@@ -32,6 +32,15 @@ No active work recorded.
 
 2026-05-23 Data conversation:
 - Owner: Data conversation.
+- Task: Create `CODEX_WORKFLOW.md` with project Codex working rules.
+- Files touched: `CODEX_WORKFLOW.md`, `AGENT_HANDOFF.md`.
+- What changed: Added the workflow rules document and recorded that it is not a handoff file; `AGENT_HANDOFF.md` remains the only default handoff file.
+- Verification: Not run; documentation-only workflow change.
+- Next needed: Use `CODEX_WORKFLOW.md` as the task discipline reference and `AGENT_HANDOFF.md` as the cross-conversation handoff board.
+- Do not touch yet: No business code, UI, scoring, review, buy zone, database, cache, or API logic was changed.
+
+2026-05-23 Data conversation:
+- Owner: Data conversation.
 - Task: Set `AGENT_HANDOFF.md` as the single default handoff file.
 - Files touched: `AGENT_HANDOFF.md`.
 - What changed: Added the canonical handoff rule at the top of this file and cleared Active Work.
