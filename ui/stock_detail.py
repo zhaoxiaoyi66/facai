@@ -1,0 +1,1309 @@
+from __future__ import annotations
+
+from datetime import datetime
+from html import escape
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from buy_zone_engine import (
+    BuyZoneEstimate,
+    buy_zone_with_manual_override,
+    clear_buy_zone_override_values,
+    effective_buy_zone_plan,
+    generate_buy_zone,
+    has_buy_zone_override,
+)
+from data.fundamentals import FundamentalCache
+from data.disclosure_pipeline import DisclosurePipeline
+from data.providers import get_market_data_provider
+from data.stock_plan import StockPlanStore
+from formatting import format_compact_number, format_currency, format_large_number, format_multiple, format_percent
+from indicators.technicals import add_technical_indicators, latest_technical_snapshot
+from position_plan_engine import PositionPlanSuggestion, generate_position_plan
+from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
+from scoring.total_score import calculate_total_score
+from settings import load_watchlist
+from ui.metric_labels import (
+    action_label,
+    confidence_label,
+    metric_label,
+    model_type_label,
+    resolution_status_label,
+    source_type_label,
+)
+from ui.theme import render_page_header, render_section_title
+
+
+MANUAL_TEXT = "建议人工复核"
+
+
+def render() -> None:
+    _render_detail_styles()
+    render_page_header("单股详情 2.0", "先看结论，再看评分原因、行业关键指标、击球区和操作计划。")
+
+    ticker = _select_ticker()
+    if not ticker:
+        st.warning("请输入股票代码后继续。")
+        return
+
+    control_cols = st.columns([1, 1, 5])
+    refresh_token_key = f"stock_detail_refresh_token_{ticker}"
+    with control_cols[0]:
+        if st.button("刷新此股票", width="stretch"):
+            st.session_state[refresh_token_key] = datetime.now().isoformat()
+            st.session_state["selected_detail_symbol"] = ticker
+            st.rerun()
+    with control_cols[1]:
+        if st.button("返回总览", width="stretch"):
+            st.session_state["pending_app_page"] = "总览仪表盘"
+            st.query_params["page"] = "dashboard"
+            st.rerun()
+
+    with st.spinner(f"正在加载 {ticker} 详情..."):
+        snapshot, history, technicals, score, refreshed_at = _load_detail(ticker, st.session_state.get(refresh_token_key))
+
+    plan_store = StockPlanStore()
+    plan = plan_store.get_plan(ticker)
+    stock_data = {**snapshot, **technicals}
+    buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
+    effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
+    effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
+    plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
+
+    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at)
+    _render_decision_summary(score, buy_zone, plan_suggestion)
+    _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone)
+    _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone)
+    _render_explanation_cards(score, snapshot, technicals, effective_plan)
+    _render_industry_metrics(score.scoring_model, snapshot, score)
+    _render_missing_data_notice(ticker, score, snapshot)
+    _render_manual_override_form(ticker, snapshot, score, technicals, history)
+    _render_raw_metrics(snapshot, history, technicals, score, ticker)
+
+
+def _select_ticker() -> str:
+    tickers = load_watchlist()
+    symbol_from_query = str(st.query_params.get("symbol", "")).strip().upper()
+    if symbol_from_query:
+        st.session_state["stock_detail_symbol"] = symbol_from_query
+    selected_from_dashboard = st.session_state.pop("selected_detail_symbol", None)
+    if selected_from_dashboard:
+        st.session_state["stock_detail_symbol"] = selected_from_dashboard
+
+    default_symbol = st.session_state.get("stock_detail_symbol") or (tickers[0] if tickers else "")
+    if default_symbol and default_symbol not in tickers:
+        tickers = [default_symbol, *tickers]
+
+    selected = ""
+    if tickers:
+        index = tickers.index(default_symbol) if default_symbol in tickers else 0
+        selected = st.selectbox("股票代码", tickers, index=index, key="stock_detail_symbol")
+    custom = st.text_input("或输入其他股票代码", value="", placeholder="例如 VST / NOW / NVDA")
+    return (custom or selected or "").strip().upper()
+
+
+def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score, refreshed_at: str | None) -> None:
+    company = snapshot.get("company_name") or ticker
+    price = technicals.get("price") or snapshot.get("current_price")
+    data_status = _data_status(score, snapshot)
+    refreshed = _format_timestamp(refreshed_at)
+    values = [
+        ("当前价格", format_currency(price)),
+        ("市值", format_large_number(snapshot.get("market_cap"))),
+        ("行业模型", model_type_label(score.scoring_model)),
+        ("质量评级", score.quality_rating),
+        ("买点评级", score.entry_rating),
+        ("风险等级", score.risk_rating),
+        ("估值状态", score.valuation_status),
+        ("操作建议", score.action),
+        ("当前新增建议", _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent))),
+        ("组合仓位上限", _position_limit_text(getattr(score, "max_portfolio_weight_percent", None))),
+        ("代理置信度", f"{confidence_label(score.proxy_confidence)} / {confidence_label(score.data_confidence)}"),
+        ("数据状态", data_status),
+        ("最近刷新", refreshed),
+    ]
+
+    st.markdown(
+        '<section class="detail-hero">'
+        '<div>'
+        f'<div class="detail-eyebrow">{escape(str(company))}</div>'
+        f'<h2>{escape(ticker)}</h2>'
+        f'<p>{escape(str(snapshot.get("sector") or "未知板块"))} · {escape(str(snapshot.get("industry") or "未知行业"))}</p>'
+        "</div>"
+        '<div class="detail-hero-grid">'
+        + "".join(_hero_item_html(label, value) for label, value in values)
+        + "</div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict) -> None:
+    render_section_title("评分解释", "为什么是这个结论")
+    columns = st.columns(3)
+
+    with columns[0]:
+        _explain_card(
+            "公司质量解释",
+            score.quality_rating,
+            "主要加分项",
+            score.key_positives or [],
+            "主要扣分项",
+            _quality_penalties(score, snapshot),
+            score.missing_data or [],
+        )
+
+    with columns[1]:
+        buy_reasons = _entry_explanation(score, snapshot, technicals, plan)
+        _explain_card(
+            "买点解释",
+            score.entry_rating,
+            "当前判断",
+            buy_reasons,
+            "需要等待",
+            _entry_wait_items(score, technicals, plan),
+            score.missing_data or [],
+        )
+
+    with columns[2]:
+        risk_reasons = _risk_explanation(score)
+        _explain_card(
+            "风险解释",
+            score.risk_rating,
+            "主要风险",
+            risk_reasons,
+            "风险来源",
+            _risk_source_labels(score),
+            score.missing_data or [],
+        )
+
+
+def _explain_card(
+    title: str,
+    rating: str,
+    positive_title: str,
+    positives: list[str],
+    risk_title: str,
+    risks: list[str],
+    missing: list[str],
+) -> None:
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        st.markdown(_pill_html(rating, _rating_color(rating)), unsafe_allow_html=True)
+        st.caption(positive_title)
+        _render_short_list(positives, "暂无明显加分项")
+        st.caption(risk_title)
+        _render_short_list(risks, "暂无明显扣分项")
+        st.caption("缺失数据项")
+        _render_short_list(missing[:5], "关键字段可用")
+
+
+def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
+    render_section_title("数据状态", "区分真缺失、未披露、供应商没有、需要 IR 抓取和需要分析师预期")
+    missing = score.missing_data or []
+    missing_impacts = getattr(score, "missing_metric_impacts", None) or getattr(score, "missingMetricImpact", [])
+    confidence = score.data_confidence or snapshot.get("dataConfidence")
+    confidence_pct = snapshot.get("dataConfidencePct")
+    if confidence:
+        st.caption(
+            f"数据置信度：{confidence_label(confidence)}"
+            + (f"（{confidence_pct}%）" if confidence_pct is not None else "")
+            + f"；代理置信度：{confidence_label(score.proxy_confidence)}；建议仓位上限：{_position_limit_text(score.max_suggested_position_percent)}"
+        )
+
+    proxy_rows = _proxy_status_rows(score)
+    if proxy_rows:
+        st.dataframe(pd.DataFrame(proxy_rows), hide_index=True, width="stretch")
+
+    category_rows = _data_status_rows(snapshot)
+    if category_rows:
+        st.dataframe(pd.DataFrame(category_rows), hide_index=True, width="stretch")
+
+    impact_rows = _missing_impact_rows(missing_impacts)
+    fundamental_rows = _missing_impact_rows([row for row in missing_impacts if isinstance(row, dict) and row.get("affects") != "Technical"])
+    technical_rows = _missing_impact_rows([row for row in missing_impacts if isinstance(row, dict) and row.get("affects") == "Technical"])
+
+    if fundamental_rows:
+        st.info(f"{ticker} 当前使用 {model_type_label(score.scoring_model)} 模型；缺失字段按影响等级展示，缺失不等于直接扣分。")
+        st.dataframe(pd.DataFrame(fundamental_rows), hide_index=True, width="stretch")
+
+    if technical_rows:
+        st.caption("技术指标未计算项：不进入基本面缺失表，也不影响 Quality Rating。")
+        st.dataframe(pd.DataFrame(technical_rows), hide_index=True, width="stretch")
+
+    if not missing and not category_rows and not impact_rows:
+        st.success(f"{ticker} 当前 {model_type_label(score.scoring_model)} 模型的核心评分字段可用。")
+        return
+
+    if missing and not impact_rows:
+        st.info(f"{ticker} 当前使用 {model_type_label(score.scoring_model)} 模型，部分字段缺失。缺失不会直接打 D，但会限制评分上限或降低置信度。")
+        rows = [
+            {
+                "评分缺口": metric_label(item),
+                "影响评分": _missing_impact(item),
+                "处理建议": "建议人工复核或抓取IR资料" if _needs_manual_override(item, score.scoring_model) else "等待数据源补齐",
+            }
+            for item in missing[:12]
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def _proxy_status_rows(score) -> list[dict]:
+    rows: list[dict] = []
+    if score.missing_industry_metrics:
+        rows.append(
+            {
+                "分类": "缺少行业专属指标",
+                "状态": confidence_label(score.proxy_confidence),
+                "字段": "、".join(metric_label(item) for item in score.missing_industry_metrics),
+                "说明": "当前未把代理指标当作完整行业数据",
+            }
+        )
+    if score.proxy_metrics_used:
+        rows.append(
+            {
+                "分类": "已使用代理指标",
+                "状态": confidence_label(score.proxy_confidence),
+                "字段": "、".join(metric_label(item) for item in score.proxy_metrics_used),
+                "说明": "用于避免直接数据不足，但会降低 proxyConfidence",
+            }
+        )
+    return rows
+
+
+def _render_industry_metrics(model_type: str, snapshot: dict, score) -> None:
+    render_section_title("行业专属指标", model_type_label(model_type))
+    rows = _industry_metric_rows(model_type, snapshot, score)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def _render_manual_override_form(ticker: str, snapshot: dict, score, technicals: dict | None = None, history: pd.DataFrame | None = None) -> None:
+    render_section_title("数据自动补齐", "优先从 SEC、8-K、IR release 和 transcript 补行业专属指标")
+    _render_disclosure_pipeline_controls(ticker, snapshot, score, technicals, history)
+    _render_sec_supplement_summary(snapshot)
+
+    fields = _manual_override_fields(score.scoring_model)
+    if not fields:
+        st.caption("当前模型暂未配置专属人工补充表单。")
+        return
+
+    with st.form(f"manual-overrides-{ticker}"):
+        st.caption("百分比字段可填 0.15 或 15%，系统会自动按比例保存。")
+        values: dict[str, str] = {}
+        columns = st.columns(2)
+        for index, (label, key, is_percent) in enumerate(fields):
+            with columns[index % 2]:
+                values[key] = st.text_input(label, value=_number_text(snapshot.get(key)), key=f"{ticker}-{key}")
+                if is_percent:
+                    st.caption("按比例保存，例如 0.18 = 18%")
+
+        notes = st.text_area("人工备注", value=snapshot.get("manualNarrativeNotes") or "", key=f"{ticker}-manual-notes")
+        submitted = st.form_submit_button("保存补充数据", width="stretch")
+        if submitted:
+            parsed = {
+                key: _parse_optional_number(values.get(key, ""), is_percent=is_percent)
+                for _, key, is_percent in fields
+            }
+            parsed["manualNarrativeNotes"] = notes.strip() or None
+            FundamentalCache().set_manual_overrides(ticker, **parsed)
+            st.session_state[f"stock_detail_refresh_token_{ticker}"] = datetime.now().isoformat()
+            st.success("已保存补充数据，评分会使用新的 manual override。")
+            st.rerun()
+
+
+def _render_disclosure_pipeline_controls(
+    ticker: str,
+    snapshot: dict,
+    score,
+    technicals: dict | None = None,
+    history: pd.DataFrame | None = None,
+) -> None:
+    result_key = f"disclosure-pipeline-result-{ticker}"
+    columns = st.columns([1.2, 3.8])
+    with columns[0]:
+        if st.button("自动补齐数据", key=f"auto-disclosure-{ticker}", width="stretch"):
+            with st.status(f"正在自动补齐 {ticker} 数据...", expanded=True) as status:
+                st.write("FMP：读取当前页面已有结构化字段")
+                st.write("Calculated：自动计算 SBC/revenue、净债务、利息覆盖、FCF margin 和技术指标")
+                st.write("SEC：抓取 companyfacts 和最近 filings")
+                st.write("8-K / IR：扫描 Exhibit 99.1、earnings release / presentation 链接")
+                st.write("Transcript：只在明确出现指标和数字时低置信度保存")
+                result = DisclosurePipeline().run(
+                    ticker,
+                    model_type=score.scoring_model,
+                    current_snapshot=snapshot,
+                    current_technicals=technicals,
+                    price_history=history,
+                    force_refresh=True,
+                )
+                status.update(label=f"{ticker} 自动补齐完成", state="complete")
+            st.session_state[result_key] = result
+            st.session_state[f"stock_detail_refresh_token_{ticker}"] = datetime.now().isoformat()
+            st.rerun()
+
+    result = st.session_state.get(result_key)
+    if result:
+        saved = result.get("saved") or []
+        missing = result.get("missing") or []
+        not_disclosed = result.get("notDisclosed") or []
+        resolutions = result.get("resolutions") or []
+        message = f"上次自动补齐保存 {len(saved)} 条指标"
+        if missing:
+            message += f"，仍缺 {len(missing)} 项"
+        if not_disclosed:
+            message += f"，公司未披露 {len(not_disclosed)} 项"
+        columns[1].success(message)
+        if saved:
+            preview = pd.DataFrame(
+                [
+                    {
+                        "字段": metric_label(item.get("displayName") or item.get("metricKey")),
+                        "数值": _format_disclosure_value(item.get("value"), item.get("unit")),
+                        "期间": item.get("period") or "N/A",
+                        "来源": source_type_label(item.get("sourceType")),
+                        "置信度": confidence_label(item.get("confidence")),
+                    }
+                    for item in saved[:8]
+                ]
+            )
+            st.dataframe(preview, hide_index=True, width="stretch")
+        if resolutions:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "指标": metric_label(item.get("displayName") or item.get("metricKey")),
+                            "状态": resolution_status_label(item.get("status")),
+                            "尝试来源": source_type_label(item.get("sourceTried")),
+                            "说明": item.get("reason"),
+                            "建议动作": action_label(item.get("recommendedAction")),
+                        }
+                        for item in resolutions[:12]
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+
+
+def _render_sec_supplement_summary(snapshot: dict) -> None:
+    status = snapshot.get("sec_supplement_status")
+    note = snapshot.get("sec_supplement_note")
+    rows = [
+        {"自动补充项": "SEC收入", "数值": format_large_number(snapshot.get("sec_revenue")), "来源": "SEC companyfacts"},
+        {"自动补充项": metric_label("GAAP operating margin"), "数值": format_percent(snapshot.get("operating_margin"), already_percent=False), "来源": _metric_source_label(snapshot, "operating_margin")},
+        {"自动补充项": metric_label("FCF margin"), "数值": format_percent(snapshot.get("fcf_margin"), already_percent=False), "来源": _metric_source_label(snapshot, "fcf_margin")},
+        {"自动补充项": metric_label("SBC / revenue"), "数值": format_percent(snapshot.get("sbc_ratio"), already_percent=False), "来源": _metric_source_label(snapshot, "sbc_ratio")},
+        {"自动补充项": metric_label("RPO / cRPO growth"), "数值": format_percent(snapshot.get("rpo_growth"), already_percent=False), "来源": _metric_source_label(snapshot, "rpo_growth")},
+        {"自动补充项": "递延收入增速", "数值": format_percent(snapshot.get("deferred_revenue_growth"), already_percent=False), "来源": snapshot.get("deferred_revenue_source") or "SEC companyfacts"},
+    ]
+    rows = [row for row in rows if row["数值"] != "N/A"]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    elif status:
+        message = f"SEC 补充状态：{resolution_status_label(status)}"
+        if note:
+            message += f"；{note}"
+        st.caption(message)
+    _render_disclosure_metrics(snapshot)
+
+
+def _render_disclosure_metrics(snapshot: dict) -> None:
+    metrics = snapshot.get("disclosureMetrics")
+    resolutions = snapshot.get("missingMetricResolutions")
+    _render_disclosure_review_summary(snapshot)
+    if not isinstance(metrics, list):
+        metrics = []
+    if not isinstance(resolutions, list):
+        resolutions = []
+    if not metrics and not resolutions:
+        return
+    render_section_title("披露数据来源", "自动抽取值均保留来源、原文和置信度")
+    if metrics:
+        rows = []
+        for item in metrics:
+            rows.append(
+                {
+                    "指标": metric_label(item.get("displayName") or item.get("metricKey")),
+                    "数值": _format_disclosure_value(item.get("value"), item.get("unit")),
+                    "来源": source_type_label(item.get("sourceType") or "N/A"),
+                    "置信度": confidence_label(item.get("confidence") or "N/A"),
+                    "复核状态": _review_status_label(item.get("reviewStatus") or "pending_review"),
+                    "期间": item.get("period") or "N/A",
+                    "原文片段": _truncate(item.get("extractedText") or "", 180),
+                    "动作": "已保存",
+                    "来源链接": item.get("sourceUrl") or "N/A",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    if resolutions:
+        resolution_rows = [
+            {
+                "指标": metric_label(item.get("displayName") or item.get("metricKey")),
+                "数值": "N/A",
+                "来源": source_type_label(item.get("sourceTried") or "N/A"),
+                "置信度": "N/A",
+                "期间": "N/A",
+                "说明": item.get("reason") or "",
+                "状态": resolution_status_label(item.get("status")),
+                "动作": action_label(item.get("recommendedAction")),
+                "来源链接": "N/A",
+            }
+            for item in resolutions
+        ]
+        st.dataframe(pd.DataFrame(resolution_rows), hide_index=True, width="stretch")
+
+
+def _render_disclosure_review_summary(snapshot: dict) -> None:
+    summary = snapshot.get("disclosureReviewSummary")
+    if not isinstance(summary, dict) or not summary.get("total"):
+        return
+    render_section_title("数据复核状态", "自动抽取值确认后才优先进入评分")
+    rows = [
+        {"状态": "已确认", "数量": summary.get("approved", 0)},
+        {"状态": "待复核", "数量": summary.get("pending_review", 0)},
+        {"状态": "已驳回", "数量": summary.get("rejected", 0)},
+        {"状态": "手动修正", "数量": summary.get("manually_corrected", 0)},
+    ]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    critical = snapshot.get("criticalPendingReviewMetrics")
+    if isinstance(critical, list) and critical:
+        st.warning("有关键数据待复核，评分置信度受限：" + "、".join(str(item) for item in critical))
+
+
+def _metric_source_label(snapshot: dict, key: str) -> str:
+    sources = snapshot.get("metric_sources")
+    if isinstance(sources, dict):
+        raw = sources.get(key)
+        if isinstance(raw, dict):
+            if raw.get("sourceDocumentTitle") or raw.get("source"):
+                return str(raw.get("sourceDocumentTitle") or raw.get("source"))
+            return source_type_label(raw.get("sourceType") or "N/A")
+        if raw:
+            return source_type_label(raw)
+    return "N/A"
+
+
+def _review_status_label(value: object) -> str:
+    return {
+        "pending_review": "待复核",
+        "approved": "已确认",
+        "rejected": "已驳回",
+        "manually_corrected": "手动修正",
+        "stale": "已过期",
+    }.get(str(value or ""), str(value or "N/A"))
+
+
+def _data_status_rows(snapshot: dict) -> list[dict]:
+    groups = [
+        ("可用关键指标", "availableCriticalMetrics", "available", "可正常参与评分"),
+        ("真缺失", "missingCriticalMetrics", "missing", "当前无值，不参与评分"),
+        ("公司不披露", "notDisclosedMetrics", "not_disclosed", "不乱估，不直接扣大分，只降低置信度"),
+        ("当前数据源没有", "vendorUnavailableMetrics", "vendor_unavailable", "FMP/标准供应商无字段，可人工补充"),
+        ("可从 IR 抓取", "requiresIrScrapeMetrics", "requires_ir_scrape", "需要财报新闻稿 / 8-K 99.1 / 投资者演示"),
+        ("需要分析师预期", "requiresEstimatesMetrics", "requires_estimates", "PEG / EPS 增速需要分析师预期"),
+        ("估算值", "estimatedMetrics", "estimated", "可低权重参与，不当作财报披露"),
+    ]
+    rows: list[dict] = []
+    for label, key, status, note in groups:
+        values = snapshot.get(key)
+        if not values:
+            continue
+        if isinstance(values, str):
+            values = [values]
+        rows.append({"分类": label, "状态": resolution_status_label(status), "字段": "、".join(metric_label(item) for item in values), "说明": note})
+    return rows
+
+
+def _manual_override_fields(model_type: str) -> list[tuple[str, str, bool]]:
+    if model_type == "SAAS_SOFTWARE":
+        return [
+            ("订阅收入增速", "manualSubscriptionRevenueGrowth", True),
+            ("non-GAAP 经营利润率", "manualNonGaapOperatingMargin", True),
+            ("净留存率 / NRR", "manualNetRetention", True),
+            ("RPO / cRPO 增速", "manualRpoGrowth", True),
+            ("大客户增长", "manualLargeCustomerGrowth", True),
+            ("股权激励/收入", "manualSbcRatio", True),
+        ]
+    if model_type == "POWER_GENERATION":
+        return [
+            ("调整后EBITDA", "manualAdjustedEbitda", False),
+            ("调整后EBITDA增速", "manualAdjustedEbitdaGrowth", True),
+            ("增长投资前调整后FCF", "manualAdjustedFcfBeforeGrowth", False),
+            ("净债务/调整后EBITDA", "manualNetDebtToAdjustedEbitda", False),
+            ("当年对冲覆盖率", "manualHedgeCoverageCurrentYear", True),
+            ("次年对冲覆盖率", "manualHedgeCoverageNextYear", True),
+            ("回购金额", "manualBuybackAmount", False),
+            ("股本减少比例", "manualShareCountReduction", True),
+        ]
+    if model_type == "AI_INFRA_HIGH_RISK":
+        return [
+            ("现金可支撑月数", "manualCashRunwayMonths", False),
+            ("Backlog / 已签约收入增速", "manualBacklogGrowth", True),
+            ("客户集中风险 0-100", "manualCustomerConcentration", False),
+            ("稀释风险 0-100", "manualDilutionRisk", False),
+        ]
+    return []
+
+
+def _decision_summary_text(score, buy_zone: BuyZoneEstimate) -> str:
+    action = score.action or "只观察"
+    if buy_zone.currentZone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} and action not in {"禁止追高", "剔除"}:
+        return f"{score.scoring_model} 模型显示当前已经接近系统买区，但仍按风险等级控制新增仓位。"
+    if score.risk_rating == "低" and action in {"只观察", "等回踩"}:
+        return "风险评级低代表公司基本面风险较低，不等于当前价格值得追；当前动作主要受买点和估值约束。"
+    if buy_zone.currentZone == "no_chase" or action == "禁止追高":
+        return "公司质量和当前价格需要分开看：短线或估值偏热时，系统不建议追高新增。"
+    return f"当前操作建议为「{action}」，系统买区用于约束新增仓位，而不是替代评分结论。"
+
+
+def _decision_wait_items(score, buy_zone: BuyZoneEstimate) -> list[str]:
+    items: list[str] = []
+    if buy_zone.trancheBuyHigh is not None:
+        items.append(f"回落到可分批区上沿 {format_currency(buy_zone.trancheBuyHigh)} 附近")
+    if score.entry_rating and not str(score.entry_rating).startswith("A"):
+        items.append("买点评级提升到 A- / A 区间")
+    if score.overheat_score >= 40:
+        items.append("过热分降温，RSI / 20日涨幅回到舒适区")
+    if score.data_confidence in {"low", "medium"}:
+        items.append("关键数据复核完成后再提高仓位")
+    return items[:4]
+
+
+def _buy_zone_label(zone: str) -> str:
+    return {
+        "no_chase": "禁止追高区",
+        "fair_observation": "合理观察区",
+        "tranche_buy": "可分批区",
+        "heavy_buy": "重仓击球区",
+        "below_heavy_buy": "低于重仓区",
+        "data_insufficient": "数据不足区",
+    }.get(zone, "正常评估")
+
+
+def _buy_zone_method_label(method: str) -> str:
+    return {
+        "valuation_multiple": "估值倍数",
+        "fcf_yield": "FCF收益率",
+        "growth_adjusted": "增长调整",
+        "technical_proxy": "技术代理",
+        "blended": "综合估值",
+        "manual_override": "手动买区",
+    }.get(method, method)
+
+
+def _plan_or_suggestion(plan: dict, field: str, fallback):
+    value = plan.get(field)
+    return value if value is not None and value != "" else fallback
+
+
+def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion) -> None:
+    render_section_title("当前结论", "区分公司质量、当前买点和仓位动作")
+    with st.container(border=True):
+        st.markdown(f"#### {score.action or '只观察'}")
+        st.write(_decision_summary_text(score, buy_zone))
+        cols = st.columns(2)
+        cols[0].metric("当前新增建议", _position_limit_text(plan_suggestion.currentAddLimitPercent))
+        cols[1].metric("组合仓位上限", _position_limit_text(plan_suggestion.maxPortfolioWeightPercent))
+        wait_items = _decision_wait_items(score, buy_zone)
+        st.caption("等待条件")
+        _render_short_list(wait_items, "暂无额外等待条件")
+
+
+def _render_buy_zone(
+    ticker: str,
+    plan_store: StockPlanStore,
+    plan: dict,
+    active_zone: BuyZoneEstimate,
+    system_zone: BuyZoneEstimate,
+) -> None:
+    manual = has_buy_zone_override(plan)
+    title_suffix = "当前使用手动买区" if manual else "当前使用系统建议"
+    render_section_title("系统建议击球区", title_suffix)
+    price = active_zone.currentPrice
+    rows = [
+        {"区间": "当前价格", "价格": format_currency(price), "当前状态": _buy_zone_label(active_zone.currentZone)},
+        {"区间": "禁止追高", "价格": _above_text(active_zone.noChaseAbove), "当前状态": _zone_status(price, lower=active_zone.noChaseAbove, mode="above")},
+        {"区间": "合理观察区", "价格": _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), "当前状态": _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh)},
+        {"区间": "可分批区", "价格": _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "当前状态": _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh)},
+        {"区间": "重仓击球区", "价格": _below_text(active_zone.heavyBuyBelow), "当前状态": _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below")},
+    ]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    cols = st.columns([1, 1, 2])
+    cols[0].metric("置信度", confidence_label(active_zone.confidence))
+    cols[1].metric("方法", _buy_zone_method_label(active_zone.method))
+    cols[2].caption(_distance_to_zone(price, active_zone.to_plan_fields()))
+    st.caption("生成依据")
+    _render_short_list(active_zone.keyReasons[:5], "暂无生成依据")
+    if active_zone.warnings:
+        st.warning("；".join(active_zone.warnings[:3]))
+
+    action_cols = st.columns([1, 1, 4])
+    if manual:
+        if action_cols[0].button("恢复系统建议", key=f"restore-system-zone-{ticker}", width="stretch"):
+            plan_store.save_plan(ticker, clear_buy_zone_override_values(plan))
+            st.success("已恢复系统建议买区。")
+            st.rerun()
+    else:
+        if action_cols[0].button("保存为手动买区", key=f"save-system-zone-{ticker}", width="stretch"):
+            plan_store.save_plan(ticker, {**plan, **system_zone.to_plan_fields()})
+            st.success("已保存为手动买区，之后会优先使用手动值。")
+            st.rerun()
+    action_cols[1].caption("可在下方操作计划里编辑区间。")
+
+
+def _render_action_plan_form(
+    ticker: str,
+    plan_store: StockPlanStore,
+    plan: dict,
+    suggestion: PositionPlanSuggestion,
+    active_zone: BuyZoneEstimate,
+) -> None:
+    render_section_title("操作计划", "系统预填，保存后成为手动计划")
+    with st.form(f"stock-plan-{ticker}"):
+        top = st.columns(2)
+        target_position_pct = top[0].text_input(
+            "组合仓位上限 %",
+            value=_number_text(_plan_or_suggestion(plan, "target_position_pct", suggestion.maxPortfolioWeightPercent)),
+        )
+        planned_position_pct = top[1].text_input(
+            "当前新增建议 %",
+            value=_number_text(_plan_or_suggestion(plan, "planned_position_pct", suggestion.currentAddLimitPercent)),
+        )
+
+        buy_cols = st.columns(3)
+        first_buy_price = buy_cols[0].text_input("第一笔买入价", value=_number_text(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice)))
+        second_buy_price = buy_cols[1].text_input("第二笔买入价", value=_number_text(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice)))
+        third_buy_price = buy_cols[2].text_input("第三笔买入价", value=_number_text(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice)))
+
+        zone_cols = st.columns(3)
+        no_chase_above = zone_cols[0].text_input("禁止追高价", value=_number_text(_plan_or_suggestion(plan, "no_chase_above", active_zone.noChaseAbove)))
+        fair_value_low = zone_cols[1].text_input("合理观察区下沿", value=_number_text(_plan_or_suggestion(plan, "fair_value_low", active_zone.fairValueLow)))
+        fair_value_high = zone_cols[2].text_input("合理观察区上沿", value=_number_text(_plan_or_suggestion(plan, "fair_value_high", active_zone.fairValueHigh)))
+
+        tranche_cols = st.columns(3)
+        tranche_buy_low = tranche_cols[0].text_input("可分批区下沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_low", active_zone.trancheBuyLow)))
+        tranche_buy_high = tranche_cols[1].text_input("可分批区上沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_high", active_zone.trancheBuyHigh)))
+        heavy_buy_below = tranche_cols[2].text_input("重仓击球区低于", value=_number_text(_plan_or_suggestion(plan, "heavy_buy_below", active_zone.heavyBuyBelow)))
+
+        stop_adding_condition = st.text_area("停止加仓条件", value=plan.get("stop_adding_condition") or suggestion.stopAddingCondition)
+        invalidation_condition = st.text_area("止损 / 逻辑破坏条件", value=plan.get("invalidation_condition") or suggestion.thesisBreakCondition)
+        earnings_review_points = st.text_area("财报复核点", value=plan.get("earnings_review_points") or suggestion.earningsReviewCondition)
+        notes = st.text_area("备注", value=plan.get("notes") or "")
+
+        submitted = st.form_submit_button("保存操作计划", width="stretch")
+        if submitted:
+            values = {
+                "target_position_pct": target_position_pct,
+                "planned_position_pct": planned_position_pct,
+                "first_buy_price": first_buy_price,
+                "second_buy_price": second_buy_price,
+                "third_buy_price": third_buy_price,
+                "no_chase_above": no_chase_above,
+                "fair_value_low": fair_value_low,
+                "fair_value_high": fair_value_high,
+                "tranche_buy_low": tranche_buy_low,
+                "tranche_buy_high": tranche_buy_high,
+                "heavy_buy_below": heavy_buy_below,
+                "stop_adding_condition": stop_adding_condition,
+                "invalidation_condition": invalidation_condition,
+                "earnings_review_points": earnings_review_points,
+                "notes": notes,
+            }
+            plan_store.save_plan(ticker, values)
+            st.success("已保存到本地 SQLite。")
+            st.rerun()
+
+
+def _render_raw_metrics(snapshot: dict, history: pd.DataFrame, technicals: dict, score, ticker: str) -> None:
+    render_section_title("原始指标展开区", "默认折叠，必要时再复核")
+    with st.expander("展开价格图、RSI 和原始财务指标", expanded=False):
+        st.plotly_chart(_price_chart(history, ticker), width="stretch")
+        st.plotly_chart(_rsi_chart(history), width="stretch")
+        fundamentals = pd.DataFrame(_raw_fundamental_rows(snapshot))
+        st.dataframe(fundamentals, hide_index=True, width="stretch")
+
+        if snapshot.get("data_quality_notes"):
+            st.info("部分 FMP 端点暂时不可用：" + "；".join(snapshot["data_quality_notes"][:4]))
+        if score.risk_flags:
+            flags = pd.DataFrame(
+                [{"风险旗标": flag.label, "严重程度": _severity_label(flag.severity), "说明": flag.detail} for flag in score.risk_flags]
+            )
+            st.dataframe(flags, hide_index=True, width="stretch")
+
+
+@st.cache_data(ttl=60 * 60)
+def _load_detail(ticker: str, refresh_token: str | None = None):
+    force_refresh = bool(refresh_token)
+    provider = get_market_data_provider(full_fundamentals=True)
+    snapshot = provider.get_quote(ticker, force_refresh=force_refresh)
+    history = add_technical_indicators(provider.get_price_history(ticker, force_refresh=force_refresh))
+    technicals = latest_technical_snapshot(history)
+    score = calculate_total_score(snapshot, technicals)
+    refreshed_at = FundamentalCache().get_snapshot_fetched_at(ticker)
+    return snapshot, history, technicals, score, refreshed_at
+
+
+def _industry_metric_rows(model_type: str, snapshot: dict, score) -> list[dict]:
+    fcf_metric = fcf_margin_metric(snapshot)
+    if model_type == "SAAS_SOFTWARE":
+        return [
+            _metric_row("收入增速", format_percent(snapshot.get("revenue_growth"), already_percent=False), "核心增长"),
+            _metric_row("毛利率", format_percent(snapshot.get("gross_margin"), already_percent=False), "经营质量"),
+            _metric_row("经营利润率", format_percent(snapshot.get("operating_margin"), already_percent=False), "GAAP profitability"),
+            _metric_row("FCF margin", format_percent(fcf_metric.value, already_percent=False), fcf_margin_source_note(snapshot)),
+            _metric_row("P/S", format_multiple(snapshot.get("price_to_sales")), "估值"),
+            _metric_row("EV/FCF", _format_ev_fcf(snapshot), "估值"),
+            _metric_row("FCF Yield", format_percent(snapshot.get("free_cash_flow_yield"), already_percent=False), "估值"),
+            _metric_row("RPO / ARR / cRPO", _manual_percent_metric(snapshot, "manualRpoGrowth", "rpo_growth", "manualArrGrowth"), "无则需人工补充"),
+            _metric_row("SBC", _manual_percent_metric(snapshot, "manualSbcRatio", "sbc_ratio", "stock_based_compensation_ratio"), "无则需人工补充"),
+        ]
+    if model_type == "POWER_GENERATION":
+        return [
+            _metric_row("Adjusted EBITDA", _large_or_manual(snapshot, "adjustedEbitda", "manualAdjustedEbitda"), "电力模型核心"),
+            _metric_row("Adjusted FCF before growth", _large_or_manual(snapshot, "adjustedFcfBeforeGrowth", "manualAdjustedFcfBeforeGrowth"), "电力模型核心"),
+            _metric_row("Market Cap / Adjusted FCF", _market_cap_to_adjusted_fcf(snapshot), "估值"),
+            _metric_row("EV / Adjusted EBITDA", _ev_to_adjusted_ebitda(snapshot), "估值"),
+            _metric_row("Net Debt / Adjusted EBITDA", _manual_metric(snapshot, "manualNetDebtToAdjustedEbitda", "net_debt_to_ebitda"), "杠杆"),
+            _metric_row("Hedge Coverage", _manual_metric(snapshot, "manualHedgeCoverageCurrentYear", "hedgeCoverageCurrentYear"), "无则需人工补充"),
+            _metric_row("Buyback", _large_or_manual(snapshot, "buybackAmount", "manualBuybackAmount"), "资本回报"),
+            _metric_row("Share Count Reduction", _manual_metric(snapshot, "shareCountReduction", "manualShareCountReduction"), "资本回报"),
+        ]
+    if model_type == "SEMICONDUCTOR":
+        return [
+            _metric_row("收入增速", format_percent(snapshot.get("revenue_growth"), already_percent=False), "周期与需求"),
+            _metric_row("毛利率", format_percent(snapshot.get("gross_margin"), already_percent=False), "产品力"),
+            _metric_row("经营利润率", format_percent(snapshot.get("operating_margin"), already_percent=False), "盈利能力"),
+            _metric_row("FCF margin", format_percent(fcf_metric.value, already_percent=False), fcf_margin_source_note(snapshot)),
+            _metric_row("P/S", format_multiple(snapshot.get("price_to_sales")), "估值"),
+            _metric_row("Forward PE", format_multiple(snapshot.get("forward_pe")), "估值"),
+            _metric_row("EV/EBITDA", format_multiple(snapshot.get("enterprise_to_ebitda")), "估值"),
+            _metric_row("库存/周期状态", _manual_metric(snapshot, "manualInventoryRisk", "manualSemiconductorCycleRisk"), "无则需人工补充"),
+        ]
+    if model_type == "AI_INFRA_HIGH_RISK":
+        return [
+            _metric_row("收入增速", format_percent(snapshot.get("revenue_growth"), already_percent=False), "增长"),
+            _metric_row("FCF", format_large_number(snapshot.get("free_cash_flow")), "现金流"),
+            _metric_row("负债", format_large_number(snapshot.get("total_debt")), "资产负债"),
+            _metric_row("客户集中风险", _manual_metric(snapshot, "manualCustomerConcentration"), "无则需人工补充"),
+            _metric_row("稀释风险", _manual_metric(snapshot, "manualDilutionRisk"), "无则需人工补充"),
+            _metric_row("Backlog / contracted revenue", _manual_metric(snapshot, "manualBacklogGrowth"), "无则需人工补充"),
+        ]
+    return [
+        _metric_row("收入增速", format_percent(snapshot.get("revenue_growth"), already_percent=False), "通用指标"),
+        _metric_row("经营利润率", format_percent(snapshot.get("operating_margin"), already_percent=False), "通用指标"),
+        _metric_row("FCF Yield", format_percent(snapshot.get("free_cash_flow_yield"), already_percent=False), "通用指标"),
+        _metric_row("P/S", format_multiple(snapshot.get("price_to_sales")), "通用指标"),
+        _metric_row("Forward PE", format_multiple(snapshot.get("forward_pe")), "通用指标"),
+        _metric_row("净债务/EBITDA", format_multiple(snapshot.get("net_debt_to_ebitda")), "通用指标"),
+        _metric_row("数据完整度", f"{score.data_quality_pct:.1f}%", "评分置信度"),
+    ]
+
+
+def _raw_fundamental_rows(snapshot: dict) -> list[dict]:
+    return [
+        {"指标": "公司", "数值": snapshot.get("company_name") or "N/A"},
+        {"指标": "行业", "数值": snapshot.get("industry") or "N/A"},
+        {"指标": "Beta", "数值": _format_plain(snapshot.get("beta"))},
+        {"指标": "市值", "数值": format_large_number(snapshot.get("market_cap"))},
+        {"指标": "企业价值", "数值": format_large_number(snapshot.get("enterprise_value"))},
+        {"指标": "流通股数", "数值": format_compact_number(snapshot.get("shares_outstanding"))},
+        {"指标": "收入", "数值": format_large_number(snapshot.get("total_revenue"))},
+        {"指标": "净利润", "数值": format_large_number(snapshot.get("net_income"))},
+        {"指标": "自由现金流", "数值": format_large_number(snapshot.get("free_cash_flow"))},
+        {"指标": "经营现金流", "数值": format_large_number(snapshot.get("operating_cash_flow"))},
+        {"指标": "TTM市盈率", "数值": format_multiple(snapshot.get("trailing_pe"))},
+        {"指标": "预期市盈率", "数值": format_multiple(snapshot.get("forward_pe"))},
+        {"指标": "市销率", "数值": format_multiple(snapshot.get("price_to_sales"))},
+        {"指标": "EV/销售额", "数值": format_multiple(snapshot.get("enterprise_to_revenue"))},
+        {"指标": "EV/EBITDA", "数值": format_multiple(snapshot.get("enterprise_to_ebitda"))},
+        {"指标": "P/FCF", "数值": format_multiple(snapshot.get("price_to_fcf"))},
+        {"指标": "FCF收益率", "数值": format_percent(snapshot.get("free_cash_flow_yield"), already_percent=False)},
+        {"指标": metric_label("FCF margin"), "数值": f"{format_percent(fcf_margin_metric(snapshot).value, already_percent=False)}（{fcf_margin_source_note(snapshot)}）"},
+        {"指标": "收入增长", "数值": format_percent(snapshot.get("revenue_growth"), already_percent=False)},
+        {"指标": "预期收入增长", "数值": format_percent(snapshot.get("forward_revenue_growth"), already_percent=False)},
+        {"指标": "自由现金流增长", "数值": format_percent(snapshot.get("free_cash_flow_growth"), already_percent=False)},
+        {"指标": "毛利率", "数值": format_percent(snapshot.get("gross_margin"), already_percent=False)},
+        {"指标": "经营利润率", "数值": format_percent(snapshot.get("operating_margin"), already_percent=False)},
+        {"指标": "净利率", "数值": format_percent(snapshot.get("profit_margin"), already_percent=False)},
+        {"指标": "ROE", "数值": format_percent(snapshot.get("return_on_equity"), already_percent=False)},
+        {"指标": "ROIC", "数值": format_percent(snapshot.get("return_on_invested_capital"), already_percent=False)},
+        {"指标": "债务/权益", "数值": format_multiple(snapshot.get("debt_to_equity"))},
+        {"指标": "净债务/EBITDA", "数值": format_multiple(snapshot.get("net_debt_to_ebitda"))},
+        {"指标": "流动比率", "数值": format_multiple(snapshot.get("current_ratio"))},
+        {"指标": "预期EPS", "数值": _format_plain(snapshot.get("forward_eps_estimate"))},
+        {"指标": "预期收入", "数值": format_large_number(snapshot.get("forward_revenue_estimate"))},
+    ]
+
+
+def _entry_explanation(score, snapshot: dict, technicals: dict, plan: dict) -> list[str]:
+    reasons = [
+        f"操作建议：{score.action}",
+        f"估值状态：{score.valuation_status}",
+        f"追高状态：{score.overheat_status} / {score.overheat_action}",
+        f"52周高点回撤：{format_percent(technicals.get('drawdown_from_high_pct'))}",
+        _distance_to_zone(technicals.get("price"), plan),
+    ]
+    if score.overheat_reasons:
+        reasons.append("追高触发原因：" + "；".join(score.overheat_reasons[:3]))
+    return reasons
+
+
+def _entry_wait_items(score, technicals: dict, plan: dict) -> list[str]:
+    items: list[str] = []
+    if score.action in {"等回踩", "只观察", "禁止追高"}:
+        items.append("等待估值或技术结构进一步确认")
+    if score.overheat_score >= 40:
+        items.append("过热分仍未完全消化")
+    price = technicals.get("price")
+    tranche_high = plan.get("tranche_buy_high")
+    if price is not None and tranche_high is not None and price > tranche_high:
+        items.append(f"价格仍高于可分批区上沿 {format_percent((price - tranche_high) / price, already_percent=False)}")
+    return items or ["当前无需额外等待条件，但仍按仓位计划执行"]
+
+
+def _risk_explanation(score) -> list[str]:
+    reasons = list(score.key_risks or [])
+    reasons.extend(flag.label for flag in score.risk_flags)
+    return [metric_label(item) for item in _dedupe(reasons)[:6]] or ["当前未触发明显高风险旗标"]
+
+
+def _quality_penalties(score, snapshot: dict) -> list[str]:
+    risks = list(score.key_risks or [])
+    fcf_source = getattr(score, "fcf_margin_source_type", "")
+    if fcf_source == "derivedFromMarket":
+        risks.append("FCF margin 为市场反推值，不参与质量评分")
+    if snapshot.get("operating_margin") is not None and snapshot.get("operating_margin") < 0.15:
+        risks.append("GAAP 经营利润率未达到高质量阈值")
+    return [metric_label(item) for item in _dedupe(risks)[:5]]
+
+
+def _risk_source_labels(score) -> list[str]:
+    labels: list[str] = []
+    text = " ".join([*(score.key_risks or []), *(score.missing_data or []), *(flag.label for flag in score.risk_flags)])
+    checks = [
+        ("估值", ("valuation", "估值", "P/S", "PE", "FCF")),
+        ("负债", ("debt", "leverage", "债", "杠杆")),
+        ("现金流", ("FCF", "cash", "现金流")),
+        ("周期", ("cycle", "周期", "inventory", "库存")),
+        ("监管", ("regulatory", "监管")),
+        ("客户集中", ("customer", "客户")),
+        ("数据缺失", ("missing", "缺失", "manual")),
+    ]
+    for label, keywords in checks:
+        if any(keyword in text for keyword in keywords):
+            labels.append(label)
+    return labels or ["暂无明确风险分类"]
+
+
+def _missing_impact(item: str) -> str:
+    lowered = item.lower()
+    if any(token in lowered for token in ["growth", "margin", "roic", "arr", "rpo", "retention", "sbc", "ebitda", "fcf"]):
+        return "Quality / 行业核心指标"
+    if any(token in lowered for token in ["valuation", "p/s", "pe", "yield", "multiple"]):
+        return "Entry / Valuation"
+    if any(token in lowered for token in ["risk", "debt", "leverage", "hedge", "regulatory", "customer", "dilution"]):
+        return "Risk"
+    return "评分置信度"
+
+
+def _missing_impact_rows(impacts: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    for item in impacts:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "指标": metric_label(item.get("metric") or "N/A"),
+                "影响等级": item.get("impactLevel") or "low",
+                "影响范围": metric_label(item.get("affects") or "Confidence Only"),
+                "建议动作": action_label(item.get("action") or "manual_override_required"),
+                "说明": item.get("explanation") or "",
+            }
+        )
+    return rows
+
+
+def _needs_manual_override(item: str, model_type: str) -> bool:
+    lowered = item.lower()
+    if model_type in {"POWER_GENERATION", "AI_INFRA_HIGH_RISK"}:
+        return True
+    return any(token in lowered for token in ["manual", "rpo", "arr", "retention", "sbc", "hedge", "backlog", "customer"])
+
+
+def _metric_row(metric: str, value: str, note: str) -> dict:
+    display = value if value not in {"N/A", "", None} else MANUAL_TEXT
+    return {"指标": metric_label(metric), "数值": display, "说明": action_label(note)}
+
+
+def _manual_metric(snapshot: dict, *keys: str) -> str:
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            return value
+        return _format_plain(value)
+    return MANUAL_TEXT
+
+
+def _manual_percent_metric(snapshot: dict, *keys: str) -> str:
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            return value
+        return format_percent(value, already_percent=False)
+    return MANUAL_TEXT
+
+
+def _large_or_manual(snapshot: dict, *keys: str) -> str:
+    for key in keys:
+        value = snapshot.get(key)
+        if value is not None:
+            return format_large_number(value)
+    return MANUAL_TEXT
+
+
+def _format_ev_fcf(snapshot: dict) -> str:
+    value = snapshot.get("ev_to_fcf")
+    if value is not None:
+        return format_multiple(value)
+    return format_multiple(snapshot.get("price_to_fcf"))
+
+
+def _market_cap_to_adjusted_fcf(snapshot: dict) -> str:
+    market_cap = snapshot.get("market_cap")
+    adjusted_fcf = snapshot.get("adjustedFcfBeforeGrowth") or snapshot.get("manualAdjustedFcfBeforeGrowth")
+    if market_cap is None or adjusted_fcf in {None, 0}:
+        return MANUAL_TEXT
+    return format_multiple(market_cap / adjusted_fcf)
+
+
+def _ev_to_adjusted_ebitda(snapshot: dict) -> str:
+    direct = snapshot.get("enterpriseValueToAdjustedEbitda") or snapshot.get("enterprise_to_ebitda")
+    if direct is not None:
+        return format_multiple(direct)
+    enterprise_value = snapshot.get("enterprise_value")
+    adjusted_ebitda = snapshot.get("adjustedEbitda") or snapshot.get("manualAdjustedEbitda")
+    if enterprise_value is None or adjusted_ebitda in {None, 0}:
+        return MANUAL_TEXT
+    return format_multiple(enterprise_value / adjusted_ebitda)
+
+
+def _zone_status(price: float | None, lower: float | None = None, upper: float | None = None, mode: str = "range") -> str:
+    if price is None:
+        return "缺少现价"
+    if mode == "above":
+        if lower is None:
+            return "未设置"
+        return "已进入禁止追高区" if price >= lower else "未触发"
+    if mode == "below":
+        if upper is None:
+            return "未设置"
+        return "已进入重仓击球区" if price <= upper else "未触发"
+    if lower is None or upper is None:
+        return "未设置"
+    if lower <= price <= upper:
+        return "当前在区间内"
+    if price > upper:
+        return f"高于上沿 {format_percent((price - upper) / price, already_percent=False)}"
+    return f"低于下沿 {format_percent((lower - price) / lower, already_percent=False)}"
+
+
+def _distance_to_zone(price: float | None, plan: dict) -> str:
+    high = plan.get("tranche_buy_high")
+    low = plan.get("tranche_buy_low")
+    if price is None:
+        return "距离击球区：缺少现价"
+    if high is None and low is None:
+        return "距离击球区：尚未设置，需要人工配置。"
+    if low is not None and high is not None and low <= price <= high:
+        return "距离击球区：已在可分批区内"
+    if high is not None and price > high:
+        return f"距离击球区：还需回落 {format_percent((price - high) / price, already_percent=False)} 到可分批区上沿"
+    if low is not None and price < low:
+        return "距离击球区：已低于可分批区下沿，可复核是否进入更深击球区"
+    return "距离击球区：区间未完整设置"
+
+
+def _above_text(value: float | None) -> str:
+    return f">{format_currency(value)}" if value is not None else "尚未设置，需要人工配置。"
+
+
+def _below_text(value: float | None) -> str:
+    return f"<{format_currency(value)}" if value is not None else "尚未设置，需要人工配置。"
+
+
+def _range_text(low: float | None, high: float | None) -> str:
+    if low is None and high is None:
+        return "尚未设置，需要人工配置。"
+    if low is None:
+        return f"低于 {format_currency(high)}"
+    if high is None:
+        return f"高于 {format_currency(low)}"
+    return f"{format_currency(low)} - {format_currency(high)}"
+
+
+def _price_chart(history: pd.DataFrame, ticker: str) -> go.Figure:
+    fig = go.Figure()
+    if history.empty:
+        fig.update_layout(title=f"{ticker}：暂无价格历史")
+        return fig
+
+    fig.add_trace(go.Scatter(x=history["date"], y=history["close"], name="收盘价", line=dict(color="#2563eb", width=2)))
+    fig.add_trace(go.Scatter(x=history["date"], y=history["ema20"], name="EMA20", line=dict(color="#7c3aed", width=1.2)))
+    fig.add_trace(go.Scatter(x=history["date"], y=history["ema50"], name="EMA50", line=dict(color="#f97316", width=1.5)))
+    fig.add_trace(go.Scatter(x=history["date"], y=history["ema200"], name="EMA200", line=dict(color="#16a34a", width=1.5)))
+    fig.update_layout(
+        title=f"{ticker} 价格、EMA20、EMA50、EMA200",
+        height=420,
+        margin=dict(l=20, r=20, t=50, b=20),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.02, x=0),
+    )
+    return fig
+
+
+def _rsi_chart(history: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if history.empty or "rsi14" not in history.columns:
+        fig.update_layout(title="暂无 RSI 数据")
+        return fig
+
+    fig.add_trace(go.Scatter(x=history["date"], y=history["rsi14"], name="RSI14", line=dict(color="#7c2d12", width=2)))
+    fig.add_hline(y=70, line_dash="dash", line_color="#dc2626", annotation_text="超买")
+    fig.add_hline(y=30, line_dash="dash", line_color="#16a34a", annotation_text="超卖")
+    fig.update_layout(height=260, margin=dict(l=20, r=20, t=50, b=20), yaxis=dict(range=[0, 100]), showlegend=False)
+    return fig
+
+
+def _data_status(score, snapshot: dict | None = None) -> str:
+    if score.data_confidence:
+        base = confidence_label(score.data_confidence)
+        if score.proxy_confidence and score.proxy_confidence != "high":
+            return f"{base} / 代理 {confidence_label(score.proxy_confidence)}"
+        return base
+    if snapshot and snapshot.get("dataConfidence"):
+        return f"{confidence_label(snapshot.get('dataConfidence'))} / {snapshot.get('dataConfidencePct', 'N/A')}%"
+    if score.data_insufficient:
+        return "数据不足，需复核"
+    if score.missing_data:
+        return "部分缺失，需补充 " + "、".join(metric_label(item) for item in score.missing_data[:3])
+    return "核心数据可用"
+
+
+def _format_timestamp(value: str | None) -> str:
+    if not value:
+        return "N/A"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _position_limit_text(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    if value <= 0:
+        return "不建议新增"
+    return f"≤{value:g}%"
+
+
+def _format_plain(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{value:.1f}"
+
+
+def _format_disclosure_value(value: object, unit: object = None) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if unit == "percent":
+        return format_percent(number, already_percent=False)
+    if unit == "x":
+        return format_multiple(number)
+    if unit == "usd":
+        return format_large_number(number)
+    return f"{number:g}"
+
+
+def _truncate(value: str, limit: int) -> str:
+    clean = " ".join(str(value).split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1] + "…"
+
+
+def _number_text(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _parse_optional_number(value: object, is_percent: bool = False) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    has_percent_sign = text.endswith("%")
+    if has_percent_sign:
+        text = text[:-1].strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if has_percent_sign or (is_percent and abs(number) > 1.5):
+        return number / 100
+    return number
+
+
+def _severity_label(severity: str) -> str:
+    return {"high": "高", "medium": "中", "info": "信息"}.get(severity, severity)
+
+
+def _render_short_list(items: list[str], empty: str) -> None:
+    if not items:
+        st.caption(empty)
+        return
+    for item in items[:6]:
+        st.markdown(f"- {metric_label(item)}")
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _rating_color(value: str) -> str:
+    if value.startswith(("A", "B")) or value == "低":
+        return "green"
+    if "中高" in value:
+        return "orange"
+    if "高" in value or value.startswith("D"):
+        return "red"
+    if value.startswith("C") or "中" in value:
+        return "yellow"
+    return "blue"
+
+
+def _pill_html(value: str, color: str) -> str:
+    styles = {
+        "green": ("#dcfce7", "#166534", "#86efac"),
+        "blue": ("#dbeafe", "#1d4ed8", "#93c5fd"),
+        "yellow": ("#fef9c3", "#854d0e", "#fde047"),
+        "orange": ("#ffedd5", "#9a3412", "#fdba74"),
+        "red": ("#fee2e2", "#991b1b", "#fca5a5"),
+    }
+    background, foreground, border = styles.get(color, styles["blue"])
+    return f'<span class="detail-pill" style="background:{background};color:{foreground};border-color:{border};">{escape(value)}</span>'
+
+
+def _hero_item_html(label: str, value: object) -> str:
+    return (
+        '<div class="detail-hero-item">'
+        f'<span>{escape(label)}</span>'
+        f'<strong>{escape(str(value))}</strong>'
+        "</div>"
+    )
+
+
+def _render_detail_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .detail-hero {
+            display: grid;
+            grid-template-columns: minmax(220px, 0.8fr) minmax(420px, 1.5fr);
+            gap: 1rem;
+            align-items: stretch;
+            padding: 1.1rem;
+            margin: 0.2rem 0 1rem;
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 0.8rem;
+            background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(241,245,249,0.92));
+            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.07);
+        }
+        .detail-eyebrow {
+            color: #2563eb;
+            font-size: 0.78rem;
+            font-weight: 780;
+            letter-spacing: 0;
+        }
+        .detail-hero h2 {
+            margin: 0.2rem 0 0.2rem;
+            color: #111827;
+            font-size: 2.2rem;
+            line-height: 1;
+            font-weight: 820;
+        }
+        .detail-hero p {
+            margin: 0;
+            color: #667085;
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+        .detail-hero-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.55rem;
+        }
+        .detail-hero-item {
+            min-height: 4.2rem;
+            padding: 0.58rem 0.62rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.55rem;
+            background: rgba(255, 255, 255, 0.78);
+        }
+        .detail-hero-item span {
+            display: block;
+            color: #667085;
+            font-size: 0.72rem;
+            font-weight: 690;
+            line-height: 1.2;
+        }
+        .detail-hero-item strong {
+            display: block;
+            margin-top: 0.3rem;
+            color: #172033;
+            font-size: 0.9rem;
+            line-height: 1.25;
+            font-weight: 760;
+            overflow-wrap: anywhere;
+        }
+        .detail-pill {
+            display: inline-flex;
+            align-items: center;
+            min-height: 1.8rem;
+            padding: 0.18rem 0.58rem;
+            border: 1px solid;
+            border-radius: 999px;
+            font-size: 0.86rem;
+            font-weight: 720;
+        }
+        @media (max-width: 900px) {
+            .detail-hero {
+                grid-template-columns: 1fr;
+            }
+            .detail-hero-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
