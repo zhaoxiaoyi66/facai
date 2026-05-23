@@ -4903,6 +4903,7 @@ class ReviewUndoVersioningTests(unittest.TestCase):
             store.update_review_status(item_id, "approved")
             approved = store.get_item(item_id)
             self.assertEqual(approved["reviewStatus"], "approved")
+            self.assertTrue(canMetricEnterScoring(approved))
             active_versions = [row for row in store.list_metric_versions(item_id) if row["isActive"]]
             self.assertEqual(len(active_versions), 1)
             self.assertEqual(active_versions[0]["reviewStatus"], "approved")
@@ -4911,11 +4912,36 @@ class ReviewUndoVersioningTests(unittest.TestCase):
             store.undo_review_status(item_id, "pending_review", "mistaken confirm")
             undone = store.get_item(item_id)
             self.assertEqual(undone["reviewStatus"], "pending_review")
+            self.assertFalse(canMetricEnterScoring(undone))
             self.assertFalse([row for row in store.list_metric_versions(item_id) if row["isActive"]])
             self.assertEqual(store.get_score_status("NOW")["scoreStatus"], "stale")
+            self.assertIn("undo_approve", store.get_score_status("NOW")["staleReason"])
             actions = [row["action"] for row in store.list_review_audit_logs(item_id)]
             self.assertIn("approve", actions)
             self.assertIn("undo_approve", actions)
+
+    def test_auto_approved_value_can_be_undone_and_blocked_from_scoring(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = ReviewQueueStore(Path(tmp) / "cache.db")
+            item = _insert_review_item(store)
+            item_id = int(item["id"])
+
+            store.apply_ai_auto_approval(item_id, explanation_zh="validated evidence")
+            approved = store.get_item(item_id)
+            self.assertEqual(approved["reviewStatus"], "approved")
+            self.assertEqual(approved["aiTriageStatus"], "auto_approved_by_ai")
+            self.assertTrue(canMetricEnterScoring(approved))
+
+            store.undo_review_status(item_id, "pending_review", "bad auto approval")
+            undone = store.get_item(item_id)
+            self.assertEqual(undone["reviewStatus"], "pending_review")
+            self.assertIsNone(undone["aiTriageStatus"])
+            self.assertFalse(canMetricEnterScoring(undone))
+            self.assertEqual(store.get_score_status("NOW")["scoreStatus"], "stale")
+            self.assertIn("undo_auto_approve", store.get_score_status("NOW")["staleReason"])
+            actions = [row["action"] for row in store.list_review_audit_logs(item_id)]
+            self.assertIn("auto_approve", actions)
+            self.assertIn("undo_auto_approve", actions)
 
     def test_manually_corrected_version_supersedes_approved_version(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -4931,6 +4957,30 @@ class ReviewUndoVersioningTests(unittest.TestCase):
             self.assertEqual(active_versions[0]["reviewStatus"], "manually_corrected")
             self.assertTrue(any(row["reviewStatus"] == "approved" and not row["isActive"] for row in versions))
 
+    def test_undo_manual_correction_restores_previous_confirmed_value(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = ReviewQueueStore(Path(tmp) / "cache.db")
+            item = _insert_review_item(store, value=20)
+            item_id = int(item["id"])
+            store.update_review_status(item_id, "approved")
+            store.correct_item(item_id, 25, "percent", "Q1 2026", "manual edit")
+            corrected = store.get_item(item_id)
+            self.assertEqual(corrected["reviewStatus"], "manually_corrected")
+            self.assertEqual(corrected["value"], 25)
+            self.assertTrue(canMetricEnterScoring(corrected))
+
+            store.undo_review_status(item_id, "pending_review", "undo manual edit")
+            restored = store.get_item(item_id)
+            self.assertEqual(restored["reviewStatus"], "approved")
+            self.assertEqual(restored["value"], 20)
+            self.assertNotEqual(restored["value"], corrected["value"])
+            self.assertTrue(canMetricEnterScoring(restored))
+            active_versions = [row for row in store.list_metric_versions(item_id) if row["isActive"]]
+            self.assertEqual(len(active_versions), 1)
+            self.assertEqual(active_versions[0]["reviewStatus"], "approved")
+            self.assertEqual(active_versions[0]["value"], 20)
+            self.assertIn("undo_manual_correct", store.get_score_status("NOW")["staleReason"])
+
     def test_rejected_and_archived_versions_do_not_remain_active(self) -> None:
         with TemporaryDirectory() as tmp:
             store = ReviewQueueStore(Path(tmp) / "cache.db")
@@ -4938,23 +4988,45 @@ class ReviewUndoVersioningTests(unittest.TestCase):
             item_id = int(item["id"])
             store.update_review_status(item_id, "approved")
             store.update_review_status(item_id, "rejected")
+            rejected = store.get_item(item_id)
+            self.assertEqual(rejected["reviewStatus"], "rejected")
+            self.assertFalse(canMetricEnterScoring(rejected))
             self.assertFalse([row for row in store.list_metric_versions(item_id) if row["isActive"]])
+            store.undo_review_status(item_id, "approved", "undo rejected")
+            pending = store.get_item(item_id)
+            self.assertEqual(pending["reviewStatus"], "pending_review")
+            self.assertFalse(canMetricEnterScoring(pending))
 
             second = _insert_review_item(store, metric_key="rpoGrowth", value=13)
             second_id = int(second["id"])
             store.auto_archive_item(second_id, "low priority")
+            archived = store.get_item(second_id)
+            self.assertEqual(archived["reviewStatus"], "auto_archived")
+            self.assertFalse(canMetricEnterScoring(archived))
             self.assertFalse([row for row in store.list_metric_versions(second_id) if row["isActive"]])
+            store.undo_review_status(second_id, "needs_data", "restore archived")
+            needs_data = store.get_item(second_id)
+            self.assertEqual(needs_data["reviewStatus"], "needs_data")
+            self.assertFalse(canMetricEnterScoring(needs_data))
+            actions = [row["action"] for row in store.list_review_audit_logs(second_id)]
+            self.assertIn("undo_archive", actions)
 
     def test_recent_confirmed_lists_approved_and_corrected_items(self) -> None:
         with TemporaryDirectory() as tmp:
             store = ReviewQueueStore(Path(tmp) / "cache.db")
             approved = _insert_review_item(store, metric_key="subscriptionRevenueGrowth")
             corrected = _insert_review_item(store, metric_key="rpoGrowth", value=13)
+            auto_approved = _insert_review_item(store, metric_key="netRetentionRate", value=115)
             store.update_review_status(int(approved["id"]), "approved")
             store.update_review_status(int(corrected["id"]), "manually_corrected")
-            metrics = {row["metricKey"] for row in store.list_recent_confirmed()}
+            store.apply_ai_auto_approval(int(auto_approved["id"]), explanation_zh="validated evidence")
+            rows = store.list_recent_confirmed_items()
+            metrics = {row["metricKey"] for row in rows}
             self.assertIn("subscriptionRevenueGrowth", metrics)
             self.assertIn("rpoGrowth", metrics)
+            self.assertIn("netRetentionRate", metrics)
+            self.assertTrue(all(row["canEnterScoring"] for row in rows))
+            self.assertTrue(all(row["reviewItemId"] for row in rows))
 
     def test_high_impact_confirm_requires_guard(self) -> None:
         from ui.manual_review import _requires_high_impact_confirmation

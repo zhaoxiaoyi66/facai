@@ -5,11 +5,11 @@ import sqlite3
 import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from data.disclosure_store import DisclosureStore
+from data.disclosure_store import DisclosureStore, canMetricEnterScoring
 from data.extract_metric_from_text import validate_extracted_metric_candidate
 from data.fundamentals import FundamentalCache
 from data.metric_source_map import metric_source_definition
@@ -654,38 +654,81 @@ class ReviewQueueStore:
 
     def undo_review_status(self, item_id: int, target_status: str = "pending_review", reason: str | None = None, actor: str = "user") -> tuple[dict | None, dict | None]:
         status = _normalize_queue_status(target_status)
+        if status in SCORING_QUEUE_STATUSES:
+            status = "pending_review"
         old = self.get_item(int(item_id))
         if not old:
             return None, None
         old_status = str(old.get("reviewStatus") or "")
-        action = {
-            "approved": "undo_approve",
-            "auto_approved_by_ai": "undo_auto_approve",
-            "manually_corrected": "undo_manual_correct",
-            "auto_archived": "undo_archive",
-            "rejected": "undo_reject",
-        }.get(old_status, "undo_approve")
+        action = _undo_action_for_row(old)
+        restored_version = self._previous_confirmed_version(int(item_id)) if old_status == "manually_corrected" else None
+        restored_status = str(restored_version.get("reviewStatus") or "approved") if restored_version else None
         with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE review_queue_items
-                SET reviewStatus = ?,
-                    aiTriageStatus = CASE
-                        WHEN aiTriageStatus IN ('auto_approved_by_ai', 'ai_auto_archived') THEN NULL
-                        ELSE aiTriageStatus
-                    END,
-                    hiddenByDefault = 0,
-                    approvedBy = NULL,
-                    approvedAt = NULL,
-                    reviewedAt = ?,
-                    correctionNotes = COALESCE(?, correctionNotes),
-                    updatedAt = ?
-                WHERE id = ?
-                """,
-                (status, _now(), reason or action, _now(), int(item_id)),
-            )
+            if restored_version and restored_status in SCORING_QUEUE_STATUSES:
+                conn.execute(
+                    """
+                    UPDATE review_queue_items
+                    SET reviewStatus = ?,
+                        value = ?,
+                        unit = ?,
+                        period = ?,
+                        sourceType = COALESCE(?, sourceType),
+                        sourceUrl = COALESCE(?, sourceUrl),
+                        evidenceText = COALESCE(?, evidenceText),
+                        extractedText = COALESCE(?, extractedText),
+                        confidence = COALESCE(?, confidence),
+                        aiTriageStatus = NULL,
+                        hiddenByDefault = 0,
+                        approvedBy = NULL,
+                        approvedAt = NULL,
+                        rejectedBy = NULL,
+                        reviewedAt = ?,
+                        correctionNotes = COALESCE(?, correctionNotes),
+                        updatedAt = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        restored_status,
+                        restored_version.get("value"),
+                        restored_version.get("unit"),
+                        restored_version.get("period"),
+                        restored_version.get("sourceType"),
+                        restored_version.get("sourceUrl"),
+                        restored_version.get("evidenceText"),
+                        restored_version.get("evidenceText"),
+                        restored_version.get("confidence"),
+                        _now(),
+                        reason or action,
+                        _now(),
+                        int(item_id),
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE review_queue_items
+                    SET reviewStatus = ?,
+                        aiTriageStatus = CASE
+                            WHEN aiTriageStatus IN ('auto_approved_by_ai', 'ai_auto_archived') THEN NULL
+                            ELSE aiTriageStatus
+                        END,
+                        hiddenByDefault = 0,
+                        approvedBy = NULL,
+                        approvedAt = NULL,
+                        rejectedBy = NULL,
+                        reviewedAt = ?,
+                        correctionNotes = COALESCE(?, correctionNotes),
+                        updatedAt = ?
+                    WHERE id = ?
+                    """,
+                    (status, _now(), reason or action, _now(), int(item_id)),
+                )
         if old.get("sourceKind") == "disclosure_metric_values" and old.get("sourceMetricId"):
-            self.disclosure_store.update_review_status(int(old["sourceMetricId"]), "pending_review", reviewed_by=actor, correction_notes=reason or action)
+            if restored_version and restored_status in SCORING_QUEUE_STATUSES:
+                self._restore_disclosure_metric_from_version(int(old["sourceMetricId"]), restored_version, actor, reason or action)
+            else:
+                disclosure_status = status if status in {"approved", "rejected", "manually_corrected", "stale"} else "pending_review"
+                self.disclosure_store.update_review_status(int(old["sourceMetricId"]), disclosure_status, reviewed_by=actor, correction_notes=reason or action)
         new = self.get_item(int(item_id))
         self._after_status_change(old, new, action, actor, reason)
         return old, new
@@ -737,18 +780,31 @@ class ReviewQueueStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_recent_confirmed(self, days: int = 7) -> list[dict]:
+    def list_recent_confirmed_items(self, days: int = 7) -> list[dict]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(int(days), 0))).isoformat()
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT *
                 FROM review_queue_items
-                WHERE reviewStatus IN ('approved', 'manually_corrected')
-                   OR aiTriageStatus = 'auto_approved_by_ai'
+                WHERE (reviewStatus IN ('approved', 'manually_corrected', 'auto_approved_by_ai')
+                   OR aiTriageStatus = 'auto_approved_by_ai')
+                  AND COALESCE(approvedAt, reviewedAt, updatedAt) >= ?
                 ORDER BY COALESCE(approvedAt, reviewedAt, updatedAt) DESC, id DESC
                 """,
+                (cutoff,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["reviewItemId"] = int(item.get("id") or 0)
+            item["confirmedAt"] = item.get("approvedAt") or item.get("reviewedAt") or item.get("updatedAt")
+            item["canEnterScoring"] = canMetricEnterScoring(item)
+            results.append(item)
+        return results
+
+    def list_recent_confirmed(self, days: int = 7) -> list[dict]:
+        return self.list_recent_confirmed_items(days)
 
     def list_metric_versions(self, item_id: int | None = None) -> list[dict]:
         clauses: list[str] = []
@@ -858,6 +914,57 @@ class ReviewQueueStore:
                 WHERE reviewItemId = ? AND id <> ?
                 """,
                 (new_version_id, item_id, new_version_id),
+            )
+
+    def _previous_confirmed_version(self, item_id: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM metric_value_versions
+                WHERE reviewItemId = ?
+                  AND reviewStatus IN ('approved', 'auto_approved_by_ai')
+                ORDER BY version DESC, id DESC
+                LIMIT 1
+                """,
+                (int(item_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def _restore_disclosure_metric_from_version(self, metric_id: int, version: dict, actor: str, reason: str) -> None:
+        with self.disclosure_store.connect() as conn:
+            conn.execute(
+                """
+                UPDATE disclosure_metric_values
+                SET value = ?,
+                    unit = ?,
+                    period = ?,
+                    sourceType = COALESCE(?, sourceType),
+                    sourceUrl = COALESCE(?, sourceUrl),
+                    extractedText = COALESCE(?, extractedText),
+                    confidence = COALESCE(?, confidence),
+                    reviewStatus = ?,
+                    reviewedAt = ?,
+                    reviewedBy = ?,
+                    correctionNotes = COALESCE(?, correctionNotes),
+                    updatedAt = ?
+                WHERE id = ?
+                """,
+                (
+                    version.get("value"),
+                    version.get("unit"),
+                    version.get("period"),
+                    version.get("sourceType"),
+                    version.get("sourceUrl"),
+                    version.get("evidenceText"),
+                    version.get("confidence"),
+                    version.get("reviewStatus") or "approved",
+                    _now(),
+                    actor,
+                    reason,
+                    _now(),
+                    int(metric_id),
+                ),
             )
 
     def set_ai_triage(
@@ -1518,10 +1625,12 @@ class ReviewQueueStore:
         period: str | None,
         notes: str | None = None,
     ) -> None:
+        old: dict | None = None
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM review_queue_items WHERE id = ?", (item_id,)).fetchone()
             if not row:
                 return
+            old = dict(row)
             conn.execute(
                 """
                 UPDATE review_queue_items
@@ -1556,6 +1665,8 @@ class ReviewQueueStore:
                 correction_notes=notes,
                 display_name=row["displayName"],
             )
+        new = self.get_item(int(item_id))
+        self._after_status_change(old, new, "manual_correct", "user", notes)
 
     def _find_existing(self, item: dict) -> dict | None:
         with self.connect() as conn:
@@ -1969,6 +2080,20 @@ def _audit_action_for_status_change(old_status: str, new_status: str, notes: str
     if new_status == "auto_archived":
         return "archive"
     return f"{old_status or 'unknown'}_to_{new_status or 'unknown'}"
+
+
+def _undo_action_for_row(row: dict) -> str:
+    review_status = str(row.get("reviewStatus") or "")
+    ai_triage_status = str(row.get("aiTriageStatus") or "")
+    if review_status == "approved" and ai_triage_status == "auto_approved_by_ai":
+        return "undo_auto_approve"
+    return {
+        "approved": "undo_approve",
+        "auto_approved_by_ai": "undo_auto_approve",
+        "manually_corrected": "undo_manual_correct",
+        "auto_archived": "undo_archive",
+        "rejected": "undo_reject",
+    }.get(review_status, "undo_approve")
 
 
 def _normalize_ai_triage_status(status: str) -> str:

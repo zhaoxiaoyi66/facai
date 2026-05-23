@@ -26,9 +26,18 @@ Data conversation:
 
 ## Active Work
 
-No active work recorded.
+None.
 
 ## Latest Handoff
+
+2026-05-23 Data conversation:
+- Owner: Data conversation.
+- Task: Checkpoint 2A - Review Undo Backend Safety.
+- Files touched: `AGENT_HANDOFF.md`, `data/review_queue_builder.py`, `tests/test_core_logic.py`.
+- What changed: Hardened review undo actions for approved, AI auto-approved, manually corrected, auto-archived, and rejected items; undo now writes audit logs, marks the symbol score stale, prevents unsafe target statuses from re-entering scoring, restores the prior confirmed value when undoing a manual correction, and exposes `list_recent_confirmed_items(days=7)` with scoring eligibility metadata for future UI use.
+- Verification: `py_compile` passed for `data/review_queue_builder.py` and `data/disclosure_store.py`; `pytest tests/test_core_logic.py -q` passed with 230 tests and 19 subtests.
+- Next needed: Review and commit Checkpoint 2A if the diff looks good. Do not start Checkpoint 2B automatically.
+- Do not touch yet: UI, dashboard, Review Center UI, BuyZoneEngine, Qwen/AI review, autopilot, schema, migrations, database schema, external API calls, and long-running services were not changed.
 
 2026-05-23 Data conversation:
 - Owner: Data conversation.
