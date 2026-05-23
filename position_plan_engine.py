@@ -12,6 +12,7 @@ class PositionPlanSuggestion:
     currentAddLimitPercent: float
     maxPortfolioWeightPercent: float
     firstBuyPrice: float | None
+    firstBuyLabel: str
     secondBuyPrice: float | None
     thirdBuyPrice: float | None
     noChaseAbove: float | None
@@ -34,6 +35,7 @@ def generate_position_plan(symbol: str, buyZone: BuyZoneEstimate, scoringResult=
 
     tranche_low = buyZone.trancheBuyLow
     tranche_high = buyZone.trancheBuyHigh
+    first_buy, first_buy_label = _first_buy_trigger(buyZone)
     second = None
     if tranche_low is not None and tranche_high is not None:
         second = round((tranche_low + tranche_high) / 2, 2)
@@ -42,7 +44,8 @@ def generate_position_plan(symbol: str, buyZone: BuyZoneEstimate, scoringResult=
         symbol=symbol.upper(),
         currentAddLimitPercent=current_add,
         maxPortfolioWeightPercent=max_portfolio,
-        firstBuyPrice=buyZone.trancheBuyHigh,
+        firstBuyPrice=first_buy,
+        firstBuyLabel=first_buy_label,
         secondBuyPrice=second,
         thirdBuyPrice=buyZone.heavyBuyBelow,
         noChaseAbove=buyZone.noChaseAbove,
@@ -67,6 +70,8 @@ def _max_portfolio_weight(quality: str, risk: str) -> float:
 
 
 def _current_add_limit(entry: str, risk: str, zone: str, action: str) -> float:
+    if _is_high_risk(risk) or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
+        return 0.0
     if _is_high_risk(risk) or zone == "no_chase" or "禁止追高" in action:
         return 0.0
     if zone in {"data_insufficient", "fair_observation"}:
@@ -80,6 +85,25 @@ def _current_add_limit(entry: str, risk: str, zone: str, action: str) -> float:
     if entry.startswith("B"):
         return 3.0
     return 0.0
+
+
+def _first_buy_trigger(buyZone: BuyZoneEstimate) -> tuple[float | None, str]:
+    zone = buyZone.currentZone
+    current_price = buyZone.currentPrice
+    if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
+        return None, "买区异常，需复核"
+    if zone == "tranche_buy":
+        return current_price, "已进入可分批区"
+    if zone == "heavy_buy":
+        return None, "已低于重仓区"
+    if zone == "fair_observation":
+        trigger = buyZone.trancheBuyHigh
+        if current_price is not None and trigger is not None and trigger > current_price:
+            return None, "已进入买区"
+        return trigger, "下一买入触发价"
+    if zone == "no_chase":
+        return buyZone.fairValueHigh or buyZone.fairValueLow, "等回踩"
+    return None, "买区异常，需复核"
 
 
 def _quality_rank(quality: str) -> int:
@@ -98,6 +122,9 @@ def _quality_rank(quality: str) -> int:
 
 
 def _is_high_risk(risk: str) -> bool:
+    text = str(risk).lower()
+    if ("高" in text or "high" in text) and "中高" not in text and "medium high" not in text:
+        return True
     return "高" in str(risk) and "中高" not in str(risk)
 
 

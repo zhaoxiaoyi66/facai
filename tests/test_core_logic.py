@@ -41,12 +41,14 @@ from ai.review_automation import (
 )
 from buy_zone import BuyZoneInputs, calculate_buy_zone_ladder, calculate_fair_value_per_share
 from buy_zone_engine import (
+    BuyZoneEstimate,
     buy_zone_with_manual_override,
     clear_buy_zone_override_values,
     direct_fcf_margin,
     generate_buy_zone,
     has_buy_zone_override,
     normalize_percent_metric,
+    validate_buy_zone_estimate,
 )
 from data.ai_review_assistant import (
     AIReviewAssistant,
@@ -2576,6 +2578,100 @@ class ScoringTests(unittest.TestCase):
         self.assertIn(zone.currentZone, {"fair_observation", "tranche_buy", "heavy_buy", "below_heavy_buy", "no_chase"})
         self.assertFalse(has_buy_zone_override({}))
 
+    def test_buy_zone_validation_rejects_missing_or_invalid_price(self) -> None:
+        zone = generate_buy_zone("ZERO", {"current_price": 0, "price_to_fcf": 20, "free_cash_flow_yield": 0.05}, None, "SAAS_SOFTWARE")
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.nextTriggerPrice)
+        self.assertIn("当前价格缺失或无效", zone.warnings)
+
+    def test_buy_zone_validation_rejects_non_monotonic_zone(self) -> None:
+        zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("BAD", "GENERIC", 100, 130, 90, 120, 80, 95, 70, "fair_observation", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        self.assertEqual(zone.currentZone, "invalid_zone")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.nextTriggerPrice)
+        self.assertIn("买区区间顺序异常", zone.validationErrors)
+
+    def test_buy_zone_extreme_price_distance_caps_confidence(self) -> None:
+        extreme_no_chase = validate_buy_zone_estimate(
+            BuyZoneEstimate("HOT", "GENERIC", 100, 260, 115, 120, 90, 100, 70, "fair_observation", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+        extreme_heavy = validate_buy_zone_estimate(
+            BuyZoneEstimate("LOW", "GENERIC", 100, 130, 115, 120, 90, 100, 20, "fair_observation", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        self.assertNotEqual(extreme_no_chase.confidence, "high")
+        self.assertEqual(extreme_no_chase.currentZone, "invalid_zone")
+        self.assertNotEqual(extreme_heavy.confidence, "high")
+        self.assertIn("重仓区与当前价偏离过大", extreme_heavy.warnings)
+
+    def test_buy_zone_next_trigger_matches_current_zone(self) -> None:
+        fair = validate_buy_zone_estimate(
+            BuyZoneEstimate("FAIR", "GENERIC", 110, 130, 105, 120, 90, 100, 70, "fair_observation", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+        tranche = validate_buy_zone_estimate(
+            BuyZoneEstimate("BATCH", "GENERIC", 95, 130, 105, 120, 90, 100, 70, "tranche_buy", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+        no_chase = validate_buy_zone_estimate(
+            BuyZoneEstimate("HOT", "GENERIC", 140, 130, 105, 120, 90, 100, 70, "no_chase", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        self.assertEqual(fair.currentZone, "fair_observation")
+        self.assertEqual(fair.nextTriggerPrice, 100)
+        self.assertEqual(tranche.currentZone, "tranche_buy")
+        self.assertIsNone(tranche.nextTriggerPrice)
+        self.assertLessEqual(tranche.currentPrice, 100)
+        self.assertEqual(no_chase.currentZone, "no_chase")
+        self.assertNotIn("可分批", no_chase.action)
+
+    def test_buy_zone_confidence_downgrades_on_low_quality_inputs(self) -> None:
+        low_data = generate_buy_zone(
+            "LOWDATA",
+            {"price": 100, "price_to_fcf": 24, "free_cash_flow_yield": 0.042, "price_to_sales": 7.5, "dataConfidence": "low"},
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+        implied = generate_buy_zone(
+            "IMPLIED",
+            {"price": 100, "price_to_fcf": 24, "free_cash_flow_yield": 0.042, "price_to_sales": 7.5, "usedInputs": ["impliedFcfMargin"], "impliedFcfMarginAsPrimaryInput": True},
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+        pending = generate_buy_zone(
+            "PENDING",
+            {
+                "price": 100,
+                "price_to_fcf": 24,
+                "free_cash_flow_yield": 0.042,
+                "price_to_sales": 7.5,
+                "metric_sources": {"price_to_fcf": {"reviewStatus": "pending_review", "sourceType": "IR_RELEASE"}},
+            },
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+
+        self.assertEqual(low_data.confidence, "low")
+        self.assertNotEqual(implied.confidence, "high")
+        self.assertNotEqual(pending.confidence, "high")
+
     def test_saas_buy_zone_uses_cash_flow_and_sales_multiples(self) -> None:
         zone = generate_buy_zone(
             "ADBE",
@@ -2651,11 +2747,42 @@ class ScoringTests(unittest.TestCase):
             {"quality_rating": "A- 高质量", "entry_rating": "B - 等回踩", "risk_rating": "低", "action": "只观察"},
         )
 
-        self.assertEqual(suggestion.firstBuyPrice, zone.trancheBuyHigh)
+        if suggestion.firstBuyPrice is not None:
+            self.assertLessEqual(suggestion.firstBuyPrice, zone.currentPrice)
         self.assertEqual(suggestion.thirdBuyPrice, zone.heavyBuyBelow)
         self.assertGreater(suggestion.maxPortfolioWeightPercent, suggestion.currentAddLimitPercent)
         self.assertGreaterEqual(suggestion.maxPortfolioWeightPercent, 15)
         self.assertLessEqual(suggestion.currentAddLimitPercent, 5)
+
+    def test_position_plan_never_waits_for_higher_price_inside_buy_zone(self) -> None:
+        zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("BATCH", "GENERIC", 95, 130, 105, 120, 90, 100, 70, "tranche_buy", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+        suggestion = generate_position_plan("BATCH", zone, {"risk_rating": "低", "entry_rating": "B"})
+
+        self.assertEqual(zone.currentZone, "tranche_buy")
+        self.assertIsNone(zone.nextTriggerPrice)
+        self.assertLessEqual(suggestion.firstBuyPrice, zone.currentPrice)
+        self.assertEqual(suggestion.firstBuyLabel, "已进入可分批区")
+
+    def test_position_plan_blocks_high_risk_and_invalid_zone_adds(self) -> None:
+        valid_zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("RISK", "GENERIC", 95, 130, 105, 120, 90, 100, 70, "tranche_buy", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+        invalid_zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("BAD", "GENERIC", 100, 130, 90, 120, 80, 95, 70, "fair_observation", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        high_risk = generate_position_plan("RISK", valid_zone, {"risk_rating": "高", "entry_rating": "A"})
+        invalid = generate_position_plan("BAD", invalid_zone, {"risk_rating": "低", "entry_rating": "A"})
+        self.assertEqual(high_risk.currentAddLimitPercent, 0)
+        self.assertEqual(invalid.currentAddLimitPercent, 0)
 
     def test_manual_buy_zone_override_takes_priority_and_can_be_cleared(self) -> None:
         system = generate_buy_zone(
@@ -2678,6 +2805,27 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(has_buy_zone_override(manual_plan))
         self.assertEqual(active.noChaseAbove, 150)
         self.assertFalse(has_buy_zone_override(cleared))
+
+    def test_invalid_manual_buy_zone_override_is_marked_low_confidence(self) -> None:
+        system = generate_buy_zone(
+            "NOW",
+            {"price": 100, "price_to_fcf": 24, "free_cash_flow_yield": 0.04, "price_to_sales": 7},
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+        manual_plan = {
+            "no_chase_above": 150,
+            "fair_value_high": 110,
+            "fair_value_low": 130,
+            "tranche_buy_high": 105,
+            "tranche_buy_low": 90,
+            "heavy_buy_below": 80,
+        }
+        active = buy_zone_with_manual_override(system, manual_plan)
+
+        self.assertEqual(active.currentZone, "invalid_manual_override")
+        self.assertEqual(active.confidence, "low")
+        self.assertFalse(active.isValid)
 
     def test_stock_plan_store_can_restore_system_buy_zone(self) -> None:
         with TemporaryDirectory() as tmpdir:

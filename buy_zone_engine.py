@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from statistics import median
 from typing import Any
@@ -34,6 +34,11 @@ class BuyZoneEstimate:
     keyReasons: list[str]
     warnings: list[str]
     createdAt: str
+    action: str = ""
+    nextTriggerPrice: float | None = None
+    nextBuyLabel: str = ""
+    isValid: bool = True
+    validationErrors: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +64,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
 
     metrics = _collect_metrics(stockData, warnings)
     if price is None or price <= 0:
+        warnings.append("当前价格缺失或无效")
         return _insufficient(symbol, model, price, ["缺少当前价格，无法生成价格区间。"], warnings)
 
     targets = _model_targets(str(model))
@@ -80,23 +86,29 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     no_chase_above = _round_price(max(fair_price * 1.08, price * 1.04 if _is_overheated(metrics) else fair_price * 1.06))
     fair_value_high = _round_price(fair_price * 1.04)
     fair_value_low = _round_price(max(tranche_price * 1.04, heavy_price * 1.12))
-    tranche_buy_high = fair_value_low
+    tranche_buy_high = _round_price(fair_value_low * 0.98)
     tranche_buy_low = _round_price(max(heavy_price * 1.06, heavy_price + (tranche_buy_high - heavy_price) * 0.25))
     heavy_buy_below = _round_price(heavy_price)
 
     if tranche_buy_low >= tranche_buy_high:
         tranche_buy_low = _round_price(max(heavy_buy_below, tranche_buy_high * 0.92))
+    if fair_value_low <= tranche_buy_high:
+        fair_value_low = _round_price(tranche_buy_high * 1.03)
     if fair_value_low >= fair_value_high:
         fair_value_low = _round_price(fair_value_high * 0.9)
+        tranche_buy_high = _round_price(fair_value_low * 0.96)
+        tranche_buy_low = _round_price(min(tranche_buy_low, tranche_buy_high * 0.92))
 
-    current_zone = _current_zone(
+    current_zone = derive_current_zone(
         price,
-        no_chase_above,
-        fair_value_low,
-        fair_value_high,
-        tranche_buy_low,
-        tranche_buy_high,
-        heavy_buy_below,
+        {
+            "noChaseAbove": no_chase_above,
+            "fairValueLow": fair_value_low,
+            "fairValueHigh": fair_value_high,
+            "trancheBuyLow": tranche_buy_low,
+            "trancheBuyHigh": tranche_buy_high,
+            "heavyBuyBelow": heavy_buy_below,
+        },
     )
     confidence = _confidence(inputs, method, model, stockData, warnings)
     method = "fcf_yield" if any("FCF收益率" in item for item in inputs) and len(inputs) == 1 else method
@@ -104,7 +116,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
         method = "blended"
 
     reasons.extend(_reason_texts(model, metrics, current_zone, inputs, confidence))
-    return BuyZoneEstimate(
+    estimate = BuyZoneEstimate(
         symbol=symbol.upper(),
         modelType=str(model),
         currentPrice=_round_price(price),
@@ -122,6 +134,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
         warnings=warnings,
         createdAt=datetime.now(timezone.utc).isoformat(),
     )
+    return validate_buy_zone_estimate(estimate, stockData, scoringResult)
 
 
 def normalize_percent_metric(value: Any) -> float | None:
@@ -184,16 +197,16 @@ def buy_zone_with_manual_override(estimate: BuyZoneEstimate, plan: dict | None) 
     if not has_buy_zone_override(plan):
         return estimate
     plan = plan or {}
-    return BuyZoneEstimate(
+    overridden = BuyZoneEstimate(
         symbol=estimate.symbol,
         modelType=estimate.modelType,
         currentPrice=estimate.currentPrice,
-        noChaseAbove=_number(plan.get("no_chase_above")) or estimate.noChaseAbove,
-        fairValueLow=_number(plan.get("fair_value_low")) or estimate.fairValueLow,
-        fairValueHigh=_number(plan.get("fair_value_high")) or estimate.fairValueHigh,
-        trancheBuyLow=_number(plan.get("tranche_buy_low")) or estimate.trancheBuyLow,
-        trancheBuyHigh=_number(plan.get("tranche_buy_high")) or estimate.trancheBuyHigh,
-        heavyBuyBelow=_number(plan.get("heavy_buy_below")) or estimate.heavyBuyBelow,
+        noChaseAbove=_override_number(plan, "no_chase_above", estimate.noChaseAbove),
+        fairValueLow=_override_number(plan, "fair_value_low", estimate.fairValueLow),
+        fairValueHigh=_override_number(plan, "fair_value_high", estimate.fairValueHigh),
+        trancheBuyLow=_override_number(plan, "tranche_buy_low", estimate.trancheBuyLow),
+        trancheBuyHigh=_override_number(plan, "tranche_buy_high", estimate.trancheBuyHigh),
+        heavyBuyBelow=_override_number(plan, "heavy_buy_below", estimate.heavyBuyBelow),
         currentZone=estimate.currentZone,
         confidence=estimate.confidence,
         method="manual_override",
@@ -202,6 +215,7 @@ def buy_zone_with_manual_override(estimate: BuyZoneEstimate, plan: dict | None) 
         warnings=estimate.warnings,
         createdAt=estimate.createdAt,
     )
+    return validate_buy_zone_estimate(overridden, {}, None)
 
 
 def _collect_metrics(stockData: dict, warnings: list[str]) -> dict[str, float | None]:
@@ -336,18 +350,149 @@ def _make_monotonic(price: float, fair: float, tranche: float, heavy: float) -> 
     return fair, tranche, heavy
 
 
-def _current_zone(price: float, no_chase: float, fair_low: float, fair_high: float, tranche_low: float, tranche_high: float, heavy_below: float) -> str:
-    if price >= no_chase:
+def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None = None, scoringResult=None) -> BuyZoneEstimate:
+    stockData = stockData or {}
+    warnings = list(buyZone.warnings or [])
+    validation_errors = list(buyZone.validationErrors or [])
+    price = _number(buyZone.currentPrice)
+    confidence = str(buyZone.confidence or "low").lower()
+    current_zone = buyZone.currentZone
+    is_valid = True
+
+    if price is None or price <= 0:
+        _append_once(warnings, "当前价格缺失或无效")
+        _append_once(validation_errors, "当前价格缺失或无效")
+        return replace(
+            buyZone,
+            currentPrice=_round_price(price),
+            currentZone="data_insufficient",
+            confidence="low",
+            action="买区异常，需复核",
+            nextTriggerPrice=None,
+            nextBuyLabel="买区异常，需复核",
+            isValid=False,
+            validationErrors=validation_errors,
+            warnings=warnings,
+        )
+
+    if not _buy_zone_prices_valid(buyZone):
+        _append_once(warnings, "买区价格无效")
+        _append_once(validation_errors, "买区价格无效")
+        current_zone = "invalid_manual_override" if buyZone.method == "manual_override" else "invalid_zone"
+        confidence = "low"
+        is_valid = False
+    elif not _buy_zone_is_monotonic(buyZone):
+        _append_once(warnings, "买区区间顺序异常")
+        _append_once(validation_errors, "买区区间顺序异常")
+        current_zone = "invalid_manual_override" if buyZone.method == "manual_override" else "invalid_zone"
+        confidence = "low"
+        is_valid = False
+    else:
+        current_zone = derive_current_zone(price, buyZone)
+        if (buyZone.noChaseAbove or 0) > price * 2.5:
+            _append_once(warnings, "禁止追高价与当前价偏离过大")
+            current_zone = "invalid_zone"
+            confidence = _downgrade_confidence(confidence, "medium")
+            is_valid = False
+        if (buyZone.heavyBuyBelow or 0) < price * 0.25:
+            _append_once(warnings, "重仓区与当前价偏离过大")
+            confidence = _downgrade_confidence(confidence, "medium")
+
+    quality = _input_quality_flags(stockData, scoringResult, buyZone)
+    for message in quality["warnings"]:
+        _append_once(warnings, message)
+    if quality["data_confidence_low"]:
+        confidence = "low"
+    elif quality["forces_medium"]:
+        confidence = _downgrade_confidence(confidence, "medium")
+    if confidence == "high" and _core_input_count(buyZone.inputsUsed) < 2:
+        confidence = "medium"
+    if buyZone.method == "technical_proxy":
+        confidence = "low"
+
+    next_price, next_label, trigger_warnings = derive_next_trigger_price(price, buyZone, current_zone)
+    for message in trigger_warnings:
+        _append_once(warnings, message)
+    if current_zone in {"invalid_zone", "invalid_manual_override", "data_insufficient"}:
+        next_price = None
+        next_label = "买区异常，需复核"
+    action = _buy_zone_action(current_zone, next_label)
+    return replace(
+        buyZone,
+        currentPrice=_round_price(price),
+        currentZone=current_zone,
+        confidence=confidence,
+        action=action,
+        nextTriggerPrice=next_price,
+        nextBuyLabel=next_label,
+        isValid=is_valid and current_zone not in {"invalid_zone", "invalid_manual_override", "data_insufficient"},
+        validationErrors=validation_errors,
+        warnings=warnings,
+    )
+
+
+def derive_current_zone(currentPrice: Any, buyZone: BuyZoneEstimate | dict) -> str:
+    price = _number(currentPrice)
+    if price is None or price <= 0:
+        return "data_insufficient"
+    if not _zone_prices_valid(buyZone):
+        return "invalid_zone"
+    no_chase = _zone_value(buyZone, "noChaseAbove")
+    fair_low = _zone_value(buyZone, "fairValueLow")
+    fair_high = _zone_value(buyZone, "fairValueHigh")
+    tranche_low = _zone_value(buyZone, "trancheBuyLow")
+    tranche_high = _zone_value(buyZone, "trancheBuyHigh")
+    heavy_below = _zone_value(buyZone, "heavyBuyBelow")
+    if not _zone_values_are_monotonic(no_chase, fair_high, fair_low, tranche_high, tranche_low, heavy_below):
+        return "invalid_zone"
+    if price > no_chase:
         return "no_chase"
     if fair_low <= price <= fair_high:
         return "fair_observation"
     if tranche_low <= price <= tranche_high:
         return "tranche_buy"
-    if heavy_below <= price < tranche_low:
+    if price <= heavy_below:
         return "heavy_buy"
-    if price < heavy_below:
-        return "below_heavy_buy"
-    return "fair_observation" if price < no_chase else "no_chase"
+    if heavy_below < price < tranche_low:
+        return "heavy_buy"
+    if tranche_high < price < fair_low:
+        return "fair_observation"
+    return "fair_observation"
+
+
+def derive_next_trigger_price(currentPrice: Any, buyZone: BuyZoneEstimate | dict, currentZone: str) -> tuple[float | None, str, list[str]]:
+    price = _number(currentPrice)
+    warnings: list[str] = []
+    if price is None or price <= 0 or currentZone in {"invalid_zone", "invalid_manual_override", "data_insufficient"}:
+        return None, "买区异常，需复核", warnings
+    if currentZone == "no_chase":
+        trigger = _zone_value(buyZone, "fairValueHigh") or _zone_value(buyZone, "fairValueLow")
+        return _round_price(trigger), "等待回踩到观察区", warnings
+    if currentZone == "fair_observation":
+        trigger = _zone_value(buyZone, "trancheBuyHigh")
+        if trigger is not None and trigger > price:
+            warnings.append("当前价已低于买入触发价")
+            return None, "已进入买区", warnings
+        return _round_price(trigger), "下一买入触发价", warnings
+    if currentZone == "tranche_buy":
+        return None, "已进入可分批区", warnings
+    if currentZone == "heavy_buy":
+        return None, "已低于重仓区", warnings
+    return None, "买区异常，需复核", warnings
+
+
+def _current_zone(price: float, no_chase: float, fair_low: float, fair_high: float, tranche_low: float, tranche_high: float, heavy_below: float) -> str:
+    return derive_current_zone(
+        price,
+        {
+            "noChaseAbove": no_chase,
+            "fairValueLow": fair_low,
+            "fairValueHigh": fair_high,
+            "trancheBuyLow": tranche_low,
+            "trancheBuyHigh": tranche_high,
+            "heavyBuyBelow": heavy_below,
+        },
+    )
 
 
 def _confidence(inputs: list[str], method: str, model: str, stockData: dict, warnings: list[str]) -> str:
@@ -379,6 +524,174 @@ def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: st
     if str(model).upper() == "POWER_GENERATION":
         reasons.append("电力股优先参考 FCF、EV/EBITDA、杠杆和回撤，不按 SaaS 模型硬套。")
     return reasons
+
+
+def _append_once(items: list[str], message: str) -> None:
+    if message not in items:
+        items.append(message)
+
+
+def _downgrade_confidence(current: str, ceiling: str) -> str:
+    rank = {"low": 0, "medium": 1, "high": 2}
+    reverse = {0: "low", 1: "medium", 2: "high"}
+    return reverse[min(rank.get(str(current).lower(), 0), rank.get(ceiling, 0))]
+
+
+def _core_input_count(inputs: list[str]) -> int:
+    core: set[str] = set()
+    for item in inputs:
+        text = str(item).lower()
+        if any(marker in text for marker in ("technical", "proxy", "implied", "代理", "技术")):
+            continue
+        core.add(text)
+    return len(core)
+
+
+def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimate) -> dict:
+    warnings: list[str] = []
+    forces_medium = False
+    data_confidence_low = str(
+        stockData.get("dataConfidence")
+        or stockData.get("data_confidence")
+        or _score_attr(scoringResult, "dataConfidence")
+        or _score_attr(scoringResult, "data_confidence")
+        or ""
+    ).lower() == "low"
+    if data_confidence_low:
+        warnings.append("dataConfidence = low，买区置信度降为 low")
+
+    if _has_unreviewed_metric_source(stockData):
+        warnings.append("包含未复核或缺证据指标，买区置信度不能为 high")
+        forces_medium = True
+    if _uses_implied_fcf_margin(stockData, buyZone):
+        warnings.append("使用 impliedFcfMargin 作为估值输入，买区置信度不能为 high")
+        forces_medium = True
+    if _uses_low_confidence_proxy(stockData, scoringResult, buyZone):
+        warnings.append("使用低置信 proxy，买区置信度不能为 high")
+        forces_medium = True
+    if _has_abnormal_percent_input(stockData):
+        warnings.append("存在异常百分比输入，买区置信度不能为 high")
+        forces_medium = True
+    return {"warnings": warnings, "forces_medium": forces_medium, "data_confidence_low": data_confidence_low}
+
+
+def _has_unreviewed_metric_source(stockData: dict) -> bool:
+    blocked = {"pending_review", "needs_evidence", "needs_data"}
+    top_status = str(stockData.get("reviewStatus") or stockData.get("review_status") or "").lower()
+    if top_status in blocked:
+        return True
+    metric_sources = stockData.get("metric_sources") or stockData.get("metricSources")
+    if not isinstance(metric_sources, dict):
+        return False
+    for source in metric_sources.values():
+        if not isinstance(source, dict):
+            continue
+        review_status = str(source.get("reviewStatus") or source.get("review_status") or "").lower()
+        resolution_status = str(source.get("resolutionStatus") or source.get("resolution_status") or "").lower()
+        if review_status in blocked or resolution_status in blocked:
+            return True
+        source_type = str(source.get("sourceType") or source.get("source_type") or "").lower()
+        if "unreviewed" in source_type:
+            return True
+    return False
+
+
+def _uses_implied_fcf_margin(stockData: dict, buyZone: BuyZoneEstimate) -> bool:
+    input_text = " ".join(str(item) for item in [*buyZone.inputsUsed, stockData.get("usedInputs"), stockData.get("inputsUsed"), stockData.get("primaryInput")]).lower()
+    if any(marker in input_text for marker in ("impliedfcfmargin", "implied_fcf_margin", "implied fcf margin")):
+        return True
+    return bool(stockData.get("impliedFcfMarginAsPrimaryInput") or stockData.get("implied_fcf_margin_as_primary_input"))
+
+
+def _uses_low_confidence_proxy(stockData: dict, scoringResult, buyZone: BuyZoneEstimate) -> bool:
+    proxy_confidence = str(stockData.get("proxyConfidence") or stockData.get("proxy_confidence") or _score_attr(scoringResult, "proxyConfidence") or "").lower()
+    input_text = " ".join(str(item) for item in buyZone.inputsUsed).lower()
+    return proxy_confidence == "low" or buyZone.method == "technical_proxy" or any(marker in input_text for marker in ("proxy", "代理"))
+
+
+def _has_abnormal_percent_input(stockData: dict) -> bool:
+    keys = (
+        "drawdownFrom52WeekHigh",
+        "drawdown_from_high_pct",
+        "drawdownFromHigh",
+        "gain_20d_pct",
+        "gain_60d_pct",
+        "return20d",
+        "return60d",
+        "free_cash_flow_yield",
+        "freeCashFlowYield",
+        "fcf_yield",
+        "revenue_growth",
+        "revenueGrowth",
+    )
+    for key in keys:
+        value = _number(stockData.get(key))
+        if value is not None and abs(value) > 100:
+            return True
+    return False
+
+
+def _buy_zone_action(current_zone: str, next_label: str) -> str:
+    if current_zone in {"invalid_zone", "invalid_manual_override", "data_insufficient"}:
+        return "买区异常，需复核"
+    if current_zone == "no_chase":
+        return "等待回踩"
+    if current_zone == "fair_observation":
+        return next_label or "观察，等待买入触发"
+    if current_zone == "tranche_buy":
+        return "已进入可分批区"
+    if current_zone == "heavy_buy":
+        return "已低于重仓区"
+    return "买区异常，需复核"
+
+
+def _buy_zone_prices_valid(buyZone: BuyZoneEstimate) -> bool:
+    return _zone_prices_valid(buyZone)
+
+
+def _buy_zone_is_monotonic(buyZone: BuyZoneEstimate) -> bool:
+    return _zone_values_are_monotonic(
+        _zone_value(buyZone, "noChaseAbove"),
+        _zone_value(buyZone, "fairValueHigh"),
+        _zone_value(buyZone, "fairValueLow"),
+        _zone_value(buyZone, "trancheBuyHigh"),
+        _zone_value(buyZone, "trancheBuyLow"),
+        _zone_value(buyZone, "heavyBuyBelow"),
+    )
+
+
+def _zone_prices_valid(buyZone: BuyZoneEstimate | dict) -> bool:
+    values = [
+        _zone_value(buyZone, "noChaseAbove"),
+        _zone_value(buyZone, "fairValueHigh"),
+        _zone_value(buyZone, "fairValueLow"),
+        _zone_value(buyZone, "trancheBuyHigh"),
+        _zone_value(buyZone, "trancheBuyLow"),
+        _zone_value(buyZone, "heavyBuyBelow"),
+    ]
+    return all(value is not None and value > 0 for value in values)
+
+
+def _zone_values_are_monotonic(no_chase: float | None, fair_high: float | None, fair_low: float | None, tranche_high: float | None, tranche_low: float | None, heavy_below: float | None) -> bool:
+    values = [no_chase, fair_high, fair_low, tranche_high, tranche_low, heavy_below]
+    if any(value is None for value in values):
+        return False
+    return bool(no_chase > fair_high > fair_low > tranche_high > tranche_low > heavy_below)
+
+
+def _zone_value(buyZone: BuyZoneEstimate | dict, attr: str) -> float | None:
+    if isinstance(buyZone, dict):
+        value = buyZone.get(attr)
+        if value is None:
+            snake = "".join([f"_{char.lower()}" if char.isupper() else char for char in attr]).lstrip("_")
+            value = buyZone.get(snake)
+        return _number(value)
+    return _number(getattr(buyZone, attr, None))
+
+
+def _override_number(plan: dict, field: str, fallback: float | None) -> float | None:
+    value = _number(plan.get(field))
+    return value if value is not None else fallback
 
 
 def _is_overheated(metrics: dict[str, float | None]) -> bool:
@@ -483,4 +796,9 @@ def _insufficient(symbol: str, model: str, price: float | None, reasons: list[st
         keyReasons=reasons,
         warnings=warnings,
         createdAt=datetime.now(timezone.utc).isoformat(),
+        action="买区异常，需复核",
+        nextTriggerPrice=None,
+        nextBuyLabel="买区异常，需复核",
+        isValid=False,
+        validationErrors=["当前价格缺失或无效"] if price is None or price <= 0 else ["估值输入不足"],
     )

@@ -30,6 +30,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-24 Data conversation:
+- Owner: Data conversation.
+- Task: Checkpoint 3 - BuyZoneEngine sanity check.
+- Files touched: `AGENT_HANDOFF.md`, `buy_zone_engine.py`, `position_plan_engine.py`, `tests/test_core_logic.py`.
+- What changed: Added buy-zone estimate validation, invalid/data-insufficient zone handling, monotonic and positive-price checks, extreme price-distance warnings, confidence downgrades for low data confidence, implied FCF margin, low-confidence proxy, abnormal percent inputs, and unreviewed metric sources. Added next-trigger labels and safer position-plan first-buy logic so entered buy zones no longer wait for a higher buy price.
+- Verification: `py_compile` passed for `buy_zone_engine.py` and `position_plan_engine.py`; `pytest tests/test_core_logic.py -q` passed with 238 tests and 19 subtests.
+- Next needed: Review and commit Checkpoint 3 if the diff looks good. Do not start the next checkpoint automatically.
+- Do not touch yet: UI, dashboard, Review Center, Qwen/AI review, autopilot, scoring input gate, schema, migrations, database, external API calls, long-running services, and technical-indicator percent normalization were not changed.
+
 2026-05-24 UI conversation:
 - Owner: UI conversation.
 - Task: Checkpoint 2B - Review Undo UI / recent confirmed and undo entry.
