@@ -30,6 +30,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Checkpoint 2B - Review Undo UI / recent confirmed and undo entry.
+- Files touched: `AGENT_HANDOFF.md`, `ui/manual_review.py`, `tests/test_core_logic.py`.
+- What changed: Added a `最近确认` Review Center tab backed by `list_recent_confirmed_items(days=7)`, recent-confirmed rows with undo/view-impact/source/recompute actions, post-confirm undo notice, high-impact second-confirmation copy, and clearer main-row status semantics for confirmed/AI-confirmed/manual-corrected/archived items. Updated one UI semantics test to reflect the new archived-row primary label.
+- Verification: `py_compile` passed for `ui/manual_review.py` and `tests/test_core_logic.py`; `pytest tests/test_core_logic.py -q` passed with 230 tests and 19 subtests.
+- Next needed: Review and commit Checkpoint 2B if the diff looks good. Do not start Checkpoint 3 automatically.
+- Do not touch yet: Backend review logic, scoring logic, data providers, database schema/migrations, Qwen/AI review pipeline, autopilot, BuyZoneEngine, PositionPlanEngine, cache structure, and long-running services were not changed.
+
 2026-05-23 Data conversation:
 - Owner: Data conversation.
 - Task: Checkpoint 2A - Review Undo Backend Safety.

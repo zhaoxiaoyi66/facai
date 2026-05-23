@@ -129,6 +129,10 @@ AI_TRIAGE_TONES.update({
     "ready_for_qwen": "blue",
 })
 
+RECENT_CONFIRMED_TAB = "最近确认"
+CONFIRM_NOTICE_KEY = "review-last-confirmed-item"
+IMPACT_DETAIL_KEY = "review-impact-detail-item"
+
 
 def render() -> None:
     st.markdown(_styles(), unsafe_allow_html=True)
@@ -140,7 +144,7 @@ def render() -> None:
           <div>
             <div class="review-kicker">Manual Review Center</div>
             <h1>数据复核中心</h1>
-            <p>覆盖整个观察池：自动抽取值、缺失KPI、低置信度推导和定性风险统一复核。</p>
+            <p>复核队列用于确认数据是否可以进入评分。确认不等于买入，也不等于认可操作建议。已确认数据可在“最近确认”中撤销。</p>
           </div>
         </div>
         """,
@@ -151,6 +155,7 @@ def render() -> None:
     filters = _render_filters(store)
     base_rows = _filtered_rows(store, filters)
     _render_sync_controls(store, base_rows, filters)
+    _render_last_confirm_notice(store)
     rows = _apply_ai_filters(base_rows, ai_store)
     _render_ai_controls(store, ai_store, filters, base_rows)
     _render_rows(store, rows, ai_store)
@@ -404,6 +409,10 @@ def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
 
 
 def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None) -> None:
+    if _active_review_tab() == RECENT_CONFIRMED_TAB:
+        _render_recent_confirmed_rows(store, rows)
+        return
+
     if not rows:
         st.info("当前筛选条件下没有待展示的复核项。可以先点击“同步当前观察池复核队列”。")
         return
@@ -412,6 +421,145 @@ def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewSt
     st.markdown('<div class="review-list-title">复核队列</div>', unsafe_allow_html=True)
     for row in rows:
         _render_metric_row(store, row, ai_results.get(int(row["id"])))
+
+
+def _render_recent_confirmed_rows(store: ReviewQueueStore, rows: list[dict]) -> None:
+    st.markdown('<div class="review-list-title">最近确认</div>', unsafe_allow_html=True)
+    st.caption("最近 7 天确认、AI自动确认和人工修正的数据。撤销后该股票评分会被标记为过期，需要重新计算。")
+    if not rows:
+        st.info("最近 7 天暂无已确认数据。")
+        return
+    for row in rows:
+        _render_recent_confirmed_row(store, row)
+
+
+def _render_recent_confirmed_row(store: ReviewQueueStore, row: dict) -> None:
+    metric_id = int(row["id"])
+    symbol = str(row.get("symbol") or "").upper()
+    status = str(row.get("reviewStatus") or "")
+    triage = str(row.get("aiTriageStatus") or "")
+    effective_status = "auto_approved_by_ai" if triage == "auto_approved_by_ai" or status == "auto_approved_by_ai" else status
+    score_status = store.get_score_status(symbol) if symbol else {}
+    with st.container(border=True):
+        cols = st.columns([0.95, 0.55, 1.35, 0.72, 0.44, 0.75, 0.82, 0.78, 0.82, 1.45], vertical_alignment="center")
+        cols[0].caption(_short_time(row.get("confirmedAt") or row.get("approvedAt") or row.get("reviewedAt") or row.get("updatedAt")))
+        cols[1].markdown(f"**{escape(symbol or 'N/A')}**")
+        cols[2].markdown(
+            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey') or 'N/A'))}</div>"
+            f"<div class='metric-sub'>{escape(str(row.get('metricKey') or ''))}</div>",
+            unsafe_allow_html=True,
+        )
+        cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
+        cols[4].caption(str(row.get("unit") or "N/A"))
+        cols[5].markdown(_badge(source_type_label(row.get("sourceType") or "N/A"), "gray"), unsafe_allow_html=True)
+        cols[6].markdown(_badge(_confirmed_status_label(effective_status), _confirmed_status_tone(effective_status)), unsafe_allow_html=True)
+        cols[7].markdown(_badge("参与评分" if row.get("canEnterScoring") else "不进评分", "green" if row.get("canEnterScoring") else "gray"), unsafe_allow_html=True)
+        cols[8].caption(_confirmed_actor_label(row))
+        with cols[9]:
+            action_cols = st.columns([0.55, 0.45])
+            if action_cols[0].button(_undo_confirm_label(effective_status), key=f"recent-undo-{metric_id}", width="stretch"):
+                store.undo_review_status(metric_id, "pending_review", f"ui_recent_undo_{effective_status}")
+                st.session_state.pop(CONFIRM_NOTICE_KEY, None)
+                st.toast("已撤销确认，该股票评分已标记为过期。")
+                st.rerun()
+            if action_cols[1].button("影响", key=f"recent-impact-{metric_id}", width="stretch"):
+                st.session_state[IMPACT_DETAIL_KEY] = metric_id if st.session_state.get(IMPACT_DETAIL_KEY) != metric_id else None
+        if st.session_state.get(IMPACT_DETAIL_KEY) == metric_id:
+            _render_score_impact_panel(store, row, score_status, key_prefix=f"recent-{metric_id}")
+        if row.get("sourceUrl"):
+            st.link_button("打开来源", str(row["sourceUrl"]), width="stretch")
+
+
+def _render_score_impact_panel(store: ReviewQueueStore, row: dict, score_status: dict, key_prefix: str) -> None:
+    affects = _affects_label(row.get("affects") or "ConfidenceOnly")
+    run_id = score_status.get("lastScoreRunId") or "N/A"
+    st.markdown(
+        f"""
+        <div class="review-impact-panel">
+          <strong>评分影响</strong>
+          <span>是否参与评分：{'是' if row.get('canEnterScoring') else '否'}</span>
+          <span>影响范围：{escape(affects)}</span>
+          <span>最近一次 scoreRunId：{escape(str(run_id))}</span>
+          <span>撤销后会将该股票评分标记为过期，需重新计算。</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    symbol = str(row.get("symbol") or "").upper()
+    if symbol and st.button("重新计算该股票", key=f"{key_prefix}-recompute", width="stretch"):
+        ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist([symbol])
+        store.mark_score_fresh(symbol, f"manual-recompute-{int(row.get('id') or 0)}")
+        st.toast(f"{symbol} 已重新计算并标记为最新。")
+        st.rerun()
+
+
+def _render_last_confirm_notice(store: ReviewQueueStore) -> None:
+    notice = st.session_state.get(CONFIRM_NOTICE_KEY)
+    if not notice:
+        return
+    row = notice.get("row") if isinstance(notice, dict) else {}
+    if not isinstance(row, dict):
+        return
+    metric_id = int(row.get("id") or notice.get("id") or 0)
+    if not metric_id:
+        return
+    symbol = str(row.get("symbol") or notice.get("symbol") or "").upper()
+    metric_name = metric_label(row.get("displayName") or row.get("metricKey") or notice.get("metricName") or "N/A")
+    st.markdown(
+        f"""
+        <div class="review-confirm-notice">
+          <strong>刚刚确认：{escape(symbol or 'N/A')} {escape(metric_name)}</strong>
+          <span>该数据将参与评分，可在“最近确认”中撤销。</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns([1.0, 1.0, 4.0], vertical_alignment="center")
+    if cols[0].button("撤销确认", key=f"review-last-undo-{metric_id}", width="stretch"):
+        store.undo_review_status(metric_id, "pending_review", "ui_last_confirm_undo")
+        st.session_state.pop(CONFIRM_NOTICE_KEY, None)
+        st.toast("已撤销确认，该股票评分已标记为过期。")
+        st.rerun()
+    if cols[1].button("查看影响", key=f"review-last-impact-{metric_id}", width="stretch"):
+        st.session_state[IMPACT_DETAIL_KEY] = metric_id if st.session_state.get(IMPACT_DETAIL_KEY) != metric_id else None
+    if st.session_state.get(IMPACT_DETAIL_KEY) == metric_id:
+        score_status = store.get_score_status(symbol) if symbol else {}
+        _render_score_impact_panel(store, row, score_status, key_prefix=f"last-confirm-{metric_id}")
+
+
+def _short_time(value: object) -> str:
+    text = str(value or "N/A")
+    return text.replace("T", " ")[:16]
+
+
+def _confirmed_status_label(status: str) -> str:
+    if status == "auto_approved_by_ai":
+        return "AI已确认"
+    if status == "manually_corrected":
+        return "已修正"
+    return STATUS_LABELS.get(status, status or "N/A")
+
+
+def _confirmed_status_tone(status: str) -> str:
+    if status == "auto_approved_by_ai":
+        return "green"
+    return STATUS_TONES.get(status, "gray")
+
+
+def _undo_confirm_label(status: str) -> str:
+    if status == "auto_approved_by_ai":
+        return "撤销AI确认"
+    if status == "manually_corrected":
+        return "撤销修正"
+    return "撤销确认"
+
+
+def _confirmed_actor_label(row: dict) -> str:
+    if str(row.get("aiTriageStatus") or "") == "auto_approved_by_ai" or str(row.get("reviewStatus") or "") == "auto_approved_by_ai":
+        return "Qwen / AI"
+    if str(row.get("reviewStatus") or "") == "manually_corrected":
+        return "人工修正"
+    return str(row.get("approvedBy") or row.get("reviewedBy") or "用户")
 
 
 def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
@@ -1083,7 +1231,7 @@ def _render_filters(store: ReviewQueueStore) -> dict:
     symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
     metric_keys = sorted({str(row.get("metricKey") or "") for row in rows if row.get("metricKey")})
     source_types = sorted({str(row.get("sourceType") or "") for row in rows if row.get("sourceType")})
-    tabs = ["待我处理", "最近确认", "需要补证据", "自动补齐失败", "AI建议修正", "AI建议驳回", "证据不足", "自动归档", "自动确认", "全部"]
+    tabs = ["待我处理", RECENT_CONFIRMED_TAB, "需要补证据", "自动补齐失败", "AI建议修正", "AI建议驳回", "证据不足", "自动归档", "自动确认", "全部"]
     st.session_state["review-active-tab"] = st.radio(
         "复核视图",
         tabs,
@@ -1129,6 +1277,14 @@ def _render_filters(store: ReviewQueueStore) -> dict:
 
 def _filtered_rows(store: ReviewQueueStore, filters: dict) -> list[dict]:
     effective_filters = _effective_review_filters(filters)
+    if _active_review_tab() == RECENT_CONFIRMED_TAB:
+        try:
+            rows = store.list_recent_confirmed_items(days=7)
+        except Exception as exc:
+            st.error(f"最近确认列表暂时不可用：{exc}")
+            return []
+        return _client_filter_review_rows(rows, effective_filters)
+
     rows = store.list_items(
         symbol=effective_filters["symbol"],
         metric_key=effective_filters["metric_key"],
@@ -1185,6 +1341,10 @@ def _client_filter_review_rows(rows: list[dict], filters: dict) -> list[dict]:
     return filtered
 
 
+def _active_review_tab() -> str:
+    return str(st.session_state.get("review-active-tab-radio") or st.session_state.get("review-active-tab") or "待我处理")
+
+
 def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filters: dict, rows: list[dict]) -> None:
     stats = qwen_review_efficiency_stats(rows)
     st.markdown(
@@ -1200,7 +1360,7 @@ def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filter
 
 def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
     latest = ai_store.latest_for_items([int(row["id"]) for row in rows])
-    tab = st.session_state.get("review-active-tab-radio") or st.session_state.get("review-active-tab", "待我处理")
+    tab = str(st.session_state.get("review-active-tab-radio") or _active_review_tab())
     st.session_state["review-active-tab"] = tab
     filtered: list[dict] = []
     for row in rows:
@@ -1232,7 +1392,7 @@ def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
             continue
         elif tab == "自动确认" and triage != "auto_approved_by_ai":
             continue
-        elif tab == "最近确认" and status not in {"approved", "manually_corrected"} and triage != "auto_approved_by_ai":
+        elif tab == RECENT_CONFIRMED_TAB and status not in {"approved", "manually_corrected", "auto_approved_by_ai"} and triage != "auto_approved_by_ai":
             continue
         filtered.append(row)
     return sorted(filtered, key=lambda row: _ai_sort_key(row, latest.get(int(row["id"]))))
@@ -1285,8 +1445,34 @@ HIGH_IMPACT_REVIEW_METRICS = {
 
 def _requires_high_impact_confirmation(row: dict) -> bool:
     metric_key = str(row.get("metricKey") or "")
+    display_text = " ".join(
+        str(row.get(key) or "")
+        for key in ("displayName", "metricKey", "systemReason", "explanation")
+    ).lower()
+    compact_text = "".join(ch for ch in display_text if ch.isalnum())
+    high_impact_terms = {
+        "rpo",
+        "crpo",
+        "subscriptionrevenuegrowth",
+        "nongaapoperatingmargin",
+        "fcfmargin",
+        "netretentionrate",
+        "adjustedebitda",
+        "adjustedfcf",
+        "hedgecoverage",
+        "debtmaturitypressure",
+        "regulatoryrisk",
+        "pipelinerisk",
+        "patentrisk",
+        "patentcliffrisk",
+    }
     affects = {part.strip() for part in str(row.get("affects") or "").split(",") if part.strip()}
-    return metric_key in HIGH_IMPACT_REVIEW_METRICS or bool(affects & {"Action", "Position", "maxPosition"})
+    return (
+        metric_key in HIGH_IMPACT_REVIEW_METRICS
+        or bool(affects & {"Action", "Position", "maxPosition"})
+        or any(term in compact_text for term in high_impact_terms)
+        or "non-gaap" in display_text
+    )
 
 
 def _review_primary_action(row: dict) -> dict:
@@ -1295,14 +1481,14 @@ def _review_primary_action(row: dict) -> dict:
     item_type = str(row.get("itemType") or "")
 
     if status == "auto_archived" or triage == "ai_auto_archived":
-        return {"key": "undo_archive", "label": "撤销归档"}
+        return {"key": "noop_archived", "label": "已归档"}
     if status == "manually_corrected":
-        return {"key": "undo_manual_correct", "label": "撤销人工修正"}
+        return {"key": "noop_manually_corrected", "label": "已修正"}
     if status == "rejected":
-        return {"key": "undo_reject", "label": "撤销驳回"}
-    if status == "approved" or triage == "auto_approved_by_ai":
-        label = "撤销AI自动确认" if triage == "auto_approved_by_ai" else "撤销确认"
-        return {"key": "undo_approval", "label": label}
+        return {"key": "noop_rejected", "label": "已驳回"}
+    if status == "approved" or status == "auto_approved_by_ai" or triage == "auto_approved_by_ai":
+        is_ai_confirmed = status == "auto_approved_by_ai" or triage == "auto_approved_by_ai"
+        return {"key": "noop_auto_approved" if is_ai_confirmed else "noop_approved", "label": "AI已确认" if is_ai_confirmed else "已确认"}
     if str(row.get("freshnessStatus") or "") == "historical_value":
         return {"key": "keep_historical", "label": "保留为历史"}
     if _has_complete_extracted_value_evidence(row):
@@ -1325,15 +1511,27 @@ def _review_primary_action(row: dict) -> dict:
 
 def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_result: dict | None = None) -> None:
     metric_id = int(row["id"])
+    if action_key.startswith("noop_"):
+        return
     if action_key == "approve":
         guard_key = f"review-confirm-guard-{metric_id}"
         if _requires_high_impact_confirmation(row) and not st.session_state.get(guard_key):
             st.session_state[guard_key] = True
-            st.warning("该数据会影响评分。确认后将进入评分系统。请再次点击“确认数据”继续。")
+            st.warning("该数据会影响评分。确认后将进入评分系统。确认不等于买入建议。是否继续？")
             return
         store.update_review_status(metric_id, "approved")
         st.session_state.pop(guard_key, None)
-        st.toast("数据已确认，可进入评分")
+        confirmed_row = dict(row)
+        confirmed_row["reviewStatus"] = "approved"
+        confirmed_row["canEnterScoring"] = True
+        metric_name = metric_label(row.get("displayName") or row.get("metricKey") or "N/A")
+        st.session_state[CONFIRM_NOTICE_KEY] = {
+            "id": metric_id,
+            "symbol": str(row.get("symbol") or "").upper(),
+            "metricName": metric_name,
+            "row": confirmed_row,
+        }
+        st.toast(f"已确认 {confirmed_row.get('symbol') or 'N/A'} {metric_name}，该数据将参与评分。")
     elif action_key == "keep_historical":
         store.auto_archive_item(metric_id, "keep_historical_value")
         st.toast("已保留为历史值")
@@ -1351,10 +1549,12 @@ def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_r
         st.toast("已撤销归档，需重新计算评分")
     elif action_key == "undo_approval":
         store.undo_review_status(metric_id, "pending_review", "undo_approval")
-        st.toast("已撤销确认，需重新计算评分")
+        st.session_state.pop(CONFIRM_NOTICE_KEY, None)
+        st.toast("已撤销确认，该股票评分已标记为过期。")
     elif action_key == "undo_manual_correct":
         store.undo_review_status(metric_id, "pending_review", "undo_manual_correct")
-        st.toast("已撤销人工修正，需重新计算评分")
+        st.session_state.pop(CONFIRM_NOTICE_KEY, None)
+        st.toast("已撤销确认，该股票评分已标记为过期。")
     elif action_key == "undo_reject":
         store.undo_review_status(metric_id, "pending_review", "undo_reject")
         st.toast("已撤销驳回，重新进入待复核")
@@ -1448,7 +1648,13 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         with cols[7]:
             action_cols = st.columns([0.62, 0.38])
             primary_action = _review_primary_action(row)
-            if action_cols[0].button(primary_action["label"], key=f"review-primary-{primary_action['key']}-{metric_id}", width="stretch"):
+            primary_key = primary_action["key"]
+            if action_cols[0].button(
+                primary_action["label"],
+                key=f"review-primary-{primary_key}-{metric_id}",
+                disabled=primary_key.startswith("noop_"),
+                width="stretch",
+            ):
                 _run_review_action(store, row, primary_action["key"], ai_result)
                 st.rerun()
             with action_cols[1].popover("操作 ▾", use_container_width=True):
@@ -1460,7 +1666,24 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
                     if st.button("归档历史值", key=f"review-archive-history-{metric_id}", width="stretch"):
                         _run_review_action(store, row, "keep_historical", ai_result)
                         st.rerun()
-                if status in {"approved", "manually_corrected"} or triage == "auto_approved_by_ai":
+                status_menu_handled = False
+                if status == "auto_archived" or triage == "ai_auto_archived":
+                    status_menu_handled = True
+                    if st.button("撤销归档", key=f"review-undo-archive-menu-{metric_id}", width="stretch"):
+                        _run_review_action(store, row, "undo_archive", ai_result)
+                        st.rerun()
+                if status in {"approved", "manually_corrected", "auto_approved_by_ai"} or triage == "auto_approved_by_ai":
+                    status_menu_handled = True
+                    effective_status = "auto_approved_by_ai" if triage == "auto_approved_by_ai" or status == "auto_approved_by_ai" else status
+                    undo_action = "undo_manual_correct" if status == "manually_corrected" else "undo_approval"
+                    if st.button(_undo_confirm_label(effective_status), key=f"review-direct-undo-{metric_id}", width="stretch"):
+                        _run_review_action(store, row, undo_action, ai_result)
+                        st.rerun()
+                    if st.button("查看评分影响", key=f"review-impact-menu-{metric_id}", width="stretch"):
+                        st.session_state[IMPACT_DETAIL_KEY] = metric_id if st.session_state.get(IMPACT_DETAIL_KEY) != metric_id else None
+                    if st.session_state.get(IMPACT_DETAIL_KEY) == metric_id:
+                        score_status = store.get_score_status(str(row.get("symbol") or ""))
+                        _render_score_impact_panel(store, row, score_status, key_prefix=f"review-menu-{metric_id}")
                     st.caption("撤销后如何处理这条数据？")
                     if st.button("回到待复核", key=f"review-undo-pending-{metric_id}", width="stretch"):
                         store.undo_review_status(metric_id, "pending_review", "undo_to_pending_review")
@@ -1478,6 +1701,8 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
                         store.undo_review_status(metric_id, "pending_review", "undo_for_manual_correction")
                         _run_review_action(store, row, "manual_fill", ai_result)
                         st.rerun()
+                if status_menu_handled:
+                    pass
                 elif _has_complete_extracted_value_evidence(row):
                     if st.button("驳回", key=f"review-reject-menu-{metric_id}", disabled=status == "rejected", width="stretch"):
                         _run_review_action(store, row, "reject", ai_result)
@@ -1535,7 +1760,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
                     if st.button("归档", key=f"review-archive-other-{metric_id}", width="stretch"):
                         _run_review_action(store, row, "archive", ai_result)
                         st.rerun()
-                if status in {"approved", "manually_corrected"} or triage == "auto_approved_by_ai":
+                if status in {"approved", "manually_corrected", "auto_approved_by_ai"} or triage == "auto_approved_by_ai":
                     with st.expander("查看评分影响", expanded=False):
                         affects = str(row.get("affects") or "ConfidenceOnly")
                         score_status = store.get_score_status(str(row.get("symbol") or ""))
@@ -2009,6 +2234,41 @@ def _styles() -> str:
         border: 1px solid #E5E7EB;
         border-radius: 8px;
         padding: 10px 12px;
+      }
+      .review-confirm-notice {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin: 8px 0 6px;
+        border: 1px solid #D1FAE5;
+        border-radius: 8px;
+        background: #F0FDF4;
+        padding: 9px 12px;
+        color: #166534;
+        font-size: 12px;
+      }
+      .review-confirm-notice strong {
+        color: #14532D;
+        font-size: 13px;
+      }
+      .review-impact-panel {
+        margin: 8px 0;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 4px 12px;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        background: #F8FAFC;
+        padding: 10px 12px;
+        color: #4B5563;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .review-impact-panel strong {
+        grid-column: 1 / -1;
+        color: #111827;
+        font-size: 12px;
       }
       .ai-review-panel {
         margin-top: 10px;

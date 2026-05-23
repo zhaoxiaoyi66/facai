@@ -4881,7 +4881,8 @@ class ManualReviewActionSemanticsTests(unittest.TestCase):
         from ui.manual_review import _review_primary_action
 
         action = _review_primary_action({"itemType": "missing_kpi", "reviewStatus": "auto_archived"})
-        self.assertEqual(action["label"], "撤销归档")
+        self.assertEqual(action["label"], "已归档")
+        self.assertEqual(action["key"], "noop_archived")
 
     def test_review_status_scoring_eligibility_is_strict(self) -> None:
         from data.disclosure_store import _eligible_for_scoring
