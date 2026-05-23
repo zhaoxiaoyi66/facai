@@ -61,7 +61,7 @@ from data.ai_review_assistant import (
 from data.calculated_metrics import calculate_metrics
 from data.data_confidence import enrich_data_confidence
 from data.disclosure_pipeline import DisclosurePipeline
-from data.disclosure_store import DisclosureStore
+from data.disclosure_store import DisclosureStore, canMetricEnterScoring
 from data.evidence_backfill import backfill_evidence_for_review_item
 from data.extract_metric_from_text import extractMetricFromText
 from data.fmp_cache import CACHE_TTL_SECONDS, ttl_bucket_for_endpoint
@@ -77,6 +77,7 @@ from data.providers import (
     MarketDataProvider,
     PolygonProvider,
     SECEdgarProvider,
+    _merge_disclosure_supplement,
     get_market_data_provider,
 )
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore, _debt_maturity_low_materiality
@@ -100,7 +101,7 @@ from indicators.technicals import (
 from scoring.overheat import calculate_overheat_score
 from scoring.risk_flags import RiskFlag
 from scoring.power_company import is_power_company
-from scoring.metric_sources import fcf_margin_metric
+from scoring.metric_sources import fcf_margin_metric, metric_participates_in_score
 from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score
 from scoring.signals import (
     ANTI_FOMO_MESSAGE,
@@ -2955,7 +2956,7 @@ class ScoringTests(unittest.TestCase):
                 "manual_override_required",
             )
 
-            supplement = store.metric_supplement("NOW")
+            supplement = store.metric_supplement("NOW", scoring_only=False)
 
             self.assertAlmostEqual(supplement["sbc_ratio"], 0.09)
             self.assertEqual(supplement["metric_sources"]["sbc_ratio"]["sourceType"], "calculated")
@@ -3003,7 +3004,7 @@ class ScoringTests(unittest.TestCase):
             metric_id = store.get_metrics("NOW")[0]["id"]
             store.update_review_status(metric_id, "rejected")
 
-            supplement = store.metric_supplement("NOW")
+            supplement = store.metric_supplement("NOW", scoring_only=False)
 
             self.assertNotIn("subscription_revenue_growth", supplement)
             self.assertEqual(supplement["disclosureMetrics"][0]["reviewStatus"], "rejected")
@@ -3073,11 +3074,175 @@ class ScoringTests(unittest.TestCase):
                 confidence="medium",
             )
 
-            supplement = store.metric_supplement("NOW")
+            supplement = store.metric_supplement("NOW", scoring_only=False)
 
             self.assertNotIn("net_retention_rate", supplement)
             self.assertNotIn("large_customer_growth", supplement)
             self.assertEqual({row["reviewStatus"] for row in supplement["disclosureMetrics"]}, {"pending_review"})
+
+    def test_scoring_input_gate_allows_only_trusted_statuses(self) -> None:
+        allowed = [
+            {"reviewStatus": "approved", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "manually_corrected", "sourceType": "MANUAL_CORRECTION"},
+            {"reviewStatus": "auto_approved_by_ai", "sourceType": "SEC_8K"},
+            {"sourceType": "CALCULATED"},
+            {"sourceType": "FMP"},
+            {"sourceType": "MANUAL", "reviewStatus": "approved", "reviewedBy": "local_user"},
+        ]
+        forbidden = [
+            {"reviewStatus": "pending_review", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "needs_evidence", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "needs_data", "sourceType": "metric_resolution"},
+            {"reviewStatus": "rejected", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "auto_archived", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "duplicate_archived", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "invalid_review_item", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "not_enough_evidence", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "stale", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "undone", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "approved", "freshnessStatus": "historical_value", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "approved", "itemType": "evidence_missing_extracted_value", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "approved", "aiTriageStatus": "extraction_rejected_by_rule", "sourceType": "IR_RELEASE"},
+            {"reviewStatus": "approved", "resolutionStatus": "company_not_disclosed", "sourceType": "metric_resolution"},
+            {"reviewStatus": "approved", "resolutionStatus": "manual_override_required", "sourceType": "metric_resolution"},
+            {"reviewStatus": "approved", "resolutionStatus": "semi_auto_low_confidence", "sourceType": "metric_resolution"},
+            {"reviewStatus": "approved", "resolutionStatus": "low_confidence_derived", "sourceType": "metric_resolution"},
+            {"sourceType": "MANUAL", "reviewStatus": "approved", "reviewedBy": "ai"},
+        ]
+
+        self.assertTrue(all(canMetricEnterScoring(row) for row in allowed))
+        self.assertFalse(any(canMetricEnterScoring(row) for row in forbidden))
+        self.assertTrue(canMetricEnterScoring({"resolutionStatus": "low_confidence_derived", "scoring_allowed": True}))
+
+    def test_scoring_only_metric_supplement_filters_forbidden_review_states(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DisclosureStore(Path(tmpdir) / "disclosure.sqlite")
+            statuses = [
+                "pending_review",
+                "rejected",
+                "stale",
+                "undone",
+                "manually_corrected",
+                "auto_approved_by_ai",
+                "approved",
+            ]
+            for index, status in enumerate(statuses, start=1):
+                store.save_metric(
+                    symbol="NOW",
+                    metric_key="subscriptionRevenueGrowth",
+                    value=index / 100,
+                    unit="percent",
+                    period=f"2026 Q{index}",
+                    source_type="IR_RELEASE",
+                    source_url=f"https://example.com/{index}",
+                    source_document_title="Release",
+                    extracted_text=f"subscription revenue grew {index}%",
+                    confidence="high",
+                    review_status=status,
+                )
+            with store.connect() as conn:
+                conn.execute("UPDATE disclosure_metric_values SET freshnessStatus = 'active_current'")
+
+            supplement = store.metric_supplement("NOW", scoring_only=True)
+            payload_statuses = {row["reviewStatus"] for row in supplement["disclosureMetrics"]}
+
+            self.assertLessEqual(payload_statuses, {"approved", "manually_corrected", "auto_approved_by_ai"})
+            self.assertIn("subscription_revenue_growth", supplement)
+
+    def test_provider_uses_scoring_only_disclosure_supplement(self) -> None:
+        class _Disclosure:
+            def __init__(self) -> None:
+                self.calls: list[bool] = []
+
+            def metric_supplement(self, ticker: str, scoring_only: bool = True) -> dict:
+                self.calls.append(scoring_only)
+                if scoring_only:
+                    return {"disclosureMetrics": []}
+                return {
+                    "subscription_revenue_growth": 0.99,
+                    "metric_sources": {
+                        "subscription_revenue_growth": {
+                            "sourceType": "reported_ir",
+                            "reviewStatus": "pending_review",
+                        }
+                    },
+                }
+
+        class _Fundamentals:
+            def get_manual_overrides(self, ticker: str) -> dict:
+                return {}
+
+        class _Supplement:
+            def get_supplement(self, *args, **kwargs) -> dict:
+                return {}
+
+        disclosure = _Disclosure()
+        provider = FMPProvider(
+            api_key="test",
+            fundamental_cache=_Fundamentals(),
+            sec_supplement=_Supplement(),
+            ir_kpi_client=_Supplement(),
+            disclosure_store=disclosure,
+        )
+
+        snapshot = provider._with_supplements("NOW", {"ticker": "NOW", "symbol": "NOW", "modelType": "SAAS_SOFTWARE"})
+
+        self.assertEqual(disclosure.calls, [True])
+        self.assertNotIn("subscription_revenue_growth", snapshot)
+
+    def test_sector_model_blocks_raw_pending_review_metric_sources(self) -> None:
+        result = calculate_total_score(
+            {
+                "ticker": "NOW",
+                "symbol": "NOW",
+                "modelType": "SAAS_SOFTWARE",
+                "subscription_revenue_growth": 0.40,
+                "metric_sources": {
+                    "subscription_revenue_growth": {
+                        "sourceType": "reported_ir",
+                        "reviewStatus": "pending_review",
+                    }
+                },
+            },
+            {},
+        )
+        resolution = _metric_resolution_by_key(result, "subscriptionRevenueGrowth")
+
+        self.assertEqual(resolution["resolutionStatus"], "requires_ir_scrape")
+        self.assertFalse(
+            metric_participates_in_score(
+                {
+                    "subscription_revenue_growth": 0.40,
+                    "metric_sources": {
+                        "subscription_revenue_growth": {
+                            "sourceType": "reported_ir",
+                            "reviewStatus": "pending_review",
+                        }
+                    },
+                },
+                "subscription_revenue_growth",
+            )
+        )
+
+    def test_ai_or_autopilot_manual_source_cannot_bypass_scoring_gate(self) -> None:
+        self.assertFalse(
+            canMetricEnterScoring(
+                {
+                    "sourceType": "MANUAL",
+                    "reviewStatus": "approved",
+                    "reviewedBy": "autopilot",
+                }
+            )
+        )
+        self.assertTrue(
+            canMetricEnterScoring(
+                {
+                    "sourceType": "MANUAL",
+                    "reviewStatus": "approved",
+                    "reviewedBy": "local_user",
+                }
+            )
+        )
 
     def test_critical_pending_review_caps_data_confidence_below_high(self) -> None:
         enriched = enrich_data_confidence(

@@ -17,6 +17,36 @@ from data.prices import CACHE_PATH
 REVIEW_STATUSES = {"pending_review", "approved", "rejected", "manually_corrected", "stale", "auto_approved_by_ai", "undone"}
 SCORING_REVIEW_STATUSES = {"approved", "manually_corrected", "auto_approved_by_ai"}
 PENDING_REVIEW_STATUS = "pending_review"
+SCORING_FORBIDDEN_REVIEW_STATUSES = {
+    "pending_review",
+    "needs_evidence",
+    "needs_data",
+    "rejected",
+    "auto_archived",
+    "duplicate_archived",
+    "invalid_review_item",
+    "not_enough_evidence",
+    "stale",
+    "undone",
+}
+SCORING_FORBIDDEN_RESOLUTION_STATUSES = {
+    "company_not_disclosed",
+    "manual_override_required",
+    "requires_ir_scrape",
+    "requires_sec_filing",
+    "requires_analyst_estimates",
+    "missing_inputs",
+    "semi_auto_low_confidence",
+}
+SCORING_FORBIDDEN_AI_TRIAGE_STATUSES = {
+    "ai_not_enough_evidence",
+    "extraction_rejected_by_rule",
+    "needs_more_source",
+}
+SCORING_FORBIDDEN_ITEM_TYPES = {"evidence_missing_extracted_value"}
+SCORING_STRUCTURED_SOURCE_TYPES = {"FMP", "CALCULATED", "calculated", "estimated", "reported"}
+SCORING_MANUAL_SOURCE_TYPES = {"MANUAL", "MANUAL_CORRECTION", "AI_ASSISTED_MANUAL_CORRECTION"}
+SCORING_BLOCKED_MANUAL_ACTORS = {"ai", "qwen", "autopilot", "pipeline", "system"}
 CRITICAL_MISSING_IMPACTS = {"CRITICAL_QUALITY", "CRITICAL_RISK"}
 REVIEW_PRIORITY = {
     "manually_corrected": 400,
@@ -385,17 +415,18 @@ class DisclosureStore:
                 best[row["metricKey"]] = row
         return best
 
-    def metric_supplement(self, symbol: str) -> dict:
+    def metric_supplement(self, symbol: str, scoring_only: bool = True) -> dict:
         rows = self.get_metrics(symbol)
+        payload_rows = [row for row in rows if _eligible_for_scoring(row)] if scoring_only else rows
         supplement: dict = {
             "metric_sources": {},
             "metric_statuses": {},
-            "disclosureMetrics": [_metric_payload(row) for row in rows],
-            "disclosureReviewSummary": _review_summary_from_rows(rows),
-            "criticalPendingReviewMetrics": _critical_pending_metrics(rows),
-            "criticalPendingReviewCount": len(_critical_pending_metrics(rows)),
+            "disclosureMetrics": [_metric_payload(row) for row in payload_rows],
+            "disclosureReviewSummary": _review_summary_from_rows(payload_rows),
+            "criticalPendingReviewMetrics": [] if scoring_only else _critical_pending_metrics(rows),
+            "criticalPendingReviewCount": 0 if scoring_only else len(_critical_pending_metrics(rows)),
         }
-        for row in rows:
+        for row in ([] if scoring_only else rows):
             definition = metric_definition_by_key(row["metricKey"])
             if definition and row.get("reviewStatus") == PENDING_REVIEW_STATUS:
                 supplement["metric_statuses"][definition.snapshot_key] = {
@@ -500,10 +531,42 @@ def _source_type_for_scoring(metric_key: str, source_type: str, confidence: str,
     return "reported_ir"
 
 
-def _eligible_for_scoring(row: dict) -> bool:
-    if str(row.get("freshnessStatus") or "active_current") == "historical_value":
+def canMetricEnterScoring(metric: dict) -> bool:
+    if str(metric.get("freshnessStatus") or metric.get("freshness_status") or "active_current") == "historical_value":
         return False
-    return str(row.get("reviewStatus") or PENDING_REVIEW_STATUS) in SCORING_REVIEW_STATUSES
+    if str(metric.get("itemType") or metric.get("item_type") or "") in SCORING_FORBIDDEN_ITEM_TYPES:
+        return False
+    triage_status = str(metric.get("aiTriageStatus") or metric.get("ai_triage_status") or "")
+    if triage_status in SCORING_FORBIDDEN_AI_TRIAGE_STATUSES:
+        return False
+
+    resolution_status = str(metric.get("resolutionStatus") or metric.get("resolution_status") or "")
+    explicit_scoring_allowed = _truthy(metric.get("scoringAllowed", metric.get("scoring_allowed")))
+    if resolution_status in SCORING_FORBIDDEN_RESOLUTION_STATUSES:
+        return False
+    if resolution_status == "low_confidence_derived" and not explicit_scoring_allowed:
+        return False
+
+    review_status = str(metric.get("reviewStatus") or metric.get("review_status") or "").strip().lower()
+    if review_status in SCORING_FORBIDDEN_REVIEW_STATUSES:
+        return False
+
+    source_type = str(metric.get("sourceType") or metric.get("source_type") or "").strip()
+    if source_type in SCORING_MANUAL_SOURCE_TYPES:
+        return _manual_metric_is_user_confirmed(metric, review_status, explicit_scoring_allowed)
+    if review_status in SCORING_REVIEW_STATUSES:
+        return True
+    if source_type in SCORING_STRUCTURED_SOURCE_TYPES and not review_status:
+        return True
+    return explicit_scoring_allowed
+
+
+def can_metric_enter_scoring(metric: dict) -> bool:
+    return canMetricEnterScoring(metric)
+
+
+def _eligible_for_scoring(row: dict) -> bool:
+    return canMetricEnterScoring(row)
 
 
 def _normalize_review_status(status: str) -> str:
@@ -519,6 +582,34 @@ def _default_review_status(source_type: str) -> str:
     if source_type in {"CALCULATED", "FMP", "MANUAL"}:
         return "approved"
     return PENDING_REVIEW_STATUS
+
+
+def _manual_metric_is_user_confirmed(metric: dict, review_status: str, explicit_scoring_allowed: bool) -> bool:
+    if review_status and review_status not in SCORING_REVIEW_STATUSES:
+        return False
+    actor = str(
+        metric.get("reviewedBy")
+        or metric.get("reviewed_by")
+        or metric.get("createdBy")
+        or metric.get("created_by")
+        or ""
+    ).strip().lower()
+    if actor in SCORING_BLOCKED_MANUAL_ACTORS:
+        return False
+    source_type = str(metric.get("sourceType") or metric.get("source_type") or "").strip()
+    if source_type in {"MANUAL_CORRECTION", "AI_ASSISTED_MANUAL_CORRECTION"}:
+        return review_status in {"manually_corrected", "approved"} or explicit_scoring_allowed
+    return actor in {"local_user", "user", "manual", "manual_override"} or explicit_scoring_allowed
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "allowed", "scoring_allowed"}
+    return False
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

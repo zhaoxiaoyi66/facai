@@ -408,7 +408,7 @@ class FMPProvider(PlaceholderProvider):
                 self.ir_kpi_client.get_supplement(ticker, force_refresh=force_refresh),
                 prefer_existing_values=False,
             )
-            enriched = _merge_disclosure_supplement(enriched, self.disclosure_store.metric_supplement(ticker))
+            enriched = _merge_disclosure_supplement(enriched, self.disclosure_store.metric_supplement(ticker, scoring_only=True))
         manual_overrides = self.fundamental_cache.get_manual_overrides(ticker)
         enriched.update(manual_overrides)
         _tag_manual_sources(enriched, manual_overrides)
@@ -654,7 +654,13 @@ def _tag_manual_sources(snapshot: dict, manual_overrides: dict) -> None:
     }
     for key, source_type in manual_source_types.items():
         if key in manual_overrides and manual_overrides[key] is not None:
-            metric_sources[key] = {"sourceType": source_type, "source": "manual override"}
+            metric_sources[key] = {
+                "sourceType": source_type,
+                "source": "manual override",
+                "reviewStatus": "manually_corrected",
+                "reviewedBy": "local_user",
+                "scoringAllowed": True,
+            }
             snapshot[f"{key}_sourceType"] = source_type
     snapshot["metric_sources"] = metric_sources
 

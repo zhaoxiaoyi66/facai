@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from data.disclosure_store import canMetricEnterScoring
+
 
 MetricSourceType = Literal[
     "reported",
@@ -86,12 +88,15 @@ CALCULATED_FIELDS = {
 
 def metric_with_source(snapshot: dict, key: str, *aliases: str) -> MetricValue:
     for candidate in (key, *aliases):
+        metadata = _explicit_source_metadata(snapshot, candidate)
+        if metadata is not None and not canMetricEnterScoring(metadata):
+            continue
         value = _number(snapshot.get(candidate))
         if value is None:
             value = _number(snapshot.get(_camel_to_snake(candidate)))
         if value is None:
             continue
-        source = _explicit_source(snapshot, candidate) or _default_source(candidate)
+        source = _source_from_metadata(metadata) or _explicit_source(snapshot, candidate) or _default_source(candidate)
         return MetricValue(key=key, value=value, sourceType=source)
     return MetricValue(key=key, value=None, sourceType="missing")
 
@@ -101,7 +106,10 @@ def metric_source_type(snapshot: dict, key: str) -> MetricSourceType | None:
 
 
 def metric_participates_in_score(snapshot: dict, key: str) -> bool:
-    source = _explicit_source(snapshot, key)
+    metadata = _explicit_source_metadata(snapshot, key)
+    if metadata is not None and not canMetricEnterScoring(metadata):
+        return False
+    source = _source_from_metadata(metadata) or _explicit_source(snapshot, key)
     return source not in NON_PARTICIPATING_SOURCES
 
 
@@ -181,20 +189,49 @@ def fcf_margin_source_note(snapshot: dict) -> str:
 
 
 def _explicit_source(snapshot: dict, key: str) -> MetricSourceType | None:
+    metadata = _explicit_source_metadata(snapshot, key)
+    return _source_from_metadata(metadata)
+
+
+def _explicit_source_metadata(snapshot: dict, key: str) -> dict | None:
     metric_sources = snapshot.get("metric_sources")
     if isinstance(metric_sources, dict):
         raw = metric_sources.get(key) or metric_sources.get(_camel_to_snake(key))
         if isinstance(raw, dict):
-            raw = raw.get("sourceType") or raw.get("source_type")
-        source = _normalize_source(raw)
-        if source:
-            return source
+            return dict(raw)
+        if raw:
+            return {"sourceType": raw}
 
+    metadata: dict = {}
     for suffix in ("sourceType", "source_type"):
-        source = _normalize_source(snapshot.get(f"{key}_{suffix}") or snapshot.get(f"{_camel_to_snake(key)}_{suffix}"))
-        if source:
-            return source
-    return None
+        value = snapshot.get(f"{key}_{suffix}") or snapshot.get(f"{_camel_to_snake(key)}_{suffix}")
+        if value:
+            metadata["sourceType"] = value
+            break
+    for field in (
+        "reviewStatus",
+        "review_status",
+        "freshnessStatus",
+        "freshness_status",
+        "resolutionStatus",
+        "resolution_status",
+        "aiTriageStatus",
+        "ai_triage_status",
+        "itemType",
+        "item_type",
+        "scoringAllowed",
+        "scoring_allowed",
+    ):
+        value = snapshot.get(f"{key}_{field}") or snapshot.get(f"{_camel_to_snake(key)}_{field}")
+        if value is not None:
+            metadata[field] = value
+    return metadata or None
+
+
+def _source_from_metadata(metadata: dict | None) -> MetricSourceType | None:
+    if not metadata:
+        return None
+    return _normalize_source(metadata.get("sourceType") or metadata.get("source_type"))
 
 
 def _default_source(key: str) -> MetricSourceType:

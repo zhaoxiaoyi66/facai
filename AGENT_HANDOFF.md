@@ -32,6 +32,15 @@ No active work recorded.
 
 2026-05-23 Data conversation:
 - Owner: Data conversation.
+- Task: Checkpoint 1 - Scoring Input Gate stabilization.
+- Files touched: `AGENT_HANDOFF.md`, `data/disclosure_store.py`, `data/providers.py`, `scoring/metric_sources.py`, `tests/test_core_logic.py`.
+- What changed: Added the unified `canMetricEnterScoring` gate behind `_eligible_for_scoring`, made scoring supplements scoring-only by default, forced provider snapshot merges to request scoring-only disclosure data, tagged user manual overrides as explicitly scoring-allowed, and blocked raw pending/rejected/stale/historical review metadata inside scoring metric source reads.
+- Verification: `py_compile` passed for `data/disclosure_store.py`, `data/providers.py`, `scoring/sector_models.py`, `scoring/metric_sources.py`; `pytest tests/test_core_logic.py -q` passed with 228 tests and 19 subtests.
+- Next needed: Review and commit Checkpoint 1 if the diff looks good. Do not start Checkpoint 2 automatically.
+- Do not touch yet: UI, Review Center UI, BuyZoneEngine, Qwen/AI review, autopilot, schema, migrations, database, cache cleanup, and external API calls were not changed.
+
+2026-05-23 Data conversation:
+- Owner: Data conversation.
 - Task: Create `CODEX_WORKFLOW.md` with project Codex working rules.
 - Files touched: `CODEX_WORKFLOW.md`, `AGENT_HANDOFF.md`.
 - What changed: Added the workflow rules document and recorded that it is not a handoff file; `AGENT_HANDOFF.md` remains the only default handoff file.
