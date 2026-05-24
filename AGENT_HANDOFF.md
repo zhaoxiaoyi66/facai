@@ -32,6 +32,15 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only display-category fix for far-from-trigger names.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the buy-zone UI checkpoint. Added a unified `resolve_buy_zone_display_category(row)` presentation helper with a 15% near-trigger threshold and reused it for summary counts, filter categories, priority-strip near eligibility, execution-table status, and trigger-condition copy. Far-from-trigger rows now stay in `等回踩` and show `仍需大幅回落` / `触发价 $xx.xx` instead of `接近买区` / `可考虑第一笔买入`.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Visual review in the running Streamlit app. Commit this buy-zone UI checkpoint only after MRVL/MU no longer look near-trigger in the page.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Dashboard UI-only badge overflow and decision-lane footer polish.
 - Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
 - What changed: Continued the Dashboard UI visual checkpoint. Shortened watchlist rating badges in the visible table (`B+ - 稳健` -> `B+`) while preserving the full label as tooltip/title, added stricter badge/cell overflow constraints, and made decision-lane footer actions more tertiary by shortening the label to `X 只未显示    查看`, left-aligning it, removing button chrome, and keeping the existing lane-filter click behavior.

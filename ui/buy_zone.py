@@ -64,6 +64,8 @@ SOURCE_LABELS = {
     "system_generated": "系统建议",
     "mixed": "混合来源",
 }
+NEAR_TRIGGER_THRESHOLD_PCT = 15.0
+LARGE_TRIGGER_DISTANCE_PCT = 30.0
 
 
 def render() -> None:
@@ -233,23 +235,23 @@ def _error_row(symbol: str, error: str) -> dict:
 def _render_summary(rows: list[dict]) -> None:
     summary = {
         "可执行": (
-            sum(1 for row in rows if _execution_status(row) == "可执行"),
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "可执行"),
             "当前已进入可分批区，可按计划小仓执行",
         ),
         "接近买区": (
-            sum(1 for row in rows if _execution_status(row) == "接近买区"),
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "接近买区"),
             "距离触发价较近，等待回踩",
         ),
         "等回踩": (
-            sum(1 for row in rows if _execution_status(row) == "等回踩"),
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "等回踩"),
             "估值未到买区，先观察",
         ),
         "禁止追高": (
-            sum(1 for row in rows if _execution_status(row) == "禁止追高"),
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "禁止追高"),
             "当前价格不适合新增",
         ),
         "需复核": (
-            sum(1 for row in rows if _execution_status(row) == "需复核"),
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "需复核"),
             "买区异常或数据置信度低",
         ),
     }
@@ -263,10 +265,10 @@ def _render_summary(rows: list[dict]) -> None:
 def _priority_rows_html(rows: list[dict]) -> str:
     candidates: list[tuple[str, str, str, str, str]] = []
     groups = [
-        ("可执行", "green", [row for row in rows if _execution_status(row) == "可执行"]),
-        ("接近", "blue", [row for row in rows if _execution_status(row) == "接近买区" and _is_near_trigger_priority(row)]),
-        ("复核", "amber", [row for row in rows if _execution_status(row) == "需复核"]),
-        ("禁追", "red", [row for row in rows if _execution_status(row) == "禁止追高"]),
+        ("可执行", "green", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "可执行"]),
+        ("接近", "blue", [row for row in rows if resolve_buy_zone_display_category(row)["priorityEligible"]]),
+        ("复核", "amber", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "需复核"]),
+        ("禁追", "red", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "禁止追高"]),
     ]
     for label, tone, group_rows in groups:
         for row in group_rows[:2]:
@@ -332,7 +334,7 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
         "需复核": "需复核",
     }
     if active_filter in status_filter_map:
-        return [row for row in rows if _execution_status(row) == status_filter_map[active_filter]]
+        return [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == status_filter_map[active_filter]]
     if active_filter == "手动":
         return [row for row in rows if row["manualOverride"]]
     return rows
@@ -366,10 +368,13 @@ def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_stor
 
 def _buy_zone_row_html(row: dict) -> str:
     symbol = str(row["symbol"])
-    status = _execution_status(row)
+    display = resolve_buy_zone_display_category(row)
+    status = str(display["displayCategory"])
     add_text, _ = _current_add_text(row)
     position_text = f"新增 {add_text}" if add_text.startswith("≤") else add_text
-    trigger_primary, trigger_secondary, trigger_tone = format_trigger_cell(row)
+    trigger_primary = str(display["triggerPrimary"])
+    trigger_secondary = str(display["triggerSecondary"])
+    trigger_tone = str(display.get("triggerTone") or "neutral")
     return (
         '<div class="buy-zone-grid buy-zone-row">'
         f'<div class="stock-cell"><strong>{escape(symbol)}</strong><span>{escape(_price_text(row.get("currentPrice")))}</span></div>'
@@ -1350,23 +1355,82 @@ def _source_label(value: object, manual: bool = False) -> str:
     return SOURCE_LABELS.get(str(value or ""), "需复核")
 
 
-def _execution_status(row: dict) -> str:
+def _display_category_result(
+    category: str,
+    primary: str,
+    secondary: str,
+    priority_eligible: bool,
+    tone: str = "neutral",
+) -> dict[str, object]:
+    return {
+        "displayCategory": category,
+        "displayLabel": category,
+        "triggerPrimary": primary,
+        "triggerSecondary": secondary,
+        "priorityEligible": priority_eligible,
+        "triggerTone": tone,
+    }
+
+
+def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
     zone = str(row.get("currentZone") or "")
     action = str(row.get("action") or "")
+    current_add = _first_number(row.get("currentAddLimitPercent"))
+    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+    price = _first_number(row.get("currentPrice"))
+    has_trigger = trigger is not None and trigger > 0
+    trigger_secondary = f"触发价 {format_currency(trigger)}" if has_trigger else "等待条件明确"
+
     if (
         _needs_review(row)
         or zone == "data_insufficient"
         or row.get("confidence") == "low"
         or row.get("dataConfidence") == "low"
     ):
-        return "需复核"
-    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
-        return "可执行"
-    if zone == "fair_observation":
-        return "接近买区"
+        if zone == "data_insufficient":
+            return _display_category_result("需复核", "数据不足", "暂不生成触发价", False, "warning")
+        return _display_category_result("需复核", "需复核", "买区异常", False, "warning")
+
     if zone == "no_chase" or action == "禁止追高":
-        return "禁止追高"
-    return "等回踩"
+        secondary = trigger_secondary if has_trigger else "等待价格回落"
+        return _display_category_result("禁止追高", "等待回踩", secondary, False, "caution")
+
+    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} or (current_add is not None and current_add > 0):
+        return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
+
+    if has_trigger and price is not None and price > 0:
+        if price <= trigger:
+            return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
+
+        distance = _drop_to_trigger_pct(row)
+        if distance is not None and distance <= NEAR_TRIGGER_THRESHOLD_PCT:
+            return _display_category_result(
+                "接近买区",
+                f"距触发 {distance:.1f}%",
+                trigger_secondary,
+                True,
+                "near",
+            )
+        if distance is not None and distance <= LARGE_TRIGGER_DISTANCE_PCT:
+            return _display_category_result(
+                "等回踩",
+                f"需回落 {distance:.1f}%",
+                trigger_secondary,
+                False,
+                "neutral",
+            )
+        return _display_category_result("等回踩", "仍需大幅回落", trigger_secondary, False, "neutral")
+
+    if not _valid_price(row.get("currentPrice")):
+        return _display_category_result("需复核", "数据不足", "缺少当前价", False, "warning")
+
+    label = str(row.get("nextBuyLabel") or "").strip()
+    fallback_primary = _next_label(label) if label else _zone_next_label(zone)
+    return _display_category_result("等回踩", fallback_primary, "等待条件明确", False, "neutral")
+
+
+def _execution_status(row: dict) -> str:
+    return str(resolve_buy_zone_display_category(row)["displayCategory"])
 
 
 def _execution_tone(status: str) -> str:
@@ -1439,19 +1503,11 @@ def _distance_to_trigger_text(row: dict) -> str:
 
 
 def _distance_to_trigger_primary(row: dict) -> str:
-    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
-    price = _first_number(row.get("currentPrice"))
-    if trigger is not None and trigger > 0:
-        if price is not None and price > 0:
-            distance = max((price - trigger) / price * 100, 0)
-            return f"距触发 {distance:.1f}%"
-        return "接近触发"
-    return _next_label(str(row.get("nextBuyLabel") or "")) if row.get("nextBuyLabel") else _zone_next_label(str(row.get("currentZone") or ""))
+    return str(resolve_buy_zone_display_category(row)["triggerPrimary"])
 
 
 def _is_near_trigger_priority(row: dict) -> bool:
-    pct = _drop_to_trigger_pct(row)
-    return pct is not None and pct <= 15
+    return bool(resolve_buy_zone_display_category(row)["priorityEligible"])
 
 
 def _drop_to_trigger_pct(row: dict) -> float | None:
@@ -1463,10 +1519,7 @@ def _drop_to_trigger_pct(row: dict) -> float | None:
 
 
 def _distance_to_trigger_secondary(row: dict) -> str:
-    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
-    if trigger is not None and trigger > 0:
-        return f"触发价 {format_currency(trigger)}"
-    return "暂无触发价"
+    return str(resolve_buy_zone_display_category(row)["triggerSecondary"])
 
 
 def _row_reason(row: dict) -> str:
@@ -1500,29 +1553,12 @@ def _trigger_cell_html(row: dict) -> str:
 
 
 def format_trigger_cell(row: dict) -> tuple[str, str, str]:
-    zone = str(row.get("currentZone") or "")
-    label = str(row.get("nextBuyLabel") or "").strip()
-    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
-
-    if zone in {"invalid_zone", "invalid_manual_override"} or row.get("isValid") is False or bool(row.get("validationErrors")):
-        return "需复核", "买区异常", "warning"
-    if zone == "data_insufficient":
-        return "数据不足", "无有效触发价", "warning"
-    if not _valid_price(row.get("currentPrice")):
-        return "数据不足", "缺少当前价", "warning"
-    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
-        return "已进入买区", "可按计划执行", "ready"
-    if zone == "no_chase":
-        secondary = f"触发价 {format_currency(trigger)}" if trigger is not None and trigger > 0 else "等待价格回落"
-        return "等待回踩", secondary, "caution"
-
-    if trigger is not None and trigger > 0:
-        if zone == "fair_observation":
-            return f"回踩至 {format_currency(trigger)}", "可考虑第一笔买入", "near"
-        return f"触发价 {format_currency(trigger)}", _trigger_secondary_text(zone, label), "neutral"
-    if label:
-        return _next_label(label), _trigger_secondary_text(zone, ""), "neutral"
-    return _zone_next_label(zone), "等待条件明确", "neutral"
+    display = resolve_buy_zone_display_category(row)
+    return (
+        str(display["triggerPrimary"]),
+        str(display["triggerSecondary"]),
+        str(display.get("triggerTone") or "neutral"),
+    )
 
 
 def _trigger_secondary_text(zone: str, label: str) -> str:
