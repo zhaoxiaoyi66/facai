@@ -89,10 +89,9 @@ def render() -> None:
     load_notice.empty()
 
     _render_summary(rows)
-    _render_execution_summary(rows)
     active_filter = _render_execution_toolbar(rows)
     visible_rows = _filter_rows(rows, active_filter)
-    _render_buy_zone_table(visible_rows, plan_store)
+    _render_buy_zone_table(rows, visible_rows, plan_store)
     _render_client_buy_zone_drawers(visible_rows)
     _render_manual_and_advanced_settings(rows, plan_store)
 
@@ -261,29 +260,6 @@ def _render_summary(rows: list[dict]) -> None:
     st.markdown(f'<section class="buy-zone-summary">{cards}</section>', unsafe_allow_html=True)
 
 
-def _render_execution_summary(rows: list[dict]) -> None:
-    counts = {
-        "可执行": sum(1 for row in rows if _execution_status(row) == "可执行"),
-        "接近": sum(1 for row in rows if _execution_status(row) == "接近买区"),
-        "需复核": sum(1 for row in rows if _execution_status(row) == "需复核"),
-        "禁追": sum(1 for row in rows if _execution_status(row) == "禁止追高"),
-    }
-    chips = "".join(f"<span>{escape(label)} {count}</span>" for label, count in counts.items())
-    priority_rows = _priority_rows_html(rows)
-    st.markdown(
-        f"""
-        <section class="priority-panel">
-          <div class="priority-head">
-            <div><strong>今日优先事项</strong><small>按执行价值和风险优先级排序</small></div>
-            <div class="priority-chips">{chips}</div>
-          </div>
-          <div class="priority-list">{priority_rows}</div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def _priority_rows_html(rows: list[dict]) -> str:
     candidates: list[tuple[str, str, str, str, str]] = []
     groups = [
@@ -306,7 +282,7 @@ def _priority_rows_html(rows: list[dict]) -> str:
 
     return "".join(
         '<div class="priority-row">'
-        f'{_badge(label, tone)}'
+        f'{_priority_marker(label, tone)}'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(primary)}</span>'
         f'<small>{escape(secondary)}</small>'
@@ -338,7 +314,7 @@ def _render_execution_toolbar(rows: list[dict]) -> str:
         st.markdown(
             """
             <div class="execution-toolbar-title">
-              <strong>执行清单</strong>
+              <strong>买区执行台</strong>
               <span>只保留执行判断，完整买区进入详情。</span>
             </div>
             """,
@@ -356,20 +332,30 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
     return rows
 
 
-def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None:
-    if not rows:
-        st.info("当前筛选下没有股票。")
-        return
-
+def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_store: StockPlanStore) -> None:
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
-      <span>股票</span><span>行动</span><span>触发条件</span><span>仓位</span><span>操作</span>
+      <span>股票</span><span>行动</span><span>触发条件</span><span>仓位</span><span>置信度</span><span>操作</span>
     </div>
     """
-    body = "".join(_buy_zone_row_html(row) for row in rows)
-    st.markdown(f'<section class="buy-zone-table">{header}{body}</section>', unsafe_allow_html=True)
-
-    st.caption("点击“详情”查看禁追价、重仓区、校验提醒、估值输入和手动覆盖。")
+    body = (
+        "".join(_buy_zone_row_html(row) for row in visible_rows)
+        if visible_rows
+        else '<div class="buy-zone-empty">当前筛选下没有股票。</div>'
+    )
+    st.markdown(
+        f"""
+        <section class="execution-console-panel">
+          <div class="priority-strip">
+            <div class="priority-strip-head"><strong>今日优先</strong><span>按执行价值和风险优先级排序</span></div>
+            <div class="priority-list">{_priority_rows_html(rows)}</div>
+          </div>
+          <div class="buy-zone-table">{header}{body}</div>
+          <div class="execution-console-foot">点击“详情”查看禁追价、重仓区、校验提醒、估值输入和手动覆盖。</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _buy_zone_row_html(row: dict) -> str:
@@ -383,8 +369,9 @@ def _buy_zone_row_html(row: dict) -> str:
         f'<div class="stock-cell"><strong>{escape(symbol)}</strong><span>{escape(_price_text(row.get("currentPrice")))}</span></div>'
         f'<div class="status-cell">{_badge(status, _execution_tone(status))}<small>{escape(_action_short_text(row))} · {escape(_status_detail_text(row))}</small></div>'
         f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
-        f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))} · {escape(confidence_label(row.get("confidence")))}置信</small></div>'
-        f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情</a>'
+        f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
+        f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
+        f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情 →</a>'
         "</div>"
     )
 
@@ -631,15 +618,16 @@ def _render_styles() -> None:
     st.markdown(
         """
         <style>
+        div[data-testid="stAppViewContainer"] {
+            background:#F6F8FB;
+        }
         div.block-container {
             max-width: 1120px;
             padding-left: 1.8rem;
             padding-right: 1.8rem;
         }
         .buy-zone-summary,
-        .priority-panel,
-        .execution-summary,
-        .buy-zone-table,
+        .execution-console-panel,
         div[data-testid="stRadio"],
         div[data-testid="stExpander"] {
             width: 100%;
@@ -654,14 +642,14 @@ def _render_styles() -> None:
             gap: 0;
             margin-top: 1rem;
             margin-bottom: 0.75rem;
-            border:1px solid #DFE7F0;
+            border:1px solid rgba(148, 163, 184, 0.20);
             border-radius:8px;
             background:#fff;
             overflow:hidden;
         }
         .buy-zone-summary-card {
             border: 0;
-            border-right:1px solid rgba(15, 23, 42, 0.055);
+            border-right:1px solid rgba(15, 23, 42, 0.035);
             background: transparent;
             border-radius: 0;
             padding: 0.62rem 0.82rem;
@@ -818,69 +806,81 @@ def _render_styles() -> None:
             font-size:0.82rem;
             font-weight:650;
         }
-        .priority-panel {
-            border:1px solid #DFE7F0;
+        .execution-console-panel {
+            border:1px solid rgba(148, 163, 184, 0.22);
             border-radius:8px;
             background:#FFFFFF;
-            padding:0.58rem 0.68rem;
-            margin-top:0;
-            margin-bottom:0.72rem;
-            box-shadow:0 1px 2px rgba(15, 23, 42, 0.03);
+            margin-top:0.4rem;
+            margin-bottom:0.8rem;
+            overflow:hidden;
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
         }
-        .priority-head {
+        .priority-strip {
+            padding:0.56rem 0.68rem 0.52rem;
+            border-bottom:1px solid rgba(15, 23, 42, 0.045);
+            background:#FAFBFD;
+        }
+        .priority-strip-head {
             display:flex;
-            align-items:flex-start;
+            align-items:baseline;
             justify-content:space-between;
-            gap:0.8rem;
-            margin-bottom:0.36rem;
+            gap:0.75rem;
+            margin-bottom:0.34rem;
         }
-        .priority-head strong {
+        .priority-strip-head strong {
             display:block;
             color:#0F172A;
-            font-size:14px;
+            font-size:13px;
             font-weight:760;
             line-height:1.1;
         }
-        .priority-head small {
-            display:block;
-            margin-top:0.12rem;
-            color:#94A3B8;
+        .priority-strip-head span {
+            color:#64748B;
             font-size:11px;
-            font-weight:500;
-        }
-        .priority-chips {
-            display:flex;
-            align-items:center;
-            gap:0.35rem;
-            flex-wrap:wrap;
-            justify-content:flex-end;
-            color:#94A3B8;
-            font-size:11px;
-            font-weight:620;
-            white-space:nowrap;
-        }
-        .priority-chips span {
-            border:1px solid #E4EAF1;
-            background:#F8FAFC;
-            border-radius:999px;
-            padding:2px 7px;
+            font-weight:520;
         }
         .priority-list {
-            display:grid;
-            grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
-            gap:0.28rem 0.42rem;
+            display:flex;
+            flex-wrap:wrap;
+            gap:0.32rem 0.42rem;
         }
         .priority-row {
-            display:grid;
-            grid-template-columns:56px 54px minmax(88px, 1fr) minmax(92px, 0.9fr);
+            display:inline-grid;
+            grid-template-columns:auto auto auto auto;
             align-items:center;
-            gap:0.42rem;
-            min-height:28px;
-            padding:0.2rem 0.36rem;
-            border:1px solid rgba(15, 23, 42, 0.045);
-            border-radius:6px;
-            background:#FBFCFF;
+            gap:0.32rem;
+            min-height:26px;
+            max-width:100%;
+            padding:0.18rem 0.42rem;
+            border-radius:999px;
+            background:rgba(255, 255, 255, 0.72);
         }
+        .priority-status {
+            display:inline-flex;
+            align-items:center;
+            gap:0.28rem;
+            color:#475569;
+            font-size:11px;
+            font-weight:650;
+            white-space:nowrap;
+        }
+        .priority-status i,
+        .confidence-inline i {
+            display:inline-block;
+            width:6px;
+            height:6px;
+            border-radius:999px;
+            background:#94A3B8;
+        }
+        .priority-status.green i,
+        .confidence-inline.green i { background:#22C55E; }
+        .priority-status.blue i,
+        .confidence-inline.blue i { background:#64748B; }
+        .priority-status.amber i,
+        .priority-status.orange i,
+        .confidence-inline.orange i { background:#D97706; }
+        .priority-status.red i,
+        .confidence-inline.red i { background:#DC2626; }
         .priority-row strong {
             color:#0F172A;
             font-size:12px;
@@ -895,12 +895,17 @@ def _render_styles() -> None:
             font-size:12px;
             font-weight:650;
         }
+        .priority-row span:not(.buy-zone-badge)::before {
+            content:"· ";
+            color:#94A3B8;
+            font-weight:500;
+        }
         .priority-row small {
             min-width:0;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
-            color:#94A3B8;
+            color:#64748B;
             font-size:11px;
             font-weight:560;
         }
@@ -912,8 +917,9 @@ def _render_styles() -> None:
             font-size:12px;
             font-weight:560;
             border:1px solid rgba(15, 23, 42, 0.045);
-            border-radius:6px;
-            padding:0 0.5rem;
+            border-radius:999px;
+            padding:0 0.6rem;
+            background:rgba(255, 255, 255, 0.72);
         }
         .execution-toolbar-title {
             max-width:1080px;
@@ -942,9 +948,9 @@ def _render_styles() -> None:
             display:inline-flex;
             gap:0.18rem;
             padding:0.18rem;
-            border:1px solid #DFE7F0;
+            border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:8px;
-            background:#F8FAFC;
+            background:#F1F5F9;
             flex-wrap:wrap;
         }
         div[data-testid="stRadio"] label {
@@ -959,28 +965,27 @@ def _render_styles() -> None:
         div[data-testid="stRadio"] label:has(input:checked) {
             background:#FFFFFF;
             color:#0F172A;
-            box-shadow:0 1px 2px rgba(15, 23, 42, 0.08);
+            box-shadow:0 1px 1px rgba(15, 23, 42, 0.05);
         }
         div[data-testid="stRadio"] label > div:first-child {
             display:none;
         }
         .buy-zone-table {
             display:block;
-            border: 1px solid #DFE7F0;
-            border-radius: 8px;
+            border:0;
+            border-radius:0;
             overflow-x: auto;
             overflow-y: hidden;
             background: #FFFFFF;
-            margin-top: 0.4rem;
-            margin-bottom: 0.8rem;
+            margin:0;
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 112px minmax(180px, 1fr) minmax(220px, 1.15fr) 150px 56px;
+            grid-template-columns: 112px minmax(180px, 1fr) minmax(220px, 1.15fr) 126px 72px 56px;
             align-items: center;
-            gap: 0.62rem;
-            min-height: 48px;
-            min-width: 760px;
+            gap: 0.56rem;
+            min-height: 44px;
+            min-width: 820px;
             width: 100%;
             padding: 0 12px;
             font-size: 12.5px;
@@ -1004,7 +1009,7 @@ def _render_styles() -> None:
         }
         .buy-zone-row:last-child { border-bottom:0; }
         .buy-zone-row:hover {
-            background:#F8FAFC;
+            background:#FAFBFD;
         }
         .stock-cell,
         .status-cell,
@@ -1042,7 +1047,7 @@ def _render_styles() -> None:
         }
         .status-cell small {
             max-width:100%;
-            color:#94A3B8;
+            color:#64748B;
             font-size:11px;
             font-weight:560;
             overflow:hidden;
@@ -1073,7 +1078,7 @@ def _render_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             font-size:11px;
-            color:#94A3B8;
+            color:#64748B;
         }
         .position-cell b {
             color:#0F172A;
@@ -1082,9 +1087,22 @@ def _render_styles() -> None:
             white-space:nowrap;
         }
         .position-cell small {
-            color:#94A3B8;
+            color:#64748B;
             font-size:11px;
             font-weight:560;
+        }
+        .confidence-cell {
+            display:flex;
+            align-items:center;
+        }
+        .confidence-inline {
+            display:inline-flex;
+            align-items:center;
+            gap:0.32rem;
+            color:#475569;
+            font-size:12px;
+            font-weight:620;
+            white-space:nowrap;
         }
         .trigger-cell.ready b { color:#1F2937; }
         .trigger-cell.near b,
@@ -1098,7 +1116,7 @@ def _render_styles() -> None:
             max-width:100%;
             padding:0 7px;
             border-radius:999px;
-            border:1px solid #E5E7EB;
+            border:1px solid transparent;
             background:#F3F4F6;
             color:#4B5563;
             font-size:11.5px;
@@ -1108,22 +1126,40 @@ def _render_styles() -> None:
             text-overflow:ellipsis;
         }
         .buy-zone-badge.green { background:#F0FDF4; color:#166534; border-color:#CDEFD8; }
-        .buy-zone-badge.blue { background:#F2F7FF; color:#1E40AF; border-color:#D5E5FF; }
-        .buy-zone-badge.yellow { background:#FFFBEA; color:#854D0E; border-color:#F7E9A8; }
-        .buy-zone-badge.orange { background:#FFF7E6; color:#A16207; border-color:#F4D99A; }
-        .buy-zone-badge.red { background:#FFF7F7; color:#9F1239; border-color:#F5D1D1; }
+        .buy-zone-badge.blue { background:#F2F6FB; color:#334155; border-color:#E4EAF1; }
+        .buy-zone-badge.yellow { background:#FFFBEB; color:#854D0E; border-color:#F4E7B0; }
+        .buy-zone-badge.orange { background:#FFF7ED; color:#92400E; border-color:#F7D8A9; }
+        .buy-zone-badge.red { background:#FFF5F5; color:#991B1B; border-color:#F3D2D2; }
         .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E4EAF1; }
         .buy-zone-detail-link {
             text-decoration:none;
             color:#64748B;
             font-size:12px;
-            font-weight:650;
-            padding:4px 6px;
+            font-weight:600;
+            padding:3px 5px;
             border-radius:6px;
+            white-space:nowrap;
         }
         .buy-zone-detail-link:hover {
-            color:#0F172A;
-            background:#F1F5F9;
+            color:#334155;
+            background:#F8FAFC;
+        }
+        .buy-zone-empty {
+            display:flex;
+            align-items:center;
+            min-height:44px;
+            padding:0 12px;
+            color:#64748B;
+            font-size:12px;
+            border-top:1px solid rgba(15, 23, 42, 0.05);
+        }
+        .execution-console-foot {
+            padding:0.42rem 0.68rem 0.52rem;
+            border-top:1px solid rgba(15, 23, 42, 0.045);
+            color:#64748B;
+            font-size:11px;
+            font-weight:520;
+            background:#FBFCFF;
         }
         .buy-zone-drawer .price-ladder,
         .buy-zone-drawer .drawer-resolution {
@@ -1258,10 +1294,10 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 108px minmax(168px, 1fr) minmax(210px, 1.12fr) 140px 54px;
+                grid-template-columns: 108px minmax(168px, 1fr) minmax(210px, 1.12fr) 118px 68px 54px;
                 font-size:12px;
                 gap:0.5rem;
-                min-width:720px;
+                min-width:790px;
             }
         }
         </style>
@@ -1272,6 +1308,16 @@ def _render_styles() -> None:
 
 def _badge(label: str, tone: str = "gray") -> str:
     return f'<span class="buy-zone-badge {escape(tone)}">{escape(str(label))}</span>'
+
+
+def _priority_marker(label: str, tone: str) -> str:
+    return f'<span class="priority-status {escape(tone)}"><i></i>{escape(label)}</span>'
+
+
+def _confidence_inline(value: object) -> str:
+    raw = str(value or "")
+    tone = CONFIDENCE_TONES.get(raw, "gray")
+    return f'<span class="confidence-inline {escape(tone)}"><i></i><span>{escape(confidence_label(value))}</span></span>'
 
 
 def _zone_label(value: object) -> str:

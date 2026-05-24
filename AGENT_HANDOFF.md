@@ -32,6 +32,24 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only visual noise reduction.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Reduced visual noise in the unified `买区执行台`: priority items now use small status dots instead of colored pills, confidence now renders as a low-noise dot plus label, detail actions are muted `详情 →` text links, panel/card borders and summary dividers were softened, the page background gained a subtle gray layer, row hover was toned down, and secondary text was kept readable at `#64748b`.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review visually. Commit this buy-zone UI checkpoint only after the page feels stable; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only unified execution console.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Merged the former standalone priority panel, filter row, and execution list into one `买区执行台` flow: toolbar title plus compact segmented filter, in-panel `今日优先` priority strip, and the execution list as the panel body. Removed the independent `今日优先事项` render path, kept the dense action-table direction, restored a separate confidence column, strengthened secondary text readability, and kept details in the drawer.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review visually. Commit this buy-zone UI checkpoint only after the page feels stable; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only execution-list regression fix.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Preserved the approved compact `今日优先事项` panel and changed the execution list away from the old dense database-table feel. Replaced the eight narrow columns with five semantic compact action-row zones: stock/current price, action status plus suggestion, trigger condition, position plus confidence, and details. Kept the unified panel, shallow separators, compact desktop density, and detail drawer behavior.
