@@ -30,6 +30,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-24 Data conversation:
+- Owner: Data conversation.
+- Task: Metric Display Mapping / unmapped field cleanup.
+- Files touched: `AGENT_HANDOFF.md`, `ui/metric_labels.py`, `tests/test_core_logic.py`.
+- What changed: Hardened the existing `metric_label()` resolver, added common technical/financial/industry KPI aliases, hid internal debug fields from normal labels, added debug-mode unmapped output plus an unmapped metric registry, and covered the requested mappings with tests.
+- Verification: `py_compile` passed for `ui/metric_labels.py` and `tests/test_core_logic.py`; `pytest tests/test_core_logic.py -q` passed with 241 tests and 27 subtests.
+- Next needed: Review and commit this label-map checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: Scoring logic, BuyZoneEngine formulas, PositionPlanEngine logic, Review Center state machine, Qwen/AI review, autopilot, database schema/migrations, external APIs, and long-running services were not changed.
+
 2026-05-24 UI conversation:
 - Owner: UI conversation.
 - Task: Dashboard decision overview UI-only repair and polish.

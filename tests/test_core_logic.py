@@ -128,7 +128,7 @@ from ui.dashboard import (
     _valuation_status,
 )
 from ui import manual_review, stock_detail
-from ui.metric_labels import metric_label, model_type_label, resolution_status_label
+from ui.metric_labels import is_internal_metric_field, metric_label, model_type_label, resolution_status_label, unmapped_metric_labels
 
 
 def _metric_resolution_by_key(result, metric_key: str) -> dict:
@@ -1062,7 +1062,48 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(metric_label("RSI14 高于 70"), "RSI14 高于 70")
         self.assertEqual(metric_label("dilution risk"), "稀释风险")
         self.assertEqual(metric_label("acquisition integration risk"), "并购整合风险")
-        self.assertEqual(metric_label("unknownBackendMetric"), "未映射字段：unknownBackendMetric")
+        self.assertEqual(metric_label("unknownBackendMetric"), "unknown Backend Metric")
+        self.assertEqual(metric_label("unknownBackendMetric", debug=True), "未映射字段：unknownBackendMetric")
+        self.assertIn("unknownBackendMetric", unmapped_metric_labels())
+
+    def test_metric_label_map_covers_common_technical_and_financial_fields(self) -> None:
+        self.assertEqual(metric_label("EMA20"), "EMA20")
+        self.assertEqual(metric_label("EMA50"), "EMA50")
+        self.assertEqual(metric_label("EMA200"), "EMA200")
+        self.assertEqual(metric_label("RSI14"), "RSI14")
+        self.assertEqual(metric_label("rsi14"), "RSI14")
+        self.assertEqual(metric_label("drawdownFrom52WeekHigh"), "距52周高点回撤")
+        self.assertEqual(metric_label("return20d"), "20日涨幅")
+        self.assertEqual(metric_label("return60d"), "60日涨幅")
+        self.assertEqual(metric_label("currentVolume / avgVolume20d - 1"), "成交量趋势")
+        self.assertEqual(metric_label("currentPrice / closePrice20TradingDaysAgo - 1"), "20日涨幅")
+        self.assertEqual(metric_label("currentPrice / closePrice60TradingDaysAgo - 1"), "60日涨幅")
+        self.assertEqual(metric_label("currentPrice / fiftyTwoWeekHigh - 1"), "距52周高点回撤")
+        self.assertEqual(metric_label("sbcToRevenue"), "股权激励/收入")
+        self.assertEqual(metric_label("stockBasedCompensation / revenue"), "股权激励/收入")
+        self.assertEqual(metric_label("operatingCashFlowMargin"), "经营现金流利润率")
+        self.assertNotEqual(metric_label("operatingCashFlowMargin"), "FCF利润率")
+        self.assertEqual(metric_label("nonGaapFcfMargin"), "Non-GAAP FCF利润率")
+        self.assertEqual(metric_label("debtMaturityPressure"), "债务到期压力")
+
+    def test_metric_label_map_covers_industry_kpis(self) -> None:
+        self.assertEqual(metric_label("cRpoGrowth"), "cRPO增速")
+        self.assertEqual(metric_label("cRpoGrowthReported"), "cRPO增速（reported YoY）")
+        self.assertEqual(metric_label("rpoGrowthConstantCurrency"), "RPO增速（constant currency）")
+        self.assertEqual(metric_label("subscriptionRevenueGrowth"), "订阅收入增速")
+        self.assertEqual(metric_label("NRR"), "净留存率")
+        self.assertEqual(metric_label("unit growth"), "客户/单位增长")
+        self.assertEqual(metric_label("seatCompressionRisk"), "席位压缩风险")
+        self.assertEqual(metric_label("aiCapexOverbuildRisk"), "AI资本开支过剩风险")
+        self.assertEqual(metric_label("merchantPowerExposure"), "市场化电价敞口")
+        self.assertEqual(metric_label("pipelineStrength"), "管线强度")
+
+    def test_metric_label_hides_internal_debug_fields_outside_debug_mode(self) -> None:
+        for field in ("evidenceHash", "extractionRule", "rawMetricKey", "sourceType", "reviewStatus", "inputHash", "promptVersion", "accessionNumber"):
+            with self.subTest(field=field):
+                self.assertTrue(is_internal_metric_field(field))
+                self.assertEqual(metric_label(field), "")
+                self.assertEqual(metric_label(field, debug=True), f"未映射字段：{field}")
 
     def test_drawer_resolution_uses_chinese_labels_and_statuses(self) -> None:
         row = pd.Series(

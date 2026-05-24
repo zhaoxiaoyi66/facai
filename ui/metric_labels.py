@@ -195,6 +195,125 @@ METRIC_DISPLAY_MAP: dict[str, str] = {
     "asset quality": "资产质量",
 }
 
+METRIC_DISPLAY_MAP.update(
+    {
+        # Common camelCase / formula aliases
+        "revenuegrowth": "收入增速",
+        "grossmargin": "毛利率",
+        "operatingmargin": "经营利润率",
+        "gaapoperatingmargin": "GAAP经营利润率",
+        "nongaapoperatingmargin": "Non-GAAP经营利润率",
+        "fcfmargin": "FCF利润率",
+        "directfcfmargin": "FCF利润率",
+        "direct fcf margin": "FCF利润率",
+        "impliedfcfmargin": "估算FCF利润率",
+        "nongaapfcfmargin": "Non-GAAP FCF利润率",
+        "operatingcashflowmargin": "经营现金流利润率",
+        "operating cash flow margin": "经营现金流利润率",
+        "fcfyield": "FCF收益率",
+        "netdebt": "净债务",
+        "net debt": "净债务",
+        "netdebttoebitda": "净债务/EBITDA",
+        "net debt to ebitda": "净债务/EBITDA",
+        "interestcoverage": "利息覆盖倍数",
+        "debtmaturitypressure": "债务到期压力",
+        "sbc to revenue": "股权激励/收入",
+        "sbctorevenue": "股权激励/收入",
+        "stockbasedcompensation / revenue": "股权激励/收入",
+        "stock based compensation / revenue": "股权激励/收入",
+        "stock based compensation revenue": "股权激励/收入",
+        "drawdownfrom52weekhigh": "距52周高点回撤",
+        "drawdown from52 week high": "距52周高点回撤",
+        "drawdown from 52 week high": "距52周高点回撤",
+        "currentvolume / avgvolume20d 1": "成交量趋势",
+        "current volume / avg volume20d 1": "成交量趋势",
+        "currentprice / closeprice20tradingdaysago 1": "20日涨幅",
+        "current price / close price20 trading days ago 1": "20日涨幅",
+        "currentprice / closeprice60tradingdaysago 1": "60日涨幅",
+        "current price / close price60 trading days ago 1": "60日涨幅",
+        "currentprice / fiftytwoweekhigh 1": "距52周高点回撤",
+        "current price / fifty two week high 1": "距52周高点回撤",
+        # SaaS / software aliases
+        "crpogrowth": "cRPO增速",
+        "c rpo growth": "cRPO增速",
+        "crpogrowthreported": "cRPO增速（reported YoY）",
+        "c rpo growth reported": "cRPO增速（reported YoY）",
+        "crpogrowthconstantcurrency": "cRPO增速（constant currency）",
+        "c rpo growth constant currency": "cRPO增速（constant currency）",
+        "rpogrowth": "RPO增速",
+        "rpogrowthreported": "RPO增速（reported YoY）",
+        "rpogrowthconstantcurrency": "RPO增速（constant currency）",
+        "subscriptionrevenuegrowth": "订阅收入增速",
+        "subscriptionrevenuegrowthreported": "订阅收入增速（reported YoY）",
+        "subscriptionrevenuegrowthconstantcurrency": "订阅收入增速（constant currency）",
+        "netretentionrate": "净留存率",
+        "nrr": "净留存率",
+        "largecustomergrowth": "大客户增长",
+        "unit growth": "客户/单位增长",
+        "unitgrowth": "客户/单位增长",
+        "seatcompressionrisk": "席位压缩风险",
+        # Platform / semis / power / crypto / pharma camelCase aliases
+        "segmentstrength": "分部业务强度",
+        "buybackdiscipline": "回购纪律",
+        "historicalvaluationpercentile": "历史估值分位",
+        "capexconcerndiscount": "Capex担忧折价",
+        "aicapexoverbuildrisk": "AI资本开支过剩风险",
+        "regulatoryrisk": "监管风险",
+        "segmentconcentration": "分部集中度",
+        "cycleposition": "周期位置",
+        "inventorycorrectionrisk": "库存修正风险",
+        "marginnormalizationrisk": "利润率正常化风险",
+        "exportcontrolrisk": "出口管制风险",
+        "customerconcentration": "客户集中度",
+        "adjustedebitda": "调整后EBITDA",
+        "adjustedfcfbeforegrowth": "增长投资前调整后FCF",
+        "hedgecoverage": "对冲覆盖率",
+        "generationmix": "发电资产结构",
+        "merchantpowerexposure": "市场化电价敞口",
+        "revenuediversification": "收入多元化",
+        "cryptocyclesensitivity": "加密周期敏感度",
+        "regulatorypositioning": "监管位置",
+        "userassetquality": "用户资产质量",
+        "pipelinestrength": "管线强度",
+        "patentcliffrisk": "专利悬崖风险",
+        "pricingpressure": "定价压力",
+        "productconcentration": "产品集中度",
+    }
+)
+
+INTERNAL_DEBUG_FIELDS = {
+    "evidencehash",
+    "evidence hash",
+    "extractionrule",
+    "extraction rule",
+    "rawmetrickey",
+    "raw metric key",
+    "sourcetype",
+    "source type",
+    "source type raw enum",
+    "resolutionstatus",
+    "resolution status",
+    "resolution status raw enum",
+    "aitriagestatus",
+    "ai triage status",
+    "ai triage status raw enum",
+    "reviewstatus",
+    "review status",
+    "review status raw enum",
+    "formula debug string",
+    "inputhash",
+    "input hash",
+    "promptversion",
+    "prompt version",
+    "provider/model debug",
+    "provider model debug",
+    "accessionnumber",
+    "accession number",
+    "internal cache key",
+}
+
+_UNMAPPED_METRIC_LABELS: set[str] = set()
+
 RESOLUTION_STATUS_DISPLAY_MAP: dict[str, str] = {
     "available": "已可用",
     "calculated": "已计算",
@@ -281,14 +400,16 @@ ACTION_DISPLAY_MAP: dict[str, str] = {
 }
 
 
-def metric_label(value: Any) -> str:
+def metric_label(value: Any, *, debug: bool = False) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
         return "N/A"
     key = _normalize(text)
+    snake_key = _normalize(_camel_to_words(text))
+    if key in INTERNAL_DEBUG_FIELDS or snake_key in INTERNAL_DEBUG_FIELDS:
+        return f"未映射字段：{text}" if debug else ""
     if key in METRIC_DISPLAY_MAP:
         return METRIC_DISPLAY_MAP[key]
-    snake_key = _normalize(_camel_to_words(text))
     if snake_key in METRIC_DISPLAY_MAP:
         return METRIC_DISPLAY_MAP[snake_key]
     translated = _replace_known_terms(text)
@@ -296,7 +417,8 @@ def metric_label(value: Any) -> str:
         return translated
     if _has_cjk(text):
         return text
-    return f"未映射字段：{text}"
+    _UNMAPPED_METRIC_LABELS.add(text)
+    return f"未映射字段：{text}" if debug else _humanize_unknown_metric(text)
 
 
 def resolution_status_label(value: Any) -> str:
@@ -340,18 +462,33 @@ def action_label(value: Any) -> str:
     if translated != text:
         return translated
     if not _has_cjk(text):
-        return f"未映射字段：{text}"
+        _UNMAPPED_METRIC_LABELS.add(text)
+        return _humanize_unknown_metric(text)
     return text
 
 
 def metric_list_label(values: Any, limit: int | None = None) -> list[str]:
     if isinstance(values, (list, tuple, set)):
-        items = [metric_label(item) for item in values if item]
+        items = [label for item in values if item for label in [metric_label(item)] if label]
     elif values:
-        items = [metric_label(values)]
+        label = metric_label(values)
+        items = [label] if label else []
     else:
         items = []
     return items[:limit] if limit else items
+
+
+def unmapped_metric_labels() -> list[str]:
+    return sorted(_UNMAPPED_METRIC_LABELS)
+
+
+def is_internal_metric_field(value: Any) -> bool:
+    text = _clean(value)
+    if not text:
+        return False
+    key = _normalize(text)
+    snake_key = _normalize(_camel_to_words(text))
+    return key in INTERNAL_DEBUG_FIELDS or snake_key in INTERNAL_DEBUG_FIELDS
 
 
 def _replace_known_terms(text: str) -> str:
@@ -368,6 +505,11 @@ def _dedupe_indicator_labels(text: str) -> str:
     normalized = re.sub(r"EMA50(?:50)+", "EMA50", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"EMA200(?:200)+", "EMA200", normalized, flags=re.IGNORECASE)
     return normalized
+
+
+def _humanize_unknown_metric(text: str) -> str:
+    cleaned = _camel_to_words(text).replace("_", " ").replace("-", " ")
+    return " ".join(cleaned.split()) or text
 
 
 def _normalize(value: str) -> str:
