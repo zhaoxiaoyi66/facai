@@ -32,6 +32,33 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only terminal polish and near-trigger priority filter.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Kept the fixed `买区执行台` structure and tightened the final terminal-style details: compact filter labels (`接近`, `手动`), table headers (`股票 / 当前动作 / 触发条件 / 建议仓位 / 置信度 / 查看`), neutral `查看 ›` action, slightly tighter status ribbon/table spacing, and a UI-only near-trigger filter so priority-strip `接近` items only include stocks within 15% of the trigger price. The trigger-distance percentage now uses current price as the denominator, preventing far-away names such as MRVL/MU from showing misleading `距触发 220% / 290%` priority prompts.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review visually. Commit this buy-zone UI checkpoint only after the page feels stable; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only priority-strip overlap fix.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Fixed overlapping text in the `今日优先` strip by removing the secondary trigger-condition line from each priority item and simplifying each item to status, ticker, and one primary action. Tightened the strip grid to single-line items with ellipsis overflow, keeping the execution table structure unchanged.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review visually. Commit this buy-zone UI checkpoint only after the page feels stable; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only high-end execution console polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Replaced the cheap `详情 →` link with a neutral `查看 ›` ghost action, renamed and tightened the execution table columns to `股票 / 当前动作 / 触发条件 / 建议仓位 / 置信度 / 查看`, tuned column widths and row density, changed the priority area from pill-like chips into a structured terminal-style summary strip, softened the segmented filter, and kept confidence as dot-plus-label instead of a colored pill.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review visually. Commit this buy-zone UI checkpoint only after the page feels stable; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only visual noise reduction.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Continued the same buy-zone UI checkpoint. Reduced visual noise in the unified `买区执行台`: priority items now use small status dots instead of colored pills, confidence now renders as a low-noise dot plus label, detail actions are muted `详情 →` text links, panel/card borders and summary dividers were softened, the page background gained a subtle gray layer, row hover was toned down, and secondary text was kept readable at `#64748b`.

@@ -264,7 +264,7 @@ def _priority_rows_html(rows: list[dict]) -> str:
     candidates: list[tuple[str, str, str, str, str]] = []
     groups = [
         ("可执行", "green", [row for row in rows if _execution_status(row) == "可执行"]),
-        ("接近", "blue", [row for row in rows if _execution_status(row) == "接近买区"]),
+        ("接近", "blue", [row for row in rows if _execution_status(row) == "接近买区" and _is_near_trigger_priority(row)]),
         ("复核", "amber", [row for row in rows if _execution_status(row) == "需复核"]),
         ("禁追", "red", [row for row in rows if _execution_status(row) == "禁止追高"]),
     ]
@@ -285,9 +285,8 @@ def _priority_rows_html(rows: list[dict]) -> str:
         f'{_priority_marker(label, tone)}'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(primary)}</span>'
-        f'<small>{escape(secondary)}</small>'
         "</div>"
-        for label, tone, symbol, primary, secondary in candidates
+        for label, tone, symbol, primary, _secondary in candidates
     )
 
 
@@ -304,7 +303,7 @@ def _priority_text(row: dict, label: str) -> tuple[str, str]:
 
 
 def _render_filters(rows: list[dict]) -> str:
-    options = ["全部", "可执行", "接近买区", "等回踩", "禁止追高", "需复核", "手动覆盖"]
+    options = ["全部", "可执行", "接近", "等回踩", "禁止追高", "需复核", "手动"]
     return st.radio("买区筛选", options, horizontal=True, label_visibility="collapsed", key="buy-zone-filter")
 
 
@@ -325,9 +324,16 @@ def _render_execution_toolbar(rows: list[dict]) -> str:
 
 
 def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
-    if active_filter in {"可执行", "接近买区", "等回踩", "禁止追高", "需复核"}:
-        return [row for row in rows if _execution_status(row) == active_filter]
-    if active_filter == "手动覆盖":
+    status_filter_map = {
+        "可执行": "可执行",
+        "接近": "接近买区",
+        "等回踩": "等回踩",
+        "禁止追高": "禁止追高",
+        "需复核": "需复核",
+    }
+    if active_filter in status_filter_map:
+        return [row for row in rows if _execution_status(row) == status_filter_map[active_filter]]
+    if active_filter == "手动":
         return [row for row in rows if row["manualOverride"]]
     return rows
 
@@ -335,7 +341,7 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
 def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_store: StockPlanStore) -> None:
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
-      <span>股票</span><span>行动</span><span>触发条件</span><span>仓位</span><span>置信度</span><span>操作</span>
+      <span>股票</span><span>当前动作</span><span>触发条件</span><span>建议仓位</span><span>置信度</span><span>查看</span>
     </div>
     """
     body = (
@@ -351,7 +357,7 @@ def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_stor
             <div class="priority-list">{_priority_rows_html(rows)}</div>
           </div>
           <div class="buy-zone-table">{header}{body}</div>
-          <div class="execution-console-foot">点击“详情”查看禁追价、重仓区、校验提醒、估值输入和手动覆盖。</div>
+          <div class="execution-console-foot">点击“查看”打开禁追价、重仓区、校验提醒、估值输入和手动覆盖。</div>
         </section>
         """,
         unsafe_allow_html=True,
@@ -371,7 +377,7 @@ def _buy_zone_row_html(row: dict) -> str:
         f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
         f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
         f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
-        f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情 →</a>'
+        f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}"><span>查看</span><i>›</i></a>'
         "</div>"
     )
 
@@ -652,7 +658,7 @@ def _render_styles() -> None:
             border-right:1px solid rgba(15, 23, 42, 0.035);
             background: transparent;
             border-radius: 0;
-            padding: 0.62rem 0.82rem;
+            padding: 0.58rem 0.82rem;
             min-height: 64px;
             display: grid;
             align-content: center;
@@ -808,7 +814,7 @@ def _render_styles() -> None:
         }
         .execution-console-panel {
             border:1px solid rgba(148, 163, 184, 0.22);
-            border-radius:8px;
+            border-radius:10px;
             background:#FFFFFF;
             margin-top:0.4rem;
             margin-bottom:0.8rem;
@@ -816,7 +822,7 @@ def _render_styles() -> None:
             box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
         }
         .priority-strip {
-            padding:0.56rem 0.68rem 0.52rem;
+            padding:0.58rem 0.68rem 0.5rem;
             border-bottom:1px solid rgba(15, 23, 42, 0.045);
             background:#FAFBFD;
         }
@@ -840,20 +846,25 @@ def _render_styles() -> None:
             font-weight:520;
         }
         .priority-list {
-            display:flex;
-            flex-wrap:wrap;
-            gap:0.32rem 0.42rem;
+            display:grid;
+            grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+            gap:0;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            background:#FFFFFF;
         }
         .priority-row {
-            display:inline-grid;
-            grid-template-columns:auto auto auto auto;
+            display:grid;
+            grid-template-columns:auto 46px minmax(0, 1fr);
             align-items:center;
-            gap:0.32rem;
-            min-height:26px;
+            gap:0.42rem;
+            min-height:36px;
             max-width:100%;
-            padding:0.18rem 0.42rem;
-            border-radius:999px;
-            background:rgba(255, 255, 255, 0.72);
+            padding:0.28rem 0.54rem;
+            border-right:1px solid rgba(15, 23, 42, 0.04);
+            background:transparent;
+        }
+        .priority-row:last-child {
+            border-right:0;
         }
         .priority-status {
             display:inline-flex;
@@ -885,6 +896,10 @@ def _render_styles() -> None:
             color:#0F172A;
             font-size:12px;
             font-weight:760;
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
         }
         .priority-row span:not(.buy-zone-badge) {
             min-width:0;
@@ -895,20 +910,6 @@ def _render_styles() -> None:
             font-size:12px;
             font-weight:650;
         }
-        .priority-row span:not(.buy-zone-badge)::before {
-            content:"· ";
-            color:#94A3B8;
-            font-weight:500;
-        }
-        .priority-row small {
-            min-width:0;
-            overflow:hidden;
-            text-overflow:ellipsis;
-            white-space:nowrap;
-            color:#64748B;
-            font-size:11px;
-            font-weight:560;
-        }
         .priority-empty {
             min-height:34px;
             display:flex;
@@ -916,10 +917,10 @@ def _render_styles() -> None:
             color:#94A3B8;
             font-size:12px;
             font-weight:560;
-            border:1px solid rgba(15, 23, 42, 0.045);
-            border-radius:999px;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            border-radius:6px;
             padding:0 0.6rem;
-            background:rgba(255, 255, 255, 0.72);
+            background:#FFFFFF;
         }
         .execution-toolbar-title {
             max-width:1080px;
@@ -946,17 +947,17 @@ def _render_styles() -> None:
         }
         div[data-testid="stRadio"] div[role="radiogroup"] {
             display:inline-flex;
-            gap:0.18rem;
-            padding:0.18rem;
-            border:1px solid rgba(148, 163, 184, 0.18);
+            gap:0;
+            padding:0.14rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
             border-radius:8px;
-            background:#F1F5F9;
+            background:#F6F8FB;
             flex-wrap:wrap;
         }
         div[data-testid="stRadio"] label {
             margin:0 !important;
             min-height:28px;
-            padding:0.18rem 0.52rem !important;
+            padding:0.15rem 0.46rem !important;
             border-radius:6px;
             color:#64748B;
             font-size:12px;
@@ -981,18 +982,18 @@ def _render_styles() -> None:
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 112px minmax(180px, 1fr) minmax(220px, 1.15fr) 126px 72px 56px;
+            grid-template-columns: 104px minmax(178px, 1fr) minmax(214px, 1.1fr) 120px 70px 68px;
             align-items: center;
-            gap: 0.56rem;
-            min-height: 44px;
-            min-width: 820px;
+            gap: 0.5rem;
+            min-height: 42px;
+            min-width: 800px;
             width: 100%;
             padding: 0 12px;
             font-size: 12.5px;
             box-sizing:border-box;
         }
         .buy-zone-grid-head {
-            background: #FBFCFF;
+            background: #F8FAFC;
             color: #64748B;
             font-size: 11.5px;
             font-weight: 650;
@@ -1006,6 +1007,7 @@ def _render_styles() -> None:
             border-bottom:1px solid rgba(15, 23, 42, 0.05);
             border-radius:0;
             box-shadow:none;
+            min-height:48px;
         }
         .buy-zone-row:last-child { border-bottom:0; }
         .buy-zone-row:hover {
@@ -1132,17 +1134,35 @@ def _render_styles() -> None:
         .buy-zone-badge.red { background:#FFF5F5; color:#991B1B; border-color:#F3D2D2; }
         .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E4EAF1; }
         .buy-zone-detail-link {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:0.18rem;
+            min-width:48px;
+            height:26px;
             text-decoration:none;
-            color:#64748B;
+            color:#475569;
             font-size:12px;
             font-weight:600;
-            padding:3px 5px;
+            padding:0 0.44rem;
             border-radius:6px;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            background:#FFFFFF;
             white-space:nowrap;
         }
+        .buy-zone-detail-link i {
+            color:#94A3B8;
+            font-style:normal;
+            font-size:14px;
+            line-height:1;
+        }
         .buy-zone-detail-link:hover {
-            color:#334155;
+            color:#0F172A;
+            border-color:rgba(100, 116, 139, 0.28);
             background:#F8FAFC;
+        }
+        .buy-zone-detail-link:hover i {
+            color:#475569;
         }
         .buy-zone-empty {
             display:flex;
@@ -1294,10 +1314,10 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 108px minmax(168px, 1fr) minmax(210px, 1.12fr) 118px 68px 54px;
+                grid-template-columns: 100px minmax(166px, 1fr) minmax(205px, 1.08fr) 116px 66px 64px;
                 font-size:12px;
-                gap:0.5rem;
-                min-width:790px;
+                gap:0.46rem;
+                min-width:770px;
             }
         }
         </style>
@@ -1423,10 +1443,23 @@ def _distance_to_trigger_primary(row: dict) -> str:
     price = _first_number(row.get("currentPrice"))
     if trigger is not None and trigger > 0:
         if price is not None and price > 0:
-            distance = max((price - trigger) / trigger * 100, 0)
+            distance = max((price - trigger) / price * 100, 0)
             return f"距触发 {distance:.1f}%"
         return "接近触发"
     return _next_label(str(row.get("nextBuyLabel") or "")) if row.get("nextBuyLabel") else _zone_next_label(str(row.get("currentZone") or ""))
+
+
+def _is_near_trigger_priority(row: dict) -> bool:
+    pct = _drop_to_trigger_pct(row)
+    return pct is not None and pct <= 15
+
+
+def _drop_to_trigger_pct(row: dict) -> float | None:
+    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+    price = _first_number(row.get("currentPrice"))
+    if trigger is None or trigger <= 0 or price is None or price <= 0:
+        return None
+    return max((price - trigger) / price * 100, 0)
 
 
 def _distance_to_trigger_secondary(row: dict) -> str:
