@@ -76,6 +76,7 @@ def render() -> None:
     _render_decision_summary(score, effective_buy_zone, plan_suggestion)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone)
+    _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan)
     _render_industry_metrics(score.scoring_model, snapshot, score)
     _render_missing_data_notice(ticker, score, snapshot)
@@ -224,10 +225,8 @@ def _explain_card(
 
 def _missing_summary_text(missing: list[str]) -> str:
     if not missing:
-        return "关键字段可用"
-    preview = "、".join(metric_label(item) for item in missing[:3])
-    suffix = f" 等 {len(missing)} 项" if len(missing) > 3 else ""
-    return f"{preview}{suffix}"
+        return "缺失 0 项"
+    return f"缺失 {len(missing)} 项"
 
 
 def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
@@ -822,6 +821,72 @@ def _render_action_plan_form(
             st.rerun()
 
 
+def _render_research_memo(ticker: str, plan_store: StockPlanStore, plan: dict) -> None:
+    memo = _parse_research_memo(plan.get("notes"))
+    edit_key = f"stock-research-memo-editing-{ticker}"
+    heading_cols = st.columns([4, 1])
+    with heading_cols[0]:
+        render_section_title("研究备忘录", "记录投资假设、观察点和下次复核条件")
+    with heading_cols[1]:
+        st.write("")
+        if st.button("编辑备忘录", key=f"research-memo-edit-{ticker}", width="stretch"):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+
+    st.markdown(_research_memo_html(memo), unsafe_allow_html=True)
+
+    if not st.session_state.get(edit_key, False):
+        return
+
+    with st.form(f"research-memo-form-{ticker}"):
+        st.caption("复用操作计划 notes 字段保存，不新增数据库表或 schema。")
+        left, right = st.columns(2)
+        with left:
+            thesis = st.text_area(
+                "投资假设",
+                value=memo["thesis"],
+                placeholder="为什么这只股票值得关注？",
+                height=78,
+            )
+            refutation = st.text_area(
+                "反证条件",
+                value=memo["refutation"],
+                placeholder="什么情况说明原判断可能错了？",
+                height=78,
+            )
+        with right:
+            observation = st.text_area(
+                "当前观察点",
+                value=memo["observation"],
+                placeholder="接下来重点看什么数据或事件？",
+                height=78,
+            )
+            next_review = st.text_area(
+                "下次复核条件",
+                value=memo["next_review"],
+                placeholder="财报后 / 股价到某区间 / 数据更新后复核",
+                height=78,
+            )
+        notes = st.text_area("备注 / 上次复盘摘要", value=memo["notes"], height=88)
+        submitted = st.form_submit_button("保存备忘录", width="stretch")
+        if submitted:
+            plan_store.save_plan(
+                ticker,
+                {
+                    **plan,
+                    "notes": _compose_research_memo(
+                        thesis=thesis,
+                        observation=observation,
+                        refutation=refutation,
+                        next_review=next_review,
+                        notes=notes,
+                    ),
+                },
+            )
+            st.session_state[edit_key] = False
+            st.success("已保存研究备忘录。")
+            st.rerun()
+
+
 def _render_raw_metrics(snapshot: dict, history: pd.DataFrame, technicals: dict, score, ticker: str) -> None:
     render_section_title("原始指标", "默认折叠，必要时再复核")
     with st.expander("展开原始指标", expanded=False):
@@ -1196,6 +1261,111 @@ def _zone_row_html(label: str, value: str, status: str, state: str) -> str:
     )
 
 
+def _parse_research_memo(raw_notes: object) -> dict[str, str]:
+    memo = {"thesis": "", "observation": "", "refutation": "", "next_review": "", "notes": ""}
+    text = str(raw_notes or "").strip()
+    if not text:
+        return memo
+
+    labels = {
+        "投资假设": "thesis",
+        "当前观察点": "observation",
+        "反证条件": "refutation",
+        "下次复核": "next_review",
+        "下次复核条件": "next_review",
+        "备注": "notes",
+        "上次复盘摘要": "notes",
+    }
+    buffers = {key: [] for key in memo}
+    current_key = ""
+    parsed_any = False
+    fallback: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if current_key:
+                buffers[current_key].append("")
+            continue
+        matched = False
+        for label, key in labels.items():
+            for delimiter in ("：", ":"):
+                prefix = f"{label}{delimiter}"
+                if stripped.startswith(prefix):
+                    current_key = key
+                    buffers[key].append(stripped[len(prefix) :].strip())
+                    parsed_any = True
+                    matched = True
+                    break
+            if matched:
+                break
+        if matched:
+            continue
+        if current_key:
+            buffers[current_key].append(stripped)
+        else:
+            fallback.append(stripped)
+
+    if not parsed_any:
+        memo["notes"] = text
+        return memo
+
+    for key, lines in buffers.items():
+        memo[key] = "\n".join(line for line in lines).strip()
+    if fallback:
+        memo["notes"] = "\n".join([memo["notes"], *fallback]).strip()
+    return memo
+
+
+def _compose_research_memo(
+    thesis: str,
+    observation: str,
+    refutation: str,
+    next_review: str,
+    notes: str,
+) -> str:
+    sections = [
+        ("投资假设", thesis),
+        ("当前观察点", observation),
+        ("反证条件", refutation),
+        ("下次复核", next_review),
+        ("备注", notes),
+    ]
+    return "\n\n".join(f"{label}：\n{str(value or '').strip()}" for label, value in sections).strip()
+
+
+def _research_memo_html(memo: dict[str, str]) -> str:
+    items = [
+        ("投资假设", memo.get("thesis"), "为什么这只股票值得关注？"),
+        ("当前观察点", memo.get("observation"), "接下来重点看什么数据或事件？"),
+        ("反证条件", memo.get("refutation"), "什么情况说明原判断可能错了？"),
+        ("下次复核", memo.get("next_review"), "财报后 / 股价到某区间 / 数据更新后复核"),
+    ]
+    has_saved = any(str(memo.get(key) or "").strip() for key in ("thesis", "observation", "refutation", "next_review", "notes"))
+    last_review = str(memo.get("notes") or "").strip()
+    return (
+        '<section class="research-card memo-summary-card">'
+        '<div class="memo-grid">'
+        + "".join(_memo_item_html(label, value, placeholder) for label, value, placeholder in items)
+        + "</div>"
+        f'<div class="memo-last-review"><span>上次复盘摘要</span><strong>{escape(last_review or "暂无复盘摘要")}</strong></div>'
+        f'<p class="memo-footnote">{escape("复用操作计划 notes 字段保存，不新增数据库。" if has_saved else "暂未记录，可在后续版本接入本地笔记保存。")}</p>'
+        "</section>"
+    )
+
+
+def _memo_item_html(label: str, value: object, placeholder: str) -> str:
+    text = str(value or "").strip()
+    is_placeholder = not text
+    class_name = "memo-placeholder" if is_placeholder else ""
+    return (
+        '<div class="memo-item">'
+        f"<span>{escape(label)}</span>"
+        f'<strong class="{class_name}">{escape(text or placeholder)}</strong>'
+        "</div>"
+    )
+
+
 def _plan_summary_html(rows: list[tuple[str, object]]) -> str:
     return (
         '<section class="research-card plan-summary-card">'
@@ -1470,7 +1640,8 @@ def _render_detail_styles() -> None:
         }
         .conclusion-card,
         .buy-zone-panel,
-        .plan-summary-card {
+        .plan-summary-card,
+        .memo-summary-card {
             padding: 0.78rem 0.86rem;
             margin-bottom: 0.75rem;
         }
@@ -1580,6 +1751,66 @@ def _render_detail_styles() -> None:
             padding: 0.72rem;
             margin-bottom: 0.4rem;
         }
+        .memo-summary-card {
+            display: grid;
+            gap: 0.55rem;
+        }
+        .memo-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+        }
+        .memo-item {
+            min-height: 4.2rem;
+            padding: 0.55rem 0.6rem;
+            border-radius: 0.5rem;
+            background: rgba(248, 250, 252, 0.7);
+            border: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        .memo-item span,
+        .memo-last-review span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 670;
+            line-height: 1.2;
+        }
+        .memo-item strong {
+            display: -webkit-box;
+            margin-top: 0.28rem;
+            color: #0f172a;
+            font-size: 0.82rem;
+            font-weight: 690;
+            line-height: 1.35;
+            overflow: hidden;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+        }
+        .memo-item strong.memo-placeholder {
+            color: #94a3b8;
+            font-weight: 560;
+        }
+        .memo-last-review {
+            padding: 0.5rem 0.6rem;
+            border-radius: 0.5rem;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(15, 23, 42, 0.05);
+        }
+        .memo-last-review strong {
+            display: block;
+            margin-top: 0.24rem;
+            color: #334155;
+            font-size: 0.8rem;
+            font-weight: 620;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+        .memo-footnote {
+            margin: 0;
+            color: #94a3b8;
+            font-size: 0.72rem;
+            line-height: 1.25;
+        }
         @media (max-width: 900px) {
             .detail-hero {
                 grid-template-columns: 1fr;
@@ -1588,7 +1819,8 @@ def _render_detail_styles() -> None:
             .conclusion-grid,
             .buy-zone-meta,
             .plan-summary-grid,
-            .data-summary-card {
+            .data-summary-card,
+            .memo-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
             .buy-zone-row {

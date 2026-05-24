@@ -32,6 +32,15 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Stock research memo / investment review UI-only section.
+- Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
+- What changed: Added a compact `研究备忘录` section after the action plan and before scoring explanation, showing investment thesis, current observation points, refutation conditions, next review trigger, and last review summary. Reused the existing `stock_action_plans.notes` path through `StockPlanStore.save_plan()` for lightweight memo editing, without adding schema or new database tables. Kept data status, auto-fill, review/source details, and raw metrics folded by default, and simplified missing-data display in scoring cards to a count summary.
+- Verification: `py_compile` passed for `ui/stock_detail.py`; `pytest tests/test_core_logic.py -q` passed with 241 tests and 27 subtests.
+- Next needed: Review and commit this UI-only checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: Data logic, scoring logic, BuyZoneEngine, PositionPlanEngine, Review Center backend, status enums, database schema/migrations, Qwen/AI review, autopilot, auto-fill pipeline, Scoring Input Gate, external APIs, long-running services, and technical-indicator normalization were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Individual stock research page UI-only restructure.
 - Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
 - What changed: Renamed the page to `个股研究`, tightened the symbol controls, moved the first screen around stock summary, current conclusion, buy-zone ladder, and position guidance, changed the action plan to a default system-summary plus edit toggle, compacted scoring explanations and SaaS/core industry metrics, and folded data status, auto-fill/review/source details, and raw metrics behind explicit expanders.
