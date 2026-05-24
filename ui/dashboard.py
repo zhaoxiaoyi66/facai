@@ -107,8 +107,8 @@ LANE_FILTER_SESSION_KEY = "dashboard_active_lane_filter"
 LANE_FILTER_LABELS = {
     "actionable": "可行动",
     "nearBuyZone": "接近击球区",
-    "waitOrReview": "等回踩 / 待确认",
-    "noChaseHighRisk": "禁止追高 / 高风险",
+    "waitOrReview": "待确认",
+    "noChaseHighRisk": "风险隔离",
 }
 DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
 DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
@@ -523,8 +523,8 @@ def _summary_lane_groups(table: pd.DataFrame) -> list[tuple[str, str, str, list[
     return [
         ("actionable", "可行动", "可执行小仓或正常分批", exclusive["actionable"], "green"),
         ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", exclusive["nearBuyZone"], "blue"),
-        ("waitOrReview", "等回踩 / 待确认", "质量可看但买点未完全到位", exclusive["waitOrReview"], "yellow"),
-        ("noChaseHighRisk", "禁止追高 / 高风险", "先看原因，不硬买", exclusive["noChaseHighRisk"], "red"),
+        ("waitOrReview", "待确认", "等待更清晰的买点", exclusive["waitOrReview"], "yellow"),
+        ("noChaseHighRisk", "风险隔离", "暂不新增，先看原因", exclusive["noChaseHighRisk"], "red"),
     ]
 
 
@@ -2428,7 +2428,7 @@ def _render_lane_more_button(lane_key: str, hidden_count: int) -> None:
 
 
 def _lane_more_label(hidden_count: int) -> str:
-    return f"+{int(hidden_count)} 未显示    查看全部"
+    return f"+{int(hidden_count)} 未显示 · 查看全部"
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
@@ -3928,11 +3928,11 @@ def _render_dashboard_styles() -> None:
         .summary-panel-head.tone-yellow .summary-count { color:#7A5C12 !important; }
         .summary-panel-head.tone-red .summary-count { color:#8A1F1F !important; }
         .lane-item {
-            grid-template-columns:48px minmax(58px, 82px) minmax(0, 1fr);
-            gap:7px;
+            grid-template-columns:46px minmax(0, 1fr) minmax(58px, 82px);
+            gap:8px;
             height:24px;
             min-height:24px;
-            padding:0 0.5rem;
+            padding:0 0.55rem;
             border-top-color:rgba(15, 23, 42, 0.032);
             min-width:0;
             max-width:100%;
@@ -3952,6 +3952,7 @@ def _render_dashboard_styles() -> None:
         .lane-reason {
             color:#64748B;
             font-size:10.8px;
+            justify-self:start;
             min-width:0;
             max-width:100%;
             overflow:hidden;
@@ -3959,7 +3960,7 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap;
         }
         .lane-item > .decision-badge {
-            justify-self:start;
+            justify-self:end;
             flex-shrink:0;
             min-width:0;
             max-width:82px;
@@ -4002,8 +4003,8 @@ def _render_dashboard_styles() -> None:
             width:100%;
             overflow:hidden;
             text-overflow:ellipsis;
-            white-space:pre;
-            text-align:center;
+            white-space:nowrap;
+            text-align:left;
         }
         .st-key-dashboard_lane_more_actionable button:hover {
             color:#334155 !important;
@@ -4689,8 +4690,8 @@ def _lane_item_html(row: pd.Series) -> str:
     return (
         f'<a class="lane-item" href="#" data-dashboard-drawer-open="{escape(symbol)}" title="{escape(full_reason)}">'
         f'<span class="lane-symbol">{escape(symbol)}</span>'
-        f'{_badge_span_html(_short_badge_text(state), state_color, "lane-state-badge")}'
         f'<span class="lane-reason">{escape(short_reason)}</span>'
+        f'{_badge_span_html(_short_badge_text(state), state_color, "lane-state-badge")}'
         "</a>"
     )
 

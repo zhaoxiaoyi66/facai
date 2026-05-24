@@ -33,6 +33,15 @@ None.
 
 2026-05-25 UI conversation:
 - Owner: UI conversation.
+- Task: Dashboard UI-only decision lane visual reflow.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Reworked Dashboard decision lanes into a cleaner terminal-list rhythm. Row order is now ticker + truncated reason + right-aligned buy-point/valuation chip, reducing the split look in the third and fourth lanes. Shortened visible lane labels from `等回踩 / 待确认` and `禁止追高 / 高风险` to `待确认` and `风险隔离`, and changed lane footers to a compact `+X 未显示 · 查看全部` secondary action.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old lane row order or long lane labels still appear; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
 - Task: Dashboard UI-only decision lane row simplification.
 - Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
 - What changed: Removed redundant action badges from Dashboard decision-lane rows, including `等回踩`, `只观察`, and `禁止追高` as extra row chips. Decision lanes now render each row as ticker + buy-point/valuation state + truncated reason, with a wider reason track and no fourth column to overflow the card.
