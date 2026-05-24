@@ -883,7 +883,7 @@ def _render_research_memo(ticker: str, plan_store: StockPlanStore, plan: dict) -
                 },
             )
             st.session_state[edit_key] = False
-            st.success("已保存研究备忘录。")
+            st.success("研究备忘录已保存。")
             st.rerun()
 
 
@@ -1349,7 +1349,7 @@ def _research_memo_html(memo: dict[str, str]) -> str:
         + "".join(_memo_item_html(label, value, placeholder) for label, value, placeholder in items)
         + "</div>"
         f'<div class="memo-last-review"><span>上次复盘摘要</span><strong>{escape(last_review or "暂无复盘摘要")}</strong></div>'
-        f'<p class="memo-footnote">{escape("复用操作计划 notes 字段保存，不新增数据库。" if has_saved else "暂未记录，可在后续版本接入本地笔记保存。")}</p>'
+        f'<p class="memo-footnote">{escape("复用操作计划 notes 字段保存，不新增数据库。" if has_saved else "暂未记录。点击「编辑备忘录」后可保存到本地计划。")}</p>'
         "</section>"
     )
 

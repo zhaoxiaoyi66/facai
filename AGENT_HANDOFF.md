@@ -32,6 +32,15 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Research memo UI copy correction.
+- Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
+- What changed: Corrected the research memo empty-state copy so it tells users they can click `编辑备忘录` and save to the local plan now, and changed the success toast to `研究备忘录已保存。`. Preserved the existing `stock_action_plans.notes` save path and did not alter persistence logic or schema.
+- Verification: `py_compile` passed for `ui/stock_detail.py`; `pytest tests/test_core_logic.py -q` passed with 241 tests and 27 subtests.
+- Next needed: Review and commit this UI-copy checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: Data save logic, `data/stock_plan.py`, scoring logic, BuyZoneEngine, PositionPlanEngine, Review Center backend, database schema/migrations, Qwen/AI review, external APIs, npm dev server, and unrelated UI structure were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Stock research memo / investment review UI-only section.
 - Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
 - What changed: Added a compact `研究备忘录` section after the action plan and before scoring explanation, showing investment thesis, current observation points, refutation conditions, next review trigger, and last review summary. Reused the existing `stock_action_plans.notes` path through `StockPlanStore.save_plan()` for lightweight memo editing, without adding schema or new database tables. Kept data status, auto-fill, review/source details, and raw metrics folded by default, and simplified missing-data display in scoring cards to a count summary.
