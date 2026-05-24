@@ -57,6 +57,7 @@ class ScoreResult:
     missing_data_explanation: list[str] | None = None
     rating_cap: str | None = None
     metric_resolution_statuses: list[dict[str, object]] | None = None
+    missing_data_summary: dict[str, object] | None = None
     human_readable_summary: dict[str, str] | None = None
     active_risk_drivers: list[str] | None = None
 
@@ -133,6 +134,10 @@ class ScoreResult:
         return self.metric_resolution_statuses or []
 
     @property
+    def missingDataSummary(self) -> dict[str, object]:
+        return self.missing_data_summary or {}
+
+    @property
     def humanReadableSummary(self) -> dict[str, str]:
         return self.human_readable_summary or {}
 
@@ -202,6 +207,7 @@ def calculate_total_score(snapshot: dict, technicals: dict) -> ScoreResult:
         missing_data_explanation=sector_score.missing_data_explanation,
         rating_cap=sector_score.rating_cap,
         metric_resolution_statuses=sector_score.metric_resolution_statuses,
+        missing_data_summary=sector_score.missing_data_summary,
         human_readable_summary=sector_score.human_readable_summary,
         active_risk_drivers=sector_score.active_risk_drivers,
     )

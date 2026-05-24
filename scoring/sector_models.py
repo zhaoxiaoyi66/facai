@@ -214,6 +214,7 @@ class SectorScore:
     missing_data_explanation: list[str] | None = None
     rating_cap: str | None = None
     metric_resolution_statuses: list[dict[str, object]] | None = None
+    missing_data_summary: dict[str, object] | None = None
     human_readable_summary: dict[str, str] | None = None
     active_risk_drivers: list[str] | None = None
 
@@ -290,6 +291,10 @@ class SectorScore:
         return self.metric_resolution_statuses or []
 
     @property
+    def missingDataSummary(self) -> dict[str, object]:
+        return self.missing_data_summary or {}
+
+    @property
     def humanReadableSummary(self) -> dict[str, str]:
         return self.human_readable_summary or {}
 
@@ -323,6 +328,9 @@ class MetricResolution:
     recommendedAction: str = ""
     sourceMetricsUsed: list[str] | None = None
     priority: str = "low"
+    missingResolutionRoute: str = ""
+    defaultReviewQueue: bool = False
+    reviewPriority: str = "low"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -341,6 +349,9 @@ class MetricResolution:
             "recommendedAction": self.recommendedAction,
             "sourceMetricsUsed": self.sourceMetricsUsed or [],
             "priority": self.priority,
+            "missingResolutionRoute": self.missingResolutionRoute,
+            "defaultReviewQueue": self.defaultReviewQueue,
+            "reviewPriority": self.reviewPriority,
         }
 
 
@@ -435,6 +446,7 @@ def score_stock_by_model(snapshot: dict, technicals: dict) -> SectorScore:
     current_add_limit = _apply_confidence_position_cap(current_add_limit, proxy_assessment.data_confidence, action)
     human_summary = _human_readable_summary(context, quality_rating, entry_rating, risk_rating, valuation_status, action)
     active_risks = _active_risk_drivers(context)
+    missing_data_summary = _missing_data_summary(metric_resolution_statuses)
 
     return SectorScore(
         model_type=model_type,
@@ -469,6 +481,7 @@ def score_stock_by_model(snapshot: dict, technicals: dict) -> SectorScore:
         missing_data_explanation=_missing_data_explanations(missing_metric_impacts),
         rating_cap=rating_cap,
         metric_resolution_statuses=metric_resolution_statuses,
+        missing_data_summary=missing_data_summary,
         human_readable_summary=human_summary,
         active_risk_drivers=active_risks,
     )
@@ -560,6 +573,7 @@ def _score_saas_software(context: ScoreContext, profile: ModelProfile) -> Sector
     current_add_limit = _apply_confidence_position_cap(current_add_limit, proxy_assessment.data_confidence, action)
     human_summary = _human_readable_summary(context, quality_rating, entry_rating, risk_rating, valuation_status, action)
     active_risks = _active_risk_drivers(context)
+    missing_data_summary = _missing_data_summary(metric_resolution_statuses)
 
     return SectorScore(
         model_type=context.model_type,
@@ -601,6 +615,7 @@ def _score_saas_software(context: ScoreContext, profile: ModelProfile) -> Sector
         missing_data_explanation=_missing_data_explanations(missing_metric_impacts),
         rating_cap=rating_cap,
         metric_resolution_statuses=metric_resolution_statuses,
+        missing_data_summary=missing_data_summary,
         human_readable_summary=human_summary,
         active_risk_drivers=active_risks,
     )
@@ -1324,6 +1339,24 @@ def _metric_resolution_statuses(context: ScoreContext, impacts: list[dict[str, s
                 ),
                 _resolution_row_for_metric(
                     context,
+                    metric_key="cRpoGrowth",
+                    display_name="cRPO growth",
+                    keys=("manualCrpoGrowth", "manualCRPOGrowth", "cRpoGrowth", "crpo_growth"),
+                    default_status="requires_ir_scrape",
+                    explanation="cRPO growth is normally disclosed in the IR release, 8-K Exhibit 99.1, investor presentation, or transcript.",
+                    action="Fetch IR release / 8-K Exhibit 99.1 before asking for manual review.",
+                ),
+                _resolution_row_for_metric(
+                    context,
+                    metric_key="largeCustomerGrowth",
+                    display_name="large customer growth",
+                    keys=("manualLargeCustomerGrowth", "largeCustomerGrowth", "large_customer_growth"),
+                    default_status="requires_ir_scrape",
+                    explanation="Large-customer growth is a company-disclosed SaaS KPI. Try IR release, 8-K 99.1, investor presentation, or transcript first.",
+                    action="Fetch IR / SEC disclosure before asking for a manual override.",
+                ),
+                _resolution_row_for_metric(
+                    context,
                     metric_key="netRetentionRate",
                     display_name="net retention rate",
                     keys=("manualNetRetention", "net_retention_rate", "dbnrr"),
@@ -1376,7 +1409,152 @@ def _metric_resolution_statuses(context: ScoreContext, impacts: list[dict[str, s
             "sourceMetricsUsed": _source_metrics_for_derived(metric.lower(), context.model_type),
             "priority": str(impact.get("priority") or "low"),
         }
-    return list(by_name.values())
+    return _finalize_metric_resolution_rows(list(by_name.values()), context)
+
+
+def _finalize_metric_resolution_rows(rows: list[dict[str, object]], context: ScoreContext) -> list[dict[str, object]]:
+    return [_with_missing_resolution_route(dict(row), context) for row in rows]
+
+
+def _with_missing_resolution_route(row: dict[str, object], context: ScoreContext) -> dict[str, object]:
+    route = str(row.get("missingResolutionRoute") or _missing_resolution_route(row, context))
+    row["missingResolutionRoute"] = route
+    row["defaultReviewQueue"] = _default_review_queue(row, route, context.model_type)
+    row["reviewPriority"] = _review_priority_for_route(row, route)
+
+    if route in {"analyst_estimates_required", "company_not_disclosed", "proxy_available", "low_priority_archive"}:
+        row["isBlocking"] = False
+    if route == "analyst_estimates_required":
+        row["affects"] = ["Entry"]
+        row["priority"] = "low"
+        row["ratingCapImpact"] = "none"
+    if route == "low_priority_archive":
+        row["priority"] = "low"
+        row["ratingCapImpact"] = "none"
+        row["recommendedAction"] = "Low materiality; archive by default unless leverage facts change."
+    if route == "auto_calculate" and str(row.get("resolutionStatus") or "") == "missing_inputs":
+        row["recommendedAction"] = row.get("recommendedAction") or "Refresh structured FMP / SEC inputs, then calculate automatically."
+    return row
+
+
+def _missing_resolution_route(row: dict[str, object], context: ScoreContext) -> str:
+    metric_key = str(row.get("metricKey") or "")
+    status = str(row.get("resolutionStatus") or "")
+    metric_type = str(row.get("metricType") or "")
+    source_type = str(row.get("sourceType") or "")
+
+    if metric_key == "debtMaturityPressure":
+        return _debt_maturity_resolution_route(context)
+    if status in {"available", "calculated"}:
+        if metric_type == "CALCULATED_METRIC" or source_type == "calculated":
+            return "auto_calculate"
+        return "proxy_available"
+    if status == "missing_inputs":
+        return "auto_calculate" if metric_type == "CALCULATED_METRIC" else "human_review_required"
+    if status in {"requires_ir_scrape", "requires_sec_filing"}:
+        return "ir_or_sec_extract"
+    if status == "requires_analyst_estimates":
+        return "analyst_estimates_required"
+    if status == "company_not_disclosed":
+        return "company_not_disclosed"
+    if status in {"derived_score", "semi_auto_low_confidence"}:
+        return "proxy_available"
+    if status == "manual_override_required":
+        return "human_review_required"
+    if status in {"not_applicable"}:
+        return "low_priority_archive"
+    return "human_review_required"
+
+
+def _debt_maturity_resolution_route(context: ScoreContext) -> str:
+    net_debt = _snapshot_number(context.snapshot, "net_debt", "netDebt")
+    net_debt_to_ebitda = _snapshot_number(context.snapshot, "net_debt_to_ebitda", "netDebtToEbitda")
+    interest_coverage = _snapshot_number(context.snapshot, "interest_coverage", "interestCoverage")
+    total_debt = _snapshot_number(context.snapshot, "total_debt", "totalDebt")
+    market_cap = _snapshot_number(context.snapshot, "market_cap", "marketCap")
+    if net_debt is not None and net_debt <= 0:
+        return "low_priority_archive"
+    if net_debt_to_ebitda is not None and net_debt_to_ebitda < 1:
+        return "low_priority_archive"
+    if total_debt is not None and market_cap is not None and market_cap > 0 and total_debt / market_cap < 0.1:
+        return "low_priority_archive"
+    if net_debt_to_ebitda is not None and net_debt_to_ebitda > 2:
+        return "human_review_required"
+    if interest_coverage is not None and interest_coverage < 3:
+        return "human_review_required"
+    return "ir_or_sec_extract"
+
+
+def _snapshot_number(snapshot: dict, *keys: str) -> float | None:
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            value = snapshot.get(_camel_to_snake(key))
+        number = _number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _default_review_queue(row: dict[str, object], route: str, model_type: ModelType) -> bool:
+    if route == "human_review_required":
+        return True
+    if route in {"analyst_estimates_required", "company_not_disclosed", "low_priority_archive", "auto_calculate"}:
+        return False
+    if route == "ir_or_sec_extract":
+        return model_type != "SAAS_SOFTWARE"
+    if route == "proxy_available":
+        return model_type != "SAAS_SOFTWARE" and bool(_affects_scoring(row))
+    return False
+
+
+def _review_priority_for_route(row: dict[str, object], route: str) -> str:
+    if route == "human_review_required":
+        return "high" if str(row.get("priority") or "") == "high" else "medium"
+    if route in {"auto_calculate", "ir_or_sec_extract"}:
+        return "medium"
+    return "low"
+
+
+def _affects_scoring(row: dict[str, object]) -> bool:
+    affects = row.get("affects")
+    if isinstance(affects, (list, tuple, set)):
+        values = {str(item) for item in affects if item}
+    elif isinstance(affects, str):
+        values = {item.strip() for item in affects.split(",") if item.strip()}
+    else:
+        values = set()
+    return bool(values & {"Quality", "Entry", "Risk"})
+
+
+def _missing_data_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+    missing_rows = [
+        row
+        for row in rows
+        if str(row.get("resolutionStatus") or "") not in {"available", "calculated", "not_applicable"}
+    ]
+    routes = [str(row.get("missingResolutionRoute") or "") for row in missing_rows]
+    human_rows = [row for row in missing_rows if row.get("missingResolutionRoute") == "human_review_required"]
+    key_blocking_metrics = [str(row.get("displayName") or row.get("metricKey") or "") for row in human_rows if row.get("displayName") or row.get("metricKey")]
+    summary = {
+        "blockingCount": len(key_blocking_metrics),
+        "autoFillableCount": sum(1 for route in routes if route in {"auto_calculate", "ir_or_sec_extract", "proxy_available"}),
+        "estimatesRequiredCount": routes.count("analyst_estimates_required"),
+        "companyNotDisclosedCount": routes.count("company_not_disclosed"),
+        "lowPriorityArchivedCount": routes.count("low_priority_archive"),
+        "humanReviewRequiredCount": len(human_rows),
+        "keyBlockingMetrics": key_blocking_metrics,
+        "recommendedNextAction": "no_missing_data",
+    }
+    if human_rows:
+        summary["recommendedNextAction"] = "handle_high_impact_manual_review"
+    elif summary["autoFillableCount"]:
+        summary["recommendedNextAction"] = "run_auto_fill_or_refresh_disclosures"
+    elif summary["estimatesRequiredCount"]:
+        summary["recommendedNextAction"] = "configure_analyst_estimates_for_valuation"
+    elif summary["companyNotDisclosedCount"] or summary["lowPriorityArchivedCount"]:
+        summary["recommendedNextAction"] = "no_user_action_required"
+    return summary
 
 
 def _is_metric_resolved(metric: str, resolution_rows: list[dict[str, object]]) -> bool:

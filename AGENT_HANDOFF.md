@@ -26,9 +26,21 @@ Data conversation:
 
 ## Active Work
 
-None.
+2026-05-24 Data conversation:
+- Task: Missing Data Resolution / missing metric routing cleanup.
+- Status: Implementation and verification complete; waiting for user review/commit decision.
+- Scope kept: Missing data routing and summary metadata only; no UI, dashboard, stock detail page, BuyZoneEngine, PositionPlanEngine, Review Center page, Qwen prompt, database schema, external API calls, npm dev, or other checkpoints.
 
 ## Latest Handoff
+
+2026-05-24 Data conversation:
+- Owner: Data conversation.
+- Task: Missing Data Resolution / missing metric routing cleanup.
+- Files touched: `AGENT_HANDOFF.md`, `scoring/sector_models.py`, `scoring/total_score.py`, `data/review_queue_builder.py`, `tests/test_core_logic.py`.
+- What changed: Added `missingResolutionRoute`, default-review routing metadata, and `missingDataSummary` to metric resolution output. SaaS KPI gaps now route to IR/SEC extraction or company-not-disclosed instead of default manual review; analyst-estimate gaps stay valuation-only; auto-calculable metrics route to auto calculation; low-materiality debt maturity pressure is archived by default, while high-leverage debt pressure still requires human review. Review queue creation now skips nonblocking estimate/not-disclosed/low-priority/auto-calculate noise.
+- Verification: `py_compile` passed for modified files plus `data/disclosure_store.py` and `data/providers.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this Missing Data Resolution checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: UI, dashboard, stock detail page, BuyZoneEngine, PositionPlanEngine, Review Center page/state machine, Qwen prompt, autopilot, scoring weights/formulas, database schema/migrations, external APIs, npm dev server, and unrelated cleanup were not changed.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.

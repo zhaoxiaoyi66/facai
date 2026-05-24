@@ -145,6 +145,43 @@ def _metric_resolution_by_display(result, display_name: str) -> dict:
     raise AssertionError(f"missing metric resolution row: {display_name}")
 
 
+def _missing_resolution_saas_snapshot(**overrides) -> dict:
+    snapshot = {
+        "ticker": "NOW",
+        "sector": "Technology",
+        "industry": "Software - Application",
+        "revenue_growth": 0.22,
+        "gross_margin": 0.80,
+        "operating_margin": 0.25,
+        "free_cash_flow": 3_200,
+        "total_revenue": 10_000,
+        "price_to_sales": 7,
+        "price_to_fcf": 24,
+        "free_cash_flow_yield": 0.04,
+        "total_debt": 4_000,
+        "total_cash": 2_000,
+        "ebitda": 2_500,
+        "ebit": 2_000,
+        "interest_expense": 100,
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def _missing_resolution_technicals() -> dict:
+    return {
+        "price": 100,
+        "ema20": 98,
+        "ema50": 96,
+        "ema200": 92,
+        "rsi14": 50,
+        "drawdown_from_high_pct": -20,
+        "gain_20d_pct": 1,
+        "gain_60d_pct": -2,
+        "fifty_two_week_low": 70,
+    }
+
+
 def _review_queue_snapshots() -> dict[str, dict]:
     return {
         "NOW": {
@@ -1495,6 +1532,30 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(_metric_resolution_by_key(result, "ema200")["resolutionStatus"], "calculated")
         self.assertEqual(_metric_resolution_by_key(result, "ema200")["metricType"], "CALCULATED_METRIC")
 
+    def test_missing_resolution_routes_saas_kpis_and_estimates(self) -> None:
+        result = calculate_total_score(_missing_resolution_saas_snapshot(), _missing_resolution_technicals())
+
+        for metric_key in ("subscriptionRevenueGrowth", "largeCustomerGrowth", "cRpoGrowth", "rpoGrowth"):
+            row = _metric_resolution_by_key(result, metric_key)
+            self.assertEqual(row["missingResolutionRoute"], "ir_or_sec_extract")
+            self.assertFalse(row["defaultReviewQueue"])
+
+        retention = _metric_resolution_by_key(result, "netRetentionRate")
+        self.assertIn(retention["missingResolutionRoute"], {"ir_or_sec_extract", "company_not_disclosed"})
+        self.assertFalse(retention["defaultReviewQueue"])
+
+        for metric_key in ("peg", "forwardRevenueMultiple"):
+            row = _metric_resolution_by_key(result, metric_key)
+            self.assertEqual(row["missingResolutionRoute"], "analyst_estimates_required")
+            self.assertEqual(row["affects"], ["Entry"])
+            self.assertFalse(row["defaultReviewQueue"])
+
+        summary = result.missingDataSummary
+        self.assertGreaterEqual(summary["autoFillableCount"], 4)
+        self.assertGreaterEqual(summary["estimatesRequiredCount"], 2)
+        self.assertGreaterEqual(summary["companyNotDisclosedCount"], 1)
+        self.assertEqual(summary["humanReviewRequiredCount"], 0)
+
     def test_calculable_sbc_and_leverage_metrics_are_not_missing(self) -> None:
         result = calculate_total_score(
             {
@@ -1533,6 +1594,15 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(_metric_resolution_by_key(result, "sbcToRevenue")["resolutionStatus"], "calculated")
         self.assertEqual(_metric_resolution_by_key(result, "netDebtToEbitda")["resolutionStatus"], "calculated")
         self.assertEqual(_metric_resolution_by_key(result, "interestCoverage")["resolutionStatus"], "calculated")
+
+    def test_auto_calculable_missing_resolution_routes_use_structured_inputs(self) -> None:
+        result = calculate_total_score(_missing_resolution_saas_snapshot(stock_based_compensation=900), _missing_resolution_technicals())
+
+        for metric_key in ("sbcToRevenue", "netDebtToEbitda", "interestCoverage", "fcfMargin"):
+            row = _metric_resolution_by_key(result, metric_key)
+            self.assertEqual(row["resolutionStatus"], "calculated")
+            self.assertEqual(row["missingResolutionRoute"], "auto_calculate")
+            self.assertNotEqual(row["resolutionStatus"], "manual_override_required")
 
     def test_saas_common_symbols_use_new_framework_without_market_derived_quality_boost(self) -> None:
         symbols = ["NOW", "CRM", "ADBE", "SNOW", "DDOG", "PLTR", "ORCL"]
@@ -1614,6 +1684,7 @@ class ScoringTests(unittest.TestCase):
         peg_rows = [row for row in without_peg.missingMetricImpact if row["metric"] == "PEG"]
         self.assertEqual(peg_rows[0]["impactCategory"], "VALUATION_ONLY")
         self.assertEqual(peg_rows[0]["affects"], "Entry")
+        self.assertEqual(_metric_resolution_by_key(without_peg, "peg")["missingResolutionRoute"], "analyst_estimates_required")
 
     def test_saas_forward_revenue_multiple_missing_does_not_cause_data_insufficient(self) -> None:
         result = calculate_total_score(
@@ -1646,6 +1717,11 @@ class ScoringTests(unittest.TestCase):
         rows = [row for row in result.missingMetricImpact if row["metric"] == "forward revenue multiple"]
         self.assertEqual(rows[0]["impactCategory"], "VALUATION_ONLY")
         self.assertNotEqual(result.qualityRating, "数据不足")
+
+        self.assertEqual(
+            _metric_resolution_by_key(result, "forwardRevenueMultiple")["missingResolutionRoute"],
+            "analyst_estimates_required",
+        )
 
     def test_saas_net_retention_missing_only_lowers_confidence(self) -> None:
         result = calculate_total_score(
@@ -1694,6 +1770,59 @@ class ScoringTests(unittest.TestCase):
         self.assertLessEqual(result.quality_score, 84)
         rows = [row for row in result.missingMetricImpact if row["metric"] == "net retention rate"]
         self.assertEqual(rows[0]["impactCategory"], "CRITICAL_QUALITY")
+
+    def test_debt_maturity_pressure_low_materiality_is_low_priority_archive(self) -> None:
+        result = calculate_total_score(
+            _missing_resolution_saas_snapshot(total_debt=1_000, total_cash=5_000, ebitda=2_000, market_cap=100_000),
+            _missing_resolution_technicals(),
+        )
+
+        row = _metric_resolution_by_key(result, "debtMaturityPressure")
+        self.assertEqual(row["missingResolutionRoute"], "low_priority_archive")
+        self.assertFalse(row["defaultReviewQueue"])
+        self.assertEqual(result.missingDataSummary["lowPriorityArchivedCount"], 1)
+        self.assertEqual(result.missingDataSummary["humanReviewRequiredCount"], 0)
+
+    def test_debt_maturity_pressure_high_leverage_requires_human_review(self) -> None:
+        result = calculate_total_score(
+            _missing_resolution_saas_snapshot(
+                total_debt=8_000,
+                total_cash=1_000,
+                ebitda=2_000,
+                interest_expense=900,
+                market_cap=20_000,
+            ),
+            _missing_resolution_technicals(),
+        )
+
+        row = _metric_resolution_by_key(result, "debtMaturityPressure")
+        self.assertEqual(row["missingResolutionRoute"], "human_review_required")
+        self.assertTrue(row["defaultReviewQueue"])
+        self.assertIn("debt maturity pressure", result.missingDataSummary["keyBlockingMetrics"])
+
+    def test_missing_resolution_routes_do_not_enter_default_review_queue_noise(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "review.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "NOW",
+                _missing_resolution_saas_snapshot(total_debt=1_000, total_cash=5_000, ebitda=2_000, market_cap=100_000),
+            )
+            builder = ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            )
+
+            builder.build_review_queue_for_symbol("NOW")
+            metric_keys = {row["metricKey"] for row in queue_store.list_items("NOW")}
+
+            self.assertNotIn("peg", metric_keys)
+            self.assertNotIn("forwardRevenueMultiple", metric_keys)
+            self.assertNotIn("netRetentionRate", metric_keys)
+            self.assertNotIn("debtMaturityPressure", metric_keys)
 
     def test_saas_ema200_missing_is_not_fundamental_missing_data(self) -> None:
         result = calculate_total_score(

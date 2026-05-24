@@ -1858,6 +1858,9 @@ def sync_review_queue() -> QueueBuildResult:
 
 
 def _item_type_for_resolution(row: dict) -> str | None:
+    if "defaultReviewQueue" in row and not row.get("defaultReviewQueue"):
+        return None
+    route = str(row.get("missingResolutionRoute") or "")
     status = str(row.get("resolutionStatus") or "")
     confidence = str(row.get("confidence") or "")
     affects = _affects(row)
@@ -1865,6 +1868,10 @@ def _item_type_for_resolution(row: dict) -> str | None:
         return None
     if not affects & SCORING_AFFECTS:
         return None
+    if route == "human_review_required" and status in {"requires_ir_scrape", "requires_sec_filing"}:
+        return "missing_kpi"
+    if route == "human_review_required":
+        return "manual_override_needed"
     if status in {"requires_ir_scrape", "requires_sec_filing"}:
         return "missing_kpi"
     if status == "requires_analyst_estimates":
@@ -1879,6 +1886,9 @@ def _item_type_for_resolution(row: dict) -> str | None:
 
 
 def _review_status_for_resolution(row: dict) -> str:
+    route = str(row.get("missingResolutionRoute") or "")
+    if route == "low_priority_archive":
+        return "auto_archived"
     status = str(row.get("resolutionStatus") or "")
     if status in {"requires_ir_scrape", "requires_sec_filing", "requires_analyst_estimates", "manual_override_required", "company_not_disclosed"}:
         return "needs_data"
