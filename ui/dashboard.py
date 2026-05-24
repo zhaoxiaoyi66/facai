@@ -35,7 +35,7 @@ DASHBOARD_COLUMNS = [
 
 WATCHLIST_COLUMNS = [
     {"key": "symbol", "label": "代码", "align": "left"},
-    {"key": "priceMarket", "label": "价格 / 市值", "align": "right"},
+    {"key": "priceMarket", "label": "价格 / 市值"},
     {"key": "qualityRating", "label": "质量", "kind": "badge"},
     {"key": "entryRating", "label": "买点", "kind": "badge"},
     {"key": "riskRating", "label": "风险", "kind": "badge"},
@@ -93,11 +93,12 @@ DETAIL_GROUPS = [
 DECISION_COLUMN_WIDTHS = [0.72, 0.82, 0.86, 0.92, 0.92, 0.78, 1.05, 1.35, 0.86, 0.90, 0.58]
 
 BADGE_STYLES = {
-    "green": ("#F0FDF4", "#166534", "#CDEFD8"),
-    "blue": ("#F2F6FB", "#334155", "#E4EAF1"),
-    "yellow": ("#FFFBEB", "#854D0E", "#F4E7B0"),
-    "orange": ("#FFF7ED", "#92400E", "#F7D8A9"),
-    "red": ("#FFF5F5", "#991B1B", "#F3D2D2"),
+    "green": ("#F4FAF6", "#166534", "#DDEBE2"),
+    "blue": ("#F4F7FB", "#36516F", "#DCE6F2"),
+    "yellow": ("#FCFAF0", "#7A5C12", "#EEE6C8"),
+    "orange": ("#FBF7F1", "#7C4A1D", "#ECDCC8"),
+    "red": ("#FBF5F5", "#8A1F1F", "#ECD5D5"),
+    "deepred": ("#FDF1F1", "#6F1111", "#E7B9B9"),
     "gray": ("#F8FAFC", "#475569", "#E4EAF1"),
 }
 
@@ -478,12 +479,7 @@ def _render_market_strip(table: pd.DataFrame) -> None:
 
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
-    summary_groups = [
-        ("actionable", "可行动", "可执行小仓或正常分批", _actionable_rows(table), "green"),
-        ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", _near_buy_zone_rows(table), "yellow"),
-        ("waitOrReview", "等回踩 / 待确认", "质量可看但买点未完全到位", _wait_or_confirm_rows(table), "blue"),
-        ("noChaseHighRisk", "禁止追高 / 高风险", "先看原因，不硬买", _blocked_or_risky_rows(table), "red"),
-    ]
+    summary_groups = _summary_lane_groups(table)
 
     st.markdown(
         '<section class="decision-terminal-head">'
@@ -505,6 +501,31 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
             if len(rows) > 4:
                 _render_lane_more_button(lane_key, len(rows) - 4)
     st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
+
+
+def _summary_lane_groups(table: pd.DataFrame) -> list[tuple[str, str, str, list[pd.Series], str]]:
+    raw_groups = {
+        "actionable": _actionable_rows(table),
+        "nearBuyZone": _near_buy_zone_rows(table),
+        "waitOrReview": _wait_or_confirm_rows(table),
+        "noChaseHighRisk": _blocked_or_risky_rows(table),
+    }
+    priority = ["noChaseHighRisk", "actionable", "nearBuyZone", "waitOrReview"]
+    assigned_symbols: set[str] = set()
+    exclusive: dict[str, list[pd.Series]] = {key: [] for key in raw_groups}
+    for lane_key in priority:
+        for row in raw_groups[lane_key]:
+            symbol = str(row.get("symbol") or "").upper().strip()
+            if not symbol or symbol in assigned_symbols:
+                continue
+            assigned_symbols.add(symbol)
+            exclusive[lane_key].append(row)
+    return [
+        ("actionable", "可行动", "可执行小仓或正常分批", exclusive["actionable"], "green"),
+        ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", exclusive["nearBuyZone"], "blue"),
+        ("waitOrReview", "等回踩 / 待确认", "质量可看但买点未完全到位", exclusive["waitOrReview"], "yellow"),
+        ("noChaseHighRisk", "禁止追高 / 高风险", "先看原因，不硬买", exclusive["noChaseHighRisk"], "red"),
+    ]
 
 
 def _render_decision_table(table: pd.DataFrame) -> None:
@@ -2150,14 +2171,9 @@ def _blocked_or_risky_rows(table: pd.DataFrame) -> list[pd.Series]:
 
 
 def _lane_filter_rows(table: pd.DataFrame, lane_key: str) -> list[pd.Series]:
-    if lane_key == "actionable":
-        return _actionable_rows(table)
-    if lane_key == "nearBuyZone":
-        return _near_buy_zone_rows(table)
-    if lane_key == "waitOrReview":
-        return _wait_or_confirm_rows(table)
-    if lane_key == "noChaseHighRisk":
-        return _blocked_or_risky_rows(table)
+    for current_key, _title, _subtitle, rows, _color in _summary_lane_groups(table):
+        if lane_key == current_key:
+            return rows
     return [row for _, row in table.iterrows()]
 
 
@@ -2229,15 +2245,7 @@ def _badge_color_for_cell(key: str, value: object, row: pd.Series | None = None)
             return "red"
         return "gray"
     if key == "entryRating":
-        if "击球区" in text or "回撤买点" in text:
-            return "green"
-        if "等回踩" in text:
-            return "blue"
-        if "观察" in text or "待复核" in text:
-            return "yellow"
-        if "偏贵" in text:
-            return "orange"
-        return "gray"
+        return _buy_point_tone(text, row)
     if key == "riskRating":
         if text == "低":
             return "green"
@@ -2263,12 +2271,42 @@ def _badge_color_for_cell(key: str, value: object, row: pd.Series | None = None)
     if key == "action" and row is not None and row.get("dataConfidence") == "low" and "小仓" in text:
         return "yellow"
     if key == "valuationStatus":
-        return _badge_color_for_action(text)
+        return _buy_point_tone(text, row)
     return _badge_color_for_action(text)
+
+
+def _buy_point_tone(value: object, row: pd.Series | None = None) -> str:
+    primary_texts = [str(value or "")]
+    action_text = ""
+    if row is not None:
+        primary_texts.extend(
+            [
+                str(row.get("valuationStatus") or ""),
+                str(row.get("entryRating") or ""),
+            ]
+        )
+        action_text = str(row.get("action") or "")
+    combined = " ".join(part for part in primary_texts if part)
+    severe_text = f"{combined} {action_text}"
+    if "极贵" in severe_text or "禁止追高" in severe_text or "高风险" in severe_text:
+        return "deepred"
+    if "偏贵" in combined or combined.startswith("D"):
+        return "orange"
+    if "击球区" in combined or "回撤买点" in combined or "合理偏便宜" in combined or combined.startswith("A"):
+        return "green"
+    if "等回踩" in combined or "接近" in combined or combined.startswith("B"):
+        return "blue"
+    if "只观察" in combined or "观察" in combined or "待复核" in combined or combined.startswith("C"):
+        return "yellow"
+    if "数据" in combined:
+        return "gray"
+    return "gray"
 
 
 def _badge_color_for_action(value: object) -> str:
     text = str(value)
+    if "极贵" in text or "禁止追高" in text:
+        return "deepred"
     if text in {"回撤买点", "回撤后有吸引力", "可小仓分批", "可正常分批"}:
         return "green"
     if text in {"观察", "只观察", "等回踩"}:
@@ -2305,11 +2343,20 @@ def _market_stat_html(label: object, value: object, detail: object) -> str:
 
 def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, list[pd.Series], str]]) -> str:
     items: list[str] = []
+    seen_symbols: set[str] = set()
     for lane_key, _title, _subtitle, rows, color in summary_groups:
-        for row in rows[:2]:
+        added_for_lane = 0
+        for row in rows:
             if len(items) >= 5:
                 break
+            if added_for_lane >= 2:
+                break
+            symbol = str(row.get("symbol") or "").upper().strip()
+            if not symbol or symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
             items.append(_dashboard_priority_item_html(lane_key, row, color))
+            added_for_lane += 1
         if len(items) >= 5:
             break
     if items:
@@ -2318,7 +2365,7 @@ def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, lis
         body = '<div class="dashboard-priority-empty">暂无明确可执行机会，优先等待回踩或复核数据。</div>'
     return (
         '<section class="dashboard-priority-strip">'
-        '<div class="dashboard-priority-head"><strong>今日重点</strong><span>最多显示 5 个决策优先项</span></div>'
+        '<div class="dashboard-priority-head"><strong>今日重点</strong><span>最多 5 项</span></div>'
         f'<div class="dashboard-priority-list">{body}</div>'
         "</section>"
     )
@@ -2327,13 +2374,18 @@ def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, lis
 def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> str:
     label = _dashboard_priority_label(lane_key, row)
     symbol = str(row.get("symbol") or "").upper()
+    safe_symbol = escape(symbol)
     action = _short_badge_text(row.get("action") or row.get("valuationStatus") or "只观察")
+    reason = _lane_short_reason(_lane_full_reason(row))
     return (
-        '<div class="dashboard-priority-row">'
-        f'<span class="dashboard-priority-status {escape(color)}"><i></i>{escape(label)}</span>'
-        f'<strong>{escape(symbol)}</strong>'
+        f'<a class="dashboard-priority-row tone-{escape(color)}" href="?page=detail&symbol={safe_symbol}" target="_self" '
+        f'aria-label="打开 {safe_symbol} 个股研究" '
+        f'title="{escape(label)} · {safe_symbol} · {escape(str(action))} · {escape(reason)}">'
+        f'<span class="dashboard-priority-status {escape(color)}" title="{escape(label)}"><i></i></span>'
+        f'<strong>{safe_symbol}</strong>'
         f'<span>{escape(str(action))}</span>'
-        "</div>"
+        f'<em>{escape(reason)}</em>'
+        "</a>"
     )
 
 
@@ -2358,7 +2410,7 @@ def _dashboard_priority_label(lane_key: str, row: pd.Series) -> str:
 def _summary_panel_head_html(title: object, subtitle: object, count: int, color: str) -> str:
     background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
     return (
-        '<div class="summary-panel-head">'
+        f'<div class="summary-panel-head tone-{escape(color)}">'
         "<div>"
         f'<div class="summary-panel-title">{escape(str(title))}</div>'
         f'<div class="summary-panel-subtitle">{escape(str(subtitle))}</div>'
@@ -2376,7 +2428,7 @@ def _render_lane_more_button(lane_key: str, hidden_count: int) -> None:
 
 
 def _lane_more_label(hidden_count: int) -> str:
-    return f"{int(hidden_count)} 只未显示    查看"
+    return f"+{int(hidden_count)} 未显示    查看全部"
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
@@ -2384,7 +2436,7 @@ def _lane_more_html(lane_key: str, hidden_count: int) -> str:
     legacy_label = f"还有 {int(hidden_count)} 只 · 查看全部"
     return (
         f'<span class="lane-more" title="原地聚焦主表：{escape(label)}" aria-label="{escape(legacy_label)}">'
-        f"<span>还有 {int(hidden_count)} 只未显示</span><b>查看全部 →</b>"
+        f"<span>+{int(hidden_count)} 未显示</span><b>查看全部</b>"
         "</span>"
     )
 
@@ -3530,11 +3582,11 @@ def _render_dashboard_styles() -> None:
             max-width: 1080px;
         }
         .terminal-header {
-            margin-bottom: 0.78rem;
+            margin-bottom: 0.38rem;
             border-bottom-color: rgba(15,23,42,0.08);
         }
         .terminal-title {
-            font-size: 1.72rem;
+            font-size: 1.62rem;
             font-weight: 780;
         }
         .terminal-subtitle {
@@ -3555,8 +3607,8 @@ def _render_dashboard_styles() -> None:
             display:grid;
             grid-template-columns:repeat(4, minmax(0, 1fr));
             gap:0;
-            margin-top:0.9rem;
-            margin-bottom:0.76rem;
+            margin-top:0.48rem;
+            margin-bottom:0.42rem;
             border:1px solid rgba(148, 163, 184, 0.20);
             border-radius:8px;
             background:#FFFFFF;
@@ -3564,13 +3616,13 @@ def _render_dashboard_styles() -> None:
             box-shadow:none;
         }
         .market-ribbon .market-stat {
-            min-height:64px;
+            min-height:54px;
             border:0;
             border-right:1px solid rgba(15, 23, 42, 0.035);
             border-radius:0;
             background:transparent;
             box-shadow:none;
-            padding:0.58rem 0.82rem;
+            padding:0.44rem 0.74rem;
             display:grid;
             align-content:center;
         }
@@ -3585,15 +3637,15 @@ def _render_dashboard_styles() -> None:
         }
         .market-stat-value {
             display:block;
-            margin-top:0.1rem;
+            margin-top:0.06rem;
             color:#0F172A;
-            font-size:18px;
+            font-size:17px;
             line-height:1.05;
             font-weight:720;
             font-variant-numeric:tabular-nums;
         }
         .market-stat-detail {
-            margin-top:0.1rem;
+            margin-top:0.06rem;
             color:#94A3B8;
             font-size:11px;
             line-height:1.2;
@@ -3604,8 +3656,13 @@ def _render_dashboard_styles() -> None:
             justify-content:space-between;
             align-items:flex-end;
             gap:0.8rem;
-            margin-top:0.52rem;
+            margin-top:0.16rem;
             margin-bottom:0;
+        }
+        .decision-terminal-head {
+            max-width:1080px;
+            margin-left:auto;
+            margin-right:auto;
         }
         .decision-terminal-head strong,
         .watchlist-head strong {
@@ -3624,55 +3681,100 @@ def _render_dashboard_styles() -> None:
             font-weight:520;
         }
         .dashboard-priority-strip {
-            margin-top:0.46rem;
-            border:1px solid rgba(148, 163, 184, 0.18);
-            border-radius:10px 10px 0 0;
-            background:#FAFBFD;
+            display:grid;
+            grid-template-columns:90px minmax(0, 1fr);
+            align-items:stretch;
+            min-height:42px;
+            max-width:1080px;
+            margin:0.18rem auto 0;
+            border:1px solid rgba(148, 163, 184, 0.16);
             border-bottom:0;
+            border-radius:6px 6px 0 0;
+            background:linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 100%);
             overflow:hidden;
             box-sizing:border-box;
         }
         .dashboard-priority-head {
             display:flex;
-            justify-content:space-between;
-            align-items:baseline;
-            gap:0.75rem;
-            padding:0.5rem 0.68rem 0.22rem;
+            flex-direction:column;
+            justify-content:center;
+            align-items:flex-start;
+            gap:0.02rem;
+            min-width:0;
+            padding:0 0.52rem;
+            border-right:1px solid rgba(148, 163, 184, 0.14);
+            background:rgba(241,245,249,0.72);
         }
         .dashboard-priority-head strong {
             color:#0F172A;
-            font-size:13px;
+            font-size:12.5px;
             font-weight:760;
             line-height:1.1;
         }
         .dashboard-priority-head span {
             color:#64748B;
-            font-size:11px;
+            font-size:10.5px;
             font-weight:520;
         }
         .dashboard-priority-list {
-            display:grid;
-            grid-template-columns:repeat(auto-fit, minmax(176px, 1fr));
-            gap:0;
-            margin:0 0.68rem 0.56rem;
-            border:1px solid rgba(148, 163, 184, 0.14);
-            background:#FFFFFF;
+            display:flex;
+            align-items:center;
+            gap:0.34rem;
+            min-width:0;
+            margin:0;
+            padding:0.34rem 0.46rem;
+            border:0;
+            background:transparent;
             overflow:hidden;
             box-sizing:border-box;
         }
         .dashboard-priority-row {
             display:grid;
-            grid-template-columns:minmax(52px, auto) 46px minmax(72px, 1fr);
+            grid-template-columns:8px minmax(34px, max-content) minmax(44px, max-content) minmax(0, 1fr);
             align-items:center;
-            gap:0.42rem;
-            min-height:34px;
+            gap:0.32rem;
+            flex:1 1 0;
+            min-height:30px;
             min-width:0;
             max-width:100%;
-            padding:0.26rem 0.54rem;
-            border-right:1px solid rgba(15, 23, 42, 0.04);
-            background:transparent;
+            padding:0 0.52rem;
+            border:1px solid transparent;
+            border-radius:5px;
+            border-right:0;
+            background:rgba(255,255,255,0.62);
             overflow:hidden;
             box-sizing:border-box;
+            box-shadow:none;
+            color:inherit;
+            text-decoration:none !important;
+            cursor:pointer;
+        }
+        .dashboard-priority-row:visited,
+        .dashboard-priority-row:focus,
+        .dashboard-priority-row:hover {
+            color:inherit;
+            text-decoration:none !important;
+        }
+        .dashboard-priority-row:first-child {
+            flex:1.28 1 0;
+            background:#FFFFFF;
+            border-color:rgba(148, 163, 184, 0.14);
+        }
+        .dashboard-priority-row.tone-green {
+            box-shadow:inset 2px 0 0 rgba(22,101,52,0.20);
+        }
+        .dashboard-priority-row.tone-blue {
+            box-shadow:inset 2px 0 0 rgba(54,81,111,0.20);
+        }
+        .dashboard-priority-row.tone-yellow {
+            box-shadow:inset 2px 0 0 rgba(122,92,18,0.20);
+        }
+        .dashboard-priority-row.tone-red {
+            box-shadow:inset 2px 0 0 rgba(138,31,31,0.20);
+        }
+        .dashboard-priority-row:hover {
+            background:#FFFFFF;
+            border-color:rgba(148, 163, 184, 0.16);
         }
         .dashboard-priority-row:last-child {
             border-right:0;
@@ -3681,10 +3783,10 @@ def _render_dashboard_styles() -> None:
         .dashboard-dot-status {
             display:inline-flex;
             align-items:center;
-            gap:0.3rem;
+            gap:0.28rem;
             color:#475569;
-            font-size:11px;
-            font-weight:650;
+            font-size:10.5px;
+            font-weight:600;
             white-space:nowrap;
             min-width:0;
             overflow:hidden;
@@ -3693,25 +3795,29 @@ def _render_dashboard_styles() -> None:
         .dashboard-priority-status i,
         .dashboard-dot-status i {
             display:inline-block;
-            width:6px;
-            height:6px;
+            width:7px;
+            height:7px;
             border-radius:999px;
             background:#94A3B8;
+            box-shadow:0 0 0 2px rgba(148, 163, 184, 0.10);
         }
         .dashboard-priority-status.green i,
-        .dashboard-dot-status.green i { background:#22C55E; }
+        .dashboard-dot-status.green i { background:#16803E; }
         .dashboard-priority-status.blue i,
-        .dashboard-dot-status.blue i { background:#64748B; }
+        .dashboard-dot-status.blue i { background:#36516F; }
         .dashboard-priority-status.yellow i,
         .dashboard-priority-status.orange i,
         .dashboard-dot-status.orange i,
-        .dashboard-dot-status.yellow i { background:#D97706; }
-        .dashboard-priority-status.red i { background:#DC2626; }
+        .dashboard-dot-status.yellow i { background:#A46A16; }
+        .dashboard-priority-status.red i,
+        .dashboard-dot-status.red i { background:#B34A4A; }
+        .dashboard-priority-status.deepred i,
+        .dashboard-dot-status.deepred i { background:#6F1111; }
         .dashboard-priority-row strong {
             min-width:0;
             color:#0F172A;
-            font-size:12px;
-            font-weight:760;
+            font-size:11.5px;
+            font-weight:780;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
@@ -3722,8 +3828,8 @@ def _render_dashboard_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             color:#334155;
-            font-size:12px;
-            font-weight:650;
+            font-size:11.5px;
+            font-weight:700;
         }
         .dashboard-priority-row em {
             min-width:0;
@@ -3731,60 +3837,103 @@ def _render_dashboard_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             color:#64748B;
-            font-size:11.5px;
+            font-size:10.8px;
             font-style:normal;
             font-weight:520;
         }
         .dashboard-priority-empty {
-            min-height:34px;
+            min-height:28px;
             display:flex;
             align-items:center;
             color:#64748B;
-            font-size:12px;
+            font-size:11.5px;
             font-weight:560;
-            padding:0 0.6rem;
+            padding:0 0.5rem;
         }
         div[data-testid="stVerticalBlock"] > div:has(.decision-lanes-marker) + div [data-testid="stHorizontalBlock"] {
             max-width:1080px;
-            margin:0 auto 0.62rem;
-            padding:0.5rem 0.56rem 0.56rem;
-            border:1px solid rgba(148, 163, 184, 0.18);
+            margin:0 auto 0.3rem;
+            padding:0.34rem 0.4rem 0.4rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
             border-top:0;
-            border-radius:0 0 10px 10px;
-            background:#FFFFFF;
-            gap:0.5rem !important;
+            border-radius:0 0 7px 7px;
+            background:linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+            gap:0.36rem !important;
             overflow:hidden;
             box-sizing:border-box;
         }
         .summary-panel-head {
-            min-height:2.46rem;
-            border-radius:7px 7px 0 0;
-            background:#FFFFFF;
-            border-color:rgba(15, 23, 42, 0.045);
-            padding:0.42rem 0.54rem;
+            min-height:2rem;
+            border-radius:5px 5px 0 0;
+            background:rgba(255,255,255,0.78);
+            border-color:rgba(148, 163, 184, 0.13);
+            padding:0.26rem 0.4rem 0.26rem 0.52rem;
+            position:relative;
+            overflow:hidden;
         }
+        .summary-panel-head::before {
+            content:"";
+            position:absolute;
+            left:0;
+            top:0;
+            bottom:0;
+            width:3px;
+            background:#94A3B8;
+        }
+        .summary-panel-head.tone-green {
+            background:#FFFFFF;
+            border-color:rgba(148,163,184,0.14);
+        }
+        .summary-panel-head.tone-green::before { background:#16803E; }
+        .summary-panel-head.tone-blue {
+            background:#FFFFFF;
+            border-color:rgba(148,163,184,0.14);
+        }
+        .summary-panel-head.tone-blue::before { background:#36516F; }
+        .summary-panel-head.tone-yellow {
+            background:#FFFFFF;
+            border-color:rgba(148,163,184,0.14);
+        }
+        .summary-panel-head.tone-yellow::before { background:#A46A16; }
+        .summary-panel-head.tone-red {
+            background:#FFFFFF;
+            border-color:rgba(148,163,184,0.14);
+        }
+        .summary-panel-head.tone-red::before { background:#B34A4A; }
         .summary-panel-title {
-            font-size:12.5px;
+            font-size:12px;
             color:#0F172A;
             font-weight:700;
         }
         .summary-panel-subtitle {
             color:#64748B;
-            font-size:11px;
+            font-size:10.5px;
+            line-height:1.18;
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
         }
         .summary-count {
-            min-width:20px;
-            height:20px;
-            font-size:11px;
-            font-weight:650;
+            min-width:18px;
+            height:18px;
+            font-size:10.5px;
+            font-weight:620;
+            box-shadow:inset 0 0 0 1px rgba(255,255,255,0.42);
+            background:#FFFFFF !important;
+            border-color:rgba(148,163,184,0.22) !important;
         }
+        .summary-panel-head.tone-green .summary-count { color:#166534 !important; }
+        .summary-panel-head.tone-blue .summary-count { color:#36516F !important; }
+        .summary-panel-head.tone-yellow .summary-count { color:#7A5C12 !important; }
+        .summary-panel-head.tone-red .summary-count { color:#8A1F1F !important; }
         .lane-item {
-            grid-template-columns:50px minmax(50px, auto) minmax(46px, auto) minmax(0, 1fr);
-            gap:5px;
-            height:28px;
-            min-height:28px;
+            grid-template-columns:48px minmax(58px, 82px) minmax(0, 1fr);
+            gap:7px;
+            height:24px;
+            min-height:24px;
             padding:0 0.5rem;
-            border-top-color:rgba(15, 23, 42, 0.035);
+            border-top-color:rgba(15, 23, 42, 0.032);
             min-width:0;
             max-width:100%;
             overflow:hidden;
@@ -3792,7 +3941,7 @@ def _render_dashboard_styles() -> None:
         }
         .lane-symbol {
             color:#0F172A;
-            font-size:12px;
+            font-size:11.5px;
             font-weight:700;
             min-width:0;
             max-width:100%;
@@ -3802,7 +3951,7 @@ def _render_dashboard_styles() -> None:
         }
         .lane-reason {
             color:#64748B;
-            font-size:11.5px;
+            font-size:10.8px;
             min-width:0;
             max-width:100%;
             overflow:hidden;
@@ -3810,9 +3959,17 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap;
         }
         .lane-item > .decision-badge {
+            justify-self:start;
             flex-shrink:0;
             min-width:0;
-            max-width:92px;
+            max-width:82px;
+            height:17px;
+            min-height:17px;
+            padding:0 5px;
+            border-radius:5px;
+            font-size:10.5px;
+            font-weight:580;
+            line-height:17px;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
@@ -3823,17 +3980,46 @@ def _render_dashboard_styles() -> None:
         .st-key-dashboard_lane_more_waitOrReview button,
         .st-key-dashboard_lane_more_noChaseHighRisk button {
             color:#64748B !important;
-            font-size:11px !important;
-            min-height:26px !important;
-            height:26px !important;
-            padding:0 0.5rem !important;
+            font-size:10.5px !important;
+            min-height:22px !important;
+            height:22px !important;
+            padding:0 0.42rem !important;
             border:0 !important;
             border-top:1px solid rgba(15, 23, 42, 0.04) !important;
-            border-radius:0 0 7px 7px !important;
+            border-radius:0 0 5px 5px !important;
             background:transparent !important;
             box-shadow:none !important;
             justify-content:flex-start !important;
             text-align:left !important;
+            font-weight:500 !important;
+            opacity:0.82;
+            font-variant-numeric:tabular-nums;
+        }
+        .st-key-dashboard_lane_more_actionable button p,
+        .st-key-dashboard_lane_more_nearBuyZone button p,
+        .st-key-dashboard_lane_more_waitOrReview button p,
+        .st-key-dashboard_lane_more_noChaseHighRisk button p {
+            width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:pre;
+            text-align:center;
+        }
+        .st-key-dashboard_lane_more_actionable button:hover {
+            color:#334155 !important;
+            background:rgba(248,250,252,0.78) !important;
+        }
+        .st-key-dashboard_lane_more_nearBuyZone button:hover {
+            color:#334155 !important;
+            background:rgba(248,250,252,0.78) !important;
+        }
+        .st-key-dashboard_lane_more_waitOrReview button:hover {
+            color:#334155 !important;
+            background:rgba(248,250,252,0.78) !important;
+        }
+        .st-key-dashboard_lane_more_noChaseHighRisk button:hover {
+            color:#334155 !important;
+            background:rgba(248,250,252,0.78) !important;
         }
         .table-filter-chip {
             display:inline-flex;
@@ -3852,74 +4038,103 @@ def _render_dashboard_styles() -> None:
         }
         .decision-table {
             display:block;
-            border:1px solid rgba(148, 163, 184, 0.20);
-            border-radius:10px;
+            width:100%;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:8px;
             overflow-x:auto;
             overflow-y:hidden;
             background:#FFFFFF;
-            margin-top:0.45rem;
-            margin-bottom:0.9rem;
-            box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
+            margin-top:0.28rem;
+            margin-bottom:0.72rem;
+            box-shadow:none;
             box-sizing:border-box;
         }
         .decision-grid {
             display:grid;
-            grid-template-columns:70px 108px 68px 68px 60px minmax(160px, 1fr) 72px 58px;
+            grid-template-columns:
+                minmax(100px, 0.66fr)
+                minmax(128px, 0.82fr)
+                minmax(72px, 0.44fr)
+                minmax(126px, 0.78fr)
+                minmax(64px, 0.42fr)
+                minmax(170px, 0.90fr)
+                minmax(68px, 0.42fr)
+                60px;
             align-items:center;
-            gap:0.46rem;
+            gap:0.56rem;
             min-height:44px;
-            min-width:736px;
+            min-width:914px;
             width:100%;
             padding:0 12px;
             box-sizing:border-box;
-            font-size:12.5px;
+            font-size:12px;
             overflow:hidden;
         }
         .decision-grid > * {
             min-width:0;
+            max-width:100%;
+            overflow:hidden;
+        }
+        .decision-grid > :nth-child(2) {
+            padding-left:16px;
+            padding-right:14px;
+        }
+        .decision-grid > :nth-child(3) {
+            padding-left:2px;
         }
         .decision-grid-head {
-            min-height:31px;
-            background:#F8FAFC;
-            border-bottom:1px solid rgba(15, 23, 42, 0.055);
+            min-height:30px;
+            background:#F9FAFB;
+            border-bottom:1px solid rgba(15, 23, 42, 0.045);
         }
         .decision-row {
-            border-bottom:1px solid rgba(15, 23, 42, 0.05);
+            border-bottom:1px solid rgba(15, 23, 42, 0.042);
             cursor:pointer;
         }
         .decision-row:last-child {
             border-bottom:0;
         }
         .decision-row:hover {
-            background:#FAFBFD;
+            background:#FBFCFE;
         }
         .decision-header {
             min-height:30px;
             padding:0;
             color:#64748B;
-            font-size:11.5px;
-            font-weight:650;
+            font-size:10.6px;
+            font-weight:600;
             background:transparent;
             border-bottom:0;
             position:static;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            letter-spacing:0;
         }
         .decision-cell {
             display:flex;
             align-items:center;
-            min-height:42px;
+            min-height:44px;
             padding:0;
             border-bottom:0;
             color:#0F172A;
-            font-size:12.5px;
+            font-size:12px;
             font-variant-numeric:tabular-nums;
             min-width:0;
             max-width:100%;
             overflow:hidden;
+            text-overflow:ellipsis;
             box-sizing:border-box;
         }
         .decision-table.compact .decision-cell {
-            min-height:42px;
-            font-size:12.5px;
+            min-height:44px;
+            font-size:12px;
+        }
+        .decision-cell > * {
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
         }
         .decision-cell-stack {
             display:flex;
@@ -3928,20 +4143,38 @@ def _render_dashboard_styles() -> None:
             justify-content:center;
             gap:0.04rem;
             min-width:0;
+            max-width:100%;
             line-height:1.13;
         }
         .decision-cell-stack.align-right {
             align-items:flex-end;
         }
+        .price-market-cell {
+            align-items:flex-start;
+            text-align:left;
+            width:100%;
+        }
+        .price-market-cell strong {
+            font-variant-numeric:tabular-nums;
+            letter-spacing:0;
+        }
+        .price-market-cell span {
+            color:#5F6F82;
+            font-weight:560;
+        }
         .decision-cell-stack strong,
         .action-cell strong {
             max-width:100%;
             color:#0F172A;
-            font-size:12.5px;
+            font-size:12px;
             font-weight:700;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
+        }
+        .action-cell {
+            width:100%;
+            max-width:220px;
         }
         .decision-cell-stack span,
         .action-cell span {
@@ -3955,7 +4188,9 @@ def _render_dashboard_styles() -> None:
         }
         .stock-cell strong {
             font-size:13px;
-            font-weight:760;
+            font-weight:700;
+            letter-spacing:0;
+            padding-left:1px;
         }
         .stock-cell span {
             color:#64748B;
@@ -3964,14 +4199,14 @@ def _render_dashboard_styles() -> None:
         .decision-badge {
             display:inline-flex;
             align-items:center;
-            height:20px;
-            min-height:20px;
+            height:18px;
+            min-height:18px;
             max-width:100%;
-            padding:0 7px;
+            padding:0 6px;
             border-radius:999px;
-            font-size:11.5px;
+            font-size:11px;
             font-weight:600;
-            line-height:20px;
+            line-height:18px;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
@@ -3979,31 +4214,85 @@ def _render_dashboard_styles() -> None:
             min-width:0;
             box-sizing:border-box;
         }
-        .dashboard-dot-status {
-            color:#475569;
-            font-size:12px;
-            font-weight:620;
+        .decision-cell .decision-badge {
+            width:auto;
             max-width:100%;
+        }
+        .entry-rating-cell {
+            justify-content:flex-start;
+        }
+        .entry-rating-token {
+            display:inline-flex;
+            align-items:center;
+            gap:5px;
+            height:21px;
+            max-width:100%;
+            min-width:0;
+            padding:0 7px;
+            border-radius:6px;
+            box-sizing:border-box;
+            overflow:hidden;
+            white-space:nowrap;
+        }
+        .entry-rating-token strong {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            color:inherit;
+            font-size:11px;
+            font-weight:650;
+            line-height:21px;
+        }
+        .entry-rating-token em {
+            flex:0 0 auto;
+            color:#64748B;
+            font-size:10px;
+            font-style:normal;
+            font-weight:650;
+            line-height:21px;
+            opacity:0.82;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-dot-status {
+            display:inline-flex;
+            align-items:center;
+            gap:0.28rem;
+            color:#475569;
+            font-size:11.5px;
+            font-weight:620;
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .dashboard-dot-status i {
+            flex:0 0 auto;
         }
         .action-view-cell {
             justify-content:center;
+            max-width:64px;
+            justify-self:stretch;
         }
         .dashboard-view-action {
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            gap:0.16rem;
-            min-width:42px;
-            height:24px;
-            padding:0 0.32rem;
+            gap:0.12rem;
+            min-width:32px;
+            height:22px;
+            padding:0 0.18rem;
             border:1px solid transparent;
-            border-radius:6px;
+            border-radius:4px;
             background:transparent;
-            color:#475569;
-            font-size:12px;
-            font-weight:600;
+            color:#64748B;
+            font-size:11.5px;
+            font-weight:560;
             text-decoration:none !important;
             white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
             box-sizing:border-box;
         }
         .dashboard-view-action i {
@@ -4013,9 +4302,9 @@ def _render_dashboard_styles() -> None:
             line-height:1;
         }
         .dashboard-view-action:hover {
-            color:#0F172A;
-            border-color:rgba(100, 116, 139, 0.28);
-            background:#F8FAFC;
+            color:#334155;
+            border-color:transparent;
+            background:transparent;
         }
         .dashboard-view-action:hover i {
             color:#475569;
@@ -4028,6 +4317,49 @@ def _render_dashboard_styles() -> None:
             color:#64748B;
             font-size:12px;
             border-top:1px solid rgba(15, 23, 42, 0.05);
+        }
+        @media (max-width: 760px) {
+            .decision-table {
+                border-radius:7px;
+            }
+            .decision-grid {
+                grid-template-columns:100px 128px 72px 126px 64px 170px 68px 60px;
+                min-width:888px;
+                gap:8px;
+                min-height:44px;
+                padding:0 8px;
+                font-size:11.5px;
+            }
+            .decision-grid-head {
+                min-height:29px;
+            }
+            .decision-cell,
+            .decision-table.compact .decision-cell {
+                min-height:44px;
+                font-size:11.5px;
+            }
+            .decision-cell-stack strong,
+            .action-cell strong {
+                font-size:11.5px;
+            }
+            .decision-cell-stack span,
+            .action-cell span {
+                font-size:10.5px;
+            }
+            .stock-cell strong {
+                font-size:12px;
+            }
+            .decision-badge {
+                height:17px;
+                min-height:17px;
+                padding:0 5px;
+                font-size:10.5px;
+                line-height:17px;
+            }
+            .dashboard-dot-status,
+            .dashboard-view-action {
+                font-size:11px;
+            }
         }
         .drawer-raw {
             margin-top: 0.8rem;
@@ -4077,14 +4409,13 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
         return (
             '<div class="decision-cell decision-cell-stack stock-cell">'
             f'<strong>{escape(symbol)}</strong>'
-            '<span>研究标的</span>'
             "</div>"
         )
     if key == "priceMarket":
         price = _display_table_text(_safe_table_value("price", row.get("price")), fallback="当前价待补")
         market_cap = _display_table_text(_safe_table_value("marketCap", row.get("marketCap")), fallback="市值待补")
         return (
-            f'<div class="decision-cell decision-cell-stack{align_class}">'
+            '<div class="decision-cell decision-cell-stack price-market-cell">'
             f'<strong>{escape(price)}</strong>'
             f'<span>{escape(market_cap)}</span>'
             "</div>"
@@ -4107,6 +4438,8 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
         return f'<div class="decision-cell">{_data_status_dot_html(value)}</div>'
     if key == "actions":
         return f'<div class="decision-cell action-view-cell">{_dashboard_view_action_html(symbol)}</div>'
+    if key == "entryRating":
+        return _entry_rating_cell_html(row)
     value = _safe_table_value(key, row.get(key, ""))
     value = _display_table_text(value, fallback="待补")
     if definition.get("kind") == "badge":
@@ -4125,11 +4458,124 @@ def _display_table_text(value: object, fallback: str = "待补") -> str:
 
 def _compact_watchlist_badge_text(key: str, value: object) -> str:
     text = str(value or "").strip()
-    if key in {"qualityRating", "entryRating"}:
+    if key == "qualityRating":
         first = text.split(" ", 1)[0].strip()
         if first:
             return first
     return _short_badge_text(text)
+
+
+def _entry_rating_cell_html(row: pd.Series) -> str:
+    label, grade, title = _entry_rating_display_parts(row)
+    tone = _buy_point_label_tone(label)
+    background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
+    display_text = _entry_rating_chip_text(label, grade)
+    return (
+        '<div class="decision-cell entry-rating-cell">'
+        f'<span class="entry-rating-token" title="{escape(title)}" '
+        f'style="background:{background};color:{foreground};border:1px solid {border};">'
+        f"<strong>{escape(display_text)}</strong>"
+        "</span></div>"
+    )
+
+
+def _entry_rating_chip_text(label: object, grade: object) -> str:
+    label_text = str(label or "").strip()
+    grade_text = str(grade or "").strip().upper()
+    if grade_text and label_text:
+        return f"{grade_text} · {label_text}"
+    return label_text or grade_text or "待确认"
+
+
+def _buy_point_label_tone(label: object) -> str:
+    text = str(label or "").strip()
+    if "极贵" in text:
+        return "deepred"
+    if "偏贵" in text:
+        return "orange"
+    if "击球区" in text or "回撤买点" in text or "合理偏便宜" in text:
+        return "green"
+    if "等回踩" in text or "接近" in text:
+        return "blue"
+    if "只观察" in text or "观察" in text or "待复核" in text:
+        return "yellow"
+    if "数据" in text:
+        return "gray"
+    return "gray"
+
+
+def _entry_rating_display_parts(row: pd.Series) -> tuple[str, str, str]:
+    raw = _display_table_text(_safe_table_value("entryRating", row.get("entryRating")), fallback="待确认")
+    normalized = raw.replace("－", "-").replace("–", "-").replace("—", "-").strip()
+    grade = ""
+    remainder = normalized
+    first_token = normalized.split(" ", 1)[0].strip()
+    if _looks_like_rating_token(first_token):
+        grade = first_token.upper()
+        remainder = normalized[len(first_token) :].strip()
+    elif "-" in normalized:
+        prefix, suffix = normalized.split("-", 1)
+        if _looks_like_rating_token(prefix.strip()):
+            grade = prefix.strip().upper()
+            remainder = suffix.strip()
+    remainder = remainder.lstrip("-").strip()
+    valuation_label = _entry_rating_text_label(row.get("valuationStatus"))
+    if valuation_label == "极贵":
+        return valuation_label, grade, raw
+    label = _entry_rating_text_label(remainder)
+    if not label:
+        label = valuation_label
+    if not label:
+        label = _entry_label_from_grade(grade)
+    return label or "待确认", grade, raw
+
+
+def _looks_like_rating_token(value: object) -> bool:
+    token = str(value or "").strip().upper()
+    if not token:
+        return False
+    core = token.rstrip("+-")
+    return core in {"A", "B", "C", "D"} and len(token) <= 3
+
+
+def _entry_rating_text_label(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "数据" in text:
+        return "数据不足"
+    if "极贵" in text:
+        return "极贵"
+    if "击球区" in text:
+        return "击球区附近"
+    if "回撤" in text:
+        return "回撤买点"
+    if "合理偏便宜" in text:
+        return "合理偏便宜"
+    if "等回踩" in text or "可等回踩" in text:
+        return "等回踩"
+    if "待复核" in text or "复核" in text:
+        return "待复核"
+    if "只观察" in text or "观察" in text:
+        return "只观察"
+    if "偏贵" in text:
+        return "偏贵"
+    return ""
+
+
+def _entry_label_from_grade(grade: str) -> str:
+    normalized = str(grade or "").upper()
+    if normalized.startswith("A"):
+        return "回撤买点"
+    if normalized == "B+":
+        return "接近买点"
+    if normalized.startswith("B"):
+        return "等回踩"
+    if normalized.startswith("C"):
+        return "只观察"
+    if normalized.startswith("D"):
+        return "偏贵"
+    return "待确认"
 
 
 def _data_status_dot_html(value: object) -> str:
@@ -4213,10 +4659,13 @@ def _badge_cell_html(value: object, color: str, title: object | None = None) -> 
     )
 
 
-def _badge_span_html(value: object, color: str) -> str:
+def _badge_span_html(value: object, color: str, extra_class: str = "") -> str:
     background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
+    class_name = "decision-badge"
+    if extra_class:
+        class_name = f"{class_name} {escape(extra_class)}"
     return (
-        f'<span class="decision-badge" style="background:{background};color:{foreground};border:1px solid {border};">'
+        f'<span class="{class_name}" style="background:{background};color:{foreground};border:1px solid {border};">'
         f"{escape(str(value))}"
         "</span>"
     )
@@ -4233,17 +4682,14 @@ def _summary_badge_html(symbol: object, action: object, color: str) -> str:
 
 def _lane_item_html(row: pd.Series) -> str:
     state = str(row.get("valuationStatus") or row.get("entryRating") or "待确认")
-    action = str(row.get("action") or "只观察")
     state_color = _badge_color_for_cell("valuationStatus", state, row)
-    action_color = _badge_color_for_cell("action", action, row)
     symbol = str(row.get("symbol") or "")
     full_reason = _lane_full_reason(row)
     short_reason = _lane_short_reason(full_reason)
     return (
         f'<a class="lane-item" href="#" data-dashboard-drawer-open="{escape(symbol)}" title="{escape(full_reason)}">'
         f'<span class="lane-symbol">{escape(symbol)}</span>'
-        f'{_badge_span_html(_short_badge_text(state), state_color)}'
-        f'{_badge_span_html(_short_badge_text(action), action_color)}'
+        f'{_badge_span_html(_short_badge_text(state), state_color, "lane-state-badge")}'
         f'<span class="lane-reason">{escape(short_reason)}</span>'
         "</a>"
     )

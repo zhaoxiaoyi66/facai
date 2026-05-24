@@ -25,6 +25,7 @@ from position_plan_engine import PositionPlanSuggestion, generate_position_plan
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
+from ui import dashboard as dashboard_ui
 from ui.metric_labels import (
     action_label,
     confidence_label,
@@ -74,7 +75,7 @@ def render() -> None:
 
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at)
     _render_decision_summary(score, effective_buy_zone, plan_suggestion)
-    _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone)
+    _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone)
     _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan)
@@ -127,6 +128,7 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
     price = technicals.get("price") or snapshot.get("current_price")
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
+    buy_point_html = _buy_point_status_pill_html(score)
     values = [
         ("操作建议", score.action),
         ("当前新增", _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent))),
@@ -135,7 +137,7 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
         ("市值", format_large_number(snapshot.get("market_cap"))),
         ("行业模型", model_type_label(score.scoring_model)),
         ("质量评级", score.quality_rating),
-        ("买点评级", score.entry_rating),
+        ("买点状态", buy_point_html, True),
         ("风险评级", score.risk_rating),
         ("数据状态", data_status),
         ("最近刷新", refreshed),
@@ -149,7 +151,7 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
         f'<p>{escape(str(snapshot.get("sector") or "未知板块"))} · {escape(str(snapshot.get("industry") or "未知行业"))}</p>'
         "</div>"
         '<div class="detail-hero-grid">'
-        + "".join(_hero_item_html(label, value) for label, value in values)
+        + "".join(_hero_item_html(label, value, raw_html=bool(rest and rest[0])) for label, value, *rest in values)
         + "</div>"
         "</section>",
         unsafe_allow_html=True,
@@ -175,7 +177,7 @@ def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dic
         buy_reasons = _entry_explanation(score, snapshot, technicals, plan)
         _explain_card(
             "买点解释",
-            score.entry_rating,
+            _buy_point_status_text(score),
             "当前判断",
             buy_reasons,
             "需要等待",
@@ -741,6 +743,7 @@ def _render_buy_zone(
     plan: dict,
     active_zone: BuyZoneEstimate,
     system_zone: BuyZoneEstimate,
+    score,
 ) -> None:
     source = _buy_zone_source(plan)
     manual = source == "manual"
@@ -763,7 +766,8 @@ def _render_buy_zone(
     st.markdown(
         '<section class="research-card buy-zone-panel">'
         '<div class="buy-zone-meta">'
-        f'<div><span>当前所处区间</span><strong>{escape(_buy_zone_label(active_zone.currentZone))}</strong></div>'
+        f'<div><span>买点状态</span><strong>{_buy_point_status_pill_html(score)}</strong></div>'
+        f'<div><span>系统买区位置</span><strong>{escape(_buy_zone_label(active_zone.currentZone))}</strong></div>'
         f'<div><span>买区置信度</span><strong>{escape(confidence_label(confidence))}</strong></div>'
         f'<div><span>方法</span><strong>{escape(_buy_zone_method_label(active_zone.method))}</strong></div>'
         f'<div><span>下一触发</span><strong>{escape(next_label)}{(" / " + escape(format_currency(next_price))) if next_price is not None else ""}</strong></div>'
@@ -1785,7 +1789,46 @@ def _dedupe(items: list[str]) -> list[str]:
     return result
 
 
+def _buy_point_status_parts(score) -> tuple[str, str, str, str]:
+    row = pd.Series(
+        {
+            "entryRating": getattr(score, "entry_rating", ""),
+            "valuationStatus": getattr(score, "valuation_status", ""),
+            "action": getattr(score, "action", ""),
+        }
+    )
+    label, grade, raw = dashboard_ui._entry_rating_display_parts(row)
+    tone = dashboard_ui._buy_point_label_tone(label)
+    return label, grade, raw, tone
+
+
+def _buy_point_status_text(score) -> str:
+    label, grade, _raw, _tone = _buy_point_status_parts(score)
+    return dashboard_ui._entry_rating_chip_text(label, grade)
+
+
+def _buy_point_status_pill_html(score) -> str:
+    label, grade, raw, tone = _buy_point_status_parts(score)
+    background, foreground, border = dashboard_ui.BADGE_STYLES.get(tone, dashboard_ui.BADGE_STYLES["gray"])
+    display_text = dashboard_ui._entry_rating_chip_text(label, grade)
+    return (
+        f'<span class="detail-pill buy-point-pill" title="{escape(raw)}" '
+        f'style="background:{background};color:{foreground};border-color:{border};">'
+        f"<b>{escape(display_text)}</b></span>"
+    )
+
+
 def _rating_color(value: str) -> str:
+    if "极贵" in value or "禁止追高" in value:
+        return "deepred"
+    if "偏贵" in value:
+        return "orange"
+    if "击球区" in value or "回撤买点" in value or "合理偏便宜" in value:
+        return "green"
+    if "接近" in value or "等回踩" in value:
+        return "blue"
+    if "只观察" in value or "待复核" in value:
+        return "yellow"
     if value.startswith(("A", "B")) or value == "低":
         return "green"
     if "中高" in value:
@@ -1799,21 +1842,23 @@ def _rating_color(value: str) -> str:
 
 def _pill_html(value: str, color: str) -> str:
     styles = {
-        "green": ("#dcfce7", "#166534", "#86efac"),
-        "blue": ("#dbeafe", "#1d4ed8", "#93c5fd"),
-        "yellow": ("#fef9c3", "#854d0e", "#fde047"),
-        "orange": ("#ffedd5", "#9a3412", "#fdba74"),
-        "red": ("#fee2e2", "#991b1b", "#fca5a5"),
+        "green": ("#F4FAF6", "#166534", "#DDEBE2"),
+        "blue": ("#F4F7FB", "#36516F", "#DCE6F2"),
+        "yellow": ("#FCFAF0", "#7A5C12", "#EEE6C8"),
+        "orange": ("#FBF7F1", "#7C4A1D", "#ECDCC8"),
+        "red": ("#FBF5F5", "#8A1F1F", "#ECD5D5"),
+        "deepred": ("#FDF1F1", "#6F1111", "#E7B9B9"),
     }
     background, foreground, border = styles.get(color, styles["blue"])
     return f'<span class="detail-pill" style="background:{background};color:{foreground};border-color:{border};">{escape(value)}</span>'
 
 
-def _hero_item_html(label: str, value: object) -> str:
+def _hero_item_html(label: str, value: object, raw_html: bool = False) -> str:
+    value_html = str(value) if raw_html else escape(str(value))
     return (
         '<div class="detail-hero-item">'
         f'<span>{escape(label)}</span>'
-        f'<strong>{escape(str(value))}</strong>'
+        f"<strong>{value_html}</strong>"
         "</div>"
     )
 
@@ -1918,6 +1963,30 @@ def _render_detail_styles() -> None:
             font-size: 0.86rem;
             font-weight: 720;
         }
+        .detail-pill.buy-point-pill {
+            gap: 0.36rem;
+            min-height: 1.45rem;
+            padding: 0.1rem 0.5rem;
+            border-radius: 0.42rem;
+            font-size: 0.78rem;
+            line-height: 1;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+        .detail-pill.buy-point-pill b {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-weight: 760;
+        }
+        .detail-pill.buy-point-pill em {
+            flex: 0 0 auto;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-style: normal;
+            font-weight: 690;
+            opacity: 0.82;
+        }
         .conclusion-card,
         .buy-zone-panel,
         .plan-summary-card,
@@ -1945,6 +2014,9 @@ def _render_detail_styles() -> None:
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 0.5rem;
+        }
+        .buy-zone-meta {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
         }
         .conclusion-grid div,
         .buy-zone-meta div,
@@ -1977,6 +2049,15 @@ def _render_detail_styles() -> None:
             line-height: 1.28;
             font-weight: 720;
             overflow-wrap: anywhere;
+        }
+        .buy-zone-meta strong .buy-point-pill {
+            display: inline-flex;
+            align-items: center;
+            width: auto;
+            max-width: 100%;
+            margin-top: -0.02rem;
+            font-size: 0.78rem;
+            line-height: 1;
         }
         .wait-list {
             display: flex;

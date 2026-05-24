@@ -31,6 +31,231 @@ None.
 
 ## Latest Handoff
 
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision lane row simplification.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Removed redundant action badges from Dashboard decision-lane rows, including `等回踩`, `只观察`, and `禁止追高` as extra row chips. Decision lanes now render each row as ticker + buy-point/valuation state + truncated reason, with a wider reason track and no fourth column to overflow the card.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if lane rows still show the removed action chips or clipped right-edge text; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard/detail UI-only buy-point chip format.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`, `ui/stock_detail.py`.
+- What changed: Unified buy-point chip text to the `B+ · 击球区附近` style in the Dashboard watchlist and stock detail page. Added a shared Dashboard formatter for `评分 · 状态`, kept the chip tone driven by the Chinese buy-point label, and slightly widened the watchlist `买点` column while tightening `动作` so the table width stays stable.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if buy-point chips still show the older split label/grade format; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist buy-point grade tail label.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Restored muted A/B/C/D rating letters inside the Dashboard watchlist `买点` chip while keeping the Chinese buy-point status as the primary text. The chip color still comes from the displayed buy-point label, so `偏贵` / `极贵` / `等回踩` / buy-zone states remain semantically consistent.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the watchlist `买点` chips still do not show the small grade tail label; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision lane spacing and action-badge color polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tightened the Dashboard decision-lane row grid so ticker, state badge, action badge, and reason align more evenly across all four lanes. Restored low-saturation action badge colors for labels such as `等回踩`, `只观察`, and `禁止追高` by using the shared badge color system instead of forcing lane actions to gray. Reduced lane footer spacing so `+X 未显示` and `查看全部` read as one compact secondary action rather than split far apart.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the decision lanes still show gray action badges or overly wide footer spacing; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only priority strip stock-detail links.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Made each Dashboard `今日重点` priority item a low-noise link to the stock detail page using the existing app route (`?page=detail&symbol=...`). Styling keeps the terminal priority-strip look and suppresses default blue/underlined link treatment.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if `今日重点` items are not clickable yet; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only buy-point chip color consistency.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`, `ui/stock_detail.py`.
+- What changed: Fixed inconsistent buy-point chip colors where identical displayed labels such as `偏贵` could render differently because action text like `禁止追高` was still influencing the chip tone. Added a label-based buy-point tone helper and used it for the Dashboard watchlist buy-point chip and stock detail buy-point pill. Displayed labels now have stable colors: `偏贵` orange, `极贵` deep red, `等回踩` blue, observe/review amber, and buy-zone/cheap states green.
+- Verification: A read-only local cache check confirmed each buy-point label maps to only one tone and no inconsistent labels remain; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if `偏贵` chips still appear in mixed colors; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only buy-point label semantics cleanup.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Cleaned up the Dashboard watchlist `买点` column semantics. The column now shows only price/valuation state labels and no longer displays action labels such as `禁止追高`; those remain in the `动作` column. Removed the visible A/B/C/D grade from the main table buy-point chip to avoid confusing rows where the same grade maps to different valuation severities; the raw rating remains available in the chip title/hover and detail views.
+- Verification: A read-only local cache check confirmed no watchlist buy-point label resolves to `禁止追高`; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the watchlist buy-point column still shows `禁止追高` or visible letter grades; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision lane mutual exclusivity.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Made Dashboard decision lanes mutually exclusive. Raw lane candidates are still calculated with the existing predicates, then assigned once by priority (`禁止追高 / 高风险` first, `可行动` second, `接近击球区` third, `等回踩 / 待确认` last). This prevents names such as MSFT from appearing in both `接近击球区` and `等回踩 / 待确认`; lane footer filters now use the same exclusive groups.
+- Verification: A read-only local cache check confirmed MSFT is assigned only to `接近击球区` and no ticker is duplicated across lanes; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if MSFT still appears in two decision lanes; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only priority strip visual cleanup.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Cleaned up the Dashboard `今日重点` strip after visual review. Converted it from equal-width mini table cells into a lighter terminal ticker tape: visible content is now status dot + ticker + action only, full reason is kept in the hover title, item widths are capped, vertical accent bars were removed, separators are softened, and hover uses a very subtle neutral background.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py ui\stock_detail.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if `今日重点` still looks like the old segmented row; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Stock detail UI-only buy-point status alignment.
+- Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
+- What changed: Diagnosed the MRVL mismatch as a UI display-source issue: the Dashboard watchlist used the combined buy-point status (`valuationStatus` + `entryRating` + `action`), while the stock detail hero showed raw `score.entry_rating` and the buy-zone panel showed buy-zone-engine `currentZone`. Updated the stock detail page to reuse the Dashboard buy-point display helper, show `买点状态` in the hero and buy-zone meta, and rename the buy-zone-engine field to `系统买区位置` so it is not confused with scoring buy-point status. MRVL now resolves to the same deep-red buy-point status in both views while keeping the buy-zone position separate.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\stock_detail.py ui\dashboard.py` passed; a read-only MRVL comparison script confirmed watchlist/detail buy-point status and tone match; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if MRVL detail still shows the old raw `C - 只观察` buy-point display; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only buy-point color consistency.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Aligned buy-point status colors between the Dashboard decision terminal and watchlist table. Added a shared buy-point tone helper so `valuationStatus` and `entryRating` use the same green-to-deep-red scale: buy-zone/cheap states map green, near/wait states map blue, observe/review maps amber, expensive maps orange, and `极贵` / `禁止追高` / high-risk states map deep red. Preserved explicit `极贵` / `禁止追高` labels in the watchlist buy-point chip instead of folding them into generic `偏贵`.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if it still shows mismatched buy-point colors; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only priority strip ticker dedupe.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Updated the Dashboard `今日重点` priority strip so each ticker appears at most once. The strip now tracks displayed symbols, skips duplicate tickers from later decision lanes, and continues scanning within each lane so skipped duplicates can be replaced by the next eligible item while preserving the total max of 5 and per-lane max of 2.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if it still shows duplicate tickers in `今日重点`; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist entry-rating text treatment.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Changed the Dashboard watchlist `买点` column from letter-only compact badges to readable text chips. The cell now shows a primary Chinese buy-point label such as `击球区附近`, `回撤买点`, `等回踩`, `只观察`, or `偏贵`, with the original A/B/C/D rating preserved as muted secondary text when available. Rebalanced the watchlist grid by widening `买点` and modestly tightening adjacent columns so the table remains dense but not cramped.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if it still shows the old letter-only buy-point column; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision terminal color harmonization.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Reduced the Dashboard decision terminal color noise after visual review. Softened the shared badge palette, removed large tinted backgrounds from priority rows and lane headers, kept only small status dots/left accent bars/count text as lane-level color, changed lane action badges to neutral gray so each row no longer shows multiple competing colors, and kept the watchlist table using the same muted badge palette.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if it still shows the previous colorful version; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision terminal color restoration.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Restored visible low-saturation status color in the Dashboard decision terminal. Removed the final CSS overrides that forced lane count badges and row badges back to gray, added tone classes to the priority strip rows and decision-lane headers, gave each lane a subtle accent stripe/background, switched `接近击球区` to blue and `等回踩 / 待确认` to amber, and added muted accent hover states to the lane footer buttons.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the browser is still showing the old gray version; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Repair local `.venv` Python launcher path.
+- Files touched: `AGENT_HANDOFF.md`, `.venv/pyvenv.cfg`.
+- What changed: Updated `.venv/pyvenv.cfg` so the virtualenv points to the available bundled Python 3.12.13 runtime instead of the missing `C:\Users\User\AppData\Local\Programs\Python\Python312` interpreter. `.venv\Scripts\python.exe` now starts directly from `C:\dev\facai`.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe --version` returns Python 3.12.13; `py_compile ui\dashboard.py` passed; `pytest tests\test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Use the project `.venv\Scripts\python.exe` directly for future verification commands.
+- Do not touch yet: app code, data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed by this environment repair.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist table terminal alignment polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tuned the Dashboard watchlist table only. Set the code column around a 100px baseline with ticker left-aligned at 700 weight, gave the price/market column a 128px baseline with left/right breathing room and stable tabular numbers, restored 44px terminal row height, softened table borders/header weight, kept the action/data/view columns compact, and preserved badge/ellipsis protections without reintroducing right-edge price/market collision.
+- Verification: The requested `.venv\Scripts\python.exe` commands still fail because the launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually review the watchlist table before committing.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist column alignment terminal polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tuned only the Dashboard watchlist table presentation. Rebalanced the eight grid tracks around the requested baselines (`代码` 96px, `价格 / 市值` 120px, `质量` 76px, `买点` 82px, `风险` 64px, `动作` 190px, `数据` 70px, `查看` 64px), restored 42px terminal row height, added a dedicated `price-market-cell` with right-aligned tabular numbers plus left/right breathing room, kept ticker-only stock cells at 700 weight, and preserved badge/ellipsis overflow protection.
+- Verification: The requested `.venv\Scripts\python.exe` commands still fail because the launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually review the watchlist table alignment before committing.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision terminal polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Refined the Dashboard `决策台` presentation only. Rebuilt `今日重点` as a compact terminal ticker strip with status dot, ticker, action, and truncated reason; removed the strong divider feel; softened the strip background/border. Reduced noise in the four decision-lane cards by fixing row height, limiting each row to ticker plus two muted badges plus truncated reason, reducing badge saturation, tightening panel spacing, and making lane footers smaller and more muted.
+- Verification: Prompt path `C:\dev\facai.venv\Scripts\python.exe` does not exist. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually review the Dashboard decision terminal before committing.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only price-quality column separation.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Fixed the Dashboard watchlist table collision shown in the screenshot where market-cap text visually stuck to the quality badge. Removed right alignment from the `价格 / 市值` column and added a stable gutter between the price/market column and the quality column while preserving the eight-column wide terminal layout and existing overflow protections.
+- Verification: The requested `.venv\Scripts\python.exe` commands still fail because the launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually check that market cap and quality badge are no longer glued together.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist narrow-view column balance.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Balanced the Dashboard watchlist grid after reviewing the captured narrow viewport. Reduced code-column expansion, gave price/market and rating columns more deliberate spacing, kept the action column capped, and added a `max-width: 760px` responsive grid (`88 / 128 / 66 / 74 / 64 / 190 / 64 / 52px`) so the first visible columns no longer look misaligned or cramped. Kept ticker-only stock cells, muted `查看 ›`, and existing overflow/badge protections.
+- Verification: The requested `.venv\Scripts\python.exe` commands still fail because the launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually review the Dashboard table in both wide and narrow widths.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only wide watchlist terminal-table repair.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Repaired the Dashboard watchlist table after the over-compression pass. Restored the table/grid to full available width with `width:100%`, raised the grid minimum width, kept the eight-column terminal layout, capped the action column with `minmax(190px, 220px)`, and let the other columns absorb remaining width. Kept ticker-only stock cells, muted `查看 ›`, badge max-width/ellipsis protections, dot-status truncation, and two-line action cells.
+- Verification: The requested `.venv\Scripts\python.exe` commands still fail because the launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Restart/reload the running Streamlit service so the browser picks up current `C:\dev\facai` source, then visually review the wide Dashboard table before committing.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only watchlist table column-density polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tightened only the Dashboard watchlist table layout. Replaced the flex-like action column with fixed grid tracks (`110 / 120 / 80 / 90 / 70 / 200 / 70 / 64px`), kept action cells to two truncated lines, added stronger min-width/overflow/ellipsis constraints to all cells, badges, dot statuses, and the neutral view action so the data and view columns stay close instead of drifting right.
+- Verification: Prompt path `C:\dev\facai.venv\Scripts\python.exe` does not exist. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Visual review in the running Streamlit app after restarting/reloading the Streamlit service so it picks up the current `C:\dev\facai` source.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only stock-cell duplicate label removal.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Removed the repeated `研究标的` sublabel under the ticker in the Dashboard watchlist table so the code/name column no longer shows duplicate filler copy.
+- Verification: `py_compile` passed for `ui/dashboard.py` using bundled Python 3.12.13 because the project venv launcher still points to a missing Python312 path.
+- Next needed: Visual review in the running Streamlit app; commit together with the Dashboard UI compaction checkpoint if it looks good.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only visual compaction and terminal-grid polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tightened the Dashboard first screen without changing data or scoring logic. Reduced header/stat-ribbon/decision-section spacing, made `今日重点` a compact one-line information band, shortened decision-lane cards and fixed row overflow/truncation, changed lane overflow footer copy to a low-noise `+X 未显示    查看全部 →` treatment, tightened the watchlist grid row/column sizing, added stronger min-width/overflow constraints for table cells and badges, softened badge colors, and made `查看` a neutral text action.
+- Verification: The requested `.venv\Scripts\python.exe` command could not start because the venv launcher points to a missing Python312 path. Equivalent `py_compile` passed with bundled Python 3.12.13; `pytest tests/test_core_logic.py -q` passed with 246 tests, 27 subtests, and one pytest cache write warning.
+- Next needed: Visual review in the running Streamlit app; commit only if the Dashboard spacing and terminal-grid feel stable.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
 2026-05-25 Data conversation:
 - Owner: Data conversation.
 - Task: Windows local launcher for ZHX Research Streamlit app.
