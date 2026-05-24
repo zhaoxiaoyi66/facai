@@ -39,23 +39,59 @@ git diff --stat
 
 If the workspace is not clean:
 
-1. Stop.
+1. Stop if the changes are unrelated to the current task or include backend/data/scoring/database files.
 2. Report the uncommitted or untracked changes.
 3. Do not continue development until the user decides what to do.
+4. For UI-only work, do not stop merely because the working tree contains uncommitted changes if all changes are within the same active UI checkpoint.
+
+## UI Page Checkpoints
+
+UI-only changes may be grouped by page or section into one checkpoint. Do not stop merely because the working tree contains uncommitted changes if all changes are within the same active UI checkpoint. Stop only if backend/data/scoring/database files are modified or if the task scope changes.
+
+Examples of page-level UI checkpoints:
+
+1. Dashboard decision overview UI.
+2. Stock research page UI.
+3. Buy-zone plan page UI.
+4. Manual review center UI.
+
+Within the same page or section, multiple small UI refinements may be completed and validated together before one commit.
+
+Stop and report immediately if any of these files or areas are modified during a UI checkpoint:
+
+1. `data/`
+2. `scoring/`
+3. `buy_zone_engine.py`
+4. `position_plan_engine.py`
+5. `review_queue_builder.py`
+6. Database schema or migrations.
+7. Qwen, AI review, or autopilot backend files.
+
+UI checkpoints must still avoid:
+
+1. Changing scoring logic.
+2. Changing data logic.
+3. Changing BuyZoneEngine logic.
+4. Changing PositionPlanEngine logic.
+5. Changing database schema.
+6. Calling external APIs.
+7. Running `npm run dev`.
 
 ## Checkpoint Completion
 
 After every checkpoint, report:
 
 1. Modified files.
-2. `git diff --stat`.
-3. Tests or checks run.
-4. Whether tests passed.
-5. Whether the database was affected.
-6. Whether scoring was affected.
-7. Whether UI was affected.
-8. Whether the change can be rolled back.
-9. Suggested next step.
+2. Whether the change was UI-only.
+3. The page or section for UI checkpoints.
+4. `git diff --stat`.
+5. Tests or checks run.
+6. Whether tests passed.
+7. Whether the database was affected.
+8. Whether scoring was affected.
+9. Whether UI was affected.
+10. Whether the change can be rolled back.
+11. Suggested commit message or next step.
 
 ## Communication Rules
 
