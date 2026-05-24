@@ -23,12 +23,22 @@ Data conversation:
 3. After editing, write what changed, what was tested, and any remaining risk.
 4. If a task needs both UI and data changes, split it into two handoffs.
 5. If there is conflict, stop and ask the user which version should win.
+6. Avoid long silent waits. The user has repeatedly felt that Codex is stuck when tool runs or multi-step work are quiet. Send short progress updates before and after slow commands, installs, builds, browser launches, or any step likely to take more than about 30 seconds. If a command is still running or blocked, say so plainly instead of staying silent.
 
 ## Active Work
 
 None.
 
 ## Latest Handoff
+
+2026-05-25 Data conversation:
+- Owner: Data conversation.
+- Task: Windows local launcher for ZHX Research Streamlit app.
+- Files touched: `AGENT_HANDOFF.md`, `scripts/launch_zhx_research.py`, `start_zhx_research.bat`, `docs/launcher.md`.
+- What changed: Added a local launcher that locates the `C:\dev\facai` project root, uses `.venv\Scripts\python.exe`, detects whether `http://localhost:8501` is already responding, starts `streamlit run app.py --server.port 8501 --server.headless true` when needed, opens the browser after readiness, and reports startup/log errors without reading or printing `.env`. Added a BAT entry point and created a Windows Desktop shortcut named `ZHX Research` pointing to `C:\dev\facai\start_zhx_research.bat`. User chose the simpler BAT plus Desktop shortcut flow instead of the heavier EXE/PyInstaller flow.
+- Verification: Confirmed Streamlit entry is `app.py`; `py_compile` passed for `scripts/launch_zhx_research.py`; `start_zhx_research.bat` ran successfully and detected the existing HTTP 200 service on port 8501; Desktop shortcut exists and targets the BAT launcher. EXE was intentionally not built and PyInstaller was not installed.
+- Next needed: Use the Desktop shortcut or `start_zhx_research.bat` to open the local app.
+- Do not touch yet: UI files, scoring logic, data providers, BuyZoneEngine formulas, PositionPlanEngine formulas, database schema/migrations, `.env`, SQLite databases, caches, external APIs, npm dev server, and commits were not changed.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
