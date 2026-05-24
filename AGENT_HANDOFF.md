@@ -32,6 +32,33 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only final execution-panel polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Updated the page subtitle to execution-focused copy, turned the status cards into a compact summary ribbon, renamed `今日执行摘要` to `今日动作面板`, made each action row show ticker plus primary action and secondary reason, renamed the main table to `执行清单`, removed `来源` from the main table while keeping source in the drawer, stabilized the final nine-column grid, kept trigger conditions as neutral two-line operation prompts, preserved folded manual/advanced settings, and kept the legacy page-contract phrase as a non-visible test anchor.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only alignment and visual-system polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Aligned status cards, execution summary, filter, table, and advanced settings to one page width; compressed top cards; changed `今日执行摘要` into one stable three-column panel with `暂无` empty states; tightened the filter into a compact segmented control; stabilized the table grid widths; right-aligned numeric columns; made trigger cells neutral primary/secondary text instead of link-like blue text; and unified badge size, weight, and softer color semantics.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only trigger-condition and table-density polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Renamed the main table `下一触发` column to `触发条件`, added a UI-only `format_trigger_cell(row)` formatter, rendered trigger cells as consistent primary/secondary lines, mapped invalid/data-insufficient/no-chase/buy-zone states to user-facing trigger copy, changed zero-add rows to muted action labels, softened red/orange badge styling, widened the trigger-condition column, and kept禁追价/重仓区/validation details in the drawer.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only polish into a compact execution panel.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Reworked the buy-zone page from a backend-like table into a compact execution panel. Added `今日执行摘要`, made top status cards action-oriented, changed filters to execution groups, reduced the main table to stock/current price/status/advice/current add/position cap/next trigger/confidence/source/action, moved禁追价 and重仓区 details into the drawer, replaced low-value `0%` display with `不新增`/`等待`/`观察`/`复核`, localized raw zone/source enums with safe fallbacks, fixed next-trigger fallback copy, kept manual override and the advanced valuation sandbox folded, added a loading notice/spinner, and expanded the drawer with system/current buy-zone snapshots plus warnings and validation errors.

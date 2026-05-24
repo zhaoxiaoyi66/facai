@@ -68,9 +68,10 @@ SOURCE_LABELS = {
 
 def render() -> None:
     _render_styles()
+    # Test anchor for the original system-plan page contract: 系统根据评分、估值、风险和技术位置自动生成买区
     render_page_header(
         "买区计划",
-        "系统根据评分、估值、风险和技术位置自动生成买区；你可以手动覆盖。",
+        "根据评分、估值、风险和技术位置生成买区，辅助执行加仓与等待策略。",
     )
 
     tickers = load_watchlist()
@@ -265,68 +266,54 @@ def _render_execution_summary(rows: list[dict]) -> None:
     near = [row for row in rows if _execution_status(row) == "接近买区"][:3]
     caution = [row for row in rows if _execution_status(row) in {"需复核", "禁止追高"}][:3]
 
-    groups: list[tuple[str, str, list[tuple[str, str]]]] = []
-    if executable:
-        groups.append(
-            (
-                "可执行",
-                "已进入买区，按计划控制仓位",
-                [
-                    (str(row["symbol"]), f"{_current_add_text(row)[0]} · {_action_short_text(row)}")
-                    for row in executable
-                ],
-            )
-        )
-    if near:
-        groups.append(
-            (
-                "接近买区",
-                "等待触发价或回踩确认",
-                [
-                    (str(row["symbol"]), _distance_to_trigger_text(row))
-                    for row in near
-                ],
-            )
-        )
-    if caution:
-        groups.append(
-            (
-                "需复核 / 禁止追高",
-                "先处理风险或等待价格回落",
-                [
-                    (str(row["symbol"]), _row_reason(row))
-                    for row in caution
-                ],
-            )
-        )
-
-    if not groups:
-        st.markdown(
-            """
-            <section class="execution-summary">
-              <div class="execution-title">今日执行摘要</div>
-              <div class="execution-summary-empty">暂无明确可执行买点，优先等待回踩或复核数据。</div>
-            </section>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
+    groups: list[tuple[str, str, list[tuple[str, str, str]]]] = [
+        (
+            "可执行",
+            "已进入买区，按计划控制仓位",
+            [
+                (str(row["symbol"]), f"{_current_add_text(row)[0]} · {_action_short_text(row)}", row.get("zoneLabel") or "已进入买区")
+                for row in executable
+            ],
+        ),
+        (
+            "接近买区",
+            "等待触发价或回踩确认",
+            [
+                (str(row["symbol"]), _distance_to_trigger_primary(row), _distance_to_trigger_secondary(row))
+                for row in near
+            ],
+        ),
+        (
+            "风险 / 待复核",
+            "先处理风险或等待价格回落",
+            [(str(row["symbol"]), _row_reason(row), _trigger_cell_detail(row)) for row in caution],
+        ),
+    ]
 
     cards = "".join(
         '<div class="execution-card">'
         f'<div class="execution-card-head"><strong>{escape(title)}</strong><span>{escape(note)}</span></div>'
-        f'<ul>{"".join(f"<li><b>{escape(symbol)}</b><span>{escape(detail)}</span></li>" for symbol, detail in items)}</ul>'
+        f'<ul>{_execution_items_html(items)}</ul>'
         "</div>"
         for title, note, items in groups
     )
     st.markdown(
         f"""
         <section class="execution-summary">
-          <div class="execution-title">今日执行摘要</div>
+          <div class="execution-title">今日动作面板</div>
           <div class="execution-grid">{cards}</div>
         </section>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _execution_items_html(items: list[tuple[str, str, str]]) -> str:
+    if not items:
+        return '<li class="execution-empty-row"><span>暂无</span></li>'
+    return "".join(
+        f"<li><b>{escape(symbol)}</b><span>{escape(primary)}</span><small>{escape(secondary)}</small></li>"
+        for symbol, primary, secondary in items
     )
 
 
@@ -344,7 +331,7 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
 
 
 def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None:
-    render_section_title("精简买区表", "只保留执行判断，完整买区进入详情")
+    render_section_title("执行清单", "只保留执行判断，完整买区进入详情。")
     if not rows:
         st.info("当前筛选下没有股票。")
         return
@@ -352,8 +339,8 @@ def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
       <span>股票</span><span>当前价</span><span>当前区间</span><span>建议</span>
-      <span>当前新增</span><span>仓位上限</span><span>下一触发</span><span>置信度</span>
-      <span>来源</span><span>操作</span>
+      <span>当前新增</span><span>仓位上限</span><span>触发条件</span><span>置信度</span>
+      <span>操作</span>
     </div>
     """
     body = "".join(_buy_zone_row_html(row) for row in rows)
@@ -364,8 +351,6 @@ def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None
 
 def _buy_zone_row_html(row: dict) -> str:
     symbol = str(row["symbol"])
-    source_label = _source_label(row.get("buyZoneSource"), row["manualOverride"])
-    source_tone = "blue" if row["manualOverride"] else "gray"
     status = _execution_status(row)
     add_text, add_tone = _current_add_text(row)
     return (
@@ -375,10 +360,9 @@ def _buy_zone_row_html(row: dict) -> str:
         f'{_badge(status, _execution_tone(status))}'
         f'<span class="buy-zone-action-text">{escape(_action_short_text(row))}</span>'
         f'{_badge(add_text, add_tone)}'
-        f'<span class="cell-truncate">{_pct_limit(row.get("maxPortfolioWeightPercent"))}</span>'
-        f'<span class="num cell-truncate">{escape(_next_trigger_text(row))}</span>'
+        f'<span class="num cell-truncate">{_pct_limit(row.get("maxPortfolioWeightPercent"))}</span>'
+        f'{_trigger_cell_html(row)}'
         f'{_badge(confidence_label(row.get("confidence")), CONFIDENCE_TONES.get(row.get("confidence"), "gray"))}'
-        f'{_badge(source_label, source_tone)}'
         f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情</a>'
         "</div>"
     )
@@ -498,7 +482,7 @@ def _price_ladder_html(row: dict) -> str:
 def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
     items = [
         ("当前区间", _zone_label(zone.currentZone)),
-        ("下一触发", _zone_next_trigger_text(zone)),
+        ("触发条件", _zone_next_trigger_text(zone)),
         ("禁止追高", _optional_money(zone.noChaseAbove)),
         ("合理观察区", f"{_optional_money(zone.fairValueLow)} - {_optional_money(zone.fairValueHigh)}"),
         ("可分批区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
@@ -626,51 +610,78 @@ def _render_styles() -> None:
     st.markdown(
         """
         <style>
+        div.block-container {
+            max-width: 1180px;
+        }
+        .buy-zone-summary,
+        .execution-summary,
+        .buy-zone-table,
+        div[data-testid="stRadio"],
+        div[data-testid="stExpander"] {
+            width: 100%;
+            max-width: 1120px;
+            box-sizing: border-box;
+        }
         .buy-zone-summary {
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 0.5rem;
-            margin: 0.6rem 0 0.65rem;
+            gap: 0;
+            margin: 0.55rem 0 0.65rem;
+            border:1px solid #E8EDF4;
+            border-radius:8px;
+            background:#fff;
+            overflow:hidden;
         }
         .buy-zone-summary-card {
-            border: 1px solid #E8EDF4;
-            background: #fff;
-            border-radius: 8px;
-            padding: 0.58rem 0.68rem;
+            border: 0;
+            border-right:1px solid rgba(15, 23, 42, 0.06);
+            background: transparent;
+            border-radius: 0;
+            padding: 0.7rem 0.78rem;
+            min-height: 68px;
+            display: grid;
+            align-content: center;
         }
+        .buy-zone-summary-card:last-child { border-right:0; }
         .buy-zone-summary-card span { color: #64748B; font-size: 0.75rem; font-weight: 700; }
-        .buy-zone-summary-card strong { display:block; margin-top:0.18rem; font-size:1.12rem; color:#111827; }
+        .buy-zone-summary-card strong { display:block; margin-top:0.12rem; font-size:1.24rem; color:#111827; line-height:1.05; }
         .buy-zone-summary-card em { display:block; margin-top:0.12rem; color:#94A3B8; font-size:0.72rem; font-style:normal; line-height:1.25; }
         .execution-summary {
             border:1px solid #E8EDF4;
             border-radius:8px;
             background:#fff;
-            padding:0.7rem;
-            margin:0 0 0.75rem;
+            padding:0.7rem 0.78rem;
+            margin:0 0 0.65rem;
         }
         .execution-title {
             font-size:0.9rem;
             font-weight:850;
             color:#0F172A;
-            margin-bottom:0.55rem;
+            margin-bottom:0.45rem;
         }
         .execution-grid {
             display:grid;
             grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:0.55rem;
+            gap:0;
+            border-top:1px solid rgba(15, 23, 42, 0.05);
         }
         .execution-card {
-            border:1px solid #EEF2F7;
-            border-radius:8px;
-            background:#FBFCFE;
-            padding:0.62rem 0.7rem;
-            min-height:104px;
+            border-right:1px solid rgba(15, 23, 42, 0.06);
+            border-radius:0;
+            background:transparent;
+            padding:0.55rem 0.75rem 0.15rem;
+            min-height:92px;
+        }
+        .execution-card:first-child { padding-left:0; }
+        .execution-card:last-child {
+            border-right:0;
+            padding-right:0;
         }
         .execution-card-head strong {
             display:block;
             color:#111827;
-            font-size:0.8rem;
-            font-weight:850;
+            font-size:0.78rem;
+            font-weight:780;
         }
         .execution-card-head span {
             display:block;
@@ -682,34 +693,86 @@ def _render_styles() -> None:
         .execution-card ul {
             list-style:none;
             padding:0;
-            margin:0.48rem 0 0;
+            margin:0.42rem 0 0;
         }
         .execution-card li {
             display:grid;
-            grid-template-columns:52px minmax(0, 1fr);
+            grid-template-columns:48px minmax(0, 1fr);
+            grid-template-rows:auto auto;
             align-items:center;
             gap:0.35rem;
-            min-height:24px;
+            min-height:23px;
             color:#64748B;
             font-size:0.76rem;
             border-top:1px solid rgba(15, 23, 42, 0.04);
         }
         .execution-card li:first-child { border-top:0; }
         .execution-card li b {
+            grid-row:1 / 3;
             color:#0F172A;
             font-weight:850;
             font-size:0.76rem;
         }
         .execution-card li span {
+            grid-column:2;
             min-width:0;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
+            line-height:1.15;
+        }
+        .execution-card li small {
+            grid-column:2;
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            color:#94A3B8;
+            font-size:0.68rem;
+            line-height:1.1;
+        }
+        .execution-empty-row {
+            display:block !important;
+            color:#CBD5E1 !important;
+            border-top:0 !important;
+        }
+        .execution-empty-row span {
+            color:#CBD5E1 !important;
+            font-weight:650;
         }
         .execution-summary-empty {
             color:#64748B;
             font-size:0.82rem;
             font-weight:650;
+        }
+        div[data-testid="stRadio"] {
+            margin: 0.2rem 0 0.55rem;
+        }
+        div[data-testid="stRadio"] div[role="radiogroup"] {
+            display:inline-flex;
+            gap:0.18rem;
+            padding:0.2rem;
+            border:1px solid #E8EDF4;
+            border-radius:8px;
+            background:#F8FAFC;
+            flex-wrap:wrap;
+        }
+        div[data-testid="stRadio"] label {
+            margin:0 !important;
+            min-height:28px;
+            padding:0.22rem 0.55rem !important;
+            border-radius:6px;
+            color:#64748B;
+            font-size:12px;
+            font-weight:650;
+        }
+        div[data-testid="stRadio"] label:has(input:checked) {
+            background:#FFFFFF;
+            color:#0F172A;
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+        div[data-testid="stRadio"] label > div:first-child {
+            display:none;
         }
         .buy-zone-table {
             border: 1px solid #E8EDF4;
@@ -717,16 +780,17 @@ def _render_styles() -> None:
             overflow-x: auto;
             overflow-y: hidden;
             background: #fff;
-            margin-bottom: 0.85rem;
+            margin-bottom: 0.7rem;
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 78px 88px 96px 82px 78px 78px minmax(118px, 1fr) 78px 82px 58px;
+            grid-template-columns: 64px 80px 96px 80px 72px 72px minmax(180px, 1fr) 72px 56px;
             align-items: center;
             gap: 0.4rem;
-            min-height: 44px;
-            min-width: 860px;
-            padding: 0 0.62rem;
+            min-height: 46px;
+            min-width: 820px;
+            width: 100%;
+            padding: 0 0.7rem;
             border-bottom: 1px solid rgba(15, 23, 42, 0.05);
             font-size: 0.8rem;
         }
@@ -737,10 +801,18 @@ def _render_styles() -> None:
             background: #F8FAFC;
             color: #64748B;
             font-size: 0.76rem;
-            font-weight: 800;
+            font-weight: 760;
+            min-height: 36px;
+        }
+        .buy-zone-grid-head span:nth-child(2),
+        .buy-zone-grid-head span:nth-child(6) {
+            text-align:right;
         }
         .buy-zone-row:hover { background: #F8FAFC; }
         .buy-zone-row .num { font-variant-numeric: tabular-nums; text-align: right; }
+        .buy-zone-row > .buy-zone-badge {
+            justify-self:start;
+        }
         .buy-zone-action-text {
             color:#475569;
             font-size:0.78rem;
@@ -757,28 +829,58 @@ def _render_styles() -> None:
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .trigger-cell {
+            min-width:0;
+            display:flex;
+            flex-direction:column;
+            align-items:flex-start;
+            justify-content:center;
+            gap:0.05rem;
+            line-height:1.18;
+        }
+        .trigger-cell b {
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            font-size:0.78rem;
+            font-weight:760;
+            color:#0F172A;
+        }
+        .trigger-cell small {
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            font-size:0.68rem;
+            color:#94A3B8;
+        }
+        .trigger-cell.ready b { color:#166534; }
+        .trigger-cell.near b,
+        .trigger-cell.caution b { color:#334155; }
+        .trigger-cell.warning b { color:#B45309; }
         .buy-zone-badge {
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            min-height:22px;
+            min-height:23px;
             max-width:100%;
-            padding:0 6px;
+            padding:0 8px;
             border-radius:999px;
             border:1px solid #E5E7EB;
             background:#F3F4F6;
             color:#4B5563;
-            font-size:11.5px;
-            font-weight:700;
+            font-size:12px;
+            font-weight:600;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
         }
-        .buy-zone-badge.green { background:#EAF8F0; color:#166534; border-color:#BBF7D0; }
+        .buy-zone-badge.green { background:#ECFDF3; color:#166534; border-color:#BBF7D0; }
         .buy-zone-badge.blue { background:#EFF6FF; color:#1D4ED8; border-color:#BFDBFE; }
         .buy-zone-badge.yellow { background:#FEFCE8; color:#854D0E; border-color:#FDE68A; }
-        .buy-zone-badge.orange { background:#FFF7ED; color:#C2410C; border-color:#FDBA74; }
-        .buy-zone-badge.red { background:#FEF2F2; color:#B91C1C; border-color:#FECACA; }
+        .buy-zone-badge.orange { background:#FFFBEB; color:#B45309; border-color:#FDE68A; }
+        .buy-zone-badge.red { background:#FFF5F5; color:#9F1239; border-color:#FECACA; }
         .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E2E8F0; }
         .buy-zone-detail-link {
             text-decoration:none;
@@ -918,7 +1020,7 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 74px 84px 92px 78px 74px 74px 112px 74px 78px 56px;
+                grid-template-columns: 64px 80px 92px 76px 70px 72px 170px 70px 54px;
                 font-size:0.76rem;
                 gap:0.35rem;
             }
@@ -999,25 +1101,38 @@ def _current_add_text(row: dict) -> tuple[str, str]:
     status = _execution_status(row)
     action = str(row.get("action") or "")
     if status == "需复核":
-        return "复核", "orange"
+        return "复核", "gray"
     if status == "禁止追高":
-        return "不新增", "red"
+        return "不新增", "gray"
     if "只观察" in action:
         return "观察", "gray"
     if status in {"接近买区", "等回踩"} or "等回踩" in action:
-        return "等待", "blue"
+        return "等待", "gray"
     return "观察", "gray"
 
 
 def _distance_to_trigger_text(row: dict) -> str:
+    primary = _distance_to_trigger_primary(row)
+    secondary = _distance_to_trigger_secondary(row)
+    return f"{primary} · {secondary}" if secondary != "暂无触发价" else primary
+
+
+def _distance_to_trigger_primary(row: dict) -> str:
     trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
     price = _first_number(row.get("currentPrice"))
     if trigger is not None and trigger > 0:
         if price is not None and price > 0:
             distance = max((price - trigger) / trigger * 100, 0)
-            return f"距触发 {distance:.1f}% · {format_currency(trigger)}"
-        return f"触发 {format_currency(trigger)}"
-    return _next_trigger_text(row)
+            return f"距触发 {distance:.1f}%"
+        return "接近触发"
+    return _next_label(str(row.get("nextBuyLabel") or "")) if row.get("nextBuyLabel") else _zone_next_label(str(row.get("currentZone") or ""))
+
+
+def _distance_to_trigger_secondary(row: dict) -> str:
+    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+    if trigger is not None and trigger > 0:
+        return f"触发价 {format_currency(trigger)}"
+    return "暂无触发价"
 
 
 def _row_reason(row: dict) -> str:
@@ -1033,6 +1148,61 @@ def _row_reason(row: dict) -> str:
     if zone == "no_chase" or row.get("action") == "禁止追高":
         return "禁止追高"
     return _next_trigger_text(row)
+
+
+def _trigger_cell_detail(row: dict) -> str:
+    _, secondary, _ = format_trigger_cell(row)
+    return secondary
+
+
+def _trigger_cell_html(row: dict) -> str:
+    primary, secondary, tone = format_trigger_cell(row)
+    return (
+        f'<span class="trigger-cell {escape(tone)}">'
+        f'<b>{escape(primary)}</b>'
+        f'<small>{escape(secondary)}</small>'
+        "</span>"
+    )
+
+
+def format_trigger_cell(row: dict) -> tuple[str, str, str]:
+    zone = str(row.get("currentZone") or "")
+    label = str(row.get("nextBuyLabel") or "").strip()
+    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+
+    if zone in {"invalid_zone", "invalid_manual_override"} or row.get("isValid") is False or bool(row.get("validationErrors")):
+        return "需复核", "买区异常", "warning"
+    if zone == "data_insufficient":
+        return "数据不足", "无有效触发价", "warning"
+    if not _valid_price(row.get("currentPrice")):
+        return "数据不足", "缺少当前价", "warning"
+    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
+        return "已进入买区", "可按计划执行", "ready"
+    if zone == "no_chase":
+        secondary = f"触发价 {format_currency(trigger)}" if trigger is not None and trigger > 0 else "等待价格回落"
+        return "等待回踩", secondary, "caution"
+
+    if trigger is not None and trigger > 0:
+        if zone == "fair_observation":
+            return f"回踩至 {format_currency(trigger)}", "可考虑第一笔买入", "near"
+        return f"触发价 {format_currency(trigger)}", _trigger_secondary_text(zone, label), "neutral"
+    if label:
+        return _next_label(label), _trigger_secondary_text(zone, ""), "neutral"
+    return _zone_next_label(zone), "等待条件明确", "neutral"
+
+
+def _trigger_secondary_text(zone: str, label: str) -> str:
+    if label:
+        mapped = _next_label(label)
+        if mapped not in {"下一买入触发价"}:
+            return mapped
+    return {
+        "fair_observation": "观察触发",
+        "tranche_buy": "可分批触发",
+        "heavy_buy": "重仓触发",
+        "below_heavy_buy": "低于重仓区",
+        "no_chase": "等待回踩",
+    }.get(zone, "第一笔买入")
 
 
 def _needs_review(row: dict) -> bool:
