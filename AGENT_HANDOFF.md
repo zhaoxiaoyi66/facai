@@ -32,6 +32,24 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Dashboard UI-only badge overflow and decision-lane footer polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Continued the Dashboard UI visual checkpoint. Shortened watchlist rating badges in the visible table (`B+ - 稳健` -> `B+`) while preserving the full label as tooltip/title, added stricter badge/cell overflow constraints, and made decision-lane footer actions more tertiary by shortening the label to `X 只未显示    查看`, left-aligning it, removing button chrome, and keeping the existing lane-filter click behavior.
+- Verification: `py_compile` passed for `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Visual review in the running Streamlit app. Commit this Dashboard UI visual checkpoint only after badge overflow and lane footer polish feel stable.
+- Do not touch yet: scoring logic, data providers, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, review status enums, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only overflow and terminal-table polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Tightened the Dashboard terminal layout without touching backend logic. Added overflow/min-width constraints to the priority strip, decision lanes, and watchlist table; stabilized lane row grids; truncated ticker/badge/reason text; shortened watchlist stock subtext to avoid ugly company-name clipping; reduced watchlist min width; and changed the `查看 ›` action into a lower-noise neutral ghost entry.
+- Verification: `py_compile` passed for `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Visual review in the running Streamlit app. Commit this UI visual system checkpoint only after the Dashboard overflow/spacing feels stable.
+- Do not touch yet: scoring logic, data providers, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, review status enums, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Global UI Visual System checkpoint; align Dashboard decision overview with the buy-zone terminal style.
 - Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
 - What changed: Converted the Dashboard summary cards into a unified status ribbon, added a compact `决策台` with `今日重点` priority strip, tightened decision lanes inside one panel, and rebuilt the watchlist display as a dense terminal-style execution table with reduced columns (`代码 / 价格市值 / 质量 / 买点 / 风险 / 动作 / 数据 / 查看`). The main table row and neutral `查看 ›` action both open the existing StockDetailDrawer. Data status now uses dot-plus-label instead of a colored pill, technical/provider errors are sanitized in main-table cells, and the page max-width/color/badge language now matches the buy-zone execution console more closely.

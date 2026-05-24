@@ -2328,13 +2328,11 @@ def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> 
     label = _dashboard_priority_label(lane_key, row)
     symbol = str(row.get("symbol") or "").upper()
     action = _short_badge_text(row.get("action") or row.get("valuationStatus") or "只观察")
-    reason = _lane_reason(row)
     return (
         '<div class="dashboard-priority-row">'
         f'<span class="dashboard-priority-status {escape(color)}"><i></i>{escape(label)}</span>'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(str(action))}</span>'
-        f'<em>{escape(reason)}</em>'
         "</div>"
     )
 
@@ -2378,7 +2376,7 @@ def _render_lane_more_button(lane_key: str, hidden_count: int) -> None:
 
 
 def _lane_more_label(hidden_count: int) -> str:
-    return f"还有 {int(hidden_count)} 只未显示　查看全部 →"
+    return f"{int(hidden_count)} 只未显示    查看"
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
@@ -3632,6 +3630,7 @@ def _render_dashboard_styles() -> None:
             background:#FAFBFD;
             border-bottom:0;
             overflow:hidden;
+            box-sizing:border-box;
         }
         .dashboard-priority-head {
             display:flex;
@@ -3653,22 +3652,27 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-priority-list {
             display:grid;
-            grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));
+            grid-template-columns:repeat(auto-fit, minmax(176px, 1fr));
             gap:0;
             margin:0 0.68rem 0.56rem;
             border:1px solid rgba(148, 163, 184, 0.14);
             background:#FFFFFF;
+            overflow:hidden;
+            box-sizing:border-box;
         }
         .dashboard-priority-row {
             display:grid;
-            grid-template-columns:auto 46px minmax(74px, 0.85fr) minmax(0, 1fr);
+            grid-template-columns:minmax(52px, auto) 46px minmax(72px, 1fr);
             align-items:center;
             gap:0.42rem;
             min-height:34px;
+            min-width:0;
             max-width:100%;
             padding:0.26rem 0.54rem;
             border-right:1px solid rgba(15, 23, 42, 0.04);
             background:transparent;
+            overflow:hidden;
+            box-sizing:border-box;
         }
         .dashboard-priority-row:last-child {
             border-right:0;
@@ -3682,6 +3686,9 @@ def _render_dashboard_styles() -> None:
             font-size:11px;
             font-weight:650;
             white-space:nowrap;
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
         }
         .dashboard-priority-status i,
         .dashboard-dot-status i {
@@ -3701,6 +3708,7 @@ def _render_dashboard_styles() -> None:
         .dashboard-dot-status.yellow i { background:#D97706; }
         .dashboard-priority-status.red i { background:#DC2626; }
         .dashboard-priority-row strong {
+            min-width:0;
             color:#0F172A;
             font-size:12px;
             font-weight:760;
@@ -3746,6 +3754,7 @@ def _render_dashboard_styles() -> None:
             background:#FFFFFF;
             gap:0.5rem !important;
             overflow:hidden;
+            box-sizing:border-box;
         }
         .summary-panel-head {
             min-height:2.46rem;
@@ -3770,21 +3779,43 @@ def _render_dashboard_styles() -> None:
             font-weight:650;
         }
         .lane-item {
-            grid-template-columns:48px auto auto minmax(0, 1fr);
+            grid-template-columns:50px minmax(50px, auto) minmax(46px, auto) minmax(0, 1fr);
             gap:5px;
             height:28px;
             min-height:28px;
             padding:0 0.5rem;
             border-top-color:rgba(15, 23, 42, 0.035);
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            box-sizing:border-box;
         }
         .lane-symbol {
             color:#0F172A;
             font-size:12px;
             font-weight:700;
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
         }
         .lane-reason {
             color:#64748B;
             font-size:11.5px;
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .lane-item > .decision-badge {
+            flex-shrink:0;
+            min-width:0;
+            max-width:92px;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
         }
         .summary-empty,
         .st-key-dashboard_lane_more_actionable button,
@@ -3795,6 +3826,14 @@ def _render_dashboard_styles() -> None:
             font-size:11px !important;
             min-height:26px !important;
             height:26px !important;
+            padding:0 0.5rem !important;
+            border:0 !important;
+            border-top:1px solid rgba(15, 23, 42, 0.04) !important;
+            border-radius:0 0 7px 7px !important;
+            background:transparent !important;
+            box-shadow:none !important;
+            justify-content:flex-start !important;
+            text-align:left !important;
         }
         .table-filter-chip {
             display:inline-flex;
@@ -3821,18 +3860,23 @@ def _render_dashboard_styles() -> None:
             margin-top:0.45rem;
             margin-bottom:0.9rem;
             box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
+            box-sizing:border-box;
         }
         .decision-grid {
             display:grid;
-            grid-template-columns:74px 118px 72px 72px 64px minmax(172px, 1fr) 78px 64px;
+            grid-template-columns:70px 108px 68px 68px 60px minmax(160px, 1fr) 72px 58px;
             align-items:center;
             gap:0.46rem;
             min-height:44px;
-            min-width:780px;
+            min-width:736px;
             width:100%;
             padding:0 12px;
             box-sizing:border-box;
             font-size:12.5px;
+            overflow:hidden;
+        }
+        .decision-grid > * {
+            min-width:0;
         }
         .decision-grid-head {
             min-height:31px;
@@ -3860,12 +3904,18 @@ def _render_dashboard_styles() -> None:
             position:static;
         }
         .decision-cell {
+            display:flex;
+            align-items:center;
             min-height:42px;
             padding:0;
             border-bottom:0;
             color:#0F172A;
             font-size:12.5px;
             font-variant-numeric:tabular-nums;
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+            box-sizing:border-box;
         }
         .decision-table.compact .decision-cell {
             min-height:42px;
@@ -3909,8 +3959,11 @@ def _render_dashboard_styles() -> None:
         }
         .stock-cell span {
             color:#64748B;
+            max-width:100%;
         }
         .decision-badge {
+            display:inline-flex;
+            align-items:center;
             height:20px;
             min-height:20px;
             max-width:100%;
@@ -3922,31 +3975,36 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
+            flex:0 1 auto;
+            min-width:0;
+            box-sizing:border-box;
         }
         .dashboard-dot-status {
             color:#475569;
             font-size:12px;
             font-weight:620;
+            max-width:100%;
         }
         .action-view-cell {
-            justify-content:flex-start;
+            justify-content:center;
         }
         .dashboard-view-action {
             display:inline-flex;
             align-items:center;
             justify-content:center;
             gap:0.16rem;
-            min-width:48px;
-            height:26px;
-            padding:0 0.42rem;
-            border:1px solid rgba(148, 163, 184, 0.18);
+            min-width:42px;
+            height:24px;
+            padding:0 0.32rem;
+            border:1px solid transparent;
             border-radius:6px;
-            background:#FFFFFF;
+            background:transparent;
             color:#475569;
             font-size:12px;
             font-weight:600;
             text-decoration:none !important;
             white-space:nowrap;
+            box-sizing:border-box;
         }
         .dashboard-view-action i {
             color:#94A3B8;
@@ -4016,11 +4074,10 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
     key = str(definition["key"])
     align_class = " align-right" if definition.get("align") == "right" else ""
     if key == "symbol":
-        company = _display_table_text(row.get("companyName"), fallback="研究标的")
         return (
             '<div class="decision-cell decision-cell-stack stock-cell">'
             f'<strong>{escape(symbol)}</strong>'
-            f'<span>{escape(company)}</span>'
+            '<span>研究标的</span>'
             "</div>"
         )
     if key == "priceMarket":
@@ -4029,7 +4086,7 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
         return (
             f'<div class="decision-cell decision-cell-stack{align_class}">'
             f'<strong>{escape(price)}</strong>'
-            f'<span>市值 {escape(market_cap)}</span>'
+            f'<span>{escape(market_cap)}</span>'
             "</div>"
         )
     if key == "actionSummary":
@@ -4053,7 +4110,7 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
     value = _safe_table_value(key, row.get(key, ""))
     value = _display_table_text(value, fallback="待补")
     if definition.get("kind") == "badge":
-        return _badge_cell_html(value, _badge_color_for_cell(key, value, row))
+        return _badge_cell_html(_compact_watchlist_badge_text(key, value), _badge_color_for_cell(key, value, row), title=value)
     return f'<div class="decision-cell{align_class}">{escape(str(value))}</div>'
 
 
@@ -4064,6 +4121,15 @@ def _display_table_text(value: object, fallback: str = "待补") -> str:
     if not text or text.lower() in {"n/a", "none", "nan", "null"}:
         return fallback
     return text
+
+
+def _compact_watchlist_badge_text(key: str, value: object) -> str:
+    text = str(value or "").strip()
+    if key in {"qualityRating", "entryRating"}:
+        first = text.split(" ", 1)[0].strip()
+        if first:
+            return first
+    return _short_badge_text(text)
 
 
 def _data_status_dot_html(value: object) -> str:
@@ -4136,11 +4202,12 @@ def _badge_html(value: object, color: str, symbol: str | None = None) -> str:
     )
 
 
-def _badge_cell_html(value: object, color: str) -> str:
+def _badge_cell_html(value: object, color: str, title: object | None = None) -> str:
     background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
+    title_attr = f' title="{escape(str(title))}"' if title else ""
     return (
         '<div class="decision-cell">'
-        f'<span class="decision-badge" style="background:{background};color:{foreground};border:1px solid {border};">'
+        f'<span class="decision-badge"{title_attr} style="background:{background};color:{foreground};border:1px solid {border};">'
         f"{escape(str(value))}"
         "</span></div>"
     )
