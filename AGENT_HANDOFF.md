@@ -32,6 +32,33 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only execution-list regression fix.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Preserved the approved compact `今日优先事项` panel and changed the execution list away from the old dense database-table feel. Replaced the eight narrow columns with five semantic compact action-row zones: stock/current price, action status plus suggestion, trigger condition, position plus confidence, and details. Kept the unified panel, shallow separators, compact desktop density, and detail drawer behavior.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review the buy-zone execution list visually. Commit only after the UI feels right; do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only dense execution table polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Converted the execution list from sparse per-row action cards back into a dense desktop execution table with a single table panel, fixed eight-column grid, compact row height, shallow separators, smaller badges, right-aligned current price, compact two-line trigger/position cells, and a compressed `今日优先事项` panel. Kept the filter in the execution-list toolbar and preserved the detail drawer interaction.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only priority panel and filter placement rewrite.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Replaced the three-lane `今日动作面板` with a compact `今日优先事项` list capped at five rows, ordered by executable, near-buy-zone, review-needed, then no-chase priority. Each row now shows status, ticker, primary action, and reason/trigger copy. Added compact count chips, removed the large empty-card layout, moved the filter into the `执行清单` toolbar row, and kept the action-list drawer behavior unchanged.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only `执行清单` compact action list rewrite.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Continued the same buy-zone UI checkpoint. Replaced the dense multi-column execution table with compact action-list rows using a stable six-part grid: stock identity/current price, status plus suggested action, trigger condition, position action, confidence, and detail action. Removed narrow current-price/current-add/max-position columns, kept current add as action text instead of `0%`, kept trigger conditions as neutral two-line prompts, made rows 60px compact cards with light borders, and preserved the detail drawer interaction.
