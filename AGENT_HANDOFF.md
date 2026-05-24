@@ -30,6 +30,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard decision overview UI-only repair and polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Fixed StockDetailDrawer opening and closing from the main table menu, then moved menu detail/position/plan actions back to client-side drawer buttons so they open without a Streamlit rerun. Kept table/lane row clicks on the client drawer opener. Polished decision lanes into a more unified compact panel with tighter card gaps, lighter transparent rows, smaller inline footer, reduced section spacing, removed blank lane placeholders, and hid raw technical error text from the main table flow.
+- Verification: `py_compile` passed for `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 238 tests and 19 subtests.
+- Next needed: Review and commit this UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: Scoring logic, data logic, BuyZoneEngine, PositionPlanEngine, Review Center backend, status enums, database schema, Qwen/AI review, autopilot, external APIs, scoring input gate, and buy-zone sanity code were not changed.
+
 2026-05-24 Data conversation:
 - Owner: Data conversation.
 - Task: Checkpoint 3 - BuyZoneEngine sanity check.

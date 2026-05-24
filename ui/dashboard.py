@@ -99,6 +99,20 @@ LANE_FILTER_LABELS = {
     "waitOrReview": "等回踩 / 待确认",
     "noChaseHighRisk": "禁止追高 / 高风险",
 }
+DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
+DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
+TECHNICAL_ERROR_HINTS = (
+    "fmp",
+    "curl",
+    "traceback",
+    "timed out",
+    "timeout",
+    "handshake",
+    "network",
+    "connection",
+    "httperror",
+    "ssl",
+)
 
 
 def render() -> None:
@@ -456,7 +470,7 @@ def _render_market_strip(table: pd.DataFrame) -> None:
 
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
-    render_section_title("决策通道", "每组最多显示 4 只，详细解释进入右侧面板")
+    render_section_title("决策通道")
     summary_groups = [
         ("actionable", "可行动", "可执行小仓或正常分批", _actionable_rows(table), "green"),
         ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", _near_buy_zone_rows(table), "yellow"),
@@ -464,7 +478,8 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
         ("noChaseHighRisk", "禁止追高 / 高风险", "先看原因，不硬买", _blocked_or_risky_rows(table), "red"),
     ]
 
-    columns = st.columns(4)
+    st.markdown('<div class="decision-lanes-marker"></div>', unsafe_allow_html=True)
+    columns = st.columns(4, gap="small")
     for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
         with column:
             st.markdown(_summary_panel_head_html(title, subtitle, len(rows), color), unsafe_allow_html=True)
@@ -475,6 +490,7 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
                 st.markdown(_lane_item_html(row), unsafe_allow_html=True)
             if len(rows) > 4:
                 _render_lane_more_button(lane_key, len(rows) - 4)
+    st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
 
 
 def _render_decision_table(table: pd.DataFrame) -> None:
@@ -491,7 +507,7 @@ def _render_decision_table(table: pd.DataFrame) -> None:
         column.markdown(_header_cell_html(definition["label"], definition.get("align")), unsafe_allow_html=True)
 
     for _, row in table.iterrows():
-        symbol = str(row.get("symbol", ""))
+        symbol = str(row.get("symbol", "")).upper()
         with st.container():
             row_columns = st.columns(DECISION_COLUMN_WIDTHS)
             for column, definition in zip(row_columns, DASHBOARD_COLUMNS):
@@ -500,19 +516,17 @@ def _render_decision_table(table: pd.DataFrame) -> None:
                         _render_row_action_menu(row)
                     continue
                 value = row.get(definition["key"], "N/A")
+                value = _safe_table_value(definition["key"], value)
                 if definition.get("kind") == "badge" or definition["key"] in {"valuationStatus", "action", "maxSuggestedPosition", "dataStatus"}:
                     display_value = _short_badge_text(value) if definition["key"] == "action" else value
-                    column.markdown(_badge_html(display_value, _badge_color_for_cell(definition["key"], value, row)), unsafe_allow_html=True)
+                    column.markdown(_badge_html(display_value, _badge_color_for_cell(definition["key"], value, row), symbol=symbol), unsafe_allow_html=True)
                 else:
-                    column.markdown(_body_cell_html(value, definition.get("align")), unsafe_allow_html=True)
-
-            if row.get("action") == "数据不足，需复核" and row.get("dataNote"):
-                st.caption(str(row.get("dataNote")))
+                    column.markdown(_body_cell_html(value, definition.get("align"), symbol=symbol), unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_row_action_menu(row: pd.Series) -> None:
-    symbol = str(row.get("symbol") or "")
+    symbol = str(row.get("symbol") or "").upper()
     with st.popover("⋯", use_container_width=True):
         st.markdown(_drawer_open_menu_html(symbol, "详情"), unsafe_allow_html=True)
         st.markdown(_drawer_open_menu_html(symbol, "买区 / 仓位", focus="position"), unsafe_allow_html=True)
@@ -522,12 +536,27 @@ def _render_row_action_menu(row: pd.Series) -> None:
             st.rerun()
 
 
+def _queue_stock_detail_drawer(symbol: str, focus: str | None = None) -> None:
+    st.session_state[DRAWER_SYMBOL_SESSION_KEY] = str(symbol or "").upper()
+    if focus:
+        st.session_state[DRAWER_FOCUS_SESSION_KEY] = str(focus)
+    else:
+        st.session_state.pop(DRAWER_FOCUS_SESSION_KEY, None)
+
+
 def _drawer_open_menu_html(symbol: str, label: str, focus: str | None = None) -> str:
-    safe_symbol = escape(str(symbol or ""))
+    normalized_symbol = str(symbol or "").upper()
+    safe_symbol = escape(normalized_symbol)
     focus_attr = f' data-dashboard-drawer-focus="{escape(focus)}"' if focus else ""
+    focus_js = json.dumps(str(focus) if focus else None, ensure_ascii=False)
+    onclick = (
+        "event.preventDefault();event.stopPropagation();"
+        f"if(window.__dashboardOpenDrawer){{window.__dashboardOpenDrawer({json.dumps(normalized_symbol, ensure_ascii=False)},{focus_js});}}"
+        "return false;"
+    )
     return (
-        f'<a class="drawer-menu-link" href="#" data-dashboard-drawer-open="{safe_symbol}"{focus_attr} '
-        f'title="打开 {safe_symbol} 右侧详情面板">{escape(label)}</a>'
+        f'<button type="button" class="drawer-menu-link" data-dashboard-drawer-open="{safe_symbol}"{focus_attr} '
+        f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板">{escape(label)}</button>'
     )
 
 
@@ -624,6 +653,8 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
             drawer_payload[symbol] = _drawer_html(row)
     if not drawer_payload:
         return
+    auto_open_symbol = str(st.session_state.pop(DRAWER_SYMBOL_SESSION_KEY, "") or "").upper()
+    auto_open_focus = st.session_state.pop(DRAWER_FOCUS_SESSION_KEY, None)
     components.html(
         f"""
         <script>
@@ -631,6 +662,8 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
           const win = window.parent;
           const doc = win.document;
           win.__dashboardDrawerPayload = {json.dumps(drawer_payload, ensure_ascii=False)};
+          const autoOpenSymbol = {json.dumps(auto_open_symbol, ensure_ascii=False)};
+          const autoOpenFocus = {json.dumps(auto_open_focus, ensure_ascii=False)};
           let root = doc.getElementById("dashboard-client-drawer-root");
           if (!root) {{
             root = doc.createElement("div");
@@ -676,8 +709,33 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
             doc.body.classList.add("dashboard-drawer-open");
             focusDrawerSection(focusKey);
           }}
+          root.onclick = (event) => {{
+            const rawTarget = event.target;
+            const target = rawTarget instanceof win.Element ? rawTarget : rawTarget && rawTarget.parentElement;
+            if (!(target instanceof win.Element)) {{
+              return;
+            }}
+            const closer = target.closest("[data-dashboard-drawer-close]");
+            const backdrop = target.closest(".drawer-backdrop");
+            if (closer || backdrop) {{
+              event.preventDefault();
+              event.stopPropagation();
+              closeDrawer();
+              return;
+            }}
+            const messageAction = target.closest("[data-dashboard-drawer-message]");
+            if (messageAction) {{
+              event.preventDefault();
+              event.stopPropagation();
+              focusDrawerSection(messageAction.getAttribute("data-dashboard-drawer-focus"));
+              showDrawerMessage(messageAction.getAttribute("data-dashboard-drawer-message"));
+            }}
+          }};
           win.__dashboardOpenDrawer = openDrawer;
           win.__dashboardCloseDrawer = closeDrawer;
+          if (autoOpenSymbol) {{
+            win.setTimeout(() => openDrawer(autoOpenSymbol, autoOpenFocus), 0);
+          }}
           if (!win.__dashboardDrawerDelegationBound) {{
             win.__dashboardDrawerDelegationBound = true;
             doc.addEventListener("click", (event) => {{
@@ -689,6 +747,7 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
               const opener = target.closest("[data-dashboard-drawer-open]");
               if (opener) {{
                 event.preventDefault();
+                event.stopPropagation();
                 openDrawer(
                   opener.getAttribute("data-dashboard-drawer-open"),
                   opener.getAttribute("data-dashboard-drawer-focus")
@@ -698,17 +757,20 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
               const closer = target.closest("[data-dashboard-drawer-close]");
               if (closer) {{
                 event.preventDefault();
+                event.stopPropagation();
                 closeDrawer();
                 return;
               }}
               if (target.classList.contains("drawer-backdrop")) {{
                 event.preventDefault();
+                event.stopPropagation();
                 closeDrawer();
                 return;
               }}
               const messageAction = target.closest("[data-dashboard-drawer-message]");
               if (messageAction) {{
                 event.preventDefault();
+                event.stopPropagation();
                 focusDrawerSection(messageAction.getAttribute("data-dashboard-drawer-focus"));
                 showDrawerMessage(messageAction.getAttribute("data-dashboard-drawer-message"));
                 return;
@@ -729,12 +791,12 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
 
 
 def _render_stock_detail_drawer(table: pd.DataFrame) -> None:
-    selected = st.session_state.get("dashboard_drawer_symbol")
+    selected = st.session_state.get(DRAWER_SYMBOL_SESSION_KEY)
     if not selected:
         return
     matches = table[table["symbol"].astype(str) == str(selected)]
     if matches.empty:
-        st.session_state.pop("dashboard_drawer_symbol", None)
+        st.session_state.pop(DRAWER_SYMBOL_SESSION_KEY, None)
         return
     row = matches.iloc[0]
     st.markdown(_drawer_html(row), unsafe_allow_html=True)
@@ -2014,6 +2076,25 @@ def _data_note(snapshot: dict, data_quality: dict, score=None) -> str:
     return "；".join(messages)
 
 
+def _looks_like_technical_error(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(hint in text for hint in TECHNICAL_ERROR_HINTS)
+
+
+def _safe_table_value(key: str, value: object) -> object:
+    if not _looks_like_technical_error(value):
+        return value
+    if key == "dataStatus":
+        return "数据异常"
+    if key == "action":
+        return "数据不足，需复核"
+    if key in {"valuationStatus", "qualityRating", "entryRating", "riskRating"}:
+        return "数据不足"
+    return "数据异常"
+
+
 def _top_research_rows(table: pd.DataFrame) -> list[pd.Series]:
     candidates = [
         row
@@ -2170,7 +2251,7 @@ def _badge_color_for_cell(key: str, value: object, row: pd.Series | None = None)
             return "blue"
         if text in {"待复核", "低置信度"}:
             return "yellow" if text == "待复核" else "orange"
-        if text == "数据不足":
+        if text in {"数据不足", "数据异常", "使用本地缓存"}:
             return "gray"
         return "gray"
     if key == "maxSuggestedPosition":
@@ -2239,14 +2320,15 @@ def _render_lane_more_button(lane_key: str, hidden_count: int) -> None:
 
 
 def _lane_more_label(hidden_count: int) -> str:
-    return f"还有 {int(hidden_count)} 只 · 查看全部"
+    return f"还有 {int(hidden_count)} 只未显示　查看全部 →"
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
     label = LANE_FILTER_LABELS.get(str(lane_key), "该分组")
+    legacy_label = f"还有 {int(hidden_count)} 只 · 查看全部"
     return (
-        f'<span class="lane-more" title="原地聚焦主表：{escape(label)}">'
-        f"{escape(_lane_more_label(hidden_count))}"
+        f'<span class="lane-more" title="原地聚焦主表：{escape(label)}" aria-label="{escape(legacy_label)}">'
+        f"<span>还有 {int(hidden_count)} 只未显示</span><b>查看全部 →</b>"
         "</span>"
     )
 
@@ -2746,51 +2828,85 @@ def _render_dashboard_styles() -> None:
         .market-stat-detail {
             margin-top: 0.18rem;
         }
+        .decision-lanes-marker,
+        .decision-lanes-end {
+            display: none;
+        }
+        .zhx-section-title {
+            margin: 0.55rem 0 0.28rem;
+        }
+        .zhx-section-title span:empty {
+            display: none;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.decision-lanes-marker) + div [data-testid="stHorizontalBlock"] {
+            gap: 0.55rem !important;
+            margin: 0 0 0.28rem;
+            padding: 0.55rem;
+            border: 1px solid rgba(15, 23, 42, 0.05);
+            border-radius: 0.65rem;
+            background: rgba(255,255,255,0.50);
+        }
         .summary-panel-head {
-            min-height: 2.82rem;
+            min-height: 2.6rem;
             border-radius: 0.55rem 0.55rem 0 0;
-            background: var(--dash-surface);
+            background: rgba(255,255,255,0.70);
             box-shadow: none;
-            padding: 0.52rem 0.65rem;
+            border-color: rgba(15, 23, 42, 0.05);
+            padding: 0.44rem 0.58rem;
         }
         .summary-panel-title {
-            font-size: 0.86rem;
+            font-size: 13px;
+            font-weight: 650;
         }
         .summary-panel-subtitle {
-            font-size: 0.72rem;
+            margin-top: 0.08rem;
+            font-size: 11.5px;
+            color: var(--dash-muted);
+        }
+        .summary-count {
+            min-width: 22px;
+            height: 22px;
+            font-size: 11px;
+            font-weight: 650;
         }
         .summary-empty,
         .lane-more {
             display: block;
-            min-height: 1.75rem;
-            padding: 0.35rem 0.6rem;
+            min-height: 1.65rem;
+            padding: 0.26rem 0.56rem;
             color: var(--dash-muted);
-            background: rgba(255,255,255,0.62);
-            border: 1px solid var(--dash-border);
-            border-top: 0;
-            font-size: 0.78rem;
+            background: transparent;
+            border: 0;
+            border-top: 1px solid rgba(15, 23, 42, 0.04);
+            font-size: 11.5px;
+            font-weight: 500;
             text-decoration: none !important;
             cursor: pointer;
         }
         .lane-more:hover {
             color: var(--dash-text);
-            background: rgba(248,250,252,0.94);
+            background: rgba(248,250,252,0.60);
+        }
+        .summary-empty {
+            min-height: 28px;
+            display: flex;
+            align-items: center;
         }
         .st-key-dashboard_lane_more_actionable button,
         .st-key-dashboard_lane_more_nearBuyZone button,
         .st-key-dashboard_lane_more_waitOrReview button,
         .st-key-dashboard_lane_more_noChaseHighRisk button {
-            min-height: 1.75rem;
-            height: 1.75rem;
-            padding: 0.35rem 0.6rem;
-            color: var(--dash-muted);
-            background: rgba(255,255,255,0.62);
-            border: 1px solid var(--dash-border);
-            border-top: 0;
-            border-radius: 0 0 0.55rem 0.55rem;
+            min-height: 1.65rem;
+            height: 1.65rem;
+            padding: 0.16rem 0.56rem;
+            color: var(--dash-secondary);
+            background: transparent;
+            border: 0;
+            border-top: 1px solid rgba(15, 23, 42, 0.04);
+            border-radius: 0 0 0.45rem 0.45rem;
             box-shadow: none;
-            font-size: 0.78rem;
-            font-weight: 600;
+            font-size: 11.5px;
+            font-weight: 500;
             justify-content: flex-start;
         }
         .st-key-dashboard_lane_more_actionable button:hover,
@@ -2798,21 +2914,22 @@ def _render_dashboard_styles() -> None:
         .st-key-dashboard_lane_more_waitOrReview button:hover,
         .st-key-dashboard_lane_more_noChaseHighRisk button:hover {
             color: var(--dash-text);
-            background: rgba(248,250,252,0.94);
-            border-color: rgba(15, 23, 42, 0.10);
+            background: rgba(248,250,252,0.60);
+            border-color: rgba(15, 23, 42, 0.04);
         }
         .lane-item {
+            --legacy-row-height: 32px;
             display: grid;
             grid-template-columns: 52px auto auto minmax(0, 1fr);
             align-items: center;
-            gap: 8px;
-            height: 32px;
-            min-height: 32px;
-            padding: 0 0.48rem;
-            border: 1px solid rgba(15, 23, 42, 0.06);
-            border-top: 0;
-            background: rgba(255,255,255,0.78);
-            font-size: 0.78rem;
+            gap: 6px;
+            height: 29px;
+            min-height: 29px;
+            padding: 0 0.54rem;
+            border: 0;
+            border-top: 1px solid rgba(15, 23, 42, 0.04);
+            background: transparent;
+            font-size: 12px;
             color: inherit;
             text-decoration: none !important;
             overflow: hidden;
@@ -2825,14 +2942,12 @@ def _render_dashboard_styles() -> None:
             text-decoration: none !important;
         }
         .lane-item:hover {
-            background: #F8FAFC;
-        }
-        .zhx-section-title {
-            margin: 0.8rem 0 0.42rem;
+            background: rgba(248,250,252,0.72);
         }
         .lane-symbol {
             color: var(--dash-text);
-            font-weight: 760;
+            font-size: 12px;
+            font-weight: 650;
             font-variant-numeric: tabular-nums;
             min-width: 0;
             overflow: hidden;
@@ -2848,6 +2963,7 @@ def _render_dashboard_styles() -> None:
         }
         .lane-reason {
             color: var(--dash-secondary);
+            font-size: 12px;
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -2882,6 +2998,15 @@ def _render_dashboard_styles() -> None:
         .decision-table {
             margin-top: 0.15rem;
         }
+        .decision-cell-link {
+            display: block;
+            color: inherit;
+            text-decoration: none !important;
+            border-radius: 6px;
+        }
+        .decision-cell-link:hover .decision-cell {
+            background: #F8FAFC;
+        }
         .decision-table [data-testid="stVerticalBlockBorderWrapper"] {
             border: 0;
             box-shadow: none;
@@ -2892,9 +3017,9 @@ def _render_dashboard_styles() -> None:
             padding: 0.35rem 0.3rem;
             color: var(--dash-secondary);
             font-size: 0.74rem;
-            font-weight: 720;
+            font-weight: 650;
             background: rgba(247,248,250,0.94);
-            border-bottom: 1px solid var(--dash-border);
+            border-bottom: 1px solid rgba(15, 23, 42, 0.05);
             position: sticky;
             top: 0;
             z-index: 2;
@@ -2903,13 +3028,13 @@ def _render_dashboard_styles() -> None:
             min-height: 3.05rem;
             padding: 0.28rem 0.3rem;
             color: var(--dash-text);
-            font-size: 0.82rem;
-            border-bottom: 1px solid rgba(229,231,235,0.82);
+            font-size: 12.5px;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.05);
             font-variant-numeric: tabular-nums;
         }
         .decision-table.compact .decision-cell {
             min-height: 2.65rem;
-            font-size: 0.79rem;
+            font-size: 12.5px;
         }
         .align-right {
             justify-content: flex-end;
@@ -2923,6 +3048,42 @@ def _render_dashboard_styles() -> None:
             font-weight: 600;
             line-height: 24px;
             white-space: nowrap;
+        }
+        div[data-testid="stPopover"] > button {
+            min-height: 30px;
+            height: 30px;
+            padding: 0 8px;
+            border-color: transparent;
+            background: transparent;
+            color: var(--dash-secondary);
+            box-shadow: none;
+        }
+        div[data-testid="stPopover"] > button:hover {
+            border-color: rgba(15, 23, 42, 0.08);
+            background: #F8FAFC;
+            color: var(--dash-text);
+        }
+        [class*="st-key-dashboard-detail-"] button,
+        [class*="st-key-dashboard-position-"] button,
+        [class*="st-key-dashboard-plan-"] button,
+        [class*="st-key-dashboard-refresh-"] button {
+            min-height: 30px !important;
+            height: 30px !important;
+            border-radius: 7px !important;
+            border-color: transparent !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            color: var(--dash-text) !important;
+            font-size: 12px !important;
+            font-weight: 560 !important;
+            justify-content: flex-start !important;
+        }
+        [class*="st-key-dashboard-detail-"] button:hover,
+        [class*="st-key-dashboard-position-"] button:hover,
+        [class*="st-key-dashboard-plan-"] button:hover,
+        [class*="st-key-dashboard-refresh-"] button:hover {
+            background: #F8FAFC !important;
+            border-color: rgba(15, 23, 42, 0.06) !important;
         }
         .score-card,
         .resolution-card {
@@ -2979,6 +3140,9 @@ def _render_dashboard_styles() -> None:
             text-decoration: none;
             font-size: 0.86rem;
             font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            appearance: none;
         }
         .drawer-menu-link:hover {
             background: var(--dash-surface-muted);
@@ -3312,18 +3476,29 @@ def _header_cell_html(value: object, align: object = None) -> str:
     return f'<div class="decision-header{align_class}">{escape(str(value))}</div>'
 
 
-def _body_cell_html(value: object, align: object = None) -> str:
-    align_class = " align-right" if align == "right" else ""
-    return f'<div class="decision-cell{align_class}">{escape(str(value))}</div>'
-
-
-def _badge_html(value: object, color: str) -> str:
-    background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
+def _dashboard_cell_link(inner_html: str, symbol: str | None) -> str:
+    safe_symbol = escape(str(symbol or "").upper())
+    if not safe_symbol:
+        return inner_html
     return (
+        f'<a class="decision-cell-link" href="#" data-dashboard-drawer-open="{safe_symbol}" '
+        f'title="打开 {safe_symbol} 右侧详情面板">{inner_html}</a>'
+    )
+
+
+def _body_cell_html(value: object, align: object = None, symbol: str | None = None) -> str:
+    align_class = " align-right" if align == "right" else ""
+    return _dashboard_cell_link(f'<div class="decision-cell{align_class}">{escape(str(value))}</div>', symbol)
+
+
+def _badge_html(value: object, color: str, symbol: str | None = None) -> str:
+    background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
+    return _dashboard_cell_link(
         '<div class="decision-cell">'
         f'<span class="decision-badge" style="background:{background};color:{foreground};border:1px solid {border};">'
         f"{escape(str(value))}"
-        "</span></div>"
+        "</span></div>",
+        symbol,
     )
 
 
