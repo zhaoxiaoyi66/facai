@@ -30,6 +30,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Individual stock research page UI-only restructure.
+- Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
+- What changed: Renamed the page to `个股研究`, tightened the symbol controls, moved the first screen around stock summary, current conclusion, buy-zone ladder, and position guidance, changed the action plan to a default system-summary plus edit toggle, compacted scoring explanations and SaaS/core industry metrics, and folded data status, auto-fill/review/source details, and raw metrics behind explicit expanders.
+- Verification: `py_compile` passed for `ui/stock_detail.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 241 tests and 27 subtests.
+- Next needed: Review and commit this UI-only checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: Data logic, scoring logic, BuyZoneEngine, PositionPlanEngine, Review Center backend, status enums, database schema/migrations, Qwen/AI review, autopilot, Scoring Input Gate, external APIs, long-running services, and technical-indicator normalization were not changed.
+
 2026-05-24 Data conversation:
 - Owner: Data conversation.
 - Task: Metric Display Mapping / unmapped field cleanup.

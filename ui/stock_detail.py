@@ -33,7 +33,7 @@ from ui.metric_labels import (
     resolution_status_label,
     source_type_label,
 )
-from ui.theme import render_page_header, render_section_title
+from ui.theme import render_section_title
 
 
 MANUAL_TEXT = "建议人工复核"
@@ -41,7 +41,7 @@ MANUAL_TEXT = "建议人工复核"
 
 def render() -> None:
     _render_detail_styles()
-    render_page_header("单股详情 2.0", "先看结论，再看评分原因、行业关键指标、击球区和操作计划。")
+    _render_research_header()
 
     ticker = _select_ticker()
     if not ticker:
@@ -73,7 +73,7 @@ def render() -> None:
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
 
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at)
-    _render_decision_summary(score, buy_zone, plan_suggestion)
+    _render_decision_summary(score, effective_buy_zone, plan_suggestion)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone)
     _render_explanation_cards(score, snapshot, technicals, effective_plan)
@@ -81,6 +81,20 @@ def render() -> None:
     _render_missing_data_notice(ticker, score, snapshot)
     _render_manual_override_form(ticker, snapshot, score, technicals, history)
     _render_raw_metrics(snapshot, history, technicals, score, ticker)
+
+
+def _render_research_header() -> None:
+    st.markdown(
+        """
+        <div class="stock-research-header">
+            <div>
+                <p>个股研究</p>
+                <span>先看结论，再看买区、评分和数据可信度。</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _select_ticker() -> str:
@@ -97,10 +111,13 @@ def _select_ticker() -> str:
         tickers = [default_symbol, *tickers]
 
     selected = ""
+    selector_cols = st.columns([1.1, 1.1, 3.8])
     if tickers:
         index = tickers.index(default_symbol) if default_symbol in tickers else 0
-        selected = st.selectbox("股票代码", tickers, index=index, key="stock_detail_symbol")
-    custom = st.text_input("或输入其他股票代码", value="", placeholder="例如 VST / NOW / NVDA")
+        with selector_cols[0]:
+            selected = st.selectbox("股票选择器", tickers, index=index, key="stock_detail_symbol", label_visibility="collapsed")
+    with selector_cols[1]:
+        custom = st.text_input("手动输入股票代码", value="", placeholder="例如 VST / NOW / NVDA", label_visibility="collapsed")
     return (custom or selected or "").strip().upper()
 
 
@@ -110,17 +127,15 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
     values = [
+        ("操作建议", score.action),
+        ("当前新增", _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent))),
+        ("组合仓位上限", _position_limit_text(getattr(score, "max_portfolio_weight_percent", None))),
         ("当前价格", format_currency(price)),
         ("市值", format_large_number(snapshot.get("market_cap"))),
         ("行业模型", model_type_label(score.scoring_model)),
         ("质量评级", score.quality_rating),
         ("买点评级", score.entry_rating),
-        ("风险等级", score.risk_rating),
-        ("估值状态", score.valuation_status),
-        ("操作建议", score.action),
-        ("当前新增建议", _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent))),
-        ("组合仓位上限", _position_limit_text(getattr(score, "max_portfolio_weight_percent", None))),
-        ("代理置信度", f"{confidence_label(score.proxy_confidence)} / {confidence_label(score.data_confidence)}"),
+        ("风险评级", score.risk_rating),
         ("数据状态", data_status),
         ("最近刷新", refreshed),
     ]
@@ -193,15 +208,49 @@ def _explain_card(
         st.markdown(f"#### {title}")
         st.markdown(_pill_html(rating, _rating_color(rating)), unsafe_allow_html=True)
         st.caption(positive_title)
-        _render_short_list(positives, "暂无明显加分项")
+        _render_short_list(positives[:3], "暂无明显加分项")
         st.caption(risk_title)
-        _render_short_list(risks, "暂无明显扣分项")
+        _render_short_list(risks[:3], "暂无明显扣分项")
         st.caption("缺失数据项")
-        _render_short_list(missing[:5], "关键字段可用")
+        st.caption(_missing_summary_text(missing))
+        with st.expander("展开详情", expanded=False):
+            st.caption(positive_title)
+            _render_short_list(positives, "暂无明显加分项")
+            st.caption(risk_title)
+            _render_short_list(risks, "暂无明显扣分项")
+            st.caption("缺失数据项")
+            _render_short_list(missing, "关键字段可用")
+
+
+def _missing_summary_text(missing: list[str]) -> str:
+    if not missing:
+        return "关键字段可用"
+    preview = "、".join(metric_label(item) for item in missing[:3])
+    suffix = f" 等 {len(missing)} 项" if len(missing) > 3 else ""
+    return f"{preview}{suffix}"
 
 
 def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
-    render_section_title("数据状态", "区分真缺失、未披露、供应商没有、需要 IR 抓取和需要分析师预期")
+    render_section_title("数据可信度", "数据细节默认折叠")
+    summary = snapshot.get("disclosureReviewSummary")
+    pending = summary.get("pending_review", 0) if isinstance(summary, dict) else 0
+    approved = summary.get("approved", 0) if isinstance(summary, dict) else 0
+    missing_count = len(score.missing_data or [])
+    st.markdown(
+        _data_summary_html(
+            confidence_label(score.data_confidence or snapshot.get("dataConfidence") or "N/A"),
+            pending,
+            approved,
+            missing_count,
+        ),
+        unsafe_allow_html=True,
+    )
+    with st.expander("查看数据状态", expanded=False):
+        _render_missing_data_details(ticker, score, snapshot)
+
+
+def _render_missing_data_details(ticker: str, score, snapshot: dict) -> None:
+    st.caption("区分真缺失、未披露、供应商没有、需要 IR 抓取和需要分析师预期。")
     missing = score.missing_data or []
     missing_impacts = getattr(score, "missing_metric_impacts", None) or getattr(score, "missingMetricImpact", [])
     confidence = score.data_confidence or snapshot.get("dataConfidence")
@@ -275,42 +324,57 @@ def _proxy_status_rows(score) -> list[dict]:
 
 def _render_industry_metrics(model_type: str, snapshot: dict, score) -> None:
     render_section_title("行业专属指标", model_type_label(model_type))
-    rows = _industry_metric_rows(model_type, snapshot, score)
+    rows = _core_industry_metric_rows(model_type, snapshot, score)
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
+def _core_industry_metric_rows(model_type: str, snapshot: dict, score) -> list[dict]:
+    if model_type == "SAAS_SOFTWARE":
+        fcf_metric = fcf_margin_metric(snapshot)
+        return [
+            _metric_row("收入增速", format_percent(snapshot.get("revenue_growth"), already_percent=False), "核心增长"),
+            _metric_row("FCF利润率", format_percent(fcf_metric.value, already_percent=False), fcf_margin_source_note(snapshot)),
+            _metric_row("P/FCF", format_multiple(snapshot.get("price_to_fcf")), "估值"),
+            _metric_row("FCF收益率", format_percent(snapshot.get("free_cash_flow_yield"), already_percent=False), "估值"),
+            _metric_row("RPO / cRPO 增速", _manual_percent_metric(snapshot, "manualRpoGrowth", "rpo_growth"), "无则需人工补充"),
+            _metric_row("SBC / revenue", _manual_percent_metric(snapshot, "manualSbcRatio", "sbc_ratio", "stock_based_compensation_ratio"), "无则需人工补充"),
+        ]
+    return _industry_metric_rows(model_type, snapshot, score)[:6]
+
+
 def _render_manual_override_form(ticker: str, snapshot: dict, score, technicals: dict | None = None, history: pd.DataFrame | None = None) -> None:
-    render_section_title("数据自动补齐", "优先从 SEC、8-K、IR release 和 transcript 补行业专属指标")
-    _render_disclosure_pipeline_controls(ticker, snapshot, score, technicals, history)
-    _render_sec_supplement_summary(snapshot)
+    with st.expander("数据自动补齐 / 人工补充", expanded=False):
+        st.caption("优先从 SEC、8-K、IR release 和 transcript 补行业专属指标。")
+        _render_disclosure_pipeline_controls(ticker, snapshot, score, technicals, history)
+        _render_sec_supplement_summary(snapshot)
 
-    fields = _manual_override_fields(score.scoring_model)
-    if not fields:
-        st.caption("当前模型暂未配置专属人工补充表单。")
-        return
+        fields = _manual_override_fields(score.scoring_model)
+        if not fields:
+            st.caption("当前模型暂未配置专属人工补充表单。")
+            return
 
-    with st.form(f"manual-overrides-{ticker}"):
-        st.caption("百分比字段可填 0.15 或 15%，系统会自动按比例保存。")
-        values: dict[str, str] = {}
-        columns = st.columns(2)
-        for index, (label, key, is_percent) in enumerate(fields):
-            with columns[index % 2]:
-                values[key] = st.text_input(label, value=_number_text(snapshot.get(key)), key=f"{ticker}-{key}")
-                if is_percent:
-                    st.caption("按比例保存，例如 0.18 = 18%")
+        with st.form(f"manual-overrides-{ticker}"):
+            st.caption("百分比字段可填 0.15 或 15%，系统会自动按比例保存。")
+            values: dict[str, str] = {}
+            columns = st.columns(2)
+            for index, (label, key, is_percent) in enumerate(fields):
+                with columns[index % 2]:
+                    values[key] = st.text_input(label, value=_number_text(snapshot.get(key)), key=f"{ticker}-{key}")
+                    if is_percent:
+                        st.caption("按比例保存，例如 0.18 = 18%")
 
-        notes = st.text_area("人工备注", value=snapshot.get("manualNarrativeNotes") or "", key=f"{ticker}-manual-notes")
-        submitted = st.form_submit_button("保存补充数据", width="stretch")
-        if submitted:
-            parsed = {
-                key: _parse_optional_number(values.get(key, ""), is_percent=is_percent)
-                for _, key, is_percent in fields
-            }
-            parsed["manualNarrativeNotes"] = notes.strip() or None
-            FundamentalCache().set_manual_overrides(ticker, **parsed)
-            st.session_state[f"stock_detail_refresh_token_{ticker}"] = datetime.now().isoformat()
-            st.success("已保存补充数据，评分会使用新的 manual override。")
-            st.rerun()
+            notes = st.text_area("人工备注", value=snapshot.get("manualNarrativeNotes") or "", key=f"{ticker}-manual-notes")
+            submitted = st.form_submit_button("保存补充数据", width="stretch")
+            if submitted:
+                parsed = {
+                    key: _parse_optional_number(values.get(key, ""), is_percent=is_percent)
+                    for _, key, is_percent in fields
+                }
+                parsed["manualNarrativeNotes"] = notes.strip() or None
+                FundamentalCache().set_manual_overrides(ticker, **parsed)
+                st.session_state[f"stock_detail_refresh_token_{ticker}"] = datetime.now().isoformat()
+                st.success("已保存补充数据，评分会使用新的 manual override。")
+                st.rerun()
 
 
 def _render_disclosure_pipeline_controls(
@@ -600,16 +664,24 @@ def _plan_or_suggestion(plan: dict, field: str, fallback):
 
 
 def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion) -> None:
-    render_section_title("当前结论", "区分公司质量、当前买点和仓位动作")
-    with st.container(border=True):
-        st.markdown(f"#### {score.action or '只观察'}")
-        st.write(_decision_summary_text(score, buy_zone))
-        cols = st.columns(2)
-        cols[0].metric("当前新增建议", _position_limit_text(plan_suggestion.currentAddLimitPercent))
-        cols[1].metric("组合仓位上限", _position_limit_text(plan_suggestion.maxPortfolioWeightPercent))
-        wait_items = _decision_wait_items(score, buy_zone)
-        st.caption("等待条件")
-        _render_short_list(wait_items, "暂无额外等待条件")
+    render_section_title("当前结论", "先定动作，再看触发条件")
+    wait_items = _decision_wait_items(score, buy_zone)
+    trigger = getattr(buy_zone, "nextBuyLabel", "") or _distance_to_zone(buy_zone.currentPrice, buy_zone.to_plan_fields())
+    st.markdown(
+        '<section class="research-card conclusion-card">'
+        f'<div class="conclusion-main">{escape(score.action or "只观察")}</div>'
+        f'<p>{escape(_decision_summary_text(score, buy_zone))}</p>'
+        '<div class="conclusion-grid">'
+        f'<div><span>当前新增建议</span><strong>{escape(_position_limit_text(plan_suggestion.currentAddLimitPercent))}</strong></div>'
+        f'<div><span>组合仓位上限</span><strong>{escape(_position_limit_text(plan_suggestion.maxPortfolioWeightPercent))}</strong></div>'
+        f'<div><span>下一触发条件</span><strong>{escape(trigger)}</strong></div>'
+        '</div>'
+        '<div class="wait-list">'
+        + "".join(f'<span>{escape(item)}</span>' for item in wait_items)
+        + '</div>'
+        '</section>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_buy_zone(
@@ -623,22 +695,37 @@ def _render_buy_zone(
     title_suffix = "当前使用手动买区" if manual else "当前使用系统建议"
     render_section_title("系统建议击球区", title_suffix)
     price = active_zone.currentPrice
+    confidence = getattr(active_zone, "buyZoneConfidence", None) or active_zone.confidence
+    next_price = getattr(active_zone, "nextTriggerPrice", None)
+    next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(price, active_zone.to_plan_fields())
+    validation_errors = list(getattr(active_zone, "validationErrors", None) or [])
     rows = [
-        {"区间": "当前价格", "价格": format_currency(price), "当前状态": _buy_zone_label(active_zone.currentZone)},
-        {"区间": "禁止追高", "价格": _above_text(active_zone.noChaseAbove), "当前状态": _zone_status(price, lower=active_zone.noChaseAbove, mode="above")},
-        {"区间": "合理观察区", "价格": _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), "当前状态": _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh)},
-        {"区间": "可分批区", "价格": _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "当前状态": _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh)},
-        {"区间": "重仓击球区", "价格": _below_text(active_zone.heavyBuyBelow), "当前状态": _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below")},
+        ("当前价格", format_currency(price), _buy_zone_label(active_zone.currentZone), "current"),
+        ("禁止追高价", _above_text(active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
+        ("合理观察区", _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
+        ("可分批区", _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
+        ("重仓击球区", _below_text(active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
     ]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    cols = st.columns([1, 1, 2])
-    cols[0].metric("置信度", confidence_label(active_zone.confidence))
-    cols[1].metric("方法", _buy_zone_method_label(active_zone.method))
-    cols[2].caption(_distance_to_zone(price, active_zone.to_plan_fields()))
-    st.caption("生成依据")
-    _render_short_list(active_zone.keyReasons[:5], "暂无生成依据")
-    if active_zone.warnings:
-        st.warning("；".join(active_zone.warnings[:3]))
+    st.markdown(
+        '<section class="research-card buy-zone-panel">'
+        '<div class="buy-zone-meta">'
+        f'<div><span>当前所处区间</span><strong>{escape(_buy_zone_label(active_zone.currentZone))}</strong></div>'
+        f'<div><span>买区置信度</span><strong>{escape(confidence_label(confidence))}</strong></div>'
+        f'<div><span>方法</span><strong>{escape(_buy_zone_method_label(active_zone.method))}</strong></div>'
+        f'<div><span>下一触发</span><strong>{escape(next_label)}{(" / " + escape(format_currency(next_price))) if next_price is not None else ""}</strong></div>'
+        '</div>'
+        '<div class="buy-zone-ladder">'
+        + "".join(_zone_row_html(label, value, status, state) for label, value, status, state in rows)
+        + '</div>'
+        '</section>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("展开买区依据", expanded=False):
+        _render_short_list(active_zone.keyReasons[:5], "暂无生成依据")
+        if active_zone.warnings:
+            st.warning("；".join(active_zone.warnings[:3]))
+        if validation_errors:
+            st.error("；".join(validation_errors[:3]))
 
     action_cols = st.columns([1, 1, 4])
     if manual:
@@ -661,7 +748,25 @@ def _render_action_plan_form(
     suggestion: PositionPlanSuggestion,
     active_zone: BuyZoneEstimate,
 ) -> None:
-    render_section_title("操作计划", "系统预填，保存后成为手动计划")
+    render_section_title("操作计划", "系统建议，可按需编辑")
+    edit_key = f"stock-plan-editing-{ticker}"
+    summary_rows = [
+        ("第一笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice))),
+        ("第二笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice))),
+        ("第三笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice))),
+        ("停止加仓条件", plan.get("stop_adding_condition") or suggestion.stopAddingCondition),
+        ("财报复核点", plan.get("earnings_review_points") or suggestion.earningsReviewCondition),
+    ]
+    header_cols = st.columns([4, 1])
+    with header_cols[0]:
+        st.markdown(_plan_summary_html(summary_rows), unsafe_allow_html=True)
+    with header_cols[1]:
+        if st.button("编辑计划", key=f"stock-plan-edit-button-{ticker}", width="stretch"):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+
+    if not st.session_state.get(edit_key, False):
+        return
+
     with st.form(f"stock-plan-{ticker}"):
         top = st.columns(2)
         target_position_pct = top[0].text_input(
@@ -718,8 +823,8 @@ def _render_action_plan_form(
 
 
 def _render_raw_metrics(snapshot: dict, history: pd.DataFrame, technicals: dict, score, ticker: str) -> None:
-    render_section_title("原始指标展开区", "默认折叠，必要时再复核")
-    with st.expander("展开价格图、RSI 和原始财务指标", expanded=False):
+    render_section_title("原始指标", "默认折叠，必要时再复核")
+    with st.expander("展开原始指标", expanded=False):
         st.plotly_chart(_price_chart(history, ticker), width="stretch")
         st.plotly_chart(_rsi_chart(history), width="stretch")
         fundamentals = pd.DataFrame(_raw_fundamental_rows(snapshot))
@@ -1081,6 +1186,40 @@ def _rsi_chart(history: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _zone_row_html(label: str, value: str, status: str, state: str) -> str:
+    return (
+        f'<div class="buy-zone-row buy-zone-row-{escape(state)}">'
+        f'<span>{escape(label)}</span>'
+        f'<strong>{escape(value)}</strong>'
+        f'<em>{escape(status)}</em>'
+        "</div>"
+    )
+
+
+def _plan_summary_html(rows: list[tuple[str, object]]) -> str:
+    return (
+        '<section class="research-card plan-summary-card">'
+        '<div class="plan-summary-grid">'
+        + "".join(
+            f'<div><span>{escape(label)}</span><strong>{escape(str(value or "N/A"))}</strong></div>'
+            for label, value in rows
+        )
+        + "</div>"
+        "</section>"
+    )
+
+
+def _data_summary_html(confidence: str, pending: int, approved: int, missing_count: int) -> str:
+    return (
+        '<section class="research-card data-summary-card">'
+        f'<div><span>数据可信度</span><strong>{escape(confidence)}</strong></div>'
+        f'<div><span>待复核</span><strong>{pending}</strong></div>'
+        f'<div><span>已确认</span><strong>{approved}</strong></div>'
+        f'<div><span>缺失关键项</span><strong>{missing_count}</strong></div>'
+        "</section>"
+    )
+
+
 def _data_status(score, snapshot: dict | None = None) -> str:
     if score.data_confidence:
         base = confidence_label(score.data_confidence)
@@ -1112,6 +1251,13 @@ def _position_limit_text(value: float | None) -> str:
     if value <= 0:
         return "不建议新增"
     return f"≤{value:g}%"
+
+
+def _format_plan_currency(value: object) -> str:
+    try:
+        return format_currency(float(value))
+    except (TypeError, ValueError):
+        return str(value or "N/A")
 
 
 def _format_plain(value: float | None) -> str:
@@ -1226,17 +1372,44 @@ def _render_detail_styles() -> None:
     st.markdown(
         """
         <style>
+        .stock-research-header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            margin: 0.15rem 0 0.7rem;
+        }
+        .stock-research-header p {
+            margin: 0;
+            color: #0f172a;
+            font-size: 1.48rem;
+            line-height: 1.15;
+            font-weight: 760;
+            letter-spacing: 0;
+        }
+        .stock-research-header span {
+            display: block;
+            margin-top: 0.25rem;
+            color: #64748b;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }
+        .research-card {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.65rem;
+            background: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04);
+        }
         .detail-hero {
             display: grid;
             grid-template-columns: minmax(220px, 0.8fr) minmax(420px, 1.5fr);
-            gap: 1rem;
+            gap: 0.85rem;
             align-items: stretch;
-            padding: 1.1rem;
-            margin: 0.2rem 0 1rem;
+            padding: 0.9rem;
+            margin: 0.25rem 0 0.75rem;
             border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 0.8rem;
-            background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(241,245,249,0.92));
-            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.07);
+            border-radius: 0.65rem;
+            background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96));
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
         }
         .detail-eyebrow {
             color: #2563eb;
@@ -1247,7 +1420,7 @@ def _render_detail_styles() -> None:
         .detail-hero h2 {
             margin: 0.2rem 0 0.2rem;
             color: #111827;
-            font-size: 2.2rem;
+            font-size: 2rem;
             line-height: 1;
             font-weight: 820;
         }
@@ -1259,15 +1432,15 @@ def _render_detail_styles() -> None:
         }
         .detail-hero-grid {
             display: grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 0.55rem;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.45rem;
         }
         .detail-hero-item {
-            min-height: 4.2rem;
-            padding: 0.58rem 0.62rem;
+            min-height: 3.6rem;
+            padding: 0.48rem 0.55rem;
             border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 0.55rem;
-            background: rgba(255, 255, 255, 0.78);
+            border-radius: 0.5rem;
+            background: rgba(255, 255, 255, 0.74);
         }
         .detail-hero-item span {
             display: block;
@@ -1278,9 +1451,9 @@ def _render_detail_styles() -> None:
         }
         .detail-hero-item strong {
             display: block;
-            margin-top: 0.3rem;
+            margin-top: 0.24rem;
             color: #172033;
-            font-size: 0.9rem;
+            font-size: 0.86rem;
             line-height: 1.25;
             font-weight: 760;
             overflow-wrap: anywhere;
@@ -1295,12 +1468,134 @@ def _render_detail_styles() -> None:
             font-size: 0.86rem;
             font-weight: 720;
         }
+        .conclusion-card,
+        .buy-zone-panel,
+        .plan-summary-card {
+            padding: 0.78rem 0.86rem;
+            margin-bottom: 0.75rem;
+        }
+        .conclusion-main {
+            color: #0f172a;
+            font-size: 1.08rem;
+            font-weight: 760;
+            line-height: 1.25;
+        }
+        .conclusion-card p {
+            margin: 0.32rem 0 0.62rem;
+            color: #475569;
+            font-size: 0.88rem;
+            line-height: 1.45;
+        }
+        .conclusion-grid,
+        .buy-zone-meta,
+        .plan-summary-grid,
+        .data-summary-card {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+        }
+        .conclusion-grid div,
+        .buy-zone-meta div,
+        .plan-summary-grid div,
+        .data-summary-card div {
+            min-height: 3.1rem;
+            padding: 0.48rem 0.55rem;
+            border-radius: 0.5rem;
+            background: rgba(248, 250, 252, 0.82);
+            border: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        .conclusion-grid span,
+        .buy-zone-meta span,
+        .plan-summary-grid span,
+        .data-summary-card span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 650;
+            line-height: 1.2;
+        }
+        .conclusion-grid strong,
+        .buy-zone-meta strong,
+        .plan-summary-grid strong,
+        .data-summary-card strong {
+            display: block;
+            margin-top: 0.25rem;
+            color: #0f172a;
+            font-size: 0.86rem;
+            line-height: 1.28;
+            font-weight: 720;
+            overflow-wrap: anywhere;
+        }
+        .wait-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-top: 0.65rem;
+        }
+        .wait-list span {
+            padding: 0.18rem 0.5rem;
+            border-radius: 999px;
+            color: #475569;
+            background: rgba(241, 245, 249, 0.9);
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            font-size: 0.75rem;
+            font-weight: 620;
+        }
+        .buy-zone-panel {
+            display: grid;
+            gap: 0.65rem;
+        }
+        .buy-zone-ladder {
+            display: grid;
+            gap: 0.3rem;
+        }
+        .buy-zone-row {
+            display: grid;
+            grid-template-columns: 116px minmax(120px, 1fr) minmax(120px, 1.1fr);
+            align-items: center;
+            min-height: 2.05rem;
+            padding: 0.28rem 0.55rem;
+            border-radius: 0.45rem;
+            border: 1px solid rgba(15, 23, 42, 0.05);
+            background: rgba(248, 250, 252, 0.6);
+            gap: 0.5rem;
+        }
+        .buy-zone-row span {
+            color: #334155;
+            font-size: 0.78rem;
+            font-weight: 690;
+        }
+        .buy-zone-row strong {
+            color: #0f172a;
+            font-size: 0.8rem;
+            font-weight: 720;
+        }
+        .buy-zone-row em {
+            color: #64748b;
+            font-size: 0.76rem;
+            font-style: normal;
+            text-align: right;
+        }
+        .data-summary-card {
+            padding: 0.72rem;
+            margin-bottom: 0.4rem;
+        }
         @media (max-width: 900px) {
             .detail-hero {
                 grid-template-columns: 1fr;
             }
-            .detail-hero-grid {
+            .detail-hero-grid,
+            .conclusion-grid,
+            .buy-zone-meta,
+            .plan-summary-grid,
+            .data-summary-card {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .buy-zone-row {
+                grid-template-columns: 1fr;
+            }
+            .buy-zone-row em {
+                text-align: left;
             }
         }
         </style>
