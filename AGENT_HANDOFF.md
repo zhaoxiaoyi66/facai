@@ -32,6 +32,15 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only polish into a compact execution panel.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Reworked the buy-zone page from a backend-like table into a compact execution panel. Added `今日执行摘要`, made top status cards action-oriented, changed filters to execution groups, reduced the main table to stock/current price/status/advice/current add/position cap/next trigger/confidence/source/action, moved禁追价 and重仓区 details into the drawer, replaced low-value `0%` display with `不新增`/`等待`/`观察`/`复核`, localized raw zone/source enums with safe fallbacks, fixed next-trigger fallback copy, kept manual override and the advanced valuation sandbox folded, added a loading notice/spinner, and expanded the drawer with system/current buy-zone snapshots plus warnings and validation errors.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this UI-only checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Combined stock detail UI checkpoint: missingDataSummary summary plus manual buy-zone trigger sync.
 - Files touched: `AGENT_HANDOFF.md`, `ui/stock_detail.py`.
 - What changed: Updated the stock research page data-confidence section to prefer existing `missingDataSummary`, render compact counts and four grouped missing-data summaries, keep the old fallback when `missingDataSummary` is absent, keep detailed tables folded behind `查看数据缺口明细`, and localize default-view technical terms. Also fixed manual buy-zone UI sync: the buy-zone title now reflects system/manual/mixed source, manual mode `下一触发` prefers saved `first_buy_price`, editing an operation plan shows an unsaved-change hint, and saving the plan closes edit mode with copy that the top buy-zone summary has updated.

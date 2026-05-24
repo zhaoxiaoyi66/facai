@@ -35,14 +35,20 @@ METHOD_LABELS = {
 }
 
 ZONE_LABELS = {
+    "invalid_zone": "买区异常",
+    "invalid_manual_override": "买区异常",
+    "low_confidence_zone": "需复核",
     "no_chase": "禁止追高",
-    "fair_observation": "合理观察",
+    "fair_observation": "合理观察区",
     "tranche_buy": "可分批区",
     "heavy_buy": "重仓击球区",
     "below_heavy_buy": "低于重仓区",
     "data_insufficient": "数据不足",
 }
 ZONE_TONES = {
+    "invalid_zone": "red",
+    "invalid_manual_override": "red",
+    "low_confidence_zone": "orange",
     "no_chase": "red",
     "fair_observation": "blue",
     "tranche_buy": "green",
@@ -51,6 +57,13 @@ ZONE_TONES = {
     "data_insufficient": "gray",
 }
 CONFIDENCE_TONES = {"high": "green", "medium": "blue", "low": "orange"}
+SOURCE_LABELS = {
+    "manual": "手动买区",
+    "manual_override": "手动买区",
+    "system": "系统建议",
+    "system_generated": "系统建议",
+    "mixed": "混合来源",
+}
 
 
 def render() -> None:
@@ -67,15 +80,20 @@ def render() -> None:
         return
 
     plan_store = StockPlanStore()
-    rows = _load_buy_zone_rows(tuple(tickers))
-    rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
+    load_notice = st.empty()
+    load_notice.info(f"正在生成买区计划：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
+    with st.spinner("正在读取观察池、评分和买区计划..."):
+        rows = _load_buy_zone_rows(tuple(tickers))
+        rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
+    load_notice.empty()
 
     _render_summary(rows)
+    _render_execution_summary(rows)
     active_filter = _render_filters(rows)
     visible_rows = _filter_rows(rows, active_filter)
     _render_buy_zone_table(visible_rows, plan_store)
     _render_client_buy_zone_drawers(visible_rows)
-    _render_valuation_sandbox()
+    _render_manual_and_advanced_settings(rows, plan_store)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -150,7 +168,7 @@ def _row_from_outputs(
 def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, source: str, manual: bool) -> dict:
     return {
         "currentZone": zone.currentZone,
-        "zoneLabel": ZONE_LABELS.get(zone.currentZone, zone.currentZone),
+        "zoneLabel": _zone_label(zone.currentZone),
         "noChaseAbove": zone.noChaseAbove,
         "fairValueLow": zone.fairValueLow,
         "fairValueHigh": zone.fairValueHigh,
@@ -158,6 +176,8 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "trancheBuyHigh": zone.trancheBuyHigh,
         "heavyBuyBelow": zone.heavyBuyBelow,
         "nextBuyPrice": plan.firstBuyPrice,
+        "nextTriggerPrice": getattr(zone, "nextTriggerPrice", None),
+        "nextBuyLabel": getattr(zone, "nextBuyLabel", ""),
         "currentAddLimitPercent": plan.currentAddLimitPercent,
         "maxPortfolioWeightPercent": plan.maxPortfolioWeightPercent,
         "confidence": zone.confidence,
@@ -165,6 +185,8 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "inputsUsed": zone.inputsUsed,
         "keyReasons": zone.keyReasons,
         "warnings": zone.warnings,
+        "validationErrors": list(getattr(zone, "validationErrors", None) or []),
+        "isValid": bool(getattr(zone, "isValid", True)),
         "buyZoneSource": source,
         "manualOverride": manual,
         "firstBuyPrice": plan.firstBuyPrice,
@@ -210,85 +232,151 @@ def _error_row(symbol: str, error: str) -> dict:
 
 def _render_summary(rows: list[dict]) -> None:
     summary = {
-        "进入可分批区": sum(1 for row in rows if row["currentZone"] in {"tranche_buy", "heavy_buy", "below_heavy_buy"}),
-        "接近击球区": sum(1 for row in rows if row["currentZone"] == "fair_observation"),
-        "禁止追高": sum(1 for row in rows if row["currentZone"] == "no_chase"),
-        "待手动配置": sum(1 for row in rows if row["currentZone"] == "data_insufficient"),
-        "数据置信度低": sum(1 for row in rows if row["confidence"] == "low" or row.get("dataConfidence") == "low"),
+        "可执行": (
+            sum(1 for row in rows if _execution_status(row) == "可执行"),
+            "当前已进入可分批区，可按计划小仓执行",
+        ),
+        "接近买区": (
+            sum(1 for row in rows if _execution_status(row) == "接近买区"),
+            "距离触发价较近，等待回踩",
+        ),
+        "等回踩": (
+            sum(1 for row in rows if _execution_status(row) == "等回踩"),
+            "估值未到买区，先观察",
+        ),
+        "禁止追高": (
+            sum(1 for row in rows if _execution_status(row) == "禁止追高"),
+            "当前价格不适合新增",
+        ),
+        "需复核": (
+            sum(1 for row in rows if _execution_status(row) == "需复核"),
+            "买区异常或数据置信度低",
+        ),
     }
     cards = "".join(
-        f'<div class="buy-zone-summary-card"><span>{escape(label)}</span><strong>{value}</strong></div>'
-        for label, value in summary.items()
+        f'<div class="buy-zone-summary-card"><span>{escape(label)}</span><strong>{value}</strong><em>{escape(note)}</em></div>'
+        for label, (value, note) in summary.items()
     )
     st.markdown(f'<section class="buy-zone-summary">{cards}</section>', unsafe_allow_html=True)
 
 
+def _render_execution_summary(rows: list[dict]) -> None:
+    executable = [row for row in rows if _execution_status(row) == "可执行"][:3]
+    near = [row for row in rows if _execution_status(row) == "接近买区"][:3]
+    caution = [row for row in rows if _execution_status(row) in {"需复核", "禁止追高"}][:3]
+
+    groups: list[tuple[str, str, list[tuple[str, str]]]] = []
+    if executable:
+        groups.append(
+            (
+                "可执行",
+                "已进入买区，按计划控制仓位",
+                [
+                    (str(row["symbol"]), f"{_current_add_text(row)[0]} · {_action_short_text(row)}")
+                    for row in executable
+                ],
+            )
+        )
+    if near:
+        groups.append(
+            (
+                "接近买区",
+                "等待触发价或回踩确认",
+                [
+                    (str(row["symbol"]), _distance_to_trigger_text(row))
+                    for row in near
+                ],
+            )
+        )
+    if caution:
+        groups.append(
+            (
+                "需复核 / 禁止追高",
+                "先处理风险或等待价格回落",
+                [
+                    (str(row["symbol"]), _row_reason(row))
+                    for row in caution
+                ],
+            )
+        )
+
+    if not groups:
+        st.markdown(
+            """
+            <section class="execution-summary">
+              <div class="execution-title">今日执行摘要</div>
+              <div class="execution-summary-empty">暂无明确可执行买点，优先等待回踩或复核数据。</div>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    cards = "".join(
+        '<div class="execution-card">'
+        f'<div class="execution-card-head"><strong>{escape(title)}</strong><span>{escape(note)}</span></div>'
+        f'<ul>{"".join(f"<li><b>{escape(symbol)}</b><span>{escape(detail)}</span></li>" for symbol, detail in items)}</ul>'
+        "</div>"
+        for title, note, items in groups
+    )
+    st.markdown(
+        f"""
+        <section class="execution-summary">
+          <div class="execution-title">今日执行摘要</div>
+          <div class="execution-grid">{cards}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_filters(rows: list[dict]) -> str:
-    options = ["全部", "进入可分批区", "接近击球区", "等回踩", "禁止追高", "数据置信度低", "已手动覆盖"]
+    options = ["全部", "可执行", "接近买区", "等回踩", "禁止追高", "需复核", "手动覆盖"]
     return st.radio("买区筛选", options, horizontal=True, label_visibility="collapsed", key="buy-zone-filter")
 
 
 def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
-    if active_filter == "进入可分批区":
-        return [row for row in rows if row["currentZone"] in {"tranche_buy", "heavy_buy", "below_heavy_buy"}]
-    if active_filter == "接近击球区":
-        return [row for row in rows if row["currentZone"] == "fair_observation"]
-    if active_filter == "等回踩":
-        return [row for row in rows if row.get("action") in {"等回踩", "只观察"}]
-    if active_filter == "禁止追高":
-        return [row for row in rows if row["currentZone"] == "no_chase" or row.get("action") == "禁止追高"]
-    if active_filter == "数据置信度低":
-        return [row for row in rows if row["confidence"] == "low" or row.get("dataConfidence") == "low"]
-    if active_filter == "已手动覆盖":
+    if active_filter in {"可执行", "接近买区", "等回踩", "禁止追高", "需复核"}:
+        return [row for row in rows if _execution_status(row) == active_filter]
+    if active_filter == "手动覆盖":
         return [row for row in rows if row["manualOverride"]]
     return rows
 
 
 def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None:
-    render_section_title("买区总表", "默认读取观察池，系统建议优先，手动覆盖优先于系统建议")
+    render_section_title("精简买区表", "只保留执行判断，完整买区进入详情")
     if not rows:
         st.info("当前筛选下没有股票。")
         return
 
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
-      <span>股票代码</span><span>当前价格</span><span>当前区间</span><span>操作建议</span>
-      <span>当前新增</span><span>组合上限</span><span>下一买入价</span><span>禁止追高价</span>
-      <span>重仓区</span><span>数据置信度</span><span>买区来源</span><span>操作</span>
+      <span>股票</span><span>当前价</span><span>当前区间</span><span>建议</span>
+      <span>当前新增</span><span>仓位上限</span><span>下一触发</span><span>置信度</span>
+      <span>来源</span><span>操作</span>
     </div>
     """
     body = "".join(_buy_zone_row_html(row) for row in rows)
     st.markdown(f'<section class="buy-zone-table">{header}{body}</section>', unsafe_allow_html=True)
 
-    action_cols = st.columns([1, 1, 4])
-    with action_cols[0]:
-        symbol = st.selectbox("手动覆盖股票", [str(row["symbol"]) for row in rows], key="buy-zone-manual-symbol")
-    selected = next((row for row in rows if row["symbol"] == symbol), None)
-    with action_cols[1]:
-        if selected and st.button("恢复系统建议", width="stretch"):
-            plan_store.save_plan(symbol, clear_buy_zone_override_values(plan_store.get_plan(symbol)))
-            _load_buy_zone_rows.clear()
-            st.toast(f"{symbol} 已恢复系统建议")
-            st.rerun()
-    with action_cols[2]:
-        st.caption("点击表格里的“详情”可打开右侧 BuyZoneDrawer；手动覆盖先在单股详情或下方高级设置保存。")
+    st.caption("点击“详情”查看禁追价、重仓区、校验提醒、估值输入和手动覆盖。")
 
 
 def _buy_zone_row_html(row: dict) -> str:
     symbol = str(row["symbol"])
-    source_label = "手动买区" if row["manualOverride"] else "系统建议"
+    source_label = _source_label(row.get("buyZoneSource"), row["manualOverride"])
     source_tone = "blue" if row["manualOverride"] else "gray"
+    status = _execution_status(row)
+    add_text, add_tone = _current_add_text(row)
     return (
         '<div class="buy-zone-grid buy-zone-row">'
-        f'<strong>{escape(symbol)}</strong>'
-        f'<span class="num">{escape(_money(row.get("currentPrice")))}</span>'
-        f'{_badge(row["zoneLabel"], ZONE_TONES.get(row["currentZone"], "gray"))}'
-        f'{_badge(action_label(row.get("action")), _action_tone(str(row.get("action") or "")))}'
-        f'<span>{_pct_limit(row.get("currentAddLimitPercent"))}</span>'
-        f'<span>{_pct_limit(row.get("maxPortfolioWeightPercent"))}</span>'
-        f'<span class="num">{escape(_money(row.get("nextBuyPrice")))}</span>'
-        f'<span class="num">{escape(_money(row.get("noChaseAbove")))}</span>'
-        f'<span class="num">{escape(_money(row.get("heavyBuyBelow")))}</span>'
+        f'<strong class="cell-symbol">{escape(symbol)}</strong>'
+        f'<span class="num cell-truncate">{escape(_price_text(row.get("currentPrice")))}</span>'
+        f'{_badge(status, _execution_tone(status))}'
+        f'<span class="buy-zone-action-text">{escape(_action_short_text(row))}</span>'
+        f'{_badge(add_text, add_tone)}'
+        f'<span class="cell-truncate">{_pct_limit(row.get("maxPortfolioWeightPercent"))}</span>'
+        f'<span class="num cell-truncate">{escape(_next_trigger_text(row))}</span>'
         f'{_badge(confidence_label(row.get("confidence")), CONFIDENCE_TONES.get(row.get("confidence"), "gray"))}'
         f'{_badge(source_label, source_tone)}'
         f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情</a>'
@@ -357,8 +445,10 @@ def _render_client_buy_zone_drawers(rows: list[dict]) -> None:
 def _buy_zone_drawer_html(row: dict) -> str:
     symbol = str(row["symbol"])
     zone: BuyZoneEstimate = row["activeZone"]
+    system_zone: BuyZoneEstimate = row["systemZone"]
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in (row.get("keyReasons") or [])[:6])
     warnings = "".join(f"<li>{escape(warning)}</li>" for warning in (row.get("warnings") or [])[:5])
+    validation_errors = "".join(f"<li>{escape(error)}</li>" for error in (row.get("validationErrors") or [])[:5])
     return (
         '<div class="buy-zone-drawer-backdrop"></div>'
         '<aside class="stock-drawer buy-zone-drawer">'
@@ -366,22 +456,26 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<div class="drawer-topline">BuyZoneDrawer</div>'
         f'<div class="drawer-head"><div><div class="drawer-symbol">{escape(symbol)}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or ""))}</div></div>'
-        f'<div class="drawer-price">{escape(_money(row.get("currentPrice")))}</div></div>'
+        f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
         '<div class="drawer-badges">'
         f'{_badge(row["zoneLabel"], ZONE_TONES.get(row["currentZone"], "gray"))}'
         f'{_badge(action_label(row.get("action")), _action_tone(str(row.get("action") or "")))}'
         f'{_badge(model_type_label(row.get("modelType")), "gray")}'
+        f'{_badge(_source_label(row.get("buyZoneSource"), row.get("manualOverride")), "blue" if row.get("manualOverride") else "gray")}'
         "</div>"
         '<div class="drawer-position-card">'
         '<div class="drawer-card-title">顶部结论</div>'
         f'<div class="drawer-decision-headline">当前处于 {escape(row["zoneLabel"])}，当前新增建议 {_pct_limit(row.get("currentAddLimitPercent"))}，组合仓位上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}。</div>'
         "</div>"
-        '<div class="drawer-section-title">系统建议击球区</div>'
+        '<div class="drawer-section-title">系统建议买区</div>'
+        f'{_zone_snapshot_html(system_zone)}'
+        '<div class="drawer-section-title">当前使用买区</div>'
         f'{_price_ladder_html(row)}'
         '<div class="drawer-section-title">生成依据</div>'
         f'<div class="drawer-resolution"><b>输入</b><ul>{"".join(f"<li>{escape(str(item))}</li>" for item in row.get("inputsUsed", [])[:8]) or "<li>暂无可用输入</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>原因</b><ul>{reasons or "<li>暂无说明</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>提醒</b><ul>{warnings or "<li>暂无重大提醒</li>"}</ul></div>'
+        f'<div class="drawer-resolution"><b>校验</b><ul>{validation_errors or "<li>暂无校验错误</li>"}</ul></div>'
         '<div class="drawer-section-title">操作计划</div>'
         f'{_plan_html(row)}'
         '<div class="drawer-section-title">手动覆盖</div>'
@@ -401,6 +495,20 @@ def _price_ladder_html(row: dict) -> str:
     return f'<div class="price-ladder"><ul>{items}</ul><div class="price-marker">当前价格：{escape(_money(row.get("currentPrice")))}</div></div>'
 
 
+def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
+    items = [
+        ("当前区间", _zone_label(zone.currentZone)),
+        ("下一触发", _zone_next_trigger_text(zone)),
+        ("禁止追高", _optional_money(zone.noChaseAbove)),
+        ("合理观察区", f"{_optional_money(zone.fairValueLow)} - {_optional_money(zone.fairValueHigh)}"),
+        ("可分批区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
+        ("重仓区", _optional_money(zone.heavyBuyBelow)),
+        ("置信度", confidence_label(zone.confidence)),
+    ]
+    html = "".join(f"<li><span>{escape(label)}</span><b>{escape(value)}</b></li>" for label, value in items)
+    return f'<div class="drawer-resolution plan-list"><ul>{html}</ul></div>'
+
+
 def _plan_html(row: dict) -> str:
     items = [
         ("第一笔买入价", _money(row.get("firstBuyPrice"))),
@@ -414,38 +522,66 @@ def _plan_html(row: dict) -> str:
     return f'<div class="drawer-resolution plan-list"><ul>{html}</ul></div>'
 
 
+def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlanStore) -> None:
+    with st.expander("手动覆盖与高级设置", expanded=False):
+        if rows:
+            cols = st.columns([1.2, 1.1, 3.5])
+            with cols[0]:
+                symbol = st.selectbox("手动覆盖股票", [str(row["symbol"]) for row in rows], key="buy-zone-manual-symbol")
+            selected = next((row for row in rows if row["symbol"] == symbol), None)
+            with cols[1]:
+                if selected and st.button("恢复系统建议", width="stretch"):
+                    plan_store.save_plan(symbol, clear_buy_zone_override_values(plan_store.get_plan(symbol)))
+                    _load_buy_zone_rows.clear()
+                    st.toast(f"{symbol} 已恢复系统建议")
+                    st.rerun()
+            with cols[2]:
+                st.caption("手动覆盖优先于系统建议；高级估值沙盒仅用于临时测算。")
+        else:
+            st.caption("观察池为空，可先使用高级估值沙盒做单次测算。")
+        st.divider()
+        if st.checkbox("打开高级估值沙盒", value=False, key="buy-zone-show-valuation-sandbox"):
+            _render_valuation_sandbox_body()
+        else:
+            st.caption("高级估值沙盒默认不计算，打开后再进行手动情景测算。")
+
+
 def _render_valuation_sandbox() -> None:
     with st.expander("高级估值沙盒", expanded=False):
-        st.caption("估值沙盒只用于手动情景测算，不作为系统买区主来源。")
-        cols = st.columns([1, 1, 1])
-        current_price = cols[0].number_input("当前价格（手动）", min_value=0.0, value=100.0, step=1.0, format="%.2f")
-        target_position = cols[1].number_input("目标仓位金额（美元）", min_value=0.0, value=10_000.0, step=500.0)
-        margin_of_safety = cols[2].slider("额外安全边际", min_value=0, max_value=60, value=0, step=1)
-        method_label = st.selectbox("估值方法", list(METHOD_LABELS.keys()))
-        method = METHOD_LABELS[method_label]
-        assumptions = _method_inputs(method)
-        inputs = BuyZoneInputs(
-            current_price=current_price,
-            target_position_size=target_position,
-            valuation_method=method,
-            margin_of_safety_pct=margin_of_safety,
-            **assumptions,
-        )
-        try:
-            output = calculate_buy_zone_ladder(inputs)
-        except ValueError as exc:
-            st.warning(str(exc))
-            return
-        metrics = st.columns(4)
-        metrics[0].metric("公允价值", format_currency(output["fair_value_price"]))
-        metrics[1].metric("试探仓价格", format_currency(output["starter_position_price"]))
-        metrics[2].metric("正常买入区", format_currency(output["normal_buy_zone_price"]))
-        metrics[3].metric("重仓买入区", format_currency(output["heavy_buy_zone_price"]))
-        tranches = output["tranches"].rename(
-            columns={"Tranche": "分批", "Buy Price": "买入价", "Allocation %": "分配比例", "Allocation $": "分配金额", "Estimated Shares": "估算股数"}
-        )
-        st.dataframe(tranches, width="stretch", hide_index=True)
-        _render_price_ladder_chart(output)
+        _render_valuation_sandbox_body()
+
+
+def _render_valuation_sandbox_body() -> None:
+    st.caption("估值沙盒只用于手动情景测算，不作为系统买区主来源。")
+    cols = st.columns([1, 1, 1])
+    current_price = cols[0].number_input("当前价格（手动）", min_value=0.0, value=100.0, step=1.0, format="%.2f")
+    target_position = cols[1].number_input("目标仓位金额（美元）", min_value=0.0, value=10_000.0, step=500.0)
+    margin_of_safety = cols[2].slider("额外安全边际", min_value=0, max_value=60, value=0, step=1)
+    method_label = st.selectbox("估值方法", list(METHOD_LABELS.keys()))
+    method = METHOD_LABELS[method_label]
+    assumptions = _method_inputs(method)
+    inputs = BuyZoneInputs(
+        current_price=current_price,
+        target_position_size=target_position,
+        valuation_method=method,
+        margin_of_safety_pct=margin_of_safety,
+        **assumptions,
+    )
+    try:
+        output = calculate_buy_zone_ladder(inputs)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+    metrics = st.columns(4)
+    metrics[0].metric("公允价值", format_currency(output["fair_value_price"]))
+    metrics[1].metric("试探仓价格", format_currency(output["starter_position_price"]))
+    metrics[2].metric("正常买入区", format_currency(output["normal_buy_zone_price"]))
+    metrics[3].metric("重仓买入区", format_currency(output["heavy_buy_zone_price"]))
+    tranches = output["tranches"].rename(
+        columns={"Tranche": "分批", "Buy Price": "买入价", "Allocation %": "分配比例", "Allocation $": "分配金额", "Estimated Shares": "估算股数"}
+    )
+    st.dataframe(tranches, width="stretch", hide_index=True)
+    _render_price_ladder_chart(output)
 
 
 def _render_price_ladder_chart(output: dict) -> None:
@@ -493,33 +629,106 @@ def _render_styles() -> None:
         .buy-zone-summary {
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 0.75rem;
-            margin: 0.8rem 0 1.1rem;
+            gap: 0.5rem;
+            margin: 0.6rem 0 0.65rem;
         }
         .buy-zone-summary-card {
-            border: 1px solid var(--dash-border, #E5E7EB);
+            border: 1px solid #E8EDF4;
             background: #fff;
-            border-radius: 12px;
-            padding: 0.85rem 1rem;
+            border-radius: 8px;
+            padding: 0.58rem 0.68rem;
         }
-        .buy-zone-summary-card span { color: #64748B; font-size: 0.8rem; font-weight: 700; }
-        .buy-zone-summary-card strong { display:block; margin-top:0.25rem; font-size:1.25rem; color:#111827; }
+        .buy-zone-summary-card span { color: #64748B; font-size: 0.75rem; font-weight: 700; }
+        .buy-zone-summary-card strong { display:block; margin-top:0.18rem; font-size:1.12rem; color:#111827; }
+        .buy-zone-summary-card em { display:block; margin-top:0.12rem; color:#94A3B8; font-size:0.72rem; font-style:normal; line-height:1.25; }
+        .execution-summary {
+            border:1px solid #E8EDF4;
+            border-radius:8px;
+            background:#fff;
+            padding:0.7rem;
+            margin:0 0 0.75rem;
+        }
+        .execution-title {
+            font-size:0.9rem;
+            font-weight:850;
+            color:#0F172A;
+            margin-bottom:0.55rem;
+        }
+        .execution-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:0.55rem;
+        }
+        .execution-card {
+            border:1px solid #EEF2F7;
+            border-radius:8px;
+            background:#FBFCFE;
+            padding:0.62rem 0.7rem;
+            min-height:104px;
+        }
+        .execution-card-head strong {
+            display:block;
+            color:#111827;
+            font-size:0.8rem;
+            font-weight:850;
+        }
+        .execution-card-head span {
+            display:block;
+            margin-top:0.1rem;
+            color:#94A3B8;
+            font-size:0.72rem;
+            line-height:1.25;
+        }
+        .execution-card ul {
+            list-style:none;
+            padding:0;
+            margin:0.48rem 0 0;
+        }
+        .execution-card li {
+            display:grid;
+            grid-template-columns:52px minmax(0, 1fr);
+            align-items:center;
+            gap:0.35rem;
+            min-height:24px;
+            color:#64748B;
+            font-size:0.76rem;
+            border-top:1px solid rgba(15, 23, 42, 0.04);
+        }
+        .execution-card li:first-child { border-top:0; }
+        .execution-card li b {
+            color:#0F172A;
+            font-weight:850;
+            font-size:0.76rem;
+        }
+        .execution-card li span {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .execution-summary-empty {
+            color:#64748B;
+            font-size:0.82rem;
+            font-weight:650;
+        }
         .buy-zone-table {
-            border: 1px solid #E5E7EB;
-            border-radius: 12px;
-            overflow: hidden;
+            border: 1px solid #E8EDF4;
+            border-radius: 8px;
+            overflow-x: auto;
+            overflow-y: hidden;
             background: #fff;
             margin-bottom: 0.85rem;
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 86px 96px 110px 126px 92px 92px 100px 104px 96px 104px 104px 74px;
+            grid-template-columns: 78px 88px 96px 82px 78px 78px minmax(118px, 1fr) 78px 82px 58px;
             align-items: center;
-            gap: 0.55rem;
+            gap: 0.4rem;
             min-height: 44px;
-            padding: 0 0.8rem;
-            border-bottom: 1px solid #EEF2F7;
-            font-size: 0.84rem;
+            min-width: 860px;
+            padding: 0 0.62rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+            font-size: 0.8rem;
         }
         .buy-zone-grid-head {
             position: sticky;
@@ -532,25 +741,45 @@ def _render_styles() -> None:
         }
         .buy-zone-row:hover { background: #F8FAFC; }
         .buy-zone-row .num { font-variant-numeric: tabular-nums; text-align: right; }
+        .buy-zone-action-text {
+            color:#475569;
+            font-size:0.78rem;
+            font-weight:650;
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .cell-symbol,
+        .cell-truncate {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .buy-zone-badge {
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            min-height:24px;
-            padding:0 8px;
+            min-height:22px;
+            max-width:100%;
+            padding:0 6px;
             border-radius:999px;
             border:1px solid #E5E7EB;
             background:#F3F4F6;
             color:#4B5563;
-            font-size:12px;
+            font-size:11.5px;
             font-weight:700;
             white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
         }
         .buy-zone-badge.green { background:#EAF8F0; color:#166534; border-color:#BBF7D0; }
         .buy-zone-badge.blue { background:#EFF6FF; color:#1D4ED8; border-color:#BFDBFE; }
         .buy-zone-badge.yellow { background:#FEFCE8; color:#854D0E; border-color:#FDE68A; }
         .buy-zone-badge.orange { background:#FFF7ED; color:#C2410C; border-color:#FDBA74; }
         .buy-zone-badge.red { background:#FEF2F2; color:#B91C1C; border-color:#FECACA; }
+        .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E2E8F0; }
         .buy-zone-detail-link {
             text-decoration:none;
             color:#1D4ED8;
@@ -559,7 +788,7 @@ def _render_styles() -> None:
         .buy-zone-drawer .price-ladder,
         .buy-zone-drawer .drawer-resolution {
             border:1px solid #E5E7EB;
-            border-radius:12px;
+            border-radius:8px;
             padding:0.8rem;
             margin-bottom:0.75rem;
             background:#fff;
@@ -585,7 +814,7 @@ def _render_styles() -> None:
         .price-marker {
             margin-top:0.65rem;
             padding:0.45rem 0.6rem;
-            border-radius:10px;
+            border-radius:8px;
             background:#EFF6FF;
             color:#1D4ED8;
             font-weight:800;
@@ -671,7 +900,7 @@ def _render_styles() -> None:
         .drawer-position-card {
             border:1px solid #BFDBFE;
             background:#EFF6FF;
-            border-radius:12px;
+            border-radius:8px;
             padding:0.85rem;
             margin-bottom:0.85rem;
         }
@@ -689,9 +918,9 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 76px 86px 100px 112px 78px 78px 90px 94px 86px 92px 94px 62px;
-                font-size:0.78rem;
-                gap:0.4rem;
+                grid-template-columns: 74px 84px 92px 78px 74px 74px 112px 74px 78px 56px;
+                font-size:0.76rem;
+                gap:0.35rem;
             }
         }
         </style>
@@ -702,6 +931,171 @@ def _render_styles() -> None:
 
 def _badge(label: str, tone: str = "gray") -> str:
     return f'<span class="buy-zone-badge {escape(tone)}">{escape(str(label))}</span>'
+
+
+def _zone_label(value: object) -> str:
+    return ZONE_LABELS.get(str(value or ""), "需复核")
+
+
+def _source_label(value: object, manual: bool = False) -> str:
+    if manual:
+        return "手动买区"
+    return SOURCE_LABELS.get(str(value or ""), "需复核")
+
+
+def _execution_status(row: dict) -> str:
+    zone = str(row.get("currentZone") or "")
+    action = str(row.get("action") or "")
+    if (
+        _needs_review(row)
+        or zone == "data_insufficient"
+        or row.get("confidence") == "low"
+        or row.get("dataConfidence") == "low"
+    ):
+        return "需复核"
+    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
+        return "可执行"
+    if zone == "fair_observation":
+        return "接近买区"
+    if zone == "no_chase" or action == "禁止追高":
+        return "禁止追高"
+    return "等回踩"
+
+
+def _execution_tone(status: str) -> str:
+    return {
+        "可执行": "green",
+        "接近买区": "blue",
+        "等回踩": "gray",
+        "禁止追高": "red",
+        "需复核": "orange",
+    }.get(status, "gray")
+
+
+def _action_short_text(row: dict) -> str:
+    status = _execution_status(row)
+    action = action_label(row.get("action"))
+    zone = str(row.get("currentZone") or "")
+    if status == "需复核":
+        return "需复核"
+    if "可小仓" in action or "可正常" in action:
+        return "可小仓"
+    if zone == "no_chase" or "禁止追高" in action:
+        return "不新增"
+    if "等回踩" in action:
+        return "等回踩"
+    if "只观察" in action:
+        return "只观察"
+    if "剔除" in action:
+        return "剔除"
+    return action or status
+
+
+def _current_add_text(row: dict) -> tuple[str, str]:
+    number = _first_number(row.get("currentAddLimitPercent"))
+    if number is not None and number > 0:
+        return f"≤{number:.0f}%", "green"
+
+    status = _execution_status(row)
+    action = str(row.get("action") or "")
+    if status == "需复核":
+        return "复核", "orange"
+    if status == "禁止追高":
+        return "不新增", "red"
+    if "只观察" in action:
+        return "观察", "gray"
+    if status in {"接近买区", "等回踩"} or "等回踩" in action:
+        return "等待", "blue"
+    return "观察", "gray"
+
+
+def _distance_to_trigger_text(row: dict) -> str:
+    trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+    price = _first_number(row.get("currentPrice"))
+    if trigger is not None and trigger > 0:
+        if price is not None and price > 0:
+            distance = max((price - trigger) / trigger * 100, 0)
+            return f"距触发 {distance:.1f}% · {format_currency(trigger)}"
+        return f"触发 {format_currency(trigger)}"
+    return _next_trigger_text(row)
+
+
+def _row_reason(row: dict) -> str:
+    zone = str(row.get("currentZone") or "")
+    if zone in {"invalid_zone", "invalid_manual_override"} or row.get("isValid") is False:
+        return "买区异常，需复核"
+    if bool(row.get("validationErrors")):
+        return "校验异常，需复核"
+    if zone == "data_insufficient":
+        return "数据不足"
+    if row.get("confidence") == "low" or row.get("dataConfidence") == "low":
+        return "低置信，先复核"
+    if zone == "no_chase" or row.get("action") == "禁止追高":
+        return "禁止追高"
+    return _next_trigger_text(row)
+
+
+def _needs_review(row: dict) -> bool:
+    zone = str(row.get("currentZone") or "")
+    return (
+        zone in {"invalid_zone", "invalid_manual_override"}
+        or bool(row.get("validationErrors"))
+        or row.get("isValid") is False
+    )
+
+
+def _next_trigger_text(row: dict) -> str:
+    zone = str(row.get("currentZone") or "")
+    if zone in {"invalid_zone", "invalid_manual_override"} or row.get("isValid") is False:
+        return "买区异常 / 需复核"
+    if zone == "data_insufficient":
+        return "数据不足"
+    if not _valid_price(row.get("currentPrice")):
+        return "当前价缺失"
+    price = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
+    label = str(row.get("nextBuyLabel") or "").strip()
+    if price is not None and price > 0:
+        return format_currency(price)
+    if label:
+        return _next_label(label)
+    return _zone_next_label(zone)
+
+
+def _zone_next_trigger_text(zone: BuyZoneEstimate) -> str:
+    row = {
+        "currentZone": zone.currentZone,
+        "currentPrice": zone.currentPrice,
+        "nextTriggerPrice": getattr(zone, "nextTriggerPrice", None),
+        "nextBuyLabel": getattr(zone, "nextBuyLabel", ""),
+        "isValid": getattr(zone, "isValid", True),
+        "validationErrors": getattr(zone, "validationErrors", None) or [],
+    }
+    return _next_trigger_text(row)
+
+
+def _next_label(value: str) -> str:
+    return {
+        "买区异常，需复核": "买区异常 / 需复核",
+        "已进入可分批区": "已进入可分批区",
+        "已低于重仓区": "已低于重仓区",
+        "已进入买区": "已进入买区",
+        "下一买入触发价": "下一买入触发价",
+        "等待回踩到观察区": "等待回踩",
+        "等回踩": "等待回踩",
+    }.get(value, value)
+
+
+def _zone_next_label(zone: str) -> str:
+    return {
+        "tranche_buy": "已进入可分批区",
+        "heavy_buy": "已进入重仓击球区",
+        "below_heavy_buy": "已低于重仓区",
+        "fair_observation": "等待买入触发价",
+        "no_chase": "等待回踩",
+        "data_insufficient": "数据不足",
+        "invalid_zone": "买区异常 / 需复核",
+        "invalid_manual_override": "买区异常 / 需复核",
+    }.get(zone, "需复核")
 
 
 def _action_tone(action: str) -> str:
@@ -729,6 +1123,20 @@ def _money(value) -> str:
     number = _first_number(value)
     if number is None or number <= 0:
         return "价格缺失"
+    return format_currency(number)
+
+
+def _price_text(value) -> str:
+    number = _first_number(value)
+    if number is None or number <= 0:
+        return "当前价缺失"
+    return format_currency(number)
+
+
+def _optional_money(value) -> str:
+    number = _first_number(value)
+    if number is None or number <= 0:
+        return "未设置"
     return format_currency(number)
 
 
