@@ -262,14 +262,19 @@ def _render_summary(rows: list[dict]) -> None:
 
 
 def _render_execution_summary(rows: list[dict]) -> None:
-    executable = [row for row in rows if _execution_status(row) == "可执行"][:3]
-    near = [row for row in rows if _execution_status(row) == "接近买区"][:3]
-    caution = [row for row in rows if _execution_status(row) in {"需复核", "禁止追高"}][:3]
+    executable_all = [row for row in rows if _execution_status(row) == "可执行"]
+    near_all = [row for row in rows if _execution_status(row) == "接近买区"]
+    caution_all = [row for row in rows if _execution_status(row) in {"需复核", "禁止追高"}]
+    executable = executable_all[:3]
+    near = near_all[:3]
+    caution = caution_all[:3]
 
-    groups: list[tuple[str, str, list[tuple[str, str, str]]]] = [
+    groups: list[tuple[str, str, str, int, list[tuple[str, str, str]]]] = [
         (
             "可执行",
+            "green",
             "已进入买区，按计划控制仓位",
+            len(executable_all),
             [
                 (str(row["symbol"]), f"{_current_add_text(row)[0]} · {_action_short_text(row)}", row.get("zoneLabel") or "已进入买区")
                 for row in executable
@@ -277,7 +282,9 @@ def _render_execution_summary(rows: list[dict]) -> None:
         ),
         (
             "接近买区",
+            "blue",
             "等待触发价或回踩确认",
+            len(near_all),
             [
                 (str(row["symbol"]), _distance_to_trigger_primary(row), _distance_to_trigger_secondary(row))
                 for row in near
@@ -285,22 +292,24 @@ def _render_execution_summary(rows: list[dict]) -> None:
         ),
         (
             "风险 / 待复核",
+            "amber",
             "先处理风险或等待价格回落",
+            len(caution_all),
             [(str(row["symbol"]), _row_reason(row), _trigger_cell_detail(row)) for row in caution],
         ),
     ]
 
     cards = "".join(
-        '<div class="execution-card">'
-        f'<div class="execution-card-head"><strong>{escape(title)}</strong><span>{escape(note)}</span></div>'
-        f'<ul>{_execution_items_html(items)}</ul>'
+        f'<div class="execution-card {escape(tone)}">'
+        f'<div class="execution-card-head"><div><strong>{escape(title)}</strong><span>{escape(note)}</span></div><em>{count}</em></div>'
+        f'<ul>{_execution_items_html(items, count)}</ul>'
         "</div>"
-        for title, note, items in groups
+        for title, tone, note, count, items in groups
     )
     st.markdown(
         f"""
         <section class="execution-summary">
-          <div class="execution-title">今日动作面板</div>
+          <div class="execution-title"><span>今日动作面板</span><small>按执行优先级展示今日最值得处理的标的</small></div>
           <div class="execution-grid">{cards}</div>
         </section>
         """,
@@ -308,13 +317,17 @@ def _render_execution_summary(rows: list[dict]) -> None:
     )
 
 
-def _execution_items_html(items: list[tuple[str, str, str]]) -> str:
+def _execution_items_html(items: list[tuple[str, str, str]], total_count: int) -> str:
     if not items:
         return '<li class="execution-empty-row"><span>暂无</span></li>'
-    return "".join(
+    rows = "".join(
         f"<li><b>{escape(symbol)}</b><span>{escape(primary)}</span><small>{escape(secondary)}</small></li>"
         for symbol, primary, secondary in items
     )
+    remaining = total_count - len(items)
+    if remaining > 0:
+        rows += f'<li class="execution-more-row"><span>还有 {remaining} 只 →</span></li>'
+    return rows
 
 
 def _render_filters(rows: list[dict]) -> str:
@@ -338,9 +351,7 @@ def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None
 
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
-      <span>股票</span><span>当前价</span><span>当前区间</span><span>建议</span>
-      <span>当前新增</span><span>仓位上限</span><span>触发条件</span><span>置信度</span>
-      <span>操作</span>
+      <span>股票</span><span>状态</span><span>触发条件</span><span>仓位</span><span>置信度</span><span>操作</span>
     </div>
     """
     body = "".join(_buy_zone_row_html(row) for row in rows)
@@ -352,17 +363,16 @@ def _render_buy_zone_table(rows: list[dict], plan_store: StockPlanStore) -> None
 def _buy_zone_row_html(row: dict) -> str:
     symbol = str(row["symbol"])
     status = _execution_status(row)
-    add_text, add_tone = _current_add_text(row)
+    add_text, _ = _current_add_text(row)
+    position_text = f"新增 {add_text}" if add_text.startswith("≤") else add_text
+    trigger_primary, trigger_secondary, trigger_tone = format_trigger_cell(row)
     return (
         '<div class="buy-zone-grid buy-zone-row">'
-        f'<strong class="cell-symbol">{escape(symbol)}</strong>'
-        f'<span class="num cell-truncate">{escape(_price_text(row.get("currentPrice")))}</span>'
-        f'{_badge(status, _execution_tone(status))}'
-        f'<span class="buy-zone-action-text">{escape(_action_short_text(row))}</span>'
-        f'{_badge(add_text, add_tone)}'
-        f'<span class="num cell-truncate">{_pct_limit(row.get("maxPortfolioWeightPercent"))}</span>'
-        f'{_trigger_cell_html(row)}'
-        f'{_badge(confidence_label(row.get("confidence")), CONFIDENCE_TONES.get(row.get("confidence"), "gray"))}'
+        f'<div class="stock-cell"><strong>{escape(symbol)}</strong><span>{escape(_price_text(row.get("currentPrice")))}</span></div>'
+        f'<div class="status-cell">{_badge(status, _execution_tone(status))}<small>{escape(_action_short_text(row))}</small></div>'
+        f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
+        f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
+        f'<div class="confidence-cell">{_badge(confidence_label(row.get("confidence")), CONFIDENCE_TONES.get(row.get("confidence"), "gray"))}</div>'
         f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}">详情</a>'
         "</div>"
     )
@@ -611,7 +621,9 @@ def _render_styles() -> None:
         """
         <style>
         div.block-container {
-            max-width: 1180px;
+            max-width: 1240px;
+            padding-left: 2.1rem;
+            padding-right: 2.1rem;
         }
         .buy-zone-summary,
         .execution-summary,
@@ -619,81 +631,116 @@ def _render_styles() -> None:
         div[data-testid="stRadio"],
         div[data-testid="stExpander"] {
             width: 100%;
-            max-width: 1120px;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
             box-sizing: border-box;
         }
         .buy-zone-summary {
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 0;
-            margin: 0.55rem 0 0.65rem;
-            border:1px solid #E8EDF4;
+            margin-top: 1rem;
+            margin-bottom: 0.75rem;
+            border:1px solid #DFE7F0;
             border-radius:8px;
             background:#fff;
             overflow:hidden;
         }
         .buy-zone-summary-card {
             border: 0;
-            border-right:1px solid rgba(15, 23, 42, 0.06);
+            border-right:1px solid rgba(15, 23, 42, 0.055);
             background: transparent;
             border-radius: 0;
-            padding: 0.7rem 0.78rem;
-            min-height: 68px;
+            padding: 0.62rem 0.82rem;
+            min-height: 64px;
             display: grid;
             align-content: center;
         }
         .buy-zone-summary-card:last-child { border-right:0; }
-        .buy-zone-summary-card span { color: #64748B; font-size: 0.75rem; font-weight: 700; }
-        .buy-zone-summary-card strong { display:block; margin-top:0.12rem; font-size:1.24rem; color:#111827; line-height:1.05; }
-        .buy-zone-summary-card em { display:block; margin-top:0.12rem; color:#94A3B8; font-size:0.72rem; font-style:normal; line-height:1.25; }
+        .buy-zone-summary-card span { color: #64748B; font-size: 12px; font-weight: 650; line-height:1.05; }
+        .buy-zone-summary-card strong { display:block; margin-top:0.1rem; font-size:18px; font-weight:720; color:#0F172A; line-height:1.05; }
+        .buy-zone-summary-card em { display:block; margin-top:0.1rem; color:#94A3B8; font-size:11px; font-style:normal; line-height:1.2; }
         .execution-summary {
-            border:1px solid #E8EDF4;
+            border:1px solid #DFE7F0;
             border-radius:8px;
-            background:#fff;
-            padding:0.7rem 0.78rem;
-            margin:0 0 0.65rem;
+            background:#FCFDFF;
+            padding:0.7rem 0.82rem 0.62rem;
+            margin-top:0;
+            margin-bottom:0.9rem;
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.035);
         }
         .execution-title {
-            font-size:0.9rem;
-            font-weight:850;
+            display:flex;
+            align-items:baseline;
+            gap:0.55rem;
+            margin-bottom:0.42rem;
+        }
+        .execution-title span {
+            font-size:14px;
+            font-weight:760;
             color:#0F172A;
-            margin-bottom:0.45rem;
+        }
+        .execution-title small {
+            font-size:11px;
+            font-weight:500;
+            color:#94A3B8;
         }
         .execution-grid {
             display:grid;
             grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:0;
-            border-top:1px solid rgba(15, 23, 42, 0.05);
+            gap:0.6rem;
+            border-top:0;
         }
         .execution-card {
-            border-right:1px solid rgba(15, 23, 42, 0.06);
-            border-radius:0;
-            background:transparent;
-            padding:0.55rem 0.75rem 0.15rem;
-            min-height:92px;
+            border:1px solid rgba(15, 23, 42, 0.055);
+            border-radius:7px;
+            background:#FFFFFF;
+            padding:0.5rem 0.58rem 0.42rem;
+            min-height:0;
+            box-shadow:0 1px 1px rgba(15, 23, 42, 0.025);
         }
-        .execution-card:first-child { padding-left:0; }
-        .execution-card:last-child {
-            border-right:0;
-            padding-right:0;
+        .execution-card.green { border-top-color:#BFE8CE; }
+        .execution-card.blue { border-top-color:#CFE0FA; }
+        .execution-card.amber { border-top-color:#F1D9A8; }
+        .execution-card-head {
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:0.55rem;
         }
         .execution-card-head strong {
             display:block;
             color:#111827;
-            font-size:0.78rem;
-            font-weight:780;
+            font-size:12px;
+            font-weight:700;
         }
         .execution-card-head span {
             display:block;
             margin-top:0.1rem;
             color:#94A3B8;
-            font-size:0.72rem;
+            font-size:11px;
             line-height:1.25;
+        }
+        .execution-card-head em {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:22px;
+            height:20px;
+            padding:0 6px;
+            border-radius:999px;
+            background:#F8FAFC;
+            border:1px solid #E4EAF1;
+            color:#475569;
+            font-size:11px;
+            font-style:normal;
+            font-weight:650;
         }
         .execution-card ul {
             list-style:none;
             padding:0;
-            margin:0.42rem 0 0;
+            margin:0.34rem 0 0;
         }
         .execution-card li {
             display:grid;
@@ -701,17 +748,17 @@ def _render_styles() -> None:
             grid-template-rows:auto auto;
             align-items:center;
             gap:0.35rem;
-            min-height:23px;
+            min-height:30px;
             color:#64748B;
-            font-size:0.76rem;
-            border-top:1px solid rgba(15, 23, 42, 0.04);
+            font-size:12px;
+            border-top:1px solid rgba(15, 23, 42, 0.035);
         }
         .execution-card li:first-child { border-top:0; }
         .execution-card li b {
             grid-row:1 / 3;
             color:#0F172A;
-            font-weight:850;
-            font-size:0.76rem;
+            font-weight:760;
+            font-size:12px;
         }
         .execution-card li span {
             grid-column:2;
@@ -720,6 +767,7 @@ def _render_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             line-height:1.15;
+            font-weight:620;
         }
         .execution-card li small {
             grid-column:2;
@@ -728,11 +776,13 @@ def _render_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             color:#94A3B8;
-            font-size:0.68rem;
+            font-size:11px;
             line-height:1.1;
         }
         .execution-empty-row {
-            display:block !important;
+            min-height:28px !important;
+            display:flex !important;
+            align-items:center;
             color:#CBD5E1 !important;
             border-top:0 !important;
         }
@@ -740,31 +790,43 @@ def _render_styles() -> None:
             color:#CBD5E1 !important;
             font-weight:650;
         }
+        .execution-more-row {
+            min-height:24px !important;
+            border-top:0 !important;
+            color:#94A3B8 !important;
+        }
+        .execution-more-row span {
+            grid-column:1 / 3;
+            font-size:11px;
+            font-weight:620;
+            color:#94A3B8;
+        }
         .execution-summary-empty {
             color:#64748B;
             font-size:0.82rem;
             font-weight:650;
         }
         div[data-testid="stRadio"] {
-            margin: 0.2rem 0 0.55rem;
+            margin-top: 0;
+            margin-bottom: 0.75rem;
         }
         div[data-testid="stRadio"] div[role="radiogroup"] {
             display:inline-flex;
             gap:0.18rem;
-            padding:0.2rem;
-            border:1px solid #E8EDF4;
+            padding:0.18rem;
+            border:1px solid #DFE7F0;
             border-radius:8px;
             background:#F8FAFC;
             flex-wrap:wrap;
         }
         div[data-testid="stRadio"] label {
             margin:0 !important;
-            min-height:28px;
-            padding:0.22rem 0.55rem !important;
+            min-height:30px;
+            padding:0.24rem 0.62rem !important;
             border-radius:6px;
             color:#64748B;
-            font-size:12px;
-            font-weight:650;
+            font-size:12.5px;
+            font-weight:620;
         }
         div[data-testid="stRadio"] label:has(input:checked) {
             background:#FFFFFF;
@@ -775,59 +837,86 @@ def _render_styles() -> None:
             display:none;
         }
         .buy-zone-table {
-            border: 1px solid #E8EDF4;
-            border-radius: 8px;
+            display:grid;
+            gap:0.28rem;
+            border: 0;
+            border-radius: 0;
             overflow-x: auto;
             overflow-y: hidden;
-            background: #fff;
-            margin-bottom: 0.7rem;
+            background: transparent;
+            margin-top: 0.45rem;
+            margin-bottom: 0.8rem;
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 64px 80px 96px 80px 72px 72px minmax(180px, 1fr) 72px 56px;
+            grid-template-columns: 120px minmax(180px, 1fr) minmax(220px, 1.2fr) 150px 96px 56px;
             align-items: center;
-            gap: 0.4rem;
-            min-height: 46px;
-            min-width: 820px;
+            gap: 0.7rem;
+            min-height: 60px;
+            min-width: 860px;
             width: 100%;
-            padding: 0 0.7rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-            font-size: 0.8rem;
+            padding: 0.56rem 0.7rem;
+            font-size: 13px;
         }
         .buy-zone-grid-head {
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            background: #F8FAFC;
+            background: transparent;
             color: #64748B;
-            font-size: 0.76rem;
-            font-weight: 760;
-            min-height: 36px;
+            font-size: 11.5px;
+            font-weight: 650;
+            min-height: 28px;
+            padding-top:0;
+            padding-bottom:0;
+            border:0;
         }
-        .buy-zone-grid-head span:nth-child(2),
-        .buy-zone-grid-head span:nth-child(6) {
-            text-align:right;
+        .buy-zone-row {
+            background:#FFFFFF;
+            border:1px solid rgba(15, 23, 42, 0.06);
+            border-radius:8px;
+            box-shadow:0 1px 1px rgba(15, 23, 42, 0.025);
         }
-        .buy-zone-row:hover { background: #F8FAFC; }
-        .buy-zone-row .num { font-variant-numeric: tabular-nums; text-align: right; }
-        .buy-zone-row > .buy-zone-badge {
-            justify-self:start;
+        .buy-zone-row:hover {
+            background:#FBFCFF;
+            border-color:#DCE6F2;
         }
-        .buy-zone-action-text {
-            color:#475569;
-            font-size:0.78rem;
-            font-weight:650;
+        .stock-cell,
+        .status-cell,
+        .position-cell,
+        .confidence-cell {
             min-width:0;
+        }
+        .stock-cell,
+        .position-cell {
+            display:flex;
+            flex-direction:column;
+            gap:0.12rem;
+            line-height:1.2;
+        }
+        .stock-cell strong {
+            color:#0F172A;
+            font-size:13px;
+            font-weight:760;
+            letter-spacing:0;
+        }
+        .stock-cell span {
+            color:#64748B;
+            font-size:12px;
+            font-weight:560;
+            font-variant-numeric:tabular-nums;
+        }
+        .status-cell {
+            display:flex;
+            flex-direction:column;
+            align-items:flex-start;
+            gap:0.2rem;
+        }
+        .status-cell small {
+            max-width:100%;
+            color:#64748B;
+            font-size:12px;
+            font-weight:560;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
-        }
-        .cell-symbol,
-        .cell-truncate {
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }
         .trigger-cell {
             min-width:0;
@@ -843,8 +932,8 @@ def _render_styles() -> None:
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
-            font-size:0.78rem;
-            font-weight:760;
+            font-size:12px;
+            font-weight:660;
             color:#0F172A;
         }
         .trigger-cell small {
@@ -852,10 +941,24 @@ def _render_styles() -> None:
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
-            font-size:0.68rem;
+            font-size:11px;
             color:#94A3B8;
         }
-        .trigger-cell.ready b { color:#166534; }
+        .position-cell b {
+            color:#0F172A;
+            font-size:12px;
+            font-weight:680;
+        }
+        .position-cell small {
+            color:#94A3B8;
+            font-size:11px;
+            font-weight:560;
+        }
+        .confidence-cell {
+            display:flex;
+            align-items:center;
+        }
+        .trigger-cell.ready b { color:#1F2937; }
         .trigger-cell.near b,
         .trigger-cell.caution b { color:#334155; }
         .trigger-cell.warning b { color:#B45309; }
@@ -863,7 +966,7 @@ def _render_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            min-height:23px;
+            height:22px;
             max-width:100%;
             padding:0 8px;
             border-radius:999px;
@@ -876,16 +979,23 @@ def _render_styles() -> None:
             overflow:hidden;
             text-overflow:ellipsis;
         }
-        .buy-zone-badge.green { background:#ECFDF3; color:#166534; border-color:#BBF7D0; }
-        .buy-zone-badge.blue { background:#EFF6FF; color:#1D4ED8; border-color:#BFDBFE; }
-        .buy-zone-badge.yellow { background:#FEFCE8; color:#854D0E; border-color:#FDE68A; }
-        .buy-zone-badge.orange { background:#FFFBEB; color:#B45309; border-color:#FDE68A; }
-        .buy-zone-badge.red { background:#FFF5F5; color:#9F1239; border-color:#FECACA; }
-        .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E2E8F0; }
+        .buy-zone-badge.green { background:#F0FDF4; color:#166534; border-color:#CDEFD8; }
+        .buy-zone-badge.blue { background:#F2F7FF; color:#1E40AF; border-color:#D5E5FF; }
+        .buy-zone-badge.yellow { background:#FFFBEA; color:#854D0E; border-color:#F7E9A8; }
+        .buy-zone-badge.orange { background:#FFF7E6; color:#A16207; border-color:#F4D99A; }
+        .buy-zone-badge.red { background:#FFF7F7; color:#9F1239; border-color:#F5D1D1; }
+        .buy-zone-badge.gray { background:#F8FAFC; color:#475569; border-color:#E4EAF1; }
         .buy-zone-detail-link {
             text-decoration:none;
-            color:#1D4ED8;
-            font-weight:800;
+            color:#64748B;
+            font-size:12px;
+            font-weight:650;
+            padding:4px 6px;
+            border-radius:6px;
+        }
+        .buy-zone-detail-link:hover {
+            color:#0F172A;
+            background:#F1F5F9;
         }
         .buy-zone-drawer .price-ladder,
         .buy-zone-drawer .drawer-resolution {
@@ -1020,9 +1130,9 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 64px 80px 92px 76px 70px 72px 170px 70px 54px;
-                font-size:0.76rem;
-                gap:0.35rem;
+                grid-template-columns: 116px minmax(170px, 1fr) minmax(210px, 1.2fr) 140px 88px 54px;
+                font-size:12.5px;
+                gap:0.55rem;
             }
         }
         </style>

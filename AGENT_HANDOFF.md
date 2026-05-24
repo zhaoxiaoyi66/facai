@@ -32,6 +32,33 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Buy zone plan page UI-only `执行清单` compact action list rewrite.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Replaced the dense multi-column execution table with compact action-list rows using a stable six-part grid: stock identity/current price, status plus suggested action, trigger condition, position action, confidence, and detail action. Removed narrow current-price/current-add/max-position columns, kept current add as action text instead of `0%`, kept trigger conditions as neutral two-line prompts, made rows 60px compact cards with light borders, and preserved the detail drawer interaction.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only `今日动作面板` layout polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint and touched only the action panel presentation. Added per-lane count badges, changed action lanes into compact cards, tightened row height, added primary/secondary row text, added muted `暂无` empty rows, added lightweight `还有 X 只 →` overflow rows, softened separators, reduced unused vertical space, and separated the panel from the filter with clearer spacing.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
+- Task: Buy zone plan page UI-only visual alignment polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
+- What changed: Continued the same buy-zone UI checkpoint. Widened and centered the page container, aligned status ribbon, action panel, filter, table, and advanced settings to one 1200px content width, tightened vertical rhythm, made the action panel visually stronger, stabilized the final table grid widths, raised table typography to 13px, softened table borders/hover, right-aligned numeric columns, made ticker/action/trigger text more consistent, unified badge height/font/weight, lowered color saturation, and turned the detail action into a muted ghost text button.
+- Verification: `py_compile` passed for `ui/buy_zone.py` and `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Review and commit this buy-zone UI checkpoint if the diff looks good. Do not start another checkpoint automatically.
+- Do not touch yet: BuyZoneEngine formulas, PositionPlanEngine formulas, scoring logic, data providers, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated UI files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only final execution-panel polish.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Continued the same buy-zone UI checkpoint. Updated the page subtitle to execution-focused copy, turned the status cards into a compact summary ribbon, renamed `今日执行摘要` to `今日动作面板`, made each action row show ticker plus primary action and secondary reason, renamed the main table to `执行清单`, removed `来源` from the main table while keeping source in the drawer, stabilized the final nine-column grid, kept trigger conditions as neutral two-line operation prompts, preserved folded manual/advanced settings, and kept the legacy page-contract phrase as a non-visible test anchor.
