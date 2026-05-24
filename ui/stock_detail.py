@@ -230,21 +230,33 @@ def _missing_summary_text(missing: list[str]) -> str:
 
 
 def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
-    render_section_title("数据可信度", "数据细节默认折叠")
-    summary = snapshot.get("disclosureReviewSummary")
-    pending = summary.get("pending_review", 0) if isinstance(summary, dict) else 0
-    approved = summary.get("approved", 0) if isinstance(summary, dict) else 0
-    missing_count = len(score.missing_data or [])
-    st.markdown(
-        _data_summary_html(
-            confidence_label(score.data_confidence or snapshot.get("dataConfidence") or "N/A"),
-            pending,
-            approved,
-            missing_count,
-        ),
-        unsafe_allow_html=True,
-    )
-    with st.expander("查看数据状态", expanded=False):
+    render_section_title("数据可信度与缺口", "按影响程度汇总，细节默认折叠")
+    missing_summary = _missing_data_summary(score, snapshot)
+    confidence = confidence_label(score.data_confidence or snapshot.get("dataConfidence") or "N/A")
+    if missing_summary:
+        st.markdown(_missing_data_summary_html(confidence, missing_summary), unsafe_allow_html=True)
+        groups = _missing_gap_groups(score, missing_summary)
+        st.markdown(_missing_gap_groups_html(groups, limit=3), unsafe_allow_html=True)
+        if any(len(group["items"]) > 3 for group in groups):
+            with st.expander("展开更多缺口分组", expanded=False):
+                st.markdown(_missing_gap_groups_html(groups, limit=None), unsafe_allow_html=True)
+    else:
+        summary = snapshot.get("disclosureReviewSummary")
+        pending = summary.get("pending_review", 0) if isinstance(summary, dict) else 0
+        approved = summary.get("approved", 0) if isinstance(summary, dict) else 0
+        missing_count = len(score.missing_data or [])
+        st.markdown(
+            _data_summary_html(
+                confidence,
+                pending,
+                approved,
+                missing_count,
+            ),
+            unsafe_allow_html=True,
+        )
+        st.caption("当前未读取到 missingDataSummary，已使用旧版数据状态摘要。")
+
+    with st.expander("查看数据缺口明细", expanded=False):
         _render_missing_data_details(ticker, score, snapshot)
 
 
@@ -278,7 +290,7 @@ def _render_missing_data_details(ticker: str, score, snapshot: dict) -> None:
         st.dataframe(pd.DataFrame(fundamental_rows), hide_index=True, width="stretch")
 
     if technical_rows:
-        st.caption("技术指标未计算项：不进入基本面缺失表，也不影响 Quality Rating。")
+        st.caption("技术指标未计算项：不进入基本面缺失表，也不影响公司质量评级。")
         st.dataframe(pd.DataFrame(technical_rows), hide_index=True, width="stretch")
 
     if not missing and not category_rows and not impact_rows:
@@ -657,9 +669,49 @@ def _buy_zone_method_label(method: str) -> str:
     }.get(method, method)
 
 
+def _buy_zone_source(plan: dict) -> str:
+    if has_buy_zone_override(plan):
+        return "manual"
+    if _plan_number(plan, "first_buy_price") is not None:
+        return "mixed"
+    return "system"
+
+
+def _buy_zone_section_title(source: str) -> tuple[str, str]:
+    if source == "manual":
+        return "手动买区", "当前使用手动买区"
+    if source == "mixed":
+        return "买区计划", "系统买区 + 手动操作计划"
+    return "系统建议击球区", "当前使用系统建议"
+
+
+def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str) -> tuple[str, float | None]:
+    if source == "manual":
+        first_buy = _plan_number(plan, "first_buy_price")
+        if first_buy is not None:
+            return "第一买入触发价", first_buy
+    next_price = getattr(active_zone, "nextTriggerPrice", None)
+    next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(active_zone.currentPrice, active_zone.to_plan_fields())
+    return next_label, next_price
+
+
 def _plan_or_suggestion(plan: dict, field: str, fallback):
     value = plan.get(field)
     return value if value is not None and value != "" else fallback
+
+
+def _plan_number(plan: dict, field: str) -> float | None:
+    try:
+        value = plan.get(field)
+        if value in {None, ""}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _toggle_session_flag(key: str) -> None:
+    st.session_state[key] = not st.session_state.get(key, False)
 
 
 def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion) -> None:
@@ -690,13 +742,16 @@ def _render_buy_zone(
     active_zone: BuyZoneEstimate,
     system_zone: BuyZoneEstimate,
 ) -> None:
-    manual = has_buy_zone_override(plan)
-    title_suffix = "当前使用手动买区" if manual else "当前使用系统建议"
-    render_section_title("系统建议击球区", title_suffix)
+    source = _buy_zone_source(plan)
+    manual = source == "manual"
+    if source == "system":
+        title, title_suffix = "系统建议击球区", "当前使用系统建议"
+    else:
+        title, title_suffix = _buy_zone_section_title(source)
+    render_section_title(title, title_suffix)
     price = active_zone.currentPrice
     confidence = getattr(active_zone, "buyZoneConfidence", None) or active_zone.confidence
-    next_price = getattr(active_zone, "nextTriggerPrice", None)
-    next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(price, active_zone.to_plan_fields())
+    next_label, next_price = _buy_zone_next_trigger(plan, active_zone, source)
     validation_errors = list(getattr(active_zone, "validationErrors", None) or [])
     rows = [
         ("当前价格", format_currency(price), _buy_zone_label(active_zone.currentZone), "current"),
@@ -719,6 +774,8 @@ def _render_buy_zone(
         '</section>',
         unsafe_allow_html=True,
     )
+    if st.session_state.get(f"stock-plan-editing-{ticker}", False):
+        st.info("有未保存的操作计划变更。保存后将更新顶部下一触发价。")
     with st.expander("展开买区依据", expanded=False):
         _render_short_list(active_zone.keyReasons[:5], "暂无生成依据")
         if active_zone.warnings:
@@ -737,7 +794,7 @@ def _render_buy_zone(
             plan_store.save_plan(ticker, {**plan, **system_zone.to_plan_fields()})
             st.success("已保存为手动买区，之后会优先使用手动值。")
             st.rerun()
-    action_cols[1].caption("可在下方操作计划里编辑区间。")
+    action_cols[1].caption("可在下方操作计划里编辑区间；保存后会刷新上方买区摘要。")
 
 
 def _render_action_plan_form(
@@ -760,13 +817,19 @@ def _render_action_plan_form(
     with header_cols[0]:
         st.markdown(_plan_summary_html(summary_rows), unsafe_allow_html=True)
     with header_cols[1]:
-        if st.button("编辑计划", key=f"stock-plan-edit-button-{ticker}", width="stretch"):
-            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+        st.button(
+            "编辑计划",
+            key=f"stock-plan-edit-button-{ticker}",
+            on_click=_toggle_session_flag,
+            args=(edit_key,),
+            width="stretch",
+        )
 
     if not st.session_state.get(edit_key, False):
         return
 
     with st.form(f"stock-plan-{ticker}"):
+        st.info("有未保存的操作计划变更。保存后将更新顶部下一触发价。")
         top = st.columns(2)
         target_position_pct = top[0].text_input(
             "组合仓位上限 %",
@@ -817,7 +880,8 @@ def _render_action_plan_form(
                 "notes": notes,
             }
             plan_store.save_plan(ticker, values)
-            st.success("已保存到本地 SQLite。")
+            st.session_state[edit_key] = False
+            st.success("操作计划已保存，顶部买区摘要已更新。")
             st.rerun()
 
 
@@ -1071,11 +1135,11 @@ def _risk_source_labels(score) -> list[str]:
 def _missing_impact(item: str) -> str:
     lowered = item.lower()
     if any(token in lowered for token in ["growth", "margin", "roic", "arr", "rpo", "retention", "sbc", "ebitda", "fcf"]):
-        return "Quality / 行业核心指标"
+        return "公司质量 / 行业核心指标"
     if any(token in lowered for token in ["valuation", "p/s", "pe", "yield", "multiple"]):
-        return "Entry / Valuation"
+        return "买点 / 估值"
     if any(token in lowered for token in ["risk", "debt", "leverage", "hedge", "regulatory", "customer", "dilution"]):
-        return "Risk"
+        return "风险"
     return "评分置信度"
 
 
@@ -1088,12 +1152,30 @@ def _missing_impact_rows(impacts: list[dict]) -> list[dict]:
             {
                 "指标": metric_label(item.get("metric") or "N/A"),
                 "影响等级": item.get("impactLevel") or "low",
-                "影响范围": metric_label(item.get("affects") or "Confidence Only"),
+                "影响范围": _affects_label(item.get("affects") or "Confidence Only"),
                 "建议动作": action_label(item.get("action") or "manual_override_required"),
                 "说明": item.get("explanation") or "",
             }
         )
     return rows
+
+
+def _affects_label(value: object) -> str:
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(item) for item in value if item]
+    else:
+        parts = [part.strip() for part in str(value or "").split(",") if part.strip()]
+    labels = {
+        "Quality": "公司质量",
+        "Entry": "买点 / 估值",
+        "Valuation": "买点 / 估值",
+        "Risk": "风险",
+        "Technical": "技术面",
+        "Confidence Only": "评分置信度",
+        "Confidence": "评分置信度",
+    }
+    translated = [labels.get(part, metric_label(part)) for part in parts]
+    return " / ".join(translated) if translated else "评分置信度"
 
 
 def _needs_manual_override(item: str, model_type: str) -> bool:
@@ -1364,6 +1446,204 @@ def _memo_item_html(label: str, value: object, placeholder: str) -> str:
         f'<strong class="{class_name}">{escape(text or placeholder)}</strong>'
         "</div>"
     )
+
+
+def _missing_data_summary(score, snapshot: dict) -> dict[str, object]:
+    expected_keys = {
+        "blockingCount",
+        "autoFillableCount",
+        "estimatesRequiredCount",
+        "companyNotDisclosedCount",
+        "lowPriorityArchivedCount",
+        "humanReviewRequiredCount",
+        "keyBlockingMetrics",
+        "recommendedNextAction",
+    }
+    candidates = [
+        snapshot.get("missingDataSummary"),
+        getattr(score, "missingDataSummary", None),
+        getattr(score, "missing_data_summary", None),
+    ]
+    for candidate in candidates:
+        if callable(candidate):
+            candidate = candidate()
+        if isinstance(candidate, dict) and candidate and any(key in candidate for key in expected_keys):
+            return candidate
+    return {}
+
+
+def _missing_data_summary_html(confidence: str, summary: dict[str, object]) -> str:
+    blocking = _summary_count(summary, "blockingCount")
+    auto_fillable = _summary_count(summary, "autoFillableCount")
+    estimates = _summary_count(summary, "estimatesRequiredCount")
+    not_disclosed = _summary_count(summary, "companyNotDisclosedCount")
+    low_priority = _summary_count(summary, "lowPriorityArchivedCount")
+    human_review = _summary_count(summary, "humanReviewRequiredCount")
+    blocking_metrics = _summary_key_metrics(summary)
+    message = _missing_data_conclusion(summary)
+    next_action = _recommended_next_action_label(summary.get("recommendedNextAction"))
+    cards = [
+        ("数据可信度", confidence, ""),
+        ("关键缺口", f"{blocking} 项", "、".join(blocking_metrics[:3]) if blocking_metrics else "暂无关键阻塞缺口"),
+        ("可自动补齐", f"{auto_fillable} 项", "可通过自动计算或披露补齐"),
+        ("需外部预期", f"{estimates} 项", "主要影响买点 / 估值"),
+        ("公司未披露 / 低优先级", f"{not_disclosed + low_priority} 项", f"未披露 {not_disclosed} / 低优先级 {low_priority}"),
+        ("需人工判断", f"{human_review} 项", "需人工判断后再进入评分"),
+    ]
+    return (
+        '<section class="research-card missing-summary-card">'
+        f'<p class="missing-summary-message">{escape(message)}</p>'
+        '<div class="missing-summary-grid">'
+        + "".join(_missing_summary_item_html(label, value, detail) for label, value, detail in cards)
+        + "</div>"
+        f'<p class="missing-summary-action">建议动作：{escape(next_action)}</p>'
+        "</section>"
+    )
+
+
+def _missing_summary_item_html(label: str, value: str, detail: str) -> str:
+    return (
+        "<div>"
+        f"<span>{escape(label)}</span>"
+        f"<strong>{escape(value)}</strong>"
+        f"<em>{escape(detail)}</em>"
+        "</div>"
+    )
+
+
+def _missing_gap_groups(score, summary: dict[str, object]) -> list[dict[str, object]]:
+    rows = _missing_resolution_rows(score)
+    key_metrics = _summary_key_metrics(summary)
+    blocking_items = _dedupe([*key_metrics, *_rows_for_routes(rows, {"human_review_required"})])
+    auto_items = _rows_for_routes(rows, {"auto_calculate", "ir_or_sec_extract", "proxy_available"})
+    estimate_items = _rows_for_routes(rows, {"analyst_estimates_required"})
+    company_low_items = _rows_for_routes(rows, {"company_not_disclosed", "low_priority_archive"})
+    return [
+        {
+            "title": "影响评分 / 需优先处理",
+            "count": _summary_count(summary, "blockingCount") or _summary_count(summary, "humanReviewRequiredCount"),
+            "items": blocking_items,
+            "empty": "暂无关键阻塞缺口",
+        },
+        {
+            "title": "可自动补齐",
+            "count": _summary_count(summary, "autoFillableCount"),
+            "items": auto_items,
+            "empty": "暂无可自动补齐项",
+        },
+        {
+            "title": "需要外部预期",
+            "count": _summary_count(summary, "estimatesRequiredCount"),
+            "items": estimate_items,
+            "empty": "暂无需要分析师预期的缺口",
+        },
+        {
+            "title": "公司未披露或低优先级",
+            "count": _summary_count(summary, "companyNotDisclosedCount") + _summary_count(summary, "lowPriorityArchivedCount"),
+            "items": company_low_items,
+            "empty": "暂无公司未披露或低优先级缺口",
+        },
+    ]
+
+
+def _missing_gap_groups_html(groups: list[dict[str, object]], limit: int | None) -> str:
+    return (
+        '<section class="missing-gap-groups">'
+        + "".join(_missing_gap_group_html(group, limit) for group in groups)
+        + "</section>"
+    )
+
+
+def _missing_gap_group_html(group: dict[str, object], limit: int | None) -> str:
+    items = list(group.get("items") or [])
+    display_items = items[:limit] if limit is not None else items
+    if not display_items:
+        display_items = [str(group.get("empty") or "暂无")]
+    remaining = max(0, len(items) - len(display_items))
+    return (
+        '<div class="research-card missing-gap-group">'
+        f'<div class="missing-gap-heading"><span>{escape(str(group.get("title") or ""))}</span><strong>{_summary_number(group.get("count"))} 项</strong></div>'
+        "<ul>"
+        + "".join(f"<li>{escape(item)}</li>" for item in display_items)
+        + "</ul>"
+        + (f'<p>还有 {remaining} 项在详情中</p>' if remaining else "")
+        + "</div>"
+    )
+
+
+def _missing_resolution_rows(score) -> list[dict[str, object]]:
+    rows = getattr(score, "metric_resolution_statuses", None) or getattr(score, "metricResolutionStatus", None) or []
+    if not isinstance(rows, list):
+        return []
+    resolved_statuses = {"available", "calculated", "not_applicable"}
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("resolutionStatus") or "") not in resolved_statuses
+    ]
+
+
+def _rows_for_routes(rows: list[dict[str, object]], routes: set[str]) -> list[str]:
+    return _dedupe(
+        [
+            _missing_row_label(row)
+            for row in rows
+            if str(row.get("missingResolutionRoute") or "") in routes
+        ]
+    )
+
+
+def _missing_row_label(row: dict[str, object]) -> str:
+    return metric_label(str(row.get("displayName") or row.get("metricKey") or "N/A"))
+
+
+def _summary_key_metrics(summary: dict[str, object]) -> list[str]:
+    raw = summary.get("keyBlockingMetrics") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return _dedupe([metric_label(str(item)) for item in raw if item])
+
+
+def _missing_data_conclusion(summary: dict[str, object]) -> str:
+    blocking = _summary_count(summary, "blockingCount")
+    human_review = _summary_count(summary, "humanReviewRequiredCount")
+    estimates = _summary_count(summary, "estimatesRequiredCount")
+    not_disclosed = _summary_count(summary, "companyNotDisclosedCount")
+    messages: list[str] = []
+    if blocking > 0:
+        messages.append("当前仍有关键数据缺口，评分上限受到限制；建议优先处理关键缺口后再提高仓位。")
+    elif blocking == 0 and human_review == 0:
+        messages.append("当前缺失项主要为非阻塞项，不直接影响核心评分。")
+    else:
+        messages.append("当前仍有需要人工判断的数据，建议处理后再提高仓位。")
+    if estimates > 0:
+        messages.append("部分估值指标依赖分析师预期，主要影响买点 / 估值判断，不影响公司质量评分。")
+    if not_disclosed > 0:
+        messages.append("部分公司专属 KPI 未披露，系统会降低置信度，但不会直接等同扣分。")
+    return " ".join(messages)
+
+
+def _recommended_next_action_label(value: object) -> str:
+    return {
+        "handle_high_impact_manual_review": "优先处理关键缺口",
+        "run_auto_fill_or_refresh_disclosures": "运行自动补齐或刷新披露数据",
+        "configure_analyst_estimates_for_valuation": "补充分析师预期后再判断估值",
+        "no_user_action_required": "暂无必须处理动作",
+        "no_missing_data": "核心缺口已处理",
+    }.get(str(value or ""), "按缺口分组逐项处理")
+
+
+def _summary_count(summary: dict[str, object], key: str) -> int:
+    return _summary_number(summary.get(key))
+
+
+def _summary_number(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _plan_summary_html(rows: list[tuple[str, object]]) -> str:
@@ -1641,7 +1921,8 @@ def _render_detail_styles() -> None:
         .conclusion-card,
         .buy-zone-panel,
         .plan-summary-card,
-        .memo-summary-card {
+        .memo-summary-card,
+        .missing-summary-card {
             padding: 0.78rem 0.86rem;
             margin-bottom: 0.75rem;
         }
@@ -1751,6 +2032,97 @@ def _render_detail_styles() -> None:
             padding: 0.72rem;
             margin-bottom: 0.4rem;
         }
+        .missing-summary-card {
+            display: grid;
+            gap: 0.6rem;
+        }
+        .missing-summary-message {
+            margin: 0;
+            color: #334155;
+            font-size: 0.86rem;
+            line-height: 1.45;
+            font-weight: 620;
+        }
+        .missing-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.48rem;
+        }
+        .missing-summary-grid div {
+            min-height: 4.1rem;
+            padding: 0.5rem 0.58rem;
+            border-radius: 0.5rem;
+            background: rgba(248, 250, 252, 0.76);
+            border: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        .missing-summary-grid span,
+        .missing-gap-heading span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 670;
+            line-height: 1.2;
+        }
+        .missing-summary-grid strong {
+            display: block;
+            margin-top: 0.25rem;
+            color: #0f172a;
+            font-size: 0.92rem;
+            line-height: 1.2;
+            font-weight: 760;
+        }
+        .missing-summary-grid em {
+            display: block;
+            margin-top: 0.2rem;
+            color: #64748b;
+            font-size: 0.72rem;
+            line-height: 1.25;
+            font-style: normal;
+        }
+        .missing-summary-action {
+            margin: 0;
+            color: #64748b;
+            font-size: 0.76rem;
+            line-height: 1.3;
+        }
+        .missing-gap-groups {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin: 0.5rem 0 0.65rem;
+        }
+        .missing-gap-group {
+            padding: 0.58rem 0.62rem;
+            box-shadow: none;
+            background: rgba(255, 255, 255, 0.82);
+        }
+        .missing-gap-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.4rem;
+        }
+        .missing-gap-heading strong {
+            color: #334155;
+            font-size: 0.72rem;
+            font-weight: 720;
+            white-space: nowrap;
+        }
+        .missing-gap-group ul {
+            margin: 0.45rem 0 0;
+            padding-left: 1rem;
+            color: #475569;
+            font-size: 0.75rem;
+            line-height: 1.45;
+        }
+        .missing-gap-group li {
+            margin: 0.12rem 0;
+        }
+        .missing-gap-group p {
+            margin: 0.35rem 0 0;
+            color: #94a3b8;
+            font-size: 0.72rem;
+        }
         .memo-summary-card {
             display: grid;
             gap: 0.55rem;
@@ -1820,7 +2192,9 @@ def _render_detail_styles() -> None:
             .buy-zone-meta,
             .plan-summary-grid,
             .data-summary-card,
-            .memo-grid {
+            .memo-grid,
+            .missing-summary-grid,
+            .missing-gap-groups {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
             .buy-zone-row {
