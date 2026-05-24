@@ -17,7 +17,6 @@ from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui.metric_labels import action_label, confidence_label, metric_label, model_type_label, resolution_status_label
-from ui.theme import render_section_title
 
 
 DASHBOARD_COLUMNS = [
@@ -32,6 +31,17 @@ DASHBOARD_COLUMNS = [
     {"key": "maxSuggestedPosition", "label": "当前新增"},
     {"key": "dataStatus", "label": "数据状态"},
     {"key": "actions", "label": "操作"},
+]
+
+WATCHLIST_COLUMNS = [
+    {"key": "symbol", "label": "代码", "align": "left"},
+    {"key": "priceMarket", "label": "价格 / 市值", "align": "right"},
+    {"key": "qualityRating", "label": "质量", "kind": "badge"},
+    {"key": "entryRating", "label": "买点", "kind": "badge"},
+    {"key": "riskRating", "label": "风险", "kind": "badge"},
+    {"key": "actionSummary", "label": "动作"},
+    {"key": "dataStatus", "label": "数据"},
+    {"key": "actions", "label": "查看"},
 ]
 
 DETAIL_GROUPS = [
@@ -83,12 +93,12 @@ DETAIL_GROUPS = [
 DECISION_COLUMN_WIDTHS = [0.72, 0.82, 0.86, 0.92, 0.92, 0.78, 1.05, 1.35, 0.86, 0.90, 0.58]
 
 BADGE_STYLES = {
-    "green": ("#EAF8F0", "#166534", "#BBF7D0"),
-    "blue": ("#EFF6FF", "#1D4ED8", "#BFDBFE"),
-    "yellow": ("#FEFCE8", "#854D0E", "#FDE68A"),
-    "orange": ("#FFF7ED", "#C2410C", "#FDBA74"),
-    "red": ("#FEF2F2", "#B91C1C", "#FECACA"),
-    "gray": ("#F3F4F6", "#4B5563", "#E5E7EB"),
+    "green": ("#F0FDF4", "#166534", "#CDEFD8"),
+    "blue": ("#F2F6FB", "#334155", "#E4EAF1"),
+    "yellow": ("#FFFBEB", "#854D0E", "#F4E7B0"),
+    "orange": ("#FFF7ED", "#92400E", "#F7D8A9"),
+    "red": ("#FFF5F5", "#991B1B", "#F3D2D2"),
+    "gray": ("#F8FAFC", "#475569", "#E4EAF1"),
 }
 
 DASHBOARD_SCORE_SCHEMA_VERSION = 4
@@ -457,20 +467,17 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     )
     avg_drawdown = _average_percent_column(table, "drawdownFromHigh")
 
-    cols = st.columns(4)
     metrics = [
         ("观察数", f"{len(table)}", "当前股票池"),
         ("可行动", f"{actionable}", "可分批执行"),
         ("待确认/观察", f"{wait_count}", "等回踩或复核"),
         ("风险/问题", f"{risk_count}", f"平均回撤 {avg_drawdown}"),
     ]
-    for col, (label, value, detail) in zip(cols, metrics):
-        with col:
-            st.markdown(_market_stat_html(label, value, detail), unsafe_allow_html=True)
+    cards = "".join(_market_stat_html(label, value, detail) for label, value, detail in metrics)
+    st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
 
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
-    render_section_title("决策通道")
     summary_groups = [
         ("actionable", "可行动", "可执行小仓或正常分批", _actionable_rows(table), "green"),
         ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", _near_buy_zone_rows(table), "yellow"),
@@ -478,6 +485,13 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
         ("noChaseHighRisk", "禁止追高 / 高风险", "先看原因，不硬买", _blocked_or_risky_rows(table), "red"),
     ]
 
+    st.markdown(
+        '<section class="decision-terminal-head">'
+        "<div><strong>决策台</strong><span>按行动优先级聚合当前观察池</span></div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(_dashboard_priority_strip_html(summary_groups), unsafe_allow_html=True)
     st.markdown('<div class="decision-lanes-marker"></div>', unsafe_allow_html=True)
     columns = st.columns(4, gap="small")
     for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
@@ -496,33 +510,23 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
 def _render_decision_table(table: pd.DataFrame) -> None:
     density = st.session_state.get("dashboard_density", "紧凑")
     table_class = "decision-table compact" if density == "紧凑" else "decision-table comfortable"
-    render_section_title("观察名单", "主表只显示决策摘要，详情进入右侧面板")
+    st.markdown(
+        '<section class="watchlist-head">'
+        "<div><strong>观察名单</strong><span>主表只显示决策摘要，详细进入右侧面板</span></div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
     st.markdown('<div id="watchlist-table"></div>', unsafe_allow_html=True)
     table = _filtered_table_for_active_lane(table)
     _render_active_lane_filter_status(table)
-    st.markdown(f'<div class="{table_class}">', unsafe_allow_html=True)
-
-    header_columns = st.columns(DECISION_COLUMN_WIDTHS)
-    for column, definition in zip(header_columns, DASHBOARD_COLUMNS):
-        column.markdown(_header_cell_html(definition["label"], definition.get("align")), unsafe_allow_html=True)
-
-    for _, row in table.iterrows():
-        symbol = str(row.get("symbol", "")).upper()
-        with st.container():
-            row_columns = st.columns(DECISION_COLUMN_WIDTHS)
-            for column, definition in zip(row_columns, DASHBOARD_COLUMNS):
-                if definition["key"] == "actions":
-                    with column:
-                        _render_row_action_menu(row)
-                    continue
-                value = row.get(definition["key"], "N/A")
-                value = _safe_table_value(definition["key"], value)
-                if definition.get("kind") == "badge" or definition["key"] in {"valuationStatus", "action", "maxSuggestedPosition", "dataStatus"}:
-                    display_value = _short_badge_text(value) if definition["key"] == "action" else value
-                    column.markdown(_badge_html(display_value, _badge_color_for_cell(definition["key"], value, row), symbol=symbol), unsafe_allow_html=True)
-                else:
-                    column.markdown(_body_cell_html(value, definition.get("align"), symbol=symbol), unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    header_html = "".join(_header_cell_html(definition["label"], definition.get("align")) for definition in WATCHLIST_COLUMNS)
+    rows_html = "".join(_decision_table_row_html(row) for _, row in table.iterrows())
+    if not rows_html:
+        rows_html = '<div class="decision-empty">当前筛选下没有股票。</div>'
+    st.markdown(
+        f'<div class="{table_class}"><div class="decision-grid decision-grid-head">{header_html}</div>{rows_html}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_row_action_menu(row: pd.Series) -> None:
@@ -2299,6 +2303,60 @@ def _market_stat_html(label: object, value: object, detail: object) -> str:
     )
 
 
+def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, list[pd.Series], str]]) -> str:
+    items: list[str] = []
+    for lane_key, _title, _subtitle, rows, color in summary_groups:
+        for row in rows[:2]:
+            if len(items) >= 5:
+                break
+            items.append(_dashboard_priority_item_html(lane_key, row, color))
+        if len(items) >= 5:
+            break
+    if items:
+        body = "".join(items)
+    else:
+        body = '<div class="dashboard-priority-empty">暂无明确可执行机会，优先等待回踩或复核数据。</div>'
+    return (
+        '<section class="dashboard-priority-strip">'
+        '<div class="dashboard-priority-head"><strong>今日重点</strong><span>最多显示 5 个决策优先项</span></div>'
+        f'<div class="dashboard-priority-list">{body}</div>'
+        "</section>"
+    )
+
+
+def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> str:
+    label = _dashboard_priority_label(lane_key, row)
+    symbol = str(row.get("symbol") or "").upper()
+    action = _short_badge_text(row.get("action") or row.get("valuationStatus") or "只观察")
+    reason = _lane_reason(row)
+    return (
+        '<div class="dashboard-priority-row">'
+        f'<span class="dashboard-priority-status {escape(color)}"><i></i>{escape(label)}</span>'
+        f'<strong>{escape(symbol)}</strong>'
+        f'<span>{escape(str(action))}</span>'
+        f'<em>{escape(reason)}</em>'
+        "</div>"
+    )
+
+
+def _dashboard_priority_label(lane_key: str, row: pd.Series) -> str:
+    if lane_key == "actionable":
+        return "可行动"
+    if lane_key == "nearBuyZone":
+        return "接近"
+    if lane_key == "waitOrReview":
+        action = str(row.get("action") or "")
+        if "复核" in action or row.get("dataConfidence") == "low":
+            return "复核"
+        return "等待"
+    if lane_key == "noChaseHighRisk":
+        action = str(row.get("action") or "")
+        if "数据" in action or row.get("dataConfidence") == "low":
+            return "复核"
+        return "风险"
+    return "观察"
+
+
 def _summary_panel_head_html(title: object, subtitle: object, count: int, color: str) -> str:
     background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
     return (
@@ -3445,6 +3503,474 @@ def _render_dashboard_styles() -> None:
             0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.28); }
             100% { box-shadow: 0 0 0 12px rgba(37, 99, 235, 0); }
         }
+        div[data-testid="stAppViewContainer"] {
+            background:#F6F8FB;
+        }
+        div.block-container {
+            max-width: 1120px;
+            padding-left: 1.8rem;
+            padding-right: 1.8rem;
+        }
+        .terminal-header,
+        .terminal-title-group,
+        .terminal-notice,
+        .terminal-refresh-card,
+        .terminal-loading-shell,
+        .market-ribbon,
+        .decision-terminal-head,
+        .dashboard-priority-strip,
+        .watchlist-head,
+        .decision-table,
+        .table-filter-chip {
+            max-width: 1080px;
+            margin-left: auto;
+            margin-right: auto;
+            box-sizing: border-box;
+        }
+        .terminal-header,
+        .terminal-title-group {
+            max-width: 1080px;
+        }
+        .terminal-header {
+            margin-bottom: 0.78rem;
+            border-bottom-color: rgba(15,23,42,0.08);
+        }
+        .terminal-title {
+            font-size: 1.72rem;
+            font-weight: 780;
+        }
+        .terminal-subtitle {
+            color:#64748B;
+            font-size:13px;
+        }
+        .terminal-kicker {
+            color:#2563EB;
+        }
+        .terminal-meta span {
+            height:26px;
+            border-color:rgba(148, 163, 184, 0.20);
+            background:#FFFFFF;
+            color:#64748B;
+            box-shadow:none;
+        }
+        .market-ribbon {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:0;
+            margin-top:0.9rem;
+            margin-bottom:0.76rem;
+            border:1px solid rgba(148, 163, 184, 0.20);
+            border-radius:8px;
+            background:#FFFFFF;
+            overflow:hidden;
+            box-shadow:none;
+        }
+        .market-ribbon .market-stat {
+            min-height:64px;
+            border:0;
+            border-right:1px solid rgba(15, 23, 42, 0.035);
+            border-radius:0;
+            background:transparent;
+            box-shadow:none;
+            padding:0.58rem 0.82rem;
+            display:grid;
+            align-content:center;
+        }
+        .market-ribbon .market-stat:last-child {
+            border-right:0;
+        }
+        .market-stat-label {
+            color:#64748B;
+            font-size:12px;
+            font-weight:650;
+            line-height:1.05;
+        }
+        .market-stat-value {
+            display:block;
+            margin-top:0.1rem;
+            color:#0F172A;
+            font-size:18px;
+            line-height:1.05;
+            font-weight:720;
+            font-variant-numeric:tabular-nums;
+        }
+        .market-stat-detail {
+            margin-top:0.1rem;
+            color:#94A3B8;
+            font-size:11px;
+            line-height:1.2;
+        }
+        .decision-terminal-head,
+        .watchlist-head {
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-end;
+            gap:0.8rem;
+            margin-top:0.52rem;
+            margin-bottom:0;
+        }
+        .decision-terminal-head strong,
+        .watchlist-head strong {
+            display:block;
+            color:#0F172A;
+            font-size:15px;
+            font-weight:760;
+            line-height:1.2;
+        }
+        .decision-terminal-head span,
+        .watchlist-head span {
+            display:block;
+            margin-top:0.12rem;
+            color:#64748B;
+            font-size:11.5px;
+            font-weight:520;
+        }
+        .dashboard-priority-strip {
+            margin-top:0.46rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:10px 10px 0 0;
+            background:#FAFBFD;
+            border-bottom:0;
+            overflow:hidden;
+        }
+        .dashboard-priority-head {
+            display:flex;
+            justify-content:space-between;
+            align-items:baseline;
+            gap:0.75rem;
+            padding:0.5rem 0.68rem 0.22rem;
+        }
+        .dashboard-priority-head strong {
+            color:#0F172A;
+            font-size:13px;
+            font-weight:760;
+            line-height:1.1;
+        }
+        .dashboard-priority-head span {
+            color:#64748B;
+            font-size:11px;
+            font-weight:520;
+        }
+        .dashboard-priority-list {
+            display:grid;
+            grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));
+            gap:0;
+            margin:0 0.68rem 0.56rem;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            background:#FFFFFF;
+        }
+        .dashboard-priority-row {
+            display:grid;
+            grid-template-columns:auto 46px minmax(74px, 0.85fr) minmax(0, 1fr);
+            align-items:center;
+            gap:0.42rem;
+            min-height:34px;
+            max-width:100%;
+            padding:0.26rem 0.54rem;
+            border-right:1px solid rgba(15, 23, 42, 0.04);
+            background:transparent;
+        }
+        .dashboard-priority-row:last-child {
+            border-right:0;
+        }
+        .dashboard-priority-status,
+        .dashboard-dot-status {
+            display:inline-flex;
+            align-items:center;
+            gap:0.3rem;
+            color:#475569;
+            font-size:11px;
+            font-weight:650;
+            white-space:nowrap;
+        }
+        .dashboard-priority-status i,
+        .dashboard-dot-status i {
+            display:inline-block;
+            width:6px;
+            height:6px;
+            border-radius:999px;
+            background:#94A3B8;
+        }
+        .dashboard-priority-status.green i,
+        .dashboard-dot-status.green i { background:#22C55E; }
+        .dashboard-priority-status.blue i,
+        .dashboard-dot-status.blue i { background:#64748B; }
+        .dashboard-priority-status.yellow i,
+        .dashboard-priority-status.orange i,
+        .dashboard-dot-status.orange i,
+        .dashboard-dot-status.yellow i { background:#D97706; }
+        .dashboard-priority-status.red i { background:#DC2626; }
+        .dashboard-priority-row strong {
+            color:#0F172A;
+            font-size:12px;
+            font-weight:760;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .dashboard-priority-row span:not(.dashboard-priority-status) {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            color:#334155;
+            font-size:12px;
+            font-weight:650;
+        }
+        .dashboard-priority-row em {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            color:#64748B;
+            font-size:11.5px;
+            font-style:normal;
+            font-weight:520;
+        }
+        .dashboard-priority-empty {
+            min-height:34px;
+            display:flex;
+            align-items:center;
+            color:#64748B;
+            font-size:12px;
+            font-weight:560;
+            padding:0 0.6rem;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.decision-lanes-marker) + div [data-testid="stHorizontalBlock"] {
+            max-width:1080px;
+            margin:0 auto 0.62rem;
+            padding:0.5rem 0.56rem 0.56rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-top:0;
+            border-radius:0 0 10px 10px;
+            background:#FFFFFF;
+            gap:0.5rem !important;
+            overflow:hidden;
+        }
+        .summary-panel-head {
+            min-height:2.46rem;
+            border-radius:7px 7px 0 0;
+            background:#FFFFFF;
+            border-color:rgba(15, 23, 42, 0.045);
+            padding:0.42rem 0.54rem;
+        }
+        .summary-panel-title {
+            font-size:12.5px;
+            color:#0F172A;
+            font-weight:700;
+        }
+        .summary-panel-subtitle {
+            color:#64748B;
+            font-size:11px;
+        }
+        .summary-count {
+            min-width:20px;
+            height:20px;
+            font-size:11px;
+            font-weight:650;
+        }
+        .lane-item {
+            grid-template-columns:48px auto auto minmax(0, 1fr);
+            gap:5px;
+            height:28px;
+            min-height:28px;
+            padding:0 0.5rem;
+            border-top-color:rgba(15, 23, 42, 0.035);
+        }
+        .lane-symbol {
+            color:#0F172A;
+            font-size:12px;
+            font-weight:700;
+        }
+        .lane-reason {
+            color:#64748B;
+            font-size:11.5px;
+        }
+        .summary-empty,
+        .st-key-dashboard_lane_more_actionable button,
+        .st-key-dashboard_lane_more_nearBuyZone button,
+        .st-key-dashboard_lane_more_waitOrReview button,
+        .st-key-dashboard_lane_more_noChaseHighRisk button {
+            color:#64748B !important;
+            font-size:11px !important;
+            min-height:26px !important;
+            height:26px !important;
+        }
+        .table-filter-chip {
+            display:inline-flex;
+            width:max-content;
+            max-width:1080px;
+            min-height:28px;
+            margin-top:0.34rem;
+            margin-bottom:0.34rem;
+            padding:0 10px;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#64748B;
+            font-size:12px;
+            font-weight:620;
+        }
+        .decision-table {
+            display:block;
+            border:1px solid rgba(148, 163, 184, 0.20);
+            border-radius:10px;
+            overflow-x:auto;
+            overflow-y:hidden;
+            background:#FFFFFF;
+            margin-top:0.45rem;
+            margin-bottom:0.9rem;
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
+        }
+        .decision-grid {
+            display:grid;
+            grid-template-columns:74px 118px 72px 72px 64px minmax(172px, 1fr) 78px 64px;
+            align-items:center;
+            gap:0.46rem;
+            min-height:44px;
+            min-width:780px;
+            width:100%;
+            padding:0 12px;
+            box-sizing:border-box;
+            font-size:12.5px;
+        }
+        .decision-grid-head {
+            min-height:31px;
+            background:#F8FAFC;
+            border-bottom:1px solid rgba(15, 23, 42, 0.055);
+        }
+        .decision-row {
+            border-bottom:1px solid rgba(15, 23, 42, 0.05);
+            cursor:pointer;
+        }
+        .decision-row:last-child {
+            border-bottom:0;
+        }
+        .decision-row:hover {
+            background:#FAFBFD;
+        }
+        .decision-header {
+            min-height:30px;
+            padding:0;
+            color:#64748B;
+            font-size:11.5px;
+            font-weight:650;
+            background:transparent;
+            border-bottom:0;
+            position:static;
+        }
+        .decision-cell {
+            min-height:42px;
+            padding:0;
+            border-bottom:0;
+            color:#0F172A;
+            font-size:12.5px;
+            font-variant-numeric:tabular-nums;
+        }
+        .decision-table.compact .decision-cell {
+            min-height:42px;
+            font-size:12.5px;
+        }
+        .decision-cell-stack {
+            display:flex;
+            flex-direction:column;
+            align-items:flex-start;
+            justify-content:center;
+            gap:0.04rem;
+            min-width:0;
+            line-height:1.13;
+        }
+        .decision-cell-stack.align-right {
+            align-items:flex-end;
+        }
+        .decision-cell-stack strong,
+        .action-cell strong {
+            max-width:100%;
+            color:#0F172A;
+            font-size:12.5px;
+            font-weight:700;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .decision-cell-stack span,
+        .action-cell span {
+            max-width:100%;
+            color:#64748B;
+            font-size:11px;
+            font-weight:540;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .stock-cell strong {
+            font-size:13px;
+            font-weight:760;
+        }
+        .stock-cell span {
+            color:#64748B;
+        }
+        .decision-badge {
+            height:20px;
+            min-height:20px;
+            max-width:100%;
+            padding:0 7px;
+            border-radius:999px;
+            font-size:11.5px;
+            font-weight:600;
+            line-height:20px;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .dashboard-dot-status {
+            color:#475569;
+            font-size:12px;
+            font-weight:620;
+        }
+        .action-view-cell {
+            justify-content:flex-start;
+        }
+        .dashboard-view-action {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:0.16rem;
+            min-width:48px;
+            height:26px;
+            padding:0 0.42rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:6px;
+            background:#FFFFFF;
+            color:#475569;
+            font-size:12px;
+            font-weight:600;
+            text-decoration:none !important;
+            white-space:nowrap;
+        }
+        .dashboard-view-action i {
+            color:#94A3B8;
+            font-style:normal;
+            font-size:14px;
+            line-height:1;
+        }
+        .dashboard-view-action:hover {
+            color:#0F172A;
+            border-color:rgba(100, 116, 139, 0.28);
+            background:#F8FAFC;
+        }
+        .dashboard-view-action:hover i {
+            color:#475569;
+        }
+        .decision-empty {
+            display:flex;
+            align-items:center;
+            min-height:44px;
+            padding:0 12px;
+            color:#64748B;
+            font-size:12px;
+            border-top:1px solid rgba(15, 23, 42, 0.05);
+        }
         .drawer-raw {
             margin-top: 0.8rem;
         }
@@ -3476,6 +4002,114 @@ def _header_cell_html(value: object, align: object = None) -> str:
     return f'<div class="decision-header{align_class}">{escape(str(value))}</div>'
 
 
+def _decision_table_row_html(row: pd.Series) -> str:
+    symbol = str(row.get("symbol", "")).upper()
+    safe_symbol = escape(symbol)
+    cells = "".join(_decision_table_cell_html(row, definition, symbol) for definition in WATCHLIST_COLUMNS)
+    return (
+        f'<div class="decision-grid decision-row" data-dashboard-drawer-open="{safe_symbol}" '
+        f'title="打开 {safe_symbol} 右侧详情面板">{cells}</div>'
+    )
+
+
+def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> str:
+    key = str(definition["key"])
+    align_class = " align-right" if definition.get("align") == "right" else ""
+    if key == "symbol":
+        company = _display_table_text(row.get("companyName"), fallback="研究标的")
+        return (
+            '<div class="decision-cell decision-cell-stack stock-cell">'
+            f'<strong>{escape(symbol)}</strong>'
+            f'<span>{escape(company)}</span>'
+            "</div>"
+        )
+    if key == "priceMarket":
+        price = _display_table_text(_safe_table_value("price", row.get("price")), fallback="当前价待补")
+        market_cap = _display_table_text(_safe_table_value("marketCap", row.get("marketCap")), fallback="市值待补")
+        return (
+            f'<div class="decision-cell decision-cell-stack{align_class}">'
+            f'<strong>{escape(price)}</strong>'
+            f'<span>市值 {escape(market_cap)}</span>'
+            "</div>"
+        )
+    if key == "actionSummary":
+        action = _display_table_text(_safe_table_value("action", row.get("action")), fallback="待复核")
+        valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
+        position = _display_table_text(row.get("maxSuggestedPosition"), fallback="")
+        secondary_parts = [_short_badge_text(valuation)]
+        if position and position not in {"不建议新增", "待补"}:
+            secondary_parts.append(position)
+        return (
+            '<div class="decision-cell decision-cell-stack action-cell">'
+            f'<strong>{escape(_short_badge_text(action))}</strong>'
+            f'<span>{escape(" · ".join(secondary_parts))}</span>'
+            "</div>"
+        )
+    if key == "dataStatus":
+        value = _display_table_text(_safe_table_value(key, row.get(key)), fallback="待复核")
+        return f'<div class="decision-cell">{_data_status_dot_html(value)}</div>'
+    if key == "actions":
+        return f'<div class="decision-cell action-view-cell">{_dashboard_view_action_html(symbol)}</div>'
+    value = _safe_table_value(key, row.get(key, ""))
+    value = _display_table_text(value, fallback="待补")
+    if definition.get("kind") == "badge":
+        return _badge_cell_html(value, _badge_color_for_cell(key, value, row))
+    return f'<div class="decision-cell{align_class}">{escape(str(value))}</div>'
+
+
+def _display_table_text(value: object, fallback: str = "待补") -> str:
+    if _looks_like_technical_error(value):
+        return "数据异常"
+    text = str(value or "").strip()
+    if not text or text.lower() in {"n/a", "none", "nan", "null"}:
+        return fallback
+    return text
+
+
+def _data_status_dot_html(value: object) -> str:
+    label = _compact_data_status_label(value)
+    tone = _data_status_tone(value)
+    return f'<span class="dashboard-dot-status {escape(tone)}"><i></i>{escape(label)}</span>'
+
+
+def _compact_data_status_label(value: object) -> str:
+    text = str(value or "")
+    if "完整" in text or text == "高":
+        return "完整"
+    if "中" in text:
+        return "中"
+    if "低" in text:
+        return "低"
+    if "缓存" in text:
+        return "缓存"
+    if "异常" in text:
+        return "异常"
+    if "不足" in text:
+        return "不足"
+    return "复核"
+
+
+def _data_status_tone(value: object) -> str:
+    text = str(value or "")
+    if "完整" in text or text == "高":
+        return "green"
+    if "中" in text:
+        return "blue"
+    if "低" in text:
+        return "orange"
+    if "异常" in text or "不足" in text or "缓存" in text:
+        return "yellow"
+    return "gray"
+
+
+def _dashboard_view_action_html(symbol: str) -> str:
+    safe_symbol = escape(str(symbol or "").upper())
+    return (
+        f'<a class="dashboard-view-action" href="#" data-dashboard-drawer-open="{safe_symbol}" '
+        f'title="打开 {safe_symbol} 右侧详情面板"><span>查看</span><i>›</i></a>'
+    )
+
+
 def _dashboard_cell_link(inner_html: str, symbol: str | None) -> str:
     safe_symbol = escape(str(symbol or "").upper())
     if not safe_symbol:
@@ -3499,6 +4133,16 @@ def _badge_html(value: object, color: str, symbol: str | None = None) -> str:
         f"{escape(str(value))}"
         "</span></div>",
         symbol,
+    )
+
+
+def _badge_cell_html(value: object, color: str) -> str:
+    background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
+    return (
+        '<div class="decision-cell">'
+        f'<span class="decision-badge" style="background:{background};color:{foreground};border:1px solid {border};">'
+        f"{escape(str(value))}"
+        "</span></div>"
     )
 
 

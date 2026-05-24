@@ -32,6 +32,15 @@ None.
 
 2026-05-24 UI conversation:
 - Owner: UI conversation.
+- Task: Global UI Visual System checkpoint; align Dashboard decision overview with the buy-zone terminal style.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Converted the Dashboard summary cards into a unified status ribbon, added a compact `决策台` with `今日重点` priority strip, tightened decision lanes inside one panel, and rebuilt the watchlist display as a dense terminal-style execution table with reduced columns (`代码 / 价格市值 / 质量 / 买点 / 风险 / 动作 / 数据 / 查看`). The main table row and neutral `查看 ›` action both open the existing StockDetailDrawer. Data status now uses dot-plus-label instead of a colored pill, technical/provider errors are sanitized in main-table cells, and the page max-width/color/badge language now matches the buy-zone execution console more closely.
+- Verification: `py_compile` passed for `ui/dashboard.py`; `pytest tests/test_core_logic.py -q` passed with 246 tests and 27 subtests.
+- Next needed: Visual review in the running Streamlit app. Commit this Global UI Visual System checkpoint only after the homepage and buy-zone page both feel stable.
+- Do not touch yet: scoring logic, data providers, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, review status enums, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and unrelated files were not changed.
+
+2026-05-24 UI conversation:
+- Owner: UI conversation.
 - Task: Buy zone plan page UI-only terminal polish and near-trigger priority filter.
 - Files touched: `AGENT_HANDOFF.md`, `ui/buy_zone.py`.
 - What changed: Continued the same buy-zone UI checkpoint. Kept the fixed `买区执行台` structure and tightened the final terminal-style details: compact filter labels (`接近`, `手动`), table headers (`股票 / 当前动作 / 触发条件 / 建议仓位 / 置信度 / 查看`), neutral `查看 ›` action, slightly tighter status ribbon/table spacing, and a UI-only near-trigger filter so priority-strip `接近` items only include stocks within 15% of the trigger price. The trigger-distance percentage now uses current price as the denominator, preventing far-away names such as MRVL/MU from showing misleading `距触发 220% / 290%` priority prompts.
