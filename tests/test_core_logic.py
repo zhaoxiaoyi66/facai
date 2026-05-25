@@ -100,11 +100,11 @@ from indicators.technicals import (
     calculate_technical_score,
     latest_technical_snapshot,
 )
-from scoring.overheat import calculate_overheat_score
+from scoring.overheat import OverheatResult, calculate_overheat_score
 from scoring.risk_flags import RiskFlag
 from scoring.power_company import is_power_company
 from scoring.metric_sources import fcf_margin_metric, metric_participates_in_score
-from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score
+from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score, _final_action, _guard_action_conflicts
 from scoring.signals import (
     ANTI_FOMO_MESSAGE,
     LEFT_SIDE_OPPORTUNITY_MESSAGE,
@@ -1329,6 +1329,9 @@ class TechnicalIndicatorTests(unittest.TestCase):
 
 
 class ScoringTests(unittest.TestCase):
+    def _neutral_overheat(self) -> OverheatResult:
+        return OverheatResult(score=0, status="", action="", recommendation="", reasons=[])
+
     def test_valuation_score_penalizes_expensive_multiples(self) -> None:
         cheap = calculate_valuation_score({"forward_pe": 20, "price_to_sales": 5}, {"drawdown_from_high_pct": -20})
         expensive = calculate_valuation_score({"forward_pe": 80, "price_to_sales": 25}, {"drawdown_from_high_pct": 0})
@@ -1399,6 +1402,94 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("adjusted EBITDA", result.missingIndustryMetrics)
         self.assertIn("EBITDA", result.proxyMetricsUsed)
         self.assertLessEqual(result.maxSuggestedPositionPercent, 5)
+
+    def test_vst_special_case_does_not_override_observe_valuation(self) -> None:
+        context = ScoreContext(
+            snapshot={"ticker": "VST"},
+            technicals={"drawdown_from_high_pct": -30},
+            model_type="POWER_GENERATION",
+        )
+
+        action = _final_action(
+            quality=65,
+            entry=45,
+            risk=60,
+            valuation_status="只观察",
+            context=context,
+            data_insufficient=False,
+            overheat=self._neutral_overheat(),
+        )
+
+        self.assertEqual(action, "等回踩")
+
+    def test_c_grade_entry_blocks_buy_actions_even_with_favorable_labels(self) -> None:
+        action = _guard_action_conflicts(
+            action="可小仓分批",
+            valuation_status="击球区附近",
+            risk=20,
+            entry=45,
+        )
+
+        self.assertEqual(action, "只观察")
+
+    def test_non_buy_valuation_statuses_block_buy_actions(self) -> None:
+        context = ScoreContext(
+            snapshot={"ticker": "TEST"},
+            technicals={"drawdown_from_high_pct": -30},
+            model_type="GENERIC",
+        )
+
+        for valuation_status in ["只观察", "偏贵", "极贵"]:
+            with self.subTest(valuation_status=valuation_status):
+                action = _final_action(
+                    quality=80,
+                    entry=80,
+                    risk=20,
+                    valuation_status=valuation_status,
+                    context=context,
+                    data_insufficient=False,
+                    overheat=self._neutral_overheat(),
+                )
+
+                self.assertNotIn(action, {"可小仓分批", "可正常分批"})
+
+    def test_medium_high_risk_does_not_emit_normal_batch_action(self) -> None:
+        context = ScoreContext(
+            snapshot={"ticker": "TEST"},
+            technicals={"drawdown_from_high_pct": -30},
+            model_type="GENERIC",
+        )
+
+        action = _final_action(
+            quality=80,
+            entry=80,
+            risk=60,
+            valuation_status="击球区附近",
+            context=context,
+            data_insufficient=False,
+            overheat=self._neutral_overheat(),
+        )
+
+        self.assertNotEqual(action, "可正常分批")
+
+    def test_high_quality_large_drawdown_does_not_bypass_observe_valuation(self) -> None:
+        context = ScoreContext(
+            snapshot={"ticker": "VST"},
+            technicals={"drawdown_from_high_pct": -40},
+            model_type="POWER_GENERATION",
+        )
+
+        action = _final_action(
+            quality=90,
+            entry=45,
+            risk=40,
+            valuation_status="只观察",
+            context=context,
+            data_insufficient=False,
+            overheat=self._neutral_overheat(),
+        )
+
+        self.assertNotIn(action, {"可小仓分批", "可正常分批"})
 
     def test_power_company_classification_includes_core_utility_symbols_and_industries(self) -> None:
         for symbol in ["VST", "CEG", "TLN", "NRG", "DUK", "SO", "NEE"]:

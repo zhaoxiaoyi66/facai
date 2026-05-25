@@ -31,6 +31,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-25 Data conversation:
+- Owner: Data conversation.
+- Task: Fix scoring action conflicts between valuation, entry, risk, and final action.
+- Files touched: `AGENT_HANDOFF.md`, `scoring/sector_models.py`, `tests/test_core_logic.py`.
+- What changed: Added final-action guardrails so valuation statuses `只观察`, `偏贵`, and `极贵` cannot emit buy actions, C/C- style entry scores below 55 cannot emit buy actions, and medium-high risk cannot emit `可正常分批`. Tightened the VST power-generation drawdown special case so it only applies when entry is at least 55, risk is not medium-high, and valuation status is not a non-buy state. This prevents `entryRating=只观察` / `valuationStatus=只观察` from producing `可小仓分批`.
+- Verification: Confirmed the new VST regression failed before the fix and passed after; targeted scoring guardrail tests passed; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile scoring\sector_models.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile tests\test_core_logic.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests and 30 subtests.
+- Next needed: Review scoring output in the UI after restarting/reloading the running Streamlit app if old VST lane placement is still visible.
+- Do not touch yet: UI files, data providers, cache paths, database schema/migrations, BuyZoneEngine formulas, PositionPlanEngine formulas, Qwen/AI review, autopilot, external APIs, npm dev server, long-running services, and commits were not changed.
+
 2026-05-25 UI conversation:
 - Owner: UI conversation.
 - Task: Dashboard UI-only decision lane visual reflow.

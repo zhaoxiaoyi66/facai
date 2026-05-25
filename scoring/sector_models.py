@@ -2180,6 +2180,11 @@ def _risk_rating(score: float, data_insufficient: bool = False) -> str:
     return "高"
 
 
+BUY_ACTIONS = {"可小仓分批", "可正常分批"}
+NON_BUY_VALUATION_STATUSES = {"只观察", "偏贵", "极贵"}
+MIN_BUY_ENTRY_SCORE = 55.0
+
+
 def _final_action(
     quality: float,
     entry: float,
@@ -2199,9 +2204,16 @@ def _final_action(
         return "禁止追高"
 
     base_action = _base_action(quality, entry, risk)
-    if context.model_type == "POWER_GENERATION" and _symbol(context) == "VST" and quality >= 60 and risk <= 70:
+    if (
+        context.model_type == "POWER_GENERATION"
+        and _symbol(context) == "VST"
+        and quality >= 60
+        and entry >= MIN_BUY_ENTRY_SCORE
+        and risk <= 50
+        and valuation_status not in NON_BUY_VALUATION_STATUSES
+    ):
         drawdown = _number(context.technicals.get("drawdown_from_high_pct"))
-        if drawdown is not None and drawdown <= -25 and entry >= 40:
+        if drawdown is not None and drawdown <= -25:
             base_action = "可小仓分批"
     if context.model_type == "SAAS_SOFTWARE":
         below_200 = below_ema200_risk(context)
@@ -2216,8 +2228,18 @@ def _final_action(
     if overheat.score >= 40 and base_action in {"可小仓分批", "可正常分批"}:
         return "等回踩"
     if overheat.score >= 20 and base_action == "可正常分批":
+        base_action = "可小仓分批"
+    return _guard_action_conflicts(base_action, valuation_status, risk, entry)
+
+
+def _guard_action_conflicts(action: str, valuation_status: str, risk: float, entry: float) -> str:
+    if valuation_status in NON_BUY_VALUATION_STATUSES and action in BUY_ACTIONS:
+        return "只观察" if valuation_status == "只观察" else "等回踩"
+    if entry < MIN_BUY_ENTRY_SCORE and action in BUY_ACTIONS:
+        return "只观察"
+    if risk > 50 and action == "可正常分批":
         return "可小仓分批"
-    return base_action
+    return action
 
 
 def _base_action(quality: float, entry: float, risk: float) -> str:
