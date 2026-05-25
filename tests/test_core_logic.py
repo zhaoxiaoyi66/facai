@@ -72,7 +72,7 @@ from data.extract_metric_from_text import extractMetricFromText
 from data.fmp_cache import CACHE_TTL_SECONDS, ttl_bucket_for_endpoint
 from data.fmp_queue import FMP_RATE_LIMIT
 from data.fundamentals import FundamentalCache
-from data.decision_log import DecisionLogStore, TradeJournalStore
+from data.decision_log import DecisionLogStore, TradeJournalStore, build_decision_snapshot_from_bundle
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
 from data.metric_dictionary import metric_definition_by_key
 from data.metric_source_map import metric_source_definition
@@ -1908,6 +1908,102 @@ class ScoringTests(unittest.TestCase):
                 "dataConfidence",
             },
         )
+
+    def test_decision_snapshot_helper_builds_from_score_only_bundle(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+        bundle = build_final_decision_bundle(score)
+
+        snapshot = build_decision_snapshot_from_bundle("now", 520, bundle, "dashboard")
+
+        self.assertEqual(snapshot["symbol"], "NOW")
+        self.assertEqual(snapshot["price"], 520)
+        self.assertEqual(snapshot["final_action"], bundle.finalAction)
+        self.assertEqual(snapshot["decision_lane"], bundle.decisionLane)
+        self.assertEqual(snapshot["current_add_pct"], 5)
+        self.assertEqual(snapshot["max_position_pct"], 15)
+        self.assertEqual(snapshot["data_confidence"], "high")
+        self.assertEqual(snapshot["buy_zone_status"], bundle.displayCategory)
+        self.assertEqual(snapshot["source_page"], "dashboard")
+
+    def test_decision_snapshot_helper_builds_from_buy_zone_bundle(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=10,
+            maxPortfolioWeightPercent=15,
+        )
+        zone = SimpleNamespace(currentZone="tranche_buy")
+        plan = SimpleNamespace(currentAddLimitPercent=6, maxPortfolioWeightPercent=20)
+        bundle = build_final_decision_bundle(score, zone, plan)
+
+        snapshot = build_decision_snapshot_from_bundle("crm", 260, bundle, "buy_zone")
+
+        self.assertEqual(snapshot["symbol"], "CRM")
+        self.assertEqual(snapshot["current_add_pct"], 6)
+        self.assertEqual(snapshot["max_position_pct"], 20)
+        self.assertEqual(snapshot["buy_zone_status"], bundle.displayCategory)
+        self.assertEqual(snapshot["source_page"], "buy_zone")
+
+    def test_decision_snapshot_helper_serializes_block_and_review_reasons(self) -> None:
+        bundle = SimpleNamespace(
+            finalAction="wait",
+            decisionLane="review",
+            displayCategory="需复核",
+            currentAddLimitPercent=0,
+            maxPortfolioWeightPercent=8,
+            blockReasons=["buy_zone"],
+            reviewReasons=["risk_rating", "data_confidence"],
+            dataConfidence="low",
+            riskRating="high",
+            buyZoneStatus="no_chase",
+        )
+
+        snapshot = build_decision_snapshot_from_bundle("hood", 80, bundle, "stock_detail")
+
+        self.assertEqual(json.loads(snapshot["block_reasons_json"]), ["buy_zone"])
+        self.assertEqual(json.loads(snapshot["review_reasons_json"]), ["risk_rating", "data_confidence"])
+        self.assertEqual(snapshot["risk_rating"], "high")
+        self.assertEqual(snapshot["buy_zone_status"], "no_chase")
+        self.assertIn("buy_zone", snapshot["reason_text"])
+        self.assertEqual(snapshot["source_page"], "stock_detail")
+
+    def test_decision_snapshot_helper_output_can_be_saved_and_queried(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DecisionLogStore(Path(tmpdir) / "decision_log.sqlite")
+            score = SimpleNamespace(
+                action=sorted(BUY_ACTIONS)[0],
+                valuationStatus="fair",
+                entryRating="A",
+                riskRating="low",
+                dataConfidence="high",
+                currentAddLimitPercent=5,
+                maxPortfolioWeightPercent=15,
+            )
+            snapshot = build_decision_snapshot_from_bundle(
+                "adbe",
+                310,
+                build_final_decision_bundle(score),
+                "dashboard",
+            )
+
+            saved = store.save_snapshot(snapshot["symbol"], snapshot)
+
+            loaded = store.list_snapshots("adbe")[0]
+            self.assertEqual(saved["id"], loaded["id"])
+            self.assertEqual(loaded["symbol"], "ADBE")
+            self.assertEqual(loaded["source_page"], "dashboard")
+            self.assertEqual(loaded["price"], 310)
 
     def test_power_company_classification_includes_core_utility_symbols_and_industries(self) -> None:
         for symbol in ["VST", "CEG", "TLN", "NRG", "DUK", "SO", "NEE"]:

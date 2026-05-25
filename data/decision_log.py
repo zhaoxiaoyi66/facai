@@ -13,6 +13,46 @@ from data.prices import CACHE_PATH
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
 
 
+def build_decision_snapshot_from_bundle(
+    symbol: str,
+    price,
+    final_decision_bundle,
+    source_page: str,
+) -> dict:
+    block_reasons = _bundle_list(final_decision_bundle, "blockReasons", "block_reasons")
+    review_reasons = _bundle_list(final_decision_bundle, "reviewReasons", "review_reasons")
+    return {
+        "symbol": _normalize_symbol(symbol),
+        "decision_date": date.today().isoformat(),
+        "price": _optional_non_negative_number(price, "price"),
+        "final_action": _clean_text(_bundle_value(final_decision_bundle, "finalAction", "final_action")),
+        "decision_lane": _clean_text(_bundle_value(final_decision_bundle, "decisionLane", "decision_lane")),
+        "current_add_pct": _optional_non_negative_number(
+            _bundle_value(final_decision_bundle, "currentAddLimitPercent", "current_add_pct"),
+            "current_add_pct",
+        ),
+        "max_position_pct": _optional_non_negative_number(
+            _bundle_value(final_decision_bundle, "maxPortfolioWeightPercent", "max_position_pct"),
+            "max_position_pct",
+        ),
+        "risk_rating": _clean_text(_bundle_value(final_decision_bundle, "riskRating", "risk_rating")),
+        "data_confidence": _clean_text(_bundle_value(final_decision_bundle, "dataConfidence", "data_confidence")),
+        "buy_zone_status": _clean_text(
+            _bundle_value(
+                final_decision_bundle,
+                "buyZoneStatus",
+                "buy_zone_status",
+                "displayCategory",
+                "display_category",
+            )
+        ),
+        "block_reasons_json": _reasons_json(block_reasons),
+        "review_reasons_json": _reasons_json(review_reasons),
+        "reason_text": _reason_text(block_reasons, review_reasons, final_decision_bundle),
+        "source_page": _clean_text(source_page),
+    }
+
+
 class DecisionLogStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
         self.path = path
@@ -275,6 +315,43 @@ def _normalize_symbol(symbol: str) -> str:
     if not normalized:
         raise ValueError("symbol is required")
     return normalized
+
+
+def _bundle_value(bundle, *names: str):
+    if isinstance(bundle, dict):
+        for name in names:
+            if name in bundle:
+                return bundle.get(name)
+        return None
+    for name in names:
+        if hasattr(bundle, name):
+            return getattr(bundle, name)
+    return None
+
+
+def _bundle_list(bundle, *names: str) -> list:
+    value = _bundle_value(bundle, *names)
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = [value]
+    else:
+        parsed = value
+    if isinstance(parsed, tuple):
+        parsed = list(parsed)
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    return parsed
+
+
+def _reason_text(block_reasons: list, review_reasons: list, bundle) -> str:
+    reasons = [str(reason) for reason in [*block_reasons, *review_reasons] if str(reason).strip()]
+    if reasons:
+        return "; ".join(reasons)
+    return _clean_text(_bundle_value(bundle, "displayCategory", "display_category"))
 
 
 def _clean_date(value) -> str:
