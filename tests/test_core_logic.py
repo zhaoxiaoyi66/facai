@@ -3648,8 +3648,16 @@ class ScoringTests(unittest.TestCase):
 
             stats = build_decision_signal_stats(db_path)
             rows = {row["group"]: row for row in stats["byHorizon"]["1d"]["byFinalAction"]}
+            summary = stats["byHorizon"]["1d"]["summary"]
 
             self.assertEqual(stats["horizons"], ["1d", "1w", "1m", "3m", "6m"])
+            self.assertEqual(summary["sampleCount"], 2)
+            self.assertEqual(summary["missingCount"], 1)
+            self.assertEqual(summary["totalCount"], 3)
+            self.assertEqual(summary["winRate"], 50)
+            self.assertEqual(summary["averageReturnPct"], 3)
+            self.assertEqual(summary["medianReturnPct"], 3)
+            self.assertEqual(summary["averageMaxDrawdownPct"], -5)
             self.assertEqual(rows["add"]["sampleCount"], 2)
             self.assertEqual(rows["add"]["missingCount"], 0)
             self.assertEqual(rows["add"]["totalCount"], 2)

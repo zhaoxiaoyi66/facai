@@ -5,8 +5,8 @@ from html import escape
 
 import streamlit as st
 
-from data.decision_log import TradeJournalStore
-from formatting import format_currency
+from data.decision_log import TradeJournalStore, build_decision_signal_stats
+from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
 
 
@@ -20,6 +20,27 @@ ACTION_OPTIONS = {
     "放弃操作": "skip",
 }
 ACTION_LABELS = {value: label for label, value in ACTION_OPTIONS.items()}
+FINAL_ACTION_LABELS = {
+    "add": "加仓",
+    "buy": "买入",
+    "wait": "等待",
+    "review": "复核",
+    "blocked": "禁止",
+    "可小仓分批": "可小仓分批",
+    "可正常分批": "可正常分批",
+    "只观察": "只观察",
+    "等回踩": "等回踩",
+    "禁止追高": "禁止追高",
+    "待复核，暂不新增": "待复核",
+    "unknown": "未标记",
+}
+LANE_LABELS = {
+    "actionable": "可执行",
+    "blocked": "禁止追高",
+    "review": "需复核",
+    "wait": "等待观察",
+    "unknown": "未标记",
+}
 BLANK_TEXT = "—"
 
 
@@ -42,6 +63,7 @@ def render() -> None:
     entries = _load_entries(store, symbols)
     _render_summary(entries)
     _render_entries(symbols, entries)
+    _render_signal_replay()
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -176,6 +198,97 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
     )
 
 
+def _render_signal_replay() -> None:
+    render_section_title("系统信号复盘", "按历史系统信号和后续表现聚合，不做交易收益统计。")
+    stats = build_decision_signal_stats()
+    horizons = [str(horizon) for horizon in stats.get("horizons", ["1d", "1w", "1m", "3m", "6m"])]
+    if not horizons:
+        horizons = ["1d", "1w", "1m", "3m", "6m"]
+    selected = st.radio("复盘周期", horizons, horizontal=True, key="trade-journal-signal-horizon")
+    horizon_stats = (stats.get("byHorizon") or {}).get(selected, {})
+    summary = horizon_stats.get("summary") or {}
+    if int(summary.get("totalCount") or 0) <= 0:
+        st.markdown(
+            (
+                '<div class="trade-journal-empty signal-empty">'
+                "<strong>暂无足够复盘数据，先记录系统信号和后续表现。</strong>"
+                "<span>有系统信号快照和后续表现后，这里会自动聚合不同周期的系统表现。</span>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        return
+
+    _render_signal_summary(summary)
+    table_cols = st.columns(2)
+    with table_cols[0]:
+        st.markdown("##### 按 finalAction 统计")
+        st.markdown(
+            _stats_table_html(horizon_stats.get("byFinalAction") or [], FINAL_ACTION_LABELS),
+            unsafe_allow_html=True,
+        )
+    with table_cols[1]:
+        st.markdown("##### 按 decisionLane 统计")
+        st.markdown(
+            _stats_table_html(horizon_stats.get("byDecisionLane") or [], LANE_LABELS),
+            unsafe_allow_html=True,
+        )
+
+
+def _render_signal_summary(summary: dict) -> None:
+    items = [
+        ("样本数", _int_text(summary.get("sampleCount")), "COMPLETE"),
+        ("胜率", _percent_or_dash(summary.get("winRate")), "WIN RATE"),
+        ("平均收益", _percent_or_dash(summary.get("averageReturnPct")), "AVG RETURN"),
+        ("中位数收益", _percent_or_dash(summary.get("medianReturnPct")), "MEDIAN"),
+        ("平均最大回撤", _percent_or_dash(summary.get("averageMaxDrawdownPct")), "DRAWDOWN"),
+        ("缺失样本数", _int_text(summary.get("missingCount")), "MISSING"),
+    ]
+    html = "".join(
+        (
+            '<div class="trade-journal-summary-item signal">'
+            f"<span>{escape(label)}</span>"
+            f"<strong>{escape(value)}</strong>"
+            f"<em>{escape(caption)}</em>"
+            "</div>"
+        )
+        for label, value, caption in items
+    )
+    st.markdown(f'<div class="trade-journal-summary signal">{html}</div>', unsafe_allow_html=True)
+
+
+def _stats_table_html(rows: list[dict], labels: dict[str, str]) -> str:
+    headers = ["分组", "样本数", "胜率", "平均收益", "中位数收益", "平均回撤", "缺失数"]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    if not rows:
+        row_html = '<tr><td colspan="7" class="empty-row">暂无数据</td></tr>'
+    else:
+        row_html = "".join(_stats_row_html(row, labels) for row in rows)
+    return (
+        '<div class="trade-journal-table-wrap signal">'
+        '<table class="trade-journal-table signal">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{row_html}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _stats_row_html(row: dict, labels: dict[str, str]) -> str:
+    group = str(row.get("group") or "unknown")
+    return (
+        "<tr>"
+        f'<td class="symbol">{escape(labels.get(group, group))}</td>'
+        f"<td>{escape(_int_text(row.get('sampleCount')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('winRate')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('averageReturnPct')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('medianReturnPct')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('averageMaxDrawdownPct')))}</td>"
+        f"<td>{escape(_int_text(row.get('missingCount')))}</td>"
+        "</tr>"
+    )
+
+
 def _entry_row_html(entry: dict) -> str:
     return (
         "<tr>"
@@ -245,6 +358,20 @@ def _money_text(value: object) -> str:
     if number is None:
         return BLANK_TEXT
     return format_currency(number)
+
+
+def _percent_or_dash(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return format_percent(number)
+
+
+def _int_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "0"
+    return str(int(number))
 
 
 def _snapshot_text(value: object) -> str:
@@ -342,6 +469,13 @@ def _render_styles() -> None:
             font-style: normal;
             font-weight: 760;
         }
+        .trade-journal-summary.signal {
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            margin-top: 0.55rem;
+        }
+        .trade-journal-summary-item.signal strong {
+            font-size: 1.06rem;
+        }
         .trade-journal-table-wrap {
             overflow-x: auto;
             border: 1px solid rgba(15, 23, 42, 0.08);
@@ -349,12 +483,18 @@ def _render_styles() -> None:
             background: #FFFFFF;
             box-shadow: 0 10px 28px rgba(15, 23, 42, 0.035);
         }
+        .trade-journal-table-wrap.signal {
+            margin-top: 0.35rem;
+        }
         .trade-journal-table {
             width: 100%;
             min-width: 1060px;
             border-collapse: collapse;
             table-layout: fixed;
             font-size: 0.72rem;
+        }
+        .trade-journal-table.signal {
+            min-width: 620px;
         }
         .trade-journal-table th {
             height: 30px;
@@ -390,6 +530,11 @@ def _render_styles() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .trade-journal-table .empty-row {
+            height: 54px;
+            color: #94a3b8;
+            text-align: center;
         }
         .trade-journal-cell {
             display: grid;
@@ -458,6 +603,26 @@ def _render_styles() -> None:
             color: #7b8798;
             font-size: 0.78rem;
         }
+        .trade-journal-empty.signal-empty {
+            margin-top: 0.5rem;
+        }
+        .trade-journal-empty.signal-empty strong {
+            font-size: 0.92rem;
+        }
+        [data-testid="stRadio"] label {
+            color: var(--zhx-muted);
+            font-size: 0.76rem;
+        }
+        [data-testid="stRadio"] [role="radiogroup"] {
+            gap: 0.25rem;
+        }
+        [data-testid="stRadio"] [role="radiogroup"] label {
+            min-height: 30px;
+            padding: 0.16rem 0.58rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 999px;
+            background: #FFFFFF;
+        }
         [data-testid="stExpander"] {
             border-color: rgba(15, 23, 42, 0.08);
             border-radius: 8px;
@@ -469,7 +634,8 @@ def _render_styles() -> None:
             color: #F8FAFC !important;
         }
         @media (max-width: 1100px) {
-            .trade-journal-summary {
+            .trade-journal-summary,
+            .trade-journal-summary.signal {
                 grid-template-columns: repeat(3, minmax(0, 1fr));
             }
             .trade-journal-summary-item {
@@ -478,7 +644,8 @@ def _render_styles() -> None:
             }
         }
         @media (max-width: 720px) {
-            .trade-journal-summary {
+            .trade-journal-summary,
+            .trade-journal-summary.signal {
                 grid-template-columns: 1fr;
             }
         }

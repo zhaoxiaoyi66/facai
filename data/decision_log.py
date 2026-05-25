@@ -429,6 +429,7 @@ def build_decision_signal_stats(path: Path = CACHE_PATH) -> dict:
         "horizons": list(OUTCOME_HORIZONS),
         "byHorizon": {
             horizon: {
+                "summary": _overall_signal_stats(rows, horizon),
                 "byFinalAction": _group_signal_stats(rows, horizon, "final_action"),
                 "byDecisionLane": _group_signal_stats(rows, horizon, "decision_lane"),
             }
@@ -576,6 +577,21 @@ def _group_signal_stats(rows: list[dict], horizon: str, field: str) -> list[dict
             group["drawdowns"].append(float(row["max_drawdown_pct"]))
 
     return [_signal_stats_row(label, values) for label, values in sorted(groups.items()) if values["total"] > 0]
+
+
+def _overall_signal_stats(rows: list[dict], horizon: str) -> dict:
+    values = {"total": 0, "missing": 0, "returns": [], "drawdowns": []}
+    for row in rows:
+        if row.get("horizon") != horizon:
+            continue
+        values["total"] += 1
+        if row.get("status") != "complete" or row.get("return_pct") is None:
+            values["missing"] += 1
+            continue
+        values["returns"].append(float(row["return_pct"]))
+        if row.get("max_drawdown_pct") is not None:
+            values["drawdowns"].append(float(row["max_drawdown_pct"]))
+    return _signal_stats_row("overall", values)
 
 
 def _signal_stats_row(label: str, values: dict) -> dict:
