@@ -1439,6 +1439,44 @@ def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
     has_trigger = trigger is not None and trigger > 0
     trigger_secondary = f"触发价 {format_currency(trigger)}" if has_trigger else "等待条件明确"
 
+    decision_gate = _final_decision_display_gate(
+        row,
+        zone=zone,
+        action=action,
+        has_final_decision=has_final_decision,
+        decision_lane=decision_lane,
+        is_actionable=is_actionable,
+        current_add=current_add,
+        has_trigger=has_trigger,
+        trigger_secondary=trigger_secondary,
+    )
+    if decision_gate is not None:
+        return decision_gate
+
+    return _buy_zone_distance_display_category(
+        row,
+        zone=zone,
+        price=price,
+        trigger=trigger,
+        has_trigger=has_trigger,
+        trigger_secondary=trigger_secondary,
+        is_actionable=is_actionable,
+        has_final_decision=has_final_decision,
+    )
+
+
+def _final_decision_display_gate(
+    row: dict,
+    *,
+    zone: str,
+    action: str,
+    has_final_decision: bool,
+    decision_lane: str,
+    is_actionable: bool,
+    current_add: float | None,
+    has_trigger: bool,
+    trigger_secondary: str,
+) -> dict[str, object] | None:
     if (
         _needs_review(row)
         or zone == "data_insufficient"
@@ -1459,6 +1497,20 @@ def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
     if is_actionable or (not has_final_decision and (zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} or (current_add is not None and current_add > 0))):
         return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
 
+    return None
+
+
+def _buy_zone_distance_display_category(
+    row: dict,
+    *,
+    zone: str,
+    price: float | None,
+    trigger: float | None,
+    has_trigger: bool,
+    trigger_secondary: str,
+    is_actionable: bool,
+    has_final_decision: bool,
+) -> dict[str, object]:
     if has_trigger and price is not None and price > 0:
         if price <= trigger and (is_actionable or not has_final_decision):
             return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
