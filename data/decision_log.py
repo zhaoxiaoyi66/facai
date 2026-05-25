@@ -423,6 +423,20 @@ def build_decision_outcomes_from_price_history(snapshot: dict, path: Path = CACH
     return [_build_outcome_for_horizon(snapshot, horizon, days, path) for horizon, days in OUTCOME_HORIZONS.items()]
 
 
+def build_decision_signal_stats(path: Path = CACHE_PATH) -> dict:
+    rows = _decision_stat_rows(path)
+    return {
+        "horizons": list(OUTCOME_HORIZONS),
+        "byHorizon": {
+            horizon: {
+                "byFinalAction": _group_signal_stats(rows, horizon, "final_action"),
+                "byDecisionLane": _group_signal_stats(rows, horizon, "decision_lane"),
+            }
+            for horizon in OUTCOME_HORIZONS
+        },
+    }
+
+
 def _clean_decision_snapshot(symbol: str, values: dict) -> dict:
     return {
         "symbol": _normalize_symbol(symbol),
@@ -511,6 +525,90 @@ def _missing_outcome(horizon: str, start_price: float | None) -> dict:
         "max_drawdown_pct": None,
         "status": "missing",
     }
+
+
+def _decision_stat_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "decision_snapshots"):
+            return []
+        if not _table_exists(conn, "decision_outcomes"):
+            return []
+        cursor = conn.execute(
+            """
+            WITH horizons(horizon) AS (
+                VALUES ('1d'), ('1w'), ('1m'), ('3m'), ('6m')
+            )
+            SELECT
+                snapshots.id AS decision_snapshot_id,
+                snapshots.final_action,
+                snapshots.decision_lane,
+                horizons.horizon,
+                outcomes.status,
+                outcomes.return_pct,
+                outcomes.max_drawdown_pct
+            FROM decision_snapshots AS snapshots
+            CROSS JOIN horizons
+            LEFT JOIN decision_outcomes AS outcomes
+              ON outcomes.decision_snapshot_id = snapshots.id
+             AND outcomes.horizon = horizons.horizon
+            """
+        )
+        columns = [description[0] for description in cursor.description] if cursor.description else []
+        rows = cursor.fetchall()
+    return [_row_to_dict(columns, row) for row in rows]
+
+
+def _group_signal_stats(rows: list[dict], horizon: str, field: str) -> list[dict]:
+    groups: dict[str, dict] = {}
+    for row in rows:
+        label = _clean_text(row.get(field)) or "unknown"
+        group = groups.setdefault(label, {"total": 0, "missing": 0, "returns": [], "drawdowns": []})
+        if row.get("horizon") != horizon:
+            continue
+        group["total"] += 1
+        if row.get("status") != "complete" or row.get("return_pct") is None:
+            group["missing"] += 1
+            continue
+        group["returns"].append(float(row["return_pct"]))
+        if row.get("max_drawdown_pct") is not None:
+            group["drawdowns"].append(float(row["max_drawdown_pct"]))
+
+    return [_signal_stats_row(label, values) for label, values in sorted(groups.items()) if values["total"] > 0]
+
+
+def _signal_stats_row(label: str, values: dict) -> dict:
+    returns = values["returns"]
+    drawdowns = values["drawdowns"]
+    sample_count = len(returns)
+    wins = sum(1 for value in returns if value > 0)
+    return {
+        "group": label,
+        "sampleCount": sample_count,
+        "missingCount": values["missing"],
+        "totalCount": values["total"],
+        "winRate": wins / sample_count * 100 if sample_count else None,
+        "averageReturnPct": _average(returns),
+        "medianReturnPct": _median(returns),
+        "averageMaxDrawdownPct": _average(drawdowns),
+    }
+
+
+def _average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
 
 
 def _normalize_symbol(symbol: str) -> str:

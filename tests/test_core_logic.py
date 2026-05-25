@@ -77,6 +77,7 @@ from data.decision_log import (
     DecisionOutcomeStore,
     TradeJournalStore,
     build_decision_outcomes_from_price_history,
+    build_decision_signal_stats,
     build_decision_snapshot_from_bundle,
 )
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
@@ -3622,6 +3623,70 @@ class ScoringTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 store.save_outcome(1, "2y", {"status": "missing"})
+
+    def test_decision_signal_stats_group_by_final_action_and_horizon(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            outcome_store = DecisionOutcomeStore(db_path)
+            add_win = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+            add_loss = decision_store.save_snapshot(
+                "CRM",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+            wait_missing = decision_store.save_snapshot(
+                "ADBE",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "wait", "decision_lane": "wait"},
+            )
+
+            outcome_store.save_outcome(add_win["id"], "1d", {"return_pct": 10, "max_drawdown_pct": -2, "status": "complete"})
+            outcome_store.save_outcome(add_loss["id"], "1d", {"return_pct": -4, "max_drawdown_pct": -8, "status": "complete"})
+            outcome_store.save_outcome(wait_missing["id"], "1d", {"status": "missing"})
+
+            stats = build_decision_signal_stats(db_path)
+            rows = {row["group"]: row for row in stats["byHorizon"]["1d"]["byFinalAction"]}
+
+            self.assertEqual(stats["horizons"], ["1d", "1w", "1m", "3m", "6m"])
+            self.assertEqual(rows["add"]["sampleCount"], 2)
+            self.assertEqual(rows["add"]["missingCount"], 0)
+            self.assertEqual(rows["add"]["totalCount"], 2)
+            self.assertEqual(rows["add"]["winRate"], 50)
+            self.assertEqual(rows["add"]["averageReturnPct"], 3)
+            self.assertEqual(rows["add"]["medianReturnPct"], 3)
+            self.assertEqual(rows["add"]["averageMaxDrawdownPct"], -5)
+            self.assertEqual(rows["wait"]["sampleCount"], 0)
+            self.assertEqual(rows["wait"]["missingCount"], 1)
+
+    def test_decision_signal_stats_group_by_decision_lane_and_count_missing_horizons(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            outcome_store = DecisionOutcomeStore(db_path)
+            actionable = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+            blocked = decision_store.save_snapshot(
+                "HOOD",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "wait", "decision_lane": "blocked"},
+            )
+
+            outcome_store.save_outcome(actionable["id"], "1w", {"return_pct": 12, "max_drawdown_pct": -3, "status": "complete"})
+
+            stats = build_decision_signal_stats(db_path)
+            one_week = {row["group"]: row for row in stats["byHorizon"]["1w"]["byDecisionLane"]}
+            one_day = {row["group"]: row for row in stats["byHorizon"]["1d"]["byDecisionLane"]}
+
+            self.assertEqual(one_week["actionable"]["sampleCount"], 1)
+            self.assertEqual(one_week["actionable"]["missingCount"], 0)
+            self.assertEqual(one_week["blocked"]["sampleCount"], 0)
+            self.assertEqual(one_week["blocked"]["missingCount"], 1)
+            self.assertEqual(one_day["actionable"]["sampleCount"], 0)
+            self.assertEqual(one_day["actionable"]["missingCount"], 1)
+            self.assertEqual(one_day["blocked"]["missingCount"], 1)
 
     def test_portfolio_position_store_crud_and_active_filter(self) -> None:
         with TemporaryDirectory() as tmpdir:
