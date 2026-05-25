@@ -31,6 +31,7 @@ Avoid routine git prechecks because the Codex app can show completed git command
 5. Do not run multiple git/status/diff commands in parallel.
 6. During commit flow only, use sequential git commands: `git diff --stat`, `git status --short`, `git add`, `git commit`, then `git status --short`.
 7. If the app UI appears stuck on a git command that has already returned, report the last visible result instead of re-running the same command.
+8. Never run git/status/diff/test commands in parallel. Run one command, report or decide, then run the next command.
 
 ## Timeout Rules
 
@@ -123,3 +124,26 @@ Avoid making the session appear stuck after a command has already returned.
 4. After a test command returns, immediately report pass/fail counts and the failing test name or file if any.
 5. If no tool is running but reasoning takes more than about 30 seconds, send a short status update.
 6. For multi-step tasks, report progress between steps instead of saving all feedback for the final summary.
+7. If a command has completed but the turn feels stuck, stop further整理/analysis and give only a status report.
+
+## Test Feedback Rule
+
+Test output must be reported before any further analysis or follow-up command.
+
+1. When a test command returns, the next assistant message must start with the fixed format: `测试结果：通过/失败，<count summary>，<duration if visible>.`
+2. The same message must include `下一步：...`.
+3. Do not silently inspect, reason, or run another command before sending that test result message.
+4. If a test fails, name the failing test or file in the result message before proposing a fix.
+5. This rule exists because tests often finish successfully while the app still shows the assistant as thinking, which feels like a stuck session.
+
+## Short Completion Report
+
+After a normal task finishes, keep the final report to at most five lines:
+
+1. Modified files.
+2. What changed.
+3. Test/check result.
+4. `git diff --stat`.
+5. Whether commit is recommended.
+
+Do not write long summaries after a passing test. UI-only small fixes do not update `AGENT_HANDOFF.md`. Default is no commit unless the user explicitly asks.

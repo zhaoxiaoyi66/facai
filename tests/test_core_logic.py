@@ -86,6 +86,7 @@ from data.providers import (
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore, _debt_maturity_low_materiality
 from data.sec_client import SECClient, SEC_MAX_REQUESTS_PER_SECOND
 from data.sec_supplement import extract_sec_saas_metrics
+from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.stock_plan import StockPlanStore
 from position_plan_engine import generate_position_plan
 from review_autopilot import ReviewAutopilot, _human_remaining, auto_fill_capability, identify_missing_data_items
@@ -3160,6 +3161,83 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(loaded["tranche_buy_high"], 430)
             self.assertEqual(loaded["heavy_buy_below"], 360)
             self.assertEqual(loaded["invalidation_condition"], "增长明显失速")
+
+    def test_portfolio_position_store_crud_and_active_filter(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            store = PortfolioPositionStore(db_path)
+
+            created = store.save_position(
+                "now",
+                {
+                    "quantity": "10",
+                    "average_cost": "500",
+                    "target_position_pct": "8",
+                    "max_acceptable_position_pct": "12",
+                    "planned_sell_price": "720",
+                    "first_trim_price": "680",
+                    "second_trim_price": "760",
+                    "review_price": "450",
+                    "notes": "core position",
+                },
+            )
+            self.assertEqual(created["symbol"], "NOW")
+            self.assertEqual(created["quantity"], 10)
+            self.assertEqual(created["average_cost"], 500)
+            self.assertTrue(created["is_active"])
+
+            updated = store.save_position("NOW", {"quantity": 12, "average_cost": 480})
+            self.assertEqual(updated["quantity"], 12)
+            self.assertEqual(updated["average_cost"], 480)
+            self.assertEqual(store.list_active_positions()[0]["symbol"], "NOW")
+
+            inactive = store.deactivate_position("now")
+            self.assertIsNotNone(inactive)
+            self.assertFalse(inactive["is_active"])
+            self.assertEqual(store.list_active_positions(), [])
+
+    def test_portfolio_position_store_rejects_negative_quantity_and_cost(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+
+            with self.assertRaises(ValueError):
+                store.save_position("NOW", {"quantity": -1, "average_cost": 500})
+            with self.assertRaises(ValueError):
+                store.save_position("NOW", {"quantity": 1, "average_cost": -500})
+
+    def test_portfolio_settings_store_saves_and_loads_defaults(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioSettingsStore(Path(tmpdir) / "portfolio.sqlite")
+
+            self.assertEqual(store.get_settings()["base_currency"], "USD")
+            saved = store.save_settings(
+                {
+                    "total_portfolio_value": "100000",
+                    "cash_balance": "12000",
+                    "base_currency": "usd",
+                }
+            )
+
+            self.assertEqual(saved["total_portfolio_value"], 100000)
+            self.assertEqual(saved["cash_balance"], 12000)
+            self.assertEqual(saved["base_currency"], "USD")
+            self.assertIsNotNone(saved["updated_at"])
+
+    def test_portfolio_tables_do_not_replace_stock_action_plans(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            plan_store = StockPlanStore(db_path)
+            position_store = PortfolioPositionStore(db_path)
+
+            plan_store.save_plan("NOW", {"notes": "research memo", "first_buy_price": 420})
+            position_store.save_position("NOW", {"quantity": 3, "average_cost": 500, "notes": "actual holding"})
+
+            plan = plan_store.get_plan("NOW")
+            position = position_store.get_position("NOW")
+            self.assertEqual(plan["notes"], "research memo")
+            self.assertEqual(plan["first_buy_price"], 420)
+            self.assertEqual(position["notes"], "actual holding")
+            self.assertEqual(position["quantity"], 3)
 
     def test_buy_zone_engine_generates_system_zone_without_manual_override(self) -> None:
         zone = generate_buy_zone(
