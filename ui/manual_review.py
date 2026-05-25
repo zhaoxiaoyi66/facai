@@ -1188,8 +1188,9 @@ def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = Non
         stats = qwen_review_efficiency_stats(rows)
         effectiveness = automation_effectiveness(rows)
         cols[3].caption(
-            f"当前筛选 {effectiveness['total']} 条；适合证据复核 {stats['eligibleForQwenCount']} 条；"
-            f"AI已自动处理 {effectiveness['automationRate']:.0%}，剩余 {effectiveness['humanRemaining']} 条需要人工判断。"
+            f"当前基础筛选 {effectiveness['total']} 条（含全部复核类型）；"
+            f"Qwen证据候选 {stats['eligibleForQwenCount']} 条；"
+            f"AI已自动处理 {effectiveness['automationRate']:.0%}，待人工判断 {effectiveness['humanRemaining']} 条。"
         )
         _render_last_autopilot_result()
         _render_last_qwen_result()
@@ -1346,12 +1347,14 @@ def _active_review_tab() -> str:
 
 
 def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filters: dict, rows: list[dict]) -> None:
-    stats = qwen_review_efficiency_stats(rows)
+    qwen_rows = [row for row in rows if qwen_review_eligibility(row)[0]]
+    stats = qwen_review_efficiency_stats(qwen_rows)
     st.markdown(
         f"""
         <div class="qwen-efficiency">
-          <strong>Qwen有效率</strong>
-          <span>适合复核 {stats['eligibleForQwenCount']} · 已预审 {stats['qwenReviewedCount']} · 自动确认 {stats['autoApprovedCount']} · 仍需人工 {stats['humanRequiredCount']} · 不适合AI {stats['skippedAsNotSuitableCount']} · 证据不足 {stats['notEnoughEvidenceCount']}</span>
+          <strong>Qwen证据复核</strong>
+          <span>候选 {stats['eligibleForQwenCount']} · 已预审 {stats['qwenReviewedCount']} · 自动确认 {stats['autoApprovedCount']} · 仍需人工 {stats['humanRequiredCount']} · 证据不足 {stats['notEnoughEvidenceCount']}</span>
+          <small>仅统计适合 Qwen 证据复核的候选项；其他基础复核项不计入本行。</small>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1496,6 +1499,8 @@ def _review_primary_action(row: dict) -> dict:
     if status == "needs_evidence" or item_type in {"evidence_missing_extracted_value", "extracted_value"}:
         return {"key": "backfill_evidence", "label": "重新抓证据"}
     if item_type == "missing_kpi":
+        if str(row.get("autoFillStatus") or "") == "success":
+            return {"key": "noop_auto_filled", "label": "已补齐"}
         capability = auto_fill_capability(row)
         if _truthy(row.get("canAutoFill")) or capability.canAutoFill:
             return {"key": "auto_fill", "label": "自动补齐"}
@@ -1815,6 +1820,9 @@ def _compact_ai_badge(ai_result: dict | None, triage: str, eligible: bool, reaso
 
 def _recommended_review_action(row: dict, eligible: bool, reason: str) -> str:
     auto_fill_status = str(row.get("autoFillStatus") or "")
+    if auto_fill_status == "success":
+        fill_type = str(row.get("autoFillType") or "自动补齐")
+        return f"自动补齐已完成：{fill_type} 已成功，等待复核新生成或更新后的数据项。"
     if auto_fill_status == "failed":
         return f"自动补齐失败：{row.get('autoFillError') or '未返回具体原因'}"
     if str(row.get("reviewStatus") or "") == "needs_evidence":
@@ -2125,6 +2133,24 @@ def _styles() -> str:
       .review-command-head span {
         color: #6B7280;
         font-size: 12px;
+      }
+      .qwen-efficiency {
+        margin: 12px 0 10px;
+        color: #111827;
+        font-size: 13px;
+      }
+      .qwen-efficiency strong {
+        font-weight: 800;
+      }
+      .qwen-efficiency span {
+        margin-left: 4px;
+        color: #374151;
+      }
+      .qwen-efficiency small {
+        display: block;
+        margin-top: 2px;
+        color: #8A94A6;
+        font-size: 11px;
       }
       .review-overview-panel {
         border: 1px solid #E5E7EB;

@@ -33,6 +33,24 @@ None.
 
 2026-05-25 UI conversation:
 - Owner: UI conversation.
+- Task: Review Center UI-only auto-fill completed-state feedback.
+- Files touched: `AGENT_HANDOFF.md`, `ui/manual_review.py`.
+- What changed: Made row-level auto-fill completion visible in the Review Center. Missing-KPI rows with `autoFillStatus=success` now show a disabled `已补齐` primary action instead of another active `自动补齐` button, and the row recommendation explains that auto-fill already succeeded and the resulting/new data still needs review. This fixes the apparent no-op behavior where clicking an already-successful auto-fill row looked like nothing happened.
+- Verification: A local read-only check confirmed the ADBE `sbcToRevenue` row has `autoFillStatus=success` and now resolves to primary action `已补齐`; `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\manual_review.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests, 30 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the row still shows the stale `自动补齐` button; no long-running service was started or stopped in this pass.
+- Do not touch yet: review backend logic, data providers, cache paths, database schema/migrations, BuyZoneEngine formulas, PositionPlanEngine formulas, Qwen/AI review service logic, autopilot backend logic, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Review Center UI-only filter count wording cleanup.
+- Files touched: `AGENT_HANDOFF.md`, `ui/manual_review.py`.
+- What changed: Clarified Review Center filtered counts so the selected-symbol base total is not visually mixed with Qwen/AI subcounts. The automation caption now labels the total as `当前基础筛选` and says it includes all review item types. The Qwen panel now counts only rows that are actually eligible for Qwen evidence review and no longer shows a huge `不适合AI` count beside the candidate count. Added small explanatory helper text under the Qwen panel.
+- Verification: A local read-only check confirmed the previous NOW mismatch pattern: base rows were far larger than Qwen candidates, and old stats counted non-candidate AI triage as Qwen reviewed. `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\manual_review.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests, 30 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old `不适合AI` wording remains visible; no long-running service was started or stopped in this pass.
+- Do not touch yet: review backend logic, data providers, cache paths, database schema/migrations, BuyZoneEngine formulas, PositionPlanEngine formulas, Qwen/AI review service logic, autopilot backend logic, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
 - Task: Dashboard UI-only decision lane text hierarchy polish.
 - Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
 - What changed: Separated decision-lane header subtitles from row reason text visually. Header subtitles now render smaller, lighter, and more muted, while row reason text is slightly stronger and reads as the per-stock explanation instead of blending with the card description.
