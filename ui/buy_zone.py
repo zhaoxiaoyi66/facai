@@ -22,6 +22,7 @@ from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from position_plan_engine import PositionPlanSuggestion, generate_position_plan
+from scoring.final_decision import derive_final_decision
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui.metric_labels import action_label, confidence_label, model_type_label
@@ -128,6 +129,7 @@ def _apply_manual_plan(row: dict, plan: dict) -> dict:
     source = "manual_override" if has_buy_zone_override(plan) else "system_generated"
     updated = dict(row)
     updated.update(_zone_plan_fields(active_zone, plan_suggestion, source, has_buy_zone_override(plan)))
+    updated.update(_final_decision_fields(score, active_zone, plan_suggestion))
     updated["activeZone"] = active_zone
     updated["positionPlan"] = plan_suggestion
     return updated
@@ -164,7 +166,22 @@ def _row_from_outputs(
         "rawTechnicals": technicals,
     }
     base.update(_zone_plan_fields(zone, plan, source, manual))
+    base.update(_final_decision_fields(score, zone, plan))
     return base
+
+
+def _final_decision_fields(score, zone: BuyZoneEstimate, plan: PositionPlanSuggestion) -> dict:
+    decision = derive_final_decision(score, zone, plan)
+    return {
+        "finalAction": decision.finalAction,
+        "decisionLane": decision.decisionLane,
+        "isActionable": decision.isActionable,
+        "decisionBlockReasons": decision.blockReasons,
+        "decisionReviewReasons": decision.reviewReasons,
+        "currentAddLimitPercent": decision.currentAddLimitPercent,
+        "maxPortfolioWeightPercent": decision.maxPortfolioWeightPercent,
+        "dataConfidence": decision.dataConfidence,
+    }
 
 
 def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, source: str, manual: bool) -> dict:
@@ -462,7 +479,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
         '<div class="drawer-badges">'
         f'{_badge(row["zoneLabel"], ZONE_TONES.get(row["currentZone"], "gray"))}'
-        f'{_badge(action_label(row.get("action")), _action_tone(str(row.get("action") or "")))}'
+        f'{_badge(action_label(_row_action(row)), _action_tone(_row_action(row)))}'
         f'{_badge(model_type_label(row.get("modelType")), "gray")}'
         f'{_badge(_source_label(row.get("buyZoneSource"), row.get("manualOverride")), "blue" if row.get("manualOverride") else "gray")}'
         "</div>"
@@ -1372,9 +1389,36 @@ def _display_category_result(
     }
 
 
+def _row_action(row: dict) -> str:
+    return str(row.get("finalAction") or row.get("action") or "")
+
+
+def _has_final_decision(row: dict) -> bool:
+    return any(key in row for key in ("finalAction", "decisionLane", "isActionable"))
+
+
+def _row_is_actionable(row: dict) -> bool:
+    current_add = _first_number(row.get("currentAddLimitPercent"))
+    explicit = row.get("isActionable")
+    if isinstance(explicit, bool):
+        if explicit:
+            return current_add is None or current_add > 0
+        return False
+    if explicit is not None:
+        text = str(explicit).strip().lower()
+        if text in {"true", "false"}:
+            if text == "true":
+                return current_add is None or current_add > 0
+            return False
+    return _row_action(row) in {"可小仓分批", "可正常分批"} and current_add is not None and current_add > 0
+
+
 def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
     zone = str(row.get("currentZone") or "")
-    action = str(row.get("action") or "")
+    action = _row_action(row)
+    has_final_decision = _has_final_decision(row)
+    decision_lane = str(row.get("decisionLane") or "")
+    is_actionable = _row_is_actionable(row)
     current_add = _first_number(row.get("currentAddLimitPercent"))
     trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
     price = _first_number(row.get("currentPrice"))
@@ -1391,15 +1435,18 @@ def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
             return _display_category_result("需复核", "数据不足", "暂不生成触发价", False, "warning")
         return _display_category_result("需复核", "需复核", "买区异常", False, "warning")
 
-    if zone == "no_chase" or action == "禁止追高":
+    if decision_lane == "review":
+        return _display_category_result("需复核", "需复核", "先复核数据与风险", False, "warning")
+
+    if zone == "no_chase" or decision_lane == "blocked" or action == "禁止追高":
         secondary = trigger_secondary if has_trigger else "等待价格回落"
         return _display_category_result("禁止追高", "等待回踩", secondary, False, "caution")
 
-    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} or (current_add is not None and current_add > 0):
+    if is_actionable or (not has_final_decision and (zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} or (current_add is not None and current_add > 0))):
         return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
 
     if has_trigger and price is not None and price > 0:
-        if price <= trigger:
+        if price <= trigger and (is_actionable or not has_final_decision):
             return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
 
         distance = _drop_to_trigger_pct(row)
@@ -1445,7 +1492,7 @@ def _execution_tone(status: str) -> str:
 
 def _action_short_text(row: dict) -> str:
     status = _execution_status(row)
-    action = action_label(row.get("action"))
+    action = action_label(_row_action(row))
     zone = str(row.get("currentZone") or "")
     if status == "需复核":
         return "需复核"
@@ -1482,9 +1529,11 @@ def _current_add_text(row: dict) -> tuple[str, str]:
     number = _first_number(row.get("currentAddLimitPercent"))
     if number is not None and number > 0:
         return f"≤{number:.0f}%", "green"
+    if _has_final_decision(row) and number is not None and number <= 0:
+        return "0%", "gray"
 
     status = _execution_status(row)
-    action = str(row.get("action") or "")
+    action = _row_action(row)
     if status == "需复核":
         return "复核", "gray"
     if status == "禁止追高":
@@ -1524,6 +1573,7 @@ def _distance_to_trigger_secondary(row: dict) -> str:
 
 def _row_reason(row: dict) -> str:
     zone = str(row.get("currentZone") or "")
+    action = _row_action(row)
     if zone in {"invalid_zone", "invalid_manual_override"} or row.get("isValid") is False:
         return "买区异常，需复核"
     if bool(row.get("validationErrors")):
@@ -1532,7 +1582,7 @@ def _row_reason(row: dict) -> str:
         return "数据不足"
     if row.get("confidence") == "low" or row.get("dataConfidence") == "low":
         return "低置信，先复核"
-    if zone == "no_chase" or row.get("action") == "禁止追高":
+    if zone == "no_chase" or action == "禁止追高":
         return "禁止追高"
     return _next_trigger_text(row)
 

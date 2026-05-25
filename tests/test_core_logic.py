@@ -106,7 +106,7 @@ from scoring.risk_flags import RiskFlag
 from scoring.power_company import is_power_company
 from scoring.metric_sources import fcf_margin_metric, metric_participates_in_score
 from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score, _final_action, _guard_action_conflicts
-from scoring.final_decision import derive_final_decision
+from scoring.final_decision import BUY_ACTIONS, NON_BUY_VALUATION_STATUSES, derive_final_decision
 from scoring.signals import (
     ANTI_FOMO_MESSAGE,
     LEFT_SIDE_OPPORTUNITY_MESSAGE,
@@ -5367,6 +5367,50 @@ class BuyZoneTests(unittest.TestCase):
 
 
 class BuyZonePlanPageTests(unittest.TestCase):
+    def _buy_zone_score(self, **overrides) -> SimpleNamespace:
+        values = {
+            "action": sorted(BUY_ACTIONS)[0],
+            "quality_rating": "A",
+            "entry_rating": "A",
+            "risk_rating": "low",
+            "valuation_status": "",
+            "data_confidence": "high",
+            "scoring_model": "GENERIC",
+            "current_add_limit_percent": 5,
+            "max_portfolio_weight_percent": 20,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def _buy_zone_estimate(
+        self,
+        symbol: str = "TST",
+        current_zone: str = "tranche_buy",
+        current_price: float = 95,
+        next_trigger_price: float | None = None,
+    ) -> BuyZoneEstimate:
+        return BuyZoneEstimate(
+            symbol=symbol,
+            modelType="GENERIC",
+            currentPrice=current_price,
+            noChaseAbove=130,
+            fairValueLow=105,
+            fairValueHigh=120,
+            trancheBuyLow=90,
+            trancheBuyHigh=100,
+            heavyBuyBelow=70,
+            currentZone=current_zone,
+            confidence="high",
+            method="blended",
+            inputsUsed=[],
+            keyReasons=[],
+            warnings=[],
+            createdAt="now",
+            nextTriggerPrice=next_trigger_price,
+            isValid=True,
+            validationErrors=[],
+        )
+
     def test_buy_zone_page_is_system_plan_center_not_default_eps_calculator(self) -> None:
         from ui import buy_zone as buy_zone_page
 
@@ -5396,6 +5440,91 @@ class BuyZonePlanPageTests(unittest.TestCase):
 
         self.assertEqual(buy_zone_page._money(0), "价格缺失")
         self.assertEqual(buy_zone_page._money(None), "价格缺失")
+
+    def test_buy_zone_page_prefers_final_action_for_display(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        legacy_buy_action = sorted(BUY_ACTIONS)[0]
+        final_non_buy_action = sorted(NON_BUY_VALUATION_STATUSES)[0]
+        row = {
+            "action": legacy_buy_action,
+            "finalAction": final_non_buy_action,
+            "currentZone": "tranche_buy",
+            "currentPrice": 95,
+            "currentAddLimitPercent": 0,
+            "confidence": "high",
+            "dataConfidence": "high",
+            "isValid": True,
+        }
+        fallback_row = dict(row)
+        fallback_row.pop("finalAction")
+        fallback_row.pop("currentAddLimitPercent")
+
+        self.assertEqual(buy_zone_page._row_action(row), final_non_buy_action)
+        self.assertEqual(buy_zone_page._row_action(fallback_row), legacy_buy_action)
+        self.assertNotEqual(buy_zone_page._action_short_text(row), buy_zone_page._action_short_text(fallback_row))
+
+    def test_buy_zone_page_shows_zero_when_final_decision_blocks_add(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        score = self._buy_zone_score(valuation_status=sorted(NON_BUY_VALUATION_STATUSES)[0])
+        zone = self._buy_zone_estimate()
+        plan = generate_position_plan("ZERO", zone, score)
+
+        row = buy_zone_page._row_from_outputs("ZERO", {}, {}, score, zone, plan, "system_generated", False)
+
+        self.assertEqual(row["action"], score.action)
+        self.assertNotEqual(row["finalAction"], row["action"])
+        self.assertFalse(row["isActionable"])
+        self.assertEqual(row["currentAddLimitPercent"], 0)
+        self.assertEqual(buy_zone_page._current_add_text(row)[0], "0%")
+
+    def test_buy_zone_manual_override_rederives_final_decision(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        score = self._buy_zone_score()
+        zone = self._buy_zone_estimate(symbol="MAN")
+        plan = generate_position_plan("MAN", zone, score)
+        row = buy_zone_page._row_from_outputs("MAN", {}, {}, score, zone, plan, "system_generated", False)
+        manual_plan = {
+            "no_chase_above": 90,
+            "fair_value_low": 70,
+            "fair_value_high": 80,
+            "tranche_buy_low": 55,
+            "tranche_buy_high": 65,
+            "heavy_buy_below": 45,
+        }
+
+        updated = buy_zone_page._apply_manual_plan(row, manual_plan)
+
+        self.assertTrue(row["isActionable"])
+        self.assertEqual(updated["currentZone"], "no_chase")
+        self.assertEqual(updated["decisionLane"], "blocked")
+        self.assertFalse(updated["isActionable"])
+        self.assertEqual(updated["currentAddLimitPercent"], 0)
+        self.assertNotEqual(updated["finalAction"], row["finalAction"])
+
+    def test_buy_zone_near_trigger_logic_survives_final_decision_wait_lane(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        result = buy_zone_page.resolve_buy_zone_display_category(
+            {
+                "currentZone": "fair_observation",
+                "currentPrice": 100,
+                "nextTriggerPrice": 90,
+                "finalAction": "wait",
+                "decisionLane": "wait",
+                "isActionable": False,
+                "currentAddLimitPercent": 0,
+                "confidence": "high",
+                "dataConfidence": "high",
+                "isValid": True,
+            }
+        )
+
+        self.assertTrue(result["priorityEligible"])
+        self.assertEqual(result["triggerTone"], "near")
+        self.assertIn("10.0", str(result["triggerPrimary"]))
 
 
 def _ai_review_result(
