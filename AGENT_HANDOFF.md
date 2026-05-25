@@ -25,11 +25,26 @@ Data conversation:
 5. If there is conflict, stop and ask the user which version should win.
 6. Avoid long silent waits. The user has repeatedly felt that Codex is stuck when tool runs or multi-step work are quiet. Send short progress updates before and after slow commands, installs, builds, browser launches, or any step likely to take more than about 30 seconds. If a command is still running or blocked, say so plainly instead of staying silent.
 
+## Coordination Notes
+
+| Date | Topic | Symptom | Likely Cause | Mitigation |
+| --- | --- | --- | --- | --- |
+| 2026-05-25 | GIF / long visual workflow stuck-state | GIF capture/encoding or short verification commands can appear stuck in the Codex app, especially after parallel tool calls or user interruption. | Encoding/browser capture may run with little output; app command-status UI can lag behind completed commands; interrupted turns may leave stale "running/thinking" indicators. | Prefer sequential short commands for verification, avoid unnecessary parallel git checks, split GIF work into capture -> encode -> verify, keep GIFs short/low-fps/smaller width, use timeouts, and send progress before/after any slow visual or encoding step. |
+
 ## Active Work
 
 None.
 
 ## Latest Handoff
+
+2026-05-25 Data conversation:
+- Owner: Data conversation.
+- Task: Record Codex/GIF workflow stuck-state mitigation for both conversations.
+- Files touched: `AGENT_HANDOFF.md`.
+- What changed: Added a `Coordination Notes` table near the top of the shared handoff board documenting why GIF/long visual workflows and interrupted/parallel command runs can appear stuck in the Codex app, plus mitigation rules: use sequential short verification commands, split GIF work into capture/encode/verify, keep GIFs small, use timeouts, and report progress around slow steps.
+- Verification: Documentation-only change; no tests run.
+- Next needed: Both conversations should follow the mitigation note when doing GIF, browser capture, or other long visual/encoding workflows.
+- Do not touch yet: No app code, data, scoring, provider, database, external API, or UI behavior was changed.
 
 2026-05-25 Data conversation:
 - Owner: Data conversation, with user-approved small Dashboard adapter touch.
