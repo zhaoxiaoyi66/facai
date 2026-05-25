@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
     calculate_portfolio_positions,
 )
+from data.prices import CACHE_PATH
+from data.stock_plan import StockPlanStore
+from indicators.technicals import add_technical_indicators, latest_technical_snapshot
+from scoring.final_decision_adapter import build_final_decision_bundle
+from scoring.total_score import calculate_total_score
 
 
 ACTION_GROUPS = (
@@ -22,13 +33,23 @@ ACTION_GROUPS = (
 def build_portfolio_view_model(
     db_path: Path | None = None,
     current_prices: dict[str, float | None] | None = None,
+    system_decision_inputs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     position_store = PortfolioPositionStore(db_path) if db_path is not None else PortfolioPositionStore()
     settings_store = PortfolioSettingsStore(db_path) if db_path is not None else PortfolioSettingsStore()
     settings = settings_store.get_settings()
     positions = position_store.list_active_positions()
-    calculated = calculate_portfolio_positions(positions, _normalize_prices(current_prices), settings=settings)
-    rows = [_row_view(row) for row in calculated]
+    prices, price_statuses = _current_prices_for_positions(positions, db_path, current_prices)
+    system_refs = _system_refs_for_positions(positions, db_path, prices, system_decision_inputs)
+    calculated = calculate_portfolio_positions(positions, prices, settings=settings, system_refs=system_refs)
+    rows = [
+        _row_view(
+            row,
+            price_statuses.get(str(row.get("symbol") or "").upper(), "missing"),
+            system_refs.get(str(row.get("symbol") or "").upper(), {}),
+        )
+        for row in calculated
+    ]
     return {
         "summary": _summary(rows),
         "actionGroups": _action_groups(rows),
@@ -37,12 +58,14 @@ def build_portfolio_view_model(
     }
 
 
-def _row_view(row: dict) -> dict[str, Any]:
+def _row_view(row: dict, price_status: str, system_ref: dict[str, Any]) -> dict[str, Any]:
+    deviation_warnings = _deviation_warnings(row, system_ref)
     return {
         "symbol": row.get("symbol"),
         "quantity": row.get("quantity"),
         "averageCost": row.get("average_cost"),
         "currentPrice": row.get("currentPrice"),
+        "priceStatus": price_status,
         "marketValue": row.get("marketValue"),
         "costBasis": row.get("costBasis"),
         "unrealizedPnl": row.get("unrealizedPnl"),
@@ -62,6 +85,13 @@ def _row_view(row: dict) -> dict[str, Any]:
         "missingPrice": bool(row.get("missingPrice")),
         "systemMaxPosition": row.get("systemMaxPosition"),
         "systemStatus": row.get("systemStatus"),
+        "systemAction": system_ref.get("systemAction"),
+        "systemCurrentAdd": system_ref.get("systemCurrentAdd"),
+        "buyZoneStatus": system_ref.get("buyZoneStatus"),
+        "decisionLane": system_ref.get("decisionLane"),
+        "blockReasons": list(system_ref.get("blockReasons") or []),
+        "reviewReasons": list(system_ref.get("reviewReasons") or []),
+        "deviationWarnings": deviation_warnings,
         "actionGroup": _action_group_for_row(row),
     }
 
@@ -122,3 +152,251 @@ def _sum_present(values) -> float:
 
 def _normalize_prices(current_prices: dict[str, float | None] | None) -> dict[str, float | None]:
     return {str(symbol).strip().upper(): price for symbol, price in (current_prices or {}).items()}
+
+
+def _current_prices_for_positions(
+    positions: list[dict],
+    db_path: Path | None,
+    current_prices: dict[str, float | None] | None,
+) -> tuple[dict[str, float | None], dict[str, str]]:
+    symbols = [str(position.get("symbol") or "").strip().upper() for position in positions]
+    symbols = [symbol for symbol in symbols if symbol]
+    path = db_path or CACHE_PATH
+    quote_prices = _quote_snapshot_prices(path, symbols)
+    history_prices = _latest_history_prices(path, symbols)
+    provided_prices = _normalize_prices(current_prices)
+    prices: dict[str, float | None] = {}
+    statuses: dict[str, str] = {}
+    for symbol in symbols:
+        quote_price = quote_prices.get(symbol)
+        history_price = history_prices.get(symbol)
+        provided_price = _number(provided_prices.get(symbol))
+        if quote_price is not None:
+            prices[symbol] = quote_price
+            statuses[symbol] = "quote_snapshot"
+        elif history_price is not None:
+            prices[symbol] = history_price
+            statuses[symbol] = "price_history"
+        elif provided_price is not None:
+            prices[symbol] = provided_price
+            statuses[symbol] = "provided"
+        else:
+            prices[symbol] = None
+            statuses[symbol] = "missing"
+    return prices, statuses
+
+
+def _system_refs_for_positions(
+    positions: list[dict],
+    db_path: Path | None,
+    current_prices: dict[str, float | None],
+    system_decision_inputs: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    symbols = [str(position.get("symbol") or "").strip().upper() for position in positions]
+    symbols = [symbol for symbol in symbols if symbol]
+    refs: dict[str, dict[str, Any]] = {}
+    input_refs = _system_refs_from_inputs(system_decision_inputs)
+    path = db_path or CACHE_PATH
+    snapshots = _quote_snapshot_payloads(path, symbols)
+    plan_store = StockPlanStore(path)
+    for symbol in symbols:
+        if symbol in input_refs:
+            refs[symbol] = input_refs[symbol]
+            continue
+        snapshot = snapshots.get(symbol)
+        if not snapshot:
+            refs[symbol] = _empty_system_ref()
+            continue
+        refs[symbol] = _system_ref_from_local_cache(symbol, snapshot, path, current_prices.get(symbol), plan_store)
+    return refs
+
+
+def _system_refs_from_inputs(system_decision_inputs: dict[str, dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    refs: dict[str, dict[str, Any]] = {}
+    for symbol, inputs in (system_decision_inputs or {}).items():
+        normalized = str(symbol).strip().upper()
+        if not normalized or not inputs.get("score"):
+            continue
+        buy_zone = inputs.get("buy_zone")
+        manual_plan = inputs.get("manual_plan_override") or inputs.get("manual_plan")
+        bundle = build_final_decision_bundle(
+            inputs["score"],
+            buy_zone,
+            inputs.get("position_plan"),
+            manual_plan_override=manual_plan,
+            symbol=normalized,
+        )
+        refs[normalized] = _system_ref_from_bundle(bundle, _buy_zone_status(buy_zone))
+    return refs
+
+
+def _system_ref_from_local_cache(
+    symbol: str,
+    snapshot: dict,
+    path: Path,
+    current_price: float | None,
+    plan_store: StockPlanStore,
+) -> dict[str, Any]:
+    try:
+        history = _price_history_frame(path, symbol)
+        technicals = latest_technical_snapshot(add_technical_indicators(history))
+        if current_price is not None:
+            snapshot = dict(snapshot)
+            snapshot.setdefault("current_price", current_price)
+            technicals["price"] = current_price
+        score = calculate_total_score(snapshot, technicals)
+        stock_data = {**snapshot, **technicals}
+        buy_zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
+        plan = plan_store.get_plan(symbol)
+        effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
+        bundle = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=symbol)
+        return _system_ref_from_bundle(bundle, _buy_zone_status(effective_buy_zone))
+    except Exception:
+        return _empty_system_ref()
+
+
+def _system_ref_from_bundle(bundle, buy_zone_status: str | None) -> dict[str, Any]:
+    return {
+        "systemAction": bundle.finalAction,
+        "systemMaxPosition": bundle.maxPortfolioWeightPercent,
+        "systemCurrentAdd": bundle.currentAddLimitPercent,
+        "buyZoneStatus": buy_zone_status,
+        "decisionLane": bundle.decisionLane,
+        "blockReasons": list(bundle.blockReasons),
+        "reviewReasons": list(bundle.reviewReasons),
+        "maxPortfolioWeightPercent": bundle.maxPortfolioWeightPercent,
+        "systemStatus": bundle.decisionLane,
+    }
+
+
+def _empty_system_ref() -> dict[str, Any]:
+    return {
+        "systemAction": None,
+        "systemMaxPosition": None,
+        "systemCurrentAdd": None,
+        "buyZoneStatus": None,
+        "decisionLane": None,
+        "blockReasons": [],
+        "reviewReasons": [],
+    }
+
+
+def _deviation_warnings(row: dict, system_ref: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    if row.get("overweightSystem"):
+        warnings.append("overweight_system")
+    if row.get("overweightPersonal"):
+        warnings.append("overweight_personal")
+    if _has_position(row) and _system_says_do_not_add(system_ref):
+        warnings.append("system_not_addable")
+    if row.get("nearTrimPrice"):
+        warnings.append("near_trim_price")
+    return warnings
+
+
+def _has_position(row: dict) -> bool:
+    quantity = _number(row.get("quantity"))
+    return quantity is not None and quantity > 0
+
+
+def _system_says_do_not_add(system_ref: dict[str, Any]) -> bool:
+    lane = str(system_ref.get("decisionLane") or "").lower()
+    current_add = _number(system_ref.get("systemCurrentAdd"))
+    return lane in {"review", "blocked", "wait"} or current_add == 0
+
+
+def _buy_zone_status(buy_zone: Any) -> str | None:
+    if buy_zone is None:
+        return None
+    if isinstance(buy_zone, dict):
+        return buy_zone.get("currentZone") or buy_zone.get("current_zone")
+    return getattr(buy_zone, "currentZone", None) or getattr(buy_zone, "current_zone", None)
+
+
+def _quote_snapshot_prices(path: Path, symbols: list[str]) -> dict[str, float | None]:
+    return {symbol: _number(payload.get("current_price")) for symbol, payload in _quote_snapshot_payloads(path, symbols).items()}
+
+
+def _quote_snapshot_payloads(path: Path, symbols: list[str]) -> dict[str, dict]:
+    if not symbols or not path.exists():
+        return {}
+    payloads: dict[str, dict] = {}
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "quote_snapshots"):
+            return {}
+        for symbol in symbols:
+            row = conn.execute(
+                "SELECT payload_json FROM quote_snapshots WHERE ticker = ?",
+                (symbol,),
+            ).fetchone()
+            if not row:
+                continue
+            try:
+                payload = json.loads(row[0])
+            except (TypeError, ValueError):
+                payload = {}
+            payloads[symbol] = payload if isinstance(payload, dict) else {}
+    return payloads
+
+
+def _latest_history_prices(path: Path, symbols: list[str]) -> dict[str, float | None]:
+    if not symbols or not path.exists():
+        return {}
+    prices: dict[str, float | None] = {}
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "price_history"):
+            return {}
+        for symbol in symbols:
+            row = conn.execute(
+                """
+                SELECT close
+                FROM price_history
+                WHERE ticker = ?
+                  AND close IS NOT NULL
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
+            if row:
+                prices[symbol] = _number(row[0])
+    return prices
+
+
+def _price_history_frame(path: Path, symbol: str) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "price_history"):
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+        frame = pd.read_sql_query(
+            """
+            SELECT date, open, high, low, close, volume
+            FROM price_history
+            WHERE ticker = ?
+            ORDER BY date
+            """,
+            conn,
+            params=(symbol,),
+        )
+    if frame.empty:
+        return frame
+    frame["date"] = pd.to_datetime(frame["date"])
+    return frame
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return bool(row)
+
+
+def _number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

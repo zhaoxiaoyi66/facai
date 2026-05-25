@@ -5,6 +5,7 @@ from html import escape
 import streamlit as st
 
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio_view_model import build_portfolio_view_model
 from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
@@ -30,30 +31,24 @@ def render() -> None:
 
     position_store = PortfolioPositionStore()
     settings_store = PortfolioSettingsStore()
-    settings = settings_store.get_settings()
-    positions = position_store.list_active_positions()
+    view = build_portfolio_view_model()
+    settings = view["settings"]
+    rows = view["rows"]
 
-    _render_overview_strip(positions, settings)
-    _render_action_panel(positions, settings)
-    _render_positions_table(positions, position_store)
-    _render_editor(position_store, settings_store, positions, settings)
+    _render_overview_strip(view["summary"], settings)
+    _render_action_panel(view["actionGroups"])
+    _render_positions_table(rows, position_store)
+    _render_editor(position_store, settings_store, rows, settings)
 
 
-def _render_overview_strip(positions: list[dict], settings: dict) -> None:
-    cost_basis = _portfolio_cost_basis(positions)
-    cash = _number(settings.get("cash_balance"))
-    configured_total = _number(settings.get("total_portfolio_value"))
-    estimated_total = configured_total if configured_total is not None else cost_basis + (cash or 0)
-    target_pct = sum(_number(row.get("target_position_pct")) or 0 for row in positions)
-    max_pct = sum(_number(row.get("max_acceptable_position_pct")) or 0 for row in positions)
-
+def _render_overview_strip(summary: dict, settings: dict) -> None:
     items = [
-        ("持仓数", str(len(positions)), "active positions"),
-        ("持仓成本", _money_text(cost_basis), "cost basis"),
-        ("组合基准", _money_text(estimated_total), "manual total" if configured_total else "cost + cash"),
-        ("现金", _money_text(cash), "cash balance"),
-        ("目标仓位", _percent_text(target_pct), "sum target"),
-        ("最大仓位", _percent_text(max_pct), "sum max"),
+        ("持仓数", str(summary.get("positionCount", 0)), "active positions"),
+        ("市值", _money_text(summary.get("marketValue")), "market value"),
+        ("成本", _money_text(summary.get("costBasis")), "cost basis"),
+        ("浮动盈亏", _money_text(summary.get("unrealizedPnl")), _percent_text(summary.get("unrealizedPnlPct"))),
+        ("组合基准", _money_text(settings.get("total_portfolio_value")), "manual total"),
+        ("现金", _money_text(settings.get("cash_balance")), "cash balance"),
     ]
     html = "".join(
         '<div class="portfolio-stat">'
@@ -66,26 +61,24 @@ def _render_overview_strip(positions: list[dict], settings: dict) -> None:
     st.markdown(f'<div class="portfolio-overview">{html}</div>', unsafe_allow_html=True)
 
 
-def _render_action_panel(positions: list[dict], settings: dict) -> None:
-    render_section_title("持仓行动面板", "只基于手动持仓计划，不读取行情。")
-    denominator = _portfolio_denominator(positions, settings)
-    rows = _action_rows(positions, denominator)
+def _render_action_panel(action_groups: list[dict]) -> None:
+    render_section_title("持仓行动面板", "来自组合 view model；当前不读取行情。")
     html = "".join(
-        f'<div class="portfolio-action-card tone-{escape(row["tone"])}">'
-        f"<span>{escape(row['label'])}</span>"
-        f"<strong>{escape(row['value'])}</strong>"
-        f"<p>{escape(row['detail'])}</p>"
+        f'<div class="portfolio-action-card tone-{escape(_action_group_tone(group.get("key")))}">'
+        f"<span>{escape(str(group.get('label') or ''))}</span>"
+        f"<strong>{escape(_action_group_value(group))}</strong>"
+        f"<p>{escape(_action_group_detail(group))}</p>"
         "</div>"
-        for row in rows
+        for group in action_groups
     )
     st.markdown(f'<div class="portfolio-action-grid">{html}</div>', unsafe_allow_html=True)
 
 
-def _render_positions_table(positions: list[dict], position_store: PortfolioPositionStore) -> None:
+def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
     title_cols = st.columns([5, 1])
     with title_cols[0]:
         render_section_title("持仓清单", "当前只显示手动录入的 active 持仓。")
-    if not positions:
+    if not rows:
         st.markdown(
             '<div class="portfolio-empty">'
             "<div>暂无持仓，添加第一只股票。</div>"
@@ -109,6 +102,9 @@ def _render_positions_table(positions: list[dict], position_store: PortfolioPosi
         "股票代码",
         "持股数量",
         "平均成本",
+        "市值",
+        "浮动盈亏",
+        "当前仓位",
         "目标仓位",
         "最大可接受仓位",
         "计划卖出价",
@@ -118,8 +114,9 @@ def _render_positions_table(positions: list[dict], position_store: PortfolioPosi
         "备注",
         "状态管理",
     ]
+    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
-    body_html = "".join(_position_row_html(row) for row in positions)
+    body_html = "".join(_position_row_html(row) for row in rows)
     st.markdown(
         '<div class="portfolio-table-wrap">'
         '<table class="portfolio-table">'
@@ -132,7 +129,7 @@ def _render_positions_table(positions: list[dict], position_store: PortfolioPosi
     action_cols = st.columns([1, 1, 1, 3])
     action_symbol = action_cols[0].selectbox(
         "归档持仓",
-        [str(row.get("symbol") or "") for row in positions],
+        [str(row.get("symbol") or "") for row in rows],
         key="portfolio-deactivate-symbol",
         label_visibility="collapsed",
     )
@@ -145,13 +142,13 @@ def _render_positions_table(positions: list[dict], position_store: PortfolioPosi
 def _render_editor(
     position_store: PortfolioPositionStore,
     settings_store: PortfolioSettingsStore,
-    positions: list[dict],
+    rows: list[dict],
     settings: dict,
 ) -> None:
     position_open = bool(st.session_state.get("portfolio_position_editor_open", False))
     with st.expander("添加/编辑持仓", expanded=position_open):
         st.session_state["portfolio_position_editor_open"] = False
-        symbols = [str(row.get("symbol") or "") for row in positions]
+        symbols = [str(row.get("symbol") or "") for row in rows]
         selected = st.selectbox("编辑对象", ["新增持仓", *symbols], key="portfolio-edit-symbol")
         editing = selected != "新增持仓"
         current = position_store.get_position(selected) if editing else None
@@ -236,41 +233,6 @@ def _render_editor(
                     st.error(str(exc))
 
 
-def _action_rows(positions: list[dict], denominator: float | None) -> list[dict]:
-    missing_trim = [
-        row for row in positions
-        if not any(_number(row.get(key)) for key in ("planned_sell_price", "first_trim_price", "second_trim_price"))
-    ]
-    missing_review = [row for row in positions if _number(row.get("review_price")) is None]
-    over_max = [
-        row for row in positions
-        if _cost_position_pct(row, denominator) is not None
-        and _number(row.get("max_acceptable_position_pct")) is not None
-        and (_cost_position_pct(row, denominator) or 0) > (_number(row.get("max_acceptable_position_pct")) or 0)
-    ]
-    planned_trim = [row for row in positions if row not in missing_trim]
-    return [
-        {
-            "label": "超仓",
-            "value": str(len(over_max)) if over_max else "暂无超仓",
-            "detail": _symbols_detail(over_max, "未发现成本仓位超过个人上限。"),
-            "tone": "red" if over_max else "green",
-        },
-        {
-            "label": "复核",
-            "value": str(len(missing_review)) if missing_review else "暂无需复核",
-            "detail": _symbols_detail(missing_review, "全部持仓已设置复核线。"),
-            "tone": "yellow" if missing_review else "green",
-        },
-        {
-            "label": "接近减仓价",
-            "value": "暂无接近减仓价",
-            "detail": _symbols_detail(planned_trim, "价格未接入，暂按手动计划展示。"),
-            "tone": "neutral",
-        },
-    ]
-
-
 def _available_watchlist_symbols(active_symbols: list[str]) -> list[str]:
     active = {symbol.upper() for symbol in active_symbols}
     return [symbol for symbol in load_watchlist() if symbol.upper() not in active]
@@ -290,46 +252,62 @@ def _position_row_html(row: dict) -> str:
         "<tr>"
         f"<td><strong>{escape(str(row.get('symbol') or ''))}</strong></td>"
         f"<td>{escape(_quantity_text(row.get('quantity')))}</td>"
-        f"<td>{escape(_money_text(row.get('average_cost')))}</td>"
-        f"<td>{escape(_percent_text(row.get('target_position_pct')))}</td>"
-        f"<td>{escape(_percent_text(row.get('max_acceptable_position_pct')))}</td>"
-        f"<td>{escape(_money_text(row.get('planned_sell_price')))}</td>"
-        f"<td>{escape(_money_text(row.get('first_trim_price')))}</td>"
-        f"<td>{escape(_money_text(row.get('second_trim_price')))}</td>"
-        f"<td>{escape(_money_text(row.get('review_price')))}</td>"
+        f"<td>{escape(_money_text(row.get('averageCost')))}</td>"
+        f"<td>{escape(_money_text(row.get('currentPrice')))}</td>"
+        f"<td>{escape(_price_status_text(row.get('priceStatus')))}</td>"
+        f"<td>{escape(_money_text(row.get('marketValue')))}</td>"
+        f"<td>{escape(_money_text(row.get('unrealizedPnl')))} / {escape(_percent_text(row.get('unrealizedPnlPct')))}</td>"
+        f"<td>{escape(_percent_text(row.get('positionPct')))}</td>"
+        f"<td>{escape(_percent_text(row.get('targetPositionPct')))}</td>"
+        f"<td>{escape(_percent_text(row.get('maxAcceptablePositionPct')))}</td>"
+        f"<td>{escape(str(row.get('systemAction') or '-'))}</td>"
+        f"<td>{escape(_percent_text(row.get('systemMaxPosition')))}</td>"
+        f"<td>{escape(_percent_text(row.get('systemCurrentAdd')))}</td>"
+        f"<td>{escape(str(row.get('decisionLane') or '-'))}</td>"
+        f"<td>{escape(_warnings_text(row.get('deviationWarnings')))}</td>"
+        f"<td>{escape(_money_text(row.get('plannedSellPrice')))}</td>"
+        f"<td>{escape(_money_text(row.get('firstTrimPrice')))}</td>"
+        f"<td>{escape(_money_text(row.get('secondTrimPrice')))}</td>"
+        f"<td>{escape(_money_text(row.get('reviewPrice')))}</td>"
         f"<td class=\"notes\">{escape(str(row.get('notes') or ''))}</td>"
         "<td>下方选择归档</td>"
         "</tr>"
     )
 
 
-def _portfolio_cost_basis(positions: list[dict]) -> float:
-    return sum((_number(row.get("quantity")) or 0) * (_number(row.get("average_cost")) or 0) for row in positions)
-
-
-def _portfolio_denominator(positions: list[dict], settings: dict) -> float | None:
-    total_value = _number(settings.get("total_portfolio_value"))
-    if total_value and total_value > 0:
-        return total_value
-    cost_basis = _portfolio_cost_basis(positions)
-    cash = _number(settings.get("cash_balance")) or 0
-    fallback = cost_basis + cash
-    return fallback if fallback > 0 else None
-
-
-def _cost_position_pct(row: dict, denominator: float | None) -> float | None:
-    if not denominator:
-        return None
-    cost = (_number(row.get("quantity")) or 0) * (_number(row.get("average_cost")) or 0)
-    return cost / denominator * 100
-
-
-def _symbols_detail(rows: list[dict], fallback: str) -> str:
-    if not rows:
+def _symbols_detail(symbols: list[str], fallback: str) -> str:
+    if not symbols:
         return fallback
-    symbols = [str(row.get("symbol") or "") for row in rows[:5]]
-    suffix = "..." if len(rows) > 5 else ""
-    return ", ".join(symbols) + suffix
+    visible = [str(symbol) for symbol in symbols[:5]]
+    suffix = "..." if len(symbols) > 5 else ""
+    return ", ".join(visible) + suffix
+
+
+def _action_group_tone(key: object) -> str:
+    return {
+        "addable": "green",
+        "hold": "neutral",
+        "nearTrim": "yellow",
+        "overweight": "red",
+        "review": "yellow",
+    }.get(str(key), "neutral")
+
+
+def _action_group_value(group: dict) -> str:
+    count = int(group.get("count") or 0)
+    if count:
+        return str(count)
+    return {
+        "addable": "暂无可加仓",
+        "hold": "暂无持有观察",
+        "nearTrim": "暂无接近减仓价",
+        "overweight": "暂无超仓",
+        "review": "暂无需复核",
+    }.get(str(group.get("key")), "暂无")
+
+
+def _action_group_detail(group: dict) -> str:
+    return _symbols_detail(list(group.get("symbols") or []), "无对应持仓。")
 
 
 def _quantity_text(value: object) -> str:
@@ -351,6 +329,428 @@ def _money_text(value: object) -> str:
     if number is None:
         return "-"
     return format_currency(number)
+
+
+def _price_status_text(value: object) -> str:
+    return {
+        "quote_snapshot": "quote",
+        "price_history": "history",
+        "provided": "provided",
+        "missing": "missing",
+    }.get(str(value), "missing")
+
+
+def _warnings_text(value: object) -> str:
+    labels = {
+        "overweight_system": "system overweight",
+        "overweight_personal": "personal overweight",
+        "system_not_addable": "system review/observe",
+        "near_trim_price": "near trim",
+    }
+    items = value if isinstance(value, list) else []
+    return ", ".join(labels.get(str(item), str(item)) for item in items) or "-"
+
+
+def _position_row_html(row: dict) -> str:
+    return (
+        "<tr>"
+        f"<td>{_cell_html(str(row.get('symbol') or ''), _row_status_text(row))}</td>"
+        f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
+        f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
+        f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
+        f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
+        f"<td>{_cell_html(_plan_main_text(row), _plan_sub_text(row))}</td>"
+        f"<td>{_details_html(row)}</td>"
+        "</tr>"
+    )
+
+
+def _cell_html(primary: object, secondary: object) -> str:
+    return (
+        '<div class="portfolio-cell">'
+        f"<b>{escape(str(primary or '-'))}</b>"
+        f"<small>{escape(str(secondary or '-'))}</small>"
+        "</div>"
+    )
+
+
+def _row_status_text(row: dict) -> str:
+    alerts = _warnings_text(row.get("deviationWarnings"))
+    return alerts if alerts != "-" else _price_status_text(row.get("priceStatus"))
+
+
+def _system_action_text(row: dict) -> str:
+    action = str(row.get("systemAction") or "").strip()
+    lane = str(row.get("decisionLane") or "").strip()
+    if lane == "actionable":
+        return "可加仓"
+    if lane == "blocked":
+        return "禁止追高"
+    if lane == "review":
+        return "待复核"
+    if action:
+        return action
+    return "未生成"
+
+
+def _system_reason_text(row: dict) -> str:
+    warnings = _warnings_text(row.get("deviationWarnings"))
+    if warnings != "-":
+        return warnings
+    reasons = [*list(row.get("blockReasons") or []), *list(row.get("reviewReasons") or [])]
+    if reasons:
+        return ", ".join(str(item) for item in reasons[:2])
+    add = _percent_text(row.get("systemCurrentAdd"))
+    return "当前可加 " + add if add != "-" else "无系统提示"
+
+
+def _plan_main_text(row: dict) -> str:
+    sell = _money_text(row.get("plannedSellPrice"))
+    first = _money_text(row.get("firstTrimPrice"))
+    second = _money_text(row.get("secondTrimPrice"))
+    if sell != "-":
+        return "卖出 " + sell
+    if first != "-":
+        return "减仓 " + first
+    if second != "-":
+        return "减仓 " + second
+    return "未设置"
+
+
+def _plan_sub_text(row: dict) -> str:
+    parts = []
+    first = _money_text(row.get("firstTrimPrice"))
+    second = _money_text(row.get("secondTrimPrice"))
+    review = _money_text(row.get("reviewPrice"))
+    if first != "-":
+        parts.append("一减 " + first)
+    if second != "-":
+        parts.append("二减 " + second)
+    if review != "-":
+        parts.append("复核 " + review)
+    return " / ".join(parts) if parts else "计划未设置"
+
+
+def _details_html(row: dict) -> str:
+    details = [
+        ("价格状态", _price_status_text(row.get("priceStatus"))),
+        ("市值", _money_text(row.get("marketValue"))),
+        ("系统可加", _percent_text(row.get("systemCurrentAdd"))),
+        ("决策通道", row.get("decisionLane") or "-"),
+        ("买区状态", row.get("buyZoneStatus") or "-"),
+        ("阻断原因", ", ".join(str(item) for item in (row.get("blockReasons") or [])) or "-"),
+        ("复核原因", ", ".join(str(item) for item in (row.get("reviewReasons") or [])) or "-"),
+        ("计划卖出价", _money_text(row.get("plannedSellPrice"))),
+        ("第一减仓价", _money_text(row.get("firstTrimPrice"))),
+        ("第二减仓价", _money_text(row.get("secondTrimPrice"))),
+        ("复核线", _money_text(row.get("reviewPrice"))),
+        ("备注", row.get("notes") or "-"),
+    ]
+    items = "".join(
+        f"<span>{escape(str(label))}</span><b>{escape(str(value))}</b>"
+        for label, value in details
+    )
+    return (
+        '<details class="portfolio-row-details">'
+        "<summary>查看</summary>"
+        f'<div class="portfolio-detail-grid">{items}</div>'
+        "</details>"
+    )
+
+
+def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
+    title_cols = st.columns([5, 1])
+    with title_cols[0]:
+        render_section_title("持仓清单", "仓位、盈亏、系统参考和计划状态。")
+    with title_cols[1]:
+        st.write("")
+        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
+            st.session_state["portfolio_position_editor_open"] = True
+            st.rerun()
+
+    if not rows:
+        st.markdown(
+            '<div class="portfolio-empty">'
+            "<div>暂无持仓</div>"
+            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统参考和计划状态。</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body_html = "".join(_position_row_html(row) for row in rows)
+    st.markdown(
+        '<div class="portfolio-table-wrap compact">'
+        '<table class="portfolio-table compact">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{body_html}</tbody>"
+        "</table>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("停用持仓", expanded=False):
+        action_cols = st.columns([1.4, 1, 1, 3])
+        action_symbol = action_cols[0].selectbox(
+            "选择持仓",
+            [str(row.get("symbol") or "") for row in rows],
+            key="portfolio-deactivate-symbol",
+            label_visibility="collapsed",
+        )
+        confirm = action_cols[1].checkbox("确认停用", key="portfolio-deactivate-confirm")
+        if action_cols[2].button("停用", key="portfolio-deactivate-from-list", width="stretch", disabled=not confirm):
+            position_store.deactivate_position(action_symbol)
+            st.success(f"{action_symbol} 已停用。")
+            st.rerun()
+
+
+def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
+    title_cols = st.columns([5, 1])
+    with title_cols[0]:
+        render_section_title("持仓清单", "仓位、盈亏、系统参考和计划状态。")
+    with title_cols[1]:
+        st.write("")
+        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
+            st.session_state["portfolio_position_editor_open"] = True
+            st.rerun()
+
+    if not rows:
+        st.markdown(
+            '<div class="portfolio-empty">'
+            "<div>暂无持仓</div>"
+            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统参考和计划状态。</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    selected_symbol = str(st.session_state.get("portfolio_detail_symbol") or rows[0].get("symbol") or "")
+    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body_html = "".join(_position_row_html(row) for row in rows)
+    st.markdown(
+        '<div class="portfolio-table-wrap compact">'
+        '<table class="portfolio-table compact">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{body_html}</tbody>"
+        "</table>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    detail_options = [str(row.get("symbol") or "") for row in rows]
+    detail_index = detail_options.index(selected_symbol) if selected_symbol in detail_options else 0
+    detail_cols = st.columns([1.2, 4])
+    selected_symbol = detail_cols[0].selectbox(
+        "查看详情",
+        detail_options,
+        index=detail_index,
+        key="portfolio-detail-symbol-select",
+        label_visibility="collapsed",
+    )
+    st.session_state["portfolio_detail_symbol"] = selected_symbol
+    selected_row = next((row for row in rows if str(row.get("symbol") or "") == selected_symbol), rows[0])
+    _render_detail_panel(selected_row)
+
+    with st.expander("停用持仓", expanded=False):
+        action_cols = st.columns([1.4, 1, 1, 3])
+        action_symbol = action_cols[0].selectbox(
+            "选择持仓",
+            detail_options,
+            key="portfolio-deactivate-symbol",
+            label_visibility="collapsed",
+        )
+        confirm = action_cols[1].checkbox("确认停用", key="portfolio-deactivate-confirm")
+        if action_cols[2].button("停用", key="portfolio-deactivate-from-list", width="stretch", disabled=not confirm):
+            position_store.deactivate_position(action_symbol)
+            st.success(f"{action_symbol} 已停用。")
+            st.rerun()
+
+
+def _position_row_html(row: dict) -> str:
+    return (
+        "<tr>"
+        f"<td>{_cell_html(str(row.get('symbol') or ''), _row_status_text(row))}</td>"
+        f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
+        f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
+        f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
+        f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
+        f"<td>{_cell_html(_plan_status_text(row), _plan_sub_text(row))}</td>"
+        f'<td><span class="portfolio-view-link">下方详情</span></td>'
+        "</tr>"
+    )
+
+
+def _render_detail_panel(row: dict) -> None:
+    st.markdown(
+        f"""
+        <div class="portfolio-detail-panel">
+            <div class="portfolio-detail-head">
+                <strong>{escape(str(row.get("symbol") or ""))}</strong>
+                <span>{escape(_system_action_text(row))} · {escape(_plan_status_text(row))}</span>
+            </div>
+            <div class="portfolio-detail-grid">
+                {_detail_items_html(row)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _detail_items_html(row: dict) -> str:
+    details = [
+        ("价格状态", _price_status_text(row.get("priceStatus"))),
+        ("市值", _money_text(row.get("marketValue"))),
+        ("系统可加", _percent_text(row.get("systemCurrentAdd"))),
+        ("决策通道", _decision_lane_text(row.get("decisionLane"))),
+        ("买区状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
+        ("阻断原因", _reason_text(row.get("blockReasons"))),
+        ("计划卖出价", _money_text(row.get("plannedSellPrice"))),
+        ("减仓价", _trim_prices_text(row)),
+        ("复核线", _money_text(row.get("reviewPrice"))),
+        ("备注", row.get("notes") or "未填写"),
+    ]
+    return "".join(
+        f"<span>{escape(str(label))}</span><b>{escape(str(value))}</b>"
+        for label, value in details
+    )
+
+
+def _price_status_text(value: object) -> str:
+    return {
+        "quote_snapshot": "实时报价",
+        "price_history": "历史收盘价",
+        "provided": "手动价格",
+        "missing": "缺少价格",
+    }.get(str(value), "缺少价格")
+
+
+def _warnings_text(value: object) -> str:
+    labels = {
+        "overweight_system": "超系统上限",
+        "overweight_personal": "超个人上限",
+        "system_not_addable": "系统建议复核/观察",
+        "near_trim_price": "接近减仓价",
+    }
+    items = value if isinstance(value, list) else []
+    return "，".join(labels.get(str(item), str(item)) for item in items) or "-"
+
+
+def _system_action_text(row: dict) -> str:
+    warnings = set(row.get("deviationWarnings") or [])
+    lane = str(row.get("decisionLane") or "").strip()
+    action = str(row.get("systemAction") or "").strip()
+    if "overweight_system" in warnings:
+        return "超系统上限"
+    if lane == "review":
+        return "待复核"
+    if lane == "blocked":
+        return "禁止追高"
+    if lane == "actionable":
+        return "可加仓"
+    if lane == "wait":
+        return "只观察"
+    if "观察" in action or "只" in action:
+        return "只观察"
+    return "未生成"
+
+
+def _system_reason_text(row: dict) -> str:
+    warnings = _warnings_text(row.get("deviationWarnings"))
+    if warnings != "-":
+        return warnings
+    reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
+    if reasons:
+        return "，".join(reasons[:2])
+    add = _percent_text(row.get("systemCurrentAdd"))
+    return "当前可加 " + add if add != "-" else "无系统提示"
+
+
+def _plan_status_text(row: dict) -> str:
+    if row.get("nearTrimPrice"):
+        return "接近减仓价"
+    current = _number(row.get("currentPrice"))
+    review = _number(row.get("reviewPrice"))
+    if current is not None and review is not None and current <= review:
+        return "触及复核线"
+    if any(_money_text(row.get(key)) != "-" for key in ("plannedSellPrice", "firstTrimPrice", "secondTrimPrice", "reviewPrice")):
+        return "已设置计划"
+    return "未设置计划"
+
+
+def _plan_main_text(row: dict) -> str:
+    return _plan_status_text(row)
+
+
+def _plan_sub_text(row: dict) -> str:
+    sell = _money_text(row.get("plannedSellPrice"))
+    first = _money_text(row.get("firstTrimPrice"))
+    review = _money_text(row.get("reviewPrice"))
+    if sell != "-":
+        return "卖出 " + sell
+    if first != "-":
+        return "减仓 " + first
+    if review != "-":
+        return "复核 " + review
+    return "计划未设置"
+
+
+def _row_status_text(row: dict) -> str:
+    alerts = _warnings_text(row.get("deviationWarnings"))
+    return alerts if alerts != "-" else _price_status_text(row.get("priceStatus"))
+
+
+def _decision_lane_text(value: object) -> str:
+    return {
+        "actionable": "可执行",
+        "review": "需复核",
+        "blocked": "阻断",
+        "wait": "等待",
+    }.get(str(value), "未生成")
+
+
+def _buy_zone_status_text(value: object) -> str:
+    return {
+        "fair_observation": "观察区",
+        "tranche_buy": "分批买区",
+        "heavy_buy": "重仓买区",
+        "below_heavy_buy": "低于重仓区",
+        "no_chase": "禁止追高",
+        "data_insufficient": "数据不足",
+        "invalid_zone": "买区异常",
+        "low_confidence_zone": "低置信买区",
+    }.get(str(value), "未生成")
+
+
+def _reason_text(value: object) -> str:
+    reasons = _translated_reasons(value)
+    return "，".join(reasons) if reasons else "-"
+
+
+def _translated_reasons(value: object) -> list[str]:
+    labels = {
+        "buy_zone": "买区阻断",
+        "data_confidence": "数据置信度",
+        "valuation_status": "估值状态",
+        "entry_rating": "入场评级",
+        "risk_rating": "风险评级",
+    }
+    items = value if isinstance(value, list) else []
+    return [labels.get(str(item), str(item)) for item in items]
+
+
+def _trim_prices_text(row: dict) -> str:
+    first = _money_text(row.get("firstTrimPrice"))
+    second = _money_text(row.get("secondTrimPrice"))
+    items = []
+    if first != "-":
+        items.append("第一减仓 " + first)
+    if second != "-":
+        items.append("第二减仓 " + second)
+    return " / ".join(items) if items else "未设置"
 
 
 def _input_value(value: object) -> str:
@@ -456,21 +856,27 @@ def _render_styles() -> None:
             min-width: 1120px;
             font-size: 0.78rem;
         }
+        .portfolio-table.compact {
+            min-width: 920px;
+            font-size: 0.76rem;
+        }
         .portfolio-table th {
-            padding: 0.58rem 0.62rem;
+            padding: 0.46rem 0.58rem;
             text-align: left;
             color: var(--zhx-muted);
             background: #F8FAFC;
             border-bottom: 1px solid var(--zhx-line);
-            font-size: 0.68rem;
+            font-size: 0.66rem;
             font-weight: 820;
-            text-transform: uppercase;
+            text-transform: none;
         }
         .portfolio-table td {
-            padding: 0.58rem 0.62rem;
+            height: 46px;
+            padding: 0.42rem 0.58rem;
             border-bottom: 1px solid var(--zhx-line);
             color: var(--zhx-text);
             white-space: nowrap;
+            vertical-align: middle;
         }
         .portfolio-table tr:last-child td {
             border-bottom: 0;
@@ -480,6 +886,80 @@ def _render_styles() -> None:
             max-width: 360px;
             white-space: normal;
             color: var(--zhx-muted);
+        }
+        .portfolio-cell {
+            display: grid;
+            gap: 0.16rem;
+            min-width: 0;
+            max-height: 34px;
+        }
+        .portfolio-cell b {
+            color: var(--zhx-text);
+            font-size: 0.8rem;
+            font-weight: 820;
+            line-height: 1.15;
+        }
+        .portfolio-cell small {
+            color: var(--zhx-muted);
+            font-size: 0.68rem;
+            line-height: 1.2;
+            max-width: 210px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .portfolio-view-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 24px;
+            padding: 0 0.55rem;
+            border: 1px solid var(--zhx-line);
+            border-radius: 6px;
+            color: var(--zhx-muted);
+            background: #FFFFFF;
+            font-size: 0.7rem;
+            font-weight: 760;
+        }
+        .portfolio-detail-panel {
+            margin: 0.65rem 0 1rem;
+            border: 1px solid var(--zhx-line);
+            border-radius: 8px;
+            background: #FFFFFF;
+        }
+        .portfolio-detail-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.62rem 0.78rem;
+            border-bottom: 1px solid var(--zhx-line);
+        }
+        .portfolio-detail-head strong {
+            color: var(--zhx-text);
+            font-size: 0.9rem;
+        }
+        .portfolio-detail-head span {
+            color: var(--zhx-muted);
+            font-size: 0.74rem;
+        }
+        .portfolio-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.42rem 0.85rem;
+            padding: 0.72rem 0.78rem;
+            background: #F8FAFC;
+            white-space: normal;
+        }
+        .portfolio-detail-grid span {
+            color: var(--zhx-muted);
+            font-size: 0.68rem;
+        }
+        .portfolio-detail-grid b {
+            color: var(--zhx-text);
+            font-size: 0.7rem;
+            font-weight: 720;
+            overflow-wrap: anywhere;
         }
         .portfolio-empty {
             margin: 0.45rem 0 0.5rem;

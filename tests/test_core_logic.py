@@ -4,6 +4,8 @@ import unittest
 import inspect
 import os
 import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -3526,6 +3528,74 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(view["summary"]["unrealizedPnlPct"], 20)
         self.assertEqual(view["rows"][0]["positionPct"], 12)
         self.assertEqual(view["rows"][0]["actionGroup"], "addable")
+        self.assertEqual(view["rows"][0]["priceStatus"], "provided")
+
+    def test_portfolio_view_model_prefers_quote_snapshot_price(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position("NOW", {"quantity": 10, "average_cost": 100})
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE quote_snapshots (
+                        ticker TEXT PRIMARY KEY,
+                        payload_json TEXT NOT NULL,
+                        fetched_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE price_history (
+                        ticker TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        close REAL,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (ticker, date)
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO quote_snapshots VALUES (?, ?, ?)",
+                    ("NOW", json.dumps({"current_price": 130}), "now"),
+                )
+                conn.execute(
+                    "INSERT INTO price_history VALUES (?, ?, ?, ?)",
+                    ("NOW", "2026-05-24", 120, "now"),
+                )
+                conn.commit()
+
+            view = build_portfolio_view_model(db_path)
+
+        self.assertEqual(view["rows"][0]["currentPrice"], 130)
+        self.assertEqual(view["rows"][0]["marketValue"], 1300)
+        self.assertEqual(view["rows"][0]["priceStatus"], "quote_snapshot")
+
+    def test_portfolio_view_model_falls_back_to_latest_history_close(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position("CRM", {"quantity": 5, "average_cost": 100})
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE price_history (
+                        ticker TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        close REAL,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (ticker, date)
+                    )
+                    """
+                )
+                conn.execute("INSERT INTO price_history VALUES (?, ?, ?, ?)", ("CRM", "2026-05-23", 190, "now"))
+                conn.execute("INSERT INTO price_history VALUES (?, ?, ?, ?)", ("CRM", "2026-05-24", 200, "now"))
+                conn.commit()
+
+            view = build_portfolio_view_model(db_path)
+
+        self.assertEqual(view["rows"][0]["currentPrice"], 200)
+        self.assertEqual(view["rows"][0]["marketValue"], 1000)
+        self.assertEqual(view["rows"][0]["priceStatus"], "price_history")
 
     def test_portfolio_view_model_flags_overweight(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -3544,8 +3614,92 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(view["summary"]["overweightCount"], 1)
         self.assertEqual(view["rows"][0]["actionGroup"], "overweight")
+        self.assertIn("overweight_personal", view["rows"][0]["deviationWarnings"])
         groups = {group["key"]: group for group in view["actionGroups"]}
         self.assertEqual(groups["overweight"]["symbols"], ["CRM"])
+
+    def test_portfolio_view_model_outputs_final_decision_system_reference(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position(
+                "NOW",
+                {"quantity": 10, "average_cost": 100, "target_position_pct": 20},
+            )
+            score = SimpleNamespace(
+                action=sorted(BUY_ACTIONS)[0],
+                valuationStatus="fair",
+                entryRating="A",
+                riskRating="low",
+                dataConfidence="high",
+                currentAddLimitPercent=10,
+                maxPortfolioWeightPercent=15,
+            )
+            zone = SimpleNamespace(currentZone="tranche_buy")
+            plan = SimpleNamespace(currentAddLimitPercent=6, maxPortfolioWeightPercent=20)
+
+            view = build_portfolio_view_model(
+                db_path,
+                {"NOW": 120},
+                {"NOW": {"score": score, "buy_zone": zone, "position_plan": plan}},
+            )
+
+        row = view["rows"][0]
+        self.assertEqual(row["systemAction"], sorted(BUY_ACTIONS)[0])
+        self.assertEqual(row["systemMaxPosition"], 20)
+        self.assertEqual(row["systemCurrentAdd"], 6)
+        self.assertEqual(row["buyZoneStatus"], "tranche_buy")
+        self.assertEqual(row["decisionLane"], "actionable")
+        self.assertEqual(row["blockReasons"], [])
+        self.assertEqual(row["reviewReasons"], [])
+
+    def test_portfolio_view_model_flags_system_overweight(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position("VST", {"quantity": 10, "average_cost": 100})
+            score = SimpleNamespace(
+                action=sorted(BUY_ACTIONS)[0],
+                valuationStatus="fair",
+                entryRating="A",
+                riskRating="low",
+                dataConfidence="high",
+                currentAddLimitPercent=5,
+                maxPortfolioWeightPercent=10,
+            )
+
+            view = build_portfolio_view_model(db_path, {"VST": 200}, {"VST": {"score": score}})
+
+        self.assertTrue(view["rows"][0]["overweightSystem"])
+        self.assertIn("overweight_system", view["rows"][0]["deviationWarnings"])
+        self.assertEqual(view["summary"]["overweightCount"], 1)
+
+    def test_portfolio_view_model_flags_held_position_when_system_not_addable(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position("HOOD", {"quantity": 10, "average_cost": 20})
+            score = SimpleNamespace(
+                action=sorted(BUY_ACTIONS)[0],
+                valuationStatus="fair",
+                entryRating="A",
+                riskRating="low",
+                dataConfidence="high",
+                currentAddLimitPercent=5,
+                maxPortfolioWeightPercent=15,
+            )
+            zone = SimpleNamespace(currentZone="no_chase")
+            plan = SimpleNamespace(currentAddLimitPercent=5, maxPortfolioWeightPercent=15)
+
+            view = build_portfolio_view_model(
+                db_path,
+                {"HOOD": 30},
+                {"HOOD": {"score": score, "buy_zone": zone, "position_plan": plan}},
+            )
+
+        row = view["rows"][0]
+        self.assertEqual(row["decisionLane"], "blocked")
+        self.assertIn("buy_zone", row["blockReasons"])
+        self.assertIn("system_not_addable", row["deviationWarnings"])
 
     def test_portfolio_view_model_flags_near_trim_price(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -3562,6 +3716,7 @@ class ScoringTests(unittest.TestCase):
             view = build_portfolio_view_model(db_path, {"ADBE": 191})
 
         self.assertTrue(view["rows"][0]["nearTrimPrice"])
+        self.assertIn("near_trim_price", view["rows"][0]["deviationWarnings"])
         self.assertEqual(view["rows"][0]["actionGroup"], "nearTrim")
         groups = {group["key"]: group for group in view["actionGroups"]}
         self.assertEqual(groups["nearTrim"]["symbols"], ["ADBE"])
@@ -3578,6 +3733,7 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(view["summary"]["needsReviewCount"], 1)
         self.assertTrue(view["rows"][0]["missingPrice"])
+        self.assertEqual(view["rows"][0]["priceStatus"], "missing")
         self.assertEqual(view["rows"][0]["marketValue"], None)
         self.assertEqual(view["rows"][0]["actionGroup"], "review")
 
