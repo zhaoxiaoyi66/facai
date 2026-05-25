@@ -86,7 +86,12 @@ from data.providers import (
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore, _debt_maturity_low_materiality
 from data.sec_client import SECClient, SEC_MAX_REQUESTS_PER_SECOND
 from data.sec_supplement import extract_sec_saas_metrics
-from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio import (
+    PortfolioPositionStore,
+    PortfolioSettingsStore,
+    calculate_portfolio_position,
+    calculate_portfolio_positions,
+)
 from data.stock_plan import StockPlanStore
 from position_plan_engine import generate_position_plan
 from review_autopilot import ReviewAutopilot, _human_remaining, auto_fill_capability, identify_missing_data_items
@@ -3238,6 +3243,106 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(plan["first_buy_price"], 420)
             self.assertEqual(position["notes"], "actual holding")
             self.assertEqual(position["quantity"], 3)
+
+    def test_portfolio_position_calculator_values_and_total_value_pct(self) -> None:
+        calculated = calculate_portfolio_position(
+            {"symbol": "now", "quantity": 10, "average_cost": 100},
+            125,
+            5000,
+        )
+
+        self.assertEqual(calculated["symbol"], "NOW")
+        self.assertEqual(calculated["marketValue"], 1250)
+        self.assertEqual(calculated["costBasis"], 1000)
+        self.assertEqual(calculated["unrealizedPnl"], 250)
+        self.assertEqual(calculated["unrealizedPnlPct"], 25)
+        self.assertEqual(calculated["positionPct"], 25)
+
+    def test_portfolio_positions_calculator_uses_settings_total_value(self) -> None:
+        positions = [{"symbol": "NOW", "quantity": 10, "average_cost": 100}]
+
+        calculated = calculate_portfolio_positions(
+            positions,
+            {"NOW": 125},
+            settings={"total_portfolio_value": 10000},
+        )
+
+        self.assertEqual(calculated[0]["positionPct"], 12.5)
+
+    def test_portfolio_positions_calculator_falls_back_to_market_value_total(self) -> None:
+        positions = [
+            {"symbol": "NOW", "quantity": 10, "average_cost": 100},
+            {"symbol": "CRM", "quantity": 5, "average_cost": 100},
+        ]
+
+        calculated = calculate_portfolio_positions(
+            positions,
+            {"NOW": 100, "CRM": 200},
+            settings={},
+        )
+
+        by_symbol = {row["symbol"]: row for row in calculated}
+        self.assertEqual(by_symbol["NOW"]["positionPct"], 50)
+        self.assertEqual(by_symbol["CRM"]["positionPct"], 50)
+
+    def test_portfolio_position_calculator_flags_overweight_limits(self) -> None:
+        calculated = calculate_portfolio_position(
+            {
+                "symbol": "NOW",
+                "quantity": 10,
+                "average_cost": 100,
+                "max_acceptable_position_pct": 15,
+            },
+            200,
+            10000,
+            {"systemMaxPosition": 10},
+        )
+
+        self.assertEqual(calculated["positionPct"], 20)
+        self.assertTrue(calculated["overweightSystem"])
+        self.assertTrue(calculated["overweightPersonal"])
+
+    def test_portfolio_position_calculator_flags_near_trim_and_review(self) -> None:
+        near_trim = calculate_portfolio_position(
+            {
+                "symbol": "NOW",
+                "quantity": 10,
+                "average_cost": 100,
+                "first_trim_price": 200,
+                "review_price": 90,
+            },
+            191,
+            5000,
+        )
+        review_price = calculate_portfolio_position(
+            {"symbol": "CRM", "quantity": 10, "average_cost": 100, "review_price": 90},
+            89,
+            5000,
+        )
+        system_review = calculate_portfolio_position(
+            {"symbol": "ADBE", "quantity": 10, "average_cost": 100},
+            120,
+            5000,
+            {"systemStatus": "blocked"},
+        )
+
+        self.assertTrue(near_trim["nearTrimPrice"])
+        self.assertFalse(near_trim["needsReview"])
+        self.assertTrue(review_price["needsReview"])
+        self.assertTrue(system_review["needsReview"])
+
+    def test_portfolio_position_calculator_missing_price_does_not_crash(self) -> None:
+        calculated = calculate_portfolio_position(
+            {"symbol": "NOW", "quantity": 10, "average_cost": 100},
+            None,
+            5000,
+        )
+
+        self.assertTrue(calculated["missingPrice"])
+        self.assertIsNone(calculated["marketValue"])
+        self.assertEqual(calculated["costBasis"], 1000)
+        self.assertIsNone(calculated["unrealizedPnl"])
+        self.assertIsNone(calculated["positionPct"])
 
     def test_buy_zone_engine_generates_system_zone_without_manual_override(self) -> None:
         zone = generate_buy_zone(

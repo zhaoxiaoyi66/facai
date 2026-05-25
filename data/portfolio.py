@@ -21,6 +21,7 @@ POSITION_NUMERIC_FIELDS = [
 ]
 
 SETTINGS_ID = "default"
+TRIM_PRICE_NEAR_PCT = 5.0
 
 
 class PortfolioPositionStore:
@@ -255,6 +256,74 @@ class PortfolioSettingsStore:
         return self.get_settings()
 
 
+def calculate_portfolio_positions(
+    positions: list[dict],
+    current_prices: dict[str, float | None],
+    settings: dict | None = None,
+    system_refs: dict[str, dict] | None = None,
+    trim_near_pct: float = TRIM_PRICE_NEAR_PCT,
+) -> list[dict]:
+    active_positions = [position for position in positions if position.get("is_active", True)]
+    market_values = {
+        _normalize_symbol(str(position.get("symbol") or "")): _market_value(position, current_prices)
+        for position in active_positions
+    }
+    denominator = _portfolio_denominator(settings, market_values)
+    return [
+        calculate_portfolio_position(
+            position,
+            current_prices.get(_normalize_symbol(str(position.get("symbol") or ""))),
+            denominator,
+            (system_refs or {}).get(_normalize_symbol(str(position.get("symbol") or "")), {}),
+            trim_near_pct=trim_near_pct,
+        )
+        for position in active_positions
+    ]
+
+
+def calculate_portfolio_position(
+    position: dict,
+    current_price: float | None,
+    portfolio_denominator: float | None,
+    system_ref: dict | None = None,
+    trim_near_pct: float = TRIM_PRICE_NEAR_PCT,
+) -> dict:
+    symbol = _normalize_symbol(str(position.get("symbol") or ""))
+    quantity = _to_non_negative_number(position.get("quantity"), "quantity", required=True) or 0.0
+    average_cost = _to_non_negative_number(position.get("average_cost"), "average_cost", required=True) or 0.0
+    price = _optional_non_negative_number(current_price, "current_price")
+    cost_basis = quantity * average_cost
+    market_value = quantity * price if price is not None else None
+    unrealized_pnl = market_value - cost_basis if market_value is not None else None
+    unrealized_pnl_pct = unrealized_pnl / cost_basis * 100 if unrealized_pnl is not None and cost_basis > 0 else None
+    position_pct = market_value / portfolio_denominator * 100 if market_value is not None and portfolio_denominator and portfolio_denominator > 0 else None
+    system_ref = system_ref or {}
+    system_max = _optional_non_negative_number(
+        system_ref.get("systemMaxPosition", system_ref.get("maxPortfolioWeightPercent")),
+        "systemMaxPosition",
+    )
+    personal_max = _optional_non_negative_number(position.get("max_acceptable_position_pct"), "max_acceptable_position_pct")
+    system_status = str(system_ref.get("systemStatus") or system_ref.get("decisionLane") or "").strip().lower()
+
+    return {
+        **position,
+        "symbol": symbol,
+        "currentPrice": price,
+        "marketValue": market_value,
+        "costBasis": cost_basis,
+        "unrealizedPnl": unrealized_pnl,
+        "unrealizedPnlPct": unrealized_pnl_pct,
+        "positionPct": position_pct,
+        "overweightSystem": _exceeds(position_pct, system_max),
+        "overweightPersonal": _exceeds(position_pct, personal_max),
+        "nearTrimPrice": _near_trim_price(price, position, trim_near_pct),
+        "needsReview": _needs_review(price, position, system_status),
+        "missingPrice": price is None,
+        "systemMaxPosition": system_max,
+        "systemStatus": system_status,
+    }
+
+
 def _clean_position(symbol: str, values: dict) -> dict:
     return {
         "symbol": _normalize_symbol(symbol),
@@ -290,6 +359,52 @@ def _to_non_negative_number(value, field: str, required: bool) -> float | None:
     if number < 0:
         raise ValueError(f"{field} cannot be negative")
     return number
+
+
+def _optional_non_negative_number(value, field: str) -> float | None:
+    return _to_non_negative_number(value, field, required=False)
+
+
+def _market_value(position: dict, current_prices: dict[str, float | None]) -> float:
+    symbol = _normalize_symbol(str(position.get("symbol") or ""))
+    price = _optional_non_negative_number(current_prices.get(symbol), "current_price")
+    if price is None:
+        return 0.0
+    quantity = _to_non_negative_number(position.get("quantity"), "quantity", required=True) or 0.0
+    return quantity * price
+
+
+def _portfolio_denominator(settings: dict | None, market_values: dict[str, float]) -> float | None:
+    total_value = _optional_non_negative_number((settings or {}).get("total_portfolio_value"), "total_portfolio_value")
+    if total_value is not None and total_value > 0:
+        return total_value
+    total_market_value = sum(market_values.values())
+    return total_market_value if total_market_value > 0 else None
+
+
+def _exceeds(position_pct: float | None, limit: float | None) -> bool:
+    return position_pct is not None and limit is not None and position_pct > limit
+
+
+def _near_trim_price(price: float | None, position: dict, trim_near_pct: float) -> bool:
+    if price is None:
+        return False
+    targets = [
+        _optional_non_negative_number(position.get("first_trim_price"), "first_trim_price"),
+        _optional_non_negative_number(position.get("second_trim_price"), "second_trim_price"),
+        _optional_non_negative_number(position.get("planned_sell_price"), "planned_sell_price"),
+    ]
+    for target in targets:
+        if target is not None and target > 0 and price >= target * (1 - trim_near_pct / 100):
+            return True
+    return False
+
+
+def _needs_review(price: float | None, position: dict, system_status: str) -> bool:
+    if system_status in {"review", "blocked"}:
+        return True
+    review_price = _optional_non_negative_number(position.get("review_price"), "review_price")
+    return price is not None and review_price is not None and price <= review_price
 
 
 def _clean_text(value) -> str:
