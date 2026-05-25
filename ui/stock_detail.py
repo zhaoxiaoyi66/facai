@@ -15,6 +15,7 @@ from buy_zone_engine import (
     generate_buy_zone,
     has_buy_zone_override,
 )
+from data.decision_log import save_decision_snapshot_from_bundle
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
 from data.portfolio_view_model import build_portfolio_view_model
@@ -58,11 +59,7 @@ def render() -> None:
             st.session_state[refresh_token_key] = datetime.now().isoformat()
             st.session_state["selected_detail_symbol"] = ticker
             st.rerun()
-    with control_cols[1]:
-        if st.button("返回总览", width="stretch"):
-            st.session_state["pending_app_page"] = "总览仪表盘"
-            st.query_params["page"] = "dashboard"
-            st.rerun()
+    record_signal_slot = control_cols[1].empty()
 
     with st.spinner(f"正在加载 {ticker} 详情..."):
         snapshot, history, technicals, score, refreshed_at = _load_detail(ticker, st.session_state.get(refresh_token_key))
@@ -76,6 +73,8 @@ def render() -> None:
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
     final_decision = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
 
+    with record_signal_slot.container():
+        _render_record_signal_button(ticker, snapshot, technicals, final_decision)
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, final_decision)
     _render_current_position_summary(_portfolio_row_for_ticker(ticker))
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
@@ -160,6 +159,13 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
         "</section>",
         unsafe_allow_html=True,
     )
+
+
+def _render_record_signal_button(ticker: str, snapshot: dict, technicals: dict, final_decision) -> None:
+    if st.button("记录当前信号", key=f"stock-detail-record-signal-{ticker}", width="stretch"):
+        price = _first_number(technicals.get("price"), snapshot.get("current_price"), snapshot.get("price"))
+        save_decision_snapshot_from_bundle(ticker, price, final_decision, "stock_detail")
+        st.success("已记录系统信号。")
 
 
 def _portfolio_row_for_ticker(ticker: str) -> dict | None:
@@ -268,6 +274,14 @@ def _optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_number(*values) -> float | None:
+    for value in values:
+        number = _optional_float(value)
+        if number is not None:
+            return number
+    return None
 
 
 def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict) -> None:

@@ -81,6 +81,7 @@ from data.decision_log import (
     build_decision_outcomes_from_price_history,
     build_decision_signal_stats,
     build_decision_snapshot_from_bundle,
+    save_decision_snapshot_from_bundle,
 )
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
 from data.metric_dictionary import metric_definition_by_key
@@ -3470,6 +3471,31 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(saved["block_reasons"], ["no_chase"])
             self.assertEqual(store.list_snapshots("now")[0]["id"], saved["id"])
             self.assertEqual(store.list_snapshots("CRM"), [])
+
+    def test_save_decision_snapshot_from_bundle_uses_existing_builder(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            saved = save_decision_snapshot_from_bundle(
+                "now",
+                520,
+                {
+                    "finalAction": "可小仓分批",
+                    "decisionLane": "actionable",
+                    "currentAddLimitPercent": 3,
+                    "maxPortfolioWeightPercent": 10,
+                    "dataConfidence": "high",
+                    "displayCategory": "可执行",
+                    "blockReasons": [],
+                    "reviewReasons": [],
+                },
+                "dashboard",
+                db_path,
+            )
+
+            self.assertEqual(saved["symbol"], "NOW")
+            self.assertEqual(saved["price"], 520)
+            self.assertEqual(saved["final_action"], "可小仓分批")
+            self.assertEqual(saved["decision_lane"], "actionable")
 
     def test_trade_journal_store_saves_entries_with_snapshot_link(self) -> None:
         with TemporaryDirectory() as tmpdir:

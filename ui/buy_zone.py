@@ -17,6 +17,7 @@ from buy_zone_engine import (
     generate_buy_zone,
     has_buy_zone_override,
 )
+from data.decision_log import save_decision_snapshot_from_bundle
 from data.providers import get_market_data_provider
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
@@ -90,6 +91,8 @@ def render() -> None:
         rows = _load_buy_zone_rows(tuple(tickers))
         rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
     load_notice.empty()
+    _handle_record_signal_query(rows, "buy_zone")
+    _render_record_signal_notice("buy_zone_record_signal_notice")
 
     _render_summary(rows)
     active_filter = _render_execution_toolbar(rows)
@@ -371,10 +374,46 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
     return rows
 
 
+def _handle_record_signal_query(rows: list[dict], page_key: str) -> None:
+    symbol = str(st.query_params.get("recordSignal", "")).strip().upper()
+    if not symbol:
+        return
+    row = next((item for item in rows if str(item.get("symbol") or "").upper() == symbol), None)
+    if row:
+        save_decision_snapshot_from_bundle(symbol, row.get("currentPrice"), _decision_bundle_from_row(row), page_key)
+        st.session_state["buy_zone_record_signal_notice"] = "已记录系统信号。"
+    else:
+        st.session_state["buy_zone_record_signal_notice"] = "未找到要记录的系统信号。"
+    if "recordSignal" in st.query_params:
+        st.query_params.pop("recordSignal")
+    st.rerun()
+
+
+def _render_record_signal_notice(key: str) -> None:
+    message = st.session_state.pop(key, "")
+    if message == "已记录系统信号。":
+        st.success(message)
+    elif message:
+        st.warning(message)
+
+
+def _decision_bundle_from_row(row: dict) -> dict:
+    return {
+        "finalAction": row.get("finalAction"),
+        "decisionLane": row.get("decisionLane"),
+        "currentAddLimitPercent": row.get("currentAddLimitPercent"),
+        "maxPortfolioWeightPercent": row.get("maxPortfolioWeightPercent"),
+        "dataConfidence": row.get("dataConfidence"),
+        "displayCategory": row.get("displayCategory"),
+        "blockReasons": row.get("decisionBlockReasons") or [],
+        "reviewReasons": row.get("decisionReviewReasons") or [],
+    }
+
+
 def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_store: StockPlanStore) -> None:
     header = """
     <div class="buy-zone-grid buy-zone-grid-head">
-      <span>股票</span><span>当前动作</span><span>触发条件</span><span>建议仓位</span><span>置信度</span><span>查看</span>
+      <span>股票</span><span>当前动作</span><span>触发条件</span><span>建议仓位</span><span>置信度</span><span>操作</span>
     </div>
     """
     body = (
@@ -413,7 +452,10 @@ def _buy_zone_row_html(row: dict) -> str:
         f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
         f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
         f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
+        '<div class="buy-zone-row-actions">'
         f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}"><span>查看</span><i>›</i></a>'
+        f'<a class="buy-zone-record-link" href="?page=buy-zone&recordSignal={escape(symbol, quote=True)}" target="_self">记录</a>'
+        "</div>"
         "</div>"
     )
 
@@ -1018,11 +1060,11 @@ def _render_styles() -> None:
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 104px minmax(178px, 1fr) minmax(214px, 1.1fr) 120px 70px 68px;
+            grid-template-columns: 104px minmax(178px, 1fr) minmax(214px, 1.1fr) 120px 70px 132px;
             align-items: center;
             gap: 0.5rem;
             min-height: 42px;
-            min-width: 800px;
+            min-width: 880px;
             width: 100%;
             padding: 0 12px;
             font-size: 12.5px;
@@ -1173,32 +1215,63 @@ def _render_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            gap:0.18rem;
-            min-width:48px;
-            height:26px;
-            text-decoration:none;
-            color:#475569;
-            font-size:12px;
-            font-weight:600;
-            padding:0 0.44rem;
-            border-radius:6px;
-            border:1px solid rgba(148, 163, 184, 0.18);
-            background:#FFFFFF;
+            min-width:38px;
+            height:22px;
+            text-decoration:none !important;
+            color:#1E3A5F;
+            font-size:11px;
+            font-weight:720;
+            padding:0 0.42rem;
+            border-radius:4px;
+            border:1px solid transparent;
+            background:rgba(255, 255, 255, 0.72);
             white-space:nowrap;
         }
         .buy-zone-detail-link i {
-            color:#94A3B8;
-            font-style:normal;
-            font-size:14px;
-            line-height:1;
+            display:none;
         }
         .buy-zone-detail-link:hover {
             color:#0F172A;
-            border-color:rgba(100, 116, 139, 0.28);
-            background:#F8FAFC;
+            border-color:rgba(15, 23, 42, 0.08);
+            background:#FFFFFF;
+            text-decoration:none !important;
         }
         .buy-zone-detail-link:hover i {
             color:#475569;
+        }
+        .buy-zone-row-actions {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:0.04rem;
+            width:max-content;
+            padding:0.08rem;
+            border:1px solid rgba(15, 23, 42, 0.06);
+            border-radius:6px;
+            background:#F6F8FB;
+            white-space:nowrap;
+            box-shadow:none;
+        }
+        .buy-zone-record-link {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            height:22px;
+            padding:0 0.42rem;
+            border-radius:4px;
+            border:1px solid transparent;
+            background:transparent;
+            color:#64748B;
+            font-size:11px;
+            font-weight:680;
+            text-decoration:none !important;
+            white-space:nowrap;
+        }
+        .buy-zone-record-link:hover {
+            color:#334155;
+            border-color:rgba(15, 23, 42, 0.08);
+            background:#FFFFFF;
+            text-decoration:none !important;
         }
         .buy-zone-empty {
             display:flex;
@@ -1350,10 +1423,10 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 100px minmax(166px, 1fr) minmax(205px, 1.08fr) 116px 66px 64px;
+                grid-template-columns: 100px minmax(166px, 1fr) minmax(205px, 1.08fr) 116px 66px 128px;
                 font-size:12px;
                 gap:0.46rem;
-                min-width:770px;
+                min-width:860px;
             }
         }
         </style>
@@ -1596,7 +1669,7 @@ def _current_add_text(row: dict) -> tuple[str, str]:
     if number is not None and number > 0:
         return f"≤{number:.0f}%", "green"
     if _has_final_decision(row) and number is not None and number <= 0:
-        return "0%", "gray"
+        return "不新增", "gray"
 
     status = _execution_status(row)
     action = _row_action(row)

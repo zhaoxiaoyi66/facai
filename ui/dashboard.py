@@ -8,6 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from buy_zone_engine import generate_buy_zone
+from data.decision_log import save_decision_snapshot_from_bundle
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
@@ -169,6 +170,8 @@ def render() -> None:
         st.warning("还没有加载到仪表盘数据。请检查观察名单或数据连接。")
         return
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+    _handle_record_signal_query(table)
+    _render_record_signal_notice()
 
     _render_market_strip(table)
     _render_summary_sections(table)
@@ -845,6 +848,56 @@ def _render_stock_detail_drawer(table: pd.DataFrame) -> None:
     st.caption("右侧详情面板只做快速查看；数据补全和复核操作请进入专门页面执行，避免刷新总览。")
 
 
+def _handle_record_signal_query(table: pd.DataFrame) -> None:
+    symbol = str(st.query_params.get("recordSignal", "")).strip().upper()
+    if not symbol:
+        return
+    matches = table[table["symbol"].astype(str).str.upper() == symbol]
+    if not matches.empty:
+        row = matches.iloc[0]
+        save_decision_snapshot_from_bundle(
+            symbol,
+            _signal_price_from_dashboard_row(row),
+            _decision_bundle_from_row(row),
+            "dashboard",
+        )
+        st.session_state["dashboard_record_signal_notice"] = "已记录系统信号。"
+    else:
+        st.session_state["dashboard_record_signal_notice"] = "未找到要记录的系统信号。"
+    if "recordSignal" in st.query_params:
+        st.query_params.pop("recordSignal")
+    st.rerun()
+
+
+def _render_record_signal_notice() -> None:
+    message = st.session_state.pop("dashboard_record_signal_notice", "")
+    if message == "已记录系统信号。":
+        st.success(message)
+    elif message:
+        st.warning(message)
+
+
+def _signal_price_from_dashboard_row(row: pd.Series) -> float | None:
+    technicals = row.get("rawTechnicals")
+    snapshot = row.get("rawSnapshot")
+    technicals = technicals if isinstance(technicals, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    return _first_present(technicals.get("price"), snapshot.get("current_price"), snapshot.get("price"))
+
+
+def _decision_bundle_from_row(row: pd.Series) -> dict:
+    return {
+        "finalAction": row.get("finalAction"),
+        "decisionLane": row.get("decisionLane"),
+        "currentAddLimitPercent": row.get("currentAddLimitPercent"),
+        "maxPortfolioWeightPercent": row.get("maxPortfolioWeightPercent"),
+        "dataConfidence": row.get("dataConfidence"),
+        "displayCategory": row.get("displayCategory"),
+        "blockReasons": row.get("decisionBlockReasons") or [],
+        "reviewReasons": row.get("decisionReviewReasons") or [],
+    }
+
+
 def _drawer_html(row: pd.Series) -> str:
     summary = row.get("humanReadableSummary")
     if not isinstance(summary, dict):
@@ -894,6 +947,7 @@ def _drawer_html(row: pd.Series) -> str:
         f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
         '</div>'
         f'<div class="drawer-badges">{"".join(badges)}</div>'
+        f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
         f'{_drawer_decision_summary_html(row)}'
         f'{_drawer_position_guidance_html(row)}'
         f'<div class="drawer-section">{"".join(explanation_cards)}</div>'
@@ -3483,6 +3537,29 @@ def _render_dashboard_styles() -> None:
             flex-wrap: wrap;
             gap: 0.4rem;
             margin-bottom: 0.85rem;
+        }
+        .drawer-signal-actions {
+            display:flex;
+            justify-content:flex-end;
+            margin:-0.35rem 0 0.72rem;
+        }
+        .drawer-signal-actions a {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            height:30px;
+            padding:0 0.72rem;
+            border:1px solid rgba(15, 23, 42, 0.10);
+            border-radius:7px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:0.74rem;
+            font-weight:760;
+            text-decoration:none !important;
+        }
+        .drawer-signal-actions a:hover {
+            background:#F8FAFC;
+            color:#0F172A;
         }
         .drawer-decision-card {
             margin: 0.78rem 0;

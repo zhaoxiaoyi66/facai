@@ -66,6 +66,17 @@ def build_decision_snapshot_from_bundle(
     }
 
 
+def save_decision_snapshot_from_bundle(
+    symbol: str,
+    price,
+    final_decision_bundle,
+    source_page: str,
+    path: Path = CACHE_PATH,
+) -> dict:
+    snapshot = build_decision_snapshot_from_bundle(symbol, price, final_decision_bundle, source_page)
+    return DecisionLogStore(path).save_snapshot(symbol, snapshot)
+
+
 class DecisionLogStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
         self.path = path
