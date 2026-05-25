@@ -73,6 +73,8 @@ from data.fmp_cache import CACHE_TTL_SECONDS, ttl_bucket_for_endpoint
 from data.fmp_queue import FMP_RATE_LIMIT
 from data.fundamentals import FundamentalCache
 from data.decision_log import (
+    DECISION_ERROR_TAGS,
+    DecisionErrorTagStore,
     DecisionLogStore,
     DecisionOutcomeStore,
     TradeJournalStore,
@@ -3695,6 +3697,67 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(one_day["actionable"]["sampleCount"], 0)
             self.assertEqual(one_day["actionable"]["missingCount"], 1)
             self.assertEqual(one_day["blocked"]["missingCount"], 1)
+
+    def test_decision_error_tag_store_saves_updates_and_lists_by_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add"},
+            )
+            store = DecisionErrorTagStore(db_path)
+
+            saved = store.save_tag(snapshot["id"], "valuation_too_high", "paid too much")
+            updated = store.save_tag(snapshot["id"], "valuation_too_high", "multiple expanded")
+            store.save_tag(snapshot["id"], "low_confidence_data")
+
+            tags = store.list_tags_for_snapshot(snapshot["id"])
+            self.assertEqual(saved["tag"], "valuation_too_high")
+            self.assertEqual(updated["notes"], "multiple expanded")
+            self.assertEqual([tag["tag"] for tag in tags], ["low_confidence_data", "valuation_too_high"])
+            self.assertEqual(store.get_tag(snapshot["id"], "valuation_too_high")["notes"], "multiple expanded")
+
+    def test_decision_error_tag_store_lists_by_symbol(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            now_snapshot = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add"},
+            )
+            crm_snapshot = decision_store.save_snapshot(
+                "CRM",
+                {"decision_date": "2026-05-26", "price": 200, "final_action": "wait"},
+            )
+            store = DecisionErrorTagStore(db_path)
+
+            store.save_tag(now_snapshot["id"], "technical_breakdown", "lost key level")
+            store.save_tag(crm_snapshot["id"], "macro_shock", "rates shock")
+
+            now_tags = store.list_tags_for_symbol("now")
+            self.assertEqual(len(now_tags), 1)
+            self.assertEqual(now_tags[0]["symbol"], "NOW")
+            self.assertEqual(now_tags[0]["tag"], "technical_breakdown")
+            self.assertEqual(now_tags[0]["decision_date"], "2026-05-26")
+
+    def test_decision_error_tag_store_deletes_and_validates_tags(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "HOOD",
+                {"decision_date": "2026-05-26", "price": 80, "final_action": "wait"},
+            )
+            store = DecisionErrorTagStore(db_path)
+
+            store.save_tag(snapshot["id"], "ignored_system_warning", "bought anyway")
+            deleted = store.delete_tag(snapshot["id"], "ignored_system_warning")
+
+            self.assertTrue(deleted)
+            self.assertFalse(store.delete_tag(snapshot["id"], "ignored_system_warning"))
+            self.assertEqual(store.list_tags_for_snapshot(snapshot["id"]), [])
+            self.assertIn("macro_shock", DECISION_ERROR_TAGS)
+            with self.assertRaises(ValueError):
+                store.save_tag(snapshot["id"], "not_a_real_tag")
 
     def test_portfolio_position_store_crud_and_active_filter(self) -> None:
         with TemporaryDirectory() as tmpdir:

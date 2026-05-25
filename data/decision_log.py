@@ -14,6 +14,16 @@ from data.prices import CACHE_PATH
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
 OUTCOME_HORIZONS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
+DECISION_ERROR_TAGS = {
+    "valuation_too_high",
+    "low_confidence_data",
+    "pre_earnings_misread",
+    "technical_breakdown",
+    "macro_shock",
+    "thesis_broken",
+    "position_too_large",
+    "ignored_system_warning",
+}
 
 
 def build_decision_snapshot_from_bundle(
@@ -419,6 +429,143 @@ class DecisionOutcomeStore:
         return [_row_to_dict(columns, row) for row in rows]
 
 
+class DecisionErrorTagStore:
+    def __init__(self, path: Path = CACHE_PATH) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        DecisionLogStore(path)
+        self._ensure_schema()
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_schema(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS decision_error_tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_snapshot_id INTEGER NOT NULL,
+                    tag TEXT NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(decision_snapshot_id, tag),
+                    FOREIGN KEY(decision_snapshot_id) REFERENCES decision_snapshots(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_decision_error_tags_snapshot
+                ON decision_error_tags(decision_snapshot_id)
+                """
+            )
+
+    def save_tag(self, decision_snapshot_id: int, tag: str, notes: str | None = None) -> dict:
+        cleaned = _clean_error_tag(decision_snapshot_id, tag, notes)
+        now = _now()
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT created_at
+                FROM decision_error_tags
+                WHERE decision_snapshot_id = ?
+                  AND tag = ?
+                """,
+                (cleaned["decision_snapshot_id"], cleaned["tag"]),
+            ).fetchone()
+            created_at = existing[0] if existing and existing[0] else now
+            conn.execute(
+                """
+                INSERT INTO decision_error_tags (
+                    decision_snapshot_id,
+                    tag,
+                    notes,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(decision_snapshot_id, tag) DO UPDATE SET
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cleaned["decision_snapshot_id"],
+                    cleaned["tag"],
+                    cleaned["notes"],
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_tag(cleaned["decision_snapshot_id"], cleaned["tag"]) or cleaned
+
+    def get_tag(self, decision_snapshot_id: int, tag: str) -> dict | None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_error_tags
+                WHERE decision_snapshot_id = ?
+                  AND tag = ?
+                """,
+                (_required_int(decision_snapshot_id, "decision_snapshot_id"), _clean_error_tag_name(tag)),
+            )
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_dict(columns, row) if row else None
+
+    def list_tags_for_snapshot(self, decision_snapshot_id: int) -> list[dict]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_error_tags
+                WHERE decision_snapshot_id = ?
+                ORDER BY tag ASC
+                """,
+                (_required_int(decision_snapshot_id, "decision_snapshot_id"),),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def list_tags_for_symbol(self, symbol: str) -> list[dict]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT tags.*, snapshots.symbol, snapshots.decision_date
+                FROM decision_error_tags AS tags
+                JOIN decision_snapshots AS snapshots
+                  ON snapshots.id = tags.decision_snapshot_id
+                WHERE snapshots.symbol = ?
+                ORDER BY snapshots.decision_date DESC, tags.tag ASC
+                """,
+                (_normalize_symbol(symbol),),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def delete_tag(self, decision_snapshot_id: int, tag: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM decision_error_tags
+                WHERE decision_snapshot_id = ?
+                  AND tag = ?
+                """,
+                (_required_int(decision_snapshot_id, "decision_snapshot_id"), _clean_error_tag_name(tag)),
+            )
+        return cursor.rowcount > 0
+
+
 def build_decision_outcomes_from_price_history(snapshot: dict, path: Path = CACHE_PATH) -> list[dict]:
     return [_build_outcome_for_horizon(snapshot, horizon, days, path) for horizon, days in OUTCOME_HORIZONS.items()]
 
@@ -491,6 +638,21 @@ def _clean_decision_outcome(decision_snapshot_id: int, horizon: str, values: dic
         "status": _clean_outcome_status(values.get("status")),
         "created_at": _now(),
     }
+
+
+def _clean_error_tag(decision_snapshot_id: int, tag: str, notes: str | None) -> dict:
+    return {
+        "decision_snapshot_id": _required_int(decision_snapshot_id, "decision_snapshot_id"),
+        "tag": _clean_error_tag_name(tag),
+        "notes": _clean_text(notes),
+    }
+
+
+def _clean_error_tag_name(value: str) -> str:
+    tag = str(value or "").strip().lower()
+    if tag not in DECISION_ERROR_TAGS:
+        raise ValueError("tag is invalid")
+    return tag
 
 
 def _build_outcome_for_horizon(snapshot: dict, horizon: str, days: int, path: Path) -> dict:
