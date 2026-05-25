@@ -8,6 +8,7 @@ import streamlit as st
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
+    DecisionOutcomeStore,
     TradeJournalStore,
     build_decision_signal_stats,
     refresh_decision_outcomes,
@@ -67,8 +68,10 @@ def render() -> None:
 
     store = TradeJournalStore()
     decision_store = DecisionLogStore()
+    outcome_store = DecisionOutcomeStore()
     error_tag_store = DecisionErrorTagStore()
     _render_notice()
+    st.markdown('<div class="trade-workbench-section">交易记录</div>', unsafe_allow_html=True)
     toolbar_cols = st.columns([3.8, 1])
     toolbar_cols[0].markdown(
         '<div class="trade-journal-toolbar-note">执行优先，日志用于复盘，不做收益统计。</div>',
@@ -82,7 +85,7 @@ def render() -> None:
     entries = _load_entries(store, symbols)
     _render_summary(entries)
     _render_entries(symbols, entries)
-    _render_signal_replay(decision_store, error_tag_store)
+    _render_signal_replay(decision_store, outcome_store, error_tag_store)
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -217,7 +220,12 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
     )
 
 
-def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
+def _render_signal_replay(
+    decision_store: DecisionLogStore,
+    outcome_store: DecisionOutcomeStore,
+    error_tag_store: DecisionErrorTagStore,
+) -> None:
+    st.markdown('<div class="trade-workbench-section replay">系统信号复盘</div>', unsafe_allow_html=True)
     render_section_title("系统信号复盘", "按历史系统信号和后续表现聚合，不做交易收益统计。")
     _render_refresh_outcomes_toolbar()
     stats = build_decision_signal_stats()
@@ -227,32 +235,36 @@ def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: Dec
     selected = st.radio("复盘周期", horizons, horizontal=True, key="trade-journal-signal-horizon")
     horizon_stats = (stats.get("byHorizon") or {}).get(selected, {})
     summary = horizon_stats.get("summary") or {}
-    if int(summary.get("totalCount") or 0) <= 0:
+    has_complete_samples = int(summary.get("sampleCount") or 0) > 0
+    if not has_complete_samples:
         st.markdown(
             (
                 '<div class="trade-journal-empty signal-empty">'
-                "<strong>可先记录系统信号，再刷新复盘结果。</strong>"
-                "<span>有系统信号快照和后续表现后，这里会自动聚合不同周期的系统表现。</span>"
+                "<strong>当前周期暂无完整复盘样本，刷新 outcome 后再查看统计。</strong>"
+                "<span>可先记录系统信号，再刷新复盘结果。</span>"
                 "</div>"
             ),
             unsafe_allow_html=True,
         )
     else:
         _render_signal_summary(summary)
-        table_cols = st.columns(2)
-        with table_cols[0]:
-            st.markdown("##### 按 finalAction 统计")
-            st.markdown(
-                _stats_table_html(horizon_stats.get("byFinalAction") or [], FINAL_ACTION_LABELS),
-                unsafe_allow_html=True,
-            )
-        with table_cols[1]:
-            st.markdown("##### 按 decisionLane 统计")
-            st.markdown(
-                _stats_table_html(horizon_stats.get("byDecisionLane") or [], LANE_LABELS),
-                unsafe_allow_html=True,
-            )
-    _render_error_tag_management(decision_store, error_tag_store)
+        with st.expander("查看统计明细", expanded=False):
+            final_action_rows = _complete_stat_rows(horizon_stats.get("byFinalAction") or [])
+            decision_lane_rows = _complete_stat_rows(horizon_stats.get("byDecisionLane") or [])
+            table_cols = st.columns(2)
+            with table_cols[0]:
+                st.markdown("##### 按系统动作统计")
+                if final_action_rows:
+                    st.markdown(_stats_table_html(final_action_rows, FINAL_ACTION_LABELS), unsafe_allow_html=True)
+                else:
+                    st.caption("暂无系统动作明细。")
+            with table_cols[1]:
+                st.markdown("##### 按决策通道统计")
+                if decision_lane_rows:
+                    st.markdown(_stats_table_html(decision_lane_rows, LANE_LABELS), unsafe_allow_html=True)
+                else:
+                    st.caption("暂无决策通道明细。")
+    _render_error_tag_management(decision_store, outcome_store, error_tag_store, selected)
 
 
 def _render_refresh_outcomes_toolbar() -> None:
@@ -271,9 +283,9 @@ def _render_refresh_outcomes_toolbar() -> None:
 
 def _render_refresh_outcome_result(summary: dict) -> None:
     items = [
-        ("刷新 snapshot 数", _int_text(summary.get("snapshotCount"))),
-        ("生成/更新 outcome 数", _int_text(summary.get("outcomeCount"))),
-        ("missing 数", _int_text(summary.get("missingCount"))),
+        ("刷新信号数", _int_text(summary.get("snapshotCount"))),
+        ("生成/更新复盘数", _int_text(summary.get("outcomeCount"))),
+        ("缺失数", _int_text(summary.get("missingCount"))),
     ]
     html = "".join(
         (
@@ -287,7 +299,12 @@ def _render_refresh_outcome_result(summary: dict) -> None:
     st.markdown(f'<div class="trade-refresh-result">{html}</div>', unsafe_allow_html=True)
 
 
-def _render_error_tag_management(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
+def _render_error_tag_management(
+    decision_store: DecisionLogStore,
+    outcome_store: DecisionOutcomeStore,
+    error_tag_store: DecisionErrorTagStore,
+    horizon: str,
+) -> None:
     st.markdown('<div class="trade-journal-subsection">错误标签摘要</div>', unsafe_allow_html=True)
     counts = error_tag_store.tag_counts()
     recent = error_tag_store.recent_tags(limit=5)
@@ -306,13 +323,19 @@ def _render_error_tag_management(decision_store: DecisionLogStore, error_tag_sto
             unsafe_allow_html=True,
         )
         return
-    _render_snapshot_rows(snapshots, error_tag_store)
+    _render_snapshot_rows(snapshots, outcome_store, error_tag_store, horizon)
     selected_snapshot = _selected_snapshot(snapshots)
     if selected_snapshot:
         _render_error_tag_editor(selected_snapshot, error_tag_store)
 
 
 def _render_error_tag_summary(counts: list[dict], recent: list[dict]) -> None:
+    if not counts and not recent:
+        st.markdown(
+            '<div class="trade-error-compact-empty">暂无错误标签。标记后会汇总各标签数量和最近案例。</div>',
+            unsafe_allow_html=True,
+        )
+        return
     left, right = st.columns([1, 1.45])
     with left:
         if counts:
@@ -349,19 +372,27 @@ def _recent_error_case_html(row: dict) -> str:
     )
 
 
-def _render_snapshot_rows(snapshots: list[dict], error_tag_store: DecisionErrorTagStore) -> None:
+def _render_snapshot_rows(
+    snapshots: list[dict],
+    outcome_store: DecisionOutcomeStore,
+    error_tag_store: DecisionErrorTagStore,
+    horizon: str,
+) -> None:
+    st.markdown(
+        '<div class="trade-snapshot-list-head"><span>股票</span><span>日期</span><span>系统动作</span><span>周期状态</span><span>错误标签</span><span>操作</span></div>',
+        unsafe_allow_html=True,
+    )
     for snapshot in snapshots:
         snapshot_id = int(snapshot.get("id") or 0)
         tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
-        cols = st.columns([0.9, 0.8, 1.2, 1, 1.5, 0.75])
+        outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
+        cols = st.columns([0.8, 0.9, 1.2, 0.9, 1.35, 0.8])
         cols[0].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b>'
-            f'<span>{escape(_text(snapshot.get("decision_date")))}</span></div>',
+            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b></div>',
             unsafe_allow_html=True,
         )
         cols[1].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_money_text(snapshot.get("price")))}</b>'
-            f'<span>信号价</span></div>',
+            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("decision_date")))}</b></div>',
             unsafe_allow_html=True,
         )
         cols[2].markdown(
@@ -370,8 +401,8 @@ def _render_snapshot_rows(snapshots: list[dict], error_tag_store: DecisionErrorT
             unsafe_allow_html=True,
         )
         cols[3].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_percent_or_dash(snapshot.get("current_add_pct")))}</b>'
-            f'<span>可加仓</span></div>',
+            f'<div class="trade-snapshot-cell"><b>{escape(_outcome_status_text(outcome))}</b>'
+            f'<span>{escape(horizon)}</span></div>',
             unsafe_allow_html=True,
         )
         cols[4].markdown(
@@ -434,18 +465,19 @@ def _render_error_tag_editor(snapshot: dict, error_tag_store: DecisionErrorTagSt
                 st.session_state["trade_journal_notice"] = ("error", "请选择有效的错误标签。")
                 st.rerun()
             st.session_state.pop("trade_error_edit_tag", None)
+            st.session_state.pop("trade_error_snapshot_id", None)
             st.session_state["trade_journal_notice"] = ("success", "错误标签已保存。")
             st.rerun()
 
 
 def _render_signal_summary(summary: dict) -> None:
     items = [
-        ("样本数", _int_text(summary.get("sampleCount")), "COMPLETE"),
-        ("胜率", _percent_or_dash(summary.get("winRate")), "WIN RATE"),
-        ("平均收益", _percent_or_dash(summary.get("averageReturnPct")), "AVG RETURN"),
-        ("中位数收益", _percent_or_dash(summary.get("medianReturnPct")), "MEDIAN"),
-        ("平均最大回撤", _percent_or_dash(summary.get("averageMaxDrawdownPct")), "DRAWDOWN"),
-        ("缺失样本数", _int_text(summary.get("missingCount")), "MISSING"),
+        ("样本数", _int_text(summary.get("sampleCount")), "已完成"),
+        ("胜率", _percent_or_dash(summary.get("winRate")), "盈利占比"),
+        ("平均收益", _percent_or_dash(summary.get("averageReturnPct")), "平均"),
+        ("中位数收益", _percent_or_dash(summary.get("medianReturnPct")), "中位数"),
+        ("平均最大回撤", _percent_or_dash(summary.get("averageMaxDrawdownPct")), "回撤"),
+        ("缺失样本数", _int_text(summary.get("missingCount")), "缺失"),
     ]
     html = "".join(
         (
@@ -492,14 +524,16 @@ def _stats_row_html(row: dict, labels: dict[str, str]) -> str:
     )
 
 
+def _complete_stat_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if int(row.get("sampleCount") or 0) > 0]
+
+
 def _selected_snapshot(snapshots: list[dict]) -> dict | None:
     selected_id = int(st.session_state.get("trade_error_snapshot_id") or 0)
     if selected_id:
         for snapshot in snapshots:
             if int(snapshot.get("id") or 0) == selected_id:
                 return snapshot
-    if snapshots:
-        return snapshots[0]
     return None
 
 
@@ -524,6 +558,15 @@ def _final_action_label(value: object) -> str:
 def _lane_label(value: object) -> str:
     text = str(value or "").strip()
     return LANE_LABELS.get(text, text or BLANK_TEXT)
+
+
+def _outcome_status_text(outcome: dict | None) -> str:
+    status = str((outcome or {}).get("status") or "").strip()
+    if status == "complete":
+        return "已完成"
+    if status == "missing" or not outcome:
+        return "缺失"
+    return status or "缺失"
 
 
 def _entry_row_html(entry: dict) -> str:
@@ -666,6 +709,18 @@ def _render_styles() -> None:
             color: var(--zhx-muted);
             font-size: 0.8rem;
         }
+        .trade-workbench-section {
+            margin: 0.68rem 0 0.42rem;
+            padding: 0.35rem 0 0.28rem;
+            border-top: 1px solid rgba(15, 23, 42, 0.07);
+            color: #0f172a;
+            font-size: 0.92rem;
+            font-weight: 860;
+            letter-spacing: 0;
+        }
+        .trade-workbench-section.replay {
+            margin-top: 1rem;
+        }
         .trade-journal-refresh-note {
             display: flex;
             align-items: center;
@@ -755,6 +810,17 @@ def _render_styles() -> None:
             color: #0f172a;
             font-size: 0.86rem;
             font-weight: 820;
+        }
+        .trade-error-compact-empty {
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+            padding: 0.48rem 0.62rem;
+            border: 1px dashed rgba(15, 23, 42, 0.12);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.74);
+            color: #7b8798;
+            font-size: 0.74rem;
         }
         .trade-error-summary-card {
             min-height: 124px;
@@ -863,6 +929,24 @@ def _render_styles() -> None:
             margin-top: 0.12rem;
             color: #7b8798;
             font-size: 0.7rem;
+        }
+        .trade-snapshot-list-head {
+            display: grid;
+            grid-template-columns: 0.8fr 0.9fr 1.2fr 0.9fr 1.35fr 0.8fr;
+            gap: 0.55rem;
+            align-items: center;
+            min-height: 30px;
+            margin-top: 0.3rem;
+            padding: 0 0.45rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 8px 8px 0 0;
+            background: rgba(248, 250, 252, 0.82);
+        }
+        .trade-snapshot-list-head span {
+            color: #7b8798;
+            font-size: 0.65rem;
+            font-weight: 780;
+            white-space: nowrap;
         }
         .trade-journal-table-wrap {
             overflow-x: auto;
