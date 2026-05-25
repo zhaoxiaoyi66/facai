@@ -7,13 +7,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from data.fmp_queue import get_fmp_request_queue
-from ui import buy_zone, dashboard, manual_review, stock_detail, watchlist
+from ui import buy_zone, dashboard, manual_review, portfolio, stock_detail, watchlist
 from ui.theme import render_global_styles
 
 
 PAGE_DASHBOARD = "决策总览"
 PAGE_STOCK_DETAIL = "个股研究"
 PAGE_BUY_ZONE = "买区计划"
+PAGE_PORTFOLIO = "组合持仓"
 PAGE_WATCHLIST = "观察池"
 PAGE_MANUAL_REVIEW = "数据复核"
 
@@ -21,6 +22,7 @@ PAGE_QUERY_VALUES = {
     "dashboard": PAGE_DASHBOARD,
     "detail": PAGE_STOCK_DETAIL,
     "buy-zone": PAGE_BUY_ZONE,
+    "portfolio": PAGE_PORTFOLIO,
     "watchlist": PAGE_WATCHLIST,
     "manual-review": PAGE_MANUAL_REVIEW,
 }
@@ -30,6 +32,7 @@ LEGACY_PAGE_ALIASES = {
     "决策仪表盘": PAGE_DASHBOARD,
     "单股详情": PAGE_STOCK_DETAIL,
     "买区计算器": PAGE_BUY_ZONE,
+    "组合持仓": PAGE_PORTFOLIO,
     "观察名单": PAGE_WATCHLIST,
     "数据复核中心": PAGE_MANUAL_REVIEW,
 }
@@ -46,6 +49,7 @@ PAGES = {
     PAGE_DASHBOARD: dashboard.render,
     PAGE_STOCK_DETAIL: stock_detail.render,
     PAGE_BUY_ZONE: buy_zone.render,
+    PAGE_PORTFOLIO: portfolio.render,
     PAGE_WATCHLIST: watchlist.render,
     PAGE_MANUAL_REVIEW: manual_review.render,
 }
@@ -163,6 +167,7 @@ def _nav_label(page_name: str) -> str:
         PAGE_DASHBOARD: "决策总览",
         PAGE_STOCK_DETAIL: "个股研究",
         PAGE_BUY_ZONE: "买区计划",
+        PAGE_PORTFOLIO: "组合持仓",
         PAGE_WATCHLIST: "观察池",
         PAGE_MANUAL_REVIEW: "数据复核",
     }
@@ -174,6 +179,7 @@ def _nav_icon(page_name: str) -> str:
         PAGE_DASHBOARD: "◇",
         PAGE_STOCK_DETAIL: "⌕",
         PAGE_BUY_ZONE: "◎",
+        PAGE_PORTFOLIO: "▣",
         PAGE_WATCHLIST: "≡",
         PAGE_MANUAL_REVIEW: "◆",
     }
