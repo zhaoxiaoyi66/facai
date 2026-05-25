@@ -113,6 +113,7 @@ from scoring.power_company import is_power_company
 from scoring.metric_sources import fcf_margin_metric, metric_participates_in_score
 from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score, _final_action, _guard_action_conflicts
 from scoring.final_decision import BUY_ACTIONS, NON_BUY_VALUATION_STATUSES, derive_final_decision
+from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.signals import (
     ANTI_FOMO_MESSAGE,
     LEFT_SIDE_OPPORTUNITY_MESSAGE,
@@ -1757,6 +1758,152 @@ class ScoringTests(unittest.TestCase):
                 self.assertFalse(decision.isActionable)
                 self.assertEqual(decision.currentAddLimitPercent, 0)
                 self.assertIn("buy_zone", decision.blockReasons)
+
+    def test_final_decision_adapter_builds_score_only_bundle(self) -> None:
+        buy_action = sorted(BUY_ACTIONS)[0]
+        score = SimpleNamespace(
+            action=buy_action,
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+
+        bundle = build_final_decision_bundle(score)
+
+        self.assertEqual(bundle.finalAction, buy_action)
+        self.assertTrue(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 5)
+        self.assertEqual(bundle.maxPortfolioWeightPercent, 15)
+
+    def test_final_decision_adapter_builds_bundle_from_score_zone_and_plan(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=10,
+            maxPortfolioWeightPercent=15,
+        )
+        zone = SimpleNamespace(currentZone="tranche_buy")
+        plan = SimpleNamespace(currentAddLimitPercent=6, maxPortfolioWeightPercent=20)
+
+        bundle = build_final_decision_bundle(score, zone, plan)
+
+        self.assertTrue(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 6)
+        self.assertEqual(bundle.maxPortfolioWeightPercent, 20)
+
+    def test_final_decision_adapter_blocks_no_chase_add(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+        zone = SimpleNamespace(currentZone="no_chase")
+        plan = SimpleNamespace(currentAddLimitPercent=5, maxPortfolioWeightPercent=20)
+
+        bundle = build_final_decision_bundle(score, zone, plan)
+
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
+        self.assertIn("buy_zone", bundle.blockReasons)
+
+    def test_final_decision_adapter_zeroes_low_confidence_add(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="low",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+
+        bundle = build_final_decision_bundle(score)
+
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
+        self.assertIn("data_confidence", bundle.blockReasons)
+
+    def test_final_decision_adapter_rebuilds_plan_after_manual_override(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            qualityRating="A",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=10,
+            maxPortfolioWeightPercent=15,
+        )
+        zone = BuyZoneEstimate(
+            "MAN",
+            "GENERIC",
+            140,
+            130,
+            105,
+            120,
+            90,
+            100,
+            70,
+            "no_chase",
+            "high",
+            "blended",
+            ["P/FCF"],
+            [],
+            [],
+            "now",
+        )
+        manual_plan = {
+            "no_chase_above": 170,
+            "fair_value_low": 130,
+            "fair_value_high": 150,
+            "tranche_buy_low": 110,
+            "tranche_buy_high": 125,
+            "heavy_buy_below": 95,
+        }
+
+        bundle = build_final_decision_bundle(score, zone, manual_plan_override=manual_plan)
+
+        self.assertTrue(bundle.isActionable)
+        self.assertGreater(bundle.currentAddLimitPercent, 0)
+        self.assertNotIn("buy_zone", bundle.blockReasons)
+
+    def test_final_decision_adapter_output_fields_are_stable(self) -> None:
+        score = SimpleNamespace(
+            action=sorted(BUY_ACTIONS)[0],
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+
+        fields = set(build_final_decision_bundle(score).as_dict())
+
+        self.assertEqual(
+            fields,
+            {
+                "finalAction",
+                "decisionLane",
+                "displayCategory",
+                "isActionable",
+                "currentAddLimitPercent",
+                "maxPortfolioWeightPercent",
+                "blockReasons",
+                "reviewReasons",
+                "dataConfidence",
+            },
+        )
 
     def test_power_company_classification_includes_core_utility_symbols_and_industries(self) -> None:
         for symbol in ["VST", "CEG", "TLN", "NRG", "DUK", "SO", "NEE"]:
