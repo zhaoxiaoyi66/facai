@@ -14,6 +14,7 @@ from data.review_queue_builder import ReviewQueueStore
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
+from scoring.final_decision import derive_final_decision
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui.metric_labels import action_label, confidence_label, metric_label, model_type_label, resolution_status_label
@@ -102,7 +103,7 @@ BADGE_STYLES = {
     "gray": ("#F8FAFC", "#475569", "#E4EAF1"),
 }
 
-DASHBOARD_SCORE_SCHEMA_VERSION = 4
+DASHBOARD_SCORE_SCHEMA_VERSION = 5
 LANE_FILTER_SESSION_KEY = "dashboard_active_lane_filter"
 LANE_FILTER_LABELS = {
     "actionable": "可行动",
@@ -110,6 +111,10 @@ LANE_FILTER_LABELS = {
     "waitOrReview": "待确认",
     "noChaseHighRisk": "风险隔离",
 }
+DASHBOARD_BUY_ACTIONS = {"可小仓分批", "可正常分批"}
+DASHBOARD_WAIT_ACTIONS = {"等回踩", "只观察", "财报后复核", "可小仓观察，待关键数据复核后再加仓", "待复核，暂不新增"}
+DASHBOARD_BLOCKED_ACTIONS = {"禁止追高", "剔除", "数据不足，需复核", "待复核，暂不新增"}
+DASHBOARD_NEAR_VALUATION_STATUSES = {"击球区附近", "回撤买点", "回撤后有吸引力", "合理偏便宜"}
 DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
 DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
 TECHNICAL_ERROR_HINTS = (
@@ -458,13 +463,21 @@ def _load_dashboard_row(provider, ticker: str, force_refresh: bool) -> dict:
 
 
 def _render_market_strip(table: pd.DataFrame) -> None:
-    actionable = int(table["action"].isin(["可小仓分批", "可正常分批"]).sum()) if "action" in table else 0
-    wait_count = int(table["action"].isin(["等回踩", "只观察"]).sum()) if "action" in table else 0
-    risk_count = int(
-        (
-            table["action"].isin(["禁止追高", "财报后复核", "数据不足，需复核", "剔除"])
-            | (table.get("highRiskFlagCount", pd.Series(dtype=float)).fillna(0) > 0)
-        ).sum()
+    rows = [row for _, row in table.iterrows()]
+    actionable = sum(1 for row in rows if _row_is_actionable(row))
+    wait_count = sum(
+        1
+        for row in rows
+        if not _row_is_actionable(row)
+        and _row_decision_lane(row) == "wait"
+        and _row_final_action(row) not in DASHBOARD_BLOCKED_ACTIONS
+    )
+    risk_count = sum(
+        1
+        for row in rows
+        if _row_decision_lane(row) in {"blocked", "review"}
+        or _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS
+        or row.get("highRiskFlagCount", 0) > 0
     )
     avg_drawdown = _average_percent_column(table, "drawdownFromHigh")
 
@@ -1197,6 +1210,9 @@ def _build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, d
     fcf_metric = fcf_margin_metric(snapshot)
     direct_fcf_margin = fcf_metric.value if fcf_metric.sourceType != "derivedFromMarket" else None
     implied_fcf_margin = fcf_metric.value if fcf_metric.sourceType == "derivedFromMarket" else None
+    final_decision = derive_final_decision(score)
+    current_add_limit = final_decision.currentAddLimitPercent
+    max_portfolio_weight = final_decision.maxPortfolioWeightPercent
 
     return {
         "symbol": ticker,
@@ -1212,13 +1228,21 @@ def _build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, d
         "riskRating": score.risk_rating,
         "valuationStatus": score.valuation_status,
         "action": score.action,
+        "finalAction": final_decision.finalAction,
+        "decisionLane": final_decision.decisionLane,
+        "displayCategory": final_decision.displayCategory,
+        "isActionable": final_decision.isActionable,
+        "decisionBlockReasons": final_decision.blockReasons,
+        "decisionReviewReasons": final_decision.reviewReasons,
+        "scoreCurrentAddLimitPercent": getattr(score, "current_add_limit_percent", score.max_suggested_position_percent),
+        "scoreMaxPortfolioWeightPercent": getattr(score, "max_portfolio_weight_percent", None),
         "maxSuggestedPositionPercent": score.max_suggested_position_percent,
-        "maxPortfolioWeightPercent": getattr(score, "max_portfolio_weight_percent", None),
-        "currentAddLimitPercent": getattr(score, "current_add_limit_percent", score.max_suggested_position_percent),
-        "maxSuggestedPosition": _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent)),
-        "maxPortfolioWeight": _portfolio_weight_text(getattr(score, "max_portfolio_weight_percent", None)),
-        "currentAddLimit": _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent)),
-        "dataConfidence": score.data_confidence,
+        "maxPortfolioWeightPercent": max_portfolio_weight,
+        "currentAddLimitPercent": current_add_limit,
+        "maxSuggestedPosition": _position_limit_text(current_add_limit),
+        "maxPortfolioWeight": _portfolio_weight_text(max_portfolio_weight),
+        "currentAddLimit": _position_limit_text(current_add_limit),
+        "dataConfidence": final_decision.dataConfidence,
         "proxyConfidence": score.proxy_confidence,
         "dataStatus": _data_status_label(score),
         "missingIndustryMetrics": score.missing_industry_metrics or [],
@@ -1291,6 +1315,14 @@ def _error_dashboard_row(ticker: str, exc: Exception) -> dict:
         "riskRating": "数据不足",
         "valuationStatus": "数据不足",
         "action": "数据不足，需复核",
+        "finalAction": "数据不足，需复核",
+        "decisionLane": "review",
+        "displayCategory": "需复核",
+        "isActionable": False,
+        "decisionBlockReasons": ["data_unavailable"],
+        "decisionReviewReasons": [],
+        "scoreCurrentAddLimitPercent": 0,
+        "scoreMaxPortfolioWeightPercent": 0,
         "maxSuggestedPositionPercent": 0,
         "maxSuggestedPosition": "不建议新增",
         "maxPortfolioWeightPercent": 0,
@@ -1461,8 +1493,10 @@ def _average_percent_column(table: pd.DataFrame, key: str) -> str:
 
 
 def _action_with_position(row: pd.Series) -> str:
-    action = str(row.get("action") or "N/A")
-    value = row.get("maxSuggestedPositionPercent")
+    action = _row_final_action(row) or "N/A"
+    value = _row_value(row, "currentAddLimitPercent")
+    if value is None:
+        value = _row_value(row, "maxSuggestedPositionPercent")
     try:
         max_position = float(value)
     except (TypeError, ValueError):
@@ -1470,6 +1504,44 @@ def _action_with_position(row: pd.Series) -> str:
     if max_position <= 0:
         return f"{action} · 不新增"
     return f"{action} · ≤{max_position:g}%"
+
+
+def _row_value(row: pd.Series, key: str) -> object | None:
+    value = row.get(key)
+    if _is_missing(value):
+        return None
+    return value
+
+
+def _row_final_action(row: pd.Series) -> str:
+    return str(_row_value(row, "finalAction") or _row_value(row, "action") or "")
+
+
+def _row_decision_lane(row: pd.Series) -> str:
+    lane = str(_row_value(row, "decisionLane") or "")
+    if lane:
+        return lane
+    action = _row_final_action(row)
+    if _row_is_actionable(row):
+        return "actionable"
+    if action in DASHBOARD_BLOCKED_ACTIONS:
+        return "blocked"
+    if action in DASHBOARD_WAIT_ACTIONS:
+        return "wait"
+    return ""
+
+
+def _row_is_actionable(row: pd.Series) -> bool:
+    explicit = _row_value(row, "isActionable")
+    if explicit is not None:
+        explicit_text = str(explicit).lower()
+        if explicit_text in {"true", "false"}:
+            return explicit_text == "true"
+    return _row_final_action(row) in DASHBOARD_BUY_ACTIONS and row.get("dataConfidence") in {"medium", "high"}
+
+
+def _row_current_add_text(row: pd.Series) -> str:
+    return str(_row_value(row, "currentAddLimit") or _row_value(row, "maxSuggestedPosition") or "")
 
 
 def _data_status_label(score) -> str:
@@ -2135,8 +2207,7 @@ def _actionable_rows(table: pd.DataFrame) -> list[pd.Series]:
     rows = [
         row
         for _, row in table.iterrows()
-        if row.get("action") in {"可小仓分批", "可正常分批"}
-        and row.get("dataConfidence") in {"medium", "high"}
+        if _row_is_actionable(row)
     ]
     return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
 
@@ -2145,8 +2216,12 @@ def _near_buy_zone_rows(table: pd.DataFrame) -> list[pd.Series]:
     rows = [
         row
         for _, row in table.iterrows()
-        if row.get("valuationStatus") in {"击球区附近", "回撤买点", "回撤后有吸引力", "合理偏便宜"}
-        and row.get("action") not in {"可正常分批", "禁止追高", "剔除"}
+        if _row_decision_lane(row) == "nearBuyZone"
+        or (
+            _row_decision_lane(row) in {"", "wait"}
+            and row.get("valuationStatus") in DASHBOARD_NEAR_VALUATION_STATUSES
+            and _row_final_action(row) not in {"可正常分批", "禁止追高", "剔除"}
+        )
     ]
     return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
 
@@ -2155,7 +2230,11 @@ def _wait_or_confirm_rows(table: pd.DataFrame) -> list[pd.Series]:
     rows = [
         row
         for _, row in table.iterrows()
-        if row.get("action") in {"等回踩", "只观察", "财报后复核", "可小仓观察，待关键数据复核后再加仓"}
+        if _row_decision_lane(row) in {"wait", "review"}
+        or (
+            not _row_value(row, "decisionLane")
+            and _row_final_action(row) in DASHBOARD_WAIT_ACTIONS
+        )
     ]
     return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
 
@@ -2164,7 +2243,8 @@ def _blocked_or_risky_rows(table: pd.DataFrame) -> list[pd.Series]:
     rows = [
         row
         for _, row in table.iterrows()
-        if row.get("action") in {"禁止追高", "剔除", "数据不足，需复核"}
+        if _row_decision_lane(row) == "blocked"
+        or _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS
         or row.get("riskRating") in {"高", "高风险"}
         or _numeric(row.get("overheatScore")) >= 60
         or row.get("highRiskFlagCount", 0) > 0
@@ -2377,7 +2457,7 @@ def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> 
     label = _dashboard_priority_label(lane_key, row)
     symbol = str(row.get("symbol") or "").upper()
     safe_symbol = escape(symbol)
-    action = _short_badge_text(row.get("action") or row.get("valuationStatus") or "只观察")
+    action = _short_badge_text(_row_final_action(row) or row.get("valuationStatus") or "只观察")
     reason = _lane_short_reason(_lane_full_reason(row))
     return (
         f'<a class="dashboard-priority-row tone-{escape(color)}" href="?page=detail&symbol={safe_symbol}" target="_self" '
@@ -2397,12 +2477,12 @@ def _dashboard_priority_label(lane_key: str, row: pd.Series) -> str:
     if lane_key == "nearBuyZone":
         return "接近"
     if lane_key == "waitOrReview":
-        action = str(row.get("action") or "")
+        action = _row_final_action(row)
         if "复核" in action or row.get("dataConfidence") == "low":
             return "复核"
         return "等待"
     if lane_key == "noChaseHighRisk":
-        action = str(row.get("action") or "")
+        action = _row_final_action(row)
         if "数据" in action or row.get("dataConfidence") == "low":
             return "复核"
         return "风险"
@@ -4542,11 +4622,13 @@ def _decision_table_cell_html(row: pd.Series, definition: dict, symbol: str) -> 
             "</div>"
         )
     if key == "actionSummary":
-        action = _display_table_text(_safe_table_value("action", row.get("action")), fallback="待复核")
+        action = _display_table_text(_safe_table_value("action", _row_final_action(row)), fallback="待复核")
         valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
-        position = _display_table_text(row.get("maxSuggestedPosition"), fallback="")
+        position = _display_table_text(_row_current_add_text(row), fallback="")
         secondary_parts = [_short_badge_text(valuation)]
         if position and position not in {"不建议新增", "待补"}:
+            secondary_parts.append(position)
+        elif position == "不建议新增":
             secondary_parts.append(position)
         return (
             '<div class="decision-cell decision-cell-stack action-cell">'

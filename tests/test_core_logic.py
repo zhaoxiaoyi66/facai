@@ -826,6 +826,46 @@ class FormattingTests(unittest.TestCase):
 
 
 class DashboardLayoutTests(unittest.TestCase):
+    def _dashboard_score(self, **overrides):
+        defaults = {
+            "risk_flags": [],
+            "trading_signals": [],
+            "scoring_model": "GENERIC",
+            "quality_rating": "A",
+            "entry_rating": "A",
+            "risk_rating": "低",
+            "valuation_status": "击球区附近",
+            "action": "可小仓分批",
+            "max_suggested_position_percent": 5,
+            "max_portfolio_weight_percent": 15,
+            "current_add_limit_percent": 5,
+            "data_confidence": "high",
+            "proxy_confidence": "high",
+            "data_insufficient": False,
+            "data_quality_pct": 100,
+            "missing_data": [],
+            "missing_industry_metrics": [],
+            "proxy_metrics_used": [],
+            "missing_metric_impacts": [],
+            "metric_resolution_statuses": [],
+            "human_readable_summary": {},
+            "active_risk_drivers": [],
+            "missing_data_explanation": [],
+            "rating_cap": None,
+            "key_positives": [],
+            "key_risks": [],
+            "total_score": 80,
+            "value_zone": "击球区附近",
+            "rating": "A",
+            "overheat_score": 0,
+            "overheat_status": "正常",
+            "overheat_action": "正常评估",
+            "overheat_recommendation": "",
+            "overheat_reasons": [],
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
     def test_default_dashboard_columns_are_decision_allowlist(self) -> None:
         labels = [column["label"] for column in DASHBOARD_COLUMNS]
         self.assertEqual(
@@ -944,6 +984,101 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(now_row["overheatReasons"], ["RSI14 高于 70", "20日涨幅偏热"])
         self.assertEqual(now_row["humanReadableSummary"], {"entry": "只观察"})
         self.assertEqual(msft_row["overheatReasons"], ["保持"])
+
+    def test_dashboard_row_expands_final_decision_fields_without_dropping_legacy_action(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        row = dashboard_module._build_dashboard_row(
+            "VST",
+            {"ticker": "VST"},
+            {"price": 100},
+            self._dashboard_score(
+                action="可小仓分批",
+                valuation_status="只观察",
+                entry_rating="C - 只观察",
+                current_add_limit_percent=5,
+                max_portfolio_weight_percent=20,
+            ),
+            {"pct": 100, "missing": []},
+        )
+
+        self.assertEqual(row["action"], "可小仓分批")
+        self.assertEqual(row["finalAction"], "只观察")
+        self.assertEqual(row["decisionLane"], "wait")
+        self.assertEqual(row["displayCategory"], "等回踩")
+        self.assertFalse(row["isActionable"])
+        self.assertEqual(row["currentAddLimitPercent"], 0)
+        self.assertEqual(row["currentAddLimit"], "不建议新增")
+
+    def test_dashboard_actionable_rows_prefer_final_decision(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        table = pd.DataFrame(
+            [
+                {
+                    "symbol": "OLD",
+                    "action": "可小仓分批",
+                    "finalAction": "只观察",
+                    "decisionLane": "wait",
+                    "isActionable": False,
+                    "dataConfidence": "high",
+                    "totalScore": 90,
+                },
+                {
+                    "symbol": "BUY",
+                    "action": "只观察",
+                    "finalAction": "可小仓分批",
+                    "decisionLane": "actionable",
+                    "isActionable": True,
+                    "dataConfidence": "high",
+                    "totalScore": 80,
+                },
+            ]
+        )
+
+        rows = dashboard_module._actionable_rows(table)
+
+        self.assertEqual([row["symbol"] for row in rows], ["BUY"])
+
+    def test_dashboard_near_buy_zone_keeps_wait_lane_rows_when_valuation_is_near(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        table = pd.DataFrame(
+            [
+                {
+                    "symbol": "NEAR",
+                    "finalAction": "等回踩",
+                    "decisionLane": "wait",
+                    "isActionable": False,
+                    "valuationStatus": "击球区附近",
+                    "totalScore": 80,
+                }
+            ]
+        )
+
+        groups = dashboard_module._summary_lane_groups(table)
+        near_symbols = [row["symbol"] for key, _title, _subtitle, rows, _color in groups if key == "nearBuyZone" for row in rows]
+        wait_symbols = [row["symbol"] for key, _title, _subtitle, rows, _color in groups if key == "waitOrReview" for row in rows]
+
+        self.assertEqual(near_symbols, ["NEAR"])
+        self.assertEqual(wait_symbols, [])
+
+    def test_dashboard_action_cell_prefers_final_action_and_final_add_limit(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        html = dashboard_module._decision_table_cell_html(
+            pd.Series(
+                {
+                    "action": "可小仓分批",
+                    "finalAction": "只观察",
+                    "valuationStatus": "只观察",
+                    "maxSuggestedPosition": "≤5%",
+                    "currentAddLimit": "不建议新增",
+                }
+            ),
+            {"key": "actionSummary"},
+            "VST",
+        )
+
+        self.assertIn("只观察", html)
+        self.assertIn("不建议新增", html)
+        self.assertNotIn("可小仓", html)
 
     def test_stock_detail_drawer_has_fixed_close_control(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

@@ -31,6 +31,15 @@ None.
 
 ## Latest Handoff
 
+2026-05-25 Data conversation:
+- Owner: Data conversation, with user-approved small Dashboard adapter touch.
+- Task: Dashboard minimal finalDecision integration.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`, `tests/test_core_logic.py`.
+- What changed: Dashboard row assembly now calls `derive_final_decision(score)` and flattens final-decision fields into the row (`finalAction`, `decisionLane`, `displayCategory`, `isActionable`, final current add/max portfolio fields) while keeping legacy `action` and score position fields as fallback/debug context. Dashboard cache schema bumped from 4 to 5. Dashboard market strip, decision lanes, lane filtering, today-priority strip, and main table action cell now prefer `finalAction` / `decisionLane` / `isActionable` / final current-add helpers instead of directly treating legacy `action` as the actionable source of truth.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py scoring\final_decision.py` passed. `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q -p no:cacheprovider` passed with 266 tests and 37 subtests. `git diff --check` reported only LF-to-CRLF warnings.
+- Scope notes: Did not touch providers, `ScoreResult`, buy-zone page, stock-detail page, `buy_zone_engine.py`, `position_plan_engine.py`, database schema, external APIs, long-running services, or commits.
+- Next needed: UI conversation should visually verify the Dashboard lanes and main-table action column after reload/restart. In particular, confirm finalAction-based grouping feels right for `nearBuyZone` rows because `FinalDecision.decisionLane` currently exposes `wait/review/blocked/actionable` but not a dedicated `nearBuyZone` lane.
+
 2026-05-25 UI conversation:
 - Owner: UI conversation.
 - Task: Dashboard UI-only move clear filter to right edge.
