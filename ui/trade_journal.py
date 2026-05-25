@@ -5,7 +5,13 @@ from html import escape
 
 import streamlit as st
 
-from data.decision_log import DecisionErrorTagStore, DecisionLogStore, TradeJournalStore, build_decision_signal_stats
+from data.decision_log import (
+    DecisionErrorTagStore,
+    DecisionLogStore,
+    TradeJournalStore,
+    build_decision_signal_stats,
+    refresh_decision_outcomes,
+)
 from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
 
@@ -213,6 +219,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
 
 def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
     render_section_title("系统信号复盘", "按历史系统信号和后续表现聚合，不做交易收益统计。")
+    _render_refresh_outcomes_toolbar()
     stats = build_decision_signal_stats()
     horizons = [str(horizon) for horizon in stats.get("horizons", ["1d", "1w", "1m", "3m", "6m"])]
     if not horizons:
@@ -224,7 +231,7 @@ def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: Dec
         st.markdown(
             (
                 '<div class="trade-journal-empty signal-empty">'
-                "<strong>暂无足够复盘数据，先记录系统信号和后续表现。</strong>"
+                "<strong>可先记录系统信号，再刷新复盘结果。</strong>"
                 "<span>有系统信号快照和后续表现后，这里会自动聚合不同周期的系统表现。</span>"
                 "</div>"
             ),
@@ -246,6 +253,38 @@ def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: Dec
                 unsafe_allow_html=True,
             )
     _render_error_tag_management(decision_store, error_tag_store)
+
+
+def _render_refresh_outcomes_toolbar() -> None:
+    cols = st.columns([3.6, 1])
+    cols[0].markdown(
+        '<div class="trade-journal-refresh-note">手动刷新历史信号的后续表现，不会启动自动任务。</div>',
+        unsafe_allow_html=True,
+    )
+    refresh_summary = None
+    with cols[1]:
+        if st.button("刷新复盘结果", key="trade-journal-refresh-outcomes", width="stretch"):
+            refresh_summary = refresh_decision_outcomes()
+    if refresh_summary:
+        _render_refresh_outcome_result(refresh_summary)
+
+
+def _render_refresh_outcome_result(summary: dict) -> None:
+    items = [
+        ("刷新 snapshot 数", _int_text(summary.get("snapshotCount"))),
+        ("生成/更新 outcome 数", _int_text(summary.get("outcomeCount"))),
+        ("missing 数", _int_text(summary.get("missingCount"))),
+    ]
+    html = "".join(
+        (
+            '<div class="trade-refresh-result-item">'
+            f"<span>{escape(label)}</span>"
+            f"<strong>{escape(value)}</strong>"
+            "</div>"
+        )
+        for label, value in items
+    )
+    st.markdown(f'<div class="trade-refresh-result">{html}</div>', unsafe_allow_html=True)
 
 
 def _render_error_tag_management(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
@@ -626,6 +665,43 @@ def _render_styles() -> None:
             min-height: 2.15rem;
             color: var(--zhx-muted);
             font-size: 0.8rem;
+        }
+        .trade-journal-refresh-note {
+            display: flex;
+            align-items: center;
+            min-height: 2.15rem;
+            color: #7b8798;
+            font-size: 0.76rem;
+        }
+        .trade-refresh-result {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.45rem;
+            margin: 0.45rem 0 0.75rem;
+            padding: 0.45rem;
+            border: 1px solid rgba(79, 157, 120, 0.16);
+            border-radius: 8px;
+            background: rgba(79, 157, 120, 0.065);
+        }
+        .trade-refresh-result-item {
+            padding: 0.45rem 0.58rem;
+            border-right: 1px solid rgba(79, 157, 120, 0.14);
+        }
+        .trade-refresh-result-item:last-child {
+            border-right: 0;
+        }
+        .trade-refresh-result-item span {
+            display: block;
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 760;
+        }
+        .trade-refresh-result-item strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0f172a;
+            font-size: 0.98rem;
+            font-weight: 860;
         }
         .trade-journal-summary {
             display: grid;
