@@ -20,6 +20,18 @@ This file records the project working rules for Codex. It is a workflow note, no
    - `pytest <specific test file>`
    - `npm run build` only for final verification when backend/frontend build is involved.
 
+## Git Command Workflow
+
+Avoid routine git prechecks because the Codex app can show completed git commands as still running and make the session appear stuck.
+
+1. Do not run `git status` or `git diff` at the start of every task.
+2. Start by reading the target files for the explicit task.
+3. Run git commands only when the user explicitly asks, when preparing a commit, when diagnosing a dirty/conflicting worktree, or when a final diff summary is requested.
+4. For normal completion summaries, run at most one `git diff --stat` if a diff is needed.
+5. Do not run multiple git/status/diff commands in parallel.
+6. During commit flow only, use sequential git commands: `git diff --stat`, `git status --short`, `git add`, `git commit`, then `git status --short`.
+7. If the app UI appears stuck on a git command that has already returned, report the last visible result instead of re-running the same command.
+
 ## Timeout Rules
 
 1. If a command has no output for 120 seconds, stop and report.
@@ -100,3 +112,14 @@ After every checkpoint, report:
 3. If the issue is more complex than expected, stop and report instead of forcing a large change.
 4. Before editing files, update `AGENT_HANDOFF.md` Active Work.
 5. After editing files, write the result in `AGENT_HANDOFF.md` Latest Handoff.
+
+## Command Feedback Rules
+
+Avoid making the session appear stuck after a command has already returned.
+
+1. After every command returns, first report the result in one short sentence before deciding the next step.
+2. Do not let a completed command be followed by a long silent reasoning pause.
+3. If another command is needed, say what will run next and why before running it.
+4. After a test command returns, immediately report pass/fail counts and the failing test name or file if any.
+5. If no tool is running but reasoning takes more than about 30 seconds, send a short status update.
+6. For multi-step tasks, report progress between steps instead of saving all feedback for the final summary.

@@ -989,7 +989,14 @@ class DashboardLayoutTests(unittest.TestCase):
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         row = dashboard_module._build_dashboard_row(
             "VST",
-            {"ticker": "VST"},
+            {
+                "ticker": "VST",
+                "current_price": 100,
+                "price_to_fcf": 18,
+                "free_cash_flow_yield": 0.06,
+                "market_cap": 100_000_000_000,
+                "free_cash_flow": 6_000_000_000,
+            },
             {"price": 100},
             self._dashboard_score(
                 action="可小仓分批",

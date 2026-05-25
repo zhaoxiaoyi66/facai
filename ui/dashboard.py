@@ -7,12 +7,15 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
 from data.review_queue_builder import ReviewQueueStore
+from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
+from position_plan_engine import generate_position_plan
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.final_decision import derive_final_decision
 from scoring.total_score import calculate_total_score
@@ -1210,7 +1213,7 @@ def _build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, d
     fcf_metric = fcf_margin_metric(snapshot)
     direct_fcf_margin = fcf_metric.value if fcf_metric.sourceType != "derivedFromMarket" else None
     implied_fcf_margin = fcf_metric.value if fcf_metric.sourceType == "derivedFromMarket" else None
-    final_decision = derive_final_decision(score)
+    final_decision = _derive_dashboard_final_decision(ticker, snapshot, technicals, score)
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
 
@@ -1301,6 +1304,22 @@ def _build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, d
         "overheatRecommendation": score.overheat_recommendation,
         "overheatReasons": score.overheat_reasons or [],
     }
+
+
+def _derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score):
+    try:
+        stock_data = {**snapshot, **technicals}
+        price = _first_present(technicals.get("price"), snapshot.get("current_price"))
+        if price is not None:
+            stock_data["price"] = price
+            stock_data.setdefault("current_price", price)
+        buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
+        plan = StockPlanStore().get_plan(ticker)
+        effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
+        position_plan = generate_position_plan(ticker, effective_buy_zone, score)
+        return derive_final_decision(score, effective_buy_zone, position_plan)
+    except Exception:
+        return derive_final_decision(score)
 
 
 def _error_dashboard_row(ticker: str, exc: Exception) -> dict:
