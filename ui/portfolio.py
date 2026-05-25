@@ -36,7 +36,10 @@ def _render_editor(
     with st.expander("添加/编辑持仓", expanded=position_open):
         st.session_state["portfolio_position_editor_open"] = False
         symbols = [str(row.get("symbol") or "") for row in rows]
-        selected = st.selectbox("编辑对象", ["新增持仓", *symbols], key="portfolio-edit-symbol")
+        options = ["新增持仓", *symbols]
+        preferred = st.session_state.pop("portfolio_edit_symbol", "")
+        selected_index = options.index(preferred) if preferred in options else 0
+        selected = st.selectbox("编辑对象", options, index=selected_index, key="portfolio-edit-symbol")
         editing = selected != "新增持仓"
         current = position_store.get_position(selected) if editing else None
         current = current or EMPTY_POSITION
@@ -383,6 +386,27 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         f"{drawer_html}",
         unsafe_allow_html=True,
     )
+    _render_drawer_action_controls(rows)
+
+
+def _render_drawer_action_controls(rows: list[dict]) -> None:
+    symbols = [str(row.get("symbol") or "") for row in rows]
+    if not symbols:
+        return
+    cols = st.columns([1.2, 1, 1, 3])
+    selected = cols[0].selectbox(
+        "当前详情",
+        symbols,
+        key="portfolio-drawer-action-symbol",
+        label_visibility="collapsed",
+    )
+    if cols[1].button("编辑当前详情", key="portfolio-drawer-edit-button", width="stretch"):
+        st.session_state["portfolio_position_editor_open"] = True
+        st.session_state["portfolio_edit_symbol"] = selected
+        st.rerun()
+    if cols[2].button("归档当前详情", type="primary", key="portfolio-drawer-archive-button", width="stretch"):
+        st.session_state["portfolio_archive_symbol"] = selected
+        st.rerun()
 
 
 def _position_row_html(row: dict) -> str:
@@ -440,19 +464,17 @@ def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
         ]),
     ]
     body = "".join(_drawer_section_html(title, items) for title, items in sections)
-    disable_href = f"?page=portfolio&portfolio_disable={escape(symbol)}"
     return (
         f'<aside id="{escape(drawer_id)}" class="portfolio-drawer">'
         '<a class="portfolio-drawer-backdrop" href="#portfolio-table"></a>'
         '<div class="portfolio-drawer-panel">'
         '<div class="portfolio-drawer-head">'
         f"<div><strong>{escape(symbol)}</strong><span>{escape(_system_action_text(row))} · {escape(_plan_status_text(row))}</span></div>"
+        '<div class="portfolio-drawer-actions">'
         '<a href="#portfolio-table">关闭</a>'
         "</div>"
-        f"{body}"
-        '<div class="portfolio-drawer-danger">'
-        f'<a href="{disable_href}">归档持仓</a>'
         "</div>"
+        f"{body}"
         "</div>"
         "</aside>"
     )
@@ -531,7 +553,7 @@ def _system_review_with_position(row: dict) -> bool:
 
 
 def _render_deactivate_dialog_if_needed(position_store: PortfolioPositionStore) -> None:
-    symbol = str(st.query_params.get("portfolio_disable", "")).strip().upper()
+    symbol = str(st.session_state.get("portfolio_archive_symbol", "")).strip().upper()
     if symbol:
         _confirm_deactivate_dialog(symbol, position_store)
 
@@ -542,16 +564,11 @@ def _confirm_deactivate_dialog(symbol: str, position_store: PortfolioPositionSto
     cols = st.columns(2)
     if cols[0].button("确认归档", type="primary", width="stretch"):
         position_store.deactivate_position(symbol)
-        _clear_portfolio_disable_query()
+        st.session_state.pop("portfolio_archive_symbol", None)
         st.rerun()
     if cols[1].button("取消", width="stretch"):
-        _clear_portfolio_disable_query()
+        st.session_state.pop("portfolio_archive_symbol", None)
         st.rerun()
-
-
-def _clear_portfolio_disable_query() -> None:
-    if "portfolio_disable" in st.query_params:
-        st.query_params.pop("portfolio_disable")
 
 
 def _drawer_id(symbol: str) -> str:
@@ -740,6 +757,16 @@ def _render_final_portfolio_styles() -> None:
             color: var(--zhx-muted);
             font-size: 0.74rem;
             text-decoration: none;
+        }
+        .portfolio-drawer-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            flex-shrink: 0;
+        }
+        .portfolio-drawer-actions a:first-child {
+            color: var(--zhx-text);
+            font-weight: 760;
         }
         .portfolio-drawer-section {
             padding: 0.75rem 0.95rem;

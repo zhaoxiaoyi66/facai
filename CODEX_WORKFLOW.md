@@ -32,6 +32,8 @@ Avoid routine git prechecks because the Codex app can show completed git command
 6. During commit flow only, use sequential git commands: `git diff --stat`, `git status --short`, `git add`, `git commit`, then `git status --short`.
 7. If the app UI appears stuck on a git command that has already returned, report the last visible result instead of re-running the same command.
 8. Never run git/status/diff/test commands in parallel. Run one command, report or decide, then run the next command.
+9. In this workspace, `git add` and `git commit` usually need elevated permission because writing `.git/index` is blocked by the sandbox. During commit flow, run `git add <files>` and `git commit -m "<message>"` directly with elevated permission instead of first running them normally and waiting for the expected `Unable to create .git/index.lock: Permission denied` failure.
+10. If `Unable to create .git/index.lock: Permission denied` appears, do not analyze or retry the normal command. Re-run the exact same `git add` command with elevated permission.
 
 ## Timeout Rules
 
