@@ -5,7 +5,7 @@ from html import escape
 
 import streamlit as st
 
-from data.decision_log import TradeJournalStore, build_decision_signal_stats
+from data.decision_log import DecisionErrorTagStore, DecisionLogStore, TradeJournalStore, build_decision_signal_stats
 from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
 
@@ -41,6 +41,17 @@ LANE_LABELS = {
     "wait": "等待观察",
     "unknown": "未标记",
 }
+ERROR_TAG_OPTIONS = {
+    "估值过高": "valuation_too_high",
+    "数据低置信": "low_confidence_data",
+    "财报前误判": "pre_earnings_misread",
+    "技术破位": "technical_breakdown",
+    "宏观冲击": "macro_shock",
+    "投资假设破裂": "thesis_broken",
+    "仓位过重": "position_too_large",
+    "忽略系统警告": "ignored_system_warning",
+}
+ERROR_TAG_LABELS = {value: label for label, value in ERROR_TAG_OPTIONS.items()}
 BLANK_TEXT = "—"
 
 
@@ -49,6 +60,8 @@ def render() -> None:
     render_page_header("交易日志", "手动记录真实操作和放弃动作，保留执行上下文。")
 
     store = TradeJournalStore()
+    decision_store = DecisionLogStore()
+    error_tag_store = DecisionErrorTagStore()
     _render_notice()
     toolbar_cols = st.columns([3.8, 1])
     toolbar_cols[0].markdown(
@@ -63,7 +76,7 @@ def render() -> None:
     entries = _load_entries(store, symbols)
     _render_summary(entries)
     _render_entries(symbols, entries)
-    _render_signal_replay()
+    _render_signal_replay(decision_store, error_tag_store)
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -198,7 +211,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
     )
 
 
-def _render_signal_replay() -> None:
+def _render_signal_replay(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
     render_section_title("系统信号复盘", "按历史系统信号和后续表现聚合，不做交易收益统计。")
     stats = build_decision_signal_stats()
     horizons = [str(horizon) for horizon in stats.get("horizons", ["1d", "1w", "1m", "3m", "6m"])]
@@ -217,22 +230,173 @@ def _render_signal_replay() -> None:
             ),
             unsafe_allow_html=True,
         )
-        return
+    else:
+        _render_signal_summary(summary)
+        table_cols = st.columns(2)
+        with table_cols[0]:
+            st.markdown("##### 按 finalAction 统计")
+            st.markdown(
+                _stats_table_html(horizon_stats.get("byFinalAction") or [], FINAL_ACTION_LABELS),
+                unsafe_allow_html=True,
+            )
+        with table_cols[1]:
+            st.markdown("##### 按 decisionLane 统计")
+            st.markdown(
+                _stats_table_html(horizon_stats.get("byDecisionLane") or [], LANE_LABELS),
+                unsafe_allow_html=True,
+            )
+    _render_error_tag_management(decision_store, error_tag_store)
 
-    _render_signal_summary(summary)
-    table_cols = st.columns(2)
-    with table_cols[0]:
-        st.markdown("##### 按 finalAction 统计")
+
+def _render_error_tag_management(decision_store: DecisionLogStore, error_tag_store: DecisionErrorTagStore) -> None:
+    st.markdown('<div class="trade-journal-subsection">错误标签摘要</div>', unsafe_allow_html=True)
+    counts = error_tag_store.tag_counts()
+    recent = error_tag_store.recent_tags(limit=5)
+    _render_error_tag_summary(counts, recent)
+
+    st.markdown('<div class="trade-journal-subsection">系统信号样本</div>', unsafe_allow_html=True)
+    snapshots = decision_store.list_recent_snapshots(limit=24)
+    if not snapshots:
         st.markdown(
-            _stats_table_html(horizon_stats.get("byFinalAction") or [], FINAL_ACTION_LABELS),
+            (
+                '<div class="trade-journal-empty signal-empty">'
+                "<strong>暂无系统信号样本</strong>"
+                "<span>有系统信号快照后，可以在这里手动标记错误原因。</span>"
+                "</div>"
+            ),
             unsafe_allow_html=True,
         )
-    with table_cols[1]:
-        st.markdown("##### 按 decisionLane 统计")
-        st.markdown(
-            _stats_table_html(horizon_stats.get("byDecisionLane") or [], LANE_LABELS),
+        return
+    _render_snapshot_rows(snapshots, error_tag_store)
+    selected_snapshot = _selected_snapshot(snapshots)
+    if selected_snapshot:
+        _render_error_tag_editor(selected_snapshot, error_tag_store)
+
+
+def _render_error_tag_summary(counts: list[dict], recent: list[dict]) -> None:
+    left, right = st.columns([1, 1.45])
+    with left:
+        if counts:
+            items = "".join(
+                (
+                    '<div class="trade-error-count-row">'
+                    f"<span>{escape(_error_tag_label(row.get('tag')))}</span>"
+                    f"<strong>{escape(_int_text(row.get('count')))}</strong>"
+                    "</div>"
+                )
+                for row in counts
+            )
+        else:
+            items = '<div class="trade-error-muted">暂无错误标签</div>'
+        st.markdown(f'<div class="trade-error-summary-card">{items}</div>', unsafe_allow_html=True)
+    with right:
+        if recent:
+            cases = "".join(_recent_error_case_html(row) for row in recent)
+        else:
+            cases = '<div class="trade-error-muted">暂无最近错误案例</div>'
+        st.markdown(f'<div class="trade-error-summary-card recent">{cases}</div>', unsafe_allow_html=True)
+
+
+def _recent_error_case_html(row: dict) -> str:
+    title = f"{_text(row.get('symbol'))} · {_error_tag_label(row.get('tag'))}"
+    meta = f"{_text(row.get('decision_date'))} / {_final_action_label(row.get('final_action'))} / {_lane_label(row.get('decision_lane'))}"
+    notes = _text(row.get("notes"))
+    return (
+        '<div class="trade-error-case-row">'
+        f"<strong>{escape(title)}</strong>"
+        f"<span>{escape(meta)}</span>"
+        f"<em>{escape(notes)}</em>"
+        "</div>"
+    )
+
+
+def _render_snapshot_rows(snapshots: list[dict], error_tag_store: DecisionErrorTagStore) -> None:
+    for snapshot in snapshots:
+        snapshot_id = int(snapshot.get("id") or 0)
+        tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
+        cols = st.columns([0.9, 0.8, 1.2, 1, 1.5, 0.75])
+        cols[0].markdown(
+            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b>'
+            f'<span>{escape(_text(snapshot.get("decision_date")))}</span></div>',
             unsafe_allow_html=True,
         )
+        cols[1].markdown(
+            f'<div class="trade-snapshot-cell"><b>{escape(_money_text(snapshot.get("price")))}</b>'
+            f'<span>信号价</span></div>',
+            unsafe_allow_html=True,
+        )
+        cols[2].markdown(
+            f'<div class="trade-snapshot-cell"><b>{escape(_final_action_label(snapshot.get("final_action")))}</b>'
+            f'<span>{escape(_lane_label(snapshot.get("decision_lane")))}</span></div>',
+            unsafe_allow_html=True,
+        )
+        cols[3].markdown(
+            f'<div class="trade-snapshot-cell"><b>{escape(_percent_or_dash(snapshot.get("current_add_pct")))}</b>'
+            f'<span>可加仓</span></div>',
+            unsafe_allow_html=True,
+        )
+        cols[4].markdown(
+            f'<div class="trade-error-chip-line">{_tag_chip_html(tags)}</div>',
+            unsafe_allow_html=True,
+        )
+        if cols[5].button("标记错误", key=f"trade-error-select-{snapshot_id}", width="stretch"):
+            st.session_state["trade_error_snapshot_id"] = snapshot_id
+            st.session_state.pop("trade_error_edit_tag", None)
+            st.rerun()
+
+
+def _render_error_tag_editor(snapshot: dict, error_tag_store: DecisionErrorTagStore) -> None:
+    snapshot_id = int(snapshot.get("id") or 0)
+    current_tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
+    editing_tag = str(st.session_state.get("trade_error_edit_tag") or "")
+    tag_values = list(ERROR_TAG_OPTIONS.values())
+    default_value = editing_tag if editing_tag in tag_values else tag_values[0]
+    default_label = ERROR_TAG_LABELS.get(default_value, "估值过高")
+    existing = next((tag for tag in current_tags if tag.get("tag") == editing_tag), {})
+
+    st.markdown(
+        (
+            '<div class="trade-error-editor-head">'
+            f"<strong>{escape(_text(snapshot.get('symbol')))} · 错误标签</strong>"
+            f"<span>{escape(_text(snapshot.get('decision_date')))} / "
+            f"{escape(_final_action_label(snapshot.get('final_action')))} / "
+            f"{escape(_lane_label(snapshot.get('decision_lane')))}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if current_tags:
+        for tag in current_tags:
+            cols = st.columns([1.1, 2.7, 0.55, 0.55])
+            cols[0].markdown(f"**{_error_tag_label(tag.get('tag'))}**")
+            cols[1].markdown(escape(_text(tag.get("notes"))), unsafe_allow_html=True)
+            if cols[2].button("编辑", key=f"trade-error-edit-{snapshot_id}-{tag.get('tag')}", width="stretch"):
+                st.session_state["trade_error_edit_tag"] = str(tag.get("tag") or "")
+                st.rerun()
+            if cols[3].button("删除", key=f"trade-error-delete-{snapshot_id}-{tag.get('tag')}", width="stretch"):
+                error_tag_store.delete_tag(snapshot_id, str(tag.get("tag") or ""))
+                if st.session_state.get("trade_error_edit_tag") == tag.get("tag"):
+                    st.session_state.pop("trade_error_edit_tag", None)
+                st.session_state["trade_journal_notice"] = ("success", "错误标签已删除。")
+                st.rerun()
+    else:
+        st.caption("当前系统信号还没有错误标签。")
+
+    with st.form(f"trade-error-tag-form-{snapshot_id}"):
+        default_index = list(ERROR_TAG_OPTIONS).index(default_label)
+        tag_label = st.selectbox("错误原因", list(ERROR_TAG_OPTIONS), index=default_index)
+        notes = st.text_area("备注", value=str(existing.get("notes") or ""), height=76)
+        submitted = st.form_submit_button("保存错误标签", width="stretch")
+        if submitted:
+            try:
+                error_tag_store.save_tag(snapshot_id, ERROR_TAG_OPTIONS[tag_label], notes)
+            except ValueError:
+                st.session_state["trade_journal_notice"] = ("error", "请选择有效的错误标签。")
+                st.rerun()
+            st.session_state.pop("trade_error_edit_tag", None)
+            st.session_state["trade_journal_notice"] = ("success", "错误标签已保存。")
+            st.rerun()
 
 
 def _render_signal_summary(summary: dict) -> None:
@@ -287,6 +451,40 @@ def _stats_row_html(row: dict, labels: dict[str, str]) -> str:
         f"<td>{escape(_int_text(row.get('missingCount')))}</td>"
         "</tr>"
     )
+
+
+def _selected_snapshot(snapshots: list[dict]) -> dict | None:
+    selected_id = int(st.session_state.get("trade_error_snapshot_id") or 0)
+    if selected_id:
+        for snapshot in snapshots:
+            if int(snapshot.get("id") or 0) == selected_id:
+                return snapshot
+    if snapshots:
+        return snapshots[0]
+    return None
+
+
+def _tag_chip_html(tags: list[dict]) -> str:
+    if not tags:
+        return '<span class="trade-error-chip empty">未标记</span>'
+    return "".join(
+        f'<span class="trade-error-chip">{escape(_error_tag_label(tag.get("tag")))}</span>'
+        for tag in tags[:3]
+    )
+
+
+def _error_tag_label(value: object) -> str:
+    return ERROR_TAG_LABELS.get(str(value or ""), "未识别")
+
+
+def _final_action_label(value: object) -> str:
+    text = str(value or "").strip()
+    return FINAL_ACTION_LABELS.get(text, text or BLANK_TEXT)
+
+
+def _lane_label(value: object) -> str:
+    text = str(value or "").strip()
+    return LANE_LABELS.get(text, text or BLANK_TEXT)
 
 
 def _entry_row_html(entry: dict) -> str:
@@ -475,6 +673,120 @@ def _render_styles() -> None:
         }
         .trade-journal-summary-item.signal strong {
             font-size: 1.06rem;
+        }
+        .trade-journal-subsection {
+            margin: 0.95rem 0 0.42rem;
+            color: #0f172a;
+            font-size: 0.86rem;
+            font-weight: 820;
+        }
+        .trade-error-summary-card {
+            min-height: 124px;
+            padding: 0.62rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.78);
+        }
+        .trade-error-count-row,
+        .trade-error-case-row {
+            display: grid;
+            gap: 0.08rem;
+            padding: 0.35rem 0;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        .trade-error-count-row {
+            grid-template-columns: 1fr auto;
+            align-items: center;
+        }
+        .trade-error-count-row:last-child,
+        .trade-error-case-row:last-child {
+            border-bottom: 0;
+        }
+        .trade-error-count-row span,
+        .trade-error-case-row span,
+        .trade-error-case-row em {
+            color: #7b8798;
+            font-size: 0.68rem;
+            font-style: normal;
+        }
+        .trade-error-count-row strong,
+        .trade-error-case-row strong {
+            color: #0f172a;
+            font-size: 0.76rem;
+            font-weight: 820;
+        }
+        .trade-error-muted {
+            display: flex;
+            align-items: center;
+            min-height: 82px;
+            color: #94a3b8;
+            font-size: 0.76rem;
+        }
+        .trade-snapshot-cell {
+            display: grid;
+            gap: 0.08rem;
+            min-height: 2.25rem;
+            align-content: center;
+            padding: 0.18rem 0;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+        }
+        .trade-snapshot-cell b {
+            color: #0f172a;
+            font-size: 0.76rem;
+            line-height: 1.1;
+        }
+        .trade-snapshot-cell span {
+            color: #7b8798;
+            font-size: 0.66rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .trade-error-chip-line {
+            display: flex;
+            align-items: center;
+            gap: 0.22rem;
+            min-height: 2.25rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+            overflow: hidden;
+        }
+        .trade-error-chip {
+            display: inline-flex;
+            align-items: center;
+            height: 22px;
+            padding: 0 0.48rem;
+            border: 1px solid rgba(181, 106, 50, 0.16);
+            border-radius: 999px;
+            background: rgba(181, 106, 50, 0.07);
+            color: #8A4B00;
+            font-size: 0.64rem;
+            font-weight: 780;
+            white-space: nowrap;
+        }
+        .trade-error-chip.empty {
+            border-color: rgba(15, 23, 42, 0.08);
+            background: #F8FAFC;
+            color: #94a3b8;
+        }
+        .trade-error-editor-head {
+            margin: 0.72rem 0 0.55rem;
+            padding: 0.58rem 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF, #F8FAFC);
+        }
+        .trade-error-editor-head strong,
+        .trade-error-editor-head span {
+            display: block;
+        }
+        .trade-error-editor-head strong {
+            color: #0f172a;
+            font-size: 0.86rem;
+        }
+        .trade-error-editor-head span {
+            margin-top: 0.12rem;
+            color: #7b8798;
+            font-size: 0.7rem;
         }
         .trade-journal-table-wrap {
             overflow-x: auto;

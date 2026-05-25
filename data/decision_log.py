@@ -179,6 +179,22 @@ class DecisionLogStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
 
+    def list_recent_snapshots(self, limit: int = 30) -> list[dict]:
+        safe_limit = max(1, int(limit))
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_snapshots
+                ORDER BY decision_date DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
 
 class TradeJournalStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
@@ -548,6 +564,43 @@ class DecisionErrorTagStore:
                 ORDER BY snapshots.decision_date DESC, tags.tag ASC
                 """,
                 (_normalize_symbol(symbol),),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def tag_counts(self) -> list[dict]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT tag, COUNT(*) AS count
+                FROM decision_error_tags
+                GROUP BY tag
+                ORDER BY count DESC, tag ASC
+                """
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def recent_tags(self, limit: int = 5) -> list[dict]:
+        safe_limit = max(1, int(limit))
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    tags.*,
+                    snapshots.symbol,
+                    snapshots.decision_date,
+                    snapshots.final_action,
+                    snapshots.decision_lane
+                FROM decision_error_tags AS tags
+                JOIN decision_snapshots AS snapshots
+                  ON snapshots.id = tags.decision_snapshot_id
+                ORDER BY tags.updated_at DESC, tags.created_at DESC, tags.id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
             )
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description] if cursor.description else []

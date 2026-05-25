@@ -3740,6 +3740,34 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(now_tags[0]["tag"], "technical_breakdown")
             self.assertEqual(now_tags[0]["decision_date"], "2026-05-26")
 
+    def test_decision_error_tag_store_summarizes_counts_and_recent_cases(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            now_snapshot = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+            crm_snapshot = decision_store.save_snapshot(
+                "CRM",
+                {"decision_date": "2026-05-27", "price": 200, "final_action": "wait", "decision_lane": "wait"},
+            )
+            store = DecisionErrorTagStore(db_path)
+
+            store.save_tag(now_snapshot["id"], "technical_breakdown", "lost key level")
+            store.save_tag(crm_snapshot["id"], "technical_breakdown", "failed again")
+            store.save_tag(crm_snapshot["id"], "macro_shock", "rates shock")
+
+            counts = {row["tag"]: row["count"] for row in store.tag_counts()}
+            recent = store.recent_tags(limit=2)
+            snapshots = decision_store.list_recent_snapshots(limit=1)
+
+            self.assertEqual(counts["technical_breakdown"], 2)
+            self.assertEqual(counts["macro_shock"], 1)
+            self.assertEqual(len(recent), 2)
+            self.assertEqual(recent[0]["symbol"], "CRM")
+            self.assertEqual(snapshots[0]["symbol"], "CRM")
+
     def test_decision_error_tag_store_deletes_and_validates_tags(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
