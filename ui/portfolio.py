@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+from urllib.parse import quote
 import streamlit as st
 
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
@@ -453,10 +454,11 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         )
         return
 
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
+    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row) for row in rows)
     drawer_html = "".join(_drawer_html(row, plan_store) for row in rows)
+    archive_html = "".join(_archive_confirm_html(row) for row in rows)
     st.markdown(
         '<div id="portfolio-table"></div>'
         '<div class="portfolio-table-wrap terminal">'
@@ -465,7 +467,8 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         f"<tbody>{body_html}</tbody>"
         "</table>"
         "</div>"
-        f"{drawer_html}",
+        f"{drawer_html}"
+        f"{archive_html}",
         unsafe_allow_html=True,
     )
     _render_drawer_action_controls(rows)
@@ -477,7 +480,7 @@ def _render_drawer_action_controls(rows: list[dict]) -> None:
         return
     current = _current_detail_symbol(symbols)
     st.session_state["portfolio-drawer-action-symbol"] = current
-    cols = st.columns([1.2, 1, 1, 3])
+    cols = st.columns([1.2, 1, 4])
     selected = cols[0].selectbox(
         "当前详情",
         symbols,
@@ -489,14 +492,13 @@ def _render_drawer_action_controls(rows: list[dict]) -> None:
         st.session_state["portfolio_position_editor_open"] = True
         st.session_state["portfolio_edit_symbol"] = selected
         st.rerun()
-    if cols[2].button("归档当前详情", type="primary", key="portfolio-drawer-archive-button", width="stretch"):
-        st.session_state["portfolio_archive_symbol"] = selected
-        st.rerun()
 
 
 def _position_row_html(row: dict) -> str:
     symbol = str(row.get("symbol") or "")
     drawer_id = _drawer_id(symbol)
+    archive_id = _archive_id(symbol)
+    research_href = f"?page=detail&symbol={quote(symbol)}"
     return (
         "<tr>"
         f"<td>{_cell_html(symbol, _row_status_text(row))}</td>"
@@ -505,7 +507,11 @@ def _position_row_html(row: dict) -> str:
         f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
         f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
         f"<td>{_cell_html(_plan_status_text(row), _plan_sub_text(row))}</td>"
-        f'<td><a class="portfolio-view-link" href="#{escape(drawer_id)}">查看</a></td>'
+        '<td><div class="portfolio-row-actions">'
+        f'<a class="portfolio-view-link" href="#{escape(drawer_id)}">查看</a>'
+        f'<a class="portfolio-view-link portfolio-research-link" href="{escape(research_href, quote=True)}" target="_self">研究</a>'
+        f'<a class="portfolio-view-link portfolio-archive-link" href="#{escape(archive_id)}">归档</a>'
+        "</div></td>"
         "</tr>"
     )
 
@@ -580,6 +586,26 @@ def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
     return f'<section class="portfolio-drawer-section"><h4>{escape(title)}</h4><div>{rows}</div></section>'
 
 
+def _archive_confirm_html(row: dict) -> str:
+    symbol = str(row.get("symbol") or "")
+    archive_id = _archive_id(symbol)
+    confirm_href = f"?page=portfolio&portfolioArchiveConfirm={escape(symbol, quote=True)}#portfolio-table"
+    return (
+        f'<aside id="{escape(archive_id)}" class="portfolio-archive-modal">'
+        '<a class="portfolio-archive-backdrop" href="#portfolio-table"></a>'
+        '<div class="portfolio-archive-card">'
+        "<span>归档持仓</span>"
+        f"<strong>{escape(symbol)}</strong>"
+        "<p>确认后，该标的将从当前持仓视图移出，并作为历史持仓留档。</p>"
+        '<div class="portfolio-archive-actions">'
+        '<a href="#portfolio-table">取消</a>'
+        f'<a class="danger" href="{confirm_href}">确认归档</a>'
+        "</div>"
+        "</div>"
+        "</aside>"
+    )
+
+
 def _research_notes(symbol: str, plan_store: StockPlanStore) -> str:
     try:
         notes = str(plan_store.get_plan(symbol).get("notes") or "").strip()
@@ -645,6 +671,13 @@ def _system_review_with_position(row: dict) -> bool:
 
 
 def _render_deactivate_dialog_if_needed(position_store: PortfolioPositionStore) -> None:
+    confirmed = str(st.query_params.get("portfolioArchiveConfirm", "")).strip().upper()
+    if confirmed:
+        position_store.deactivate_position(confirmed)
+        if "portfolioArchiveConfirm" in st.query_params:
+            st.query_params.pop("portfolioArchiveConfirm")
+        st.session_state["portfolio_save_notice"] = ("success", f"{confirmed} 已归档。")
+        st.rerun()
     symbol = str(st.session_state.get("portfolio_archive_symbol", "")).strip().upper()
     if symbol:
         _confirm_deactivate_dialog(symbol, position_store)
@@ -652,7 +685,7 @@ def _render_deactivate_dialog_if_needed(position_store: PortfolioPositionStore) 
 
 @st.dialog("归档持仓")
 def _confirm_deactivate_dialog(symbol: str, position_store: PortfolioPositionStore) -> None:
-    st.write(f"确认归档 {symbol}？归档后不会出现在 active 持仓清单。")
+    st.write(f"确认将 {symbol} 移入归档？归档后该标的将退出当前持仓视图，仅保留历史持仓记录。")
     cols = st.columns(2)
     if cols[0].button("确认归档", type="primary", width="stretch"):
         position_store.deactivate_position(symbol)
@@ -666,6 +699,11 @@ def _confirm_deactivate_dialog(symbol: str, position_store: PortfolioPositionSto
 def _drawer_id(symbol: str) -> str:
     safe = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"-", "_"})
     return f"portfolio-drawer-{safe or 'position'}"
+
+
+def _archive_id(symbol: str) -> str:
+    safe = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"-", "_"})
+    return f"portfolio-archive-{safe or 'position'}"
 
 
 def _money_or_dash(value: object, zero_dash: bool = False) -> str:
@@ -770,30 +808,142 @@ def _render_final_portfolio_styles() -> None:
             text-transform: none;
         }
         .portfolio-table.terminal td {
-            height: 44px;
-            padding: 0.38rem 0.55rem;
+            height: 46px;
+            padding: 0.42rem 0.62rem;
             vertical-align: middle;
+        }
+        .portfolio-table.terminal th:last-child,
+        .portfolio-table.terminal td:last-child {
+            width: 128px;
+            padding-left: 0.72rem;
+            padding-right: 0.72rem;
+            text-align: center;
         }
         .portfolio-table.terminal tr:hover td {
             background: #FAFBFC;
+        }
+        .portfolio-row-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.12rem;
+            padding: 0.12rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #F8FAFC;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+            white-space: nowrap;
         }
         .portfolio-view-link {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            height: 24px;
-            padding: 0 0.55rem;
-            border: 1px solid var(--zhx-line);
+            min-width: 42px;
+            height: 26px;
+            padding: 0 0.52rem;
+            border: 1px solid transparent;
             border-radius: 6px;
             color: var(--zhx-muted);
-            background: #FFFFFF;
+            background: transparent;
             font-size: 0.7rem;
             font-weight: 760;
             text-decoration: none;
         }
+        .portfolio-table a.portfolio-view-link,
+        .portfolio-table a.portfolio-view-link:visited,
+        .portfolio-table a.portfolio-view-link:hover,
+        .portfolio-table a.portfolio-view-link:active {
+            text-decoration: none !important;
+        }
         .portfolio-view-link:hover {
             color: var(--zhx-text);
-            border-color: var(--zhx-line-strong);
+            background: #FFFFFF;
+            border-color: rgba(15, 23, 42, 0.10);
+            text-decoration: none;
+        }
+        .portfolio-research-link {
+            color: #1d4ed8;
+            background: #FFFFFF;
+            border-color: rgba(37, 99, 235, 0.16);
+        }
+        .portfolio-archive-link {
+            color: #9f1239;
+        }
+        .portfolio-archive-link:hover {
+            color: #881337;
+            border-color: rgba(159, 18, 57, 0.18);
+            background: #FFF7F8;
+        }
+        .portfolio-archive-modal {
+            pointer-events: none;
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            opacity: 0;
+            transition: opacity 0.16s ease;
+        }
+        .portfolio-archive-modal:target {
+            pointer-events: auto;
+            opacity: 1;
+        }
+        .portfolio-archive-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.20);
+        }
+        .portfolio-archive-card {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: min(340px, calc(100vw - 32px));
+            transform: translate(-50%, -50%);
+            padding: 1rem;
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 8px;
+            background: #FFFFFF;
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
+        }
+        .portfolio-archive-card span {
+            display: block;
+            color: var(--zhx-muted);
+            font-size: 0.72rem;
+            font-weight: 760;
+        }
+        .portfolio-archive-card strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: var(--zhx-text);
+            font-size: 1.05rem;
+        }
+        .portfolio-archive-card p {
+            margin: 0.45rem 0 0.8rem;
+            color: var(--zhx-muted);
+            font-size: 0.82rem;
+        }
+        .portfolio-archive-actions {
+            display: flex;
+            gap: 0.45rem;
+            justify-content: flex-end;
+        }
+        .portfolio-archive-actions a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 74px;
+            height: 30px;
+            padding: 0 0.72rem;
+            border: 1px solid var(--zhx-line);
+            border-radius: 6px;
+            color: var(--zhx-muted);
+            background: #FFFFFF;
+            font-size: 0.74rem;
+            font-weight: 760;
+            text-decoration: none;
+        }
+        .portfolio-archive-actions a.danger {
+            color: #9f1239;
+            border-color: rgba(159, 18, 57, 0.20);
+            background: #FFF7F8;
         }
         .portfolio-drawer {
             pointer-events: none;
@@ -1028,11 +1178,18 @@ def _render_styles() -> None:
         }
         .portfolio-table td {
             height: 46px;
-            padding: 0.42rem 0.58rem;
+            padding: 0.42rem 0.62rem;
             border-bottom: 1px solid var(--zhx-line);
             color: var(--zhx-text);
             white-space: nowrap;
             vertical-align: middle;
+        }
+        .portfolio-table th:last-child,
+        .portfolio-table td:last-child {
+            width: 128px;
+            padding-left: 0.72rem;
+            padding-right: 0.72rem;
+            text-align: center;
         }
         .portfolio-table tr:last-child td {
             border-bottom: 0;
@@ -1064,18 +1221,54 @@ def _render_styles() -> None:
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .portfolio-row-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.12rem;
+            padding: 0.12rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #F8FAFC;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+            white-space: nowrap;
+        }
         .portfolio-view-link {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            height: 24px;
-            padding: 0 0.55rem;
-            border: 1px solid var(--zhx-line);
+            min-width: 42px;
+            height: 26px;
+            padding: 0 0.52rem;
+            border: 1px solid transparent;
             border-radius: 6px;
             color: var(--zhx-muted);
-            background: #FFFFFF;
+            background: transparent;
             font-size: 0.7rem;
             font-weight: 760;
+            text-decoration: none;
+        }
+        .portfolio-table a.portfolio-view-link,
+        .portfolio-table a.portfolio-view-link:visited,
+        .portfolio-table a.portfolio-view-link:hover,
+        .portfolio-table a.portfolio-view-link:active {
+            text-decoration: none !important;
+        }
+        .portfolio-view-link:hover {
+            text-decoration: none;
+        }
+        .portfolio-research-link {
+            color: #1d4ed8;
+            background: #FFFFFF;
+            border-color: rgba(37, 99, 235, 0.16);
+        }
+        .portfolio-archive-link {
+            color: #9f1239;
+        }
+        .portfolio-archive-link:hover {
+            color: #881337;
+            border-color: rgba(159, 18, 57, 0.18);
+            background: #FFF7F8;
         }
         .portfolio-detail-panel {
             margin: 0.65rem 0 1rem;

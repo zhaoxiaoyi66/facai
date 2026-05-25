@@ -17,6 +17,7 @@ from buy_zone_engine import (
 )
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
+from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.stock_plan import StockPlanStore
 from formatting import format_compact_number, format_currency, format_large_number, format_multiple, format_percent
@@ -76,6 +77,7 @@ def render() -> None:
     final_decision = derive_final_decision(score, effective_buy_zone, plan_suggestion)
 
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, final_decision)
+    _render_current_position_summary(_portfolio_row_for_ticker(ticker))
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision)
@@ -158,6 +160,114 @@ def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score
         "</section>",
         unsafe_allow_html=True,
     )
+
+
+def _portfolio_row_for_ticker(ticker: str) -> dict | None:
+    symbol = str(ticker or "").strip().upper()
+    if not symbol:
+        return None
+    try:
+        rows = build_portfolio_view_model().get("rows", [])
+    except Exception:
+        return None
+    return next((row for row in rows if str(row.get("symbol") or "").upper() == symbol), None)
+
+
+def _render_current_position_summary(row: dict | None) -> None:
+    if not row:
+        return
+    items = [
+        ("持股数量", _portfolio_quantity_text(row.get("quantity"))),
+        ("平均成本", _portfolio_money_text(row.get("averageCost"))),
+        ("当前盈亏", _portfolio_pnl_text(row)),
+        ("仓位占比", _portfolio_percent_text(row.get("positionPct"))),
+        ("系统参考", _portfolio_system_reference_text(row)),
+    ]
+    st.markdown(
+        '<section class="current-position-strip">'
+        '<div class="current-position-title"><span>当前持仓</span><strong>'
+        + escape(str(row.get("symbol") or ""))
+        + "</strong></div>"
+        + '<div class="current-position-grid">'
+        + "".join(
+            f'<div class="current-position-item"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
+            for label, value in items
+        )
+        + "</div></section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _portfolio_pnl_text(row: dict) -> str:
+    return f"{_portfolio_money_text(row.get('unrealizedPnl'))} / {_portfolio_percent_text(row.get('unrealizedPnlPct'))}"
+
+
+def _portfolio_system_reference_text(row: dict) -> str:
+    action = _portfolio_system_action_text(row)
+    max_position = _portfolio_percent_text(row.get("systemMaxPosition"))
+    reason = _portfolio_reason_text(row)
+    if reason != "—":
+        return f"{action} · 上限 {max_position} · {reason}"
+    return f"{action} · 上限 {max_position}"
+
+
+def _portfolio_system_action_text(row: dict) -> str:
+    lane = str(row.get("decisionLane") or "").strip()
+    action = str(row.get("systemAction") or "").strip()
+    if row.get("overweightSystem"):
+        return "超系统上限"
+    if lane == "review":
+        return "待复核"
+    if lane == "blocked":
+        return "禁止追高"
+    if lane == "actionable":
+        return "可加仓"
+    if lane == "wait":
+        return "只观察"
+    return action or "未生成"
+
+
+def _portfolio_reason_text(row: dict) -> str:
+    reasons = [*_portfolio_translated_reasons(row.get("blockReasons")), *_portfolio_translated_reasons(row.get("reviewReasons"))]
+    return "，".join(reasons[:2]) if reasons else "—"
+
+
+def _portfolio_translated_reasons(value: object) -> list[str]:
+    labels = {
+        "buy_zone": "买区阻断",
+        "data_confidence": "数据置信度",
+        "valuation_status": "估值状态",
+        "entry_rating": "入场评级",
+        "risk_rating": "风险评级",
+    }
+    items = value if isinstance(value, list) else []
+    return [labels.get(str(item), str(item)) for item in items]
+
+
+def _portfolio_quantity_text(value: object) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return "—"
+    return f"{number:,.4g}"
+
+
+def _portfolio_money_text(value: object) -> str:
+    number = _optional_float(value)
+    return format_currency(number) if number is not None else "—"
+
+
+def _portfolio_percent_text(value: object) -> str:
+    number = _optional_float(value)
+    return format_percent(number) if number is not None else "—"
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict) -> None:
@@ -1976,6 +2086,61 @@ def _render_detail_styles() -> None:
             font-weight: 760;
             overflow-wrap: anywhere;
         }
+        .current-position-strip {
+            display: grid;
+            grid-template-columns: minmax(150px, 0.38fr) minmax(0, 1fr);
+            gap: 0.65rem;
+            align-items: stretch;
+            margin: -0.2rem 0 0.85rem;
+            padding: 0.62rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.55rem;
+            background: #FFFFFF;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+        }
+        .current-position-title {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 3.3rem;
+            padding: 0.42rem 0.55rem;
+            border-left: 3px solid #2563eb;
+            background: #F8FAFC;
+        }
+        .current-position-title span,
+        .current-position-item span {
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 760;
+            line-height: 1.2;
+        }
+        .current-position-title strong {
+            margin-top: 0.18rem;
+            color: #0f172a;
+            font-size: 1rem;
+            line-height: 1.1;
+        }
+        .current-position-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.42rem;
+        }
+        .current-position-item {
+            min-height: 3.3rem;
+            padding: 0.42rem 0.5rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 0.45rem;
+            background: #FBFCFE;
+        }
+        .current-position-item b {
+            display: block;
+            margin-top: 0.18rem;
+            color: #111827;
+            font-size: 0.78rem;
+            line-height: 1.25;
+            font-weight: 780;
+            overflow-wrap: anywhere;
+        }
         .detail-pill {
             display: inline-flex;
             align-items: center;
@@ -2291,7 +2456,11 @@ def _render_detail_styles() -> None:
             .detail-hero {
                 grid-template-columns: 1fr;
             }
+            .current-position-strip {
+                grid-template-columns: 1fr;
+            }
             .detail-hero-grid,
+            .current-position-grid,
             .conclusion-grid,
             .buy-zone-meta,
             .plan-summary-grid,
