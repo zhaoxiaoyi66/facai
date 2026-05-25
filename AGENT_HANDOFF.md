@@ -31,6 +31,33 @@ None.
 
 ## Latest Handoff
 
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision lane text hierarchy polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Separated decision-lane header subtitles from row reason text visually. Header subtitles now render smaller, lighter, and more muted, while row reason text is slightly stronger and reads as the per-stock explanation instead of blending with the card description.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests, 30 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the lane subtitle/reason hierarchy still looks unchanged; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only lane footer label consistency.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Made every visible Dashboard decision-lane footer render the same `查看全部` filter action whenever the lane has rows, instead of showing hidden-count copy such as `+X 未显示`. The action still filters the main watchlist to that lane. The legacy `_lane_more_html` helper is not used by the visible footer path and was left compatible with the existing core test.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests, 30 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old hidden-count footer remains in the browser; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only drawer click reliability after lane filter.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Stabilized Dashboard stock-detail drawer opening after lane footer filters rerender the watchlist. The client drawer component now rebinds its parent-document click handler on each render and calls the latest global drawer opener; the `查看` link also has a direct fallback onclick so filtered rows can still open the drawer even after Streamlit reruns.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 251 tests, 30 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the browser still has the older drawer handler loaded; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
 2026-05-25 Data conversation:
 - Owner: Data conversation.
 - Task: Fix scoring action conflicts between valuation, entry, risk, and final action.

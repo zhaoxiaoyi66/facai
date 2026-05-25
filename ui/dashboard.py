@@ -498,8 +498,7 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
                 continue
             for row in rows[:4]:
                 st.markdown(_lane_item_html(row), unsafe_allow_html=True)
-            if len(rows) > 4:
-                _render_lane_more_button(lane_key, len(rows) - 4)
+            _render_lane_more_button(lane_key)
     st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
 
 
@@ -761,9 +760,10 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
           if (autoOpenSymbol) {{
             win.setTimeout(() => openDrawer(autoOpenSymbol, autoOpenFocus), 0);
           }}
-          if (!win.__dashboardDrawerDelegationBound) {{
-            win.__dashboardDrawerDelegationBound = true;
-            doc.addEventListener("click", (event) => {{
+          if (win.__dashboardDrawerClickHandler) {{
+            doc.removeEventListener("click", win.__dashboardDrawerClickHandler, true);
+          }}
+          win.__dashboardDrawerClickHandler = (event) => {{
               const rawTarget = event.target;
               const target = rawTarget instanceof win.Element ? rawTarget : rawTarget && rawTarget.parentElement;
               if (!(target instanceof win.Element)) {{
@@ -773,7 +773,8 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
               if (opener) {{
                 event.preventDefault();
                 event.stopPropagation();
-                openDrawer(
+                const open = win.__dashboardOpenDrawer || openDrawer;
+                open(
                   opener.getAttribute("data-dashboard-drawer-open"),
                   opener.getAttribute("data-dashboard-drawer-focus")
                 );
@@ -800,10 +801,14 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
                 showDrawerMessage(messageAction.getAttribute("data-dashboard-drawer-message"));
                 return;
               }}
-            }}, true);
+          }};
+          doc.addEventListener("click", win.__dashboardDrawerClickHandler, true);
+          if (!win.__dashboardDrawerKeydownBound) {{
+            win.__dashboardDrawerKeydownBound = true;
             doc.addEventListener("keydown", (event) => {{
               if (event.key === "Escape") {{
-                closeDrawer();
+                const close = win.__dashboardCloseDrawer || closeDrawer;
+                close();
               }}
             }});
           }}
@@ -2420,15 +2425,13 @@ def _summary_panel_head_html(title: object, subtitle: object, count: int, color:
     )
 
 
-def _render_lane_more_button(lane_key: str, hidden_count: int) -> None:
-    if hidden_count <= 0:
-        return
-    if st.button(_lane_more_label(hidden_count), key=f"dashboard_lane_more_{lane_key}", width="stretch", help="原地聚焦主表，不切换页面"):
+def _render_lane_more_button(lane_key: str) -> None:
+    if st.button(_lane_more_label(), key=f"dashboard_lane_more_{lane_key}", width="stretch", help="筛选主表显示该分组"):
         st.session_state[LANE_FILTER_SESSION_KEY] = str(lane_key)
 
 
-def _lane_more_label(hidden_count: int) -> str:
-    return f"+{int(hidden_count)} 未显示 · 查看全部"
+def _lane_more_label() -> str:
+    return "查看全部"
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
@@ -3906,9 +3909,11 @@ def _render_dashboard_styles() -> None:
             font-weight:700;
         }
         .summary-panel-subtitle {
-            color:#64748B;
-            font-size:10.5px;
-            line-height:1.18;
+            color:#94A3B8;
+            font-size:10px;
+            font-weight:500;
+            line-height:1.12;
+            margin-top:1px;
             max-width:100%;
             overflow:hidden;
             text-overflow:ellipsis;
@@ -3950,8 +3955,9 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap;
         }
         .lane-reason {
-            color:#64748B;
-            font-size:10.8px;
+            color:#53657B;
+            font-size:11px;
+            font-weight:530;
             justify-self:start;
             min-width:0;
             max-width:100%;
@@ -4616,10 +4622,16 @@ def _data_status_tone(value: object) -> str:
 
 
 def _dashboard_view_action_html(symbol: str) -> str:
-    safe_symbol = escape(str(symbol or "").upper())
+    normalized_symbol = str(symbol or "").upper()
+    safe_symbol = escape(normalized_symbol)
+    onclick = (
+        "event.preventDefault();event.stopPropagation();"
+        f"if(window.__dashboardOpenDrawer){{window.__dashboardOpenDrawer({json.dumps(normalized_symbol, ensure_ascii=False)},null);}}"
+        "return false;"
+    )
     return (
         f'<a class="dashboard-view-action" href="#" data-dashboard-drawer-open="{safe_symbol}" '
-        f'title="打开 {safe_symbol} 右侧详情面板"><span>查看</span><i>›</i></a>'
+        f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板"><span>查看</span><i>›</i></a>'
     )
 
 
