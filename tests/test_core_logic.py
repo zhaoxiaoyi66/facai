@@ -127,7 +127,7 @@ from ui.dashboard import (
     _translate_factor,
     _valuation_status,
 )
-from ui import manual_review, stock_detail
+from ui import buy_zone, manual_review, stock_detail
 from ui.metric_labels import is_internal_metric_field, metric_label, model_type_label, resolution_status_label, unmapped_metric_labels
 
 
@@ -1395,13 +1395,13 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(_risk_rating(result.risk_flags, high_flags, medium_flags, data_quality), "中高")
         self.assertEqual(result.valuation_status, "回撤后有吸引力")
         self.assertEqual(_valuation_status(result.value_zone, data_quality), "回撤后有吸引力")
-        self.assertEqual(result.action, "可小仓分批")
-        self.assertEqual(_action_recommendation(result, data_quality, "", high_flags, ""), "可小仓分批")
+        self.assertEqual(result.action, "等回踩")
+        self.assertEqual(_action_recommendation(result, data_quality, "", high_flags, ""), "等回踩")
         self.assertEqual(result.dataConfidence, "medium")
         self.assertEqual(result.proxyConfidence, "medium")
         self.assertIn("adjusted EBITDA", result.missingIndustryMetrics)
         self.assertIn("EBITDA", result.proxyMetricsUsed)
-        self.assertLessEqual(result.maxSuggestedPositionPercent, 5)
+        self.assertEqual(result.maxSuggestedPositionPercent, 0)
 
     def test_vst_special_case_does_not_override_observe_valuation(self) -> None:
         context = ScoreContext(
@@ -1471,6 +1471,26 @@ class ScoringTests(unittest.TestCase):
         )
 
         self.assertNotEqual(action, "可正常分批")
+        self.assertNotIn(action, {"可小仓分批", "可正常分批"})
+
+    def test_near_buy_zone_entry_does_not_emit_exact_buy_action(self) -> None:
+        context = ScoreContext(
+            snapshot={"ticker": "TEST"},
+            technicals={"drawdown_from_high_pct": -25},
+            model_type="GENERIC",
+        )
+
+        action = _final_action(
+            quality=80,
+            entry=70,
+            risk=40,
+            valuation_status="击球区附近",
+            context=context,
+            data_insufficient=False,
+            overheat=self._neutral_overheat(),
+        )
+
+        self.assertEqual(action, "等回踩")
 
     def test_high_quality_large_drawdown_does_not_bypass_observe_valuation(self) -> None:
         context = ScoreContext(
@@ -2215,8 +2235,90 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(result.dataConfidence, "low")
         self.assertNotIn(result.action, {"可小仓分批", "可正常分批"})
-        self.assertEqual(result.action, "可小仓观察，待关键数据复核后再加仓")
-        self.assertLessEqual(result.maxSuggestedPositionPercent, 3)
+        self.assertNotIn("可小仓", result.action)
+        self.assertEqual(result.maxSuggestedPositionPercent, 0)
+        self.assertEqual(result.currentAddLimitPercent, 0)
+
+    def test_observe_actions_do_not_keep_current_add_limit(self) -> None:
+        result = calculate_total_score(
+            {
+                "ticker": "ORCL",
+                "sector": "Technology",
+                "industry": "Software - Infrastructure",
+                "revenue_growth": 0.04,
+                "gross_margin": 0.70,
+                "operating_margin": 0.24,
+                "free_cash_flow": 12_000,
+                "total_revenue": 55_000,
+                "total_debt": 95_000,
+                "total_cash": 8_000,
+                "price_to_sales": 12,
+                "price_to_fcf": 45,
+            },
+            {
+                "price": 100,
+                "ema20": 105,
+                "ema50": 110,
+                "ema200": 120,
+                "rsi14": 48,
+                "drawdown_from_high_pct": -18,
+                "gain_20d_pct": 1,
+            },
+        )
+
+        self.assertIn(result.action, {"只观察", "等回踩"})
+        self.assertEqual(result.maxSuggestedPositionPercent, 0)
+        self.assertEqual(result.currentAddLimitPercent, 0)
+
+    def test_crypto_medium_high_risk_does_not_emit_exact_buy_action(self) -> None:
+        cases = [
+            (
+                "COIN",
+                {
+                    "ticker": "COIN",
+                    "sector": "Financial Services",
+                    "industry": "Capital Markets",
+                    "revenue_growth": 0.18,
+                    "operating_margin": 0.22,
+                    "free_cash_flow": 2_000_000_000,
+                    "total_revenue": 6_000_000_000,
+                    "total_cash": 7_000_000_000,
+                    "total_debt": 3_000_000_000,
+                    "price_to_sales": 8,
+                },
+            ),
+            (
+                "HOOD",
+                {
+                    "ticker": "HOOD",
+                    "sector": "Financial Services",
+                    "industry": "Brokerage",
+                    "revenue_growth": 0.22,
+                    "operating_margin": 0.16,
+                    "free_cash_flow": 1_200_000_000,
+                    "total_revenue": 3_500_000_000,
+                    "total_cash": 4_000_000_000,
+                    "total_debt": 1_000_000_000,
+                    "price_to_sales": 10,
+                },
+            ),
+        ]
+        technicals = {
+            "price": 100,
+            "ema20": 98,
+            "ema50": 96,
+            "ema200": 90,
+            "rsi14": 48,
+            "drawdown_from_high_pct": -35,
+            "gain_20d_pct": -3,
+        }
+
+        for symbol, snapshot in cases:
+            with self.subTest(symbol=symbol):
+                result = calculate_total_score(snapshot, technicals)
+
+                self.assertEqual(result.riskRating, "中高")
+                self.assertNotIn(result.action, {"可小仓分批", "可正常分批"})
 
     def test_score_explanation_panel_is_not_debug_table(self) -> None:
         source = inspect.getsource(_render_score_explanation)
@@ -2724,7 +2826,7 @@ class ScoringTests(unittest.TestCase):
                 "enterprise_value": 55_000_000_000,
                 "ebitda": 5_500_000_000,
                 "free_cash_flow": 4_000_000_000,
-                "net_debt_to_ebitda": 3.4,
+                "net_debt_to_ebitda": 2.5,
                 "current_ratio": 1.1,
             },
             {
@@ -2736,7 +2838,9 @@ class ScoringTests(unittest.TestCase):
             },
         )
 
+        self.assertEqual(result.riskRating, "中")
         self.assertEqual(result.action, "可小仓分批")
+        self.assertGreater(result.maxSuggestedPositionPercent, 0)
         self.assertLessEqual(result.maxSuggestedPositionPercent, 5)
 
     def test_dashboard_core_summary_data_is_enough_for_common_models(self) -> None:
@@ -3044,6 +3148,50 @@ class ScoringTests(unittest.TestCase):
         invalid = generate_position_plan("BAD", invalid_zone, {"risk_rating": "低", "entry_rating": "A"})
         self.assertEqual(high_risk.currentAddLimitPercent, 0)
         self.assertEqual(invalid.currentAddLimitPercent, 0)
+
+    def test_position_plan_requires_exact_buy_action_for_current_add(self) -> None:
+        zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("OBS", "GENERIC", 95, 130, 105, 120, 90, 100, 70, "tranche_buy", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        observe = generate_position_plan("OBS", zone, {"risk_rating": "低", "entry_rating": "A", "action": "只观察"})
+        wait = generate_position_plan("WAIT", zone, {"risk_rating": "低", "entry_rating": "A", "action": "等回踩"})
+        exact_buy = generate_position_plan("BUY", zone, {"risk_rating": "低", "entry_rating": "A", "action": "可小仓分批"})
+
+        self.assertEqual(observe.currentAddLimitPercent, 0)
+        self.assertEqual(wait.currentAddLimitPercent, 0)
+        self.assertGreater(exact_buy.currentAddLimitPercent, 0)
+
+    def test_position_plan_blocks_low_confidence_current_add(self) -> None:
+        zone = validate_buy_zone_estimate(
+            BuyZoneEstimate("LOW", "GENERIC", 95, 130, 105, 120, 90, 100, 70, "tranche_buy", "high", "blended", ["P/FCF", "P/S"], [], [], "now"),
+            {},
+            None,
+        )
+
+        suggestion = generate_position_plan(
+            "LOW",
+            zone,
+            {"risk_rating": "低", "entry_rating": "A", "action": "可小仓分批", "data_confidence": "low"},
+        )
+
+        self.assertEqual(suggestion.currentAddLimitPercent, 0)
+
+    def test_buy_zone_short_action_prioritizes_no_chase_over_buy_wording(self) -> None:
+        label = buy_zone._action_short_text(
+            {
+                "currentZone": "no_chase",
+                "currentPrice": 100,
+                "action": "可小仓分批",
+                "dataConfidence": "medium",
+                "confidence": "high",
+                "isValid": True,
+            }
+        )
+
+        self.assertEqual(label, "不新增")
 
     def test_manual_buy_zone_override_takes_priority_and_can_be_cleared(self) -> None:
         system = generate_buy_zone(

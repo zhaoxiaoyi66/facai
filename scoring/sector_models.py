@@ -1957,7 +1957,7 @@ def _apply_confidence_action(action: str, data_confidence: str) -> str:
     if data_confidence != "low":
         return action
     if action in {"可小仓分批", "可正常分批"}:
-        return "可小仓观察，待关键数据复核后再加仓"
+        return "待复核，暂不新增"
     if action in {"回撤买点", "击球区附近"}:
         return "数据待复核"
     return action
@@ -1970,11 +1970,9 @@ def _apply_confidence_score_caps(quality: float, risk: float, data_confidence: s
 
 
 def _apply_confidence_position_cap(max_position: float, data_confidence: str, action: str) -> float:
-    if data_confidence != "low":
-        return max_position
-    if action == "可小仓观察，待关键数据复核后再加仓":
-        return min(max_position, 3.0)
-    return min(max_position, 5.0)
+    if data_confidence == "low":
+        return 0.0
+    return max_position
 
 
 def _max_portfolio_weight_percent(quality: float, risk: float, data_insufficient: bool, data_confidence: str = "high") -> float:
@@ -2183,6 +2181,7 @@ def _risk_rating(score: float, data_insufficient: bool = False) -> str:
 BUY_ACTIONS = {"可小仓分批", "可正常分批"}
 NON_BUY_VALUATION_STATUSES = {"只观察", "偏贵", "极贵"}
 MIN_BUY_ENTRY_SCORE = 55.0
+MIN_EXACT_BUY_ENTRY_SCORE = 75.0
 
 
 def _final_action(
@@ -2237,8 +2236,10 @@ def _guard_action_conflicts(action: str, valuation_status: str, risk: float, ent
         return "只观察" if valuation_status == "只观察" else "等回踩"
     if entry < MIN_BUY_ENTRY_SCORE and action in BUY_ACTIONS:
         return "只观察"
-    if risk > 50 and action == "可正常分批":
-        return "可小仓分批"
+    if entry < MIN_EXACT_BUY_ENTRY_SCORE and action in BUY_ACTIONS:
+        return "等回踩"
+    if risk > 50 and action in BUY_ACTIONS:
+        return "等回踩"
     return action
 
 
@@ -2257,7 +2258,7 @@ def _base_action(quality: float, entry: float, risk: float) -> str:
 
 
 def _max_suggested_position_percent(quality: float, risk: float, action: str, data_insufficient: bool) -> float:
-    if data_insufficient or action in {"数据不足，需复核", "剔除", "禁止追高"}:
+    if data_insufficient or "复核" in str(action) or action in {"剔除", "禁止追高", "只观察", "等回踩"}:
         return 0.0
     if risk > 70:
         max_position = 5.0

@@ -1449,10 +1449,10 @@ def _action_short_text(row: dict) -> str:
     zone = str(row.get("currentZone") or "")
     if status == "需复核":
         return "需复核"
-    if "可小仓" in action or "可正常" in action:
-        return "可小仓"
     if zone == "no_chase" or "禁止追高" in action:
         return "不新增"
+    if "可小仓" in action or "可正常" in action:
+        return "可小仓"
     if "等回踩" in action:
         return "等回踩"
     if "只观察" in action:

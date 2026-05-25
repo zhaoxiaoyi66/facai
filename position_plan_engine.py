@@ -30,8 +30,9 @@ def generate_position_plan(symbol: str, buyZone: BuyZoneEstimate, scoringResult=
     risk = _score_attr(scoringResult, "risk_rating") or _score_attr(scoringResult, "riskRating") or ""
     entry = _score_attr(scoringResult, "entry_rating") or _score_attr(scoringResult, "entryRating") or ""
     action = _score_attr(scoringResult, "action") or ""
+    data_confidence = _score_attr(scoringResult, "data_confidence") or _score_attr(scoringResult, "dataConfidence") or ""
     max_portfolio = _max_portfolio_weight(quality, risk)
-    current_add = _current_add_limit(entry, risk, buyZone.currentZone, action)
+    current_add = _current_add_limit(entry, risk, buyZone.currentZone, action, data_confidence)
 
     tranche_low = buyZone.trancheBuyLow
     tranche_high = buyZone.trancheBuyHigh
@@ -69,10 +70,14 @@ def _max_portfolio_weight(quality: str, risk: str) -> float:
     return 8.0
 
 
-def _current_add_limit(entry: str, risk: str, zone: str, action: str) -> float:
+def _current_add_limit(entry: str, risk: str, zone: str, action: str, data_confidence: str = "") -> float:
+    if str(data_confidence).lower() == "low":
+        return 0.0
     if _is_high_risk(risk) or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
         return 0.0
     if _is_high_risk(risk) or zone == "no_chase" or "禁止追高" in action:
+        return 0.0
+    if action not in {"可小仓分批", "可正常分批"}:
         return 0.0
     if zone in {"data_insufficient", "fair_observation"}:
         return 3.0
