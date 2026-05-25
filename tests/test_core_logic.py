@@ -6,6 +6,7 @@ import os
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -105,6 +106,7 @@ from scoring.risk_flags import RiskFlag
 from scoring.power_company import is_power_company
 from scoring.metric_sources import fcf_margin_metric, metric_participates_in_score
 from scoring.sector_models import ScoreContext, classifyStockModel, fcf_margin_score, _final_action, _guard_action_conflicts
+from scoring.final_decision import derive_final_decision
 from scoring.signals import (
     ANTI_FOMO_MESSAGE,
     LEFT_SIDE_OPPORTUNITY_MESSAGE,
@@ -1510,6 +1512,103 @@ class ScoringTests(unittest.TestCase):
         )
 
         self.assertNotIn(action, {"可小仓分批", "可正常分批"})
+
+    def test_final_decision_blocks_observe_valuation_and_plan_add(self) -> None:
+        score = SimpleNamespace(
+            action="可小仓分批",
+            valuationStatus="只观察",
+            entryRating="A",
+            riskRating="低",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+        buy_zone_estimate = SimpleNamespace(currentZone="tranche_buy")
+        position_plan = SimpleNamespace(currentAddLimitPercent=8, maxPortfolioWeightPercent=20)
+
+        decision = derive_final_decision(score, buy_zone_estimate, position_plan)
+
+        self.assertEqual(decision.finalAction, "只观察")
+        self.assertFalse(decision.isActionable)
+        self.assertEqual(decision.currentAddLimitPercent, 0)
+        self.assertIn("valuation_status", decision.blockReasons)
+
+    def test_final_decision_blocks_c_or_d_entry_from_actionable(self) -> None:
+        for entry_rating in ["C - 只观察", "D - 剔除"]:
+            with self.subTest(entry_rating=entry_rating):
+                score = SimpleNamespace(
+                    action="可小仓分批",
+                    valuationStatus="击球区附近",
+                    entryRating=entry_rating,
+                    riskRating="低",
+                    dataConfidence="high",
+                    currentAddLimitPercent=5,
+                    maxPortfolioWeightPercent=15,
+                )
+
+                decision = derive_final_decision(score)
+
+                self.assertFalse(decision.isActionable)
+                self.assertEqual(decision.currentAddLimitPercent, 0)
+                self.assertIn("entry_rating", decision.blockReasons)
+
+    def test_final_decision_caps_medium_high_risk_normal_batch(self) -> None:
+        score = SimpleNamespace(
+            action="可正常分批",
+            valuationStatus="击球区附近",
+            entryRating="A",
+            riskRating="中高",
+            dataConfidence="high",
+            currentAddLimitPercent=10,
+            maxPortfolioWeightPercent=20,
+        )
+
+        decision = derive_final_decision(score)
+
+        self.assertNotEqual(decision.finalAction, "可正常分批")
+        self.assertFalse(decision.isActionable)
+        self.assertEqual(decision.currentAddLimitPercent, 0)
+        self.assertIn("risk_rating", decision.reviewReasons)
+
+    def test_final_decision_blocks_low_confidence_buy_and_add(self) -> None:
+        score = SimpleNamespace(
+            action="可小仓分批",
+            valuationStatus="击球区附近",
+            entryRating="A",
+            riskRating="低",
+            dataConfidence="low",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+        position_plan = SimpleNamespace(currentAddLimitPercent=5, maxPortfolioWeightPercent=20)
+
+        decision = derive_final_decision(score, position_plan=position_plan)
+
+        self.assertNotIn(decision.finalAction, {"可小仓分批", "可正常分批"})
+        self.assertFalse(decision.isActionable)
+        self.assertEqual(decision.currentAddLimitPercent, 0)
+        self.assertIn("data_confidence", decision.blockReasons)
+
+    def test_final_decision_blocks_no_chase_and_invalid_zones(self) -> None:
+        for zone in ["no_chase", "invalid_zone", "data_insufficient"]:
+            with self.subTest(zone=zone):
+                score = SimpleNamespace(
+                    action="可小仓分批",
+                    valuationStatus="击球区附近",
+                    entryRating="A",
+                    riskRating="低",
+                    dataConfidence="high",
+                    currentAddLimitPercent=5,
+                    maxPortfolioWeightPercent=15,
+                )
+                buy_zone_estimate = SimpleNamespace(currentZone=zone)
+                position_plan = SimpleNamespace(currentAddLimitPercent=5, maxPortfolioWeightPercent=20)
+
+                decision = derive_final_decision(score, buy_zone_estimate, position_plan)
+
+                self.assertFalse(decision.isActionable)
+                self.assertEqual(decision.currentAddLimitPercent, 0)
+                self.assertIn("buy_zone", decision.blockReasons)
 
     def test_power_company_classification_includes_core_utility_symbols_and_industries(self) -> None:
         for symbol in ["VST", "CEG", "TLN", "NRG", "DUK", "SO", "NEE"]:
