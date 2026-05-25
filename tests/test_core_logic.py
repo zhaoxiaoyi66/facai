@@ -3497,6 +3497,16 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(option_entry["strike_price"], 25)
             self.assertEqual(skip_entry["action_type"], "skip")
 
+    def test_trade_journal_store_lists_all_entries_and_symbols(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            store.save_entry("hood", {"trade_date": "2026-05-26", "action_type": "buy"})
+            store.save_entry("now", {"trade_date": "2026-05-27", "action_type": "sell"})
+
+            self.assertEqual([entry["symbol"] for entry in store.list_entries()], ["NOW", "HOOD"])
+            self.assertEqual(store.list_symbols(), ["HOOD", "NOW"])
+
     def test_decision_log_and_trade_journal_validate_inputs(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"

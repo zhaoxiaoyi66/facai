@@ -255,20 +255,41 @@ class TradeJournalStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return _row_to_dict(columns, row) if row else None
 
-    def list_entries(self, symbol: str) -> list[dict]:
+    def list_entries(self, symbol: str | None = None) -> list[dict]:
         with self.connect() as conn:
-            cursor = conn.execute(
-                """
-                SELECT *
-                FROM trade_journal_entries
-                WHERE symbol = ?
-                ORDER BY trade_date DESC, created_at DESC, id DESC
-                """,
-                (_normalize_symbol(symbol),),
-            )
+            if symbol:
+                cursor = conn.execute(
+                    """
+                    SELECT *
+                    FROM trade_journal_entries
+                    WHERE symbol = ?
+                    ORDER BY trade_date DESC, created_at DESC, id DESC
+                    """,
+                    (_normalize_symbol(symbol),),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT *
+                    FROM trade_journal_entries
+                    ORDER BY trade_date DESC, created_at DESC, id DESC
+                    """
+                )
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
+
+    def list_symbols(self) -> list[str]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT symbol
+                FROM trade_journal_entries
+                ORDER BY symbol ASC
+                """
+            )
+            rows = cursor.fetchall()
+        return [str(row[0]) for row in rows]
 
 
 def _clean_decision_snapshot(symbol: str, values: dict) -> dict:
