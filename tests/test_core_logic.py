@@ -3487,6 +3487,46 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn('st.info("尚未设置，需要人工配置。")', source)
         self.assertIn("系统建议击球区", source)
 
+    def test_stock_detail_prefers_final_decision_for_action_and_position(self) -> None:
+        final_decision = SimpleNamespace(
+            finalAction="只观察",
+            currentAddLimitPercent=0,
+            maxPortfolioWeightPercent=12,
+        )
+        score = SimpleNamespace(
+            action="可小仓分批",
+            current_add_limit_percent=5,
+            max_suggested_position_percent=5,
+            max_portfolio_weight_percent=20,
+            scoring_model="GENERIC",
+            risk_rating="中",
+        )
+        plan = SimpleNamespace(currentAddLimitPercent=8, maxPortfolioWeightPercent=25)
+        zone = BuyZoneEstimate(
+            "DETAIL",
+            "GENERIC",
+            110,
+            130,
+            105,
+            120,
+            90,
+            100,
+            70,
+            "fair_observation",
+            "high",
+            "blended",
+            [],
+            [],
+            [],
+            "now",
+        )
+
+        self.assertEqual(stock_detail._final_action_text(score, final_decision), "只观察")
+        self.assertEqual(stock_detail._final_current_add(score, final_decision, plan), 0)
+        self.assertEqual(stock_detail._final_max_position(score, final_decision, plan), 12)
+        self.assertIn("只观察", stock_detail._decision_summary_text(score, zone, final_decision))
+        self.assertNotIn("可小仓分批", stock_detail._decision_summary_text(score, zone, final_decision))
+
     def test_sec_saas_supplement_extracts_sbc_and_rpo_growth(self) -> None:
         companyfacts = {
             "facts": {

@@ -22,6 +22,7 @@ from data.stock_plan import StockPlanStore
 from formatting import format_compact_number, format_currency, format_large_number, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from position_plan_engine import PositionPlanSuggestion, generate_position_plan
+from scoring.final_decision import derive_final_decision
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
@@ -72,11 +73,12 @@ def render() -> None:
     effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
     effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
+    final_decision = derive_final_decision(score, effective_buy_zone, plan_suggestion)
 
-    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at)
-    _render_decision_summary(score, effective_buy_zone, plan_suggestion)
+    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, final_decision)
+    _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
-    _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone)
+    _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision)
     _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan)
     _render_industry_metrics(score.scoring_model, snapshot, score)
@@ -123,16 +125,16 @@ def _select_ticker() -> str:
     return (custom or selected or "").strip().upper()
 
 
-def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score, refreshed_at: str | None) -> None:
+def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score, refreshed_at: str | None, final_decision=None) -> None:
     company = snapshot.get("company_name") or ticker
     price = technicals.get("price") or snapshot.get("current_price")
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
     buy_point_html = _buy_point_status_pill_html(score)
     values = [
-        ("操作建议", score.action),
-        ("当前新增", _position_limit_text(getattr(score, "current_add_limit_percent", score.max_suggested_position_percent))),
-        ("组合仓位上限", _position_limit_text(getattr(score, "max_portfolio_weight_percent", None))),
+        ("操作建议", _final_action_text(score, final_decision)),
+        ("当前新增", _position_limit_text(_final_current_add(score, final_decision))),
+        ("组合仓位上限", _position_limit_text(_final_max_position(score, final_decision))),
         ("当前价格", format_currency(price)),
         ("市值", format_large_number(snapshot.get("market_cap"))),
         ("行业模型", model_type_label(score.scoring_model)),
@@ -625,8 +627,8 @@ def _manual_override_fields(model_type: str) -> list[tuple[str, str, bool]]:
     return []
 
 
-def _decision_summary_text(score, buy_zone: BuyZoneEstimate) -> str:
-    action = score.action or "只观察"
+def _decision_summary_text(score, buy_zone: BuyZoneEstimate, final_decision=None) -> str:
+    action = _final_action_text(score, final_decision)
     if buy_zone.currentZone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} and action not in {"禁止追高", "剔除"}:
         return f"{score.scoring_model} 模型显示当前已经接近系统买区，但仍按风险等级控制新增仓位。"
     if score.risk_rating == "低" and action in {"只观察", "等回踩"}:
@@ -716,17 +718,37 @@ def _toggle_session_flag(key: str) -> None:
     st.session_state[key] = not st.session_state.get(key, False)
 
 
-def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion) -> None:
+def _final_action_text(score, final_decision=None) -> str:
+    return str(getattr(final_decision, "finalAction", None) or getattr(score, "action", None) or "只观察")
+
+
+def _final_current_add(score, final_decision=None, plan_suggestion: PositionPlanSuggestion | None = None):
+    if final_decision is not None and hasattr(final_decision, "currentAddLimitPercent"):
+        return getattr(final_decision, "currentAddLimitPercent")
+    if plan_suggestion is not None:
+        return plan_suggestion.currentAddLimitPercent
+    return getattr(score, "current_add_limit_percent", getattr(score, "max_suggested_position_percent", None))
+
+
+def _final_max_position(score, final_decision=None, plan_suggestion: PositionPlanSuggestion | None = None):
+    if final_decision is not None and hasattr(final_decision, "maxPortfolioWeightPercent"):
+        return getattr(final_decision, "maxPortfolioWeightPercent")
+    if plan_suggestion is not None:
+        return plan_suggestion.maxPortfolioWeightPercent
+    return getattr(score, "max_portfolio_weight_percent", None)
+
+
+def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion, final_decision=None) -> None:
     render_section_title("当前结论", "先定动作，再看触发条件")
     wait_items = _decision_wait_items(score, buy_zone)
     trigger = getattr(buy_zone, "nextBuyLabel", "") or _distance_to_zone(buy_zone.currentPrice, buy_zone.to_plan_fields())
     st.markdown(
         '<section class="research-card conclusion-card">'
-        f'<div class="conclusion-main">{escape(score.action or "只观察")}</div>'
-        f'<p>{escape(_decision_summary_text(score, buy_zone))}</p>'
+        f'<div class="conclusion-main">{escape(_final_action_text(score, final_decision))}</div>'
+        f'<p>{escape(_decision_summary_text(score, buy_zone, final_decision))}</p>'
         '<div class="conclusion-grid">'
-        f'<div><span>当前新增建议</span><strong>{escape(_position_limit_text(plan_suggestion.currentAddLimitPercent))}</strong></div>'
-        f'<div><span>组合仓位上限</span><strong>{escape(_position_limit_text(plan_suggestion.maxPortfolioWeightPercent))}</strong></div>'
+        f'<div><span>当前新增建议</span><strong>{escape(_position_limit_text(_final_current_add(score, final_decision, plan_suggestion)))}</strong></div>'
+        f'<div><span>组合仓位上限</span><strong>{escape(_position_limit_text(_final_max_position(score, final_decision, plan_suggestion)))}</strong></div>'
         f'<div><span>下一触发条件</span><strong>{escape(trigger)}</strong></div>'
         '</div>'
         '<div class="wait-list">'
@@ -807,6 +829,7 @@ def _render_action_plan_form(
     plan: dict,
     suggestion: PositionPlanSuggestion,
     active_zone: BuyZoneEstimate,
+    final_decision=None,
 ) -> None:
     render_section_title("操作计划", "系统建议，可按需编辑")
     edit_key = f"stock-plan-editing-{ticker}"
@@ -837,11 +860,11 @@ def _render_action_plan_form(
         top = st.columns(2)
         target_position_pct = top[0].text_input(
             "组合仓位上限 %",
-            value=_number_text(_plan_or_suggestion(plan, "target_position_pct", suggestion.maxPortfolioWeightPercent)),
+            value=_number_text(_plan_or_suggestion(plan, "target_position_pct", _final_max_position(None, final_decision, suggestion))),
         )
         planned_position_pct = top[1].text_input(
             "当前新增建议 %",
-            value=_number_text(_plan_or_suggestion(plan, "planned_position_pct", suggestion.currentAddLimitPercent)),
+            value=_number_text(_plan_or_suggestion(plan, "planned_position_pct", _final_current_add(None, final_decision, suggestion))),
         )
 
         buy_cols = st.columns(3)
