@@ -72,7 +72,13 @@ from data.extract_metric_from_text import extractMetricFromText
 from data.fmp_cache import CACHE_TTL_SECONDS, ttl_bucket_for_endpoint
 from data.fmp_queue import FMP_RATE_LIMIT
 from data.fundamentals import FundamentalCache
-from data.decision_log import DecisionLogStore, TradeJournalStore, build_decision_snapshot_from_bundle
+from data.decision_log import (
+    DecisionLogStore,
+    DecisionOutcomeStore,
+    TradeJournalStore,
+    build_decision_outcomes_from_price_history,
+    build_decision_snapshot_from_bundle,
+)
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
 from data.metric_dictionary import metric_definition_by_key
 from data.metric_source_map import metric_source_definition
@@ -1486,6 +1492,24 @@ class TechnicalIndicatorTests(unittest.TestCase):
 class ScoringTests(unittest.TestCase):
     def _neutral_overheat(self) -> OverheatResult:
         return OverheatResult(score=0, status="", action="", recommendation="", reasons=[])
+
+    def _insert_price_history(self, db_path: Path, symbol: str, closes: list[tuple[str, float]]) -> None:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE price_history (
+                    ticker TEXT,
+                    date TEXT,
+                    close REAL,
+                    fetched_at TEXT
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO price_history VALUES (?, ?, ?, ?)",
+                [(symbol.upper(), day, close, "now") for day, close in closes],
+            )
+            conn.commit()
 
     def test_valuation_score_penalizes_expensive_multiples(self) -> None:
         cheap = calculate_valuation_score({"forward_pe": 20, "price_to_sales": 5}, {"drawdown_from_high_pct": -20})
@@ -3521,6 +3545,83 @@ class ScoringTests(unittest.TestCase):
                 trade_store.save_entry("NOW", {"action_type": "unknown"})
             with self.assertRaises(ValueError):
                 trade_store.save_entry("NOW", {"action_type": "buy", "quantity": -1})
+
+    def test_decision_outcomes_calculate_returns_and_drawdown(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(
+                db_path,
+                "NOW",
+                [
+                    ("2026-05-27", 110),
+                    ("2026-05-28", 95),
+                    ("2026-06-02", 120),
+                    ("2026-06-26", 130),
+                    ("2026-08-24", 150),
+                    ("2026-11-22", 180),
+                ],
+            )
+            snapshot = {"id": 1, "symbol": "NOW", "decision_date": "2026-05-26", "price": 100}
+
+            outcomes = {item["horizon"]: item for item in build_decision_outcomes_from_price_history(snapshot, db_path)}
+
+            self.assertEqual(set(outcomes), {"1d", "1w", "1m", "3m", "6m"})
+            self.assertEqual(outcomes["1d"]["start_price"], 100)
+            self.assertEqual(outcomes["1d"]["end_price"], 110)
+            self.assertEqual(outcomes["1d"]["return_pct"], 10)
+            self.assertEqual(outcomes["1w"]["end_price"], 120)
+            self.assertEqual(outcomes["1w"]["return_pct"], 20)
+            self.assertEqual(outcomes["1w"]["max_drawdown_pct"], -13.636363636363635)
+            self.assertEqual(outcomes["6m"]["end_price"], 180)
+            self.assertEqual(outcomes["6m"]["status"], "complete")
+
+    def test_decision_outcome_store_saves_and_lists_by_snapshot_id(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(db_path, "CRM", [("2026-05-27", 105), ("2026-06-25", 125)])
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "CRM",
+                {
+                    "decision_date": "2026-05-26",
+                    "price": 100,
+                    "final_action": "add",
+                },
+            )
+            store = DecisionOutcomeStore(db_path)
+
+            saved = store.calculate_and_save_outcomes(snapshot["id"])
+            loaded = store.list_outcomes(snapshot["id"])
+
+            self.assertEqual([row["horizon"] for row in loaded], ["1d", "1w", "1m", "3m", "6m"])
+            self.assertEqual(len(saved), 5)
+            self.assertEqual(store.get_outcome(snapshot["id"], "1d")["return_pct"], 5)
+            self.assertEqual(store.get_outcome(snapshot["id"], "1m")["return_pct"], 25)
+
+    def test_decision_outcomes_mark_missing_when_price_history_is_insufficient(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "ADBE",
+                {
+                    "decision_date": "2026-05-26",
+                    "price": 300,
+                    "final_action": "wait",
+                },
+            )
+            store = DecisionOutcomeStore(db_path)
+
+            outcomes = store.calculate_and_save_outcomes(snapshot["id"])
+
+            self.assertEqual(len(outcomes), 5)
+            self.assertTrue(all(outcome["status"] == "missing" for outcome in outcomes))
+            self.assertIsNone(store.get_outcome(snapshot["id"], "1d")["end_price"])
+
+    def test_decision_outcome_store_validates_horizon(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DecisionOutcomeStore(Path(tmpdir) / "decision_log.sqlite")
+
+            with self.assertRaises(ValueError):
+                store.save_outcome(1, "2y", {"status": "missing"})
 
     def test_portfolio_position_store_crud_and_active_filter(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from contextlib import closing
 from datetime import date, datetime, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -11,6 +13,7 @@ from data.prices import CACHE_PATH
 
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
+OUTCOME_HORIZONS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
 
 
 def build_decision_snapshot_from_bundle(
@@ -292,6 +295,134 @@ class TradeJournalStore:
         return [str(row[0]) for row in rows]
 
 
+class DecisionOutcomeStore:
+    def __init__(self, path: Path = CACHE_PATH) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        DecisionLogStore(path)
+        self._ensure_schema()
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_schema(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS decision_outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_snapshot_id INTEGER NOT NULL,
+                    horizon TEXT NOT NULL,
+                    start_price REAL,
+                    end_price REAL,
+                    return_pct REAL,
+                    max_drawdown_pct REAL,
+                    status TEXT NOT NULL DEFAULT 'missing',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(decision_snapshot_id, horizon),
+                    FOREIGN KEY(decision_snapshot_id) REFERENCES decision_snapshots(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_decision_outcomes_snapshot
+                ON decision_outcomes(decision_snapshot_id)
+                """
+            )
+
+    def calculate_and_save_outcomes(self, decision_snapshot_id: int) -> list[dict]:
+        snapshot = DecisionLogStore(self.path).get_snapshot(decision_snapshot_id)
+        if not snapshot:
+            return []
+        outcomes = build_decision_outcomes_from_price_history(snapshot, self.path)
+        return [self.save_outcome(decision_snapshot_id, outcome["horizon"], outcome) for outcome in outcomes]
+
+    def save_outcome(self, decision_snapshot_id: int, horizon: str, values: dict) -> dict:
+        cleaned = _clean_decision_outcome(decision_snapshot_id, horizon, values)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO decision_outcomes (
+                    decision_snapshot_id,
+                    horizon,
+                    start_price,
+                    end_price,
+                    return_pct,
+                    max_drawdown_pct,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_snapshot_id, horizon) DO UPDATE SET
+                    start_price = excluded.start_price,
+                    end_price = excluded.end_price,
+                    return_pct = excluded.return_pct,
+                    max_drawdown_pct = excluded.max_drawdown_pct,
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                """,
+                (
+                    cleaned["decision_snapshot_id"],
+                    cleaned["horizon"],
+                    cleaned["start_price"],
+                    cleaned["end_price"],
+                    cleaned["return_pct"],
+                    cleaned["max_drawdown_pct"],
+                    cleaned["status"],
+                    cleaned["created_at"],
+                ),
+            )
+        return self.get_outcome(decision_snapshot_id, horizon) or cleaned
+
+    def get_outcome(self, decision_snapshot_id: int, horizon: str) -> dict | None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_outcomes
+                WHERE decision_snapshot_id = ?
+                  AND horizon = ?
+                """,
+                (decision_snapshot_id, _clean_horizon(horizon)),
+            )
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_dict(columns, row) if row else None
+
+    def list_outcomes(self, decision_snapshot_id: int) -> list[dict]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_outcomes
+                WHERE decision_snapshot_id = ?
+                ORDER BY CASE horizon
+                    WHEN '1d' THEN 1
+                    WHEN '1w' THEN 2
+                    WHEN '1m' THEN 3
+                    WHEN '3m' THEN 4
+                    WHEN '6m' THEN 5
+                    ELSE 99
+                END
+                """,
+                (decision_snapshot_id,),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+
+def build_decision_outcomes_from_price_history(snapshot: dict, path: Path = CACHE_PATH) -> list[dict]:
+    return [_build_outcome_for_horizon(snapshot, horizon, days, path) for horizon, days in OUTCOME_HORIZONS.items()]
+
+
 def _clean_decision_snapshot(symbol: str, values: dict) -> dict:
     return {
         "symbol": _normalize_symbol(symbol),
@@ -328,6 +459,57 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "decision_snapshot_id": _optional_int(values.get("decision_snapshot_id"), "decision_snapshot_id"),
         "notes": _clean_text(values.get("notes")),
         "created_at": _now(),
+    }
+
+
+def _clean_decision_outcome(decision_snapshot_id: int, horizon: str, values: dict) -> dict:
+    return {
+        "decision_snapshot_id": _required_int(decision_snapshot_id, "decision_snapshot_id"),
+        "horizon": _clean_horizon(horizon),
+        "start_price": _optional_non_negative_number(values.get("start_price", values.get("startPrice")), "start_price"),
+        "end_price": _optional_non_negative_number(values.get("end_price", values.get("endPrice")), "end_price"),
+        "return_pct": _optional_number(values.get("return_pct", values.get("returnPct")), "return_pct"),
+        "max_drawdown_pct": _optional_number(
+            values.get("max_drawdown_pct", values.get("maxDrawdownPct")),
+            "max_drawdown_pct",
+        ),
+        "status": _clean_outcome_status(values.get("status")),
+        "created_at": _now(),
+    }
+
+
+def _build_outcome_for_horizon(snapshot: dict, horizon: str, days: int, path: Path) -> dict:
+    start_price = _optional_non_negative_number(snapshot.get("price"), "price")
+    decision_date = _parse_date(snapshot.get("decision_date"))
+    if start_price is None or decision_date is None:
+        return _missing_outcome(horizon, start_price)
+
+    end_date = decision_date + timedelta(days=days)
+    closes = _history_closes(path, str(snapshot.get("symbol") or ""), decision_date, end_date)
+    if not closes:
+        return _missing_outcome(horizon, start_price)
+
+    end_price = closes[-1]
+    return_pct = (end_price - start_price) / start_price * 100 if start_price > 0 else None
+    max_drawdown_pct = _max_drawdown_pct(start_price, closes)
+    return {
+        "horizon": horizon,
+        "start_price": start_price,
+        "end_price": end_price,
+        "return_pct": return_pct,
+        "max_drawdown_pct": max_drawdown_pct,
+        "status": "complete",
+    }
+
+
+def _missing_outcome(horizon: str, start_price: float | None) -> dict:
+    return {
+        "horizon": horizon,
+        "start_price": start_price,
+        "end_price": None,
+        "return_pct": None,
+        "max_drawdown_pct": None,
+        "status": "missing",
     }
 
 
@@ -381,6 +563,29 @@ def _clean_date(value) -> str:
     return str(value).strip()
 
 
+def _parse_date(value) -> date | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _clean_horizon(value) -> str:
+    horizon = str(value or "").strip().lower()
+    if horizon not in OUTCOME_HORIZONS:
+        raise ValueError("horizon is invalid")
+    return horizon
+
+
+def _clean_outcome_status(value) -> str:
+    status = str(value or "missing").strip().lower()
+    if status not in {"complete", "missing"}:
+        raise ValueError("status is invalid")
+    return status
+
+
 def _optional_non_negative_number(value, field: str) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -393,6 +598,15 @@ def _optional_non_negative_number(value, field: str) -> float | None:
     return number
 
 
+def _optional_number(value, field: str) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number") from exc
+
+
 def _optional_int(value, field: str) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -403,6 +617,63 @@ def _optional_int(value, field: str) -> int | None:
     if number < 0:
         raise ValueError(f"{field} cannot be negative")
     return number
+
+
+def _required_int(value, field: str) -> int:
+    number = _optional_int(value, field)
+    if number is None:
+        raise ValueError(f"{field} is required")
+    return number
+
+
+def _history_closes(path: Path, symbol: str, start_date: date, end_date: date) -> list[float]:
+    if not path.exists():
+        return []
+    normalized = _normalize_symbol(symbol)
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "price_history"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT close
+            FROM price_history
+            WHERE ticker = ?
+              AND date > ?
+              AND date <= ?
+              AND close IS NOT NULL
+            ORDER BY date ASC
+            """,
+            (normalized, start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+    closes: list[float] = []
+    for row in rows:
+        price = _optional_non_negative_number(row[0], "close")
+        if price is not None:
+            closes.append(price)
+    return closes
+
+
+def _max_drawdown_pct(start_price: float, closes: list[float]) -> float | None:
+    if start_price <= 0:
+        return None
+    peak = start_price
+    max_drawdown = 0.0
+    for close in closes:
+        if close > peak:
+            peak = close
+        if peak > 0:
+            drawdown = (close - peak) / peak * 100
+            if drawdown < max_drawdown:
+                max_drawdown = drawdown
+    return max_drawdown
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return bool(row)
 
 
 def _reasons_json(value) -> str:
