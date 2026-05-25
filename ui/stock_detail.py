@@ -23,7 +23,7 @@ from data.stock_plan import StockPlanStore
 from formatting import format_compact_number, format_currency, format_large_number, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from position_plan_engine import PositionPlanSuggestion, generate_position_plan
-from scoring.final_decision import derive_final_decision
+from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
@@ -74,7 +74,7 @@ def render() -> None:
     effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
     effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
-    final_decision = derive_final_decision(score, effective_buy_zone, plan_suggestion)
+    final_decision = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
 
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, final_decision)
     _render_current_position_summary(_portfolio_row_for_ticker(ticker))

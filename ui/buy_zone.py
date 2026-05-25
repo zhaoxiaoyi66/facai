@@ -22,7 +22,7 @@ from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from position_plan_engine import PositionPlanSuggestion, generate_position_plan
-from scoring.final_decision import derive_final_decision
+from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui.metric_labels import action_label, confidence_label, model_type_label
@@ -129,7 +129,7 @@ def _apply_manual_plan(row: dict, plan: dict) -> dict:
     source = "manual_override" if has_buy_zone_override(plan) else "system_generated"
     updated = dict(row)
     updated.update(_zone_plan_fields(active_zone, plan_suggestion, source, has_buy_zone_override(plan)))
-    updated.update(_final_decision_fields(score, active_zone, plan_suggestion))
+    updated.update(_final_decision_fields(score, system_zone, manual_plan_override=plan, symbol=str(row["symbol"])))
     updated["activeZone"] = active_zone
     updated["positionPlan"] = plan_suggestion
     return updated
@@ -170,11 +170,25 @@ def _row_from_outputs(
     return base
 
 
-def _final_decision_fields(score, zone: BuyZoneEstimate, plan: PositionPlanSuggestion) -> dict:
-    decision = derive_final_decision(score, zone, plan)
+def _final_decision_fields(
+    score,
+    zone: BuyZoneEstimate,
+    plan: PositionPlanSuggestion | None = None,
+    *,
+    manual_plan_override: dict | None = None,
+    symbol: str | None = None,
+) -> dict:
+    decision = build_final_decision_bundle(
+        score,
+        zone,
+        plan,
+        manual_plan_override=manual_plan_override,
+        symbol=symbol,
+    )
     return {
         "finalAction": decision.finalAction,
         "decisionLane": decision.decisionLane,
+        "displayCategory": decision.displayCategory,
         "isActionable": decision.isActionable,
         "decisionBlockReasons": decision.blockReasons,
         "decisionReviewReasons": decision.reviewReasons,

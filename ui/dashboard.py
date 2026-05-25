@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
+from buy_zone_engine import generate_buy_zone
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
@@ -15,9 +15,8 @@ from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
-from position_plan_engine import generate_position_plan
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
-from scoring.final_decision import derive_final_decision
+from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui.metric_labels import action_label, confidence_label, metric_label, model_type_label, resolution_status_label
@@ -1315,11 +1314,9 @@ def _derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: di
             stock_data.setdefault("current_price", price)
         buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
         plan = StockPlanStore().get_plan(ticker)
-        effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
-        position_plan = generate_position_plan(ticker, effective_buy_zone, score)
-        return derive_final_decision(score, effective_buy_zone, position_plan)
+        return build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
     except Exception:
-        return derive_final_decision(score)
+        return build_final_decision_bundle(score)
 
 
 def _error_dashboard_row(ticker: str, exc: Exception) -> dict:
