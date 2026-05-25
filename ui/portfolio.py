@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from html import escape
-
 import streamlit as st
 
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
@@ -24,6 +23,7 @@ EMPTY_POSITION = {
     "review_price": "",
     "notes": "",
 }
+BLANK_TEXT = "—"
 
 
 def _render_editor(
@@ -38,68 +38,89 @@ def _render_editor(
         symbols = [str(row.get("symbol") or "") for row in rows]
         options = ["新增持仓", *symbols]
         preferred = st.session_state.pop("portfolio_edit_symbol", "")
+        if preferred in options:
+            st.session_state["portfolio-edit-symbol"] = preferred
         selected_index = options.index(preferred) if preferred in options else 0
         selected = st.selectbox("编辑对象", options, index=selected_index, key="portfolio-edit-symbol")
         editing = selected != "新增持仓"
         current = position_store.get_position(selected) if editing else None
         current = current or EMPTY_POSITION
         watchlist_symbols = _available_watchlist_symbols(symbols)
+        form_key = _position_form_key(selected)
+        save_symbol = str(current.get("symbol") or "") if editing else ""
 
         with st.form("portfolio-position-form"):
             st.markdown('<div class="portfolio-form-section">基础持仓</div>', unsafe_allow_html=True)
             basic_cols = st.columns(2)
             if editing:
-                symbol = basic_cols[0].text_input("股票代码", value=str(current.get("symbol") or ""), disabled=True)
+                symbol = basic_cols[0].text_input(
+                    "股票代码",
+                    value=str(current.get("symbol") or ""),
+                    disabled=True,
+                    key=f"{form_key}:symbol-disabled",
+                )
             else:
-                symbol = _symbol_input_from_watchlist(basic_cols[0], watchlist_symbols)
-            quantity = basic_cols[1].text_input("持股数量", value=_input_value(current.get("quantity")))
+                _symbol_input_from_watchlist(basic_cols[0], watchlist_symbols, form_key)
+            quantity = basic_cols[1].text_input(
+                "持股数量",
+                value=_input_value(current.get("quantity")),
+                key=f"{form_key}:quantity",
+            )
             cost_cols = st.columns(2)
-            average_cost = cost_cols[0].text_input("平均成本", value=_input_value(current.get("average_cost")))
+            average_cost = cost_cols[0].text_input(
+                "平均成本",
+                value=_input_value(current.get("average_cost")),
+                key=f"{form_key}:average_cost",
+            )
             cost_cols[1].write("")
 
             st.markdown('<div class="portfolio-form-section">计划参数</div>', unsafe_allow_html=True)
             plan_cols = st.columns(2)
-            target_position_pct = plan_cols[0].text_input("目标仓位", value=_input_value(current.get("target_position_pct")))
+            target_position_pct = plan_cols[0].text_input(
+                "目标仓位",
+                value=_input_value(current.get("target_position_pct")),
+                key=f"{form_key}:target_position_pct",
+            )
             max_acceptable_position_pct = plan_cols[1].text_input(
                 "最大可接受仓位",
                 value=_input_value(current.get("max_acceptable_position_pct")),
+                key=f"{form_key}:max_acceptable_position_pct",
             )
             sell_cols = st.columns(2)
-            planned_sell_price = sell_cols[0].text_input("计划卖出价", value=_input_value(current.get("planned_sell_price")))
-            first_trim_price = sell_cols[1].text_input("第一减仓价", value=_input_value(current.get("first_trim_price")))
+            planned_sell_price = sell_cols[0].text_input(
+                "计划卖出价",
+                value=_input_value(current.get("planned_sell_price")),
+                key=f"{form_key}:planned_sell_price",
+            )
+            first_trim_price = sell_cols[1].text_input(
+                "第一减仓价",
+                value=_input_value(current.get("first_trim_price")),
+                key=f"{form_key}:first_trim_price",
+            )
             review_cols = st.columns(2)
-            second_trim_price = review_cols[0].text_input("第二减仓价", value=_input_value(current.get("second_trim_price")))
-            review_price = review_cols[1].text_input("复核线", value=_input_value(current.get("review_price")))
-            notes = st.text_area("备注", value=str(current.get("notes") or ""), height=96)
+            second_trim_price = review_cols[0].text_input(
+                "第二减仓价",
+                value=_input_value(current.get("second_trim_price")),
+                key=f"{form_key}:second_trim_price",
+            )
+            review_price = review_cols[1].text_input(
+                "复核线",
+                value=_input_value(current.get("review_price")),
+                key=f"{form_key}:review_price",
+            )
+            notes = st.text_area(
+                "备注",
+                value=str(current.get("notes") or ""),
+                height=96,
+                key=f"{form_key}:notes",
+            )
 
-            submitted = st.form_submit_button("保存持仓", width="stretch")
-            if submitted:
-                try:
-                    position_store.save_position(
-                        str(current.get("symbol") or symbol) if editing else symbol,
-                        {
-                            "quantity": quantity,
-                            "average_cost": average_cost,
-                            "target_position_pct": target_position_pct,
-                            "max_acceptable_position_pct": max_acceptable_position_pct,
-                            "planned_sell_price": planned_sell_price,
-                            "first_trim_price": first_trim_price,
-                            "second_trim_price": second_trim_price,
-                            "review_price": review_price,
-                            "notes": notes,
-                            "is_active": True,
-                        },
-                    )
-                    st.success("持仓已保存。")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-
-        if editing:
-            if st.button(f"归档 {selected}", type="primary", width="stretch"):
-                position_store.deactivate_position(selected)
-                st.success(f"{selected} 已归档。")
-                st.rerun()
+            st.form_submit_button(
+                "保存持仓",
+                width="stretch",
+                on_click=_save_position_from_form,
+                args=(position_store, save_symbol, form_key),
+            )
 
     with st.expander("组合设置", expanded=False):
         with st.form("portfolio-settings-form"):
@@ -128,13 +149,62 @@ def _available_watchlist_symbols(active_symbols: list[str]) -> list[str]:
     return [symbol for symbol in load_watchlist() if symbol.upper() not in active]
 
 
-def _symbol_input_from_watchlist(column, watchlist_symbols: list[str]) -> str:
+def _symbol_input_from_watchlist(column, watchlist_symbols: list[str], form_key: str) -> None:
     if watchlist_symbols:
-        choice = column.selectbox("股票代码", [*watchlist_symbols, "手动输入"], help="优先从观察池选择。")
+        choice = column.selectbox(
+            "股票代码",
+            [*watchlist_symbols, "手动输入"],
+            help="优先从观察池选择。",
+            key=f"{form_key}:symbol-choice",
+        )
         if choice != "手动输入":
-            return str(choice)
-        return column.text_input("手动股票代码")
-    return column.text_input("股票代码", help="观察池股票都已有持仓，可手动输入其他代码。")
+            return
+        column.text_input("手动股票代码", key=f"{form_key}:manual-symbol")
+        return
+    column.text_input("股票代码", help="观察池股票都已有持仓，可手动输入其他代码。", key=f"{form_key}:symbol")
+
+
+def _position_form_key(selected: str) -> str:
+    safe = "".join(ch for ch in str(selected or "new").upper() if ch.isalnum() or ch in {"-", "_"})
+    return f"portfolio-position-form:{safe or 'NEW'}"
+
+
+def _form_value(form_key: str, field: str) -> object:
+    return st.session_state.get(f"{form_key}:{field}")
+
+
+def _form_symbol(form_key: str, fallback: str) -> str:
+    if fallback:
+        return fallback
+    choice = str(_form_value(form_key, "symbol-choice") or "").strip()
+    if choice and choice != "手动输入":
+        return choice
+    return str(_form_value(form_key, "manual-symbol") or _form_value(form_key, "symbol") or "").strip()
+
+
+def _save_position_from_form(position_store: PortfolioPositionStore, symbol: str, form_key: str) -> None:
+    try:
+        saved = position_store.save_position(
+            _form_symbol(form_key, symbol),
+            {
+                "quantity": _form_value(form_key, "quantity"),
+                "average_cost": _form_value(form_key, "average_cost"),
+                "target_position_pct": _form_value(form_key, "target_position_pct"),
+                "max_acceptable_position_pct": _form_value(form_key, "max_acceptable_position_pct"),
+                "planned_sell_price": _form_value(form_key, "planned_sell_price"),
+                "first_trim_price": _form_value(form_key, "first_trim_price"),
+                "second_trim_price": _form_value(form_key, "second_trim_price"),
+                "review_price": _form_value(form_key, "review_price"),
+                "notes": _form_value(form_key, "notes"),
+                "is_active": True,
+            },
+        )
+        saved_symbol = str(saved.get("symbol") or "").strip().upper()
+        st.session_state["portfolio-drawer-action-symbol"] = saved_symbol
+        st.session_state["portfolio_save_notice"] = ("success", f"{saved_symbol} 持仓已保存。")
+    except ValueError as exc:
+        st.session_state["portfolio_position_editor_open"] = True
+        st.session_state["portfolio_save_notice"] = ("error", str(exc))
 
 
 def _action_group_tone(key: object) -> str:
@@ -150,8 +220,8 @@ def _action_group_tone(key: object) -> str:
 def _cell_html(primary: object, secondary: object) -> str:
     return (
         '<div class="portfolio-cell">'
-        f"<b>{escape(str(primary or '-'))}</b>"
-        f"<small>{escape(str(secondary or '-'))}</small>"
+        f"<b>{escape(str(primary or BLANK_TEXT))}</b>"
+        f"<small>{escape(str(secondary or BLANK_TEXT))}</small>"
         "</div>"
     )
 
@@ -159,21 +229,21 @@ def _cell_html(primary: object, secondary: object) -> str:
 def _quantity_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "-"
+        return BLANK_TEXT
     return f"{number:,.4g}"
 
 
 def _percent_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "-"
+        return BLANK_TEXT
     return format_percent(number)
 
 
 def _money_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "-"
+        return BLANK_TEXT
     return format_currency(number)
 
 
@@ -212,7 +282,7 @@ def _system_reason_text(row: dict) -> str:
     if reasons:
         return "，".join(reasons[:2])
     add = _percent_text(row.get("systemCurrentAdd"))
-    return "当前可加 " + add if add != "-" else "无系统提示"
+    return "当前可加 " + add if add != BLANK_TEXT else "无系统提示"
 
 
 def _plan_status_text(row: dict) -> str:
@@ -222,7 +292,7 @@ def _plan_status_text(row: dict) -> str:
     review = _number(row.get("reviewPrice"))
     if current is not None and review is not None and current <= review:
         return "触及复核线"
-    if any(_money_text(row.get(key)) != "-" for key in ("plannedSellPrice", "firstTrimPrice", "secondTrimPrice", "reviewPrice")):
+    if any(_money_text(row.get(key)) != BLANK_TEXT for key in ("plannedSellPrice", "firstTrimPrice", "secondTrimPrice", "reviewPrice")):
         return "已设置计划"
     return "未设置计划"
 
@@ -231,11 +301,11 @@ def _plan_sub_text(row: dict) -> str:
     sell = _money_text(row.get("plannedSellPrice"))
     first = _money_text(row.get("firstTrimPrice"))
     review = _money_text(row.get("reviewPrice"))
-    if sell != "-":
+    if sell != BLANK_TEXT:
         return "卖出 " + sell
-    if first != "-":
+    if first != BLANK_TEXT:
         return "减仓 " + first
-    if review != "-":
+    if review != BLANK_TEXT:
         return "复核 " + review
     return "计划未设置"
 
@@ -269,7 +339,7 @@ def _buy_zone_status_text(value: object) -> str:
 
 def _reason_text(value: object) -> str:
     reasons = _translated_reasons(value)
-    return "，".join(reasons) if reasons else "-"
+    return "，".join(reasons) if reasons else BLANK_TEXT
 
 
 def _translated_reasons(value: object) -> list[str]:
@@ -288,9 +358,9 @@ def _trim_prices_text(row: dict) -> str:
     first = _money_text(row.get("firstTrimPrice"))
     second = _money_text(row.get("secondTrimPrice"))
     items = []
-    if first != "-":
+    if first != BLANK_TEXT:
         items.append("第一减仓 " + first)
-    if second != "-":
+    if second != BLANK_TEXT:
         items.append("第二减仓 " + second)
     return " / ".join(items) if items else "未设置"
 
@@ -299,6 +369,7 @@ def render() -> None:
     _render_styles()
     _render_final_portfolio_styles()
     render_page_header("组合持仓", "真实持仓、仓位偏离和下一步动作。")
+    _render_portfolio_notice()
 
     position_store = PortfolioPositionStore()
     settings_store = PortfolioSettingsStore()
@@ -312,6 +383,17 @@ def render() -> None:
     _render_action_panel(view["actionGroups"])
     _render_positions_table(rows, position_store, plan_store)
     _render_editor(position_store, settings_store, rows, settings)
+
+
+def _render_portfolio_notice() -> None:
+    notice = st.session_state.pop("portfolio_save_notice", None)
+    if not notice:
+        return
+    level, message = notice
+    if level == "error":
+        st.error(str(message))
+    else:
+        st.success(str(message))
 
 
 def _render_overview_strip(summary: dict, settings: dict) -> None:
@@ -393,10 +475,13 @@ def _render_drawer_action_controls(rows: list[dict]) -> None:
     symbols = [str(row.get("symbol") or "") for row in rows]
     if not symbols:
         return
+    current = _current_detail_symbol(symbols)
+    st.session_state["portfolio-drawer-action-symbol"] = current
     cols = st.columns([1.2, 1, 1, 3])
     selected = cols[0].selectbox(
         "当前详情",
         symbols,
+        index=symbols.index(current),
         key="portfolio-drawer-action-symbol",
         label_visibility="collapsed",
     )
@@ -423,6 +508,13 @@ def _position_row_html(row: dict) -> str:
         f'<td><a class="portfolio-view-link" href="#{escape(drawer_id)}">查看</a></td>'
         "</tr>"
     )
+
+
+def _current_detail_symbol(symbols: list[str]) -> str:
+    selected = str(st.session_state.get("portfolio-drawer-action-symbol") or "").strip().upper()
+    if selected in symbols:
+        return selected
+    return symbols[0]
 
 
 def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
