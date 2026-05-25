@@ -92,6 +92,7 @@ from data.portfolio import (
     calculate_portfolio_position,
     calculate_portfolio_positions,
 )
+from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
 from position_plan_engine import generate_position_plan
 from review_autopilot import ReviewAutopilot, _human_remaining, auto_fill_capability, identify_missing_data_items
@@ -3490,6 +3491,95 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(calculated["costBasis"], 1000)
         self.assertIsNone(calculated["unrealizedPnl"])
         self.assertIsNone(calculated["positionPct"])
+
+    def test_portfolio_view_model_handles_empty_positions(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            view = build_portfolio_view_model(Path(tmpdir) / "portfolio.sqlite")
+
+        self.assertEqual(view["summary"]["positionCount"], 0)
+        self.assertEqual(view["summary"]["marketValue"], 0)
+        self.assertEqual(view["summary"]["costBasis"], 0)
+        self.assertEqual(view["summary"]["overweightCount"], 0)
+        self.assertEqual(view["summary"]["needsReviewCount"], 0)
+        self.assertEqual(view["rows"], [])
+
+    def test_portfolio_view_model_summarizes_normal_holding(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position(
+                "now",
+                {
+                    "quantity": 10,
+                    "average_cost": 100,
+                    "target_position_pct": 20,
+                    "max_acceptable_position_pct": 25,
+                },
+            )
+
+            view = build_portfolio_view_model(db_path, {"NOW": 120})
+
+        self.assertEqual(view["summary"]["positionCount"], 1)
+        self.assertEqual(view["summary"]["marketValue"], 1200)
+        self.assertEqual(view["summary"]["costBasis"], 1000)
+        self.assertEqual(view["summary"]["unrealizedPnl"], 200)
+        self.assertEqual(view["summary"]["unrealizedPnlPct"], 20)
+        self.assertEqual(view["rows"][0]["positionPct"], 12)
+        self.assertEqual(view["rows"][0]["actionGroup"], "addable")
+
+    def test_portfolio_view_model_flags_overweight(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position(
+                "CRM",
+                {
+                    "quantity": 10,
+                    "average_cost": 100,
+                    "max_acceptable_position_pct": 15,
+                },
+            )
+
+            view = build_portfolio_view_model(db_path, {"CRM": 200})
+
+        self.assertEqual(view["summary"]["overweightCount"], 1)
+        self.assertEqual(view["rows"][0]["actionGroup"], "overweight")
+        groups = {group["key"]: group for group in view["actionGroups"]}
+        self.assertEqual(groups["overweight"]["symbols"], ["CRM"])
+
+    def test_portfolio_view_model_flags_near_trim_price(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position(
+                "ADBE",
+                {
+                    "quantity": 5,
+                    "average_cost": 100,
+                    "first_trim_price": 200,
+                },
+            )
+
+            view = build_portfolio_view_model(db_path, {"ADBE": 191})
+
+        self.assertTrue(view["rows"][0]["nearTrimPrice"])
+        self.assertEqual(view["rows"][0]["actionGroup"], "nearTrim")
+        groups = {group["key"]: group for group in view["actionGroups"]}
+        self.assertEqual(groups["nearTrim"]["symbols"], ["ADBE"])
+
+    def test_portfolio_view_model_flags_missing_price_as_review(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position(
+                "HOOD",
+                {"quantity": 10, "average_cost": 20},
+            )
+
+            view = build_portfolio_view_model(db_path, {})
+
+        self.assertEqual(view["summary"]["needsReviewCount"], 1)
+        self.assertTrue(view["rows"][0]["missingPrice"])
+        self.assertEqual(view["rows"][0]["marketValue"], None)
+        self.assertEqual(view["rows"][0]["actionGroup"], "review")
 
     def test_buy_zone_engine_generates_system_zone_without_manual_override(self) -> None:
         zone = generate_buy_zone(
