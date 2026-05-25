@@ -6,6 +6,7 @@ import streamlit as st
 
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.portfolio_view_model import build_portfolio_view_model
+from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
@@ -23,120 +24,6 @@ EMPTY_POSITION = {
     "review_price": "",
     "notes": "",
 }
-
-
-def render() -> None:
-    _render_styles()
-    render_page_header("组合持仓", "记录真实持仓、目标仓位和减仓复核线。")
-
-    position_store = PortfolioPositionStore()
-    settings_store = PortfolioSettingsStore()
-    view = build_portfolio_view_model()
-    settings = view["settings"]
-    rows = view["rows"]
-
-    _render_overview_strip(view["summary"], settings)
-    _render_action_panel(view["actionGroups"])
-    _render_positions_table(rows, position_store)
-    _render_editor(position_store, settings_store, rows, settings)
-
-
-def _render_overview_strip(summary: dict, settings: dict) -> None:
-    items = [
-        ("持仓数", str(summary.get("positionCount", 0)), "active positions"),
-        ("市值", _money_text(summary.get("marketValue")), "market value"),
-        ("成本", _money_text(summary.get("costBasis")), "cost basis"),
-        ("浮动盈亏", _money_text(summary.get("unrealizedPnl")), _percent_text(summary.get("unrealizedPnlPct"))),
-        ("组合基准", _money_text(settings.get("total_portfolio_value")), "manual total"),
-        ("现金", _money_text(settings.get("cash_balance")), "cash balance"),
-    ]
-    html = "".join(
-        '<div class="portfolio-stat">'
-        f"<span>{escape(label)}</span>"
-        f"<strong>{escape(value)}</strong>"
-        f"<em>{escape(detail)}</em>"
-        "</div>"
-        for label, value, detail in items
-    )
-    st.markdown(f'<div class="portfolio-overview">{html}</div>', unsafe_allow_html=True)
-
-
-def _render_action_panel(action_groups: list[dict]) -> None:
-    render_section_title("持仓行动面板", "来自组合 view model；当前不读取行情。")
-    html = "".join(
-        f'<div class="portfolio-action-card tone-{escape(_action_group_tone(group.get("key")))}">'
-        f"<span>{escape(str(group.get('label') or ''))}</span>"
-        f"<strong>{escape(_action_group_value(group))}</strong>"
-        f"<p>{escape(_action_group_detail(group))}</p>"
-        "</div>"
-        for group in action_groups
-    )
-    st.markdown(f'<div class="portfolio-action-grid">{html}</div>', unsafe_allow_html=True)
-
-
-def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
-    title_cols = st.columns([5, 1])
-    with title_cols[0]:
-        render_section_title("持仓清单", "当前只显示手动录入的 active 持仓。")
-    if not rows:
-        st.markdown(
-            '<div class="portfolio-empty">'
-            "<div>暂无持仓，添加第一只股票。</div>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        empty_cols = st.columns([1, 1, 1])
-        with empty_cols[1]:
-            if st.button("添加第一只股票", key="portfolio-empty-add", width="stretch"):
-                st.session_state["portfolio_position_editor_open"] = True
-                st.rerun()
-        return
-
-    with title_cols[1]:
-        st.write("")
-        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
-            st.session_state["portfolio_position_editor_open"] = True
-            st.rerun()
-
-    headers = [
-        "股票代码",
-        "持股数量",
-        "平均成本",
-        "市值",
-        "浮动盈亏",
-        "当前仓位",
-        "目标仓位",
-        "最大可接受仓位",
-        "计划卖出价",
-        "第一减仓价",
-        "第二减仓价",
-        "复核线",
-        "备注",
-        "状态管理",
-    ]
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
-    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
-    body_html = "".join(_position_row_html(row) for row in rows)
-    st.markdown(
-        '<div class="portfolio-table-wrap">'
-        '<table class="portfolio-table">'
-        f"<thead><tr>{header_html}</tr></thead>"
-        f"<tbody>{body_html}</tbody>"
-        "</table>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    action_cols = st.columns([1, 1, 1, 3])
-    action_symbol = action_cols[0].selectbox(
-        "归档持仓",
-        [str(row.get("symbol") or "") for row in rows],
-        key="portfolio-deactivate-symbol",
-        label_visibility="collapsed",
-    )
-    if action_cols[1].button("归档", type="primary", key="portfolio-deactivate-from-list", width="stretch"):
-        position_store.deactivate_position(action_symbol)
-        st.success(f"{action_symbol} 已归档。")
-        st.rerun()
 
 
 def _render_editor(
@@ -247,42 +134,6 @@ def _symbol_input_from_watchlist(column, watchlist_symbols: list[str]) -> str:
     return column.text_input("股票代码", help="观察池股票都已有持仓，可手动输入其他代码。")
 
 
-def _position_row_html(row: dict) -> str:
-    return (
-        "<tr>"
-        f"<td><strong>{escape(str(row.get('symbol') or ''))}</strong></td>"
-        f"<td>{escape(_quantity_text(row.get('quantity')))}</td>"
-        f"<td>{escape(_money_text(row.get('averageCost')))}</td>"
-        f"<td>{escape(_money_text(row.get('currentPrice')))}</td>"
-        f"<td>{escape(_price_status_text(row.get('priceStatus')))}</td>"
-        f"<td>{escape(_money_text(row.get('marketValue')))}</td>"
-        f"<td>{escape(_money_text(row.get('unrealizedPnl')))} / {escape(_percent_text(row.get('unrealizedPnlPct')))}</td>"
-        f"<td>{escape(_percent_text(row.get('positionPct')))}</td>"
-        f"<td>{escape(_percent_text(row.get('targetPositionPct')))}</td>"
-        f"<td>{escape(_percent_text(row.get('maxAcceptablePositionPct')))}</td>"
-        f"<td>{escape(str(row.get('systemAction') or '-'))}</td>"
-        f"<td>{escape(_percent_text(row.get('systemMaxPosition')))}</td>"
-        f"<td>{escape(_percent_text(row.get('systemCurrentAdd')))}</td>"
-        f"<td>{escape(str(row.get('decisionLane') or '-'))}</td>"
-        f"<td>{escape(_warnings_text(row.get('deviationWarnings')))}</td>"
-        f"<td>{escape(_money_text(row.get('plannedSellPrice')))}</td>"
-        f"<td>{escape(_money_text(row.get('firstTrimPrice')))}</td>"
-        f"<td>{escape(_money_text(row.get('secondTrimPrice')))}</td>"
-        f"<td>{escape(_money_text(row.get('reviewPrice')))}</td>"
-        f"<td class=\"notes\">{escape(str(row.get('notes') or ''))}</td>"
-        "<td>下方选择归档</td>"
-        "</tr>"
-    )
-
-
-def _symbols_detail(symbols: list[str], fallback: str) -> str:
-    if not symbols:
-        return fallback
-    visible = [str(symbol) for symbol in symbols[:5]]
-    suffix = "..." if len(symbols) > 5 else ""
-    return ", ".join(visible) + suffix
-
-
 def _action_group_tone(key: object) -> str:
     return {
         "addable": "green",
@@ -293,21 +144,13 @@ def _action_group_tone(key: object) -> str:
     }.get(str(key), "neutral")
 
 
-def _action_group_value(group: dict) -> str:
-    count = int(group.get("count") or 0)
-    if count:
-        return str(count)
-    return {
-        "addable": "暂无可加仓",
-        "hold": "暂无持有观察",
-        "nearTrim": "暂无接近减仓价",
-        "overweight": "暂无超仓",
-        "review": "暂无需复核",
-    }.get(str(group.get("key")), "暂无")
-
-
-def _action_group_detail(group: dict) -> str:
-    return _symbols_detail(list(group.get("symbols") or []), "无对应持仓。")
+def _cell_html(primary: object, secondary: object) -> str:
+    return (
+        '<div class="portfolio-cell">'
+        f"<b>{escape(str(primary or '-'))}</b>"
+        f"<small>{escape(str(secondary or '-'))}</small>"
+        "</div>"
+    )
 
 
 def _quantity_text(value: object) -> str:
@@ -333,294 +176,6 @@ def _money_text(value: object) -> str:
 
 def _price_status_text(value: object) -> str:
     return {
-        "quote_snapshot": "quote",
-        "price_history": "history",
-        "provided": "provided",
-        "missing": "missing",
-    }.get(str(value), "missing")
-
-
-def _warnings_text(value: object) -> str:
-    labels = {
-        "overweight_system": "system overweight",
-        "overweight_personal": "personal overweight",
-        "system_not_addable": "system review/observe",
-        "near_trim_price": "near trim",
-    }
-    items = value if isinstance(value, list) else []
-    return ", ".join(labels.get(str(item), str(item)) for item in items) or "-"
-
-
-def _position_row_html(row: dict) -> str:
-    return (
-        "<tr>"
-        f"<td>{_cell_html(str(row.get('symbol') or ''), _row_status_text(row))}</td>"
-        f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
-        f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
-        f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
-        f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
-        f"<td>{_cell_html(_plan_main_text(row), _plan_sub_text(row))}</td>"
-        f"<td>{_details_html(row)}</td>"
-        "</tr>"
-    )
-
-
-def _cell_html(primary: object, secondary: object) -> str:
-    return (
-        '<div class="portfolio-cell">'
-        f"<b>{escape(str(primary or '-'))}</b>"
-        f"<small>{escape(str(secondary or '-'))}</small>"
-        "</div>"
-    )
-
-
-def _row_status_text(row: dict) -> str:
-    alerts = _warnings_text(row.get("deviationWarnings"))
-    return alerts if alerts != "-" else _price_status_text(row.get("priceStatus"))
-
-
-def _system_action_text(row: dict) -> str:
-    action = str(row.get("systemAction") or "").strip()
-    lane = str(row.get("decisionLane") or "").strip()
-    if lane == "actionable":
-        return "可加仓"
-    if lane == "blocked":
-        return "禁止追高"
-    if lane == "review":
-        return "待复核"
-    if action:
-        return action
-    return "未生成"
-
-
-def _system_reason_text(row: dict) -> str:
-    warnings = _warnings_text(row.get("deviationWarnings"))
-    if warnings != "-":
-        return warnings
-    reasons = [*list(row.get("blockReasons") or []), *list(row.get("reviewReasons") or [])]
-    if reasons:
-        return ", ".join(str(item) for item in reasons[:2])
-    add = _percent_text(row.get("systemCurrentAdd"))
-    return "当前可加 " + add if add != "-" else "无系统提示"
-
-
-def _plan_main_text(row: dict) -> str:
-    sell = _money_text(row.get("plannedSellPrice"))
-    first = _money_text(row.get("firstTrimPrice"))
-    second = _money_text(row.get("secondTrimPrice"))
-    if sell != "-":
-        return "卖出 " + sell
-    if first != "-":
-        return "减仓 " + first
-    if second != "-":
-        return "减仓 " + second
-    return "未设置"
-
-
-def _plan_sub_text(row: dict) -> str:
-    parts = []
-    first = _money_text(row.get("firstTrimPrice"))
-    second = _money_text(row.get("secondTrimPrice"))
-    review = _money_text(row.get("reviewPrice"))
-    if first != "-":
-        parts.append("一减 " + first)
-    if second != "-":
-        parts.append("二减 " + second)
-    if review != "-":
-        parts.append("复核 " + review)
-    return " / ".join(parts) if parts else "计划未设置"
-
-
-def _details_html(row: dict) -> str:
-    details = [
-        ("价格状态", _price_status_text(row.get("priceStatus"))),
-        ("市值", _money_text(row.get("marketValue"))),
-        ("系统可加", _percent_text(row.get("systemCurrentAdd"))),
-        ("决策通道", row.get("decisionLane") or "-"),
-        ("买区状态", row.get("buyZoneStatus") or "-"),
-        ("阻断原因", ", ".join(str(item) for item in (row.get("blockReasons") or [])) or "-"),
-        ("复核原因", ", ".join(str(item) for item in (row.get("reviewReasons") or [])) or "-"),
-        ("计划卖出价", _money_text(row.get("plannedSellPrice"))),
-        ("第一减仓价", _money_text(row.get("firstTrimPrice"))),
-        ("第二减仓价", _money_text(row.get("secondTrimPrice"))),
-        ("复核线", _money_text(row.get("reviewPrice"))),
-        ("备注", row.get("notes") or "-"),
-    ]
-    items = "".join(
-        f"<span>{escape(str(label))}</span><b>{escape(str(value))}</b>"
-        for label, value in details
-    )
-    return (
-        '<details class="portfolio-row-details">'
-        "<summary>查看</summary>"
-        f'<div class="portfolio-detail-grid">{items}</div>'
-        "</details>"
-    )
-
-
-def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
-    title_cols = st.columns([5, 1])
-    with title_cols[0]:
-        render_section_title("持仓清单", "仓位、盈亏、系统参考和计划状态。")
-    with title_cols[1]:
-        st.write("")
-        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
-            st.session_state["portfolio_position_editor_open"] = True
-            st.rerun()
-
-    if not rows:
-        st.markdown(
-            '<div class="portfolio-empty">'
-            "<div>暂无持仓</div>"
-            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统参考和计划状态。</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
-    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
-    body_html = "".join(_position_row_html(row) for row in rows)
-    st.markdown(
-        '<div class="portfolio-table-wrap compact">'
-        '<table class="portfolio-table compact">'
-        f"<thead><tr>{header_html}</tr></thead>"
-        f"<tbody>{body_html}</tbody>"
-        "</table>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    with st.expander("停用持仓", expanded=False):
-        action_cols = st.columns([1.4, 1, 1, 3])
-        action_symbol = action_cols[0].selectbox(
-            "选择持仓",
-            [str(row.get("symbol") or "") for row in rows],
-            key="portfolio-deactivate-symbol",
-            label_visibility="collapsed",
-        )
-        confirm = action_cols[1].checkbox("确认停用", key="portfolio-deactivate-confirm")
-        if action_cols[2].button("停用", key="portfolio-deactivate-from-list", width="stretch", disabled=not confirm):
-            position_store.deactivate_position(action_symbol)
-            st.success(f"{action_symbol} 已停用。")
-            st.rerun()
-
-
-def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
-    title_cols = st.columns([5, 1])
-    with title_cols[0]:
-        render_section_title("持仓清单", "仓位、盈亏、系统参考和计划状态。")
-    with title_cols[1]:
-        st.write("")
-        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
-            st.session_state["portfolio_position_editor_open"] = True
-            st.rerun()
-
-    if not rows:
-        st.markdown(
-            '<div class="portfolio-empty">'
-            "<div>暂无持仓</div>"
-            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统参考和计划状态。</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    selected_symbol = str(st.session_state.get("portfolio_detail_symbol") or rows[0].get("symbol") or "")
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
-    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
-    body_html = "".join(_position_row_html(row) for row in rows)
-    st.markdown(
-        '<div class="portfolio-table-wrap compact">'
-        '<table class="portfolio-table compact">'
-        f"<thead><tr>{header_html}</tr></thead>"
-        f"<tbody>{body_html}</tbody>"
-        "</table>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    detail_options = [str(row.get("symbol") or "") for row in rows]
-    detail_index = detail_options.index(selected_symbol) if selected_symbol in detail_options else 0
-    detail_cols = st.columns([1.2, 4])
-    selected_symbol = detail_cols[0].selectbox(
-        "查看详情",
-        detail_options,
-        index=detail_index,
-        key="portfolio-detail-symbol-select",
-        label_visibility="collapsed",
-    )
-    st.session_state["portfolio_detail_symbol"] = selected_symbol
-    selected_row = next((row for row in rows if str(row.get("symbol") or "") == selected_symbol), rows[0])
-    _render_detail_panel(selected_row)
-
-    with st.expander("停用持仓", expanded=False):
-        action_cols = st.columns([1.4, 1, 1, 3])
-        action_symbol = action_cols[0].selectbox(
-            "选择持仓",
-            detail_options,
-            key="portfolio-deactivate-symbol",
-            label_visibility="collapsed",
-        )
-        confirm = action_cols[1].checkbox("确认停用", key="portfolio-deactivate-confirm")
-        if action_cols[2].button("停用", key="portfolio-deactivate-from-list", width="stretch", disabled=not confirm):
-            position_store.deactivate_position(action_symbol)
-            st.success(f"{action_symbol} 已停用。")
-            st.rerun()
-
-
-def _position_row_html(row: dict) -> str:
-    return (
-        "<tr>"
-        f"<td>{_cell_html(str(row.get('symbol') or ''), _row_status_text(row))}</td>"
-        f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
-        f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
-        f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
-        f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
-        f"<td>{_cell_html(_plan_status_text(row), _plan_sub_text(row))}</td>"
-        f'<td><span class="portfolio-view-link">下方详情</span></td>'
-        "</tr>"
-    )
-
-
-def _render_detail_panel(row: dict) -> None:
-    st.markdown(
-        f"""
-        <div class="portfolio-detail-panel">
-            <div class="portfolio-detail-head">
-                <strong>{escape(str(row.get("symbol") or ""))}</strong>
-                <span>{escape(_system_action_text(row))} · {escape(_plan_status_text(row))}</span>
-            </div>
-            <div class="portfolio-detail-grid">
-                {_detail_items_html(row)}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _detail_items_html(row: dict) -> str:
-    details = [
-        ("价格状态", _price_status_text(row.get("priceStatus"))),
-        ("市值", _money_text(row.get("marketValue"))),
-        ("系统可加", _percent_text(row.get("systemCurrentAdd"))),
-        ("决策通道", _decision_lane_text(row.get("decisionLane"))),
-        ("买区状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
-        ("阻断原因", _reason_text(row.get("blockReasons"))),
-        ("计划卖出价", _money_text(row.get("plannedSellPrice"))),
-        ("减仓价", _trim_prices_text(row)),
-        ("复核线", _money_text(row.get("reviewPrice"))),
-        ("备注", row.get("notes") or "未填写"),
-    ]
-    return "".join(
-        f"<span>{escape(str(label))}</span><b>{escape(str(value))}</b>"
-        for label, value in details
-    )
-
-
-def _price_status_text(value: object) -> str:
-    return {
         "quote_snapshot": "实时报价",
         "price_history": "历史收盘价",
         "provided": "手动价格",
@@ -628,22 +183,10 @@ def _price_status_text(value: object) -> str:
     }.get(str(value), "缺少价格")
 
 
-def _warnings_text(value: object) -> str:
-    labels = {
-        "overweight_system": "超系统上限",
-        "overweight_personal": "超个人上限",
-        "system_not_addable": "系统建议复核/观察",
-        "near_trim_price": "接近减仓价",
-    }
-    items = value if isinstance(value, list) else []
-    return "，".join(labels.get(str(item), str(item)) for item in items) or "-"
-
-
 def _system_action_text(row: dict) -> str:
-    warnings = set(row.get("deviationWarnings") or [])
     lane = str(row.get("decisionLane") or "").strip()
     action = str(row.get("systemAction") or "").strip()
-    if "overweight_system" in warnings:
+    if row.get("overweightSystem"):
         return "超系统上限"
     if lane == "review":
         return "待复核"
@@ -655,13 +198,13 @@ def _system_action_text(row: dict) -> str:
         return "只观察"
     if "观察" in action or "只" in action:
         return "只观察"
-    return "未生成"
+    return action or "未生成"
 
 
 def _system_reason_text(row: dict) -> str:
-    warnings = _warnings_text(row.get("deviationWarnings"))
-    if warnings != "-":
-        return warnings
+    deviation = _deviation_text(row)
+    if deviation != "暂无偏离提示":
+        return deviation
     reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
     if reasons:
         return "，".join(reasons[:2])
@@ -681,10 +224,6 @@ def _plan_status_text(row: dict) -> str:
     return "未设置计划"
 
 
-def _plan_main_text(row: dict) -> str:
-    return _plan_status_text(row)
-
-
 def _plan_sub_text(row: dict) -> str:
     sell = _money_text(row.get("plannedSellPrice"))
     first = _money_text(row.get("firstTrimPrice"))
@@ -699,8 +238,8 @@ def _plan_sub_text(row: dict) -> str:
 
 
 def _row_status_text(row: dict) -> str:
-    alerts = _warnings_text(row.get("deviationWarnings"))
-    return alerts if alerts != "-" else _price_status_text(row.get("priceStatus"))
+    deviation = _deviation_text(row)
+    return deviation if deviation != "暂无偏离提示" else _price_status_text(row.get("priceStatus"))
 
 
 def _decision_lane_text(value: object) -> str:
@@ -760,6 +299,7 @@ def render() -> None:
 
     position_store = PortfolioPositionStore()
     settings_store = PortfolioSettingsStore()
+    plan_store = StockPlanStore()
     view = build_portfolio_view_model()
     settings = view["settings"]
     rows = view["rows"]
@@ -767,7 +307,7 @@ def render() -> None:
     _render_deactivate_dialog_if_needed(position_store)
     _render_overview_strip(view["summary"], settings)
     _render_action_panel(view["actionGroups"])
-    _render_positions_table(rows, position_store)
+    _render_positions_table(rows, position_store, plan_store)
     _render_editor(position_store, settings_store, rows, settings)
 
 
@@ -808,7 +348,7 @@ def _render_action_panel(action_groups: list[dict]) -> None:
     st.markdown(f'<div class="portfolio-lanes">{"".join(lanes)}</div>', unsafe_allow_html=True)
 
 
-def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore) -> None:
+def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore, plan_store: StockPlanStore) -> None:
     title_cols = st.columns([5, 1])
     with title_cols[0]:
         render_section_title("持仓清单", "状态优先，详情从右侧查看。")
@@ -831,7 +371,7 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
     headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "查看"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row) for row in rows)
-    drawer_html = "".join(_drawer_html(row) for row in rows)
+    drawer_html = "".join(_drawer_html(row, plan_store) for row in rows)
     st.markdown(
         '<div id="portfolio-table"></div>'
         '<div class="portfolio-table-wrap terminal">'
@@ -861,9 +401,10 @@ def _position_row_html(row: dict) -> str:
     )
 
 
-def _drawer_html(row: dict) -> str:
+def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
     symbol = str(row.get("symbol") or "")
     drawer_id = _drawer_id(symbol)
+    research_notes = _research_notes(symbol, plan_store)
     sections = [
         ("持仓摘要", [
             ("持股数量", _quantity_text(row.get("quantity"))),
@@ -875,12 +416,17 @@ def _drawer_html(row: dict) -> str:
             ("当前仓位", _percent_text(row.get("positionPct"))),
         ]),
         ("系统参考", [
-            ("系统参考", _system_action_text(row)),
+            ("怎么看", _system_explanation_text(row)),
+            ("系统动作", _system_action_text(row)),
             ("系统上限", _percent_text(row.get("systemMaxPosition"))),
             ("当前可加", _percent_text(row.get("systemCurrentAdd"))),
             ("决策通道", _decision_lane_text(row.get("decisionLane"))),
             ("买区状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
             ("阻断原因", _reason_text(row.get("blockReasons"))),
+            ("复核原因", _reason_text(row.get("reviewReasons"))),
+        ]),
+        ("研究备忘录", [
+            ("备忘录", research_notes),
         ]),
         ("我的计划", [
             ("计划状态", _plan_status_text(row)),
@@ -890,7 +436,7 @@ def _drawer_html(row: dict) -> str:
             ("备注", row.get("notes") or "未填写"),
         ]),
         ("偏离提示", [
-            ("提醒", _warnings_text(row.get("deviationWarnings"))),
+            ("提醒", _deviation_text(row)),
         ]),
     ]
     body = "".join(_drawer_section_html(title, items) for title, items in sections)
@@ -905,7 +451,7 @@ def _drawer_html(row: dict) -> str:
         "</div>"
         f"{body}"
         '<div class="portfolio-drawer-danger">'
-        f'<a href="{disable_href}">停用持仓</a>'
+        f'<a href="{disable_href}">归档持仓</a>'
         "</div>"
         "</div>"
         "</aside>"
@@ -920,17 +466,81 @@ def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
     return f'<section class="portfolio-drawer-section"><h4>{escape(title)}</h4><div>{rows}</div></section>'
 
 
+def _research_notes(symbol: str, plan_store: StockPlanStore) -> str:
+    try:
+        notes = str(plan_store.get_plan(symbol).get("notes") or "").strip()
+    except Exception:
+        notes = ""
+    return notes or "暂无研究备忘录"
+
+
+def _system_explanation_text(row: dict) -> str:
+    lane = str(row.get("decisionLane") or "").strip()
+    max_position = _percent_text(row.get("systemMaxPosition"))
+    current_add = _percent_text(row.get("systemCurrentAdd"))
+    reason = _main_reason_text(row)
+    if lane == "actionable":
+        return f"系统允许新增，当前可加 {current_add}，系统仓位上限 {max_position}。"
+    if lane == "review":
+        return f"系统建议先复核；主要原因：{reason}。"
+    if lane == "blocked":
+        return f"系统当前阻断新增；主要原因：{reason}。"
+    if lane == "wait":
+        return f"系统建议等待，不急于新增；主要原因：{reason}。"
+    return "系统参考不足，先按手动计划管理。"
+
+
+def _main_reason_text(row: dict) -> str:
+    warnings = _deviation_items(row)
+    if warnings:
+        return "，".join(warnings[:2])
+    reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
+    return "，".join(reasons[:2]) if reasons else "暂无明确阻断/复核原因"
+
+
+def _deviation_text(row: dict) -> str:
+    items = _deviation_items(row)
+    return "，".join(items) if items else "暂无偏离提示"
+
+
+def _deviation_items(row: dict) -> list[str]:
+    items: list[str] = []
+    if row.get("overweightSystem"):
+        items.append("超系统上限")
+    if row.get("overweightPersonal"):
+        items.append("超个人上限")
+    if row.get("nearTrimPrice"):
+        items.append("接近减仓价")
+    if _review_line_touched(row):
+        items.append("触及复核线")
+    if _system_review_with_position(row):
+        items.append("系统建议复核但仍有仓位")
+    return items
+
+
+def _review_line_touched(row: dict) -> bool:
+    current = _number(row.get("currentPrice"))
+    review = _number(row.get("reviewPrice"))
+    return current is not None and review is not None and current <= review
+
+
+def _system_review_with_position(row: dict) -> bool:
+    quantity = _number(row.get("quantity"))
+    lane = str(row.get("decisionLane") or "").strip()
+    return quantity is not None and quantity > 0 and lane == "review"
+
+
 def _render_deactivate_dialog_if_needed(position_store: PortfolioPositionStore) -> None:
     symbol = str(st.query_params.get("portfolio_disable", "")).strip().upper()
     if symbol:
         _confirm_deactivate_dialog(symbol, position_store)
 
 
-@st.dialog("停用持仓")
+@st.dialog("归档持仓")
 def _confirm_deactivate_dialog(symbol: str, position_store: PortfolioPositionStore) -> None:
-    st.write(f"确认停用 {symbol}？停用后不会出现在 active 持仓清单。")
+    st.write(f"确认归档 {symbol}？归档后不会出现在 active 持仓清单。")
     cols = st.columns(2)
-    if cols[0].button("确认停用", type="primary", width="stretch"):
+    if cols[0].button("确认归档", type="primary", width="stretch"):
         position_store.deactivate_position(symbol)
         _clear_portfolio_disable_query()
         st.rerun()
