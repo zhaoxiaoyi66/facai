@@ -525,6 +525,29 @@ def _position_row_html(row: dict) -> str:
     )
 
 
+def _archive_confirm_html(row: dict) -> str:
+    symbol = str(row.get("symbol") or "")
+    archive_id = _archive_id(symbol)
+    return (
+        f'<aside id="{escape(archive_id)}" class="portfolio-archive-modal">'
+        '<a class="portfolio-archive-backdrop" href="#portfolio-table"></a>'
+        '<div class="portfolio-archive-card">'
+        "<span>归档持仓</span>"
+        f"<strong>{escape(symbol)}</strong>"
+        "<p>确认后，该标的将从当前持仓视图移出，并作为历史持仓留档。</p>"
+        '<div class="portfolio-archive-actions">'
+        '<a href="#portfolio-table">取消</a>'
+        '<form method="get" action="/">'
+        '<input type="hidden" name="page" value="portfolio">'
+        f'<input type="hidden" name="portfolioArchiveConfirm" value="{escape(symbol, quote=True)}">'
+        '<button type="submit">确认归档</button>'
+        "</form>"
+        "</div>"
+        "</div>"
+        "</aside>"
+    )
+
+
 def _current_detail_symbol(symbols: list[str]) -> str:
     selected = str(st.session_state.get("portfolio-drawer-action-symbol") or "").strip().upper()
     if selected in symbols:
@@ -638,26 +661,6 @@ def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
         for label, value in items
     )
     return f'<section class="portfolio-drawer-section"><h4>{escape(title)}</h4><div>{rows}</div></section>'
-
-
-def _archive_confirm_html(row: dict) -> str:
-    symbol = str(row.get("symbol") or "")
-    archive_id = _archive_id(symbol)
-    confirm_href = f"?page=portfolio&portfolioArchiveConfirm={escape(symbol, quote=True)}#portfolio-table"
-    return (
-        f'<aside id="{escape(archive_id)}" class="portfolio-archive-modal">'
-        '<a class="portfolio-archive-backdrop" href="#portfolio-table"></a>'
-        '<div class="portfolio-archive-card">'
-        "<span>归档持仓</span>"
-        f"<strong>{escape(symbol)}</strong>"
-        "<p>确认后，该标的将从当前持仓视图移出，并作为历史持仓留档。</p>"
-        '<div class="portfolio-archive-actions">'
-        '<a href="#portfolio-table">取消</a>'
-        f'<a class="danger" href="{confirm_href}">确认归档</a>'
-        "</div>"
-        "</div>"
-        "</aside>"
-    )
 
 
 def _research_notes(symbol: str, plan_store: StockPlanStore) -> str:
@@ -993,12 +996,94 @@ def _render_final_portfolio_styles() -> None:
             border-color: transparent;
         }
         .portfolio-archive-link {
-            color: #7b8798;
+            color: #6b7280;
+            background: transparent;
+            border-color: transparent;
         }
         .portfolio-archive-link:hover {
-            color: #8a5a1f;
-            border-color: rgba(138, 90, 31, 0.16);
-            background: #FFFBF5;
+            color: #334155;
+            background: #FFFFFF;
+            border-color: rgba(15, 23, 42, 0.10);
+        }
+        .portfolio-archive-modal {
+            pointer-events: none;
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            opacity: 0;
+            transition: opacity 0.14s ease;
+        }
+        .portfolio-archive-modal:target {
+            pointer-events: auto;
+            opacity: 1;
+        }
+        .portfolio-archive-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.18);
+        }
+        .portfolio-archive-card {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: min(360px, calc(100vw - 2rem));
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 10px;
+            background: #FFFFFF;
+            box-shadow: 0 22px 52px rgba(15, 23, 42, 0.16);
+            padding: 1rem;
+        }
+        .portfolio-archive-card span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 760;
+        }
+        .portfolio-archive-card strong {
+            display: block;
+            margin-top: 0.2rem;
+            color: #0f172a;
+            font-size: 1.05rem;
+            font-weight: 860;
+        }
+        .portfolio-archive-card p {
+            margin: 0.55rem 0 0;
+            color: #64748b;
+            font-size: 0.78rem;
+            line-height: 1.55;
+        }
+        .portfolio-archive-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            margin-top: 0.85rem;
+        }
+        .portfolio-archive-actions form {
+            margin: 0;
+        }
+        .portfolio-archive-actions a,
+        .portfolio-archive-actions button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 30px;
+            padding: 0 0.8rem;
+            border-radius: 7px;
+            font-size: 0.72rem;
+            font-weight: 760;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .portfolio-archive-actions a {
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            color: #334155;
+            background: #FFFFFF;
+        }
+        .portfolio-archive-actions button {
+            border: 1px solid #B42318;
+            color: #FFFFFF;
+            background: #B42318;
         }
         .portfolio-system-cell,
         .portfolio-plan-cell {
@@ -1037,77 +1122,6 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-drawer-actions a:first-child {
             color: #0f172a;
             font-weight: 760;
-        }
-        .portfolio-archive-modal {
-            pointer-events: none;
-            position: fixed;
-            inset: 0;
-            z-index: 10000;
-            opacity: 0;
-            transition: opacity 0.16s ease;
-        }
-        .portfolio-archive-modal:target {
-            pointer-events: auto;
-            opacity: 1;
-        }
-        .portfolio-archive-backdrop {
-            position: absolute;
-            inset: 0;
-            background: rgba(15, 23, 42, 0.20);
-        }
-        .portfolio-archive-card {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: min(340px, calc(100vw - 32px));
-            transform: translate(-50%, -50%);
-            padding: 1rem;
-            border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 8px;
-            background: #FFFFFF;
-            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
-        }
-        .portfolio-archive-card span {
-            display: block;
-            color: var(--zhx-muted);
-            font-size: 0.72rem;
-            font-weight: 760;
-        }
-        .portfolio-archive-card strong {
-            display: block;
-            margin-top: 0.12rem;
-            color: var(--zhx-text);
-            font-size: 1.05rem;
-        }
-        .portfolio-archive-card p {
-            margin: 0.45rem 0 0.8rem;
-            color: var(--zhx-muted);
-            font-size: 0.82rem;
-        }
-        .portfolio-archive-actions {
-            display: flex;
-            gap: 0.45rem;
-            justify-content: flex-end;
-        }
-        .portfolio-archive-actions a {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 74px;
-            height: 30px;
-            padding: 0 0.72rem;
-            border: 1px solid var(--zhx-line);
-            border-radius: 6px;
-            color: var(--zhx-muted);
-            background: #FFFFFF;
-            font-size: 0.74rem;
-            font-weight: 760;
-            text-decoration: none;
-        }
-        .portfolio-archive-actions a.danger {
-            color: #9f1239;
-            border-color: rgba(159, 18, 57, 0.20);
-            background: #FFF7F8;
         }
         .portfolio-drawer {
             pointer-events: none;
@@ -1425,14 +1439,6 @@ def _render_styles() -> None:
             color: #1d4ed8;
             background: #FFFFFF;
             border-color: rgba(37, 99, 235, 0.16);
-        }
-        .portfolio-archive-link {
-            color: #9f1239;
-        }
-        .portfolio-archive-link:hover {
-            color: #881337;
-            border-color: rgba(159, 18, 57, 0.18);
-            background: #FFF7F8;
         }
         .portfolio-detail-panel {
             margin: 0.65rem 0 1rem;
