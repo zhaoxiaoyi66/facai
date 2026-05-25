@@ -72,6 +72,7 @@ from data.extract_metric_from_text import extractMetricFromText
 from data.fmp_cache import CACHE_TTL_SECONDS, ttl_bucket_for_endpoint
 from data.fmp_queue import FMP_RATE_LIMIT
 from data.fundamentals import FundamentalCache
+from data.decision_log import DecisionLogStore, TradeJournalStore
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
 from data.metric_dictionary import metric_definition_by_key
 from data.metric_source_map import metric_source_definition
@@ -3316,6 +3317,104 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(loaded["tranche_buy_high"], 430)
             self.assertEqual(loaded["heavy_buy_below"], 360)
             self.assertEqual(loaded["invalidation_condition"], "增长明显失速")
+
+    def test_decision_log_store_saves_and_lists_snapshots_by_symbol(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DecisionLogStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_snapshot(
+                "now",
+                {
+                    "decision_date": "2026-05-26",
+                    "price": "520",
+                    "final_action": "wait",
+                    "decision_lane": "blocked",
+                    "current_add_pct": "0",
+                    "max_position_pct": "8",
+                    "risk_rating": "medium",
+                    "data_confidence": "high",
+                    "buy_zone_status": "no_chase",
+                    "block_reasons": ["no_chase"],
+                    "review_reasons": [],
+                    "reason_text": "price above no chase zone",
+                    "source_page": "dashboard",
+                },
+            )
+
+            self.assertEqual(saved["symbol"], "NOW")
+            self.assertEqual(saved["price"], 520)
+            self.assertEqual(saved["current_add_pct"], 0)
+            self.assertEqual(saved["block_reasons"], ["no_chase"])
+            self.assertEqual(store.list_snapshots("now")[0]["id"], saved["id"])
+            self.assertEqual(store.list_snapshots("CRM"), [])
+
+    def test_trade_journal_store_saves_entries_with_snapshot_link(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "crm",
+                {
+                    "decision_date": "2026-05-26",
+                    "price": 260,
+                    "final_action": "add",
+                    "decision_lane": "actionable",
+                },
+            )
+            store = TradeJournalStore(db_path)
+
+            saved = store.save_entry(
+                "crm",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": "5",
+                    "price": "260",
+                    "decision_snapshot_id": snapshot["id"],
+                    "notes": "followed signal",
+                },
+            )
+
+            self.assertEqual(saved["symbol"], "CRM")
+            self.assertEqual(saved["action_type"], "buy")
+            self.assertEqual(saved["quantity"], 5)
+            self.assertEqual(saved["decision_snapshot_id"], snapshot["id"])
+            self.assertEqual(store.list_entries("crm")[0]["notes"], "followed signal")
+
+    def test_trade_journal_store_supports_option_and_skip_actions(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            option_entry = store.save_entry(
+                "hood",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "sell_put",
+                    "premium": "1.2",
+                    "strike_price": "25",
+                    "expiry_date": "2026-06-19",
+                },
+            )
+            skip_entry = store.save_entry("hood", {"trade_date": "2026-05-27", "action_type": "skip"})
+
+            self.assertEqual(option_entry["symbol"], "HOOD")
+            self.assertEqual(option_entry["premium"], 1.2)
+            self.assertEqual(option_entry["strike_price"], 25)
+            self.assertEqual(skip_entry["action_type"], "skip")
+
+    def test_decision_log_and_trade_journal_validate_inputs(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            trade_store = TradeJournalStore(db_path)
+
+            with self.assertRaises(ValueError):
+                decision_store.save_snapshot("", {"decision_date": "2026-05-26"})
+            with self.assertRaises(ValueError):
+                decision_store.save_snapshot("NOW", {"price": -1})
+            with self.assertRaises(ValueError):
+                trade_store.save_entry("NOW", {"action_type": "unknown"})
+            with self.assertRaises(ValueError):
+                trade_store.save_entry("NOW", {"action_type": "buy", "quantity": -1})
 
     def test_portfolio_position_store_crud_and_active_filter(self) -> None:
         with TemporaryDirectory() as tmpdir:
