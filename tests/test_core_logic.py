@@ -3530,6 +3530,40 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(saved["decision_snapshot_id"], snapshot["id"])
             self.assertEqual(store.list_entries("crm")[0]["notes"], "followed signal")
 
+    def test_decision_log_store_deletes_snapshot_and_related_records(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            snapshot = decision_store.save_snapshot(
+                "now",
+                {
+                    "decision_date": "2026-05-26",
+                    "price": 100,
+                    "final_action": "add",
+                },
+            )
+            outcome_store = DecisionOutcomeStore(db_path)
+            tag_store = DecisionErrorTagStore(db_path)
+            trade_store = TradeJournalStore(db_path)
+            outcome_store.save_outcome(snapshot["id"], "1d", {"return_pct": 5, "status": "complete"})
+            tag_store.save_tag(snapshot["id"], "technical_breakdown", "lost level")
+            entry = trade_store.save_entry(
+                "now",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "decision_snapshot_id": snapshot["id"],
+                },
+            )
+
+            self.assertTrue(decision_store.delete_snapshot(snapshot["id"]))
+
+            self.assertIsNone(decision_store.get_snapshot(snapshot["id"]))
+            self.assertIsNone(outcome_store.get_outcome(snapshot["id"], "1d"))
+            self.assertEqual(tag_store.list_tags_for_snapshot(snapshot["id"]), [])
+            self.assertIsNone(trade_store.get_entry(entry["id"])["decision_snapshot_id"])
+            self.assertFalse(decision_store.delete_snapshot(snapshot["id"]))
+
     def test_trade_journal_store_supports_option_and_skip_actions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

@@ -219,6 +219,21 @@ class DecisionLogStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
 
+    def delete_snapshot(self, snapshot_id: int) -> bool:
+        clean_id = _required_int(snapshot_id, "decision_snapshot_id")
+        with self.connect() as conn:
+            if _table_exists(conn, "decision_error_tags"):
+                conn.execute("DELETE FROM decision_error_tags WHERE decision_snapshot_id = ?", (clean_id,))
+            if _table_exists(conn, "decision_outcomes"):
+                conn.execute("DELETE FROM decision_outcomes WHERE decision_snapshot_id = ?", (clean_id,))
+            if _table_exists(conn, "trade_journal_entries"):
+                conn.execute(
+                    "UPDATE trade_journal_entries SET decision_snapshot_id = NULL WHERE decision_snapshot_id = ?",
+                    (clean_id,),
+                )
+            cursor = conn.execute("DELETE FROM decision_snapshots WHERE id = ?", (clean_id,))
+        return cursor.rowcount > 0
+
 
 class TradeJournalStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:

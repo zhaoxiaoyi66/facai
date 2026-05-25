@@ -323,7 +323,7 @@ def _render_error_tag_management(
             unsafe_allow_html=True,
         )
         return
-    _render_snapshot_rows(snapshots, outcome_store, error_tag_store, horizon)
+    _render_snapshot_rows(snapshots, decision_store, outcome_store, error_tag_store, horizon)
     selected_snapshot = _selected_snapshot(snapshots)
     if selected_snapshot:
         _render_error_tag_editor(selected_snapshot, error_tag_store)
@@ -374,6 +374,7 @@ def _recent_error_case_html(row: dict) -> str:
 
 def _render_snapshot_rows(
     snapshots: list[dict],
+    decision_store: DecisionLogStore,
     outcome_store: DecisionOutcomeStore,
     error_tag_store: DecisionErrorTagStore,
     horizon: str,
@@ -386,7 +387,7 @@ def _render_snapshot_rows(
         snapshot_id = int(snapshot.get("id") or 0)
         tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
         outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
-        cols = st.columns([0.8, 0.9, 1.2, 0.9, 1.35, 0.8])
+        cols = st.columns([0.8, 0.9, 1.2, 0.9, 1.25, 1.05])
         cols[0].markdown(
             f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b></div>',
             unsafe_allow_html=True,
@@ -409,10 +410,21 @@ def _render_snapshot_rows(
             f'<div class="trade-error-chip-line">{_tag_chip_html(tags)}</div>',
             unsafe_allow_html=True,
         )
-        if cols[5].button("标记错误", key=f"trade-error-select-{snapshot_id}", width="stretch"):
-            st.session_state["trade_error_snapshot_id"] = snapshot_id
-            st.session_state.pop("trade_error_edit_tag", None)
-            st.rerun()
+        with cols[5]:
+            action_cols = st.columns([1, 1])
+            if action_cols[0].button("标记", key=f"trade-error-select-{snapshot_id}", width="stretch"):
+                st.session_state["trade_error_snapshot_id"] = snapshot_id
+                st.session_state.pop("trade_error_edit_tag", None)
+                st.rerun()
+            if action_cols[1].button("删除", key=f"trade-snapshot-delete-{snapshot_id}", width="stretch"):
+                if decision_store.delete_snapshot(snapshot_id):
+                    if st.session_state.get("trade_error_snapshot_id") == snapshot_id:
+                        st.session_state.pop("trade_error_snapshot_id", None)
+                    st.session_state.pop("trade_error_edit_tag", None)
+                    st.session_state["trade_journal_notice"] = ("success", "系统信号样本已删除。")
+                else:
+                    st.session_state["trade_journal_notice"] = ("error", "系统信号样本不存在或已删除。")
+                st.rerun()
 
 
 def _render_error_tag_editor(snapshot: dict, error_tag_store: DecisionErrorTagStore) -> None:
@@ -932,7 +944,7 @@ def _render_styles() -> None:
         }
         .trade-snapshot-list-head {
             display: grid;
-            grid-template-columns: 0.8fr 0.9fr 1.2fr 0.9fr 1.35fr 0.8fr;
+            grid-template-columns: 0.8fr 0.9fr 1.2fr 0.9fr 1.25fr 1.05fr;
             gap: 0.55rem;
             align-items: center;
             min-height: 30px;
