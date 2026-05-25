@@ -190,6 +190,19 @@ class DecisionLogStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
 
+    def list_all_snapshots(self) -> list[dict]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM decision_snapshots
+                ORDER BY decision_date DESC, created_at DESC, id DESC
+                """
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
     def list_recent_snapshots(self, limit: int = 30) -> list[dict]:
         safe_limit = max(1, int(limit))
         with self.connect() as conn:
@@ -632,6 +645,23 @@ class DecisionErrorTagStore:
 
 def build_decision_outcomes_from_price_history(snapshot: dict, path: Path = CACHE_PATH) -> list[dict]:
     return [_build_outcome_for_horizon(snapshot, horizon, days, path) for horizon, days in OUTCOME_HORIZONS.items()]
+
+
+def refresh_decision_outcomes(path: Path = CACHE_PATH) -> dict:
+    decision_store = DecisionLogStore(path)
+    outcome_store = DecisionOutcomeStore(path)
+    snapshots = decision_store.list_all_snapshots()
+    refreshed_count = 0
+    missing_count = 0
+    for snapshot in snapshots:
+        outcomes = outcome_store.calculate_and_save_outcomes(int(snapshot["id"]))
+        refreshed_count += len(outcomes)
+        missing_count += sum(1 for outcome in outcomes if outcome.get("status") == "missing")
+    return {
+        "snapshotCount": len(snapshots),
+        "outcomeCount": refreshed_count,
+        "missingCount": missing_count,
+    }
 
 
 def build_decision_signal_stats(path: Path = CACHE_PATH) -> dict:

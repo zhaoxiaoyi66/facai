@@ -81,6 +81,7 @@ from data.decision_log import (
     build_decision_outcomes_from_price_history,
     build_decision_signal_stats,
     build_decision_snapshot_from_bundle,
+    refresh_decision_outcomes,
     save_decision_snapshot_from_bundle,
 )
 from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
@@ -3652,6 +3653,47 @@ class ScoringTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save_outcome(1, "2y", {"status": "missing"})
 
+    def test_refresh_decision_outcomes_backfills_all_snapshots(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(db_path, "NOW", [("2026-05-27", 110), ("2026-06-25", 130)])
+            decision_store = DecisionLogStore(db_path)
+            now_snapshot = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add"},
+            )
+            missing_snapshot = decision_store.save_snapshot(
+                "ADBE",
+                {"decision_date": "2026-05-26", "price": 300, "final_action": "wait"},
+            )
+
+            summary = refresh_decision_outcomes(db_path)
+            outcome_store = DecisionOutcomeStore(db_path)
+
+            self.assertEqual(summary["snapshotCount"], 2)
+            self.assertEqual(summary["outcomeCount"], 10)
+            self.assertEqual(summary["missingCount"], 5)
+            self.assertEqual(outcome_store.get_outcome(now_snapshot["id"], "1d")["return_pct"], 10)
+            self.assertEqual(outcome_store.get_outcome(now_snapshot["id"], "1m")["return_pct"], 30)
+            self.assertEqual(outcome_store.get_outcome(missing_snapshot["id"], "1d")["status"], "missing")
+
+    def test_refresh_decision_outcomes_overwrites_existing_outcomes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(db_path, "CRM", [("2026-05-27", 105)])
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "CRM",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add"},
+            )
+            outcome_store = DecisionOutcomeStore(db_path)
+            outcome_store.save_outcome(snapshot["id"], "1d", {"return_pct": -99, "status": "complete"})
+
+            summary = refresh_decision_outcomes(db_path)
+
+            self.assertEqual(summary["snapshotCount"], 1)
+            self.assertEqual(summary["outcomeCount"], 5)
+            self.assertEqual(outcome_store.get_outcome(snapshot["id"], "1d")["return_pct"], 5)
+
     def test_decision_signal_stats_group_by_final_action_and_horizon(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
@@ -6596,7 +6638,7 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertNotEqual(row["finalAction"], row["action"])
         self.assertFalse(row["isActionable"])
         self.assertEqual(row["currentAddLimitPercent"], 0)
-        self.assertEqual(buy_zone_page._current_add_text(row)[0], "0%")
+        self.assertEqual(buy_zone_page._current_add_text(row)[0], "不新增")
 
     def test_buy_zone_manual_override_rederives_final_decision(self) -> None:
         from ui import buy_zone as buy_zone_page
