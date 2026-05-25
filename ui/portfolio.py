@@ -6,6 +6,7 @@ import streamlit as st
 
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from formatting import format_currency, format_percent
+from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
 
 
@@ -34,7 +35,7 @@ def render() -> None:
 
     _render_overview_strip(positions, settings)
     _render_action_panel(positions, settings)
-    _render_positions_table(positions)
+    _render_positions_table(positions, position_store)
     _render_editor(position_store, settings_store, positions, settings)
 
 
@@ -48,11 +49,11 @@ def _render_overview_strip(positions: list[dict], settings: dict) -> None:
 
     items = [
         ("持仓数", str(len(positions)), "active positions"),
-        ("持仓成本", format_currency(cost_basis), "cost basis"),
-        ("组合基准", format_currency(estimated_total), "manual total" if configured_total else "cost + cash"),
-        ("现金", format_currency(cash), "cash balance"),
-        ("目标仓位", format_percent(target_pct), "sum target"),
-        ("最大仓位", format_percent(max_pct), "sum max"),
+        ("持仓成本", _money_text(cost_basis), "cost basis"),
+        ("组合基准", _money_text(estimated_total), "manual total" if configured_total else "cost + cash"),
+        ("现金", _money_text(cash), "cash balance"),
+        ("目标仓位", _percent_text(target_pct), "sum target"),
+        ("最大仓位", _percent_text(max_pct), "sum max"),
     ]
     html = "".join(
         '<div class="portfolio-stat">'
@@ -69,21 +70,6 @@ def _render_action_panel(positions: list[dict], settings: dict) -> None:
     render_section_title("持仓行动面板", "只基于手动持仓计划，不读取行情。")
     denominator = _portfolio_denominator(positions, settings)
     rows = _action_rows(positions, denominator)
-    if not rows:
-        st.markdown(
-            """
-            <div class="portfolio-action-grid">
-                <div class="portfolio-action-card muted">
-                    <span>待处理</span>
-                    <strong>暂无</strong>
-                    <p>添加持仓后，这里会提示缺计划、超仓位和复核线问题。</p>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-
     html = "".join(
         f'<div class="portfolio-action-card tone-{escape(row["tone"])}">'
         f"<span>{escape(row['label'])}</span>"
@@ -95,19 +81,29 @@ def _render_action_panel(positions: list[dict], settings: dict) -> None:
     st.markdown(f'<div class="portfolio-action-grid">{html}</div>', unsafe_allow_html=True)
 
 
-def _render_positions_table(positions: list[dict]) -> None:
-    render_section_title("持仓清单", "当前只显示手动录入的 active 持仓。")
+def _render_positions_table(positions: list[dict], position_store: PortfolioPositionStore) -> None:
+    title_cols = st.columns([5, 1])
+    with title_cols[0]:
+        render_section_title("持仓清单", "当前只显示手动录入的 active 持仓。")
     if not positions:
         st.markdown(
-            """
-            <div class="portfolio-empty">
-                <div>暂无持仓，先添加第一只股票</div>
-                <span>填写代码、数量和平均成本后，组合总览会自动汇总成本与目标仓位。</span>
-            </div>
-            """,
+            '<div class="portfolio-empty">'
+            "<div>暂无持仓，添加第一只股票。</div>"
+            "</div>",
             unsafe_allow_html=True,
         )
+        empty_cols = st.columns([1, 1, 1])
+        with empty_cols[1]:
+            if st.button("添加第一只股票", key="portfolio-empty-add", width="stretch"):
+                st.session_state["portfolio_position_editor_open"] = True
+                st.rerun()
         return
+
+    with title_cols[1]:
+        st.write("")
+        if st.button("添加持仓", key="portfolio-list-add", width="stretch"):
+            st.session_state["portfolio_position_editor_open"] = True
+            st.rerun()
 
     headers = [
         "股票代码",
@@ -120,20 +116,30 @@ def _render_positions_table(positions: list[dict]) -> None:
         "第二减仓价",
         "复核线",
         "备注",
+        "状态管理",
     ]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row) for row in positions)
     st.markdown(
-        f"""
-        <div class="portfolio-table-wrap">
-            <table class="portfolio-table">
-                <thead><tr>{header_html}</tr></thead>
-                <tbody>{body_html}</tbody>
-            </table>
-        </div>
-        """,
+        '<div class="portfolio-table-wrap">'
+        '<table class="portfolio-table">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{body_html}</tbody>"
+        "</table>"
+        "</div>",
         unsafe_allow_html=True,
     )
+    action_cols = st.columns([1, 1, 1, 3])
+    action_symbol = action_cols[0].selectbox(
+        "归档持仓",
+        [str(row.get("symbol") or "") for row in positions],
+        key="portfolio-deactivate-symbol",
+        label_visibility="collapsed",
+    )
+    if action_cols[1].button("归档", type="primary", key="portfolio-deactivate-from-list", width="stretch"):
+        position_store.deactivate_position(action_symbol)
+        st.success(f"{action_symbol} 已归档。")
+        st.rerun()
 
 
 def _render_editor(
@@ -142,58 +148,44 @@ def _render_editor(
     positions: list[dict],
     settings: dict,
 ) -> None:
-    render_section_title("添加/编辑持仓", "保存会写入本地 portfolio_positions / portfolio_settings。")
-    settings_col, position_col = st.columns([0.85, 1.45])
-
-    with settings_col:
-        with st.form("portfolio-settings-form"):
-            st.markdown("**组合设置**")
-            total_value = st.text_input("组合总资产", value=_input_value(settings.get("total_portfolio_value")))
-            cash_balance = st.text_input("现金余额", value=_input_value(settings.get("cash_balance")))
-            base_currency = st.text_input("币种", value=str(settings.get("base_currency") or "USD"))
-            if st.form_submit_button("保存组合设置", type="primary", width="stretch"):
-                try:
-                    settings_store.save_settings(
-                        {
-                            "total_portfolio_value": total_value,
-                            "cash_balance": cash_balance,
-                            "base_currency": base_currency,
-                        }
-                    )
-                    st.success("组合设置已保存。")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-
-    with position_col:
+    position_open = bool(st.session_state.get("portfolio_position_editor_open", False))
+    with st.expander("添加/编辑持仓", expanded=position_open):
+        st.session_state["portfolio_position_editor_open"] = False
         symbols = [str(row.get("symbol") or "") for row in positions]
         selected = st.selectbox("编辑对象", ["新增持仓", *symbols], key="portfolio-edit-symbol")
         editing = selected != "新增持仓"
         current = position_store.get_position(selected) if editing else None
         current = current or EMPTY_POSITION
+        watchlist_symbols = _available_watchlist_symbols(symbols)
 
         with st.form("portfolio-position-form"):
-            st.markdown("**持仓表单**")
-            top_cols = st.columns(3)
-            symbol = top_cols[0].text_input("股票代码", value=str(current.get("symbol") or ""), disabled=editing)
-            quantity = top_cols[1].text_input("持股数量", value=_input_value(current.get("quantity")))
-            average_cost = top_cols[2].text_input("平均成本", value=_input_value(current.get("average_cost")))
+            st.markdown('<div class="portfolio-form-section">基础持仓</div>', unsafe_allow_html=True)
+            basic_cols = st.columns(2)
+            if editing:
+                symbol = basic_cols[0].text_input("股票代码", value=str(current.get("symbol") or ""), disabled=True)
+            else:
+                symbol = _symbol_input_from_watchlist(basic_cols[0], watchlist_symbols)
+            quantity = basic_cols[1].text_input("持股数量", value=_input_value(current.get("quantity")))
+            cost_cols = st.columns(2)
+            average_cost = cost_cols[0].text_input("平均成本", value=_input_value(current.get("average_cost")))
+            cost_cols[1].write("")
 
-            plan_cols = st.columns(3)
+            st.markdown('<div class="portfolio-form-section">计划参数</div>', unsafe_allow_html=True)
+            plan_cols = st.columns(2)
             target_position_pct = plan_cols[0].text_input("目标仓位", value=_input_value(current.get("target_position_pct")))
             max_acceptable_position_pct = plan_cols[1].text_input(
                 "最大可接受仓位",
                 value=_input_value(current.get("max_acceptable_position_pct")),
             )
-            planned_sell_price = plan_cols[2].text_input("计划卖出价", value=_input_value(current.get("planned_sell_price")))
-
-            trim_cols = st.columns(3)
-            first_trim_price = trim_cols[0].text_input("第一减仓价", value=_input_value(current.get("first_trim_price")))
-            second_trim_price = trim_cols[1].text_input("第二减仓价", value=_input_value(current.get("second_trim_price")))
-            review_price = trim_cols[2].text_input("复核线", value=_input_value(current.get("review_price")))
+            sell_cols = st.columns(2)
+            planned_sell_price = sell_cols[0].text_input("计划卖出价", value=_input_value(current.get("planned_sell_price")))
+            first_trim_price = sell_cols[1].text_input("第一减仓价", value=_input_value(current.get("first_trim_price")))
+            review_cols = st.columns(2)
+            second_trim_price = review_cols[0].text_input("第二减仓价", value=_input_value(current.get("second_trim_price")))
+            review_price = review_cols[1].text_input("复核线", value=_input_value(current.get("review_price")))
             notes = st.text_area("备注", value=str(current.get("notes") or ""), height=96)
 
-            submitted = st.form_submit_button("保存持仓", type="primary", width="stretch")
+            submitted = st.form_submit_button("保存持仓", width="stretch")
             if submitted:
                 try:
                     position_store.save_position(
@@ -217,14 +209,35 @@ def _render_editor(
                     st.error(str(exc))
 
         if editing:
-            if st.button(f"停用 {selected}", width="stretch"):
+            if st.button(f"归档 {selected}", type="primary", width="stretch"):
                 position_store.deactivate_position(selected)
-                st.success(f"{selected} 已停用。")
+                st.success(f"{selected} 已归档。")
                 st.rerun()
+
+    with st.expander("组合设置", expanded=False):
+        with st.form("portfolio-settings-form"):
+            st.caption("仅用于组合基准和现金显示。")
+            settings_cols = st.columns(2)
+            total_value = settings_cols[0].text_input("组合总资产", value=_input_value(settings.get("total_portfolio_value")))
+            cash_balance = settings_cols[1].text_input("现金余额", value=_input_value(settings.get("cash_balance")))
+            base_currency = st.text_input("币种", value=str(settings.get("base_currency") or "USD"))
+            if st.form_submit_button("保存组合设置", width="stretch"):
+                try:
+                    settings_store.save_settings(
+                        {
+                            "total_portfolio_value": total_value,
+                            "cash_balance": cash_balance,
+                            "base_currency": base_currency,
+                        }
+                    )
+                    st.success("组合设置已保存。")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
 
 
 def _action_rows(positions: list[dict], denominator: float | None) -> list[dict]:
-    missing_plan = [
+    missing_trim = [
         row for row in positions
         if not any(_number(row.get(key)) for key in ("planned_sell_price", "first_trim_price", "second_trim_price"))
     ]
@@ -235,38 +248,41 @@ def _action_rows(positions: list[dict], denominator: float | None) -> list[dict]
         and _number(row.get("max_acceptable_position_pct")) is not None
         and (_cost_position_pct(row, denominator) or 0) > (_number(row.get("max_acceptable_position_pct")) or 0)
     ]
-    target_gap = [
-        row for row in positions
-        if _number(row.get("target_position_pct")) is not None
-        and _number(row.get("max_acceptable_position_pct")) is not None
-        and (_number(row.get("target_position_pct")) or 0) > (_number(row.get("max_acceptable_position_pct")) or 0)
-    ]
+    planned_trim = [row for row in positions if row not in missing_trim]
     return [
         {
-            "label": "缺少减仓计划",
-            "value": str(len(missing_plan)),
-            "detail": _symbols_detail(missing_plan, "全部持仓已有卖出/减仓价。"),
-            "tone": "orange" if missing_plan else "green",
-        },
-        {
-            "label": "缺少复核线",
-            "value": str(len(missing_review)),
-            "detail": _symbols_detail(missing_review, "全部持仓已设置复核线。"),
-            "tone": "yellow" if missing_review else "green",
-        },
-        {
-            "label": "成本仓位超上限",
-            "value": str(len(over_max)),
+            "label": "超仓",
+            "value": str(len(over_max)) if over_max else "暂无超仓",
             "detail": _symbols_detail(over_max, "未发现成本仓位超过个人上限。"),
             "tone": "red" if over_max else "green",
         },
         {
-            "label": "目标高于上限",
-            "value": str(len(target_gap)),
-            "detail": _symbols_detail(target_gap, "目标仓位均未超过最大可接受仓位。"),
-            "tone": "red" if target_gap else "green",
+            "label": "复核",
+            "value": str(len(missing_review)) if missing_review else "暂无需复核",
+            "detail": _symbols_detail(missing_review, "全部持仓已设置复核线。"),
+            "tone": "yellow" if missing_review else "green",
+        },
+        {
+            "label": "接近减仓价",
+            "value": "暂无接近减仓价",
+            "detail": _symbols_detail(planned_trim, "价格未接入，暂按手动计划展示。"),
+            "tone": "neutral",
         },
     ]
+
+
+def _available_watchlist_symbols(active_symbols: list[str]) -> list[str]:
+    active = {symbol.upper() for symbol in active_symbols}
+    return [symbol for symbol in load_watchlist() if symbol.upper() not in active]
+
+
+def _symbol_input_from_watchlist(column, watchlist_symbols: list[str]) -> str:
+    if watchlist_symbols:
+        choice = column.selectbox("股票代码", [*watchlist_symbols, "手动输入"], help="优先从观察池选择。")
+        if choice != "手动输入":
+            return str(choice)
+        return column.text_input("手动股票代码")
+    return column.text_input("股票代码", help="观察池股票都已有持仓，可手动输入其他代码。")
 
 
 def _position_row_html(row: dict) -> str:
@@ -274,14 +290,15 @@ def _position_row_html(row: dict) -> str:
         "<tr>"
         f"<td><strong>{escape(str(row.get('symbol') or ''))}</strong></td>"
         f"<td>{escape(_quantity_text(row.get('quantity')))}</td>"
-        f"<td>{escape(format_currency(_number(row.get('average_cost'))))}</td>"
+        f"<td>{escape(_money_text(row.get('average_cost')))}</td>"
         f"<td>{escape(_percent_text(row.get('target_position_pct')))}</td>"
         f"<td>{escape(_percent_text(row.get('max_acceptable_position_pct')))}</td>"
-        f"<td>{escape(format_currency(_number(row.get('planned_sell_price'))))}</td>"
-        f"<td>{escape(format_currency(_number(row.get('first_trim_price'))))}</td>"
-        f"<td>{escape(format_currency(_number(row.get('second_trim_price'))))}</td>"
-        f"<td>{escape(format_currency(_number(row.get('review_price'))))}</td>"
+        f"<td>{escape(_money_text(row.get('planned_sell_price')))}</td>"
+        f"<td>{escape(_money_text(row.get('first_trim_price')))}</td>"
+        f"<td>{escape(_money_text(row.get('second_trim_price')))}</td>"
+        f"<td>{escape(_money_text(row.get('review_price')))}</td>"
         f"<td class=\"notes\">{escape(str(row.get('notes') or ''))}</td>"
+        "<td>下方选择归档</td>"
         "</tr>"
     )
 
@@ -318,12 +335,22 @@ def _symbols_detail(rows: list[dict], fallback: str) -> str:
 def _quantity_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "-"
     return f"{number:,.4g}"
 
 
 def _percent_text(value: object) -> str:
-    return format_percent(_number(value))
+    number = _number(value)
+    if number is None:
+        return "-"
+    return format_percent(number)
+
+
+def _money_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "-"
+    return format_currency(number)
 
 
 def _input_value(value: object) -> str:
@@ -414,6 +441,7 @@ def _render_styles() -> None:
         .portfolio-action-card.tone-yellow { border-left-color: var(--zhx-yellow); }
         .portfolio-action-card.tone-orange { border-left-color: var(--zhx-orange); }
         .portfolio-action-card.tone-red { border-left-color: var(--zhx-red); }
+        .portfolio-action-card.tone-neutral { border-left-color: var(--zhx-blue); }
         .portfolio-action-card.muted { border-left-color: var(--zhx-line-strong); }
         .portfolio-table-wrap {
             margin: 0.45rem 0 1.1rem;
@@ -454,8 +482,8 @@ def _render_styles() -> None:
             color: var(--zhx-muted);
         }
         .portfolio-empty {
-            margin: 0.55rem 0 1.1rem;
-            padding: 1.4rem;
+            margin: 0.45rem 0 0.5rem;
+            padding: 0.85rem 1rem;
             border: 1px dashed var(--zhx-line-strong);
             border-radius: 8px;
             background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
@@ -471,6 +499,33 @@ def _render_styles() -> None:
             margin-top: 0.35rem;
             color: var(--zhx-muted);
             font-size: 0.82rem;
+        }
+        [data-testid="stExpander"] {
+            border-color: var(--zhx-line);
+            border-radius: 8px;
+            background: var(--zhx-surface);
+        }
+        [data-testid="stExpander"] details summary {
+            font-size: 0.86rem;
+            font-weight: 760;
+        }
+        [data-testid="stFormSubmitButton"] button {
+            background: #0B1220 !important;
+            border-color: #0B1220 !important;
+            color: #F8FAFC !important;
+        }
+        [data-testid="stButton"] button[kind="primary"] {
+            background: var(--zhx-red) !important;
+            border-color: var(--zhx-red) !important;
+            color: #FFFFFF !important;
+        }
+        .portfolio-form-section {
+            margin: 0.25rem 0 0.35rem;
+            color: var(--zhx-muted);
+            font-size: 0.72rem;
+            font-weight: 820;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }
         @media (max-width: 1100px) {
             .portfolio-overview {
