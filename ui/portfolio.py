@@ -4,6 +4,7 @@ from html import escape
 from urllib.parse import quote
 import streamlit as st
 
+from data.decision_log import DecisionLogStore, TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
@@ -25,6 +26,15 @@ EMPTY_POSITION = {
     "notes": "",
 }
 BLANK_TEXT = "—"
+TRADE_ACTION_LABELS = {
+    "buy": "买入",
+    "sell": "卖出",
+    "add": "加仓",
+    "trim": "减仓",
+    "sell_put": "卖 Put",
+    "covered_call": "Covered Call",
+    "skip": "放弃操作",
+}
 
 
 def _render_editor(
@@ -475,7 +485,9 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
     headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row) for row in rows)
-    drawer_html = "".join(_drawer_html(row, plan_store) for row in rows)
+    decision_store = DecisionLogStore()
+    trade_store = TradeJournalStore()
+    drawer_html = "".join(_drawer_html(row, plan_store, decision_store, trade_store) for row in rows)
     archive_html = "".join(_archive_confirm_html(row) for row in rows)
     colgroup = (
         '<colgroup>'
@@ -598,11 +610,18 @@ def _system_reason_short(row: dict) -> str:
     return reason
 
 
-def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
+def _drawer_html(
+    row: dict,
+    plan_store: StockPlanStore,
+    decision_store: DecisionLogStore,
+    trade_store: TradeJournalStore,
+) -> str:
     symbol = str(row.get("symbol") or "")
     drawer_id = _drawer_id(symbol)
     edit_href = f"?page=portfolio&portfolioEdit={quote(symbol)}#portfolio-table"
     research_notes = _research_notes(symbol, plan_store)
+    signal_items = _recent_signal_items(symbol, decision_store)
+    trade_items = _recent_trade_items(symbol, trade_store)
     sections = [
         ("持仓摘要", [
             ("持股数量", _quantity_text(row.get("quantity"))),
@@ -623,6 +642,8 @@ def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
             ("阻断原因", _reason_text(row.get("blockReasons"))),
             ("复核原因", _reason_text(row.get("reviewReasons"))),
         ]),
+        ("最近信号", signal_items),
+        ("最近操作", trade_items),
         ("研究备忘录", [
             ("备忘录", research_notes),
         ]),
@@ -669,6 +690,67 @@ def _research_notes(symbol: str, plan_store: StockPlanStore) -> str:
     except Exception:
         notes = ""
     return notes or "暂无研究备忘录"
+
+
+def _recent_signal_items(symbol: str, decision_store: DecisionLogStore) -> list[tuple[str, object]]:
+    try:
+        snapshot = (decision_store.list_snapshots(symbol) or [None])[0]
+    except Exception:
+        snapshot = None
+    if not snapshot:
+        return [("状态", "暂无系统信号")]
+    return [
+        ("系统动作", _snapshot_action_text(snapshot.get("final_action"))),
+        ("决策通道", _decision_lane_text(snapshot.get("decision_lane"))),
+        ("信号价格", _money_text(snapshot.get("price"))),
+        ("信号日期", snapshot.get("decision_date") or BLANK_TEXT),
+        ("主要原因", _snapshot_reason_text(snapshot)),
+    ]
+
+
+def _recent_trade_items(symbol: str, trade_store: TradeJournalStore) -> list[tuple[str, object]]:
+    try:
+        entry = (trade_store.list_entries(symbol) or [None])[0]
+    except Exception:
+        entry = None
+    if not entry:
+        return [("状态", "暂无操作记录")]
+    return [
+        ("操作类型", _trade_action_text(entry.get("action_type"))),
+        ("日期", entry.get("trade_date") or BLANK_TEXT),
+        ("价格", _money_text(entry.get("price"))),
+        ("数量", _quantity_text(entry.get("quantity"))),
+        ("备注", entry.get("notes") or "未填写"),
+    ]
+
+
+def _snapshot_action_text(value: object) -> str:
+    text = str(value or "").strip()
+    return {
+        "add": "加仓",
+        "buy": "买入",
+        "wait": "等待",
+        "review": "复核",
+        "blocked": "阻断",
+        "unknown": "未标记",
+    }.get(text, text or BLANK_TEXT)
+
+
+def _trade_action_text(value: object) -> str:
+    text = str(value or "").strip()
+    return TRADE_ACTION_LABELS.get(text, text or BLANK_TEXT)
+
+
+def _snapshot_reason_text(snapshot: dict) -> str:
+    reasons = [*_translated_reasons(snapshot.get("block_reasons")), *_translated_reasons(snapshot.get("review_reasons"))]
+    if reasons:
+        return "，".join(reasons[:2])
+    raw_text = str(snapshot.get("reason_text") or "").strip()
+    if not raw_text:
+        return "暂无主要原因"
+    raw_items = [item.strip() for item in raw_text.replace("；", ";").split(";") if item.strip()]
+    translated = _translated_reasons(raw_items)
+    return "，".join(translated[:2]) if translated else raw_text
 
 
 def _system_explanation_text(row: dict) -> str:
