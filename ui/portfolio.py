@@ -370,6 +370,7 @@ def render() -> None:
     _render_styles()
     _render_final_portfolio_styles()
     render_page_header("组合持仓", "真实持仓、仓位偏离和下一步动作。")
+    _consume_portfolio_edit_query()
     _render_portfolio_notice()
 
     position_store = PortfolioPositionStore()
@@ -384,6 +385,16 @@ def render() -> None:
     _render_action_panel(view["actionGroups"])
     _render_positions_table(rows, position_store, plan_store)
     _render_editor(position_store, settings_store, rows, settings)
+
+
+def _consume_portfolio_edit_query() -> None:
+    symbol = str(st.query_params.get("portfolioEdit") or "").strip().upper()
+    if not symbol:
+        return
+    st.session_state["portfolio_position_editor_open"] = True
+    st.session_state["portfolio_edit_symbol"] = symbol
+    if "portfolioEdit" in st.query_params:
+        st.query_params.pop("portfolioEdit")
 
 
 def _render_portfolio_notice() -> None:
@@ -431,7 +442,14 @@ def _render_action_panel(action_groups: list[dict]) -> None:
             f"<small>{escape(content)}</small>"
             "</div>"
         )
-    st.markdown(f'<div class="portfolio-lanes">{"".join(lanes)}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="portfolio-radar-head">'
+        "<strong>组合风险雷达</strong>"
+        "<span>按持仓状态聚合下一步动作</span>"
+        "</div>"
+        f'<div class="portfolio-lanes">{"".join(lanes)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_positions_table(rows: list[dict], position_store: PortfolioPositionStore, plan_store: StockPlanStore) -> None:
@@ -459,10 +477,22 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
     body_html = "".join(_position_row_html(row) for row in rows)
     drawer_html = "".join(_drawer_html(row, plan_store) for row in rows)
     archive_html = "".join(_archive_confirm_html(row) for row in rows)
+    colgroup = (
+        '<colgroup>'
+        '<col class="portfolio-col-symbol">'
+        '<col class="portfolio-col-cost">'
+        '<col class="portfolio-col-pnl">'
+        '<col class="portfolio-col-weight">'
+        '<col class="portfolio-col-system">'
+        '<col class="portfolio-col-plan">'
+        '<col class="portfolio-col-actions">'
+        "</colgroup>"
+    )
     st.markdown(
         '<div id="portfolio-table"></div>'
         '<div class="portfolio-table-wrap terminal">'
         '<table class="portfolio-table terminal">'
+        f"{colgroup}"
         f"<thead><tr>{header_html}</tr></thead>"
         f"<tbody>{body_html}</tbody>"
         "</table>"
@@ -471,27 +501,6 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         f"{archive_html}",
         unsafe_allow_html=True,
     )
-    _render_drawer_action_controls(rows)
-
-
-def _render_drawer_action_controls(rows: list[dict]) -> None:
-    symbols = [str(row.get("symbol") or "") for row in rows]
-    if not symbols:
-        return
-    current = _current_detail_symbol(symbols)
-    st.session_state["portfolio-drawer-action-symbol"] = current
-    cols = st.columns([1.2, 1, 4])
-    selected = cols[0].selectbox(
-        "当前详情",
-        symbols,
-        index=symbols.index(current),
-        key="portfolio-drawer-action-symbol",
-        label_visibility="collapsed",
-    )
-    if cols[1].button("编辑当前详情", key="portfolio-drawer-edit-button", width="stretch"):
-        st.session_state["portfolio_position_editor_open"] = True
-        st.session_state["portfolio_edit_symbol"] = selected
-        st.rerun()
 
 
 def _position_row_html(row: dict) -> str:
@@ -501,12 +510,12 @@ def _position_row_html(row: dict) -> str:
     research_href = f"?page=detail&symbol={quote(symbol)}"
     return (
         "<tr>"
-        f"<td>{_cell_html(symbol, _row_status_text(row))}</td>"
+        f'<td class="portfolio-symbol-cell">{_cell_html(symbol, _row_status_text(row))}</td>'
         f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
         f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
         f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
-        f"<td>{_cell_html(_system_action_text(row), _system_reason_text(row))}</td>"
-        f"<td>{_cell_html(_plan_status_text(row), _plan_sub_text(row))}</td>"
+        f"<td>{_system_cell_html(row)}</td>"
+        f"<td>{_plan_cell_html(row)}</td>"
         '<td><div class="portfolio-row-actions">'
         f'<a class="portfolio-view-link" href="#{escape(drawer_id)}">查看</a>'
         f'<a class="portfolio-view-link portfolio-research-link" href="{escape(research_href, quote=True)}" target="_self">研究</a>'
@@ -523,9 +532,53 @@ def _current_detail_symbol(symbols: list[str]) -> str:
     return symbols[0]
 
 
+def _system_cell_html(row: dict) -> str:
+    tone = _system_tone_class(row)
+    return (
+        f'<div class="portfolio-system-cell {escape(tone)}">'
+        f"<b>{escape(_system_action_text(row))}</b>"
+        f"<small>{escape(_system_reason_short(row))}</small>"
+        "</div>"
+    )
+
+
+def _plan_cell_html(row: dict) -> str:
+    status = _plan_status_text(row)
+    tone = "is-empty" if status == "未设置计划" else "is-set"
+    return (
+        f'<div class="portfolio-plan-cell {escape(tone)}">'
+        f"<b>{escape(status)}</b>"
+        f"<small>{escape(_plan_sub_text(row))}</small>"
+        "</div>"
+    )
+
+
+def _system_tone_class(row: dict) -> str:
+    if row.get("overweightSystem"):
+        return "tone-risk"
+    lane = str(row.get("decisionLane") or "").strip()
+    if lane == "actionable":
+        return "tone-green"
+    if lane == "review":
+        return "tone-amber"
+    if lane == "blocked":
+        return "tone-risk"
+    return "tone-neutral"
+
+
+def _system_reason_short(row: dict) -> str:
+    reason = _system_reason_text(row)
+    if "，" in reason:
+        return reason.split("，", 1)[0]
+    if len(reason) > 20:
+        return reason[:20] + "…"
+    return reason
+
+
 def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
     symbol = str(row.get("symbol") or "")
     drawer_id = _drawer_id(symbol)
+    edit_href = f"?page=portfolio&portfolioEdit={quote(symbol)}#portfolio-table"
     research_notes = _research_notes(symbol, plan_store)
     sections = [
         ("持仓摘要", [
@@ -569,6 +622,7 @@ def _drawer_html(row: dict, plan_store: StockPlanStore) -> str:
         '<div class="portfolio-drawer-head">'
         f"<div><strong>{escape(symbol)}</strong><span>{escape(_system_action_text(row))} · {escape(_plan_status_text(row))}</span></div>"
         '<div class="portfolio-drawer-actions">'
+        f'<a href="{escape(edit_href, quote=True)}" target="_self">编辑持仓</a>'
         '<a href="#portfolio-table">关闭</a>'
         "</div>"
         "</div>"
@@ -735,102 +789,169 @@ def _render_final_portfolio_styles() -> None:
         """
         <style>
         .portfolio-overview.compact {
-            gap: 0.5rem;
-            margin: 0.45rem 0 0.75rem;
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 0;
+            margin: 0.35rem 0 0.75rem;
+            padding: 0.34rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
         }
         .portfolio-stat.compact {
-            min-height: 68px;
-            padding: 0.55rem 0.68rem;
+            min-height: 58px;
+            padding: 0.48rem 0.68rem;
+            border: 0;
+            border-right: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0;
+            background: transparent;
             box-shadow: none;
         }
+        .portfolio-stat.compact:last-child {
+            border-right: 0;
+        }
+        .portfolio-stat.compact span {
+            color: #64748b;
+            font-size: 0.66rem;
+            font-weight: 760;
+        }
         .portfolio-stat.compact strong {
-            font-size: 1.15rem;
+            margin-top: 0.18rem;
+            color: #0f172a;
+            font-size: 1.22rem;
             letter-spacing: 0;
         }
         .portfolio-stat.compact em {
-            opacity: 0.58;
+            margin-top: 0.12rem;
+            color: #94a3b8;
+            opacity: 1;
+            font-size: 0.62rem;
+        }
+        .portfolio-radar-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 1rem;
+            margin: 0.15rem 0 0.35rem;
+        }
+        .portfolio-radar-head strong {
+            color: #0f172a;
+            font-size: 0.95rem;
+            font-weight: 820;
+        }
+        .portfolio-radar-head span {
+            color: #94a3b8;
+            font-size: 0.72rem;
+            font-weight: 680;
         }
         .portfolio-lanes {
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 0.45rem;
-            margin: 0.35rem 0 0.9rem;
+            gap: 0.38rem;
+            margin: 0 0 0.85rem;
         }
         .portfolio-lane {
             display: grid;
             grid-template-columns: 1fr auto;
-            gap: 0.1rem 0.5rem;
+            gap: 0.08rem 0.48rem;
             align-items: baseline;
-            min-height: 48px;
-            padding: 0.46rem 0.58rem;
-            border: 1px solid var(--zhx-line);
+            min-height: 44px;
+            padding: 0.42rem 0.56rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
             border-left: 3px solid var(--zhx-line-strong);
-            border-radius: 7px;
-            background: #FFFFFF;
+            border-radius: 6px;
+            background: #FBFCFE;
         }
         .portfolio-lane span {
-            color: var(--zhx-muted);
-            font-size: 0.68rem;
+            color: #64748b;
+            font-size: 0.66rem;
             font-weight: 820;
         }
         .portfolio-lane b {
-            color: var(--zhx-text);
-            font-size: 1rem;
+            color: #0f172a;
+            font-size: 0.95rem;
         }
         .portfolio-lane small {
             grid-column: 1 / -1;
-            color: var(--zhx-faint);
-            font-size: 0.68rem;
+            color: #94a3b8;
+            font-size: 0.66rem;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .portfolio-lane.tone-green { border-left-color: var(--zhx-green); }
-        .portfolio-lane.tone-yellow { border-left-color: var(--zhx-yellow); }
-        .portfolio-lane.tone-red { border-left-color: #B45309; }
-        .portfolio-lane.tone-neutral { border-left-color: var(--zhx-blue); }
+        .portfolio-lane.tone-green { border-left-color: #4F9D78; }
+        .portfolio-lane.tone-yellow { border-left-color: #C59A32; }
+        .portfolio-lane.tone-red { border-left-color: #B56A32; }
+        .portfolio-lane.tone-neutral { border-left-color: #6B83A6; }
         .portfolio-table-wrap.terminal {
-            margin-top: 0.35rem;
-            border-radius: 6px;
-            box-shadow: none;
+            margin-top: 0.3rem;
+            border-color: rgba(15, 23, 42, 0.08);
+            border-radius: 7px;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.035);
         }
         .portfolio-table.terminal {
-            min-width: 920px;
-            font-size: 0.75rem;
+            table-layout: fixed;
+            min-width: 1080px;
+            font-size: 0.72rem;
         }
+        .portfolio-col-symbol { width: 17%; }
+        .portfolio-col-cost { width: 18%; }
+        .portfolio-col-pnl { width: 13%; }
+        .portfolio-col-weight { width: 13%; }
+        .portfolio-col-system { width: 17%; }
+        .portfolio-col-plan { width: 14%; }
+        .portfolio-col-actions { width: 150px; }
         .portfolio-table.terminal th {
-            height: 30px;
-            padding: 0.36rem 0.55rem;
-            background: #F8FAFC;
-            color: var(--zhx-muted);
-            font-size: 0.65rem;
+            height: 28px;
+            padding: 0.28rem 0.52rem;
+            background: #FAFBFC;
+            color: #7b8798;
+            font-size: 0.63rem;
+            font-weight: 760;
             letter-spacing: 0;
             text-transform: none;
         }
         .portfolio-table.terminal td {
-            height: 46px;
-            padding: 0.42rem 0.62rem;
+            height: 42px;
+            padding: 0.34rem 0.52rem;
             vertical-align: middle;
         }
         .portfolio-table.terminal th:last-child,
         .portfolio-table.terminal td:last-child {
-            width: 128px;
-            padding-left: 0.72rem;
-            padding-right: 0.72rem;
+            width: 150px;
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
             text-align: center;
         }
         .portfolio-table.terminal tr:hover td {
-            background: #FAFBFC;
+            background: #FBFCFE;
+        }
+        .portfolio-symbol-cell .portfolio-cell b {
+            font-size: 0.83rem;
+            font-weight: 860;
+        }
+        .portfolio-cell {
+            gap: 0.1rem;
+            max-height: 32px;
+        }
+        .portfolio-cell b {
+            font-size: 0.76rem;
+            line-height: 1.1;
+        }
+        .portfolio-cell small {
+            max-width: 100%;
+            color: #7b8798;
+            font-size: 0.66rem;
         }
         .portfolio-row-actions {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.12rem;
+            gap: 0.08rem;
             padding: 0.12rem;
             border: 1px solid rgba(15, 23, 42, 0.08);
             border-radius: 8px;
-            background: #F8FAFC;
+            background: #F7F9FC;
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
             white-space: nowrap;
         }
@@ -838,14 +959,14 @@ def _render_final_portfolio_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-width: 42px;
-            height: 26px;
-            padding: 0 0.52rem;
+            min-width: 38px;
+            height: 24px;
+            padding: 0 0.45rem;
             border: 1px solid transparent;
             border-radius: 6px;
-            color: var(--zhx-muted);
+            color: #64748b;
             background: transparent;
-            font-size: 0.7rem;
+            font-size: 0.66rem;
             font-weight: 760;
             text-decoration: none;
         }
@@ -856,23 +977,66 @@ def _render_final_portfolio_styles() -> None:
             text-decoration: none !important;
         }
         .portfolio-view-link:hover {
-            color: var(--zhx-text);
+            color: #0f172a;
             background: #FFFFFF;
             border-color: rgba(15, 23, 42, 0.10);
             text-decoration: none;
         }
-        .portfolio-research-link {
-            color: #1d4ed8;
+        .portfolio-row-actions .portfolio-view-link:first-child {
+            color: #0f172a;
             background: #FFFFFF;
-            border-color: rgba(37, 99, 235, 0.16);
+            border-color: rgba(15, 23, 42, 0.10);
+        }
+        .portfolio-research-link {
+            color: #52657f;
+            background: transparent;
+            border-color: transparent;
         }
         .portfolio-archive-link {
-            color: #9f1239;
+            color: #7b8798;
         }
         .portfolio-archive-link:hover {
-            color: #881337;
-            border-color: rgba(159, 18, 57, 0.18);
-            background: #FFF7F8;
+            color: #8a5a1f;
+            border-color: rgba(138, 90, 31, 0.16);
+            background: #FFFBF5;
+        }
+        .portfolio-system-cell,
+        .portfolio-plan-cell {
+            display: grid;
+            gap: 0.1rem;
+            min-width: 0;
+            padding-left: 0.48rem;
+            border-left: 3px solid #CBD5E1;
+        }
+        .portfolio-system-cell b,
+        .portfolio-plan-cell b {
+            color: #0f172a;
+            font-size: 0.75rem;
+            line-height: 1.1;
+            font-weight: 820;
+        }
+        .portfolio-system-cell small,
+        .portfolio-plan-cell small {
+            color: #7b8798;
+            font-size: 0.65rem;
+            line-height: 1.15;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .portfolio-system-cell.tone-green { border-left-color: #4F9D78; }
+        .portfolio-system-cell.tone-amber { border-left-color: #C59A32; }
+        .portfolio-system-cell.tone-risk { border-left-color: #B56A32; background: linear-gradient(90deg, rgba(181, 106, 50, 0.06), transparent 70%); }
+        .portfolio-system-cell.tone-neutral { border-left-color: #6B83A6; }
+        .portfolio-plan-cell.is-empty b,
+        .portfolio-plan-cell.is-empty small {
+            color: #94a3b8;
+            font-weight: 680;
+        }
+        .portfolio-plan-cell.is-set { border-left-color: #6B83A6; }
+        .portfolio-drawer-actions a:first-child {
+            color: #0f172a;
+            font-weight: 760;
         }
         .portfolio-archive-modal {
             pointer-events: none;
