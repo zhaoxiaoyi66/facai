@@ -493,12 +493,9 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
     for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
         with column:
             st.markdown(_summary_panel_head_html(title, subtitle, len(rows), color), unsafe_allow_html=True)
-            if not rows:
-                st.markdown('<div class="summary-empty">暂无</div>', unsafe_allow_html=True)
-                continue
-            for row in rows[:4]:
-                st.markdown(_lane_item_html(row), unsafe_allow_html=True)
-            _render_lane_more_button(lane_key)
+            st.markdown(_lane_stack_html(rows[:4]), unsafe_allow_html=True)
+            if rows:
+                _render_lane_more_button(lane_key)
     st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
 
 
@@ -2197,14 +2194,14 @@ def _render_active_lane_filter_status(filtered_table: pd.DataFrame) -> None:
     label = LANE_FILTER_LABELS.get(lane_key)
     if not label:
         return
-    left, right = st.columns([0.86, 0.14], vertical_alignment="center")
+    left, _spacer, clear = st.columns([0.16, 0.78, 0.06], gap="small", vertical_alignment="top")
     with left:
         st.markdown(
             f'<div class="table-filter-chip">当前筛选：<strong>{escape(label)}</strong> · {len(filtered_table)}只</div>',
             unsafe_allow_html=True,
         )
-    with right:
-        if st.button("清除筛选", key="dashboard_clear_lane_filter", width="stretch"):
+    with clear:
+        if st.button("清除", key="dashboard_clear_lane_filter", width="stretch", help="清除当前筛选"):
             st.session_state.pop(LANE_FILTER_SESSION_KEY, None)
             st.rerun()
 
@@ -3003,30 +3000,59 @@ def _render_dashboard_styles() -> None:
             display: flex;
             align-items: center;
         }
+        .lane-row-stack {
+            height: 112px;
+            min-height: 112px;
+            overflow: hidden;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.035);
+            box-sizing: border-box;
+        }
+        .lane-row-stack .summary-empty {
+            height: 112px;
+            min-height: 112px;
+        }
         .st-key-dashboard_lane_more_actionable button,
         .st-key-dashboard_lane_more_nearBuyZone button,
         .st-key-dashboard_lane_more_waitOrReview button,
         .st-key-dashboard_lane_more_noChaseHighRisk button {
-            min-height: 1.65rem;
-            height: 1.65rem;
-            padding: 0.16rem 0.56rem;
-            color: var(--dash-secondary);
+            min-height: 20px;
+            height: 20px;
+            padding: 0 0.5rem;
+            color: #718198;
             background: transparent;
             border: 0;
             border-top: 1px solid rgba(15, 23, 42, 0.04);
             border-radius: 0 0 0.45rem 0.45rem;
             box-shadow: none;
-            font-size: 11.5px;
-            font-weight: 500;
-            justify-content: flex-start;
+            font-size: 10px;
+            font-weight: 520;
+            line-height: 20px;
+            justify-content: flex-end;
+            text-align: right;
+            opacity: 0.72;
+            font-variant-numeric: tabular-nums;
+        }
+        .st-key-dashboard_lane_more_actionable button p,
+        .st-key-dashboard_lane_more_nearBuyZone button p,
+        .st-key-dashboard_lane_more_waitOrReview button p,
+        .st-key-dashboard_lane_more_noChaseHighRisk button p {
+            width: auto;
+            margin: 0;
+            color: inherit;
+            font-size: 10px;
+            font-weight: 520;
+            line-height: 20px;
+            text-align: right;
+            letter-spacing: 0;
         }
         .st-key-dashboard_lane_more_actionable button:hover,
         .st-key-dashboard_lane_more_nearBuyZone button:hover,
         .st-key-dashboard_lane_more_waitOrReview button:hover,
         .st-key-dashboard_lane_more_noChaseHighRisk button:hover {
             color: var(--dash-text);
-            background: rgba(248,250,252,0.60);
+            background: rgba(248,250,252,0.56);
             border-color: rgba(15, 23, 42, 0.04);
+            opacity: 1;
         }
         .lane-item {
             --legacy-row-height: 32px;
@@ -3034,8 +3060,8 @@ def _render_dashboard_styles() -> None:
             grid-template-columns: 52px auto auto minmax(0, 1fr);
             align-items: center;
             gap: 6px;
-            height: 29px;
-            min-height: 29px;
+            height: 28px;
+            min-height: 28px;
             padding: 0 0.54rem;
             border: 0;
             border-top: 1px solid rgba(15, 23, 42, 0.04);
@@ -3085,7 +3111,10 @@ def _render_dashboard_styles() -> None:
         .table-filter-chip {
             display: inline-flex;
             align-items: center;
-            min-height: 30px;
+            min-height: 28px;
+            height: 28px;
+            margin-top: 0.34rem;
+            margin-bottom: 0.34rem;
             padding: 0 10px;
             border: 1px solid rgba(191,219,254,0.86);
             border-radius: 999px;
@@ -3093,18 +3122,42 @@ def _render_dashboard_styles() -> None:
             color: var(--dash-secondary);
             font-size: 12px;
             font-weight: 650;
+            line-height: 26px;
+        }
+        .st-key-dashboard_clear_lane_filter {
+            margin-top: 0.34rem;
+            margin-bottom: 0.34rem;
         }
         .st-key-dashboard_clear_lane_filter button {
-            min-height: 30px !important;
-            height: 30px !important;
+            min-width: 54px !important;
+            min-height: 28px !important;
+            height: 28px !important;
             border-radius: 999px !important;
-            padding: 0 10px !important;
-            font-size: 12px !important;
-            font-weight: 650 !important;
+            padding: 0 8px !important;
+            font-size: 11px !important;
+            font-weight: 620 !important;
+            line-height: 26px !important;
+            white-space: nowrap !important;
+            word-break: keep-all !important;
             box-shadow: none !important;
-            background: rgba(255,255,255,0.88) !important;
-            border: 1px solid var(--dash-border) !important;
-            color: var(--dash-secondary) !important;
+            background: rgba(254, 242, 242, 0.62) !important;
+            border: 1px solid rgba(239, 68, 68, 0.20) !important;
+            color: #A33A3A !important;
+            opacity: 0.88;
+        }
+        .st-key-dashboard_clear_lane_filter button p {
+            font-size: 11px !important;
+            font-weight: 620 !important;
+            line-height: 26px !important;
+            margin: 0;
+            white-space: nowrap !important;
+            word-break: keep-all !important;
+        }
+        .st-key-dashboard_clear_lane_filter button:hover {
+            opacity: 1;
+            color: #8A1F1F !important;
+            background: rgba(254, 226, 226, 0.78) !important;
+            border-color: rgba(220, 38, 38, 0.30) !important;
         }
         .decision-table {
             margin-top: 0.15rem;
@@ -3932,11 +3985,22 @@ def _render_dashboard_styles() -> None:
         .summary-panel-head.tone-blue .summary-count { color:#36516F !important; }
         .summary-panel-head.tone-yellow .summary-count { color:#7A5C12 !important; }
         .summary-panel-head.tone-red .summary-count { color:#8A1F1F !important; }
+        .lane-row-stack {
+            height:112px;
+            min-height:112px;
+            overflow:hidden;
+            border-bottom:1px solid rgba(15, 23, 42, 0.035);
+            box-sizing:border-box;
+        }
+        .lane-row-stack .summary-empty {
+            height:112px;
+            min-height:112px;
+        }
         .lane-item {
             grid-template-columns:46px minmax(0, 1fr) minmax(58px, 82px);
             gap:8px;
-            height:24px;
-            min-height:24px;
+            height:28px;
+            min-height:28px;
             padding:0 0.55rem;
             border-top-color:rgba(15, 23, 42, 0.032);
             min-width:0;
@@ -3986,62 +4050,112 @@ def _render_dashboard_styles() -> None:
         .st-key-dashboard_lane_more_nearBuyZone button,
         .st-key-dashboard_lane_more_waitOrReview button,
         .st-key-dashboard_lane_more_noChaseHighRisk button {
-            color:#64748B !important;
-            font-size:10.5px !important;
-            min-height:22px !important;
-            height:22px !important;
-            padding:0 0.42rem !important;
+            color:#718198 !important;
+            font-size:10px !important;
+            min-height:20px !important;
+            height:20px !important;
+            padding:0 0.5rem !important;
             border:0 !important;
             border-top:1px solid rgba(15, 23, 42, 0.04) !important;
             border-radius:0 0 5px 5px !important;
             background:transparent !important;
             box-shadow:none !important;
-            justify-content:flex-start !important;
-            text-align:left !important;
-            font-weight:500 !important;
-            opacity:0.82;
+            justify-content:flex-end !important;
+            text-align:right !important;
+            font-weight:520 !important;
+            line-height:20px !important;
+            opacity:0.72;
             font-variant-numeric:tabular-nums;
         }
         .st-key-dashboard_lane_more_actionable button p,
         .st-key-dashboard_lane_more_nearBuyZone button p,
         .st-key-dashboard_lane_more_waitOrReview button p,
         .st-key-dashboard_lane_more_noChaseHighRisk button p {
-            width:100%;
+            width:auto;
+            margin:0;
+            color:inherit;
+            font-size:10px !important;
+            font-weight:520 !important;
+            line-height:20px !important;
+            letter-spacing:0;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
-            text-align:left;
+            text-align:right;
         }
         .st-key-dashboard_lane_more_actionable button:hover {
             color:#334155 !important;
             background:rgba(248,250,252,0.78) !important;
+            opacity:1;
         }
         .st-key-dashboard_lane_more_nearBuyZone button:hover {
             color:#334155 !important;
             background:rgba(248,250,252,0.78) !important;
+            opacity:1;
         }
         .st-key-dashboard_lane_more_waitOrReview button:hover {
             color:#334155 !important;
             background:rgba(248,250,252,0.78) !important;
+            opacity:1;
         }
         .st-key-dashboard_lane_more_noChaseHighRisk button:hover {
             color:#334155 !important;
             background:rgba(248,250,252,0.78) !important;
+            opacity:1;
         }
         .table-filter-chip {
             display:inline-flex;
+            align-items:center;
             width:max-content;
             max-width:1080px;
             min-height:28px;
+            height:28px;
             margin-top:0.34rem;
             margin-bottom:0.34rem;
-            padding:0 10px;
+            padding:0 9px;
             border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:999px;
             background:#FFFFFF;
             color:#64748B;
-            font-size:12px;
+            font-size:11.5px;
             font-weight:620;
+            line-height:26px;
+        }
+        .st-key-dashboard_clear_lane_filter {
+            margin-top:0.34rem;
+            margin-bottom:0.34rem;
+        }
+        .st-key-dashboard_clear_lane_filter button {
+            min-width:54px !important;
+            min-height:28px !important;
+            height:28px !important;
+            padding:0 8px !important;
+            border-radius:999px !important;
+            border:1px solid rgba(239, 68, 68, 0.20) !important;
+            background:rgba(254, 242, 242, 0.62) !important;
+            color:#A33A3A !important;
+            box-shadow:none !important;
+            font-size:11px !important;
+            font-weight:620 !important;
+            line-height:26px !important;
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            opacity:0.88;
+        }
+        .st-key-dashboard_clear_lane_filter button p {
+            margin:0;
+            font-size:11px !important;
+            font-weight:620 !important;
+            line-height:26px !important;
+            letter-spacing:0;
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+        }
+        .st-key-dashboard_clear_lane_filter button:hover {
+            opacity:1;
+            color:#8A1F1F !important;
+            background:rgba(254, 226, 226, 0.78) !important;
+            border-color:rgba(220, 38, 38, 0.30) !important;
         }
         .decision-table {
             display:block;
@@ -4706,6 +4820,14 @@ def _lane_item_html(row: pd.Series) -> str:
         f'{_badge_span_html(_short_badge_text(state), state_color, "lane-state-badge")}'
         "</a>"
     )
+
+
+def _lane_stack_html(rows: list[pd.Series]) -> str:
+    if not rows:
+        body = '<div class="summary-empty">暂无</div>'
+    else:
+        body = "".join(_lane_item_html(row) for row in rows[:4])
+    return f'<div class="lane-row-stack">{body}</div>'
 
 
 def _short_badge_text(value: object) -> str:

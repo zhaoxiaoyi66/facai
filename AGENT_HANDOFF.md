@@ -33,6 +33,69 @@ None.
 
 2026-05-25 UI conversation:
 - Owner: UI conversation.
+- Task: Dashboard UI-only move clear filter to right edge.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Moved the active-filter red `清除` action away from the filter chip and onto the far-right side of the filter row, near the watchlist `查看` column. Kept it compact, single-line, and red, with the existing no-wrap guardrails.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the clear control still appears beside the filter chip; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only active-filter chip/button baseline polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Rebalanced the active-filter row so the filter chip and red `清除` control use top-aligned columns plus matching 28px height, 26px line height, vertical margins, and text centering. This keeps the clear action visually aligned with the `当前筛选` text instead of floating off its baseline.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the clear control still appears offset; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only clear filter alignment and emphasis.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Aligned the active-filter `清除` control with the filter chip by giving the keyed button wrapper the same vertical margins as the chip, tightened the adjacent columns, and changed the clear action to a low-saturation red treatment with stronger hover feedback.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the clear control still appears in the old muted/offset style; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only active filter clear control polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Moved the Dashboard active lane filter clear action from the far-right oversized pill to a compact `清除` control beside the filter chip. The control is smaller, muted, transparent by default, and only gains emphasis on hover, matching the terminal-style secondary action treatment.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old `清除筛选` pill remains visible; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision-lane footer visual polish.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Refined the Dashboard decision-lane `查看全部` footer from a visible Streamlit-style button into a smaller terminal secondary action. The footer is now 10px, right-aligned, muted, lower opacity by default, with hover-only emphasis, while preserving the fixed four-slot row body.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old larger footer remains visible; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only fixed four-slot lane body for decision-lane footer alignment.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Reworked the Dashboard decision lanes so each lane renders its stock rows inside one fixed four-slot body (`lane-row-stack`) before the `查看全部` footer. This keeps the footer below the fourth stock slot even when a lane has fewer than four displayed stocks, instead of letting it float upward with the row count.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old floating footer remains visible; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
+- Task: Dashboard UI-only decision-lane footer anchoring.
+- Files touched: `AGENT_HANDOFF.md`, `ui/dashboard.py`.
+- What changed: Kept each Dashboard decision-lane `查看全部` footer at a fixed bottom position by reserving invisible row slots up to the four-row lane height. The placeholder rows now contain hidden non-breaking content so Streamlit keeps their layout height instead of collapsing them.
+- Verification: `C:\dev\facai\.venv\Scripts\python.exe -m py_compile ui\dashboard.py` passed; `C:\dev\facai\.venv\Scripts\python.exe -m pytest tests\test_core_logic.py -q` passed with 257 tests, 32 subtests, and one pytest cache write warning.
+- Next needed: Reload/restart the currently running Streamlit page if the old floating footer remains visible; no long-running service was started or stopped in this pass.
+- Do not touch yet: data/scoring files, BuyZoneEngine formulas, PositionPlanEngine formulas, Review Center backend, database schema/migrations, Qwen/AI review, autopilot, external APIs, npm dev server, and long-running services were not changed.
+
+2026-05-25 UI conversation:
+- Owner: UI conversation.
 - Task: Review Center UI-only auto-fill completed-state feedback.
 - Files touched: `AGENT_HANDOFF.md`, `ui/manual_review.py`.
 - What changed: Made row-level auto-fill completion visible in the Review Center. Missing-KPI rows with `autoFillStatus=success` now show a disabled `已补齐` primary action instead of another active `自动补齐` button, and the row recommendation explains that auto-fill already succeeded and the resulting/new data still needs review. This fixes the apparent no-op behavior where clicking an already-successful auto-fill row looked like nothing happened.
