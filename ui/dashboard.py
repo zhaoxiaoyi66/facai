@@ -644,11 +644,11 @@ def _data_health_issue_action_html(action: str, target: str, ticker: str) -> str
     href = ""
     if target in {"stock", "stock_data", "stock_score"} and ticker != "全局":
         focus = "data" if target == "stock_data" else "score" if target == "stock_score" else "summary"
-        href = f"?page=stock_detail&symbol={escape(ticker, quote=True)}&focus={focus}"
+        href = f"?page=detail&symbol={escape(ticker, quote=True)}&focus={focus}"
     elif target == "portfolio":
         href = "?page=portfolio"
     elif target == "journal":
-        href = "?page=trade_journal"
+        href = "?page=trade-journal"
     if not href:
         return f'<em>{escape(action)}</em>'
     return f'<a class="data-health-detail-action" href="{href}" target="_self">{escape(action)}</a>'
@@ -3323,6 +3323,9 @@ def _render_dashboard_styles() -> None:
             background:#FFFFFF;
             box-shadow:0 18px 42px rgba(15, 23, 42, 0.13);
             white-space:normal;
+        }
+        .data-health-popover:not([open]) .data-health-popover-panel {
+            display:none;
         }
         .data-health-detail-panel {
             position:static;
