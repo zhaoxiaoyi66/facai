@@ -74,6 +74,11 @@ from data.dashboard_lanes import (
     today_priority_rows,
     wait_or_confirm_rows,
 )
+from data.dashboard_risk_model import (
+    build_dashboard_data_health_view_from_summary,
+    build_dashboard_risk_radar,
+    data_health_issue_text,
+)
 from data.dashboard_row_builder import build_dashboard_row
 from data.data_confidence import enrich_data_confidence
 from data.data_health import build_data_health_summary
@@ -3704,6 +3709,72 @@ class ScoringTests(unittest.TestCase):
             self.assertIsNone(cache.get_current_price("hood"))
             self.assertEqual(cache.get_price_status("hood"), "missing")
             self.assertEqual(cache.get_history_status("hood"), "missing")
+
+    def test_dashboard_risk_model_builds_radar_items(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "AAPL", "decisionLane": "blocked", "currentAddLimitPercent": 0, "dataConfidence": "high", "modelType": "platform"},
+                {"symbol": "MSFT", "decisionLane": "review", "currentAddLimitPercent": 4, "dataConfidence": "high", "modelType": "platform"},
+                {"symbol": "NOW", "decisionLane": "actionable", "currentAddLimitPercent": 3, "dataConfidence": "low", "modelType": "saas"},
+                {"symbol": "CRM", "decisionLane": "actionable", "currentAddLimitPercent": 2, "dataConfidence": "high", "modelType": "saas"},
+            ]
+        )
+        portfolio_view = {
+            "rows": [
+                {"symbol": "AAPL"},
+                {"symbol": "MSFT"},
+                {"symbol": "CRM", "overweightSystem": True},
+            ]
+        }
+
+        radar = {item["key"]: item for item in build_dashboard_risk_radar(table, portfolio_view)}
+
+        self.assertEqual(radar["overweight"]["symbols"], ["CRM"])
+        self.assertEqual(radar["noChase"]["symbols"], ["AAPL"])
+        self.assertEqual(radar["review"]["symbols"], ["MSFT"])
+        self.assertEqual(radar["lowConfidence"]["symbols"], ["NOW"])
+        self.assertEqual(radar["noAdd"]["symbols"], ["AAPL"])
+        self.assertEqual(radar["concentration"]["symbols"], ["AAPL", "MSFT"])
+
+    def test_dashboard_data_health_view_preserves_strip_status_rules(self) -> None:
+        summary = {
+            "cacheExists": True,
+            "healthyCount": 7,
+            "missingPriceCount": 0,
+            "missingHistoryCount": 1,
+            "finalDecisionErrorCount": 0,
+            "portfolioMissingPriceCount": 0,
+            "outcomeMissingCount": 1,
+            "topIssues": [
+                {"symbol": "NOW", "category": "missing_history"},
+                {"symbol": "CRM", "category": "outcome_missing"},
+            ],
+        }
+
+        view = build_dashboard_data_health_view_from_summary(summary, ["NOW", "CRM"])
+
+        self.assertEqual(view["tone"], "warning")
+        self.assertEqual(view["statusLabel"], "注意")
+        self.assertEqual(view["issueSummary"], "主要问题 2 项")
+        self.assertEqual(view["issues"], ["NOW 历史缺失", "CRM 复盘结果缺失"])
+        self.assertIn(("健康项", 7), view["items"])
+
+    def test_dashboard_data_health_view_marks_severe_price_gap_as_error(self) -> None:
+        summary = {
+            "cacheExists": True,
+            "healthyCount": 2,
+            "missingPriceCount": 3,
+            "missingHistoryCount": 0,
+            "finalDecisionErrorCount": 0,
+            "portfolioMissingPriceCount": 0,
+            "outcomeMissingCount": 0,
+            "topIssues": [{"symbol": "AAPL", "category": "missing_price"}],
+        }
+
+        view = build_dashboard_data_health_view_from_summary(summary, ["AAPL", "MSFT", "NOW"])
+
+        self.assertEqual(view["tone"], "error")
+        self.assertEqual(data_health_issue_text({"symbol": "AAPL", "category": "missing_price"}), "AAPL 价格缺失")
 
     def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:
         with TemporaryDirectory() as tmpdir:

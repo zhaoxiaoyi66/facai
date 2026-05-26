@@ -6,7 +6,6 @@ import json
 import pandas as pd
 import streamlit as st
 
-from data.data_health import build_data_health_summary
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.dashboard_row_builder import (
     build_dashboard_row as _build_dashboard_row,
@@ -27,6 +26,11 @@ from data.dashboard_lanes import (
     summary_lane_groups as _summary_lane_groups,
     today_priority_rows as _today_priority_rows,
     wait_or_confirm_rows as _wait_or_confirm_rows,
+)
+from data.dashboard_risk_model import (
+    build_dashboard_data_health_view,
+    build_dashboard_risk_radar,
+    row_current_add_limit_value as _row_current_add_limit_value,
 )
 from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
@@ -210,7 +214,7 @@ def render() -> None:
     _render_market_strip(table)
     _render_data_health_strip(table)
     portfolio_view = build_portfolio_view_model()
-    _render_dashboard_risk_radar(_build_dashboard_risk_radar(table, portfolio_view))
+    _render_dashboard_risk_radar(build_dashboard_risk_radar(table, portfolio_view))
     _render_summary_sections(table)
     _render_decision_table(table)
     _render_client_stock_detail_drawers(table)
@@ -534,132 +538,30 @@ def _render_market_strip(table: pd.DataFrame) -> None:
 
 
 def _render_data_health_strip(table: pd.DataFrame) -> None:
-    symbols = [str(symbol).upper() for symbol in table.get("symbol", []) if str(symbol or "").strip()]
-    try:
-        summary = build_data_health_summary(watchlist=symbols)
-    except Exception as exc:
-        st.markdown(
-            (
-                '<section class="data-health-strip warning">'
-                '<div class="data-health-title"><strong>数据健康</strong><span>检查失败</span></div>'
-                '<div class="data-health-metrics"><span><em>健康项</em><strong>N/A</strong></span></div>'
-                '<details class="data-health-issues">'
-                '<summary>主要问题 1 项</summary>'
-                f'<ol><li>{escape(str(exc))}</li></ol>'
-                '</details>'
-                "</section>"
-            ),
-            unsafe_allow_html=True,
-        )
-        return
-
-    issue_count = (
-        int(summary.get("missingPriceCount") or 0)
-        + int(summary.get("missingHistoryCount") or 0)
-        + int(summary.get("finalDecisionErrorCount") or 0)
-        + int(summary.get("portfolioMissingPriceCount") or 0)
-        + int(summary.get("outcomeMissingCount") or 0)
-    )
-    missing_price_count = int(summary.get("missingPriceCount") or 0)
-    severe_price_gap = bool(symbols) and missing_price_count >= max(3, int(len(symbols) * 0.2))
-    has_final_decision_error = int(summary.get("finalDecisionErrorCount") or 0) > 0
-    if not summary.get("cacheExists") or has_final_decision_error or severe_price_gap:
-        tone = "error"
-        status_label = "异常"
-    elif issue_count:
-        tone = "warning"
-        status_label = "注意"
-    else:
-        tone = "ok"
-        status_label = "正常"
-    items = [
-        ("健康项", summary.get("healthyCount", 0)),
-        ("价格缺失", summary.get("missingPriceCount", 0)),
-        ("历史缺失", summary.get("missingHistoryCount", 0)),
-        ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
-        ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
-        ("复盘缺失", summary.get("outcomeMissingCount", 0)),
-    ]
+    view = build_dashboard_data_health_view(table)
+    items = list(view.get("items") or [])
     item_html = "".join(
         f'<span><em>{escape(label)}</em><strong>{escape(str(value))}</strong></span>'
         for label, value in items
     )
-    issues = list(summary.get("topIssues") or [])[:3]
-    issue_html = "".join(f"<li>{escape(_data_health_issue_text(issue))}</li>" for issue in issues)
-    issue_summary = f"主要问题 {len(issues)} 项" if issues else "无主要问题"
+    issues = list(view.get("issues") or [])
+    issue_html = "".join(f"<li>{escape(str(issue))}</li>" for issue in issues)
     issues_block = (
         '<details class="data-health-issues">'
-        f'<summary>{escape(issue_summary)}</summary>'
+        f'<summary>{escape(str(view.get("issueSummary") or "无主要问题"))}</summary>'
         f"<ol>{issue_html}</ol>"
         "</details>"
     )
     st.markdown(
         (
-            f'<section class="data-health-strip {tone}">'
-            f'<div class="data-health-title"><strong>数据健康：{escape(status_label)}</strong><span>本地缓存体检</span></div>'
+            f'<section class="data-health-strip {escape(str(view.get("tone") or "warning"))}">'
+            f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>{escape(str(view.get("subtitle") or "本地缓存体检"))}</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
             f"{issues_block}"
             "</section>"
         ),
         unsafe_allow_html=True,
     )
-
-
-def _data_health_issue_text(issue: object) -> str:
-    if not isinstance(issue, dict):
-        return str(issue)
-    symbol = str(issue.get("symbol") or "").upper()
-    category = str(issue.get("category") or "")
-    labels = {
-        "cache_missing": "缓存缺失",
-        "missing_price": "价格缺失",
-        "stale_quote": "价格过期",
-        "missing_history": "历史缺失",
-        "final_decision_error": "finalDecision 异常",
-        "portfolio_missing_price": "持仓缺价",
-        "outcome_missing": "复盘结果缺失",
-    }
-    label = labels.get(category, category or "数据问题")
-    return f"{symbol} {label}".strip()
-
-
-def _build_dashboard_risk_radar(table: pd.DataFrame, portfolio_view: dict) -> list[dict[str, object]]:
-    rows = [row for _, row in table.iterrows()]
-    portfolio_rows = list((portfolio_view or {}).get("rows") or [])
-    overweight = [
-        str(row.get("symbol") or "").upper()
-        for row in portfolio_rows
-        if row.get("overweightSystem") or row.get("overweightPersonal")
-    ]
-    no_chase = [
-        str(row.get("symbol") or "").upper()
-        for row in rows
-        if _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS or _row_decision_lane(row) == "blocked"
-    ]
-    review = [
-        str(row.get("symbol") or "").upper()
-        for row in rows
-        if _row_decision_lane(row) == "review" or "复核" in _row_final_action(row)
-    ]
-    low_confidence = [
-        str(row.get("symbol") or "").upper()
-        for row in rows
-        if str(row.get("dataConfidence") or row.get("confidence") or "").lower() == "low"
-    ]
-    no_add = [
-        str(row.get("symbol") or "").upper()
-        for row in rows
-        if _row_current_add_limit_value(row) <= 0
-    ]
-    industry_concentration = _industry_concentration_symbols(rows, portfolio_rows)
-    return [
-        {"key": "overweight", "label": "超仓位", "tone": "red", "symbols": overweight, "reason": "暂无" if not overweight else "持仓高于系统或个人上限"},
-        {"key": "noChase", "label": "禁止追高", "tone": "red", "symbols": no_chase, "reason": "暂无" if not no_chase else "当前价格不适合新增"},
-        {"key": "review", "label": "需复核", "tone": "amber", "symbols": review, "reason": "暂无" if not review else "买区异常或数据置信低"},
-        {"key": "lowConfidence", "label": "低置信", "tone": "amber", "symbols": low_confidence, "reason": "暂无" if not low_confidence else "数据置信度偏低"},
-        {"key": "noAdd", "label": "不可新增", "tone": "slate", "symbols": no_add, "reason": "暂无" if not no_add else "当前可加仓为 0"},
-        {"key": "concentration", "label": "行业集中", "tone": "blue", "symbols": industry_concentration, "reason": "暂无" if not industry_concentration else "持仓行业暴露偏集中"},
-    ]
 
 
 def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
@@ -689,37 +591,6 @@ def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
         f'<em>{escape(str(item.get("reason") or ""))}</em>'
         "</a>"
     )
-
-
-def _industry_concentration_symbols(rows: list[pd.Series], portfolio_rows: list[dict]) -> list[str]:
-    held_symbols = {str(row.get("symbol") or "").upper() for row in portfolio_rows}
-    if not held_symbols:
-        return []
-    industry_map = {
-        str(row.get("symbol") or "").upper(): str(row.get("modelType") or row.get("industryModel") or "").strip()
-        for row in rows
-    }
-    grouped: dict[str, list[str]] = {}
-    for symbol in held_symbols:
-        industry = industry_map.get(symbol)
-        if industry:
-            grouped.setdefault(industry, []).append(symbol)
-    concentrated: list[str] = []
-    for symbols in grouped.values():
-        if len(symbols) >= 2:
-            concentrated.extend(sorted(symbols))
-    return concentrated
-
-
-def _row_current_add_limit_value(row: pd.Series) -> float:
-    value = _row_value(row, "currentAddLimitPercent")
-    if value is None:
-        value = _row_value(row, "maxSuggestedPositionPercent")
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
     summary_groups = _summary_lane_groups(table)
@@ -1719,7 +1590,7 @@ def _filtered_table_for_active_lane(table: pd.DataFrame) -> pd.DataFrame:
     if risk_key in RISK_RADAR_FILTER_LABELS and "symbol" in table.columns:
         portfolio_view = build_portfolio_view_model()
         risk_item = next(
-            (item for item in _build_dashboard_risk_radar(table, portfolio_view) if item.get("key") == risk_key),
+            (item for item in build_dashboard_risk_radar(table, portfolio_view) if item.get("key") == risk_key),
             None,
         )
         symbols = {str(symbol).upper() for symbol in (risk_item or {}).get("symbols", [])}
