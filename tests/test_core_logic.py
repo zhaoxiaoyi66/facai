@@ -66,6 +66,14 @@ from data.ai_review_assistant import (
 )
 from data.calculated_metrics import calculate_metrics
 from data.cache_read_model import CacheReadModel
+from data.dashboard_lanes import (
+    actionable_rows,
+    blocked_or_risky_rows,
+    near_buy_zone_rows,
+    summary_lane_groups,
+    today_priority_rows,
+    wait_or_confirm_rows,
+)
 from data.dashboard_row_builder import build_dashboard_row
 from data.data_confidence import enrich_data_confidence
 from data.data_health import build_data_health_summary
@@ -1125,6 +1133,75 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertEqual(near_symbols, ["NEAR"])
         self.assertEqual(wait_symbols, [])
+
+    def test_dashboard_lanes_classify_actionable_rows(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "WAIT", "decisionLane": "wait", "isActionable": False, "totalScore": 99},
+                {"symbol": "BUY", "decisionLane": "actionable", "isActionable": True, "totalScore": 80},
+            ]
+        )
+
+        self.assertEqual([row["symbol"] for row in actionable_rows(table)], ["BUY"])
+
+    def test_dashboard_lanes_classify_near_buy_zone_rows(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "NEAR", "decisionLane": "nearBuyZone", "isActionable": False, "totalScore": 70},
+                {"symbol": "WAIT", "decisionLane": "wait", "isActionable": False, "totalScore": 90},
+            ]
+        )
+
+        self.assertEqual([row["symbol"] for row in near_buy_zone_rows(table)], ["NEAR"])
+
+    def test_dashboard_lanes_classify_wait_or_confirm_rows(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "WAIT", "decisionLane": "wait", "isActionable": False, "totalScore": 70},
+                {"symbol": "REVIEW", "decisionLane": "review", "isActionable": False, "totalScore": 60},
+                {"symbol": "BUY", "decisionLane": "actionable", "isActionable": True, "totalScore": 90},
+            ]
+        )
+
+        self.assertEqual([row["symbol"] for row in wait_or_confirm_rows(table)], ["WAIT", "REVIEW"])
+
+    def test_dashboard_lanes_classify_blocked_or_risky_rows(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "RISK", "decisionLane": "wait", "isActionable": False, "highRiskFlagCount": 2, "overheatScore": 10},
+                {"symbol": "BLOCK", "decisionLane": "blocked", "isActionable": False, "highRiskFlagCount": 0, "overheatScore": 80},
+                {"symbol": "WAIT", "decisionLane": "wait", "isActionable": False, "highRiskFlagCount": 0, "overheatScore": 0},
+            ]
+        )
+
+        self.assertEqual([row["symbol"] for row in blocked_or_risky_rows(table)], ["BLOCK", "RISK"])
+
+    def test_dashboard_today_priority_rows_follow_summary_groups(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"symbol": "BUY1", "decisionLane": "actionable", "isActionable": True, "totalScore": 90},
+                {"symbol": "BUY2", "decisionLane": "actionable", "isActionable": True, "totalScore": 80},
+                {"symbol": "BUY3", "decisionLane": "actionable", "isActionable": True, "totalScore": 70},
+                {"symbol": "NEAR", "decisionLane": "nearBuyZone", "isActionable": False, "totalScore": 85},
+                {"symbol": "WAIT", "decisionLane": "wait", "isActionable": False, "totalScore": 75},
+                {"symbol": "RISK", "decisionLane": "blocked", "isActionable": False, "overheatScore": 90, "highRiskFlagCount": 1},
+            ]
+        )
+
+        expected = []
+        for lane_key, _title, _subtitle, rows, color in summary_lane_groups(table):
+            for row in rows[:2]:
+                expected.append((lane_key, row["symbol"], color))
+                if len(expected) >= 5:
+                    break
+            if len(expected) >= 5:
+                break
+
+        actual = [(lane_key, row["symbol"], color) for lane_key, row, color in today_priority_rows(table)]
+
+        self.assertEqual(actual, expected)
+        self.assertLessEqual(len(actual), 5)
+        self.assertEqual(len({symbol for _lane_key, symbol, _color in actual}), len(actual))
 
     def test_dashboard_action_cell_prefers_final_action_and_final_add_limit(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

@@ -14,6 +14,21 @@ from data.dashboard_row_builder import (
     derive_dashboard_final_decision as _derive_dashboard_final_decision,
     error_dashboard_row as _error_dashboard_row,
 )
+from data.dashboard_lanes import (
+    DASHBOARD_BLOCKED_ACTIONS,
+    actionable_rows as _actionable_rows,
+    blocked_or_risky_rows as _blocked_or_risky_rows,
+    lane_filter_rows as _lane_filter_rows,
+    near_buy_zone_rows as _near_buy_zone_rows,
+    row_current_add_text as _row_current_add_text,
+    row_decision_lane as _row_decision_lane,
+    row_final_action as _row_final_action,
+    row_is_actionable as _row_is_actionable,
+    row_value as _row_value,
+    summary_lane_groups as _summary_lane_groups,
+    today_priority_rows as _today_priority_rows,
+    wait_or_confirm_rows as _wait_or_confirm_rows,
+)
 from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
@@ -125,10 +140,6 @@ RISK_RADAR_FILTER_LABELS = {
     "noAdd": "不可新增",
     "concentration": "行业集中",
 }
-DASHBOARD_BUY_ACTIONS = {"可小仓分批", "可正常分批"}
-DASHBOARD_WAIT_ACTIONS = {"等回踩", "只观察", "财报后复核", "可小仓观察，待关键数据复核后再加仓", "待复核，暂不新增"}
-DASHBOARD_BLOCKED_ACTIONS = {"禁止追高", "剔除", "数据不足，需复核", "待复核，暂不新增"}
-DASHBOARD_NEAR_VALUATION_STATUSES = {"击球区附近", "回撤买点", "回撤后有吸引力", "合理偏便宜"}
 DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
 DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
 TECHNICAL_ERROR_HINTS = (
@@ -708,7 +719,7 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
         "</section>",
         unsafe_allow_html=True,
     )
-    st.markdown(_dashboard_priority_strip_html(summary_groups), unsafe_allow_html=True)
+    st.markdown(_dashboard_priority_strip_html(table), unsafe_allow_html=True)
     st.markdown('<div class="decision-lanes-marker"></div>', unsafe_allow_html=True)
     columns = st.columns(4, gap="small")
     for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
@@ -717,31 +728,6 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
             st.markdown(_lane_stack_html(rows[:4]), unsafe_allow_html=True)
             _render_lane_more_button(lane_key)
     st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
-
-
-def _summary_lane_groups(table: pd.DataFrame) -> list[tuple[str, str, str, list[pd.Series], str]]:
-    raw_groups = {
-        "actionable": _actionable_rows(table),
-        "nearBuyZone": _near_buy_zone_rows(table),
-        "waitOrReview": _wait_or_confirm_rows(table),
-        "noChaseHighRisk": _blocked_or_risky_rows(table),
-    }
-    priority = ["noChaseHighRisk", "actionable", "nearBuyZone", "waitOrReview"]
-    assigned_symbols: set[str] = set()
-    exclusive: dict[str, list[pd.Series]] = {key: [] for key in raw_groups}
-    for lane_key in priority:
-        for row in raw_groups[lane_key]:
-            symbol = str(row.get("symbol") or "").upper().strip()
-            if not symbol or symbol in assigned_symbols:
-                continue
-            assigned_symbols.add(symbol)
-            exclusive[lane_key].append(row)
-    return [
-        ("actionable", "可行动", "可执行小仓或正常分批", exclusive["actionable"], "green"),
-        ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", exclusive["nearBuyZone"], "blue"),
-        ("waitOrReview", "待确认", "等待更清晰的买点", exclusive["waitOrReview"], "yellow"),
-        ("noChaseHighRisk", "风险隔离", "暂不新增，先看原因", exclusive["noChaseHighRisk"], "red"),
-    ]
 
 
 def _render_decision_table(table: pd.DataFrame) -> None:
@@ -1608,44 +1594,6 @@ def _action_with_position(row: pd.Series) -> str:
     return f"{action} · ≤{max_position:g}%"
 
 
-def _row_value(row: pd.Series, key: str) -> object | None:
-    value = row.get(key)
-    if _is_missing(value):
-        return None
-    return value
-
-
-def _row_final_action(row: pd.Series) -> str:
-    return str(_row_value(row, "finalAction") or _row_value(row, "action") or "")
-
-
-def _row_decision_lane(row: pd.Series) -> str:
-    lane = str(_row_value(row, "decisionLane") or "")
-    if lane:
-        return lane
-    action = _row_final_action(row)
-    if _row_is_actionable(row):
-        return "actionable"
-    if action in DASHBOARD_BLOCKED_ACTIONS:
-        return "blocked"
-    if action in DASHBOARD_WAIT_ACTIONS:
-        return "wait"
-    return ""
-
-
-def _row_is_actionable(row: pd.Series) -> bool:
-    explicit = _row_value(row, "isActionable")
-    if explicit is not None:
-        explicit_text = str(explicit).lower()
-        if explicit_text in {"true", "false"}:
-            return explicit_text == "true"
-    return _row_final_action(row) in DASHBOARD_BUY_ACTIONS and row.get("dataConfidence") in {"medium", "high"}
-
-
-def _row_current_add_text(row: pd.Series) -> str:
-    return str(_row_value(row, "currentAddLimit") or _row_value(row, "maxSuggestedPosition") or "")
-
-
 def _data_status_label(score) -> str:
     if getattr(score, "data_insufficient", False):
         return "数据不足"
@@ -2305,62 +2253,6 @@ def _top_research_rows(table: pd.DataFrame) -> list[pd.Series]:
     return sorted(candidates, key=lambda row: row.get("totalScore", 0), reverse=True)[:4]
 
 
-def _actionable_rows(table: pd.DataFrame) -> list[pd.Series]:
-    rows = [
-        row
-        for _, row in table.iterrows()
-        if _row_is_actionable(row)
-    ]
-    return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
-
-
-def _near_buy_zone_rows(table: pd.DataFrame) -> list[pd.Series]:
-    rows = [
-        row
-        for _, row in table.iterrows()
-        if _row_decision_lane(row) == "nearBuyZone"
-        or (
-            _row_decision_lane(row) in {"", "wait"}
-            and row.get("valuationStatus") in DASHBOARD_NEAR_VALUATION_STATUSES
-            and _row_final_action(row) not in {"可正常分批", "禁止追高", "剔除"}
-        )
-    ]
-    return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
-
-
-def _wait_or_confirm_rows(table: pd.DataFrame) -> list[pd.Series]:
-    rows = [
-        row
-        for _, row in table.iterrows()
-        if _row_decision_lane(row) in {"wait", "review"}
-        or (
-            not _row_value(row, "decisionLane")
-            and _row_final_action(row) in DASHBOARD_WAIT_ACTIONS
-        )
-    ]
-    return sorted(rows, key=lambda row: row.get("totalScore", 0), reverse=True)
-
-
-def _blocked_or_risky_rows(table: pd.DataFrame) -> list[pd.Series]:
-    rows = [
-        row
-        for _, row in table.iterrows()
-        if _row_decision_lane(row) == "blocked"
-        or _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS
-        or row.get("riskRating") in {"高", "高风险"}
-        or _numeric(row.get("overheatScore")) >= 60
-        or row.get("highRiskFlagCount", 0) > 0
-    ]
-    return sorted(rows, key=lambda row: (_numeric(row.get("overheatScore")), row.get("highRiskFlagCount", 0)), reverse=True)
-
-
-def _lane_filter_rows(table: pd.DataFrame, lane_key: str) -> list[pd.Series]:
-    for current_key, _title, _subtitle, rows, _color in _summary_lane_groups(table):
-        if lane_key == current_key:
-            return rows
-    return [row for _, row in table.iterrows()]
-
-
 def _filtered_table_for_active_lane(table: pd.DataFrame) -> pd.DataFrame:
     risk_key = str(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY) or "")
     if risk_key in RISK_RADAR_FILTER_LABELS and "symbol" in table.columns:
@@ -2552,24 +2444,11 @@ def _market_stat_html(label: object, value: object, detail: object) -> str:
     )
 
 
-def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, list[pd.Series], str]]) -> str:
-    items: list[str] = []
-    seen_symbols: set[str] = set()
-    for lane_key, _title, _subtitle, rows, color in summary_groups:
-        added_for_lane = 0
-        for row in rows:
-            if len(items) >= 5:
-                break
-            if added_for_lane >= 2:
-                break
-            symbol = str(row.get("symbol") or "").upper().strip()
-            if not symbol or symbol in seen_symbols:
-                continue
-            seen_symbols.add(symbol)
-            items.append(_dashboard_priority_item_html(lane_key, row, color))
-            added_for_lane += 1
-        if len(items) >= 5:
-            break
+def _dashboard_priority_strip_html(table: pd.DataFrame) -> str:
+    items = [
+        _dashboard_priority_item_html(lane_key, row, color)
+        for lane_key, row, color in _today_priority_rows(table)
+    ]
     if items:
         body = "".join(items)
     else:
