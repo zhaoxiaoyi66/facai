@@ -318,9 +318,11 @@ def _priority_rows_html(rows: list[dict]) -> str:
 
     return "".join(
         '<div class="priority-row">'
-        f'{_priority_marker(label, tone)}'
+        f'<i class="priority-dot {escape(tone)}" aria-hidden="true"></i>'
+        '<div class="priority-copy">'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(primary)}</span>'
+        "</div>"
         "</div>"
         for label, tone, symbol, primary, _secondary in candidates
     )
@@ -328,13 +330,11 @@ def _priority_rows_html(rows: list[dict]) -> str:
 
 def _priority_text(row: dict, label: str) -> tuple[str, str]:
     if label == "可执行":
-        return f"{_current_add_text(row)[0]} · {_action_short_text(row)}", str(row.get("zoneLabel") or "已进入买区")
+        return f"{_current_add_text(row)[0]} {_action_short_text(row)}", str(row.get("zoneLabel") or "已进入买区")
     if label == "接近":
-        return _distance_to_trigger_primary(row), _distance_to_trigger_secondary(row)
+        return "接近买区", _distance_to_trigger_secondary(row)
     if label == "复核":
-        if row.get("confidence") == "low" or row.get("dataConfidence") == "low":
-            return "低置信 · 先复核", _trigger_cell_detail(row)
-        return _row_reason(row), _trigger_cell_detail(row)
+        return "需复核", _trigger_cell_detail(row)
     return "不新增", _trigger_cell_detail(row)
 
 
@@ -345,7 +345,7 @@ def _render_filters(rows: list[dict]) -> str:
 
 def _render_execution_toolbar(rows: list[dict]) -> str:
     st.markdown('<div class="buy-zone-filter-toolbar-marker"></div>', unsafe_allow_html=True)
-    title_col, filter_col = st.columns([1.05, 3.2], gap="small")
+    title_col, filter_col = st.columns([1.15, 4.1], gap="small")
     with title_col:
         st.markdown(
             """
@@ -446,10 +446,11 @@ def _buy_zone_row_html(row: dict) -> str:
     trigger_primary = str(display["triggerPrimary"])
     trigger_secondary = str(display["triggerSecondary"])
     trigger_tone = str(display.get("triggerTone") or "neutral")
+    status_note = _status_detail_text(row)
     return (
         '<div class="buy-zone-grid buy-zone-row">'
         f'<div class="stock-cell"><strong>{escape(symbol)}</strong><span>{escape(_price_text(row.get("currentPrice")))}</span></div>'
-        f'<div class="status-cell">{_badge(status, _execution_tone(status))}<small>{escape(_action_short_text(row))} · {escape(_status_detail_text(row))}</small></div>'
+        f'<div class="status-cell">{_badge(status, _execution_tone(status))}<small>{escape(status_note)}</small></div>'
         f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
         f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
         f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
@@ -726,7 +727,7 @@ def _render_styles() -> None:
             grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 0;
             margin-top: 1rem;
-            margin-bottom: 0.75rem;
+            margin-bottom: 0.55rem;
             border:1px solid rgba(148, 163, 184, 0.20);
             border-radius:8px;
             background:#fff;
@@ -895,15 +896,15 @@ def _render_styles() -> None:
             border:1px solid rgba(148, 163, 184, 0.22);
             border-radius:10px;
             background:#FFFFFF;
-            margin-top:0.4rem;
+            margin-top:0.36rem;
             margin-bottom:0.8rem;
             overflow:hidden;
             box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
         }
         .priority-strip {
-            padding:0.58rem 0.68rem 0.5rem;
+            padding:0.44rem 0.64rem 0.42rem;
             border-bottom:1px solid rgba(15, 23, 42, 0.045);
-            background:#FAFBFD;
+            background:linear-gradient(180deg, #F8FAFC 0%, #FBFCFE 100%);
         }
         .priority-strip-head {
             display:flex;
@@ -926,55 +927,61 @@ def _render_styles() -> None:
         }
         .priority-list {
             display:grid;
-            grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
-            gap:0;
-            border:1px solid rgba(148, 163, 184, 0.14);
-            background:#FFFFFF;
+            grid-template-columns:repeat(5, minmax(0, 1fr));
+            gap:0.5rem;
+            border:0;
+            background:transparent;
+            overflow:visible;
         }
         .priority-row {
             display:grid;
-            grid-template-columns:auto 46px minmax(0, 1fr);
+            grid-template-columns:7px minmax(0, 1fr);
             align-items:center;
-            gap:0.42rem;
-            min-height:36px;
+            gap:0.34rem;
+            min-height:25px;
             max-width:100%;
-            padding:0.28rem 0.54rem;
-            border-right:1px solid rgba(15, 23, 42, 0.04);
+            padding:0.14rem 0.18rem;
+            border:1px solid transparent;
+            border-radius:4px;
             background:transparent;
+            overflow:hidden;
         }
-        .priority-row:last-child {
-            border-right:0;
+        .priority-row:hover {
+            background:rgba(255,255,255,0.72);
+            border-color:rgba(148, 163, 184, 0.08);
         }
-        .priority-status {
-            display:inline-flex;
+        .priority-copy {
+            display:grid;
+            grid-template-columns:minmax(34px, auto) minmax(0, 1fr);
             align-items:center;
-            gap:0.28rem;
-            color:#475569;
-            font-size:11px;
-            font-weight:650;
-            white-space:nowrap;
+            column-gap:0.35rem;
+            row-gap:0.08rem;
+            width:100%;
+            min-width:0;
         }
-        .priority-status i,
+        .priority-dot,
         .confidence-inline i {
             display:inline-block;
             width:6px;
             height:6px;
+            margin-top:0;
             border-radius:999px;
             background:#94A3B8;
+            box-shadow:0 0 0 2px rgba(148, 163, 184, 0.08);
         }
-        .priority-status.green i,
+        .priority-dot.green,
         .confidence-inline.green i { background:#22C55E; }
-        .priority-status.blue i,
+        .priority-dot.blue,
         .confidence-inline.blue i { background:#64748B; }
-        .priority-status.amber i,
-        .priority-status.orange i,
+        .priority-dot.amber,
+        .priority-dot.orange,
         .confidence-inline.orange i { background:#D97706; }
-        .priority-status.red i,
+        .priority-dot.red,
         .confidence-inline.red i { background:#DC2626; }
         .priority-row strong {
             color:#0F172A;
-            font-size:12px;
-            font-weight:760;
+            font-size:11.5px;
+            font-weight:780;
             min-width:0;
             overflow:hidden;
             text-overflow:ellipsis;
@@ -986,7 +993,7 @@ def _render_styles() -> None:
             text-overflow:ellipsis;
             white-space:nowrap;
             color:#334155;
-            font-size:12px;
+            font-size:11.5px;
             font-weight:650;
         }
         .priority-empty {
@@ -1028,12 +1035,23 @@ def _render_styles() -> None:
         }
         div[data-testid="stVerticalBlock"] > div:has(.buy-zone-filter-toolbar-marker) + div [data-testid="stHorizontalBlock"] {
             max-width:1080px;
-            margin:0.28rem auto 0.42rem;
-            align-items:flex-end;
-            gap:0.55rem !important;
+            margin:0.28rem auto 0.36rem;
+            padding:0.34rem 0.5rem;
+            align-items:center;
+            gap:0.5rem !important;
+            border:1px solid rgba(15, 23, 42, 0.075);
+            border-radius:8px;
+            background:linear-gradient(180deg, rgba(255,255,255,0.92), rgba(248,250,252,0.86));
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.025);
+            box-sizing:border-box;
         }
         div[data-testid="stVerticalBlock"] > div:has(.buy-zone-filter-toolbar-marker) + div [data-testid="stHorizontalBlock"] > div {
             padding:0 !important;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.buy-zone-filter-toolbar-marker) + div [data-testid="stHorizontalBlock"] > div:last-child {
+            display:flex;
+            justify-content:flex-end;
+            align-items:center;
         }
         div[data-testid="stRadio"] {
             margin-top: 0;
@@ -1042,23 +1060,23 @@ def _render_styles() -> None:
         div[data-testid="stRadio"] div[role="radiogroup"] {
             display:inline-flex;
             align-items:center;
-            gap:6px;
-            min-height:34px;
-            padding:0.18rem;
+            gap:4px;
+            min-height:32px;
+            padding:0.16rem;
             border:1px solid rgba(15, 23, 42, 0.08);
             border-radius:8px;
-            background:linear-gradient(180deg, #F8FAFC 0%, #F3F6FA 100%);
+            background:#F6F8FB;
             flex-wrap:wrap;
             box-shadow:inset 0 1px 0 rgba(255,255,255,0.72);
         }
         div[data-testid="stRadio"] label {
             margin:0 !important;
-            min-height:26px;
-            padding:0.12rem 0.52rem !important;
+            min-height:25px;
+            padding:0.1rem 0.5rem !important;
             border-radius:6px;
             color:#64748B;
-            font-size:12px;
-            font-weight:650;
+            font-size:11.5px;
+            font-weight:700;
             line-height:1;
             letter-spacing:0;
             border:1px solid transparent;
@@ -1073,7 +1091,7 @@ def _render_styles() -> None:
             background:#FFFFFF;
             color:#0F172A;
             border-color:rgba(15, 23, 42, 0.08);
-            box-shadow:0 1px 2px rgba(15, 23, 42, 0.05);
+            box-shadow:0 1px 1px rgba(15, 23, 42, 0.04);
         }
         div[data-testid="stRadio"] label:hover {
             background:rgba(255,255,255,0.72);
@@ -1093,7 +1111,7 @@ def _render_styles() -> None:
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 104px minmax(178px, 1fr) minmax(214px, 1.1fr) 120px 70px 132px;
+            grid-template-columns: 104px minmax(178px, 1fr) minmax(188px, 0.9fr) 146px 70px 110px;
             align-items: center;
             gap: 0.5rem;
             min-height: 42px;
@@ -1112,6 +1130,9 @@ def _render_styles() -> None:
             padding-top:0;
             padding-bottom:0;
             border-bottom:1px solid rgba(15, 23, 42, 0.055);
+        }
+        .buy-zone-grid-head span:last-child {
+            text-align:center;
         }
         .buy-zone-row {
             background:#FFFFFF;
@@ -1248,17 +1269,20 @@ def _render_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            min-width:38px;
-            height:22px;
+            min-width:30px;
+            height:26px;
             text-decoration:none !important;
-            color:#1E3A5F;
-            font-size:11px;
-            font-weight:720;
-            padding:0 0.42rem;
+            color:#52657F;
+            font-size:12px;
+            font-weight:700;
+            padding:0;
             border-radius:4px;
             border:1px solid transparent;
-            background:rgba(255, 255, 255, 0.72);
+            background:transparent;
             white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            box-sizing:border-box;
         }
         .buy-zone-detail-link i {
             display:none;
@@ -1276,12 +1300,14 @@ def _render_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            gap:0.04rem;
-            width:max-content;
-            padding:0.08rem;
-            border:1px solid rgba(15, 23, 42, 0.06);
-            border-radius:6px;
-            background:#F6F8FB;
+            justify-self:center;
+            gap:16px;
+            width:82px;
+            max-width:82px;
+            padding:0;
+            border:0;
+            border-radius:0;
+            background:transparent;
             white-space:nowrap;
             box-shadow:none;
         }
@@ -1289,14 +1315,15 @@ def _render_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            height:22px;
-            padding:0 0.42rem;
+            height:26px;
+            min-width:30px;
+            padding:0;
             border-radius:4px;
             border:1px solid transparent;
             background:transparent;
             color:#64748B;
-            font-size:11px;
-            font-weight:680;
+            font-size:12px;
+            font-weight:650;
             text-decoration:none !important;
             white-space:nowrap;
         }
