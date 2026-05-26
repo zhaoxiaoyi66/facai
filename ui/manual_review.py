@@ -2150,10 +2150,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
                 _run_review_action(store, row, "archive", ai_result)
                 st.rerun()
             if action_cols[3].button("证据", key=f"review-toggle-evidence-{metric_id}", width="stretch"):
-                st.session_state[f"review-evidence-open-{metric_id}"] = not st.session_state.get(f"review-evidence-open-{metric_id}", False)
-
-        if st.session_state.get(f"review-evidence-open-{metric_id}", False):
-            _render_review_evidence_panel(row, ai_result, eligible, reason, view_item)
+                st.session_state["review-selected-evidence-id"] = metric_id
 
 
 def _review_row_source_meta(row: dict) -> str:
@@ -2221,6 +2218,91 @@ def _render_review_evidence_panel(row: dict, ai_result: dict | None, eligible: b
         st.caption(QWEN_NOT_SUITABLE_REASON if not eligible else "尚未进行 Qwen 证据复核。")
 
 
+def _render_review_evidence_drawer(source_rows: list[dict], ai_results: dict[int, dict]) -> None:
+    selected_id = st.session_state.get("review-selected-evidence-id")
+    selected_entry = None
+    if selected_id is not None:
+        for entry in source_rows:
+            raw = entry.get("raw") or {}
+            if raw.get("id") is not None and int(raw["id"]) == int(selected_id):
+                selected_entry = entry
+                break
+    if selected_entry is None:
+        st.markdown(
+            """
+            <aside class="review-evidence-drawer empty">
+              <div class="drawer-topline">证据详情</div>
+              <strong>选择一条复核项</strong>
+              <p>点击队列右侧的“证据”，这里会显示原文、AI 解释和建议处理方式。</p>
+            </aside>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    row = dict(selected_entry.get("raw") or {})
+    view_item = selected_entry.get("item")
+    metric_id = int(row["id"])
+    ai_result = ai_results.get(metric_id)
+    eligible, reason = qwen_review_eligibility(row)
+    if st.button("关闭证据", key=f"review-close-evidence-{metric_id}", width="stretch"):
+        st.session_state["review-selected-evidence-id"] = None
+        st.markdown(
+            """
+            <aside class="review-evidence-drawer empty">
+              <div class="drawer-topline">证据详情</div>
+              <strong>选择一条复核项</strong>
+              <p>点击队列右侧的“证据”，这里会显示原文、AI 解释和建议处理方式。</p>
+            </aside>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+    st.markdown(_review_evidence_drawer_html(row, ai_result, eligible, reason, view_item), unsafe_allow_html=True)
+
+
+def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
+    symbol = str(row.get("symbol") or "")
+    metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey") or "N/A"
+    evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
+    system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
+    evidence_summary = str((view_item or {}).get("evidenceSummary") or "").strip()
+    source_title = str(row.get("sourceDocumentTitle") or row.get("sourceTitle") or row.get("sourceType") or "N/A")
+    source_url = str(row.get("sourceUrl") or "").strip()
+    source_text = source_title if not source_url else f"{source_title} · {source_url}"
+    ai_explanation = ""
+    if ai_result:
+        decision = str(ai_result.get("aiDecision") or "")
+        ai_explanation = (
+            f"{AI_DECISION_LABELS.get(decision, decision)}；"
+            f"AI置信度 {float(ai_result.get('confidenceScore') or 0):.0%}；"
+            f"{str(ai_result.get('explanationZh') or '').strip()}"
+        )
+    shortage = reason if not eligible else str(row.get("reviewStatus") or "暂无不足原因")
+    action = _review_action_hint(row, ai_result, eligible, reason, view_item)
+    quote = str((ai_result or {}).get("evidenceQuote") or "").strip()
+    original = evidence_text or quote or evidence_summary or "暂无原文片段。"
+    system = system_reason or evidence_summary or "暂无系统说明。"
+    ai_text = ai_explanation or "尚未进行 Qwen 证据复核。"
+    return (
+        '<aside class="review-evidence-drawer">'
+        '<div class="drawer-topline">证据详情</div>'
+        f'<div class="drawer-head"><strong>{escape(symbol)}</strong><span>{escape(metric_label(metric_name))}</span></div>'
+        f'{_review_drawer_section("系统说明", system)}'
+        f'{_review_drawer_section("原文片段", original, clipped=True)}'
+        f'{_review_drawer_section("AI 解释", ai_text)}'
+        f'{_review_drawer_section("证据来源", source_text)}'
+        f'{_review_drawer_section("不足原因", shortage)}'
+        f'{_review_drawer_section("建议处理方式", action)}'
+        '</aside>'
+    )
+
+
+def _review_drawer_section(title: str, body: object, clipped: bool = False) -> str:
+    class_name = "drawer-evidence-section clipped" if clipped else "drawer-evidence-section"
+    return f'<section class="{class_name}"><h4>{escape(title)}</h4><p>{escape(str(body or "暂无"))}</p></section>'
+
+
 def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None, view_rows: list[dict] | None = None) -> None:
     if not rows:
         st.info("当前工作台视图没有待处理项。可以切换 tab 或同步观察池复核队列。")
@@ -2228,12 +2310,16 @@ def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewSt
     source_rows = view_rows if view_rows is not None else [{"raw": row, "item": None} for row in rows]
     ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
     st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
-    for entry in source_rows:
-        raw = dict(entry.get("raw") or {})
-        if not raw:
-            continue
-        raw["__review_view_item"] = entry.get("item")
-        _render_metric_row(store, raw, ai_results.get(int(raw["id"])))
+    table_col, detail_col = st.columns([3.65, 1.15], gap="medium")
+    with table_col:
+        for entry in source_rows:
+            raw = dict(entry.get("raw") or {})
+            if not raw:
+                continue
+            raw["__review_view_item"] = entry.get("item")
+            _render_metric_row(store, raw, ai_results.get(int(raw["id"])))
+    with detail_col:
+        _render_review_evidence_drawer(source_rows, ai_results)
 
 
 def _review_view_rows_for_active_tab(view: dict, fallback_rows: list[dict]) -> list[dict]:
@@ -2522,8 +2608,74 @@ def _styles() -> str:
         font-weight: 700;
         line-height: 1.15;
       }
+      .review-evidence-drawer {
+        position: sticky;
+        top: 70px;
+        display: grid;
+        gap: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 8px;
+        background: #FFFFFF;
+        padding: 10px;
+        box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06);
+      }
+      .review-evidence-drawer.empty {
+        background: #FBFCFE;
+        box-shadow: none;
+      }
+      .review-evidence-drawer .drawer-topline {
+        color: #64748B;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+      .review-evidence-drawer .drawer-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+        padding-bottom: 7px;
+      }
+      .review-evidence-drawer .drawer-head strong,
+      .review-evidence-drawer.empty strong {
+        color: #0F172A;
+        font-size: 14px;
+        font-weight: 850;
+      }
+      .review-evidence-drawer .drawer-head span,
+      .review-evidence-drawer.empty p {
+        color: #64748B;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      .drawer-evidence-section {
+        display: grid;
+        gap: 3px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        border-radius: 7px;
+        background: #FBFCFE;
+        padding: 7px 8px;
+      }
+      .drawer-evidence-section h4 {
+        margin: 0;
+        color: #475569;
+        font-size: 10.5px;
+        font-weight: 800;
+      }
+      .drawer-evidence-section p {
+        margin: 0;
+        color: #111827;
+        font-size: 11.5px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      .drawer-evidence-section.clipped p {
+        max-height: 150px;
+        overflow: auto;
+      }
       .review-evidence-panel {
-        margin: 5px 0 8px;
+        margin: 0;
         display: grid;
         gap: 4px;
         border: 1px solid rgba(148, 163, 184, 0.18);
@@ -2690,6 +2842,27 @@ def _styles() -> str:
         opacity: 0.42;
         color: #94A3B8;
         background: #F8FAFC;
+      }
+      div[class*="st-key-review-confirm-"] button,
+      div[class*="st-key-review-reject-"] button,
+      div[class*="st-key-review-archive-"] button,
+      div[class*="st-key-review-toggle-evidence-"] button {
+        min-height: 20px;
+        height: 20px;
+        padding: 0 2px;
+        border-color: transparent;
+        background: transparent;
+        color: #64748B;
+        font-size: 11px;
+        font-weight: 750;
+      }
+      div[class*="st-key-review-confirm-"] button:hover,
+      div[class*="st-key-review-reject-"] button:hover,
+      div[class*="st-key-review-archive-"] button:hover,
+      div[class*="st-key-review-toggle-evidence-"] button:hover {
+        border-color: rgba(148, 163, 184, 0.2);
+        background: #F8FAFC;
+        color: #0F172A;
       }
       div[data-testid="stExpander"] details {
         border-color: rgba(148, 163, 184, 0.16);
