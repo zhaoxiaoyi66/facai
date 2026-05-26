@@ -8,6 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from buy_zone_engine import generate_buy_zone
+from data.data_health import build_data_health_summary
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
@@ -185,6 +186,7 @@ def render() -> None:
     _render_record_signal_notice()
 
     _render_market_strip(table)
+    _render_data_health_strip(table)
     portfolio_view = build_portfolio_view_model()
     _render_dashboard_risk_radar(_build_dashboard_risk_radar(table, portfolio_view))
     _render_summary_sections(table)
@@ -507,6 +509,96 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     ]
     cards = "".join(_market_stat_html(label, value, detail) for label, value, detail in metrics)
     st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
+
+
+def _render_data_health_strip(table: pd.DataFrame) -> None:
+    symbols = [str(symbol).upper() for symbol in table.get("symbol", []) if str(symbol or "").strip()]
+    try:
+        summary = build_data_health_summary(watchlist=symbols)
+    except Exception as exc:
+        st.markdown(
+            (
+                '<section class="data-health-strip warning">'
+                '<div class="data-health-title"><strong>数据健康</strong><span>检查失败</span></div>'
+                '<div class="data-health-metrics"><span><em>健康项</em><strong>N/A</strong></span></div>'
+                '<details class="data-health-issues">'
+                '<summary>主要问题 1 项</summary>'
+                f'<ol><li>{escape(str(exc))}</li></ol>'
+                '</details>'
+                "</section>"
+            ),
+            unsafe_allow_html=True,
+        )
+        return
+
+    issue_count = (
+        int(summary.get("missingPriceCount") or 0)
+        + int(summary.get("missingHistoryCount") or 0)
+        + int(summary.get("finalDecisionErrorCount") or 0)
+        + int(summary.get("portfolioMissingPriceCount") or 0)
+        + int(summary.get("outcomeMissingCount") or 0)
+    )
+    missing_price_count = int(summary.get("missingPriceCount") or 0)
+    severe_price_gap = bool(symbols) and missing_price_count >= max(3, int(len(symbols) * 0.2))
+    has_final_decision_error = int(summary.get("finalDecisionErrorCount") or 0) > 0
+    if not summary.get("cacheExists") or has_final_decision_error or severe_price_gap:
+        tone = "error"
+        status_label = "异常"
+    elif issue_count:
+        tone = "warning"
+        status_label = "注意"
+    else:
+        tone = "ok"
+        status_label = "正常"
+    items = [
+        ("健康项", summary.get("healthyCount", 0)),
+        ("价格缺失", summary.get("missingPriceCount", 0)),
+        ("历史缺失", summary.get("missingHistoryCount", 0)),
+        ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
+        ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
+        ("复盘缺失", summary.get("outcomeMissingCount", 0)),
+    ]
+    item_html = "".join(
+        f'<span><em>{escape(label)}</em><strong>{escape(str(value))}</strong></span>'
+        for label, value in items
+    )
+    issues = list(summary.get("topIssues") or [])[:3]
+    issue_html = "".join(f"<li>{escape(_data_health_issue_text(issue))}</li>" for issue in issues)
+    issue_summary = f"主要问题 {len(issues)} 项" if issues else "无主要问题"
+    issues_block = (
+        '<details class="data-health-issues">'
+        f'<summary>{escape(issue_summary)}</summary>'
+        f"<ol>{issue_html}</ol>"
+        "</details>"
+    )
+    st.markdown(
+        (
+            f'<section class="data-health-strip {tone}">'
+            f'<div class="data-health-title"><strong>数据健康：{escape(status_label)}</strong><span>本地缓存体检</span></div>'
+            f'<div class="data-health-metrics">{item_html}</div>'
+            f"{issues_block}"
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _data_health_issue_text(issue: object) -> str:
+    if not isinstance(issue, dict):
+        return str(issue)
+    symbol = str(issue.get("symbol") or "").upper()
+    category = str(issue.get("category") or "")
+    labels = {
+        "cache_missing": "缓存缺失",
+        "missing_price": "价格缺失",
+        "stale_quote": "价格过期",
+        "missing_history": "历史缺失",
+        "final_decision_error": "finalDecision 异常",
+        "portfolio_missing_price": "持仓缺价",
+        "outcome_missing": "复盘结果缺失",
+    }
+    label = labels.get(category, category or "数据问题")
+    return f"{symbol} {label}".strip()
 
 
 def _build_dashboard_risk_radar(table: pd.DataFrame, portfolio_view: dict) -> list[dict[str, object]]:
@@ -4039,6 +4131,160 @@ def _render_dashboard_styles() -> None:
             color:#94A3B8;
             font-size:11px;
             line-height:1.2;
+        }
+        .data-health-strip {
+            display:grid;
+            grid-template-columns:128px minmax(0, 1fr) 132px;
+            gap:0;
+            align-items:stretch;
+            margin:0 0 0.42rem;
+            min-height:34px;
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-left:2px solid #94A3B8;
+            border-radius:7px;
+            background:#FFFFFF;
+            overflow:hidden;
+        }
+        .data-health-strip.ok {
+            border-left-color:#16A34A;
+            background:#FCFEFC;
+        }
+        .data-health-strip.warning {
+            border-left-color:#D97706;
+            background:#FFFDF8;
+        }
+        .data-health-strip.error {
+            border-left-color:#DC2626;
+            background:#FFFCFC;
+        }
+        .data-health-title {
+            display:grid;
+            align-content:center;
+            gap:0.08rem;
+            padding:0.3rem 0.54rem;
+            border-right:1px solid rgba(15, 23, 42, 0.045);
+        }
+        .data-health-strip.ok .data-health-title {
+            background:#F6FBF7;
+        }
+        .data-health-strip.warning .data-health-title {
+            background:#FFFAF0;
+        }
+        .data-health-strip.error .data-health-title {
+            background:#FEF4F4;
+        }
+        .data-health-title strong {
+            color:#0F172A;
+            font-size:11.5px;
+            line-height:1.15;
+            font-weight:760;
+        }
+        .data-health-title span {
+            color:#94A3B8;
+            font-size:9.5px;
+            line-height:1.2;
+            font-weight:560;
+        }
+        .data-health-metrics {
+            display:flex;
+            align-items:center;
+            gap:0;
+            min-width:0;
+            overflow:hidden;
+            background:rgba(255, 255, 255, 0.72);
+        }
+        .data-health-metrics span {
+            display:flex;
+            align-items:center;
+            gap:0.2rem;
+            min-width:0;
+            margin:0.25rem 0 0.25rem 0.4rem;
+            padding:0.15rem 0.36rem;
+            border-right:1px solid rgba(15, 23, 42, 0.04);
+            border:1px solid rgba(148, 163, 184, 0.15);
+            border-radius:999px;
+            background:#FFFFFF;
+            white-space:nowrap;
+        }
+        .data-health-metrics span:last-child {
+            margin-right:0.4rem;
+        }
+        .data-health-metrics em {
+            color:#64748B;
+            font-size:10px;
+            line-height:1.2;
+            font-style:normal;
+            font-weight:620;
+        }
+        .data-health-metrics strong {
+            color:#0F172A;
+            font-size:12px;
+            line-height:1.1;
+            font-weight:760;
+            font-variant-numeric:tabular-nums;
+        }
+        .data-health-issues {
+            position:relative;
+            gap:0.28rem;
+            min-width:0;
+            height:100%;
+            border-left:1px solid rgba(15, 23, 42, 0.05);
+            color:#7C4A1D;
+            font-size:10px;
+            line-height:1.2;
+            font-weight:600;
+            white-space:nowrap;
+        }
+        .data-health-strip.ok .data-health-issues {
+            color:#166534;
+            background:#F8FCF9;
+        }
+        .data-health-strip.warning .data-health-issues {
+            color:#7C4A1D;
+            background:#FFFCF7;
+        }
+        .data-health-strip.error .data-health-issues {
+            color:#8A1F1F;
+            background:#FFF7F7;
+        }
+        .data-health-issues summary {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100%;
+            padding:0 0.54rem;
+            cursor:pointer;
+            list-style:none;
+            outline:none;
+        }
+        .data-health-issues summary::-webkit-details-marker {
+            display:none;
+        }
+        .data-health-issues summary:hover {
+            background:rgba(15, 23, 42, 0.025);
+        }
+        .data-health-issues ol {
+            position:absolute;
+            right:0;
+            top:calc(100% + 6px);
+            z-index:20;
+            display:grid;
+            gap:0.24rem;
+            width:max-content;
+            max-width:360px;
+            min-width:210px;
+            margin:0;
+            padding:0.48rem 0.58rem;
+            border:1px solid rgba(148, 163, 184, 0.22);
+            border-radius:7px;
+            background:#FFFFFF;
+            box-shadow:0 14px 32px rgba(15, 23, 42, 0.10);
+            white-space:normal;
+        }
+        .data-health-issues li {
+            margin-left:1rem;
+            color:#94A3B8;
+            font-weight:620;
         }
         .dashboard-risk-radar {
             display:grid;
