@@ -307,6 +307,29 @@ def _render_signal_replay(
                     st.markdown(_stats_table_html(decision_lane_rows, LANE_LABELS), unsafe_allow_html=True)
                 else:
                     st.caption("暂无决策通道明细。")
+            error_tag_rows = horizon_stats.get("byErrorTag") or []
+            if error_tag_rows:
+                st.markdown("##### 按错误标签统计")
+                st.markdown(_error_stats_table_html(error_tag_rows, _error_tag_group_label), unsafe_allow_html=True)
+                cross_cols = st.columns(2)
+                with cross_cols[0]:
+                    st.markdown("##### 系统动作 × 错误标签")
+                    st.markdown(
+                        _error_stats_table_html(
+                            horizon_stats.get("byFinalActionErrorTag") or [],
+                            _final_action_error_tag_group_label,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with cross_cols[1]:
+                    st.markdown("##### 决策通道 × 错误标签")
+                    st.markdown(
+                        _error_stats_table_html(
+                            horizon_stats.get("byDecisionLaneErrorTag") or [],
+                            _decision_lane_error_tag_group_label,
+                        ),
+                        unsafe_allow_html=True,
+                    )
     _render_error_tag_management(decision_store, outcome_store, error_tag_store, selected, has_complete_samples)
 
 
@@ -608,6 +631,48 @@ def _stats_row_html(row: dict, labels: dict[str, str]) -> str:
         f"<td>{escape(_int_text(row.get('missingCount')))}</td>"
         "</tr>"
     )
+
+
+def _error_stats_table_html(rows: list[dict], labeler) -> str:
+    headers = ["分组", "标签数", "完整样本", "平均收益", "平均回撤", "缺失数"]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    if not rows:
+        row_html = '<tr><td colspan="6" class="empty-row">暂无错误标签统计</td></tr>'
+    else:
+        row_html = "".join(_error_stats_row_html(row, labeler) for row in rows)
+    return (
+        '<div class="trade-journal-table-wrap signal error-stats">'
+        '<table class="trade-journal-table signal">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{row_html}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _error_stats_row_html(row: dict, labeler) -> str:
+    return (
+        "<tr>"
+        f'<td class="symbol">{escape(labeler(row))}</td>'
+        f"<td>{escape(_int_text(row.get('totalCount')))}</td>"
+        f"<td>{escape(_int_text(row.get('sampleCount')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('averageReturnPct')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('averageMaxDrawdownPct')))}</td>"
+        f"<td>{escape(_int_text(row.get('missingCount')))}</td>"
+        "</tr>"
+    )
+
+
+def _error_tag_group_label(row: dict) -> str:
+    return _error_tag_label(row.get("group"))
+
+
+def _final_action_error_tag_group_label(row: dict) -> str:
+    return f"{_final_action_label(row.get('finalAction'))} × {_error_tag_label(row.get('errorTag'))}"
+
+
+def _decision_lane_error_tag_group_label(row: dict) -> str:
+    return f"{_lane_label(row.get('decisionLane'))} × {_error_tag_label(row.get('errorTag'))}"
 
 
 def _complete_stat_rows(rows: list[dict]) -> list[dict]:

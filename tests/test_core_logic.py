@@ -3811,6 +3811,55 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(one_day["actionable"]["missingCount"], 1)
             self.assertEqual(one_day["blocked"]["missingCount"], 1)
 
+    def test_decision_signal_stats_include_error_tag_performance_and_cross_tabs(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            decision_store = DecisionLogStore(db_path)
+            outcome_store = DecisionOutcomeStore(db_path)
+            tag_store = DecisionErrorTagStore(db_path)
+            add_loss = decision_store.save_snapshot(
+                "NOW",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+            wait_loss = decision_store.save_snapshot(
+                "CRM",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "wait", "decision_lane": "wait"},
+            )
+            missing = decision_store.save_snapshot(
+                "ADBE",
+                {"decision_date": "2026-05-26", "price": 100, "final_action": "add", "decision_lane": "actionable"},
+            )
+
+            tag_store.save_tag(add_loss["id"], "valuation_too_high")
+            tag_store.save_tag(wait_loss["id"], "valuation_too_high")
+            tag_store.save_tag(missing["id"], "low_confidence_data")
+            outcome_store.save_outcome(add_loss["id"], "1d", {"return_pct": -8, "max_drawdown_pct": -12, "status": "complete"})
+            outcome_store.save_outcome(wait_loss["id"], "1d", {"return_pct": -2, "max_drawdown_pct": -4, "status": "complete"})
+
+            stats = build_decision_signal_stats(db_path)
+            tag_rows = {row["group"]: row for row in stats["byHorizon"]["1d"]["byErrorTag"]}
+            action_cross = {
+                (row["finalAction"], row["errorTag"]): row
+                for row in stats["byHorizon"]["1d"]["byFinalActionErrorTag"]
+            }
+            lane_cross = {
+                (row["decisionLane"], row["errorTag"]): row
+                for row in stats["byHorizon"]["1d"]["byDecisionLaneErrorTag"]
+            }
+            counts = {row["tag"]: row["count"] for row in stats["errorTags"]["counts"]}
+
+            self.assertEqual(counts["valuation_too_high"], 2)
+            self.assertEqual(counts["low_confidence_data"], 1)
+            self.assertEqual(tag_rows["valuation_too_high"]["totalCount"], 2)
+            self.assertEqual(tag_rows["valuation_too_high"]["sampleCount"], 2)
+            self.assertEqual(tag_rows["valuation_too_high"]["averageReturnPct"], -5)
+            self.assertEqual(tag_rows["valuation_too_high"]["averageMaxDrawdownPct"], -8)
+            self.assertEqual(tag_rows["low_confidence_data"]["sampleCount"], 0)
+            self.assertEqual(tag_rows["low_confidence_data"]["missingCount"], 1)
+            self.assertEqual(action_cross[("add", "valuation_too_high")]["averageReturnPct"], -8)
+            self.assertEqual(action_cross[("wait", "valuation_too_high")]["averageReturnPct"], -2)
+            self.assertEqual(lane_cross[("actionable", "low_confidence_data")]["missingCount"], 1)
+
     def test_decision_error_tag_store_saves_updates_and_lists_by_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
