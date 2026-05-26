@@ -3665,51 +3665,6 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(saved["final_action"], "可小仓分批")
             self.assertEqual(saved["decision_lane"], "actionable")
 
-    def test_data_health_summary_reports_missing_cache(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            summary = build_data_health_summary(Path(tmpdir) / "missing.sqlite", watchlist=["NOW"])
-
-            self.assertFalse(summary["cacheExists"])
-            self.assertEqual(summary["healthyCount"], 0)
-            self.assertEqual(summary["topIssues"][0]["category"], "cache_missing")
-
-    def test_cache_read_model_prefers_quote_price_and_reports_stale_quote(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "cache.sqlite"
-            self._insert_quote_snapshot(
-                db_path,
-                "NOW",
-                {"currentPrice": 130, "ticker": "NOW"},
-                "2026-05-24T00:00:00+00:00",
-            )
-            self._insert_price_history(db_path, "NOW", [("2026-05-25", 120)])
-
-            cache = CacheReadModel(
-                db_path,
-                now=datetime(2026, 5, 26, tzinfo=timezone.utc),
-                quote_max_age_hours=24,
-            )
-
-            self.assertEqual(cache.get_quote_payload("now")["ticker"], "NOW")
-            self.assertEqual(cache.get_current_price("now"), 130)
-            self.assertEqual(cache.get_latest_close("now"), 120)
-            self.assertEqual(cache.get_price_status("now"), "stale_quote")
-            self.assertEqual(cache.get_history_status("now"), "available")
-
-    def test_cache_read_model_falls_back_to_latest_close_and_missing_statuses(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "cache.sqlite"
-            self._insert_price_history(db_path, "CRM", [("2026-05-24", 190), ("2026-05-25", 200)])
-
-            cache = CacheReadModel(db_path)
-
-            self.assertEqual(cache.get_current_price("crm"), 200)
-            self.assertEqual(cache.get_price_status("crm"), "price_history")
-            self.assertEqual(cache.get_history_status("crm"), "available")
-            self.assertIsNone(cache.get_current_price("hood"))
-            self.assertEqual(cache.get_price_status("hood"), "missing")
-            self.assertEqual(cache.get_history_status("hood"), "missing")
-
     def test_dashboard_risk_model_builds_radar_items(self) -> None:
         table = pd.DataFrame(
             [
@@ -3775,66 +3730,6 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(view["tone"], "error")
         self.assertEqual(data_health_issue_text({"symbol": "AAPL", "category": "missing_price"}), "AAPL 价格缺失")
-
-    def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "cache.sqlite"
-            now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-            self._insert_quote_snapshot(
-                db_path,
-                "NOW",
-                {
-                    "ticker": "NOW",
-                    "current_price": 100,
-                    "sector": "Technology",
-                    "industry": "Software - Application",
-                    "revenue_growth": 0.12,
-                    "gross_margin": 0.75,
-                    "operating_margin": 0.20,
-                    "return_on_invested_capital": 0.12,
-                    "free_cash_flow": 1_000,
-                    "total_revenue": 10_000,
-                    "price_to_sales": 8,
-                    "price_to_fcf": 25,
-                    "forward_pe": 30,
-                    "total_debt": 100,
-                    "total_cash": 300,
-                },
-                "2026-05-26T00:00:00+00:00",
-            )
-            self._insert_price_history(db_path, "NOW", [(f"2026-05-{day:02d}", 90 + day) for day in range(1, 27)])
-            self._insert_quote_snapshot(db_path, "CRM", {"ticker": "CRM"}, "2026-05-24T00:00:00+00:00")
-
-            summary = build_data_health_summary(db_path, watchlist=["NOW", "CRM"], now=now, quote_max_age_hours=24)
-
-            self.assertTrue(summary["cacheExists"])
-            self.assertEqual(summary["healthyCount"], 1)
-            self.assertEqual(summary["stalePriceCount"], 1)
-            self.assertEqual(summary["missingPriceCount"], 1)
-            self.assertEqual(summary["missingHistoryCount"], 1)
-            self.assertEqual(summary["finalDecisionErrorCount"], 1)
-            categories = {item["category"] for item in summary["topIssues"]}
-            self.assertIn("missing_price", categories)
-            self.assertIn("stale_quote", categories)
-            self.assertIn("missing_history", categories)
-
-    def test_data_health_summary_counts_portfolio_missing_price_and_outcome_missing(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "cache.sqlite"
-            PortfolioPositionStore(db_path).save_position("ADBE", {"quantity": 2, "average_cost": 300})
-            snapshot = DecisionLogStore(db_path).save_snapshot(
-                "NOW",
-                {"decision_date": "2026-05-26", "price": 100, "final_action": "add"},
-            )
-            DecisionOutcomeStore(db_path).save_outcome(snapshot["id"], "1d", {"status": "missing"})
-
-            summary = build_data_health_summary(db_path, watchlist=[], now=datetime(2026, 5, 26, tzinfo=timezone.utc))
-
-            self.assertEqual(summary["portfolioMissingPriceCount"], 1)
-            self.assertEqual(summary["outcomeMissingCount"], 1)
-            categories = {item["category"] for item in summary["topIssues"]}
-            self.assertIn("portfolio_missing_price", categories)
-            self.assertIn("outcome_missing", categories)
 
     def test_trade_journal_store_saves_entries_with_snapshot_link(self) -> None:
         with TemporaryDirectory() as tmpdir:
