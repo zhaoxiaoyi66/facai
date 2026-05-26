@@ -45,7 +45,7 @@ WATCHLIST_COLUMNS = [
     {"key": "riskRating", "label": "风险", "kind": "badge"},
     {"key": "actionSummary", "label": "动作"},
     {"key": "dataStatus", "label": "数据"},
-    {"key": "actions", "label": "查看"},
+    {"key": "actions", "label": "操作", "align": "center"},
 ]
 
 DETAIL_GROUPS = [
@@ -512,8 +512,7 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
         with column:
             st.markdown(_summary_panel_head_html(title, subtitle, len(rows), color), unsafe_allow_html=True)
             st.markdown(_lane_stack_html(rows[:4]), unsafe_allow_html=True)
-            if rows:
-                _render_lane_more_button(lane_key)
+            _render_lane_more_button(lane_key)
     st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
 
 
@@ -3150,6 +3149,10 @@ def _render_dashboard_styles() -> None:
             display: flex;
             align-items: center;
         }
+        .summary-empty.is-blank {
+            cursor: default;
+            pointer-events: none;
+        }
         .lane-row-stack {
             height: 112px;
             min-height: 112px;
@@ -3547,18 +3550,19 @@ def _render_dashboard_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            height:30px;
-            padding:0 0.72rem;
-            border:1px solid rgba(15, 23, 42, 0.10);
-            border-radius:7px;
-            background:#FFFFFF;
-            color:#334155;
-            font-size:0.74rem;
-            font-weight:760;
+            height:22px;
+            padding:0 0.42rem;
+            border:1px solid rgba(15, 23, 42, 0.08);
+            border-radius:4px;
+            background:#F6F8FB;
+            color:#52657F;
+            font-size:11px;
+            font-weight:700;
             text-decoration:none !important;
         }
         .drawer-signal-actions a:hover {
-            background:#F8FAFC;
+            background:#FFFFFF;
+            border-color:rgba(15, 23, 42, 0.12);
             color:#0F172A;
         }
         .drawer-decision-card {
@@ -4405,6 +4409,12 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap;
             letter-spacing:0;
         }
+        .decision-header.align-center {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            text-align:center;
+        }
         .decision-cell {
             display:flex;
             align-items:center;
@@ -4566,39 +4576,47 @@ def _render_dashboard_styles() -> None:
         }
         .action-view-cell {
             justify-content:center;
-            max-width:64px;
-            justify-self:stretch;
+            justify-self:center;
+            width:60px;
+            max-width:60px;
         }
         .dashboard-view-action {
+            position:relative;
             display:inline-flex;
             align-items:center;
             justify-content:center;
             gap:0.12rem;
-            min-width:32px;
+            min-width:38px;
             height:22px;
-            padding:0 0.18rem;
+            padding:0 0.42rem;
             border:1px solid transparent;
             border-radius:4px;
             background:transparent;
-            color:#64748B;
-            font-size:11.5px;
-            font-weight:560;
+            color:#52657F;
+            font-size:11px;
+            font-weight:700;
             text-decoration:none !important;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
             box-sizing:border-box;
         }
+        .dashboard-view-action span {
+            display:block;
+            padding-right:0;
+        }
         .dashboard-view-action i {
+            position:absolute;
+            right:4px;
             color:#94A3B8;
             font-style:normal;
             font-size:14px;
             line-height:1;
         }
         .dashboard-view-action:hover {
-            color:#334155;
-            border-color:transparent;
-            background:transparent;
+            color:#0F172A;
+            border-color:rgba(15, 23, 42, 0.08);
+            background:#FFFFFF;
         }
         .dashboard-view-action:hover i {
             color:#475569;
@@ -4682,7 +4700,7 @@ def _render_dashboard_styles() -> None:
 
 
 def _header_cell_html(value: object, align: object = None) -> str:
-    align_class = " align-right" if align == "right" else ""
+    align_class = " align-right" if align == "right" else " align-center" if align == "center" else ""
     return f'<div class="decision-header{align_class}">{escape(str(value))}</div>'
 
 
@@ -4999,7 +5017,7 @@ def _lane_item_html(row: pd.Series) -> str:
 
 def _lane_stack_html(rows: list[pd.Series]) -> str:
     if not rows:
-        body = '<div class="summary-empty">暂无</div>'
+        body = '<div class="summary-empty is-blank" aria-hidden="true"></div>'
     else:
         body = "".join(_lane_item_html(row) for row in rows[:4])
     return f'<div class="lane-row-stack">{body}</div>'

@@ -1032,12 +1032,12 @@ def _render_final_portfolio_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.08rem;
-            padding: 0.12rem;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 8px;
-            background: #F7F9FC;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+            gap: 0.04rem;
+            padding: 0.08rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 6px;
+            background: #F6F8FB;
+            box-shadow: none;
             white-space: nowrap;
         }
         .portfolio-view-link {
@@ -1045,14 +1045,14 @@ def _render_final_portfolio_styles() -> None:
             align-items: center;
             justify-content: center;
             min-width: 38px;
-            height: 24px;
-            padding: 0 0.45rem;
+            height: 22px;
+            padding: 0 0.42rem;
             border: 1px solid transparent;
-            border-radius: 6px;
-            color: #64748b;
+            border-radius: 4px;
+            color: #52657F;
             background: transparent;
-            font-size: 0.66rem;
-            font-weight: 760;
+            font-size: 11px;
+            font-weight: 700;
             text-decoration: none;
         }
         .portfolio-table a.portfolio-view-link,
@@ -1070,10 +1070,10 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-row-actions .portfolio-view-link:first-child {
             color: #0f172a;
             background: #FFFFFF;
-            border-color: rgba(15, 23, 42, 0.10);
+            border-color: rgba(15, 23, 42, 0.08);
         }
         .portfolio-research-link {
-            color: #52657f;
+            color: #52657F;
             background: transparent;
             border-color: transparent;
         }
@@ -1486,26 +1486,26 @@ def _render_styles() -> None:
             align-items: center;
             justify-content: center;
             gap: 0.12rem;
-            padding: 0.12rem;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 8px;
-            background: #F8FAFC;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+            padding: 0.08rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 6px;
+            background: #F6F8FB;
+            box-shadow: none;
             white-space: nowrap;
         }
         .portfolio-view-link {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-width: 42px;
-            height: 26px;
-            padding: 0 0.52rem;
+            min-width: 38px;
+            height: 22px;
+            padding: 0 0.42rem;
             border: 1px solid transparent;
-            border-radius: 6px;
-            color: var(--zhx-muted);
+            border-radius: 4px;
+            color: #52657F;
             background: transparent;
-            font-size: 0.7rem;
-            font-weight: 760;
+            font-size: 11px;
+            font-weight: 700;
             text-decoration: none;
         }
         .portfolio-table a.portfolio-view-link,
@@ -1518,9 +1518,9 @@ def _render_styles() -> None:
             text-decoration: none;
         }
         .portfolio-research-link {
-            color: #1d4ed8;
-            background: #FFFFFF;
-            border-color: rgba(37, 99, 235, 0.16);
+            color: #52657F;
+            background: transparent;
+            border-color: transparent;
         }
         .portfolio-detail-panel {
             margin: 0.65rem 0 1rem;

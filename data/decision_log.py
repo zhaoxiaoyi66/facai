@@ -359,6 +359,14 @@ class TradeJournalStore:
             rows = cursor.fetchall()
         return [str(row[0]) for row in rows]
 
+    def delete_entry(self, entry_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM trade_journal_entries WHERE id = ?",
+                (_required_int(entry_id, "entry_id"),),
+            )
+        return cursor.rowcount > 0
+
 
 class DecisionOutcomeStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:

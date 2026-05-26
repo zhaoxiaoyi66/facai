@@ -2023,7 +2023,7 @@ def _render_detail_styles() -> None:
         .stock-research-header p {
             margin: 0;
             color: #0f172a;
-            font-size: 1.48rem;
+            font-size: 1.42rem;
             line-height: 1.15;
             font-weight: 760;
             letter-spacing: 0;
@@ -2158,12 +2158,13 @@ def _render_detail_styles() -> None:
         .detail-pill {
             display: inline-flex;
             align-items: center;
-            min-height: 1.8rem;
-            padding: 0.18rem 0.58rem;
+            min-height: 18px;
+            padding: 0.05rem 0.42rem;
             border: 1px solid;
             border-radius: 999px;
-            font-size: 0.86rem;
-            font-weight: 720;
+            font-size: 11px;
+            font-weight: 650;
+            line-height: 1.35;
         }
         .detail-pill.buy-point-pill {
             gap: 0.36rem;
@@ -2188,6 +2189,23 @@ def _render_detail_styles() -> None:
             font-style: normal;
             font-weight: 690;
             opacity: 0.82;
+        }
+        [class*="st-key-stock-detail-record-signal"] button {
+            min-height: 24px !important;
+            height: 24px !important;
+            padding: 0 0.48rem !important;
+            border-radius: 4px !important;
+            border-color: rgba(15, 23, 42, 0.08) !important;
+            background: #F6F8FB !important;
+            color: #52657F !important;
+            box-shadow: none !important;
+            font-size: 11px !important;
+            font-weight: 700 !important;
+        }
+        [class*="st-key-stock-detail-record-signal"] button:hover {
+            border-color: rgba(15, 23, 42, 0.12) !important;
+            background: #FFFFFF !important;
+            color: #0F172A !important;
         }
         .conclusion-card,
         .buy-zone-panel,

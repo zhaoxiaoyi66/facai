@@ -2332,21 +2332,22 @@ def _styles() -> str:
       }
       .review-badge {
         display: inline-flex;
-        min-height: 24px;
+        min-height: 18px;
         align-items: center;
-        padding: 0 8px;
+        padding: 0 7px;
         border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
+        font-size: 11px;
+        font-weight: 650;
         border: 1px solid transparent;
         white-space: nowrap;
+        line-height: 18px;
       }
-      .tone-green { background: #EAF8F0; color: #166534; border-color: #BBF7D0; }
-      .tone-blue { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
-      .tone-yellow { background: #FEFCE8; color: #854D0E; border-color: #FDE68A; }
-      .tone-orange { background: #FFF7ED; color: #C2410C; border-color: #FDBA74; }
-      .tone-red { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
-      .tone-gray { background: #F3F4F6; color: #4B5563; border-color: #E5E7EB; }
+      .tone-green { background: #F0FDF4; color: #166534; border-color: #CDEFD8; }
+      .tone-blue { background: #F2F6FB; color: #334155; border-color: #E4EAF1; }
+      .tone-yellow { background: #FFFBEB; color: #854D0E; border-color: #F4E7B0; }
+      .tone-orange { background: #FFF7ED; color: #92400E; border-color: #F7D8A9; }
+      .tone-red { background: #FFF5F5; color: #991B1B; border-color: #F3D2D2; }
+      .tone-gray { background: #F8FAFC; color: #475569; border-color: #E4EAF1; }
       @media (max-width: 1100px) {
         .review-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .review-ai-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

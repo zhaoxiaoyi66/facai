@@ -25,11 +25,19 @@ def render_global_styles() -> None:
             --zhx-orange: #c2410c;
             --zhx-red: #b42318;
             --zhx-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+            --zhx-action-bg: #F6F8FB;
+            --zhx-action-border: rgba(15, 23, 42, 0.07);
+            --zhx-action-text: #52657F;
+            --zhx-action-text-strong: #0F172A;
+            --zhx-table-head: #F8FAFC;
+            --zhx-table-hover: #FBFCFE;
+            --zhx-subtle-line: rgba(15, 23, 42, 0.055);
         }
 
         .stApp {
             background: var(--zhx-bg);
             color: var(--zhx-text);
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
 
         [data-testid="stMainBlockContainer"] {
@@ -287,19 +295,169 @@ def render_global_styles() -> None:
         }
 
         .stButton > button {
-            min-height: 2.15rem;
-            border-radius: 0.45rem;
-            border: 1px solid var(--zhx-line-strong);
+            min-height: 2rem;
+            border-radius: 7px;
+            border: 1px solid rgba(15, 23, 42, 0.12);
             background: rgba(255, 255, 255, 0.92);
-            color: var(--zhx-text);
+            color: #334155;
             box-shadow: none;
-            font-weight: 650;
+            font-size: 0.8rem;
+            font-weight: 680;
         }
 
         .stButton > button:hover {
-            border-color: rgba(37, 99, 235, 0.45);
-            color: #1d4ed8;
+            border-color: rgba(15, 23, 42, 0.20);
+            color: #0F172A;
             background: #ffffff;
+        }
+
+        .zhx-action-group,
+        .buy-zone-row-actions,
+        .portfolio-row-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.04rem;
+            width: max-content;
+            padding: 0.08rem;
+            border: 1px solid var(--zhx-action-border);
+            border-radius: 6px;
+            background: var(--zhx-action-bg);
+            box-shadow: none;
+            white-space: nowrap;
+        }
+
+        .zhx-action-link,
+        .buy-zone-detail-link,
+        .buy-zone-record-link,
+        .dashboard-view-action,
+        .drawer-signal-actions a,
+        .drawer-menu-link,
+        .portfolio-view-link,
+        .trade-entry-delete-link,
+        .trade-entry-delete-link:visited {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 38px;
+            height: 22px;
+            padding: 0 0.42rem;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--zhx-action-text) !important;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1;
+            text-decoration: none !important;
+            white-space: nowrap;
+            box-shadow: none;
+        }
+
+        .zhx-action-link:hover,
+        .buy-zone-detail-link:hover,
+        .buy-zone-record-link:hover,
+        .dashboard-view-action:hover,
+        .drawer-signal-actions a:hover,
+        .drawer-menu-link:hover,
+        .portfolio-view-link:hover,
+        .trade-entry-delete-link:hover {
+            color: var(--zhx-action-text-strong) !important;
+            border-color: rgba(15, 23, 42, 0.08);
+            background: #FFFFFF;
+            text-decoration: none !important;
+        }
+
+        [class*="st-key-stock-detail-record-signal"] button,
+        [class*="st-key-dashboard-detail-"] button,
+        [class*="st-key-dashboard-position-"] button,
+        [class*="st-key-dashboard-plan-"] button,
+        [class*="st-key-dashboard-refresh-"] button,
+        [class*="st-key-trade-error-select-"] button,
+        [class*="st-key-trade-snapshot-delete-"] button,
+        [class*="st-key-trade-error-edit-"] button,
+        [class*="st-key-trade-error-delete-"] button {
+            min-height: 24px !important;
+            height: 24px !important;
+            padding: 0 0.48rem !important;
+            border-radius: 4px !important;
+            border-color: transparent !important;
+            background: transparent !important;
+            color: var(--zhx-action-text) !important;
+            box-shadow: none !important;
+            font-size: 11px !important;
+            font-weight: 700 !important;
+        }
+
+        [class*="st-key-stock-detail-record-signal"] button:hover,
+        [class*="st-key-dashboard-detail-"] button:hover,
+        [class*="st-key-dashboard-position-"] button:hover,
+        [class*="st-key-dashboard-plan-"] button:hover,
+        [class*="st-key-dashboard-refresh-"] button:hover,
+        [class*="st-key-trade-error-select-"] button:hover,
+        [class*="st-key-trade-snapshot-delete-"] button:hover,
+        [class*="st-key-trade-error-edit-"] button:hover,
+        [class*="st-key-trade-error-delete-"] button:hover {
+            color: var(--zhx-action-text-strong) !important;
+            border-color: rgba(15, 23, 42, 0.08) !important;
+            background: #FFFFFF !important;
+        }
+
+        .zhx-badge,
+        .decision-badge,
+        .detail-pill,
+        .review-badge,
+        .trade-action-badge {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            min-height: 18px;
+            height: auto;
+            padding: 0.05rem 0.42rem;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 650;
+            line-height: 1.35;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            box-sizing: border-box;
+        }
+
+        .buy-zone-table,
+        .portfolio-table-wrap.terminal,
+        .trade-journal-table-wrap,
+        .decision-table {
+            border-color: rgba(15, 23, 42, 0.08) !important;
+            border-radius: 8px !important;
+            background: #FFFFFF !important;
+            box-shadow: none !important;
+        }
+
+        .portfolio-table.terminal th,
+        .trade-journal-table th,
+        .decision-grid-head,
+        .buy-zone-grid-head {
+            min-height: 28px;
+            background: var(--zhx-table-head) !important;
+            color: #64748B !important;
+            font-size: 11px !important;
+            font-weight: 650 !important;
+            letter-spacing: 0 !important;
+        }
+
+        .portfolio-table.terminal td,
+        .trade-journal-table td,
+        .decision-row,
+        .buy-zone-row {
+            border-bottom-color: var(--zhx-subtle-line) !important;
+        }
+
+        .portfolio-table.terminal tr:hover td,
+        .trade-journal-table tr:hover td,
+        .decision-row:hover,
+        .buy-zone-row:hover {
+            background: var(--zhx-table-hover) !important;
         }
 
         .stAlert {

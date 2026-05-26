@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 
 import streamlit as st
@@ -60,6 +60,7 @@ ERROR_TAG_OPTIONS = {
 }
 ERROR_TAG_LABELS = {value: label for label, value in ERROR_TAG_OPTIONS.items()}
 BLANK_TEXT = "—"
+OUTCOME_HORIZON_DAYS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
 
 
 def render() -> None:
@@ -84,6 +85,7 @@ def render() -> None:
     symbols = store.list_symbols()
     entries = _load_entries(store, symbols)
     _render_summary(entries)
+    _render_entry_delete_confirmation(store)
     _render_entries(symbols, entries)
     _render_signal_replay(decision_store, outcome_store, error_tag_store)
 
@@ -204,13 +206,18 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         )
         return
 
-    headers = ["日期", "股票", "操作", "数量 / 价格", "期权参数", "决策快照", "备注"]
+    headers = ["日期", "股票", "操作", "数量 / 价格", "期权参数", "决策快照", "备注", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     row_html = "".join(_entry_row_html(entry) for entry in entries)
     st.markdown(
         (
-            '<div class="trade-journal-table-wrap">'
-            '<table class="trade-journal-table">'
+            '<div id="trade-journal-list"></div>'
+            '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
+            '<table class="trade-journal-table trade-terminal-table">'
+            "<colgroup>"
+            '<col style="width:12%"><col style="width:9%"><col style="width:9%"><col style="width:13%">'
+            '<col style="width:13%"><col style="width:10%"><col style="width:24%"><col style="width:10%">'
+            "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
             "</table>"
@@ -218,6 +225,42 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         ),
         unsafe_allow_html=True,
     )
+
+
+def _render_entry_delete_confirmation(store: TradeJournalStore) -> None:
+    entry_id = _query_int("deleteTrade")
+    if entry_id is None:
+        return
+    entry = store.get_entry(entry_id)
+    if not entry:
+        _clear_trade_delete_query()
+        st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
+        st.rerun()
+
+    st.markdown(
+        (
+            '<div class="trade-delete-confirm">'
+            '<div>'
+            "<span>确认删除交易记录</span>"
+            f"<strong>{escape(_entry_delete_summary(entry))}</strong>"
+            "</div>"
+            "<em>删除后仅移除这条手动记录，不影响系统信号样本。</em>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    cols = st.columns([1, 1, 4.2])
+    if cols[0].button("确认删除", key=f"trade-entry-delete-confirm-{entry_id}", width="stretch"):
+        deleted = store.delete_entry(entry_id)
+        _clear_trade_delete_query()
+        st.session_state["trade_journal_notice"] = (
+            "success" if deleted else "error",
+            "交易记录已删除。" if deleted else "交易记录不存在或已删除。",
+        )
+        st.rerun()
+    if cols[1].button("取消", key=f"trade-entry-delete-cancel-{entry_id}", width="stretch"):
+        _clear_trade_delete_query()
+        st.rerun()
 
 
 def _render_signal_replay(
@@ -264,7 +307,7 @@ def _render_signal_replay(
                     st.markdown(_stats_table_html(decision_lane_rows, LANE_LABELS), unsafe_allow_html=True)
                 else:
                     st.caption("暂无决策通道明细。")
-    _render_error_tag_management(decision_store, outcome_store, error_tag_store, selected)
+    _render_error_tag_management(decision_store, outcome_store, error_tag_store, selected, has_complete_samples)
 
 
 def _render_refresh_outcomes_toolbar() -> None:
@@ -304,6 +347,7 @@ def _render_error_tag_management(
     outcome_store: DecisionOutcomeStore,
     error_tag_store: DecisionErrorTagStore,
     horizon: str,
+    has_complete_samples: bool,
 ) -> None:
     st.markdown('<div class="trade-journal-subsection">错误标签摘要</div>', unsafe_allow_html=True)
     counts = error_tag_store.tag_counts()
@@ -323,6 +367,7 @@ def _render_error_tag_management(
             unsafe_allow_html=True,
         )
         return
+    _render_missing_outcome_brief(snapshots, outcome_store, horizon, has_complete_samples)
     _render_snapshot_rows(snapshots, decision_store, outcome_store, error_tag_store, horizon)
     selected_snapshot = _selected_snapshot(snapshots)
     if selected_snapshot:
@@ -372,6 +417,42 @@ def _recent_error_case_html(row: dict) -> str:
     )
 
 
+def _render_missing_outcome_brief(
+    snapshots: list[dict],
+    outcome_store: DecisionOutcomeStore,
+    horizon: str,
+    has_complete_samples: bool,
+) -> None:
+    missing_items: list[str] = []
+    for snapshot in snapshots:
+        snapshot_id = int(snapshot.get("id") or 0)
+        outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
+        status = _outcome_status_text(outcome, horizon, snapshot)
+        if status == "已完成":
+            continue
+        symbol = _text(snapshot.get("symbol"))
+        date_text = _text(snapshot.get("decision_date"))
+        detail = _outcome_status_reason(outcome, horizon, snapshot)
+        missing_items.append(
+            f'<span><b>{escape(symbol)}</b><em>{escape(date_text)} · {escape(detail)}</em></span>'
+        )
+    if not missing_items:
+        return
+    tone = "muted" if has_complete_samples else "empty"
+    body = "".join(missing_items[:8])
+    more = len(missing_items) - 8
+    more_html = f'<i>另有 {more} 条</i>' if more > 0 else ""
+    st.markdown(
+        (
+            f'<div class="trade-missing-brief {tone}">'
+            "<strong>缺失结果</strong>"
+            f"<div>{body}{more_html}</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_snapshot_rows(
     snapshots: list[dict],
     decision_store: DecisionLogStore,
@@ -380,38 +461,32 @@ def _render_snapshot_rows(
     horizon: str,
 ) -> None:
     st.markdown(
-        '<div class="trade-snapshot-list-head"><span>股票</span><span>日期</span><span>系统动作</span><span>周期状态</span><span>错误标签</span><span>操作</span></div>',
+        '<div class="trade-snapshot-table trade-terminal-table-wrap">'
+        '<div class="trade-snapshot-list-head"><span>股票</span><span>日期</span><span>系统动作</span><span>周期状态</span><span>错误标签</span><span>操作</span></div>'
+        '</div>',
         unsafe_allow_html=True,
     )
     for snapshot in snapshots:
         snapshot_id = int(snapshot.get("id") or 0)
         tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
         outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
-        cols = st.columns([0.8, 0.9, 1.2, 0.9, 1.25, 1.05])
+        cols = st.columns([5.2, 0.72], gap="small", vertical_alignment="center")
         cols[0].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b></div>',
+            (
+                '<div class="trade-snapshot-row">'
+                f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("symbol")))}</b></div>'
+                f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("decision_date")))}</b></div>'
+                f'<div class="trade-snapshot-cell"><b>{escape(_final_action_label(snapshot.get("final_action")))}</b>'
+                f'<span>{escape(_lane_label(snapshot.get("decision_lane")))}</span></div>'
+                f'<div class="trade-snapshot-cell"><b>{escape(_outcome_status_text(outcome, horizon, snapshot))}</b>'
+                f'<span>{escape(_outcome_status_detail(outcome, horizon, snapshot))}</span></div>'
+                f'<div class="trade-error-chip-line">{_tag_chip_html(tags)}</div>'
+                "</div>"
+            ),
             unsafe_allow_html=True,
         )
-        cols[1].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_text(snapshot.get("decision_date")))}</b></div>',
-            unsafe_allow_html=True,
-        )
-        cols[2].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_final_action_label(snapshot.get("final_action")))}</b>'
-            f'<span>{escape(_lane_label(snapshot.get("decision_lane")))}</span></div>',
-            unsafe_allow_html=True,
-        )
-        cols[3].markdown(
-            f'<div class="trade-snapshot-cell"><b>{escape(_outcome_status_text(outcome))}</b>'
-            f'<span>{escape(horizon)}</span></div>',
-            unsafe_allow_html=True,
-        )
-        cols[4].markdown(
-            f'<div class="trade-error-chip-line">{_tag_chip_html(tags)}</div>',
-            unsafe_allow_html=True,
-        )
-        with cols[5]:
-            action_cols = st.columns([1, 1])
+        with cols[1]:
+            action_cols = st.columns([1, 1], gap="small", vertical_alignment="center")
             if action_cols[0].button("标记", key=f"trade-error-select-{snapshot_id}", width="stretch"):
                 st.session_state["trade_error_snapshot_id"] = snapshot_id
                 st.session_state.pop("trade_error_edit_tag", None)
@@ -572,13 +647,54 @@ def _lane_label(value: object) -> str:
     return LANE_LABELS.get(text, text or BLANK_TEXT)
 
 
-def _outcome_status_text(outcome: dict | None) -> str:
+def _outcome_status_text(outcome: dict | None, horizon: str, snapshot: dict) -> str:
     status = str((outcome or {}).get("status") or "").strip()
     if status == "complete":
         return "已完成"
-    if status == "missing" or not outcome:
-        return "缺失"
-    return status or "缺失"
+    if _observation_window_pending(snapshot, horizon):
+        return "观察期未到"
+    if (outcome or {}).get("start_price") is None:
+        return "缺少起始价格"
+    return "缺少后续价格"
+
+
+def _outcome_status_detail(outcome: dict | None, horizon: str, snapshot: dict) -> str:
+    if str((outcome or {}).get("status") or "").strip() == "complete":
+        return horizon
+    return f"{horizon} / {_outcome_status_reason(outcome, horizon, snapshot)}"
+
+
+def _outcome_status_reason(outcome: dict | None, horizon: str, snapshot: dict) -> str:
+    if _observation_window_pending(snapshot, horizon):
+        due = _outcome_due_date(snapshot, horizon)
+        return "观察期未到" if due is None else f"观察期未到，预计 {due.isoformat()}"
+    if (outcome or {}).get("start_price") is None:
+        return "缺少起始价格"
+    if not outcome:
+        return "尚未刷新 outcome"
+    if outcome.get("end_price") is None:
+        return "缺少后续价格"
+    return "样本未完成"
+
+
+def _observation_window_pending(snapshot: dict, horizon: str) -> bool:
+    due = _outcome_due_date(snapshot, horizon)
+    return bool(due and due > date.today())
+
+
+def _outcome_due_date(snapshot: dict, horizon: str) -> date | None:
+    days = OUTCOME_HORIZON_DAYS.get(str(horizon))
+    decision_date = _parse_iso_date(snapshot.get("decision_date"))
+    if days is None or decision_date is None:
+        return None
+    return decision_date + timedelta(days=days)
+
+
+def _parse_iso_date(value: object) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "").strip()[:10])
+    except ValueError:
+        return None
 
 
 def _entry_row_html(entry: dict) -> str:
@@ -591,8 +707,34 @@ def _entry_row_html(entry: dict) -> str:
         f"<td>{_option_text(entry)}</td>"
         f"<td>{escape(_snapshot_text(entry.get('decision_snapshot_id')))}</td>"
         f'<td class="notes">{escape(_text(entry.get("notes")))}</td>'
+        f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_delete_action_html(entry)}</span></td>'
         "</tr>"
     )
+
+
+def _entry_delete_action_html(entry: dict) -> str:
+    entry_id = int(entry.get("id") or 0)
+    if entry_id <= 0:
+        return BLANK_TEXT
+    return (
+        f'<a class="trade-entry-delete-link" href="?page=trade-journal&deleteTrade={entry_id}#trade-journal-list" '
+        'target="_self" title="删除这条交易记录">删除</a>'
+    )
+
+
+def _entry_delete_summary(entry: dict) -> str:
+    parts = [
+        _text(entry.get("trade_date")),
+        _text(entry.get("symbol")),
+        ACTION_LABELS.get(str(entry.get("action_type") or ""), "未识别"),
+    ]
+    quantity = _quantity_text(entry.get("quantity"))
+    price = _money_text(entry.get("price"))
+    if quantity != BLANK_TEXT:
+        parts.append(f"{quantity} 股")
+    if price != BLANK_TEXT:
+        parts.append(price)
+    return " · ".join(part for part in parts if part and part != BLANK_TEXT)
 
 
 def _cell_html(primary: str, secondary: str) -> str:
@@ -671,6 +813,20 @@ def _snapshot_text(value: object) -> str:
     if number is None:
         return BLANK_TEXT
     return str(int(number))
+
+
+def _query_int(key: str) -> int | None:
+    value = st.query_params.get(key)
+    try:
+        number = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _clear_trade_delete_query() -> None:
+    if "deleteTrade" in st.query_params:
+        st.query_params.pop("deleteTrade")
 
 
 def _text(value: object) -> str:
@@ -834,6 +990,56 @@ def _render_styles() -> None:
             color: #7b8798;
             font-size: 0.74rem;
         }
+        .trade-missing-brief {
+            display: grid;
+            grid-template-columns: 88px minmax(0, 1fr);
+            align-items: start;
+            gap: 0.55rem;
+            margin: 0.3rem 0 0.5rem;
+            padding: 0.5rem 0.62rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.68);
+        }
+        .trade-missing-brief.empty {
+            border-style: dashed;
+            background: rgba(248, 250, 252, 0.48);
+        }
+        .trade-missing-brief strong {
+            color: #334155;
+            font-size: 0.72rem;
+            font-weight: 780;
+        }
+        .trade-missing-brief div {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.32rem;
+            min-width: 0;
+        }
+        .trade-missing-brief span,
+        .trade-missing-brief i {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            min-height: 22px;
+            padding: 0 0.45rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 999px;
+            background: #FFFFFF;
+            color: #64748b;
+            font-size: 0.66rem;
+            font-style: normal;
+            white-space: nowrap;
+        }
+        .trade-missing-brief span b {
+            color: #0f172a;
+            font-size: 0.68rem;
+            font-weight: 820;
+        }
+        .trade-missing-brief span em {
+            color: #64748b;
+            font-style: normal;
+        }
         .trade-error-summary-card {
             min-height: 124px;
             padding: 0.62rem;
@@ -876,22 +1082,73 @@ def _render_styles() -> None:
             color: #94a3b8;
             font-size: 0.76rem;
         }
+        .trade-terminal-table-wrap {
+            --trade-terminal-border: rgba(15, 23, 42, 0.08);
+            --trade-terminal-line: rgba(15, 23, 42, 0.055);
+            --trade-terminal-head: #F8FAFC;
+            --trade-terminal-hover: #FBFCFE;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) {
+            gap: 0 !important;
+            min-height: 42px;
+            margin: -1px 0 0 !important;
+            border-right: 1px solid var(--trade-terminal-border, rgba(15, 23, 42, 0.08));
+            border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
+            border-left: 1px solid var(--trade-terminal-border, rgba(15, 23, 42, 0.08));
+            background: #FFFFFF;
+            box-sizing: border-box;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row):hover {
+            background: var(--trade-terminal-hover, #FBFCFE);
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div {
+            padding: 0 !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: 0 0.32rem !important;
+            border-left: 0;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
+        div[data-testid="stHorizontalBlock"] {
+            gap: 0.22rem !important;
+            width: max-content;
+            padding: 0.08rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 6px;
+            background: var(--zhx-action-bg);
+        }
+        .trade-snapshot-row {
+            display: grid;
+            grid-template-columns: 0.85fr 0.85fr 1.25fr 1.1fr 1.15fr;
+            gap: 0.5rem;
+            align-items: center;
+            min-height: 42px;
+            padding: 0 12px;
+            border: 0;
+            background: transparent;
+        }
         .trade-snapshot-cell {
             display: grid;
             gap: 0.08rem;
-            min-height: 2.25rem;
+            min-height: 38px;
             align-content: center;
-            padding: 0.18rem 0;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+            padding: 0;
+            border-bottom: 0;
+            background: transparent;
         }
         .trade-snapshot-cell b {
             color: #0f172a;
-            font-size: 0.76rem;
+            font-size: 12px;
             line-height: 1.1;
+            font-weight: 700;
         }
         .trade-snapshot-cell span {
-            color: #7b8798;
-            font-size: 0.66rem;
+            color: #64748B;
+            font-size: 11px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -900,20 +1157,22 @@ def _render_styles() -> None:
             display: flex;
             align-items: center;
             gap: 0.22rem;
-            min-height: 2.25rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+            min-height: 38px;
+            padding: 0;
+            border-bottom: 0;
+            background: transparent;
             overflow: hidden;
         }
         .trade-error-chip {
             display: inline-flex;
             align-items: center;
-            height: 22px;
-            padding: 0 0.48rem;
-            border: 1px solid rgba(181, 106, 50, 0.16);
+            height: 19px;
+            padding: 0 0.42rem;
+            border: 1px solid rgba(82, 101, 127, 0.14);
             border-radius: 999px;
-            background: rgba(181, 106, 50, 0.07);
-            color: #8A4B00;
-            font-size: 0.64rem;
+            background: rgba(82, 101, 127, 0.055);
+            color: #64748b;
+            font-size: 0.6rem;
             font-weight: 780;
             white-space: nowrap;
         }
@@ -944,56 +1203,90 @@ def _render_styles() -> None:
         }
         .trade-snapshot-list-head {
             display: grid;
-            grid-template-columns: 0.8fr 0.9fr 1.2fr 0.9fr 1.25fr 1.05fr;
-            gap: 0.55rem;
+            grid-template-columns: 0.85fr 0.85fr 1.25fr 1.1fr 1.15fr 0.72fr;
+            gap: 0.5rem;
             align-items: center;
             min-height: 30px;
-            margin-top: 0.3rem;
-            padding: 0 0.45rem;
-            border: 1px solid rgba(15, 23, 42, 0.07);
-            border-radius: 8px 8px 0 0;
-            background: rgba(248, 250, 252, 0.82);
+            padding: 0 12px;
+            border: 0;
+            border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
+            border-radius: 0;
+            background: var(--trade-terminal-head, #F8FAFC);
         }
         .trade-snapshot-list-head span {
-            color: #7b8798;
-            font-size: 0.65rem;
-            font-weight: 780;
+            color: #64748B;
+            font-size: 11px;
+            font-weight: 650;
             white-space: nowrap;
+        }
+        .trade-snapshot-list-head span:last-child {
+            text-align: center;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button {
+            min-height: 24px;
+            height: 24px;
+            padding: 0 0.48rem;
+            border-radius: 4px;
+            border-color: transparent;
+            background: transparent;
+            color: #475569;
+            box-shadow: none;
+            text-decoration: none !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button p {
+            font-size: 0.64rem;
+            font-weight: 720;
+            line-height: 1;
+            text-decoration: none !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button:hover {
+            border-color: rgba(15, 23, 42, 0.08);
+            background: #FFFFFF;
+            color: #0f172a;
         }
         .trade-journal-table-wrap {
             overflow-x: auto;
-            border: 1px solid rgba(15, 23, 42, 0.08);
+            margin-top: 0.28rem;
+            border: 1px solid var(--trade-terminal-border, rgba(15, 23, 42, 0.08));
             border-radius: 8px;
             background: #FFFFFF;
-            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.035);
+            box-shadow: none;
+        }
+        .trade-terminal-table-wrap {
+            margin-top: 0.28rem;
+            border: 1px solid var(--trade-terminal-border, rgba(15, 23, 42, 0.08));
+            border-radius: 8px;
+            background: #FFFFFF;
+            overflow: hidden;
+            box-shadow: none;
         }
         .trade-journal-table-wrap.signal {
             margin-top: 0.35rem;
         }
         .trade-journal-table {
             width: 100%;
-            min-width: 1060px;
+            min-width: 1040px;
             border-collapse: collapse;
             table-layout: fixed;
-            font-size: 0.72rem;
+            font-size: 12px;
         }
         .trade-journal-table.signal {
             min-width: 620px;
         }
         .trade-journal-table th {
             height: 30px;
-            padding: 0.32rem 0.58rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-            background: #FAFBFC;
-            color: #7b8798;
-            font-size: 0.65rem;
-            font-weight: 760;
+            padding: 0 12px;
+            border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
+            background: var(--trade-terminal-head, #F8FAFC);
+            color: #64748B;
+            font-size: 11px;
+            font-weight: 650;
             text-align: left;
         }
         .trade-journal-table td {
-            height: 46px;
-            padding: 0.36rem 0.58rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+            height: 42px;
+            padding: 0 12px;
+            border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
             color: #0f172a;
             vertical-align: middle;
         }
@@ -1001,19 +1294,77 @@ def _render_styles() -> None:
             border-bottom: 0;
         }
         .trade-journal-table tr:hover td {
-            background: #FBFCFE;
+            background: var(--trade-terminal-hover, #FBFCFE);
         }
         .trade-journal-table .symbol {
             width: 96px;
-            font-size: 0.82rem;
-            font-weight: 860;
+            font-size: 12px;
+            font-weight: 780;
         }
         .trade-journal-table .notes {
-            max-width: 260px;
+            max-width: 100%;
             color: #64748b;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .trade-entry-actions {
+            text-align: center;
+        }
+        .trade-entry-action-group {
+            margin: 0 auto;
+        }
+        .trade-entry-actions::after {
+            content: "";
+            display: inline-flex;
+            vertical-align: middle;
+        }
+        .trade-entry-delete-link,
+        .trade-entry-delete-link:visited {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 22px;
+            min-width: 38px;
+            padding: 0 0.42rem;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #52657F;
+            font-size: 11px;
+            font-weight: 700;
+            text-decoration: none !important;
+            white-space: nowrap;
+        }
+        .trade-entry-delete-link:hover {
+            border-color: rgba(15, 23, 42, 0.08);
+            background: #FFFFFF;
+            color: #0F172A;
+            text-decoration: none !important;
+        }
+        .trade-delete-confirm {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.8rem;
+            margin: 0.45rem 0 0.35rem;
+            padding: 0.62rem 0.72rem;
+            border: 1px solid rgba(181, 106, 50, 0.16);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(255, 251, 235, 0.82), rgba(255, 247, 237, 0.66));
+        }
+        .trade-delete-confirm span,
+        .trade-delete-confirm em {
+            color: #8A4B00;
+            font-size: 0.68rem;
+            font-style: normal;
+        }
+        .trade-delete-confirm strong {
+            display: block;
+            margin-top: 0.1rem;
+            color: #0f172a;
+            font-size: 0.78rem;
+            font-weight: 820;
         }
         .trade-journal-table .empty-row {
             height: 54px;
@@ -1022,18 +1373,19 @@ def _render_styles() -> None:
         }
         .trade-journal-cell {
             display: grid;
-            gap: 0.08rem;
+            gap: 0.04rem;
             min-width: 0;
+            line-height: 1.12;
         }
         .trade-journal-cell b {
             color: #0f172a;
-            font-size: 0.75rem;
+            font-size: 12px;
             line-height: 1.1;
-            font-weight: 820;
+            font-weight: 720;
         }
         .trade-journal-cell span {
-            color: #7b8798;
-            font-size: 0.66rem;
+            color: #64748B;
+            font-size: 11px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -1041,14 +1393,15 @@ def _render_styles() -> None:
         .trade-action-badge {
             display: inline-flex;
             align-items: center;
-            height: 24px;
-            padding: 0 0.55rem;
+            height: 18px;
+            min-height: 18px;
+            padding: 0 0.42rem;
             border-radius: 999px;
             border: 1px solid rgba(15, 23, 42, 0.08);
             background: #F8FAFC;
             color: #52657f;
-            font-size: 0.66rem;
-            font-weight: 800;
+            font-size: 11px;
+            font-weight: 650;
             white-space: nowrap;
         }
         .trade-action-badge.buy {
