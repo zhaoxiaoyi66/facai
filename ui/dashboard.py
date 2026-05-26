@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 
 from buy_zone_engine import generate_buy_zone
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
@@ -108,11 +109,20 @@ BADGE_STYLES = {
 
 DASHBOARD_SCORE_SCHEMA_VERSION = 5
 LANE_FILTER_SESSION_KEY = "dashboard_active_lane_filter"
+RISK_RADAR_FILTER_SESSION_KEY = "dashboard_active_risk_filter"
 LANE_FILTER_LABELS = {
     "actionable": "可行动",
     "nearBuyZone": "接近击球区",
     "waitOrReview": "待确认",
     "noChaseHighRisk": "风险隔离",
+}
+RISK_RADAR_FILTER_LABELS = {
+    "overweight": "超仓位",
+    "noChase": "禁止追高",
+    "review": "需复核",
+    "lowConfidence": "低置信",
+    "noAdd": "不可新增",
+    "concentration": "行业集中",
 }
 DASHBOARD_BUY_ACTIONS = {"可小仓分批", "可正常分批"}
 DASHBOARD_WAIT_ACTIONS = {"等回踩", "只观察", "财报后复核", "可小仓观察，待关键数据复核后再加仓", "待复核，暂不新增"}
@@ -170,10 +180,13 @@ def render() -> None:
         st.warning("还没有加载到仪表盘数据。请检查观察名单或数据连接。")
         return
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+    _handle_risk_radar_filter_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
 
     _render_market_strip(table)
+    portfolio_view = build_portfolio_view_model()
+    _render_dashboard_risk_radar(_build_dashboard_risk_radar(table, portfolio_view))
     _render_summary_sections(table)
     _render_decision_table(table)
     _render_client_stock_detail_drawers(table)
@@ -496,6 +509,104 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
 
 
+def _build_dashboard_risk_radar(table: pd.DataFrame, portfolio_view: dict) -> list[dict[str, object]]:
+    rows = [row for _, row in table.iterrows()]
+    portfolio_rows = list((portfolio_view or {}).get("rows") or [])
+    overweight = [
+        str(row.get("symbol") or "").upper()
+        for row in portfolio_rows
+        if row.get("overweightSystem") or row.get("overweightPersonal")
+    ]
+    no_chase = [
+        str(row.get("symbol") or "").upper()
+        for row in rows
+        if _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS or _row_decision_lane(row) == "blocked"
+    ]
+    review = [
+        str(row.get("symbol") or "").upper()
+        for row in rows
+        if _row_decision_lane(row) == "review" or "复核" in _row_final_action(row)
+    ]
+    low_confidence = [
+        str(row.get("symbol") or "").upper()
+        for row in rows
+        if str(row.get("dataConfidence") or row.get("confidence") or "").lower() == "low"
+    ]
+    no_add = [
+        str(row.get("symbol") or "").upper()
+        for row in rows
+        if _row_current_add_limit_value(row) <= 0
+    ]
+    industry_concentration = _industry_concentration_symbols(rows, portfolio_rows)
+    return [
+        {"key": "overweight", "label": "超仓位", "tone": "red", "symbols": overweight, "reason": "暂无" if not overweight else "持仓高于系统或个人上限"},
+        {"key": "noChase", "label": "禁止追高", "tone": "red", "symbols": no_chase, "reason": "暂无" if not no_chase else "当前价格不适合新增"},
+        {"key": "review", "label": "需复核", "tone": "amber", "symbols": review, "reason": "暂无" if not review else "买区异常或数据置信低"},
+        {"key": "lowConfidence", "label": "低置信", "tone": "amber", "symbols": low_confidence, "reason": "暂无" if not low_confidence else "数据置信度偏低"},
+        {"key": "noAdd", "label": "不可新增", "tone": "slate", "symbols": no_add, "reason": "暂无" if not no_add else "当前可加仓为 0"},
+        {"key": "concentration", "label": "行业集中", "tone": "blue", "symbols": industry_concentration, "reason": "暂无" if not industry_concentration else "持仓行业暴露偏集中"},
+    ]
+
+
+def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
+    cards = "".join(_dashboard_risk_radar_item_html(item) for item in items)
+    st.markdown(
+        (
+            '<section class="dashboard-risk-radar">'
+            '<div class="dashboard-risk-radar-head"><strong>风险雷达</strong><span>当前最容易踩雷的位置</span></div>'
+            f'<div class="dashboard-risk-radar-list">{cards}</div>'
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
+    symbols = [str(symbol) for symbol in item.get("symbols", []) if symbol]
+    key = str(item.get("key") or "")
+    active = " active" if st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY) == key else ""
+    return (
+        f'<a class="dashboard-risk-radar-item {escape(str(item.get("tone") or "slate"))}{active}" '
+        f'href="?page=dashboard&riskFilter={escape(key, quote=True)}#watchlist-table" target="_self">'
+        '<div>'
+        f'<span>{escape(str(item.get("label") or ""))}</span>'
+        f'<strong>{len(symbols)}</strong>'
+        "</div>"
+        f'<em>{escape(str(item.get("reason") or ""))}</em>'
+        "</a>"
+    )
+
+
+def _industry_concentration_symbols(rows: list[pd.Series], portfolio_rows: list[dict]) -> list[str]:
+    held_symbols = {str(row.get("symbol") or "").upper() for row in portfolio_rows}
+    if not held_symbols:
+        return []
+    industry_map = {
+        str(row.get("symbol") or "").upper(): str(row.get("modelType") or row.get("industryModel") or "").strip()
+        for row in rows
+    }
+    grouped: dict[str, list[str]] = {}
+    for symbol in held_symbols:
+        industry = industry_map.get(symbol)
+        if industry:
+            grouped.setdefault(industry, []).append(symbol)
+    concentrated: list[str] = []
+    for symbols in grouped.values():
+        if len(symbols) >= 2:
+            concentrated.extend(sorted(symbols))
+    return concentrated
+
+
+def _row_current_add_limit_value(row: pd.Series) -> float:
+    value = _row_value(row, "currentAddLimitPercent")
+    if value is None:
+        value = _row_value(row, "maxSuggestedPositionPercent")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _render_summary_sections(table: pd.DataFrame) -> None:
     summary_groups = _summary_lane_groups(table)
 
@@ -783,6 +894,9 @@ def _render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
               if (!(target instanceof win.Element)) {{
                 return;
               }}
+              if (target.closest(".dashboard-record-action")) {{
+                return;
+              }}
               const opener = target.closest("[data-dashboard-drawer-open]");
               if (opener) {{
                 event.preventDefault();
@@ -866,6 +980,16 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
     if "recordSignal" in st.query_params:
         st.query_params.pop("recordSignal")
     st.rerun()
+
+
+def _handle_risk_radar_filter_query() -> None:
+    key = str(st.query_params.get("riskFilter", "")).strip()
+    if key in RISK_RADAR_FILTER_LABELS:
+        st.session_state[RISK_RADAR_FILTER_SESSION_KEY] = key
+        st.session_state.pop(LANE_FILTER_SESSION_KEY, None)
+    if "riskFilter" in st.query_params:
+        st.query_params.pop("riskFilter")
+        st.rerun()
 
 
 def _render_record_signal_notice() -> None:
@@ -2329,6 +2453,18 @@ def _lane_filter_rows(table: pd.DataFrame, lane_key: str) -> list[pd.Series]:
 
 
 def _filtered_table_for_active_lane(table: pd.DataFrame) -> pd.DataFrame:
+    risk_key = str(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY) or "")
+    if risk_key in RISK_RADAR_FILTER_LABELS and "symbol" in table.columns:
+        portfolio_view = build_portfolio_view_model()
+        risk_item = next(
+            (item for item in _build_dashboard_risk_radar(table, portfolio_view) if item.get("key") == risk_key),
+            None,
+        )
+        symbols = {str(symbol).upper() for symbol in (risk_item or {}).get("symbols", [])}
+        if not symbols:
+            return table.iloc[0:0].copy()
+        return table[table["symbol"].astype(str).str.upper().isin(symbols)].copy()
+
     lane_key = str(st.session_state.get(LANE_FILTER_SESSION_KEY) or "")
     if lane_key not in LANE_FILTER_LABELS or "symbol" not in table.columns:
         return table
@@ -2339,11 +2475,26 @@ def _filtered_table_for_active_lane(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_active_lane_filter_status(filtered_table: pd.DataFrame) -> None:
+    risk_key = str(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY) or "")
+    risk_label = RISK_RADAR_FILTER_LABELS.get(risk_key)
+    if risk_label:
+        left, _spacer, clear = st.columns([0.18, 0.72, 0.10], gap="small", vertical_alignment="center")
+        with left:
+            st.markdown(
+                f'<div class="table-filter-chip">当前筛选：<strong>{escape(risk_label)}</strong> · {len(filtered_table)}只</div>',
+                unsafe_allow_html=True,
+            )
+        with clear:
+            if st.button("清除", key="dashboard_clear_risk_filter", width="stretch", help="清除当前筛选"):
+                st.session_state.pop(RISK_RADAR_FILTER_SESSION_KEY, None)
+                st.rerun()
+        return
+
     lane_key = str(st.session_state.get(LANE_FILTER_SESSION_KEY) or "")
     label = LANE_FILTER_LABELS.get(lane_key)
     if not label:
         return
-    left, _spacer, clear = st.columns([0.16, 0.78, 0.06], gap="small", vertical_alignment="top")
+    left, _spacer, clear = st.columns([0.18, 0.72, 0.10], gap="small", vertical_alignment="center")
     with left:
         st.markdown(
             f'<div class="table-filter-chip">当前筛选：<strong>{escape(label)}</strong> · {len(filtered_table)}只</div>',
@@ -3277,11 +3428,13 @@ def _render_dashboard_styles() -> None:
             font-weight: 650;
             line-height: 26px;
         }
-        .st-key-dashboard_clear_lane_filter {
+        .st-key-dashboard_clear_lane_filter,
+        .st-key-dashboard_clear_risk_filter {
             margin-top: 0.34rem;
             margin-bottom: 0.34rem;
         }
-        .st-key-dashboard_clear_lane_filter button {
+        .st-key-dashboard_clear_lane_filter button,
+        .st-key-dashboard_clear_risk_filter button {
             min-width: 54px !important;
             min-height: 28px !important;
             height: 28px !important;
@@ -3298,7 +3451,8 @@ def _render_dashboard_styles() -> None:
             color: #A33A3A !important;
             opacity: 0.88;
         }
-        .st-key-dashboard_clear_lane_filter button p {
+        .st-key-dashboard_clear_lane_filter button p,
+        .st-key-dashboard_clear_risk_filter button p {
             font-size: 11px !important;
             font-weight: 620 !important;
             line-height: 26px !important;
@@ -3306,7 +3460,8 @@ def _render_dashboard_styles() -> None:
             white-space: nowrap !important;
             word-break: keep-all !important;
         }
-        .st-key-dashboard_clear_lane_filter button:hover {
+        .st-key-dashboard_clear_lane_filter button:hover,
+        .st-key-dashboard_clear_risk_filter button:hover {
             opacity: 1;
             color: #8A1F1F !important;
             background: rgba(254, 226, 226, 0.78) !important;
@@ -3801,6 +3956,7 @@ def _render_dashboard_styles() -> None:
         .terminal-refresh-card,
         .terminal-loading-shell,
         .market-ribbon,
+        .dashboard-risk-radar,
         .decision-terminal-head,
         .dashboard-priority-strip,
         .watchlist-head,
@@ -3883,6 +4039,120 @@ def _render_dashboard_styles() -> None:
             color:#94A3B8;
             font-size:11px;
             line-height:1.2;
+        }
+        .dashboard-risk-radar {
+            display:grid;
+            grid-template-columns:108px minmax(0, 1fr);
+            align-items:stretch;
+            min-height:52px;
+            margin-top:0;
+            margin-bottom:0.42rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-radius:7px;
+            background:#FFFFFF;
+            overflow:hidden;
+        }
+        .dashboard-risk-radar-head {
+            display:grid;
+            align-content:center;
+            gap:0.12rem;
+            padding:0.42rem 0.58rem;
+            border-right:1px solid rgba(15, 23, 42, 0.045);
+            background:#F8FAFC;
+        }
+        .dashboard-risk-radar-head strong {
+            color:#0F172A;
+            font-size:12.5px;
+            font-weight:760;
+            line-height:1.15;
+        }
+        .dashboard-risk-radar-head span {
+            color:#94A3B8;
+            font-size:10px;
+            font-weight:560;
+            line-height:1.25;
+        }
+        .dashboard-risk-radar-list {
+            display:grid;
+            grid-template-columns:repeat(6, minmax(0, 1fr));
+            gap:0;
+            min-width:0;
+        }
+        .dashboard-risk-radar-item {
+            display:grid;
+            grid-template-columns:minmax(0, 1fr);
+            grid-template-rows:auto auto;
+            align-content:center;
+            gap:0.16rem;
+            min-width:0;
+            max-width:100%;
+            min-height:52px;
+            padding:0.42rem 0.52rem;
+            border-left:2px solid rgba(148, 163, 184, 0.35);
+            border-right:1px solid rgba(15, 23, 42, 0.035);
+            background:#FFFFFF;
+            color:inherit;
+            text-decoration:none !important;
+            overflow:hidden;
+        }
+        .dashboard-risk-radar-item:hover,
+        .dashboard-risk-radar-item:focus,
+        .dashboard-risk-radar-item:visited {
+            color:inherit;
+            text-decoration:none !important;
+        }
+        .dashboard-risk-radar-item:hover {
+            background:#FAFBFD;
+        }
+        .dashboard-risk-radar-item.active {
+            background:#F8FAFC;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+        }
+        .dashboard-risk-radar-item:last-child {
+            border-right:0;
+        }
+        .dashboard-risk-radar-item.red { border-left-color:#EF4444; }
+        .dashboard-risk-radar-item.amber { border-left-color:#D97706; }
+        .dashboard-risk-radar-item.blue { border-left-color:#64748B; }
+        .dashboard-risk-radar-item.slate { border-left-color:#94A3B8; }
+        .dashboard-risk-radar-item div {
+            display:flex;
+            align-items:center;
+            gap:0.26rem;
+            min-height:15px;
+            min-width:0;
+            max-width:100%;
+            overflow:hidden;
+        }
+        .dashboard-risk-radar-item span {
+            color:#64748B;
+            font-size:11px;
+            font-weight:650;
+            line-height:1.15;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .dashboard-risk-radar-item strong {
+            color:#0F172A;
+            font-size:13.5px;
+            line-height:1.1;
+            font-weight:760;
+            font-variant-numeric:tabular-nums;
+            flex:0 0 auto;
+        }
+        .dashboard-risk-radar-item em {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            line-height:1.25;
+        }
+        .dashboard-risk-radar-item em {
+            color:#94A3B8;
+            font-size:10.5px;
+            font-style:normal;
+            font-weight:560;
         }
         .decision-terminal-head,
         .watchlist-head {
@@ -4298,11 +4568,13 @@ def _render_dashboard_styles() -> None:
             font-weight:620;
             line-height:26px;
         }
-        .st-key-dashboard_clear_lane_filter {
+        .st-key-dashboard_clear_lane_filter,
+        .st-key-dashboard_clear_risk_filter {
             margin-top:0.34rem;
             margin-bottom:0.34rem;
         }
-        .st-key-dashboard_clear_lane_filter button {
+        .st-key-dashboard_clear_lane_filter button,
+        .st-key-dashboard_clear_risk_filter button {
             min-width:54px !important;
             min-height:28px !important;
             height:28px !important;
@@ -4319,7 +4591,8 @@ def _render_dashboard_styles() -> None:
             word-break:keep-all !important;
             opacity:0.88;
         }
-        .st-key-dashboard_clear_lane_filter button p {
+        .st-key-dashboard_clear_lane_filter button p,
+        .st-key-dashboard_clear_risk_filter button p {
             margin:0;
             font-size:11px !important;
             font-weight:620 !important;
@@ -4328,7 +4601,8 @@ def _render_dashboard_styles() -> None:
             white-space:nowrap !important;
             word-break:keep-all !important;
         }
-        .st-key-dashboard_clear_lane_filter button:hover {
+        .st-key-dashboard_clear_lane_filter button:hover,
+        .st-key-dashboard_clear_risk_filter button:hover {
             opacity:1;
             color:#8A1F1F !important;
             background:rgba(254, 226, 226, 0.78) !important;
