@@ -6181,6 +6181,22 @@ class MetricVariantFreshnessTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["rpoGrowthReported"].value, 0.265)
         self.assertAlmostEqual(metrics["rpoGrowthConstantCurrency"].value, 0.225)
 
+    def test_crpo_extraction_ignores_unrelated_guidance_growth_before_anchor(self) -> None:
+        text = (
+            "Raises full year FY26 operating cash flow growth guidance to approximately 13% to 14% Y/Y. "
+            "Q3 cRPO was exceptional, up 11% year-over-year at $29.4 billion."
+        )
+        metrics = {metric.metric_key: metric for metric in extract_saas_metric_variants(text)}
+
+        self.assertAlmostEqual(metrics["cRpoGrowthReported"].value, 0.11)
+
+    def test_segment_subscription_revenue_is_not_companywide_growth(self) -> None:
+        text = "Business Professionals and Consumers Group subscription revenue was $1.60 billion, representing 15 percent year-over-year growth."
+
+        metrics = {metric.metric_key for metric in extract_saas_metric_variants(text)}
+
+        self.assertNotIn("subscriptionRevenueGrowthReported", metrics)
+
     def test_latest_metric_variant_is_active_and_old_period_is_historical(self) -> None:
         with TemporaryDirectory() as tmp:
             store = DisclosureStore(Path(tmp) / "cache.db")

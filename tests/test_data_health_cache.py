@@ -15,7 +15,13 @@ from data.portfolio import PortfolioPositionStore
 
 
 class DataHealthCacheTests(unittest.TestCase):
-    def _insert_price_history(self, db_path: Path, symbol: str, closes: list[tuple[str, float]]) -> None:
+    def _insert_price_history(
+        self,
+        db_path: Path,
+        symbol: str,
+        closes: list[tuple[str, float]],
+        fetched_at: str = "2026-05-26T00:00:00+00:00",
+    ) -> None:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 """
@@ -29,7 +35,7 @@ class DataHealthCacheTests(unittest.TestCase):
             )
             conn.executemany(
                 "INSERT INTO price_history VALUES (?, ?, ?, ?)",
-                [(symbol.upper(), day, close, "now") for day, close in closes],
+                [(symbol.upper(), day, close, fetched_at) for day, close in closes],
             )
             conn.commit()
 
@@ -84,13 +90,18 @@ class DataHealthCacheTests(unittest.TestCase):
     def test_cache_read_model_falls_back_to_latest_close_and_missing_statuses(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cache.sqlite"
-            self._insert_price_history(db_path, "CRM", [("2026-05-24", 190), ("2026-05-25", 200)])
+            self._insert_price_history(
+                db_path,
+                "CRM",
+                [("2026-05-24", 190), ("2026-05-25", 200)],
+                "2026-05-22T00:00:00+00:00",
+            )
 
-            cache = CacheReadModel(db_path)
+            cache = CacheReadModel(db_path, now=datetime(2026, 5, 26, tzinfo=timezone.utc), history_max_age_hours=72)
 
             self.assertEqual(cache.get_current_price("crm"), 200)
             self.assertEqual(cache.get_price_status("crm"), "price_history")
-            self.assertEqual(cache.get_history_status("crm"), "available")
+            self.assertEqual(cache.get_history_status("crm"), "stale_history")
             self.assertIsNone(cache.get_current_price("hood"))
             self.assertEqual(cache.get_price_status("hood"), "missing")
             self.assertEqual(cache.get_history_status("hood"), "missing")
@@ -136,6 +147,28 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertIn("missing_price", categories)
             self.assertIn("stale_quote", categories)
             self.assertIn("missing_history", categories)
+
+    def test_data_health_summary_counts_stale_price_history(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+            self._insert_quote_snapshot(db_path, "NOW", {"ticker": "NOW", "current_price": 100}, "2026-05-26T00:00:00+00:00")
+            self._insert_price_history(
+                db_path,
+                "NOW",
+                [("2026-05-20", 90), ("2026-05-21", 91)],
+                "2026-05-21T00:00:00+00:00",
+            )
+
+            summary = build_data_health_summary(
+                db_path,
+                watchlist=["NOW"],
+                now=now,
+                history_max_age_hours=72,
+            )
+
+            self.assertEqual(summary["staleHistoryCount"], 1)
+            self.assertIn("stale_history", {item["category"] for item in summary["topIssues"]})
 
     def test_data_health_summary_counts_portfolio_missing_price_and_outcome_missing(self) -> None:
         with TemporaryDirectory() as tmpdir:

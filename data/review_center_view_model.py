@@ -30,6 +30,18 @@ AUTO_ARCHIVE_ITEM_TYPES = {
     "qualitative_risk",
 }
 CONFIDENCE_SCORES = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
+HISTORICAL_FRESHNESS = "historical_value"
+METRIC_CANONICAL_MAP = {
+    "cRpoGrowth": "cRpoGrowth",
+    "cRpoGrowthReported": "cRpoGrowth",
+    "cRpoGrowthConstantCurrency": "cRpoGrowth",
+    "rpoGrowth": "rpoGrowth",
+    "rpoGrowthReported": "rpoGrowth",
+    "rpoGrowthConstantCurrency": "rpoGrowth",
+    "subscriptionRevenueGrowth": "subscriptionRevenueGrowth",
+    "subscriptionRevenueGrowthReported": "subscriptionRevenueGrowth",
+    "subscriptionRevenueGrowthConstantCurrency": "subscriptionRevenueGrowth",
+}
 
 REVIEW_CENTER_GROUPS = (
     ("highPriorityPending", "\u9ad8\u4f18\u5148\u7ea7\u5f85\u5904\u7406"),
@@ -75,15 +87,18 @@ def build_review_center_view_model(
     queue_rows = list(rows) if rows is not None else (store or ReviewQueueStore()).list_items(symbol=symbol)
     prepared = [_prepare_row(dict(row)) for row in queue_rows]
     active_rows = sorted([row for row in prepared if row.active], key=_active_sort_key)
+    _mark_contextual_archive_candidates(active_rows)
+    exact_rows = _collapse_exact_duplicates(active_rows)
+    main_rows = _collapse_main_queue(exact_rows)
     recent_rows = sorted([row for row in prepared if row.handled], key=_recent_sort_key, reverse=True)[: max(0, int(recent_limit))]
 
     group_rows = {
-        "highPriorityPending": [row for row in active_rows if _is_high_priority_pending(row)],
-        "scoringImpactNeedsHuman": [row for row in active_rows if _needs_human_for_scoring(row)],
-        "autoConfirmCandidates": [row for row in active_rows if row.item["canAutoConfirm"]],
+        "highPriorityPending": [row for row in main_rows if _is_high_priority_pending(row)],
+        "scoringImpactNeedsHuman": [row for row in main_rows if _needs_human_for_scoring(row)],
+        "autoConfirmCandidates": [row for row in main_rows if row.item["canAutoConfirm"]],
         "autoArchiveCandidates": [row for row in active_rows if row.item["canAutoArchive"]],
-        "aiSuggestedCorrections": [row for row in active_rows if row.ai_correction],
-        "insufficientEvidence": [row for row in active_rows if row.missing_evidence],
+        "aiSuggestedCorrections": [row for row in main_rows if row.ai_correction],
+        "insufficientEvidence": [row for row in main_rows if row.missing_evidence],
         "recentlyHandled": recent_rows,
     }
     groups = [
@@ -100,6 +115,8 @@ def build_review_center_view_model(
         "summary": {
             "total": len(prepared),
             "active": len(active_rows),
+            "mainQueueCount": len(main_rows),
+            "suppressedDuplicateCount": max(0, len(active_rows) - len(main_rows)),
             "recentlyHandled": len(recent_rows),
             "groupCounts": group_counts,
         },
@@ -136,6 +153,10 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
         "symbol": str(row.get("symbol") or "").upper(),
         "metric": row.get("displayName") or row.get("metricKey") or "",
         "metricKey": row.get("metricKey"),
+        "canonicalMetric": _canonical_metric(row),
+        "dedupeKey": _dedupe_key(row),
+        "metricVariant": row.get("metricVariant"),
+        "targetBasis": row.get("targetBasis"),
         "itemType": row.get("itemType"),
         "currentValue": _current_value(row),
         "proposedValue": _proposed_value(row, can_auto_confirm),
@@ -158,6 +179,9 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
         "evidenceSummary": _evidence_summary(row),
         "canAutoConfirm": can_auto_confirm,
         "canAutoArchive": can_auto_archive,
+        "duplicateCount": 0,
+        "duplicateSummary": "",
+        "duplicateCandidates": [],
         "reviewedAt": row.get("reviewedAt") or row.get("approvedAt"),
         "updatedAt": row.get("updatedAt"),
     }
@@ -213,11 +237,7 @@ def _has_explicit_evidence(row: dict) -> bool:
     source_type = str(row.get("sourceType") or "").strip().upper()
     if source_type not in EXPLICIT_EVIDENCE_SOURCES:
         return False
-    return bool(
-        str(row.get("evidenceText") or row.get("extractedText") or row.get("evidenceQuote") or "").strip()
-        or str(row.get("sourceUrl") or "").strip()
-        or str(row.get("sourceDocumentTitle") or "").strip()
-    )
+    return bool(str(row.get("evidenceText") or row.get("extractedText") or row.get("evidenceQuote") or "").strip())
 
 
 def _missing_evidence(row: dict) -> bool:
@@ -248,10 +268,12 @@ def _can_auto_confirm(
     has_explicit_evidence: bool,
     missing_evidence: bool,
 ) -> bool:
-    if not active or missing_evidence or not has_explicit_evidence:
+    if not active or str(row.get("reviewStatus") or "").strip() != "pending_review":
+        return False
+    if _is_historical(row) or missing_evidence or not has_explicit_evidence:
         return False
     triage = str(row.get("aiTriageStatus") or "").strip()
-    if triage in AUTO_CONFIRM_TRIAGE_STATUSES:
+    if triage in AUTO_CONFIRM_TRIAGE_STATUSES and confidence_score >= CONFIDENCE_SCORES["medium"]:
         return True
     return confidence_score >= CONFIDENCE_SCORES["high"]
 
@@ -391,9 +413,146 @@ def _truncate(value: str, limit: int) -> str:
     return f"{text[: max(0, limit - 1)]}\u2026"
 
 
+def _collapse_exact_duplicates(rows: list[_ReviewCenterRow]) -> list[_ReviewCenterRow]:
+    grouped: dict[str, list[_ReviewCenterRow]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.item.get("dedupeKey") or ""), []).append(row)
+    representatives: list[_ReviewCenterRow] = []
+    for candidates in grouped.values():
+        ranked = sorted(candidates, key=_candidate_quality_key, reverse=True)
+        representative = ranked[0]
+        _attach_duplicate_candidates(representative, ranked[1:])
+        representatives.append(representative)
+    return sorted(representatives, key=_active_sort_key)
+
+
+def _mark_contextual_archive_candidates(rows: list[_ReviewCenterRow]) -> None:
+    grouped: dict[tuple[str, str], list[_ReviewCenterRow]] = {}
+    for row in rows:
+        grouped.setdefault((str(row.item.get("symbol") or ""), str(row.item.get("canonicalMetric") or "")), []).append(row)
+    for candidates in grouped.values():
+        if not any(_is_current_period(row) for row in candidates):
+            continue
+        for candidate in candidates:
+            if _is_historical(candidate.row):
+                _mark_auto_archive_candidate(candidate, "Historical duplicate has a current-period candidate.")
+
+
+def _collapse_main_queue(rows: list[_ReviewCenterRow]) -> list[_ReviewCenterRow]:
+    grouped: dict[tuple[str, str], list[_ReviewCenterRow]] = {}
+    for row in rows:
+        grouped.setdefault((str(row.item.get("symbol") or ""), str(row.item.get("canonicalMetric") or "")), []).append(row)
+    representatives: list[_ReviewCenterRow] = []
+    for candidates in grouped.values():
+        ranked = sorted(candidates, key=_candidate_quality_key, reverse=True)
+        representative = ranked[0]
+        duplicates = ranked[1:]
+        if any(_is_current_period(row) for row in ranked):
+            for duplicate in duplicates:
+                if _is_historical(duplicate.row):
+                    _mark_auto_archive_candidate(duplicate, "Historical duplicate has a current-period candidate.")
+        _attach_duplicate_candidates(representative, duplicates)
+        representatives.append(representative)
+    return sorted(representatives, key=_active_sort_key)
+
+
+def _attach_duplicate_candidates(representative: _ReviewCenterRow, duplicates: list[_ReviewCenterRow]) -> None:
+    if not duplicates:
+        return
+    existing = list(representative.item.get("duplicateCandidates") or [])
+    for row in duplicates:
+        existing.append(_duplicate_candidate_payload(row))
+        existing.extend(list(row.item.get("duplicateCandidates") or []))
+    representative.item["duplicateCandidates"] = existing
+    representative.item["duplicateCount"] = len(existing)
+    historical = sum(1 for item in existing if item.get("freshnessStatus") == HISTORICAL_FRESHNESS)
+    weak = sum(1 for item in existing if item.get("missingEvidence"))
+    parts = [f"{len(existing)} duplicate/historical candidates"]
+    if historical:
+        parts.append(f"{historical} historical")
+    if weak:
+        parts.append(f"{weak} weak-evidence")
+    representative.item["duplicateSummary"] = ", ".join(parts)
+
+
+def _duplicate_candidate_payload(row: _ReviewCenterRow) -> dict:
+    return {
+        "id": row.item.get("id"),
+        "metricKey": row.item.get("metricKey"),
+        "metricVariant": row.item.get("metricVariant"),
+        "targetBasis": row.item.get("targetBasis"),
+        "currentValue": row.item.get("currentValue"),
+        "source": row.item.get("source"),
+        "confidence": row.item.get("confidence"),
+        "reviewStatus": row.item.get("reviewStatus"),
+        "aiTriageStatus": row.item.get("aiTriageStatus"),
+        "freshnessStatus": row.row.get("freshnessStatus"),
+        "period": _period_key(row.row),
+        "missingEvidence": row.missing_evidence,
+        "suggestedAction": row.item.get("suggestedAction"),
+    }
+
+
+def _candidate_quality_key(row: _ReviewCenterRow) -> tuple:
+    return (
+        0 if row.item.get("canAutoArchive") else 1,
+        1 if row.has_explicit_evidence else 0,
+        1 if row.item.get("aiTriageStatus") in AUTO_CONFIRM_TRIAGE_STATUSES else 0,
+        1 if _is_current_candidate(row) else 0,
+        0 if row.missing_evidence else 1,
+        row.confidence_score,
+        row.source_score,
+        row.priority_score,
+        str(row.item.get("updatedAt") or ""),
+    )
+
+
+def _mark_auto_archive_candidate(row: _ReviewCenterRow, reason: str) -> None:
+    row.item["canAutoArchive"] = True
+    row.item["suggestedAction"] = "auto_archive_candidate"
+    row.item["reasonSummary"] = reason
+
+
+def _canonical_metric(row: dict) -> str:
+    metric_key = str(row.get("metricKey") or "")
+    metric_variant = str(row.get("metricVariant") or "")
+    return METRIC_CANONICAL_MAP.get(metric_variant) or METRIC_CANONICAL_MAP.get(metric_key) or metric_key
+
+
+def _dedupe_key(row: dict) -> str:
+    return "|".join(
+        [
+            str(row.get("symbol") or "").upper(),
+            _canonical_metric(row),
+            _period_key(row),
+            str(row.get("unit") or "").strip().lower(),
+            str(row.get("sourceType") or "").strip().upper(),
+        ]
+    )
+
+
+def _period_key(row: dict) -> str:
+    return str(row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or "unknown_period")
+
+
+def _is_historical(row: dict) -> bool:
+    return str(row.get("freshnessStatus") or "").strip() == HISTORICAL_FRESHNESS
+
+
+def _is_current_candidate(row: _ReviewCenterRow) -> bool:
+    return _is_current_period(row) and not row.missing_evidence
+
+
+def _is_current_period(row: _ReviewCenterRow) -> bool:
+    freshness = str(row.row.get("freshnessStatus") or "").strip()
+    return freshness in {"", "active_current"}
+
+
 def _is_high_priority_pending(row: _ReviewCenterRow) -> bool:
-    return row.active and not row.item["canAutoArchive"] and (
-        row.affects_scoring or row.ai_correction or row.missing_evidence or row.priority_score >= 80
+    if not row.active or row.item["canAutoArchive"] or row.missing_evidence or _is_historical(row.row):
+        return False
+    return row.item["canAutoConfirm"] or row.ai_correction or (
+        row.affects_scoring and row.has_explicit_evidence and row.confidence_score >= CONFIDENCE_SCORES["high"]
     )
 
 

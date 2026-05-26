@@ -75,35 +75,96 @@ def extract_saas_metric_variants(text: str, confidence: str = "medium") -> list[
     seen: set[tuple[str, float, str]] = set()
 
     for sentence in _sentences(source):
-        lower = sentence.lower()
-        family = _rpo_family(lower)
-        if family:
-            reported = _reported_yoy_value(sentence)
-            constant_currency = _constant_currency_value(sentence)
-            if reported is not None:
-                metric_key = "cRpoGrowthReported" if family == "crpo" else "rpoGrowthReported"
-                _append_unique(extracted, seen, metric_key, reported / 100, sentence, confidence)
-            if constant_currency is not None:
-                metric_key = "cRpoGrowthConstantCurrency" if family == "crpo" else "rpoGrowthConstantCurrency"
-                _append_unique(extracted, seen, metric_key, constant_currency / 100, sentence, confidence)
+        for clause in _metric_clauses(sentence):
+            lower = clause.lower()
+            for family in _rpo_families(clause):
+                family_window = _family_window(clause, family)
+                reported = _reported_yoy_value(family_window)
+                constant_currency = _constant_currency_value(family_window)
+                if reported is not None:
+                    metric_key = "cRpoGrowthReported" if family == "crpo" else "rpoGrowthReported"
+                    _append_unique(extracted, seen, metric_key, reported / 100, family_window, confidence)
+                if constant_currency is not None:
+                    metric_key = "cRpoGrowthConstantCurrency" if family == "crpo" else "rpoGrowthConstantCurrency"
+                    _append_unique(extracted, seen, metric_key, constant_currency / 100, family_window, confidence)
 
-        if "subscription revenue" in lower or "subscription revenues" in lower:
-            reported = _reported_yoy_value(sentence)
-            constant_currency = _constant_currency_value(sentence)
-            if reported is not None:
-                _append_unique(extracted, seen, "subscriptionRevenueGrowthReported", reported / 100, sentence, confidence)
-            if constant_currency is not None:
-                _append_unique(extracted, seen, "subscriptionRevenueGrowthConstantCurrency", constant_currency / 100, sentence, confidence)
+            if ("subscription revenue" in lower or "subscription revenues" in lower) and not _segment_subscription_clause(lower):
+                reported = _reported_yoy_value(clause)
+                constant_currency = _constant_currency_value(clause)
+                if reported is not None:
+                    _append_unique(extracted, seen, "subscriptionRevenueGrowthReported", reported / 100, clause, confidence)
+                if constant_currency is not None:
+                    _append_unique(extracted, seen, "subscriptionRevenueGrowthConstantCurrency", constant_currency / 100, clause, confidence)
 
-        non_gaap_fcf = _non_gaap_fcf_margin(sentence)
-        if non_gaap_fcf is not None:
-            _append_unique(extracted, seen, "nonGaapFcfMargin", non_gaap_fcf / 100, sentence, confidence)
+            non_gaap_fcf = _non_gaap_fcf_margin(clause)
+            if non_gaap_fcf is not None:
+                _append_unique(extracted, seen, "nonGaapFcfMargin", non_gaap_fcf / 100, clause, confidence)
 
-        operating_cash_flow_margin = _operating_cash_flow_margin(sentence)
-        if operating_cash_flow_margin is not None:
-            _append_unique(extracted, seen, "operatingCashFlowMargin", operating_cash_flow_margin / 100, sentence, confidence)
+            operating_cash_flow_margin = _operating_cash_flow_margin(clause)
+            if operating_cash_flow_margin is not None:
+                _append_unique(extracted, seen, "operatingCashFlowMargin", operating_cash_flow_margin / 100, clause, confidence)
 
     return extracted
+
+
+def _metric_clauses(sentence: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\s*(?:\u2022|;)\s*", sentence) if part.strip()]
+
+
+def _rpo_families(sentence: str) -> list[str]:
+    lower = sentence.lower()
+    families: list[str] = []
+    if "crpo" in lower or "current remaining performance obligations" in lower or "current rpo" in lower:
+        families.append("crpo")
+    rpo_matches = list(re.finditer(r"\brpo\b|remaining performance obligations", lower))
+    for match in rpo_matches:
+        prefix = lower[max(0, match.start() - 16) : match.start()]
+        if "current" in prefix or "crpo" in prefix:
+            continue
+        families.append("rpo")
+        break
+    return families
+
+
+def _family_window(sentence: str, family: str) -> str:
+    patterns = (
+        (r"crpo|current remaining performance obligations|current rpo",)
+        if family == "crpo"
+        else (r"\brpo\b|remaining performance obligations",)
+    )
+    lower = sentence.lower()
+    indexes: list[int] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, lower, flags=re.IGNORECASE):
+            if family == "rpo":
+                prefix = lower[max(0, match.start() - 16) : match.start()]
+                if "current" in prefix or "crpo" in prefix:
+                    continue
+            indexes.append(match.start())
+    if not indexes:
+        return sentence
+    start = max(0, min(indexes) - 24)
+    return sentence[start : min(len(sentence), start + 260)]
+
+
+def _segment_subscription_clause(lower: str) -> bool:
+    if "total subscription revenue" in lower or "total subscription revenues" in lower:
+        return False
+    segment_markers = (
+        "business professionals",
+        "consumers group",
+        "consumer group",
+        "creative professionals",
+        "digital media",
+        "digital experience",
+        "customer group",
+    )
+    return any(marker in lower for marker in segment_markers)
+
+
+def _rpo_family(sentence_lower: str) -> str | None:
+    families = _rpo_families(sentence_lower)
+    return families[0] if families else None
 
 
 def _append_unique(
@@ -130,14 +191,6 @@ def _append_unique(
             target_basis=definition.targetBasis if definition else target_basis_for_metric(metric_key),
         )
     )
-
-
-def _rpo_family(sentence_lower: str) -> str | None:
-    if "crpo" in sentence_lower or "current remaining performance obligations" in sentence_lower or "current rpo" in sentence_lower:
-        return "crpo"
-    if re.search(r"\brpo\b|remaining performance obligations", sentence_lower):
-        return "rpo"
-    return None
 
 
 def _reported_yoy_value(sentence: str) -> float | None:

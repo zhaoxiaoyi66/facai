@@ -20,6 +20,7 @@ def build_data_health_summary(
     watchlist: list[str] | None = None,
     now: datetime | None = None,
     quote_max_age_hours: float = 24,
+    history_max_age_hours: float = 72,
 ) -> dict[str, Any]:
     symbols = _normalize_symbols(watchlist if watchlist is not None else load_watchlist())
     summary = _empty_summary()
@@ -29,7 +30,12 @@ def build_data_health_summary(
         return summary
 
     current_time = now or datetime.now(timezone.utc)
-    cache = CacheReadModel(path, now=current_time, quote_max_age_hours=quote_max_age_hours)
+    cache = CacheReadModel(
+        path,
+        now=current_time,
+        quote_max_age_hours=quote_max_age_hours,
+        history_max_age_hours=history_max_age_hours,
+    )
     healthy_symbols = 0
 
     for symbol in symbols:
@@ -44,10 +50,15 @@ def build_data_health_summary(
             summary["stalePriceCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期")
-        if cache.get_history_status(symbol) == "missing":
+        history_status = cache.get_history_status(symbol)
+        if history_status == "missing":
             summary["missingHistoryCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "missing_history", symbol, "price_history 缺失")
+        elif history_status == "stale_history":
+            summary["staleHistoryCount"] += 1
+            symbol_issues += 1
+            _add_issue(summary, "stale_history", symbol, "price_history 已过期")
         if not _can_generate_final_decision(cache, symbol, payload):
             summary["finalDecisionErrorCount"] += 1
             symbol_issues += 1
@@ -71,6 +82,7 @@ def _empty_summary() -> dict[str, Any]:
         "cacheExists": False,
         "healthyCount": 0,
         "stalePriceCount": 0,
+        "staleHistoryCount": 0,
         "missingPriceCount": 0,
         "missingHistoryCount": 0,
         "finalDecisionErrorCount": 0,

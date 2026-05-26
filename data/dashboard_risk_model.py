@@ -108,6 +108,7 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
     issue_count = (
         int(summary.get("missingPriceCount") or 0)
         + int(summary.get("missingHistoryCount") or 0)
+        + int(summary.get("staleHistoryCount") or 0)
         + int(summary.get("finalDecisionErrorCount") or 0)
         + int(summary.get("portfolioMissingPriceCount") or 0)
         + int(summary.get("outcomeMissingCount") or 0)
@@ -133,6 +134,7 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
             ("健康项", summary.get("healthyCount", 0)),
             ("价格缺失", summary.get("missingPriceCount", 0)),
             ("历史缺失", summary.get("missingHistoryCount", 0)),
+            ("历史过期", summary.get("staleHistoryCount", 0)),
             ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
             ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
             ("复盘缺失", summary.get("outcomeMissingCount", 0)),
@@ -156,6 +158,7 @@ def data_health_issue_text(issue: object) -> str:
         "missing_price": "价格缺失",
         "stale_quote": "价格过期",
         "missing_history": "历史缺失",
+        "stale_history": "历史过期",
         "final_decision_error": "finalDecision 异常",
         "portfolio_missing_price": "持仓缺价",
         "outcome_missing": "复盘结果缺失",

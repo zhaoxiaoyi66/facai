@@ -19,10 +19,12 @@ class CacheReadModel:
         *,
         now: datetime | None = None,
         quote_max_age_hours: float | None = None,
+        history_max_age_hours: float | None = None,
     ) -> None:
         self.path = path
         self.now = now
         self.quote_max_age_hours = quote_max_age_hours
+        self.history_max_age_hours = history_max_age_hours
 
     def cache_exists(self) -> bool:
         return self.path.exists()
@@ -63,7 +65,12 @@ class CacheReadModel:
         return "missing"
 
     def get_history_status(self, symbol: str) -> str:
-        return "available" if self.get_latest_close(symbol) is not None else "missing"
+        latest = self._latest_history_snapshot(symbol)
+        if latest is None or _number(latest.get("close")) is None:
+            return "missing"
+        if self.history_max_age_hours is not None and self._is_stale(latest.get("fetched_at"), self.history_max_age_hours):
+            return "stale_history"
+        return "available"
 
     def get_quote_payload(self, symbol: str) -> dict[str, Any] | None:
         snapshot = self.get_quote_snapshot(symbol)
@@ -120,8 +127,28 @@ class CacheReadModel:
         payload = self.get_quote_payload(symbol)
         return _current_price(payload or {})
 
-    def _is_stale(self, fetched_at: object) -> bool:
-        if self.quote_max_age_hours is None:
+    def _latest_history_snapshot(self, symbol: str) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return None
+        with closing(sqlite3.connect(self.path)) as conn:
+            if not _table_exists(conn, "price_history"):
+                return None
+            row = conn.execute(
+                """
+                SELECT close, fetched_at
+                FROM price_history
+                WHERE ticker = ?
+                  AND close IS NOT NULL
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (_normalize_symbol(symbol),),
+            ).fetchone()
+        return {"close": row[0], "fetched_at": row[1]} if row else None
+
+    def _is_stale(self, fetched_at: object, max_age_hours: float | None = None) -> bool:
+        ttl_hours = self.quote_max_age_hours if max_age_hours is None else max_age_hours
+        if ttl_hours is None:
             return False
         if not fetched_at:
             return True
@@ -134,7 +161,7 @@ class CacheReadModel:
         current_time = self.now or datetime.now(timezone.utc)
         return (
             current_time.astimezone(timezone.utc) - fetched.astimezone(timezone.utc)
-        ).total_seconds() > self.quote_max_age_hours * 3600
+        ).total_seconds() > ttl_hours * 3600
 
 
 def _current_price(payload: dict[str, Any]) -> float | None:
