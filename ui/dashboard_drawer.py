@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from html import escape
 import json
 
@@ -14,10 +16,37 @@ DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
 DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
 
 
-def _dashboard_helpers():
-    from ui import dashboard as dashboard_helpers
+@dataclass(frozen=True)
+class DashboardDrawerDeps:
+    badge_span_html: Callable[[object, str, str], str]
+    badge_color_for_cell: Callable[[str, object, pd.Series | None], str]
+    translated_join: Callable[..., str]
+    quality_negative_items: Callable[[pd.Series], list[str]]
+    risk_items: Callable[[pd.Series], list[str]]
+    resolution_value_text: Callable[[dict[str, object]], str]
+    clean_resolution_explanation: Callable[[str], str]
+    dedupe_text: Callable[[list[str]], list[str]]
+    metric_resolution_groups: Callable[[object], dict[str, list[dict[str, object]]]]
+    drawer_actionable_resolution_row: Callable[[dict[str, object]], str]
+    drawer_calculated_resolution_row: Callable[[dict[str, object]], str]
+    drawer_low_priority_resolution_row: Callable[[dict[str, object]], str]
+    detail_groups: Sequence[tuple[str, Sequence[tuple[str, str]]]]
 
-    return dashboard_helpers
+
+_DRAWER_DEPS: DashboardDrawerDeps | None = None
+
+
+def configure_dashboard_drawer(deps: DashboardDrawerDeps) -> None:
+    global _DRAWER_DEPS
+    _DRAWER_DEPS = deps
+
+
+def _drawer_deps(deps: DashboardDrawerDeps | None = None) -> DashboardDrawerDeps:
+    if deps is not None:
+        return deps
+    if _DRAWER_DEPS is None:
+        raise RuntimeError("Dashboard drawer dependencies are not configured.")
+    return _DRAWER_DEPS
 
 
 def queue_stock_detail_drawer(symbol: str, focus: str | None = None) -> None:
@@ -44,12 +73,13 @@ def drawer_open_menu_html(symbol: str, label: str, focus: str | None = None) -> 
     )
 
 
-def render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
+def render_client_stock_detail_drawers(table: pd.DataFrame, deps: DashboardDrawerDeps | None = None) -> None:
+    drawer_deps = _drawer_deps(deps)
     drawer_payload: dict[str, str] = {}
     for _, row in table.iterrows():
         symbol = str(row.get("symbol") or "").upper()
         if symbol:
-            drawer_payload[symbol] = drawer_html(row)
+            drawer_payload[symbol] = drawer_html(row, drawer_deps)
     if not drawer_payload:
         return
     auto_open_symbol = str(st.session_state.pop(DRAWER_SYMBOL_SESSION_KEY, "") or "").upper()
@@ -198,7 +228,8 @@ def render_client_stock_detail_drawers(table: pd.DataFrame) -> None:
     )
 
 
-def render_stock_detail_drawer(table: pd.DataFrame) -> None:
+def render_stock_detail_drawer(table: pd.DataFrame, deps: DashboardDrawerDeps | None = None) -> None:
+    drawer_deps = _drawer_deps(deps)
     selected = st.session_state.get(DRAWER_SYMBOL_SESSION_KEY)
     if not selected:
         return
@@ -207,27 +238,27 @@ def render_stock_detail_drawer(table: pd.DataFrame) -> None:
         st.session_state.pop(DRAWER_SYMBOL_SESSION_KEY, None)
         return
     row = matches.iloc[0]
-    st.markdown(drawer_html(row), unsafe_allow_html=True)
+    st.markdown(drawer_html(row, drawer_deps), unsafe_allow_html=True)
     st.caption("右侧详情面板只做快速查看；数据补全和复核操作请进入专门页面执行，避免刷新总览。")
 
 
-def drawer_html(row: pd.Series) -> str:
-    helpers = _dashboard_helpers()
+def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
     summary = row.get("humanReadableSummary")
     if not isinstance(summary, dict):
         summary = {}
     symbol = str(row.get("symbol") or "").upper()
     safe_symbol = escape(symbol)
     badges = [
-        helpers._badge_span_html(row.get("qualityRating"), helpers._badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
-        helpers._badge_span_html(row.get("entryRating"), helpers._badge_color_for_cell("entryRating", row.get("entryRating"), row)),
-        helpers._badge_span_html(row.get("riskRating"), helpers._badge_color_for_cell("riskRating", row.get("riskRating"), row)),
-        helpers._badge_span_html(row.get("action"), helpers._badge_color_for_cell("action", row.get("action"), row)),
+        drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
+        drawer_deps.badge_span_html(row.get("entryRating"), drawer_deps.badge_color_for_cell("entryRating", row.get("entryRating"), row)),
+        drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
+        drawer_deps.badge_span_html(row.get("action"), drawer_deps.badge_color_for_cell("action", row.get("action"), row)),
     ]
     explanation_cards = [
         _drawer_card_html("公司质量解释", str(row.get("qualityRating") or "N/A"), [
-            "主要加分：" + helpers._translated_join(row.get("keyPositiveDrivers"), limit=4),
-            "主要扣分：" + helpers._translated_join(helpers._quality_negative_items(row), limit=4),
+            "主要加分：" + drawer_deps.translated_join(row.get("keyPositiveDrivers"), limit=4),
+            "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
             str(summary.get("quality") or ""),
         ]),
         _drawer_card_html("买点解释", str(row.get("entryRating") or "N/A"), [
@@ -237,7 +268,7 @@ def drawer_html(row: pd.Series) -> str:
             _entry_context_note(row),
         ]),
         _drawer_card_html("风险解释", str(row.get("riskRating") or "N/A"), [
-            "风险来源：" + helpers._translated_join(helpers._risk_items(row), limit=4),
+            "风险来源：" + drawer_deps.translated_join(drawer_deps.risk_items(row), limit=4),
             str(summary.get("risk") or ""),
             _risk_context_note(row),
         ]),
@@ -262,24 +293,25 @@ def drawer_html(row: pd.Series) -> str:
         '</div>'
         f'<div class="drawer-badges">{"".join(badges)}</div>'
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
-        f'{_drawer_decision_summary_html(row)}'
+        f'{_drawer_decision_summary_html(row, drawer_deps)}'
         f'{_drawer_position_guidance_html(row)}'
         f'<div class="drawer-section">{"".join(explanation_cards)}</div>'
-        f'{_drawer_industry_metrics_html(row)}'
+        f'{_drawer_industry_metrics_html(row, drawer_deps)}'
         '<div class="drawer-section-title">数据复核状态</div>'
         f'{drawer_review_summary_html(row)}'
         '<div data-drawer-section="resolution">'
         '<div class="drawer-section-title">数据补全状态</div>'
-        f'{_drawer_resolution_html(row)}'
+        f'{_drawer_resolution_html(row, drawer_deps)}'
         '</div>'
         '<details class="drawer-raw"><summary>原始指标</summary>'
-        f'{_drawer_raw_metrics_html(row)}'
+        f'{_drawer_raw_metrics_html(row, drawer_deps)}'
         '</details>'
         '</aside>'
     )
 
 
-def _drawer_decision_summary_html(row: pd.Series) -> str:
+def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
     symbol = str(row.get("symbol") or "该股票")
     model = model_type_label(row.get("modelType"))
     action = str(row.get("action") or "只观察")
@@ -291,7 +323,7 @@ def _drawer_decision_summary_html(row: pd.Series) -> str:
         summary = {}
     conclusion = _decision_conclusion_text(row, symbol, model, action)
     why = _decision_why_text(row, quality, entry, risk, summary)
-    wait_items = "".join(f"<li>{escape(item)}</li>" for item in _waiting_conditions(row))
+    wait_items = "".join(f"<li>{escape(item)}</li>" for item in _waiting_conditions(row, drawer_deps))
     return (
         '<div class="drawer-decision-card">'
         '<div class="drawer-card-title">当前结论</div>'
@@ -325,8 +357,8 @@ def _drawer_position_guidance_html(row: pd.Series) -> str:
     )
 
 
-def _drawer_industry_metrics_html(row: pd.Series) -> str:
-    helpers = _dashboard_helpers()
+def _drawer_industry_metrics_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
     model_type = str(row.get("modelType") or "")
     if model_type != "MEGA_CAP_PLATFORM":
         return ""
@@ -346,8 +378,8 @@ def _drawer_industry_metrics_html(row: pd.Series) -> str:
         item = _find_metric_resolution(rows, key)
         if item:
             status = resolution_status_label(item.get("resolutionStatus"))
-            value = helpers._resolution_value_text(item).split("｜", 1)[0]
-            explanation = helpers._clean_resolution_explanation(str(item.get("explanation") or fallback_explanation))
+            value = drawer_deps.resolution_value_text(item).split("｜", 1)[0]
+            explanation = drawer_deps.clean_resolution_explanation(str(item.get("explanation") or fallback_explanation))
         else:
             status = fallback_status
             value = "待补齐" if "抓取" in fallback_status else "规则推导"
@@ -401,8 +433,8 @@ def _decision_why_text(row: pd.Series, quality: str, entry: str, risk: str, summ
     return text or "当前建议由质量、买点、风险、估值和数据置信度综合得出。"
 
 
-def _waiting_conditions(row: pd.Series) -> list[str]:
-    helpers = _dashboard_helpers()
+def _waiting_conditions(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> list[str]:
+    drawer_deps = _drawer_deps(deps)
     model_type = str(row.get("modelType") or "")
     action = str(row.get("action") or "")
     items: list[str] = []
@@ -413,7 +445,7 @@ def _waiting_conditions(row: pd.Series) -> list[str]:
         items.append("Azure / Cloud / AI 收入继续兑现")
     if row.get("dataConfidence") in {"low", "medium"}:
         items.append("关键经营指标和复核队列完成确认")
-    return helpers._dedupe_text(items)[:4]
+    return drawer_deps.dedupe_text(items)[:4]
 
 
 def _entry_context_note(row: pd.Series) -> str:
@@ -462,34 +494,34 @@ def _drawer_card_html(title: str, headline: str, lines: list[str]) -> str:
     )
 
 
-def _drawer_resolution_html(row: pd.Series) -> str:
-    helpers = _dashboard_helpers()
-    groups = helpers._metric_resolution_groups(row.get("metricResolutionStatus"))
+def _drawer_resolution_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
+    groups = drawer_deps.metric_resolution_groups(row.get("metricResolutionStatus"))
     if not groups:
         return '<div class="drawer-muted">暂无补全状态</div>'
     blocks: list[str] = []
     key_items = groups.get("关键待补齐", [])
     if key_items:
-        rows = "".join(helpers._drawer_actionable_resolution_row(item) for item in key_items[:6])
+        rows = "".join(drawer_deps.drawer_actionable_resolution_row(item) for item in key_items[:6])
         blocks.append(f'<div class="drawer-resolution priority-high"><b>关键待补齐</b><ul>{rows}</ul></div>')
 
     auto_items = groups.get("可自动补齐", [])
     if auto_items:
-        rows = "".join(helpers._drawer_actionable_resolution_row(item) for item in auto_items[:6])
+        rows = "".join(drawer_deps.drawer_actionable_resolution_row(item) for item in auto_items[:6])
         blocks.append(f'<div class="drawer-resolution"><b>可自动补齐</b><ul>{rows}</ul></div>')
 
     calculated_items = groups.get("已计算摘要", [])
     if calculated_items:
-        rows = "".join(helpers._drawer_calculated_resolution_row(item) for item in calculated_items[:5])
+        rows = "".join(drawer_deps.drawer_calculated_resolution_row(item) for item in calculated_items[:5])
         extra = ""
         if len(calculated_items) > 5:
-            extra_rows = "".join(helpers._drawer_calculated_resolution_row(item) for item in calculated_items[5:])
+            extra_rows = "".join(drawer_deps.drawer_calculated_resolution_row(item) for item in calculated_items[5:])
             extra = f'<details class="drawer-low-priority"><summary>展开全部已计算指标</summary><ul>{extra_rows}</ul></details>'
         blocks.append(f'<div class="drawer-resolution"><b>已计算摘要</b><ul>{rows}</ul>{extra}</div>')
 
     low_items = groups.get("低优先级 / 仅解释项", [])
     if low_items:
-        rows = "".join(helpers._drawer_low_priority_resolution_row(item) for item in low_items[:12])
+        rows = "".join(drawer_deps.drawer_low_priority_resolution_row(item) for item in low_items[:12])
         blocks.append(
             '<details class="drawer-resolution drawer-low-priority">'
             '<summary>低优先级 / 仅解释项</summary>'
@@ -562,10 +594,10 @@ def drawer_review_action_bar_html(symbol: str) -> str:
     )
 
 
-def _drawer_raw_metrics_html(row: pd.Series) -> str:
-    helpers = _dashboard_helpers()
+def _drawer_raw_metrics_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
     blocks = []
-    for group_name, metrics in helpers.DETAIL_GROUPS:
+    for group_name, metrics in drawer_deps.detail_groups:
         items = "".join(
             f'<li><span>{escape(label)}</span><strong>{escape(str(row.get(key, "N/A")))}</strong></li>'
             for key, label in metrics

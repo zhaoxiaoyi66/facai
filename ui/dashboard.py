@@ -42,6 +42,8 @@ from settings import load_watchlist
 from ui.dashboard_drawer import (
     DRAWER_FOCUS_SESSION_KEY,
     DRAWER_SYMBOL_SESSION_KEY,
+    DashboardDrawerDeps,
+    configure_dashboard_drawer,
     drawer_html as _drawer_html,
     drawer_open_menu_html,
     drawer_open_menu_html as _drawer_open_menu_html,
@@ -4375,3 +4377,22 @@ def _is_missing(value: object) -> bool:
         return bool(pd.isna(value))
     except Exception:
         return False
+
+
+configure_dashboard_drawer(
+    DashboardDrawerDeps(
+        badge_span_html=_badge_span_html,
+        badge_color_for_cell=_badge_color_for_cell,
+        translated_join=_translated_join,
+        quality_negative_items=_quality_negative_items,
+        risk_items=_risk_items,
+        resolution_value_text=_resolution_value_text,
+        clean_resolution_explanation=_clean_resolution_explanation,
+        dedupe_text=_dedupe_text,
+        metric_resolution_groups=_metric_resolution_groups,
+        drawer_actionable_resolution_row=_drawer_actionable_resolution_row,
+        drawer_calculated_resolution_row=_drawer_calculated_resolution_row,
+        drawer_low_priority_resolution_row=_drawer_low_priority_resolution_row,
+        detail_groups=DETAIL_GROUPS,
+    )
+)
