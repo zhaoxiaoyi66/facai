@@ -66,6 +66,7 @@ from data.ai_review_assistant import (
 )
 from data.calculated_metrics import calculate_metrics
 from data.cache_read_model import CacheReadModel
+from data.dashboard_row_builder import build_dashboard_row
 from data.data_confidence import enrich_data_confidence
 from data.data_health import build_data_health_summary
 from data.disclosure_pipeline import DisclosurePipeline
@@ -1040,6 +1041,39 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertFalse(row["isActionable"])
         self.assertEqual(row["currentAddLimitPercent"], 0)
         self.assertEqual(row["currentAddLimit"], "不建议新增")
+
+    def test_dashboard_row_builder_outputs_dashboard_contract_fields(self) -> None:
+        row = build_dashboard_row(
+            "NOW",
+            {
+                "ticker": "NOW",
+                "current_price": 100,
+                "market_cap": 1_000_000_000,
+                "price_to_fcf": 25,
+                "free_cash_flow_yield": 0.04,
+            },
+            {"price": 100, "drawdown_from_high_pct": -10, "rsi14": 55},
+            self._dashboard_score(
+                action=sorted(BUY_ACTIONS)[0],
+                valuation_status="fair",
+                entry_rating="A",
+                risk_rating="low",
+                current_add_limit_percent=5,
+                max_portfolio_weight_percent=15,
+            ),
+            {"pct": 100, "missing": []},
+        )
+
+        self.assertEqual(row["symbol"], "NOW")
+        self.assertEqual(row["finalAction"], sorted(BUY_ACTIONS)[0])
+        self.assertEqual(row["decisionLane"], "actionable")
+        self.assertGreater(row["currentAddLimitPercent"], 0)
+        self.assertEqual(row["currentAddLimit"], f"≤{row['currentAddLimitPercent']:g}%")
+        self.assertGreater(row["maxPortfolioWeightPercent"], row["currentAddLimitPercent"])
+        self.assertIn("reviewQueueSummary", row)
+        self.assertIn("metricResolutionStatus", row)
+        self.assertIn("rawSnapshot", row)
+        self.assertIn("rawTechnicals", row)
 
     def test_dashboard_actionable_rows_prefer_final_decision(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

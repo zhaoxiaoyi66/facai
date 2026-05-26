@@ -1,0 +1,336 @@
+from __future__ import annotations
+
+from typing import Any
+
+from buy_zone_engine import generate_buy_zone
+from data.review_queue_builder import ReviewQueueStore
+from data.stock_plan import StockPlanStore
+from formatting import format_currency, format_multiple, format_percent
+from scoring.final_decision_adapter import build_final_decision_bundle
+from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
+from ui.metric_labels import confidence_label, metric_label, model_type_label
+
+
+DETAIL_GROUPS = [
+    (
+        "Valuation",
+        [
+            ("trailingPe", "TTM市盈率"),
+            ("forwardPe", "预期市盈率"),
+            ("priceToSales", "市销率"),
+            ("enterpriseToRevenue", "EV/销售额"),
+            ("priceToFcf", "P/FCF"),
+            ("freeCashFlowYield", "FCF收益率"),
+        ],
+    ),
+    (
+        "Quality",
+        [
+            ("revenueGrowth", "收入增速"),
+            ("operatingMargin", "经营利润率"),
+            ("returnOnInvestedCapital", "ROIC"),
+            ("fcfMargin", "FCF margin"),
+        ],
+    ),
+    (
+        "Balance Sheet",
+        [
+            ("netDebtToEbitda", "净债务/EBITDA"),
+            ("currentRatio", "流动比率"),
+        ],
+    ),
+    (
+        "Technical Setup",
+        [
+            ("rsi14", "RSI14"),
+            ("ema20", "EMA20"),
+            ("ema50", "EMA50"),
+            ("ema200", "EMA200"),
+            ("priceVsEma20", "距EMA20"),
+            ("priceVsEma50", "距EMA50"),
+            ("dailyReturn", "今日涨跌"),
+            ("gain20d", "20日涨幅"),
+            ("gain60d", "60日涨幅"),
+            ("fiftyTwoWeekHigh", "52周高点"),
+            ("fiftyTwoWeekLow", "52周低点"),
+        ],
+    ),
+]
+
+
+def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, data_quality: dict) -> dict:
+    high_risk_flags = sum(1 for flag in score.risk_flags if flag.severity == "high")
+    medium_risk_flags = sum(1 for flag in score.risk_flags if flag.severity == "medium")
+    anti_fomo = _signal_message(score.trading_signals, "anti_fomo")
+    left_side_opportunity = _signal_message(score.trading_signals, "left_side_opportunity")
+    price = _first_present(technicals.get("price"), snapshot.get("current_price"))
+    fcf_metric = fcf_margin_metric(snapshot)
+    direct_fcf_margin = fcf_metric.value if fcf_metric.sourceType != "derivedFromMarket" else None
+    implied_fcf_margin = fcf_metric.value if fcf_metric.sourceType == "derivedFromMarket" else None
+    final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score)
+    current_add_limit = final_decision.currentAddLimitPercent
+    max_portfolio_weight = final_decision.maxPortfolioWeightPercent
+
+    return {
+        "symbol": ticker,
+        "companyName": snapshot.get("company_name") or snapshot.get("companyName") or "",
+        "rawSnapshot": snapshot,
+        "rawTechnicals": technicals,
+        "modelType": score.scoring_model,
+        "price": format_currency(price),
+        "marketCap": _format_billions(snapshot.get("market_cap")),
+        "drawdownFromHigh": format_percent(technicals.get("drawdown_from_high_pct")),
+        "qualityRating": score.quality_rating,
+        "entryRating": score.entry_rating,
+        "riskRating": score.risk_rating,
+        "valuationStatus": score.valuation_status,
+        "action": score.action,
+        "finalAction": final_decision.finalAction,
+        "decisionLane": final_decision.decisionLane,
+        "displayCategory": final_decision.displayCategory,
+        "isActionable": final_decision.isActionable,
+        "decisionBlockReasons": final_decision.blockReasons,
+        "decisionReviewReasons": final_decision.reviewReasons,
+        "scoreCurrentAddLimitPercent": getattr(score, "current_add_limit_percent", score.max_suggested_position_percent),
+        "scoreMaxPortfolioWeightPercent": getattr(score, "max_portfolio_weight_percent", None),
+        "maxSuggestedPositionPercent": score.max_suggested_position_percent,
+        "maxPortfolioWeightPercent": max_portfolio_weight,
+        "currentAddLimitPercent": current_add_limit,
+        "maxSuggestedPosition": _position_limit_text(current_add_limit),
+        "maxPortfolioWeight": _portfolio_weight_text(max_portfolio_weight),
+        "currentAddLimit": _position_limit_text(current_add_limit),
+        "dataConfidence": final_decision.dataConfidence,
+        "proxyConfidence": score.proxy_confidence,
+        "dataStatus": _data_status_label(score),
+        "missingIndustryMetrics": score.missing_industry_metrics or [],
+        "proxyMetricsUsed": score.proxy_metrics_used or [],
+        "missingMetricImpact": getattr(score, "missing_metric_impacts", None) or [],
+        "metricResolutionStatus": getattr(score, "metric_resolution_statuses", None) or [],
+        "reviewQueueSummary": ReviewQueueStore().summary(ticker),
+        "disclosureReviewSummary": snapshot.get("disclosureReviewSummary") or {},
+        "criticalPendingReviewMetrics": snapshot.get("criticalPendingReviewMetrics") or [],
+        "humanReadableSummary": getattr(score, "human_readable_summary", None) or {},
+        "activeRiskDrivers": getattr(score, "active_risk_drivers", None) or getattr(score, "activeRiskDrivers", None) or [],
+        "missingDataExplanation": getattr(score, "missing_data_explanation", None) or [],
+        "ratingCap": getattr(score, "rating_cap", None),
+        "keyPositiveDrivers": score.key_positives or [],
+        "keyNegativeDrivers": score.key_risks or [],
+        "trailingPe": format_multiple(snapshot.get("trailing_pe")),
+        "forwardPe": format_multiple(snapshot.get("forward_pe")),
+        "priceToSales": format_multiple(snapshot.get("price_to_sales")),
+        "enterpriseToRevenue": format_multiple(snapshot.get("enterprise_to_revenue")),
+        "priceToFcf": format_multiple(snapshot.get("price_to_fcf")),
+        "freeCashFlowYield": format_percent(snapshot.get("free_cash_flow_yield"), already_percent=False),
+        "revenueGrowth": format_percent(snapshot.get("revenue_growth"), already_percent=False),
+        "operatingMargin": format_percent(snapshot.get("operating_margin"), already_percent=False),
+        "returnOnInvestedCapital": format_percent(snapshot.get("return_on_invested_capital"), already_percent=False),
+        "fcfMargin": format_percent(fcf_metric.value, already_percent=False),
+        "directFcfMargin": format_percent(direct_fcf_margin, already_percent=False),
+        "impliedFcfMargin": format_percent(implied_fcf_margin, already_percent=False),
+        "fcfMarginLabel": "估算FCF利润率" if fcf_metric.sourceType == "derivedFromMarket" else "FCF利润率",
+        "fcfMarginSourceType": fcf_metric.sourceType,
+        "fcfMarginNote": fcf_margin_source_note(snapshot),
+        "netDebtToEbitda": format_multiple(snapshot.get("net_debt_to_ebitda")),
+        "currentRatio": format_multiple(snapshot.get("current_ratio")),
+        "rsi14": _format_plain_number(technicals.get("rsi14")),
+        "ema20": format_currency(technicals.get("ema20")),
+        "ema50": format_currency(technicals.get("ema50")),
+        "ema200": format_currency(technicals.get("ema200")),
+        "gain20d": format_percent(technicals.get("gain_20d_pct")),
+        "gain60d": format_percent(technicals.get("gain_60d_pct")),
+        "dailyReturn": format_percent(technicals.get("daily_return_pct")),
+        "priceVsEma20": format_percent(technicals.get("pct_above_ema20")),
+        "priceVsEma50": format_percent(technicals.get("pct_above_ema50")),
+        "fiftyTwoWeekHigh": format_currency(_first_present(technicals.get("fifty_two_week_high"), snapshot.get("fifty_two_week_high"))),
+        "fiftyTwoWeekLow": format_currency(_first_present(technicals.get("fifty_two_week_low"), snapshot.get("fifty_two_week_low"))),
+        "totalScore": score.total_score,
+        "valueZone": score.value_zone,
+        "rating": score.rating,
+        "antiFomo": bool(anti_fomo),
+        "leftSideOpportunity": bool(left_side_opportunity),
+        "riskFlagCount": high_risk_flags + medium_risk_flags,
+        "highRiskFlagCount": high_risk_flags,
+        "dataQualityPct": data_quality["pct"],
+        "dataNote": _data_note(snapshot, data_quality, score),
+        "overheatScore": score.overheat_score,
+        "overheatStatus": score.overheat_status,
+        "overheatAction": score.overheat_action,
+        "overheatRecommendation": score.overheat_recommendation,
+        "overheatReasons": score.overheat_reasons or [],
+    }
+
+
+def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score):
+    try:
+        stock_data = {**snapshot, **technicals}
+        price = _first_present(technicals.get("price"), snapshot.get("current_price"))
+        if price is not None:
+            stock_data["price"] = price
+            stock_data.setdefault("current_price", price)
+        buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
+        plan = StockPlanStore().get_plan(ticker)
+        return build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
+    except Exception:
+        return build_final_decision_bundle(score)
+
+
+def error_dashboard_row(ticker: str, exc: Exception) -> dict:
+    row = {
+        "symbol": ticker,
+        "companyName": "",
+        "price": "N/A",
+        "marketCap": "N/A",
+        "drawdownFromHigh": "N/A",
+        "qualityRating": "数据不足",
+        "entryRating": "数据不足",
+        "riskRating": "数据不足",
+        "valuationStatus": "数据不足",
+        "action": "数据不足，需复核",
+        "finalAction": "数据不足，需复核",
+        "decisionLane": "review",
+        "displayCategory": "需复核",
+        "isActionable": False,
+        "decisionBlockReasons": ["data_unavailable"],
+        "decisionReviewReasons": [],
+        "scoreCurrentAddLimitPercent": 0,
+        "scoreMaxPortfolioWeightPercent": 0,
+        "maxSuggestedPositionPercent": 0,
+        "maxSuggestedPosition": "不建议新增",
+        "maxPortfolioWeightPercent": 0,
+        "currentAddLimitPercent": 0,
+        "maxPortfolioWeight": "不建议配置",
+        "currentAddLimit": "不建议新增",
+        "dataConfidence": "low",
+        "proxyConfidence": "low",
+        "dataStatus": "数据不足",
+        "missingIndustryMetrics": [],
+        "proxyMetricsUsed": [],
+        "missingMetricImpact": [],
+        "metricResolutionStatus": [],
+        "humanReadableSummary": {},
+        "missingDataExplanation": [],
+        "ratingCap": None,
+        "keyPositiveDrivers": [],
+        "keyNegativeDrivers": [str(exc)],
+        "totalScore": 0,
+        "valueZone": "数据不可用",
+        "rating": "需要数据",
+        "antiFomo": False,
+        "leftSideOpportunity": False,
+        "riskFlagCount": 0,
+        "highRiskFlagCount": 0,
+        "dataQualityPct": 0,
+        "dataNote": str(exc),
+        "fcfMarginNote": "",
+        "overheatScore": 0,
+        "overheatStatus": "数据不足",
+        "overheatAction": "数据不足，需复核",
+        "overheatRecommendation": "先补齐数据",
+        "overheatReasons": [str(exc)],
+    }
+    for _, metrics in DETAIL_GROUPS:
+        for key, _ in metrics:
+            row[key] = "N/A"
+    return row
+
+
+def _signal_message(signals, kind: str) -> str:
+    for signal in signals:
+        if signal.kind == kind:
+            return signal.message
+    return ""
+
+
+def _format_billions(value: float | None) -> str:
+    if value is None or _is_missing(value):
+        return "N/A"
+    try:
+        return f"{float(value) / 1_000_000_000:,.1f}B"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _format_plain_number(value: float | None, digits: int = 1) -> str:
+    if _is_missing(value):
+        return "N/A"
+    return f"{float(value):,.{digits}f}"
+
+
+def _data_status_label(score) -> str:
+    if getattr(score, "data_insufficient", False):
+        return "数据不足"
+    confidence = getattr(score, "data_confidence", None)
+    if confidence == "high":
+        return "完整"
+    if confidence == "medium":
+        return "中等"
+    if confidence == "low":
+        return "低置信度"
+    return "待复核"
+
+
+def _position_limit_text(value: float | None) -> str:
+    if value is None or _is_missing(value):
+        return "N/A"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if number <= 0:
+        return "不建议新增"
+    return f"≤{number:g}%"
+
+
+def _portfolio_weight_text(value: float | None) -> str:
+    if value is None or _is_missing(value):
+        return "N/A"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if number <= 0:
+        return "不建议配置"
+    if number >= 15:
+        return "15%-20%"
+    if number >= 10:
+        return "10%-15%"
+    if number >= 5:
+        return "5%-10%"
+    return f"≤{number:g}%"
+
+
+def _data_note(snapshot: dict, data_quality: dict, score=None) -> str:
+    notes = snapshot.get("data_quality_notes") or []
+    messages = list(notes[:2])
+    if snapshot.get("cache_note"):
+        messages.append(str(snapshot["cache_note"]))
+    if score is not None:
+        messages.append(f"模型：{model_type_label(getattr(score, 'scoring_model', 'GENERIC'))}")
+        if getattr(score, "fcf_margin_source_type", "") == "derivedFromMarket":
+            messages.append("FCF margin 为推导值，不参与质量评分")
+        if getattr(score, "missing_industry_metrics", None):
+            missing_labels = "、".join(metric_label(item) for item in score.missing_industry_metrics[:4])
+            messages.append(f"代理置信度：{confidence_label(score.proxy_confidence)}；缺行业 KPI：" + missing_labels)
+    missing = data_quality.get("missing") or []
+    if missing:
+        messages.append("缺失：" + "、".join(missing[:4]))
+    return "；".join(messages)
+
+
+def _first_present(*values: object) -> float | None:
+    for value in values:
+        if not _is_missing(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except Exception:
+        return False
