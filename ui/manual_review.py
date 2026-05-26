@@ -152,7 +152,8 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
-    filters = _render_filters(store)
+    initial_review_view = build_review_center_view_model(rows=store.list_items(), store=store)
+    filters = _render_filters(store, initial_review_view.get("summary", {}).get("groupCounts", {}))
     base_rows = _filtered_rows(store, filters)
     review_view = build_review_center_view_model(rows=base_rows, store=store)
     _render_summary(review_view.get("summary", {}), ai_store.summary())
@@ -1236,18 +1237,22 @@ def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
     )
 
 
-def _render_filters(store: ReviewQueueStore) -> dict:
+def _render_filters(store: ReviewQueueStore, group_counts: dict | None = None) -> dict:
     rows = store.list_items()
     symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
     metric_keys = sorted({str(row.get("metricKey") or "") for row in rows if row.get("metricKey")})
     source_types = sorted({str(row.get("sourceType") or "") for row in rows if row.get("sourceType")})
     tabs = ["待处理", "影响评分", "可自动处理", "AI 建议", "证据不足", "已处理"]
+    tab_counts = _review_tab_counts(group_counts or {})
+    _apply_default_review_tab(tab_counts)
+    st.session_state["review-tab-counts"] = tab_counts
     st.session_state["review-active-tab"] = st.radio(
         "工作台视图",
         tabs,
         index=tabs.index(st.session_state.get("review-active-tab", "待处理"))
         if st.session_state.get("review-active-tab", "待处理") in tabs
         else 0,
+        format_func=lambda tab: f"{tab} {tab_counts.get(tab, 0)}",
         horizontal=True,
         key="review-active-tab-radio",
     )
@@ -1324,6 +1329,33 @@ def _effective_review_filters(filters: dict) -> dict:
             effective[filter_key] = None
     effective["affects_scoring"] = bool(st.session_state.get("review-filter-affects-scoring", effective.get("affects_scoring")))
     return effective
+
+
+def _review_tab_counts(group_counts: dict) -> dict[str, int]:
+    return {
+        "待处理": int(group_counts.get("highPriorityPending", 0) or 0),
+        "影响评分": int(group_counts.get("scoringImpactNeedsHuman", 0) or 0),
+        "可自动处理": int(group_counts.get("autoConfirmCandidates", 0) or 0)
+        + int(group_counts.get("autoArchiveCandidates", 0) or 0),
+        "AI 建议": int(group_counts.get("aiSuggestedCorrections", 0) or 0),
+        "证据不足": int(group_counts.get("insufficientEvidence", 0) or 0),
+        "已处理": int(group_counts.get("recentlyHandled", 0) or 0),
+    }
+
+
+def _apply_default_review_tab(tab_counts: dict[str, int]) -> None:
+    if st.session_state.get("review-default-tab-applied"):
+        return
+    current_tab = str(st.session_state.get("review-active-tab-radio") or st.session_state.get("review-active-tab") or "待处理")
+    if current_tab != "待处理" or tab_counts.get("待处理", 0) > 0:
+        st.session_state["review-default-tab-applied"] = True
+        return
+    for tab in ("影响评分", "证据不足", "AI 建议", "可自动处理", "已处理"):
+        if tab_counts.get(tab, 0) > 0:
+            st.session_state["review-active-tab"] = tab
+            st.session_state["review-active-tab-radio"] = tab
+            break
+    st.session_state["review-default-tab-applied"] = True
 
 
 def _client_filter_review_rows(rows: list[dict], filters: dict) -> list[dict]:
@@ -2304,12 +2336,12 @@ def _review_drawer_section(title: str, body: object, clipped: bool = False) -> s
 
 
 def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None, view_rows: list[dict] | None = None) -> None:
-    if not rows:
-        st.info("当前工作台视图没有待处理项。可以切换 tab 或同步观察池复核队列。")
-        return
     source_rows = view_rows if view_rows is not None else [{"raw": row, "item": None} for row in rows]
     ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
     st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
+    if not source_rows:
+        _render_review_empty_state()
+        return
     table_col, detail_col = st.columns([3.65, 1.15], gap="medium")
     with table_col:
         for entry in source_rows:
@@ -2320,6 +2352,26 @@ def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewSt
             _render_metric_row(store, raw, ai_results.get(int(raw["id"])))
     with detail_col:
         _render_review_evidence_drawer(source_rows, ai_results)
+
+
+def _render_review_empty_state() -> None:
+    tab_counts = st.session_state.get("review-tab-counts") or {}
+    current_tab = _active_review_tab()
+    suggested = [
+        f"{tab} {count}"
+        for tab in ("影响评分", "证据不足", "AI 建议", "可自动处理", "已处理")
+        if tab != current_tab and (count := int(tab_counts.get(tab, 0) or 0)) > 0
+    ]
+    suggestion_text = " / ".join(suggested) if suggested else "暂无其它非空分类"
+    st.markdown(
+        f"""
+        <div class="review-empty-state">
+          <strong>当前分类暂无复核项。</strong>
+          <span>可切换到：{escape(suggestion_text)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _review_view_rows_for_active_tab(view: dict, fallback_rows: list[dict]) -> list[dict]:
@@ -2607,6 +2659,26 @@ def _styles() -> str:
         font-size: 11px;
         font-weight: 700;
         line-height: 1.15;
+      }
+      .review-empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 7px;
+        background: #FBFCFE;
+        padding: 9px 10px;
+        color: #475569;
+        font-size: 12px;
+      }
+      .review-empty-state strong {
+        color: #0F172A;
+        font-size: 13px;
+      }
+      .review-empty-state span {
+        color: #64748B;
+        font-size: 12px;
       }
       .review-evidence-drawer {
         position: sticky;
