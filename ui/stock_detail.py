@@ -55,7 +55,7 @@ def render() -> None:
     control_cols = st.columns([1, 1, 5])
     refresh_token_key = f"stock_detail_refresh_token_{ticker}"
     with control_cols[0]:
-        if st.button("刷新此股票", width="stretch"):
+        if st.button("刷新此股票", key=f"stock-detail-refresh-{ticker}", width="stretch"):
             st.session_state[refresh_token_key] = datetime.now().isoformat()
             st.session_state["selected_detail_symbol"] = ticker
             st.rerun()
@@ -2002,8 +2002,9 @@ def _pill_html(value: str, color: str) -> str:
 
 def _hero_item_html(label: str, value: object, raw_html: bool = False) -> str:
     value_html = str(value) if raw_html else escape(str(value))
+    class_name = "detail-hero-item has-inline-pill" if raw_html else "detail-hero-item"
     return (
-        '<div class="detail-hero-item">'
+        f'<div class="{class_name}">'
         f'<span>{escape(label)}</span>'
         f"<strong>{value_html}</strong>"
         "</div>"
@@ -2100,6 +2101,13 @@ def _render_detail_styles() -> None:
             font-weight: 760;
             overflow-wrap: anywhere;
         }
+        .detail-hero-item.has-inline-pill {
+            background: rgba(255, 255, 255, 0.68);
+        }
+        .detail-hero-item.has-inline-pill strong {
+            margin-top: 0.28rem;
+            overflow: hidden;
+        }
         .current-position-strip {
             display: grid;
             grid-template-columns: minmax(150px, 0.38fr) minmax(0, 1fr);
@@ -2167,20 +2175,21 @@ def _render_detail_styles() -> None:
             line-height: 1.35;
         }
         .detail-pill.buy-point-pill {
-            gap: 0.36rem;
-            min-height: 1.45rem;
-            padding: 0.1rem 0.5rem;
-            border-radius: 0.42rem;
-            font-size: 0.78rem;
-            line-height: 1;
-            white-space: nowrap;
+            gap: 0.24rem;
+            min-height: 20px;
             max-width: 100%;
+            padding: 0.04rem 0.42rem;
+            border-radius: 999px;
+            font-size: 11px;
+            line-height: 1.25;
+            white-space: nowrap;
         }
         .detail-pill.buy-point-pill b {
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
-            font-weight: 760;
+            white-space: nowrap;
+            font-weight: 680;
         }
         .detail-pill.buy-point-pill em {
             flex: 0 0 auto;
@@ -2190,18 +2199,26 @@ def _render_detail_styles() -> None:
             font-weight: 690;
             opacity: 0.82;
         }
+        [class*="st-key-stock-detail-refresh-"] button,
         [class*="st-key-stock-detail-record-signal"] button {
-            min-height: 24px !important;
-            height: 24px !important;
-            padding: 0 0.48rem !important;
+            min-height: 26px !important;
+            height: 26px !important;
+            padding: 0 0.56rem !important;
             border-radius: 4px !important;
-            border-color: rgba(15, 23, 42, 0.08) !important;
-            background: #F6F8FB !important;
+            border-color: rgba(15, 23, 42, 0.10) !important;
+            background: #FFFFFF !important;
             color: #52657F !important;
             box-shadow: none !important;
-            font-size: 11px !important;
+            font-size: 12px !important;
             font-weight: 700 !important;
         }
+        [class*="st-key-stock-detail-refresh-"] button p,
+        [class*="st-key-stock-detail-record-signal"] button p {
+            font-size: 12px !important;
+            font-weight: 700 !important;
+            line-height: 1 !important;
+        }
+        [class*="st-key-stock-detail-refresh-"] button:hover,
         [class*="st-key-stock-detail-record-signal"] button:hover {
             border-color: rgba(15, 23, 42, 0.12) !important;
             background: #FFFFFF !important;

@@ -317,12 +317,12 @@ def render_global_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.04rem;
+            gap: 8px;
             width: max-content;
-            padding: 0.08rem;
-            border: 1px solid var(--zhx-action-border);
-            border-radius: 6px;
-            background: var(--zhx-action-bg);
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
             box-shadow: none;
             white-space: nowrap;
         }
@@ -340,13 +340,13 @@ def render_global_styles() -> None:
             align-items: center;
             justify-content: center;
             min-width: 38px;
-            height: 22px;
-            padding: 0 0.42rem;
+            height: 26px;
+            padding: 0 0.56rem;
             border-radius: 4px;
             border: 1px solid transparent;
             background: transparent;
             color: var(--zhx-action-text) !important;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 700;
             line-height: 1;
             text-decoration: none !important;
@@ -368,6 +368,15 @@ def render_global_styles() -> None:
             text-decoration: none !important;
         }
 
+        .portfolio-archive-link,
+        .trade-entry-delete-link,
+        .trade-entry-delete-link:visited {
+            padding-left: 0.2rem;
+            padding-right: 0.2rem;
+            color: #64748B !important;
+            font-weight: 650;
+        }
+
         [class*="st-key-stock-detail-record-signal"] button,
         [class*="st-key-dashboard-detail-"] button,
         [class*="st-key-dashboard-position-"] button,
@@ -377,15 +386,15 @@ def render_global_styles() -> None:
         [class*="st-key-trade-snapshot-delete-"] button,
         [class*="st-key-trade-error-edit-"] button,
         [class*="st-key-trade-error-delete-"] button {
-            min-height: 24px !important;
-            height: 24px !important;
-            padding: 0 0.48rem !important;
+            min-height: 26px !important;
+            height: 26px !important;
+            padding: 0 0.56rem !important;
             border-radius: 4px !important;
             border-color: transparent !important;
             background: transparent !important;
             color: var(--zhx-action-text) !important;
             box-shadow: none !important;
-            font-size: 11px !important;
+            font-size: 12px !important;
             font-weight: 700 !important;
         }
 
@@ -401,6 +410,14 @@ def render_global_styles() -> None:
             color: var(--zhx-action-text-strong) !important;
             border-color: rgba(15, 23, 42, 0.08) !important;
             background: #FFFFFF !important;
+        }
+
+        [class*="st-key-trade-snapshot-delete-"] button,
+        [class*="st-key-trade-error-delete-"] button {
+            padding-left: 0.2rem !important;
+            padding-right: 0.2rem !important;
+            color: #64748B !important;
+            font-weight: 650 !important;
         }
 
         .zhx-badge,

@@ -216,7 +216,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
             '<table class="trade-journal-table trade-terminal-table">'
             "<colgroup>"
             '<col style="width:12%"><col style="width:9%"><col style="width:9%"><col style="width:13%">'
-            '<col style="width:13%"><col style="width:10%"><col style="width:24%"><col style="width:10%">'
+            '<col style="width:13%"><col style="width:10%"><col style="width:auto"><col style="width:120px">'
             "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
@@ -462,7 +462,7 @@ def _render_snapshot_rows(
 ) -> None:
     st.markdown(
         '<div class="trade-snapshot-table trade-terminal-table-wrap">'
-        '<div class="trade-snapshot-list-head"><span>股票</span><span>日期</span><span>系统动作</span><span>周期状态</span><span>错误标签</span><span>操作</span></div>'
+        '<div class="trade-snapshot-list-head"><span>股票</span><span>日期</span><span>系统动作</span><span>周期状态</span><span>操作</span></div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -479,8 +479,7 @@ def _render_snapshot_rows(
                 f'<div class="trade-snapshot-cell"><b>{escape(_final_action_label(snapshot.get("final_action")))}</b>'
                 f'<span>{escape(_lane_label(snapshot.get("decision_lane")))}</span></div>'
                 f'<div class="trade-snapshot-cell"><b>{escape(_outcome_status_text(outcome, horizon, snapshot))}</b>'
-                f'<span>{escape(_outcome_status_detail(outcome, horizon, snapshot))}</span></div>'
-                f'<div class="trade-error-chip-line">{_tag_chip_html(tags)}</div>'
+                f'<span>{_outcome_status_detail_html(outcome, horizon, snapshot, tags)}</span></div>'
                 "</div>"
             ),
             unsafe_allow_html=True,
@@ -624,12 +623,32 @@ def _selected_snapshot(snapshots: list[dict]) -> dict | None:
     return None
 
 
+def _outcome_status_detail_html(outcome: dict | None, horizon: str, snapshot: dict, tags: list[dict]) -> str:
+    detail = escape(_outcome_status_detail(outcome, horizon, snapshot))
+    return f"{detail}{_tag_inline_html(tags)}"
+
+
+def _tag_inline_html(tags: list[dict]) -> str:
+    if not tags:
+        return ""
+    labels = [_error_tag_label(tag.get("tag")) for tag in tags]
+    title = " / ".join(labels)
+    suffix = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+    return (
+        f'<i class="trade-error-inline" title="{escape(title, quote=True)}">'
+        f"{escape(labels[0])}{escape(suffix)}</i>"
+    )
+
+
 def _tag_chip_html(tags: list[dict]) -> str:
     if not tags:
         return '<span class="trade-error-chip empty">未标记</span>'
-    return "".join(
-        f'<span class="trade-error-chip">{escape(_error_tag_label(tag.get("tag")))}</span>'
-        for tag in tags[:3]
+    labels = [_error_tag_label(tag.get("tag")) for tag in tags]
+    title = " / ".join(labels)
+    suffix = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+    return (
+        f'<span class="trade-error-chip" title="{escape(title, quote=True)}">'
+        f"{escape(labels[0])}{escape(suffix)}</span>"
     )
 
 
@@ -1089,6 +1108,8 @@ def _render_styles() -> None:
             --trade-terminal-hover: #FBFCFE;
         }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) {
+            display: grid !important;
+            grid-template-columns: minmax(610px, 1fr) 110px;
             gap: 0 !important;
             min-height: 42px;
             margin: -1px 0 0 !important;
@@ -1108,23 +1129,42 @@ def _render_styles() -> None:
             display: flex;
             align-items: center;
             justify-content: center;
+            width: 110px;
+            min-width: 110px;
             min-height: 42px;
-            padding: 0 0.32rem !important;
+            padding: 0 8px !important;
             border-left: 0;
         }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
         div[data-testid="stHorizontalBlock"] {
-            gap: 0.22rem !important;
+            gap: 8px !important;
             width: max-content;
-            padding: 0.08rem;
-            border: 1px solid rgba(15, 23, 42, 0.06);
-            border-radius: 6px;
-            background: var(--zhx-action-bg);
+            min-width: 92px;
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
+        div[data-testid="stHorizontalBlock"] > div {
+            position: relative;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
+        div[data-testid="stHorizontalBlock"] > div:first-child::after {
+            content: "·";
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #CBD5E1;
+            font-size: 12px;
+            line-height: 1;
+            pointer-events: none;
         }
         .trade-snapshot-row {
             display: grid;
-            grid-template-columns: 0.85fr 0.85fr 1.25fr 1.1fr 1.15fr;
-            gap: 0.5rem;
+            grid-template-columns: 80px 110px 160px minmax(260px, 1fr);
+            gap: 0;
             align-items: center;
             min-height: 42px;
             padding: 0 12px;
@@ -1156,7 +1196,7 @@ def _render_styles() -> None:
         .trade-error-chip-line {
             display: flex;
             align-items: center;
-            gap: 0.22rem;
+            gap: 0;
             min-height: 38px;
             padding: 0;
             border-bottom: 0;
@@ -1166,20 +1206,45 @@ def _render_styles() -> None:
         .trade-error-chip {
             display: inline-flex;
             align-items: center;
-            height: 19px;
-            padding: 0 0.42rem;
-            border: 1px solid rgba(82, 101, 127, 0.14);
+            max-width: 86px;
+            height: 18px;
+            padding: 0 0.32rem;
+            border: 1px solid rgba(82, 101, 127, 0.10);
             border-radius: 999px;
-            background: rgba(82, 101, 127, 0.055);
+            background: rgba(82, 101, 127, 0.035);
             color: #64748b;
-            font-size: 0.6rem;
-            font-weight: 780;
+            font-size: 11px;
+            font-weight: 620;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .trade-error-chip.empty {
-            border-color: rgba(15, 23, 42, 0.08);
-            background: #F8FAFC;
+            border-color: transparent;
+            background: transparent;
             color: #94a3b8;
+            padding-left: 0;
+            padding-right: 0;
+        }
+        .trade-error-inline {
+            display: inline-flex;
+            align-items: center;
+            max-width: 96px;
+            height: 17px;
+            margin-left: 0.42rem;
+            padding: 0 0.32rem;
+            border: 1px solid rgba(82, 101, 127, 0.10);
+            border-radius: 999px;
+            background: rgba(82, 101, 127, 0.035);
+            color: #64748b;
+            font-size: 11px;
+            font-style: normal;
+            font-weight: 620;
+            line-height: 1;
+            vertical-align: middle;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .trade-error-editor-head {
             margin: 0.72rem 0 0.55rem;
@@ -1203,8 +1268,8 @@ def _render_styles() -> None:
         }
         .trade-snapshot-list-head {
             display: grid;
-            grid-template-columns: 0.85fr 0.85fr 1.25fr 1.1fr 1.15fr 0.72fr;
-            gap: 0.5rem;
+            grid-template-columns: 80px 110px 160px minmax(260px, 1fr) 110px;
+            gap: 0;
             align-items: center;
             min-height: 30px;
             padding: 0 12px;
@@ -1223,26 +1288,41 @@ def _render_styles() -> None:
             text-align: center;
         }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button {
-            min-height: 24px;
-            height: 24px;
-            padding: 0 0.48rem;
-            border-radius: 4px;
-            border-color: transparent;
-            background: transparent;
-            color: #475569;
-            box-shadow: none;
+            min-height: 26px !important;
+            height: 26px !important;
+            padding: 0 0.42rem !important;
+            border-radius: 4px !important;
+            border-color: rgba(15, 23, 42, 0.10) !important;
+            background: transparent !important;
+            color: #475569 !important;
+            box-shadow: none !important;
             text-decoration: none !important;
         }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button p {
-            font-size: 0.64rem;
-            font-weight: 720;
+            font-size: 12px !important;
+            font-weight: 720 !important;
             line-height: 1;
             text-decoration: none !important;
         }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-error-select-"] button {
+            border-color: rgba(15, 23, 42, 0.12) !important;
+            background: #FFFFFF !important;
+            color: #334155 !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-snapshot-delete-"] button {
+            padding: 0 0.1rem !important;
+            border-color: transparent !important;
+            background: transparent !important;
+            color: #64748B !important;
+            font-weight: 650 !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-snapshot-delete-"] button p {
+            font-weight: 650 !important;
+        }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button:hover {
-            border-color: rgba(15, 23, 42, 0.08);
-            background: #FFFFFF;
-            color: #0f172a;
+            border-color: rgba(15, 23, 42, 0.08) !important;
+            background: #FFFFFF !important;
+            color: #0f172a !important;
         }
         .trade-journal-table-wrap {
             overflow-x: auto;
@@ -1310,8 +1390,13 @@ def _render_styles() -> None:
         }
         .trade-entry-actions {
             text-align: center;
+            width: 120px;
         }
         .trade-entry-action-group {
+            min-width: 72px;
+            padding: 0;
+            border: 0;
+            background: transparent;
             margin: 0 auto;
         }
         .trade-entry-actions::after {
@@ -1324,15 +1409,15 @@ def _render_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            height: 22px;
+            height: 26px;
             min-width: 38px;
-            padding: 0 0.42rem;
+            padding: 0 0.2rem;
             border: 1px solid transparent;
             border-radius: 4px;
             background: transparent;
             color: #52657F;
-            font-size: 11px;
-            font-weight: 700;
+            font-size: 12px;
+            font-weight: 650;
             text-decoration: none !important;
             white-space: nowrap;
         }

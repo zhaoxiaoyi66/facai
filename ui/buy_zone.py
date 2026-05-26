@@ -344,7 +344,8 @@ def _render_filters(rows: list[dict]) -> str:
 
 
 def _render_execution_toolbar(rows: list[dict]) -> str:
-    title_col, filter_col = st.columns([1.05, 2.35], gap="small")
+    st.markdown('<div class="buy-zone-filter-toolbar-marker"></div>', unsafe_allow_html=True)
+    title_col, filter_col = st.columns([1.05, 3.2], gap="small")
     with title_col:
         st.markdown(
             """
@@ -1004,6 +1005,7 @@ def _render_styles() -> None:
             max-width:1080px;
             margin-left:auto;
             margin-right:auto;
+            padding-top:0.05rem;
         }
         .execution-toolbar-title strong {
             display:block;
@@ -1014,10 +1016,24 @@ def _render_styles() -> None:
         }
         .execution-toolbar-title span {
             display:block;
-            margin-top:0.12rem;
+            margin-top:0.1rem;
             color:#94A3B8;
             font-size:11.5px;
             font-weight:520;
+        }
+        .buy-zone-filter-toolbar-marker {
+            height:0;
+            margin:0;
+            padding:0;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.buy-zone-filter-toolbar-marker) + div [data-testid="stHorizontalBlock"] {
+            max-width:1080px;
+            margin:0.28rem auto 0.42rem;
+            align-items:flex-end;
+            gap:0.55rem !important;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.buy-zone-filter-toolbar-marker) + div [data-testid="stHorizontalBlock"] > div {
+            padding:0 !important;
         }
         div[data-testid="stRadio"] {
             margin-top: 0;
@@ -1025,26 +1041,43 @@ def _render_styles() -> None:
         }
         div[data-testid="stRadio"] div[role="radiogroup"] {
             display:inline-flex;
-            gap:0;
-            padding:0.14rem;
-            border:1px solid rgba(148, 163, 184, 0.16);
+            align-items:center;
+            gap:6px;
+            min-height:34px;
+            padding:0.18rem;
+            border:1px solid rgba(15, 23, 42, 0.08);
             border-radius:8px;
-            background:#F6F8FB;
+            background:linear-gradient(180deg, #F8FAFC 0%, #F3F6FA 100%);
             flex-wrap:wrap;
+            box-shadow:inset 0 1px 0 rgba(255,255,255,0.72);
         }
         div[data-testid="stRadio"] label {
             margin:0 !important;
-            min-height:28px;
-            padding:0.15rem 0.46rem !important;
+            min-height:26px;
+            padding:0.12rem 0.52rem !important;
             border-radius:6px;
             color:#64748B;
             font-size:12px;
-            font-weight:620;
+            font-weight:650;
+            line-height:1;
+            letter-spacing:0;
+            border:1px solid transparent;
+            transition:background 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        div[data-testid="stRadio"] label p {
+            font-size:12px !important;
+            font-weight:650 !important;
+            line-height:1 !important;
         }
         div[data-testid="stRadio"] label:has(input:checked) {
             background:#FFFFFF;
             color:#0F172A;
-            box-shadow:0 1px 1px rgba(15, 23, 42, 0.05);
+            border-color:rgba(15, 23, 42, 0.08);
+            box-shadow:0 1px 2px rgba(15, 23, 42, 0.05);
+        }
+        div[data-testid="stRadio"] label:hover {
+            background:rgba(255,255,255,0.72);
+            color:#334155;
         }
         div[data-testid="stRadio"] label > div:first-child {
             display:none;

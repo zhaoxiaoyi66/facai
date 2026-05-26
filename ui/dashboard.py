@@ -2516,7 +2516,7 @@ def _dashboard_priority_strip_html(summary_groups: list[tuple[str, str, str, lis
         body = '<div class="dashboard-priority-empty">暂无明确可执行机会，优先等待回踩或复核数据。</div>'
     return (
         '<section class="dashboard-priority-strip">'
-        '<div class="dashboard-priority-head"><strong>今日重点</strong><span>最多 5 项</span></div>'
+        '<div class="dashboard-priority-head"><strong>今日优先</strong><span>最多 5 项</span></div>'
         f'<div class="dashboard-priority-list">{body}</div>'
         "</section>"
     )
@@ -3550,13 +3550,13 @@ def _render_dashboard_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            height:22px;
-            padding:0 0.42rem;
-            border:1px solid rgba(15, 23, 42, 0.08);
+            height:26px;
+            padding:0 0.56rem;
+            border:1px solid rgba(15, 23, 42, 0.10);
             border-radius:4px;
-            background:#F6F8FB;
+            background:#FFFFFF;
             color:#52657F;
-            font-size:11px;
+            font-size:12px;
             font-weight:700;
             text-decoration:none !important;
         }
@@ -3743,7 +3743,7 @@ def _render_dashboard_styles() -> None:
         .drawer-review-actions {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.45rem;
+            gap: 8px;
             margin-top: 0.6rem;
         }
         .drawer-review-actions a,
@@ -3751,15 +3751,16 @@ def _render_dashboard_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-height: 30px;
-            padding: 0 0.7rem;
-            border-radius: 999px;
+            min-height: 26px;
+            height: 26px;
+            padding: 0 0.56rem;
+            border-radius: 4px;
             border: 1px solid var(--dash-border);
             background: var(--dash-surface);
             color: var(--dash-text);
             text-decoration: none;
-            font-size: 0.76rem;
-            font-weight: 740;
+            font-size: 12px;
+            font-weight: 700;
             cursor: pointer;
             font-family: inherit;
         }
@@ -3950,12 +3951,13 @@ def _render_dashboard_styles() -> None:
             font-weight:520;
         }
         .dashboard-priority-list {
-            display:flex;
+            display:grid;
+            grid-template-columns:repeat(5, minmax(0, 1fr));
             align-items:center;
-            gap:0.34rem;
+            gap:0.4rem;
             min-width:0;
             margin:0;
-            padding:0.34rem 0.46rem;
+            padding:0.34rem 0.48rem;
             border:0;
             background:transparent;
             overflow:hidden;
@@ -3963,18 +3965,16 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-priority-row {
             display:grid;
-            grid-template-columns:8px minmax(34px, max-content) minmax(44px, max-content) minmax(0, 1fr);
+            grid-template-columns:8px minmax(34px, auto) minmax(42px, auto) minmax(0, 1fr);
             align-items:center;
-            gap:0.32rem;
-            flex:1 1 0;
+            gap:0.28rem;
             min-height:30px;
             min-width:0;
             max-width:100%;
-            padding:0 0.52rem;
-            border:1px solid transparent;
+            padding:0 0.5rem;
+            border:1px solid rgba(148, 163, 184, 0.10);
             border-radius:5px;
-            border-right:0;
-            background:rgba(255,255,255,0.62);
+            background:rgba(255,255,255,0.58);
             overflow:hidden;
             box-sizing:border-box;
             box-shadow:none;
@@ -3989,9 +3989,8 @@ def _render_dashboard_styles() -> None:
             text-decoration:none !important;
         }
         .dashboard-priority-row:first-child {
-            flex:1.28 1 0;
             background:#FFFFFF;
-            border-color:rgba(148, 163, 184, 0.14);
+            border-color:rgba(148, 163, 184, 0.12);
         }
         .dashboard-priority-row.tone-green {
             box-shadow:inset 2px 0 0 rgba(22,101,52,0.20);
@@ -4010,7 +4009,7 @@ def _render_dashboard_styles() -> None:
             border-color:rgba(148, 163, 184, 0.16);
         }
         .dashboard-priority-row:last-child {
-            border-right:0;
+            border-right:1px solid rgba(148, 163, 184, 0.10);
         }
         .dashboard-priority-status,
         .dashboard-dot-status {
@@ -4057,6 +4056,7 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-priority-row span:not(.dashboard-priority-status) {
             min-width:0;
+            max-width:78px;
             overflow:hidden;
             text-overflow:ellipsis;
             white-space:nowrap;
@@ -4357,11 +4357,11 @@ def _render_dashboard_styles() -> None:
                 minmax(64px, 0.42fr)
                 minmax(170px, 0.90fr)
                 minmax(68px, 0.42fr)
-                60px;
+                110px;
             align-items:center;
             gap:0.56rem;
             min-height:44px;
-            min-width:914px;
+            min-width:964px;
             width:100%;
             padding:0 12px;
             box-sizing:border-box;
@@ -4577,8 +4577,28 @@ def _render_dashboard_styles() -> None:
         .action-view-cell {
             justify-content:center;
             justify-self:center;
-            width:60px;
-            max-width:60px;
+            width:110px;
+            max-width:110px;
+        }
+        .dashboard-row-actions {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:8px;
+            width:max-content;
+            max-width:110px;
+            white-space:nowrap;
+        }
+        .dashboard-row-actions .dashboard-view-action:first-child::after {
+            content:"·";
+            position:absolute;
+            right:-6px;
+            top:50%;
+            transform:translateY(-50%);
+            color:#CBD5E1;
+            font-size:12px;
+            line-height:1;
+            pointer-events:none;
         }
         .dashboard-view-action {
             position:relative;
@@ -4587,19 +4607,25 @@ def _render_dashboard_styles() -> None:
             justify-content:center;
             gap:0.12rem;
             min-width:38px;
-            height:22px;
+            height:26px;
             padding:0 0.42rem;
             border:1px solid transparent;
             border-radius:4px;
             background:transparent;
             color:#52657F;
-            font-size:11px;
+            font-size:12px;
             font-weight:700;
             text-decoration:none !important;
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
             box-sizing:border-box;
+        }
+        .dashboard-record-action {
+            padding-left:0.1rem;
+            padding-right:0.1rem;
+            color:#64748B;
+            font-weight:650;
         }
         .dashboard-view-action span {
             display:block;
@@ -4635,8 +4661,8 @@ def _render_dashboard_styles() -> None:
                 border-radius:7px;
             }
             .decision-grid {
-                grid-template-columns:100px 128px 72px 126px 64px 170px 68px 60px;
-                min-width:888px;
+                grid-template-columns:100px 128px 72px 126px 64px 170px 68px 110px;
+                min-width:938px;
                 gap:8px;
                 min-height:44px;
                 padding:0 8px;
@@ -4936,9 +4962,14 @@ def _dashboard_view_action_html(symbol: str) -> str:
         f"if(window.__dashboardOpenDrawer){{window.__dashboardOpenDrawer({json.dumps(normalized_symbol, ensure_ascii=False)},null);}}"
         "return false;"
     )
+    record_href = f"?page=dashboard&recordSignal={escape(normalized_symbol, quote=True)}#watchlist-table"
     return (
+        '<span class="dashboard-row-actions">'
         f'<a class="dashboard-view-action" href="#" data-dashboard-drawer-open="{safe_symbol}" '
-        f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板"><span>查看</span><i>›</i></a>'
+        f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板"><span>查看</span></a>'
+        f'<a class="dashboard-view-action dashboard-record-action" href="{record_href}" target="_self" '
+        f'onclick="event.stopPropagation();" title="记录 {safe_symbol} 当前系统信号"><span>记录</span></a>'
+        "</span>"
     )
 
 

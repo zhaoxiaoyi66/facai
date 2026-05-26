@@ -244,6 +244,13 @@ def _quantity_text(value: object) -> str:
     return f"{number:,.4g}"
 
 
+def _share_count_text(value: object) -> str:
+    quantity = _quantity_text(value)
+    if quantity == BLANK_TEXT:
+        return quantity
+    return f"{quantity} 股"
+
+
 def _percent_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -523,7 +530,7 @@ def _position_row_html(row: dict) -> str:
     return (
         "<tr>"
         f'<td class="portfolio-symbol-cell">{_cell_html(symbol, _row_status_text(row))}</td>'
-        f"<td>{_cell_html(_quantity_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
+        f"<td>{_cell_html(_share_count_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
         f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
         f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
         f"<td>{_system_cell_html(row)}</td>"
@@ -976,16 +983,16 @@ def _render_final_portfolio_styles() -> None:
         }
         .portfolio-table.terminal {
             table-layout: fixed;
-            min-width: 1080px;
+            min-width: 1030px;
             font-size: 0.72rem;
         }
-        .portfolio-col-symbol { width: 17%; }
-        .portfolio-col-cost { width: 18%; }
-        .portfolio-col-pnl { width: 13%; }
-        .portfolio-col-weight { width: 13%; }
-        .portfolio-col-system { width: 17%; }
-        .portfolio-col-plan { width: 14%; }
-        .portfolio-col-actions { width: 150px; }
+        .portfolio-col-symbol { width: 110px; }
+        .portfolio-col-cost { width: 150px; }
+        .portfolio-col-pnl { width: 140px; }
+        .portfolio-col-weight { width: 130px; }
+        .portfolio-col-system { width: 220px; }
+        .portfolio-col-plan { width: 150px; }
+        .portfolio-col-actions { width: 130px; }
         .portfolio-table.terminal th {
             height: 28px;
             padding: 0.28rem 0.52rem;
@@ -1003,9 +1010,9 @@ def _render_final_portfolio_styles() -> None:
         }
         .portfolio-table.terminal th:last-child,
         .portfolio-table.terminal td:last-child {
-            width: 150px;
-            padding-left: 0.5rem;
-            padding-right: 0.5rem;
+            width: 130px;
+            padding-left: 0.4rem;
+            padding-right: 0.4rem;
             text-align: center;
         }
         .portfolio-table.terminal tr:hover td {
@@ -1027,16 +1034,19 @@ def _render_final_portfolio_styles() -> None:
             max-width: 100%;
             color: #7b8798;
             font-size: 0.66rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .portfolio-row-actions {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.04rem;
-            padding: 0.08rem;
-            border: 1px solid rgba(15, 23, 42, 0.07);
-            border-radius: 6px;
-            background: #F6F8FB;
+            gap: 6px;
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
             box-shadow: none;
             white-space: nowrap;
         }
@@ -1045,13 +1055,13 @@ def _render_final_portfolio_styles() -> None:
             align-items: center;
             justify-content: center;
             min-width: 38px;
-            height: 22px;
+            height: 26px;
             padding: 0 0.42rem;
             border: 1px solid transparent;
             border-radius: 4px;
             color: #52657F;
             background: transparent;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 700;
             text-decoration: none;
         }
@@ -1081,6 +1091,9 @@ def _render_final_portfolio_styles() -> None:
             color: #6b7280;
             background: transparent;
             border-color: transparent;
+            padding-left: 0.2rem;
+            padding-right: 0.2rem;
+            font-weight: 650;
         }
         .portfolio-archive-link:hover {
             color: #334155;
@@ -1263,12 +1276,34 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-drawer-actions {
             display: flex;
             align-items: center;
-            gap: 0.7rem;
+            gap: 8px;
             flex-shrink: 0;
+        }
+        .portfolio-drawer-actions a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 26px;
+            padding: 0 0.56rem;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            color: #52657F;
+            background: transparent;
+            font-size: 12px;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .portfolio-drawer-actions a:hover {
+            color: #0f172a;
+            background: #FFFFFF;
+            border-color: rgba(15, 23, 42, 0.10);
+            text-decoration: none;
         }
         .portfolio-drawer-actions a:first-child {
             color: var(--zhx-text);
             font-weight: 760;
+            background: #FFFFFF;
+            border-color: rgba(15, 23, 42, 0.10);
         }
         .portfolio-drawer-section {
             padding: 0.75rem 0.95rem;
@@ -1485,11 +1520,11 @@ def _render_styles() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.12rem;
-            padding: 0.08rem;
-            border: 1px solid rgba(15, 23, 42, 0.07);
-            border-radius: 6px;
-            background: #F6F8FB;
+            gap: 6px;
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
             box-shadow: none;
             white-space: nowrap;
         }
@@ -1498,13 +1533,13 @@ def _render_styles() -> None:
             align-items: center;
             justify-content: center;
             min-width: 38px;
-            height: 22px;
+            height: 26px;
             padding: 0 0.42rem;
             border: 1px solid transparent;
             border-radius: 4px;
             color: #52657F;
             background: transparent;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 700;
             text-decoration: none;
         }
@@ -1521,6 +1556,14 @@ def _render_styles() -> None:
             color: #52657F;
             background: transparent;
             border-color: transparent;
+        }
+        .portfolio-archive-link {
+            color: #6b7280;
+            background: transparent;
+            border-color: transparent;
+            padding-left: 0.2rem;
+            padding-right: 0.2rem;
+            font-weight: 650;
         }
         .portfolio-detail-panel {
             margin: 0.65rem 0 1rem;
