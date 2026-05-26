@@ -14,6 +14,7 @@ from ai.qwen_review_service import (
 from ai.review_automation import ReviewAutomationService, automation_effectiveness
 from data.ai_review_assistant import AIReviewStore
 from data.evidence_backfill import backfill_evidence_for_review_item
+from data.review_center_view_model import build_review_center_view_model
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore
 from review_autopilot import ReviewAutopilot, auto_fill_capability
 from scoring.sector_models import classifyStockModel
@@ -142,23 +143,25 @@ def render() -> None:
         """
         <div class="review-toolbar">
           <div>
-            <div class="review-kicker">Manual Review Center</div>
-            <h1>数据复核中心</h1>
-            <p>复核队列用于确认数据是否可以进入评分。确认不等于买入，也不等于认可操作建议。已确认数据可在“最近确认”中撤销。</p>
+            <div class="review-kicker">Review Workbench</div>
+            <h1>复核工作台</h1>
+            <p>优先处理会影响评分和需要人工判断的数据项；证据、原文和 AI 解释默认收起。</p>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    _render_summary(store.summary(), ai_store.summary())
     filters = _render_filters(store)
     base_rows = _filtered_rows(store, filters)
+    review_view = build_review_center_view_model(rows=base_rows, store=store)
+    _render_summary(review_view.get("summary", {}), ai_store.summary())
     _render_sync_controls(store, base_rows, filters)
     _render_last_confirm_notice(store)
     rows = _apply_ai_filters(base_rows, ai_store)
+    view_rows = _review_view_rows_for_active_tab(review_view, rows)
     _render_ai_controls(store, ai_store, filters, base_rows)
-    _render_rows(store, rows, ai_store)
+    _render_rows(store, rows, ai_store, view_rows)
 
 
 def _render_sync_controls(store: ReviewQueueStore) -> None:
@@ -280,6 +283,7 @@ def _filtered_rows(store: ReviewQueueStore, filters: dict) -> list[dict]:
 
 
 def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
+    view_item = row.pop("__review_view_item", None)
     metric_id = int(row["id"])
     status = str(row.get("reviewStatus") or "pending_review")
     confidence = str(row.get("confidence") or "")
@@ -414,11 +418,11 @@ def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewSt
         return
 
     if not rows:
-        st.info("当前筛选条件下没有待展示的复核项。可以先点击“同步当前观察池复核队列”。")
+        st.info("当前工作台视图没有待处理项。可以切换 tab 或同步观察池复核队列。")
         return
 
     ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
-    st.markdown('<div class="review-list-title">复核队列</div>', unsafe_allow_html=True)
+    st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
     for row in rows:
         _render_metric_row(store, row, ai_results.get(int(row["id"])))
 
@@ -563,6 +567,7 @@ def _confirmed_actor_label(row: dict) -> str:
 
 
 def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
+    view_item = row.pop("__review_view_item", None)
     metric_id = int(row["id"])
     status = str(row.get("reviewStatus") or "pending_review")
     confidence = str(row.get("confidence") or "")
@@ -1200,14 +1205,18 @@ def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = Non
 
 
 def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
+    group_counts = summary.get("groupCounts") or {}
+    pending_count = int(group_counts.get("highPriorityPending", summary.get("active", 0)) or 0)
+    impact_count = int(group_counts.get("scoringImpactNeedsHuman", 0) or 0)
+    auto_confirm_count = int(group_counts.get("autoConfirmCandidates", 0) or 0)
+    auto_archive_count = int(group_counts.get("autoArchiveCandidates", 0) or 0)
     cards = [
-        ("涉及股票", summary.get("symbols", 0), "blue"),
-        ("待确认", summary.get("pending_review", 0), "yellow"),
-        ("需要补齐", summary.get("needs_data", 0), "orange"),
-        ("建议修正", summary.get("ai_recommend_correct", 0), "orange"),
-        ("建议驳回", summary.get("ai_recommend_reject", 0), "red"),
-        ("自动归档", summary.get("ai_auto_archived", 0), "gray"),
-        ("自动确认", summary.get("auto_approved_by_ai", 0), "green"),
+        ("待处理", pending_count, "yellow"),
+        ("影响评分", impact_count, "red"),
+        ("可自动确认", auto_confirm_count, "green"),
+        ("可自动归档", auto_archive_count, "gray"),
+        ("AI 建议", group_counts.get("aiSuggestedCorrections", 0), "orange"),
+        ("证据不足", group_counts.get("insufficientEvidence", 0), "gray"),
     ]
     html = "".join(
         f'<div class="review-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
@@ -1217,8 +1226,8 @@ def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
         f"""
         <section class="review-overview-panel">
           <div class="review-overview-title">
-            <strong>复核状态总览</strong>
-            <span>默认只展示需要你处理的异常项，AI自动确认项已隐藏。</span>
+            <strong>复核状态</strong>
+            <span>默认优先展示会影响评分、AI 高置信建议和证据不足项；自动归档默认收起。</span>
           </div>
           <div class="review-summary-strip">{html}</div>
         </section>
@@ -1232,17 +1241,17 @@ def _render_filters(store: ReviewQueueStore) -> dict:
     symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
     metric_keys = sorted({str(row.get("metricKey") or "") for row in rows if row.get("metricKey")})
     source_types = sorted({str(row.get("sourceType") or "") for row in rows if row.get("sourceType")})
-    tabs = ["待我处理", RECENT_CONFIRMED_TAB, "需要补证据", "自动补齐失败", "AI建议修正", "AI建议驳回", "证据不足", "自动归档", "自动确认", "全部"]
+    tabs = ["待处理", "影响评分", "可自动处理", "AI 建议", "证据不足", "已处理"]
     st.session_state["review-active-tab"] = st.radio(
-        "复核视图",
+        "工作台视图",
         tabs,
-        index=tabs.index(st.session_state.get("review-active-tab", "待我处理"))
-        if st.session_state.get("review-active-tab", "待我处理") in tabs
+        index=tabs.index(st.session_state.get("review-active-tab", "待处理"))
+        if st.session_state.get("review-active-tab", "待处理") in tabs
         else 0,
         horizontal=True,
         key="review-active-tab-radio",
     )
-    with st.expander("筛选", expanded=False):
+    with st.expander("精确筛选", expanded=False):
         cols = st.columns([1.0, 1.4, 1.1, 1.0, 1.0])
         symbol = cols[0].selectbox("股票", ["全部", *symbols], key="review-filter-symbol")
         metric_key = cols[1].selectbox(
@@ -1343,7 +1352,7 @@ def _client_filter_review_rows(rows: list[dict], filters: dict) -> list[dict]:
 
 
 def _active_review_tab() -> str:
-    return str(st.session_state.get("review-active-tab-radio") or st.session_state.get("review-active-tab") or "待我处理")
+    return str(st.session_state.get("review-active-tab-radio") or st.session_state.get("review-active-tab") or "待处理")
 
 
 def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filters: dict, rows: list[dict]) -> None:
@@ -1370,35 +1379,25 @@ def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
         triage = _ai_triage_status(row, latest.get(int(row["id"])))
         status = str(row.get("reviewStatus") or "")
         item_type = str(row.get("itemType") or "")
-        if tab == "待我处理":
+        if tab == "待处理":
             if status in {"approved", "rejected", "manually_corrected", "auto_archived"}:
                 continue
             if triage in {"auto_approved_by_ai", "ai_auto_archived"} or row.get("hiddenByDefault"):
                 continue
-            if status == "needs_evidence" and not _is_high_impact_review_item(row):
-                continue
-            if item_type == "extracted_value" and not triage:
-                continue
             if item_type in {"calculated", "not_applicable"}:
                 continue
-        elif tab == "需要补证据" and status != "needs_evidence":
+        elif tab == "影响评分" and not _is_high_impact_review_item(row):
             continue
-        elif tab == "自动补齐失败" and str(row.get("autoFillStatus") or "") != "failed":
+        elif tab == "可自动处理" and triage not in {"auto_approved_by_ai", "ai_auto_archived", "ai_recommend_approve"} and not _truthy(row.get("canAutoFill")):
             continue
-        elif tab == "AI建议修正" and triage != "ai_recommend_correct":
+        elif tab == "AI 建议" and triage not in {"ai_recommend_correct", "ai_recommend_reject", "ai_recommend_approve", "ai_needs_human_review"}:
             continue
-        elif tab == "AI建议驳回" and triage != "ai_recommend_reject":
+        elif tab == "证据不足" and triage != "ai_not_enough_evidence" and status != "needs_evidence":
             continue
-        elif tab == "证据不足" and triage != "ai_not_enough_evidence":
-            continue
-        elif tab == "自动归档" and triage != "ai_auto_archived":
-            continue
-        elif tab == "自动确认" and triage != "auto_approved_by_ai":
-            continue
-        elif tab == RECENT_CONFIRMED_TAB and status not in {"approved", "manually_corrected", "auto_approved_by_ai"} and triage != "auto_approved_by_ai":
+        elif tab == "已处理" and status not in {"approved", "rejected", "manually_corrected", "auto_archived", "auto_approved_by_ai"} and triage not in {"auto_approved_by_ai", "ai_auto_archived"}:
             continue
         filtered.append(row)
-    return sorted(filtered, key=lambda row: _ai_sort_key(row, latest.get(int(row["id"]))))
+    return sorted(filtered, key=lambda row: _review_workbench_sort_key(row, latest.get(int(row["id"]))))
 
 
 def _has_complete_extracted_value_evidence(row: dict) -> bool:
@@ -1420,6 +1419,21 @@ def _has_complete_extracted_value_evidence(row: dict) -> bool:
         period,
     ]
     return all(item is not None and str(item).strip() != "" for item in required_values)
+
+
+def _review_workbench_sort_key(row: dict, result: dict | None) -> tuple[int, str, str]:
+    triage = _ai_triage_status(row, result)
+    if _is_high_impact_review_item(row) and str(row.get("reviewStatus") or "") not in {"approved", "rejected", "auto_archived"}:
+        rank = 0
+    elif triage in {"ai_recommend_correct", "ai_recommend_reject", "ai_recommend_approve"}:
+        rank = 1
+    elif triage in {"ai_not_enough_evidence", "ai_needs_human_review"} or str(row.get("reviewStatus") or "") == "needs_evidence":
+        rank = 2
+    elif triage in {"auto_approved_by_ai", "ai_auto_archived"} or row.get("hiddenByDefault"):
+        rank = 8
+    else:
+        rank = 4
+    return (rank, str(row.get("symbol") or ""), str(row.get("metricKey") or ""))
 
 
 def _truthy(value) -> bool:
@@ -1631,6 +1645,7 @@ def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_r
 
 
 def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
+    view_item = row.pop("__review_view_item", None)
     metric_id = int(row["id"])
     status = str(row.get("reviewStatus") or "pending_review")
     confidence = str(row.get("confidence") or "")
@@ -2090,6 +2105,207 @@ def _render_last_operation_result(store: ReviewQueueStore) -> None:
         st.info(text)
 
 
+def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
+    view_item = row.pop("__review_view_item", None)
+    metric_id = int(row["id"])
+    status = str(row.get("reviewStatus") or "pending_review")
+    confidence = str(row.get("confidence") or "")
+    eligible, reason = qwen_review_eligibility(row)
+    value_text = _format_value(row.get("value"), row.get("unit"))
+    suggested_text = _review_suggested_value_text(row, ai_result, view_item)
+    source_meta = _review_row_source_meta(row)
+    affects_text = _affects_label(row.get("affects") or "ConfidenceOnly")
+
+    with st.container():
+        st.markdown('<div class="review-row-marker"></div>', unsafe_allow_html=True)
+        cols = st.columns([0.44, 1.5, 1.08, 0.64, 0.7, 0.68, 1.1, 1.68], gap="small", vertical_alignment="center")
+        cols[0].markdown(f"<div class='review-symbol'>{escape(str(row.get('symbol') or ''))}</div>", unsafe_allow_html=True)
+        metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey") or "N/A"
+        cols[1].markdown(
+            f"<div class='metric-title'>{escape(metric_label(metric_name))}</div>"
+            f"<div class='metric-sub'>{escape(_metric_row_subtitle(row))}</div>",
+            unsafe_allow_html=True,
+        )
+        cols[2].markdown(
+            f"<div class='review-value-stack'><strong>{escape(value_text)}</strong><span>{escape(suggested_text)}</span></div>",
+            unsafe_allow_html=True,
+        )
+        cols[3].markdown(_badge(source_type_label(row.get("sourceType") or "N/A"), "gray"), unsafe_allow_html=True)
+        cols[4].markdown(_badge(confidence_label(confidence or "N/A"), _confidence_tone(confidence)), unsafe_allow_html=True)
+        cols[5].markdown(_badge(affects_text, _affects_tone(row.get("affects"))), unsafe_allow_html=True)
+        action_hint = _review_action_hint(row, ai_result, eligible, reason, view_item)
+        cols[6].markdown(
+            f"<div class='review-action-hint'><span>{escape(source_meta)}</span><strong>{escape(action_hint)}</strong></div>",
+            unsafe_allow_html=True,
+        )
+        with cols[7]:
+            action_cols = st.columns([1, 1, 1, 1], gap="small")
+            if action_cols[0].button("确认", key=f"review-confirm-{metric_id}", disabled=status in {"approved", "auto_approved_by_ai"}, width="stretch"):
+                _run_review_action(store, row, "approve", ai_result)
+                st.rerun()
+            if action_cols[1].button("驳回", key=f"review-reject-{metric_id}", disabled=status == "rejected", width="stretch"):
+                _run_review_action(store, row, "reject", ai_result)
+                st.rerun()
+            if action_cols[2].button("归档", key=f"review-archive-{metric_id}", disabled=status == "auto_archived", width="stretch"):
+                _run_review_action(store, row, "archive", ai_result)
+                st.rerun()
+            if action_cols[3].button("证据", key=f"review-toggle-evidence-{metric_id}", width="stretch"):
+                st.session_state[f"review-evidence-open-{metric_id}"] = not st.session_state.get(f"review-evidence-open-{metric_id}", False)
+
+        if st.session_state.get(f"review-evidence-open-{metric_id}", False):
+            _render_review_evidence_panel(row, ai_result, eligible, reason, view_item)
+
+
+def _review_row_source_meta(row: dict) -> str:
+    source = source_type_label(row.get("sourceType") or "N/A")
+    updated = row.get("updatedAt") or row.get("sourceDate") or row.get("createdAt") or row.get("fiscalPeriod") or "N/A"
+    return f"{source} · {updated}"
+
+
+def _affects_tone(value: object) -> str:
+    raw = str(value or "")
+    if "Risk" in raw or "Technical" in raw:
+        return "orange"
+    if "Quality" in raw or "Entry" in raw:
+        return "blue"
+    return "gray"
+
+
+def _review_suggested_value_text(row: dict, ai_result: dict | None, view_item: dict | None = None) -> str:
+    if isinstance(view_item, dict) and view_item.get("proposedValue") not in (None, ""):
+        return f"建议 {view_item.get('proposedValue')}"
+    if ai_result and ai_result.get("correctedValue") is not None:
+        return "建议 " + _format_value(ai_result.get("correctedValue"), ai_result.get("correctedUnit") or row.get("unit"))
+    display = row.get("displayValue")
+    if display and str(display) != str(row.get("value") or ""):
+        return f"建议 {display}"
+    return "建议 暂无"
+
+
+def _review_action_hint(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
+    if isinstance(view_item, dict) and view_item.get("suggestedAction"):
+        return _review_vm_action_label(str(view_item.get("suggestedAction")))
+    triage = _ai_triage_status(row, ai_result)
+    if triage == "ai_recommend_correct":
+        return "建议修正后确认"
+    if triage == "ai_recommend_reject":
+        return "建议驳回"
+    if triage == "ai_not_enough_evidence" or str(row.get("reviewStatus") or "") == "needs_evidence":
+        return "先补证据"
+    if _is_high_impact_review_item(row):
+        return "影响评分，需人工确认"
+    if triage in {"auto_approved_by_ai", "ai_recommend_approve"}:
+        return "可自动确认"
+    if triage == "ai_auto_archived":
+        return "可自动归档"
+    return _recommended_review_action(row, eligible, reason)
+
+
+def _render_review_evidence_panel(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> None:
+    evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
+    system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
+    title = "原文证据" if evidence_text else "系统说明"
+    body = evidence_text or (view_item or {}).get("evidenceSummary") or system_reason or "暂无原文证据。"
+    st.markdown(
+        f"""
+        <div class="review-evidence-panel">
+          <strong>{escape(title)}</strong>
+          <span>{escape(body)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if ai_result:
+        st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
+    else:
+        st.caption(QWEN_NOT_SUITABLE_REASON if not eligible else "尚未进行 Qwen 证据复核。")
+
+
+def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None, view_rows: list[dict] | None = None) -> None:
+    if not rows:
+        st.info("当前工作台视图没有待处理项。可以切换 tab 或同步观察池复核队列。")
+        return
+    source_rows = view_rows if view_rows is not None else [{"raw": row, "item": None} for row in rows]
+    ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
+    st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
+    for entry in source_rows:
+        raw = dict(entry.get("raw") or {})
+        if not raw:
+            continue
+        raw["__review_view_item"] = entry.get("item")
+        _render_metric_row(store, raw, ai_results.get(int(raw["id"])))
+
+
+def _review_view_rows_for_active_tab(view: dict, fallback_rows: list[dict]) -> list[dict]:
+    active_tab = _active_review_tab()
+    group_key = {
+        "待处理": "highPriorityPending",
+        "影响评分": "scoringImpactNeedsHuman",
+        "AI 建议": "aiSuggestedCorrections",
+        "证据不足": "insufficientEvidence",
+        "已处理": "recentlyHandled",
+    }.get(active_tab, "highPriorityPending")
+    raw_by_id = {int(row["id"]): row for row in fallback_rows if row.get("id") is not None}
+    if active_tab == "可自动处理":
+        entries = []
+        for group in view.get("groups", []):
+            if group.get("key") not in {"autoConfirmCandidates", "autoArchiveCandidates"}:
+                continue
+            for item in group.get("items", []):
+                raw = raw_by_id.get(int(item.get("id") or 0))
+                if raw and all(entry["raw"].get("id") != raw.get("id") for entry in entries):
+                    entries.append({"raw": raw, "item": item})
+        return entries
+    for group in view.get("groups", []):
+        if group.get("key") != group_key:
+            continue
+        entries = []
+        for item in group.get("items", []):
+            raw = raw_by_id.get(int(item.get("id") or 0))
+            if raw:
+                entries.append({"raw": raw, "item": item})
+        return entries
+    return [{"raw": row, "item": None} for row in fallback_rows]
+
+
+def _review_vm_action_label(action: str) -> str:
+    return {
+        "review_completed": "已处理",
+        "review_ai_correction": "建议修正后确认",
+        "auto_confirm_candidate": "可自动确认",
+        "auto_archive_candidate": "可自动归档",
+        "manual_confirm_after_evidence_review": "补证据后确认",
+        "collect_evidence": "先补证据",
+        "manual_confirm": "人工确认",
+        "review_later": "稍后复核",
+        "no_action": "无需操作",
+    }.get(action, action)
+
+
+def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = None, filters: dict | None = None) -> None:
+    rows = rows if rows is not None else store.list_items()
+    with st.expander("维护操作", expanded=False):
+        st.caption("这些操作只在你手动点击时执行；默认复核工作台不会自动刷新或批量修复。")
+        cols = st.columns([1.1, 1.0, 1.0, 1.0], vertical_alignment="center")
+        if cols[0].button("同步观察池", key="review-sync-workbench", width="stretch"):
+            result = ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist(load_watchlist())
+            st.session_state["review_queue_sync_result"] = result
+            st.toast(f"已同步 {len(result.symbols)} 只股票，生成/更新 {result.total} 项。")
+            st.rerun()
+        if cols[1].button("数据补齐", key="review-autofill-workbench", width="stretch"):
+            result = ReviewAutopilot(queue_store=store).run_auto_fill_only(rows)
+            _show_autopilot_result(result)
+            st.rerun()
+        if cols[2].button("Qwen 预审", key="review-qwen-workbench", width="stretch"):
+            result = QwenReviewService(queue_store=store, ai_store=AIReviewStore(store.path)).review_rows(rows)
+            _show_ai_run_result(result)
+            st.rerun()
+        if cols[3].button("处理日志", key="review-log-workbench", width="stretch"):
+            st.session_state["show_review_automation_logs"] = not st.session_state.get("show_review_automation_logs", False)
+        if st.session_state.get("show_review_automation_logs"):
+            _render_automation_logs(store)
+
+
 def _styles() -> str:
     return """
     <style>
@@ -2153,18 +2369,18 @@ def _styles() -> str:
         font-size: 11px;
       }
       .review-overview-panel {
-        border: 1px solid #E5E7EB;
-        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 7px;
         background: #FFFFFF;
-        padding: 12px;
-        margin: 12px 0;
+        padding: 8px;
+        margin: 10px 0 8px;
       }
       .review-overview-title {
         display: flex;
         align-items: baseline;
         justify-content: space-between;
         gap: 16px;
-        margin-bottom: 10px;
+        margin-bottom: 7px;
       }
       .review-overview-title strong {
         color: #111827;
@@ -2178,8 +2394,11 @@ def _styles() -> str:
       .review-summary-strip {
         display: grid;
         grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 8px;
-        margin: 0 0 8px;
+        gap: 0;
+        margin: 0;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        border-radius: 6px;
+        overflow: hidden;
       }
       .review-ai-summary-strip {
         display: grid;
@@ -2209,23 +2428,27 @@ def _styles() -> str:
         font-variant-numeric: tabular-nums;
       }
       .review-summary-card {
-        height: 58px;
-        border: 1px solid #E5E7EB;
-        border-radius: 8px;
-        background: #FFFFFF;
-        padding: 9px 12px;
+        height: 38px;
+        border: 0;
+        border-right: 1px solid rgba(148, 163, 184, 0.14);
+        border-radius: 0;
+        background: #FBFCFE;
+        padding: 5px 10px;
         display: flex;
         flex-direction: column;
         justify-content: center;
       }
+      .review-summary-card:last-child {
+        border-right: 0;
+      }
       .review-summary-card span {
-        color: #6B7280;
-        font-size: 12px;
+        color: #7C8797;
+        font-size: 10px;
         font-weight: 700;
       }
       .review-summary-card strong {
         color: #111827;
-        font-size: 19px;
+        font-size: 16px;
         line-height: 1.1;
         font-variant-numeric: tabular-nums;
       }
@@ -2237,19 +2460,87 @@ def _styles() -> str:
       }
       .metric-title {
         color: #111827;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 800;
+        line-height: 1.22;
       }
       .metric-sub,
       .source-meta {
         color: #9CA3AF;
-        font-size: 12px;
+        font-size: 10.5px;
+        line-height: 1.18;
       }
       .metric-value {
         color: #111827;
         font-size: 13px;
         font-weight: 800;
         font-variant-numeric: tabular-nums;
+      }
+      .review-row-marker {
+        height: 1px;
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        margin: 0;
+      }
+      .review-symbol {
+        color: #0F172A;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0;
+        line-height: 1.1;
+      }
+      .review-value-stack {
+        display: grid;
+        gap: 0;
+        min-width: 0;
+      }
+      .review-value-stack strong {
+        color: #111827;
+        font-size: 12px;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+      }
+      .review-value-stack span,
+      .review-action-hint {
+        color: #64748B;
+        font-size: 11px;
+        line-height: 1.2;
+      }
+      .review-action-hint {
+        display: grid;
+        gap: 1px;
+      }
+      .review-action-hint span {
+        color: #9CA3AF;
+        font-size: 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .review-action-hint strong {
+        color: #475569;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.15;
+      }
+      .review-evidence-panel {
+        margin: 5px 0 8px;
+        display: grid;
+        gap: 4px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 7px;
+        background: #FBFCFE;
+        padding: 8px 10px;
+        color: #475569;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .review-evidence-panel strong {
+        color: #0F172A;
+        font-size: 12px;
+      }
+      .review-evidence-panel span {
+        max-height: 92px;
+        overflow: hidden;
       }
       .source-snippet {
         margin-top: 8px;
@@ -2348,6 +2639,69 @@ def _styles() -> str:
       .tone-orange { background: #FFF7ED; color: #92400E; border-color: #F7D8A9; }
       .tone-red { background: #FFF5F5; color: #991B1B; border-color: #F3D2D2; }
       .tone-gray { background: #F8FAFC; color: #475569; border-color: #E4EAF1; }
+      .review-summary-card.tone-green,
+      .review-summary-card.tone-blue,
+      .review-summary-card.tone-yellow,
+      .review-summary-card.tone-orange,
+      .review-summary-card.tone-red,
+      .review-summary-card.tone-gray {
+        background: #FBFCFE;
+        border-color: rgba(148, 163, 184, 0.16);
+      }
+      .review-summary-card.tone-green strong { color: #166534; }
+      .review-summary-card.tone-blue strong { color: #1E3A8A; }
+      .review-summary-card.tone-yellow strong { color: #854D0E; }
+      .review-summary-card.tone-orange strong { color: #92400E; }
+      .review-summary-card.tone-red strong { color: #991B1B; }
+      .review-summary-card.tone-gray strong { color: #334155; }
+      .review-summary-card.tone-green span,
+      .review-summary-card.tone-blue span,
+      .review-summary-card.tone-yellow span,
+      .review-summary-card.tone-orange span,
+      .review-summary-card.tone-red span,
+      .review-summary-card.tone-gray span {
+        color: #7C8797;
+      }
+      div[data-testid="stButton"] > button {
+        min-height: 24px;
+        height: 24px;
+        padding: 0 7px;
+        border-radius: 999px;
+        border-color: rgba(148, 163, 184, 0.28);
+        background: rgba(255, 255, 255, 0.72);
+        color: #475569;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        box-shadow: none;
+      }
+      div[data-testid="stButton"] p {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      div[data-testid="stButton"] > button:hover {
+        border-color: rgba(71, 85, 105, 0.36);
+        background: #F8FAFC;
+        color: #0F172A;
+      }
+      div[data-testid="stButton"] > button:disabled {
+        opacity: 0.42;
+        color: #94A3B8;
+        background: #F8FAFC;
+      }
+      div[data-testid="stExpander"] details {
+        border-color: rgba(148, 163, 184, 0.16);
+        border-radius: 7px;
+        background: #FBFCFE;
+      }
+      div[data-testid="stExpander"] details summary {
+        min-height: 28px;
+        padding: 4px 8px;
+        font-size: 12px;
+        color: #475569;
+      }
       @media (max-width: 1100px) {
         .review-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .review-ai-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
