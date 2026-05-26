@@ -127,6 +127,9 @@ Avoid making the session appear stuck after a command has already returned.
 5. If no tool is running but reasoning takes more than about 30 seconds, send a short status update.
 6. For multi-step tasks, report progress between steps instead of saving all feedback for the final summary.
 7. If a command has completed but the turn feels stuck, stop further整理/analysis and give only a status report.
+8. If a command has returned and the remaining work is synthesis, audit write-up, or review wording, immediately say that no shell command is running and that the result is being organized.
+9. If synthesis may take more than 60 seconds, send a status update before continuing; if it may take more than 2 minutes, send partial findings or a compact status report instead of waiting for a perfect final answer.
+10. For architecture audits and reviews, stream findings by section when useful; do not hold all P0/P1/P2 findings silently until the end.
 
 ## Test Feedback Rule
 

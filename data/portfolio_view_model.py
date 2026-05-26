@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
-import sqlite3
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
+from data.cache_read_model import CacheReadModel
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
@@ -162,21 +158,17 @@ def _current_prices_for_positions(
     symbols = [str(position.get("symbol") or "").strip().upper() for position in positions]
     symbols = [symbol for symbol in symbols if symbol]
     path = db_path or CACHE_PATH
-    quote_prices = _quote_snapshot_prices(path, symbols)
-    history_prices = _latest_history_prices(path, symbols)
+    cache = CacheReadModel(path)
     provided_prices = _normalize_prices(current_prices)
     prices: dict[str, float | None] = {}
     statuses: dict[str, str] = {}
     for symbol in symbols:
-        quote_price = quote_prices.get(symbol)
-        history_price = history_prices.get(symbol)
+        cache_price = cache.get_current_price(symbol)
+        cache_status = cache.get_price_status(symbol)
         provided_price = _number(provided_prices.get(symbol))
-        if quote_price is not None:
-            prices[symbol] = quote_price
-            statuses[symbol] = "quote_snapshot"
-        elif history_price is not None:
-            prices[symbol] = history_price
-            statuses[symbol] = "price_history"
+        if cache_price is not None:
+            prices[symbol] = cache_price
+            statuses[symbol] = cache_status
         elif provided_price is not None:
             prices[symbol] = provided_price
             statuses[symbol] = "provided"
@@ -197,17 +189,17 @@ def _system_refs_for_positions(
     refs: dict[str, dict[str, Any]] = {}
     input_refs = _system_refs_from_inputs(system_decision_inputs)
     path = db_path or CACHE_PATH
-    snapshots = _quote_snapshot_payloads(path, symbols)
+    cache = CacheReadModel(path)
     plan_store = StockPlanStore(path)
     for symbol in symbols:
         if symbol in input_refs:
             refs[symbol] = input_refs[symbol]
             continue
-        snapshot = snapshots.get(symbol)
+        snapshot = cache.get_quote_payload(symbol)
         if not snapshot:
             refs[symbol] = _empty_system_ref()
             continue
-        refs[symbol] = _system_ref_from_local_cache(symbol, snapshot, path, current_prices.get(symbol), plan_store)
+        refs[symbol] = _system_ref_from_local_cache(symbol, snapshot, cache, current_prices.get(symbol), plan_store)
     return refs
 
 
@@ -233,12 +225,12 @@ def _system_refs_from_inputs(system_decision_inputs: dict[str, dict[str, Any]] |
 def _system_ref_from_local_cache(
     symbol: str,
     snapshot: dict,
-    path: Path,
+    cache: CacheReadModel,
     current_price: float | None,
     plan_store: StockPlanStore,
 ) -> dict[str, Any]:
     try:
-        history = _price_history_frame(path, symbol)
+        history = cache.get_price_history(symbol)
         technicals = latest_technical_snapshot(add_technical_indicators(history))
         if current_price is not None:
             snapshot = dict(snapshot)
@@ -311,86 +303,6 @@ def _buy_zone_status(buy_zone: Any) -> str | None:
     if isinstance(buy_zone, dict):
         return buy_zone.get("currentZone") or buy_zone.get("current_zone")
     return getattr(buy_zone, "currentZone", None) or getattr(buy_zone, "current_zone", None)
-
-
-def _quote_snapshot_prices(path: Path, symbols: list[str]) -> dict[str, float | None]:
-    return {symbol: _number(payload.get("current_price")) for symbol, payload in _quote_snapshot_payloads(path, symbols).items()}
-
-
-def _quote_snapshot_payloads(path: Path, symbols: list[str]) -> dict[str, dict]:
-    if not symbols or not path.exists():
-        return {}
-    payloads: dict[str, dict] = {}
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "quote_snapshots"):
-            return {}
-        for symbol in symbols:
-            row = conn.execute(
-                "SELECT payload_json FROM quote_snapshots WHERE ticker = ?",
-                (symbol,),
-            ).fetchone()
-            if not row:
-                continue
-            try:
-                payload = json.loads(row[0])
-            except (TypeError, ValueError):
-                payload = {}
-            payloads[symbol] = payload if isinstance(payload, dict) else {}
-    return payloads
-
-
-def _latest_history_prices(path: Path, symbols: list[str]) -> dict[str, float | None]:
-    if not symbols or not path.exists():
-        return {}
-    prices: dict[str, float | None] = {}
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "price_history"):
-            return {}
-        for symbol in symbols:
-            row = conn.execute(
-                """
-                SELECT close
-                FROM price_history
-                WHERE ticker = ?
-                  AND close IS NOT NULL
-                ORDER BY date DESC
-                LIMIT 1
-                """,
-                (symbol,),
-            ).fetchone()
-            if row:
-                prices[symbol] = _number(row[0])
-    return prices
-
-
-def _price_history_frame(path: Path, symbol: str) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "price_history"):
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-        frame = pd.read_sql_query(
-            """
-            SELECT date, open, high, low, close, volume
-            FROM price_history
-            WHERE ticker = ?
-            ORDER BY date
-            """,
-            conn,
-            params=(symbol,),
-        )
-    if frame.empty:
-        return frame
-    frame["date"] = pd.to_datetime(frame["date"])
-    return frame
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return bool(row)
 
 
 def _number(value: object) -> float | None:

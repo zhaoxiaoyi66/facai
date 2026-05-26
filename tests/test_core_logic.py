@@ -65,6 +65,7 @@ from data.ai_review_assistant import (
     validate_ai_review_result,
 )
 from data.calculated_metrics import calculate_metrics
+from data.cache_read_model import CacheReadModel
 from data.data_confidence import enrich_data_confidence
 from data.data_health import build_data_health_summary
 from data.disclosure_pipeline import DisclosurePipeline
@@ -3524,6 +3525,43 @@ class ScoringTests(unittest.TestCase):
             self.assertFalse(summary["cacheExists"])
             self.assertEqual(summary["healthyCount"], 0)
             self.assertEqual(summary["topIssues"][0]["category"], "cache_missing")
+
+    def test_cache_read_model_prefers_quote_price_and_reports_stale_quote(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            self._insert_quote_snapshot(
+                db_path,
+                "NOW",
+                {"currentPrice": 130, "ticker": "NOW"},
+                "2026-05-24T00:00:00+00:00",
+            )
+            self._insert_price_history(db_path, "NOW", [("2026-05-25", 120)])
+
+            cache = CacheReadModel(
+                db_path,
+                now=datetime(2026, 5, 26, tzinfo=timezone.utc),
+                quote_max_age_hours=24,
+            )
+
+            self.assertEqual(cache.get_quote_payload("now")["ticker"], "NOW")
+            self.assertEqual(cache.get_current_price("now"), 130)
+            self.assertEqual(cache.get_latest_close("now"), 120)
+            self.assertEqual(cache.get_price_status("now"), "stale_quote")
+            self.assertEqual(cache.get_history_status("now"), "available")
+
+    def test_cache_read_model_falls_back_to_latest_close_and_missing_statuses(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            self._insert_price_history(db_path, "CRM", [("2026-05-24", 190), ("2026-05-25", 200)])
+
+            cache = CacheReadModel(db_path)
+
+            self.assertEqual(cache.get_current_price("crm"), 200)
+            self.assertEqual(cache.get_price_status("crm"), "price_history")
+            self.assertEqual(cache.get_history_status("crm"), "available")
+            self.assertIsNone(cache.get_current_price("hood"))
+            self.assertEqual(cache.get_price_status("hood"), "missing")
+            self.assertEqual(cache.get_history_status("hood"), "missing")
 
     def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:
         with TemporaryDirectory() as tmpdir:

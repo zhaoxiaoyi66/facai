@@ -24,11 +24,14 @@ Data conversation:
 4. If a task needs both UI and data changes, split it into two handoffs.
 5. If there is conflict, stop and ask the user which version should win.
 6. Avoid long silent waits. The user has repeatedly felt that Codex is stuck when tool runs or multi-step work are quiet. Send short progress updates before and after slow commands, installs, builds, browser launches, or any step likely to take more than about 30 seconds. If a command is still running or blocked, say so plainly instead of staying silent.
+7. When a command has returned but the remaining work is synthesis, audit write-up, or review wording, report immediately that no shell command is running and the result is being organized.
+8. If synthesis may take more than 60 seconds, send a status update before continuing; if it may take more than 2 minutes, send partial findings or a compact status report instead of waiting for a perfect final answer.
 
 ## Coordination Notes
 
 | Date | Topic | Symptom | Likely Cause | Mitigation |
 | --- | --- | --- | --- | --- |
+| 2026-05-26 | Post-command synthesis stuck-state | Commands can finish quickly while Codex appears stuck during long audit/review summarization. | The shell is done, but the assistant is silently organizing conclusions or trying to produce a polished final report. | After every command, report the result first. If only synthesis remains, say no shell is running. After 60 seconds, send a status update; after 2 minutes, send partial findings or a compact status report. |
 | 2026-05-25 | GIF / long visual workflow stuck-state | GIF capture/encoding or short verification commands can appear stuck in the Codex app, especially after parallel tool calls or user interruption. | Encoding/browser capture may run with little output; app command-status UI can lag behind completed commands; interrupted turns may leave stale "running/thinking" indicators. | Prefer sequential short commands for verification, avoid unnecessary parallel git checks, split GIF work into capture -> encode -> verify, keep GIFs short/low-fps/smaller width, use timeouts, and send progress before/after any slow visual or encoding step. |
 
 ## Active Work
@@ -36,6 +39,15 @@ Data conversation:
 None.
 
 ## Latest Handoff
+
+2026-05-26 Data conversation:
+- Owner: Data conversation.
+- Task: Record post-command synthesis stuck-state discipline for both conversations.
+- Files touched: `CODEX_WORKFLOW.md`, `AGENT_HANDOFF.md`.
+- What changed: Added rules that after a command returns, Codex must report the result before synthesis; if no shell is running, say so; send a status update after 60 seconds of synthesis and partial findings or compact status after 2 minutes.
+- Verification: Documentation-only change; no tests run.
+- Next needed: Both conversations should follow this rule for audits, reviews, and any long summary work.
+- Do not touch yet: No app code, data, scoring, UI behavior, database, cache, external API, or tests were changed.
 
 2026-05-25 Data conversation:
 - Owner: Data conversation.

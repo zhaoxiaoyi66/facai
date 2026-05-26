@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from buy_zone_engine import generate_buy_zone
+from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -30,29 +28,27 @@ def build_data_health_summary(
         _add_issue(summary, "cache_missing", None, "cache.sqlite 不存在")
         return summary
 
-    quote_snapshots = _quote_snapshots(path)
-    history_symbols = _history_symbols(path)
     current_time = now or datetime.now(timezone.utc)
+    cache = CacheReadModel(path, now=current_time, quote_max_age_hours=quote_max_age_hours)
     healthy_symbols = 0
 
     for symbol in symbols:
         symbol_issues = 0
-        quote = quote_snapshots.get(symbol)
-        payload = quote.get("payload") if quote else None
-        current_price = _current_price(payload or {})
+        payload = cache.get_quote_payload(symbol)
+        current_price = cache.get_current_price(symbol)
         if current_price is None:
             summary["missingPriceCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "missing_price", symbol, "观察池缺少 current price")
-        if quote and _is_stale(quote.get("fetched_at"), current_time, quote_max_age_hours):
+        if cache.get_price_status(symbol) == "stale_quote":
             summary["stalePriceCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期")
-        if symbol not in history_symbols:
+        if cache.get_history_status(symbol) == "missing":
             summary["missingHistoryCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "missing_history", symbol, "price_history 缺失")
-        if not _can_generate_final_decision(path, symbol, payload):
+        if not _can_generate_final_decision(cache, symbol, payload):
             summary["finalDecisionErrorCount"] += 1
             symbol_issues += 1
             _add_issue(summary, "final_decision_error", symbol, "finalDecision 无法用本地数据生成")
@@ -60,7 +56,7 @@ def build_data_health_summary(
             healthy_symbols += 1
 
     summary["healthyCount"] = healthy_symbols
-    summary["portfolioMissingPriceCount"] = _portfolio_missing_price_count(path, quote_snapshots, history_symbols)
+    summary["portfolioMissingPriceCount"] = _portfolio_missing_price_count(path, cache)
     if summary["portfolioMissingPriceCount"]:
         _add_issue(summary, "portfolio_missing_price", None, "组合持仓存在缺价格标的")
     summary["outcomeMissingCount"] = _outcome_missing_count(path)
@@ -84,37 +80,7 @@ def _empty_summary() -> dict[str, Any]:
     }
 
 
-def _quote_snapshots(path: Path) -> dict[str, dict[str, Any]]:
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "quote_snapshots"):
-            return {}
-        rows = conn.execute("SELECT ticker, payload_json, fetched_at FROM quote_snapshots").fetchall()
-    snapshots: dict[str, dict[str, Any]] = {}
-    for ticker, payload_json, fetched_at in rows:
-        symbol = _normalize_symbol(ticker)
-        try:
-            payload = json.loads(payload_json or "{}")
-        except json.JSONDecodeError:
-            payload = {}
-        snapshots[symbol] = {"payload": payload if isinstance(payload, dict) else {}, "fetched_at": fetched_at}
-    return snapshots
-
-
-def _history_symbols(path: Path) -> set[str]:
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "price_history"):
-            return set()
-        rows = conn.execute(
-            """
-            SELECT DISTINCT ticker
-            FROM price_history
-            WHERE close IS NOT NULL
-            """
-        ).fetchall()
-    return {_normalize_symbol(row[0]) for row in rows}
-
-
-def _portfolio_missing_price_count(path: Path, quote_snapshots: dict[str, dict[str, Any]], history_symbols: set[str]) -> int:
+def _portfolio_missing_price_count(path: Path, cache: CacheReadModel) -> int:
     with closing(sqlite3.connect(path)) as conn:
         if not _table_exists(conn, "portfolio_positions"):
             return 0
@@ -128,8 +94,7 @@ def _portfolio_missing_price_count(path: Path, quote_snapshots: dict[str, dict[s
     missing = 0
     for row in rows:
         symbol = _normalize_symbol(row[0])
-        quote = quote_snapshots.get(symbol)
-        if _current_price((quote or {}).get("payload") or {}) is None and symbol not in history_symbols:
+        if cache.get_current_price(symbol) is None:
             missing += 1
     return missing
 
@@ -142,10 +107,10 @@ def _outcome_missing_count(path: Path) -> int:
     return int(row[0] or 0) if row else 0
 
 
-def _can_generate_final_decision(path: Path, symbol: str, payload: dict | None) -> bool:
+def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: dict | None) -> bool:
     if not payload:
         return False
-    history = _price_history_frame(path, symbol)
+    history = cache.get_price_history(symbol)
     if history.empty:
         return False
     try:
@@ -163,36 +128,6 @@ def _can_generate_final_decision(path: Path, symbol: str, payload: dict | None) 
     return bool(getattr(bundle, "finalAction", None))
 
 
-def _price_history_frame(path: Path, symbol: str) -> pd.DataFrame:
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "price_history"):
-            return pd.DataFrame(columns=["date", "close"])
-        frame = pd.read_sql_query(
-            """
-            SELECT date, close
-            FROM price_history
-            WHERE ticker = ?
-              AND close IS NOT NULL
-            ORDER BY date
-            """,
-            conn,
-            params=(_normalize_symbol(symbol),),
-        )
-    if frame.empty:
-        return frame
-    frame["date"] = pd.to_datetime(frame["date"])
-    return frame
-
-
-def _current_price(payload: dict[str, Any]) -> float | None:
-    return _first_number(
-        payload.get("current_price"),
-        payload.get("currentPrice"),
-        payload.get("price"),
-        payload.get("regularMarketPrice"),
-    )
-
-
 def _first_number(*values: object) -> float | None:
     for value in values:
         if value is None or value == "":
@@ -202,19 +137,6 @@ def _first_number(*values: object) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
-
-
-def _is_stale(fetched_at: object, now: datetime, max_age_hours: float) -> bool:
-    if not fetched_at:
-        return True
-    try:
-        fetched = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=timezone.utc)
-    return (now.astimezone(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds() > max_age_hours * 3600
-
 
 def _add_issue(summary: dict[str, Any], category: str, symbol: str | None, message: str) -> None:
     summary["topIssues"].append({"category": category, "symbol": symbol, "message": message})
