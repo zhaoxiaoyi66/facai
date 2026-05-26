@@ -24,7 +24,6 @@ from data.dashboard_lanes import (
     row_is_actionable as _row_is_actionable,
     row_value as _row_value,
     summary_lane_groups as _summary_lane_groups,
-    today_priority_rows as _today_priority_rows,
     wait_or_confirm_rows as _wait_or_confirm_rows,
 )
 from data.dashboard_risk_model import (
@@ -53,6 +52,18 @@ from ui.dashboard_drawer import (
     render_client_stock_detail_drawers,
     render_client_stock_detail_drawers as _render_client_stock_detail_drawers,
     render_stock_detail_drawer as _render_stock_detail_drawer,
+)
+from ui.dashboard_lanes_ui import (
+    _dashboard_priority_item_html as _dashboard_priority_item_html_base,
+    _dashboard_priority_label,
+    _dashboard_priority_strip_html as _dashboard_priority_strip_html_base,
+    _lane_full_reason as _lane_full_reason_base,
+    _lane_item_html as _lane_item_html_base,
+    _lane_more_html as _lane_more_html_base,
+    _lane_reason as _lane_reason_base,
+    _lane_short_reason,
+    _lane_stack_html as _lane_stack_html_base,
+    _summary_panel_head_html,
 )
 from ui.dashboard_tables import (
     _badge_cell_html,
@@ -1801,69 +1812,11 @@ def _market_stat_html(label: object, value: object, detail: object) -> str:
 
 
 def _dashboard_priority_strip_html(table: pd.DataFrame) -> str:
-    items = [
-        _dashboard_priority_item_html(lane_key, row, color)
-        for lane_key, row, color in _today_priority_rows(table)
-    ]
-    if items:
-        body = "".join(items)
-    else:
-        body = '<div class="dashboard-priority-empty">暂无明确可执行机会，优先等待回踩或复核数据。</div>'
-    return (
-        '<section class="dashboard-priority-strip">'
-        '<div class="dashboard-priority-head"><strong>今日优先</strong><span>最多 5 项</span></div>'
-        f'<div class="dashboard-priority-list">{body}</div>'
-        "</section>"
-    )
+    return _dashboard_priority_strip_html_base(table, _dashboard_priority_item_html)
 
 
 def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> str:
-    label = _dashboard_priority_label(lane_key, row)
-    symbol = str(row.get("symbol") or "").upper()
-    safe_symbol = escape(symbol)
-    action = _short_badge_text(_row_final_action(row) or row.get("valuationStatus") or "只观察")
-    reason = _lane_short_reason(_lane_full_reason(row))
-    return (
-        f'<a class="dashboard-priority-row tone-{escape(color)}" href="?page=detail&symbol={safe_symbol}" target="_self" '
-        f'aria-label="打开 {safe_symbol} 个股研究" '
-        f'title="{escape(label)} · {safe_symbol} · {escape(str(action))} · {escape(reason)}">'
-        f'<span class="dashboard-priority-status {escape(color)}" title="{escape(label)}"><i></i></span>'
-        f'<strong>{safe_symbol}</strong>'
-        f'<span>{escape(str(action))}</span>'
-        f'<em>{escape(reason)}</em>'
-        "</a>"
-    )
-
-
-def _dashboard_priority_label(lane_key: str, row: pd.Series) -> str:
-    if lane_key == "actionable":
-        return "可行动"
-    if lane_key == "nearBuyZone":
-        return "接近"
-    if lane_key == "waitOrReview":
-        action = _row_final_action(row)
-        if "复核" in action or row.get("dataConfidence") == "low":
-            return "复核"
-        return "等待"
-    if lane_key == "noChaseHighRisk":
-        action = _row_final_action(row)
-        if "数据" in action or row.get("dataConfidence") == "low":
-            return "复核"
-        return "风险"
-    return "观察"
-
-
-def _summary_panel_head_html(title: object, subtitle: object, count: int, color: str) -> str:
-    background, foreground, border = BADGE_STYLES.get(color, BADGE_STYLES["gray"])
-    return (
-        f'<div class="summary-panel-head tone-{escape(color)}">'
-        "<div>"
-        f'<div class="summary-panel-title">{escape(str(title))}</div>'
-        f'<div class="summary-panel-subtitle">{escape(str(subtitle))}</div>'
-        "</div>"
-        f'<span class="summary-count" style="background:{background};color:{foreground};border:1px solid {border};">{count}</span>'
-        "</div>"
-    )
+    return _dashboard_priority_item_html_base(lane_key, row, color, _lane_full_reason)
 
 
 def _render_lane_more_button(lane_key: str) -> None:
@@ -1876,13 +1829,7 @@ def _lane_more_label() -> str:
 
 
 def _lane_more_html(lane_key: str, hidden_count: int) -> str:
-    label = LANE_FILTER_LABELS.get(str(lane_key), "该分组")
-    legacy_label = f"还有 {int(hidden_count)} 只 · 查看全部"
-    return (
-        f'<span class="lane-more" title="原地聚焦主表：{escape(label)}" aria-label="{escape(legacy_label)}">'
-        f"<span>+{int(hidden_count)} 未显示</span><b>查看全部</b>"
-        "</span>"
-    )
+    return _lane_more_html_base(lane_key, hidden_count, LANE_FILTER_LABELS)
 
 
 def _render_dashboard_styles() -> None:
@@ -4341,66 +4288,26 @@ def _summary_badge_html(symbol: object, action: object, color: str) -> str:
 
 
 def _lane_item_html(row: pd.Series) -> str:
-    state = str(row.get("valuationStatus") or row.get("entryRating") or "待确认")
-    state_color = _badge_color_for_cell("valuationStatus", state, row)
-    symbol = str(row.get("symbol") or "")
-    full_reason = _lane_full_reason(row)
-    short_reason = _lane_short_reason(full_reason)
-    return (
-        f'<a class="lane-item" href="#" data-dashboard-drawer-open="{escape(symbol)}" title="{escape(full_reason)}">'
-        f'<span class="lane-symbol">{escape(symbol)}</span>'
-        f'<span class="lane-reason">{escape(short_reason)}</span>'
-        f'{_badge_span_html(_short_badge_text(state), state_color, "lane-state-badge")}'
-        "</a>"
-    )
+    return _lane_item_html_base(row, _badge_color_for_cell, _lane_full_reason)
 
 
 def _lane_stack_html(rows: list[pd.Series]) -> str:
-    if not rows:
-        body = '<div class="summary-empty is-blank" aria-hidden="true"></div>'
-    else:
-        body = "".join(_lane_item_html(row) for row in rows[:4])
-    return f'<div class="lane-row-stack">{body}</div>'
+    return _lane_stack_html_base(rows, _lane_item_html)
 
 
 def _lane_reason(row: pd.Series) -> str:
-    return _lane_short_reason(_lane_full_reason(row))
+    return _lane_reason_base(row, _lane_full_reason)
 
 
 def _lane_full_reason(row: pd.Series) -> str:
-    reasons = _list_value(row.get("overheatReasons"))
-    if row.get("dataConfidence") == "low":
-        return "关键数据待复核"
-    if reasons and _numeric(row.get("overheatScore")) >= 40:
-        return _translate_factor(str(reasons[0])).rstrip("。")
-    positives = _translated_list(_list_value(row.get("keyPositiveDrivers")), limit=1)
-    if positives:
-        return positives[0]
-    risks = _translated_list(_quality_negative_items(row), limit=1)
-    if risks:
-        return risks[0]
-    return str(row.get("valuationStatus") or "等待确认")
-
-
-def _lane_short_reason(reason: object) -> str:
-    text = str(reason or "").strip().rstrip("。")
-    if not text:
-        return "等待确认"
-    if "今日下跌只是短期冷却" in text or "不等于进入击球区" in text:
-        return "短期冷却，未到买点"
-    if "关键数据待复核" in text or ("数据" in text and "复核" in text):
-        return "数据待复核"
-    if "RSI" in text and any(keyword in text for keyword in ["高于", "偏热", "过热", "极高"]):
-        return "RSI仍偏热"
-    if "回撤" in text and any(keyword in text for keyword in ["深", "较大", "超过", "距高点"]):
-        return "回撤较深"
-    if "收入增速" in text or "收入增长" in text:
-        return "收入增速"
-    if "自由现金流" in text or "FCF" in text:
-        return "FCF支撑"
-    if len(text) <= 18:
-        return text
-    return text[:17] + "…"
+    return _lane_full_reason_base(
+        row,
+        _list_value,
+        _numeric,
+        _translate_factor,
+        lambda items, limit=None: _translated_list(items, limit=limit),
+        _quality_negative_items,
+    )
 
 
 def _overheat_card_html(row: pd.Series) -> str:
