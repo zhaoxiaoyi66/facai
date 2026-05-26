@@ -81,6 +81,8 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any]) -> dict[
         "missingPrice": bool(row.get("missingPrice")),
         "systemMaxPosition": row.get("systemMaxPosition"),
         "systemStatus": row.get("systemStatus"),
+        "executionSource": system_ref.get("executionSource"),
+        "finalDecision": dict(system_ref.get("finalDecision") or {}),
         "systemAction": system_ref.get("systemAction"),
         "systemCurrentAdd": system_ref.get("systemCurrentAdd"),
         "buyZoneStatus": system_ref.get("buyZoneStatus"),
@@ -249,10 +251,12 @@ def _system_ref_from_local_cache(
 
 def _system_ref_from_bundle(bundle, buy_zone_status: str | None) -> dict[str, Any]:
     return {
+        "executionSource": bundle.executionSource,
+        "finalDecision": bundle.as_dict(),
         "systemAction": bundle.finalAction,
         "systemMaxPosition": bundle.maxPortfolioWeightPercent,
         "systemCurrentAdd": bundle.currentAddLimitPercent,
-        "buyZoneStatus": buy_zone_status,
+        "buyZoneStatus": bundle.buyZoneStatus or buy_zone_status,
         "decisionLane": bundle.decisionLane,
         "blockReasons": list(bundle.blockReasons),
         "reviewReasons": list(bundle.reviewReasons),
@@ -266,6 +270,8 @@ def _empty_system_ref() -> dict[str, Any]:
         "systemAction": None,
         "systemMaxPosition": None,
         "systemCurrentAdd": None,
+        "executionSource": None,
+        "finalDecision": {},
         "buyZoneStatus": None,
         "decisionLane": None,
         "blockReasons": [],

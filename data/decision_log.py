@@ -50,15 +50,7 @@ def build_decision_snapshot_from_bundle(
         ),
         "risk_rating": _clean_text(_bundle_value(final_decision_bundle, "riskRating", "risk_rating")),
         "data_confidence": _clean_text(_bundle_value(final_decision_bundle, "dataConfidence", "data_confidence")),
-        "buy_zone_status": _clean_text(
-            _bundle_value(
-                final_decision_bundle,
-                "buyZoneStatus",
-                "buy_zone_status",
-                "displayCategory",
-                "display_category",
-            )
-        ),
+        "buy_zone_status": _clean_text(_bundle_buy_zone_status(final_decision_bundle)),
         "block_reasons_json": _reasons_json(block_reasons),
         "review_reasons_json": _reasons_json(review_reasons),
         "reason_text": _reason_text(block_reasons, review_reasons, final_decision_bundle),
@@ -1066,6 +1058,20 @@ def _bundle_list(bundle, *names: str) -> list:
     if not isinstance(parsed, list):
         parsed = [parsed]
     return parsed
+
+
+def _bundle_buy_zone_status(bundle) -> str:
+    if _bundle_value(bundle, "executionSource", "execution_source") == "finalDecisionBundle":
+        return _clean_text(_bundle_value(bundle, "displayCategory", "display_category"))
+    return _clean_text(
+        _bundle_value(
+            bundle,
+            "buyZoneStatus",
+            "buy_zone_status",
+            "displayCategory",
+            "display_category",
+        )
+    )
 
 
 def _reason_text(block_reasons: list, review_reasons: list, bundle) -> str:

@@ -10,6 +10,7 @@ from scoring.final_decision import derive_final_decision
 
 @dataclass(frozen=True)
 class FinalDecisionBundle:
+    executionSource: str
     finalAction: str
     decisionLane: str
     displayCategory: str
@@ -19,6 +20,12 @@ class FinalDecisionBundle:
     blockReasons: list[str]
     reviewReasons: list[str]
     dataConfidence: str
+    buyZoneStatus: str | None
+    legacyAction: str
+    scoreCurrentAddLimitPercent: float | None
+    scoreMaxPortfolioWeightPercent: float | None
+    positionPlanCurrentAddLimitPercent: float | None
+    positionPlanMaxPortfolioWeightPercent: float | None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -41,6 +48,7 @@ def build_final_decision_bundle(
     )
     decision = derive_final_decision(score, effective_buy_zone, effective_position_plan)
     return FinalDecisionBundle(
+        executionSource="finalDecisionBundle",
         finalAction=decision.finalAction,
         decisionLane=decision.decisionLane,
         displayCategory=decision.displayCategory,
@@ -50,6 +58,30 @@ def build_final_decision_bundle(
         blockReasons=decision.blockReasons,
         reviewReasons=decision.reviewReasons,
         dataConfidence=decision.dataConfidence,
+        buyZoneStatus=_buy_zone_status(effective_buy_zone),
+        legacyAction=str(_value(score, "action", default="") or ""),
+        scoreCurrentAddLimitPercent=_number(
+            score,
+            "current_add_limit_percent",
+            "currentAddLimitPercent",
+            "max_suggested_position_percent",
+            "maxSuggestedPositionPercent",
+        ),
+        scoreMaxPortfolioWeightPercent=_number(
+            score,
+            "max_portfolio_weight_percent",
+            "maxPortfolioWeightPercent",
+        ),
+        positionPlanCurrentAddLimitPercent=_number(
+            effective_position_plan,
+            "currentAddLimitPercent",
+            "current_add_limit_percent",
+        ),
+        positionPlanMaxPortfolioWeightPercent=_number(
+            effective_position_plan,
+            "maxPortfolioWeightPercent",
+            "max_portfolio_weight_percent",
+        ),
     )
 
 
@@ -72,3 +104,32 @@ def _effective_position_plan(
         return position_plan
     resolved_symbol = symbol or effective_buy_zone.symbol
     return generate_position_plan(resolved_symbol, effective_buy_zone, score)
+
+
+def _buy_zone_status(buy_zone: Any) -> str | None:
+    value = _value(buy_zone, "currentZone", "current_zone", default=None)
+    return str(value) if value not in {None, ""} else None
+
+
+def _number(source: Any, *names: str) -> float | None:
+    value = _value(source, *names, default=None)
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _value(source: Any, *names: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        for name in names:
+            if name in source:
+                return source[name]
+        return default
+    for name in names:
+        if hasattr(source, name):
+            return getattr(source, name)
+    return default

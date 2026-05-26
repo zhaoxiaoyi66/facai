@@ -1946,6 +1946,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(
             fields,
             {
+                "executionSource",
                 "finalAction",
                 "decisionLane",
                 "displayCategory",
@@ -1955,8 +1956,38 @@ class ScoringTests(unittest.TestCase):
                 "blockReasons",
                 "reviewReasons",
                 "dataConfidence",
+                "buyZoneStatus",
+                "legacyAction",
+                "scoreCurrentAddLimitPercent",
+                "scoreMaxPortfolioWeightPercent",
+                "positionPlanCurrentAddLimitPercent",
+                "positionPlanMaxPortfolioWeightPercent",
             },
         )
+
+    def test_final_decision_adapter_keeps_legacy_values_debug_only(self) -> None:
+        buy_action = sorted(BUY_ACTIONS)[0]
+        score = SimpleNamespace(
+            action=buy_action,
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=5,
+            maxPortfolioWeightPercent=15,
+        )
+        zone = SimpleNamespace(currentZone="no_chase")
+        plan = SimpleNamespace(currentAddLimitPercent=5, maxPortfolioWeightPercent=20)
+
+        bundle = build_final_decision_bundle(score, zone, plan)
+
+        self.assertEqual(bundle.executionSource, "finalDecisionBundle")
+        self.assertEqual(bundle.legacyAction, buy_action)
+        self.assertEqual(bundle.scoreCurrentAddLimitPercent, 5)
+        self.assertEqual(bundle.positionPlanCurrentAddLimitPercent, 5)
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
+        self.assertNotEqual(bundle.finalAction, bundle.legacyAction)
 
     def test_decision_snapshot_helper_builds_from_score_only_bundle(self) -> None:
         score = SimpleNamespace(
@@ -4409,6 +4440,9 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(row["decisionLane"], "actionable")
         self.assertEqual(row["blockReasons"], [])
         self.assertEqual(row["reviewReasons"], [])
+        self.assertEqual(row["executionSource"], "finalDecisionBundle")
+        self.assertEqual(row["finalDecision"]["finalAction"], row["systemAction"])
+        self.assertEqual(row["finalDecision"]["currentAddLimitPercent"], row["systemCurrentAdd"])
 
     def test_portfolio_view_model_flags_system_overweight(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -4455,6 +4489,9 @@ class ScoringTests(unittest.TestCase):
 
         row = view["rows"][0]
         self.assertEqual(row["decisionLane"], "blocked")
+        self.assertEqual(row["systemCurrentAdd"], 0)
+        self.assertEqual(row["finalDecision"]["legacyAction"], sorted(BUY_ACTIONS)[0])
+        self.assertEqual(row["finalDecision"]["currentAddLimitPercent"], 0)
         self.assertIn("buy_zone", row["blockReasons"])
         self.assertIn("system_not_addable", row["deviationWarnings"])
 
