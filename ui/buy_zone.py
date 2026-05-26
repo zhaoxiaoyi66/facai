@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from html import escape
-import json
 from types import SimpleNamespace
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 from buy_zone import BuyZoneInputs, calculate_buy_zone_ladder
 from buy_zone_engine import (
@@ -97,8 +95,8 @@ def render() -> None:
     _render_summary(rows)
     active_filter = _render_execution_toolbar(rows)
     visible_rows = _filter_rows(rows, active_filter)
-    _render_buy_zone_table(rows, visible_rows, plan_store)
     _render_client_buy_zone_drawers(visible_rows)
+    _render_buy_zone_table(rows, visible_rows, plan_store)
     _render_manual_and_advanced_settings(rows, plan_store)
 
 
@@ -429,7 +427,7 @@ def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_stor
             <div class="priority-strip-head"><strong>今日优先</strong><span>按执行价值和风险优先级排序</span></div>
             <div class="priority-list">{_priority_rows_html(rows)}</div>
           </div>
-          <div class="buy-zone-table">{header}{body}</div>
+          <div id="buy-zone-table" class="buy-zone-table">{header}{body}</div>
           <div class="execution-console-foot">点击“查看”打开禁追价、重仓区、校验提醒、估值输入和手动覆盖。</div>
         </section>
         """,
@@ -439,6 +437,7 @@ def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_stor
 
 def _buy_zone_row_html(row: dict) -> str:
     symbol = str(row["symbol"])
+    drawer_id = _buy_zone_drawer_id(symbol)
     display = resolve_buy_zone_display_category(row)
     status = str(display["displayCategory"])
     add_text, _ = _current_add_text(row)
@@ -455,7 +454,7 @@ def _buy_zone_row_html(row: dict) -> str:
         f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
         f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
         '<div class="buy-zone-row-actions">'
-        f'<a class="buy-zone-detail-link" href="#" data-buy-zone-drawer-open="{escape(symbol)}"><span>查看</span><i>›</i></a>'
+        f'<a class="buy-zone-detail-link" href="#{escape(drawer_id, quote=True)}" data-buy-zone-drawer-open="{escape(symbol, quote=True)}"><span>查看</span><i>›</i></a>'
         f'<a class="buy-zone-record-link" href="?page=buy-zone&recordSignal={escape(symbol, quote=True)}" target="_self">记录</a>'
         "</div>"
         "</div>"
@@ -463,75 +462,31 @@ def _buy_zone_row_html(row: dict) -> str:
 
 
 def _render_client_buy_zone_drawers(rows: list[dict]) -> None:
-    payload = {str(row["symbol"]).upper(): _buy_zone_drawer_html(row) for row in rows}
-    if not payload:
+    if not rows:
         return
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          const win = window.parent;
-          const doc = win.document;
-          win.__buyZoneDrawerPayload = {json.dumps(payload, ensure_ascii=False)};
-          let root = doc.getElementById("buy-zone-client-drawer-root");
-          if (!root) {{
-            root = doc.createElement("div");
-            root.id = "buy-zone-client-drawer-root";
-            doc.body.appendChild(root);
-          }}
-          function closeDrawer() {{
-            root.classList.remove("is-open");
-            root.innerHTML = "";
-            doc.body.classList.remove("dashboard-drawer-open");
-          }}
-          function openDrawer(symbol) {{
-            const key = String(symbol || "").toUpperCase();
-            const html = win.__buyZoneDrawerPayload && win.__buyZoneDrawerPayload[key];
-            if (!html) return;
-            root.innerHTML = html;
-            root.classList.add("is-open");
-            doc.body.classList.add("dashboard-drawer-open");
-          }}
-          if (!win.__buyZoneDrawerDelegationBound) {{
-            win.__buyZoneDrawerDelegationBound = true;
-            doc.addEventListener("click", (event) => {{
-              const target = event.target instanceof win.Element ? event.target : event.target && event.target.parentElement;
-              if (!(target instanceof win.Element)) return;
-              const opener = target.closest("[data-buy-zone-drawer-open]");
-              if (opener) {{
-                event.preventDefault();
-                openDrawer(opener.getAttribute("data-buy-zone-drawer-open"));
-                return;
-              }}
-              if (target.closest("[data-buy-zone-drawer-close]") || target.classList.contains("buy-zone-drawer-backdrop")) {{
-                event.preventDefault();
-                closeDrawer();
-              }}
-            }}, true);
-            doc.addEventListener("keydown", (event) => {{
-              if (event.key === "Escape") closeDrawer();
-            }});
-          }}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+    drawers = "".join(_buy_zone_drawer_html(row) for row in rows)
+    st.markdown(f'<div class="buy-zone-drawer-root">{drawers}</div>', unsafe_allow_html=True)
+
+
+def _buy_zone_drawer_id(symbol: str) -> str:
+    safe = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"-", "_"})
+    return f"buy-zone-drawer-{safe or 'stock'}"
 
 
 def _buy_zone_drawer_html(row: dict) -> str:
     symbol = str(row["symbol"])
+    drawer_id = _buy_zone_drawer_id(symbol)
     zone: BuyZoneEstimate = row["activeZone"]
     system_zone: BuyZoneEstimate = row["systemZone"]
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in (row.get("keyReasons") or [])[:6])
     warnings = "".join(f"<li>{escape(warning)}</li>" for warning in (row.get("warnings") or [])[:5])
     validation_errors = "".join(f"<li>{escape(error)}</li>" for error in (row.get("validationErrors") or [])[:5])
     return (
-        '<div class="buy-zone-drawer-backdrop"></div>'
+        f'<section id="{escape(drawer_id, quote=True)}" class="buy-zone-drawer-shell">'
+        '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭买区详情"></a>'
         '<aside class="stock-drawer buy-zone-drawer">'
-        '<a class="drawer-close-link" href="#" data-buy-zone-drawer-close="1" title="关闭">×</a>'
-        '<div class="drawer-topline">BuyZoneDrawer</div>'
+        '<a class="drawer-close-link" href="#buy-zone-table" title="关闭">×</a>'
+        '<div class="drawer-topline">买区详情</div>'
         f'<div class="drawer-head"><div><div class="drawer-symbol">{escape(symbol)}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or ""))}</div></div>'
         f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
@@ -559,6 +514,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<div class="drawer-section-title">手动覆盖</div>'
         '<div class="drawer-muted">手动覆盖优先于系统建议。编辑和保存可在单股详情页完成；本页可快速恢复系统建议。</div>'
         "</aside>"
+        "</section>"
     )
 
 
@@ -1383,6 +1339,15 @@ def _render_styles() -> None:
             background:#EFF6FF;
             color:#1D4ED8;
             font-weight:800;
+        }
+        .buy-zone-drawer-root {
+            display: contents;
+        }
+        .buy-zone-drawer-shell {
+            display: none;
+        }
+        .buy-zone-drawer-shell:target {
+            display: block;
         }
         .buy-zone-drawer-backdrop {
             position: fixed;

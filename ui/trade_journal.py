@@ -206,7 +206,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         )
         return
 
-    headers = ["日期", "股票", "操作", "数量 / 价格", "期权参数", "决策快照", "备注", "操作"]
+    headers = ["日期", "股票", "操作", "数量 / 价格", "期权参数", "关联信号", "备注", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     row_html = "".join(_entry_row_html(entry) for entry in entries)
     st.markdown(
@@ -739,11 +739,12 @@ def _signal_snapshot_summary_html(snapshot: dict) -> str:
 
 def _signal_snapshot_reasons_html(snapshot: dict) -> str:
     reasons = [
-        *[str(item) for item in snapshot.get("block_reasons", []) if str(item).strip()],
-        *[str(item) for item in snapshot.get("review_reasons", []) if str(item).strip()],
+        *[_signal_reason_label(item) for item in snapshot.get("block_reasons", []) if str(item).strip()],
+        *[_signal_reason_label(item) for item in snapshot.get("review_reasons", []) if str(item).strip()],
     ]
     if not reasons and str(snapshot.get("reason_text") or "").strip():
-        reasons = [str(snapshot.get("reason_text") or "").strip()]
+        raw_reasons = [item.strip() for item in str(snapshot.get("reason_text") or "").replace("；", ",").split(",")]
+        reasons = [_signal_reason_label(item) for item in raw_reasons if item]
     if reasons:
         body = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
     else:
@@ -754,6 +755,18 @@ def _signal_snapshot_reasons_html(snapshot: dict) -> str:
         f"<ul>{body}</ul>"
         "</section>"
     )
+
+
+def _signal_reason_label(value: object) -> str:
+    text = str(value or "").strip()
+    labels = {
+        "buy_zone": "买区阻断",
+        "data_confidence": "数据置信度",
+        "valuation_status": "估值状态",
+        "entry_rating": "入场评级",
+        "risk_rating": "风险评级",
+    }
+    return labels.get(text, text)
 
 
 def _signal_snapshot_outcomes_html(
@@ -1034,7 +1047,7 @@ def _friendly_error(message: str) -> str:
     if "cannot be negative" in message:
         return "数量、价格、权利金和行权价不能为负数。"
     if "must be an integer" in message:
-        return "决策快照 ID 需要填写整数。"
+        return "关联信号 ID 需要填写整数。"
     return "保存失败，请检查输入。"
 
 
