@@ -104,7 +104,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             quantity = trade_cols[0].text_input("数量", key="trade-journal-quantity")
             price = trade_cols[1].text_input("价格", key="trade-journal-price")
             decision_snapshot_id = trade_cols[2].text_input(
-                "决策快照 ID（可选）",
+                "关联信号 ID（可选）",
                 key="trade-journal-snapshot-id",
             )
 
@@ -283,7 +283,7 @@ def _render_signal_replay(
         st.markdown(
             (
                 '<div class="trade-journal-empty signal-empty">'
-                "<strong>当前周期暂无完整复盘样本，刷新 outcome 后再查看统计。</strong>"
+                "<strong>当前周期暂无完整复盘样本，刷新复盘结果后再查看统计。</strong>"
                 "<span>可先记录系统信号，再刷新复盘结果。</span>"
                 "</div>"
             ),
@@ -394,7 +394,7 @@ def _render_error_tag_management(
     _render_snapshot_rows(snapshots, decision_store, outcome_store, error_tag_store, horizon)
     selected_snapshot = _selected_snapshot(snapshots)
     if selected_snapshot:
-        _render_error_tag_editor(selected_snapshot, error_tag_store)
+        _render_signal_snapshot_drawer(selected_snapshot, outcome_store, error_tag_store, horizon)
 
 
 def _render_error_tag_summary(counts: list[dict], recent: list[dict]) -> None:
@@ -493,7 +493,7 @@ def _render_snapshot_rows(
         snapshot_id = int(snapshot.get("id") or 0)
         tags = error_tag_store.list_tags_for_snapshot(snapshot_id)
         outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
-        cols = st.columns([5.2, 0.72], gap="small", vertical_alignment="center")
+        cols = st.columns([5.2, 1.05], gap="small", vertical_alignment="center")
         cols[0].markdown(
             (
                 '<div class="trade-snapshot-row">'
@@ -509,7 +509,7 @@ def _render_snapshot_rows(
         )
         with cols[1]:
             action_cols = st.columns([1, 1], gap="small", vertical_alignment="center")
-            if action_cols[0].button("标记", key=f"trade-error-select-{snapshot_id}", width="stretch"):
+            if action_cols[0].button("查看", key=f"trade-snapshot-view-{snapshot_id}", width="stretch"):
                 st.session_state["trade_error_snapshot_id"] = snapshot_id
                 st.session_state.pop("trade_error_edit_tag", None)
                 st.rerun()
@@ -574,7 +574,6 @@ def _render_error_tag_editor(snapshot: dict, error_tag_store: DecisionErrorTagSt
                 st.session_state["trade_journal_notice"] = ("error", "请选择有效的错误标签。")
                 st.rerun()
             st.session_state.pop("trade_error_edit_tag", None)
-            st.session_state.pop("trade_error_snapshot_id", None)
             st.session_state["trade_journal_notice"] = ("success", "错误标签已保存。")
             st.rerun()
 
@@ -688,6 +687,104 @@ def _selected_snapshot(snapshots: list[dict]) -> dict | None:
     return None
 
 
+def _render_signal_snapshot_drawer(
+    snapshot: dict,
+    outcome_store: DecisionOutcomeStore,
+    error_tag_store: DecisionErrorTagStore,
+    active_horizon: str,
+) -> None:
+    snapshot_id = int(snapshot.get("id") or 0)
+    symbol = _text(snapshot.get("symbol"))
+    with st.container(key="trade-signal-drawer-container"):
+        st.markdown('<div class="trade-signal-drawer-marker"></div>', unsafe_allow_html=True)
+        head_cols = st.columns([1, 0.22], vertical_alignment="center")
+        head_cols[0].markdown(
+            (
+                '<div class="trade-signal-drawer-head">'
+                "<span>系统信号详情</span>"
+                f"<strong>{escape(symbol)}</strong>"
+                f"<em>{escape(_text(snapshot.get('decision_date')))}</em>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        if head_cols[1].button("关闭", key=f"trade-signal-drawer-close-{snapshot_id}", width="stretch"):
+            st.session_state.pop("trade_error_snapshot_id", None)
+            st.session_state.pop("trade_error_edit_tag", None)
+            st.rerun()
+
+        st.markdown(_signal_snapshot_summary_html(snapshot), unsafe_allow_html=True)
+        st.markdown(_signal_snapshot_reasons_html(snapshot), unsafe_allow_html=True)
+        st.markdown(
+            _signal_snapshot_outcomes_html(snapshot, outcome_store, active_horizon),
+            unsafe_allow_html=True,
+        )
+        _render_error_tag_editor(snapshot, error_tag_store)
+
+
+def _signal_snapshot_summary_html(snapshot: dict) -> str:
+    items = [
+        ("当时价格", _money_text(snapshot.get("price"))),
+        ("系统动作", _final_action_label(snapshot.get("final_action"))),
+        ("决策通道", _lane_label(snapshot.get("decision_lane"))),
+        ("当前可加", _percent_or_dash(snapshot.get("current_add_pct"))),
+        ("系统仓位上限", _percent_or_dash(snapshot.get("max_position_pct"))),
+    ]
+    rows = "".join(
+        f"<span>{escape(label)}</span><strong>{escape(value)}</strong>"
+        for label, value in items
+    )
+    return f'<section class="trade-signal-drawer-card summary-grid">{rows}</section>'
+
+
+def _signal_snapshot_reasons_html(snapshot: dict) -> str:
+    reasons = [
+        *[str(item) for item in snapshot.get("block_reasons", []) if str(item).strip()],
+        *[str(item) for item in snapshot.get("review_reasons", []) if str(item).strip()],
+    ]
+    if not reasons and str(snapshot.get("reason_text") or "").strip():
+        reasons = [str(snapshot.get("reason_text") or "").strip()]
+    if reasons:
+        body = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
+    else:
+        body = "<li>暂无阻断或复核原因。</li>"
+    return (
+        '<section class="trade-signal-drawer-card">'
+        "<h4>阻断 / 复核原因</h4>"
+        f"<ul>{body}</ul>"
+        "</section>"
+    )
+
+
+def _signal_snapshot_outcomes_html(
+    snapshot: dict,
+    outcome_store: DecisionOutcomeStore,
+    active_horizon: str,
+) -> str:
+    snapshot_id = int(snapshot.get("id") or 0)
+    rows = []
+    for horizon in OUTCOME_HORIZON_DAYS:
+        outcome = outcome_store.get_outcome(snapshot_id, horizon) if snapshot_id else None
+        active = " active" if horizon == active_horizon else ""
+        rows.append(
+            (
+                f'<div class="trade-signal-outcome-row{active}">'
+                f"<b>{escape(horizon)}</b>"
+                f"<span>{escape(_outcome_status_text(outcome, horizon, snapshot))}</span>"
+                f"<strong>{escape(_percent_or_dash((outcome or {}).get('return_pct')))}</strong>"
+                f"<em>{escape(_percent_or_dash((outcome or {}).get('max_drawdown_pct')))}</em>"
+                "</div>"
+            )
+        )
+    return (
+        '<section class="trade-signal-drawer-card outcomes">'
+        "<h4>各周期复盘结果</h4>"
+        '<div class="trade-signal-outcome-head"><span>周期</span><span>状态</span><span>收益</span><span>最大回撤</span></div>'
+        f"{''.join(rows)}"
+        "</section>"
+    )
+
+
 def _outcome_status_detail_html(outcome: dict | None, horizon: str, snapshot: dict, tags: list[dict]) -> str:
     detail = escape(_outcome_status_detail(outcome, horizon, snapshot))
     return f"{detail}{_tag_inline_html(tags)}"
@@ -755,7 +852,7 @@ def _outcome_status_reason(outcome: dict | None, horizon: str, snapshot: dict) -
     if (outcome or {}).get("start_price") is None:
         return "缺少起始价格"
     if not outcome:
-        return "尚未刷新 outcome"
+        return "尚未刷新复盘结果"
     if outcome.get("end_price") is None:
         return "缺少后续价格"
     return "样本未完成"
@@ -1210,22 +1307,6 @@ def _render_styles() -> None:
             border-radius: 0;
             background: transparent;
         }
-        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
-        div[data-testid="stHorizontalBlock"] > div {
-            position: relative;
-        }
-        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) > div:last-child
-        div[data-testid="stHorizontalBlock"] > div:first-child::after {
-            content: "·";
-            position: absolute;
-            right: -6px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #CBD5E1;
-            font-size: 12px;
-            line-height: 1;
-            pointer-events: none;
-        }
         .trade-snapshot-row {
             display: grid;
             grid-template-columns: 80px 110px 160px minmax(260px, 1fr);
@@ -1355,9 +1436,9 @@ def _render_styles() -> None:
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [data-testid="stButton"] button {
             min-height: 26px !important;
             height: 26px !important;
-            padding: 0 0.42rem !important;
+            padding: 0 0.16rem !important;
             border-radius: 4px !important;
-            border-color: rgba(15, 23, 42, 0.10) !important;
+            border-color: transparent !important;
             background: transparent !important;
             color: #475569 !important;
             box-shadow: none !important;
@@ -1369,9 +1450,7 @@ def _render_styles() -> None:
             line-height: 1;
             text-decoration: none !important;
         }
-        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-error-select-"] button {
-            border-color: rgba(15, 23, 42, 0.12) !important;
-            background: #FFFFFF !important;
+        div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-snapshot-view-"] button {
             color: #334155 !important;
         }
         div[data-testid="stHorizontalBlock"]:has(.trade-snapshot-row) [class*="st-key-trade-snapshot-delete-"] button {
@@ -1388,6 +1467,143 @@ def _render_styles() -> None:
             border-color: rgba(15, 23, 42, 0.08) !important;
             background: #FFFFFF !important;
             color: #0f172a !important;
+        }
+        div[class*="st-key-trade-signal-drawer-container"] {
+            position: fixed;
+            top: 0;
+            right: 0;
+            z-index: 99999;
+            width: min(440px, calc(100vw - 28px));
+            height: 100vh;
+            padding: 1rem 1rem 1.2rem !important;
+            overflow-y: auto;
+            border-left: 1px solid rgba(15, 23, 42, 0.12);
+            background: #FFFFFF;
+            box-shadow: -18px 0 36px rgba(15, 23, 42, 0.12);
+        }
+        div[class*="st-key-trade-signal-drawer-container"] [data-testid="stVerticalBlock"] {
+            gap: 0.58rem;
+        }
+        div[class*="st-key-trade-signal-drawer-container"] [data-testid="stButton"] button {
+            min-height: 28px !important;
+            height: 28px !important;
+            padding: 0 0.48rem !important;
+            border-radius: 6px !important;
+            border-color: rgba(15, 23, 42, 0.10) !important;
+            background: #FFFFFF !important;
+            color: #52657F !important;
+            box-shadow: none !important;
+        }
+        div[class*="st-key-trade-signal-drawer-container"] [data-testid="stButton"] button p {
+            font-size: 12px !important;
+            font-weight: 680 !important;
+        }
+        div[class*="st-key-trade-signal-drawer-container"] [data-testid="stButton"] button:hover {
+            border-color: rgba(15, 23, 42, 0.16) !important;
+            color: #0F172A !important;
+        }
+        .trade-signal-drawer-marker {
+            height: 0;
+            margin: 0;
+            padding: 0;
+        }
+        .trade-signal-drawer-head {
+            padding-bottom: 0.72rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+        }
+        .trade-signal-drawer-head span,
+        .trade-signal-drawer-head em {
+            display: block;
+            color: #64748B;
+            font-size: 11px;
+            font-style: normal;
+            font-weight: 600;
+        }
+        .trade-signal-drawer-head strong {
+            display: block;
+            margin-top: 0.14rem;
+            color: #0F172A;
+            font-size: 26px;
+            line-height: 1;
+            font-weight: 780;
+        }
+        .trade-signal-drawer-card {
+            margin-top: 0.68rem;
+            padding: 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF, #F8FAFC);
+        }
+        .trade-signal-drawer-card h4 {
+            margin: 0 0 0.5rem;
+            color: #0F172A;
+            font-size: 12px;
+            font-weight: 760;
+        }
+        .trade-signal-drawer-card.summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.52rem 0.7rem;
+        }
+        .trade-signal-drawer-card.summary-grid span {
+            display: block;
+            color: #64748B;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .trade-signal-drawer-card.summary-grid strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0F172A;
+            font-size: 13px;
+            font-weight: 740;
+        }
+        .trade-signal-drawer-card ul {
+            margin: 0;
+            padding-left: 1rem;
+            color: #475569;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+        .trade-signal-outcome-head,
+        .trade-signal-outcome-row {
+            display: grid;
+            grid-template-columns: 42px minmax(0, 1fr) 68px 72px;
+            align-items: center;
+            gap: 0.42rem;
+            min-height: 28px;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+        }
+        .trade-signal-outcome-head {
+            color: #64748B;
+            font-size: 10.5px;
+            font-weight: 650;
+        }
+        .trade-signal-outcome-row:last-child {
+            border-bottom: 0;
+        }
+        .trade-signal-outcome-row.active {
+            background: rgba(37, 99, 235, 0.035);
+        }
+        .trade-signal-outcome-row b,
+        .trade-signal-outcome-row strong,
+        .trade-signal-outcome-row em,
+        .trade-signal-outcome-row span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 11.5px;
+            font-style: normal;
+        }
+        .trade-signal-outcome-row b,
+        .trade-signal-outcome-row strong {
+            color: #0F172A;
+            font-weight: 720;
+        }
+        .trade-signal-outcome-row span,
+        .trade-signal-outcome-row em {
+            color: #64748B;
+            font-weight: 600;
         }
         .trade-journal-table-wrap {
             overflow-x: auto;
