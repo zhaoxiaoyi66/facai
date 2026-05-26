@@ -575,27 +575,83 @@ def _render_data_health_strip(table: pd.DataFrame) -> None:
     view = build_dashboard_data_health_view(table)
     items = list(view.get("items") or [])
     item_html = "".join(
-        f'<span><em>{escape(label)}</em><strong>{escape(str(value))}</strong></span>'
+        f'<span>{escape(label)} {escape(str(value))}</span>'
         for label, value in items
     )
     issues = list(view.get("issues") or [])
-    issue_html = "".join(f"<li>{escape(str(issue))}</li>" for issue in issues)
-    issues_block = (
-        '<details class="data-health-issues">'
-        f'<summary>{escape(str(view.get("issueSummary") or "无主要问题"))}</summary>'
-        f"<ol>{issue_html}</ol>"
+    detail_html = _data_health_detail_groups_html(issues)
+    detail_block = (
+        '<details class="data-health-popover">'
+        '<summary><span>查看详情</span></summary>'
+        f'<div class="data-health-popover-panel">{detail_html}</div>'
         "</details>"
     )
     st.markdown(
         (
-            f'<section class="data-health-strip {escape(str(view.get("tone") or "warning"))}">'
+            f'<section id="data-health-strip" class="data-health-strip {escape(str(view.get("tone") or "warning"))}">'
+            '<div class="data-health-main-row">'
             f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>{escape(str(view.get("subtitle") or "本地缓存体检"))}</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
-            f"{issues_block}"
+            f"{detail_block}"
+            "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
     )
+
+
+def _data_health_detail_groups_html(issues: list[object]) -> str:
+    groups = [
+        ("价格缺失", ("价格缺失", "价格过期", "缓存缺失"), "查看股票", "stock"),
+        ("历史缺失", ("历史缺失",), "查看数据状态", "stock_data"),
+        ("finalDecision 异常", ("finalDecision",), "查看评分", "stock_score"),
+        ("持仓缺价", ("持仓缺价",), "查看持仓", "portfolio"),
+        ("复盘结果缺失", ("复盘", "outcome"), "进入交易日志", "journal"),
+    ]
+    issue_texts = [str(issue) for issue in issues if str(issue).strip()]
+    cards: list[str] = []
+    for title, tokens, action, target in groups:
+        matched = [text for text in issue_texts if any(token in text for token in tokens)]
+        rows = "".join(_data_health_issue_row_html(text, action, target) for text in matched)
+        if not rows:
+            rows = '<div class="data-health-detail-empty">暂无</div>'
+        cards.append(
+            (
+                '<div class="data-health-detail-group">'
+                f'<div class="data-health-detail-head"><strong>{escape(title)}</strong><span>{len(matched)}</span></div>'
+                f"{rows}"
+                "</div>"
+            )
+        )
+    return f'<div class="data-health-detail-panel">{"".join(cards)}</div>'
+
+
+def _data_health_issue_row_html(issue: str, action: str, target: str) -> str:
+    parts = issue.split(maxsplit=1)
+    ticker = parts[0] if parts and parts[0].replace(".", "").replace("-", "").isalnum() and parts[0].upper() == parts[0] else "全局"
+    reason = parts[1] if ticker != "全局" and len(parts) > 1 else issue
+    action_html = _data_health_issue_action_html(action, target, ticker)
+    return (
+        '<div class="data-health-detail-row">'
+        f'<strong>{escape(ticker)}</strong>'
+        f'<span>{escape(reason)}</span>'
+        f"{action_html}"
+        "</div>"
+    )
+
+
+def _data_health_issue_action_html(action: str, target: str, ticker: str) -> str:
+    href = ""
+    if target in {"stock", "stock_data", "stock_score"} and ticker != "全局":
+        focus = "data" if target == "stock_data" else "score" if target == "stock_score" else "summary"
+        href = f"?page=stock_detail&symbol={escape(ticker, quote=True)}&focus={focus}"
+    elif target == "portfolio":
+        href = "?page=portfolio"
+    elif target == "journal":
+        href = "?page=trade_journal"
+    if not href:
+        return f'<em>{escape(action)}</em>'
+    return f'<a class="data-health-detail-action" href="{href}" target="_self">{escape(action)}</a>'
 
 
 def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
@@ -3134,17 +3190,20 @@ def _render_dashboard_styles() -> None:
             line-height:1.2;
         }
         .data-health-strip {
-            display:grid;
-            grid-template-columns:128px minmax(0, 1fr) 132px;
-            gap:0;
-            align-items:stretch;
+            display:block;
             margin:0 0 0.42rem;
-            min-height:34px;
             border:1px solid rgba(148, 163, 184, 0.16);
             border-left:2px solid #94A3B8;
             border-radius:7px;
             background:#FFFFFF;
-            overflow:hidden;
+            overflow:visible;
+        }
+        .data-health-main-row {
+            display:grid;
+            grid-template-columns:128px minmax(0, 1fr) 132px;
+            gap:0;
+            align-items:stretch;
+            min-height:34px;
         }
         .data-health-strip.ok {
             border-left-color:#16A34A;
@@ -3195,96 +3254,160 @@ def _render_dashboard_styles() -> None:
             background:rgba(255, 255, 255, 0.72);
         }
         .data-health-metrics span {
-            display:flex;
+            display:inline-flex;
             align-items:center;
-            gap:0.2rem;
+            justify-content:center;
             min-width:0;
             margin:0.25rem 0 0.25rem 0.4rem;
-            padding:0.15rem 0.36rem;
+            height:18px;
+            padding:0 0.36rem;
             border-right:1px solid rgba(15, 23, 42, 0.04);
             border:1px solid rgba(148, 163, 184, 0.15);
             border-radius:999px;
             background:#FFFFFF;
+            color:#334155;
+            font-size:10px;
+            line-height:18px;
+            font-weight:680;
             white-space:nowrap;
         }
         .data-health-metrics span:last-child {
             margin-right:0.4rem;
         }
-        .data-health-metrics em {
-            color:#64748B;
-            font-size:10px;
-            line-height:1.2;
-            font-style:normal;
-            font-weight:620;
-        }
-        .data-health-metrics strong {
-            color:#0F172A;
-            font-size:12px;
-            line-height:1.1;
-            font-weight:760;
-            font-variant-numeric:tabular-nums;
-        }
-        .data-health-issues {
+        .data-health-popover {
             position:relative;
-            gap:0.28rem;
             min-width:0;
             height:100%;
             border-left:1px solid rgba(15, 23, 42, 0.05);
-            color:#7C4A1D;
+            color:#64748B;
             font-size:10px;
             line-height:1.2;
-            font-weight:600;
+            font-weight:650;
             white-space:nowrap;
         }
-        .data-health-strip.ok .data-health-issues {
-            color:#166534;
-            background:#F8FCF9;
-        }
-        .data-health-strip.warning .data-health-issues {
-            color:#7C4A1D;
-            background:#FFFCF7;
-        }
-        .data-health-strip.error .data-health-issues {
-            color:#8A1F1F;
-            background:#FFF7F7;
-        }
-        .data-health-issues summary {
+        .data-health-popover summary {
             display:flex;
             align-items:center;
             justify-content:center;
             height:100%;
+            width:100%;
             padding:0 0.54rem;
             cursor:pointer;
             list-style:none;
             outline:none;
+            white-space:nowrap;
         }
-        .data-health-issues summary::-webkit-details-marker {
+        .data-health-popover summary::-webkit-details-marker {
             display:none;
         }
-        .data-health-issues summary:hover {
+        .data-health-popover summary:hover {
+            color:#0F172A;
             background:rgba(15, 23, 42, 0.025);
         }
-        .data-health-issues ol {
+        .data-health-popover summary span {
+            color:inherit;
+            line-height:18px;
+        }
+        .data-health-popover[open] summary {
+            background:rgba(15, 23, 42, 0.035);
+            color:#0F172A;
+        }
+        .data-health-popover-panel {
             position:absolute;
             right:0;
-            top:calc(100% + 6px);
-            z-index:20;
-            display:grid;
-            gap:0.24rem;
-            width:max-content;
-            max-width:360px;
-            min-width:210px;
-            margin:0;
-            padding:0.48rem 0.58rem;
+            top:calc(100% + 7px);
+            z-index:30;
+            width:min(720px, calc(100vw - 48px));
             border:1px solid rgba(148, 163, 184, 0.22);
             border-radius:7px;
             background:#FFFFFF;
-            box-shadow:0 14px 32px rgba(15, 23, 42, 0.10);
+            box-shadow:0 18px 42px rgba(15, 23, 42, 0.13);
             white-space:normal;
         }
-        .data-health-issues li {
-            margin-left:1rem;
+        .data-health-detail-panel {
+            position:static;
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:0.42rem;
+            width:auto;
+            margin:0;
+            padding:0.52rem;
+            border:0;
+            border-radius:7px;
+            background:#FFFFFF;
+            box-shadow:none;
+            color:#0F172A;
+            white-space:normal;
+        }
+        .data-health-detail-group {
+            display:grid;
+            gap:0.3rem;
+            min-width:0;
+            align-content:start;
+            padding:0.38rem 0.42rem;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            border-radius:6px;
+            background:#FBFCFE;
+        }
+        .data-health-detail-head {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.5rem;
+            color:#0F172A;
+        }
+        .data-health-detail-head strong {
+            font-size:10.5px;
+            line-height:1.2;
+            font-weight:760;
+        }
+        .data-health-detail-head span {
+            color:#64748B;
+            font-size:10px;
+            font-weight:760;
+            font-variant-numeric:tabular-nums;
+        }
+        .data-health-detail-row {
+            display:grid;
+            grid-template-columns:44px minmax(0, 1fr);
+            gap:0.34rem;
+            align-items:center;
+            min-width:0;
+            color:#475569;
+            font-size:10px;
+            line-height:1.25;
+        }
+        .data-health-detail-row strong {
+            color:#0F172A;
+            font-size:10.5px;
+            font-weight:780;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .data-health-detail-row span {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .data-health-detail-row em,
+        .data-health-detail-action {
+            grid-column:2;
+            color:#52657F;
+            font-style:normal;
+            font-weight:720;
+            text-align:left;
+            text-decoration:none !important;
+            white-space:nowrap;
+        }
+        .data-health-detail-action:hover,
+        .data-health-detail-action:visited {
+            color:#0F172A;
+            text-decoration:none !important;
+        }
+        .data-health-detail-empty {
             color:#94A3B8;
+            font-size:10px;
             font-weight:620;
         }
         .dashboard-risk-radar {
