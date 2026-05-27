@@ -29,6 +29,20 @@ AUTO_ARCHIVE_ITEM_TYPES = {
     "manual_override_needed",
     "qualitative_risk",
 }
+RISK_OBSERVATION_ITEM_TYPES = {"qualitative_risk", "generic_risk", "sector_risk"}
+GENERIC_RISK_KEYWORDS = (
+    "customerconcentration",
+    "customerconcentrationrisk",
+    "客户集中",
+    "semiconductorcyclerisk",
+    "半导体周期",
+    "exportcontrolrisk",
+    "chinaregulatoryrisk",
+    "出口管制",
+    "中国风险",
+    "inventorycorrectionrisk",
+    "库存修正",
+)
 CONFIDENCE_SCORES = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 HISTORICAL_FRESHNESS = "historical_value"
 METRIC_CANONICAL_MAP = {
@@ -49,6 +63,7 @@ REVIEW_CENTER_GROUPS = (
     ("autoConfirmCandidates", "\u53ef\u81ea\u52a8\u786e\u8ba4"),
     ("autoArchiveCandidates", "\u53ef\u81ea\u52a8\u5f52\u6863"),
     ("aiSuggestedCorrections", "AI \u5efa\u8bae\u4fee\u6b63"),
+    ("riskObservation", "\u98ce\u9669\u89c2\u5bdf"),
     ("insufficientEvidence", "\u8bc1\u636e\u4e0d\u8db3"),
     ("recentlyHandled", "\u6700\u8fd1\u5df2\u5904\u7406"),
 )
@@ -67,6 +82,8 @@ class _ReviewCenterRow:
     priority_score: int
     confidence_score: int
     source_score: int
+    has_value: bool
+    risk_observation: bool
     handled_at: str
 
 
@@ -98,7 +115,8 @@ def build_review_center_view_model(
         "autoConfirmCandidates": [row for row in main_rows if row.item["canAutoConfirm"]],
         "autoArchiveCandidates": [row for row in active_rows if row.item["canAutoArchive"]],
         "aiSuggestedCorrections": [row for row in main_rows if row.ai_correction],
-        "insufficientEvidence": [row for row in main_rows if row.missing_evidence],
+        "riskObservation": [row for row in main_rows if row.risk_observation],
+        "insufficientEvidence": [row for row in main_rows if row.missing_evidence and not row.risk_observation],
         "recentlyHandled": recent_rows,
     }
     groups = [
@@ -132,21 +150,24 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
     confidence_score = CONFIDENCE_SCORES.get(confidence, 0)
     affects = _affects(row)
     affects_scoring = bool(affects & SCORING_AFFECTS)
-    impact_level = _impact_level(affects)
+    has_value = _has_review_value(row)
+    risk_observation = _is_risk_observation_item(row, has_value)
+    impact_level = "low" if risk_observation else _impact_level(affects)
     has_explicit_evidence = _has_explicit_evidence(row)
     missing_evidence = _missing_evidence(row)
     active = status in ACTIVE_REVIEW_STATUSES and status not in HANDLED_REVIEW_STATUSES
     handled = status in HANDLED_REVIEW_STATUSES or bool(row.get("reviewedAt") or row.get("approvedAt"))
     ai_correction = triage in AI_CORRECTION_TRIAGE_STATUSES or bool(_correction_candidate(row))
     can_auto_confirm = _can_auto_confirm(row, active, confidence_score, has_explicit_evidence, missing_evidence)
-    can_auto_archive = _can_auto_archive(row, active, impact_level, missing_evidence)
+    can_auto_archive = _can_auto_archive(row, active, impact_level, missing_evidence, risk_observation)
     priority_score = _priority_score(
-        affects_scoring=affects_scoring,
+        affects_scoring=affects_scoring and not risk_observation,
         confidence_score=confidence_score,
         source_score=_source_score(row, has_explicit_evidence),
         missing_evidence=missing_evidence,
         active=active,
         can_auto_archive=can_auto_archive,
+        risk_observation=risk_observation,
     )
     item = {
         "id": row.get("id"),
@@ -168,17 +189,19 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
         "suggestedAction": _suggested_action(
             status=status,
             triage=triage,
-            affects_scoring=affects_scoring,
+            affects_scoring=affects_scoring and not risk_observation,
             ai_correction=ai_correction,
             can_auto_confirm=can_auto_confirm,
             can_auto_archive=can_auto_archive,
             missing_evidence=missing_evidence,
+            risk_observation=risk_observation,
             handled=handled,
         ),
-        "reasonSummary": _reason_summary(row, affects_scoring, missing_evidence, can_auto_archive),
+        "reasonSummary": _reason_summary(row, affects_scoring and not risk_observation, missing_evidence, can_auto_archive, risk_observation),
         "evidenceSummary": _evidence_summary(row),
         "canAutoConfirm": can_auto_confirm,
         "canAutoArchive": can_auto_archive,
+        "riskObservation": risk_observation,
         "duplicateCount": 0,
         "duplicateSummary": "",
         "duplicateCandidates": [],
@@ -197,6 +220,8 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
         priority_score=priority_score,
         confidence_score=confidence_score,
         source_score=_source_score(row, has_explicit_evidence),
+        has_value=has_value,
+        risk_observation=risk_observation,
         handled_at=str(row.get("approvedAt") or row.get("reviewedAt") or row.get("updatedAt") or ""),
     )
 
@@ -261,16 +286,32 @@ def _source_score(row: dict, has_explicit_evidence: bool) -> int:
     return 1 if source else 0
 
 
-def _can_auto_confirm(
-    row: dict,
-    active: bool,
-    confidence_score: int,
-    has_explicit_evidence: bool,
-    missing_evidence: bool,
-) -> bool:
+def _has_review_value(row: dict) -> bool:
+    return any(row.get(key) not in (None, "") for key in ("displayValue", "normalizedValue", "value")) or bool(_correction_candidate(row))
+
+
+def _is_risk_observation_item(row: dict, has_value: bool) -> bool:
+    item_type = _normalized_token(row.get("itemType"))
+    metric_key = _normalized_token(row.get("metricKey"))
+    display_name = _normalized_token(row.get("displayName"))
+    if str(row.get("itemType") or "").strip().lower() in RISK_OBSERVATION_ITEM_TYPES:
+        return True
+    if not has_value and ("risk" in metric_key or "risk" in display_name or "风险" in metric_key or "风险" in display_name):
+        return True
+    return any(keyword in metric_key or keyword in display_name for keyword in GENERIC_RISK_KEYWORDS)
+
+
+def _is_generic_sector_risk(row: dict) -> bool:
+    metric_key = _normalized_token(row.get("metricKey"))
+    display_name = _normalized_token(row.get("displayName"))
+    combined = f"{metric_key} {display_name}"
+    return any(keyword in combined for keyword in GENERIC_RISK_KEYWORDS) or str(row.get("sourceType") or "").strip().lower() in {"missing", "system", "model"}
+
+
+def _can_auto_confirm(row: dict, active: bool, confidence_score: int, has_explicit_evidence: bool, missing_evidence: bool) -> bool:
     if not active or str(row.get("reviewStatus") or "").strip() != "pending_review":
         return False
-    if _is_historical(row) or missing_evidence or not has_explicit_evidence:
+    if _is_historical(row) or missing_evidence or not has_explicit_evidence or not _has_review_value(row):
         return False
     triage = str(row.get("aiTriageStatus") or "").strip()
     if triage in AUTO_CONFIRM_TRIAGE_STATUSES and confidence_score >= CONFIDENCE_SCORES["medium"]:
@@ -278,8 +319,8 @@ def _can_auto_confirm(
     return confidence_score >= CONFIDENCE_SCORES["high"]
 
 
-def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_evidence: bool) -> bool:
-    if not active or impact_level != "low":
+def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_evidence: bool, risk_observation: bool = False) -> bool:
+    if not active:
         return False
     triage = str(row.get("aiTriageStatus") or "").strip()
     item_type = str(row.get("itemType") or "").strip()
@@ -288,6 +329,12 @@ def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_eviden
         return True
     if bool(row.get("hiddenByDefault")):
         return True
+    if risk_observation:
+        if _has_explicit_evidence(row):
+            return False
+        return missing_evidence or _is_generic_sector_risk(row)
+    if impact_level != "low":
+        return False
     return missing_evidence and (status in {"needs_data", "needs_evidence"} or item_type in AUTO_ARCHIVE_ITEM_TYPES)
 
 
@@ -298,6 +345,7 @@ def _priority_score(
     missing_evidence: bool,
     active: bool,
     can_auto_archive: bool,
+    risk_observation: bool = False,
 ) -> int:
     if not active:
         return 0
@@ -308,6 +356,8 @@ def _priority_score(
         score += 50
     if can_auto_archive:
         score -= 40
+    if risk_observation:
+        score -= 80
     return score
 
 
@@ -356,6 +406,7 @@ def _suggested_action(
     can_auto_archive: bool,
     missing_evidence: bool,
     handled: bool,
+    risk_observation: bool = False,
 ) -> str:
     if handled:
         return "review_completed"
@@ -365,6 +416,8 @@ def _suggested_action(
         return "auto_confirm_candidate"
     if can_auto_archive:
         return "auto_archive_candidate"
+    if risk_observation:
+        return "risk_observation"
     if missing_evidence and affects_scoring:
         return "manual_confirm_after_evidence_review"
     if missing_evidence or triage in EVIDENCE_GAP_TRIAGE_STATUSES:
@@ -376,11 +429,13 @@ def _suggested_action(
     return "no_action"
 
 
-def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, can_auto_archive: bool) -> str:
+def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, can_auto_archive: bool, risk_observation: bool = False) -> str:
     for key in ("recommendedAction", "aiExplanationZh", "explanation", "systemReason", "correctionNotes"):
         text = _clean_text(row.get(key))
         if text:
             return _truncate(text, 180)
+    if risk_observation:
+        return "Qualitative risk label is tracked as observation, not a data confirmation task."
     if affects_scoring and missing_evidence:
         return "Scoring-impact item is missing verifiable evidence."
     if affects_scoring:
@@ -489,6 +544,7 @@ def _duplicate_candidate_payload(row: _ReviewCenterRow) -> dict:
         "freshnessStatus": row.row.get("freshnessStatus"),
         "period": _period_key(row.row),
         "missingEvidence": row.missing_evidence,
+        "riskObservation": row.risk_observation,
         "suggestedAction": row.item.get("suggestedAction"),
     }
 
@@ -516,7 +572,35 @@ def _mark_auto_archive_candidate(row: _ReviewCenterRow, reason: str) -> None:
 def _canonical_metric(row: dict) -> str:
     metric_key = str(row.get("metricKey") or "")
     metric_variant = str(row.get("metricVariant") or "")
+    risk_metric = _risk_canonical_metric(row)
+    if risk_metric:
+        return risk_metric
     return METRIC_CANONICAL_MAP.get(metric_variant) or METRIC_CANONICAL_MAP.get(metric_key) or metric_key
+
+
+def _risk_canonical_metric(row: dict) -> str | None:
+    item_type = str(row.get("itemType") or "").strip().lower()
+    metric_key_token = _normalized_token(row.get("metricKey"))
+    display_token = _normalized_token(row.get("displayName"))
+    if item_type not in RISK_OBSERVATION_ITEM_TYPES and "risk" not in metric_key_token and "risk" not in display_token and "风险" not in display_token:
+        return None
+    combined = f"{metric_key_token} {display_token}"
+    if "customerconcentration" in combined:
+        return "customerConcentrationRisk"
+    if "客户集中" in combined:
+        return "customerConcentrationRisk"
+    if "semiconductorcycle" in combined or "半导体周期" in combined:
+        return "semiconductorCycleRisk"
+    if "exportcontrol" in combined or "chinarisk" in combined or "chinaregulatory" in combined or "出口管制" in combined or "中国风险" in combined:
+        return "exportControlChinaRisk"
+    if "inventorycorrection" in combined or "inventoryrisk" in combined or "库存修正" in combined:
+        return "inventoryCorrectionRisk"
+    metric_key = str(row.get("metricKey") or "").strip()
+    return metric_key or str(row.get("displayName") or "qualitativeRisk")
+
+
+def _normalized_token(value: object) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
 def _dedupe_key(row: dict) -> str:
@@ -549,7 +633,7 @@ def _is_current_period(row: _ReviewCenterRow) -> bool:
 
 
 def _is_high_priority_pending(row: _ReviewCenterRow) -> bool:
-    if not row.active or row.item["canAutoArchive"] or row.missing_evidence or _is_historical(row.row):
+    if not row.active or row.item["canAutoArchive"] or row.missing_evidence or _is_historical(row.row) or row.risk_observation or not row.has_value:
         return False
     return row.item["canAutoConfirm"] or row.ai_correction or (
         row.affects_scoring and row.has_explicit_evidence and row.confidence_score >= CONFIDENCE_SCORES["high"]
@@ -557,7 +641,7 @@ def _is_high_priority_pending(row: _ReviewCenterRow) -> bool:
 
 
 def _needs_human_for_scoring(row: _ReviewCenterRow) -> bool:
-    return row.active and row.affects_scoring and not row.item["canAutoConfirm"]
+    return row.active and row.affects_scoring and row.has_value and not row.risk_observation and not row.item["canAutoConfirm"]
 
 
 def _active_sort_key(row: _ReviewCenterRow) -> tuple:

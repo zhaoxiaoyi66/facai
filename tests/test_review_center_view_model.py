@@ -92,6 +92,7 @@ class ReviewCenterViewModelTests(unittest.TestCase):
                     "autoConfirmCandidates",
                     "autoArchiveCandidates",
                     "aiSuggestedCorrections",
+                    "riskObservation",
                     "insufficientEvidence",
                     "recentlyHandled",
                 },
@@ -152,6 +153,97 @@ class ReviewCenterViewModelTests(unittest.TestCase):
 
             self.assertEqual(groups["autoConfirmCandidates"]["items"], [])
             self.assertFalse(view["items"][0]["canAutoConfirm"])
+
+    def test_qualitative_risk_labels_are_observations_not_high_priority_data_tasks(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="customerConcentrationRisk",
+                value=None,
+                confidence="medium",
+                evidence_text="",
+                item_type="qualitative_risk",
+                display_name="客户集中度",
+                source_type="SYSTEM",
+            ),
+            _review_row(
+                2,
+                metric_key="customerConcentrationRiskAdjustment",
+                value=None,
+                confidence="medium",
+                evidence_text="",
+                item_type="qualitative_risk",
+                display_name="客户集中度风险调整",
+                source_type="SYSTEM",
+            ),
+            _review_row(
+                3,
+                metric_key="semiconductorCycleRisk",
+                value=None,
+                confidence="low",
+                evidence_text="",
+                item_type="sector_risk",
+                display_name="半导体周期风险",
+                source_type="SYSTEM",
+            ),
+            _review_row(
+                4,
+                metric_key="ExportControlChinaRisk",
+                value=None,
+                confidence="low",
+                evidence_text="",
+                item_type="qualitative_risk",
+                display_name="出口管制/中国风险",
+                source_type="SYSTEM",
+            ),
+            _review_row(
+                5,
+                metric_key="inventoryCorrectionRisk",
+                value=None,
+                confidence="low",
+                evidence_text="",
+                item_type="sector_risk",
+                display_name="库存修正风险",
+                source_type="SYSTEM",
+            ),
+        ]
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+
+        self.assertEqual(groups["highPriorityPending"]["items"], [])
+        self.assertEqual(groups["scoringImpactNeedsHuman"]["items"], [])
+        self.assertEqual(groups["autoConfirmCandidates"]["items"], [])
+        self.assertEqual(view["summary"]["mainQueueCount"], 4)
+        risk_metrics = [item["canonicalMetric"] for item in groups["riskObservation"]["items"]]
+        self.assertIn("customerConcentrationRisk", risk_metrics)
+        customer_item = next(item for item in groups["riskObservation"]["items"] if item["canonicalMetric"] == "customerConcentrationRisk")
+        self.assertEqual(customer_item["duplicateCount"], 1)
+        self.assertEqual(customer_item["suggestedAction"], "auto_archive_candidate")
+        self.assertTrue(all(item["canAutoArchive"] for item in groups["riskObservation"]["items"]))
+
+    def test_qualitative_risk_with_sec_evidence_stays_risk_observation(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="customerConcentrationRisk",
+                value=None,
+                confidence="medium",
+                evidence_text="A significant portion of revenue is concentrated in a limited number of customers.",
+                item_type="qualitative_risk",
+                display_name="客户集中度",
+                source_type="SEC_10K",
+            )
+        ]
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+        item = groups["riskObservation"]["items"][0]
+
+        self.assertEqual(groups["highPriorityPending"]["items"], [])
+        self.assertFalse(item["canAutoConfirm"])
+        self.assertFalse(item["canAutoArchive"])
+        self.assertEqual(item["suggestedAction"], "risk_observation")
 
     def test_review_center_collapses_crpo_variants_and_archives_historical_duplicates(self) -> None:
         rows = [
@@ -256,6 +348,8 @@ def _review_row(
     value: float | None,
     confidence: str,
     evidence_text: str,
+    item_type: str = "extracted_value",
+    display_name: str | None = None,
     period: str = "2026 Q1",
     source_type: str = "SEC_8K",
     review_status: str = "pending_review",
@@ -268,8 +362,8 @@ def _review_row(
         "id": item_id,
         "symbol": "NOW",
         "metricKey": metric_key,
-        "displayName": metric_key,
-        "itemType": "extracted_value",
+        "displayName": display_name or metric_key,
+        "itemType": item_type,
         "value": value,
         "unit": "percent" if value is not None else None,
         "period": period,
