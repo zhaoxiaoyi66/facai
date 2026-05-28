@@ -170,6 +170,33 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertEqual(summary["staleHistoryCount"], 1)
             self.assertIn("stale_history", {item["category"] for item in summary["topIssues"]})
 
+    def test_data_health_final_decision_uses_quote_when_history_is_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+            self._insert_quote_snapshot(
+                db_path,
+                "ANET",
+                {
+                    "ticker": "ANET",
+                    "current_price": 159.28,
+                    "modelType": "NETWORKING_HARDWARE",
+                    "price_to_fcf": 38,
+                    "enterprise_to_revenue": 20.4,
+                    "price_to_sales": 20.7,
+                    "revenue_growth": 0.28,
+                    "gross_margin": 0.63,
+                    "operating_margin": 0.42,
+                    "fcf_margin": 0.60,
+                },
+                "2026-05-26T00:00:00+00:00",
+            )
+
+            summary = build_data_health_summary(db_path, watchlist=["ANET"], now=now)
+
+            self.assertEqual(summary["missingHistoryCount"], 1)
+            self.assertEqual(summary["finalDecisionErrorCount"], 0)
+
     def test_data_health_summary_counts_portfolio_missing_price_and_outcome_missing(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cache.sqlite"

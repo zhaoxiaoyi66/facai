@@ -122,14 +122,20 @@ def _outcome_missing_count(path: Path) -> int:
 def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: dict | None) -> bool:
     if not payload:
         return False
-    history = cache.get_price_history(symbol)
-    if history.empty:
+    cached_price = _first_number(
+        payload.get("price"),
+        payload.get("current_price"),
+        payload.get("currentPrice"),
+        cache.get_current_price(symbol),
+    )
+    if cached_price is None:
         return False
     try:
-        technicals = latest_technical_snapshot(add_technical_indicators(history))
+        history = cache.get_price_history(symbol)
+        technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
         score = calculate_total_score(payload, technicals)
         stock_data = {**payload, **technicals}
-        price = _first_number(stock_data.get("price"), stock_data.get("current_price"), stock_data.get("currentPrice"))
+        price = _first_number(stock_data.get("price"), stock_data.get("current_price"), stock_data.get("currentPrice"), cached_price)
         if price is not None:
             stock_data["price"] = price
             stock_data.setdefault("current_price", price)
