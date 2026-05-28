@@ -225,6 +225,7 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "validationErrors": list(getattr(zone, "validationErrors", None) or []),
         "explainability": getattr(zone, "explainability", None) or {},
         "technicalEntry": getattr(zone, "technicalEntry", None) or {},
+        "combinedEntry": getattr(zone, "combinedEntry", None) or {},
         "isValid": bool(getattr(zone, "isValid", True)),
         "buyZoneSource": source,
         "manualOverride": manual,
@@ -475,13 +476,33 @@ def _render_client_buy_zone_drawers(rows: list[dict]) -> None:
 
 def _buy_zone_trigger_cell_html(row: dict, trigger_primary: str, trigger_secondary: str, trigger_tone: str) -> str:
     technical = _technical_trigger_summary(row)
+    combined = _combined_trigger_summary(row)
     return (
         f'<div class="trigger-cell {escape(trigger_tone)}">'
         f'<b>{escape(trigger_primary)}</b>'
         f'<small>{escape("估值买点：" + trigger_secondary)}</small>'
+        f'<em>{escape(combined)}</em>'
         f'<em>{escape(technical)}</em>'
         "</div>"
     )
+
+
+def _combined_entry_for_row(row: dict) -> dict:
+    combined = row.get("combinedEntry")
+    if isinstance(combined, dict) and combined:
+        return dict(combined)
+    active_zone = row.get("activeZone")
+    combined = getattr(active_zone, "combinedEntry", None) if active_zone is not None else None
+    return dict(combined) if isinstance(combined, dict) else {}
+
+
+def _combined_trigger_summary(row: dict) -> str:
+    combined = _combined_entry_for_row(row)
+    label = str(combined.get("entryLabel") or "等待估值买点")
+    trigger = _technical_money(combined.get("combinedTriggerPrice"))
+    if trigger == "未设置":
+        return f"综合触发：不生成入场触发（{label}）"
+    return f"综合触发：{trigger}（{label}）"
 
 
 def _technical_entry_for_row(row: dict) -> dict:
@@ -517,12 +538,12 @@ def _technical_trigger_summary(row: dict) -> str:
         or row.get("dataConfidence") == "low"
     )
     if state in {"unavailable", "insufficient_data"} or confidence == "low":
-        return "技术数据不足"
+        return "技术：数据不足，暂不生成"
     review = _technical_money(technical.get("technicalReviewPrice"))
     if blocked or state == "trend_break_review":
         if review != "未设置":
-            return f"技: 复核 {review}，不转买点"
-        return "技: 不转买点"
+            return f"技术：复核 {review}，不转买点"
+        return "技术：不转买点"
     entry = _technical_money(technical.get("technicalEntryPrice"))
     no_chase = _technical_money(technical.get("technicalNoChaseAbove"))
     parts = []
@@ -532,7 +553,7 @@ def _technical_trigger_summary(row: dict) -> str:
         parts.append(f"复核 {review}")
     if no_chase != "未设置":
         parts.append(f"不追高 {no_chase}")
-    return "技: " + " / ".join(parts[:2]) if parts else "技术数据不足"
+    return "技术：" + " / ".join(parts[:2]) if parts else "技术：数据不足，暂不生成"
 
 
 def _buy_zone_drawer_id(symbol: str) -> str:
@@ -573,6 +594,8 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_price_ladder_html(row)}'
         '<div class="drawer-section-title">买区解释</div>'
         f'{_buy_zone_explainability_html(row)}'
+        '<div class="drawer-section-title">综合入场参考</div>'
+        f'{_combined_entry_html(_combined_entry_for_row(row))}'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
         '<div class="drawer-section-title">生成依据</div>'
@@ -667,9 +690,9 @@ def _fallback_buy_zone_explainability(row: dict) -> dict[str, object]:
     fallback_by_zone = {
         "unsupported_buy_zone_model": ("买区模型暂不支持", "当前板块暂无专属买区模型，系统不输出精确买点。"),
         "data_insufficient": ("买区数据不足", "关键输入缺失，暂时不能生成精确买点。"),
-        "low_confidence_zone": ("买区置信度不足", "数据置信度偏低，暂不把买区作为可执行信号。"),
+        "low_confidence_zone": ("买区置信度不足", "数据置信度偏低，暂不把买区作为入场信号。"),
         "invalid_zone": ("买区输入需复核", "买区区间或输入异常，系统暂不输出买点。"),
-        "invalid_manual_override": ("手动买区需复核", "手动覆盖后的区间异常，暂不输出可执行买点。"),
+        "invalid_manual_override": ("手动买区需复核", "手动覆盖后的区间异常，暂不输出入场买点。"),
         "no_chase": ("当前不追高", "当前价格高于系统买区上沿，不建议新增。"),
     }
     title, summary = fallback_by_zone.get(zone, ("系统买区已生成", f"当前状态为 {_zone_label(zone)}，买点解释来自系统买区结果。"))
@@ -704,6 +727,37 @@ def _explain_list(value: object) -> list[str]:
 
 def _explain_items_html(items: list[str]) -> str:
     return "".join(f"<li>{escape(str(item))}</li>" for item in items[:6])
+
+
+def _combined_entry_html(entry: object) -> str:
+    combined = entry if isinstance(entry, dict) else {}
+    label = str(combined.get("entryLabel") or "等待估值买点")
+    trigger = _technical_money(combined.get("combinedTriggerPrice"))
+    trigger_text = "不生成入场触发" if trigger == "未设置" else trigger
+    items = [
+        ("结论", label),
+        ("估值买点", _technical_money(combined.get("valuationEntryPrice"))),
+        ("技术回踩点", _technical_money(combined.get("technicalPullbackPrice"))),
+        ("综合触发价", trigger_text),
+        ("复核线", _technical_money(combined.get("reviewPrice"))),
+    ]
+    metrics = "".join(
+        f'<li><span>{escape(name)}</span><b>{escape(value)}</b></li>'
+        for name, value in items
+        if value and value != "未设置"
+    )
+    reasons = [str(item) for item in combined.get("entryReasons") or [] if str(item).strip()]
+    if not reasons:
+        reasons = ["综合入场参考只合并估值买点和技术回踩点，不覆盖最终结论。"]
+    reason_html = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
+    return (
+        '<div class="drawer-technical-entry">'
+        f"<strong>{escape(label)}</strong>"
+        "<p>估值买点、技术回踩点和综合触发价分开显示；禁止追高、阻断或低置信状态不会生成入场触发。</p>"
+        f'<div class="drawer-technical-grid"><ul>{metrics}</ul></div>'
+        f'<div class="drawer-technical-reasons"><b>综合说明</b><ul>{reason_html}</ul></div>'
+        "</div>"
+    )
 
 
 def _technical_entry_html(entry: object) -> str:
@@ -805,9 +859,9 @@ def _technical_levels_text(value: object) -> str:
 def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
-        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
     if review_only:
-        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
+        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
     guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 

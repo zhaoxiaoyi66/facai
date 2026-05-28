@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any
 
+from data.technical_entry_model import build_technical_entry_model
+
 
 BUY_ZONE_OVERRIDE_FIELDS = (
     "no_chase_above",
@@ -67,6 +69,8 @@ class BuyZoneEstimate:
     isValid: bool = True
     validationErrors: list[str] | None = None
     explainability: dict[str, Any] | None = None
+    technicalEntry: dict[str, Any] | None = None
+    combinedEntry: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -240,7 +244,8 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
         createdAt=datetime.now(timezone.utc).isoformat(),
     )
     validated = validate_buy_zone_estimate(estimate, stockData, scoringResult)
-    return _finalize_brokerage_fintech_estimate(validated, stockData, scoringResult)
+    finalized = _finalize_brokerage_fintech_estimate(validated, stockData, scoringResult)
+    return attach_technical_entry(finalized, stockData=stockData)
 
 
 def normalize_percent_metric(value: Any) -> float | None:
@@ -299,6 +304,30 @@ def effective_buy_zone_plan(plan: dict | None, estimate: BuyZoneEstimate) -> dic
     return effective
 
 
+def attach_technical_entry(
+    estimate: BuyZoneEstimate,
+    price_history: Any = None,
+    finalDecision: Any = None,
+    *,
+    stockData: dict | None = None,
+) -> BuyZoneEstimate:
+    stockData = stockData or {}
+    history = price_history if price_history is not None else _price_history_from_stock_data(stockData)
+    if _history_is_stale(stockData):
+        technical_entry = build_technical_entry_model(estimate.symbol, estimate.currentPrice, None, estimate, finalDecision).to_dict()
+        technical_entry["technicalState"] = "unavailable"
+        technical_entry["technicalTrend"] = "unavailable"
+        technical_entry["technicalConfidence"] = "low"
+        technical_entry["technicalReasons"] = ["本地 price_history 已过期，技术入场模型暂不生成触发价。"]
+        return attach_combined_entry(replace(estimate, technicalEntry=technical_entry), finalDecision)
+    technical_entry = build_technical_entry_model(estimate.symbol, estimate.currentPrice, history, estimate, finalDecision).to_dict()
+    return attach_combined_entry(replace(estimate, technicalEntry=technical_entry), finalDecision)
+
+
+def attach_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) -> BuyZoneEstimate:
+    return replace(estimate, combinedEntry=_build_combined_entry(estimate, finalDecision))
+
+
 def buy_zone_with_manual_override(estimate: BuyZoneEstimate, plan: dict | None) -> BuyZoneEstimate:
     if not has_buy_zone_override(plan):
         return estimate
@@ -320,8 +349,9 @@ def buy_zone_with_manual_override(estimate: BuyZoneEstimate, plan: dict | None) 
         keyReasons=["当前使用手动买区，系统建议仍保留供对比。", *estimate.keyReasons],
         warnings=estimate.warnings,
         createdAt=estimate.createdAt,
+        technicalEntry=estimate.technicalEntry,
     )
-    return validate_buy_zone_estimate(overridden, {}, None)
+    return attach_combined_entry(validate_buy_zone_estimate(overridden, {}, None))
 
 
 def _collect_metrics(stockData: dict, warnings: list[str]) -> dict[str, float | None]:
@@ -683,8 +713,9 @@ def _blocked_estimate(
         nextBuyLabel="needs_review",
         isValid=False,
         validationErrors=list(reasons),
+        technicalEntry=build_technical_entry_model(symbol, price, None, None, None).to_dict(),
     )
-    return _with_explainability(estimate, {}, None)
+    return attach_combined_entry(_with_explainability(estimate, {}, None))
 
 
 def _without_actionable_prices(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
@@ -741,7 +772,7 @@ def _explain_title_summary(zone: str, buyZone: BuyZoneEstimate, main_drivers: li
     if zone == "low_confidence_zone":
         return (
             "买区置信度不足",
-            "数据置信度不足，暂不输出可执行买点。",
+            "数据置信度不足，暂不输出入场买点。",
         )
     if zone == "data_insufficient":
         return (
@@ -767,7 +798,7 @@ def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[s
     if zone in {"invalid_zone", "invalid_manual_override"}:
         reasons.append("当前估值区间异常，系统暂不输出买点，需复核输入")
     if zone == "low_confidence_zone":
-        reasons.append("数据置信度不足，暂不输出可执行买点")
+        reasons.append("数据置信度不足，暂不输出入场买点")
     if zone == "data_insufficient":
         reasons.append("关键买区输入不足，暂不输出精确买点")
     if zone == "no_chase":
@@ -1753,6 +1784,211 @@ def _score_attr(score, name: str):
     return getattr(score, name, None)
 
 
+def _first_value(source: Any, *names: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        for name in names:
+            if name in source:
+                return source[name]
+        return default
+    for name in names:
+        if hasattr(source, name):
+            return getattr(source, name)
+    return default
+
+
+def _price_history_from_stock_data(stockData: dict | None) -> Any:
+    if not stockData:
+        return None
+    for key in ("price_history", "priceHistory", "history"):
+        if key in stockData:
+            return stockData.get(key)
+    return None
+
+
+def _history_is_stale(stockData: dict | None) -> bool:
+    if not stockData:
+        return False
+    status = str(
+        stockData.get("historyStatus")
+        or stockData.get("history_status")
+        or stockData.get("priceHistoryStatus")
+        or stockData.get("price_history_status")
+        or ""
+    ).strip()
+    if status == "stale_history":
+        return True
+    return bool(stockData.get("stale_history") or stockData.get("staleHistory"))
+
+
+def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) -> dict[str, Any]:
+    technical = estimate.technicalEntry if isinstance(estimate.technicalEntry, dict) else {}
+    valuation_entry = _valuation_entry_price(estimate)
+    technical_pullback = _first_number_from_value(technical.get("technicalEntryPrice"))
+    review_price = _first_number_from_value(technical.get("technicalReviewPrice"))
+    blocked = _combined_entry_blocked(estimate, finalDecision)
+    trend_break = str(technical.get("technicalState") or "") == "trend_break_review"
+    fair_not_tranche = _estimate_is_fair_not_tranche(estimate)
+    distance = _distance_to_valuation_entry_pct(estimate.currentPrice, valuation_entry)
+    combined_trigger = _combined_trigger_price(valuation_entry, technical_pullback, blocked or trend_break)
+    label = _combined_entry_label(
+        estimate,
+        finalDecision,
+        blocked=blocked,
+        trend_break=trend_break,
+        fair_not_tranche=fair_not_tranche,
+        valuation_distance_pct=distance,
+    )
+    reasons = _combined_entry_reasons(
+        estimate,
+        technical,
+        finalDecision,
+        valuation_entry=valuation_entry,
+        technical_pullback=technical_pullback,
+        combined_trigger=combined_trigger,
+        review_price=review_price,
+        blocked=blocked,
+        trend_break=trend_break,
+        fair_not_tranche=fair_not_tranche,
+        valuation_distance_pct=distance,
+    )
+    return {
+        "valuationEntryPrice": _round_price(valuation_entry),
+        "technicalPullbackPrice": _round_price(technical_pullback),
+        "combinedTriggerPrice": _round_price(combined_trigger),
+        "reviewPrice": _round_price(review_price),
+        "entryLabel": label,
+        "entryReasons": reasons,
+    }
+
+
+def _valuation_entry_price(estimate: BuyZoneEstimate) -> float | None:
+    if estimate.currentZone in BLOCKED_BUY_ZONE_STATES:
+        return None
+    return _first_number_from_value(estimate.nextTriggerPrice) or _first_number_from_value(estimate.trancheBuyHigh)
+
+
+def _combined_trigger_price(
+    valuation_entry: float | None,
+    technical_pullback: float | None,
+    review_only: bool,
+) -> float | None:
+    if review_only:
+        return None
+    if valuation_entry is None:
+        return None
+    if technical_pullback is None or technical_pullback <= 0:
+        return valuation_entry
+    return min(valuation_entry, technical_pullback)
+
+
+def _combined_entry_label(
+    estimate: BuyZoneEstimate,
+    finalDecision: Any,
+    *,
+    blocked: bool,
+    trend_break: bool,
+    fair_not_tranche: bool,
+    valuation_distance_pct: float | None,
+) -> str:
+    if trend_break:
+        return "趋势破坏，需复核"
+    if blocked:
+        return "需复核或禁止追高，技术面不转买点"
+    if fair_not_tranche:
+        return "合理观察，未到估值买点"
+    if valuation_distance_pct is not None and valuation_distance_pct > 15:
+        return "合理观察，未到估值买点"
+    if estimate.currentZone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
+        return "进入估值买点，参考技术回踩"
+    return "等待估值买点"
+
+
+def _combined_entry_reasons(
+    estimate: BuyZoneEstimate,
+    technical: dict[str, Any],
+    finalDecision: Any,
+    *,
+    valuation_entry: float | None,
+    technical_pullback: float | None,
+    combined_trigger: float | None,
+    review_price: float | None,
+    blocked: bool,
+    trend_break: bool,
+    fair_not_tranche: bool,
+    valuation_distance_pct: float | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if valuation_entry is not None:
+        reasons.append(f"估值买点参考可分批区上沿 / 下一触发价：{valuation_entry:.2f}。")
+    else:
+        reasons.append("估值买点当前不可用，综合入场不输出入场触发价。")
+    if technical_pullback is not None:
+        reasons.append(f"技术回踩点：{technical_pullback:.2f}，仅作辅助，不覆盖估值买区。")
+    if combined_trigger is not None:
+        reasons.append(f"综合触发价：{combined_trigger:.2f}，不会高于估值买点，避免技术面把价格提前变成入场信号。")
+    if review_price is not None:
+        reasons.append(f"技术复核线：{review_price:.2f}，跌破后优先复核趋势和支撑。")
+    if trend_break:
+        reasons.append("技术面跌破 MA200 或关键支撑，显示趋势破坏，需复核。")
+    if blocked:
+        action = _first_value(finalDecision, "finalAction", "displayCategory", default="") or estimate.action or estimate.currentZone
+        reasons.append(f"最终结论或买区已阻断（{action}），技术面不能转成入场信号。")
+    if fair_not_tranche:
+        reasons.append("当前处于合理观察区但未进入可分批区，只显示合理观察，未到估值买点。")
+    if valuation_distance_pct is not None and valuation_distance_pct > 15:
+        reasons.append(f"距离第一估值买点约 {valuation_distance_pct:.1f}%，不得显示接近买点。")
+    if estimate.heavyBuyBelow is not None:
+        reasons.append(f"极端恐慌区：{estimate.heavyBuyBelow:.2f}，不是常规重仓计划。")
+    if str(technical.get("technicalState") or "") in {"unavailable", "insufficient_data"}:
+        reasons.append("本地 price_history 缺失或不可用，技术层仅保留 low / unavailable 状态。")
+    return reasons[:8]
+
+
+def _combined_entry_blocked(estimate: BuyZoneEstimate, finalDecision: Any = None) -> bool:
+    if estimate.currentZone in BLOCKED_BUY_ZONE_STATES or estimate.currentZone == "no_chase":
+        return True
+    if str(estimate.confidence or "").lower() == "low" or estimate.isValid is False:
+        return True
+    if finalDecision is None:
+        return False
+    lane = str(_first_value(finalDecision, "decisionLane", default="") or "").lower()
+    action = str(_first_value(finalDecision, "finalAction", default="") or "")
+    display = str(_first_value(finalDecision, "displayCategory", default="") or "")
+    data_confidence = str(_first_value(finalDecision, "dataConfidence", default="") or "").lower()
+    if data_confidence == "low" or lane in {"blocked", "review"}:
+        return True
+    return any(token in f"{action} {display}" for token in ["禁止追高", "需复核", "数据不足", "待复核"])
+
+
+def _estimate_is_fair_not_tranche(estimate: BuyZoneEstimate) -> bool:
+    price = _first_number_from_value(estimate.currentPrice)
+    if price is None or estimate.currentZone != "fair_observation":
+        return False
+    in_fair = _between(price, estimate.fairValueLow, estimate.fairValueHigh)
+    in_tranche = _between(price, estimate.trancheBuyLow, estimate.trancheBuyHigh)
+    return in_fair and not in_tranche
+
+
+def _distance_to_valuation_entry_pct(current_price: float | None, valuation_entry: float | None) -> float | None:
+    price = _first_number_from_value(current_price)
+    if price is None or price <= 0 or valuation_entry is None or valuation_entry <= 0 or price <= valuation_entry:
+        return None
+    return round((price - valuation_entry) / price * 100, 1)
+
+
+def _between(value: float, low: float | None, high: float | None) -> bool:
+    lower = _first_number_from_value(low)
+    upper = _first_number_from_value(high)
+    return lower is not None and upper is not None and lower <= value <= upper
+
+
+def _first_number_from_value(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number == number else None
+
+
 def _insufficient(symbol: str, model: str, price: float | None, reasons: list[str], warnings: list[str]) -> BuyZoneEstimate:
     estimate = BuyZoneEstimate(
         symbol=symbol.upper(),
@@ -1771,10 +2007,11 @@ def _insufficient(symbol: str, model: str, price: float | None, reasons: list[st
         keyReasons=reasons,
         warnings=warnings,
         createdAt=datetime.now(timezone.utc).isoformat(),
+        technicalEntry=build_technical_entry_model(symbol, price, None, None, None).to_dict(),
         action="买区异常，需复核",
         nextTriggerPrice=None,
         nextBuyLabel="买区异常，需复核",
         isValid=False,
         validationErrors=["当前价格缺失或无效"] if price is None or price <= 0 else ["估值输入不足"],
     )
-    return _with_explainability(_without_actionable_prices(estimate), {}, None)
+    return attach_combined_entry(_with_explainability(_without_actionable_prices(estimate), {}, None))
