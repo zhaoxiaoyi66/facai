@@ -6,7 +6,7 @@ from typing import Any
 
 BUY_ACTIONS = {"可小仓分批", "可正常分批"}
 NON_BUY_VALUATION_STATUSES = {"只观察", "偏贵", "极贵"}
-BLOCKING_ZONES = {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}
+BLOCKING_ZONES = {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}
 REVIEW_ACTION = "待复核，暂不新增"
 
 
@@ -146,7 +146,7 @@ def _classify(
 ) -> tuple[str, str]:
     if is_actionable:
         return "actionable", "可执行"
-    if "data_confidence" in block_reasons or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
+    if "data_confidence" in block_reasons or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
         return "review", "需复核"
     if final_action == "禁止追高" or zone == "no_chase":
         return "blocked", "禁止追高"

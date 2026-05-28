@@ -15,6 +15,21 @@ BUY_ZONE_OVERRIDE_FIELDS = (
     "heavy_buy_below",
 )
 
+SUPPORTED_BUY_ZONE_MODELS = {
+    "SAAS_SOFTWARE",
+    "MEGA_CAP_PLATFORM",
+    "SEMICONDUCTOR",
+    "POWER_GENERATION",
+}
+
+BLOCKED_BUY_ZONE_STATES = {
+    "invalid_zone",
+    "invalid_manual_override",
+    "data_insufficient",
+    "low_confidence_zone",
+    "unsupported_buy_zone_model",
+}
+
 
 @dataclass(frozen=True)
 class BuyZoneEstimate:
@@ -66,6 +81,31 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     if price is None or price <= 0:
         warnings.append("当前价格缺失或无效")
         return _insufficient(symbol, model, price, ["缺少当前价格，无法生成价格区间。"], warnings)
+
+    model_key = str(model).upper()
+    if model_key not in SUPPORTED_BUY_ZONE_MODELS:
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "unsupported_buy_zone_model",
+            ["buy_zone_model_not_supported"],
+            ["当前板块暂无专属买区模型，禁用精确买点"],
+            inputs,
+            method="unsupported_buy_zone_model",
+        )
+
+    if _power_generation_core_inputs_missing(model_key, stockData):
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "data_insufficient",
+            ["missing_power_generation_core_inputs"],
+            ["missing_power_generation_core_inputs"],
+            inputs,
+            method="data_insufficient",
+        )
 
     targets = _model_targets(str(model))
     candidates = _valuation_candidates(price, metrics, targets, inputs)
@@ -350,6 +390,56 @@ def _make_monotonic(price: float, fair: float, tranche: float, heavy: float) -> 
     return fair, tranche, heavy
 
 
+def _blocked_estimate(
+    symbol: str,
+    model: str,
+    price: float | None,
+    zone: str,
+    reasons: list[str],
+    warnings: list[str],
+    inputs: list[str] | None = None,
+    *,
+    method: str = "guardrail",
+) -> BuyZoneEstimate:
+    return BuyZoneEstimate(
+        symbol=symbol.upper(),
+        modelType=str(model),
+        currentPrice=_round_price(price),
+        noChaseAbove=None,
+        fairValueLow=None,
+        fairValueHigh=None,
+        trancheBuyLow=None,
+        trancheBuyHigh=None,
+        heavyBuyBelow=None,
+        currentZone=zone,
+        confidence="low",
+        method=method,
+        inputsUsed=list(inputs or []),
+        keyReasons=reasons,
+        warnings=warnings,
+        createdAt=datetime.now(timezone.utc).isoformat(),
+        action="needs_review",
+        nextTriggerPrice=None,
+        nextBuyLabel="needs_review",
+        isValid=False,
+        validationErrors=list(reasons),
+    )
+
+
+def _without_actionable_prices(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
+    return replace(
+        buyZone,
+        noChaseAbove=None,
+        fairValueLow=None,
+        fairValueHigh=None,
+        trancheBuyLow=None,
+        trancheBuyHigh=None,
+        heavyBuyBelow=None,
+        nextTriggerPrice=None,
+        isValid=False,
+    )
+
+
 def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None = None, scoringResult=None) -> BuyZoneEstimate:
     stockData = stockData or {}
     warnings = list(buyZone.warnings or [])
@@ -403,6 +493,10 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
         _append_once(warnings, message)
     if quality["data_confidence_low"]:
         confidence = "low"
+        if current_zone not in {"invalid_zone", "invalid_manual_override", "data_insufficient", "unsupported_buy_zone_model"}:
+            current_zone = "low_confidence_zone"
+            is_valid = False
+            _append_once(validation_errors, "data_confidence_low")
     elif quality["forces_medium"]:
         confidence = _downgrade_confidence(confidence, "medium")
     if confidence == "high" and _core_input_count(buyZone.inputsUsed) < 2:
@@ -413,11 +507,12 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
     next_price, next_label, trigger_warnings = derive_next_trigger_price(price, buyZone, current_zone)
     for message in trigger_warnings:
         _append_once(warnings, message)
-    if current_zone in {"invalid_zone", "invalid_manual_override", "data_insufficient"}:
+    if current_zone in BLOCKED_BUY_ZONE_STATES:
         next_price = None
+        is_valid = False
         next_label = "买区异常，需复核"
     action = _buy_zone_action(current_zone, next_label)
-    return replace(
+    validated = replace(
         buyZone,
         currentPrice=_round_price(price),
         currentZone=current_zone,
@@ -425,10 +520,13 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
         action=action,
         nextTriggerPrice=next_price,
         nextBuyLabel=next_label,
-        isValid=is_valid and current_zone not in {"invalid_zone", "invalid_manual_override", "data_insufficient"},
+        isValid=is_valid and current_zone not in BLOCKED_BUY_ZONE_STATES,
         validationErrors=validation_errors,
         warnings=warnings,
     )
+    if current_zone in BLOCKED_BUY_ZONE_STATES:
+        return _without_actionable_prices(validated)
+    return validated
 
 
 def derive_current_zone(currentPrice: Any, buyZone: BuyZoneEstimate | dict) -> str:
@@ -499,7 +597,7 @@ def _confidence(inputs: list[str], method: str, model: str, stockData: dict, war
     if method == "technical_proxy":
         return "low"
     distinct = set(inputs)
-    if str(model).upper() == "POWER_GENERATION" and not any(stockData.get(key) is not None for key in ("adjustedEbitda", "manualAdjustedEbitda", "adjustedFcfBeforeGrowth", "manualAdjustedFcfBeforeGrowth")):
+    if _power_generation_core_inputs_missing(str(model).upper(), stockData):
         warnings.append("电力模型缺少调整后 EBITDA / 增长投资前 FCF，使用代理估值，置信度不高于中。")
         return "medium" if len(distinct) >= 2 else "low"
     if len(distinct) >= 3:
@@ -507,6 +605,23 @@ def _confidence(inputs: list[str], method: str, model: str, stockData: dict, war
     if len(distinct) >= 2:
         return "medium"
     return "low"
+
+
+def _power_generation_core_inputs_missing(model: str, stockData: dict) -> bool:
+    if str(model).upper() != "POWER_GENERATION":
+        return False
+    return not any(
+        stockData.get(key) is not None
+        for key in (
+            "adjustedEbitda",
+            "manualAdjustedEbitda",
+            "manual_adjusted_ebitda",
+            "adjustedFcfBeforeGrowth",
+            "manualAdjustedFcfBeforeGrowth",
+            "adjusted_fcf_before_growth",
+            "manual_adjusted_fcf_before_growth",
+        )
+    )
 
 
 def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: str, inputs: list[str], confidence: str) -> list[str]:
@@ -550,13 +665,13 @@ def _core_input_count(inputs: list[str]) -> int:
 def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimate) -> dict:
     warnings: list[str] = []
     forces_medium = False
-    data_confidence_low = str(
-        stockData.get("dataConfidence")
-        or stockData.get("data_confidence")
-        or _score_attr(scoringResult, "dataConfidence")
-        or _score_attr(scoringResult, "data_confidence")
-        or ""
-    ).lower() == "low"
+    data_confidence_values = (
+        _score_attr(scoringResult, "data_confidence"),
+        _score_attr(scoringResult, "dataConfidence"),
+        stockData.get("data_confidence"),
+        stockData.get("dataConfidence"),
+    )
+    data_confidence_low = any(str(value).lower() == "low" for value in data_confidence_values if value not in {None, ""})
     if data_confidence_low:
         warnings.append("dataConfidence = low，买区置信度降为 low")
 

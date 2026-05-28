@@ -1035,10 +1035,13 @@ class DashboardLayoutTests(unittest.TestCase):
                 "free_cash_flow_yield": 0.06,
                 "market_cap": 100_000_000_000,
                 "free_cash_flow": 6_000_000_000,
+                "adjustedEbitda": 8_000_000_000,
+                "adjustedFcfBeforeGrowth": 6_000_000_000,
             },
             {"price": 100},
             self._dashboard_score(
                 action="可小仓分批",
+                scoring_model="POWER_GENERATION",
                 valuation_status="只观察",
                 entry_rating="C - 只观察",
                 current_add_limit_percent=5,
@@ -3438,6 +3441,89 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(low_data.confidence, "low")
         self.assertNotEqual(implied.confidence, "high")
         self.assertNotEqual(pending.confidence, "high")
+
+    def test_low_score_data_confidence_blocks_actionable_buy_zone_prices(self) -> None:
+        zone = generate_buy_zone(
+            "NOW",
+            {"price": 100, "price_to_fcf": 24, "free_cash_flow_yield": 0.042, "price_to_sales": 7.5, "dataConfidence": "medium"},
+            {"scoring_model": "SAAS_SOFTWARE", "data_confidence": "low"},
+            "SAAS_SOFTWARE",
+        )
+        plan = generate_position_plan("NOW", zone, {"data_confidence": "low", "entry_rating": "A", "risk_rating": "low", "action": sorted(BUY_ACTIONS)[0]})
+
+        self.assertEqual(zone.currentZone, "low_confidence_zone")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.nextTriggerPrice)
+        self.assertIsNone(plan.firstBuyPrice)
+        self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_unsupported_buy_zone_model_blocks_precise_generic_targets(self) -> None:
+        for symbol, model in (("ANET", "AUTO_HARDWARE"), ("COIN", "CRYPTO_FINANCIAL_INFRA")):
+            zone = generate_buy_zone(
+                symbol,
+                {"price": 100, "price_to_fcf": 20, "free_cash_flow_yield": 0.05, "price_to_sales": 8},
+                {"scoring_model": model},
+                model,
+            )
+            plan = generate_position_plan(symbol, zone, {"entry_rating": "A", "risk_rating": "low", "action": sorted(BUY_ACTIONS)[0]})
+
+            self.assertEqual(zone.currentZone, "unsupported_buy_zone_model")
+            self.assertEqual(zone.confidence, "low")
+            self.assertFalse(zone.isValid)
+            self.assertIn("buy_zone_model_not_supported", zone.validationErrors)
+            self.assertIn("当前板块暂无专属买区模型，禁用精确买点", zone.warnings)
+            self.assertIsNone(zone.fairValueHigh)
+            self.assertIsNone(zone.trancheBuyHigh)
+            self.assertIsNone(zone.heavyBuyBelow)
+            self.assertIsNone(plan.firstBuyPrice)
+            self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_invalid_buy_zone_hides_actionable_prices(self) -> None:
+        zone = generate_buy_zone(
+            "ADBE",
+            {
+                "price": 242.5,
+                "price_to_fcf": 9.5007,
+                "free_cash_flow_yield": 0.1052,
+                "price_to_sales": 4.0084,
+                "enterprise_to_revenue": 4.0222,
+            },
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+        plan = generate_position_plan("ADBE", zone, {"entry_rating": "A", "risk_rating": "low", "action": sorted(BUY_ACTIONS)[0]})
+
+        self.assertEqual(zone.currentZone, "invalid_zone")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.noChaseAbove)
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIsNone(plan.firstBuyPrice)
+        self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_power_generation_missing_core_inputs_blocks_proxy_heavy_buy_zone(self) -> None:
+        zone = generate_buy_zone(
+            "VST",
+            {
+                "price": 164.95,
+                "enterprise_to_ebitda": 13.5273,
+                "price_to_fcf": 57.6355,
+                "free_cash_flow_yield": 0.0174,
+                "market_cap": 55_619_000_000,
+                "free_cash_flow": 129_000_000,
+            },
+            {"scoring_model": "POWER_GENERATION"},
+            "POWER_GENERATION",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_power_generation_core_inputs", zone.validationErrors)
+        self.assertIsNone(zone.heavyBuyBelow)
 
     def test_saas_buy_zone_uses_cash_flow_and_sales_multiples(self) -> None:
         zone = generate_buy_zone(

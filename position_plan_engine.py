@@ -73,7 +73,7 @@ def _max_portfolio_weight(quality: str, risk: str) -> float:
 def _current_add_limit(entry: str, risk: str, zone: str, action: str, data_confidence: str = "") -> float:
     if str(data_confidence).lower() == "low":
         return 0.0
-    if _is_high_risk(risk) or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
+    if _is_high_risk(risk) or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
         return 0.0
     if _is_high_risk(risk) or zone == "no_chase" or "禁止追高" in action:
         return 0.0
@@ -95,7 +95,7 @@ def _current_add_limit(entry: str, risk: str, zone: str, action: str, data_confi
 def _first_buy_trigger(buyZone: BuyZoneEstimate) -> tuple[float | None, str]:
     zone = buyZone.currentZone
     current_price = buyZone.currentPrice
-    if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone"}:
+    if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
         return None, "买区异常，需复核"
     if zone == "tranche_buy":
         return current_price, "已进入可分批区"
