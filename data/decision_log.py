@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
 
+from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
 
 
@@ -1151,30 +1152,31 @@ def _required_int(value, field: str) -> int:
 
 
 def _history_closes(path: Path, symbol: str, start_date: date, end_date: date) -> list[float]:
-    if not path.exists():
+    history = CacheReadModel(path).get_price_history(symbol)
+    if history.empty or "date" not in history or "close" not in history:
         return []
-    normalized = _normalize_symbol(symbol)
-    with closing(sqlite3.connect(path)) as conn:
-        if not _table_exists(conn, "price_history"):
-            return []
-        rows = conn.execute(
-            """
-            SELECT close
-            FROM price_history
-            WHERE ticker = ?
-              AND date > ?
-              AND date <= ?
-              AND close IS NOT NULL
-            ORDER BY date ASC
-            """,
-            (normalized, start_date.isoformat(), end_date.isoformat()),
-        ).fetchall()
     closes: list[float] = []
-    for row in rows:
-        price = _optional_non_negative_number(row[0], "close")
+    for row in history.itertuples(index=False):
+        history_date = _history_row_date(getattr(row, "date", None))
+        if history_date is None or history_date <= start_date or history_date > end_date:
+            continue
+        price = _optional_non_negative_number(getattr(row, "close", None), "close")
         if price is not None:
             closes.append(price)
     return closes
+
+
+def _history_row_date(value: object) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
 
 
 def _max_drawdown_pct(start_price: float, closes: list[float]) -> float | None:

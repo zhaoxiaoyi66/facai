@@ -419,6 +419,23 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(outcome_store.get_outcome(now_snapshot["id"], "1m")["return_pct"], 30)
             self.assertEqual(outcome_store.get_outcome(missing_snapshot["id"], "1d")["status"], "missing")
 
+    def test_refresh_decision_outcomes_reads_fmp_history_key(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(db_path, "FMP:NVDA", [("2026-05-27", 220), ("2026-06-25", 240)])
+            snapshot = DecisionLogStore(db_path).save_snapshot(
+                "NVDA",
+                {"decision_date": "2026-05-26", "price": 200, "final_action": "add"},
+            )
+
+            summary = refresh_decision_outcomes(db_path)
+            outcome_store = DecisionOutcomeStore(db_path)
+
+            self.assertEqual(summary["snapshotCount"], 1)
+            self.assertEqual(summary["missingCount"], 0)
+            self.assertEqual(outcome_store.get_outcome(snapshot["id"], "1d")["return_pct"], 10)
+            self.assertEqual(outcome_store.get_outcome(snapshot["id"], "1m")["return_pct"], 20)
+
     def test_refresh_decision_outcomes_overwrites_existing_outcomes(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
