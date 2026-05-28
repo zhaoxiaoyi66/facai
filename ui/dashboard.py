@@ -28,9 +28,13 @@ from data.dashboard_lanes import (
 )
 from data.dashboard_risk_model import (
     build_dashboard_data_health_view,
+    build_dashboard_data_health_view_from_summary,
     build_dashboard_risk_radar,
+    dashboard_symbols as _dashboard_symbols,
     row_current_add_limit_value as _row_current_add_limit_value,
 )
+from data.data_health import build_data_health_summary
+from data.market_data_refresh import refresh_symbol_market_data
 from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
@@ -179,7 +183,7 @@ LANE_FILTER_SESSION_KEY = "dashboard_active_lane_filter"
 RISK_RADAR_FILTER_SESSION_KEY = "dashboard_active_risk_filter"
 LANE_FILTER_LABELS = {
     "actionable": "可行动",
-    "nearBuyZone": "接近击球区",
+    "nearBuyZone": "接近买区",
     "waitOrReview": "待确认",
     "noChaseHighRisk": "风险隔离",
 }
@@ -572,19 +576,18 @@ def _render_market_strip(table: pd.DataFrame) -> None:
 
 
 def _render_data_health_strip(table: pd.DataFrame) -> None:
-    view = build_dashboard_data_health_view(table)
+    symbols = _dashboard_symbols(table)
+    try:
+        summary = build_data_health_summary(watchlist=symbols)
+        view = build_dashboard_data_health_view_from_summary(summary, symbols)
+        raw_issues = list(summary.get("topIssues") or [])
+    except Exception:
+        view = build_dashboard_data_health_view(table)
+        raw_issues = list(view.get("issues") or [])
     items = list(view.get("items") or [])
     item_html = "".join(
         f'<span>{escape(label)} {escape(str(value))}</span>'
         for label, value in items
-    )
-    issues = list(view.get("issues") or [])
-    detail_html = _data_health_detail_groups_html(issues)
-    detail_block = (
-        '<details class="data-health-popover">'
-        '<summary><span>查看详情</span></summary>'
-        f'<div class="data-health-popover-panel">{detail_html}</div>'
-        "</details>"
     )
     st.markdown(
         (
@@ -592,12 +595,167 @@ def _render_data_health_strip(table: pd.DataFrame) -> None:
             '<div class="data-health-main-row">'
             f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>{escape(str(view.get("subtitle") or "本地缓存体检"))}</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
-            f"{detail_block}"
+            '<div class="data-health-detail-label">查看详情</div>'
             "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
     )
+    _render_data_health_refresh_result()
+    with st.expander("数据健康详情", expanded=False):
+        _render_data_health_detail_groups(raw_issues)
+
+
+def _render_data_health_refresh_result() -> None:
+    result = st.session_state.get("data_health_last_refresh_result")
+    if not isinstance(result, dict):
+        return
+    status = str(result.get("status") or "failed")
+    tone = {"success": "ok", "partial": "warning"}.get(status, "error")
+    error = str(result.get("error") or "无")
+    st.markdown(
+        (
+            f'<div class="data-health-refresh-result {escape(tone)}">'
+            f'<strong>{escape(str(result.get("symbol") or ""))} 刷新{escape(_refresh_status_label(status))}</strong>'
+            f'<span>quoteStatus: {escape(str(result.get("quoteStatus") or "N/A"))} · '
+            f'historyStatus: {escape(str(result.get("historyStatus") or "N/A"))} · error: {escape(error)}</span>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_data_health_detail_groups(issues: list[object]) -> None:
+    groups = [
+        ("价格缺失 / 过期", {"missing_price", "stale_quote"}, "刷新该股票"),
+        ("历史缺失 / 过期", {"missing_history", "stale_history"}, "刷新该股票"),
+        ("finalDecision 异常", {"final_decision_error"}, "查看评分"),
+        ("持仓缺价", {"portfolio_missing_price"}, "查看持仓"),
+        ("复盘结果缺失", {"outcome_missing"}, "进入交易日志"),
+    ]
+    normalized = [_normalize_data_health_issue(issue) for issue in issues]
+    columns = st.columns(len(groups), gap="small")
+    for column, (title, categories, fallback_action) in zip(columns, groups):
+        matched = [issue for issue in normalized if issue["category"] in categories]
+        with column:
+            st.markdown(
+                f'<div class="data-health-detail-head"><strong>{escape(title)}</strong><span>{len(matched)}</span></div>',
+                unsafe_allow_html=True,
+            )
+            if not matched:
+                st.markdown('<div class="data-health-detail-empty">暂无</div>', unsafe_allow_html=True)
+                continue
+            for index, issue in enumerate(matched[:5]):
+                _render_data_health_issue_row(issue, fallback_action, index)
+
+
+def _render_data_health_issue_row(issue: dict[str, str], fallback_action: str, index: int) -> None:
+    symbol = issue.get("symbol") or "全局"
+    category = issue.get("category") or ""
+    can_refresh = bool(symbol and symbol != "全局" and category in {"missing_price", "stale_quote", "missing_history", "stale_history"})
+    st.markdown(
+        (
+            '<div class="data-health-detail-row">'
+            f'<strong>{escape(symbol)}</strong>'
+            f'<span>{escape(issue.get("reason") or "数据问题")}</span>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    if can_refresh:
+        if st.button("刷新该股票", key=f"data-health-refresh-{symbol}-{category}-{index}", width="stretch"):
+            st.session_state["data_health_last_refresh_result"] = _refresh_data_health_symbol(symbol)
+            st.rerun()
+    else:
+        st.markdown(f'<em class="data-health-detail-action">{escape(fallback_action)}</em>', unsafe_allow_html=True)
+
+
+def _refresh_data_health_symbol(symbol: str) -> dict[str, str]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    try:
+        result = refresh_symbol_market_data(normalized_symbol)
+    except Exception as exc:
+        return {
+            "symbol": normalized_symbol,
+            "status": "failed",
+            "quoteStatus": "not_run",
+            "historyStatus": "not_run",
+            "error": _clean_refresh_error(exc),
+        }
+    if not isinstance(result, dict):
+        return {
+            "symbol": normalized_symbol,
+            "status": "failed",
+            "quoteStatus": "unknown",
+            "historyStatus": "unknown",
+            "error": "刷新服务返回异常",
+        }
+    return {
+        "symbol": str(result.get("symbol") or normalized_symbol),
+        "status": str(result.get("status") or "failed"),
+        "quoteStatus": str(result.get("quoteStatus") or "N/A"),
+        "historyStatus": str(result.get("historyStatus") or "N/A"),
+        "error": str(result.get("error") or "无"),
+    }
+
+
+def _clean_refresh_error(error: object) -> str:
+    message = str(error or "").strip()
+    if not message:
+        return "刷新失败，请稍后重试"
+    return message.splitlines()[0]
+
+
+def _normalize_data_health_issue(issue: object) -> dict[str, str]:
+    if isinstance(issue, dict):
+        category = str(issue.get("category") or "")
+        symbol = str(issue.get("symbol") or "").upper()
+        reason = str(issue.get("message") or _data_health_category_label(category) or "数据问题")
+        return {"category": category, "symbol": symbol, "reason": reason}
+    text = str(issue or "").strip()
+    parts = text.split(maxsplit=1)
+    symbol = parts[0] if parts and parts[0].replace(".", "").replace("-", "").isalnum() and parts[0].upper() == parts[0] else ""
+    reason = parts[1] if symbol and len(parts) > 1 else text
+    category = _data_health_category_from_text(text)
+    return {"category": category, "symbol": symbol, "reason": reason or _data_health_category_label(category)}
+
+
+def _data_health_category_from_text(text: str) -> str:
+    if "价格缺失" in text:
+        return "missing_price"
+    if "价格过期" in text:
+        return "stale_quote"
+    if "历史缺失" in text:
+        return "missing_history"
+    if "历史过期" in text:
+        return "stale_history"
+    if "finalDecision" in text:
+        return "final_decision_error"
+    if "持仓缺价" in text:
+        return "portfolio_missing_price"
+    if "复盘" in text or "outcome" in text:
+        return "outcome_missing"
+    return "unknown"
+
+
+def _data_health_category_label(category: str) -> str:
+    return {
+        "missing_price": "价格缺失",
+        "stale_quote": "价格过期",
+        "missing_history": "历史缺失",
+        "stale_history": "历史过期",
+        "final_decision_error": "finalDecision 异常",
+        "portfolio_missing_price": "持仓缺价",
+        "outcome_missing": "复盘结果缺失",
+    }.get(category, "数据问题")
+
+
+def _refresh_status_label(status: str) -> str:
+    return {
+        "success": "成功",
+        "partial": "部分成功",
+        "failed": "失败",
+    }.get(status, "完成")
 
 
 def _data_health_detail_groups_html(issues: list[object]) -> str:
@@ -789,10 +947,12 @@ def _render_score_explanation(row: pd.Series) -> None:
             unsafe_allow_html=True,
         )
     with cards[2]:
+        entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
+        entry_display = _entry_rating_chip_text(entry_label, entry_grade)
         st.markdown(
             _score_card_html(
                 "买点解释",
-                str(row.get("entryRating") or "N/A"),
+                entry_display or str(row.get("entryRating") or "N/A"),
                 [
                     "估值状态：" + str(row.get("valuationStatus") or "N/A"),
                     "回撤幅度：" + str(row.get("drawdownFromHigh") or "N/A"),
@@ -1824,7 +1984,7 @@ def _buy_point_tone(value: object, row: pd.Series | None = None) -> str:
         return "green"
     if "等回踩" in combined or "接近" in combined or combined.startswith("B"):
         return "blue"
-    if "只观察" in combined or "观察" in combined or "待复核" in combined or combined.startswith("C"):
+    if "未到估值买点" in combined or "只观察" in combined or "观察" in combined or "待复核" in combined or "需复核" in combined or combined.startswith("C"):
         return "yellow"
     if "数据" in combined:
         return "gray"
@@ -3274,6 +3434,47 @@ def _render_dashboard_styles() -> None:
         .data-health-metrics span:last-child {
             margin-right:0.4rem;
         }
+        .data-health-detail-label {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100%;
+            border-left:1px solid rgba(15, 23, 42, 0.05);
+            color:#64748B;
+            font-size:10px;
+            line-height:1.2;
+            font-weight:700;
+            white-space:nowrap;
+        }
+        .data-health-refresh-result {
+            max-width:1080px;
+            margin:0 auto 0.42rem;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.6rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:7px;
+            background:#FFFFFF;
+            padding:0.38rem 0.56rem;
+            color:#475569;
+            font-size:11px;
+        }
+        .data-health-refresh-result strong {
+            color:#0F172A;
+            font-size:11.5px;
+            font-weight:780;
+            white-space:nowrap;
+        }
+        .data-health-refresh-result span {
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .data-health-refresh-result.ok { border-left:2px solid #16A34A; }
+        .data-health-refresh-result.warning { border-left:2px solid #D97706; }
+        .data-health-refresh-result.error { border-left:2px solid #DC2626; }
         .data-health-popover {
             position:relative;
             min-width:0;

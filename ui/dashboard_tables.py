@@ -85,6 +85,10 @@ def _decision_table_cell_html(
     if key == "actionSummary":
         action = _display_table_text(_safe_table_value("action", row_final_action(row)), fallback="待复核")
         valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
+        entry_label, _entry_grade, _entry_raw = _entry_rating_display_parts(row)
+        raw_entry = str(row.get("entryRating") or "")
+        if "击球区" in valuation or "击球区" in raw_entry or "接近买点" in raw_entry:
+            valuation = entry_label or valuation
         position = _display_table_text(row_current_add_text(row), fallback="")
         secondary_parts = [_short_badge_text(valuation)]
         if position and position not in {"不建议新增", "待补"}:
@@ -132,13 +136,13 @@ def _compact_watchlist_badge_text(key: str, value: object) -> str:
 
 
 def _entry_rating_cell_html(row: pd.Series) -> str:
-    label, grade, title = _entry_rating_display_parts(row)
+    label, grade, _title = _entry_rating_display_parts(row)
     tone = _buy_point_label_tone(label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
     display_text = _entry_rating_chip_text(label, grade)
     return (
         '<div class="decision-cell entry-rating-cell">'
-        f'<span class="entry-rating-token" title="{escape(title)}" '
+        f'<span class="entry-rating-token" title="{escape(display_text)}" '
         f'style="background:{background};color:{foreground};border:1px solid {border};">'
         f"<strong>{escape(display_text)}</strong>"
         "</span></div>"
@@ -163,7 +167,7 @@ def _buy_point_label_tone(label: object) -> str:
         return "green"
     if "等回踩" in text or "接近" in text:
         return "blue"
-    if "只观察" in text or "观察" in text or "待复核" in text:
+    if "未到估值买点" in text or "只观察" in text or "观察" in text or "待复核" in text or "需复核" in text:
         return "yellow"
     if "数据" in text:
         return "gray"
@@ -185,15 +189,63 @@ def _entry_rating_display_parts(row: pd.Series) -> tuple[str, str, str]:
             grade = prefix.strip().upper()
             remainder = suffix.strip()
     remainder = remainder.lstrip("-").strip()
+    combined_label = _combined_entry_label(row)
+    if combined_label:
+        return combined_label, "", raw
     valuation_label = _entry_rating_text_label(row.get("valuationStatus"))
     if valuation_label == "极贵":
         return valuation_label, grade, raw
     label = _entry_rating_text_label(remainder)
     if not label:
         label = valuation_label
+    fallback_label = _misleading_entry_fallback_label(row, label)
+    if fallback_label:
+        return fallback_label, "", raw
     if not label:
         label = _entry_label_from_grade(grade)
     return label or "待确认", grade, raw
+
+
+def _combined_entry_label(row: pd.Series | dict) -> str:
+    combined = _row_value(row, "combinedEntry")
+    if isinstance(combined, dict):
+        label = str(combined.get("entryLabel") or "").strip()
+        if label:
+            return label
+    for key in ("activeZone", "systemZone"):
+        zone = _row_value(row, key)
+        combined = getattr(zone, "combinedEntry", None)
+        if isinstance(combined, dict):
+            label = str(combined.get("entryLabel") or "").strip()
+            if label:
+                return label
+    return ""
+
+
+def _row_value(row: pd.Series | dict, key: str) -> object:
+    if isinstance(row, dict):
+        return row.get(key)
+    return row.get(key)
+
+
+def _misleading_entry_fallback_label(row: pd.Series | dict, label: str) -> str:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            label,
+            _row_value(row, "entryRating"),
+            _row_value(row, "valuationStatus"),
+        )
+    )
+    if "击球区" not in text and "接近买点" not in text:
+        return ""
+    action_text = str(_row_value(row, "finalAction") or _row_value(row, "action") or "")
+    lane = str(_row_value(row, "decisionLane") or "")
+    if "禁止追高" in action_text or lane == "blocked":
+        return "禁止追高，未到估值买点"
+    if "复核" in action_text or str(_row_value(row, "dataConfidence") or "") == "low":
+        return "需复核，未到估值买点"
+    return "合理观察，未到估值买点"
 
 
 def _looks_like_rating_token(value: object) -> bool:

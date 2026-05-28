@@ -6,12 +6,12 @@ from html import escape
 import pandas as pd
 
 from data.dashboard_lanes import row_final_action, today_priority_rows
-from ui.dashboard_tables import BADGE_STYLES, _badge_span_html, _short_badge_text
+from ui.dashboard_tables import BADGE_STYLES, _badge_span_html, _entry_rating_display_parts, _short_badge_text
 
 
 LANE_FILTER_LABELS = {
     "actionable": "可行动",
-    "nearBuyZone": "接近击球区",
+    "nearBuyZone": "接近买区",
     "waitOrReview": "待确认",
     "noChaseHighRisk": "风险隔离",
 }
@@ -103,7 +103,7 @@ def _lane_item_html(
     badge_color_for_cell: BadgeColorFn | None = None,
     lane_full_reason: LaneFullReasonFn | None = None,
 ) -> str:
-    state = str(row.get("valuationStatus") or row.get("entryRating") or "待确认")
+    state = _lane_state_label(row)
     color_fn = badge_color_for_cell or _default_badge_color_for_cell
     state_color = color_fn("valuationStatus", state, row)
     symbol = str(row.get("symbol") or "")
@@ -156,7 +156,16 @@ def _lane_full_reason(
     risks = translated_fn(quality_negative_fn(row), 1)
     if risks:
         return risks[0]
-    return str(row.get("valuationStatus") or "等待确认")
+    return _lane_state_label(row) or "等待确认"
+
+
+def _lane_state_label(row: pd.Series) -> str:
+    entry_label, _entry_grade, _entry_raw = _entry_rating_display_parts(row)
+    valuation = str(row.get("valuationStatus") or "")
+    raw_entry = str(row.get("entryRating") or "")
+    if "击球区" in valuation or "击球区" in raw_entry or "接近买点" in raw_entry:
+        return entry_label
+    return valuation or entry_label or "待确认"
 
 
 def _lane_short_reason(reason: object) -> str:
@@ -164,7 +173,7 @@ def _lane_short_reason(reason: object) -> str:
     if not text:
         return "等待确认"
     if "今日下跌只是短期冷却" in text or "不等于进入击球区" in text:
-        return "短期冷却，未到买点"
+        return "短期冷却，未到估值买点"
     if "关键数据待复核" in text or ("数据" in text and "复核" in text):
         return "数据待复核"
     if "RSI" in text and any(keyword in text for keyword in ["高于", "偏热", "过热", "极高"]):

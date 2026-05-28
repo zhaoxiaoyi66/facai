@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from ui.dashboard_tables import _buy_point_label_tone, _entry_rating_chip_text, _entry_rating_display_parts
 from ui.metric_labels import model_type_label, resolution_status_label
 
 
@@ -249,9 +250,11 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         summary = {}
     symbol = str(row.get("symbol") or "").upper()
     safe_symbol = escape(symbol)
+    entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
+    entry_display = _entry_rating_chip_text(entry_label, entry_grade)
     badges = [
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
-        drawer_deps.badge_span_html(row.get("entryRating"), drawer_deps.badge_color_for_cell("entryRating", row.get("entryRating"), row)),
+        drawer_deps.badge_span_html(entry_display, _buy_point_label_tone(entry_label)),
         drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
         drawer_deps.badge_span_html(row.get("action"), drawer_deps.badge_color_for_cell("action", row.get("action"), row)),
     ]
@@ -261,10 +264,10 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
             "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
             str(summary.get("quality") or ""),
         ]),
-        _drawer_card_html("买点解释", str(row.get("entryRating") or "N/A"), [
-            str(summary.get("valuation") or ""),
-            str(summary.get("technical") or ""),
-            str(summary.get("entry") or ""),
+        _drawer_card_html("买点解释", entry_display or str(row.get("entryRating") or "N/A"), [
+            _clean_buy_point_summary_text(summary.get("valuation"), row),
+            _clean_buy_point_summary_text(summary.get("technical"), row),
+            _clean_buy_point_summary_text(summary.get("entry"), row),
             _entry_context_note(row),
         ]),
         _drawer_card_html("风险解释", str(row.get("riskRating") or "N/A"), [
@@ -316,7 +319,8 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
     model = model_type_label(row.get("modelType"))
     action = str(row.get("action") or "只观察")
     quality = str(row.get("qualityRating") or "N/A")
-    entry = str(row.get("entryRating") or "N/A")
+    entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
+    entry = _entry_rating_chip_text(entry_label, entry_grade) or str(row.get("entryRating") or "N/A")
     risk = str(row.get("riskRating") or "N/A")
     summary = row.get("humanReadableSummary")
     if not isinstance(summary, dict):
@@ -346,7 +350,7 @@ def _drawer_position_guidance_html(row: pd.Series) -> str:
         '<div>'
         '<span>当前新增建议</span>'
         f'<strong>{escape(str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A"))}</strong>'
-        '<em>由买点评级、估值位置和当前趋势决定。</em>'
+        '<em>由买点结论、估值位置和当前趋势决定。</em>'
         '</div>'
         '<div>'
         '<span>组合仓位上限</span>'
@@ -427,10 +431,33 @@ def _decision_conclusion_text(row: pd.Series, symbol: str, model: str, action: s
 def _decision_why_text(row: pd.Series, quality: str, entry: str, risk: str, summary: dict[str, str]) -> str:
     action = str(row.get("action") or "")
     if _is_high_quality_text(quality) and risk == "低" and _is_observe_or_wait_action(action, entry):
-        return f"公司风险低，但买点评级为 {entry}，当前新增仓位受限；这不是公司质量问题，而是买点不够理想。"
-    parts = [str(summary.get("entry") or ""), str(summary.get("technical") or ""), str(summary.get("valuation") or "")]
-    text = " ".join(part for part in parts if part).strip()
+        return f"公司风险低，但买点结论为 {entry}，当前新增仓位受限；这不是公司质量问题，而是估值买点还没到。"
+    parts = [_combined_entry_note(row), str(summary.get("technical") or ""), str(summary.get("valuation") or "")]
+    if not parts[0]:
+        parts.insert(0, str(summary.get("entry") or ""))
+    text = " ".join(_clean_buy_point_summary_text(part, row) for part in parts if part).strip()
     return text or "当前建议由质量、买点、风险、估值和数据置信度综合得出。"
+
+
+def _combined_entry_note(row: pd.Series) -> str:
+    combined = row.get("combinedEntry")
+    if not isinstance(combined, dict):
+        return ""
+    label = str(combined.get("entryLabel") or "").strip()
+    return f"买点结论：{label}。" if label else ""
+
+
+def _clean_buy_point_summary_text(text: object, row: pd.Series) -> str:
+    value = str(text or "")
+    entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
+    display = _entry_rating_chip_text(entry_label, entry_grade)
+    raw = str(row.get("entryRating") or "").strip()
+    if raw and display:
+        value = value.replace(f"买点评级为{raw}", f"买点结论为{display}")
+        value = value.replace(f"买点评级为 {raw}", f"买点结论为 {display}")
+    if display:
+        value = value.replace("击球区附近", display)
+    return value
 
 
 def _waiting_conditions(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> list[str]:

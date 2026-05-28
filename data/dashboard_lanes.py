@@ -117,7 +117,7 @@ def summary_lane_groups(table: pd.DataFrame) -> list[LaneGroup]:
             exclusive[lane_key].append(row)
     return [
         ("actionable", "可行动", "可执行小仓或正常分批", exclusive["actionable"], "green"),
-        ("nearBuyZone", "接近击球区", "回撤较深但仍需确认", exclusive["nearBuyZone"], "blue"),
+        ("nearBuyZone", "接近买区", "回撤较深但仍需确认", exclusive["nearBuyZone"], "blue"),
         ("waitOrReview", "待确认", "等待更清晰的买点", exclusive["waitOrReview"], "yellow"),
         ("noChaseHighRisk", "风险隔离", "暂不新增，先看原因", exclusive["noChaseHighRisk"], "red"),
     ]

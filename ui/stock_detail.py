@@ -42,7 +42,7 @@ from ui.theme import render_section_title
 
 MANUAL_TEXT = "建议人工复核"
 NEAR_BUY_TRIGGER_THRESHOLD_PCT = 15.0
-FAIR_OBSERVATION_NOT_BUY_LABEL = "合理观察，未到买点"
+FAIR_OBSERVATION_NOT_BUY_LABEL = "合理观察，未到估值买点"
 DEEP_DISCOUNT_ZONE_LABEL = "极端恐慌区"
 
 
@@ -85,7 +85,7 @@ def render() -> None:
     _render_technical_entry_reference(effective_buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision)
     _render_research_memo(ticker, plan_store, plan)
-    _render_explanation_cards(score, snapshot, technicals, effective_plan)
+    _render_explanation_cards(score, snapshot, technicals, effective_plan, effective_buy_zone)
     _render_industry_metrics(score.scoring_model, snapshot, score)
     _render_missing_data_notice(ticker, score, snapshot)
     _render_manual_override_form(ticker, snapshot, score, technicals, history)
@@ -296,7 +296,7 @@ def _first_number(*values) -> float | None:
     return None
 
 
-def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict) -> None:
+def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict, buy_zone: BuyZoneEstimate | None = None) -> None:
     render_section_title("评分解释", "为什么是这个结论")
     columns = st.columns(3)
 
@@ -312,7 +312,7 @@ def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dic
         )
 
     with columns[1]:
-        buy_reasons = _entry_explanation(score, snapshot, technicals, plan)
+        buy_reasons = _entry_explanation(score, snapshot, technicals, plan, buy_zone)
         _explain_card(
             "买点解释",
             _buy_point_status_text(score),
@@ -1352,10 +1352,11 @@ def _raw_fundamental_rows(snapshot: dict) -> list[dict]:
     ]
 
 
-def _entry_explanation(score, snapshot: dict, technicals: dict, plan: dict) -> list[str]:
+def _entry_explanation(score, snapshot: dict, technicals: dict, plan: dict, buy_zone: BuyZoneEstimate | None = None) -> list[str]:
+    label = _buy_point_status_text(score, buy_zone)
     reasons = [
         f"操作建议：{score.action}",
-        f"估值状态：{score.valuation_status}",
+        f"买点结论：{label}",
         f"追高状态：{score.overheat_status} / {score.overheat_action}",
         f"52周高点回撤：{format_percent(technicals.get('drawdown_from_high_pct'))}",
         _distance_to_zone(technicals.get("price"), plan),
@@ -2071,11 +2072,14 @@ def _buy_point_status_parts(score, buy_zone: BuyZoneEstimate | None = None) -> t
             "entryRating": getattr(score, "entry_rating", ""),
             "valuationStatus": getattr(score, "valuation_status", ""),
             "action": getattr(score, "action", ""),
+            "combinedEntry": getattr(buy_zone, "combinedEntry", None) or {},
         }
     )
     label, grade, raw = dashboard_ui._entry_rating_display_parts(row)
+    combined = getattr(buy_zone, "combinedEntry", None) if buy_zone is not None else None
+    has_combined_label = isinstance(combined, dict) and bool(str(combined.get("entryLabel") or "").strip())
     sanity_label = _buy_point_sanity_label_for_zone(buy_zone)
-    if sanity_label:
+    if sanity_label and not has_combined_label:
         label = sanity_label
         raw = sanity_label
     tone = dashboard_ui._buy_point_label_tone(label)
@@ -2106,9 +2110,9 @@ def _buy_point_sanity_label_for_zone(buy_zone: BuyZoneEstimate | None) -> str | 
     if price is None or price <= 0:
         return None
     if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
-        return "需复核，未到买点"
+        return "需复核，未到估值买点"
     if zone == "no_chase":
-        return "禁止追高，未到买点"
+        return "禁止追高，未到估值买点"
     if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
         return None
     tranche_low = _first_number(getattr(buy_zone, "trancheBuyLow", None))

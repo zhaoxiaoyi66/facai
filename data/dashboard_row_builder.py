@@ -67,7 +67,8 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     fcf_metric = fcf_margin_metric(snapshot)
     direct_fcf_margin = fcf_metric.value if fcf_metric.sourceType != "derivedFromMarket" else None
     implied_fcf_margin = fcf_metric.value if fcf_metric.sourceType == "derivedFromMarket" else None
-    final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score)
+    buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
+    final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score, buy_zone=buy_zone)
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
 
@@ -88,6 +89,8 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "finalAction": final_decision.finalAction,
         "decisionLane": final_decision.decisionLane,
         "displayCategory": final_decision.displayCategory,
+        "buyZoneStatus": getattr(buy_zone, "currentZone", None),
+        "combinedEntry": getattr(buy_zone, "combinedEntry", None) or {},
         "isActionable": final_decision.isActionable,
         "decisionBlockReasons": final_decision.blockReasons,
         "decisionReviewReasons": final_decision.reviewReasons,
@@ -160,14 +163,22 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     }
 
 
-def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score):
+def derive_dashboard_buy_zone(ticker: str, snapshot: dict, technicals: dict, score):
     try:
         stock_data = {**snapshot, **technicals}
         price = _first_present(technicals.get("price"), snapshot.get("current_price"))
         if price is not None:
             stock_data["price"] = price
             stock_data.setdefault("current_price", price)
-        buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
+        return generate_buy_zone(ticker, stock_data, score, score.scoring_model)
+    except Exception:
+        return None
+
+
+def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score, *, buy_zone: Any = None):
+    try:
+        if buy_zone is None:
+            buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
         plan = StockPlanStore().get_plan(ticker)
         return build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
     except Exception:
@@ -189,6 +200,8 @@ def error_dashboard_row(ticker: str, exc: Exception) -> dict:
         "finalAction": "数据不足，需复核",
         "decisionLane": "review",
         "displayCategory": "需复核",
+        "buyZoneStatus": None,
+        "combinedEntry": {},
         "isActionable": False,
         "decisionBlockReasons": ["data_unavailable"],
         "decisionReviewReasons": [],
