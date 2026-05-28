@@ -455,7 +455,7 @@ def _buy_zone_row_html(row: dict) -> str:
         '<div class="buy-zone-grid buy-zone-row">'
         f'<div class="stock-cell"><strong>{escape(symbol)}</strong><span>{escape(_price_text(row.get("currentPrice")))}</span></div>'
         f'<div class="status-cell">{_badge(status, _execution_tone(status))}<small>{escape(status_note)}</small></div>'
-        f'<div class="trigger-cell {escape(trigger_tone)}"><b>{escape(trigger_primary)}</b><small>{escape(trigger_secondary)}</small></div>'
+        f'{_buy_zone_trigger_cell_html(row, trigger_primary, trigger_secondary, trigger_tone)}'
         f'<div class="position-cell"><b>{escape(position_text)}</b><small>上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}</small></div>'
         f'<div class="confidence-cell">{_confidence_inline(row.get("confidence"))}</div>'
         '<div class="buy-zone-row-actions">'
@@ -471,6 +471,68 @@ def _render_client_buy_zone_drawers(rows: list[dict]) -> None:
         return
     drawers = "".join(_buy_zone_drawer_html(row) for row in rows)
     st.markdown(f'<div class="buy-zone-drawer-root">{drawers}</div>', unsafe_allow_html=True)
+
+
+def _buy_zone_trigger_cell_html(row: dict, trigger_primary: str, trigger_secondary: str, trigger_tone: str) -> str:
+    technical = _technical_trigger_summary(row)
+    return (
+        f'<div class="trigger-cell {escape(trigger_tone)}">'
+        f'<b>{escape(trigger_primary)}</b>'
+        f'<small>{escape("估值买点：" + trigger_secondary)}</small>'
+        f'<em>{escape(technical)}</em>'
+        "</div>"
+    )
+
+
+def _technical_entry_for_row(row: dict) -> dict:
+    technical = row.get("technicalEntry")
+    technical = dict(technical) if isinstance(technical, dict) else {}
+    zone = str(row.get("currentZone") or "")
+    lane = str(row.get("decisionLane") or "")
+    action = _row_action(row)
+    technical["__buyZoneBlocked"] = (
+        zone in {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}
+        or lane == "blocked"
+        or action == "禁止追高"
+        or row.get("confidence") == "low"
+        or row.get("dataConfidence") == "low"
+    )
+    return technical
+
+
+def _technical_trigger_summary(row: dict) -> str:
+    technical = _technical_entry_for_row(row)
+    state = str(technical.get("technicalState") or "unavailable")
+    confidence = str(technical.get("technicalConfidence") or "low")
+    zone = str(row.get("currentZone") or "")
+    lane = str(row.get("decisionLane") or "")
+    action = _row_action(row)
+    blocked = (
+        state in {"unavailable", "insufficient_data"}
+        or confidence == "low"
+        or zone in {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}
+        or lane == "blocked"
+        or action == "禁止追高"
+        or row.get("confidence") == "low"
+        or row.get("dataConfidence") == "low"
+    )
+    if state in {"unavailable", "insufficient_data"} or confidence == "low":
+        return "技术数据不足"
+    review = _technical_money(technical.get("technicalReviewPrice"))
+    if blocked or state == "trend_break_review":
+        if review != "未设置":
+            return f"技: 复核 {review}，不转买点"
+        return "技: 不转买点"
+    entry = _technical_money(technical.get("technicalEntryPrice"))
+    no_chase = _technical_money(technical.get("technicalNoChaseAbove"))
+    parts = []
+    if entry != "未设置":
+        parts.append(f"回踩 {entry}")
+    if review != "未设置":
+        parts.append(f"复核 {review}")
+    if no_chase != "未设置":
+        parts.append(f"不追高 {no_chase}")
+    return "技: " + " / ".join(parts[:2]) if parts else "技术数据不足"
 
 
 def _buy_zone_drawer_id(symbol: str) -> str:
@@ -512,7 +574,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<div class="drawer-section-title">买区解释</div>'
         f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">技术面辅助</div>'
-        f'{_technical_entry_html(row.get("technicalEntry"))}'
+        f'{_technical_entry_html(_technical_entry_for_row(row))}'
         '<div class="drawer-section-title">生成依据</div>'
         f'<div class="drawer-resolution"><b>输入</b><ul>{"".join(f"<li>{escape(str(item))}</li>" for item in row.get("inputsUsed", [])[:8]) or "<li>暂无可用输入</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>原因</b><ul>{reasons or "<li>暂无说明</li>"}</ul></div>'
@@ -646,11 +708,12 @@ def _explain_items_html(items: list[str]) -> str:
 
 def _technical_entry_html(entry: object) -> str:
     technical = entry if isinstance(entry, dict) else {}
+    buy_zone_blocked = bool(technical.get("__buyZoneBlocked"))
     confidence = str(technical.get("technicalConfidence") or "low")
     state = str(technical.get("technicalState") or "unavailable")
     trend = str(technical.get("technicalTrend") or "unavailable")
     unavailable = state in {"unavailable", "insufficient_data"} or confidence == "low"
-    review_only = unavailable or state == "trend_break_review"
+    review_only = unavailable or buy_zone_blocked or state == "trend_break_review"
     title = "技术数据不足" if unavailable else "技术入场参考"
     summary = (
         "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
@@ -742,9 +805,9 @@ def _technical_levels_text(value: object) -> str:
 def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
-        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     if review_only:
-        return ["趋势破坏或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
@@ -1297,7 +1360,7 @@ def _render_styles() -> None:
         }
         .buy-zone-grid {
             display: grid;
-            grid-template-columns: 104px minmax(178px, 1fr) minmax(188px, 0.9fr) 146px 70px 110px;
+            grid-template-columns: 104px minmax(164px, 0.95fr) minmax(230px, 1.12fr) 132px 66px 104px;
             align-items: center;
             gap: 0.5rem;
             min-height: 42px;
@@ -1380,7 +1443,7 @@ def _render_styles() -> None:
             flex-direction:column;
             align-items:flex-start;
             justify-content:center;
-            gap:0.03rem;
+            gap:0.08rem;
             line-height:1.12;
         }
         .trigger-cell b {
@@ -1399,6 +1462,16 @@ def _render_styles() -> None:
             white-space:nowrap;
             font-size:11px;
             color:#64748B;
+        }
+        .trigger-cell em {
+            max-width:100%;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+            color:#94A3B8;
+            font-size:10.5px;
+            font-style:normal;
+            font-weight:560;
         }
         .position-cell b {
             color:#0F172A;
@@ -1794,10 +1867,10 @@ def _render_styles() -> None:
         }
         @media (max-width: 1280px) {
             .buy-zone-grid {
-                grid-template-columns: 100px minmax(166px, 1fr) minmax(205px, 1.08fr) 116px 66px 128px;
+                grid-template-columns: 96px minmax(150px, 0.9fr) minmax(220px, 1.18fr) 112px 62px 112px;
                 font-size:12px;
                 gap:0.46rem;
-                min-width:860px;
+                min-width:875px;
             }
         }
         </style>

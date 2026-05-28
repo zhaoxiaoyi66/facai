@@ -962,11 +962,19 @@ def _render_buy_zone(
 def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
     technical = getattr(active_zone, "technicalEntry", None)
     technical = technical if isinstance(technical, dict) else {}
+    buy_zone_blocked = str(getattr(active_zone, "currentZone", "") or "") in {
+        "no_chase",
+        "invalid_zone",
+        "invalid_manual_override",
+        "data_insufficient",
+        "low_confidence_zone",
+        "unsupported_buy_zone_model",
+    }
     confidence = str(technical.get("technicalConfidence") or "low")
     state = str(technical.get("technicalState") or "unavailable")
     trend = str(technical.get("technicalTrend") or "unavailable")
     unavailable = state in {"unavailable", "insufficient_data"} or confidence == "low"
-    review_only = unavailable or state == "trend_break_review"
+    review_only = unavailable or buy_zone_blocked or state == "trend_break_review"
     title = "技术数据不足" if unavailable else "技术入场参考"
     summary = (
         "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
@@ -1061,9 +1069,9 @@ def _technical_levels_text(value: object) -> str:
 def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
-        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     if review_only:
-        return ["趋势破坏或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
