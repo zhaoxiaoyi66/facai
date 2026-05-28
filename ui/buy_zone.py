@@ -44,6 +44,7 @@ ZONE_LABELS = {
     "heavy_buy": "重仓击球区",
     "below_heavy_buy": "低于重仓区",
     "data_insufficient": "数据不足",
+    "unsupported_buy_zone_model": "模型不支持",
 }
 ZONE_TONES = {
     "invalid_zone": "red",
@@ -55,6 +56,7 @@ ZONE_TONES = {
     "heavy_buy": "green",
     "below_heavy_buy": "green",
     "data_insufficient": "gray",
+    "unsupported_buy_zone_model": "gray",
 }
 CONFIDENCE_TONES = {"high": "green", "medium": "blue", "low": "orange"}
 SOURCE_LABELS = {
@@ -220,6 +222,7 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "keyReasons": zone.keyReasons,
         "warnings": zone.warnings,
         "validationErrors": list(getattr(zone, "validationErrors", None) or []),
+        "explainability": getattr(zone, "explainability", None) or {},
         "isValid": bool(getattr(zone, "isValid", True)),
         "buyZoneSource": source,
         "manualOverride": manual,
@@ -504,6 +507,8 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_zone_snapshot_html(system_zone)}'
         '<div class="drawer-section-title">当前使用买区</div>'
         f'{_price_ladder_html(row)}'
+        '<div class="drawer-section-title">买区解释</div>'
+        f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">生成依据</div>'
         f'<div class="drawer-resolution"><b>输入</b><ul>{"".join(f"<li>{escape(str(item))}</li>" for item in row.get("inputsUsed", [])[:8]) or "<li>暂无可用输入</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>原因</b><ul>{reasons or "<li>暂无说明</li>"}</ul></div>'
@@ -541,6 +546,120 @@ def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
     ]
     html = "".join(f"<li><span>{escape(label)}</span><b>{escape(value)}</b></li>" for label, value in items)
     return f'<div class="drawer-resolution plan-list"><ul>{html}</ul></div>'
+
+
+def _buy_zone_explainability_html(row: dict) -> str:
+    explain = _normalized_buy_zone_explainability(row)
+    blocks = [
+        ("主因", explain["mainDrivers"]),
+        ("守门原因", explain["guardrailReasons"]),
+        ("缺失输入", explain["missingInputs"]),
+        ("置信度", explain["confidenceReasons"]),
+    ]
+    visible_blocks = [(title, items) for title, items in blocks if items]
+    block_html = "".join(
+        '<div class="drawer-explain-block">'
+        f"<b>{escape(title)}</b>"
+        f"<ul>{_explain_items_html(items)}</ul>"
+        "</div>"
+        for title, items in visible_blocks
+    )
+    grid_html = f'<div class="drawer-explain-grid">{block_html}</div>' if block_html else ""
+    return (
+        '<div class="drawer-explainability">'
+        f'<strong>{escape(explain["explainTitle"])}</strong>'
+        f'<p>{escape(explain["explainSummary"])}</p>'
+        f"{grid_html}"
+        "</div>"
+    )
+
+
+def _normalized_buy_zone_explainability(row: dict) -> dict[str, object]:
+    explain = row.get("explainability")
+    if not isinstance(explain, dict) or not explain:
+        active_zone = row.get("activeZone")
+        explain = getattr(active_zone, "explainability", None) if active_zone is not None else None
+    if not isinstance(explain, dict) or not explain:
+        explain = _fallback_buy_zone_explainability(row)
+    fallback = _fallback_buy_zone_explainability(row)
+    return {
+        "explainTitle": str(explain.get("explainTitle") or fallback["explainTitle"]),
+        "explainSummary": str(explain.get("explainSummary") or fallback["explainSummary"]),
+        "mainDrivers": _explain_list(explain.get("mainDrivers")) or fallback["mainDrivers"],
+        "guardrailReasons": _explain_list(explain.get("guardrailReasons")) or fallback["guardrailReasons"],
+        "missingInputs": _explain_list(explain.get("missingInputs")),
+        "confidenceReasons": _explain_list(explain.get("confidenceReasons")) or fallback["confidenceReasons"],
+    }
+
+
+def _fallback_buy_zone_explainability(row: dict) -> dict[str, object]:
+    zone = str(row.get("currentZone") or "")
+    confidence = str(row.get("confidence") or row.get("dataConfidence") or "low")
+    inputs = _explain_list(row.get("inputsUsed"))
+    warnings = _explain_list(row.get("warnings"))
+    validation_errors = _explain_list(row.get("validationErrors"))
+    fallback_by_zone = {
+        "unsupported_buy_zone_model": ("买区模型暂不支持", "当前板块暂无专属买区模型，系统不输出精确买点。"),
+        "data_insufficient": ("买区数据不足", "关键输入缺失，暂时不能生成精确买点。"),
+        "low_confidence_zone": ("买区置信度不足", "数据置信度偏低，暂不把买区作为可执行信号。"),
+        "invalid_zone": ("买区输入需复核", "买区区间或输入异常，系统暂不输出买点。"),
+        "invalid_manual_override": ("手动买区需复核", "手动覆盖后的区间异常，暂不输出可执行买点。"),
+        "no_chase": ("当前不追高", "当前价格高于系统买区上沿，不建议新增。"),
+    }
+    title, summary = fallback_by_zone.get(zone, ("系统买区已生成", f"当前状态为 {_zone_label(zone)}，买点解释来自系统买区结果。"))
+    guardrails = validation_errors or warnings
+    if not guardrails and zone in {"no_chase", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model", "invalid_zone", "invalid_manual_override"}:
+        guardrails = [summary]
+    missing: list[str] = []
+    if zone == "unsupported_buy_zone_model":
+        missing = ["专属买区模型"]
+    elif zone == "data_insufficient":
+        missing = ["价格、估值或技术输入不足"]
+    return {
+        "explainTitle": title,
+        "explainSummary": summary,
+        "mainDrivers": inputs or [f"当前价格：{_money(row.get('currentPrice'))}"],
+        "guardrailReasons": guardrails,
+        "missingInputs": missing,
+        "confidenceReasons": [f"买区置信度：{confidence_label(confidence)}"],
+    }
+
+
+def _explain_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [_humanize_buy_zone_explain_item(item) for item in value if _humanize_buy_zone_explain_item(item)]
+    if value is None or value == "":
+        return []
+    item = _humanize_buy_zone_explain_item(value)
+    return [item] if item else []
+
+
+def _explain_items_html(items: list[str]) -> str:
+    return "".join(f"<li>{escape(str(item))}</li>" for item in items[:6])
+
+
+def _humanize_buy_zone_explain_item(value: object) -> str:
+    text = str(value or "").strip()
+    mapping = {
+        "buy_zone_model_not_supported": "暂无专属买区模型",
+        "unsupported_buy_zone_model": "暂无专属买区模型",
+        "data_confidence_low": "数据置信度偏低",
+        "missing_power_generation_core_inputs": "缺少发电模型核心输入",
+        "invalid_zone": "买区区间异常",
+        "invalid_manual_override": "手动买区区间异常",
+        "data_insufficient": "关键买区输入不足",
+        "low_confidence_zone": "买区置信度不足",
+        "no_chase": "当前价格处于禁止追高区",
+    }
+    if text in mapping:
+        return mapping[text]
+    if text == "dataConfidence = low":
+        return "数据置信度偏低"
+    if text.startswith("model_type:"):
+        return "模型类型：" + text.split(":", 1)[1].strip()
+    if text.startswith("current price:"):
+        return "当前价格：" + text.split(":", 1)[1].strip()
+    return text
 
 
 def _plan_html(row: dict) -> str:
@@ -1313,6 +1432,54 @@ def _render_styles() -> None:
             padding:0.8rem;
             margin-bottom:0.75rem;
             background:#fff;
+        }
+        .drawer-explainability {
+            border:1px solid rgba(148, 163, 184, 0.22);
+            border-radius:8px;
+            background:#FBFCFE;
+            padding:0.8rem;
+            margin-bottom:0.75rem;
+        }
+        .drawer-explainability > strong {
+            display:block;
+            color:#0F172A;
+            font-size:0.95rem;
+            font-weight:850;
+            margin-bottom:0.25rem;
+        }
+        .drawer-explainability > p {
+            margin:0 0 0.7rem;
+            color:#475569;
+            font-size:0.82rem;
+            line-height:1.5;
+        }
+        .drawer-explain-grid {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0.5rem;
+        }
+        .drawer-explain-block {
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-radius:7px;
+            background:#FFFFFF;
+            padding:0.55rem 0.62rem;
+        }
+        .drawer-explain-block b {
+            display:block;
+            color:#64748B;
+            font-size:0.72rem;
+            font-weight:850;
+            margin-bottom:0.3rem;
+        }
+        .drawer-explain-block ul {
+            margin:0;
+            padding-left:1rem;
+            color:#0F172A;
+            font-size:0.76rem;
+            line-height:1.45;
+        }
+        .drawer-explain-block li + li {
+            margin-top:0.2rem;
         }
         .price-ladder ul,
         .plan-list ul {
