@@ -787,8 +787,23 @@ def _explain_title_summary(zone: str, buyZone: BuyZoneEstimate, main_drivers: li
     driver_text = "、".join(main_drivers[:3]) if main_drivers else "可用估值和技术输入"
     return (
         "系统买区已生成",
-        f"系统基于 {driver_text} 生成买区，当前状态为 {zone or 'fair_observation'}。",
+        f"系统基于 {driver_text} 生成买区，当前状态为 {_buy_zone_state_label(zone)}。",
     )
+
+
+def _buy_zone_state_label(zone: str) -> str:
+    return {
+        "invalid_zone": "买区异常",
+        "invalid_manual_override": "手动买区异常",
+        "low_confidence_zone": "需复核",
+        "no_chase": "禁止追高",
+        "fair_observation": "合理观察区",
+        "tranche_buy": "可分批区",
+        "heavy_buy": "极端恐慌区",
+        "below_heavy_buy": "低于极端恐慌区",
+        "data_insufficient": "数据不足",
+        "unsupported_buy_zone_model": "买区模型暂不支持",
+    }.get(str(zone or ""), "需复核")
 
 
 def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[str]) -> list[str]:

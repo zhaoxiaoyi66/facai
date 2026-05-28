@@ -2105,6 +2105,10 @@ def _buy_point_sanity_label_for_zone(buy_zone: BuyZoneEstimate | None) -> str | 
     price = _first_number(getattr(buy_zone, "currentPrice", None))
     if price is None or price <= 0:
         return None
+    if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
+        return "需复核，未到买点"
+    if zone == "no_chase":
+        return "禁止追高，未到买点"
     if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
         return None
     tranche_low = _first_number(getattr(buy_zone, "trancheBuyLow", None))
