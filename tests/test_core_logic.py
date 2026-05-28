@@ -6441,6 +6441,70 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertEqual(result["triggerTone"], "near")
         self.assertIn("10.0", str(result["triggerPrimary"]))
 
+    def test_buy_zone_page_fair_zone_far_from_first_buy_is_observation_not_near(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        row = {
+            "currentZone": "fair_observation",
+            "currentPrice": 212.60,
+            "fairValueLow": 158.96,
+            "fairValueHigh": 225.38,
+            "trancheBuyLow": 121.33,
+            "trancheBuyHigh": 155.78,
+            "nextTriggerPrice": 155.78,
+            "nextBuyPrice": 155.78,
+            "firstBuyPrice": 155.78,
+            "finalAction": "等回踩",
+            "decisionLane": "wait",
+            "isActionable": False,
+            "currentAddLimitPercent": 0,
+            "confidence": "high",
+            "dataConfidence": "high",
+            "isValid": True,
+        }
+
+        result = buy_zone_page.resolve_buy_zone_display_category(row)
+        primary, _secondary, tone = buy_zone_page.format_trigger_cell(row)
+
+        self.assertEqual(result["displayCategory"], "等回踩")
+        self.assertEqual(result["triggerPrimary"], "合理观察，未到买点")
+        self.assertFalse(result["priorityEligible"])
+        self.assertEqual(primary, "合理观察，未到买点")
+        self.assertEqual(tone, "neutral")
+
+    def test_stock_detail_buy_point_status_uses_buy_zone_distance_sanity(self) -> None:
+        score = SimpleNamespace(
+            entry_rating="B+ - 击球区附近",
+            valuation_status="击球区附近",
+            action="等回踩",
+        )
+        zone = BuyZoneEstimate(
+            symbol="NVDA",
+            modelType="SEMICONDUCTOR",
+            currentPrice=212.60,
+            noChaseAbove=250,
+            fairValueLow=158.96,
+            fairValueHigh=225.38,
+            trancheBuyLow=121.33,
+            trancheBuyHigh=155.78,
+            heavyBuyBelow=109.85,
+            currentZone="fair_observation",
+            confidence="high",
+            method="blended",
+            inputsUsed=[],
+            keyReasons=[],
+            warnings=[],
+            createdAt="now",
+            nextTriggerPrice=155.78,
+            isValid=True,
+            validationErrors=[],
+        )
+
+        html = stock_detail._buy_point_status_pill_html(score, zone)
+
+        self.assertIn("合理观察，未到买点", html)
+        self.assertNotIn("击球区附近", html)
+
 
 def _ai_review_result(
     decision: str,

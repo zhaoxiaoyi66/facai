@@ -41,6 +41,9 @@ from ui.theme import render_section_title
 
 
 MANUAL_TEXT = "建议人工复核"
+NEAR_BUY_TRIGGER_THRESHOLD_PCT = 15.0
+FAIR_OBSERVATION_NOT_BUY_LABEL = "合理观察，未到买点"
+DEEP_DISCOUNT_ZONE_LABEL = "极端恐慌区"
 
 
 def render() -> None:
@@ -75,7 +78,7 @@ def render() -> None:
 
     with record_signal_slot.container():
         _render_record_signal_button(ticker, snapshot, technicals, final_decision)
-    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, final_decision)
+    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision)
     _render_current_position_summary(_portfolio_row_for_ticker(ticker))
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
@@ -126,12 +129,20 @@ def _select_ticker() -> str:
     return (custom or selected or "").strip().upper()
 
 
-def _render_conclusion_card(ticker: str, snapshot: dict, technicals: dict, score, refreshed_at: str | None, final_decision=None) -> None:
+def _render_conclusion_card(
+    ticker: str,
+    snapshot: dict,
+    technicals: dict,
+    score,
+    refreshed_at: str | None,
+    buy_zone: BuyZoneEstimate | None = None,
+    final_decision=None,
+) -> None:
     company = snapshot.get("company_name") or ticker
     price = technicals.get("price") or snapshot.get("current_price")
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
-    buy_point_html = _buy_point_status_pill_html(score)
+    buy_point_html = _buy_point_status_pill_html(score, buy_zone)
     values = [
         ("操作建议", _final_action_text(score, final_decision)),
         ("当前新增", _position_limit_text(_final_current_add(score, final_decision))),
@@ -780,8 +791,8 @@ def _buy_zone_label(zone: str) -> str:
         "no_chase": "禁止追高区",
         "fair_observation": "合理观察区",
         "tranche_buy": "可分批区",
-        "heavy_buy": "重仓击球区",
-        "below_heavy_buy": "低于重仓区",
+        "heavy_buy": DEEP_DISCOUNT_ZONE_LABEL,
+        "below_heavy_buy": f"低于{DEEP_DISCOUNT_ZONE_LABEL}",
         "data_insufficient": "数据不足区",
     }.get(zone, "正常评估")
 
@@ -907,12 +918,12 @@ def _render_buy_zone(
         ("禁止追高价", _above_text(active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
         ("合理观察区", _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
         ("可分批区", _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
-        ("重仓击球区", _below_text(active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
+        (DEEP_DISCOUNT_ZONE_LABEL, _below_text(active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
     ]
     st.markdown(
         '<section class="research-card buy-zone-panel">'
         '<div class="buy-zone-meta">'
-        f'<div><span>买点状态</span><strong>{_buy_point_status_pill_html(score)}</strong></div>'
+        f'<div><span>买点状态</span><strong>{_buy_point_status_pill_html(score, active_zone)}</strong></div>'
         f'<div><span>系统买区位置</span><strong>{escape(_buy_zone_label(active_zone.currentZone))}</strong></div>'
         f'<div><span>买区置信度</span><strong>{escape(confidence_label(confidence))}</strong></div>'
         f'<div><span>方法</span><strong>{escape(_buy_zone_method_label(active_zone.method))}</strong></div>'
@@ -960,7 +971,7 @@ def _render_action_plan_form(
     summary_rows = [
         ("第一笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice))),
         ("第二笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice))),
-        ("第三笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice))),
+        ("极端恐慌区触发价", _format_plan_currency(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice))),
         ("停止加仓条件", plan.get("stop_adding_condition") or suggestion.stopAddingCondition),
         ("财报复核点", plan.get("earnings_review_points") or suggestion.earningsReviewCondition),
     ]
@@ -1004,7 +1015,7 @@ def _render_action_plan_form(
         tranche_cols = st.columns(3)
         tranche_buy_low = tranche_cols[0].text_input("可分批区下沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_low", active_zone.trancheBuyLow)))
         tranche_buy_high = tranche_cols[1].text_input("可分批区上沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_high", active_zone.trancheBuyHigh)))
-        heavy_buy_below = tranche_cols[2].text_input("重仓击球区低于", value=_number_text(_plan_or_suggestion(plan, "heavy_buy_below", active_zone.heavyBuyBelow)))
+        heavy_buy_below = tranche_cols[2].text_input("极端恐慌区低于", value=_number_text(_plan_or_suggestion(plan, "heavy_buy_below", active_zone.heavyBuyBelow)))
 
         stop_adding_condition = st.text_area("停止加仓条件", value=plan.get("stop_adding_condition") or suggestion.stopAddingCondition)
         invalidation_condition = st.text_area("止损 / 逻辑破坏条件", value=plan.get("invalidation_condition") or suggestion.thesisBreakCondition)
@@ -1407,7 +1418,7 @@ def _zone_status(price: float | None, lower: float | None = None, upper: float |
     if mode == "below":
         if upper is None:
             return "未设置"
-        return "已进入重仓击球区" if price <= upper else "未触发"
+        return "已进入极端恐慌区" if price <= upper else "未触发"
     if lower is None or upper is None:
         return "未设置"
     if lower <= price <= upper:
@@ -1936,7 +1947,7 @@ def _dedupe(items: list[str]) -> list[str]:
     return result
 
 
-def _buy_point_status_parts(score) -> tuple[str, str, str, str]:
+def _buy_point_status_parts(score, buy_zone: BuyZoneEstimate | None = None) -> tuple[str, str, str, str]:
     row = pd.Series(
         {
             "entryRating": getattr(score, "entry_rating", ""),
@@ -1945,17 +1956,21 @@ def _buy_point_status_parts(score) -> tuple[str, str, str, str]:
         }
     )
     label, grade, raw = dashboard_ui._entry_rating_display_parts(row)
+    sanity_label = _buy_point_sanity_label_for_zone(buy_zone)
+    if sanity_label:
+        label = sanity_label
+        raw = sanity_label
     tone = dashboard_ui._buy_point_label_tone(label)
     return label, grade, raw, tone
 
 
-def _buy_point_status_text(score) -> str:
-    label, grade, _raw, _tone = _buy_point_status_parts(score)
+def _buy_point_status_text(score, buy_zone: BuyZoneEstimate | None = None) -> str:
+    label, grade, _raw, _tone = _buy_point_status_parts(score, buy_zone)
     return dashboard_ui._entry_rating_chip_text(label, grade)
 
 
-def _buy_point_status_pill_html(score) -> str:
-    label, grade, raw, tone = _buy_point_status_parts(score)
+def _buy_point_status_pill_html(score, buy_zone: BuyZoneEstimate | None = None) -> str:
+    label, grade, raw, tone = _buy_point_status_parts(score, buy_zone)
     background, foreground, border = dashboard_ui.BADGE_STYLES.get(tone, dashboard_ui.BADGE_STYLES["gray"])
     display_text = dashboard_ui._entry_rating_chip_text(label, grade)
     return (
@@ -1963,6 +1978,38 @@ def _buy_point_status_pill_html(score) -> str:
         f'style="background:{background};color:{foreground};border-color:{border};">'
         f"<b>{escape(display_text)}</b></span>"
     )
+
+
+def _buy_point_sanity_label_for_zone(buy_zone: BuyZoneEstimate | None) -> str | None:
+    if buy_zone is None:
+        return None
+    zone = str(getattr(buy_zone, "currentZone", "") or "")
+    price = _first_number(getattr(buy_zone, "currentPrice", None))
+    if price is None or price <= 0:
+        return None
+    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
+        return None
+    tranche_low = _first_number(getattr(buy_zone, "trancheBuyLow", None))
+    tranche_high = _first_number(getattr(buy_zone, "trancheBuyHigh", None))
+    if _price_in_range(price, tranche_low, tranche_high):
+        return None
+    fair_low = _first_number(getattr(buy_zone, "fairValueLow", None))
+    fair_high = _first_number(getattr(buy_zone, "fairValueHigh", None))
+    if zone == "fair_observation" and _price_in_range(price, fair_low, fair_high):
+        return FAIR_OBSERVATION_NOT_BUY_LABEL
+    trigger = _first_number(getattr(buy_zone, "nextTriggerPrice", None), tranche_high)
+    if trigger is None or trigger <= 0 or price <= trigger:
+        return None
+    distance = max((price - trigger) / price * 100, 0)
+    if distance > NEAR_BUY_TRIGGER_THRESHOLD_PCT:
+        return FAIR_OBSERVATION_NOT_BUY_LABEL
+    return None
+
+
+def _price_in_range(price: float, low: float | None, high: float | None) -> bool:
+    if low is None or high is None:
+        return False
+    return low <= price <= high
 
 
 def _rating_color(value: str) -> str:

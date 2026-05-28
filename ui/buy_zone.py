@@ -41,8 +41,8 @@ ZONE_LABELS = {
     "no_chase": "禁止追高",
     "fair_observation": "合理观察区",
     "tranche_buy": "可分批区",
-    "heavy_buy": "重仓击球区",
-    "below_heavy_buy": "低于重仓区",
+    "heavy_buy": "极端恐慌区",
+    "below_heavy_buy": "低于极端恐慌区",
     "data_insufficient": "数据不足",
     "unsupported_buy_zone_model": "模型不支持",
 }
@@ -68,6 +68,7 @@ SOURCE_LABELS = {
 }
 NEAR_TRIGGER_THRESHOLD_PCT = 15.0
 LARGE_TRIGGER_DISTANCE_PCT = 30.0
+FAIR_OBSERVATION_NOT_BUY_LABEL = "合理观察，未到买点"
 
 
 def render() -> None:
@@ -431,7 +432,7 @@ def _render_buy_zone_table(rows: list[dict], visible_rows: list[dict], plan_stor
             <div class="priority-list">{_priority_rows_html(rows)}</div>
           </div>
           <div id="buy-zone-table" class="buy-zone-table">{header}{body}</div>
-          <div class="execution-console-foot">点击“查看”打开禁追价、重仓区、校验提醒、估值输入和手动覆盖。</div>
+          <div class="execution-console-foot">点击“查看”打开禁追价、极端恐慌区、校验提醒、估值输入和手动覆盖。</div>
         </section>
         """,
         unsafe_allow_html=True,
@@ -528,7 +529,7 @@ def _price_ladder_html(row: dict) -> str:
         ("禁止追高", row.get("noChaseAbove")),
         ("合理观察区", f"{_money(row.get('fairValueLow'))} - {_money(row.get('fairValueHigh'))}"),
         ("可分批区", f"{_money(row.get('trancheBuyLow'))} - {_money(row.get('trancheBuyHigh'))}"),
-        ("重仓击球区", row.get("heavyBuyBelow")),
+        ("极端恐慌区", row.get("heavyBuyBelow")),
     ]
     items = "".join(f"<li><span>{escape(label)}</span><b>{escape(_money(value) if not isinstance(value, str) else value)}</b></li>" for label, value in bands)
     return f'<div class="price-ladder"><ul>{items}</ul><div class="price-marker">当前价格：{escape(_money(row.get("currentPrice")))}</div></div>'
@@ -541,7 +542,7 @@ def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
         ("禁止追高", _optional_money(zone.noChaseAbove)),
         ("合理观察区", f"{_optional_money(zone.fairValueLow)} - {_optional_money(zone.fairValueHigh)}"),
         ("可分批区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
-        ("重仓区", _optional_money(zone.heavyBuyBelow)),
+        ("极端恐慌区", _optional_money(zone.heavyBuyBelow)),
         ("置信度", confidence_label(zone.confidence)),
     ]
     html = "".join(f"<li><span>{escape(label)}</span><b>{escape(value)}</b></li>" for label, value in items)
@@ -668,7 +669,7 @@ def _plan_html(row: dict) -> str:
     items = [
         ("第一笔买入价", _money(row.get("firstBuyPrice"))),
         ("第二笔买入价", _money(row.get("secondBuyPrice"))),
-        ("第三笔买入价", _money(row.get("thirdBuyPrice"))),
+        ("极端恐慌区触发价", _money(row.get("thirdBuyPrice"))),
         ("禁止追高价", _money(row.get("noChaseAbove"))),
         ("停止加仓条件", str(row.get("stopAddingCondition") or "")),
         ("财报复核条件", str(row.get("earningsReviewCondition") or "")),
@@ -731,7 +732,7 @@ def _render_valuation_sandbox_body() -> None:
     metrics[0].metric("公允价值", format_currency(output["fair_value_price"]))
     metrics[1].metric("试探仓价格", format_currency(output["starter_position_price"]))
     metrics[2].metric("正常买入区", format_currency(output["normal_buy_zone_price"]))
-    metrics[3].metric("重仓买入区", format_currency(output["heavy_buy_zone_price"]))
+    metrics[3].metric("极端恐慌区", format_currency(output["heavy_buy_zone_price"]))
     tranches = output["tranches"].rename(
         columns={"Tranche": "分批", "Buy Price": "买入价", "Allocation %": "分配比例", "Allocation $": "分配金额", "Estimated Shares": "估算股数"}
     )
@@ -740,7 +741,7 @@ def _render_valuation_sandbox_body() -> None:
 
 
 def _render_price_ladder_chart(output: dict) -> None:
-    labels = ["禁止追高", "试探", "正常买入", "重仓", "恐慌"]
+    labels = ["禁止追高", "试探", "正常买入", "极端恐慌", "恐慌"]
     prices = [
         output["margin_adjusted_fair_value"],
         output["starter_position_price"],
@@ -1782,6 +1783,10 @@ def _buy_zone_distance_display_category(
         if price <= trigger and (is_actionable or not has_final_decision):
             return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
 
+        sanity_label = _buy_point_sanity_label(row, zone=zone, price=price, trigger=trigger)
+        if sanity_label:
+            return _display_category_result("等回踩", sanity_label, trigger_secondary, False, "neutral")
+
         distance = _drop_to_trigger_pct(row)
         if distance is not None and distance <= NEAR_TRIGGER_THRESHOLD_PCT:
             return _display_category_result(
@@ -1807,6 +1812,33 @@ def _buy_zone_distance_display_category(
     label = str(row.get("nextBuyLabel") or "").strip()
     fallback_primary = _next_label(label) if label else _zone_next_label(zone)
     return _display_category_result("等回踩", fallback_primary, "等待条件明确", False, "neutral")
+
+
+def _buy_point_sanity_label(row: dict, *, zone: str, price: float | None, trigger: float | None) -> str | None:
+    if price is None or price <= 0:
+        return None
+    if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
+        return None
+    tranche_low = _first_number(row.get("trancheBuyLow"))
+    tranche_high = _first_number(row.get("trancheBuyHigh"))
+    if _price_in_range(price, tranche_low, tranche_high):
+        return None
+    fair_low = _first_number(row.get("fairValueLow"))
+    fair_high = _first_number(row.get("fairValueHigh"))
+    if zone == "fair_observation" and _price_in_range(price, fair_low, fair_high):
+        return FAIR_OBSERVATION_NOT_BUY_LABEL
+    if trigger is None or trigger <= 0 or price <= trigger:
+        return None
+    distance = max((price - trigger) / price * 100, 0)
+    if distance > NEAR_TRIGGER_THRESHOLD_PCT:
+        return FAIR_OBSERVATION_NOT_BUY_LABEL
+    return None
+
+
+def _price_in_range(price: float, low: float | None, high: float | None) -> bool:
+    if low is None or high is None:
+        return False
+    return low <= price <= high
 
 
 def _execution_status(row: dict) -> str:
@@ -1845,6 +1877,14 @@ def _action_short_text(row: dict) -> str:
 def _status_detail_text(row: dict) -> str:
     status = _execution_status(row)
     zone = str(row.get("currentZone") or "")
+    sanity_label = _buy_point_sanity_label(
+        row,
+        zone=zone,
+        price=_first_number(row.get("currentPrice")),
+        trigger=_first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice")),
+    )
+    if sanity_label:
+        return sanity_label
     if status == "需复核":
         return _row_reason(row)
     if status == "可执行":
@@ -1854,7 +1894,7 @@ def _status_detail_text(row: dict) -> str:
     if status == "禁止追高":
         return "禁止追高"
     if zone == "fair_observation":
-        return "合理观察"
+        return FAIR_OBSERVATION_NOT_BUY_LABEL
     return "等待触发"
 
 
@@ -1952,8 +1992,8 @@ def _trigger_secondary_text(zone: str, label: str) -> str:
     return {
         "fair_observation": "观察触发",
         "tranche_buy": "可分批触发",
-        "heavy_buy": "重仓触发",
-        "below_heavy_buy": "低于重仓区",
+        "heavy_buy": "极端恐慌区触发",
+        "below_heavy_buy": "低于极端恐慌区",
         "no_chase": "等待回踩",
     }.get(zone, "第一笔买入")
 
@@ -2000,7 +2040,7 @@ def _next_label(value: str) -> str:
     return {
         "买区异常，需复核": "买区异常 / 需复核",
         "已进入可分批区": "已进入可分批区",
-        "已低于重仓区": "已低于重仓区",
+        "已低于重仓区": "已低于极端恐慌区",
         "已进入买区": "已进入买区",
         "下一买入触发价": "下一买入触发价",
         "等待回踩到观察区": "等待回踩",
@@ -2011,8 +2051,8 @@ def _next_label(value: str) -> str:
 def _zone_next_label(zone: str) -> str:
     return {
         "tranche_buy": "已进入可分批区",
-        "heavy_buy": "已进入重仓击球区",
-        "below_heavy_buy": "已低于重仓区",
+        "heavy_buy": "已进入极端恐慌区",
+        "below_heavy_buy": "已低于极端恐慌区",
         "fair_observation": "等待买入触发价",
         "no_chase": "等待回踩",
         "data_insufficient": "数据不足",
