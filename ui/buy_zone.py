@@ -114,7 +114,7 @@ def _load_buy_zone_rows(tickers: tuple[str, ...]) -> list[dict]:
             history = add_technical_indicators(provider.get_price_history(symbol, force_refresh=False))
             technicals = latest_technical_snapshot(history)
             score = calculate_total_score(snapshot, technicals)
-            stock_data = {**snapshot, **technicals}
+            stock_data = {**snapshot, **technicals, "price_history": history}
             if not _valid_price(stock_data.get("price") or stock_data.get("current_price")):
                 stock_data["price"] = _first_number(technicals.get("price"), snapshot.get("current_price"))
             zone = generate_buy_zone(symbol, stock_data, score, score.scoring_model)
@@ -224,6 +224,7 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "warnings": zone.warnings,
         "validationErrors": list(getattr(zone, "validationErrors", None) or []),
         "explainability": getattr(zone, "explainability", None) or {},
+        "technicalEntry": getattr(zone, "technicalEntry", None) or {},
         "isValid": bool(getattr(zone, "isValid", True)),
         "buyZoneSource": source,
         "manualOverride": manual,
@@ -510,6 +511,8 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_price_ladder_html(row)}'
         '<div class="drawer-section-title">买区解释</div>'
         f'{_buy_zone_explainability_html(row)}'
+        '<div class="drawer-section-title">技术面辅助</div>'
+        f'{_technical_entry_html(row.get("technicalEntry"))}'
         '<div class="drawer-section-title">生成依据</div>'
         f'<div class="drawer-resolution"><b>输入</b><ul>{"".join(f"<li>{escape(str(item))}</li>" for item in row.get("inputsUsed", [])[:8]) or "<li>暂无可用输入</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>原因</b><ul>{reasons or "<li>暂无说明</li>"}</ul></div>'
@@ -639,6 +642,108 @@ def _explain_list(value: object) -> list[str]:
 
 def _explain_items_html(items: list[str]) -> str:
     return "".join(f"<li>{escape(str(item))}</li>" for item in items[:6])
+
+
+def _technical_entry_html(entry: object) -> str:
+    technical = entry if isinstance(entry, dict) else {}
+    confidence = str(technical.get("technicalConfidence") or "low")
+    state = str(technical.get("technicalState") or "unavailable")
+    trend = str(technical.get("technicalTrend") or "unavailable")
+    unavailable = state in {"unavailable", "insufficient_data"} or confidence == "low"
+    title = "技术数据不足" if unavailable else "技术入场参考"
+    summary = (
+        "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
+        if unavailable
+        else "技术回踩点用于辅助择时，估值买点和极端恐慌区仍以买区模型为准。"
+    )
+    metric_items = [
+        ("技术状态", _technical_state_label(state)),
+        ("趋势", _technical_trend_label(trend)),
+        ("MA20", _technical_money(technical.get("ma20"))),
+        ("MA50", _technical_money(technical.get("ma50"))),
+        ("MA200", _technical_money(technical.get("ma200"))),
+        ("RSI14", _technical_number(technical.get("rsi14"), 1)),
+        ("ATR14", _technical_money(technical.get("atr14"))),
+        ("技术回踩点", "不生成建议" if unavailable else _technical_money(technical.get("technicalEntryPrice"))),
+        ("技术复核线", "不生成建议" if unavailable else _technical_money(technical.get("technicalReviewPrice"))),
+        ("技术不追高线", "不生成建议" if unavailable else _technical_money(technical.get("technicalNoChaseAbove"))),
+        ("关键支撑", _technical_levels_text(technical.get("supportLevels"))),
+        ("关键压力", _technical_levels_text(technical.get("resistanceLevels"))),
+    ]
+    metrics = "".join(
+        f'<li><span>{escape(label)}</span><b>{escape(value)}</b></li>'
+        for label, value in metric_items
+        if value and value != "未设置"
+    )
+    reasons = _technical_reasons_list(technical, unavailable)
+    reason_html = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
+    return (
+        '<div class="drawer-technical-entry">'
+        f"<strong>{escape(title)}</strong>"
+        f"<p>{escape(summary)}</p>"
+        f'<div class="drawer-technical-grid"><ul>{metrics}</ul></div>'
+        f'<div class="drawer-technical-reasons"><b>技术说明</b><ul>{reason_html}</ul></div>'
+        "</div>"
+    )
+
+
+def _technical_state_label(value: object) -> str:
+    return {
+        "short_term_extended": "短期偏热，避免追价",
+        "healthy_pullback": "健康回踩",
+        "trend_break_review": "趋势破坏，需复核",
+        "tactical_observation": "战术观察",
+        "neutral": "中性等待",
+        "insufficient_data": "技术数据不足",
+        "unavailable": "技术数据不足",
+    }.get(str(value or ""), "技术数据不足")
+
+
+def _technical_trend_label(value: object) -> str:
+    return {
+        "uptrend": "上升趋势",
+        "pullback_in_uptrend": "上升趋势中的回踩",
+        "broken_trend": "趋势破坏",
+        "downtrend": "下降趋势",
+        "sideways": "横盘震荡",
+        "insufficient_data": "数据不足",
+        "unavailable": "数据不足",
+    }.get(str(value or ""), "数据不足")
+
+
+def _technical_money(value: object) -> str:
+    number = _first_number(value)
+    return format_currency(number) if number is not None and number > 0 else "未设置"
+
+
+def _technical_number(value: object, digits: int = 1) -> str:
+    number = _first_number(value)
+    return f"{number:.{digits}f}" if number is not None else "未设置"
+
+
+def _technical_levels_text(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "未设置"
+    parts = []
+    for level in value[:2]:
+        if not isinstance(level, dict):
+            continue
+        price = _technical_money(level.get("price"))
+        if price == "未设置":
+            continue
+        label = str(level.get("label") or "技术位")
+        distance = _first_number(level.get("distancePct"))
+        suffix = f" ({distance:+.1f}%)" if distance is not None else ""
+        parts.append(f"{label} {price}{suffix}")
+    return " / ".join(parts) if parts else "未设置"
+
+
+def _technical_reasons_list(technical: dict, unavailable: bool) -> list[str]:
+    raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
+    if unavailable:
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+    guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
+    return [guardrail, *raw] if raw else [guardrail]
 
 
 def _humanize_buy_zone_explain_item(value: object) -> str:
@@ -1483,6 +1588,74 @@ def _render_styles() -> None:
         }
         .drawer-explain-block li + li {
             margin-top:0.2rem;
+        }
+        .drawer-technical-entry {
+            border:1px solid rgba(148, 163, 184, 0.22);
+            border-radius:8px;
+            background:#FFFFFF;
+            padding:0.8rem;
+            margin-bottom:0.75rem;
+        }
+        .drawer-technical-entry > strong {
+            display:block;
+            color:#0F172A;
+            font-size:0.92rem;
+            font-weight:850;
+            margin-bottom:0.25rem;
+        }
+        .drawer-technical-entry > p {
+            margin:0 0 0.65rem;
+            color:#64748B;
+            font-size:0.8rem;
+            line-height:1.5;
+        }
+        .drawer-technical-grid ul {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0;
+            margin:0;
+            padding:0;
+            list-style:none;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            border-radius:7px;
+            overflow:hidden;
+        }
+        .drawer-technical-grid li {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.45rem;
+            padding:0.42rem 0.55rem;
+            border-right:1px solid rgba(148, 163, 184, 0.12);
+            border-bottom:1px solid rgba(148, 163, 184, 0.12);
+            color:#64748B;
+            font-size:0.74rem;
+        }
+        .drawer-technical-grid li:nth-child(2n) { border-right:0; }
+        .drawer-technical-grid li b {
+            color:#0F172A;
+            font-size:0.75rem;
+            font-variant-numeric:tabular-nums;
+            text-align:right;
+        }
+        .drawer-technical-reasons {
+            margin-top:0.55rem;
+            border:1px solid rgba(148, 163, 184, 0.14);
+            border-radius:7px;
+            background:#FBFCFE;
+            padding:0.55rem 0.65rem;
+        }
+        .drawer-technical-reasons b {
+            color:#64748B;
+            font-size:0.72rem;
+            font-weight:850;
+        }
+        .drawer-technical-reasons ul {
+            margin:0.32rem 0 0;
+            padding-left:1rem;
+            color:#334155;
+            font-size:0.76rem;
+            line-height:1.45;
         }
         .price-ladder ul,
         .plan-list ul {

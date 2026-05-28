@@ -69,7 +69,7 @@ def render() -> None:
 
     plan_store = StockPlanStore()
     plan = plan_store.get_plan(ticker)
-    stock_data = {**snapshot, **technicals}
+    stock_data = {**snapshot, **technicals, "price_history": history}
     buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
     effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
     effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
@@ -82,6 +82,7 @@ def render() -> None:
     _render_current_position_summary(_portfolio_row_for_ticker(ticker))
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
+    _render_technical_entry_reference(effective_buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision)
     _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan)
@@ -956,6 +957,112 @@ def _render_buy_zone(
             st.success("已保存为手动买区，之后会优先使用手动值。")
             st.rerun()
     action_cols[1].caption("可在下方操作计划里编辑区间；保存后会刷新上方买区摘要。")
+
+
+def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
+    technical = getattr(active_zone, "technicalEntry", None)
+    technical = technical if isinstance(technical, dict) else {}
+    confidence = str(technical.get("technicalConfidence") or "low")
+    state = str(technical.get("technicalState") or "unavailable")
+    trend = str(technical.get("technicalTrend") or "unavailable")
+    unavailable = state in {"unavailable", "insufficient_data"} or confidence == "low"
+    title = "技术数据不足" if unavailable else "技术入场参考"
+    summary = (
+        "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
+        if unavailable
+        else "技术回踩点用于辅助择时，估值买点和极端恐慌区仍以买区模型为准。"
+    )
+    metrics = [
+        ("技术状态", _technical_state_label(state)),
+        ("趋势", _technical_trend_label(trend)),
+        ("MA20", _technical_money(technical.get("ma20"))),
+        ("MA50", _technical_money(technical.get("ma50"))),
+        ("MA200", _technical_money(technical.get("ma200"))),
+        ("RSI14", _technical_number(technical.get("rsi14"), 1)),
+        ("ATR14", _technical_money(technical.get("atr14"))),
+        ("技术回踩点", "不生成建议" if unavailable else _technical_money(technical.get("technicalEntryPrice"))),
+        ("技术复核线", "不生成建议" if unavailable else _technical_money(technical.get("technicalReviewPrice"))),
+        ("技术不追高线", "不生成建议" if unavailable else _technical_money(technical.get("technicalNoChaseAbove"))),
+        ("关键支撑", _technical_levels_text(technical.get("supportLevels"))),
+        ("关键压力", _technical_levels_text(technical.get("resistanceLevels"))),
+    ]
+    metric_html = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in metrics
+        if value and value != "未设置"
+    )
+    reasons = _technical_reasons_list(technical, unavailable)
+    reason_html = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
+    st.markdown(
+        '<section class="research-card technical-entry-card">'
+        '<div class="technical-entry-head">'
+        f"<div><strong>{escape(title)}</strong><span>{escape(summary)}</span></div>"
+        '<em>辅助层，不覆盖估值买区</em>'
+        "</div>"
+        f'<div class="technical-entry-grid">{metric_html}</div>'
+        f'<ul class="technical-entry-reasons">{reason_html}</ul>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _technical_state_label(value: object) -> str:
+    return {
+        "short_term_extended": "短期偏热，避免追价",
+        "healthy_pullback": "健康回踩",
+        "trend_break_review": "趋势破坏，需复核",
+        "tactical_observation": "战术观察",
+        "neutral": "中性等待",
+        "insufficient_data": "技术数据不足",
+        "unavailable": "技术数据不足",
+    }.get(str(value or ""), "技术数据不足")
+
+
+def _technical_trend_label(value: object) -> str:
+    return {
+        "uptrend": "上升趋势",
+        "pullback_in_uptrend": "上升趋势中的回踩",
+        "broken_trend": "趋势破坏",
+        "downtrend": "下降趋势",
+        "sideways": "横盘震荡",
+        "insufficient_data": "数据不足",
+        "unavailable": "数据不足",
+    }.get(str(value or ""), "数据不足")
+
+
+def _technical_money(value: object) -> str:
+    number = _first_number(value)
+    return format_currency(number) if number is not None and number > 0 else "未设置"
+
+
+def _technical_number(value: object, digits: int = 1) -> str:
+    number = _first_number(value)
+    return f"{number:.{digits}f}" if number is not None else "未设置"
+
+
+def _technical_levels_text(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "未设置"
+    parts = []
+    for level in value[:2]:
+        if not isinstance(level, dict):
+            continue
+        price = _technical_money(level.get("price"))
+        if price == "未设置":
+            continue
+        label = str(level.get("label") or "技术位")
+        distance = _first_number(level.get("distancePct"))
+        suffix = f" ({distance:+.1f}%)" if distance is not None else ""
+        parts.append(f"{label} {price}{suffix}")
+    return " / ".join(parts) if parts else "未设置"
+
+
+def _technical_reasons_list(technical: dict, unavailable: bool) -> list[str]:
+    raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
+    if unavailable:
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+    guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
+    return [guardrail, *raw] if raw else [guardrail]
 
 
 def _render_action_plan_form(
@@ -2273,6 +2380,7 @@ def _render_detail_styles() -> None:
         }
         .conclusion-card,
         .buy-zone-panel,
+        .technical-entry-card,
         .plan-summary-card,
         .memo-summary-card,
         .missing-summary-card {
@@ -2392,6 +2500,80 @@ def _render_detail_styles() -> None:
             font-size: 0.76rem;
             font-style: normal;
             text-align: right;
+        }
+        .technical-entry-card {
+            display: grid;
+            gap: 0.62rem;
+            background: #FFFFFF;
+        }
+        .technical-entry-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .technical-entry-head strong {
+            display: block;
+            color: #0f172a;
+            font-size: 0.95rem;
+            line-height: 1.2;
+            font-weight: 780;
+        }
+        .technical-entry-head span {
+            display: block;
+            margin-top: 0.2rem;
+            color: #64748b;
+            font-size: 0.8rem;
+            line-height: 1.45;
+        }
+        .technical-entry-head em {
+            flex: 0 0 auto;
+            padding: 0.15rem 0.48rem;
+            border: 1px solid rgba(148, 163, 184, 0.20);
+            border-radius: 999px;
+            color: #64748b;
+            background: #F8FAFC;
+            font-size: 0.7rem;
+            font-style: normal;
+            font-weight: 720;
+        }
+        .technical-entry-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.42rem;
+        }
+        .technical-entry-grid div {
+            min-height: 3rem;
+            padding: 0.45rem 0.52rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.48rem;
+            background: rgba(248, 250, 252, 0.76);
+        }
+        .technical-entry-grid span {
+            display: block;
+            color: #64748b;
+            font-size: 0.7rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .technical-entry-grid strong {
+            display: block;
+            margin-top: 0.22rem;
+            color: #0f172a;
+            font-size: 0.78rem;
+            line-height: 1.24;
+            font-weight: 740;
+            overflow-wrap: anywhere;
+        }
+        .technical-entry-reasons {
+            margin: 0;
+            padding: 0.52rem 0.65rem 0.52rem 1.25rem;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 0.5rem;
+            background: #FBFCFE;
+            color: #334155;
+            font-size: 0.78rem;
+            line-height: 1.45;
         }
         .data-summary-card {
             padding: 0.72rem;
@@ -2561,6 +2743,7 @@ def _render_detail_styles() -> None:
             .buy-zone-meta,
             .plan-summary-grid,
             .data-summary-card,
+            .technical-entry-grid,
             .memo-grid,
             .missing-summary-grid,
             .missing-gap-groups {
