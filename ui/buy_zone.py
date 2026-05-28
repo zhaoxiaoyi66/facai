@@ -613,6 +613,8 @@ def _fallback_buy_zone_explainability(row: dict) -> dict[str, object]:
     missing: list[str] = []
     if zone == "unsupported_buy_zone_model":
         missing = ["专属买区模型"]
+    elif "缺少发电模型核心输入" in validation_errors or "缺少发电模型核心输入" in warnings:
+        missing = ["发电模型核心输入：adjusted EBITDA / adjusted FCF before growth"]
     elif zone == "data_insufficient":
         missing = ["价格、估值或技术输入不足"]
     return {
