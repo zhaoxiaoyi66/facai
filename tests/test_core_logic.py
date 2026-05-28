@@ -3345,6 +3345,8 @@ class ScoringTests(unittest.TestCase):
 
         self.assertIsNotNone(zone.noChaseAbove)
         self.assertIsNotNone(zone.trancheBuyHigh)
+        self.assertEqual(zone.explainability["explainTitle"], "系统买区已生成")
+        self.assertIn("P/FCF", " ".join(zone.explainability["mainDrivers"]))
         self.assertIn(zone.currentZone, {"fair_observation", "tranche_buy", "heavy_buy", "below_heavy_buy", "no_chase"})
         self.assertFalse(has_buy_zone_override({}))
 
@@ -3410,6 +3412,8 @@ class ScoringTests(unittest.TestCase):
         self.assertIsNone(tranche.nextTriggerPrice)
         self.assertLessEqual(tranche.currentPrice, 100)
         self.assertEqual(no_chase.currentZone, "no_chase")
+        self.assertEqual(no_chase.explainability["explainTitle"], "当前不追高")
+        self.assertTrue(no_chase.explainability["guardrailReasons"])
         self.assertNotIn("可分批", no_chase.action)
 
     def test_buy_zone_confidence_downgrades_on_low_quality_inputs(self) -> None:
@@ -3453,6 +3457,8 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(zone.currentZone, "low_confidence_zone")
         self.assertEqual(zone.confidence, "low")
+        self.assertEqual(zone.explainability["explainSummary"], "数据置信度不足，暂不输出可执行买点。")
+        self.assertIn("dataConfidence = low", zone.explainability["confidenceReasons"])
         self.assertFalse(zone.isValid)
         self.assertIsNone(zone.trancheBuyHigh)
         self.assertIsNone(zone.nextTriggerPrice)
@@ -3471,6 +3477,7 @@ class ScoringTests(unittest.TestCase):
 
             self.assertEqual(zone.currentZone, "unsupported_buy_zone_model")
             self.assertEqual(zone.confidence, "low")
+            self.assertEqual(zone.explainability["explainSummary"], "当前板块暂无专属买区模型，系统保留评分和观察结论，但不输出精确买点。")
             self.assertFalse(zone.isValid)
             self.assertIn("buy_zone_model_not_supported", zone.validationErrors)
             self.assertIn("当前板块暂无专属买区模型，禁用精确买点", zone.warnings)
@@ -3496,6 +3503,7 @@ class ScoringTests(unittest.TestCase):
         plan = generate_position_plan("ADBE", zone, {"entry_rating": "A", "risk_rating": "low", "action": sorted(BUY_ACTIONS)[0]})
 
         self.assertEqual(zone.currentZone, "invalid_zone")
+        self.assertEqual(zone.explainability["explainSummary"], "当前估值区间异常，系统暂不输出买点，需复核输入。")
         self.assertFalse(zone.isValid)
         self.assertIsNone(zone.noChaseAbove)
         self.assertIsNone(zone.fairValueHigh)
@@ -3520,6 +3528,8 @@ class ScoringTests(unittest.TestCase):
         )
 
         self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.explainability["explainTitle"], "买区数据不足")
+        self.assertIn("adjusted EBITDA", zone.explainability["missingInputs"])
         self.assertEqual(zone.confidence, "low")
         self.assertFalse(zone.isValid)
         self.assertIn("missing_power_generation_core_inputs", zone.validationErrors)

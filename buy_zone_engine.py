@@ -54,6 +54,7 @@ class BuyZoneEstimate:
     nextBuyLabel: str = ""
     isValid: bool = True
     validationErrors: list[str] | None = None
+    explainability: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -401,7 +402,7 @@ def _blocked_estimate(
     *,
     method: str = "guardrail",
 ) -> BuyZoneEstimate:
-    return BuyZoneEstimate(
+    estimate = BuyZoneEstimate(
         symbol=symbol.upper(),
         modelType=str(model),
         currentPrice=_round_price(price),
@@ -424,6 +425,7 @@ def _blocked_estimate(
         isValid=False,
         validationErrors=list(reasons),
     )
+    return _with_explainability(estimate, {}, None)
 
 
 def _without_actionable_prices(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
@@ -440,6 +442,167 @@ def _without_actionable_prices(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
     )
 
 
+def _with_explainability(buyZone: BuyZoneEstimate, stockData: dict | None = None, scoringResult=None) -> BuyZoneEstimate:
+    return replace(
+        buyZone,
+        explainability=_build_explainability(buyZone, stockData or {}, scoringResult),
+    )
+
+
+def _build_explainability(buyZone: BuyZoneEstimate, stockData: dict, scoringResult=None) -> dict[str, Any]:
+    zone = str(buyZone.currentZone or "")
+    warnings = list(dict.fromkeys(str(item) for item in (buyZone.warnings or []) if item))
+    validation_errors = list(dict.fromkeys(str(item) for item in (buyZone.validationErrors or []) if item))
+    guardrail_reasons = _guardrail_reasons(zone, validation_errors, warnings)
+    confidence_reasons = _confidence_reasons(buyZone, stockData, scoringResult, warnings, validation_errors)
+    missing_inputs = _missing_inputs(zone, stockData, validation_errors)
+    main_drivers = _main_drivers(buyZone, stockData)
+    title, summary = _explain_title_summary(zone, buyZone, main_drivers, guardrail_reasons)
+    return {
+        "explainTitle": title,
+        "explainSummary": summary,
+        "mainDrivers": main_drivers,
+        "guardrailReasons": guardrail_reasons,
+        "missingInputs": missing_inputs,
+        "confidenceReasons": confidence_reasons,
+    }
+
+
+def _explain_title_summary(zone: str, buyZone: BuyZoneEstimate, main_drivers: list[str], guardrail_reasons: list[str]) -> tuple[str, str]:
+    if zone == "unsupported_buy_zone_model":
+        return (
+            "买区模型暂不支持",
+            "当前板块暂无专属买区模型，系统保留评分和观察结论，但不输出精确买点。",
+        )
+    if zone in {"invalid_zone", "invalid_manual_override"}:
+        return (
+            "买区输入需复核",
+            "当前估值区间异常，系统暂不输出买点，需复核输入。",
+        )
+    if zone == "low_confidence_zone":
+        return (
+            "买区置信度不足",
+            "数据置信度不足，暂不输出可执行买点。",
+        )
+    if zone == "data_insufficient":
+        return (
+            "买区数据不足",
+            "关键买区输入不足，系统暂不输出精确买点。",
+        )
+    if zone == "no_chase":
+        return (
+            "当前不追高",
+            "当前价高于系统买区上沿，保留观察结论，但不建议新增。",
+        )
+    driver_text = "、".join(main_drivers[:3]) if main_drivers else "可用估值和技术输入"
+    return (
+        "系统买区已生成",
+        f"系统基于 {driver_text} 生成买区，当前状态为 {zone or 'fair_observation'}。",
+    )
+
+
+def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[str]) -> list[str]:
+    reasons: list[str] = []
+    if zone == "unsupported_buy_zone_model":
+        reasons.append("当前板块暂无专属买区模型，禁用精确买点")
+    if zone in {"invalid_zone", "invalid_manual_override"}:
+        reasons.append("当前估值区间异常，系统暂不输出买点，需复核输入")
+    if zone == "low_confidence_zone":
+        reasons.append("数据置信度不足，暂不输出可执行买点")
+    if zone == "data_insufficient":
+        reasons.append("关键买区输入不足，暂不输出精确买点")
+    if zone == "no_chase":
+        reasons.append("当前价处于禁止追高区，不输出新增建议")
+    for item in [*validation_errors, *warnings]:
+        if item in {"buy_zone_model_not_supported", "data_confidence_low", "missing_power_generation_core_inputs"}:
+            continue
+        if "异常" in item or "缺" in item or "不足" in item or "unsupported" in item:
+            reasons.append(item)
+    return list(dict.fromkeys(reasons))
+
+
+def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str]) -> list[str]:
+    missing: list[str] = []
+    if "buy_zone_model_not_supported" in validation_errors or zone == "unsupported_buy_zone_model":
+        missing.append("专属买区模型")
+    if "missing_power_generation_core_inputs" in validation_errors:
+        missing.extend(["adjusted EBITDA", "adjusted FCF before growth"])
+    if zone == "data_insufficient" and not missing:
+        for label, keys in (
+            ("current price", ("current_price", "currentPrice", "price")),
+            ("P/FCF", ("price_to_fcf", "priceToFcf", "priceToFCF", "pfcf")),
+            ("FCF yield", ("free_cash_flow_yield", "freeCashFlowYield", "fcfYield")),
+            ("P/S", ("price_to_sales", "priceToSales", "psRatio")),
+        ):
+            if _first_number(stockData, *keys) is None:
+                missing.append(label)
+    return list(dict.fromkeys(missing))
+
+
+def _confidence_reasons(
+    buyZone: BuyZoneEstimate,
+    stockData: dict,
+    scoringResult,
+    warnings: list[str],
+    validation_errors: list[str],
+) -> list[str]:
+    reasons: list[str] = []
+    confidence = str(buyZone.confidence or "").lower()
+    score_confidence = str(_score_attr(scoringResult, "data_confidence") or _score_attr(scoringResult, "dataConfidence") or "").lower()
+    stock_confidence = str(stockData.get("data_confidence") or stockData.get("dataConfidence") or "").lower()
+    if score_confidence == "low" or stock_confidence == "low" or "data_confidence_low" in validation_errors:
+        reasons.append("dataConfidence = low")
+    if buyZone.currentZone in BLOCKED_BUY_ZONE_STATES:
+        reasons.extend(validation_errors or warnings)
+    if buyZone.method == "technical_proxy":
+        reasons.append("仅使用技术代理，置信度较低")
+    if confidence == "high" and not reasons:
+        reasons.append("多项核心买区输入可用")
+    if confidence == "medium" and not reasons:
+        reasons.append("部分关键输入缺失或需要复核")
+    if confidence == "low" and not reasons:
+        reasons.append("买区输入不足或触发 guardrail")
+    return list(dict.fromkeys(str(item) for item in reasons if item))
+
+
+def _main_drivers(buyZone: BuyZoneEstimate, stockData: dict) -> list[str]:
+    drivers: list[str] = []
+    for item in dict.fromkeys(buyZone.inputsUsed or []):
+        drivers.append(_driver_label(str(item), stockData))
+    if not drivers and buyZone.currentZone == "unsupported_buy_zone_model":
+        drivers.append(f"model_type: {buyZone.modelType}")
+    if not drivers and buyZone.currentPrice is not None:
+        drivers.append(f"current price: {buyZone.currentPrice:.2f}")
+    return drivers[:5]
+
+
+def _driver_label(label: str, stockData: dict) -> str:
+    lowered = label.lower()
+    if "p/fcf" in lowered:
+        return _format_driver(label, _first_number(stockData, "price_to_fcf", "priceToFcf", "priceToFCF", "pfcf"), "x")
+    if "fcf" in lowered and ("yield" in lowered or "收益" in label):
+        return _format_driver(label, _ratio_like(_first_number(stockData, "free_cash_flow_yield", "freeCashFlowYield", "fcfYield")), "%")
+    if "p/s" in lowered:
+        return _format_driver(label, _first_number(stockData, "price_to_sales", "priceToSales", "psRatio"), "x")
+    if "ev/fcf" in lowered:
+        return _format_driver(label, _first_number(stockData, "ev_to_fcf", "enterprise_to_fcf", "enterpriseValueToFcf"), "x")
+    if "sales" in lowered:
+        return _format_driver(label, _first_number(stockData, "enterprise_to_revenue", "enterpriseToRevenue", "evToSales"), "x")
+    if "ebitda" in lowered:
+        return _format_driver(label, _first_number(stockData, "enterprise_to_ebitda", "enterpriseValueToEbitda", "evToEbitda"), "x")
+    if "technical" in lowered or "技术" in label:
+        return _format_driver(label, normalize_percent_metric(_first_number(stockData, "drawdownFrom52WeekHigh", "drawdown_from_high_pct", "drawdownFromHigh")), "%")
+    return label
+
+
+def _format_driver(label: str, value: float | None, unit: str) -> str:
+    if value is None:
+        return label
+    if unit == "%":
+        return f"{label}: {value * 100:.1f}%"
+    return f"{label}: {value:.1f}{unit}"
+
+
 def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None = None, scoringResult=None) -> BuyZoneEstimate:
     stockData = stockData or {}
     warnings = list(buyZone.warnings or [])
@@ -452,7 +615,7 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
     if price is None or price <= 0:
         _append_once(warnings, "当前价格缺失或无效")
         _append_once(validation_errors, "当前价格缺失或无效")
-        return replace(
+        invalid = replace(
             buyZone,
             currentPrice=_round_price(price),
             currentZone="data_insufficient",
@@ -464,6 +627,7 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
             validationErrors=validation_errors,
             warnings=warnings,
         )
+        return _with_explainability(_without_actionable_prices(invalid), stockData, scoringResult)
 
     if not _buy_zone_prices_valid(buyZone):
         _append_once(warnings, "买区价格无效")
@@ -525,8 +689,8 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
         warnings=warnings,
     )
     if current_zone in BLOCKED_BUY_ZONE_STATES:
-        return _without_actionable_prices(validated)
-    return validated
+        return _with_explainability(_without_actionable_prices(validated), stockData, scoringResult)
+    return _with_explainability(validated, stockData, scoringResult)
 
 
 def derive_current_zone(currentPrice: Any, buyZone: BuyZoneEstimate | dict) -> str:
@@ -894,7 +1058,7 @@ def _score_attr(score, name: str):
 
 
 def _insufficient(symbol: str, model: str, price: float | None, reasons: list[str], warnings: list[str]) -> BuyZoneEstimate:
-    return BuyZoneEstimate(
+    estimate = BuyZoneEstimate(
         symbol=symbol.upper(),
         modelType=str(model),
         currentPrice=_round_price(price),
@@ -917,3 +1081,4 @@ def _insufficient(symbol: str, model: str, price: float | None, reasons: list[st
         isValid=False,
         validationErrors=["当前价格缺失或无效"] if price is None or price <= 0 else ["估值输入不足"],
     )
+    return _with_explainability(_without_actionable_prices(estimate), {}, None)
