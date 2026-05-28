@@ -30,6 +30,8 @@ BLOCKED_BUY_ZONE_STATES = {
     "unsupported_buy_zone_model",
 }
 
+CASHFLOW_SIGNAL_KEYS = {"price_to_fcf", "fcf_yield"}
+
 
 @dataclass(frozen=True)
 class BuyZoneEstimate:
@@ -340,7 +342,11 @@ def _valuation_candidates(price: float, metrics: dict[str, float | None], target
         "ev_to_ebitda": "EV/EBITDA",
         "market_cap_to_fcf": "市值/FCF",
     }
+    _add_cashflow_signal_candidate(price, metrics, targets, candidates, inputs, labels)
+
     for key, target in targets.items():
+        if key in CASHFLOW_SIGNAL_KEYS:
+            continue
         current = metrics.get(key)
         if current is None or current <= 0:
             continue
@@ -348,13 +354,47 @@ def _valuation_candidates(price: float, metrics: dict[str, float | None], target
         inputs.append(labels.get(key, key))
         for zone in ("fair", "tranche", "heavy"):
             target_value = target[zone]
-            if key == "fcf_yield":
-                implied_price = price * current / target_value
-            else:
-                implied_price = price * target_value / current
+            implied_price = _implied_price(price, key, current, target_value)
             if implied_price > 0:
                 candidates[zone].append((implied_price, weight))
     return candidates
+
+
+def _add_cashflow_signal_candidate(
+    price: float,
+    metrics: dict[str, float | None],
+    targets: dict[str, dict[str, float]],
+    candidates: dict[str, list[tuple[float, float]]],
+    inputs: list[str],
+    labels: dict[str, str],
+) -> None:
+    available: list[tuple[str, dict[str, float], float]] = []
+    for key in ("price_to_fcf", "fcf_yield"):
+        target = targets.get(key)
+        current = metrics.get(key)
+        if target is not None and current is not None and current > 0:
+            available.append((key, target, current))
+
+    if not available:
+        return
+
+    source_labels = [labels.get(key, key) for key, _, _ in available]
+    inputs.append(f"Cashflow valuation ({', '.join(source_labels)})")
+    signal_weight = max(target.get("weight", 1) for _, target, _ in available)
+    for zone in ("fair", "tranche", "heavy"):
+        implied_prices = [
+            _implied_price(price, key, current, target[zone])
+            for key, target, current in available
+        ]
+        implied_prices = [value for value in implied_prices if value > 0]
+        if implied_prices:
+            candidates[zone].append((sum(implied_prices) / len(implied_prices), signal_weight))
+
+
+def _implied_price(price: float, key: str, current: float, target_value: float) -> float:
+    if key == "fcf_yield":
+        return price * current / target_value
+    return price * target_value / current
 
 
 def _technical_candidates(price: float, metrics: dict[str, float | None], inputs: list[str]) -> dict[str, list[tuple[float, float]]]:
@@ -578,6 +618,17 @@ def _main_drivers(buyZone: BuyZoneEstimate, stockData: dict) -> list[str]:
 
 def _driver_label(label: str, stockData: dict) -> str:
     lowered = label.lower()
+    if "cashflow valuation" in lowered:
+        parts = []
+        pfcf = _first_number(stockData, "price_to_fcf", "priceToFcf", "priceToFCF", "pfcf")
+        fcf_yield = _ratio_like(_first_number(stockData, "free_cash_flow_yield", "freeCashFlowYield", "fcfYield"))
+        if pfcf is not None:
+            parts.append(f"P/FCF {pfcf:.1f}x")
+        if fcf_yield is not None:
+            parts.append(f"FCF yield {fcf_yield * 100:.1f}%")
+        if parts:
+            return f"{label}: {', '.join(parts)}"
+        return label
     if "p/fcf" in lowered:
         return _format_driver(label, _first_number(stockData, "price_to_fcf", "priceToFcf", "priceToFCF", "pfcf"), "x")
     if "fcf" in lowered and ("yield" in lowered or "收益" in label):

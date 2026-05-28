@@ -3548,8 +3548,12 @@ class ScoringTests(unittest.TestCase):
             "SAAS_SOFTWARE",
         )
 
-        self.assertIn("P/FCF", zone.inputsUsed)
-        self.assertIn("FCF收益率", zone.inputsUsed)
+        cashflow_inputs = [item for item in zone.inputsUsed if item.startswith("Cashflow valuation")]
+        self.assertEqual(len(cashflow_inputs), 1)
+        self.assertIn("P/FCF", cashflow_inputs[0])
+        self.assertIn("FCF", cashflow_inputs[0])
+        self.assertNotIn("P/FCF", [item for item in zone.inputsUsed if item == "P/FCF"])
+        self.assertNotIn("FCF收益率", [item for item in zone.inputsUsed if item == "FCF收益率"])
         self.assertIn("P/S", zone.inputsUsed)
         self.assertEqual(zone.method, "blended")
 
