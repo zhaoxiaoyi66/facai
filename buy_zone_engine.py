@@ -20,6 +20,7 @@ SUPPORTED_BUY_ZONE_MODELS = {
     "MEGA_CAP_PLATFORM",
     "SEMICONDUCTOR",
     "POWER_GENERATION",
+    "NETWORKING_HARDWARE",
 }
 
 BLOCKED_BUY_ZONE_STATES = {
@@ -35,6 +36,7 @@ GROWTH_MARGIN_ANCHOR_LIMITS = {
     "SAAS_SOFTWARE": (0.90, 1.15),
     "MEGA_CAP_PLATFORM": (0.92, 1.15),
     "SEMICONDUCTOR": (0.85, 1.22),
+    "NETWORKING_HARDWARE": (0.92, 1.10),
 }
 SAAS_SALES_ANCHOR_CAP = 1.10
 
@@ -116,6 +118,18 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             method="data_insufficient",
         )
 
+    if _networking_hardware_core_inputs_missing(model_key, metrics, stockData):
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "data_insufficient",
+            ["missing_networking_hardware_growth_or_margin"],
+            ["missing_networking_hardware_growth_or_margin"],
+            inputs,
+            method="data_insufficient",
+        )
+
     targets = _apply_growth_margin_anchor(str(model), _model_targets(str(model)), metrics, stockData)
     candidates = _valuation_candidates(price, metrics, targets, inputs)
     if not candidates:
@@ -159,6 +173,9 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             "heavyBuyBelow": heavy_buy_below,
         },
     )
+    if _networking_hardware_sales_multiple_overextended(model_key, metrics):
+        current_zone = "no_chase"
+        _append_once(warnings, "networking_hardware_sales_multiple_overextended")
     confidence = _confidence(inputs, method, model, stockData, warnings)
     method = "fcf_yield" if any("FCF收益率" in item for item in inputs) and len(inputs) == 1 else method
     if len(inputs) >= 2 and method != "technical_proxy":
@@ -326,6 +343,11 @@ def _model_targets(model: str) -> dict[str, dict[str, float]]:
             "ev_to_ebitda": {"fair": 24, "tranche": 18, "heavy": 13, "weight": 1.5},
             "forward_pe": {"fair": 35, "tranche": 27, "heavy": 20, "weight": 1.5},
         }
+    if model == "NETWORKING_HARDWARE":
+        return {
+            "price_to_fcf": {"fair": 32, "tranche": 24, "heavy": 18, "weight": 2.5},
+            "ev_to_sales": {"fair": 14, "tranche": 10, "heavy": 7, "weight": 2},
+        }
     if model == "POWER_GENERATION":
         return {
             "ev_to_ebitda": {"fair": 11, "tranche": 9, "heavy": 7, "weight": 2},
@@ -420,6 +442,7 @@ def _growth_anchor_signal(model: str, growth: float) -> float:
         "SAAS_SOFTWARE": (-0.02, 0.05, 0.25),
         "MEGA_CAP_PLATFORM": (-0.02, 0.03, 0.15),
         "SEMICONDUCTOR": (-0.05, 0.05, 0.30),
+        "NETWORKING_HARDWARE": (-0.05, 0.08, 0.30),
     }
     bad, neutral, good = thresholds.get(model, (-0.02, 0.05, 0.20))
     return _bounded_anchor_signal(growth, bad, neutral, good)
@@ -431,12 +454,14 @@ def _margin_anchor_signal(model: str, margin_kind: str, margin: float) -> float:
             "SAAS_SOFTWARE": (0.35, 0.55, 0.78),
             "MEGA_CAP_PLATFORM": (0.35, 0.50, 0.68),
             "SEMICONDUCTOR": (0.30, 0.45, 0.68),
+            "NETWORKING_HARDWARE": (0.35, 0.50, 0.68),
         }
     else:
         thresholds = {
             "SAAS_SOFTWARE": (0.00, 0.10, 0.28),
             "MEGA_CAP_PLATFORM": (0.05, 0.15, 0.32),
             "SEMICONDUCTOR": (0.00, 0.10, 0.32),
+            "NETWORKING_HARDWARE": (0.05, 0.15, 0.35),
         }
     bad, neutral, good = thresholds.get(model, (0.00, 0.10, 0.25))
     return _bounded_anchor_signal(margin, bad, neutral, good)
@@ -621,7 +646,7 @@ def _build_explainability(buyZone: BuyZoneEstimate, stockData: dict, scoringResu
     validation_errors = list(dict.fromkeys(str(item) for item in (buyZone.validationErrors or []) if item))
     guardrail_reasons = _guardrail_reasons(zone, validation_errors, warnings)
     confidence_reasons = _confidence_reasons(buyZone, stockData, scoringResult, warnings, validation_errors)
-    missing_inputs = _missing_inputs(zone, stockData, validation_errors)
+    missing_inputs = _missing_inputs(zone, stockData, validation_errors, buyZone.modelType)
     main_drivers = _main_drivers(buyZone, stockData)
     title, summary = _explain_title_summary(zone, buyZone, main_drivers, guardrail_reasons)
     return {
@@ -682,17 +707,28 @@ def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[s
     for item in [*validation_errors, *warnings]:
         if item in {"buy_zone_model_not_supported", "data_confidence_low", "missing_power_generation_core_inputs"}:
             continue
+        if "missing" in item or "overextended" in item:
+            reasons.append(item)
+            continue
         if "异常" in item or "缺" in item or "不足" in item or "unsupported" in item:
             reasons.append(item)
     return list(dict.fromkeys(reasons))
 
 
-def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str]) -> list[str]:
+def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], model: str | None = None) -> list[str]:
     missing: list[str] = []
     if "buy_zone_model_not_supported" in validation_errors or zone == "unsupported_buy_zone_model":
         missing.append("专属买区模型")
     if "missing_power_generation_core_inputs" in validation_errors:
         missing.extend(["adjusted EBITDA", "adjusted FCF before growth"])
+    if "missing_networking_hardware_growth_or_margin" in validation_errors:
+        if _growth_anchor_value(_collect_metrics(stockData, [])) is None:
+            missing.append("revenue growth")
+        if _margin_anchor_value(_collect_metrics(stockData, []), stockData)[0] is None:
+            missing.append("reliable margin")
+    if str(model or stockData.get("modelType") or "").upper() == "NETWORKING_HARDWARE" or "networking_hardware_risk_inputs_missing" in validation_errors:
+        if _networking_hardware_risk_inputs_missing("NETWORKING_HARDWARE", stockData):
+            missing.extend(["customer concentration risk", "cloud capex risk"])
     if zone == "data_insufficient" and not missing:
         for label, keys in (
             ("current price", ("current_price", "currentPrice", "price")),
@@ -720,6 +756,9 @@ def _confidence_reasons(
         reasons.append("dataConfidence = low")
     if buyZone.currentZone in BLOCKED_BUY_ZONE_STATES:
         reasons.extend(validation_errors or warnings)
+    for item in warnings:
+        if "networking_hardware" in item:
+            reasons.append(item)
     if buyZone.method == "technical_proxy":
         reasons.append("仅使用技术代理，置信度较低")
     if confidence == "high" and not reasons:
@@ -965,6 +1004,48 @@ def _power_generation_core_inputs_missing(model: str, stockData: dict) -> bool:
     )
 
 
+def _networking_hardware_core_inputs_missing(model: str, metrics: dict[str, float | None], stockData: dict) -> bool:
+    if str(model).upper() != "NETWORKING_HARDWARE":
+        return False
+    return _growth_anchor_value(metrics) is None or _margin_anchor_value(metrics, stockData)[0] is None
+
+
+def _networking_hardware_sales_multiple_overextended(model: str, metrics: dict[str, float | None]) -> bool:
+    if str(model).upper() != "NETWORKING_HARDWARE":
+        return False
+    sales_multiples = (
+        metrics.get("price_to_sales"),
+        metrics.get("ev_to_sales"),
+    )
+    return any(value is not None and value >= 18 for value in sales_multiples)
+
+
+def _networking_hardware_risk_inputs_missing(model: str, stockData: dict) -> bool:
+    if str(model).upper() != "NETWORKING_HARDWARE":
+        return False
+    customer_risk = any(
+        stockData.get(key) is not None
+        for key in (
+            "manualCustomerConcentration",
+            "manual_customer_concentration",
+            "customerConcentrationRisk",
+            "customer_concentration_risk",
+        )
+    )
+    cloud_capex_risk = any(
+        stockData.get(key) is not None
+        for key in (
+            "manualCloudCapexRisk",
+            "manual_cloud_capex_risk",
+            "manualCapexConcern",
+            "manual_capex_concern",
+            "cloudCapexRisk",
+            "cloud_capex_risk",
+        )
+    )
+    return not (customer_risk and cloud_capex_risk)
+
+
 def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: str, inputs: list[str], confidence: str) -> list[str]:
     reasons = [f"使用 {', '.join(dict.fromkeys(inputs))} 合成系统买区。"]
     if metrics.get("fcf_yield") is not None:
@@ -1024,6 +1105,9 @@ def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimat
         forces_medium = True
     if _uses_low_confidence_proxy(stockData, scoringResult, buyZone):
         warnings.append("使用低置信 proxy，买区置信度不能为 high")
+        forces_medium = True
+    if _networking_hardware_risk_inputs_missing(buyZone.modelType, stockData):
+        warnings.append("networking_hardware_risk_inputs_missing: customer concentration / cloud capex risk")
         forces_medium = True
     if _has_abnormal_percent_input(stockData):
         warnings.append("存在异常百分比输入，买区置信度不能为 high")

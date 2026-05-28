@@ -1847,6 +1847,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(classifyStockModel({"ticker": "PLTR"}), "SAAS_SOFTWARE")
         self.assertEqual(classifyStockModel({"ticker": "NVDA"}), "SEMICONDUCTOR")
         self.assertEqual(classifyStockModel({"ticker": "AVGO"}), "SEMICONDUCTOR")
+        self.assertEqual(classifyStockModel({"ticker": "ANET"}), "NETWORKING_HARDWARE")
         self.assertEqual(classifyStockModel({"ticker": "COIN"}), "CRYPTO_FINANCIAL_INFRA")
         self.assertEqual(classifyStockModel({"ticker": "HOOD"}), "CRYPTO_FINANCIAL_INFRA")
 
@@ -3466,7 +3467,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(plan.currentAddLimitPercent, 0)
 
     def test_unsupported_buy_zone_model_blocks_precise_generic_targets(self) -> None:
-        for symbol, model in (("ANET", "AUTO_HARDWARE"), ("COIN", "CRYPTO_FINANCIAL_INFRA")):
+        for symbol, model in (("COIN", "CRYPTO_FINANCIAL_INFRA"), ("HOOD", "CRYPTO_FINANCIAL_INFRA")):
             zone = generate_buy_zone(
                 symbol,
                 {"price": 100, "price_to_fcf": 20, "free_cash_flow_yield": 0.05, "price_to_sales": 8},
@@ -3486,6 +3487,61 @@ class ScoringTests(unittest.TestCase):
             self.assertIsNone(zone.heavyBuyBelow)
             self.assertIsNone(plan.firstBuyPrice)
             self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_networking_hardware_anet_uses_conservative_buy_zone_model(self) -> None:
+        zone = generate_buy_zone(
+            "ANET",
+            {
+                "price": 159.28,
+                "price_to_fcf": 37.9986,
+                "enterprise_to_revenue": 20.368,
+                "price_to_sales": 20.655,
+                "revenue_growth": 0.286,
+                "gross_margin": 0.635,
+                "operating_margin": 0.428,
+                "fcf_margin": 0.605,
+            },
+            {"scoring_model": "NETWORKING_HARDWARE"},
+            "NETWORKING_HARDWARE",
+        )
+
+        self.assertEqual(zone.modelType, "NETWORKING_HARDWARE")
+        self.assertEqual(zone.currentZone, "no_chase")
+        self.assertEqual(zone.confidence, "medium")
+        self.assertTrue(zone.isValid)
+        self.assertIsNotNone(zone.noChaseAbove)
+        self.assertLess(zone.noChaseAbove, zone.currentPrice)
+        self.assertIn("Cashflow valuation", " ".join(zone.inputsUsed))
+        self.assertIn("EV/Sales", zone.inputsUsed)
+        self.assertIn("networking_hardware_sales_multiple_overextended", zone.explainability["guardrailReasons"])
+        self.assertIn(
+            "networking_hardware_risk_inputs_missing: customer concentration / cloud capex risk",
+            zone.explainability["confidenceReasons"],
+        )
+        self.assertIn("customer concentration risk", zone.explainability["missingInputs"])
+        self.assertIn("cloud capex risk", zone.explainability["missingInputs"])
+
+    def test_networking_hardware_missing_growth_or_margin_blocks_precise_prices(self) -> None:
+        zone = generate_buy_zone(
+            "ANET",
+            {
+                "price": 159.28,
+                "price_to_fcf": 37.9986,
+                "enterprise_to_revenue": 20.368,
+                "price_to_sales": 20.655,
+            },
+            {"scoring_model": "NETWORKING_HARDWARE"},
+            "NETWORKING_HARDWARE",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_networking_hardware_growth_or_margin", zone.validationErrors)
+        self.assertIsNone(zone.noChaseAbove)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIn("revenue growth", zone.explainability["missingInputs"])
+        self.assertIn("reliable margin", zone.explainability["missingInputs"])
 
     def test_invalid_buy_zone_hides_actionable_prices(self) -> None:
         zone = generate_buy_zone(

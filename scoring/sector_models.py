@@ -41,6 +41,8 @@ symbolModelOverrides: dict[str, ModelType] = {
     "COHR": "SEMICONDUCTOR_CYCLICAL",
     "WDC": "SEMICONDUCTOR_CYCLICAL",
     "STX": "SEMICONDUCTOR_CYCLICAL",
+    # Networking hardware
+    "ANET": "NETWORKING_HARDWARE",
     # AI infrastructure / neo-cloud
     "CRWV": "AI_INFRA_HIGH_RISK",
     "NBIS": "AI_INFRA_HIGH_RISK",
