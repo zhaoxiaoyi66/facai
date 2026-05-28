@@ -3467,7 +3467,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(plan.currentAddLimitPercent, 0)
 
     def test_unsupported_buy_zone_model_blocks_precise_generic_targets(self) -> None:
-        for symbol, model in (("COIN", "CRYPTO_FINANCIAL_INFRA"), ("HOOD", "CRYPTO_FINANCIAL_INFRA")):
+        for symbol, model in (("HOOD", "CRYPTO_FINANCIAL_INFRA"),):
             zone = generate_buy_zone(
                 symbol,
                 {"price": 100, "price_to_fcf": 20, "free_cash_flow_yield": 0.05, "price_to_sales": 8},
@@ -3487,6 +3487,80 @@ class ScoringTests(unittest.TestCase):
             self.assertIsNone(zone.heavyBuyBelow)
             self.assertIsNone(plan.firstBuyPrice)
             self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_coin_crypto_buy_zone_uses_conservative_guardrail_model(self) -> None:
+        zone = generate_buy_zone(
+            "COIN",
+            {
+                "price": 184.02,
+                "enterprise_to_revenue": 7.957,
+                "price_to_sales": 8.343,
+                "price_to_fcf": 17.365,
+                "free_cash_flow_yield": 0.0576,
+                "beta": 3.381,
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+        plan = generate_position_plan("COIN", zone, {"entry_rating": "A", "risk_rating": "low", "action": sorted(BUY_ACTIONS)[0]})
+
+        self.assertEqual(zone.modelType, "CRYPTO_FINANCIAL_INFRA")
+        self.assertEqual(zone.currentZone, "no_chase")
+        self.assertEqual(zone.confidence, "medium")
+        self.assertFalse(zone.isValid)
+        self.assertIn("EV/Sales", zone.inputsUsed)
+        self.assertIn("Cashflow valuation", " ".join(zone.inputsUsed))
+        self.assertIn("crypto_financial_infra_high_beta_sales_multiple", zone.explainability["guardrailReasons"])
+        self.assertIn("missing_crypto_operating_inputs", zone.validationErrors)
+        self.assertIn("crypto_financial_infra_operating_mix_missing", zone.explainability["confidenceReasons"])
+        self.assertIn("transaction revenue mix", zone.explainability["missingInputs"])
+        self.assertIn("subscription / USDC revenue mix", zone.explainability["missingInputs"])
+        self.assertIn("normalized earnings", zone.explainability["missingInputs"])
+        self.assertIn("BTC cycle signal", zone.explainability["missingInputs"])
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIsNone(plan.firstBuyPrice)
+        self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_coin_missing_operating_mix_blocks_heavy_buy(self) -> None:
+        zone = generate_buy_zone(
+            "COIN",
+            {
+                "price": 50,
+                "enterprise_to_revenue": 2,
+                "price_to_sales": 2.2,
+                "price_to_fcf": 8,
+                "free_cash_flow_yield": 0.12,
+                "beta": 1.2,
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_crypto_core_inputs_for_heavy_buy", zone.validationErrors)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIsNone(zone.trancheBuyHigh)
+
+    def test_coin_missing_ev_sales_anchor_blocks_weak_cashflow_only_zone(self) -> None:
+        zone = generate_buy_zone(
+            "COIN",
+            {
+                "price": 100,
+                "price_to_fcf": 12,
+                "free_cash_flow_yield": 0.08,
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_crypto_ev_sales_anchor", zone.validationErrors)
+        self.assertIsNone(zone.noChaseAbove)
 
     def test_networking_hardware_anet_uses_conservative_buy_zone_model(self) -> None:
         zone = generate_buy_zone(

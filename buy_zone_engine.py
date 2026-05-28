@@ -21,6 +21,7 @@ SUPPORTED_BUY_ZONE_MODELS = {
     "SEMICONDUCTOR",
     "POWER_GENERATION",
     "NETWORKING_HARDWARE",
+    "CRYPTO_FINANCIAL_INFRA",
 }
 
 BLOCKED_BUY_ZONE_STATES = {
@@ -94,7 +95,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
         return _insufficient(symbol, model, price, ["缺少当前价格，无法生成价格区间。"], warnings)
 
     model_key = str(model).upper()
-    if model_key not in SUPPORTED_BUY_ZONE_MODELS:
+    if model_key not in SUPPORTED_BUY_ZONE_MODELS or not _buy_zone_model_supported_for_symbol(symbol, model_key):
         return _blocked_estimate(
             symbol,
             str(model),
@@ -126,6 +127,18 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             "data_insufficient",
             ["missing_networking_hardware_growth_or_margin"],
             ["missing_networking_hardware_growth_or_margin"],
+            inputs,
+            method="data_insufficient",
+        )
+
+    if _crypto_financial_infra_core_anchor_missing(model_key, symbol, metrics):
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "data_insufficient",
+            ["missing_crypto_ev_sales_anchor"],
+            ["missing_crypto_ev_sales_anchor"],
             inputs,
             method="data_insufficient",
         )
@@ -176,6 +189,12 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     if _networking_hardware_sales_multiple_overextended(model_key, metrics):
         current_zone = "no_chase"
         _append_once(warnings, "networking_hardware_sales_multiple_overextended")
+    if _crypto_financial_infra_beta_sales_overextended(model_key, symbol, metrics, stockData):
+        current_zone = "no_chase"
+        _append_once(warnings, "crypto_financial_infra_high_beta_sales_multiple")
+    if _crypto_financial_infra_regulatory_risk_high(model_key, symbol, stockData, scoringResult):
+        current_zone = "no_chase"
+        _append_once(warnings, "crypto_financial_infra_regulatory_risk_high")
     confidence = _confidence(inputs, method, model, stockData, warnings)
     method = "fcf_yield" if any("FCF收益率" in item for item in inputs) and len(inputs) == 1 else method
     if len(inputs) >= 2 and method != "technical_proxy":
@@ -313,6 +332,7 @@ def _collect_metrics(stockData: dict, warnings: list[str]) -> dict[str, float | 
         "return20d": _ratio_like(_first_number(stockData, "gain_20d_pct", "return20d", "return20D")),
         "return60d": _ratio_like(_first_number(stockData, "gain_60d_pct", "return60d", "return60D")),
         "net_debt_to_ebitda": _first_number(stockData, "net_debt_to_ebitda", "netDebtToEbitda"),
+        "beta": _first_number(stockData, "beta", "marketBeta"),
     }
 
 
@@ -347,6 +367,12 @@ def _model_targets(model: str) -> dict[str, dict[str, float]]:
         return {
             "price_to_fcf": {"fair": 32, "tranche": 24, "heavy": 18, "weight": 2.5},
             "ev_to_sales": {"fair": 14, "tranche": 10, "heavy": 7, "weight": 2},
+        }
+    if model == "CRYPTO_FINANCIAL_INFRA":
+        return {
+            "ev_to_sales": {"fair": 6, "tranche": 4.5, "heavy": 3.2, "weight": 4},
+            "price_to_fcf": {"fair": 20, "tranche": 14, "heavy": 10, "weight": 0.4},
+            "fcf_yield": {"fair": 0.05, "tranche": 0.07, "heavy": 0.10, "weight": 0.4},
         }
     if model == "POWER_GENERATION":
         return {
@@ -479,6 +505,12 @@ def _bounded_anchor_signal(value: float, bad: float, neutral: float, good: float
 
 def _clamp_value(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
+
+
+def _buy_zone_model_supported_for_symbol(symbol: str, model: str) -> bool:
+    if str(model).upper() == "CRYPTO_FINANCIAL_INFRA":
+        return str(symbol).upper() == "COIN"
+    return True
 
 
 def _valuation_candidates(price: float, metrics: dict[str, float | None], targets: dict[str, dict[str, float]], inputs: list[str]) -> dict[str, list[tuple[float, float]]]:
@@ -646,7 +678,7 @@ def _build_explainability(buyZone: BuyZoneEstimate, stockData: dict, scoringResu
     validation_errors = list(dict.fromkeys(str(item) for item in (buyZone.validationErrors or []) if item))
     guardrail_reasons = _guardrail_reasons(zone, validation_errors, warnings)
     confidence_reasons = _confidence_reasons(buyZone, stockData, scoringResult, warnings, validation_errors)
-    missing_inputs = _missing_inputs(zone, stockData, validation_errors, buyZone.modelType)
+    missing_inputs = _missing_inputs(zone, stockData, validation_errors, buyZone.modelType, buyZone.symbol)
     main_drivers = _main_drivers(buyZone, stockData)
     title, summary = _explain_title_summary(zone, buyZone, main_drivers, guardrail_reasons)
     return {
@@ -707,7 +739,7 @@ def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[s
     for item in [*validation_errors, *warnings]:
         if item in {"buy_zone_model_not_supported", "data_confidence_low", "missing_power_generation_core_inputs"}:
             continue
-        if "missing" in item or "overextended" in item:
+        if "missing" in item or "overextended" in item or "high_beta" in item or "regulatory_risk_high" in item:
             reasons.append(item)
             continue
         if "异常" in item or "缺" in item or "不足" in item or "unsupported" in item:
@@ -715,7 +747,7 @@ def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[s
     return list(dict.fromkeys(reasons))
 
 
-def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], model: str | None = None) -> list[str]:
+def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], model: str | None = None, symbol: str | None = None) -> list[str]:
     missing: list[str] = []
     if "buy_zone_model_not_supported" in validation_errors or zone == "unsupported_buy_zone_model":
         missing.append("专属买区模型")
@@ -726,9 +758,13 @@ def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], mo
             missing.append("revenue growth")
         if _margin_anchor_value(_collect_metrics(stockData, []), stockData)[0] is None:
             missing.append("reliable margin")
+    if "missing_crypto_ev_sales_anchor" in validation_errors:
+        missing.append("EV/Sales")
     if str(model or stockData.get("modelType") or "").upper() == "NETWORKING_HARDWARE" or "networking_hardware_risk_inputs_missing" in validation_errors:
         if _networking_hardware_risk_inputs_missing("NETWORKING_HARDWARE", stockData):
             missing.extend(["customer concentration risk", "cloud capex risk"])
+    if str(model or stockData.get("modelType") or "").upper() == "CRYPTO_FINANCIAL_INFRA" and str(symbol or stockData.get("ticker") or stockData.get("symbol") or "").upper() == "COIN":
+        missing.extend(_crypto_financial_infra_missing_operating_inputs(stockData))
     if zone == "data_insufficient" and not missing:
         for label, keys in (
             ("current price", ("current_price", "currentPrice", "price")),
@@ -757,7 +793,7 @@ def _confidence_reasons(
     if buyZone.currentZone in BLOCKED_BUY_ZONE_STATES:
         reasons.extend(validation_errors or warnings)
     for item in warnings:
-        if "networking_hardware" in item:
+        if "networking_hardware" in item or "crypto_financial_infra" in item:
             reasons.append(item)
     if buyZone.method == "technical_proxy":
         reasons.append("仅使用技术代理，置信度较低")
@@ -883,6 +919,14 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
         confidence = "medium"
     if buyZone.method == "technical_proxy":
         confidence = "low"
+    crypto_operating_inputs_missing = _crypto_financial_infra_operating_inputs_missing(buyZone.modelType, buyZone.symbol, stockData)
+    if crypto_operating_inputs_missing:
+        _append_once(validation_errors, "missing_crypto_operating_inputs")
+    if crypto_operating_inputs_missing and current_zone in {"heavy_buy", "below_heavy_buy"}:
+        current_zone = "data_insufficient"
+        confidence = "low"
+        is_valid = False
+        _append_once(validation_errors, "missing_crypto_core_inputs_for_heavy_buy")
 
     next_price, next_label, trigger_warnings = derive_next_trigger_price(price, buyZone, current_zone)
     for message in trigger_warnings:
@@ -905,6 +949,8 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
         warnings=warnings,
     )
     if current_zone in BLOCKED_BUY_ZONE_STATES:
+        return _with_explainability(_without_actionable_prices(validated), stockData, scoringResult)
+    if crypto_operating_inputs_missing and current_zone == "no_chase":
         return _with_explainability(_without_actionable_prices(validated), stockData, scoringResult)
     return _with_explainability(validated, stockData, scoringResult)
 
@@ -1046,6 +1092,106 @@ def _networking_hardware_risk_inputs_missing(model: str, stockData: dict) -> boo
     return not (customer_risk and cloud_capex_risk)
 
 
+def _crypto_financial_infra_core_anchor_missing(model: str, symbol: str, metrics: dict[str, float | None]) -> bool:
+    if str(model).upper() != "CRYPTO_FINANCIAL_INFRA" or str(symbol).upper() != "COIN":
+        return False
+    return metrics.get("ev_to_sales") is None
+
+
+def _crypto_financial_infra_operating_inputs_missing(model: str, symbol: str, stockData: dict) -> bool:
+    if str(model).upper() != "CRYPTO_FINANCIAL_INFRA" or str(symbol).upper() != "COIN":
+        return False
+    return bool(_crypto_financial_infra_missing_operating_inputs(stockData))
+
+
+def _crypto_financial_infra_missing_operating_inputs(stockData: dict) -> list[str]:
+    missing: list[str] = []
+    if not _has_any_value(
+        stockData,
+        "transactionRevenueMix",
+        "transaction_revenue_mix",
+        "transactionRevenueShare",
+        "transaction_revenue_share",
+        "manualTransactionRevenueMix",
+        "manual_transaction_revenue_mix",
+    ):
+        missing.append("transaction revenue mix")
+    if not _has_any_value(
+        stockData,
+        "usdcRevenueMix",
+        "usdc_revenue_mix",
+        "stablecoinRevenueMix",
+        "stablecoin_revenue_mix",
+        "subscriptionRevenueMix",
+        "subscription_revenue_mix",
+        "manualUsdcRevenueMix",
+        "manual_usdc_revenue_mix",
+    ):
+        missing.append("subscription / USDC revenue mix")
+    if not _has_any_value(
+        stockData,
+        "normalizedEarnings",
+        "normalized_earnings",
+        "normalizedEps",
+        "normalized_eps",
+        "normalizedEbitda",
+        "normalized_ebitda",
+        "manualNormalizedEarnings",
+        "manual_normalized_earnings",
+    ):
+        missing.append("normalized earnings")
+    if not _has_any_value(
+        stockData,
+        "btcBeta",
+        "btc_beta",
+        "bitcoinBeta",
+        "bitcoin_beta",
+        "cryptoCycleSignal",
+        "crypto_cycle_signal",
+        "manualCryptoCycleSetup",
+        "manual_crypto_cycle_setup",
+    ):
+        missing.append("BTC cycle signal")
+    return missing
+
+
+def _crypto_financial_infra_beta_sales_overextended(model: str, symbol: str, metrics: dict[str, float | None], stockData: dict) -> bool:
+    if str(model).upper() != "CRYPTO_FINANCIAL_INFRA" or str(symbol).upper() != "COIN":
+        return False
+    beta = metrics.get("beta") or _first_number(stockData, "beta", "marketBeta")
+    ev_sales = metrics.get("ev_to_sales")
+    ps = metrics.get("price_to_sales")
+    sales_multiple = ev_sales if ev_sales is not None else ps
+    return beta is not None and beta >= 2.0 and sales_multiple is not None and sales_multiple >= 7.0
+
+
+def _crypto_financial_infra_regulatory_risk_high(model: str, symbol: str, stockData: dict, scoringResult=None) -> bool:
+    if str(model).upper() != "CRYPTO_FINANCIAL_INFRA" or str(symbol).upper() != "COIN":
+        return False
+    raw_values = (
+        stockData.get("regulatoryRisk"),
+        stockData.get("manualRegulatoryRisk"),
+        stockData.get("regulatory_risk"),
+        stockData.get("manual_regulatory_risk"),
+        _score_attr(scoringResult, "regulatoryRisk"),
+        _score_attr(scoringResult, "manualRegulatoryRisk"),
+    )
+    for value in raw_values:
+        if value in {None, ""}:
+            continue
+        number = _number(value)
+        if number is not None:
+            return number >= 70
+        text = str(value).strip().lower()
+        if text in {"high", "高", "high risk", "高风险"}:
+            return True
+    return False
+
+
+def _has_any_value(stockData: dict, *keys: str) -> bool:
+    return any(stockData.get(key) not in {None, ""} for key in keys)
+
+
 def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: str, inputs: list[str], confidence: str) -> list[str]:
     reasons = [f"使用 {', '.join(dict.fromkeys(inputs))} 合成系统买区。"]
     if metrics.get("fcf_yield") is not None:
@@ -1108,6 +1254,9 @@ def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimat
         forces_medium = True
     if _networking_hardware_risk_inputs_missing(buyZone.modelType, stockData):
         warnings.append("networking_hardware_risk_inputs_missing: customer concentration / cloud capex risk")
+        forces_medium = True
+    if _crypto_financial_infra_operating_inputs_missing(buyZone.modelType, buyZone.symbol, stockData):
+        warnings.append("crypto_financial_infra_operating_mix_missing")
         forces_medium = True
     if _has_abnormal_percent_input(stockData):
         warnings.append("存在异常百分比输入，买区置信度不能为 high")
