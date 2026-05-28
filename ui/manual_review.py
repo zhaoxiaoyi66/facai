@@ -14,6 +14,7 @@ from ai.qwen_review_service import (
 from ai.review_automation import ReviewAutomationService, automation_effectiveness
 from data.ai_review_assistant import AIReviewStore
 from data.evidence_backfill import backfill_evidence_for_review_item
+from data.review_center_auto_archive import auto_archive_low_priority_review_items
 from data.review_center_view_model import build_review_center_view_model
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore
 from review_autopilot import ReviewAutopilot, auto_fill_capability
@@ -1216,6 +1217,7 @@ def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
         ("影响评分", impact_count, "red"),
         ("可自动确认", auto_confirm_count, "green"),
         ("可自动归档", auto_archive_count, "gray"),
+        ("风险观察", group_counts.get("riskObservation", 0), "orange"),
         ("AI 建议", group_counts.get("aiSuggestedCorrections", 0), "orange"),
         ("证据不足", group_counts.get("insufficientEvidence", 0), "gray"),
     ]
@@ -2212,6 +2214,8 @@ def _review_suggested_value_text(row: dict, ai_result: dict | None, view_item: d
 
 
 def _review_action_hint(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
+    if isinstance(view_item, dict) and view_item.get("riskObservation"):
+        return "风险观察 / 可归档" if view_item.get("canAutoArchive") else "风险观察"
     if isinstance(view_item, dict) and view_item.get("suggestedAction"):
         return _review_vm_action_label(str(view_item.get("suggestedAction")))
     triage = _ai_triage_status(row, ai_result)
@@ -2338,7 +2342,7 @@ def _review_drawer_section(title: str, body: object, clipped: bool = False) -> s
 def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None, view_rows: list[dict] | None = None) -> None:
     source_rows = view_rows if view_rows is not None else [{"raw": row, "item": None} for row in rows]
     ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
-    st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="review-list-title">{escape(_review_list_title())}</div>', unsafe_allow_html=True)
     if not source_rows:
         _render_review_empty_state()
         return
@@ -2352,6 +2356,17 @@ def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewSt
             _render_metric_row(store, raw, ai_results.get(int(raw["id"])))
     with detail_col:
         _render_review_evidence_drawer(source_rows, ai_results)
+
+
+def _review_list_title() -> str:
+    return {
+        "待处理": "高优先级待处理",
+        "影响评分": "影响评分，需人工确认",
+        "可自动处理": "可自动确认 / 归档候选",
+        "AI 建议": "AI 建议修正",
+        "证据不足": "证据不足，先补证据",
+        "已处理": "最近已处理",
+    }.get(_active_review_tab(), "复核队列")
 
 
 def _render_review_empty_state() -> None:
@@ -2440,8 +2455,117 @@ def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = Non
             st.rerun()
         if cols[3].button("处理日志", key="review-log-workbench", width="stretch"):
             st.session_state["show_review_automation_logs"] = not st.session_state.get("show_review_automation_logs", False)
+        _render_auto_archive_preview_control(store, filters)
         if st.session_state.get("show_review_automation_logs"):
             _render_automation_logs(store)
+
+
+def _render_auto_archive_preview_control(store: ReviewQueueStore, filters: dict | None = None) -> None:
+    preview_cols = st.columns([1.0, 3.0], vertical_alignment="center")
+    if preview_cols[0].button("预览低优先级归档", key="review-auto-archive-preview", width="stretch"):
+        result = auto_archive_low_priority_review_items(
+            store=store,
+            symbol=(filters or {}).get("symbol"),
+            dry_run=True,
+        )
+        st.session_state["review_auto_archive_preview"] = result
+    result = st.session_state.get("review_auto_archive_preview")
+    if not isinstance(result, dict):
+        preview_cols[1].caption("仅 dry-run 预览，不会实际归档。")
+        _render_auto_archive_execution_result()
+        return
+    items = list(result.get("items") or [])
+    count = int(result.get("eligibleCount") or 0)
+    sample_html = _auto_archive_sample_html(items)
+    preview_cols[1].markdown(
+        (
+            '<div class="review-auto-archive-preview">'
+            f'<div><strong>预计归档 {count} 条，仅处理低优先级项。</strong><span>当前为预览，未实际归档。</span></div>'
+            f"{sample_html}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    confirm = preview_cols[1].checkbox(
+        "我确认只归档上述低优先级项",
+        key="review-auto-archive-execute-confirm",
+        disabled=count <= 0,
+    )
+    execute = preview_cols[1].button(
+        "执行自动归档",
+        key="review-auto-archive-execute",
+        width="stretch",
+        disabled=count <= 0 or not confirm,
+    )
+    if execute:
+        try:
+            archive_result = auto_archive_low_priority_review_items(
+                store=store,
+                symbol=(filters or {}).get("symbol"),
+                dry_run=False,
+            )
+            st.session_state["review_auto_archive_execution_result"] = archive_result
+            st.session_state["review_auto_archive_preview"] = auto_archive_low_priority_review_items(
+                store=store,
+                symbol=(filters or {}).get("symbol"),
+                dry_run=True,
+            )
+            st.rerun()
+        except Exception as exc:
+            st.session_state["review_auto_archive_execution_result"] = {
+                "archivedCount": 0,
+                "items": [],
+                "error": str(exc),
+            }
+    _render_auto_archive_execution_result()
+
+
+def _render_auto_archive_execution_result() -> None:
+    result = st.session_state.get("review_auto_archive_execution_result")
+    if not isinstance(result, dict):
+        return
+    items = list(result.get("items") or [])
+    archived_count = int(result.get("archivedCount") or 0)
+    error = str(result.get("error") or "").strip()
+    error_html = f'<div class="review-auto-archive-error">{escape(error)}</div>' if error else ""
+    st.markdown(
+        (
+            '<div class="review-auto-archive-preview done">'
+            f'<div><strong>已归档 {archived_count} 条</strong><span>执行完成后已刷新复核中心视图。</span></div>'
+            f"{_auto_archive_sample_html(items)}"
+            f"{error_html}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _auto_archive_sample_html(items: list[dict]) -> str:
+    sample_html = "".join(
+        (
+            '<div class="review-auto-archive-sample">'
+            f'<strong>{escape(str(item.get("symbol") or ""))}</strong>'
+            f'<span>{escape(str(item.get("metric") or item.get("metricKey") or ""))}</span>'
+            f'<em>{escape(_auto_archive_reason_label(item.get("reason")))}</em>'
+            "</div>"
+        )
+        for item in items[:5]
+    )
+    return sample_html or '<div class="review-auto-archive-empty">暂无可显示样例。</div>'
+
+
+def _auto_archive_reason_label(reason: object) -> str:
+    text = str(reason or "").strip()
+    normalized = text.lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"risk_observation", "qualitative_risk", "generic_risk", "sector_risk"}:
+        return "泛风险观察"
+    if normalized in {"historical_value", "stale"}:
+        return "历史值"
+    if normalized in {"duplicate_archived", "duplicate_candidate", "duplicate"}:
+        return "重复候选"
+    if normalized in {"ai_auto_archived", "low_priority_review_noise"} or "low-priority" in text.lower() or "low priority" in text.lower():
+        return "低优先级不影响评分"
+    return text or "低优先级不影响评分"
 
 
 def _styles() -> str:
@@ -2487,6 +2611,51 @@ def _styles() -> str:
       .review-command-head span {
         color: #6B7280;
         font-size: 12px;
+      }
+      .review-auto-archive-preview {
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        padding: 8px;
+        background: #F9FAFB;
+        font-size: 12px;
+      }
+      .review-auto-archive-preview.done {
+        margin-top: 8px;
+        border-color: #BBF7D0;
+        background: #F0FDF4;
+      }
+      .review-auto-archive-error {
+        margin-top: 6px;
+        color: #B91C1C;
+      }
+      .review-auto-archive-preview > div:first-child {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 5px;
+      }
+      .review-auto-archive-preview span,
+      .review-auto-archive-empty {
+        color: #6B7280;
+      }
+      .review-auto-archive-sample {
+        display: grid;
+        grid-template-columns: 52px minmax(96px, 1fr) 110px;
+        gap: 6px;
+        padding: 3px 0;
+        border-top: 1px solid #EEF2F7;
+      }
+      .review-auto-archive-sample strong,
+      .review-auto-archive-sample span,
+      .review-auto-archive-sample em {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .review-auto-archive-sample em {
+        color: #6B7280;
+        font-style: normal;
       }
       .qwen-efficiency {
         margin: 12px 0 10px;

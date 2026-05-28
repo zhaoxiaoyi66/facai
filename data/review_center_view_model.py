@@ -38,10 +38,14 @@ GENERIC_RISK_KEYWORDS = (
     "半导体周期",
     "exportcontrolrisk",
     "chinaregulatoryrisk",
+    "regulatoryrisk",
     "出口管制",
     "中国风险",
     "inventorycorrectionrisk",
     "库存修正",
+    "cryptocyclesensitivity",
+    "cryptoexposurerisk",
+    "cryptoassetvolatility",
 )
 CONFIDENCE_SCORES = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 HISTORICAL_FRESHNESS = "historical_value"
@@ -116,7 +120,7 @@ def build_review_center_view_model(
         "autoArchiveCandidates": [row for row in active_rows if row.item["canAutoArchive"]],
         "aiSuggestedCorrections": [row for row in main_rows if row.ai_correction],
         "riskObservation": [row for row in main_rows if row.risk_observation],
-        "insufficientEvidence": [row for row in main_rows if row.missing_evidence and not row.risk_observation],
+        "insufficientEvidence": [row for row in main_rows if row.missing_evidence and not row.risk_observation and not row.item["canAutoArchive"]],
         "recentlyHandled": recent_rows,
     }
     groups = [
@@ -325,6 +329,8 @@ def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_eviden
     triage = str(row.get("aiTriageStatus") or "").strip()
     item_type = str(row.get("itemType") or "").strip()
     status = str(row.get("reviewStatus") or "").strip()
+    if status == "stale" or _is_historical(row):
+        return True
     if triage in AUTO_ARCHIVE_TRIAGE_STATUSES:
         return True
     if bool(row.get("hiddenByDefault")):
@@ -641,7 +647,9 @@ def _is_high_priority_pending(row: _ReviewCenterRow) -> bool:
 
 
 def _needs_human_for_scoring(row: _ReviewCenterRow) -> bool:
-    return row.active and row.affects_scoring and row.has_value and not row.risk_observation and not row.item["canAutoConfirm"]
+    if not row.active or row.item["canAutoArchive"] or row.missing_evidence or _is_historical(row.row):
+        return False
+    return row.affects_scoring and row.has_value and not row.risk_observation and not row.item["canAutoConfirm"]
 
 
 def _active_sort_key(row: _ReviewCenterRow) -> tuple:

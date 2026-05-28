@@ -102,7 +102,7 @@ class ReviewCenterViewModelTests(unittest.TestCase):
 
             high_priority_metrics = [item["metricKey"] for item in groups["highPriorityPending"]["items"]]
             self.assertNotIn("revenueGrowth", high_priority_metrics)
-            self.assertIn("revenueGrowth", [item["metricKey"] for item in groups["scoringImpactNeedsHuman"]["items"]])
+            self.assertNotIn("revenueGrowth", [item["metricKey"] for item in groups["scoringImpactNeedsHuman"]["items"]])
             self.assertIn("netRetentionRate", [item["metricKey"] for item in groups["autoConfirmCandidates"]["items"]])
             self.assertIn("minorDisclosureGap", [item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]])
             self.assertIn("revenueGrowth", [item["metricKey"] for item in groups["insufficientEvidence"]["items"]])
@@ -153,6 +153,64 @@ class ReviewCenterViewModelTests(unittest.TestCase):
 
             self.assertEqual(groups["autoConfirmCandidates"]["items"], [])
             self.assertFalse(view["items"][0]["canAutoConfirm"])
+            self.assertEqual(groups["scoringImpactNeedsHuman"]["items"], [])
+            self.assertEqual(groups["insufficientEvidence"]["items"], [])
+            self.assertIn("rpoGrowth", [item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]])
+
+    def test_stale_or_historical_scoring_items_are_archive_candidates_not_main_work(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="subscriptionRevenueGrowth",
+                value=0.21,
+                confidence="medium",
+                evidence_text="Q4 2025 subscription revenue grew 21%.",
+                review_status="stale",
+            ),
+            _review_row(
+                2,
+                metric_key="rpoGrowth",
+                value=0.18,
+                confidence="high",
+                evidence_text="Q4 2025 RPO grew 18%.",
+                freshness_status="historical_value",
+            ),
+        ]
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+
+        self.assertEqual(groups["highPriorityPending"]["items"], [])
+        self.assertEqual(groups["scoringImpactNeedsHuman"]["items"], [])
+        self.assertEqual(groups["insufficientEvidence"]["items"], [])
+        self.assertEqual(
+            {item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]},
+            {"subscriptionRevenueGrowth", "rpoGrowth"},
+        )
+
+    def test_crypto_cycle_sensitivity_is_risk_observation_not_data_confirmation(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="cryptoCycleSensitivity",
+                value=1,
+                confidence="medium",
+                evidence_text="",
+                item_type="qualitative_risk",
+                display_name="Crypto cycle sensitivity",
+                source_type="SYSTEM",
+            )
+        ]
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+        risk_item = groups["riskObservation"]["items"][0]
+
+        self.assertEqual(groups["highPriorityPending"]["items"], [])
+        self.assertEqual(groups["scoringImpactNeedsHuman"]["items"], [])
+        self.assertEqual(groups["autoConfirmCandidates"]["items"], [])
+        self.assertEqual(risk_item["suggestedAction"], "auto_archive_candidate")
+        self.assertTrue(risk_item["riskObservation"])
 
     def test_qualitative_risk_labels_are_observations_not_high_priority_data_tasks(self) -> None:
         rows = [
