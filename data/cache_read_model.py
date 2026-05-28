@@ -36,23 +36,8 @@ class CacheReadModel:
         return self.get_latest_close(symbol)
 
     def get_latest_close(self, symbol: str) -> float | None:
-        if not self.path.exists():
-            return None
-        with closing(sqlite3.connect(self.path)) as conn:
-            if not _table_exists(conn, "price_history"):
-                return None
-            row = conn.execute(
-                """
-                SELECT close
-                FROM price_history
-                WHERE ticker = ?
-                  AND close IS NOT NULL
-                ORDER BY date DESC
-                LIMIT 1
-                """,
-                (_normalize_symbol(symbol),),
-            ).fetchone()
-        return _number(row[0]) if row else None
+        latest = self._latest_history_snapshot(symbol)
+        return _number(latest.get("close")) if latest else None
 
     def get_price_status(self, symbol: str) -> str:
         quote = self.get_quote_snapshot(symbol)
@@ -103,6 +88,9 @@ class CacheReadModel:
         with closing(sqlite3.connect(self.path)) as conn:
             if not _table_exists(conn, "price_history"):
                 return _empty_history_frame()
+            history_key = self._select_history_key(conn, symbol)
+            if history_key is None:
+                return _empty_history_frame()
             columns = _table_columns(conn, "price_history")
             selected = [column for column in ("date", "open", "high", "low", "close", "volume") if column in columns]
             if "date" not in selected or "close" not in selected:
@@ -116,7 +104,7 @@ class CacheReadModel:
                 ORDER BY date
                 """,
                 conn,
-                params=(_normalize_symbol(symbol),),
+                params=(history_key,),
             )
         if frame.empty:
             return frame
@@ -133,18 +121,46 @@ class CacheReadModel:
         with closing(sqlite3.connect(self.path)) as conn:
             if not _table_exists(conn, "price_history"):
                 return None
+            history_key = self._select_history_key(conn, symbol)
+            if history_key is None:
+                return None
             row = conn.execute(
                 """
-                SELECT close, fetched_at
+                SELECT close, fetched_at, ticker, date
                 FROM price_history
                 WHERE ticker = ?
                   AND close IS NOT NULL
                 ORDER BY date DESC
                 LIMIT 1
                 """,
-                (_normalize_symbol(symbol),),
+                (history_key,),
             ).fetchone()
-        return {"close": row[0], "fetched_at": row[1]} if row else None
+        return {"close": row[0], "fetched_at": row[1], "ticker": row[2], "date": row[3]} if row else None
+
+    def _select_history_key(self, conn: sqlite3.Connection, symbol: str) -> str | None:
+        rows = conn.execute(
+            """
+            SELECT ticker, MAX(fetched_at) AS latest_fetch, MAX(date) AS latest_date
+            FROM price_history
+            WHERE ticker IN (?, ?)
+              AND close IS NOT NULL
+            GROUP BY ticker
+            """,
+            _history_keys(symbol),
+        ).fetchall()
+        if not rows:
+            return None
+        plain_key = _normalize_symbol(symbol)
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                _parse_datetime(row[1]),
+                str(row[2] or ""),
+                1 if str(row[0] or "").upper() == plain_key else 0,
+            ),
+            reverse=True,
+        )
+        return str(ranked[0][0]) if ranked[0][0] else None
 
     def _is_stale(self, fetched_at: object, max_age_hours: float | None = None) -> bool:
         ttl_hours = self.quote_max_age_hours if max_age_hours is None else max_age_hours
@@ -171,6 +187,27 @@ def _current_price(payload: dict[str, Any]) -> float | None:
         payload.get("price"),
         payload.get("regularMarketPrice"),
     )
+
+
+def _history_keys(symbol: object) -> tuple[str, str]:
+    normalized = _normalize_symbol(symbol)
+    return normalized, f"FMP:{normalized}"
+
+
+def _history_key_placeholders() -> str:
+    return "?, ?"
+
+
+def _parse_datetime(value: object) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _first_number(*values: object) -> float | None:

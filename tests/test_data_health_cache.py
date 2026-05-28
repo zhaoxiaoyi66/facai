@@ -25,7 +25,7 @@ class DataHealthCacheTests(unittest.TestCase):
         with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 """
-                CREATE TABLE price_history (
+                CREATE TABLE IF NOT EXISTS price_history (
                     ticker TEXT,
                     date TEXT,
                     close REAL,
@@ -105,6 +105,71 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertIsNone(cache.get_current_price("hood"))
             self.assertEqual(cache.get_price_status("hood"), "missing")
             self.assertEqual(cache.get_history_status("hood"), "missing")
+
+    def test_cache_read_model_reads_fmp_history_key(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            self._insert_price_history(
+                db_path,
+                "FMP:NOW",
+                [("2026-05-24", 120), ("2026-05-25", 125)],
+                "2026-05-26T00:00:00+00:00",
+            )
+
+            cache = CacheReadModel(db_path, now=datetime(2026, 5, 26, tzinfo=timezone.utc), history_max_age_hours=72)
+
+            self.assertEqual(cache.get_latest_close("now"), 125)
+            self.assertEqual(cache.get_history_status("now"), "available")
+            self.assertEqual(cache.get_price_history("now")["close"].tolist(), [120, 125])
+
+    def test_cache_read_model_uses_newest_history_key_when_plain_and_fmp_exist(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            self._insert_price_history(
+                db_path,
+                "MSFT",
+                [("2026-05-20", 410), ("2026-05-21", 412)],
+                "2026-05-21T00:00:00+00:00",
+            )
+            self._insert_price_history(
+                db_path,
+                "FMP:MSFT",
+                [("2026-05-24", 425), ("2026-05-25", 430)],
+                "2026-05-26T00:00:00+00:00",
+            )
+
+            cache = CacheReadModel(db_path, now=datetime(2026, 5, 26, tzinfo=timezone.utc), history_max_age_hours=72)
+
+            self.assertEqual(cache.get_latest_close("msft"), 430)
+            self.assertEqual(cache.get_history_status("msft"), "available")
+            self.assertEqual(cache.get_price_history("msft")["close"].tolist(), [425, 430])
+
+    def test_data_health_summary_uses_fresh_fmp_history_before_reporting_stale_history(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+            self._insert_price_history(
+                db_path,
+                "NVDA",
+                [("2026-05-20", 190), ("2026-05-21", 192)],
+                "2026-05-21T00:00:00+00:00",
+            )
+            self._insert_price_history(
+                db_path,
+                "FMP:NVDA",
+                [("2026-05-24", 205), ("2026-05-25", 210)],
+                "2026-05-26T00:00:00+00:00",
+            )
+
+            summary = build_data_health_summary(
+                db_path,
+                watchlist=["NVDA"],
+                now=now,
+                history_max_age_hours=72,
+            )
+
+            self.assertEqual(summary["staleHistoryCount"], 0)
+            self.assertNotIn("stale_history", {item["category"] for item in summary["topIssues"]})
 
     def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:
         with TemporaryDirectory() as tmpdir:
