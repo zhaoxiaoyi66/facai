@@ -2991,6 +2991,54 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(regulatory["resolutionStatus"], "semi_auto_low_confidence")
         self.assertFalse(regulatory["isBlocking"])
 
+        hood = calculate_total_score(
+            {
+                "ticker": "HOOD",
+                "sector": "Financial Services",
+                "industry": "Capital Markets",
+                "revenue_growth": 0.30,
+                "operating_margin": 0.22,
+                "free_cash_flow": 1_200_000_000,
+                "total_revenue": 3_500_000_000,
+                "price_to_sales": 12,
+                "price_to_fcf": 30,
+                "free_cash_flow_yield": 0.033,
+            },
+            {
+                "price": 100,
+                "ema20": 96,
+                "ema50": 94,
+                "ema200": 90,
+                "rsi14": 48,
+                "drawdown_from_high_pct": -20,
+                "gain_20d_pct": 2,
+            },
+        )
+        for metric_key in (
+            "hoodAuc",
+            "hoodNetDeposits",
+            "hoodTransactionRevenue",
+            "hoodInterestRevenue",
+            "hoodSubscriptionGoldRevenue",
+            "hoodNormalizedEarnings",
+            "hoodNormalizedEbitda",
+        ):
+            row = _metric_resolution_by_key(hood, metric_key)
+            self.assertEqual(row["metricType"], "DISCLOSURE_KPI")
+            self.assertEqual(row["resolutionStatus"], "requires_ir_scrape")
+            self.assertEqual(row["affects"], ["Entry", "ConfidenceOnly"])
+            self.assertTrue(row["defaultReviewQueue"])
+            self.assertIn("buy-zone model", row["explanation"])
+            self.assertIn("system confidence", row["explanation"])
+            self.assertIn("IR / SEC / earnings release", row["recommendedAction"])
+            self.assertIn("P/S, P/FCF, or FCF yield", row["explanation"])
+            dictionary = metric_definition_by_key(metric_key)
+            source = metric_source_definition(metric_key)
+            self.assertIsNotNone(dictionary)
+            self.assertIsNotNone(source)
+            self.assertEqual(source.category, "Entry")
+            self.assertEqual(source.missingImpact, "BUY_ZONE_MODEL_INPUT")
+
         nvo = calculate_total_score(
             {
                 "ticker": "NVO",

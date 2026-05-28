@@ -1065,9 +1065,15 @@ _DISCLOSURE_KPI_PATTERNS_BY_MODEL: dict[str, tuple[str, ...]] = {
         "user assets",
         "auc",
         "aum",
+        "net deposits",
         "trading volume",
+        "transaction revenue",
+        "interest revenue",
         "subscription revenue",
+        "gold revenue",
         "stablecoin revenue",
+        "normalized earnings",
+        "normalized ebitda",
     ),
     "PHARMA": (
         "product revenue growth",
@@ -1798,6 +1804,8 @@ def _model_specific_resolution_rows(context: ScoreContext) -> list[dict[str, obj
                 _derived_resolution("cryptoCycleSensitivity", "crypto cycle sensitivity", model_type, "由价格回撤、估值和 symbol risk proxy 推导。"),
             ]
         )
+        if _symbol(context) == "HOOD":
+            rows.extend(_hood_brokerage_buy_zone_resolution_rows(context))
     if model_type == "PHARMA":
         rows.extend(
             [
@@ -1867,6 +1875,93 @@ def _model_disclosure_metric(
         explanation=explanation,
         recommendedAction="抓取 IR / 8-K / investor presentation；若公司未披露再考虑人工补充",
         sourceMetricsUsed=["IR release", "SEC 8-K", "investor presentation"],
+        priority="high",
+    )
+
+
+def _hood_brokerage_buy_zone_resolution_rows(context: ScoreContext) -> list[MetricResolution]:
+    specs = (
+        ("hoodAuc", "AUC", ("manualHoodAuc", "hoodAuc", "hood_auc", "auc", "assets_under_custody", "assetsUnderCustody")),
+        ("hoodNetDeposits", "net deposits", ("manualHoodNetDeposits", "hoodNetDeposits", "hood_net_deposits", "net_deposits", "netDeposits")),
+        (
+            "hoodTransactionRevenue",
+            "transaction revenue",
+            ("manualHoodTransactionRevenue", "hoodTransactionRevenue", "hood_transaction_revenue", "transaction_revenue", "transactionRevenue"),
+        ),
+        (
+            "hoodInterestRevenue",
+            "interest revenue",
+            ("manualHoodInterestRevenue", "hoodInterestRevenue", "hood_interest_revenue", "interest_revenue", "interestRevenue"),
+        ),
+        (
+            "hoodSubscriptionGoldRevenue",
+            "subscription / Gold revenue",
+            (
+                "manualHoodSubscriptionGoldRevenue",
+                "hoodSubscriptionGoldRevenue",
+                "hood_subscription_gold_revenue",
+                "subscription_gold_revenue",
+                "subscriptionGoldRevenue",
+                "gold_revenue",
+                "goldRevenue",
+            ),
+        ),
+        (
+            "hoodNormalizedEarnings",
+            "normalized earnings",
+            ("manualHoodNormalizedEarnings", "hoodNormalizedEarnings", "hood_normalized_earnings", "normalized_earnings", "normalizedEarnings"),
+        ),
+        (
+            "hoodNormalizedEbitda",
+            "normalized EBITDA",
+            ("manualHoodNormalizedEbitda", "hoodNormalizedEbitda", "hood_normalized_ebitda", "normalized_ebitda", "normalizedEbitda"),
+        ),
+    )
+    return [_hood_brokerage_buy_zone_metric(context, metric_key, display_name, keys) for metric_key, display_name, keys in specs]
+
+
+def _hood_brokerage_buy_zone_metric(
+    context: ScoreContext,
+    metric_key: str,
+    display_name: str,
+    keys: tuple[str, ...],
+) -> MetricResolution:
+    value = _metric(context, *keys)
+    source_metrics = ["IR release", "SEC 10-K/10-Q", "earnings release"]
+    if value is not None:
+        return MetricResolution(
+            metricKey=metric_key,
+            displayName=display_name,
+            metricType="DISCLOSURE_KPI",
+            resolutionStatus="available",
+            value=value,
+            sourceType=_resolution_source_type(context, keys),
+            confidence="high",
+            affects=["Entry", "ConfidenceOnly"],
+            isBlocking=False,
+            ratingCapImpact="none",
+            explanation=f"{display_name} is available for the future HOOD brokerage/fintech buy-zone model.",
+            recommendedAction="No refill needed.",
+            sourceMetricsUsed=source_metrics,
+            priority="high",
+        )
+    return MetricResolution(
+        metricKey=metric_key,
+        displayName=display_name,
+        metricType="DISCLOSURE_KPI",
+        resolutionStatus="requires_ir_scrape",
+        value=None,
+        sourceType="missing",
+        confidence="low",
+        affects=["Entry", "ConfidenceOnly"],
+        isBlocking=False,
+        ratingCapImpact="none",
+        explanation=(
+            f"{display_name} is a core HOOD brokerage/fintech operating input for the buy-zone model and system confidence; "
+            "do not substitute P/S, P/FCF, or FCF yield for it."
+        ),
+        recommendedAction=f"Fetch IR / SEC / earnings release evidence for {display_name} before enabling a precise HOOD buy-zone model.",
+        sourceMetricsUsed=source_metrics,
         priority="high",
     )
 

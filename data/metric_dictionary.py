@@ -296,8 +296,69 @@ SAAS_SOFTWARE_METRICS: tuple[MetricDefinition, ...] = (
 )
 
 
+CRYPTO_FINANCIAL_INFRA_METRICS: tuple[MetricDefinition, ...] = (
+    MetricDefinition(
+        metric_key="hoodAuc",
+        snapshot_key="hood_auc",
+        display_name="AUC",
+        aliases=("AUC", "assets under custody", "assets under management", "AUM"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodNetDeposits",
+        snapshot_key="hood_net_deposits",
+        display_name="Net deposits",
+        aliases=("net deposits", "net deposit"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodTransactionRevenue",
+        snapshot_key="hood_transaction_revenue",
+        display_name="Transaction revenue",
+        aliases=("transaction revenue", "transaction revenues"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodInterestRevenue",
+        snapshot_key="hood_interest_revenue",
+        display_name="Interest revenue",
+        aliases=("interest revenue", "net interest revenue"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodSubscriptionGoldRevenue",
+        snapshot_key="hood_subscription_gold_revenue",
+        display_name="Subscription / Gold revenue",
+        aliases=("subscription revenue", "Robinhood Gold", "Gold revenue", "subscription / Gold revenue"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodNormalizedEarnings",
+        snapshot_key="hood_normalized_earnings",
+        display_name="Normalized earnings",
+        aliases=("normalized earnings", "normalized net income", "adjusted net income"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="hoodNormalizedEbitda",
+        snapshot_key="hood_normalized_ebitda",
+        display_name="Normalized EBITDA",
+        aliases=("normalized EBITDA", "adjusted EBITDA"),
+        preferred_sources=("IR_RELEASE", "SEC_8K", "SEC_10Q", "SEC_10K", "IR_PRESENTATION"),
+        unit_hint="money",
+    ),
+)
+
+
 MODEL_METRIC_DICTIONARY = {
     "SAAS_SOFTWARE": SAAS_SOFTWARE_METRICS,
+    "CRYPTO_FINANCIAL_INFRA": CRYPTO_FINANCIAL_INFRA_METRICS,
 }
 
 
