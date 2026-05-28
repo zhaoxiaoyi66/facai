@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import hashlib
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,14 @@ from settings import load_watchlist
 
 
 EXTRACTED_VALUE_SOURCES = {"SEC_8K", "SEC_10Q", "SEC_10K", "IR_RELEASE", "IR_PRESENTATION", "FMP_TRANSCRIPT"}
+HOOD_BUY_ZONE_CORE_METRICS = {
+    "hoodAuc",
+    "hoodNetDeposits",
+    "hoodTransactionRevenue",
+    "hoodSubscriptionGoldRevenue",
+    "hoodNormalizedEarnings",
+    "hoodNormalizedEbitda",
+}
 QUEUE_REVIEW_STATUSES = {
     "pending_review",
     "needs_data",
@@ -309,7 +318,7 @@ class ReviewQueueStore:
     def upsert_item(self, item: dict) -> str:
         normalized = _normalize_queue_item(item)
         existing = self._find_existing(normalized)
-        if existing and str(existing.get("reviewStatus")) in TERMINAL_REVIEW_STATUSES:
+        if existing and str(existing.get("reviewStatus")) in TERMINAL_REVIEW_STATUSES and not _can_reopen_terminal_queue_item(normalized, existing):
             return "skipped"
 
         if existing:
@@ -1068,6 +1077,91 @@ class ReviewQueueStore:
             )
         return len(duplicate_ids)
 
+    def archive_superseded_hood_operating_candidates(self, symbols: Iterable[str] | None = None) -> dict:
+        symbol_set = {str(symbol).upper() for symbol in symbols or [] if str(symbol).strip()}
+        if symbol_set and "HOOD" not in symbol_set:
+            return {"archived": 0, "promoted": 0}
+        rows = [
+            row
+            for row in self.list_items(symbol="HOOD")
+            if str(row.get("itemType") or "") == "extracted_value"
+            and str(row.get("metricKey") or "") in HOOD_BUY_ZONE_CORE_METRICS
+            and (
+                str(row.get("reviewStatus") or "") not in TERMINAL_REVIEW_STATUSES
+                or str(row.get("reviewStatus") or "") == "duplicate_archived"
+            )
+        ]
+        if not rows:
+            return {"archived": 0, "promoted": 0}
+
+        archive_ids: set[int] = set()
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            row_id = int(row.get("id") or 0)
+            if not row_id:
+                continue
+            if _is_noisy_hood_operating_candidate(row):
+                archive_ids.add(row_id)
+                continue
+            key = (str(row.get("metricKey") or ""), _hood_candidate_period_key(row))
+            grouped.setdefault(key, []).append(row)
+
+        period_winners: list[dict] = []
+        for candidates in grouped.values():
+            if not candidates:
+                continue
+            sorted_candidates = sorted(candidates, key=_hood_operating_candidate_rank, reverse=True)
+            winner = sorted_candidates[0]
+            period_winners.append(winner)
+            archive_ids.update(int(row["id"]) for row in sorted_candidates[1:] if row.get("id") is not None)
+
+        by_metric: dict[str, list[dict]] = {}
+        for row in period_winners:
+            by_metric.setdefault(str(row.get("metricKey") or ""), []).append(row)
+
+        winner_ids: set[int] = set()
+        for candidates in by_metric.values():
+            sorted_candidates = sorted(candidates, key=_hood_operating_metric_rank, reverse=True)
+            winner_ids.add(int(sorted_candidates[0]["id"]))
+            archive_ids.update(int(row["id"]) for row in sorted_candidates[1:] if row.get("id") is not None)
+
+        archive_ids.difference_update(winner_ids)
+        now = _now()
+        promoted = 0
+        with self.connect() as conn:
+            for item_id in sorted(winner_ids):
+                row = next((candidate for candidate in period_winners if int(candidate.get("id") or 0) == item_id), None)
+                if not row:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE review_queue_items
+                    SET reviewStatus = 'pending_review',
+                        aiTriageStatus = NULL,
+                        hiddenByDefault = 0,
+                        freshnessStatus = 'active_current',
+                        recommendedAction = ?,
+                        updatedAt = ?
+                    WHERE id = ?
+                    """,
+                    (_hood_operating_recommended_action(row), now, item_id),
+                )
+                promoted += 1
+            if archive_ids:
+                conn.executemany(
+                    """
+                    UPDATE review_queue_items
+                    SET reviewStatus = 'duplicate_archived',
+                        aiTriageStatus = 'ai_auto_archived',
+                        hiddenByDefault = 1,
+                        correctionNotes = COALESCE(correctionNotes, 'hood_candidate_superseded_by_current_evidence'),
+                        updatedAt = ?
+                    WHERE id = ?
+                    """,
+                    [(now, item_id) for item_id in sorted(archive_ids)],
+                )
+        return {"archived": len(archive_ids), "promoted": promoted}
+
     def log_automation_action(
         self,
         run_id: str,
@@ -1728,6 +1822,7 @@ class ReviewQueueBuilder:
             item_type_counts[item_type] = item_type_counts.get(item_type, 0) + 1
         self.queue_store.archive_duplicate_items(symbols)
         self.queue_store.cleanup_stale_review_items(symbols)
+        self.queue_store.archive_superseded_hood_operating_candidates(symbols)
         return QueueBuildResult(
             symbols=symbols,
             created=counters["created"],
@@ -1748,6 +1843,8 @@ class ReviewQueueBuilder:
             recommended = "approve, reject, or correct extracted value" if valid else "extraction rejected by rule"
             if freshness_status == "historical_value":
                 recommended = "keep as historical value; set current only with confirmation"
+            if valid and str(row.get("metricKey") or "") in {"hoodNormalizedEarnings", "hoodNormalizedEbitda"}:
+                recommended = "needs_human_review: confirm non-GAAP normalization basis before scoring or buy-zone use"
             items.append(
                 {
                     "symbol": symbol,
@@ -1980,6 +2077,86 @@ def _looks_like_system_reason(text: str) -> bool:
 def _has_high_value_affect(row: dict) -> bool:
     affects = _affects(row)
     return bool(affects & {"Quality", "Entry", "Risk", "Action", "Position", "maxPosition"})
+
+
+def _can_reopen_terminal_queue_item(item: dict, existing: dict) -> bool:
+    return (
+        str(existing.get("reviewStatus") or "") == "duplicate_archived"
+        and str(item.get("symbol") or "").upper() == "HOOD"
+        and str(item.get("itemType") or "") == "extracted_value"
+        and str(item.get("sourceKind") or "") == "disclosure_metric_values"
+        and str(item.get("metricKey") or "") in HOOD_BUY_ZONE_CORE_METRICS
+    )
+
+
+def _hood_candidate_period_key(row: dict) -> str:
+    periods = normalize_metric_period(row)
+    return str(periods.metricPeriod or periods.fiscalPeriod or row.get("period") or "").strip()
+
+
+def _hood_operating_recommended_action(row: dict) -> str:
+    if str(row.get("metricKey") or "") in {"hoodNormalizedEarnings", "hoodNormalizedEbitda"}:
+        return "needs_human_review: confirm non-GAAP normalization basis before scoring or buy-zone use"
+    return "approve, reject, or correct extracted value"
+
+
+def _is_noisy_hood_operating_candidate(row: dict) -> bool:
+    unit = str(row.get("unit") or "").strip().lower()
+    status = str(row.get("reviewStatus") or "").strip().lower()
+    return unit == "percent" or status == "stale"
+
+
+def _hood_operating_candidate_rank(row: dict) -> tuple:
+    source_rank = _hood_operating_source_rank(row)
+    confidence_rank = {"high": 30, "medium": 20, "low": 10}.get(str(row.get("confidence") or "").lower(), 0)
+    evidence_rank = 20 if str(row.get("evidenceText") or row.get("extractedText") or "").strip() else 0
+    return (
+        source_rank,
+        confidence_rank,
+        evidence_rank,
+        str(row.get("updatedAt") or ""),
+        int(row.get("id") or 0),
+    )
+
+
+def _hood_operating_metric_rank(row: dict) -> tuple:
+    return (
+        _hood_candidate_period_rank(row),
+        _hood_operating_source_rank(row),
+        {"high": 30, "medium": 20, "low": 10}.get(str(row.get("confidence") or "").lower(), 0),
+        20 if str(row.get("evidenceText") or row.get("extractedText") or "").strip() else 0,
+        str(row.get("updatedAt") or ""),
+        int(row.get("id") or 0),
+    )
+
+
+def _hood_operating_source_rank(row: dict) -> int:
+    source_type = str(row.get("sourceType") or "").strip()
+    source_text = " ".join(
+        str(row.get(key) or "")
+        for key in ("sourceType", "sourceUrl", "sourceDocumentTitle", "evidenceText", "extractedText")
+    ).lower()
+    source_rank = {
+        "IR_RELEASE": 500,
+        "IR_PRESENTATION": 400,
+        "SEC_10Q": 350,
+        "SEC_10K": 300,
+        "FMP_TRANSCRIPT": 100,
+    }.get(source_type, 0)
+    if source_type == "SEC_8K":
+        source_rank = 600 if any(marker in source_text for marker in ("exhibit 99.1", "exhibit99.1", "exhibit991", "ex-99.1", "ex99.1")) else 550
+    return source_rank
+
+
+def _hood_candidate_period_rank(row: dict) -> tuple[int, int, str]:
+    period = _hood_candidate_period_key(row)
+    year_match = re.search(r"(20\d{2})", period)
+    quarter_match = re.search(r"\bQ([1-4])\b", period, flags=re.IGNORECASE)
+    year = int(year_match.group(1)) if year_match else 0
+    quarter = int(quarter_match.group(1)) if quarter_match else 0
+    if re.search(r"\bFY\b", period, flags=re.IGNORECASE):
+        quarter = 5
+    return (year, quarter, period)
 
 
 def _normalize_queue_item(item: dict) -> dict:

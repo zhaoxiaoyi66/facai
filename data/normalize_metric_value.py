@@ -68,12 +68,9 @@ def normalize_metric_value(value: object, unit: object = None, evidence_text: st
 def normalize_metric_period(row: dict) -> MetricPeriod:
     row_period = _clean(row.get("period"))
     source_date = _date_like(row_period)
-    text = " ".join(
-        _clean(row.get(key))
-        for key in ("extractedText", "explanation", "sourceDocumentTitle")
-        if _clean(row.get(key))
-    )
-    text_period = _period_from_text(text)
+    title_period = _period_from_text(_clean(row.get("sourceDocumentTitle")))
+    text = " ".join(_clean(row.get(key)) for key in ("extractedText", "explanation") if _clean(row.get(key)))
+    text_period = title_period or _period_from_text(text)
     fiscal_period = _period_from_fiscal_fields(row) or text_period
     if row_period and not source_date and _looks_like_fiscal_period(row_period):
         metric_period = row_period
@@ -195,6 +192,10 @@ def _parse_number(value: object) -> float | None:
 
 def _value_scale(unit_text: str, evidence_text: str, metric_key: str) -> str:
     combined = f"{unit_text} {evidence_text} {metric_key}".lower()
+    if unit_text in {"percent", "%", "percentage"}:
+        return "percent"
+    if unit_text in {"usd", "currency", "$", "dollar", "dollars"} or "usd" in unit_text or "dollar" in unit_text:
+        return "currency"
     if any(hint in combined for hint in PERCENT_HINTS):
         return "percent"
     if unit_text in {"x", "multiple", "times"} or re.search(r"\d+(?:\.\d+)?x\b", combined):
@@ -220,8 +221,8 @@ def _value_variants(display_value: str) -> list[str]:
 
 def _period_from_text(text: str) -> str | None:
     patterns = [
-        r"\b(Q[1-4])\s*(20\d{2})\b",
-        r"\b(20\d{2})\s*(Q[1-4])\b",
+        r"\b(Q[1-4])[\s_-]*(20\d{2})(?=\D|$)",
+        r"\b(20\d{2})[\s_-]*(Q[1-4])\b",
         r"\bFY\s*(20\d{2})\b",
         r"\bfiscal\s+(20\d{2})\b",
     ]
@@ -259,13 +260,13 @@ def _period_matches_text(period: str, text: str) -> bool:
 
 def _normalize_period_text(value: str) -> str:
     text = str(value or "").upper()
-    text = re.sub(r"\b(Q[1-4])\s*(20\d{2})\b", r"\2 \1", text)
+    text = re.sub(r"\b(Q[1-4])[\s_-]*(20\d{2})(?=\D|$)", r"\2 \1", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def _looks_like_fiscal_period(value: str) -> bool:
-    return bool(re.search(r"\b(Q[1-4]\s*20\d{2}|20\d{2}\s*Q[1-4]|FY\s*20\d{2})\b", value, flags=re.IGNORECASE))
+    return bool(re.search(r"\b(Q[1-4][\s_-]*20\d{2}(?=\D|$)|20\d{2}[\s_-]*Q[1-4]|FY\s*20\d{2})\b", value, flags=re.IGNORECASE))
 
 
 def _date_like(value: str) -> str | None:

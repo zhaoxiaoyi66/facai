@@ -19,12 +19,16 @@ from data.metric_dictionary import MetricDefinition, metric_definitions_for_mode
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import extract_saas_metric_variants
 from data.sec_client import SECClient, SECFiling, _html_to_text, _links_from_html
-from data.sec_supplement import SEC_COMPANYFACTS_URL, extract_sec_saas_metrics
+from data.sec_supplement import SEC_COMPANYFACTS_URL, extract_sec_hood_metrics, extract_sec_saas_metrics
 
 
 NOW_IR_SEED_URLS = (
     "https://investors.servicenow.com/news-events/press-releases/default.aspx",
     "https://www.servicenow.com/company/media/press-room.html",
+)
+HOOD_IR_SEED_URLS = (
+    "https://investors.robinhood.com/newsroom/default.aspx",
+    "https://investors.robinhood.com/financials/quarterly-results/default.aspx",
 )
 IR_LINK_KEYWORDS = (
     "financial results",
@@ -66,7 +70,7 @@ class DisclosurePipeline:
         definitions = list(metric_definitions_for_model(model_type))
         result = {"symbol": symbol, "modelType": model_type, "saved": [], "logs": [], "missing": [], "notDisclosed": [], "resolutions": []}
 
-        if model_type != "SAAS_SOFTWARE":
+        if model_type != "SAAS_SOFTWARE" and not (model_type == "CRYPTO_FINANCIAL_INFRA" and symbol == "HOOD"):
             self._log(result, symbol, "PIPELINE", None, "skipped", "MVP 版本先支持 SAAS_SOFTWARE")
             return result
 
@@ -199,6 +203,8 @@ class DisclosurePipeline:
         try:
             companyfacts = self.sec_client.companyfacts(cik, force_refresh=force_refresh)
             supplement = extract_sec_saas_metrics(companyfacts)
+            if symbol == "HOOD":
+                supplement.update(extract_sec_hood_metrics(companyfacts))
         except Exception as exc:
             self._log(result, symbol, "SEC_XBRL", url, "failed", _short_error(exc))
             return
@@ -208,19 +214,24 @@ class DisclosurePipeline:
             "sbcRatio": supplement.get("sbc_ratio"),
             "rpoGrowth": supplement.get("rpo_growth"),
         }
+        if symbol == "HOOD":
+            xbrl_metrics = {"hoodInterestRevenue": supplement.get("hood_interest_revenue")}
         for metric_key, value in xbrl_metrics.items():
             if value is None:
                 continue
+            unit = "usd" if metric_key.startswith("hood") else "percent"
+            source_type = "SEC_10Q" if metric_key.startswith("hood") else "SEC_XBRL"
+            source_title = "SEC companyfacts / 10-Q / 10-K" if metric_key.startswith("hood") else "SEC companyfacts"
             self._save(
                 result,
                 symbol,
                 metric_key,
                 float(value),
-                "percent",
+                unit,
                 "latest",
-                "SEC_XBRL",
+                source_type,
                 url,
-                "SEC companyfacts",
+                source_title,
                 _xbrl_extracted_text(metric_key, supplement),
                 "high",
             )
@@ -575,6 +586,8 @@ def _candidate_ir_links(raw_html: str, base_url: str) -> list[tuple[str, str]]:
 def _ir_seed_urls(symbol: str) -> tuple[str, ...]:
     if symbol.upper() == "NOW":
         return NOW_IR_SEED_URLS
+    if symbol.upper() == "HOOD":
+        return HOOD_IR_SEED_URLS
     return ()
 
 
@@ -583,6 +596,8 @@ def _xbrl_extracted_text(metric_key: str, supplement: dict) -> str:
         return "SBC / revenue calculated from SEC companyfacts share-based compensation and revenue."
     if metric_key == "rpoGrowth":
         return "RPO growth calculated from comparable SEC companyfacts RPO values."
+    if metric_key == "hoodInterestRevenue":
+        return "Interest revenue mapped from SEC companyfacts net interest income / operating interest income."
     return "SEC companyfacts structured value."
 
 

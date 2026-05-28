@@ -1881,17 +1881,33 @@ def _model_disclosure_metric(
 
 def _hood_brokerage_buy_zone_resolution_rows(context: ScoreContext) -> list[MetricResolution]:
     specs = (
-        ("hoodAuc", "AUC", ("manualHoodAuc", "hoodAuc", "hood_auc", "auc", "assets_under_custody", "assetsUnderCustody")),
-        ("hoodNetDeposits", "net deposits", ("manualHoodNetDeposits", "hoodNetDeposits", "hood_net_deposits", "net_deposits", "netDeposits")),
+        (
+            "hoodAuc",
+            "AUC",
+            ("manualHoodAuc", "hoodAuc", "hood_auc", "auc", "assets_under_custody", "assetsUnderCustody"),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: AUC, Assets Under Custody; unit USD; period quarter-end point-in-time.",
+        ),
+        (
+            "hoodNetDeposits",
+            "net deposits",
+            ("manualHoodNetDeposits", "hoodNetDeposits", "hood_net_deposits", "net_deposits", "netDeposits"),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: net deposits; unit USD; period quarterly flow.",
+        ),
         (
             "hoodTransactionRevenue",
             "transaction revenue",
             ("manualHoodTransactionRevenue", "hoodTransactionRevenue", "hood_transaction_revenue", "transaction_revenue", "transactionRevenue"),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: transaction revenue, transaction-based revenues; unit USD; period quarterly revenue.",
         ),
         (
             "hoodInterestRevenue",
             "interest revenue",
             ("manualHoodInterestRevenue", "hoodInterestRevenue", "hood_interest_revenue", "interest_revenue", "interestRevenue"),
+            "Source priority: SEC companyfacts / 10-Q / 10-K > shareholder letter > earnings release > IR release > SEC 8-K.",
+            "Keywords: net interest revenue, interest revenue, InterestIncomeExpenseNet; unit USD; period quarterly revenue.",
         ),
         (
             "hoodSubscriptionGoldRevenue",
@@ -1905,19 +1921,28 @@ def _hood_brokerage_buy_zone_resolution_rows(context: ScoreContext) -> list[Metr
                 "gold_revenue",
                 "goldRevenue",
             ),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: subscription and services revenue, Robinhood Gold revenue, Gold revenue; unit USD; period quarterly revenue.",
         ),
         (
             "hoodNormalizedEarnings",
             "normalized earnings",
             ("manualHoodNormalizedEarnings", "hoodNormalizedEarnings", "hood_normalized_earnings", "normalized_earnings", "normalizedEarnings"),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: normalized earnings, adjusted net income, non-GAAP net income; unit USD; period quarterly or TTM; review adjustment basis.",
         ),
         (
             "hoodNormalizedEbitda",
             "normalized EBITDA",
             ("manualHoodNormalizedEbitda", "hoodNormalizedEbitda", "hood_normalized_ebitda", "normalized_ebitda", "normalizedEbitda"),
+            "Source priority: shareholder letter > earnings release > IR release > SEC 8-K > 10-Q > 10-K.",
+            "Keywords: adjusted EBITDA, normalized EBITDA; unit USD; period quarterly or TTM; review adjustment basis.",
         ),
     )
-    return [_hood_brokerage_buy_zone_metric(context, metric_key, display_name, keys) for metric_key, display_name, keys in specs]
+    return [
+        _hood_brokerage_buy_zone_metric(context, metric_key, display_name, keys, source_priority, extraction_hint)
+        for metric_key, display_name, keys, source_priority, extraction_hint in specs
+    ]
 
 
 def _hood_brokerage_buy_zone_metric(
@@ -1925,9 +1950,12 @@ def _hood_brokerage_buy_zone_metric(
     metric_key: str,
     display_name: str,
     keys: tuple[str, ...],
+    source_priority: str,
+    extraction_hint: str,
 ) -> MetricResolution:
     value = _metric(context, *keys)
-    source_metrics = ["IR release", "SEC 10-K/10-Q", "earnings release"]
+    source_metrics = ["SEC 10-Q", "SEC 10-K", "shareholder letter", "earnings release", "IR release"]
+    missing_note = " 未在当前披露文本中找到 normalized earnings." if metric_key == "hoodNormalizedEarnings" else ""
     if value is not None:
         return MetricResolution(
             metricKey=metric_key,
@@ -1958,9 +1986,13 @@ def _hood_brokerage_buy_zone_metric(
         ratingCapImpact="none",
         explanation=(
             f"{display_name} is a core HOOD brokerage/fintech operating input for the buy-zone model and system confidence; "
-            "do not substitute P/S, P/FCF, or FCF yield for it."
+            "do not substitute P/S, P/FCF, or FCF yield for it. "
+            f"{source_priority} {extraction_hint}{missing_note}"
         ),
-        recommendedAction=f"Fetch IR / SEC / earnings release evidence for {display_name} before enabling a precise HOOD buy-zone model.",
+        recommendedAction=(
+            f"Fetch SEC / shareholder letter / earnings release / 10-Q / 10-K evidence for {display_name} "
+            f"before enabling a precise HOOD buy-zone model.{missing_note}"
+        ),
         sourceMetricsUsed=source_metrics,
         priority="high",
     )

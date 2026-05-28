@@ -142,10 +142,6 @@ def _extract_value(window: str, unit_hint: str) -> tuple[float, str] | None:
         if match:
             return float(match.group(1)), "x"
 
-    percent = PERCENT_PATTERN.search(window)
-    if percent:
-        return float(percent.group(1)) / 100, "percent"
-
     if unit_hint == "money":
         money = MONEY_PATTERN.search(window)
         if money:
@@ -156,6 +152,10 @@ def _extract_value(window: str, unit_hint: str) -> tuple[float, str] | None:
             elif suffix in {"million", "mm", "m"}:
                 amount *= 1_000_000
             return amount, "usd"
+
+    percent = PERCENT_PATTERN.search(window)
+    if percent:
+        return float(percent.group(1)) / 100, "percent"
 
     if unit_hint == "multiple":
         number = NUMBER_PATTERN.search(window)

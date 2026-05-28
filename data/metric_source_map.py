@@ -15,6 +15,7 @@ class MetricSourceDefinition:
     fallbackSources: tuple[str, ...]
     missingImpact: str
     confidenceRule: str
+    extractionHint: str = ""
 
 
 METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
@@ -337,10 +338,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: AUC, Assets Under Custody, assets under custody. Unit: USD. Period: quarter-end point-in-time; use latest quarter.",
     ),
     "hoodNetDeposits": MetricSourceDefinition(
         metricKey="hoodNetDeposits",
@@ -349,10 +351,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: net deposits, Net Deposits, annualized growth deposits. Unit: USD. Period: quarterly flow; keep period explicit.",
     ),
     "hoodTransactionRevenue": MetricSourceDefinition(
         metricKey="hoodTransactionRevenue",
@@ -361,10 +364,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: transaction revenue, transaction-based revenues. Unit: USD. Period: quarterly revenue; do not use total revenue.",
     ),
     "hoodInterestRevenue": MetricSourceDefinition(
         metricKey="hoodInterestRevenue",
@@ -373,10 +377,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SEC_10Q", "SEC_10K", "SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: net interest revenue, interest revenue, InterestIncomeExpenseNet. Unit: USD. Period: quarterly revenue; SEC companyfacts can prefill.",
     ),
     "hoodSubscriptionGoldRevenue": MetricSourceDefinition(
         metricKey="hoodSubscriptionGoldRevenue",
@@ -385,10 +390,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: subscription and services revenue, Robinhood Gold revenue, Gold revenue. Unit: USD. Period: quarterly revenue.",
     ),
     "hoodNormalizedEarnings": MetricSourceDefinition(
         metricKey="hoodNormalizedEarnings",
@@ -397,10 +403,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: normalized earnings, adjusted net income, non-GAAP net income. Unit: USD. Period: quarterly or TTM; requires review of adjustment basis.",
     ),
     "hoodNormalizedEbitda": MetricSourceDefinition(
         metricKey="hoodNormalizedEbitda",
@@ -409,10 +416,11 @@ METRIC_SOURCE_MAP: dict[str, MetricSourceDefinition] = {
         category="Entry",
         canCalculate=False,
         calculationFormula=None,
-        preferredSources=("IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K", "EARNINGS_RELEASE"),
+        preferredSources=("SHAREHOLDER_LETTER", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K_EXHIBIT_99_1", "SEC_10Q", "SEC_10K"),
         fallbackSources=("MANUAL",),
         missingImpact="BUY_ZONE_MODEL_INPUT",
         confidenceRule="required before enabling a precise HOOD brokerage/fintech buy-zone model",
+        extractionHint="Keywords: adjusted EBITDA, normalized EBITDA. Unit: USD. Period: quarterly or TTM; requires review of adjustment basis.",
     ),
 }
 

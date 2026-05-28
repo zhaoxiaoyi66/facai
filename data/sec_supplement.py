@@ -69,6 +69,10 @@ DEFERRED_REVENUE_TAGS = (
     "DeferredRevenue",
     "DeferredRevenueAndCreditsCurrent",
 )
+HOOD_INTEREST_REVENUE_TAGS = (
+    "InterestIncomeExpenseNet",
+    "InterestIncomeOperating",
+)
 
 
 class SECSupplementClient:
@@ -109,6 +113,8 @@ class SECSupplementClient:
             return {"sec_supplement_status": "unavailable", "sec_supplement_note": _short_error(exc)}
 
         supplement = extract_sec_saas_metrics(facts, total_revenue=total_revenue)
+        if ticker == "HOOD":
+            supplement = _merge_metric_supplement(supplement, extract_sec_hood_metrics(facts))
         supplement["sec_supplement_status"] = "available"
         supplement["sec_cik"] = cik
         return supplement
@@ -262,6 +268,38 @@ def extract_sec_saas_metrics(companyfacts: dict, total_revenue: float | None = N
             metric_sources["deferred_revenue_growth"] = {"sourceType": "calculated", "formula": "latest deferred revenue / prior comparable deferred revenue - 1"}
 
     return supplement
+
+
+def extract_sec_hood_metrics(companyfacts: dict) -> dict:
+    us_gaap = (companyfacts.get("facts") or {}).get("us-gaap") or {}
+    interest_revenue = _latest_duration_value(us_gaap, HOOD_INTEREST_REVENUE_TAGS)
+    supplement: dict = {
+        "secSupplementSource": "SEC companyfacts",
+        "metric_sources": {},
+    }
+    metric_sources = supplement["metric_sources"]
+    if interest_revenue:
+        supplement["hood_interest_revenue"] = interest_revenue["value"]
+        metric_sources["hood_interest_revenue"] = {
+            "sourceType": "reported_sec",
+            "source": interest_revenue["tag"],
+            "sourceDocumentTitle": "SEC companyfacts / 10-Q / 10-K",
+        }
+    return supplement
+
+
+def _merge_metric_supplement(base: dict, extra: dict) -> dict:
+    merged = dict(base)
+    base_sources = base.get("metric_sources") if isinstance(base.get("metric_sources"), dict) else {}
+    extra_sources = extra.get("metric_sources") if isinstance(extra.get("metric_sources"), dict) else {}
+    merged_sources = {**base_sources, **extra_sources}
+    for key, value in extra.items():
+        if key == "metric_sources":
+            continue
+        merged[key] = value
+    if merged_sources:
+        merged["metric_sources"] = merged_sources
+    return merged
 
 
 def _latest_duration_value(us_gaap: dict, tags: tuple[str, ...], units: tuple[str, ...] = ("USD", "usd")) -> dict | None:

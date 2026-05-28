@@ -116,7 +116,7 @@ from data.providers import (
 )
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore, _debt_maturity_low_materiality
 from data.sec_client import SECClient, SEC_MAX_REQUESTS_PER_SECOND
-from data.sec_supplement import extract_sec_saas_metrics
+from data.sec_supplement import extract_sec_hood_metrics, extract_sec_saas_metrics
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
@@ -566,6 +566,18 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(payload["periodDisplay"], "2025 Q4")
         self.assertEqual(payload["deterministicPrecheck"], "exact")
         self.assertEqual(enforce_qwen_evidence_only(row, guarded)["periodMatch"], "exact")
+
+    def test_metric_period_reads_quarter_from_sec_exhibit_slug(self) -> None:
+        row = {
+            "period": "2026-04-28",
+            "sourceDocumentTitle": "q12026robinhoodexhibit991.htm",
+            "extractedText": "Net Deposits grew relative to Total Platform Assets at the end of Q4 2025.",
+        }
+
+        periods = normalize_metric_period(row)
+
+        self.assertEqual(periods.sourcePublishedDate, "2026-04-28")
+        self.assertEqual(periods.metricPeriod, "2026 Q1")
 
     def test_metric_percent_values_are_normalized_for_qwen(self) -> None:
         self.assertEqual(normalize_metric_value("25%", "percent").displayValue, "25.0%")
@@ -3030,14 +3042,17 @@ class ScoringTests(unittest.TestCase):
             self.assertTrue(row["defaultReviewQueue"])
             self.assertIn("buy-zone model", row["explanation"])
             self.assertIn("system confidence", row["explanation"])
-            self.assertIn("IR / SEC / earnings release", row["recommendedAction"])
+            self.assertIn("SEC / shareholder letter / earnings release / 10-Q / 10-K", row["recommendedAction"])
             self.assertIn("P/S, P/FCF, or FCF yield", row["explanation"])
+            self.assertIn("Source priority:", row["explanation"])
+            self.assertIn("Keywords:", row["explanation"])
             dictionary = metric_definition_by_key(metric_key)
             source = metric_source_definition(metric_key)
             self.assertIsNotNone(dictionary)
             self.assertIsNotNone(source)
             self.assertEqual(source.category, "Entry")
             self.assertEqual(source.missingImpact, "BUY_ZONE_MODEL_INPUT")
+            self.assertTrue(source.extractionHint)
 
         nvo = calculate_total_score(
             {
@@ -3515,7 +3530,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(plan.currentAddLimitPercent, 0)
 
     def test_unsupported_buy_zone_model_blocks_precise_generic_targets(self) -> None:
-        for symbol, model in (("HOOD", "CRYPTO_FINANCIAL_INFRA"),):
+        for symbol, model in (("XYZ", "CRYPTO_FINANCIAL_INFRA"),):
             zone = generate_buy_zone(
                 symbol,
                 {"price": 100, "price_to_fcf": 20, "free_cash_flow_yield": 0.05, "price_to_sales": 8},
@@ -3535,6 +3550,101 @@ class ScoringTests(unittest.TestCase):
             self.assertIsNone(zone.heavyBuyBelow)
             self.assertIsNone(plan.firstBuyPrice)
             self.assertEqual(plan.currentAddLimitPercent, 0)
+
+    def test_hood_brokerage_fintech_buy_zone_is_conservative_no_chase(self) -> None:
+        zone = generate_buy_zone(
+            "HOOD",
+            {
+                "price": 100,
+                "enterprise_to_revenue": 11.5,
+                "price_to_sales": 12,
+                "price_to_fcf": 18,
+                "free_cash_flow_yield": 0.055,
+                "beta": 2.2,
+                "hood_auc": 279_000_000_000,
+                "hood_net_deposits": 17_700_000_000,
+                "hood_transaction_revenue": 623_000_000,
+                "hood_subscription_gold_revenue": 50_000_000,
+                "hood_normalized_ebitda": 761_000_000,
+                "metric_sources": {
+                    "hood_auc": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "usd"},
+                    "hood_net_deposits": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "usd"},
+                    "hood_transaction_revenue": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "usd"},
+                    "hood_subscription_gold_revenue": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "usd"},
+                    "hood_normalized_ebitda": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "usd"},
+                },
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+
+        self.assertEqual(zone.modelType, "BROKERAGE_FINTECH")
+        self.assertEqual(zone.currentZone, "no_chase")
+        self.assertEqual(zone.confidence, "medium")
+        self.assertTrue(zone.isValid)
+        self.assertNotIn("buy_zone_model_not_supported", zone.validationErrors)
+        self.assertIn("EV/Sales", zone.inputsUsed)
+        self.assertIn("P/S", zone.inputsUsed)
+        self.assertTrue(any("AUC" in item for item in zone.inputsUsed))
+        self.assertTrue(any("normalized EBITDA" in item for item in zone.inputsUsed))
+        self.assertNotIn("Cashflow valuation", " ".join(zone.inputsUsed))
+        self.assertIsNotNone(zone.fairValueHigh)
+        self.assertIsNotNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIn("brokerage_fintech_high_beta_sales_multiple", zone.explainability["guardrailReasons"])
+        self.assertIn("brokerage_fintech_normalized_earnings_missing_blocks_high_confidence_and_heavy_buy", zone.explainability["confidenceReasons"])
+        self.assertIn("brokerage_fintech_normalized_ebitda_secondary_anchor_needs_non_gaap_review", zone.explainability["confidenceReasons"])
+
+    def test_hood_brokerage_fintech_missing_or_noisy_core_fields_blocks_prices(self) -> None:
+        zone = generate_buy_zone(
+            "HOOD",
+            {
+                "price": 100,
+                "enterprise_to_revenue": 8,
+                "price_to_sales": 8.5,
+                "hood_auc": 279_000_000_000,
+                "hood_net_deposits": 17_700_000_000,
+                "hood_transaction_revenue": 623_000_000,
+                "hood_subscription_gold_revenue": 0.57,
+                "hood_normalized_ebitda": 761_000_000,
+                "metric_sources": {
+                    "hood_subscription_gold_revenue": {"sourceType": "SEC_8K", "reviewStatus": "pending_review", "unit": "percent"},
+                },
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+
+        self.assertEqual(zone.modelType, "BROKERAGE_FINTECH")
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_brokerage_fintech_core_inputs", zone.validationErrors)
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+
+    def test_hood_brokerage_fintech_missing_normalized_earnings_blocks_heavy_buy(self) -> None:
+        zone = generate_buy_zone(
+            "HOOD",
+            {
+                "price": 35,
+                "enterprise_to_revenue": 3,
+                "price_to_sales": 3.2,
+                "hood_auc": 279_000_000_000,
+                "hood_net_deposits": 17_700_000_000,
+                "hood_transaction_revenue": 623_000_000,
+                "hood_subscription_gold_revenue": 50_000_000,
+                "hood_normalized_ebitda": 761_000_000,
+            },
+            {"scoring_model": "CRYPTO_FINANCIAL_INFRA"},
+            "CRYPTO_FINANCIAL_INFRA",
+        )
+
+        self.assertEqual(zone.modelType, "BROKERAGE_FINTECH")
+        self.assertNotIn(zone.currentZone, {"heavy_buy", "below_heavy_buy"})
+        self.assertEqual(zone.confidence, "medium")
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIn("missing_hood_normalized_earnings_for_heavy_buy", zone.validationErrors)
 
     def test_coin_crypto_buy_zone_uses_conservative_guardrail_model(self) -> None:
         zone = generate_buy_zone(
@@ -4145,6 +4255,32 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(supplement["metric_sources"]["fcf_margin"]["sourceType"], "calculated")
         self.assertNotIn("manualRpoGrowth", supplement)
 
+    def test_hood_sec_companyfacts_maps_interest_revenue_only(self) -> None:
+        companyfacts = {
+            "facts": {
+                "us-gaap": {
+                    "InterestIncomeExpenseNet": {
+                        "units": {"USD": [{"val": 359_000_000, "end": "2026-03-31", "fy": 2026, "fp": "Q1"}]}
+                    },
+                    "NetIncomeLoss": {
+                        "units": {"USD": [{"val": 350_000_000, "end": "2026-03-31", "fy": 2026, "fp": "Q1"}]}
+                    },
+                    "Revenues": {
+                        "units": {"USD": [{"val": 927_000_000, "end": "2026-03-31", "fy": 2026, "fp": "Q1"}]}
+                    },
+                }
+            }
+        }
+
+        supplement = extract_sec_hood_metrics(companyfacts)
+
+        self.assertEqual(supplement["hood_interest_revenue"], 359_000_000)
+        self.assertEqual(supplement["metric_sources"]["hood_interest_revenue"]["sourceType"], "reported_sec")
+        self.assertEqual(supplement["metric_sources"]["hood_interest_revenue"]["source"], "InterestIncomeExpenseNet")
+        self.assertNotIn("hood_normalized_earnings", supplement)
+        self.assertNotIn("hood_normalized_ebitda", supplement)
+        self.assertNotIn("hood_transaction_revenue", supplement)
+
     def test_ir_kpi_mapping_and_parser_keep_company_specific_large_customer_labels(self) -> None:
         self.assertEqual(kpi_mapping_for_ticker("NOW")["large_customer_growth"].label, "customers over $1M / $5M ACV")
         self.assertEqual(kpi_mapping_for_ticker("DDOG")["large_customer_growth"].label, "customers over $100k ARR")
@@ -4174,6 +4310,198 @@ class ScoringTests(unittest.TestCase):
         self.assertAlmostEqual(extracted.value, 0.21)
         self.assertEqual(extracted.unit, "percent")
         self.assertIn("Current remaining performance obligations", extracted.extracted_text)
+
+    def test_hood_operating_fields_have_extraction_aliases(self) -> None:
+        examples = {
+            "hoodAuc": ("AUC was $279 billion at quarter end.", 279_000_000_000),
+            "hoodNetDeposits": ("Net deposits were $18 billion in the quarter.", 18_000_000_000),
+            "hoodTransactionRevenue": ("Transaction-based revenues were $583 million.", 583_000_000),
+            "hoodSubscriptionGoldRevenue": ("Subscription and services revenues were $183 million.", 183_000_000),
+            "hoodNormalizedEarnings": ("Adjusted net income was $336 million.", 336_000_000),
+            "hoodNormalizedEbitda": ("Adjusted EBITDA was $451 million.", 451_000_000),
+        }
+        for metric_key, (text, expected) in examples.items():
+            definition = metric_definition_by_key(metric_key)
+            self.assertIsNotNone(definition)
+
+            extracted = extractMetricFromText(text, definition, confidence="medium")
+
+            self.assertIsNotNone(extracted, metric_key)
+            self.assertEqual(extracted.unit, "usd")
+            self.assertEqual(extracted.value, expected)
+        normalized_earnings = metric_definition_by_key("hoodNormalizedEarnings")
+        self.assertIsNotNone(normalized_earnings)
+        for text in (
+            "Net income, adjusted was $336 million.",
+            "Adjusted earnings were $336 million.",
+            "Non-GAAP net income was $336 million.",
+            "Net income excluding certain items was $336 million.",
+        ):
+            extracted = extractMetricFromText(text, normalized_earnings, confidence="medium")
+
+            self.assertIsNotNone(extracted, text)
+            self.assertEqual(extracted.unit, "usd")
+            self.assertEqual(extracted.value, 336_000_000)
+
+    def test_hood_review_queue_archives_percent_stale_operating_candidates(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hood.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            disclosure_store.save_metric(
+                symbol="HOOD",
+                metric_key="hoodAuc",
+                value=0.37,
+                unit="percent",
+                period="Q1 2026",
+                source_type="IR_RELEASE",
+                source_url="https://investors.robinhood.com/old-release",
+                source_document_title="Q1 2026 old release",
+                extracted_text="AUC increased 37% year-over-year.",
+                confidence="low",
+                review_status="stale",
+            )
+            disclosure_store.save_metric(
+                symbol="HOOD",
+                metric_key="hoodAuc",
+                value=279_000_000_000,
+                unit="usd",
+                period="Q1 2026",
+                source_type="SEC_8K",
+                source_url="https://sec.gov/Archives/edgar/data/1783879/q12026robinhoodexhibit991.htm",
+                source_document_title="8-K Exhibit 99.1",
+                extracted_text="Q1 2026 financial results. AUC was $279 billion at quarter end.",
+                confidence="medium",
+            )
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "HOOD",
+                {"ticker": "HOOD", "symbol": "HOOD", "price_to_sales": 12, "price_to_fcf": 30, "free_cash_flow_yield": 0.033},
+            )
+
+            ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            ).build_review_queue_for_symbol("HOOD")
+
+            rows = [
+                row
+                for row in queue_store.list_items("HOOD", metric_key="hoodAuc", item_type="extracted_value")
+                if row.get("metricKey") == "hoodAuc"
+            ]
+            pending = [row for row in rows if row.get("reviewStatus") == "pending_review"]
+            archived = [row for row in rows if row.get("reviewStatus") == "duplicate_archived"]
+
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["sourceType"], "SEC_8K")
+            self.assertEqual(pending[0]["unit"], "usd")
+            self.assertEqual(pending[0]["value"], 279_000_000_000)
+            self.assertTrue(archived)
+            self.assertTrue(all(row.get("hiddenByDefault") for row in archived))
+            with queue_store.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE review_queue_items
+                    SET reviewStatus = 'duplicate_archived',
+                        aiTriageStatus = 'ai_auto_archived',
+                        hiddenByDefault = 1
+                    WHERE id = ?
+                    """,
+                    (pending[0]["id"],),
+                )
+
+            queue_store.archive_superseded_hood_operating_candidates(["HOOD"])
+            revived = [
+                row
+                for row in queue_store.list_items("HOOD", metric_key="hoodAuc", item_type="extracted_value")
+                if row.get("reviewStatus") == "pending_review" and not row.get("hiddenByDefault")
+            ]
+
+            self.assertEqual(len(revived), 1)
+            self.assertEqual(revived[0]["sourceType"], "SEC_8K")
+
+    def test_hood_ir_pipeline_creates_review_candidates_for_operating_fields(self) -> None:
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001783879"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return []
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return []
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                if str(key).startswith("ir_seed_"):
+                    return (
+                        '<html><body><a href="https://investors.robinhood.com/newsroom/press-releases/'
+                        'news-details/2026/Robinhood-Reports-Q1-2026-Results/default.aspx">'
+                        "Q1 2026 financial results</a></body></html>"
+                    )
+                return (
+                    "Q1 2026 financial results. AUC was $279 billion at quarter end. "
+                    "Net deposits were $18 billion in the quarter. Transaction-based revenues were $583 million. "
+                    "Subscription and services revenues were $183 million. Adjusted net income was $336 million. "
+                    "Adjusted EBITDA was $451 million."
+                )
+
+        fields = {
+            "hoodAuc",
+            "hoodNetDeposits",
+            "hoodTransactionRevenue",
+            "hoodSubscriptionGoldRevenue",
+            "hoodNormalizedEarnings",
+            "hoodNormalizedEbitda",
+        }
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hood.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            result = DisclosurePipeline(store=disclosure_store, sec_client=FakeSecClient()).run(
+                "HOOD",
+                model_type="CRYPTO_FINANCIAL_INFRA",
+                current_snapshot={"ticker": "HOOD"},
+            )
+            saved = {row["metricKey"]: row for row in result["saved"] if row.get("metricKey") in fields}
+
+            self.assertEqual(set(saved), fields)
+            for row in saved.values():
+                self.assertEqual(row["sourceType"], "IR_RELEASE")
+                self.assertEqual(row["unit"], "usd")
+                self.assertIn("Q1", str(row["period"]))
+                self.assertTrue(row["extractedText"])
+
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "HOOD",
+                {"ticker": "HOOD", "symbol": "HOOD", "price_to_sales": 12, "price_to_fcf": 30, "free_cash_flow_yield": 0.033},
+            )
+            ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            ).build_review_queue_for_symbol("HOOD")
+            items = {}
+            for row in queue_store.list_items("HOOD"):
+                if row.get("metricKey") not in fields or row.get("itemType") != "extracted_value":
+                    continue
+                current = items.get(row["metricKey"])
+                if current is None or current.get("reviewStatus") == "duplicate_archived":
+                    items[row["metricKey"]] = row
+
+            self.assertEqual(set(items), fields)
+            for row in items.values():
+                self.assertEqual(row["sourceType"], "IR_RELEASE")
+                self.assertEqual(row["unit"], "usd")
+                self.assertIn("Q1", str(row["period"]))
+                self.assertTrue(row["evidenceText"])
+                self.assertEqual(row["reviewStatus"], "pending_review")
+            self.assertIn("needs_human_review", items["hoodNormalizedEarnings"]["recommendedAction"])
+            self.assertIn("non-GAAP", items["hoodNormalizedEbitda"]["recommendedAction"])
 
     def test_crpo_ratio_text_is_not_extracted_as_growth(self) -> None:
         definition = metric_definition_by_key("cRpoGrowth")

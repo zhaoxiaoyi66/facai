@@ -22,6 +22,7 @@ SUPPORTED_BUY_ZONE_MODELS = {
     "POWER_GENERATION",
     "NETWORKING_HARDWARE",
     "CRYPTO_FINANCIAL_INFRA",
+    "BROKERAGE_FINTECH",
 }
 
 BLOCKED_BUY_ZONE_STATES = {
@@ -82,7 +83,9 @@ class BuyZoneEstimate:
 
 
 def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelType: str | None = None) -> BuyZoneEstimate:
-    model = modelType or _score_attr(scoringResult, "scoring_model") or _score_attr(scoringResult, "modelType") or stockData.get("modelType") or "GENERIC"
+    raw_model = modelType or _score_attr(scoringResult, "scoring_model") or _score_attr(scoringResult, "modelType") or stockData.get("modelType") or "GENERIC"
+    model = _buy_zone_model_for_symbol(symbol, raw_model)
+    stockData = _with_brokerage_fintech_review_candidates(symbol, model, stockData)
     price = _first_number(stockData, "current_price", "currentPrice", "price")
     inputs: list[str] = []
     reasons: list[str] = []
@@ -143,6 +146,19 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             method="data_insufficient",
         )
 
+    brokerage_missing = _brokerage_fintech_core_inputs_missing(model_key, symbol, metrics, stockData)
+    if brokerage_missing:
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "data_insufficient",
+            ["missing_brokerage_fintech_core_inputs", *brokerage_missing],
+            ["missing_brokerage_fintech_core_inputs", *brokerage_missing],
+            inputs,
+            method="data_insufficient",
+        )
+
     targets = _apply_growth_margin_anchor(str(model), _model_targets(str(model)), metrics, stockData)
     candidates = _valuation_candidates(price, metrics, targets, inputs)
     if not candidates:
@@ -195,6 +211,10 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     if _crypto_financial_infra_regulatory_risk_high(model_key, symbol, stockData, scoringResult):
         current_zone = "no_chase"
         _append_once(warnings, "crypto_financial_infra_regulatory_risk_high")
+    if _brokerage_fintech_beta_sales_overextended(model_key, symbol, metrics, stockData):
+        current_zone = "no_chase"
+        _append_once(warnings, "brokerage_fintech_high_beta_sales_multiple")
+    _append_brokerage_fintech_operating_inputs(model_key, symbol, stockData, inputs, warnings)
     confidence = _confidence(inputs, method, model, stockData, warnings)
     method = "fcf_yield" if any("FCF收益率" in item for item in inputs) and len(inputs) == 1 else method
     if len(inputs) >= 2 and method != "technical_proxy":
@@ -219,7 +239,8 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
         warnings=warnings,
         createdAt=datetime.now(timezone.utc).isoformat(),
     )
-    return validate_buy_zone_estimate(estimate, stockData, scoringResult)
+    validated = validate_buy_zone_estimate(estimate, stockData, scoringResult)
+    return _finalize_brokerage_fintech_estimate(validated, stockData, scoringResult)
 
 
 def normalize_percent_metric(value: Any) -> float | None:
@@ -374,6 +395,11 @@ def _model_targets(model: str) -> dict[str, dict[str, float]]:
             "price_to_fcf": {"fair": 20, "tranche": 14, "heavy": 10, "weight": 0.4},
             "fcf_yield": {"fair": 0.05, "tranche": 0.07, "heavy": 0.10, "weight": 0.4},
         }
+    if model == "BROKERAGE_FINTECH":
+        return {
+            "ev_to_sales": {"fair": 8, "tranche": 5.8, "heavy": 4.2, "weight": 3},
+            "price_to_sales": {"fair": 7.5, "tranche": 5.5, "heavy": 4.0, "weight": 2},
+        }
     if model == "POWER_GENERATION":
         return {
             "ev_to_ebitda": {"fair": 11, "tranche": 9, "heavy": 7, "weight": 2},
@@ -508,9 +534,19 @@ def _clamp_value(value: float, low: float, high: float) -> float:
 
 
 def _buy_zone_model_supported_for_symbol(symbol: str, model: str) -> bool:
+    if str(model).upper() == "BROKERAGE_FINTECH":
+        return str(symbol).upper() == "HOOD"
     if str(model).upper() == "CRYPTO_FINANCIAL_INFRA":
         return str(symbol).upper() == "COIN"
     return True
+
+
+def _buy_zone_model_for_symbol(symbol: str, model: str) -> str:
+    symbol_key = str(symbol or "").upper()
+    model_key = str(model or "").upper()
+    if symbol_key == "HOOD" and model_key in {"CRYPTO_FINANCIAL_INFRA", "BROKERAGE_FINTECH"}:
+        return "BROKERAGE_FINTECH"
+    return str(model)
 
 
 def _valuation_candidates(price: float, metrics: dict[str, float | None], targets: dict[str, dict[str, float]], inputs: list[str]) -> dict[str, list[tuple[float, float]]]:
@@ -765,6 +801,10 @@ def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], mo
             missing.extend(["customer concentration risk", "cloud capex risk"])
     if str(model or stockData.get("modelType") or "").upper() == "CRYPTO_FINANCIAL_INFRA" and str(symbol or stockData.get("ticker") or stockData.get("symbol") or "").upper() == "COIN":
         missing.extend(_crypto_financial_infra_missing_operating_inputs(stockData))
+    if str(model or stockData.get("modelType") or "").upper() == "BROKERAGE_FINTECH" and str(symbol or stockData.get("ticker") or stockData.get("symbol") or "").upper() == "HOOD":
+        missing.extend(_brokerage_fintech_core_inputs_missing("BROKERAGE_FINTECH", "HOOD", _collect_metrics(stockData, []), stockData))
+        if _brokerage_fintech_normalized_earnings_missing("BROKERAGE_FINTECH", "HOOD", stockData):
+            missing.append("normalized earnings")
     if zone == "data_insufficient" and not missing:
         for label, keys in (
             ("current price", ("current_price", "currentPrice", "price")),
@@ -793,7 +833,7 @@ def _confidence_reasons(
     if buyZone.currentZone in BLOCKED_BUY_ZONE_STATES:
         reasons.extend(validation_errors or warnings)
     for item in warnings:
-        if "networking_hardware" in item or "crypto_financial_infra" in item:
+        if "networking_hardware" in item or "crypto_financial_infra" in item or "brokerage_fintech" in item:
             reasons.append(item)
     if buyZone.method == "technical_proxy":
         reasons.append("仅使用技术代理，置信度较低")
@@ -922,7 +962,7 @@ def validate_buy_zone_estimate(buyZone: BuyZoneEstimate, stockData: dict | None 
     crypto_operating_inputs_missing = _crypto_financial_infra_operating_inputs_missing(buyZone.modelType, buyZone.symbol, stockData)
     if crypto_operating_inputs_missing:
         _append_once(validation_errors, "missing_crypto_operating_inputs")
-    if crypto_operating_inputs_missing and current_zone in {"heavy_buy", "below_heavy_buy"}:
+    if crypto_operating_inputs_missing and current_zone in {"heavy_buy", "below_heavy_buy", "invalid_zone"}:
         current_zone = "data_insufficient"
         confidence = "low"
         is_valid = False
@@ -1023,6 +1063,10 @@ def _confidence(inputs: list[str], method: str, model: str, stockData: dict, war
     if method == "technical_proxy":
         return "low"
     distinct = set(inputs)
+    if str(model).upper() == "BROKERAGE_FINTECH":
+        if _brokerage_fintech_core_inputs_missing("BROKERAGE_FINTECH", "HOOD", _collect_metrics(stockData, []), stockData):
+            return "low"
+        return "medium" if len(distinct) >= 3 else "low"
     if _power_generation_core_inputs_missing(str(model).upper(), stockData):
         warnings.append("电力模型缺少调整后 EBITDA / 增长投资前 FCF，使用代理估值，置信度不高于中。")
         return "medium" if len(distinct) >= 2 else "low"
@@ -1188,15 +1232,206 @@ def _crypto_financial_infra_regulatory_risk_high(model: str, symbol: str, stockD
     return False
 
 
+BROKERAGE_FINTECH_CORE_FIELDS = (
+    ("AUC", ("hood_auc", "hoodAuc", "manualHoodAuc", "manual_hood_auc")),
+    ("net deposits", ("hood_net_deposits", "hoodNetDeposits", "manualHoodNetDeposits", "manual_hood_net_deposits")),
+    (
+        "transaction revenue",
+        ("hood_transaction_revenue", "hoodTransactionRevenue", "manualHoodTransactionRevenue", "manual_hood_transaction_revenue"),
+    ),
+    (
+        "subscription / Gold revenue",
+        (
+            "hood_subscription_gold_revenue",
+            "hoodSubscriptionGoldRevenue",
+            "manualHoodSubscriptionGoldRevenue",
+            "manual_hood_subscription_gold_revenue",
+        ),
+    ),
+    (
+        "normalized EBITDA",
+        ("hood_normalized_ebitda", "hoodNormalizedEbitda", "manualHoodNormalizedEbitda", "manual_hood_normalized_ebitda"),
+    ),
+)
+
+
+def _brokerage_fintech_core_inputs_missing(model: str, symbol: str, metrics: dict[str, float | None], stockData: dict) -> list[str]:
+    if str(model).upper() != "BROKERAGE_FINTECH" or str(symbol).upper() != "HOOD":
+        return []
+    missing: list[str] = []
+    if metrics.get("ev_to_sales") is None and metrics.get("price_to_sales") is None:
+        missing.append("missing_brokerage_sales_valuation_anchor")
+    for label, keys in BROKERAGE_FINTECH_CORE_FIELDS:
+        if not _brokerage_fintech_clean_field(stockData, keys):
+            missing.append(f"missing_or_unreliable_{label}")
+    return missing
+
+
+def _with_brokerage_fintech_review_candidates(symbol: str, model: str, stockData: dict) -> dict:
+    if str(model).upper() != "BROKERAGE_FINTECH" or str(symbol).upper() != "HOOD":
+        return stockData
+    if all(_brokerage_fintech_clean_field(stockData, keys) for _, keys in BROKERAGE_FINTECH_CORE_FIELDS):
+        return stockData
+    try:
+        from data.review_queue_builder import ReviewQueueStore
+    except Exception:
+        return stockData
+
+    try:
+        rows = ReviewQueueStore().list_items("HOOD")
+    except Exception:
+        return stockData
+
+    enriched = dict(stockData)
+    metric_sources = dict(enriched.get("metric_sources") or {})
+    for _, keys in BROKERAGE_FINTECH_CORE_FIELDS:
+        target_key = _snake_metric_key(keys[0])
+        if _brokerage_fintech_clean_field(enriched, keys):
+            continue
+        if _has_any_value(enriched, *keys):
+            continue
+        row = _best_brokerage_fintech_review_candidate(rows, keys)
+        if not row:
+            continue
+        value = _number(row.get("value") if row.get("value") is not None else row.get("normalizedValue"))
+        if value is None:
+            continue
+        enriched[target_key] = value
+        metric_sources[target_key] = {
+            "sourceType": row.get("sourceType"),
+            "sourceUrl": row.get("sourceUrl"),
+            "sourceDocumentTitle": row.get("sourceDocumentTitle"),
+            "extractedText": row.get("evidenceText") or row.get("extractedText"),
+            "confidence": row.get("confidence"),
+            "period": row.get("metricPeriod") or row.get("period"),
+            "reviewStatus": row.get("reviewStatus"),
+            "unit": row.get("unit"),
+            "freshnessStatus": row.get("freshnessStatus"),
+        }
+    if metric_sources:
+        enriched["metric_sources"] = metric_sources
+    return enriched
+
+
+def _best_brokerage_fintech_review_candidate(rows: list[dict], keys: tuple[str, ...]) -> dict | None:
+    key_set = set(keys)
+    candidates = []
+    for row in rows:
+        if str(row.get("metricKey") or "") not in key_set:
+            continue
+        if str(row.get("itemType") or "") != "extracted_value":
+            continue
+        if str(row.get("reviewStatus") or "") != "pending_review" or row.get("hiddenByDefault"):
+            continue
+        if str(row.get("unit") or "").lower() == "percent":
+            continue
+        if not str(row.get("evidenceText") or row.get("extractedText") or "").strip():
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda row: (str(row.get("metricPeriod") or row.get("period") or ""), str(row.get("updatedAt") or ""), int(row.get("id") or 0)), reverse=True)[0]
+
+
+def _snake_metric_key(value: str) -> str:
+    text = str(value or "")
+    return "".join([f"_{char.lower()}" if char.isupper() else char for char in text]).lstrip("_")
+
+
+def _brokerage_fintech_clean_field(stockData: dict, keys: tuple[str, ...]) -> bool:
+    value = _first_number_from_stock_or_disclosure(stockData, *keys)
+    if value is None or value <= 0:
+        return False
+    source = _metric_source_payload(stockData, *keys)
+    if not source:
+        return True
+    unit = str(source.get("unit") or source.get("valueScale") or source.get("value_scale") or "").lower()
+    if unit == "percent":
+        return False
+    review_status = str(source.get("reviewStatus") or source.get("review_status") or "").lower()
+    if review_status in {"stale", "duplicate_archived", "auto_archived", "invalid_review_item", "rejected"}:
+        return False
+    freshness_status = str(source.get("freshnessStatus") or source.get("freshness_status") or "").lower()
+    if freshness_status == "historical_value":
+        return False
+    return True
+
+
+def _brokerage_fintech_normalized_earnings_missing(model: str, symbol: str, stockData: dict) -> bool:
+    if str(model).upper() != "BROKERAGE_FINTECH" or str(symbol).upper() != "HOOD":
+        return False
+    return not _brokerage_fintech_clean_field(
+        stockData,
+        (
+            "hood_normalized_earnings",
+            "hoodNormalizedEarnings",
+            "manualHoodNormalizedEarnings",
+            "manual_hood_normalized_earnings",
+        ),
+    )
+
+
+def _brokerage_fintech_beta_sales_overextended(model: str, symbol: str, metrics: dict[str, float | None], stockData: dict) -> bool:
+    if str(model).upper() != "BROKERAGE_FINTECH" or str(symbol).upper() != "HOOD":
+        return False
+    beta = metrics.get("beta") or _first_number(stockData, "beta", "marketBeta")
+    sales_multiple = metrics.get("ev_to_sales") if metrics.get("ev_to_sales") is not None else metrics.get("price_to_sales")
+    return beta is not None and beta >= 1.8 and sales_multiple is not None and sales_multiple >= 8.0
+
+
+def _append_brokerage_fintech_operating_inputs(model: str, symbol: str, stockData: dict, inputs: list[str], warnings: list[str]) -> None:
+    if str(model).upper() != "BROKERAGE_FINTECH" or str(symbol).upper() != "HOOD":
+        return
+    for label, keys in BROKERAGE_FINTECH_CORE_FIELDS:
+        if _brokerage_fintech_clean_field(stockData, keys):
+            inputs.append(f"HOOD operating field: {label}")
+    if _brokerage_fintech_clean_field(
+        stockData,
+        ("hood_normalized_ebitda", "hoodNormalizedEbitda", "manualHoodNormalizedEbitda", "manual_hood_normalized_ebitda"),
+    ):
+        _append_once(warnings, "brokerage_fintech_normalized_ebitda_secondary_anchor_needs_non_gaap_review")
+    if _brokerage_fintech_normalized_earnings_missing(model, symbol, stockData):
+        _append_once(warnings, "brokerage_fintech_normalized_earnings_missing_blocks_high_confidence_and_heavy_buy")
+
+
+def _finalize_brokerage_fintech_estimate(buyZone: BuyZoneEstimate, stockData: dict, scoringResult=None) -> BuyZoneEstimate:
+    if str(buyZone.modelType).upper() != "BROKERAGE_FINTECH" or str(buyZone.symbol).upper() != "HOOD":
+        return buyZone
+    warnings = list(buyZone.warnings or [])
+    validation_errors = list(buyZone.validationErrors or [])
+    confidence = _downgrade_confidence(str(buyZone.confidence or "low"), "medium")
+    current_zone = buyZone.currentZone
+    if _brokerage_fintech_normalized_earnings_missing("BROKERAGE_FINTECH", "HOOD", stockData):
+        _append_once(warnings, "brokerage_fintech_normalized_earnings_missing_blocks_high_confidence_and_heavy_buy")
+        _append_once(validation_errors, "missing_hood_normalized_earnings_for_heavy_buy")
+        if current_zone in {"heavy_buy", "below_heavy_buy"}:
+            current_zone = "tranche_buy"
+    next_price, next_label, _ = derive_next_trigger_price(buyZone.currentPrice, buyZone, current_zone)
+    finalized = replace(
+        buyZone,
+        currentZone=current_zone,
+        confidence=confidence,
+        heavyBuyBelow=None,
+        action=_buy_zone_action(current_zone, next_label),
+        nextTriggerPrice=next_price,
+        nextBuyLabel=next_label,
+        warnings=warnings,
+        validationErrors=validation_errors,
+    )
+    return _with_explainability(finalized, stockData, scoringResult)
+
+
 def _has_any_value(stockData: dict, *keys: str) -> bool:
     return any(stockData.get(key) not in {None, ""} for key in keys)
 
 
 def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: str, inputs: list[str], confidence: str) -> list[str]:
     reasons = [f"使用 {', '.join(dict.fromkeys(inputs))} 合成系统买区。"]
-    if metrics.get("fcf_yield") is not None:
+    input_text = " ".join(inputs).lower()
+    uses_cashflow = "cashflow valuation" in input_text or "p/fcf" in input_text or "fcf" in input_text
+    if metrics.get("fcf_yield") is not None and uses_cashflow:
         reasons.append(f"FCF收益率约 {metrics['fcf_yield'] * 100:.1f}%，用于估值锚。")
-    if metrics.get("price_to_fcf") is not None:
+    if metrics.get("price_to_fcf") is not None and uses_cashflow:
         reasons.append(f"P/FCF 约 {metrics['price_to_fcf']:.1f}x，作为主要现金流估值输入。")
     if metrics.get("drawdown") is not None:
         reasons.append(f"距高点回撤约 {metrics['drawdown'] * 100:.1f}%，用于调节当前区间。")
@@ -1206,6 +1441,9 @@ def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: st
         reasons.append("部分行业关键输入缺失，系统建议仅作为初版买区。")
     if str(model).upper() == "POWER_GENERATION":
         reasons.append("电力股优先参考 FCF、EV/EBITDA、杠杆和回撤，不按 SaaS 模型硬套。")
+    if str(model).upper() == "BROKERAGE_FINTECH":
+        reasons.append("HOOD brokerage fintech model uses EV/Sales or P/S as valuation anchors and operating fields as guardrails.")
+        reasons.append("Normalized EBITDA is only a secondary non-GAAP anchor; normalized earnings is required before heavy-buy output.")
     return reasons
 
 
@@ -1258,6 +1496,16 @@ def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimat
     if _crypto_financial_infra_operating_inputs_missing(buyZone.modelType, buyZone.symbol, stockData):
         warnings.append("crypto_financial_infra_operating_mix_missing")
         forces_medium = True
+    if str(buyZone.modelType).upper() == "BROKERAGE_FINTECH":
+        if _brokerage_fintech_normalized_earnings_missing(buyZone.modelType, buyZone.symbol, stockData):
+            warnings.append("brokerage_fintech_normalized_earnings_missing_blocks_high_confidence_and_heavy_buy")
+            forces_medium = True
+        if _brokerage_fintech_clean_field(
+            stockData,
+            ("hood_normalized_ebitda", "hoodNormalizedEbitda", "manualHoodNormalizedEbitda", "manual_hood_normalized_ebitda"),
+        ):
+            warnings.append("brokerage_fintech_normalized_ebitda_secondary_anchor_needs_non_gaap_review")
+            forces_medium = True
     if _has_abnormal_percent_input(stockData):
         warnings.append("存在异常百分比输入，买区置信度不能为 high")
         forces_medium = True
@@ -1399,17 +1647,35 @@ def _market_cap_to_fcf(stockData: dict) -> float | None:
 
 
 def _metric_source(stockData: dict, key: str) -> str | None:
-    metric_sources = stockData.get("metric_sources")
-    if isinstance(metric_sources, dict):
-        raw = metric_sources.get(key)
-        if isinstance(raw, dict):
-            value = raw.get("sourceType") or raw.get("source_type")
-            if value:
-                return str(value)
-    for suffix in ("sourceType", "source_type"):
-        value = stockData.get(f"{key}_{suffix}")
+    payload = _metric_source_payload(stockData, key)
+    if payload:
+        value = payload.get("sourceType") or payload.get("source_type")
         if value:
             return str(value)
+    return None
+
+
+def _metric_source_payload(stockData: dict, *keys: str) -> dict | None:
+    metric_sources = stockData.get("metric_sources")
+    if isinstance(metric_sources, dict):
+        for key in keys:
+            raw = metric_sources.get(key)
+            if isinstance(raw, dict):
+                return raw
+    for suffix in ("sourceType", "source_type"):
+        for key in keys:
+            value = stockData.get(f"{key}_{suffix}")
+            if value:
+                return {"sourceType": value}
+    disclosures = stockData.get("disclosureMetrics")
+    if isinstance(disclosures, list):
+        key_set = set(keys)
+        for row in disclosures:
+            if not isinstance(row, dict):
+                continue
+            metric_key = str(row.get("metricKey") or row.get("snapshotKey") or "")
+            if metric_key in key_set:
+                return row
     return None
 
 
@@ -1425,6 +1691,26 @@ def _ratio_like(value: Any) -> float | None:
 def _first_number(data: dict, *keys: str) -> float | None:
     for key in keys:
         value = _number(data.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_number_from_stock_or_disclosure(data: dict, *keys: str) -> float | None:
+    value = _first_number(data, *keys)
+    if value is not None:
+        return value
+    disclosures = data.get("disclosureMetrics")
+    if not isinstance(disclosures, list):
+        return None
+    key_set = set(keys)
+    for row in disclosures:
+        if not isinstance(row, dict):
+            continue
+        metric_key = str(row.get("metricKey") or row.get("snapshotKey") or "")
+        if metric_key not in key_set:
+            continue
+        value = _number(row.get("value") if row.get("value") is not None else row.get("normalizedValue"))
         if value is not None:
             return value
     return None

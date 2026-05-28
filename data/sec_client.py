@@ -24,6 +24,8 @@ WHITELISTED_DOCUMENT_DOMAINS = (
     "sec.gov",
     "servicenow.com",
     "investors.servicenow.com",
+    "robinhood.com",
+    "investors.robinhood.com",
     "q4cdn.com",
 )
 
