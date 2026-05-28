@@ -966,6 +966,7 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
     state = str(technical.get("technicalState") or "unavailable")
     trend = str(technical.get("technicalTrend") or "unavailable")
     unavailable = state in {"unavailable", "insufficient_data"} or confidence == "low"
+    review_only = unavailable or state == "trend_break_review"
     title = "技术数据不足" if unavailable else "技术入场参考"
     summary = (
         "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
@@ -980,9 +981,9 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
         ("MA200", _technical_money(technical.get("ma200"))),
         ("RSI14", _technical_number(technical.get("rsi14"), 1)),
         ("ATR14", _technical_money(technical.get("atr14"))),
-        ("技术回踩点", "不生成建议" if unavailable else _technical_money(technical.get("technicalEntryPrice"))),
+        ("技术回踩点", "不生成建议" if review_only else _technical_money(technical.get("technicalEntryPrice"))),
         ("技术复核线", "不生成建议" if unavailable else _technical_money(technical.get("technicalReviewPrice"))),
-        ("技术不追高线", "不生成建议" if unavailable else _technical_money(technical.get("technicalNoChaseAbove"))),
+        ("技术不追高线", "不生成建议" if review_only else _technical_money(technical.get("technicalNoChaseAbove"))),
         ("关键支撑", _technical_levels_text(technical.get("supportLevels"))),
         ("关键压力", _technical_levels_text(technical.get("resistanceLevels"))),
     ]
@@ -991,7 +992,7 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
         for label, value in metrics
         if value and value != "未设置"
     )
-    reasons = _technical_reasons_list(technical, unavailable)
+    reasons = _technical_reasons_list(technical, unavailable, review_only)
     reason_html = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
     st.markdown(
         '<section class="research-card technical-entry-card">'
@@ -1057,10 +1058,12 @@ def _technical_levels_text(value: object) -> str:
     return " / ".join(parts) if parts else "未设置"
 
 
-def _technical_reasons_list(technical: dict, unavailable: bool) -> list[str]:
+def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
         return ["技术数据不足，不生成技术回踩建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
+    if review_only:
+        return ["趋势破坏或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把 no_chase、blocked 或低置信买区变成可买。", *raw]
     guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
