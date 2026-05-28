@@ -3557,6 +3557,107 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("P/S", zone.inputsUsed)
         self.assertEqual(zone.method, "blended")
 
+    def test_growth_margin_anchor_lifts_nvda_and_msft_without_buy_signal(self) -> None:
+        nvda_base = {
+            "price": 180,
+            "price_to_fcf": 50,
+            "free_cash_flow_yield": 0.02,
+            "price_to_sales": 24,
+            "enterprise_to_ebitda": 45,
+            "forward_pe": 38,
+        }
+        nvda_plain = generate_buy_zone("NVDA", nvda_base, {"scoring_model": "SEMICONDUCTOR"}, "SEMICONDUCTOR")
+        nvda_anchored = generate_buy_zone(
+            "NVDA",
+            {**nvda_base, "revenue_growth": 0.55, "gross_margin": 0.75, "operating_margin": 0.62},
+            {"scoring_model": "SEMICONDUCTOR"},
+            "SEMICONDUCTOR",
+        )
+        msft_base = {
+            "price": 420,
+            "price_to_fcf": 28,
+            "free_cash_flow_yield": 0.036,
+            "price_to_sales": 11,
+        }
+        msft_plain = generate_buy_zone("MSFT", msft_base, {"scoring_model": "MEGA_CAP_PLATFORM"}, "MEGA_CAP_PLATFORM")
+        msft_anchored = generate_buy_zone(
+            "MSFT",
+            {**msft_base, "revenue_growth": 0.16, "operating_margin": 0.45},
+            {"scoring_model": "MEGA_CAP_PLATFORM"},
+            "MEGA_CAP_PLATFORM",
+        )
+
+        self.assertGreater(nvda_anchored.noChaseAbove, nvda_plain.noChaseAbove)
+        self.assertEqual(nvda_anchored.currentZone, "no_chase")
+        self.assertGreater(msft_anchored.fairValueHigh, msft_plain.fairValueHigh)
+        self.assertNotIn(msft_anchored.currentZone, {"tranche_buy", "heavy_buy", "below_heavy_buy"})
+
+    def test_growth_margin_anchor_ignores_market_derived_fcf_margin(self) -> None:
+        base = {
+            "price": 420,
+            "price_to_fcf": 28,
+            "free_cash_flow_yield": 0.036,
+            "price_to_sales": 11,
+        }
+        plain = generate_buy_zone("MSFT", base, {"scoring_model": "MEGA_CAP_PLATFORM"}, "MEGA_CAP_PLATFORM")
+        market_derived_margin = generate_buy_zone(
+            "MSFT",
+            {
+                **base,
+                "revenue_growth": 0.16,
+                "fcf_margin": 0.45,
+                "metric_sources": {"fcf_margin": {"sourceType": "derivedFromMarket"}},
+            },
+            {"scoring_model": "MEGA_CAP_PLATFORM"},
+            "MEGA_CAP_PLATFORM",
+        )
+
+        self.assertEqual(market_derived_margin.noChaseAbove, plain.noChaseAbove)
+        self.assertEqual(market_derived_margin.fairValueHigh, plain.fairValueHigh)
+
+    def test_growth_margin_anchor_keeps_now_low_confidence_blocked(self) -> None:
+        zone = generate_buy_zone(
+            "NOW",
+            {
+                "price": 100,
+                "price_to_fcf": 24,
+                "free_cash_flow_yield": 0.042,
+                "price_to_sales": 7.5,
+                "revenue_growth": 0.22,
+                "operating_margin": 0.18,
+            },
+            {"scoring_model": "SAAS_SOFTWARE", "data_confidence": "low"},
+            "SAAS_SOFTWARE",
+        )
+
+        self.assertEqual(zone.currentZone, "low_confidence_zone")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.noChaseAbove)
+        self.assertIsNone(zone.trancheBuyHigh)
+
+    def test_growth_margin_anchor_keeps_adbe_invalid_blocked(self) -> None:
+        zone = generate_buy_zone(
+            "ADBE",
+            {
+                "price": 242.5,
+                "price_to_fcf": 9.5007,
+                "free_cash_flow_yield": 0.1052,
+                "price_to_sales": 4.0084,
+                "enterprise_to_revenue": 4.0222,
+                "revenue_growth": 0.10,
+                "operating_margin": 0.28,
+            },
+            {"scoring_model": "SAAS_SOFTWARE"},
+            "SAAS_SOFTWARE",
+        )
+
+        self.assertEqual(zone.currentZone, "invalid_zone")
+        self.assertFalse(zone.isValid)
+        self.assertIsNone(zone.noChaseAbove)
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+
     def test_buy_zone_normalizes_bad_drawdown_percentages(self) -> None:
         self.assertAlmostEqual(normalize_percent_metric(-0.517), -0.517)
         self.assertAlmostEqual(normalize_percent_metric(-51.7), -0.517)

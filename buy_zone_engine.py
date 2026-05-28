@@ -31,6 +31,12 @@ BLOCKED_BUY_ZONE_STATES = {
 }
 
 CASHFLOW_SIGNAL_KEYS = {"price_to_fcf", "fcf_yield"}
+GROWTH_MARGIN_ANCHOR_LIMITS = {
+    "SAAS_SOFTWARE": (0.90, 1.15),
+    "MEGA_CAP_PLATFORM": (0.92, 1.15),
+    "SEMICONDUCTOR": (0.85, 1.22),
+}
+SAAS_SALES_ANCHOR_CAP = 1.10
 
 
 @dataclass(frozen=True)
@@ -110,7 +116,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             method="data_insufficient",
         )
 
-    targets = _model_targets(str(model))
+    targets = _apply_growth_margin_anchor(str(model), _model_targets(str(model)), metrics, stockData)
     candidates = _valuation_candidates(price, metrics, targets, inputs)
     if not candidates:
         candidates = _technical_candidates(price, metrics, inputs)
@@ -277,9 +283,14 @@ def _collect_metrics(stockData: dict, warnings: list[str]) -> dict[str, float | 
         "forward_pe": _first_number(stockData, "forward_pe", "forwardPE"),
         "ev_to_ebitda": _first_number(stockData, "enterprise_to_ebitda", "enterpriseValueToEbitda", "evToEbitda"),
         "market_cap_to_fcf": _market_cap_to_fcf(stockData),
+        "forward_revenue_growth": _ratio_like(_first_number(stockData, "forward_revenue_growth", "forwardRevenueGrowth")),
         "revenue_growth": _ratio_like(_first_number(stockData, "revenue_growth", "revenueGrowth")),
+        "earnings_growth": _ratio_like(_first_number(stockData, "earnings_growth", "earningsGrowth", "eps_growth", "epsGrowth")),
+        "forward_eps_growth": _ratio_like(_first_number(stockData, "forward_eps_growth_estimate", "forwardEpsGrowthEstimate", "forward_eps_growth", "forwardEpsGrowth")),
         "fcf_margin": direct_margin,
         "implied_fcf_margin": implied_fcf_margin(stockData),
+        "gross_margin": _ratio_like(_first_number(stockData, "gross_margin", "grossMargin")),
+        "operating_margin": _ratio_like(_first_number(stockData, "operating_margin", "operatingMargin")),
         "drawdown": drawdown,
         "rsi14": _first_number(stockData, "rsi14", "RSI14"),
         "return20d": _ratio_like(_first_number(stockData, "gain_20d_pct", "return20d", "return20D")),
@@ -328,6 +339,121 @@ def _model_targets(model: str) -> dict[str, dict[str, float]]:
         "fcf_yield": {"fair": 0.04, "tranche": 0.055, "heavy": 0.075, "weight": 2},
         "price_to_sales": {"fair": 8, "tranche": 5.5, "heavy": 4, "weight": 1},
     }
+
+
+def _apply_growth_margin_anchor(
+    model: str,
+    targets: dict[str, dict[str, float]],
+    metrics: dict[str, float | None],
+    stockData: dict,
+) -> dict[str, dict[str, float]]:
+    model_key = str(model).upper()
+    anchor_factor = _growth_margin_anchor_factor(model_key, metrics, stockData)
+    if anchor_factor == 1:
+        return targets
+
+    adjusted: dict[str, dict[str, float]] = {}
+    for key, target in targets.items():
+        factor = anchor_factor
+        if model_key == "SAAS_SOFTWARE" and key in {"price_to_sales", "ev_to_sales"}:
+            factor = min(factor, SAAS_SALES_ANCHOR_CAP)
+        adjusted[key] = dict(target)
+        for zone in ("fair", "tranche", "heavy"):
+            if key == "fcf_yield":
+                adjusted[key][zone] = target[zone] / factor
+            else:
+                adjusted[key][zone] = target[zone] * factor
+    return adjusted
+
+
+def _growth_margin_anchor_factor(model: str, metrics: dict[str, float | None], stock_data: dict) -> float:
+    model_key = str(model).upper()
+    limits = GROWTH_MARGIN_ANCHOR_LIMITS.get(model_key)
+    if limits is None:
+        return 1.0
+
+    growth = _growth_anchor_value(metrics)
+    margin, margin_kind = _margin_anchor_value(metrics, stock_data)
+    if growth is None or margin is None or margin_kind is None:
+        return 1.0
+
+    growth_signal = _growth_anchor_signal(model_key, growth)
+    margin_signal = _margin_anchor_signal(model_key, margin_kind, margin)
+    quality_signal = _clamp_value(0.6 * growth_signal + 0.4 * margin_signal, -1, 1)
+    floor, cap = limits
+    if quality_signal >= 0:
+        return 1 + (cap - 1) * quality_signal
+    return 1 + (1 - floor) * quality_signal
+
+
+def _growth_anchor_value(metrics: dict[str, float | None]) -> float | None:
+    for key in ("forward_revenue_growth", "revenue_growth", "earnings_growth", "forward_eps_growth"):
+        value = metrics.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _margin_anchor_value(metrics: dict[str, float | None], stockData: dict) -> tuple[float | None, str | None]:
+    if not _fcf_margin_is_market_derived(stockData):
+        fcf_margin = metrics.get("fcf_margin")
+        if fcf_margin is not None:
+            return fcf_margin, "fcf"
+    operating_margin = metrics.get("operating_margin")
+    if operating_margin is not None:
+        return operating_margin, "operating"
+    gross_margin = metrics.get("gross_margin")
+    if gross_margin is not None:
+        return gross_margin, "gross"
+    return None, None
+
+
+def _fcf_margin_is_market_derived(stockData: dict) -> bool:
+    if stockData.get("impliedFcfMarginAsPrimaryInput") or stockData.get("implied_fcf_margin_as_primary_input"):
+        return True
+    source = _metric_source(stockData, "fcf_margin") or _metric_source(stockData, "direct_fcf_margin")
+    return str(source or "").lower() in {"derivedfrommarket", "market_derived", "implied", "derived"}
+
+
+def _growth_anchor_signal(model: str, growth: float) -> float:
+    thresholds = {
+        "SAAS_SOFTWARE": (-0.02, 0.05, 0.25),
+        "MEGA_CAP_PLATFORM": (-0.02, 0.03, 0.15),
+        "SEMICONDUCTOR": (-0.05, 0.05, 0.30),
+    }
+    bad, neutral, good = thresholds.get(model, (-0.02, 0.05, 0.20))
+    return _bounded_anchor_signal(growth, bad, neutral, good)
+
+
+def _margin_anchor_signal(model: str, margin_kind: str, margin: float) -> float:
+    if margin_kind == "gross":
+        thresholds = {
+            "SAAS_SOFTWARE": (0.35, 0.55, 0.78),
+            "MEGA_CAP_PLATFORM": (0.35, 0.50, 0.68),
+            "SEMICONDUCTOR": (0.30, 0.45, 0.68),
+        }
+    else:
+        thresholds = {
+            "SAAS_SOFTWARE": (0.00, 0.10, 0.28),
+            "MEGA_CAP_PLATFORM": (0.05, 0.15, 0.32),
+            "SEMICONDUCTOR": (0.00, 0.10, 0.32),
+        }
+    bad, neutral, good = thresholds.get(model, (0.00, 0.10, 0.25))
+    return _bounded_anchor_signal(margin, bad, neutral, good)
+
+
+def _bounded_anchor_signal(value: float, bad: float, neutral: float, good: float) -> float:
+    if value >= good:
+        return 1.0
+    if value <= bad:
+        return -1.0
+    if value >= neutral:
+        return (value - neutral) / (good - neutral)
+    return -((neutral - value) / (neutral - bad))
+
+
+def _clamp_value(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
 
 
 def _valuation_candidates(price: float, metrics: dict[str, float | None], targets: dict[str, dict[str, float]], inputs: list[str]) -> dict[str, list[tuple[float, float]]]:
