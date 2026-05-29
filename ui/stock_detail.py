@@ -950,9 +950,9 @@ def _render_buy_zone(
     with st.expander("展开买区依据", expanded=False):
         _render_short_list(active_zone.keyReasons[:5], "暂无生成依据")
         if active_zone.warnings:
-            st.warning("；".join(active_zone.warnings[:3]))
+            st.warning("；".join(metric_label(item) for item in active_zone.warnings[:3]))
         if validation_errors:
-            st.error("；".join(validation_errors[:3]))
+            st.error("；".join(metric_label(item) for item in validation_errors[:3]))
 
     action_cols = st.columns([1, 1, 4])
     if manual:

@@ -573,9 +573,9 @@ def _buy_zone_drawer_html(row: dict) -> str:
     drawer_id = _buy_zone_drawer_id(symbol)
     zone: BuyZoneEstimate = row["activeZone"]
     system_zone: BuyZoneEstimate = row["systemZone"]
-    reasons = "".join(f"<li>{escape(reason)}</li>" for reason in (row.get("keyReasons") or [])[:6])
-    warnings = "".join(f"<li>{escape(warning)}</li>" for warning in (row.get("warnings") or [])[:5])
-    validation_errors = "".join(f"<li>{escape(error)}</li>" for error in (row.get("validationErrors") or [])[:5])
+    reasons = "".join(f"<li>{escape(_humanize_buy_zone_explain_item(reason))}</li>" for reason in (row.get("keyReasons") or [])[:6])
+    warnings = "".join(f"<li>{escape(_humanize_buy_zone_explain_item(warning))}</li>" for warning in (row.get("warnings") or [])[:5])
+    validation_errors = "".join(f"<li>{escape(_humanize_buy_zone_explain_item(error))}</li>" for error in (row.get("validationErrors") or [])[:5])
     return (
         f'<section id="{escape(drawer_id, quote=True)}" class="buy-zone-drawer-shell">'
         '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭买区详情"></a>'
@@ -887,6 +887,20 @@ def _humanize_buy_zone_explain_item(value: object) -> str:
         "data_insufficient": "关键买区输入不足",
         "low_confidence_zone": "买区置信度不足",
         "no_chase": "当前价格处于禁止追高区",
+        "missing_networking_hardware_growth_or_margin": "缺少网络硬件模型所需的增长或利润率输入",
+        "networking_hardware_sales_multiple_overextended": "销售倍数偏高，优先不追高",
+        "networking_hardware_risk_inputs_missing: customer concentration / cloud capex risk": "缺客户集中度 / 云资本开支风险输入，置信度受限",
+        "missing_crypto_ev_sales_anchor": "缺少 EV/Sales 主估值锚",
+        "missing_crypto_operating_inputs": "缺少交易收入、订阅收入、盈利和周期拆分",
+        "missing_crypto_core_inputs_for_heavy_buy": "缺少核心经营输入，不输出深度折价区",
+        "crypto_financial_infra_high_beta_sales_multiple": "高 beta 且销售倍数偏高，优先不追高",
+        "crypto_financial_infra_operating_mix_missing": "缺少加密金融经营拆分，置信度受限",
+        "missing_power_generation_core_inputs": "缺少电力模型核心输入",
+        "ai_cloud_infra_high_ev_sales_capex_debt": "EV/Sales、资本开支和债务压力同时偏高",
+        "ai_cloud_infra_customer_concentration_missing": "缺客户集中度输入，置信度受限",
+        "ai_cloud_infra_debt_maturity_unclear": "债务到期结构不清楚，置信度受限",
+        "ai_cloud_infra_operating_inputs_incomplete": "缺利用率或资本开支承诺输入",
+        "ai_cloud_infra_fcf_burn_or_capex_intensity_blocks_heavy_buy": "FCF 为负或资本开支强度过高，不输出深度折价区",
     }
     if text in mapping:
         return mapping[text]
