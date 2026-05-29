@@ -1955,7 +1955,6 @@ def _hood_brokerage_buy_zone_metric(
 ) -> MetricResolution:
     value = _metric(context, *keys)
     source_metrics = ["SEC 10-Q", "SEC 10-K", "shareholder letter", "earnings release", "IR release"]
-    missing_note = " 未在当前披露文本中找到 normalized earnings." if metric_key == "hoodNormalizedEarnings" else ""
     if value is not None:
         return MetricResolution(
             metricKey=metric_key,
@@ -1973,6 +1972,29 @@ def _hood_brokerage_buy_zone_metric(
             sourceMetricsUsed=source_metrics,
             priority="high",
         )
+    if metric_key == "hoodNormalizedEarnings":
+        explanation = (
+            "未在当前披露文本中找到 normalized earnings，需人工确认 non-GAAP 盈利口径。"
+            "这是 HOOD 券商 / 金融科技买区模型的核心经营输入，影响系统置信度；"
+            "不得用 P/S、P/FCF 或 FCF yield 替代。"
+            "来源优先级：股东信 / earnings release / IR release / SEC 8-K / 10-Q / 10-K。"
+            "抽取提示：关键词 normalized earnings、adjusted net income、non-GAAP net income；单位 USD；口径为季度或 TTM。"
+        )
+        recommended_action = (
+            "需从 SEC / 股东信 / earnings release / 10-Q / 10-K 补充 normalized earnings 证据，"
+            "并人工确认 non-GAAP 调整口径后，才能支持更精确的 HOOD 买区模型。"
+        )
+    else:
+        explanation = (
+            f"{display_name} is a core HOOD brokerage/fintech operating input for the buy-zone model and system confidence; "
+            "do not substitute P/S, P/FCF, or FCF yield for it. "
+            f"{source_priority} {extraction_hint}"
+        )
+        recommended_action = (
+            f"Fetch SEC / shareholder letter / earnings release / 10-Q / 10-K evidence for {display_name} "
+            "before enabling a precise HOOD buy-zone model."
+        )
+
     return MetricResolution(
         metricKey=metric_key,
         displayName=display_name,
@@ -1984,15 +2006,8 @@ def _hood_brokerage_buy_zone_metric(
         affects=["Entry", "ConfidenceOnly"],
         isBlocking=False,
         ratingCapImpact="none",
-        explanation=(
-            f"{display_name} is a core HOOD brokerage/fintech operating input for the buy-zone model and system confidence; "
-            "do not substitute P/S, P/FCF, or FCF yield for it. "
-            f"{source_priority} {extraction_hint}{missing_note}"
-        ),
-        recommendedAction=(
-            f"Fetch SEC / shareholder letter / earnings release / 10-Q / 10-K evidence for {display_name} "
-            f"before enabling a precise HOOD buy-zone model.{missing_note}"
-        ),
+        explanation=explanation,
+        recommendedAction=recommended_action,
         sourceMetricsUsed=source_metrics,
         priority="high",
     )

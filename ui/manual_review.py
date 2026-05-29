@@ -1844,11 +1844,11 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
             evidence_text = str(row.get("evidenceText") or "").strip()
             system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
             if row.get("aiTriageStatus") == "extraction_rejected_by_rule":
-                st.markdown(f"**规则已拦截**：{escape(system_reason or '该抽取候选未通过指标校验。')}")
+                st.markdown(f"**规则已拦截**：{escape(_review_system_reason_text(system_reason) or '该抽取候选未通过指标校验。')}")
             elif evidence_text:
                 st.markdown(f"**原文片段**：{escape(evidence_text)}")
             else:
-                st.markdown(f"**系统说明**：{escape(system_reason or '暂无真实原文证据。')}")
+                st.markdown(f"**系统说明**：{escape(_review_system_reason_text(system_reason) or '暂无真实原文证据。')}")
             if ai_result:
                 st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
             else:
@@ -2238,7 +2238,7 @@ def _render_review_evidence_panel(row: dict, ai_result: dict | None, eligible: b
     evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
     system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
     title = "原文证据" if evidence_text else "系统说明"
-    body = evidence_text or (view_item or {}).get("evidenceSummary") or system_reason or "暂无原文证据。"
+    body = evidence_text or _review_system_reason_text((view_item or {}).get("evidenceSummary") or system_reason)
     st.markdown(
         f"""
         <div class="review-evidence-panel">
@@ -2297,6 +2297,36 @@ def _render_review_evidence_drawer(source_rows: list[dict], ai_results: dict[int
     st.markdown(_review_evidence_drawer_html(row, ai_result, eligible, reason, view_item), unsafe_allow_html=True)
 
 
+def _review_human_reason_text(reason: object) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "暂无不足原因"
+    labels = {
+        "deterministic_precheck_failed": "规则预检未通过，需人工确认",
+        "missing_extracted_text": "缺少可复核的抽取文本",
+        "missing_evidence_text": "缺少原文证据",
+        "needs_evidence": "证据不足，需补充来源",
+        "requires_ir_scrape": "需从 IR / SEC 披露中补充抽取",
+    }
+    if text in labels:
+        return labels[text]
+    if "_" in text and text.isascii():
+        return "证据不足，需人工确认"
+    return text
+
+
+def _review_system_reason_text(reason: object) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "暂无系统说明。"
+    labels = {
+        "Extracted from SEC / IR / transcript; confirmation is required before scoring.": (
+            "已从 SEC / IR / 电话会文本提取，进入评分前需人工确认。"
+        ),
+    }
+    return labels.get(text, text)
+
+
 def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
     symbol = str(row.get("symbol") or "")
     metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey") or "N/A"
@@ -2314,11 +2344,11 @@ def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bo
             f"AI置信度 {float(ai_result.get('confidenceScore') or 0):.0%}；"
             f"{str(ai_result.get('explanationZh') or '').strip()}"
         )
-    shortage = reason if not eligible else str(row.get("reviewStatus") or "暂无不足原因")
+    shortage = _review_human_reason_text(reason if not eligible else row.get("reviewStatus"))
     action = _review_action_hint(row, ai_result, eligible, reason, view_item)
     quote = str((ai_result or {}).get("evidenceQuote") or "").strip()
     original = evidence_text or quote or evidence_summary or "暂无原文片段。"
-    system = system_reason or evidence_summary or "暂无系统说明。"
+    system = _review_system_reason_text(system_reason or evidence_summary)
     ai_text = ai_explanation or "尚未进行 Qwen 证据复核。"
     return (
         '<aside class="review-evidence-drawer">'
@@ -2541,6 +2571,11 @@ def _render_auto_archive_execution_result() -> None:
 
 
 def _auto_archive_sample_html(items: list[dict]) -> str:
+    header = (
+        '<div class="review-auto-archive-sample head">'
+        "<strong>股票</strong><span>指标</span><em>归档原因</em>"
+        "</div>"
+    )
     sample_html = "".join(
         (
             '<div class="review-auto-archive-sample">'
@@ -2551,7 +2586,7 @@ def _auto_archive_sample_html(items: list[dict]) -> str:
         )
         for item in items[:5]
     )
-    return sample_html or '<div class="review-auto-archive-empty">暂无可显示样例。</div>'
+    return f"{header}{sample_html}" if sample_html else '<div class="review-auto-archive-empty">暂无可显示样例。</div>'
 
 
 def _auto_archive_reason_label(reason: object) -> str:
@@ -2559,11 +2594,12 @@ def _auto_archive_reason_label(reason: object) -> str:
     normalized = text.lower().replace("-", "_").replace(" ", "_")
     if normalized in {"risk_observation", "qualitative_risk", "generic_risk", "sector_risk"}:
         return "泛风险观察"
-    if normalized in {"historical_value", "stale"}:
-        return "历史值"
-    if normalized in {"duplicate_archived", "duplicate_candidate", "duplicate"}:
+    lower_text = text.lower()
+    if normalized in {"duplicate_archived", "duplicate_candidate", "duplicate"} or "duplicate" in lower_text:
         return "重复候选"
-    if normalized in {"ai_auto_archived", "low_priority_review_noise"} or "low-priority" in text.lower() or "low priority" in text.lower():
+    if normalized in {"historical_value", "stale"} or "historical" in lower_text or "stale" in lower_text:
+        return "历史值"
+    if normalized in {"ai_auto_archived", "low_priority_review_noise"} or "low-priority" in lower_text or "low priority" in lower_text:
         return "低优先级不影响评分"
     return text or "低优先级不影响评分"
 
@@ -2656,6 +2692,12 @@ def _styles() -> str:
       .review-auto-archive-sample em {
         color: #6B7280;
         font-style: normal;
+      }
+      .review-auto-archive-sample.head {
+        border-top: 0;
+        padding-top: 0;
+        color: #6B7280;
+        font-weight: 700;
       }
       .qwen-efficiency {
         margin: 12px 0 10px;
