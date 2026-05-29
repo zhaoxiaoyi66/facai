@@ -11,9 +11,11 @@ from typing import Iterator
 
 from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
+from data.trading_discipline import evaluate_trading_discipline
 
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
+DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
 OUTCOME_HORIZONS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
 DECISION_ERROR_TAGS = {
     "valuation_too_high",
@@ -24,6 +26,23 @@ DECISION_ERROR_TAGS = {
     "thesis_broken",
     "position_too_large",
     "ignored_system_warning",
+}
+TRADE_DISCIPLINE_COLUMNS = {
+    "position_class": "TEXT",
+    "planned_sell_pct": "REAL",
+    "sell_reason_type": "TEXT",
+    "sell_level": "TEXT",
+    "thesis_broken": "INTEGER",
+    "position_over_limit": "INTEGER",
+    "has_reentry_plan": "INTEGER",
+    "reentry_plan_text": "TEXT",
+    "max_allowed_sell_pct": "REAL",
+    "can_sell_core": "INTEGER",
+    "requires_reentry_plan": "INTEGER",
+    "discipline_status": "TEXT",
+    "blockers_json": "TEXT",
+    "warnings_json": "TEXT",
+    "reminder_text": "TEXT",
 }
 
 
@@ -271,6 +290,7 @@ class TradeJournalStore:
                 ON trade_journal_entries(symbol, trade_date, created_at)
                 """
             )
+            _ensure_columns(conn, "trade_journal_entries", TRADE_DISCIPLINE_COLUMNS)
 
     def save_entry(self, symbol: str, values: dict) -> dict:
         cleaned = _clean_trade_entry(symbol, values)
@@ -288,9 +308,24 @@ class TradeJournalStore:
                     expiry_date,
                     decision_snapshot_id,
                     notes,
+                    position_class,
+                    planned_sell_pct,
+                    sell_reason_type,
+                    sell_level,
+                    thesis_broken,
+                    position_over_limit,
+                    has_reentry_plan,
+                    reentry_plan_text,
+                    max_allowed_sell_pct,
+                    can_sell_core,
+                    requires_reentry_plan,
+                    discipline_status,
+                    blockers_json,
+                    warnings_json,
+                    reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -303,6 +338,21 @@ class TradeJournalStore:
                     cleaned["expiry_date"],
                     cleaned["decision_snapshot_id"],
                     cleaned["notes"],
+                    cleaned["position_class"],
+                    cleaned["planned_sell_pct"],
+                    cleaned["sell_reason_type"],
+                    cleaned["sell_level"],
+                    cleaned["thesis_broken"],
+                    cleaned["position_over_limit"],
+                    cleaned["has_reentry_plan"],
+                    cleaned["reentry_plan_text"],
+                    cleaned["max_allowed_sell_pct"],
+                    cleaned["can_sell_core"],
+                    cleaned["requires_reentry_plan"],
+                    cleaned["discipline_status"],
+                    cleaned["blockers_json"],
+                    cleaned["warnings_json"],
+                    cleaned["reminder_text"],
                     cleaned["created_at"],
                 ),
             )
@@ -740,7 +790,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     action_type = str(values.get("action_type") or "").strip().lower()
     if action_type not in ACTION_TYPES:
         raise ValueError("action_type is invalid")
-    return {
+    cleaned = {
         "symbol": _normalize_symbol(symbol),
         "trade_date": _clean_date(values.get("trade_date")),
         "action_type": action_type,
@@ -752,6 +802,76 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "decision_snapshot_id": _optional_int(values.get("decision_snapshot_id"), "decision_snapshot_id"),
         "notes": _clean_text(values.get("notes")),
         "created_at": _now(),
+    }
+    cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
+    return cleaned
+
+
+def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:
+    empty = _empty_trade_discipline_snapshot()
+    if action_type not in DISCIPLINE_ACTION_TYPES:
+        return empty
+
+    position_class = _clean_text(_value(values, "positionClass", "position_class")) or "C"
+    planned_sell_pct = _optional_ratio(_value(values, "plannedSellPct", "planned_sell_pct"), "planned_sell_pct")
+    if planned_sell_pct is None:
+        planned_sell_pct = 0.0
+    sell_reason_type = _clean_text(_value(values, "sellReasonType", "sell_reason_type"))
+    thesis_broken = _clean_bool(_value(values, "thesisBroken", "thesis_broken"))
+    position_over_limit = _clean_bool(_value(values, "positionOverLimit", "position_over_limit"))
+    has_reentry_plan = _clean_bool(_value(values, "hasReentryPlan", "has_reentry_plan"))
+    reentry_plan_text = _clean_text(_value(values, "reentryPlanText", "reentry_plan_text"))
+
+    result = evaluate_trading_discipline(
+        symbol=symbol,
+        positionClass=position_class,
+        corePositionPct=_optional_ratio(_value(values, "corePositionPct", "core_position_pct"), "core_position_pct"),
+        tradingPositionPct=_optional_ratio(_value(values, "tradingPositionPct", "trading_position_pct"), "trading_position_pct"),
+        unrealizedGainPct=_optional_ratio(_value(values, "unrealizedGainPct", "unrealized_gain_pct"), "unrealized_gain_pct"),
+        plannedAction=action_type,
+        plannedSellPct=planned_sell_pct,
+        sellReasonType=sell_reason_type,
+        thesisBroken=thesis_broken,
+        positionOverLimit=position_over_limit,
+        hasReentryPlan=has_reentry_plan,
+    )
+
+    return {
+        "position_class": position_class.upper(),
+        "planned_sell_pct": planned_sell_pct,
+        "sell_reason_type": sell_reason_type,
+        "sell_level": result.sellLevel,
+        "thesis_broken": int(thesis_broken),
+        "position_over_limit": int(position_over_limit),
+        "has_reentry_plan": int(has_reentry_plan),
+        "reentry_plan_text": reentry_plan_text,
+        "max_allowed_sell_pct": result.maxAllowedSellPct,
+        "can_sell_core": int(result.canSellCore),
+        "requires_reentry_plan": int(result.requiresReentryPlan),
+        "discipline_status": result.disciplineStatus,
+        "blockers_json": _reasons_json(result.blockers),
+        "warnings_json": _reasons_json(result.warnings),
+        "reminder_text": result.reminderText,
+    }
+
+
+def _empty_trade_discipline_snapshot() -> dict:
+    return {
+        "position_class": None,
+        "planned_sell_pct": None,
+        "sell_reason_type": None,
+        "sell_level": None,
+        "thesis_broken": None,
+        "position_over_limit": None,
+        "has_reentry_plan": None,
+        "reentry_plan_text": None,
+        "max_allowed_sell_pct": None,
+        "can_sell_core": None,
+        "requires_reentry_plan": None,
+        "discipline_status": None,
+        "blockers_json": None,
+        "warnings_json": None,
+        "reminder_text": None,
     }
 
 
@@ -1123,6 +1243,29 @@ def _optional_non_negative_number(value, field: str) -> float | None:
     return number
 
 
+def _optional_ratio(value, field: str) -> float | None:
+    number = _optional_non_negative_number(value, field)
+    if number is None:
+        return None
+    return number / 100 if number > 1 else number
+
+
+def _clean_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _value(values: dict, *names: str):
+    for name in names:
+        if name in values:
+            return values.get(name)
+    return None
+
+
 def _optional_number(value, field: str) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -1202,6 +1345,16 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return bool(row)
 
 
+def _ensure_columns(conn: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column, definition in columns.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+
+
 def _reasons_json(value) -> str:
     if value is None or value == "":
         return "[]"
@@ -1236,6 +1389,10 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["block_reasons"] = _load_json_list(item["block_reasons_json"])
     if "review_reasons_json" in item:
         item["review_reasons"] = _load_json_list(item["review_reasons_json"])
+    if "blockers_json" in item:
+        item["blockers"] = _load_json_list(item["blockers_json"])
+    if "warnings_json" in item:
+        item["warnings"] = _load_json_list(item["warnings_json"])
     return item
 
 

@@ -227,6 +227,111 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["decision_snapshot_id"], snapshot["id"])
             self.assertEqual(store.list_entries("crm")[0]["notes"], "followed signal")
 
+    def test_trade_journal_sell_saves_trading_discipline_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "sell",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.1,
+                    "plannedSellPct": 1.0,
+                    "sellReasonType": "macro",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": False,
+                    "reentryPlanText": "",
+                },
+            )
+
+            self.assertEqual(saved["position_class"], "A")
+            self.assertEqual(saved["planned_sell_pct"], 1.0)
+            self.assertEqual(saved["sell_reason_type"], "macro")
+            self.assertEqual(saved["sell_level"], "L3")
+            self.assertEqual(saved["discipline_status"], "blocked")
+            self.assertIn("a_class_core_clear_requires_thesis_break", saved["blockers"])
+            self.assertIn("macro_risk_cannot_trigger_single_name_exit", saved["blockers"])
+            self.assertIn("宏观风险", saved["warnings"][0])
+            self.assertEqual(saved["max_allowed_sell_pct"], 0.3)
+            self.assertEqual(saved["can_sell_core"], 0)
+            self.assertEqual(saved["requires_reentry_plan"], 0)
+            self.assertTrue(saved["reminder_text"])
+
+    def test_trade_journal_trim_saves_reentry_plan_requirement(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": False,
+                },
+            )
+
+            self.assertEqual(saved["action_type"], "trim")
+            self.assertEqual(saved["sell_level"], "L1")
+            self.assertEqual(saved["requires_reentry_plan"], 1)
+            self.assertEqual(saved["discipline_status"], "blocked")
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+            self.assertEqual(json.loads(saved["blockers_json"]), saved["blockers"])
+
+    def test_trade_journal_buy_add_skip_do_not_require_discipline_fields(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            buy = store.save_entry("hood", {"trade_date": "2026-05-26", "action_type": "buy"})
+            add = store.save_entry("hood", {"trade_date": "2026-05-27", "action_type": "add"})
+            skip = store.save_entry("hood", {"trade_date": "2026-05-28", "action_type": "skip"})
+
+            self.assertIsNone(buy["discipline_status"])
+            self.assertIsNone(add["sell_level"])
+            self.assertIsNone(skip["planned_sell_pct"])
+            self.assertEqual(skip["blockers"], [])
+            self.assertEqual(skip["warnings"], [])
+
+    def test_trade_journal_reads_persisted_discipline_snapshot_without_recomputing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+            saved = store.save_entry(
+                "now",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "B",
+                    "corePositionPct": 0.5,
+                    "tradingPositionPct": 0.5,
+                    "unrealizedGainPct": 0.5,
+                    "plannedSellPct": 10,
+                    "sellReasonType": "technical",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": True,
+                    "reentryPlanText": "回踩 MA50 回补",
+                },
+            )
+
+            loaded = store.get_entry(saved["id"])
+
+            self.assertEqual(loaded["planned_sell_pct"], 0.1)
+            self.assertEqual(loaded["discipline_status"], "warning")
+            self.assertEqual(loaded["reentry_plan_text"], "回踩 MA50 回补")
+            self.assertEqual(loaded["warnings"], saved["warnings"])
+
     def test_decision_log_store_deletes_snapshot_and_related_records(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
