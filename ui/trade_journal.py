@@ -43,7 +43,7 @@ DISCIPLINE_STATUS_LABELS = {
     "hold": "无需卖出",
 }
 DISCIPLINE_BLOCKER_LABELS = {
-    "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在 thesis 未破裂时清仓。",
+    "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在投资逻辑未破裂时清仓。",
     "a_class_core_sale_blocked_while_gain_0_to_25_pct": "A 类持仓在 0-25% 浮盈区间不建议卖核心仓。",
     "sell_level_does_not_allow_core_sale": "当前卖出等级不允许动核心仓。",
     "macro_risk_cannot_trigger_single_name_exit": "宏观风险不能单独触发个股清仓。",
@@ -161,12 +161,12 @@ def _render_editor(store: TradeJournalStore) -> None:
 def _render_trading_discipline_check(symbol: str, action_type: str) -> None:
     st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
     cols = st.columns([0.72, 0.92, 1.2, 0.86, 0.86, 0.92], gap="small")
-    position_class = cols[0].selectbox("positionClass", ["A", "B", "C"], key="trade-discipline-position-class")
-    planned_sell_pct = cols[1].text_input("plannedSellPct（%）", value="10", key="trade-discipline-planned-sell-pct")
-    reason_label = cols[2].selectbox("sellReasonType", list(SELL_REASON_OPTIONS), key="trade-discipline-sell-reason")
-    thesis_broken = cols[3].checkbox("thesisBroken", key="trade-discipline-thesis-broken")
-    position_over_limit = cols[4].checkbox("positionOverLimit", key="trade-discipline-position-over-limit")
-    has_reentry_plan = cols[5].checkbox("hasReentryPlan", key="trade-discipline-has-reentry-plan")
+    position_class = cols[0].selectbox("股票分类", ["A", "B", "C"], key="trade-discipline-position-class")
+    planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value="10", key="trade-discipline-planned-sell-pct")
+    reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), key="trade-discipline-sell-reason")
+    thesis_broken = cols[3].checkbox("投资逻辑破裂", key="trade-discipline-thesis-broken")
+    position_over_limit = cols[4].checkbox("仓位超限", key="trade-discipline-position-over-limit")
+    has_reentry_plan = cols[5].checkbox("已有回补计划", key="trade-discipline-has-reentry-plan")
 
     result = evaluate_trading_discipline(
         symbol=symbol,
@@ -188,11 +188,11 @@ def _render_trading_discipline_result(result) -> None:
     status = str(result.disciplineStatus or "")
     tone = _discipline_status_tone(status)
     metrics = [
-        ("disciplineStatus", DISCIPLINE_STATUS_LABELS.get(status, status or "N/A")),
-        ("sellLevel", str(result.sellLevel or "N/A")),
-        ("maxAllowedSellPct", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
-        ("canSellCore", _yes_no(result.canSellCore)),
-        ("requiresReentryPlan", _yes_no(result.requiresReentryPlan)),
+        ("纪律状态", DISCIPLINE_STATUS_LABELS.get(status, status or "N/A")),
+        ("卖出等级", str(result.sellLevel or "N/A")),
+        ("上限比例", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
+        ("允许卖核心仓", _yes_no(result.canSellCore)),
+        ("需要回补计划", _yes_no(result.requiresReentryPlan)),
     ]
     metric_html = "".join(
         f'<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>'
@@ -222,9 +222,9 @@ def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bo
     if not items:
         return ""
     class_name = "blockers" if is_blocker else "warnings"
-    label = "blockers" if is_blocker else "warnings"
+    label = "阻断提醒" if is_blocker else "复核提醒"
     rows = "".join(f"<li>{escape(_discipline_message_text(item))}</li>" for item in items)
-    return f'<div class="trade-discipline-messages {class_name}"><b>{escape(title or label)}</b><ul>{rows}</ul></div>'
+    return f'<div class="trade-discipline-messages {class_name}"><b>{escape(label)}</b><ul>{rows}</ul></div>'
 
 
 def _discipline_message_text(item: object) -> str:

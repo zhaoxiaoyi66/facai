@@ -136,9 +136,9 @@ def evaluate_trading_discipline(
         blockers.append("planned_sell_pct_exceeds_sell_level_limit")
 
     if sell_reason == "valuation":
-        warnings.append("估值偏贵只能作为减交易仓提示，不能替代 thesis 破裂。")
+        warnings.append("估值偏贵只能作为减交易仓提示，不能替代投资逻辑破裂。")
     if sell_reason == "technical":
-        warnings.append("技术过热只能作为择时提示，不能替代 thesis 破裂。")
+        warnings.append("技术过热只能作为择时提示，不能替代投资逻辑破裂。")
     if sell_reason == "position_size" or positionOverLimit:
         warnings.append("仓位过重可优先降低交易仓，但不自动允许卖核心仓。")
     if sell_reason == "macro":
