@@ -448,7 +448,7 @@ class DisclosurePipeline:
             extracted.metric_key,
             extracted.value,
             extracted.unit,
-            period,
+            _metric_period_from_extraction(period, source_document_title, extracted.extracted_text),
             source_type,
             source_url,
             source_document_title,
@@ -602,14 +602,43 @@ def _xbrl_extracted_text(metric_key: str, supplement: dict) -> str:
 
 
 def _period_from_text(text: str) -> str | None:
-    match = re.search(
-        r"\b((?:first|second|third|fourth)\s+quarter|Q[1-4]|fiscal\s+\d{4}|20\d{2})[^.]{0,40}?(20\d{2})?",
-        text,
+    cleaned = str(text or "")
+    quarter_patterns = [
+        r"\bQ([1-4])[\s_-]*(20\d{2})(?=\D|$)",
+        r"\b(20\d{2})[\s_-]*Q([1-4])\b",
+    ]
+    for pattern in quarter_patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        groups = match.groups()
+        if groups[0].isdigit() and len(groups[0]) == 4:
+            return f"{groups[0]} Q{groups[1]}"
+        return f"{groups[1]} Q{groups[0]}"
+
+    word_match = re.search(r"\b(first|second|third|fourth)\s+quarter[^.]{0,40}?\b(20\d{2})\b", cleaned, flags=re.IGNORECASE)
+    if word_match:
+        quarter = {"first": "Q1", "second": "Q2", "third": "Q3", "fourth": "Q4"}[word_match.group(1).lower()]
+        return f"{word_match.group(2)} {quarter}"
+
+    ended_match = re.search(
+        r"\b(?:three months ended|quarter ended)[^.]{0,80}?\b"
+        r"(march|june|september|december)\s+\d{1,2},\s*(20\d{2})\b",
+        cleaned,
         flags=re.IGNORECASE,
     )
-    if not match:
-        return None
-    return " ".join(part for part in match.groups() if part).strip()
+    if ended_match:
+        quarter = {"march": "Q1", "june": "Q2", "september": "Q3", "december": "Q4"}[ended_match.group(1).lower()]
+        return f"{ended_match.group(2)} {quarter}"
+
+    fiscal_match = re.search(r"\bfiscal\s+(20\d{2})\b|\bFY\s*(20\d{2})\b", cleaned, flags=re.IGNORECASE)
+    if fiscal_match:
+        return f"FY{fiscal_match.group(1) or fiscal_match.group(2)}"
+    return None
+
+
+def _metric_period_from_extraction(default_period: str | None, source_document_title: str | None, extracted_text: str | None) -> str | None:
+    return _period_from_text(str(source_document_title or "")) or _period_from_text(str(extracted_text or "")) or default_period
 
 
 def _transcript_text(data) -> str:

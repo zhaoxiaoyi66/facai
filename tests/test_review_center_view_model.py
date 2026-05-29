@@ -400,6 +400,54 @@ class ReviewCenterViewModelTests(unittest.TestCase):
         self.assertEqual([item["canonicalMetric"] for item in groups["insufficientEvidence"]["items"]], [])
         self.assertIn("cRpoGrowthReported", [item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]])
 
+    def test_confirmed_value_hides_resolved_missing_placeholder_from_main_queue(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="hoodTransactionRevenue",
+                value=None,
+                confidence="low",
+                evidence_text="",
+                source_type="missing",
+                review_status="needs_data",
+            ),
+            _review_row(
+                2,
+                metric_key="hoodTransactionRevenue",
+                value=623_000_000,
+                confidence="medium",
+                evidence_text="Transaction-based revenues increased to $623 million.",
+                source_type="SEC_8K",
+                review_status="approved",
+            ),
+            _review_row(
+                3,
+                metric_key="hoodNormalizedEarnings",
+                value=None,
+                confidence="low",
+                evidence_text="",
+                source_type="missing",
+                review_status="needs_data",
+            ),
+        ]
+        for row in rows:
+            row["symbol"] = "HOOD"
+            row["unit"] = "usd" if row["value"] is not None else None
+            if row["value"] is None:
+                row["itemType"] = "missing_kpi"
+                row["affects"] = "ConfidenceOnly,Entry"
+                row["displayValue"] = "N/A"
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+
+        insufficient_metrics = [item["metricKey"] for item in groups["insufficientEvidence"]["items"]]
+        handled_metrics = [item["metricKey"] for item in groups["recentlyHandled"]["items"]]
+
+        self.assertNotIn("hoodTransactionRevenue", insufficient_metrics)
+        self.assertIn("hoodNormalizedEarnings", insufficient_metrics)
+        self.assertIn("hoodTransactionRevenue", handled_metrics)
+
 
 def _insert_review_item(
     store: ReviewQueueStore,

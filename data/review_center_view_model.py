@@ -18,6 +18,7 @@ HANDLED_REVIEW_STATUSES = {
     "duplicate_archived",
     "invalid_review_item",
 }
+CONFIRMED_VALUE_STATUSES = {"approved", "auto_approved_by_ai", "manually_corrected"}
 EXPLICIT_EVIDENCE_SOURCES = {"SEC_8K", "SEC_10Q", "SEC_10K", "IR_RELEASE", "IR_PRESENTATION"}
 AI_SPECULATIVE_SOURCES = {"AI", "AI_MODEL", "QWEN", "MODEL", "LOCAL_AI"}
 AUTO_CONFIRM_TRIAGE_STATUSES = {"auto_approved_by_ai", "ai_recommend_approve"}
@@ -108,7 +109,11 @@ def build_review_center_view_model(
 ) -> dict:
     queue_rows = list(rows) if rows is not None else (store or ReviewQueueStore()).list_items(symbol=symbol)
     prepared = [_prepare_row(dict(row)) for row in queue_rows]
-    active_rows = sorted([row for row in prepared if row.active], key=_active_sort_key)
+    resolved_missing_keys = _confirmed_value_keys(prepared)
+    active_rows = sorted(
+        [row for row in prepared if row.active and not _is_resolved_missing_placeholder(row, resolved_missing_keys)],
+        key=_active_sort_key,
+    )
     _mark_contextual_archive_candidates(active_rows)
     exact_rows = _collapse_exact_duplicates(active_rows)
     main_rows = _collapse_main_queue(exact_rows)
@@ -292,7 +297,15 @@ def _source_score(row: dict, has_explicit_evidence: bool) -> int:
 
 
 def _has_review_value(row: dict) -> bool:
-    return any(row.get(key) not in (None, "") for key in ("displayValue", "normalizedValue", "value")) or bool(_correction_candidate(row))
+    return any(_present_review_value(row.get(key)) for key in ("displayValue", "normalizedValue", "value")) or bool(_correction_candidate(row))
+
+
+def _present_review_value(value: object) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, str) and value.strip().lower() in {"n/a", "na", "none", "null", "-", "--"}:
+        return False
+    return True
 
 
 def _is_money_scope_mismatch_candidate(row: dict) -> bool:
@@ -588,6 +601,23 @@ def _candidate_quality_key(row: _ReviewCenterRow) -> tuple:
         row.priority_score,
         str(row.item.get("updatedAt") or ""),
     )
+
+
+def _confirmed_value_keys(rows: list[_ReviewCenterRow]) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for row in rows:
+        status = str(row.row.get("reviewStatus") or "").strip()
+        if status not in CONFIRMED_VALUE_STATUSES or not row.has_value:
+            continue
+        keys.add((str(row.item.get("symbol") or ""), str(row.item.get("canonicalMetric") or "")))
+    return keys
+
+
+def _is_resolved_missing_placeholder(row: _ReviewCenterRow, confirmed_keys: set[tuple[str, str]]) -> bool:
+    if not row.active or row.has_value or not row.missing_evidence:
+        return False
+    key = (str(row.item.get("symbol") or ""), str(row.item.get("canonicalMetric") or ""))
+    return key in confirmed_keys
 
 
 def _mark_auto_archive_candidate(row: _ReviewCenterRow, reason: str) -> None:

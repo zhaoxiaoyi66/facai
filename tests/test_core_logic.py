@@ -121,7 +121,7 @@ from data.providers import (
     get_market_data_provider,
 )
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore, _debt_maturity_low_materiality
-from data.sec_client import SECClient, SEC_MAX_REQUESTS_PER_SECOND
+from data.sec_client import SECClient, SEC_MAX_REQUESTS_PER_SECOND, SECFiling
 from data.sec_supplement import extract_sec_hood_metrics, extract_sec_saas_metrics
 from data.portfolio import (
     PortfolioPositionStore,
@@ -4483,6 +4483,12 @@ class ScoringTests(unittest.TestCase):
             transaction_definition,
             confidence="medium",
         )
+        transaction_with_subcomponent = extractMetricFromText(
+            "Transaction-based revenues increased 7% year-over-year to $623 million, "
+            "primarily driven by other transaction revenue of $147 million.",
+            transaction_definition,
+            confidence="medium",
+        )
 
         self.assertIsNotNone(table_extracted)
         self.assertEqual(table_extracted.value, 761_000_000)
@@ -4490,6 +4496,33 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(billion_extracted.value, 2_500_000_000)
         self.assertIsNotNone(transaction_extracted)
         self.assertEqual(transaction_extracted.value, 623_000_000)
+        self.assertIsNotNone(transaction_with_subcomponent)
+        self.assertEqual(transaction_with_subcomponent.value, 623_000_000)
+
+    def test_hood_money_table_extraction_uses_amount_column_not_yoy_percent(self) -> None:
+        text = (
+            "Robinhood Reports Third Quarter 2025 Results. "
+            "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (in millions) "
+            "Three Months Ended September 30, 2024 2025 June 30, 2025 "
+            "Revenues: Transaction-based revenues $ 319 $ 730 129 % $ 539 35 % "
+            "Net interest revenues 274 456 66 % 357 28 % "
+            "Adjusted EBITDA (non-GAAP) $ 268 $ 742 $ 549."
+        )
+
+        expected = {
+            "hoodTransactionRevenue": 730_000_000,
+            "hoodInterestRevenue": 456_000_000,
+            "hoodNormalizedEbitda": 742_000_000,
+        }
+        for metric_key, expected_value in expected.items():
+            definition = metric_definition_by_key(metric_key)
+            self.assertIsNotNone(definition)
+
+            extracted = extractMetricFromText(text, definition, confidence="medium")
+
+            self.assertIsNotNone(extracted, metric_key)
+            self.assertEqual(extracted.unit, "usd")
+            self.assertEqual(extracted.value, expected_value)
 
     def test_hood_auc_rejects_sub_business_aum(self) -> None:
         definition = metric_definition_by_key("hoodAuc")
@@ -4676,6 +4709,154 @@ class ScoringTests(unittest.TestCase):
             self.assertTrue(rows_by_metric["hoodNormalizedEbitda"]["hiddenByDefault"])
             self.assertEqual(rows_by_metric["hoodTransactionRevenue"]["reviewStatus"], "pending_review")
 
+    def test_hood_review_queue_rebuild_refreshes_legacy_operating_candidates(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hood.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            rows = (
+                (
+                    "hoodInterestRevenue",
+                    0.66,
+                    "percent",
+                    "2025-10-30",
+                    "q32025robinhoodexhibit991.htm",
+                    "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (in millions) "
+                    "Three Months Ended September 30, 2024 2025 June 30, 2025 "
+                    "Revenues: Transaction-based revenues $ 319 $ 730 129 % $ 539 35 % "
+                    "Net interest revenues 274 456 66 % 357 28 %",
+                ),
+                (
+                    "hoodTransactionRevenue",
+                    975_000_000,
+                    "usd",
+                    "2025-10-30",
+                    "q32025robinhoodexhibit991.htm",
+                    "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (Unaudited) "
+                    "Nine Months Ended September 30, YOY% Change (in millions) "
+                    "2024 2025 Revenues: Transaction-based revenues $ 975 $ 1,852 90 %",
+                ),
+                (
+                    "hoodTransactionRevenue",
+                    623_000_000,
+                    "usd",
+                    "2026-04-28",
+                    "q12026robinhoodexhibit991.htm",
+                    "First Quarter Results. Transaction-based revenues increased 7% year-over-year to $623 million.",
+                ),
+                (
+                    "hoodNetDeposits",
+                    20_400_000_000,
+                    "usd",
+                    "2025-10-30",
+                    "q32025robinhoodexhibit991.htm",
+                    "Third Quarter Results. Net Deposits were $20.4 billion, an annualized growth rate of 29% "
+                    "relative to Total Platform Assets at the end of Q2 2025. Over the past twelve months, "
+                    "Net Deposits were $68.3 billion.",
+                ),
+                (
+                    "hoodNormalizedEbitda",
+                    742_000_000,
+                    "usd",
+                    "2025-10-30",
+                    "q32025robinhoodexhibit991.htm",
+                    "Third Quarter Results. Adjusted EBITDA (non-GAAP) increased 177% year-over-year to $742 million.",
+                ),
+                (
+                    "hoodSubscriptionGoldRevenue",
+                    50_000_000,
+                    "usd",
+                    "2026-02-06",
+                    "q42025robinhoodexhibit991.htm",
+                    "Fourth Quarter Results. Other revenues increased 109% year-over-year to $96 million, "
+                    "primarily driven by Robinhood Gold subscription revenue of $50 million.",
+                ),
+            )
+            for metric_key, value, unit, period, title, evidence in rows:
+                disclosure_store.save_metric(
+                    symbol="HOOD",
+                    metric_key=metric_key,
+                    value=value,
+                    unit=unit,
+                    period=period,
+                    source_type="SEC_8K",
+                    source_url=f"https://sec.gov/{title}",
+                    source_document_title=title,
+                    extracted_text=evidence,
+                    confidence="medium",
+                )
+
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            queue_store.upsert_item(
+                {
+                    "symbol": "HOOD",
+                    "metricKey": "hoodInterestRevenue",
+                    "displayName": "Interest revenue",
+                    "itemType": "extracted_value",
+                    "value": 0.66,
+                    "unit": "percent",
+                    "period": "2025-10-30",
+                    "sourceType": "SEC_8K",
+                    "sourceDocumentTitle": "q32025robinhoodexhibit991.htm",
+                    "sourceUrl": "https://sec.gov/q32025robinhoodexhibit991.htm",
+                    "evidenceText": rows[0][-1],
+                    "extractedText": rows[0][-1],
+                    "confidence": "medium",
+                    "affects": "Quality",
+                    "reviewStatus": "pending_review",
+                    "sourceKind": "autopilot_saved_metric",
+                    "sourceMetricId": None,
+                    "modelType": "CRYPTO_FINANCIAL_INFRA",
+                }
+            )
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "HOOD",
+                {"ticker": "HOOD", "symbol": "HOOD", "price_to_sales": 12, "price_to_fcf": 30, "free_cash_flow_yield": 0.033},
+            )
+
+            ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            ).build_review_queue_for_symbol("HOOD")
+
+            pending = {
+                row["metricKey"]: row
+                for row in queue_store.list_items("HOOD")
+                if row.get("itemType") == "extracted_value"
+                and row.get("reviewStatus") == "pending_review"
+                and not row.get("hiddenByDefault")
+                and row.get("metricKey")
+                in {
+                    "hoodInterestRevenue",
+                    "hoodTransactionRevenue",
+                    "hoodNetDeposits",
+                    "hoodNormalizedEbitda",
+                    "hoodSubscriptionGoldRevenue",
+                }
+            }
+
+            self.assertEqual(pending["hoodInterestRevenue"]["value"], 456_000_000)
+            self.assertEqual(pending["hoodInterestRevenue"]["unit"], "usd")
+            self.assertEqual(pending["hoodInterestRevenue"]["metricPeriod"], "2025 Q3")
+            self.assertEqual(pending["hoodTransactionRevenue"]["value"], 623_000_000)
+            self.assertEqual(pending["hoodTransactionRevenue"]["metricPeriod"], "2026 Q1")
+            self.assertEqual(pending["hoodNetDeposits"]["value"], 20_400_000_000)
+            self.assertEqual(pending["hoodNetDeposits"]["metricPeriod"], "2025 Q3")
+            self.assertEqual(pending["hoodNormalizedEbitda"]["value"], 742_000_000)
+            self.assertEqual(pending["hoodNormalizedEbitda"]["metricPeriod"], "2025 Q3")
+            self.assertIn("non-GAAP", pending["hoodNormalizedEbitda"]["recommendedAction"])
+            self.assertEqual(pending["hoodSubscriptionGoldRevenue"]["value"], 50_000_000)
+            self.assertEqual(pending["hoodSubscriptionGoldRevenue"]["metricPeriod"], "2025 Q4")
+
+            archived_interest = [
+                row
+                for row in queue_store.list_items("HOOD", metric_key="hoodInterestRevenue")
+                if row.get("unit") == "percent"
+            ]
+            self.assertTrue(archived_interest)
+            self.assertTrue(all(row.get("reviewStatus") == "duplicate_archived" for row in archived_interest))
+
     def test_hood_ir_pipeline_creates_review_candidates_for_operating_fields(self) -> None:
         class FakeSecClient:
             def cik_for_ticker(self, symbol, force_refresh=False):
@@ -4757,6 +4938,64 @@ class ScoringTests(unittest.TestCase):
                 self.assertEqual(row["reviewStatus"], "pending_review")
             self.assertIn("needs_human_review", items["hoodNormalizedEarnings"]["recommendedAction"])
             self.assertIn("non-GAAP", items["hoodNormalizedEbitda"]["recommendedAction"])
+
+    def test_hood_sec_exhibit_pipeline_uses_metric_period_from_exhibit(self) -> None:
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001783879"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return [
+                    SECFiling(
+                        form="8-K",
+                        accession_number="000178387925000309",
+                        filing_date="2025-10-30",
+                        report_date="2025-10-30",
+                        primary_document="hood-20251030.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1783879/hood-20251030.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1783879/000178387925000309-index.htm",
+                    )
+                ]
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return [
+                    (
+                        "https://www.sec.gov/Archives/edgar/data/1783879/000178387925000309/q32025robinhoodexhibit991.htm",
+                        "q32025robinhoodexhibit991.htm",
+                    )
+                ]
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                return (
+                    "Robinhood Reports Third Quarter 2025 Results. "
+                    "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (in millions) "
+                    "Three Months Ended September 30, 2024 2025 June 30, 2025 "
+                    "Net interest revenues 274 456 66 % 357 28 %. "
+                    "Adjusted EBITDA (non-GAAP) $ 268 $ 742 $ 549."
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            disclosure_store = DisclosureStore(Path(tmpdir) / "hood.sqlite")
+            result = DisclosurePipeline(store=disclosure_store, sec_client=FakeSecClient()).run(
+                "HOOD",
+                model_type="CRYPTO_FINANCIAL_INFRA",
+                current_snapshot={"ticker": "HOOD"},
+            )
+
+        saved = {
+            row["metricKey"]: row
+            for row in result["saved"]
+            if row.get("sourceType") == "SEC_8K" and row.get("metricKey") in {"hoodInterestRevenue", "hoodNormalizedEbitda"}
+        }
+
+        self.assertEqual(saved["hoodInterestRevenue"]["value"], 456_000_000)
+        self.assertEqual(saved["hoodInterestRevenue"]["unit"], "usd")
+        self.assertEqual(saved["hoodInterestRevenue"]["period"], "2025 Q3")
+        self.assertEqual(saved["hoodNormalizedEbitda"]["value"], 742_000_000)
+        self.assertEqual(saved["hoodNormalizedEbitda"]["period"], "2025 Q3")
 
     def test_crpo_ratio_text_is_not_extracted_as_growth(self) -> None:
         definition = metric_definition_by_key("cRpoGrowth")

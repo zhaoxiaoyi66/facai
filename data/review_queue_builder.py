@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from data.disclosure_store import DisclosureStore, canMetricEnterScoring
-from data.extract_metric_from_text import metric_value_scope_mismatch, validate_extracted_metric_candidate
+from data.extract_metric_from_text import extractMetricFromText, metric_value_scope_mismatch, validate_extracted_metric_candidate
 from data.fundamentals import FundamentalCache
+from data.metric_dictionary import metric_definition_by_key
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import metric_variant_for_key, target_basis_for_metric
 from data.normalize_metric_value import display_percent_to_scoring_ratio, is_business_percent_metric, normalize_metric_period, normalize_metric_value
@@ -27,6 +28,7 @@ HOOD_BUY_ZONE_CORE_METRICS = {
     "hoodAuc",
     "hoodNetDeposits",
     "hoodTransactionRevenue",
+    "hoodInterestRevenue",
     "hoodSubscriptionGoldRevenue",
     "hoodNormalizedEarnings",
     "hoodNormalizedEbitda",
@@ -355,7 +357,11 @@ class ReviewQueueStore:
                         freshnessStatus = ?,
                         extractionRule = ?,
                         aiTriageStatus = COALESCE(?, aiTriageStatus),
-                        hiddenByDefault = CASE WHEN ? = 'auto_archived' THEN 1 ELSE hiddenByDefault END,
+                        hiddenByDefault = CASE
+                            WHEN ? = 'auto_archived' THEN 1
+                            WHEN ? = 'pending_review' THEN 0
+                            ELSE hiddenByDefault
+                        END,
                         updatedAt = ?
                     WHERE id = ?
                     """,
@@ -389,6 +395,7 @@ class ReviewQueueStore:
                         normalized["freshnessStatus"],
                         normalized["extractionRule"],
                         normalized["aiTriageStatus"],
+                        normalized["reviewStatus"],
                         normalized["reviewStatus"],
                         _now(),
                         existing["id"],
@@ -1838,8 +1845,9 @@ class ReviewQueueBuilder:
         for row in self.disclosure_store.get_metrics(symbol):
             if str(row.get("sourceType") or "") not in EXTRACTED_VALUE_SOURCES:
                 continue
+            row = _refresh_extracted_value_row(row)
             evidence_text = row.get("extractedText") if row.get("sourceUrl") else ""
-            valid, reason = validate_extracted_metric_candidate(str(row.get("metricKey") or ""), str(evidence_text or ""))
+            valid, reason = validate_extracted_metric_candidate(str(row.get("metricKey") or ""), str(evidence_text or ""), _number(row.get("value")))
             freshness_status = row.get("freshnessStatus") or "active_current"
             recommended = "approve, reject, or correct extracted value" if valid else "extraction rejected by rule"
             if freshness_status == "historical_value":
@@ -1854,7 +1862,7 @@ class ReviewQueueBuilder:
                     "itemType": "extracted_value",
                     "value": row.get("value"),
                     "unit": row.get("unit"),
-                    "period": row.get("period"),
+                    "period": _review_period_for_extracted_row(row),
                     "sourceType": row.get("sourceType"),
                     "sourceUrl": row.get("sourceUrl"),
                     "sourceDocumentTitle": row.get("sourceDocumentTitle"),
@@ -2081,12 +2089,13 @@ def _has_high_value_affect(row: dict) -> bool:
 
 
 def _can_reopen_terminal_queue_item(item: dict, existing: dict) -> bool:
+    existing_status = str(existing.get("reviewStatus") or "")
     return (
-        str(existing.get("reviewStatus") or "") == "duplicate_archived"
-        and str(item.get("symbol") or "").upper() == "HOOD"
+        existing_status in {"auto_archived", "duplicate_archived"}
         and str(item.get("itemType") or "") == "extracted_value"
         and str(item.get("sourceKind") or "") == "disclosure_metric_values"
-        and str(item.get("metricKey") or "") in HOOD_BUY_ZONE_CORE_METRICS
+        and item.get("sourceMetricId") is not None
+        and str(item.get("reviewStatus") or "") == "pending_review"
     )
 
 
@@ -2107,15 +2116,31 @@ def _is_noisy_hood_operating_candidate(row: dict) -> bool:
     metric_key = str(row.get("metricKey") or "")
     evidence = str(row.get("evidenceText") or row.get("extractedText") or "")
     value = _number(row.get("value"))
+    if _looks_like_annual_hood_non_gaap_candidate(metric_key, evidence, value):
+        return True
     return unit == "percent" or status == "stale" or metric_value_scope_mismatch(metric_key, evidence, value)
+
+
+def _looks_like_annual_hood_non_gaap_candidate(metric_key: str, evidence: str, value: float | None) -> bool:
+    token = re.sub(r"[^a-z0-9]", "", str(metric_key or "").lower())
+    if not ("hoodnormalizedebitda" in token or "hoodnormalizedearnings" in token):
+        return False
+    if value is None or abs(value) <= 1_500_000_000:
+        return False
+    text = str(evidence or "").lower()
+    return not re.search(r"\b(q[1-4]|quarter|three months ended|first quarter|second quarter|third quarter|fourth quarter)\b", text)
 
 
 def _hood_operating_candidate_rank(row: dict) -> tuple:
     source_rank = _hood_operating_source_rank(row)
     confidence_rank = {"high": 30, "medium": 20, "low": 10}.get(str(row.get("confidence") or "").lower(), 0)
     evidence_rank = 20 if str(row.get("evidenceText") or row.get("extractedText") or "").strip() else 0
+    refreshed_source_rank = 20 if row.get("sourceMetricId") is not None else 0
+    period_quality_rank = 20 if _hood_candidate_period_key(row) and not _date_like_period(row.get("period")) else 0
     return (
         source_rank,
+        refreshed_source_rank,
+        period_quality_rank,
         confidence_rank,
         evidence_rank,
         str(row.get("updatedAt") or ""),
@@ -2127,6 +2152,8 @@ def _hood_operating_metric_rank(row: dict) -> tuple:
     return (
         _hood_candidate_period_rank(row),
         _hood_operating_source_rank(row),
+        20 if row.get("sourceMetricId") is not None else 0,
+        20 if _hood_candidate_period_key(row) and not _date_like_period(row.get("period")) else 0,
         {"high": 30, "medium": 20, "low": 10}.get(str(row.get("confidence") or "").lower(), 0),
         20 if str(row.get("evidenceText") or row.get("extractedText") or "").strip() else 0,
         str(row.get("updatedAt") or ""),
@@ -2328,6 +2355,35 @@ def _number(value: object) -> float | None:
     if number != number:
         return None
     return number
+
+
+def _refresh_extracted_value_row(row: dict) -> dict:
+    metric_key = str(row.get("metricKey") or "")
+    evidence_text = str(row.get("extractedText") or "")
+    definition = metric_definition_by_key(metric_key)
+    if not definition or not evidence_text.strip():
+        return row
+    extracted = extractMetricFromText(evidence_text, definition, confidence=str(row.get("confidence") or "medium"))
+    if not extracted:
+        return row
+    refreshed = dict(row)
+    refreshed["value"] = extracted.value
+    refreshed["unit"] = extracted.unit
+    refreshed["extractedText"] = extracted.extracted_text
+    refreshed["confidence"] = extracted.confidence or refreshed.get("confidence")
+    return refreshed
+
+
+def _review_period_for_extracted_row(row: dict) -> object:
+    periods = normalize_metric_period(row)
+    metric_key = str(row.get("metricKey") or "")
+    if metric_key in HOOD_BUY_ZONE_CORE_METRICS and periods.metricPeriod:
+        return periods.metricPeriod
+    return row.get("period")
+
+
+def _date_like_period(value: object) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value or "").strip()))
 
 
 def _correction_candidate_from_row(row: dict) -> dict:
