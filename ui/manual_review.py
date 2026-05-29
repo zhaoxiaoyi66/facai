@@ -17,6 +17,7 @@ from data.evidence_backfill import backfill_evidence_for_review_item
 from data.review_center_auto_archive import auto_archive_low_priority_review_items
 from data.review_center_view_model import build_review_center_view_model
 from data.review_queue_builder import ReviewQueueBuilder, ReviewQueueStore
+from formatting import format_compact_number, format_large_number
 from review_autopilot import ReviewAutopilot, auto_fill_capability
 from scoring.sector_models import classifyStockModel
 from settings import load_watchlist
@@ -638,19 +639,28 @@ def _model_type_for_symbol(symbol: str) -> str:
 
 
 def _format_value(value: object, unit: object) -> str:
-    if value is None:
+    if value in (None, ""):
         return "暂无"
+    raw_text = str(value).strip()
     try:
-        number = float(value)
+        parse_text = raw_text.replace(",", "").lower().replace("percentage", "").replace("percent", "").replace("%", "").strip()
+        number = float(parse_text)
     except (TypeError, ValueError):
         return str(value)
-    if unit == "percent":
-        return f"{number * 100:.1f}%"
-    if unit == "multiple":
+
+    normalized_unit = str(unit or "").strip().lower()
+    if normalized_unit in {"percent", "percentage", "pct"}:
+        explicit_percent = "%" in raw_text or "percent" in raw_text.lower()
+        return f"{number:.1f}%" if explicit_percent or abs(number) > 1 else f"{number * 100:.1f}%"
+    if normalized_unit in {"multiple", "x"}:
         return f"{number:.2f}x"
-    if unit == "money":
+    if normalized_unit in {"money", "usd", "dollar", "currency"}:
+        return format_large_number(number)
+    if abs(number) >= 1_000_000:
+        return format_compact_number(number)
+    if number.is_integer():
         return f"{number:,.0f}"
-    return f"{number:.4g}"
+    return f"{number:,.2f}".rstrip("0").rstrip(".")
 
 
 def _metric_row_subtitle(row: dict) -> str:
@@ -2204,12 +2214,12 @@ def _affects_tone(value: object) -> str:
 
 def _review_suggested_value_text(row: dict, ai_result: dict | None, view_item: dict | None = None) -> str:
     if isinstance(view_item, dict) and view_item.get("proposedValue") not in (None, ""):
-        return f"建议 {view_item.get('proposedValue')}"
+        return "建议 " + _format_value(view_item.get("proposedValue"), row.get("unit"))
     if ai_result and ai_result.get("correctedValue") is not None:
         return "建议 " + _format_value(ai_result.get("correctedValue"), ai_result.get("correctedUnit") or row.get("unit"))
     display = row.get("displayValue")
     if display and str(display) != str(row.get("value") or ""):
-        return f"建议 {display}"
+        return "建议 " + _format_value(display, row.get("unit"))
     return "建议 暂无"
 
 

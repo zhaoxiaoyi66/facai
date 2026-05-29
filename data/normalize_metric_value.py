@@ -51,7 +51,7 @@ def normalize_metric_value(value: object, unit: object = None, evidence_text: st
     normalized_unit: str | None = unit_text or None
     if scale == "percent":
         normalized_unit = "percent"
-        if numeric is not None and abs(numeric) <= 1:
+        if numeric is not None and abs(numeric) <= 1 and not _has_explicit_percent_marker(raw, numeric, evidence_text):
             numeric = numeric * 100
         display = "N/A" if numeric is None else f"{numeric:.1f}%"
     elif scale == "multiple":
@@ -188,6 +188,23 @@ def _parse_number(value: object) -> float | None:
     text = str(value).strip().replace(",", "")
     match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
     return float(match.group(0)) if match else None
+
+
+def _has_explicit_percent_marker(value: object, numeric: float | None, evidence_text: str = "") -> bool:
+    raw_text = str(value or "").strip().lower() if isinstance(value, str) else ""
+    if "%" in raw_text or "percent" in raw_text:
+        return True
+    if numeric is None or not evidence_text:
+        return False
+    numeric_forms = {
+        f"{numeric:g}",
+        f"{numeric:.1f}",
+        f"{numeric:.2f}".rstrip("0").rstrip("."),
+    }
+    for numeric_form in {form for form in numeric_forms if form}:
+        if re.search(rf"(?<![\d.]){re.escape(numeric_form)}\s*(?:%|percent|percentage)", evidence_text, flags=re.IGNORECASE):
+            return True
+    return False
 
 
 def _value_scale(unit_text: str, evidence_text: str, metric_key: str) -> str:

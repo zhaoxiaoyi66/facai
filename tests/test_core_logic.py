@@ -583,6 +583,40 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(normalize_metric_value("25%", "percent").displayValue, "25.0%")
         self.assertEqual(normalize_metric_value(25.0, "percent").displayValue, "25.0%")
         self.assertEqual(normalize_metric_value(0.25, "percent").displayValue, "25.0%")
+        self.assertEqual(normalize_metric_value("0.13%", "percent").displayValue, "0.1%")
+        self.assertEqual(
+            normalize_metric_value(0.13, "percent", "RPO growth was 0.13%.", "rpoGrowth").displayValue,
+            "0.1%",
+        )
+
+    def test_review_center_percent_values_are_not_scaled_twice(self) -> None:
+        cases = [
+            ("rpoGrowth", 13.0, "RPO increased 13% year-over-year.", "13.0%"),
+            ("subscriptionRevenueGrowth", 15.0, "Subscription revenue grew 15% year-over-year.", "15.0%"),
+            ("cRpoGrowth", 22.5, "cRPO grew 22.5% year-over-year.", "22.5%"),
+            ("nonGaapOperatingMargin", 35.5, "Non-GAAP operating margin was 35.5%.", "35.5%"),
+            ("sbcToRevenue", 0.09, "SBC was 9% of revenue.", "9.0%"),
+        ]
+
+        for metric_key, value, evidence, expected in cases:
+            with self.subTest(metric_key=metric_key):
+                normalized = normalize_metric_value(value, "percent", evidence, metric_key)
+                row = {
+                    "value": normalized.normalizedValue,
+                    "unit": normalized.unit,
+                    "displayValue": normalized.displayValue,
+                }
+
+                self.assertEqual(normalized.displayValue, expected)
+                self.assertEqual(manual_review._format_value(normalized.normalizedValue, normalized.unit), expected)
+                self.assertEqual(
+                    manual_review._review_suggested_value_text(row, None, {"proposedValue": normalized.normalizedValue}),
+                    f"建议 {expected}",
+                )
+                self.assertEqual(
+                    manual_review._review_suggested_value_text(row, None, {"proposedValue": normalized.displayValue}),
+                    f"建议 {expected}",
+                )
 
     def test_deterministic_precheck_exact_can_machine_verify(self) -> None:
         row = {
