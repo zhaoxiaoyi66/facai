@@ -2319,6 +2319,25 @@ def _review_system_reason_text(reason: object) -> str:
     text = str(reason or "").strip()
     if not text:
         return "暂无系统说明。"
+    lowered = text.lower()
+    if "is a core hood brokerage/fintech operating input" in lowered and "do not substitute" in lowered:
+        metric = text.split(" is a core ", 1)[0].strip() or "该字段"
+        metric_label_map = {
+            "auc": "AUC",
+            "net deposits": "net deposits",
+            "transaction revenue": "transaction revenue",
+            "interest revenue": "interest revenue",
+            "subscription / gold revenue": "subscription / Gold revenue",
+            "normalized earnings": "normalized earnings",
+            "normalized ebitda": "normalized EBITDA",
+        }
+        display_metric = metric_label_map.get(metric.lower(), metric)
+        if metric.lower() == "normalized earnings":
+            return "未在当前披露文本中找到 normalized earnings，需人工确认 non-GAAP 盈利口径。"
+        return (
+            f"{display_metric} 是 HOOD 券商 / 金融科技买区模型的核心经营输入，影响系统置信度；"
+            "不得用 P/S、P/FCF 或 FCF yield 替代。需从 SEC / IR 披露中补充证据并人工确认。"
+        )
     labels = {
         "Extracted from SEC / IR / transcript; confirmation is required before scoring.": (
             "已从 SEC / IR / 电话会文本提取，进入评分前需人工确认。"
