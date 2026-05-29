@@ -1,0 +1,44 @@
+version: 1
+
+position_classes:
+  A:
+    core_position_pct: 0.70
+    trading_position_pct: 0.30
+    forbid_core_sale_gain_low_pct: 0.00
+    forbid_core_sale_gain_high_pct: 0.25
+  B:
+    core_position_pct: 0.50
+    trading_position_pct: 0.50
+    forbid_core_sale_gain_low_pct: 0.00
+    forbid_core_sale_gain_high_pct: 0.00
+  C:
+    core_position_pct: 0.00
+    trading_position_pct: 1.00
+    forbid_core_sale_gain_low_pct: 0.00
+    forbid_core_sale_gain_high_pct: 0.00
+
+sell_levels:
+  L0:
+    max_allowed_sell_pct: 0.00
+    can_sell_core: false
+    requires_reentry_plan: false
+  L1:
+    max_allowed_sell_pct: 0.10
+    can_sell_core: false
+    requires_reentry_plan: true
+  L2:
+    max_allowed_sell_pct: 0.20
+    can_sell_core: false
+    requires_reentry_plan: false
+  L3:
+    max_allowed_sell_pct: 0.30
+    can_sell_core: false
+    requires_reentry_plan: false
+  L4:
+    max_allowed_sell_pct: 0.70
+    can_sell_core: true
+    requires_reentry_plan: false
+  L5:
+    max_allowed_sell_pct: 1.00
+    can_sell_core: true
+    requires_reentry_plan: false

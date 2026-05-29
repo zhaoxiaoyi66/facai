@@ -194,7 +194,7 @@ class PortfolioModelTests(unittest.TestCase):
     def test_portfolio_view_model_summarizes_normal_holding(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "portfolio.sqlite"
-            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000, "cash_balance": 500})
             PortfolioPositionStore(db_path).save_position(
                 "now",
                 {
@@ -210,6 +210,9 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(view["summary"]["positionCount"], 1)
         self.assertEqual(view["summary"]["marketValue"], 1200)
         self.assertEqual(view["summary"]["costBasis"], 1000)
+        self.assertEqual(view["summary"]["totalPortfolioValue"], 10000)
+        self.assertEqual(view["summary"]["cashBalance"], 8800)
+        self.assertEqual(view["summary"]["cashBalanceSource"], "derived")
         self.assertEqual(view["summary"]["unrealizedPnl"], 200)
         self.assertEqual(view["summary"]["unrealizedPnlPct"], 20)
         self.assertEqual(view["rows"][0]["positionPct"], 12)

@@ -8,6 +8,7 @@ from data.decision_log import DecisionLogStore, TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
+from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
@@ -34,6 +35,11 @@ TRADE_ACTION_LABELS = {
     "sell_put": "卖 Put",
     "covered_call": "Covered Call",
     "skip": "放弃操作",
+}
+POSITION_CLASS_LABELS = {
+    "A": "A 类核心仓",
+    "B": "B 类平衡仓",
+    "C": "C 类交易仓",
 }
 
 
@@ -135,17 +141,15 @@ def _render_editor(
 
     with st.expander("组合设置", expanded=False):
         with st.form("portfolio-settings-form"):
-            st.caption("仅用于组合基准和现金显示。")
-            settings_cols = st.columns(2)
-            total_value = settings_cols[0].text_input("组合总资产", value=_input_value(settings.get("total_portfolio_value")))
-            cash_balance = settings_cols[1].text_input("现金余额", value=_input_value(settings.get("cash_balance")))
+            st.caption("组合总资产用于仓位基准；现金由总资产减当前证券市值自动得出。")
+            total_value = st.text_input("组合总资产", value=_input_value(settings.get("total_portfolio_value")))
             base_currency = st.text_input("币种", value=str(settings.get("base_currency") or "USD"))
             if st.form_submit_button("保存组合设置", width="stretch"):
                 try:
                     settings_store.save_settings(
                         {
                             "total_portfolio_value": total_value,
-                            "cash_balance": cash_balance,
+                            "cash_balance": None,
                             "base_currency": base_currency,
                         }
                     )
@@ -398,7 +402,7 @@ def render() -> None:
     rows = view["rows"]
 
     _render_deactivate_dialog_if_needed(position_store)
-    _render_overview_strip(view["summary"], settings)
+    _render_overview_strip(view["summary"])
     _render_action_panel(view["actionGroups"])
     _render_positions_table(rows, position_store, plan_store)
     _render_editor(position_store, settings_store, rows, settings)
@@ -425,14 +429,14 @@ def _render_portfolio_notice() -> None:
         st.success(str(message))
 
 
-def _render_overview_strip(summary: dict, settings: dict) -> None:
+def _render_overview_strip(summary: dict) -> None:
     items = [
         ("持仓数", str(summary.get("positionCount", 0)), "active"),
         ("总市值", _money_or_dash(summary.get("marketValue"), zero_dash=True), "market value"),
         ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "cost basis"),
         ("浮动盈亏", _money_or_dash(summary.get("unrealizedPnl")), _percent_or_dash(summary.get("unrealizedPnlPct"))),
-        ("组合基准", _money_or_dash(settings.get("total_portfolio_value"), zero_dash=True), "manual total"),
-        ("现金", _money_or_dash(settings.get("cash_balance"), zero_dash=True), "cash"),
+        ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "manual total"),
+        ("现金", _money_or_dash(summary.get("cashBalance")), "auto cash"),
     ]
     html = "".join(
         '<div class="portfolio-stat compact">'
@@ -629,6 +633,7 @@ def _drawer_html(
     research_notes = _research_notes(symbol, plan_store)
     signal_items = _recent_signal_items(symbol, decision_store)
     trade_items = _recent_trade_items(symbol, trade_store)
+    discipline_items = _trading_discipline_items(row)
     sections = [
         ("持仓摘要", [
             ("持股数量", _quantity_text(row.get("quantity"))),
@@ -649,6 +654,7 @@ def _drawer_html(
             ("阻断原因", _reason_text(row.get("blockReasons"))),
             ("复核原因", _reason_text(row.get("reviewReasons"))),
         ]),
+        ("交易纪律", discipline_items),
         ("最近信号", signal_items),
         ("最近操作", trade_items),
         ("研究备忘录", [
@@ -689,6 +695,80 @@ def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
         for label, value in items
     )
     return f'<section class="portfolio-drawer-section"><h4>{escape(title)}</h4><div>{rows}</div></section>'
+
+
+def _trading_discipline_items(row: dict) -> list[tuple[str, object]]:
+    symbol = str(row.get("symbol") or "").upper()
+    position_class = _position_class_for_row(row)
+    config = load_trading_discipline_config()
+    class_rules = dict(config.get("position_classes", {}).get(position_class, {}))
+    core_pct = _number(class_rules.get("core_position_pct")) or 0.0
+    trading_pct = _number(class_rules.get("trading_position_pct"))
+    if trading_pct is None:
+        trading_pct = max(0.0, 1.0 - core_pct)
+    macro_check = evaluate_trading_discipline(
+        symbol=symbol,
+        positionClass=position_class,
+        corePositionPct=core_pct,
+        tradingPositionPct=trading_pct,
+        unrealizedGainPct=_number(row.get("unrealizedPnlPct")),
+        plannedAction="sell",
+        plannedSellPct=1.0,
+        sellReasonType="macro",
+        thesisBroken=False,
+        positionOverLimit=bool(row.get("overweightSystem") or row.get("overweightPersonal")),
+        hasReentryPlan=False,
+        config=config,
+    )
+    trim_check = evaluate_trading_discipline(
+        symbol=symbol,
+        positionClass=position_class,
+        corePositionPct=core_pct,
+        tradingPositionPct=trading_pct,
+        unrealizedGainPct=_number(row.get("unrealizedPnlPct")),
+        plannedAction="trim",
+        plannedSellPct=min(max(trading_pct, 0.0), 0.1),
+        sellReasonType="technical",
+        thesisBroken=False,
+        positionOverLimit=bool(row.get("overweightSystem") or row.get("overweightPersonal")),
+        hasReentryPlan=False,
+        config=config,
+    )
+    can_sell_core = "允许" if macro_check.canSellCore else "不允许，除非投资逻辑已确认破裂"
+    requires_reentry = "需要" if trim_check.requiresReentryPlan else "不需要"
+    return [
+        ("股票分类", POSITION_CLASS_LABELS.get(position_class, position_class)),
+        ("核心仓比例", format_percent(core_pct, already_percent=False)),
+        ("交易仓比例", format_percent(trading_pct, already_percent=False)),
+        ("允许卖核心仓", can_sell_core),
+        ("需要回补计划", requires_reentry),
+        ("纪律提醒", _discipline_reminder_text(row, macro_check, trim_check)),
+    ]
+
+
+def _position_class_for_row(row: dict) -> str:
+    anchor = (
+        _number(row.get("targetPositionPct"))
+        or _number(row.get("systemMaxPosition"))
+        or _number(row.get("positionPct"))
+        or 0.0
+    )
+    if anchor >= 8:
+        return "A"
+    if anchor >= 4:
+        return "B"
+    return "C"
+
+
+def _discipline_reminder_text(row: dict, macro_check, trim_check) -> str:
+    position_class = _position_class_for_row(row)
+    if macro_check.blockers:
+        return "宏观恐慌不能作为清仓理由；先处理交易仓，核心仓只在投资逻辑破裂后复核。"
+    if trim_check.requiresReentryPlan:
+        return "技术或估值减仓前先写回补条件，避免卖飞后没有再入场计划。"
+    if position_class == "C":
+        return "交易仓可更灵活，但仍按计划减仓，不用情绪替代规则。"
+    return str(macro_check.reminderText or "继续按持仓纪律执行，不做情绪化卖出。")
 
 
 def _research_notes(symbol: str, plan_store: StockPlanStore) -> str:

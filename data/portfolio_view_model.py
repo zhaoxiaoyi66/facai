@@ -47,7 +47,7 @@ def build_portfolio_view_model(
         for row in calculated
     ]
     return {
-        "summary": _summary(rows),
+        "summary": _summary(rows, settings),
         "actionGroups": _action_groups(rows),
         "rows": rows,
         "settings": settings,
@@ -94,15 +94,20 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any]) -> dict[
     }
 
 
-def _summary(rows: list[dict]) -> dict[str, Any]:
+def _summary(rows: list[dict], settings: dict | None = None) -> dict[str, Any]:
     market_value = _sum_present(row.get("marketValue") for row in rows)
     cost_basis = _sum_present(row.get("costBasis") for row in rows)
     unrealized_pnl = _sum_present(row.get("unrealizedPnl") for row in rows)
+    total_value = _number((settings or {}).get("total_portfolio_value"))
+    cash_balance = total_value - market_value if total_value is not None and total_value > 0 else None
     return {
         "marketValue": market_value,
         "costBasis": cost_basis,
         "unrealizedPnl": unrealized_pnl,
         "unrealizedPnlPct": unrealized_pnl / cost_basis * 100 if cost_basis > 0 else None,
+        "totalPortfolioValue": total_value,
+        "cashBalance": cash_balance,
+        "cashBalanceSource": "derived" if cash_balance is not None else "unavailable",
         "positionCount": len(rows),
         "overweightCount": sum(1 for row in rows if row["overweightSystem"] or row["overweightPersonal"]),
         "needsReviewCount": sum(1 for row in rows if row["needsReview"] or row["missingPrice"]),

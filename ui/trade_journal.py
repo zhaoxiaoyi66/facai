@@ -13,6 +13,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.trading_discipline import evaluate_trading_discipline
 from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
 
@@ -27,6 +28,28 @@ ACTION_OPTIONS = {
     "放弃操作": "skip",
 }
 ACTION_LABELS = {value: label for label, value in ACTION_OPTIONS.items()}
+SELL_DISCIPLINE_ACTIONS = {"sell", "trim"}
+SELL_REASON_OPTIONS = {
+    "宏观风险": "macro",
+    "技术破位 / 过热": "technical",
+    "估值过高": "valuation",
+    "仓位过重": "position_size",
+    "投资假设破裂": "thesis_broken",
+}
+DISCIPLINE_STATUS_LABELS = {
+    "allowed": "允许执行",
+    "warning": "需要复核",
+    "blocked": "纪律不建议执行",
+    "hold": "无需卖出",
+}
+DISCIPLINE_BLOCKER_LABELS = {
+    "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在 thesis 未破裂时清仓。",
+    "a_class_core_sale_blocked_while_gain_0_to_25_pct": "A 类持仓在 0-25% 浮盈区间不建议卖核心仓。",
+    "sell_level_does_not_allow_core_sale": "当前卖出等级不允许动核心仓。",
+    "macro_risk_cannot_trigger_single_name_exit": "宏观风险不能单独触发个股清仓。",
+    "reentry_plan_required_before_trim_or_sell": "减仓 / 卖出前需要明确回补计划。",
+    "planned_sell_pct_exceeds_sell_level_limit": "计划卖出比例超过当前纪律等级上限。",
+}
 FINAL_ACTION_LABELS = {
     "add": "加仓",
     "buy": "买入",
@@ -94,43 +117,142 @@ def _render_editor(store: TradeJournalStore) -> None:
     editor_open = bool(st.session_state.get("trade_journal_editor_open", False))
     with st.expander("新增交易记录", expanded=editor_open):
         st.session_state["trade_journal_editor_open"] = False
-        with st.form("trade-journal-form"):
-            top_cols = st.columns([1.1, 1.2, 1])
-            symbol = top_cols[0].text_input("股票代码", key="trade-journal-symbol").strip().upper()
-            action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), key="trade-journal-action")
-            trade_date = top_cols[2].date_input("日期", value=date.today(), key="trade-journal-date")
+        top_cols = st.columns([1.1, 1.2, 1])
+        symbol = top_cols[0].text_input("股票代码", key="trade-journal-symbol").strip().upper()
+        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), key="trade-journal-action")
+        trade_date = top_cols[2].date_input("日期", value=date.today(), key="trade-journal-date")
+        action_type = ACTION_OPTIONS[action_label]
 
-            trade_cols = st.columns(3)
-            quantity = trade_cols[0].text_input("数量", key="trade-journal-quantity")
-            price = trade_cols[1].text_input("价格", key="trade-journal-price")
-            decision_snapshot_id = trade_cols[2].text_input(
-                "关联信号 ID（可选）",
-                key="trade-journal-snapshot-id",
+        trade_cols = st.columns(3)
+        quantity = trade_cols[0].text_input("数量", key="trade-journal-quantity")
+        price = trade_cols[1].text_input("价格", key="trade-journal-price")
+        decision_snapshot_id = trade_cols[2].text_input(
+            "关联信号 ID（可选）",
+            key="trade-journal-snapshot-id",
+        )
+
+        option_cols = st.columns(3)
+        premium = option_cols[0].text_input("权利金", key="trade-journal-premium")
+        strike_price = option_cols[1].text_input("行权价", key="trade-journal-strike")
+        expiry_date = option_cols[2].text_input("到期日", placeholder="YYYY-MM-DD", key="trade-journal-expiry")
+
+        if action_type in SELL_DISCIPLINE_ACTIONS:
+            _render_trading_discipline_check(symbol, action_type)
+
+        notes = st.text_area("备注", height=86, key="trade-journal-notes")
+        if st.button("保存记录", key="trade-journal-save", width="stretch"):
+            _save_entry(
+                store,
+                symbol,
+                {
+                    "trade_date": trade_date.isoformat(),
+                    "action_type": action_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "premium": premium,
+                    "strike_price": strike_price,
+                    "expiry_date": expiry_date,
+                    "decision_snapshot_id": decision_snapshot_id,
+                    "notes": notes,
+                },
             )
 
-            option_cols = st.columns(3)
-            premium = option_cols[0].text_input("权利金", key="trade-journal-premium")
-            strike_price = option_cols[1].text_input("行权价", key="trade-journal-strike")
-            expiry_date = option_cols[2].text_input("到期日", placeholder="YYYY-MM-DD", key="trade-journal-expiry")
 
-            notes = st.text_area("备注", height=86, key="trade-journal-notes")
-            submitted = st.form_submit_button("保存记录", width="stretch")
-            if submitted:
-                _save_entry(
-                    store,
-                    symbol,
-                    {
-                        "trade_date": trade_date.isoformat(),
-                        "action_type": ACTION_OPTIONS[action_label],
-                        "quantity": quantity,
-                        "price": price,
-                        "premium": premium,
-                        "strike_price": strike_price,
-                        "expiry_date": expiry_date,
-                        "decision_snapshot_id": decision_snapshot_id,
-                        "notes": notes,
-                    },
-                )
+def _render_trading_discipline_check(symbol: str, action_type: str) -> None:
+    st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
+    cols = st.columns([0.72, 0.92, 1.2, 0.86, 0.86, 0.92], gap="small")
+    position_class = cols[0].selectbox("positionClass", ["A", "B", "C"], key="trade-discipline-position-class")
+    planned_sell_pct = cols[1].text_input("plannedSellPct（%）", value="10", key="trade-discipline-planned-sell-pct")
+    reason_label = cols[2].selectbox("sellReasonType", list(SELL_REASON_OPTIONS), key="trade-discipline-sell-reason")
+    thesis_broken = cols[3].checkbox("thesisBroken", key="trade-discipline-thesis-broken")
+    position_over_limit = cols[4].checkbox("positionOverLimit", key="trade-discipline-position-over-limit")
+    has_reentry_plan = cols[5].checkbox("hasReentryPlan", key="trade-discipline-has-reentry-plan")
+
+    result = evaluate_trading_discipline(
+        symbol=symbol,
+        positionClass=position_class,
+        corePositionPct=None,
+        tradingPositionPct=None,
+        unrealizedGainPct=None,
+        plannedAction=action_type,
+        plannedSellPct=_parse_optional_float(planned_sell_pct),
+        sellReasonType=SELL_REASON_OPTIONS[reason_label],
+        thesisBroken=thesis_broken,
+        positionOverLimit=position_over_limit,
+        hasReentryPlan=has_reentry_plan,
+    )
+    _render_trading_discipline_result(result)
+
+
+def _render_trading_discipline_result(result) -> None:
+    status = str(result.disciplineStatus or "")
+    tone = _discipline_status_tone(status)
+    metrics = [
+        ("disciplineStatus", DISCIPLINE_STATUS_LABELS.get(status, status or "N/A")),
+        ("sellLevel", str(result.sellLevel or "N/A")),
+        ("maxAllowedSellPct", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
+        ("canSellCore", _yes_no(result.canSellCore)),
+        ("requiresReentryPlan", _yes_no(result.requiresReentryPlan)),
+    ]
+    metric_html = "".join(
+        f'<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>'
+        for label, value in metrics
+    )
+    blocker_html = _discipline_messages_html("blockers", result.blockers, is_blocker=True)
+    warning_html = _discipline_messages_html("warnings", result.warnings, is_blocker=False)
+    st.markdown(
+        f"""
+        <section class="trade-discipline-card {escape(tone)}">
+          <div class="trade-discipline-head">
+            <strong>{escape(DISCIPLINE_STATUS_LABELS.get(status, status or "N/A"))}</strong>
+            <span>{escape(str(result.reminderText or ""))}</span>
+          </div>
+          <div class="trade-discipline-grid">{metric_html}</div>
+          {blocker_html}
+          {warning_html}
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    if result.blockers:
+        st.error("纪律不建议执行该卖出。可以保存记录，但请先复核核心仓、卖出比例和回补计划。")
+
+
+def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bool) -> str:
+    if not items:
+        return ""
+    class_name = "blockers" if is_blocker else "warnings"
+    label = "blockers" if is_blocker else "warnings"
+    rows = "".join(f"<li>{escape(_discipline_message_text(item))}</li>" for item in items)
+    return f'<div class="trade-discipline-messages {class_name}"><b>{escape(title or label)}</b><ul>{rows}</ul></div>'
+
+
+def _discipline_message_text(item: object) -> str:
+    text = str(item or "").strip()
+    return DISCIPLINE_BLOCKER_LABELS.get(text, text or "N/A")
+
+
+def _discipline_status_tone(status: str) -> str:
+    return {
+        "allowed": "ok",
+        "warning": "warning",
+        "blocked": "blocked",
+        "hold": "neutral",
+    }.get(status, "neutral")
+
+
+def _yes_no(value: object) -> str:
+    return "是" if bool(value) else "否"
+
+
+def _parse_optional_float(value: object) -> float | None:
+    text = str(value or "").strip().replace("%", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
@@ -1843,6 +1965,97 @@ def _render_styles() -> None:
             border-color: rgba(15, 23, 42, 0.08);
             border-radius: 8px;
             background: rgba(255, 255, 255, 0.78);
+        }
+        .trade-discipline-title {
+            margin: 0.64rem 0 0.35rem;
+            color: #0F172A;
+            font-size: 0.76rem;
+            font-weight: 760;
+            letter-spacing: 0;
+        }
+        .trade-discipline-card {
+            margin: 0.45rem 0 0.68rem;
+            padding: 0.72rem 0.82rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF, #F8FAFC);
+        }
+        .trade-discipline-card.warning {
+            border-color: rgba(181, 106, 50, 0.18);
+            background: linear-gradient(180deg, rgba(255, 251, 235, 0.92), rgba(255, 255, 255, 0.86));
+        }
+        .trade-discipline-card.blocked {
+            border-color: rgba(164, 48, 63, 0.2);
+            background: linear-gradient(180deg, rgba(255, 245, 245, 0.94), rgba(255, 255, 255, 0.88));
+        }
+        .trade-discipline-card.ok {
+            border-color: rgba(79, 157, 120, 0.18);
+            background: linear-gradient(180deg, rgba(244, 250, 246, 0.94), rgba(255, 255, 255, 0.88));
+        }
+        .trade-discipline-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.8rem;
+            margin-bottom: 0.5rem;
+        }
+        .trade-discipline-head strong {
+            color: #0F172A;
+            font-size: 0.82rem;
+            font-weight: 820;
+            white-space: nowrap;
+        }
+        .trade-discipline-head span {
+            color: #64748B;
+            font-size: 0.72rem;
+            text-align: right;
+        }
+        .trade-discipline-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .trade-discipline-grid div {
+            display: grid;
+            gap: 0.08rem;
+            min-width: 0;
+            padding: 0.42rem 0.5rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.055);
+            background: rgba(255, 255, 255, 0.62);
+        }
+        .trade-discipline-grid div:last-child {
+            border-right: 0;
+        }
+        .trade-discipline-grid span {
+            color: #64748B;
+            font-size: 0.66rem;
+            white-space: nowrap;
+        }
+        .trade-discipline-grid strong {
+            color: #0F172A;
+            font-size: 0.75rem;
+            font-weight: 780;
+            white-space: nowrap;
+        }
+        .trade-discipline-messages {
+            margin-top: 0.5rem;
+            color: #52657F;
+            font-size: 0.72rem;
+        }
+        .trade-discipline-messages b {
+            display: block;
+            margin-bottom: 0.18rem;
+            color: #334155;
+            font-size: 0.68rem;
+        }
+        .trade-discipline-messages ul {
+            margin: 0;
+            padding-left: 1rem;
+        }
+        .trade-discipline-messages.blockers {
+            color: #8A1F1F;
         }
         [data-testid="stFormSubmitButton"] button {
             background: #0B1220 !important;
