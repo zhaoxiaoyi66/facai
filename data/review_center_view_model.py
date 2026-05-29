@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Iterable
 
+from data.extract_metric_from_text import metric_value_scope_mismatch
 from data.review_queue_builder import ReviewQueueStore, SCORING_AFFECTS
 
 
@@ -294,6 +295,15 @@ def _has_review_value(row: dict) -> bool:
     return any(row.get(key) not in (None, "") for key in ("displayValue", "normalizedValue", "value")) or bool(_correction_candidate(row))
 
 
+def _is_money_scope_mismatch_candidate(row: dict) -> bool:
+    if str(row.get("itemType") or "").strip() != "extracted_value":
+        return False
+    metric_key = str(row.get("metricKey") or "")
+    evidence = str(row.get("evidenceText") or row.get("extractedText") or "")
+    value = _number(row.get("value"))
+    return metric_value_scope_mismatch(metric_key, evidence, value)
+
+
 def _is_risk_observation_item(row: dict, has_value: bool) -> bool:
     item_type = _normalized_token(row.get("itemType"))
     metric_key = _normalized_token(row.get("metricKey"))
@@ -329,6 +339,8 @@ def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_eviden
     triage = str(row.get("aiTriageStatus") or "").strip()
     item_type = str(row.get("itemType") or "").strip()
     status = str(row.get("reviewStatus") or "").strip()
+    if _is_money_scope_mismatch_candidate(row):
+        return True
     if status == "stale" or _is_historical(row):
         return True
     if triage in AUTO_ARCHIVE_TRIAGE_STATUSES:
@@ -436,6 +448,8 @@ def _suggested_action(
 
 
 def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, can_auto_archive: bool, risk_observation: bool = False) -> str:
+    if _is_money_scope_mismatch_candidate(row):
+        return "金额单位或口径不匹配，需降级归档，不能作为主候选。"
     for key in ("recommendedAction", "aiExplanationZh", "explanation", "systemReason", "correctionNotes"):
         text = _clean_text(row.get(key))
         if text:
@@ -465,6 +479,13 @@ def _evidence_summary(row: dict) -> str:
 
 def _clean_text(value: object) -> str:
     return " ".join(str(value or "").split())
+
+
+def _number(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _truncate(value: str, limit: int) -> str:

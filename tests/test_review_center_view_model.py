@@ -188,6 +188,46 @@ class ReviewCenterViewModelTests(unittest.TestCase):
             {"subscriptionRevenueGrowth", "rpoGrowth"},
         )
 
+    def test_hood_money_scope_mismatches_are_archive_candidates_not_main_work(self) -> None:
+        rows = [
+            _review_row(
+                1,
+                metric_key="hoodAuc",
+                value=1_600_000_000,
+                confidence="medium",
+                evidence_text="Robinhood Strategies grew to $1.6 billion in assets under management.",
+            ),
+            _review_row(
+                2,
+                metric_key="hoodNetDeposits",
+                value=67_800_000_000,
+                confidence="medium",
+                evidence_text="Over the past twelve months, Net Deposits were $67.8 billion.",
+            ),
+            _review_row(
+                3,
+                metric_key="hoodNormalizedEbitda",
+                value=761,
+                confidence="medium",
+                evidence_text="Adjusted EBITDA (non-GAAP) $ 761 $ 470 $ 534.",
+            ),
+        ]
+        for row in rows:
+            row["symbol"] = "HOOD"
+            row["unit"] = "usd"
+
+        view = build_review_center_view_model(rows=rows)
+        groups = {group["key"]: group for group in view["groups"]}
+
+        self.assertEqual(groups["highPriorityPending"]["items"], [])
+        self.assertEqual(groups["scoringImpactNeedsHuman"]["items"], [])
+        self.assertEqual(groups["autoConfirmCandidates"]["items"], [])
+        self.assertEqual(
+            {item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]},
+            {"hoodAuc", "hoodNetDeposits", "hoodNormalizedEbitda"},
+        )
+        self.assertTrue(all(item["canAutoArchive"] for item in groups["autoArchiveCandidates"]["items"]))
+
     def test_crypto_cycle_sensitivity_is_risk_observation_not_data_confirmation(self) -> None:
         rows = [
             _review_row(

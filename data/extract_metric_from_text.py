@@ -124,10 +124,8 @@ def validate_extracted_metric_candidate(metric_key: str, evidence_text: str, can
     if canonical_key == "fcfMargin":
         if not re.search(r"\b(free cash flow margin|fcf margin)\b", text, flags=re.IGNORECASE):
             return False, "原文没有明确 free cash flow margin"
-    if canonical_key == "hoodAuc" and money_metric_scope_mismatch(canonical_key, text, candidate_value):
-        return False, "HOOD AUC 口径不匹配：仅接受 total AUC / Assets Under Custody / platform AUC。"
-    if canonical_key == "hoodNetDeposits" and money_metric_scope_mismatch(canonical_key, text, candidate_value):
-        return False, "HOOD net deposits 口径不匹配：TTM/LTM/全年口径不能冒充季度 net deposits。"
+    if metric_value_scope_mismatch(canonical_key, text, candidate_value):
+        return False, "金额单位、期间或公司级口径不匹配，不能作为主候选。"
     return True, "valid"
 
 
@@ -176,49 +174,95 @@ def _extract_value(window: str, unit_hint: str, scale_context: str | None = None
 def _best_candidate(candidates: list[ExtractedMetric], metric_key: str | None = None) -> ExtractedMetric | None:
     if not candidates:
         return None
-    if metric_key == "hoodNetDeposits":
+    if _expected_period_scope(metric_key) == "quarterly":
         scoped = [
             candidate
             for candidate in candidates
-            if not money_metric_scope_mismatch(metric_key, candidate.extracted_text, candidate.value)
+            if not metric_value_scope_mismatch(metric_key, candidate.extracted_text, candidate.value)
         ]
         if scoped:
             candidates = scoped
     return max(candidates, key=lambda item: (len(item.extracted_text), abs(item.value)))
 
 
-def money_metric_scope_mismatch(metric_key: str, evidence_text: str, value: float | None = None) -> bool:
+def metric_value_scope_mismatch(metric_key: str, evidence_text: str, value: float | None = None) -> bool:
     text = _normalize_whitespace(evidence_text).lower()
     canonical_key = _canonical_metric_key(metric_key)
 
-    if canonical_key == "hoodAuc":
-        if re.search(r"\b(robinhood strategies|robinhood retirement|retirement auc|assets under management|aum)\b", text):
+    if _requires_company_level_asset_scope(canonical_key):
+        if _has_sub_business_asset_context(text):
             return True
-        return not re.search(r"\b(total\s+auc|auc|assets under custody|platform auc)\b", text)
+        return not _has_company_level_asset_context(text)
 
-    if canonical_key == "hoodNetDeposits":
+    if _expected_period_scope(canonical_key) == "quarterly":
         if value is not None:
             context = _money_context_for_value(text, value)
-            prefix = context.split("$", 1)[0]
-            if re.search(r"\b(ttm|ltm|trailing|last|past|over)\b.{0,80}\b(twelve|12)\s+months?\b", prefix):
-                return True
-            if re.search(r"\b(full year|year ended|in\s+20\d{2})\b", prefix) and "q" not in context and "quarter" not in context:
+            if _period_scope_mismatch(context, expected="quarterly"):
                 return True
             return False
-        if re.search(r"\b(ttm|ltm|trailing|last|past|over)\b.{0,60}\b(twelve|12)\s+months?\b", text) and not re.search(
-            r"\bquarter\b|\bq[1-4]\b",
-            text,
-        ):
-            return True
-        if re.search(r"\b(full year|year ended|in\s+20\d{2})\b", text) and "q" not in text and "quarter" not in text:
+        if _period_scope_mismatch(text, expected="quarterly"):
             return True
         return not re.search(r"\bnet deposits?\s+(?:were|was|of)?\s*\$?\s*\d", text)
 
-    if canonical_key in {"hoodNormalizedEarnings", "hoodNormalizedEbitda"} and value is not None:
-        if 0 < abs(value) < 1_000_000 and re.search(r"\b(adjusted|normalized).{0,40}(ebitda|earnings|net income)\b", text):
-            return True
+    if _looks_like_scaled_non_gaap_money_metric(canonical_key, text, value):
+        return True
 
     return False
+
+
+def money_metric_scope_mismatch(metric_key: str, evidence_text: str, value: float | None = None) -> bool:
+    return metric_value_scope_mismatch(metric_key, evidence_text, value)
+
+
+def _requires_company_level_asset_scope(metric_key: str) -> bool:
+    token = _normalized_metric_token(metric_key)
+    return "auc" in token or "assetsundercustody" in token
+
+
+def _has_sub_business_asset_context(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(robinhood strategies|robinhood retirement|retirement auc|segment|business line|sub[- ]business|assets under management|aum)\b",
+            text,
+        )
+    )
+
+
+def _has_company_level_asset_context(text: str) -> bool:
+    return bool(re.search(r"\b(total\s+auc|auc|assets under custody|platform auc|company[- ]level|consolidated)\b", text))
+
+
+def _expected_period_scope(metric_key: str) -> str | None:
+    token = _normalized_metric_token(metric_key)
+    if "netdeposits" in token or "netdeposit" in token:
+        return "quarterly"
+    return None
+
+
+def _period_scope_mismatch(text: str, expected: str) -> bool:
+    if expected != "quarterly":
+        return False
+    prefix = text.split("$", 1)[0]
+    if re.search(r"\b(ttm|ltm|trailing|last|past|over)\b.{0,80}\b(twelve|12)\s+months?\b", prefix):
+        return True
+    if re.search(r"\b(full year|fy|year ended|in\s+20\d{2})\b", prefix) and not re.search(r"\bquarter\b|\bq[1-4]\b", text):
+        return True
+    return False
+
+
+def _looks_like_scaled_non_gaap_money_metric(metric_key: str, text: str, value: float | None) -> bool:
+    if value is None:
+        return False
+    token = _normalized_metric_token(metric_key)
+    if not ("ebitda" in token or "earnings" in token or "netincome" in token):
+        return False
+    return 0 < abs(value) < 1_000_000 and bool(
+        re.search(r"\b(adjusted|normalized|non[- ]gaap).{0,60}(ebitda|earnings|net income)\b", text)
+    )
+
+
+def _normalized_metric_token(metric_key: str) -> str:
+    return "".join(ch for ch in str(metric_key or "").lower() if ch.isalnum())
 
 
 def _money_unit_multiplier(suffix: str, context: str) -> float:

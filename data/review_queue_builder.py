@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from data.disclosure_store import DisclosureStore, canMetricEnterScoring
-from data.extract_metric_from_text import money_metric_scope_mismatch, validate_extracted_metric_candidate
+from data.extract_metric_from_text import metric_value_scope_mismatch, validate_extracted_metric_candidate
 from data.fundamentals import FundamentalCache
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import metric_variant_for_key, target_basis_for_metric
@@ -2107,7 +2107,7 @@ def _is_noisy_hood_operating_candidate(row: dict) -> bool:
     metric_key = str(row.get("metricKey") or "")
     evidence = str(row.get("evidenceText") or row.get("extractedText") or "")
     value = _number(row.get("value"))
-    return unit == "percent" or status == "stale" or money_metric_scope_mismatch(metric_key, evidence, value)
+    return unit == "percent" or status == "stale" or metric_value_scope_mismatch(metric_key, evidence, value)
 
 
 def _hood_operating_candidate_rank(row: dict) -> tuple:
