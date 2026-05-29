@@ -105,7 +105,13 @@ from data.ir_kpi_scraper import kpi_mapping_for_ticker, parse_ir_kpi_text
 from data.metric_dictionary import metric_definition_by_key
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import extract_saas_metric_variants
-from data.normalize_metric_value import deterministic_precheck, normalize_metric_period, normalize_metric_value
+from data.normalize_metric_value import (
+    deterministic_precheck,
+    display_percent_to_scoring_ratio,
+    normalize_metric_period,
+    normalize_metric_value,
+    scoring_ratio_to_display_percent,
+)
 from data.providers import (
     FMPProvider,
     MarketDataProvider,
@@ -617,6 +623,79 @@ class ProviderTests(unittest.TestCase):
                     manual_review._review_suggested_value_text(row, None, {"proposedValue": normalized.displayValue}),
                     f"建议 {expected}",
                 )
+
+    def test_business_percent_values_convert_to_scoring_ratio(self) -> None:
+        cases = [
+            ("rpoGrowth", 13.0, 0.13),
+            ("cRpoGrowth", 0.13, 0.13),
+            ("subscriptionRevenueGrowth", "130%", 1.30),
+            ("sbcToRevenue", 9.3, 0.093),
+            ("nonGaapOperatingMargin", 35.5, 0.355),
+        ]
+
+        for metric_key, value, expected in cases:
+            with self.subTest(metric_key=metric_key):
+                self.assertAlmostEqual(display_percent_to_scoring_ratio(value, "percent", metric_key), expected)
+
+        self.assertEqual(scoring_ratio_to_display_percent(0.13), 13.0)
+        self.assertEqual(scoring_ratio_to_display_percent(1.30), 130.0)
+
+    def test_disclosure_store_writes_business_percent_as_scoring_ratio(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DisclosureStore(Path(tmpdir) / "cache.sqlite")
+            cases = [
+                ("rpoGrowth", 13.0, "rpo_growth", 0.13),
+                ("cRpoGrowth", 0.13, "crpo_growth", 0.13),
+                ("subscriptionRevenueGrowth", 130.0, "subscription_revenue_growth", 1.30),
+                ("sbcToRevenue", 9.3, "sbc_ratio", 0.093),
+                ("nonGaapOperatingMargin", 35.5, "non_gaap_operating_margin", 0.355),
+            ]
+
+            for metric_key, value, snapshot_key, expected in cases:
+                with self.subTest(metric_key=metric_key):
+                    store.save_metric(
+                        "NOW",
+                        metric_key,
+                        value,
+                        "percent",
+                        "Q1 2026",
+                        "MANUAL_CORRECTION",
+                        None,
+                        "Manual Review Center",
+                        "confirmed percent value",
+                        "high",
+                        review_status="manually_corrected",
+                        reviewed_by="local_user",
+                    )
+                    row = store.list_metrics(symbol="NOW", metric_key=metric_key)[0]
+                    supplement = store.metric_supplement("NOW", scoring_only=True)
+
+                    self.assertAlmostEqual(row["value"], expected)
+                    self.assertAlmostEqual(supplement[snapshot_key], expected)
+
+    def test_review_corrections_write_business_percent_as_scoring_ratio(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = ReviewQueueStore(Path(tmpdir) / "cache.sqlite")
+            ai_item = _insert_review_item(store, metric_key="rpoGrowth", value=0.13, extracted_text="RPO grew 13% in Q1 2026.")
+            result = _qwen_review_result("recommend_correct", corrected_value=13.0, confidence=0.93)
+
+            store.accept_ai_correction(int(ai_item["id"]), result)
+            ai_metric = store.disclosure_store.list_metrics(symbol="NOW", metric_key="rpoGrowth")[0]
+
+            self.assertEqual(store.get_item(int(ai_item["id"]))["value"], 13.0)
+            self.assertAlmostEqual(ai_metric["value"], 0.13)
+
+            manual_item = _insert_review_item(
+                store,
+                metric_key="sbcToRevenue",
+                value=0.09,
+                extracted_text="SBC was 9% of revenue in Q1 2026.",
+            )
+            store.correct_item(int(manual_item["id"]), 9.3, "percent", "Q1 2026", "manual edit")
+            manual_metric = store.disclosure_store.list_metrics(symbol="NOW", metric_key="sbcToRevenue")[0]
+
+            self.assertEqual(store.get_item(int(manual_item["id"]))["value"], 9.3)
+            self.assertAlmostEqual(manual_metric["value"], 0.093)
 
     def test_deterministic_precheck_exact_can_machine_verify(self) -> None:
         row = {
@@ -4383,6 +4462,67 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(extracted.unit, "usd")
             self.assertEqual(extracted.value, 336_000_000)
 
+    def test_hood_money_extraction_scales_table_millions_and_explicit_suffixes(self) -> None:
+        ebitda_definition = metric_definition_by_key("hoodNormalizedEbitda")
+        self.assertIsNotNone(ebitda_definition)
+        table_text = (
+            "ROBINHOOD MARKETS, INC. CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS "
+            "(in millions, except share, per share, and percentage data) Adjusted EBITDA (non-GAAP) $ 761 $ 470 $ 534"
+        )
+
+        table_extracted = extractMetricFromText(table_text, ebitda_definition, confidence="medium")
+        billion_extracted = extractMetricFromText(
+            "Adjusted EBITDA increased year-over-year to $2.5 billion.",
+            ebitda_definition,
+            confidence="medium",
+        )
+        transaction_definition = metric_definition_by_key("hoodTransactionRevenue")
+        self.assertIsNotNone(transaction_definition)
+        transaction_extracted = extractMetricFromText(
+            "Transaction-based revenues increased year-over-year to $623 million.",
+            transaction_definition,
+            confidence="medium",
+        )
+
+        self.assertIsNotNone(table_extracted)
+        self.assertEqual(table_extracted.value, 761_000_000)
+        self.assertIsNotNone(billion_extracted)
+        self.assertEqual(billion_extracted.value, 2_500_000_000)
+        self.assertIsNotNone(transaction_extracted)
+        self.assertEqual(transaction_extracted.value, 623_000_000)
+
+    def test_hood_auc_rejects_sub_business_aum(self) -> None:
+        definition = metric_definition_by_key("hoodAuc")
+        self.assertIsNotNone(definition)
+
+        extracted = extractMetricFromText(
+            "Robinhood Strategies grew to $1.6 billion in assets under management.",
+            definition,
+            confidence="medium",
+        )
+
+        self.assertIsNone(extracted)
+
+    def test_hood_net_deposits_rejects_ttm_and_prefers_quarterly(self) -> None:
+        definition = metric_definition_by_key("hoodNetDeposits")
+        self.assertIsNotNone(definition)
+
+        ttm_only = extractMetricFromText(
+            "Over the past twelve months, Net Deposits were $67.8 billion.",
+            definition,
+            confidence="medium",
+        )
+        mixed = extractMetricFromText(
+            "Net deposits were $17.7 billion in the quarter. "
+            "Over the past twelve months, Net Deposits were $67.8 billion.",
+            definition,
+            confidence="medium",
+        )
+
+        self.assertIsNone(ttm_only)
+        self.assertIsNotNone(mixed)
+        self.assertEqual(mixed.value, 17_700_000_000)
+
     def test_hood_review_queue_archives_percent_stale_operating_candidates(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "hood.sqlite"
@@ -4460,6 +4600,81 @@ class ScoringTests(unittest.TestCase):
 
             self.assertEqual(len(revived), 1)
             self.assertEqual(revived[0]["sourceType"], "SEC_8K")
+
+    def test_hood_review_queue_archives_bad_money_scope_candidates(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "hood.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            bad_rows = (
+                (
+                    "hoodAuc",
+                    1_600_000_000,
+                    "Robinhood Strategies grew to $1.6 billion in assets under management.",
+                ),
+                (
+                    "hoodNetDeposits",
+                    67_800_000_000,
+                    "Over the past twelve months, Net Deposits were $67.8 billion.",
+                ),
+                (
+                    "hoodNormalizedEbitda",
+                    761,
+                    "Adjusted EBITDA (non-GAAP) $ 761 $ 470 $ 534.",
+                ),
+            )
+            for metric_key, value, text in bad_rows:
+                disclosure_store.save_metric(
+                    symbol="HOOD",
+                    metric_key=metric_key,
+                    value=value,
+                    unit="usd",
+                    period="Q1 2026",
+                    source_type="SEC_8K",
+                    source_url="https://sec.gov/Archives/edgar/data/1783879/q12026robinhoodexhibit991.htm",
+                    source_document_title="8-K Exhibit 99.1",
+                    extracted_text=text,
+                    confidence="medium",
+                )
+            disclosure_store.save_metric(
+                symbol="HOOD",
+                metric_key="hoodTransactionRevenue",
+                value=623_000_000,
+                unit="usd",
+                period="Q1 2026",
+                source_type="SEC_8K",
+                source_url="https://sec.gov/Archives/edgar/data/1783879/q12026robinhoodexhibit991.htm",
+                source_document_title="8-K Exhibit 99.1",
+                extracted_text="Transaction-based revenues were $623 million.",
+                confidence="medium",
+            )
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "HOOD",
+                {"ticker": "HOOD", "symbol": "HOOD", "price_to_sales": 12, "price_to_fcf": 30, "free_cash_flow_yield": 0.033},
+            )
+
+            ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            ).build_review_queue_for_symbol("HOOD")
+
+            rows_by_metric = {
+                row["metricKey"]: row
+                for row in queue_store.list_items("HOOD")
+                if row.get("itemType") == "extracted_value"
+                and row.get("metricKey")
+                in {"hoodAuc", "hoodNetDeposits", "hoodNormalizedEbitda", "hoodTransactionRevenue"}
+            }
+
+            self.assertNotEqual(rows_by_metric["hoodAuc"]["reviewStatus"], "pending_review")
+            self.assertNotEqual(rows_by_metric["hoodNetDeposits"]["reviewStatus"], "pending_review")
+            self.assertNotEqual(rows_by_metric["hoodNormalizedEbitda"]["reviewStatus"], "pending_review")
+            self.assertTrue(rows_by_metric["hoodAuc"]["hiddenByDefault"])
+            self.assertTrue(rows_by_metric["hoodNetDeposits"]["hiddenByDefault"])
+            self.assertTrue(rows_by_metric["hoodNormalizedEbitda"]["hiddenByDefault"])
+            self.assertEqual(rows_by_metric["hoodTransactionRevenue"]["reviewStatus"], "pending_review")
 
     def test_hood_ir_pipeline_creates_review_candidates_for_operating_fields(self) -> None:
         class FakeSecClient:

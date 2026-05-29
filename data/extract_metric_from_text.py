@@ -45,10 +45,17 @@ def extractMetricFromText(text: str, metric_definition: MetricDefinition, confid
             window_end = min(len(normalized_text), index + len(alias) + 200)
             window = normalized_text[window_start:window_end]
             post_alias_window = normalized_text[index:window_end]
-            value = _extract_value(post_alias_window, metric_definition.unit_hint) or _extract_value(window, metric_definition.unit_hint)
+            scale_context_start = max(0, index - 800)
+            scale_context_end = min(len(normalized_text), index + len(alias) + 260)
+            scale_context = normalized_text[scale_context_start:scale_context_end]
+            value = _extract_value(post_alias_window, metric_definition.unit_hint, scale_context) or _extract_value(
+                window,
+                metric_definition.unit_hint,
+                scale_context,
+            )
             if value:
                 number, unit = value
-                valid, _reason = validate_extracted_metric_candidate(metric_definition.metric_key, window)
+                valid, _reason = validate_extracted_metric_candidate(metric_definition.metric_key, window, number)
                 if not valid:
                     start = index + len(alias_lower)
                     continue
@@ -63,10 +70,10 @@ def extractMetricFromText(text: str, metric_definition: MetricDefinition, confid
                 )
             start = index + len(alias_lower)
 
-    return _best_candidate(candidates)
+    return _best_candidate(candidates, metric_definition.metric_key)
 
 
-def validate_extracted_metric_candidate(metric_key: str, evidence_text: str) -> tuple[bool, str]:
+def validate_extracted_metric_candidate(metric_key: str, evidence_text: str, candidate_value: float | None = None) -> tuple[bool, str]:
     """Reject obvious metric mapping mistakes before they enter the review queue."""
     text = _normalize_whitespace(evidence_text).lower()
     canonical_key = _canonical_metric_key(metric_key)
@@ -117,6 +124,10 @@ def validate_extracted_metric_candidate(metric_key: str, evidence_text: str) -> 
     if canonical_key == "fcfMargin":
         if not re.search(r"\b(free cash flow margin|fcf margin)\b", text, flags=re.IGNORECASE):
             return False, "原文没有明确 free cash flow margin"
+    if canonical_key == "hoodAuc" and money_metric_scope_mismatch(canonical_key, text, candidate_value):
+        return False, "HOOD AUC 口径不匹配：仅接受 total AUC / Assets Under Custody / platform AUC。"
+    if canonical_key == "hoodNetDeposits" and money_metric_scope_mismatch(canonical_key, text, candidate_value):
+        return False, "HOOD net deposits 口径不匹配：TTM/LTM/全年口径不能冒充季度 net deposits。"
     return True, "valid"
 
 
@@ -136,7 +147,7 @@ def _canonical_metric_key(metric_key: str) -> str:
     return mapping.get(str(metric_key), str(metric_key))
 
 
-def _extract_value(window: str, unit_hint: str) -> tuple[float, str] | None:
+def _extract_value(window: str, unit_hint: str, scale_context: str | None = None) -> tuple[float, str] | None:
     if unit_hint == "multiple":
         match = MULTIPLE_PATTERN.search(window)
         if match:
@@ -147,10 +158,7 @@ def _extract_value(window: str, unit_hint: str) -> tuple[float, str] | None:
         if money:
             amount = float(money.group(1))
             suffix = (money.group(2) or "").lower()
-            if suffix in {"billion", "bn"}:
-                amount *= 1_000_000_000
-            elif suffix in {"million", "mm", "m"}:
-                amount *= 1_000_000
+            amount *= _money_unit_multiplier(suffix, scale_context or window)
             return amount, "usd"
 
     percent = PERCENT_PATTERN.search(window)
@@ -165,10 +173,87 @@ def _extract_value(window: str, unit_hint: str) -> tuple[float, str] | None:
     return None
 
 
-def _best_candidate(candidates: list[ExtractedMetric]) -> ExtractedMetric | None:
+def _best_candidate(candidates: list[ExtractedMetric], metric_key: str | None = None) -> ExtractedMetric | None:
     if not candidates:
         return None
+    if metric_key == "hoodNetDeposits":
+        scoped = [
+            candidate
+            for candidate in candidates
+            if not money_metric_scope_mismatch(metric_key, candidate.extracted_text, candidate.value)
+        ]
+        if scoped:
+            candidates = scoped
     return max(candidates, key=lambda item: (len(item.extracted_text), abs(item.value)))
+
+
+def money_metric_scope_mismatch(metric_key: str, evidence_text: str, value: float | None = None) -> bool:
+    text = _normalize_whitespace(evidence_text).lower()
+    canonical_key = _canonical_metric_key(metric_key)
+
+    if canonical_key == "hoodAuc":
+        if re.search(r"\b(robinhood strategies|robinhood retirement|retirement auc|assets under management|aum)\b", text):
+            return True
+        return not re.search(r"\b(total\s+auc|auc|assets under custody|platform auc)\b", text)
+
+    if canonical_key == "hoodNetDeposits":
+        if value is not None:
+            context = _money_context_for_value(text, value)
+            prefix = context.split("$", 1)[0]
+            if re.search(r"\b(ttm|ltm|trailing|last|past|over)\b.{0,80}\b(twelve|12)\s+months?\b", prefix):
+                return True
+            if re.search(r"\b(full year|year ended|in\s+20\d{2})\b", prefix) and "q" not in context and "quarter" not in context:
+                return True
+            return False
+        if re.search(r"\b(ttm|ltm|trailing|last|past|over)\b.{0,60}\b(twelve|12)\s+months?\b", text) and not re.search(
+            r"\bquarter\b|\bq[1-4]\b",
+            text,
+        ):
+            return True
+        if re.search(r"\b(full year|year ended|in\s+20\d{2})\b", text) and "q" not in text and "quarter" not in text:
+            return True
+        return not re.search(r"\bnet deposits?\s+(?:were|was|of)?\s*\$?\s*\d", text)
+
+    if canonical_key in {"hoodNormalizedEarnings", "hoodNormalizedEbitda"} and value is not None:
+        if 0 < abs(value) < 1_000_000 and re.search(r"\b(adjusted|normalized).{0,40}(ebitda|earnings|net income)\b", text):
+            return True
+
+    return False
+
+
+def _money_unit_multiplier(suffix: str, context: str) -> float:
+    if suffix in {"billion", "bn"}:
+        return 1_000_000_000
+    if suffix in {"million", "mm", "m"}:
+        return 1_000_000
+    lowered = context.lower()
+    if re.search(r"(?:\(|\b)in\s+(?:u\.?s\.?\s+dollars?\s+)?billions?\b|dollars?\s+in\s+billions?\b", lowered):
+        return 1_000_000_000
+    if re.search(r"(?:\(|\b)in\s+(?:u\.?s\.?\s+dollars?\s+)?millions?\b|dollars?\s+in\s+millions?\b", lowered):
+        return 1_000_000
+    return 1
+
+
+def _money_context_for_value(text: str, value: float | None) -> str:
+    if value is None:
+        return text
+    previous_money_end = 0
+    for match in MONEY_PATTERN.finditer(text):
+        amount = float(match.group(1))
+        suffix = (match.group(2) or "").lower()
+        context_start = max(previous_money_end, match.start() - 120)
+        context_end = min(len(text), match.end() + 120)
+        scaled = amount * _money_unit_multiplier(suffix, text[context_start:context_end])
+        if _values_close(scaled, value):
+            return text[context_start:min(len(text), match.end() + 160)]
+        previous_money_end = match.end()
+    return text
+
+
+def _values_close(left: float, right: float) -> bool:
+    if right == 0:
+        return abs(left) < 1e-9
+    return abs(left - right) / max(abs(right), 1) < 0.005
 
 
 def _normalize_whitespace(text: str) -> str:

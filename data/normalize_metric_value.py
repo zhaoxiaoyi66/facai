@@ -18,6 +18,19 @@ PERCENT_HINTS = (
     "%",
 )
 
+BUSINESS_PERCENT_TOKENS = (
+    "growth",
+    "margin",
+    "ratio",
+    "yield",
+    "retention",
+    "coverage",
+    "sbc",
+    "rpo",
+    "crpo",
+    "deposit",
+)
+
 
 @dataclass(frozen=True)
 class NormalizedMetricValue:
@@ -63,6 +76,32 @@ def normalize_metric_value(value: object, unit: object = None, evidence_text: st
     else:
         display = "N/A" if numeric is None else f"{numeric:g}"
     return NormalizedMetricValue(raw, numeric, normalized_unit, display, scale)
+
+
+def display_percent_to_scoring_ratio(value: object, unit: object = None, metric_key: str = "") -> float | None:
+    """Convert review-center percent points to the ratio convention used by scoring."""
+    numeric = _parse_number(value)
+    if numeric is None:
+        return None
+    unit_text = str(unit or "").strip().lower()
+    if unit_text not in {"percent", "%", "percentage", "pct"} and not is_business_percent_metric(metric_key):
+        return numeric
+    raw_text = str(value or "").strip().lower() if isinstance(value, str) else ""
+    if "%" in raw_text or "percent" in raw_text or abs(numeric) > 1:
+        return numeric / 100
+    return numeric
+
+
+def scoring_ratio_to_display_percent(value: object) -> float | None:
+    numeric = _parse_number(value)
+    if numeric is None:
+        return None
+    return numeric * 100
+
+
+def is_business_percent_metric(metric_key: object) -> bool:
+    token = _metric_token(metric_key)
+    return any(hint in token for hint in BUSINESS_PERCENT_TOKENS)
 
 
 def normalize_metric_period(row: dict) -> MetricPeriod:
@@ -205,6 +244,10 @@ def _has_explicit_percent_marker(value: object, numeric: float | None, evidence_
         if re.search(rf"(?<![\d.]){re.escape(numeric_form)}\s*(?:%|percent|percentage)", evidence_text, flags=re.IGNORECASE):
             return True
     return False
+
+
+def _metric_token(metric_key: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(metric_key or "").lower())
 
 
 def _value_scale(unit_text: str, evidence_text: str, metric_key: str) -> str:

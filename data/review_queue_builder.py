@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from data.disclosure_store import DisclosureStore, canMetricEnterScoring
-from data.extract_metric_from_text import validate_extracted_metric_candidate
+from data.extract_metric_from_text import money_metric_scope_mismatch, validate_extracted_metric_candidate
 from data.fundamentals import FundamentalCache
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import metric_variant_for_key, target_basis_for_metric
-from data.normalize_metric_value import normalize_metric_period, normalize_metric_value
+from data.normalize_metric_value import display_percent_to_scoring_ratio, is_business_percent_metric, normalize_metric_period, normalize_metric_value
 from data.prices import CACHE_PATH, PriceCache
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.total_score import calculate_total_score
@@ -941,6 +941,7 @@ class ReviewQueueStore:
         return dict(row) if row else None
 
     def _restore_disclosure_metric_from_version(self, metric_id: int, version: dict, actor: str, reason: str) -> None:
+        stored_value = _scoring_storage_value_for_review(version.get("metricKey"), version.get("value"), version.get("unit"))
         with self.disclosure_store.connect() as conn:
             conn.execute(
                 """
@@ -960,7 +961,7 @@ class ReviewQueueStore:
                 WHERE id = ?
                 """,
                 (
-                    version.get("value"),
+                    stored_value,
                     version.get("unit"),
                     version.get("period"),
                     version.get("sourceType"),
@@ -2103,7 +2104,10 @@ def _hood_operating_recommended_action(row: dict) -> str:
 def _is_noisy_hood_operating_candidate(row: dict) -> bool:
     unit = str(row.get("unit") or "").strip().lower()
     status = str(row.get("reviewStatus") or "").strip().lower()
-    return unit == "percent" or status == "stale"
+    metric_key = str(row.get("metricKey") or "")
+    evidence = str(row.get("evidenceText") or row.get("extractedText") or "")
+    value = _number(row.get("value"))
+    return unit == "percent" or status == "stale" or money_metric_scope_mismatch(metric_key, evidence, value)
 
 
 def _hood_operating_candidate_rank(row: dict) -> tuple:
@@ -2332,6 +2336,14 @@ def _correction_candidate_from_row(row: dict) -> dict:
     except json.JSONDecodeError:
         parsed = {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _scoring_storage_value_for_review(metric_key: object, value: object, unit: object) -> object:
+    if str(unit or "").strip().lower() in {"percent", "%", "percentage", "pct"} and is_business_percent_metric(metric_key):
+        converted = display_percent_to_scoring_ratio(value, unit, str(metric_key or ""))
+        if converted is not None:
+            return converted
+    return value
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

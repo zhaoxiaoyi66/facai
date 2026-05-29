@@ -10,7 +10,7 @@ from typing import Iterator
 from data.metric_dictionary import CONFIDENCE_PRIORITY, SOURCE_PRIORITY, metric_definition_by_key
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import metric_variant_for_key, target_basis_for_metric
-from data.normalize_metric_value import normalize_metric_period
+from data.normalize_metric_value import display_percent_to_scoring_ratio, is_business_percent_metric, normalize_metric_period
 from data.prices import CACHE_PATH
 
 
@@ -173,6 +173,7 @@ class DisclosureStore:
         freshness_status: str | None = None,
     ) -> None:
         definition = metric_definition_by_key(metric_key)
+        value = _scoring_storage_value(metric_key, value, unit)
         metric_variant = metric_variant or metric_variant_for_key(metric_key)
         target_basis = target_basis or target_basis_for_metric(metric_variant or metric_key)
         freshness_status = freshness_status or "active_current"
@@ -374,6 +375,8 @@ class DisclosureStore:
         reviewed_by: str = "local_user",
         source_type: str = "MANUAL_CORRECTION",
     ) -> None:
+        metric_key = self._metric_key_for_id(metric_id)
+        value = _scoring_storage_value(metric_key, value, unit)
         with self.connect() as conn:
             conn.execute(
                 """
@@ -392,6 +395,11 @@ class DisclosureStore:
                 """,
                 (value, unit, period, source_type, _now(), reviewed_by, correction_notes, _now(), metric_id),
             )
+
+    def _metric_key_for_id(self, metric_id: int) -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT metricKey FROM disclosure_metric_values WHERE id = ?", (int(metric_id),)).fetchone()
+        return str(row["metricKey"] if row else "")
 
     def clear_symbol_metrics(self, symbol: str) -> None:
         with self.connect() as conn:
@@ -658,6 +666,14 @@ def _metric_payload(row: dict) -> dict:
         "updatedAt": row.get("updatedAt"),
         "eligibleForScoring": row.get("eligibleForScoring"),
     }
+
+
+def _scoring_storage_value(metric_key: object, value: float, unit: object) -> float:
+    if str(unit or "").strip().lower() in {"percent", "%", "percentage", "pct"} and is_business_percent_metric(metric_key):
+        converted = display_percent_to_scoring_ratio(value, unit, str(metric_key or ""))
+        if converted is not None:
+            return converted
+    return value
 
 
 def _review_summary_from_rows(rows: list[dict]) -> dict:
