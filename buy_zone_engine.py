@@ -25,6 +25,7 @@ SUPPORTED_BUY_ZONE_MODELS = {
     "NETWORKING_HARDWARE",
     "CRYPTO_FINANCIAL_INFRA",
     "BROKERAGE_FINTECH",
+    "AI_CLOUD_INFRA",
 }
 
 BLOCKED_BUY_ZONE_STATES = {
@@ -138,6 +139,18 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             method="data_insufficient",
         )
 
+    if _ai_cloud_infra_core_inputs_missing(model_key, metrics, stockData):
+        return _blocked_estimate(
+            symbol,
+            str(model),
+            price,
+            "data_insufficient",
+            ["missing_ai_cloud_infra_operating_context"],
+            ["missing_ai_cloud_infra_operating_context"],
+            inputs,
+            method="data_insufficient",
+        )
+
     if _crypto_financial_infra_core_anchor_missing(model_key, symbol, metrics):
         return _blocked_estimate(
             symbol,
@@ -218,7 +231,11 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     if _brokerage_fintech_beta_sales_overextended(model_key, symbol, metrics, stockData):
         current_zone = "no_chase"
         _append_once(warnings, "brokerage_fintech_high_beta_sales_multiple")
+    if _ai_cloud_infra_overextended(model_key, metrics, stockData):
+        current_zone = "no_chase"
+        _append_once(warnings, "ai_cloud_infra_high_ev_sales_capex_debt")
     _append_brokerage_fintech_operating_inputs(model_key, symbol, stockData, inputs, warnings)
+    _append_ai_cloud_infra_operating_inputs(model_key, stockData, inputs, warnings)
     confidence = _confidence(inputs, method, model, stockData, warnings)
     method = "fcf_yield" if any("FCF收益率" in item for item in inputs) and len(inputs) == 1 else method
     if len(inputs) >= 2 and method != "technical_proxy":
@@ -245,6 +262,7 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
     )
     validated = validate_buy_zone_estimate(estimate, stockData, scoringResult)
     finalized = _finalize_brokerage_fintech_estimate(validated, stockData, scoringResult)
+    finalized = _finalize_ai_cloud_infra_estimate(finalized, stockData, scoringResult)
     return attach_technical_entry(finalized, stockData=stockData)
 
 
@@ -384,6 +402,10 @@ def _collect_metrics(stockData: dict, warnings: list[str]) -> dict[str, float | 
         "return60d": _ratio_like(_first_number(stockData, "gain_60d_pct", "return60d", "return60D")),
         "net_debt_to_ebitda": _first_number(stockData, "net_debt_to_ebitda", "netDebtToEbitda"),
         "beta": _first_number(stockData, "beta", "marketBeta"),
+        "ev_to_rpo": _ai_cloud_infra_ev_to_demand(stockData, "rpo"),
+        "ev_to_backlog": _ai_cloud_infra_ev_to_demand(stockData, "backlog"),
+        "capex_intensity": _ai_cloud_infra_capex_intensity(stockData),
+        "debt_to_revenue": _ai_cloud_infra_debt_to_revenue(stockData),
     }
 
 
@@ -429,6 +451,12 @@ def _model_targets(model: str) -> dict[str, dict[str, float]]:
         return {
             "ev_to_sales": {"fair": 8, "tranche": 5.8, "heavy": 4.2, "weight": 3},
             "price_to_sales": {"fair": 7.5, "tranche": 5.5, "heavy": 4.0, "weight": 2},
+        }
+    if model == "AI_CLOUD_INFRA":
+        return {
+            "ev_to_sales": {"fair": 10, "tranche": 7, "heavy": 5, "weight": 2},
+            "ev_to_rpo": {"fair": 3.5, "tranche": 2.5, "heavy": 1.8, "weight": 1.2},
+            "ev_to_backlog": {"fair": 3.5, "tranche": 2.5, "heavy": 1.8, "weight": 1.2},
         }
     if model == "POWER_GENERATION":
         return {
@@ -574,6 +602,8 @@ def _buy_zone_model_supported_for_symbol(symbol: str, model: str) -> bool:
 def _buy_zone_model_for_symbol(symbol: str, model: str) -> str:
     symbol_key = str(symbol or "").upper()
     model_key = str(model or "").upper()
+    if model_key == "AI_INFRA_HIGH_RISK":
+        return "AI_CLOUD_INFRA"
     if symbol_key == "HOOD" and model_key in {"CRYPTO_FINANCIAL_INFRA", "BROKERAGE_FINTECH"}:
         return "BROKERAGE_FINTECH"
     return str(model)
@@ -590,6 +620,8 @@ def _valuation_candidates(price: float, metrics: dict[str, float | None], target
         "forward_pe": "Forward PE",
         "ev_to_ebitda": "EV/EBITDA",
         "market_cap_to_fcf": "市值/FCF",
+        "ev_to_rpo": "EV/RPO",
+        "ev_to_backlog": "EV/contracted backlog",
     }
     _add_cashflow_signal_candidate(price, metrics, targets, candidates, inputs, labels)
 
@@ -821,7 +853,7 @@ def _guardrail_reasons(zone: str, validation_errors: list[str], warnings: list[s
     for item in [*validation_errors, *warnings]:
         if item in {"buy_zone_model_not_supported", "data_confidence_low", "missing_power_generation_core_inputs"}:
             continue
-        if "missing" in item or "overextended" in item or "high_beta" in item or "regulatory_risk_high" in item:
+        if "missing" in item or "overextended" in item or "high_beta" in item or "high_ev_sales" in item or "regulatory_risk_high" in item:
             reasons.append(item)
             continue
         if "异常" in item or "缺" in item or "不足" in item or "unsupported" in item:
@@ -851,6 +883,8 @@ def _missing_inputs(zone: str, stockData: dict, validation_errors: list[str], mo
         missing.extend(_brokerage_fintech_core_inputs_missing("BROKERAGE_FINTECH", "HOOD", _collect_metrics(stockData, []), stockData))
         if _brokerage_fintech_normalized_earnings_missing("BROKERAGE_FINTECH", "HOOD", stockData):
             missing.append("normalized earnings")
+    if str(model or stockData.get("modelType") or "").upper() == "AI_CLOUD_INFRA":
+        missing.extend(_ai_cloud_infra_missing_inputs(stockData))
     if zone == "data_insufficient" and not missing:
         for label, keys in (
             ("current price", ("current_price", "currentPrice", "price")),
@@ -879,7 +913,7 @@ def _confidence_reasons(
     if buyZone.currentZone in BLOCKED_BUY_ZONE_STATES:
         reasons.extend(validation_errors or warnings)
     for item in warnings:
-        if "networking_hardware" in item or "crypto_financial_infra" in item or "brokerage_fintech" in item:
+        if "networking_hardware" in item or "crypto_financial_infra" in item or "brokerage_fintech" in item or "ai_cloud_infra" in item:
             reasons.append(item)
     if buyZone.method == "technical_proxy":
         reasons.append("仅使用技术代理，置信度较低")
@@ -926,6 +960,10 @@ def _driver_label(label: str, stockData: dict) -> str:
         return _format_driver(label, _first_number(stockData, "ev_to_fcf", "enterprise_to_fcf", "enterpriseValueToFcf"), "x")
     if "sales" in lowered:
         return _format_driver(label, _first_number(stockData, "enterprise_to_revenue", "enterpriseToRevenue", "evToSales"), "x")
+    if "rpo" in lowered:
+        return _format_driver(label, _ai_cloud_infra_ev_to_demand(stockData, "rpo"), "x")
+    if "backlog" in lowered:
+        return _format_driver(label, _ai_cloud_infra_ev_to_demand(stockData, "backlog"), "x")
     if "ebitda" in lowered:
         return _format_driver(label, _first_number(stockData, "enterprise_to_ebitda", "enterpriseValueToEbitda", "evToEbitda"), "x")
     if "technical" in lowered or "技术" in label:
@@ -1083,11 +1121,11 @@ def derive_next_trigger_price(currentPrice: Any, buyZone: BuyZoneEstimate | dict
         if trigger is not None and trigger > price:
             warnings.append("当前价已低于买入触发价")
             return None, "已进入买区", warnings
-        return _round_price(trigger), "下一买入触发价", warnings
+        return _round_price(trigger), "估值折价触发价", warnings
     if currentZone == "tranche_buy":
         return None, "已进入可分批区", warnings
     if currentZone == "heavy_buy":
-        return None, "已低于重仓区", warnings
+        return None, "已进入极端恐慌区", warnings
     return None, "买区异常，需复核", warnings
 
 
@@ -1113,6 +1151,10 @@ def _confidence(inputs: list[str], method: str, model: str, stockData: dict, war
         if _brokerage_fintech_core_inputs_missing("BROKERAGE_FINTECH", "HOOD", _collect_metrics(stockData, []), stockData):
             return "low"
         return "medium" if len(distinct) >= 3 else "low"
+    if str(model).upper() == "AI_CLOUD_INFRA":
+        if _ai_cloud_infra_core_inputs_missing("AI_CLOUD_INFRA", _collect_metrics(stockData, []), stockData):
+            return "low"
+        return "medium" if len(distinct) >= 2 else "low"
     if _power_generation_core_inputs_missing(str(model).upper(), stockData):
         warnings.append("电力模型缺少调整后 EBITDA / 增长投资前 FCF，使用代理估值，置信度不高于中。")
         return "medium" if len(distinct) >= 2 else "low"
@@ -1180,6 +1222,195 @@ def _networking_hardware_risk_inputs_missing(model: str, stockData: dict) -> boo
         )
     )
     return not (customer_risk and cloud_capex_risk)
+
+
+AI_CLOUD_INFRA_RPO_KEYS = (
+    "remaining_performance_obligations",
+    "remainingPerformanceObligations",
+    "rpo",
+    "RPO",
+    "contracted_rpo",
+    "contractedRpo",
+)
+AI_CLOUD_INFRA_BACKLOG_KEYS = (
+    "contracted_backlog",
+    "contractedBacklog",
+    "backlog",
+    "revenue_backlog",
+    "revenueBacklog",
+)
+AI_CLOUD_INFRA_UTILIZATION_KEYS = (
+    "utilization",
+    "gpu_utilization",
+    "gpuUtilization",
+    "fleet_utilization",
+    "fleetUtilization",
+    "capacity_utilization",
+    "capacityUtilization",
+)
+AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS = (
+    "capex_commitments",
+    "capexCommitments",
+    "contracted_capex_commitments",
+    "contractedCapexCommitments",
+    "remaining_capex_commitments",
+    "remainingCapexCommitments",
+)
+AI_CLOUD_INFRA_CUSTOMER_CONCENTRATION_KEYS = (
+    "customer_concentration",
+    "customerConcentration",
+    "customer_concentration_risk",
+    "customerConcentrationRisk",
+    "top_customer_revenue_share",
+    "topCustomerRevenueShare",
+    "manual_customer_concentration",
+    "manualCustomerConcentration",
+)
+AI_CLOUD_INFRA_DEBT_MATURITY_KEYS = (
+    "debt_maturity",
+    "debtMaturity",
+    "debt_maturity_schedule",
+    "debtMaturitySchedule",
+    "debt_maturity_pressure",
+    "debtMaturityPressure",
+    "nearest_debt_maturity",
+    "nearestDebtMaturity",
+)
+
+
+def _ai_cloud_infra_core_inputs_missing(model: str, metrics: dict[str, float | None], stockData: dict) -> bool:
+    if str(model).upper() != "AI_CLOUD_INFRA":
+        return False
+    has_valuation_anchor = any(
+        value is not None and value > 0
+        for value in (metrics.get("ev_to_sales"), metrics.get("ev_to_rpo"), metrics.get("ev_to_backlog"))
+    )
+    has_operating_context = (
+        _ai_cloud_infra_has_reliable_demand(stockData)
+        or _ai_cloud_infra_has_ratio(stockData, *AI_CLOUD_INFRA_UTILIZATION_KEYS)
+        or _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS)
+    )
+    return not (has_valuation_anchor and has_operating_context)
+
+
+def _ai_cloud_infra_ev_to_demand(stockData: dict, demand_kind: str) -> float | None:
+    if demand_kind == "rpo":
+        explicit = _first_number(stockData, "ev_to_rpo", "evToRpo", "enterprise_to_rpo", "enterpriseToRpo")
+        keys = AI_CLOUD_INFRA_RPO_KEYS
+    else:
+        explicit = _first_number(stockData, "ev_to_backlog", "evToBacklog", "enterprise_to_backlog", "enterpriseToBacklog")
+        keys = AI_CLOUD_INFRA_BACKLOG_KEYS
+    if explicit is not None and explicit > 0:
+        return explicit
+    enterprise_value = _first_number(stockData, "enterprise_value", "enterpriseValue", "ev")
+    demand = _first_number_from_stock_or_disclosure(stockData, *keys)
+    if enterprise_value is None or enterprise_value <= 0 or demand is None or demand <= 0:
+        return None
+    if not _ai_cloud_infra_clean_metric_source(stockData, *keys):
+        return None
+    return enterprise_value / demand
+
+
+def _ai_cloud_infra_capex_intensity(stockData: dict) -> float | None:
+    explicit = _ratio_like(_first_number(stockData, "capex_intensity", "capexIntensity", "capex_to_revenue", "capexToRevenue"))
+    if explicit is not None:
+        return abs(explicit)
+    capex = _first_number(stockData, "capex", "capital_expenditure", "capitalExpenditure", "capital_expenditures", "capitalExpenditures")
+    revenue = _first_number(stockData, "total_revenue", "totalRevenue", "revenue")
+    if capex is None or revenue is None or revenue <= 0:
+        return None
+    return abs(capex) / revenue
+
+
+def _ai_cloud_infra_debt_to_revenue(stockData: dict) -> float | None:
+    explicit = _first_number(stockData, "debt_to_revenue", "debtToRevenue")
+    if explicit is not None:
+        return explicit
+    debt = _first_number(stockData, "total_debt", "totalDebt", "net_debt", "netDebt")
+    revenue = _first_number(stockData, "total_revenue", "totalRevenue", "revenue")
+    if debt is None or revenue is None or revenue <= 0:
+        return None
+    return max(debt, 0) / revenue
+
+
+def _ai_cloud_infra_overextended(model: str, metrics: dict[str, float | None], stockData: dict) -> bool:
+    if str(model).upper() != "AI_CLOUD_INFRA":
+        return False
+    ev_sales = metrics.get("ev_to_sales")
+    capex_intensity = metrics.get("capex_intensity")
+    debt_to_revenue = metrics.get("debt_to_revenue")
+    net_debt_to_ebitda = metrics.get("net_debt_to_ebitda")
+    high_debt = (debt_to_revenue is not None and debt_to_revenue >= 2.0) or (net_debt_to_ebitda is not None and net_debt_to_ebitda >= 4.0)
+    return bool(ev_sales is not None and ev_sales >= 15 and capex_intensity is not None and capex_intensity >= 0.45 and high_debt)
+
+
+def _ai_cloud_infra_blocks_heavy_buy(metrics: dict[str, float | None], stockData: dict) -> bool:
+    fcf = _first_number(stockData, "free_cash_flow", "freeCashFlow", "fcf")
+    capex_intensity = metrics.get("capex_intensity") or _ai_cloud_infra_capex_intensity(stockData)
+    return bool((fcf is not None and fcf < 0) or (capex_intensity is not None and capex_intensity >= 0.45))
+
+
+def _ai_cloud_infra_has_reliable_demand(stockData: dict) -> bool:
+    return _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_RPO_KEYS) or _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_BACKLOG_KEYS)
+
+
+def _ai_cloud_infra_has_clean_money(stockData: dict, *keys: str) -> bool:
+    value = _first_number_from_stock_or_disclosure(stockData, *keys)
+    return value is not None and value > 0 and _ai_cloud_infra_clean_metric_source(stockData, *keys)
+
+
+def _ai_cloud_infra_has_ratio(stockData: dict, *keys: str) -> bool:
+    value = _ratio_like(_first_number_from_stock_or_disclosure(stockData, *keys))
+    return value is not None and value > 0 and _ai_cloud_infra_clean_metric_source(stockData, *keys)
+
+
+def _ai_cloud_infra_clean_metric_source(stockData: dict, *keys: str) -> bool:
+    source = _metric_source_payload(stockData, *keys)
+    if not source:
+        return True
+    unit = str(source.get("unit") or source.get("valueScale") or source.get("value_scale") or "").lower()
+    if unit == "percent" and not set(keys).intersection(AI_CLOUD_INFRA_UTILIZATION_KEYS):
+        return False
+    review_status = str(source.get("reviewStatus") or source.get("review_status") or "").lower()
+    if review_status in {"stale", "duplicate_archived", "auto_archived", "invalid_review_item", "rejected"}:
+        return False
+    freshness_status = str(source.get("freshnessStatus") or source.get("freshness_status") or "").lower()
+    if freshness_status == "historical_value":
+        return False
+    return True
+
+
+def _ai_cloud_infra_missing_inputs(stockData: dict) -> list[str]:
+    missing: list[str] = []
+    if not _ai_cloud_infra_has_reliable_demand(stockData):
+        missing.append("RPO / contracted backlog")
+    if not _ai_cloud_infra_has_ratio(stockData, *AI_CLOUD_INFRA_UTILIZATION_KEYS):
+        missing.append("utilization")
+    if not _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS):
+        missing.append("capex commitments")
+    if not _has_any_value(stockData, *AI_CLOUD_INFRA_CUSTOMER_CONCENTRATION_KEYS):
+        missing.append("customer concentration")
+    if not _has_any_value(stockData, *AI_CLOUD_INFRA_DEBT_MATURITY_KEYS):
+        missing.append("debt maturity")
+    return missing
+
+
+def _append_ai_cloud_infra_operating_inputs(model: str, stockData: dict, inputs: list[str], warnings: list[str]) -> None:
+    if str(model).upper() != "AI_CLOUD_INFRA":
+        return
+    if _ai_cloud_infra_has_reliable_demand(stockData):
+        inputs.append("AI cloud contracted demand")
+    if _ai_cloud_infra_has_ratio(stockData, *AI_CLOUD_INFRA_UTILIZATION_KEYS):
+        inputs.append("AI cloud utilization")
+    if _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS):
+        inputs.append("AI cloud capex commitments")
+    missing = _ai_cloud_infra_missing_inputs(stockData)
+    if "customer concentration" in missing:
+        _append_once(warnings, "ai_cloud_infra_customer_concentration_missing")
+    if "debt maturity" in missing:
+        _append_once(warnings, "ai_cloud_infra_debt_maturity_unclear")
+    if "utilization" in missing or "capex commitments" in missing:
+        _append_once(warnings, "ai_cloud_infra_operating_inputs_incomplete")
 
 
 def _crypto_financial_infra_core_anchor_missing(model: str, symbol: str, metrics: dict[str, float | None]) -> bool:
@@ -1467,6 +1698,54 @@ def _finalize_brokerage_fintech_estimate(buyZone: BuyZoneEstimate, stockData: di
     return _with_explainability(finalized, stockData, scoringResult)
 
 
+def _finalize_ai_cloud_infra_estimate(buyZone: BuyZoneEstimate, stockData: dict, scoringResult=None) -> BuyZoneEstimate:
+    if str(buyZone.modelType).upper() != "AI_CLOUD_INFRA":
+        return buyZone
+    metrics = _collect_metrics(stockData, [])
+    warnings = list(buyZone.warnings or [])
+    validation_errors = list(buyZone.validationErrors or [])
+    confidence = str(buyZone.confidence or "low").lower()
+    current_zone = buyZone.currentZone
+    heavy_buy_below = buyZone.heavyBuyBelow
+
+    if _ai_cloud_infra_overextended("AI_CLOUD_INFRA", metrics, stockData):
+        current_zone = "no_chase"
+        _append_once(warnings, "ai_cloud_infra_high_ev_sales_capex_debt")
+
+    missing_inputs = _ai_cloud_infra_missing_inputs(stockData)
+    if "customer concentration" in missing_inputs:
+        confidence = _downgrade_confidence(confidence, "medium")
+        _append_once(warnings, "ai_cloud_infra_customer_concentration_missing")
+    if "debt maturity" in missing_inputs:
+        confidence = _downgrade_confidence(confidence, "medium")
+        _append_once(warnings, "ai_cloud_infra_debt_maturity_unclear")
+    if "utilization" in missing_inputs or "capex commitments" in missing_inputs:
+        confidence = _downgrade_confidence(confidence, "medium")
+        _append_once(warnings, "ai_cloud_infra_operating_inputs_incomplete")
+
+    if _ai_cloud_infra_blocks_heavy_buy(metrics, stockData):
+        confidence = _downgrade_confidence(confidence, "medium")
+        heavy_buy_below = None
+        _append_once(warnings, "ai_cloud_infra_fcf_burn_or_capex_intensity_blocks_heavy_buy")
+        _append_once(validation_errors, "ai_cloud_infra_no_heavy_buy_without_positive_fcf_and_capex_discipline")
+        if current_zone in {"heavy_buy", "below_heavy_buy"}:
+            current_zone = "tranche_buy"
+
+    next_price, next_label, _ = derive_next_trigger_price(buyZone.currentPrice, buyZone, current_zone)
+    finalized = replace(
+        buyZone,
+        currentZone=current_zone,
+        confidence=confidence,
+        heavyBuyBelow=heavy_buy_below,
+        action=_buy_zone_action(current_zone, next_label),
+        nextTriggerPrice=next_price,
+        nextBuyLabel=next_label,
+        warnings=warnings,
+        validationErrors=validation_errors,
+    )
+    return _with_explainability(finalized, stockData, scoringResult)
+
+
 def _has_any_value(stockData: dict, *keys: str) -> bool:
     return any(stockData.get(key) not in {None, ""} for key in keys)
 
@@ -1490,6 +1769,9 @@ def _reason_texts(model: str, metrics: dict[str, float | None], current_zone: st
     if str(model).upper() == "BROKERAGE_FINTECH":
         reasons.append("HOOD brokerage fintech model uses EV/Sales or P/S as valuation anchors and operating fields as guardrails.")
         reasons.append("Normalized EBITDA is only a secondary non-GAAP anchor; normalized earnings is required before heavy-buy output.")
+    if str(model).upper() == "AI_CLOUD_INFRA":
+        reasons.append("AI cloud infra model uses EV/Sales and reliable EV/RPO or contracted backlog only as weak anchors.")
+        reasons.append("Capex intensity, leverage, FCF burn, utilization and customer concentration act as guardrails before any precise buy-zone output.")
     return reasons
 
 
@@ -1551,6 +1833,20 @@ def _input_quality_flags(stockData: dict, scoringResult, buyZone: BuyZoneEstimat
             ("hood_normalized_ebitda", "hoodNormalizedEbitda", "manualHoodNormalizedEbitda", "manual_hood_normalized_ebitda"),
         ):
             warnings.append("brokerage_fintech_normalized_ebitda_secondary_anchor_needs_non_gaap_review")
+            forces_medium = True
+    if str(buyZone.modelType).upper() == "AI_CLOUD_INFRA":
+        missing_ai_inputs = _ai_cloud_infra_missing_inputs(stockData)
+        if "customer concentration" in missing_ai_inputs:
+            warnings.append("ai_cloud_infra_customer_concentration_missing")
+            forces_medium = True
+        if "debt maturity" in missing_ai_inputs:
+            warnings.append("ai_cloud_infra_debt_maturity_unclear")
+            forces_medium = True
+        if "utilization" in missing_ai_inputs or "capex commitments" in missing_ai_inputs:
+            warnings.append("ai_cloud_infra_operating_inputs_incomplete")
+            forces_medium = True
+        if _ai_cloud_infra_blocks_heavy_buy(_collect_metrics(stockData, []), stockData):
+            warnings.append("ai_cloud_infra_fcf_burn_or_capex_intensity_blocks_heavy_buy")
             forces_medium = True
     if _has_abnormal_percent_input(stockData):
         warnings.append("存在异常百分比输入，买区置信度不能为 high")

@@ -3894,6 +3894,86 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("revenue growth", zone.explainability["missingInputs"])
         self.assertIn("reliable margin", zone.explainability["missingInputs"])
 
+    def test_ai_cloud_infra_crwv_uses_guardrail_first_model(self) -> None:
+        zone = generate_buy_zone(
+            "CRWV",
+            {
+                "price": 120,
+                "enterprise_to_revenue": 25,
+                "enterprise_value": 60_000_000_000,
+                "remaining_performance_obligations": 20_000_000_000,
+                "total_revenue": 2_500_000_000,
+                "total_debt": 8_000_000_000,
+                "capex": -2_000_000_000,
+                "free_cash_flow": -1_200_000_000,
+                "revenue_growth": 0.8,
+            },
+            {"scoring_model": "AI_INFRA_HIGH_RISK"},
+            "AI_INFRA_HIGH_RISK",
+        )
+
+        self.assertEqual(zone.modelType, "AI_CLOUD_INFRA")
+        self.assertEqual(zone.currentZone, "no_chase")
+        self.assertEqual(zone.confidence, "medium")
+        self.assertTrue(zone.isValid)
+        self.assertNotIn("buy_zone_model_not_supported", zone.validationErrors)
+        self.assertIn("EV/Sales", zone.inputsUsed)
+        self.assertIn("EV/RPO", zone.inputsUsed)
+        self.assertIn("AI cloud contracted demand", zone.inputsUsed)
+        self.assertNotIn("P/S", zone.inputsUsed)
+        self.assertIsNotNone(zone.fairValueHigh)
+        self.assertIsNotNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIn("ai_cloud_infra_high_ev_sales_capex_debt", zone.explainability["guardrailReasons"])
+        self.assertIn("ai_cloud_infra_customer_concentration_missing", zone.explainability["confidenceReasons"])
+        self.assertIn("ai_cloud_infra_debt_maturity_unclear", zone.explainability["confidenceReasons"])
+
+    def test_ai_cloud_infra_nbis_missing_core_inputs_blocks_precise_prices(self) -> None:
+        zone = generate_buy_zone(
+            "NBIS",
+            {
+                "price": 100,
+                "enterprise_to_revenue": 35,
+                "price_to_sales": 30,
+                "revenue_growth": 0.8,
+                "total_revenue": 1_500_000_000,
+                "total_debt": 6_000_000_000,
+                "free_cash_flow": -1_000_000_000,
+            },
+            {"scoring_model": "AI_INFRA_HIGH_RISK"},
+            "AI_INFRA_HIGH_RISK",
+        )
+
+        self.assertEqual(zone.modelType, "AI_CLOUD_INFRA")
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertEqual(zone.confidence, "low")
+        self.assertFalse(zone.isValid)
+        self.assertIn("missing_ai_cloud_infra_operating_context", zone.validationErrors)
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIsNone(zone.heavyBuyBelow)
+        self.assertIn("RPO / contracted backlog", zone.explainability["missingInputs"])
+        self.assertIn("utilization", zone.explainability["missingInputs"])
+        self.assertIn("capex commitments", zone.explainability["missingInputs"])
+
+    def test_ai_cloud_infra_ps_and_growth_only_do_not_create_precise_zone(self) -> None:
+        zone = generate_buy_zone(
+            "AICLOUD",
+            {
+                "price": 100,
+                "price_to_sales": 22,
+                "revenue_growth": 1.1,
+            },
+            {"scoring_model": "AI_CLOUD_INFRA"},
+            "AI_CLOUD_INFRA",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertFalse(zone.isValid)
+        self.assertNotIn("P/S", zone.inputsUsed)
+        self.assertIsNone(zone.noChaseAbove)
+        self.assertIsNone(zone.trancheBuyHigh)
+
     def test_invalid_buy_zone_hides_actionable_prices(self) -> None:
         zone = generate_buy_zone(
             "ADBE",
