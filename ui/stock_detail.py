@@ -9,6 +9,7 @@ import streamlit as st
 
 from buy_zone_engine import (
     BuyZoneEstimate,
+    attach_combined_entry,
     buy_zone_with_manual_override,
     clear_buy_zone_override_values,
     effective_buy_zone_plan,
@@ -75,6 +76,7 @@ def render() -> None:
     effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
     final_decision = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
+    effective_buy_zone = attach_combined_entry(effective_buy_zone, final_decision)
 
     with record_signal_slot.container():
         _render_record_signal_button(ticker, snapshot, technicals, final_decision)
@@ -777,7 +779,7 @@ def _decision_summary_text(score, buy_zone: BuyZoneEstimate, final_decision=None
 def _decision_wait_items(score, buy_zone: BuyZoneEstimate) -> list[str]:
     items: list[str] = []
     if buy_zone.trancheBuyHigh is not None:
-        items.append(f"回落到可分批区上沿 {format_currency(buy_zone.trancheBuyHigh)} 附近")
+        items.append(f"回落到估值折价区上沿 {format_currency(buy_zone.trancheBuyHigh)} 附近")
     if score.entry_rating and not str(score.entry_rating).startswith("A"):
         items.append("买点评级提升到 A- / A 区间")
     if score.overheat_score >= 40:
@@ -822,17 +824,24 @@ def _buy_zone_section_title(source: str) -> tuple[str, str]:
         return "手动买区", "当前使用手动买区"
     if source == "mixed":
         return "买区计划", "系统买区 + 手动操作计划"
-    return "系统建议击球区", "当前使用系统建议"
+    return "系统建议买区", "当前使用系统建议"
 
 
 def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str) -> tuple[str, float | None]:
     if source == "manual":
         first_buy = _plan_number(plan, "first_buy_price")
         if first_buy is not None:
-            return "第一买入触发价", first_buy
+            return "估值折价触发价", first_buy
     next_price = getattr(active_zone, "nextTriggerPrice", None)
     next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(active_zone.currentPrice, active_zone.to_plan_fields())
-    return next_label, next_price
+    return _buy_zone_trigger_label(next_label), next_price
+
+
+def _buy_zone_trigger_label(value: str) -> str:
+    return {
+        "下一买入触发价": "估值折价触发价",
+        "已低于重仓区": "已进入极端恐慌区",
+    }.get(str(value or ""), str(value or ""))
 
 
 def _plan_or_suggestion(plan: dict, field: str, fallback):
@@ -906,7 +915,7 @@ def _render_buy_zone(
     source = _buy_zone_source(plan)
     manual = source == "manual"
     if source == "system":
-        title, title_suffix = "系统建议击球区", "当前使用系统建议"
+        title, title_suffix = "系统建议买区", "当前使用系统建议"
     else:
         title, title_suffix = _buy_zone_section_title(source)
     render_section_title(title, title_suffix)
@@ -918,7 +927,7 @@ def _render_buy_zone(
         ("当前价格", format_currency(price), _buy_zone_label(active_zone.currentZone), "current"),
         ("禁止追高价", _above_text(active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
         ("合理观察区", _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
-        ("可分批区", _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
+        ("估值折价区", _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
         (DEEP_DISCOUNT_ZONE_LABEL, _below_text(active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
     ]
     st.markdown(
@@ -979,7 +988,7 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
     summary = (
         "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
         if unavailable
-        else "技术回踩点用于辅助择时，估值买点和极端恐慌区仍以买区模型为准。"
+        else "技术回踩点用于辅助择时，估值折价区和极端恐慌区仍以买区模型为准。"
     )
     metrics = [
         ("技术状态", _technical_state_label(state)),
@@ -1072,7 +1081,7 @@ def _technical_reasons_list(technical: dict, unavailable: bool, review_only: boo
         return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     if review_only:
         return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
-    guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
+    guardrail = "估值买点、技术回踩点、轻仓试探点和极端恐慌区分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
 
@@ -1087,8 +1096,8 @@ def _render_action_plan_form(
     render_section_title("操作计划", "系统建议，可按需编辑")
     edit_key = f"stock-plan-editing-{ticker}"
     summary_rows = [
-        ("第一笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice))),
-        ("第二笔买入价", _format_plan_currency(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice))),
+        ("估值折价触发价", _format_plan_currency(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice))),
+        ("估值折价区下沿", _format_plan_currency(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice))),
         ("极端恐慌区触发价", _format_plan_currency(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice))),
         ("停止加仓条件", plan.get("stop_adding_condition") or suggestion.stopAddingCondition),
         ("财报复核点", plan.get("earnings_review_points") or suggestion.earningsReviewCondition),
@@ -1121,9 +1130,9 @@ def _render_action_plan_form(
         )
 
         buy_cols = st.columns(3)
-        first_buy_price = buy_cols[0].text_input("第一笔买入价", value=_number_text(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice)))
-        second_buy_price = buy_cols[1].text_input("第二笔买入价", value=_number_text(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice)))
-        third_buy_price = buy_cols[2].text_input("第三笔买入价", value=_number_text(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice)))
+        first_buy_price = buy_cols[0].text_input("估值折价触发价", value=_number_text(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice)))
+        second_buy_price = buy_cols[1].text_input("估值折价区下沿", value=_number_text(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice)))
+        third_buy_price = buy_cols[2].text_input("深度折价触发价", value=_number_text(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice)))
 
         zone_cols = st.columns(3)
         no_chase_above = zone_cols[0].text_input("禁止追高价", value=_number_text(_plan_or_suggestion(plan, "no_chase_above", active_zone.noChaseAbove)))
@@ -1131,8 +1140,8 @@ def _render_action_plan_form(
         fair_value_high = zone_cols[2].text_input("合理观察区上沿", value=_number_text(_plan_or_suggestion(plan, "fair_value_high", active_zone.fairValueHigh)))
 
         tranche_cols = st.columns(3)
-        tranche_buy_low = tranche_cols[0].text_input("可分批区下沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_low", active_zone.trancheBuyLow)))
-        tranche_buy_high = tranche_cols[1].text_input("可分批区上沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_high", active_zone.trancheBuyHigh)))
+        tranche_buy_low = tranche_cols[0].text_input("估值折价区下沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_low", active_zone.trancheBuyLow)))
+        tranche_buy_high = tranche_cols[1].text_input("估值折价区上沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_high", active_zone.trancheBuyHigh)))
         heavy_buy_below = tranche_cols[2].text_input("极端恐慌区低于", value=_number_text(_plan_or_suggestion(plan, "heavy_buy_below", active_zone.heavyBuyBelow)))
 
         stop_adding_condition = st.text_area("停止加仓条件", value=plan.get("stop_adding_condition") or suggestion.stopAddingCondition)
@@ -1375,7 +1384,7 @@ def _entry_wait_items(score, technicals: dict, plan: dict) -> list[str]:
     price = technicals.get("price")
     tranche_high = plan.get("tranche_buy_high")
     if price is not None and tranche_high is not None and price > tranche_high:
-        items.append(f"价格仍高于可分批区上沿 {format_percent((price - tranche_high) / price, already_percent=False)}")
+        items.append(f"价格仍高于估值折价区上沿 {format_percent((price - tranche_high) / price, already_percent=False)}")
     return items or ["当前无需额外等待条件，但仍按仓位计划执行"]
 
 
@@ -1551,16 +1560,16 @@ def _distance_to_zone(price: float | None, plan: dict) -> str:
     high = plan.get("tranche_buy_high")
     low = plan.get("tranche_buy_low")
     if price is None:
-        return "距离击球区：缺少现价"
+        return "距离估值折价区：缺少现价"
     if high is None and low is None:
-        return "距离击球区：尚未设置，需要人工配置。"
+        return "距离估值折价区：尚未设置，需要人工配置。"
     if low is not None and high is not None and low <= price <= high:
-        return "距离击球区：已在可分批区内"
+        return "距离估值折价区：已在估值折价区内"
     if high is not None and price > high:
-        return f"距离击球区：还需回落 {format_percent((price - high) / price, already_percent=False)} 到可分批区上沿"
+        return f"距离估值折价区：还需回落 {format_percent((price - high) / price, already_percent=False)} 到估值折价区上沿"
     if low is not None and price < low:
-        return "距离击球区：已低于可分批区下沿，可复核是否进入更深击球区"
-    return "距离击球区：区间未完整设置"
+        return "距离估值折价区：已低于估值折价区下沿，可复核是否进入深度折价区"
+    return "距离估值折价区：区间未完整设置"
 
 
 def _above_text(value: float | None) -> str:

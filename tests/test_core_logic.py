@@ -4261,7 +4261,7 @@ class ScoringTests(unittest.TestCase):
         source = inspect.getsource(stock_detail._render_buy_zone)
 
         self.assertNotIn('st.info("尚未设置，需要人工配置。")', source)
-        self.assertIn("系统建议击球区", source)
+        self.assertIn("系统建议买区", source)
 
     def test_stock_detail_prefers_final_decision_for_action_and_position(self) -> None:
         final_decision = SimpleNamespace(
@@ -6961,9 +6961,9 @@ class BuyZonePlanPageTests(unittest.TestCase):
         primary, _secondary, tone = buy_zone_page.format_trigger_cell(row)
 
         self.assertEqual(result["displayCategory"], "等回踩")
-        self.assertEqual(result["triggerPrimary"], "合理观察，未到买点")
+        self.assertEqual(result["triggerPrimary"], "合理观察，未到估值买点")
         self.assertFalse(result["priorityEligible"])
-        self.assertEqual(primary, "合理观察，未到买点")
+        self.assertEqual(primary, "合理观察，未到估值买点")
         self.assertEqual(tone, "neutral")
 
     def test_stock_detail_buy_point_status_uses_buy_zone_distance_sanity(self) -> None:
@@ -6996,7 +6996,7 @@ class BuyZonePlanPageTests(unittest.TestCase):
 
         html = stock_detail._buy_point_status_pill_html(score, zone)
 
-        self.assertIn("合理观察，未到买点", html)
+        self.assertIn("合理观察，未到估值买点", html)
         self.assertNotIn("击球区附近", html)
 
 

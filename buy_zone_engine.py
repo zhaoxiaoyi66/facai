@@ -1624,7 +1624,7 @@ def _buy_zone_action(current_zone: str, next_label: str) -> str:
     if current_zone == "tranche_buy":
         return "已进入可分批区"
     if current_zone == "heavy_buy":
-        return "已低于重仓区"
+        return "已进入极端恐慌区"
     return "买区异常，需复核"
 
 
@@ -1846,6 +1846,8 @@ def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) 
     trend_break = str(technical.get("technicalState") or "") == "trend_break_review"
     fair_not_tranche = _estimate_is_fair_not_tranche(estimate)
     distance = _distance_to_valuation_entry_pct(estimate.currentPrice, valuation_entry)
+    light_probe = _light_probe_price(estimate, technical, technical_pullback, fair_not_tranche, trend_break)
+    deep_discount = _first_number_from_value(estimate.heavyBuyBelow)
     combined_trigger = _combined_trigger_price(valuation_entry, technical_pullback, blocked or trend_break)
     label = _combined_entry_label(
         estimate,
@@ -1861,6 +1863,8 @@ def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) 
         finalDecision,
         valuation_entry=valuation_entry,
         technical_pullback=technical_pullback,
+        light_probe=light_probe,
+        deep_discount=deep_discount,
         combined_trigger=combined_trigger,
         review_price=review_price,
         blocked=blocked,
@@ -1871,10 +1875,21 @@ def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) 
     return {
         "valuationEntryPrice": _round_price(valuation_entry),
         "technicalPullbackPrice": _round_price(technical_pullback),
+        "lightProbePrice": _round_price(light_probe),
+        "valuationDiscountPrice": _round_price(valuation_entry),
+        "deepDiscountPrice": _round_price(deep_discount),
         "combinedTriggerPrice": _round_price(combined_trigger),
         "reviewPrice": _round_price(review_price),
         "entryLabel": label,
         "entryReasons": reasons,
+        "entryLayers": _combined_entry_layers(
+            estimate,
+            valuation_entry=valuation_entry,
+            technical_pullback=technical_pullback,
+            light_probe=light_probe,
+            deep_discount=deep_discount,
+            blocked=blocked or trend_break,
+        ),
     }
 
 
@@ -1910,6 +1925,8 @@ def _combined_entry_label(
     if trend_break:
         return "趋势破坏，需复核"
     if blocked:
+        if fair_not_tranche and _combined_entry_wait_state(finalDecision):
+            return "合理观察，未到估值买点"
         return "需复核或禁止追高，技术面不转买点"
     if fair_not_tranche:
         return "合理观察，未到估值买点"
@@ -1927,6 +1944,8 @@ def _combined_entry_reasons(
     *,
     valuation_entry: float | None,
     technical_pullback: float | None,
+    light_probe: float | None,
+    deep_discount: float | None,
     combined_trigger: float | None,
     review_price: float | None,
     blocked: bool,
@@ -1936,11 +1955,13 @@ def _combined_entry_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     if valuation_entry is not None:
-        reasons.append(f"估值买点参考可分批区上沿 / 下一触发价：{valuation_entry:.2f}。")
+        reasons.append(f"估值买点参考估值折价区上沿：{valuation_entry:.2f}，不是合理观察区内的常规买点。")
     else:
         reasons.append("估值买点当前不可用，综合入场不输出入场触发价。")
     if technical_pullback is not None:
         reasons.append(f"技术回踩点：{technical_pullback:.2f}，仅作辅助，不覆盖估值买区。")
+    if light_probe is not None:
+        reasons.append(f"轻仓试探点：{light_probe:.2f}，仅用于高质量半导体龙头的战术观察，需 finalDecision 放行才可执行。")
     if combined_trigger is not None:
         reasons.append(f"综合触发价：{combined_trigger:.2f}，不会高于估值买点，避免技术面把价格提前变成入场信号。")
     if review_price is not None:
@@ -1951,11 +1972,11 @@ def _combined_entry_reasons(
         action = _first_value(finalDecision, "finalAction", "displayCategory", default="") or estimate.action or estimate.currentZone
         reasons.append(f"最终结论或买区已阻断（{action}），技术面不能转成入场信号。")
     if fair_not_tranche:
-        reasons.append("当前处于合理观察区但未进入可分批区，只显示合理观察，未到估值买点。")
+        reasons.append("当前处于合理观察区但未进入估值折价区，只显示合理观察，未到估值买点。")
     if valuation_distance_pct is not None and valuation_distance_pct > 15:
-        reasons.append(f"距离第一估值买点约 {valuation_distance_pct:.1f}%，不得显示接近买点。")
-    if estimate.heavyBuyBelow is not None:
-        reasons.append(f"极端恐慌区：{estimate.heavyBuyBelow:.2f}，不是常规重仓计划。")
+        reasons.append(f"距离估值折价区约 {valuation_distance_pct:.1f}%，不得显示接近买点。")
+    if deep_discount is not None:
+        reasons.append(f"深度折价区 / 极端恐慌区：{deep_discount:.2f}，不是常规重仓计划。")
     if str(technical.get("technicalState") or "") in {"unavailable", "insufficient_data"}:
         reasons.append("本地 price_history 缺失或不可用，技术层仅保留 low / unavailable 状态。")
     return reasons[:8]
@@ -1972,9 +1993,65 @@ def _combined_entry_blocked(estimate: BuyZoneEstimate, finalDecision: Any = None
     action = str(_first_value(finalDecision, "finalAction", default="") or "")
     display = str(_first_value(finalDecision, "displayCategory", default="") or "")
     data_confidence = str(_first_value(finalDecision, "dataConfidence", default="") or "").lower()
-    if data_confidence == "low" or lane in {"blocked", "review"}:
+    current_add = _first_number_from_value(_first_value(finalDecision, "currentAddLimitPercent", default=None))
+    actionable = _first_value(finalDecision, "isActionable", default=None)
+    if data_confidence == "low" or lane in {"blocked", "review", "wait"}:
         return True
-    return any(token in f"{action} {display}" for token in ["禁止追高", "需复核", "数据不足", "待复核"])
+    if isinstance(actionable, bool) and not actionable:
+        return True
+    if current_add is not None and current_add <= 0:
+        return True
+    return any(token in f"{action} {display}" for token in ["禁止追高", "需复核", "数据不足", "待复核", "等回踩", "只观察"])
+
+
+def _combined_entry_wait_state(finalDecision: Any = None) -> bool:
+    if finalDecision is None:
+        return False
+    lane = str(_first_value(finalDecision, "decisionLane", default="") or "").lower()
+    action = str(_first_value(finalDecision, "finalAction", "displayCategory", default="") or "")
+    return lane == "wait" or any(token in action for token in {"等回踩", "只观察"})
+
+
+def _light_probe_price(
+    estimate: BuyZoneEstimate,
+    technical: dict[str, Any],
+    technical_pullback: float | None,
+    fair_not_tranche: bool,
+    trend_break: bool,
+) -> float | None:
+    if trend_break or not fair_not_tranche:
+        return None
+    if str(estimate.modelType or "").upper() != "SEMICONDUCTOR":
+        return None
+    if str(estimate.confidence or "").lower() == "low" or estimate.isValid is False:
+        return None
+    if technical_pullback is None or technical_pullback <= 0:
+        return None
+    state = str(technical.get("technicalState") or "")
+    if state not in {"healthy_pullback", "tactical_observation", "neutral"}:
+        return None
+    return technical_pullback
+
+
+def _combined_entry_layers(
+    estimate: BuyZoneEstimate,
+    *,
+    valuation_entry: float | None,
+    technical_pullback: float | None,
+    light_probe: float | None,
+    deep_discount: float | None,
+    blocked: bool,
+) -> list[dict[str, Any]]:
+    fair_range = None
+    if estimate.fairValueLow is not None and estimate.fairValueHigh is not None:
+        fair_range = [_round_price(estimate.fairValueLow), _round_price(estimate.fairValueHigh)]
+    return [
+        {"key": "fair_observation", "label": "合理观察区", "range": fair_range, "price": None, "isActionable": False},
+        {"key": "technical_pullback", "label": "技术回踩观察区", "price": _round_price(technical_pullback), "isActionable": False},
+        {"key": "light_probe", "label": "轻仓试探区", "price": _round_price(light_probe), "isActionable": False if blocked else light_probe is not None},
+        {"key": "valuation_discount", "label": "估值折价区", "price": _round_price(valuation_entry), "isActionable": False if blocked else valuation_entry is not None},
+        {"key": "deep_discount", "label": "深度折价区 / 极端恐慌区", "price": _round_price(deep_discount), "isActionable": False if blocked else deep_discount is not None},
+    ]
 
 
 def _estimate_is_fair_not_tranche(estimate: BuyZoneEstimate) -> bool:

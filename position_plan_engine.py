@@ -100,12 +100,12 @@ def _first_buy_trigger(buyZone: BuyZoneEstimate) -> tuple[float | None, str]:
     if zone == "tranche_buy":
         return current_price, "已进入可分批区"
     if zone == "heavy_buy":
-        return None, "已低于重仓区"
+        return None, "已进入极端恐慌区"
     if zone == "fair_observation":
         trigger = buyZone.trancheBuyHigh
         if current_price is not None and trigger is not None and trigger > current_price:
             return None, "已进入买区"
-        return trigger, "下一买入触发价"
+        return trigger, "估值折价触发价"
     if zone == "no_chase":
         return buyZone.fairValueHigh or buyZone.fairValueLow, "等回踩"
     return None, "买区异常，需复核"

@@ -131,6 +131,7 @@ def test_buy_zone_output_includes_technical_entry_when_history_is_available() ->
     assert zone.combinedEntry
     assert zone.combinedEntry["valuationEntryPrice"] is not None
     assert zone.combinedEntry["combinedTriggerPrice"] <= zone.combinedEntry["valuationEntryPrice"]
+    assert "entryLayers" in zone.combinedEntry
 
 
 def test_buy_zone_output_technical_entry_falls_back_when_history_missing_or_stale() -> None:
@@ -206,7 +207,10 @@ def test_combined_entry_labels_fair_zone_as_observation_not_batting_zone() -> No
 
     assert zone.combinedEntry["entryLabel"] == "合理观察，未到估值买点"
     assert zone.combinedEntry["combinedTriggerPrice"] == 88
+    assert zone.combinedEntry["lightProbePrice"] == 105
+    assert zone.combinedEntry["deepDiscountPrice"] == 65
     assert any("未到估值买点" in reason for reason in zone.combinedEntry["entryReasons"])
+    assert any("轻仓试探点" in reason for reason in zone.combinedEntry["entryReasons"])
     assert all("击球区附近" not in reason for reason in zone.combinedEntry["entryReasons"])
 
 
@@ -254,3 +258,37 @@ def test_combined_entry_keeps_first_buy_distance_out_of_near_label() -> None:
 
     assert zone.combinedEntry["entryLabel"] == "合理观察，未到估值买点"
     assert any("不得显示接近买点" in reason for reason in zone.combinedEntry["entryReasons"])
+    assert all("第一买点" not in reason for reason in zone.combinedEntry["entryReasons"])
+
+
+def test_combined_entry_wait_decision_keeps_tactical_layer_non_actionable() -> None:
+    zone = _buy_zone("fair_observation", 212.60)
+    zone = attach_combined_entry(
+        BuyZoneEstimate(
+            **{
+                **zone.to_dict(),
+                "symbol": "NVDA",
+                "fairValueLow": 158.96,
+                "fairValueHigh": 225.38,
+                "trancheBuyLow": 121.33,
+                "trancheBuyHigh": 155.78,
+                "heavyBuyBelow": 109.85,
+                "nextTriggerPrice": 155.78,
+                "technicalEntry": {
+                    "technicalState": "healthy_pullback",
+                    "technicalEntryPrice": 198.5,
+                    "technicalReviewPrice": 184.0,
+                    "technicalConfidence": "medium",
+                },
+            }
+        ),
+        SimpleNamespace(finalAction="等回踩", decisionLane="wait", isActionable=False, currentAddLimitPercent=0, dataConfidence="high"),
+    )
+
+    assert zone.combinedEntry["entryLabel"] == "合理观察，未到估值买点"
+    assert zone.combinedEntry["combinedTriggerPrice"] is None
+    assert zone.combinedEntry["valuationEntryPrice"] == 155.78
+    assert zone.combinedEntry["technicalPullbackPrice"] == 198.5
+    assert zone.combinedEntry["lightProbePrice"] == 198.5
+    assert zone.combinedEntry["deepDiscountPrice"] == 109.85
+    assert any(layer["label"] == "轻仓试探区" and layer["isActionable"] is False for layer in zone.combinedEntry["entryLayers"])

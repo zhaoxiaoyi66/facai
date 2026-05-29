@@ -10,6 +10,7 @@ import streamlit as st
 from buy_zone import BuyZoneInputs, calculate_buy_zone_ladder
 from buy_zone_engine import (
     BuyZoneEstimate,
+    attach_combined_entry,
     buy_zone_with_manual_override,
     clear_buy_zone_override_values,
     generate_buy_zone,
@@ -131,9 +132,11 @@ def _apply_manual_plan(row: dict, plan: dict) -> dict:
     score = row["score"]
     plan_suggestion = generate_position_plan(str(row["symbol"]), active_zone, score)
     source = "manual_override" if has_buy_zone_override(plan) else "system_generated"
+    decision_fields = _final_decision_fields(score, system_zone, manual_plan_override=plan, symbol=str(row["symbol"]))
+    active_zone = attach_combined_entry(active_zone, SimpleNamespace(**decision_fields))
     updated = dict(row)
     updated.update(_zone_plan_fields(active_zone, plan_suggestion, source, has_buy_zone_override(plan)))
-    updated.update(_final_decision_fields(score, system_zone, manual_plan_override=plan, symbol=str(row["symbol"])))
+    updated.update(decision_fields)
     updated["activeZone"] = active_zone
     updated["positionPlan"] = plan_suggestion
     return updated
@@ -169,8 +172,12 @@ def _row_from_outputs(
         "rawSnapshot": snapshot,
         "rawTechnicals": technicals,
     }
+    decision_fields = _final_decision_fields(score, zone, plan)
+    zone = attach_combined_entry(zone, SimpleNamespace(**decision_fields))
+    base["systemZone"] = zone
+    base["activeZone"] = zone
     base.update(_zone_plan_fields(zone, plan, source, manual))
-    base.update(_final_decision_fields(score, zone, plan))
+    base.update(decision_fields)
     return base
 
 
@@ -616,7 +623,7 @@ def _price_ladder_html(row: dict) -> str:
     bands = [
         ("禁止追高", row.get("noChaseAbove")),
         ("合理观察区", f"{_money(row.get('fairValueLow'))} - {_money(row.get('fairValueHigh'))}"),
-        ("可分批区", f"{_money(row.get('trancheBuyLow'))} - {_money(row.get('trancheBuyHigh'))}"),
+        ("估值折价区", f"{_money(row.get('trancheBuyLow'))} - {_money(row.get('trancheBuyHigh'))}"),
         ("极端恐慌区", row.get("heavyBuyBelow")),
     ]
     items = "".join(f"<li><span>{escape(label)}</span><b>{escape(_money(value) if not isinstance(value, str) else value)}</b></li>" for label, value in bands)
@@ -629,7 +636,7 @@ def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
         ("触发条件", _zone_next_trigger_text(zone)),
         ("禁止追高", _optional_money(zone.noChaseAbove)),
         ("合理观察区", f"{_optional_money(zone.fairValueLow)} - {_optional_money(zone.fairValueHigh)}"),
-        ("可分批区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
+        ("估值折价区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
         ("极端恐慌区", _optional_money(zone.heavyBuyBelow)),
         ("置信度", confidence_label(zone.confidence)),
     ]
@@ -738,7 +745,9 @@ def _combined_entry_html(entry: object) -> str:
         ("结论", label),
         ("估值买点", _technical_money(combined.get("valuationEntryPrice"))),
         ("技术回踩点", _technical_money(combined.get("technicalPullbackPrice"))),
+        ("轻仓试探点", _technical_money(combined.get("lightProbePrice"))),
         ("综合触发价", trigger_text),
+        ("深度折价区", _technical_money(combined.get("deepDiscountPrice"))),
         ("复核线", _technical_money(combined.get("reviewPrice"))),
     ]
     metrics = "".join(
@@ -753,7 +762,7 @@ def _combined_entry_html(entry: object) -> str:
     return (
         '<div class="drawer-technical-entry">'
         f"<strong>{escape(label)}</strong>"
-        "<p>估值买点、技术回踩点和综合触发价分开显示；禁止追高、阻断或低置信状态不会生成入场触发。</p>"
+        "<p>合理观察、技术回踩、轻仓试探、估值折价和深度折价分层显示；禁止追高、等回踩、阻断或低置信状态不会生成可买触发。</p>"
         f'<div class="drawer-technical-grid"><ul>{metrics}</ul></div>'
         f'<div class="drawer-technical-reasons"><b>综合说明</b><ul>{reason_html}</ul></div>'
         "</div>"
@@ -772,7 +781,7 @@ def _technical_entry_html(entry: object) -> str:
     summary = (
         "技术层只做辅助观察，不覆盖估值买点；当前数据不足，不生成技术建议。"
         if unavailable
-        else "技术回踩点用于辅助择时，估值买点和极端恐慌区仍以买区模型为准。"
+        else "技术回踩点用于辅助择时，估值折价区和极端恐慌区仍以买区模型为准。"
     )
     metric_items = [
         ("技术状态", _technical_state_label(state)),
@@ -862,7 +871,7 @@ def _technical_reasons_list(technical: dict, unavailable: bool, review_only: boo
         return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
     if review_only:
         return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
-    guardrail = "估值买点、技术回踩点、极端恐慌区三者分开理解；技术层只辅助入场。"
+    guardrail = "估值买点、技术回踩点、轻仓试探点和极端恐慌区分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
 
@@ -892,8 +901,8 @@ def _humanize_buy_zone_explain_item(value: object) -> str:
 
 def _plan_html(row: dict) -> str:
     items = [
-        ("第一笔买入价", _money(row.get("firstBuyPrice"))),
-        ("第二笔买入价", _money(row.get("secondBuyPrice"))),
+        ("估值折价触发价", _money(row.get("firstBuyPrice"))),
+        ("估值折价区下沿", _money(row.get("secondBuyPrice"))),
         ("极端恐慌区触发价", _money(row.get("thirdBuyPrice"))),
         ("禁止追高价", _money(row.get("noChaseAbove"))),
         ("停止加仓条件", str(row.get("stopAddingCondition") or "")),
@@ -2290,15 +2299,15 @@ def format_trigger_cell(row: dict) -> tuple[str, str, str]:
 def _trigger_secondary_text(zone: str, label: str) -> str:
     if label:
         mapped = _next_label(label)
-        if mapped not in {"下一买入触发价"}:
+        if mapped not in {"下一买入触发价", "估值折价触发价"}:
             return mapped
     return {
-        "fair_observation": "观察触发",
+        "fair_observation": "估值折价触发",
         "tranche_buy": "可分批触发",
         "heavy_buy": "极端恐慌区触发",
         "below_heavy_buy": "低于极端恐慌区",
         "no_chase": "等待回踩",
-    }.get(zone, "第一笔买入")
+    }.get(zone, "估值触发")
 
 
 def _needs_review(row: dict) -> bool:
@@ -2344,8 +2353,10 @@ def _next_label(value: str) -> str:
         "买区异常，需复核": "买区异常 / 需复核",
         "已进入可分批区": "已进入可分批区",
         "已低于重仓区": "已低于极端恐慌区",
+        "已进入极端恐慌区": "已进入极端恐慌区",
         "已进入买区": "已进入买区",
-        "下一买入触发价": "下一买入触发价",
+        "下一买入触发价": "估值折价触发价",
+        "估值折价触发价": "估值折价触发价",
         "等待回踩到观察区": "等待回踩",
         "等回踩": "等待回踩",
     }.get(value, value)
@@ -2356,7 +2367,7 @@ def _zone_next_label(zone: str) -> str:
         "tranche_buy": "已进入可分批区",
         "heavy_buy": "已进入极端恐慌区",
         "below_heavy_buy": "已低于极端恐慌区",
-        "fair_observation": "等待买入触发价",
+        "fair_observation": "等待估值折价触发",
         "no_chase": "等待回踩",
         "data_insufficient": "数据不足",
         "invalid_zone": "买区异常 / 需复核",
