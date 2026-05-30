@@ -623,7 +623,7 @@ def _render_weekly_discipline_strip() -> None:
             '<div class="dashboard-discipline-main-row">'
             f'<div class="dashboard-discipline-title"><strong>本周交易纪律：{escape(_dashboard_discipline_level_text(level))}</strong><span>{escape(headline)}</span></div>'
             f'<div class="dashboard-discipline-metrics">{item_html}</div>'
-            '<div class="dashboard-discipline-detail-label">详情在交易日志</div>'
+            '<div class="dashboard-discipline-detail-label">详情</div>'
             "</div>"
             "</section>"
         ),
@@ -689,7 +689,7 @@ def _render_data_health_strip(context: dict[str, object]) -> None:
             '<div class="data-health-main-row">'
             f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>异常驱动展示，本地缓存体检</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
-            '<div class="data-health-detail-label">详情在下方</div>'
+            '<div class="data-health-detail-label">查看详情</div>'
             "</div>"
             "</section>"
         ),
@@ -971,9 +971,9 @@ def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.D
     st.markdown(
         (
             f'<section class="dashboard-risk-summary-strip {tone}">'
-            '<div class="dashboard-risk-summary-title"><strong>风险雷达</strong><span>默认折叠，先看今日行动</span></div>'
+            '<div class="dashboard-risk-summary-title"><strong>风险雷达</strong><span>风险摘要</span></div>'
             f'<div class="dashboard-risk-summary-metrics">{item_html}</div>'
-            '<div class="dashboard-risk-summary-detail">详情在下方</div>'
+            '<div class="dashboard-risk-summary-detail">查看详情</div>'
             "</section>"
         ),
         unsafe_allow_html=True,
@@ -1031,7 +1031,7 @@ def _render_summary_sections(table: pd.DataFrame) -> None:
     st.markdown(_dashboard_priority_strip_html(table), unsafe_allow_html=True)
     st.markdown(
         '<section class="decision-terminal-head">'
-        "<div><strong>决策台</strong><span>按行动优先级聚合当前观察池</span></div>"
+        "<div><strong>决策台</strong><span>行动优先级</span></div>"
         "</section>",
         unsafe_allow_html=True,
     )
@@ -1050,7 +1050,7 @@ def _render_decision_table(table: pd.DataFrame) -> None:
     table_class = "decision-table compact" if density == "紧凑" else "decision-table comfortable"
     st.markdown(
         '<section class="watchlist-head">'
-        "<div><strong>观察名单</strong><span>主表只显示决策摘要，详细进入右侧面板</span></div>"
+        "<div><strong>观察名单</strong><span>决策摘要</span></div>"
         "</section>",
         unsafe_allow_html=True,
     )
