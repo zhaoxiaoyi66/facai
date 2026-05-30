@@ -227,6 +227,71 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["decision_snapshot_id"], snapshot["id"])
             self.assertEqual(store.list_entries("crm")[0]["notes"], "followed signal")
 
+    def test_trade_journal_store_saves_optional_decision_mood(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 420,
+                    "decision_mood": "plan_execution",
+                },
+            )
+            legacy = store.save_entry("msft", {"trade_date": "2026-05-27", "action_type": "skip"})
+
+            self.assertEqual(saved["decision_mood"], "plan_execution")
+            self.assertIsNone(legacy["decision_mood"])
+            with self.assertRaises(ValueError):
+                store.save_entry("msft", {"trade_date": "2026-05-28", "action_type": "buy", "decision_mood": "raw_bad"})
+
+    def test_trade_journal_store_updates_entry_and_recomputes_discipline_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 200,
+                    "decision_mood": "plan_execution",
+                },
+            )
+
+            updated = store.update_entry(
+                saved["id"],
+                "msft",
+                {
+                    "trade_date": "2026-05-27",
+                    "action_type": "trim",
+                    "quantity": 2,
+                    "price": 420,
+                    "decision_mood": "anxiety",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.1,
+                    "plannedSellPct": 0.4,
+                    "sellReasonType": "technical",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": False,
+                },
+            )
+
+            self.assertEqual(updated["symbol"], "MSFT")
+            self.assertEqual(updated["action_type"], "trim")
+            self.assertEqual(updated["quantity"], 2)
+            self.assertEqual(updated["decision_mood"], "anxiety")
+            self.assertEqual(updated["discipline_status"], "blocked")
+            self.assertIn("reentry_plan_required_before_trim_or_sell", updated["blockers"])
+            with self.assertRaises(ValueError):
+                store.update_entry(9999, "msft", {"trade_date": "2026-05-27", "action_type": "buy", "quantity": 1, "price": 1})
+
     def test_trade_journal_sell_saves_trading_discipline_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

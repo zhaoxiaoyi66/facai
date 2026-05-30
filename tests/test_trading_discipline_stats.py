@@ -172,3 +172,21 @@ def test_buy_add_skip_count_frequency_but_not_sell_discipline_violations() -> No
         assert summary["sellTrimCountThisWeek"] == 0
         assert summary["disciplineBlockerCount"] == 0
         assert summary["overTradingLevel"] == "normal"
+
+
+def test_decision_mood_counts_are_included_in_discipline_stats() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(store, "2026-05-27", "buy", decision_mood="fomo")
+        _save(store, "2026-05-27", "trim", decision_mood="anxiety")
+        _save(store, "2026-05-27", "sell", decision_mood="panic_sell")
+        _save(store, "2026-05-27", "skip", decision_mood="revenge_trade")
+        _save(store, "2026-05-27", "add", decision_mood="well_reasoned")
+        _save(store, "2026-05-27", "buy", decision_mood="plan_execution")
+
+        summary = _summary(tmpdir)
+
+        assert summary["fomoTradeCount"] == 1
+        assert summary["anxietyPanicTradeCount"] == 2
+        assert summary["revengeTradeCount"] == 1
+        assert summary["reasonedPlanTradeCount"] == 2

@@ -24,6 +24,10 @@ class TradingDisciplineStatsSummary:
     noReentryPlanSellCount: int
     disciplineBlockerCount: int
     disciplineWarningCount: int
+    fomoTradeCount: int
+    anxietyPanicTradeCount: int
+    revengeTradeCount: int
+    reasonedPlanTradeCount: int
     overTradingLevel: str
     warnings: list[str]
     reminderText: str
@@ -69,6 +73,10 @@ def build_trading_discipline_stats(
         for entry in sell_trim_entries
         if _json_list(entry.get("warnings"), entry.get("warnings_json"))
     ]
+    fomo_entries = _mood_entries(entries, {"fomo"})
+    anxiety_panic_entries = _mood_entries(entries, {"anxiety", "macro_fear", "panic_sell"})
+    revenge_entries = _mood_entries(entries, {"revenge_trade"})
+    reasoned_plan_entries = _mood_entries(entries, {"well_reasoned", "plan_execution"})
 
     warnings: list[str] = []
     level = "normal"
@@ -102,6 +110,10 @@ def build_trading_discipline_stats(
         noReentryPlanSellCount=len(no_reentry_sells),
         disciplineBlockerCount=len(blocker_entries),
         disciplineWarningCount=len(warning_entries),
+        fomoTradeCount=len(fomo_entries),
+        anxietyPanicTradeCount=len(anxiety_panic_entries),
+        revengeTradeCount=len(revenge_entries),
+        reasonedPlanTradeCount=len(reasoned_plan_entries),
         overTradingLevel=level,
         warnings=warnings,
         reminderText=_reminder_text(level),
@@ -123,6 +135,14 @@ def _entry_in_period(entry: dict, period_start: date, period_end: date) -> bool:
 
 def _has_discipline_snapshot(entry: dict) -> bool:
     return bool(str(entry.get("discipline_status") or "").strip())
+
+
+def _mood_entries(entries: list[dict], moods: set[str]) -> list[dict]:
+    return [
+        entry
+        for entry in entries
+        if str(entry.get("decision_mood") or "").strip().lower() in moods
+    ]
 
 
 def _is_false(value: object) -> bool:

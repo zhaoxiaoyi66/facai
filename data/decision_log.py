@@ -16,6 +16,18 @@ from data.trading_discipline import evaluate_trading_discipline
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
 DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
+DECISION_MOOD_TYPES = {
+    "well_reasoned",
+    "plan_execution",
+    "fomo",
+    "anxiety",
+    "macro_fear",
+    "revenge_trade",
+    "boredom_trade",
+    "panic_sell",
+    "regret_chase",
+    "uncertainty",
+}
 OUTCOME_HORIZONS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
 DECISION_ERROR_TAGS = {
     "valuation_too_high",
@@ -28,6 +40,7 @@ DECISION_ERROR_TAGS = {
     "ignored_system_warning",
 }
 TRADE_DISCIPLINE_COLUMNS = {
+    "decision_mood": "TEXT",
     "position_class": "TEXT",
     "planned_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
@@ -308,6 +321,7 @@ class TradeJournalStore:
                     expiry_date,
                     decision_snapshot_id,
                     notes,
+                    decision_mood,
                     position_class,
                     planned_sell_pct,
                     sell_reason_type,
@@ -325,7 +339,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -338,6 +352,7 @@ class TradeJournalStore:
                     cleaned["expiry_date"],
                     cleaned["decision_snapshot_id"],
                     cleaned["notes"],
+                    cleaned["decision_mood"],
                     cleaned["position_class"],
                     cleaned["planned_sell_pct"],
                     cleaned["sell_reason_type"],
@@ -358,6 +373,76 @@ class TradeJournalStore:
             )
             entry_id = cursor.lastrowid
         return self.get_entry(int(entry_id)) or cleaned
+
+    def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
+        clean_id = _required_int(entry_id, "entry_id")
+        cleaned = _clean_trade_entry(symbol, values)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE trade_journal_entries
+                SET
+                    symbol = ?,
+                    trade_date = ?,
+                    action_type = ?,
+                    quantity = ?,
+                    price = ?,
+                    premium = ?,
+                    strike_price = ?,
+                    expiry_date = ?,
+                    decision_snapshot_id = ?,
+                    notes = ?,
+                    decision_mood = ?,
+                    position_class = ?,
+                    planned_sell_pct = ?,
+                    sell_reason_type = ?,
+                    sell_level = ?,
+                    thesis_broken = ?,
+                    position_over_limit = ?,
+                    has_reentry_plan = ?,
+                    reentry_plan_text = ?,
+                    max_allowed_sell_pct = ?,
+                    can_sell_core = ?,
+                    requires_reentry_plan = ?,
+                    discipline_status = ?,
+                    blockers_json = ?,
+                    warnings_json = ?,
+                    reminder_text = ?
+                WHERE id = ?
+                """,
+                (
+                    cleaned["symbol"],
+                    cleaned["trade_date"],
+                    cleaned["action_type"],
+                    cleaned["quantity"],
+                    cleaned["price"],
+                    cleaned["premium"],
+                    cleaned["strike_price"],
+                    cleaned["expiry_date"],
+                    cleaned["decision_snapshot_id"],
+                    cleaned["notes"],
+                    cleaned["decision_mood"],
+                    cleaned["position_class"],
+                    cleaned["planned_sell_pct"],
+                    cleaned["sell_reason_type"],
+                    cleaned["sell_level"],
+                    cleaned["thesis_broken"],
+                    cleaned["position_over_limit"],
+                    cleaned["has_reentry_plan"],
+                    cleaned["reentry_plan_text"],
+                    cleaned["max_allowed_sell_pct"],
+                    cleaned["can_sell_core"],
+                    cleaned["requires_reentry_plan"],
+                    cleaned["discipline_status"],
+                    cleaned["blockers_json"],
+                    cleaned["warnings_json"],
+                    cleaned["reminder_text"],
+                    clean_id,
+                ),
+            )
+        if cursor.rowcount <= 0:
+            raise ValueError("trade entry not found")
+        return self.get_entry(clean_id) or cleaned
 
     def get_entry(self, entry_id: int) -> dict | None:
         with self.connect() as conn:
@@ -801,6 +886,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "expiry_date": _clean_optional_text(values.get("expiry_date")),
         "decision_snapshot_id": _optional_int(values.get("decision_snapshot_id"), "decision_snapshot_id"),
         "notes": _clean_text(values.get("notes")),
+        "decision_mood": _clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
         "created_at": _now(),
     }
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
@@ -873,6 +959,15 @@ def _empty_trade_discipline_snapshot() -> dict:
         "warnings_json": None,
         "reminder_text": None,
     }
+
+
+def _clean_decision_mood(value: object) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    if text not in DECISION_MOOD_TYPES:
+        raise ValueError("decision_mood is invalid")
+    return text
 
 
 def _clean_decision_outcome(decision_snapshot_id: int, horizon: str, values: dict) -> dict:

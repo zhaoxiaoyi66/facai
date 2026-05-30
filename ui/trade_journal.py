@@ -13,6 +13,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.sell_fly_review import build_sell_fly_review_results
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
@@ -37,6 +38,22 @@ SELL_REASON_OPTIONS = {
     "仓位过重": "position_size",
     "投资假设破裂": "thesis_broken",
 }
+DECISION_MOOD_OPTIONS = {
+    "请选择": "",
+    "深思熟虑": "well_reasoned",
+    "按计划执行": "plan_execution",
+    "FOMO / 怕错过": "fomo",
+    "焦虑 / 怕回撤": "anxiety",
+    "宏观恐慌": "macro_fear",
+    "报复性交易": "revenge_trade",
+    "手痒交易": "boredom_trade",
+    "恐慌卖出": "panic_sell",
+    "卖飞后追回": "regret_chase",
+    "不确定但想操作": "uncertainty",
+}
+DECISION_MOOD_LABELS = {value: label for label, value in DECISION_MOOD_OPTIONS.items() if value}
+SELL_EMOTIONAL_MOODS = {"anxiety", "macro_fear", "panic_sell", "regret_chase"}
+BUY_EMOTIONAL_MOODS = {"fomo", "regret_chase"}
 DISCIPLINE_STATUS_LABELS = {
     "allowed": "允许执行",
     "warning": "需要复核",
@@ -111,6 +128,7 @@ def render() -> None:
         unsafe_allow_html=True,
     )
     if toolbar_cols[1].button("新增记录", key="trade-journal-open", width="stretch"):
+        _clear_trade_edit_query()
         st.session_state["trade_journal_editor_open"] = True
     _render_editor(store)
 
@@ -118,39 +136,53 @@ def render() -> None:
     entries = _load_entries(store, symbols)
     _render_summary(entries)
     _render_entry_delete_confirmation(store)
-    _render_entries(symbols, entries)
     _render_entry_detail(store)
+    _render_entries(symbols, entries)
+    _render_sell_fly_review()
     _render_signal_replay(decision_store, outcome_store, error_tag_store)
 
 
 def _render_editor(store: TradeJournalStore) -> None:
-    editor_open = bool(st.session_state.get("trade_journal_editor_open", False))
-    with st.expander("新增交易记录", expanded=editor_open):
+    editing_id = _query_int("editTrade")
+    editing_entry = store.get_entry(editing_id) if editing_id is not None else None
+    if editing_id is not None and editing_entry is None:
+        _clear_trade_edit_query()
+        st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
+        st.rerun()
+    editor_open = bool(st.session_state.get("trade_journal_editor_open", False)) or editing_entry is not None
+    title = "编辑交易记录" if editing_entry else "新增交易记录"
+    st.markdown('<div id="trade-journal-editor"></div>', unsafe_allow_html=True)
+    with st.expander(title, expanded=editor_open):
         st.session_state["trade_journal_editor_open"] = False
         top_cols = st.columns([1.1, 1.2, 1])
-        symbol = top_cols[0].text_input("股票代码", key="trade-journal-symbol").strip().upper()
-        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), key="trade-journal-action")
-        trade_date = top_cols[2].date_input("日期", value=date.today(), key="trade-journal-date")
+        symbol = top_cols[0].text_input("股票代码", value=_entry_value(editing_entry, "symbol"), key=_editor_key("symbol", editing_id)).strip().upper()
+        action_default = _action_label_for_entry(editing_entry)
+        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action", editing_id))
+        trade_date = top_cols[2].date_input("日期", value=_entry_date(editing_entry), key=_editor_key("date", editing_id))
         action_type = ACTION_OPTIONS[action_label]
 
-        trade_cols = st.columns(3)
-        quantity = trade_cols[0].text_input("数量", key="trade-journal-quantity")
-        price = trade_cols[1].text_input("价格", key="trade-journal-price")
-        decision_snapshot_id = trade_cols[2].text_input(
+        trade_cols = st.columns([1, 1, 1.2, 1])
+        quantity = trade_cols[0].text_input("数量", value=_entry_number_text(editing_entry, "quantity"), key=_editor_key("quantity", editing_id))
+        price = trade_cols[1].text_input("价格", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
+        mood_default = _decision_mood_label_for_entry(editing_entry)
+        mood_label = trade_cols[2].selectbox("交易心理标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
+        decision_snapshot_id = trade_cols[3].text_input(
             "关联信号 ID（可选）",
-            key="trade-journal-snapshot-id",
+            value=_entry_int_text(editing_entry, "decision_snapshot_id"),
+            key=_editor_key("snapshot-id", editing_id),
         )
 
         option_cols = st.columns(3)
-        premium = option_cols[0].text_input("权利金", key="trade-journal-premium")
-        strike_price = option_cols[1].text_input("行权价", key="trade-journal-strike")
-        expiry_date = option_cols[2].text_input("到期日", placeholder="YYYY-MM-DD", key="trade-journal-expiry")
+        premium = option_cols[0].text_input("权利金", value=_entry_number_text(editing_entry, "premium"), key=_editor_key("premium", editing_id))
+        strike_price = option_cols[1].text_input("行权价", value=_entry_number_text(editing_entry, "strike_price"), key=_editor_key("strike", editing_id))
+        expiry_date = option_cols[2].text_input("到期日", value=_entry_value(editing_entry, "expiry_date"), placeholder="YYYY-MM-DD", key=_editor_key("expiry", editing_id))
 
         if action_type in SELL_DISCIPLINE_ACTIONS:
-            _render_trading_discipline_check(symbol, action_type)
+            _render_trading_discipline_check(symbol, action_type, editing_entry=editing_entry, key_suffix=str(editing_id or "new"))
 
-        notes = st.text_area("备注", height=86, key="trade-journal-notes")
-        if st.button("保存记录", key="trade-journal-save", width="stretch"):
+        notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
+        button_label = "保存修改" if editing_entry else "保存记录"
+        if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
             entry_values = {
                 "trade_date": trade_date.isoformat(),
                 "action_type": action_type,
@@ -159,26 +191,38 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "premium": premium,
                 "strike_price": strike_price,
                 "expiry_date": expiry_date,
+                "decision_mood": DECISION_MOOD_OPTIONS.get(mood_label, ""),
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
             }
-            entry_values.update(_trade_discipline_form_values(action_type))
-            _save_entry(
-                store,
-                symbol,
-                entry_values,
-            )
+            entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
+            if editing_entry:
+                _update_entry(store, int(editing_id or 0), symbol, entry_values)
+            else:
+                _save_entry(store, symbol, entry_values)
+        if editing_entry and st.button("取消编辑", key=_editor_key("cancel", editing_id), width="stretch"):
+            _clear_trade_edit_query()
+            st.rerun()
 
 
-def _render_trading_discipline_check(symbol: str, action_type: str) -> None:
+def _render_trading_discipline_check(
+    symbol: str,
+    action_type: str,
+    *,
+    editing_entry: dict | None = None,
+    key_suffix: str = "new",
+) -> None:
     st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
     cols = st.columns([0.72, 0.92, 1.2, 0.86, 0.86, 0.92], gap="small")
-    position_class = cols[0].selectbox("股票分类", ["A", "B", "C"], key="trade-discipline-position-class")
-    planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value="10", key="trade-discipline-planned-sell-pct")
-    reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), key="trade-discipline-sell-reason")
-    thesis_broken = cols[3].checkbox("投资逻辑破裂", key="trade-discipline-thesis-broken")
-    position_over_limit = cols[4].checkbox("仓位超限", key="trade-discipline-position-over-limit")
-    has_reentry_plan = cols[5].checkbox("已有回补计划", key="trade-discipline-has-reentry-plan")
+    position_options = ["A", "B", "C"]
+    position_default = _entry_value(editing_entry, "position_class") or "A"
+    reason_default = _sell_reason_label_for_entry(editing_entry)
+    position_class = cols[0].selectbox("股票分类", position_options, index=position_options.index(position_default) if position_default in position_options else 0, key=f"trade-discipline-position-class-{key_suffix}")
+    planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value=_entry_percent_text(editing_entry, "planned_sell_pct", "10"), key=f"trade-discipline-planned-sell-pct-{key_suffix}")
+    reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
+    thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
+    position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
+    has_reentry_plan = cols[5].checkbox("已有回补计划", value=_entry_bool(editing_entry, "has_reentry_plan"), key=f"trade-discipline-has-reentry-plan-{key_suffix}")
 
     result = evaluate_trading_discipline(
         symbol=symbol,
@@ -196,17 +240,17 @@ def _render_trading_discipline_check(symbol: str, action_type: str) -> None:
     _render_trading_discipline_result(result)
 
 
-def _trade_discipline_form_values(action_type: str) -> dict:
+def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> dict:
     if action_type not in SELL_DISCIPLINE_ACTIONS:
         return {}
-    reason_label = st.session_state.get("trade-discipline-sell-reason")
+    reason_label = st.session_state.get(f"trade-discipline-sell-reason-{key_suffix}")
     return {
-        "positionClass": st.session_state.get("trade-discipline-position-class") or "C",
-        "plannedSellPct": _parse_optional_float(st.session_state.get("trade-discipline-planned-sell-pct")),
+        "positionClass": st.session_state.get(f"trade-discipline-position-class-{key_suffix}") or "C",
+        "plannedSellPct": _parse_optional_float(st.session_state.get(f"trade-discipline-planned-sell-pct-{key_suffix}")),
         "sellReasonType": SELL_REASON_OPTIONS.get(str(reason_label or ""), str(reason_label or "")),
-        "thesisBroken": bool(st.session_state.get("trade-discipline-thesis-broken")),
-        "positionOverLimit": bool(st.session_state.get("trade-discipline-position-over-limit")),
-        "hasReentryPlan": bool(st.session_state.get("trade-discipline-has-reentry-plan")),
+        "thesisBroken": bool(st.session_state.get(f"trade-discipline-thesis-broken-{key_suffix}")),
+        "positionOverLimit": bool(st.session_state.get(f"trade-discipline-position-over-limit-{key_suffix}")),
+        "hasReentryPlan": bool(st.session_state.get(f"trade-discipline-has-reentry-plan-{key_suffix}")),
     }
 
 
@@ -282,12 +326,47 @@ def _parse_optional_float(value: object) -> float | None:
 
 
 def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
+    if not str(symbol or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写股票代码。")
+        st.rerun()
+    if not str(values.get("quantity") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写数量。")
+        st.rerun()
+    if not str(values.get("price") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写价格。")
+        st.rerun()
+    if not str(values.get("decision_mood") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请选择交易心理标签。")
+        st.rerun()
     try:
         saved = store.save_entry(symbol, values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
     st.session_state["trade_journal_notice"] = ("success", f"{saved['symbol']} 交易记录已保存。")
+    st.rerun()
+
+
+def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: dict) -> None:
+    if not str(symbol or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写股票代码。")
+        st.rerun()
+    if not str(values.get("quantity") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写数量。")
+        st.rerun()
+    if not str(values.get("price") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请填写价格。")
+        st.rerun()
+    if not str(values.get("decision_mood") or "").strip():
+        st.session_state["trade_journal_notice"] = ("error", "请选择交易心理标签。")
+        st.rerun()
+    try:
+        saved = store.update_entry(entry_id, symbol, values)
+    except ValueError as exc:
+        st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
+        st.rerun()
+    _clear_trade_edit_query()
+    st.session_state["trade_journal_notice"] = ("success", f"{saved['symbol']} 交易记录已更新。")
     st.rerun()
 
 
@@ -325,6 +404,10 @@ def _render_weekly_discipline_summary() -> None:
         ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
         ("blocker", summary.get("disciplineBlockerCount", 0)),
         ("warning", summary.get("disciplineWarningCount", 0)),
+        ("FOMO", summary.get("fomoTradeCount", 0)),
+        ("焦虑/恐慌", summary.get("anxietyPanicTradeCount", 0)),
+        ("报复交易", summary.get("revengeTradeCount", 0)),
+        ("深思/计划", summary.get("reasonedPlanTradeCount", 0)),
     ]
     metric_html = "".join(
         f"<div><span>{escape(label)}</span><b>{escape(str(value))}</b></div>"
@@ -433,8 +516,8 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
             '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
             '<table class="trade-journal-table trade-terminal-table">'
             "<colgroup>"
-            '<col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:9%">'
-            '<col style="width:12%"><col style="width:12%"><col style="width:9%"><col style="width:auto"><col style="width:132px">'
+            '<col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:9%">'
+            '<col style="width:11%"><col style="width:10%"><col style="width:9%"><col style="width:auto"><col style="width:136px">'
             "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
@@ -482,6 +565,7 @@ def _render_entry_delete_confirmation(store: TradeJournalStore) -> None:
 
 
 def _render_entry_detail(store: TradeJournalStore) -> None:
+    st.markdown('<div id="trade-entry-detail"></div>', unsafe_allow_html=True)
     entry_id = _query_int("viewTrade")
     if entry_id is None:
         return
@@ -491,7 +575,6 @@ def _render_entry_detail(store: TradeJournalStore) -> None:
         st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
         st.rerun()
 
-    st.markdown('<div id="trade-entry-detail"></div>', unsafe_allow_html=True)
     head_cols = st.columns([4.4, 0.8])
     head_cols[0].markdown(
         (
@@ -509,11 +592,149 @@ def _render_entry_detail(store: TradeJournalStore) -> None:
     st.markdown(_entry_detail_html(entry), unsafe_allow_html=True)
 
 
+def _render_sell_fly_review() -> None:
+    st.markdown('<div class="trade-workbench-section replay">卖飞复盘</div>', unsafe_allow_html=True)
+    render_section_title("卖飞复盘", "只读检测 sell / trim 后 5d / 10d / 20d 的卖后涨幅，不写入数据库。")
+    rows = _sell_fly_rows(build_sell_fly_review_results())
+    if not rows:
+        st.markdown(
+            (
+                '<div class="trade-journal-empty signal-empty">'
+                "<strong>暂无可复盘的卖出记录或价格序列不足</strong>"
+                "<span>需要已有 sell / trim 交易记录、卖出价格，以及卖出后的本地 price_history。</span>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        return
+    st.caption("疑似卖飞：卖出后 10 日内最高上涨超过阈值。纪律违规：卖出行为与系统允许比例或卖出等级不匹配。")
+    st.markdown(_sell_fly_table_html(rows), unsafe_allow_html=True)
+
+
+def _sell_fly_rows(results: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str, str, float | None, float | None], dict] = {}
+    for item in results:
+        key = (
+            str(item.get("symbol") or ""),
+            str(item.get("tradeDate") or ""),
+            str(item.get("actionType") or ""),
+            _number(item.get("sellPrice")),
+            _number(item.get("quantity")),
+        )
+        row = grouped.setdefault(
+            key,
+            {
+                "symbol": item.get("symbol"),
+                "tradeDate": item.get("tradeDate"),
+                "actionType": item.get("actionType"),
+                "sellPrice": item.get("sellPrice"),
+                "quantity": item.get("quantity"),
+                "suspectedSellFly": False,
+                "violatedDiscipline": False,
+                "reason": "",
+                "horizons": {},
+            },
+        )
+        horizon = str(item.get("horizon") or "")
+        row["horizons"][horizon] = item
+        row["suspectedSellFly"] = bool(row["suspectedSellFly"] or item.get("suspectedSellFly"))
+        row["violatedDiscipline"] = bool(row["violatedDiscipline"] or item.get("violatedDiscipline"))
+        if item.get("reason") and not str(item.get("reason")).startswith("missing"):
+            row["reason"] = str(item.get("reason"))
+        elif not row["reason"]:
+            row["reason"] = str(item.get("reason") or "")
+    return [row for row in grouped.values() if _sell_fly_row_has_data(row)]
+
+
+def _sell_fly_row_has_data(row: dict) -> bool:
+    horizons = row.get("horizons") or {}
+    return any((item or {}).get("maxReturnAfterSellPct") is not None for item in horizons.values())
+
+
+def _sell_fly_table_html(rows: list[dict]) -> str:
+    headers = [
+        "股票",
+        "卖出日期",
+        "类型",
+        "卖出价格",
+        "5d 最大 / 期末",
+        "10d 最大 / 期末",
+        "20d 最大 / 期末",
+        "疑似卖飞",
+        "纪律违规",
+        "违规原因",
+    ]
+    body = "".join(_sell_fly_row_html(row) for row in rows[:30])
+    return (
+        '<div class="trade-journal-table-wrap trade-terminal-table-wrap sell-fly">'
+        '<table class="trade-journal-table trade-terminal-table sell-fly">'
+        "<colgroup>"
+        '<col style="width:8%"><col style="width:10%"><col style="width:8%"><col style="width:10%">'
+        '<col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:9%">'
+        '<col style="width:9%"><col style="width:auto">'
+        "</colgroup>"
+        f"<thead><tr>{''.join(f'<th>{escape(label)}</th>' for label in headers)}</tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _sell_fly_row_html(row: dict) -> str:
+    horizons = row.get("horizons") or {}
+    return (
+        "<tr>"
+        f'<td class="symbol">{escape(_text(row.get("symbol")))}</td>'
+        f"<td>{escape(_text(row.get('tradeDate')))}</td>"
+        f"<td>{escape(_text(row.get('actionType')))}</td>"
+        f"<td>{escape(_money_text(row.get('sellPrice')))}</td>"
+        f"<td>{_sell_fly_horizon_cell(horizons.get('5d'))}</td>"
+        f"<td>{_sell_fly_horizon_cell(horizons.get('10d'))}</td>"
+        f"<td>{_sell_fly_horizon_cell(horizons.get('20d'))}</td>"
+        f"<td>{_yes_no_pill(row.get('suspectedSellFly'), positive_tone='blocked')}</td>"
+        f"<td>{_yes_no_pill(row.get('violatedDiscipline'), positive_tone='blocked')}</td>"
+        f"<td>{escape(_sell_fly_reason_text(row))}</td>"
+        "</tr>"
+    )
+
+
+def _sell_fly_horizon_cell(item: dict | None) -> str:
+    if not item or item.get("maxReturnAfterSellPct") is None:
+        return '<span class="sell-fly-muted">缺历史</span>'
+    max_return = format_percent(_number(item.get("maxReturnAfterSellPct")) or 0)
+    end_return = format_percent(_number(item.get("endReturnPct")) or 0)
+    return (
+        '<div class="trade-journal-cell">'
+        f"<b>{escape(max_return)}</b>"
+        f"<span>{escape('期末 ' + end_return)}</span>"
+        "</div>"
+    )
+
+
+def _sell_fly_reason_text(row: dict) -> str:
+    if row.get("violatedDiscipline"):
+        return "纪律快照含 blocker，且卖出后股价上涨。"
+    if row.get("suspectedSellFly"):
+        return "卖出后 10 日内最高涨幅超过 8%。"
+    reason = str(row.get("reason") or "")
+    if reason.startswith("missing"):
+        return "价格序列不足。"
+    return "未触发 10 日疑似卖飞。"
+
+
+def _yes_no_pill(value: object, *, positive_tone: str = "ok") -> str:
+    truthy = bool(value)
+    tone = positive_tone if truthy else "neutral"
+    label = "是" if truthy else "否"
+    return f'<span class="trade-discipline-pill {escape(tone)}">{escape(label)}</span>'
+
+
 def _entry_detail_html(entry: dict) -> str:
     base_rows = [
         ("日期", _text(entry.get("trade_date"))),
         ("股票", _text(entry.get("symbol"))),
         ("操作", ACTION_LABELS.get(str(entry.get("action_type") or ""), "未识别")),
+        ("交易心理", _decision_mood_text(entry.get("decision_mood"))),
         ("数量", _quantity_text(entry.get("quantity"))),
         ("价格", _money_text(entry.get("price"))),
         ("关联信号", _snapshot_text(entry.get("decision_snapshot_id"))),
@@ -525,6 +746,7 @@ def _entry_detail_html(entry: dict) -> str:
         '<section class="trade-entry-detail-card">'
         '<h4>基础信息</h4>'
         f"{base_html}"
+        f"{_decision_mood_warning_html(entry)}"
         '<h4>卖出纪律快照</h4>'
         f"{discipline_html}"
         '<h4>备注</h4>'
@@ -1227,7 +1449,23 @@ def _entry_row_html(entry: dict) -> str:
 
 
 def _entry_actions_html(entry: dict) -> str:
-    return f"{_entry_detail_action_html(entry)}{_entry_delete_action_html(entry)}"
+    return (
+        f"{_stock_detail_action_html(entry)}"
+        '<span class="trade-entry-more-wrap">'
+        '<button class="trade-entry-more-button" type="button">更多</button>'
+        f'<span class="trade-entry-more-menu">{_entry_edit_action_html(entry)}{_entry_detail_action_html(entry)}{_entry_delete_action_html(entry)}</span>'
+        "</span>"
+    )
+
+
+def _stock_detail_action_html(entry: dict) -> str:
+    symbol = str(entry.get("symbol") or "").strip().upper()
+    if not symbol:
+        return BLANK_TEXT
+    return (
+        f'<a class="trade-entry-detail-link" href="?page=detail&symbol={escape(symbol, quote=True)}" '
+        'target="_self" title="查看个股研究详情">详情</a>'
+    )
 
 
 def _entry_detail_action_html(entry: dict) -> str:
@@ -1235,8 +1473,18 @@ def _entry_detail_action_html(entry: dict) -> str:
     if entry_id <= 0:
         return BLANK_TEXT
     return (
-        f'<a class="trade-entry-detail-link" href="?page=trade-journal&viewTrade={entry_id}#trade-entry-detail" '
-        'target="_self" title="查看这条交易记录详情">详情</a>'
+        f'<a class="trade-entry-record-link" href="?page=trade-journal&viewTrade={entry_id}#trade-entry-detail" '
+        'target="_self" title="查看这条交易记录快照">记录</a>'
+    )
+
+
+def _entry_edit_action_html(entry: dict) -> str:
+    entry_id = int(entry.get("id") or 0)
+    if entry_id <= 0:
+        return BLANK_TEXT
+    return (
+        f'<a class="trade-entry-edit-link" href="?page=trade-journal&editTrade={entry_id}#trade-journal-editor" '
+        'target="_self" title="编辑这条交易记录">编辑</a>'
     )
 
 
@@ -1270,6 +1518,87 @@ def _discipline_status_text(value: object) -> str:
 def _sell_reason_text(value: object) -> str:
     reason = str(value or "").strip().lower()
     return SELL_REASON_LABELS.get(reason, reason or BLANK_TEXT)
+
+
+def _decision_mood_text(value: object) -> str:
+    mood = str(value or "").strip()
+    return DECISION_MOOD_LABELS.get(mood, "未记录")
+
+
+def _decision_mood_warning_html(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").lower()
+    mood = str(entry.get("decision_mood") or "").strip()
+    if action in SELL_DISCIPLINE_ACTIONS and mood in SELL_EMOTIONAL_MOODS:
+        text = "该卖出可能由情绪驱动，请确认 thesis 是否真的破坏。"
+    elif action in {"buy", "add"} and mood in BUY_EMOTIONAL_MOODS:
+        text = "该买入可能是追涨或卖飞后追回，不应替代原计划。"
+    else:
+        return ""
+    return f'<div class="trade-entry-mood-warning"><b>WARN</b><span>{escape(text)}</span></div>'
+
+
+def _editor_key(field: str, entry_id: int | None) -> str:
+    return f"trade-journal-edit-{entry_id}-{field}" if entry_id is not None else f"trade-journal-{field}"
+
+
+def _entry_value(entry: dict | None, key: str) -> str:
+    if not entry:
+        return ""
+    value = entry.get(key)
+    return "" if value is None else str(value)
+
+
+def _entry_number_text(entry: dict | None, key: str) -> str:
+    number = _number((entry or {}).get(key))
+    if number is None:
+        return ""
+    return f"{number:g}"
+
+
+def _entry_int_text(entry: dict | None, key: str) -> str:
+    number = _number((entry or {}).get(key))
+    if number is None:
+        return ""
+    return str(int(number))
+
+
+def _entry_percent_text(entry: dict | None, key: str, default: str) -> str:
+    number = _number((entry or {}).get(key))
+    if number is None:
+        return default
+    return f"{number * 100:g}"
+
+
+def _entry_bool(entry: dict | None, key: str) -> bool:
+    value = (entry or {}).get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _entry_date(entry: dict | None) -> date:
+    parsed = _parse_iso_date((entry or {}).get("trade_date"))
+    return parsed or date.today()
+
+
+def _action_label_for_entry(entry: dict | None) -> str:
+    action = str((entry or {}).get("action_type") or "")
+    label = ACTION_LABELS.get(action)
+    return label if label in ACTION_OPTIONS else list(ACTION_OPTIONS)[0]
+
+
+def _decision_mood_label_for_entry(entry: dict | None) -> str:
+    mood = str((entry or {}).get("decision_mood") or "")
+    label = DECISION_MOOD_LABELS.get(mood)
+    return label if label in DECISION_MOOD_OPTIONS else list(DECISION_MOOD_OPTIONS)[0]
+
+
+def _sell_reason_label_for_entry(entry: dict | None) -> str:
+    reason = str((entry or {}).get("sell_reason_type") or "")
+    label = SELL_REASON_LABELS.get(reason)
+    return label if label in SELL_REASON_OPTIONS else list(SELL_REASON_OPTIONS)[0]
 
 
 def _discipline_percent(value: object) -> str:
@@ -1391,6 +1720,11 @@ def _clear_trade_detail_query() -> None:
         st.query_params.pop("viewTrade")
 
 
+def _clear_trade_edit_query() -> None:
+    if "editTrade" in st.query_params:
+        st.query_params.pop("editTrade")
+
+
 def _text(value: object) -> str:
     text = str(value or "").strip()
     return text if text else BLANK_TEXT
@@ -1410,6 +1744,8 @@ def _friendly_error(message: str) -> str:
         return "请填写股票代码。"
     if "action_type is invalid" in message:
         return "请选择有效的操作类型。"
+    if "decision_mood is invalid" in message:
+        return "请选择有效的交易心理标签。"
     if "must be a number" in message:
         return "数量、价格、权利金和行权价需要填写数字。"
     if "cannot be negative" in message:
@@ -1513,7 +1849,7 @@ def _render_styles() -> None:
         }
         .weekly-discipline-grid {
             display: grid;
-            grid-template-columns: repeat(7, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
             border: 1px solid rgba(15, 23, 42, 0.055);
             border-radius: 7px;
             overflow: hidden;
@@ -2102,7 +2438,7 @@ def _render_styles() -> None:
             border: 1px solid var(--trade-terminal-border, rgba(15, 23, 42, 0.08));
             border-radius: 8px;
             background: #FFFFFF;
-            overflow: hidden;
+            overflow: visible;
             box-shadow: none;
         }
         .trade-journal-table-wrap.signal {
@@ -2110,7 +2446,7 @@ def _render_styles() -> None:
         }
         .trade-journal-table {
             width: 100%;
-            min-width: 1040px;
+            min-width: 980px;
             border-collapse: collapse;
             table-layout: fixed;
             font-size: 12px;
@@ -2118,9 +2454,12 @@ def _render_styles() -> None:
         .trade-journal-table.signal {
             min-width: 620px;
         }
+        .trade-journal-table.sell-fly {
+            min-width: 1080px;
+        }
         .trade-journal-table th {
-            height: 30px;
-            padding: 0 12px;
+            height: 28px;
+            padding: 0 10px;
             border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
             background: var(--trade-terminal-head, #F8FAFC);
             color: #64748B;
@@ -2129,8 +2468,8 @@ def _render_styles() -> None:
             text-align: left;
         }
         .trade-journal-table td {
-            height: 42px;
-            padding: 0 12px;
+            height: 46px;
+            padding: 0 10px;
             border-bottom: 1px solid var(--trade-terminal-line, rgba(15, 23, 42, 0.055));
             color: #0f172a;
             vertical-align: middle;
@@ -2153,19 +2492,26 @@ def _render_styles() -> None:
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .sell-fly-muted {
+            color: #94a3b8;
+            font-size: 11px;
+        }
         .trade-entry-actions {
             text-align: center;
-            width: 120px;
+            width: 136px;
+            overflow: visible;
         }
         .trade-entry-action-group {
-            min-width: 72px;
+            min-width: 104px;
             padding: 0;
             border: 0;
             background: transparent;
             margin: 0 auto;
             display: inline-flex;
             justify-content: center;
-            gap: 0.16rem;
+            align-items: center;
+            gap: 0.24rem;
+            position: relative;
         }
         .trade-entry-actions::after {
             content: "";
@@ -2175,13 +2521,18 @@ def _render_styles() -> None:
         .trade-entry-delete-link,
         .trade-entry-delete-link:visited,
         .trade-entry-detail-link,
-        .trade-entry-detail-link:visited {
+        .trade-entry-detail-link:visited,
+        .trade-entry-edit-link,
+        .trade-entry-edit-link:visited,
+        .trade-entry-record-link,
+        .trade-entry-record-link:visited,
+        .trade-entry-more-button {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             height: 26px;
-            min-width: 38px;
-            padding: 0 0.2rem;
+            min-width: 40px;
+            padding: 0 0.28rem;
             border: 1px solid transparent;
             border-radius: 4px;
             background: transparent;
@@ -2190,17 +2541,60 @@ def _render_styles() -> None:
             font-weight: 650;
             text-decoration: none !important;
             white-space: nowrap;
+            cursor: pointer;
         }
         .trade-entry-delete-link:hover,
-        .trade-entry-detail-link:hover {
+        .trade-entry-detail-link:hover,
+        .trade-entry-edit-link:hover,
+        .trade-entry-record-link:hover,
+        .trade-entry-more-button:hover {
             border-color: rgba(15, 23, 42, 0.08);
             background: #FFFFFF;
             color: #0F172A;
             text-decoration: none !important;
         }
         .trade-entry-detail-link,
-        .trade-entry-detail-link:visited {
+        .trade-entry-detail-link:visited,
+        .trade-entry-edit-link,
+        .trade-entry-edit-link:visited,
+        .trade-entry-record-link,
+        .trade-entry-record-link:visited {
             color: #2563eb;
+        }
+        .trade-entry-more-wrap {
+            position: relative;
+            display: inline-flex;
+        }
+        .trade-entry-more-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 4px);
+            z-index: 30;
+            display: none;
+            min-width: 96px;
+            padding: 0.2rem;
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 6px;
+            background: #fff;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.10);
+        }
+        .trade-entry-more-wrap:hover .trade-entry-more-menu,
+        .trade-entry-more-wrap:focus-within .trade-entry-more-menu {
+            display: grid;
+            gap: 0.12rem;
+        }
+        .trade-entry-more-menu a,
+        .trade-entry-more-menu a:visited {
+            justify-content: flex-start;
+            height: 24px;
+            min-width: 0;
+            width: 100%;
+            padding: 0 0.46rem;
+            border-radius: 4px;
+            color: #52657F !important;
+        }
+        .trade-entry-more-menu a:hover {
+            color: #0F172A !important;
         }
         .trade-discipline-pill {
             display: inline-flex;
@@ -2263,7 +2657,7 @@ def _render_styles() -> None:
         }
         .trade-journal-cell {
             display: grid;
-            gap: 0.04rem;
+            gap: 0.08rem;
             min-width: 0;
             line-height: 1.12;
         }
@@ -2358,6 +2752,22 @@ def _render_styles() -> None:
             border-style: solid;
             background: rgba(239, 246, 255, 0.62);
             color: #334155;
+        }
+        .trade-entry-mood-warning {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin-top: 0.5rem;
+            padding: 0.48rem 0.58rem;
+            border: 1px solid rgba(185, 28, 28, 0.14);
+            border-radius: 6px;
+            background: rgba(254, 226, 226, 0.52);
+            color: #991b1b;
+            font-size: 0.76rem;
+        }
+        .trade-entry-mood-warning b {
+            font-size: 0.68rem;
+            letter-spacing: 0.04em;
         }
         .trade-entry-detail-messages {
             margin-top: 0.45rem;
