@@ -100,6 +100,9 @@ def test_macro_sell_triggers_caution() -> None:
             thesisBroken=False,
             positionOverLimit=False,
             hasReentryPlan=True,
+            reentryPullbackPrice=95,
+            reentryBreakoutPrice=102,
+            reentryPlanText="回踩或重新站回卖出价时分批买回",
         )
 
         summary = _summary(tmpdir)

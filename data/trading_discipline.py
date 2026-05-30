@@ -11,8 +11,11 @@ HOLD_ACTIONS = {"", "hold", "none", "watch"}
 SELL_ACTIONS = {"sell", "trim"}
 REENTRY_REQUIRED_REASONS = {"technical", "valuation"}
 NOW_STYLE_RISK_BLOCKER = "now_style_error_risk"
+PLANNED_ACTUAL_MISMATCH_BLOCKER = "planned_actual_sell_pct_mismatch"
+A_CLASS_EMOTIONAL_SELL_CAP_BLOCKER = "a_class_macro_or_emotional_sell_exceeds_20_pct"
+A_CLASS_CORE_FLOOR_BLOCKER = "a_class_core_floor_breached"
 NOW_STYLE_RISK_TEXT = (
-    "NOW 式错误风险：A 类核心股在 thesis 未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。"
+    "NOW 式错误风险：A 类核心股在投资逻辑未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。"
     "若你不愿右侧追回，就不能全卖低位买到的好公司。"
 )
 NOW_STYLE_RISK_MOODS = {"anxiety", "macro_fear", "panic_sell", "焦虑", "宏观恐慌", "恐慌卖出"}
@@ -57,6 +60,8 @@ class TradingDisciplineResult:
     maxAllowedSellPct: float
     canSellCore: bool
     requiresReentryPlan: bool
+    actualSellPct: float
+    plannedActualMismatch: float
     blockers: list[str]
     warnings: list[str]
     reminderText: str
@@ -86,6 +91,7 @@ def evaluate_trading_discipline(
     thesisBroken: bool,
     positionOverLimit: bool,
     hasReentryPlan: bool,
+    actualSellPct: float | int | None = None,
     decisionMood: str | None = None,
     emotionTags: list[str] | str | None = None,
     config: dict[str, Any] | None = None,
@@ -96,6 +102,8 @@ def evaluate_trading_discipline(
     sell_reason = str(sellReasonType or "").strip().lower()
     planned_action = str(plannedAction or "").strip().lower()
     planned_sell_pct = _normalize_pct(plannedSellPct)
+    actual_sell_pct = _normalize_pct(actualSellPct) if actualSellPct is not None else planned_sell_pct
+    effective_sell_pct = actual_sell_pct
     unrealized_gain_pct = _normalize_pct(unrealizedGainPct)
     core_pct = _normalize_pct(corePositionPct)
     trading_pct = _normalize_pct(tradingPositionPct)
@@ -104,34 +112,55 @@ def evaluate_trading_discipline(
     if trading_pct is None:
         trading_pct = _number(class_rules.get("trading_position_pct"), max(0.0, 1.0 - core_pct))
 
-    sell_level = _sell_level(planned_action, sell_reason, planned_sell_pct, thesisBroken, positionOverLimit)
+    sell_level = _sell_level(planned_action, sell_reason, effective_sell_pct, thesisBroken, positionOverLimit)
     level_rules = dict(rules.get("sell_levels", {}).get(sell_level, DEFAULT_CONFIG["sell_levels"]["L0"]))
     max_allowed_sell_pct = _number(level_rules.get("max_allowed_sell_pct"), 0.0)
     level_allows_core = bool(level_rules.get("can_sell_core", False))
-    requires_reentry_plan = bool(level_rules.get("requires_reentry_plan", False)) or (
-        planned_action in SELL_ACTIONS and sell_reason in REENTRY_REQUIRED_REASONS and planned_sell_pct > 0
+    a_class_emotional_or_macro = (
+        position_class == "A"
+        and planned_action in SELL_ACTIONS
+        and not thesisBroken
+        and not positionOverLimit
+        and (sell_reason == "macro" or _has_now_style_risk_mood(decisionMood, emotionTags))
     )
-    touches_core = planned_sell_pct > trading_pct + 1e-9
-    clears_position = planned_sell_pct >= max(core_pct + trading_pct, 0.95) - 1e-9
+    if a_class_emotional_or_macro:
+        max_allowed_sell_pct = max(max_allowed_sell_pct, 0.20)
+    requires_reentry_plan = bool(level_rules.get("requires_reentry_plan", False)) or (
+        planned_action in SELL_ACTIONS and sell_reason in REENTRY_REQUIRED_REASONS and effective_sell_pct > 0
+    )
+    touches_core = effective_sell_pct > trading_pct + 1e-9
+    clears_position = effective_sell_pct >= max(core_pct + trading_pct, 0.95) - 1e-9
     can_sell_core = bool(level_allows_core and (thesisBroken or position_class != "A"))
+    planned_actual_mismatch = abs(effective_sell_pct - planned_sell_pct)
 
     blockers: list[str] = []
     warnings: list[str] = []
 
-    if planned_action in HOLD_ACTIONS or planned_sell_pct <= 0:
+    if planned_action in HOLD_ACTIONS or effective_sell_pct <= 0:
         return TradingDisciplineResult(
             disciplineStatus="hold",
             sellLevel="L0",
             maxAllowedSellPct=0.0,
             canSellCore=False,
             requiresReentryPlan=False,
+            actualSellPct=0.0,
+            plannedActualMismatch=0.0,
             blockers=[],
             warnings=[],
             reminderText=f"{symbol.upper()} 当前没有卖出计划，继续按核心仓纪律持有。",
         )
 
+    if planned_actual_mismatch > 0.02 + 1e-9:
+        if effective_sell_pct > planned_sell_pct:
+            blockers.append(PLANNED_ACTUAL_MISMATCH_BLOCKER)
+        else:
+            warnings.append("计划卖出比例与实际卖出数量不一致。")
     if position_class == "A" and not thesisBroken and clears_position and core_pct > 0:
         blockers.append("a_class_core_clear_requires_thesis_break")
+    if position_class == "A" and not thesisBroken and (1.0 - effective_sell_pct) < core_pct - 1e-9:
+        blockers.append(A_CLASS_CORE_FLOOR_BLOCKER)
+    if a_class_emotional_or_macro and effective_sell_pct > 0.20 + 1e-9:
+        blockers.append(A_CLASS_EMOTIONAL_SELL_CAP_BLOCKER)
     if position_class == "A" and touches_core and _within_core_gain_freeze(unrealized_gain_pct, class_rules):
         blockers.append("a_class_core_sale_blocked_while_gain_0_to_25_pct")
     if touches_core and not can_sell_core:
@@ -140,7 +169,7 @@ def evaluate_trading_discipline(
         blockers.append("macro_risk_cannot_trigger_single_name_exit")
     if requires_reentry_plan and not hasReentryPlan:
         blockers.append("reentry_plan_required_before_trim_or_sell")
-    if planned_sell_pct > max_allowed_sell_pct + 1e-9:
+    if effective_sell_pct > max_allowed_sell_pct + 1e-9:
         blockers.append("planned_sell_pct_exceeds_sell_level_limit")
     if (
         position_class == "A"
@@ -171,9 +200,11 @@ def evaluate_trading_discipline(
         maxAllowedSellPct=round(max_allowed_sell_pct, 4),
         canSellCore=can_sell_core,
         requiresReentryPlan=requires_reentry_plan,
+        actualSellPct=round(effective_sell_pct, 4),
+        plannedActualMismatch=round(planned_actual_mismatch, 4),
         blockers=blockers,
         warnings=warnings,
-        reminderText=_reminder_text(symbol, position_class, sell_level, status, planned_sell_pct),
+        reminderText=_reminder_text(symbol, position_class, sell_level, status, effective_sell_pct),
     )
 
 
@@ -188,10 +219,10 @@ def _sell_level(
         return "L0"
     if thesis_broken or sell_reason == "thesis_broken":
         return "L5" if planned_sell_pct >= 0.95 else "L4"
-    if sell_reason == "macro":
-        return "L3"
     if sell_reason == "position_size" or position_over_limit:
         return "L2"
+    if sell_reason == "macro":
+        return "L1"
     if sell_reason in REENTRY_REQUIRED_REASONS:
         return "L1"
     return "L1"

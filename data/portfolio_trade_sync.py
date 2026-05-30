@@ -51,6 +51,18 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
         _write_sync_log(path, result, status="failed")
         return result
 
+    if _entry_sync_blocked_by_discipline(entry):
+        result = _preview_entry_effect(entry, path)
+        result.update(
+            {
+                "status": "failed",
+                "syncStatus": "failed",
+                "error": "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。",
+            }
+        )
+        _write_sync_log(path, result, status="failed")
+        return result
+
     existing = _sync_log(path, entry_id)
     if existing and existing.get("status") == "synced":
         preview = _preview_entry_effect(entry, path)
@@ -65,6 +77,8 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
     if preview["actionType"] in POSITION_AFFECTING_ACTIONS:
         position_store = PortfolioPositionStore(path)
         current = position_store.get_position(preview["symbol"]) or {}
+        if not _position_is_active(current):
+            current = {}
         position_store.save_position(
             preview["symbol"],
             {
@@ -99,6 +113,12 @@ def get_trade_portfolio_sync_status(entry_id: int, path: Path = CACHE_PATH) -> d
     }
 
 
+def _entry_sync_blocked_by_discipline(entry: dict[str, Any]) -> bool:
+    action_type = str(entry.get("action_type") or "").strip().lower()
+    discipline_status = str(entry.get("discipline_status") or "").strip().lower()
+    return action_type in SELL_ACTIONS and discipline_status == "blocked"
+
+
 def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
     _ensure_sync_schema(path)
     with closing(sqlite3.connect(path)) as conn:
@@ -128,6 +148,8 @@ def _preview_entry_effect(
     quantity = _number(entry.get("quantity"))
     price = _number(entry.get("price"))
     position = PortfolioPositionStore(path).get_position(symbol) or {}
+    if not _position_is_active(position):
+        position = {}
     current_quantity = _number(position.get("quantity")) or 0.0
     current_average_cost = _number(position.get("average_cost")) or 0.0
     log = _sync_log(path, entry_id) if check_sync_log and entry_id is not None else None
@@ -198,6 +220,17 @@ def _market_effect(symbol: str, after_quantity: float, path: Path) -> dict[str, 
         "afterMarketValue": market_value,
         "afterPositionPct": market_value / total_value * 100 if total_value and total_value > 0 else None,
     }
+
+
+def _position_is_active(position: dict[str, Any]) -> bool:
+    if not position:
+        return False
+    value = position.get("is_active", 1)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"0", "false", "no", "n", "off"}
 
 
 def _ensure_sync_schema(path: Path) -> None:

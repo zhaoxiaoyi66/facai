@@ -377,6 +377,44 @@ def _empty_reconciliation(symbol: str) -> dict:
     }
 
 
+def _first_unsynced_reconciliation_symbol(items: list[dict]) -> str:
+    for item in items:
+        if int(item.get("unsyncedTradeCount") or 0) <= 0:
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if symbol:
+            return symbol
+    return ""
+
+
+def _trade_journal_symbol_href(symbol: str) -> str:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        return "?page=trade-journal#trade-journal-list"
+    return f"?page=trade-journal&symbol={quote(ticker)}#trade-journal-list"
+
+
+def _unsynced_trade_action_html(symbol: str) -> str:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        return ""
+    href = _trade_journal_symbol_href(ticker)
+    return (
+        f'<a class="portfolio-reconciliation-action" '
+        f'href="{escape(href, quote=True)}" target="_self">查看未同步交易</a>'
+    )
+
+
+def _drawer_raw_html(value: str) -> dict[str, str]:
+    return {"__html": value}
+
+
+def _drawer_value_html(value: object) -> str:
+    if isinstance(value, dict) and "__html" in value:
+        return str(value["__html"])
+    return escape(str(value))
+
+
 def _render_reconciliation_strip(items: list[dict]) -> None:
     summary = _reconciliation_summary(items)
     metrics = [
@@ -394,12 +432,15 @@ def _render_reconciliation_strip(items: list[dict]) -> None:
         for label, value in metrics
     )
     tone = "ok" if summary["problemCount"] == 0 else "warning" if summary["mismatch"] == 0 else "mismatch"
+    action_html = _unsynced_trade_action_html(_first_unsynced_reconciliation_symbol(items))
+    action_class = " has-action" if action_html else ""
     title = "账务一致" if summary["problemCount"] == 0 else "账务需复核"
     st.markdown(
         (
-            f'<section class="portfolio-reconciliation-strip {escape(tone)}">'
+            f'<section class="portfolio-reconciliation-strip {escape(tone + action_class)}">'
             f'<div class="portfolio-reconciliation-title"><strong>{escape(title)}</strong><span>交易日志 / 当前持仓</span></div>'
             f'<div class="portfolio-reconciliation-grid">{html}</div>'
+            f"{action_html}"
             "</section>"
         ),
         unsafe_allow_html=True,
@@ -461,7 +502,7 @@ def _reconciliation_reason_text(item: dict | None) -> str:
 
 def _reconciliation_drawer_items(item: dict | None) -> list[tuple[str, object]]:
     current = item or {}
-    return [
+    items = [
         ("状态", _reconciliation_status_text(current)),
         ("原因", _reconciliation_reason_text(current)),
         ("未同步交易", int(current.get("unsyncedTradeCount") or 0)),
@@ -470,6 +511,10 @@ def _reconciliation_drawer_items(item: dict | None) -> list[tuple[str, object]]:
         ("持仓成本 / 日志成本", _money_text(current.get("positionAverageCost")) + " / " + _money_text(current.get("journalAverageCost"))),
         ("成本差异", _money_text(current.get("costDiff"))),
     ]
+    symbol = str(current.get("symbol") or "").strip().upper()
+    if int(current.get("unsyncedTradeCount") or 0) > 0 and symbol:
+        items.append(("处理入口", _drawer_raw_html(_unsynced_trade_action_html(symbol))))
+    return items
 
 
 def _decision_lane_text(value: object) -> str:
@@ -835,7 +880,7 @@ def _drawer_html(
 
 def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
     rows = "".join(
-        f"<span>{escape(label)}</span><b>{escape(str(value))}</b>"
+        f"<span>{escape(label)}</span><b>{_drawer_value_html(value)}</b>"
         for label, value in items
     )
     return f'<section class="portfolio-drawer-section"><h4>{escape(title)}</h4><div>{rows}</div></section>'
@@ -1154,6 +1199,9 @@ def _render_final_portfolio_styles() -> None:
             background: #FFFFFF;
             overflow: hidden;
         }
+        .portfolio-reconciliation-strip.has-action {
+            grid-template-columns: 132px minmax(0, 1fr) 142px;
+        }
         .portfolio-reconciliation-strip.warning {
             border-left-color: #C59A32;
         }
@@ -1204,6 +1252,24 @@ def _render_final_portfolio_styles() -> None:
             font-size: 0.88rem;
             font-weight: 820;
             font-variant-numeric: tabular-nums;
+        }
+        .portfolio-reconciliation-action {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 0 0.72rem;
+            border-left: 1px solid rgba(15, 23, 42, 0.055);
+            color: #334155;
+            background: rgba(248, 250, 252, 0.86);
+            font-size: 0.68rem;
+            font-weight: 820;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .portfolio-reconciliation-action:hover {
+            color: #0f172a;
+            background: #EEF2F7;
         }
         .portfolio-radar-head {
             display: flex;

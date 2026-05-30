@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from html import escape
 
 import streamlit as st
 
+from buy_zone_engine import generate_buy_zone
+from data.cache_read_model import CacheReadModel
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
@@ -23,6 +26,8 @@ from data.stock_plan import StockPlanStore
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
+from indicators.technicals import add_technical_indicators, latest_technical_snapshot
+from scoring.total_score import calculate_total_score
 from ui.theme import render_page_header, render_section_title
 
 
@@ -79,6 +84,7 @@ DECISION_MOOD_OPTIONS = {
 DECISION_MOOD_LABELS = {value: label for label, value in DECISION_MOOD_OPTIONS.items() if value}
 SELL_EMOTIONAL_MOODS = {"anxiety", "macro_fear", "panic_sell", "regret_chase"}
 BUY_EMOTIONAL_MOODS = {"fomo", "regret_chase"}
+FIX_REQUIRED_BLOCKERS = {"planned_actual_sell_pct_mismatch", "reentry_plan_required_before_trim_or_sell"}
 DISCIPLINE_STATUS_LABELS = {
     "allowed": "允许执行",
     "warning": "需要复核",
@@ -92,7 +98,7 @@ DISCIPLINE_STATUS_COMPACT_LABELS = {
     "hold": "无",
 }
 DISCIPLINE_BLOCKER_LABELS = {
-    "now_style_error_risk": "NOW 式错误风险：A 类核心股在 thesis 未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。若你不愿右侧追回，就不能全卖低位买到的好公司。",
+    "now_style_error_risk": "NOW 式错误风险：A 类核心股在投资逻辑未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。若你不愿右侧追回，就不能全卖低位买到的好公司。",
     "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在投资逻辑未破裂时清仓。",
     "a_class_core_sale_blocked_while_gain_0_to_25_pct": "A 类持仓在 0-25% 浮盈区间不建议卖核心仓。",
     "sell_level_does_not_allow_core_sale": "当前卖出等级不允许动核心仓。",
@@ -100,6 +106,13 @@ DISCIPLINE_BLOCKER_LABELS = {
     "reentry_plan_required_before_trim_or_sell": "减仓 / 卖出前需要明确回补计划。",
     "planned_sell_pct_exceeds_sell_level_limit": "计划卖出比例超过当前纪律等级上限。",
 }
+DISCIPLINE_BLOCKER_LABELS.update(
+    {
+        "planned_actual_sell_pct_mismatch": "计划卖出比例与实际卖出数量不一致。",
+        "a_class_macro_or_emotional_sell_exceeds_20_pct": "A 类核心股在宏观或情绪压力下，默认最多只能卖出 20%。",
+        "a_class_core_floor_breached": "该操作会打穿 A 类核心仓底仓保护。",
+    }
+)
 FINAL_ACTION_LABELS = {
     "add": "加仓",
     "buy": "买入",
@@ -206,6 +219,25 @@ def _render_editor(store: TradeJournalStore) -> None:
         strike_price = option_cols[1].text_input("行权价", value=_entry_number_text(editing_entry, "strike_price"), key=_editor_key("strike", editing_id))
         expiry_date = option_cols[2].text_input("到期日", value=_entry_value(editing_entry, "expiry_date"), placeholder="YYYY-MM-DD", key=_editor_key("expiry", editing_id))
 
+        portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
+        discipline_result = None
+
+        if action_type in CLASSIFICATION_ACTIONS:
+            _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
+
+        if action_type in SELL_DISCIPLINE_ACTIONS:
+            discipline_result = _render_trading_discipline_check(
+                symbol,
+                action_type,
+                decision_mood=decision_mood,
+                trade_quantity=quantity,
+                trade_price=price,
+                current_quantity=portfolio_preview.get("currentQuantity"),
+                editing_entry=editing_entry,
+                stock_plan=stock_plan,
+                key_suffix=str(editing_id or "new"),
+            )
+
         sync_to_portfolio = _render_portfolio_sync_option(
             symbol,
             action_type,
@@ -213,20 +245,9 @@ def _render_editor(store: TradeJournalStore) -> None:
             price,
             default_checked=editing_entry is None,
             key_suffix=str(editing_id or "new"),
+            preview=portfolio_preview,
+            discipline_blocked=_discipline_result_blocked(discipline_result),
         )
-
-        if action_type in CLASSIFICATION_ACTIONS:
-            _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
-
-        if action_type in SELL_DISCIPLINE_ACTIONS:
-            _render_trading_discipline_check(
-                symbol,
-                action_type,
-                decision_mood=decision_mood,
-                editing_entry=editing_entry,
-                stock_plan=stock_plan,
-                key_suffix=str(editing_id or "new"),
-            )
 
         notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
         button_label = "保存修改" if editing_entry else "保存记录"
@@ -261,7 +282,7 @@ def _render_buy_classification_editor(
     editing_entry: dict | None = None,
     stock_plan: dict | None = None,
     key_suffix: str = "new",
-) -> None:
+):
     st.markdown('<div class="trade-discipline-title">股票纪律分类</div>', unsafe_allow_html=True)
     default_class = _default_position_class(editing_entry, stock_plan)
     default_label = _position_class_label(default_class)
@@ -292,7 +313,7 @@ def _render_buy_classification_editor(
     cols[3].text_input(
         "分类备注",
         value=note_default,
-        placeholder="例如：核心云平台，除非 thesis 破裂不清仓",
+        placeholder="例如：核心云平台，除非投资逻辑破裂不清仓",
         key=f"trade-class-note-{key_suffix}",
     )
     summary = _classification_summary(position_class)
@@ -317,25 +338,43 @@ def _render_portfolio_sync_option(
     *,
     default_checked: bool,
     key_suffix: str,
+    preview: dict | None = None,
+    discipline_blocked: bool = False,
 ) -> bool:
     if action_type not in POSITION_AFFECTING_ACTIONS:
         return False
+    sync_key = f"trade-portfolio-sync-{key_suffix}"
+    if discipline_blocked:
+        st.session_state[sync_key] = False
     checked = st.checkbox(
         "保存后同步到组合持仓",
-        value=default_checked,
-        key=f"trade-portfolio-sync-{key_suffix}",
+        value=False if discipline_blocked else default_checked,
+        key=sync_key,
+        disabled=discipline_blocked,
     )
-    preview = preview_trade_values_portfolio_effect(
+    current_preview = preview or _portfolio_sync_preview(symbol, action_type, quantity, price)
+    _render_portfolio_sync_preview(current_preview, checked=checked, discipline_blocked=discipline_blocked)
+    return False if discipline_blocked else checked
+
+
+def _portfolio_sync_preview(symbol: str, action_type: str, quantity: object, price: object) -> dict:
+    if action_type not in POSITION_AFFECTING_ACTIONS:
+        return {}
+    return preview_trade_values_portfolio_effect(
         symbol,
         {"action_type": action_type, "quantity": quantity, "price": price},
     )
-    _render_portfolio_sync_preview(preview, checked=checked)
-    return checked
 
 
-def _render_portfolio_sync_preview(preview: dict, *, checked: bool) -> None:
-    tone = "warning" if preview.get("status") == "failed" else "ok"
+def _discipline_result_blocked(result: object) -> bool:
+    return str(getattr(result, "disciplineStatus", "") or "") == "blocked"
+
+
+def _render_portfolio_sync_preview(preview: dict, *, checked: bool, discipline_blocked: bool = False) -> None:
+    tone = "warning" if preview.get("status") == "failed" or discipline_blocked else "ok"
     title = "组合持仓同步预览" if checked else "仅保存交易日志，不同步持仓"
+    if discipline_blocked:
+        title = "纪律门禁阻止同步"
     rows = [
         ("当前持股", _quantity_text(preview.get("currentQuantity"))),
         ("当前均价", _money_text(preview.get("currentAverageCost"))),
@@ -354,6 +393,8 @@ def _render_portfolio_sync_preview(preview: dict, *, checked: bool) -> None:
     )
     error = str(preview.get("error") or "").strip()
     hint = error if error else "勾选后，保存成功会同步一次；已同步交易不会重复作用到持仓。"
+    if discipline_blocked:
+        hint = "当前交易未通过纪律门禁，只能保存为违规记录，不能同步到组合持仓。"
     st.markdown(
         f"""
         <section class="trade-portfolio-sync-card {escape(tone)}">
@@ -370,6 +411,9 @@ def _render_trading_discipline_check(
     action_type: str,
     *,
     decision_mood: str | None = None,
+    trade_quantity: object = None,
+    trade_price: object = None,
+    current_quantity: object = None,
     editing_entry: dict | None = None,
     stock_plan: dict | None = None,
     key_suffix: str = "new",
@@ -386,18 +430,65 @@ def _render_trading_discipline_check(
         key=f"trade-discipline-position-class-{key_suffix}",
     )
     position_class = POSITION_CLASS_OPTIONS.get(position_label, "")
+    actual_sell_pct = _actual_sell_pct(trade_quantity, current_quantity)
+    st.session_state[f"trade-discipline-actual-sell-pct-{key_suffix}"] = actual_sell_pct
+    st.session_state[f"trade-discipline-current-quantity-{key_suffix}"] = _number(current_quantity)
     planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value=_entry_percent_text(editing_entry, "planned_sell_pct", "10"), key=f"trade-discipline-planned-sell-pct-{key_suffix}")
     reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
     thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
     position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
-    has_reentry_plan = cols[5].checkbox("已有回补计划", value=_entry_bool(editing_entry, "has_reentry_plan"), key=f"trade-discipline-has-reentry-plan-{key_suffix}")
+    cols[5].markdown('<div class="trade-reentry-state">回补计划由下方字段判断</div>', unsafe_allow_html=True)
     core_pct, trading_pct = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
     st.session_state[f"trade-discipline-core-min-{key_suffix}"] = core_pct
     st.session_state[f"trade-discipline-trading-max-{key_suffix}"] = trading_pct
+    discipline_context = _discipline_gate_context(
+        position_class=position_class,
+        current_quantity=current_quantity,
+        trade_quantity=trade_quantity,
+        planned_sell_pct=planned_sell_pct,
+        actual_sell_pct=actual_sell_pct,
+        core_pct=core_pct,
+    )
     if position_class:
         st.caption("股票分类默认来自股票纪律档案；本次卖出/减仓仍可临时覆盖。")
     else:
         st.caption("未设置分类：本次不会按 A 类核心仓纪律检查，建议先补股票纪律档案。")
+
+    gate_result = evaluate_trading_discipline(
+        symbol=symbol,
+        positionClass=position_class or "C",
+        corePositionPct=core_pct,
+        tradingPositionPct=trading_pct,
+        unrealizedGainPct=None,
+        plannedAction=action_type,
+        plannedSellPct=_parse_optional_float(planned_sell_pct),
+        sellReasonType=SELL_REASON_OPTIONS[reason_label],
+        thesisBroken=thesis_broken,
+        positionOverLimit=position_over_limit,
+        hasReentryPlan=True,
+        actualSellPct=actual_sell_pct,
+        decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
+    )
+    gate_conclusion = _discipline_gate_conclusion(gate_result)
+    hard_blocked = gate_conclusion in {"BLOCK", "FIX_REQUIRED"}
+    if hard_blocked:
+        st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = True
+        st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = False
+        _render_discipline_gate_explanation(gate_result, discipline_context)
+        st.error("当前交易未通过纪律门禁，不能用回补计划合理化违规卖出。")
+        return gate_result
+    st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = False
+
+    reentry_values = _render_reentry_plan_editor(
+        symbol,
+        trade_price=trade_price,
+        sell_reason_type=SELL_REASON_OPTIONS[reason_label],
+        decision_mood=decision_mood,
+        editing_entry=editing_entry,
+        key_suffix=key_suffix,
+    )
+    has_reentry_plan = _has_reentry_plan_values(reentry_values)
+    st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = has_reentry_plan
 
     result = evaluate_trading_discipline(
         symbol=symbol,
@@ -411,9 +502,395 @@ def _render_trading_discipline_check(
         thesisBroken=thesis_broken,
         positionOverLimit=position_over_limit,
         hasReentryPlan=has_reentry_plan,
+        actualSellPct=actual_sell_pct,
         decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
     )
-    _render_trading_discipline_result(result)
+    _render_discipline_gate_explanation(result, discipline_context)
+    return result
+
+
+def _discipline_gate_context(
+    *,
+    position_class: str,
+    current_quantity: object,
+    trade_quantity: object,
+    planned_sell_pct: object,
+    actual_sell_pct: object,
+    core_pct: object,
+) -> dict:
+    current_qty = _number(current_quantity) or 0.0
+    sell_qty = _number(trade_quantity) or 0.0
+    planned_pct = _ratio_value(planned_sell_pct) or 0.0
+    actual_pct = _number(actual_sell_pct)
+    if actual_pct is None and current_qty > 0:
+        actual_pct = sell_qty / current_qty
+    actual_pct = actual_pct or 0.0
+    core_ratio = _number(core_pct)
+    if core_ratio is None:
+        core_ratio = POSITION_CLASS_DEFAULTS.get(str(position_class or "").upper(), (0.0, 1.0))[0] or 0.0
+    core_min_qty = math.ceil(current_qty * core_ratio) if current_qty > 0 else 0
+    tradable_qty = max(0.0, current_qty - core_min_qty)
+    after_sell_qty = max(0.0, current_qty - sell_qty)
+    remaining_tradable_qty = max(0.0, after_sell_qty - core_min_qty)
+    breach_qty = max(0.0, core_min_qty - after_sell_qty)
+    return {
+        "positionClass": str(position_class or "").upper() or "未分类",
+        "currentQty": current_qty,
+        "sellQty": sell_qty,
+        "plannedSellPct": planned_pct,
+        "actualSellPct": actual_pct,
+        "plannedActualDiffPct": abs(actual_pct - planned_pct),
+        "coreRatioMin": core_ratio,
+        "coreMinQty": float(core_min_qty),
+        "tradableQty": tradable_qty,
+        "afterSellQty": after_sell_qty,
+        "remainingTradableQty": remaining_tradable_qty,
+        "breachesCore": breach_qty > 1e-9,
+        "breachQty": breach_qty,
+    }
+
+
+def _discipline_gate_conclusion(result) -> str:
+    blockers = {str(item) for item in (getattr(result, "blockers", []) or [])}
+    hard_blockers = blockers - FIX_REQUIRED_BLOCKERS
+    if hard_blockers:
+        return "BLOCK"
+    if blockers:
+        return "FIX_REQUIRED"
+    if str(getattr(result, "disciplineStatus", "") or "") == "warning" or getattr(result, "warnings", []):
+        return "WARN"
+    return "PASS"
+
+
+def _render_discipline_gate_explanation(result, context: dict) -> None:
+    conclusion = _discipline_gate_conclusion(result)
+    tone = {
+        "PASS": "pass",
+        "WARN": "warn",
+        "FIX_REQUIRED": "fix",
+        "BLOCK": "block",
+    }.get(conclusion, "warn")
+    max_allowed_pct = float(getattr(result, "maxAllowedSellPct", 0) or 0)
+    max_allowed_qty = math.floor(context["currentQty"] * max_allowed_pct) if context["currentQty"] > 0 else 0
+    reasons = _discipline_gate_reasons(result, context, max_allowed_qty)
+    actions = _discipline_gate_actions(result, context, max_allowed_qty)
+    metric_rows = [
+        ("当前持股", _quantity_text(context["currentQty"])),
+        ("本次卖出", _quantity_text(context["sellQty"])),
+        ("计划卖出", _pct_point_text(context["plannedSellPct"])),
+        ("实际卖出", _pct_point_text(context["actualSellPct"])),
+        ("差异", _pct_point_text(context["plannedActualDiffPct"], suffix="pct")),
+        ("卖出等级", str(getattr(result, "sellLevel", "") or "N/A")),
+        ("等级上限", _pct_point_text(max_allowed_pct)),
+        ("最多可卖", _quantity_text(max_allowed_qty)),
+    ]
+    split_rows = [
+        ("股票分类", _position_class_label(context["positionClass"]) if context["positionClass"] in {"A", "B", "C"} else "未分类"),
+        ("核心仓最低", _pct_point_text(context["coreRatioMin"])),
+        ("核心仓底线", _quantity_text(context["coreMinQty"])),
+        ("可交易仓", _quantity_text(context["tradableQty"])),
+        ("卖出后持股", _quantity_text(context["afterSellQty"])),
+        ("剩余交易仓", _quantity_text(context["remainingTradableQty"])),
+        ("是否打穿", "是" if context["breachesCore"] else "否"),
+        ("打穿数量", _quantity_text(context["breachQty"])),
+    ]
+    reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons)
+    action_html = "".join(f"<li>{escape(item)}</li>" for item in actions)
+    metric_html = _discipline_gate_metric_html(metric_rows)
+    split_html = _discipline_gate_metric_html(split_rows)
+    st.markdown(
+        f"""
+        <section class="trade-gate-card {escape(tone)}">
+          <div class="trade-gate-head">
+            <strong>门禁结论：{escape(conclusion)}</strong>
+            <span>{escape(_discipline_gate_summary(conclusion))}</span>
+          </div>
+          <div class="trade-gate-body">
+            <div><b>阻止原因</b><ul>{reason_html}</ul></div>
+            <div><b>可修正动作</b><ul>{action_html}</ul></div>
+          </div>
+          <div class="trade-gate-subtitle">卖出比例核对</div>
+          <div class="trade-gate-grid">{metric_html}</div>
+          <div class="trade-gate-subtitle">核心仓 / 交易仓拆分</div>
+          <div class="trade-gate-grid">{split_html}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _discipline_gate_metric_html(rows: list[tuple[str, str]]) -> str:
+    return "".join(
+        "<div>"
+        f"<span>{escape(label)}</span>"
+        f"<strong>{escape(value)}</strong>"
+        "</div>"
+        for label, value in rows
+    )
+
+
+def _discipline_gate_summary(conclusion: str) -> str:
+    return {
+        "PASS": "可以保存并同步，但仍按计划执行。",
+        "WARN": "可以同步前继续复核，避免情绪驱动。",
+        "FIX_REQUIRED": "先修正比例、数量或回补计划；暂不允许同步。",
+        "BLOCK": "硬性拦截；只能保存为违规记录，不能同步持仓。",
+    }.get(conclusion, "需要复核。")
+
+
+def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> list[str]:
+    reasons: list[str] = []
+    if context["plannedActualDiffPct"] > 0.02:
+        reasons.append(
+            f"你计划卖 {_pct_point_text(context['plannedSellPct'])}，但实际卖出 {_pct_point_text(context['actualSellPct'])}。"
+        )
+    if context["breachesCore"]:
+        reasons.append(
+            f"卖出后只剩 {_quantity_text(context['afterSellQty'])} 股，低于核心仓底线 {_quantity_text(context['coreMinQty'])} 股。"
+        )
+    else:
+        reasons.append("本次卖出仍在交易仓内，未打穿核心仓。")
+    sell_level = str(getattr(result, "sellLevel", "") or "N/A")
+    if max_allowed_qty > 0:
+        reasons.append(f"若卖出超过 {max_allowed_qty} 股，将超过 {sell_level} 卖出上限。")
+    for blocker in getattr(result, "blockers", []) or []:
+        text = _discipline_message_text(blocker)
+        if text not in reasons:
+            reasons.append(text)
+    for warning in (getattr(result, "warnings", []) or [])[:2]:
+        text = _discipline_message_text(warning)
+        if text not in reasons:
+            reasons.append(text)
+    return reasons or ["当前交易纪律检查通过。"]
+
+
+def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> list[str]:
+    actions: list[str] = []
+    if context["plannedActualDiffPct"] > 0.02:
+        planned_qty = math.floor(context["currentQty"] * context["plannedSellPct"]) if context["currentQty"] > 0 else 0
+        actions.append(
+            f"把计划卖出比例改为 {_pct_point_text(context['actualSellPct'])}，或把卖出数量改到约 {planned_qty} 股。"
+        )
+    if max_allowed_qty > 0 and context["sellQty"] > max_allowed_qty:
+        actions.append(f"把本次卖出数量降到不超过 {max_allowed_qty} 股。")
+    if context["breachesCore"]:
+        actions.append(f"至少保留 {_quantity_text(context['coreMinQty'])} 股 A 类核心仓。")
+    if "reentry_plan_required_before_trim_or_sell" in {str(item) for item in (getattr(result, "blockers", []) or [])}:
+        actions.append("补全回踩买回价、不跌反涨买回价和时间止损。")
+    if not actions:
+        actions.append("按计划保存；同步前再次确认不是宏观恐慌或焦虑驱动。")
+    return actions
+
+
+def _ratio_value(value: object) -> float | None:
+    number = _parse_optional_float(value)
+    if number is None:
+        return None
+    return number / 100 if abs(number) > 1 else number
+
+
+def _pct_point_text(value: object, *, suffix: str = "%") -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    if suffix == "pct":
+        return f"{number * 100:.1f}pct"
+    return f"{number * 100:.1f}%"
+
+
+def _render_reentry_plan_editor(
+    symbol: str,
+    *,
+    trade_price: object = None,
+    sell_reason_type: str = "",
+    decision_mood: str | None = None,
+    editing_entry: dict | None = None,
+    key_suffix: str = "new",
+) -> dict:
+    emotional_sell = str(sell_reason_type or "") in {"macro", "macro_fear", "anxiety", "panic_sell"} or str(
+        decision_mood or ""
+    ) in SELL_EMOTIONAL_MOODS
+    tone = " alert" if emotional_sell else ""
+    st.markdown(
+        (
+            f'<section class="trade-reentry-shell{tone}">'
+            '<div class="trade-reentry-head"><strong>回补计划</strong>'
+            '<span>卖出前先写清楚怎么追回，避免卖飞后临场拍脑袋。</span></div>'
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+    keys = _reentry_keys(key_suffix)
+    if st.button("使用系统建议生成回补计划", key=keys["generate"], width="stretch"):
+        suggestion = _build_reentry_plan_suggestion(symbol, trade_price)
+        for field, value in suggestion.items():
+            if field in keys:
+                st.session_state[keys[field]] = value
+
+    price_cols = st.columns([1, 1, 0.72, 0.88, 0.88], gap="small")
+    pullback_price = price_cols[0].text_input(
+        "回踩买回价",
+        value=_entry_number_text(editing_entry, "reentry_pullback_price"),
+        key=keys["pullback"],
+    )
+    breakout_price = price_cols[1].text_input(
+        "不跌反涨买回价",
+        value=_entry_number_text(editing_entry, "reentry_breakout_price"),
+        key=keys["breakout"],
+    )
+    time_stop_days = price_cols[2].text_input(
+        "时间止损天数",
+        value=_entry_int_text(editing_entry, "reentry_time_stop_days") or "5",
+        key=keys["time_stop"],
+    )
+    pullback_pct = price_cols[3].text_input(
+        "回踩买回比例 %",
+        value=_entry_percent_text(editing_entry, "reentry_buy_back_pct_on_pullback", "50"),
+        key=keys["pullback_pct"],
+    )
+    breakout_pct = price_cols[4].text_input(
+        "反涨买回比例 %",
+        value=_entry_percent_text(editing_entry, "reentry_buy_back_pct_on_breakout", "30"),
+        key=keys["breakout_pct"],
+    )
+    thesis_invalidation = st.text_input(
+        "不回补条件 / 投资逻辑破坏条件",
+        value=_entry_value(editing_entry, "reentry_thesis_invalidation"),
+        key=keys["invalidation"],
+    )
+    plan_text = st.text_area(
+        "完整回补计划摘要",
+        value=_entry_value(editing_entry, "reentry_plan_text"),
+        height=64,
+        key=keys["plan_text"],
+    )
+    values = {
+        "reentryPullbackPrice": pullback_price,
+        "reentryBreakoutPrice": breakout_price,
+        "reentryTimeStopDays": time_stop_days,
+        "reentryBuyBackPctOnPullback": pullback_pct,
+        "reentryBuyBackPctOnBreakout": breakout_pct,
+        "reentryThesisInvalidation": thesis_invalidation,
+        "reentryPlanText": plan_text,
+    }
+    if emotional_sell and not _has_reentry_plan_values(values):
+        st.warning("宏观或情绪驱动卖出前，必须先写清楚回补计划；否则纪律检查会继续提醒。")
+    return values
+
+
+def _reentry_keys(key_suffix: str) -> dict[str, str]:
+    prefix = f"trade-reentry-{key_suffix}"
+    return {
+        "generate": f"{prefix}-generate",
+        "pullback": f"{prefix}-pullback",
+        "breakout": f"{prefix}-breakout",
+        "time_stop": f"{prefix}-time-stop",
+        "pullback_pct": f"{prefix}-pullback-pct",
+        "breakout_pct": f"{prefix}-breakout-pct",
+        "invalidation": f"{prefix}-invalidation",
+        "plan_text": f"{prefix}-plan-text",
+    }
+
+
+def _reentry_plan_form_values(key_suffix: str) -> dict:
+    keys = _reentry_keys(key_suffix)
+    return {
+        "reentryPullbackPrice": st.session_state.get(keys["pullback"]),
+        "reentryBreakoutPrice": st.session_state.get(keys["breakout"]),
+        "reentryTimeStopDays": st.session_state.get(keys["time_stop"]),
+        "reentryBuyBackPctOnPullback": st.session_state.get(keys["pullback_pct"]),
+        "reentryBuyBackPctOnBreakout": st.session_state.get(keys["breakout_pct"]),
+        "reentryThesisInvalidation": st.session_state.get(keys["invalidation"]) or "",
+        "reentryPlanText": st.session_state.get(keys["plan_text"]) or "",
+    }
+
+
+def _has_reentry_plan_values(values: dict) -> bool:
+    return bool(
+        str(values.get("reentryPlanText") or "").strip()
+        or _parse_optional_float(values.get("reentryPullbackPrice")) is not None
+        or _parse_optional_float(values.get("reentryBreakoutPrice")) is not None
+    )
+
+
+def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> dict[str, str]:
+    sell_price = _parse_optional_float(trade_price)
+    pullback = None
+    breakout = sell_price
+    try:
+        cache = CacheReadModel()
+        snapshot = cache.get_quote_payload(symbol) or {}
+        history = cache.get_price_history(symbol)
+        technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
+        current_price = _first_number(sell_price, technicals.get("price"), snapshot.get("current_price"), cache.get_current_price(symbol))
+        if current_price is not None:
+            stock_data = {**snapshot, **technicals, "price_history": history, "price": current_price}
+            score = calculate_total_score(snapshot, technicals)
+            zone = generate_buy_zone(str(symbol).upper(), stock_data, score, score.scoring_model)
+            combined = getattr(zone, "combinedEntry", None) or {}
+            technical = getattr(zone, "technicalEntry", None) or {}
+            pullback = _first_number(
+                combined.get("technicalPullbackPrice"),
+                combined.get("valuationEntryPrice"),
+                _first_support_level_price(technical.get("supportLevels")),
+                getattr(zone, "nextTriggerPrice", None),
+                getattr(zone, "trancheBuyHigh", None),
+            )
+            breakout = _first_number(
+                sell_price,
+                getattr(zone, "noChaseAbove", None),
+                technical.get("technicalReviewPrice"),
+                current_price,
+            )
+    except Exception:
+        pass
+    if pullback is None and sell_price is not None:
+        pullback = sell_price * 0.95
+    if breakout is None and sell_price is not None:
+        breakout = sell_price
+    time_stop = "5"
+    pullback_pct = "50"
+    breakout_pct = "30"
+    pullback_text = _money_text(pullback)
+    breakout_text = _money_text(breakout)
+    plan_text = (
+        f"回踩到 {pullback_text} 买回 {pullback_pct}%；"
+        f"若不跌反涨站回 {breakout_text}，买回 {breakout_pct}%；"
+        f"若 {time_stop} 个交易日未跌破预期位置，买回 {breakout_pct}%；"
+        "若投资逻辑破坏则不回补。"
+    )
+    return {
+        "pullback": "" if pullback is None else f"{pullback:.2f}",
+        "breakout": "" if breakout is None else f"{breakout:.2f}",
+        "time_stop": time_stop,
+        "pullback_pct": pullback_pct,
+        "breakout_pct": breakout_pct,
+        "invalidation": "核心投资假设被证伪，或长期逻辑不再成立",
+        "plan_text": plan_text,
+    }
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        number = _number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _first_support_level_price(levels: object) -> float | None:
+    if not isinstance(levels, list):
+        return None
+    for level in levels:
+        if isinstance(level, dict):
+            number = _first_number(level.get("price"), level.get("level"), level.get("value"))
+            if number is not None:
+                return number
+        else:
+            number = _number(level)
+            if number is not None:
+                return number
+    return None
 
 
 def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> dict:
@@ -421,15 +898,30 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
         return {}
     reason_label = st.session_state.get(f"trade-discipline-sell-reason-{key_suffix}")
     position_class = _position_class_from_state(f"trade-discipline-position-class-{key_suffix}")
+    reentry_values = _reentry_plan_form_values(key_suffix)
+    hard_blocked = bool(st.session_state.get(f"trade-discipline-hard-block-{key_suffix}"))
+    if hard_blocked:
+        reentry_values = {
+            "reentryPullbackPrice": "",
+            "reentryBreakoutPrice": "",
+            "reentryTimeStopDays": "",
+            "reentryBuyBackPctOnPullback": "",
+            "reentryBuyBackPctOnBreakout": "",
+            "reentryThesisInvalidation": "",
+            "reentryPlanText": "",
+        }
     return {
         "positionClass": position_class,
         "corePositionMinPct": st.session_state.get(f"trade-discipline-core-min-{key_suffix}"),
         "tradingPositionMaxPct": st.session_state.get(f"trade-discipline-trading-max-{key_suffix}"),
         "plannedSellPct": _parse_optional_float(st.session_state.get(f"trade-discipline-planned-sell-pct-{key_suffix}")),
+        "actualSellPct": st.session_state.get(f"trade-discipline-actual-sell-pct-{key_suffix}"),
+        "currentPositionQuantity": st.session_state.get(f"trade-discipline-current-quantity-{key_suffix}"),
         "sellReasonType": SELL_REASON_OPTIONS.get(str(reason_label or ""), str(reason_label or "")),
         "thesisBroken": bool(st.session_state.get(f"trade-discipline-thesis-broken-{key_suffix}")),
         "positionOverLimit": bool(st.session_state.get(f"trade-discipline-position-over-limit-{key_suffix}")),
-        "hasReentryPlan": bool(st.session_state.get(f"trade-discipline-has-reentry-plan-{key_suffix}")),
+        "hasReentryPlan": False if hard_blocked else _has_reentry_plan_values(reentry_values),
+        **reentry_values,
     }
 
 
@@ -515,6 +1007,14 @@ def _parse_optional_float(value: object) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _actual_sell_pct(quantity: object, current_quantity: object) -> float | None:
+    sell_quantity = _number(quantity)
+    current = _number(current_quantity)
+    if sell_quantity is None or current is None or current <= 0:
+        return None
+    return sell_quantity / current
 
 
 def _load_stock_discipline_profile(symbol: str) -> dict:
@@ -664,6 +1164,8 @@ def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: 
 def _apply_portfolio_sync_if_requested(saved: dict, values: dict) -> tuple[str, str] | None:
     if not values.get("syncToPortfolio"):
         return None
+    if str(saved.get("action_type") or "") in SELL_DISCIPLINE_ACTIONS and str(saved.get("discipline_status") or "") == "blocked":
+        return ("error", f"{saved['symbol']} 已保存为违规交易记录；纪律门禁 BLOCK，未同步到组合持仓。")
     result = apply_trade_to_portfolio(int(saved.get("id") or 0))
     status = str(result.get("status") or "")
     if status == "success":
@@ -759,8 +1261,15 @@ def _over_trading_level_text(level: str) -> str:
     }.get(str(level or ""), "正常")
 
 
+def _requested_symbol_filter() -> str:
+    return str(st.query_params.get("symbol") or "").strip().upper()
+
+
 def _load_entries(store: TradeJournalStore, symbols: list[str]) -> list[dict]:
     filter_cols = st.columns([1, 3.4])
+    requested_symbol = _requested_symbol_filter()
+    if requested_symbol in symbols:
+        st.session_state["trade-journal-symbol-filter"] = requested_symbol
     options = ["全部股票", *symbols]
     selected = filter_cols[0].selectbox("股票筛选", options, key="trade-journal-symbol-filter")
     filter_cols[1].markdown(
@@ -1077,15 +1586,67 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
         ("卖出原因", _sell_reason_text(entry.get("sell_reason_type"))),
         ("已有回补计划", _yes_no(entry.get("has_reentry_plan"))),
     ]
+    rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
+    if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
+        rows.append(("同步限制", "纪律门禁 BLOCK，禁止同步到组合持仓"))
+    reentry_html = _entry_reentry_plan_html(entry)
     blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
     warning_html = _discipline_detail_messages_html("复核提醒", entry.get("warnings") or [], is_blocker=False)
     reminder = escape(_text(entry.get("reminder_text")))
     return (
         f"{_detail_grid_html(rows)}"
+        f"{reentry_html}"
         f"{blocker_html}"
         f"{warning_html}"
         f'<div class="trade-entry-reminder">{reminder}</div>'
     )
+
+
+def _entry_reentry_plan_html(entry: dict) -> str:
+    has_plan = _entry_bool(entry, "has_reentry_plan")
+    has_content = bool(
+        _text(entry.get("reentry_plan_text"))
+        or _text(entry.get("reentry_thesis_invalidation"))
+        or _number(entry.get("reentry_pullback_price")) is not None
+        or _number(entry.get("reentry_breakout_price")) is not None
+    )
+    if not has_plan and not has_content:
+        return '<div class="trade-entry-discipline-empty">未记录具体回补计划。</div>'
+    rows = [
+        ("回踩买回", _reentry_price_pct_text(entry.get("reentry_pullback_price"), entry.get("reentry_buy_back_pct_on_pullback"))),
+        ("不跌反涨买回", _reentry_price_pct_text(entry.get("reentry_breakout_price"), entry.get("reentry_buy_back_pct_on_breakout"))),
+        ("时间止损", _reentry_time_stop_text(entry.get("reentry_time_stop_days"), entry.get("reentry_buy_back_pct_on_breakout"))),
+        ("不回补条件", _text(entry.get("reentry_thesis_invalidation"))),
+    ]
+    summary = escape(_text(entry.get("reentry_plan_text")))
+    return (
+        '<div class="trade-entry-reentry-plan">'
+        '<b>回补计划</b>'
+        f"{_detail_grid_html(rows)}"
+        f'<p>{summary}</p>'
+        "</div>"
+    )
+
+
+def _reentry_price_pct_text(price: object, pct: object) -> str:
+    price_text = _money_text(price)
+    pct_text = _discipline_percent(pct)
+    if price_text == BLANK_TEXT and pct_text == BLANK_TEXT:
+        return BLANK_TEXT
+    if price_text == BLANK_TEXT:
+        return pct_text
+    if pct_text == BLANK_TEXT:
+        return price_text
+    return f"{price_text} / {pct_text}"
+
+
+def _reentry_time_stop_text(days: object, pct: object) -> str:
+    number = _number(days)
+    if number is None:
+        return BLANK_TEXT
+    pct_text = _discipline_percent(pct)
+    suffix = "" if pct_text == BLANK_TEXT else f"后买回 {pct_text}"
+    return f"{int(number)} 个交易日{suffix}"
 
 
 def _classification_snapshot_html(entry: dict) -> str:
@@ -1856,7 +2417,7 @@ def _decision_mood_warning_html(entry: dict) -> str:
     action = str(entry.get("action_type") or "").lower()
     mood = str(entry.get("decision_mood") or "").strip()
     if action in SELL_DISCIPLINE_ACTIONS and mood in SELL_EMOTIONAL_MOODS:
-        text = "该卖出可能由情绪驱动，请确认 thesis 是否真的破坏。"
+        text = "该卖出可能由情绪驱动，请确认投资逻辑是否真的破坏。"
     elif action in {"buy", "add"} and mood in BUY_EMOTIONAL_MOODS:
         text = "该买入可能是追涨或卖飞后追回，不应替代原计划。"
     else:
@@ -3080,6 +3641,26 @@ def _render_styles() -> None:
             background: rgba(239, 246, 255, 0.62);
             color: #334155;
         }
+        .trade-entry-reentry-plan {
+            margin-top: 0.48rem;
+            padding: 0.5rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.66);
+        }
+        .trade-entry-reentry-plan > b {
+            display: block;
+            margin-bottom: 0.4rem;
+            color: #0F172A;
+            font-size: 0.76rem;
+            font-weight: 820;
+        }
+        .trade-entry-reentry-plan p {
+            margin: 0.42rem 0 0;
+            color: #475569;
+            font-size: 0.74rem;
+            line-height: 1.45;
+        }
         .trade-entry-mood-warning {
             display: flex;
             align-items: center;
@@ -3197,6 +3778,134 @@ def _render_styles() -> None:
             font-size: 0.76rem;
             font-weight: 760;
             letter-spacing: 0;
+        }
+        .trade-reentry-state {
+            min-height: 38px;
+            display: flex;
+            align-items: center;
+            color: #64748B;
+            font-size: 0.66rem;
+            font-weight: 700;
+        }
+        .trade-reentry-shell {
+            margin: 0.56rem 0 0.42rem;
+            padding: 0.52rem 0.64rem;
+            border: 1px solid rgba(15, 23, 42, 0.075);
+            border-left: 3px solid rgba(79, 157, 120, 0.58);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.72);
+        }
+        .trade-reentry-shell.alert {
+            border-left-color: rgba(181, 106, 50, 0.78);
+            background: rgba(255, 251, 235, 0.58);
+        }
+        .trade-reentry-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.85rem;
+        }
+        .trade-reentry-head strong {
+            color: #0F172A;
+            font-size: 0.78rem;
+            font-weight: 820;
+        }
+        .trade-reentry-head span {
+            color: #64748B;
+            font-size: 0.68rem;
+            text-align: right;
+        }
+        .trade-gate-card {
+            margin: 0.52rem 0 0.66rem;
+            padding: 0.68rem 0.76rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-left: 4px solid #4F9D78;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF, #F8FAFC);
+        }
+        .trade-gate-card.warn {
+            border-left-color: #C59A32;
+            background: linear-gradient(180deg, rgba(255, 251, 235, 0.86), rgba(255, 255, 255, 0.92));
+        }
+        .trade-gate-card.fix {
+            border-left-color: #B56A32;
+            background: linear-gradient(180deg, rgba(255, 247, 237, 0.9), rgba(255, 255, 255, 0.92));
+        }
+        .trade-gate-card.block {
+            border-left-color: #B91C1C;
+            background: linear-gradient(180deg, rgba(255, 245, 245, 0.94), rgba(255, 255, 255, 0.92));
+        }
+        .trade-gate-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.8rem;
+            margin-bottom: 0.52rem;
+        }
+        .trade-gate-head strong {
+            color: #0F172A;
+            font-size: 0.86rem;
+            font-weight: 860;
+        }
+        .trade-gate-head span {
+            color: #64748B;
+            font-size: 0.7rem;
+            text-align: right;
+        }
+        .trade-gate-body {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 0.55rem;
+            margin-bottom: 0.58rem;
+        }
+        .trade-gate-body > div {
+            padding: 0.48rem 0.56rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.68);
+        }
+        .trade-gate-body b,
+        .trade-gate-subtitle {
+            color: #0F172A;
+            font-size: 0.72rem;
+            font-weight: 820;
+        }
+        .trade-gate-body ul {
+            margin: 0.3rem 0 0;
+            padding-left: 1rem;
+            color: #475569;
+            font-size: 0.7rem;
+            line-height: 1.48;
+        }
+        .trade-gate-subtitle {
+            margin: 0.48rem 0 0.28rem;
+        }
+        .trade-gate-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 7px;
+            overflow: hidden;
+        }
+        .trade-gate-grid div {
+            display: grid;
+            gap: 0.08rem;
+            min-width: 0;
+            padding: 0.4rem 0.48rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.055);
+            border-bottom: 1px solid rgba(15, 23, 42, 0.045);
+            background: rgba(255, 255, 255, 0.62);
+        }
+        .trade-gate-grid span {
+            color: #64748B;
+            font-size: 0.64rem;
+            white-space: nowrap;
+        }
+        .trade-gate-grid strong {
+            color: #0F172A;
+            font-size: 0.76rem;
+            font-weight: 820;
+            white-space: nowrap;
         }
         .trade-classification-summary {
             display: grid;

@@ -47,12 +47,19 @@ TRADE_DISCIPLINE_COLUMNS = {
     "trading_position_max_pct": "REAL",
     "classification_note": "TEXT",
     "planned_sell_pct": "REAL",
+    "actual_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
     "sell_level": "TEXT",
     "thesis_broken": "INTEGER",
     "position_over_limit": "INTEGER",
     "has_reentry_plan": "INTEGER",
     "reentry_plan_text": "TEXT",
+    "reentry_pullback_price": "REAL",
+    "reentry_breakout_price": "REAL",
+    "reentry_time_stop_days": "INTEGER",
+    "reentry_buy_back_pct_on_pullback": "REAL",
+    "reentry_buy_back_pct_on_breakout": "REAL",
+    "reentry_thesis_invalidation": "TEXT",
     "max_allowed_sell_pct": "REAL",
     "can_sell_core": "INTEGER",
     "requires_reentry_plan": "INTEGER",
@@ -331,12 +338,19 @@ class TradeJournalStore:
                     trading_position_max_pct,
                     classification_note,
                     planned_sell_pct,
+                    actual_sell_pct,
                     sell_reason_type,
                     sell_level,
                     thesis_broken,
                     position_over_limit,
                     has_reentry_plan,
                     reentry_plan_text,
+                    reentry_pullback_price,
+                    reentry_breakout_price,
+                    reentry_time_stop_days,
+                    reentry_buy_back_pct_on_pullback,
+                    reentry_buy_back_pct_on_breakout,
+                    reentry_thesis_invalidation,
                     max_allowed_sell_pct,
                     can_sell_core,
                     requires_reentry_plan,
@@ -346,7 +360,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -365,12 +379,19 @@ class TradeJournalStore:
                     cleaned["trading_position_max_pct"],
                     cleaned["classification_note"],
                     cleaned["planned_sell_pct"],
+                    cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_level"],
                     cleaned["thesis_broken"],
                     cleaned["position_over_limit"],
                     cleaned["has_reentry_plan"],
                     cleaned["reentry_plan_text"],
+                    cleaned["reentry_pullback_price"],
+                    cleaned["reentry_breakout_price"],
+                    cleaned["reentry_time_stop_days"],
+                    cleaned["reentry_buy_back_pct_on_pullback"],
+                    cleaned["reentry_buy_back_pct_on_breakout"],
+                    cleaned["reentry_thesis_invalidation"],
                     cleaned["max_allowed_sell_pct"],
                     cleaned["can_sell_core"],
                     cleaned["requires_reentry_plan"],
@@ -408,12 +429,19 @@ class TradeJournalStore:
                     trading_position_max_pct = ?,
                     classification_note = ?,
                     planned_sell_pct = ?,
+                    actual_sell_pct = ?,
                     sell_reason_type = ?,
                     sell_level = ?,
                     thesis_broken = ?,
                     position_over_limit = ?,
                     has_reentry_plan = ?,
                     reentry_plan_text = ?,
+                    reentry_pullback_price = ?,
+                    reentry_breakout_price = ?,
+                    reentry_time_stop_days = ?,
+                    reentry_buy_back_pct_on_pullback = ?,
+                    reentry_buy_back_pct_on_breakout = ?,
+                    reentry_thesis_invalidation = ?,
                     max_allowed_sell_pct = ?,
                     can_sell_core = ?,
                     requires_reentry_plan = ?,
@@ -440,12 +468,19 @@ class TradeJournalStore:
                     cleaned["trading_position_max_pct"],
                     cleaned["classification_note"],
                     cleaned["planned_sell_pct"],
+                    cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_level"],
                     cleaned["thesis_broken"],
                     cleaned["position_over_limit"],
                     cleaned["has_reentry_plan"],
                     cleaned["reentry_plan_text"],
+                    cleaned["reentry_pullback_price"],
+                    cleaned["reentry_breakout_price"],
+                    cleaned["reentry_time_stop_days"],
+                    cleaned["reentry_buy_back_pct_on_pullback"],
+                    cleaned["reentry_buy_back_pct_on_breakout"],
+                    cleaned["reentry_thesis_invalidation"],
                     cleaned["max_allowed_sell_pct"],
                     cleaned["can_sell_core"],
                     cleaned["requires_reentry_plan"],
@@ -939,11 +974,50 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
     planned_sell_pct = _optional_ratio(_value(values, "plannedSellPct", "planned_sell_pct"), "planned_sell_pct")
     if planned_sell_pct is None:
         planned_sell_pct = 0.0
+    actual_sell_pct = _optional_ratio(_value(values, "actualSellPct", "actual_sell_pct"), "actual_sell_pct")
+    if actual_sell_pct is None:
+        current_position_quantity = _optional_non_negative_number(
+            _value(values, "currentPositionQuantity", "current_position_quantity"),
+            "current_position_quantity",
+        )
+        trade_quantity = _optional_non_negative_number(_value(values, "quantity", "tradeQuantity", "trade_quantity"), "quantity")
+        if current_position_quantity and current_position_quantity > 0 and trade_quantity is not None:
+            actual_sell_pct = trade_quantity / current_position_quantity
+    if actual_sell_pct is None:
+        actual_sell_pct = planned_sell_pct
     sell_reason_type = _clean_text(_value(values, "sellReasonType", "sell_reason_type"))
     thesis_broken = _clean_bool(_value(values, "thesisBroken", "thesis_broken"))
     position_over_limit = _clean_bool(_value(values, "positionOverLimit", "position_over_limit"))
-    has_reentry_plan = _clean_bool(_value(values, "hasReentryPlan", "has_reentry_plan"))
     reentry_plan_text = _clean_text(_value(values, "reentryPlanText", "reentry_plan_text"))
+    reentry_pullback_price = _optional_non_negative_number(
+        _value(values, "reentryPullbackPrice", "reentry_pullback_price"),
+        "reentry_pullback_price",
+    )
+    reentry_breakout_price = _optional_non_negative_number(
+        _value(values, "reentryBreakoutPrice", "reentry_breakout_price"),
+        "reentry_breakout_price",
+    )
+    reentry_time_stop_days = _optional_int(
+        _value(values, "reentryTimeStopDays", "reentry_time_stop_days"),
+        "reentry_time_stop_days",
+    )
+    reentry_buy_back_pct_on_pullback = _optional_ratio(
+        _value(values, "reentryBuyBackPctOnPullback", "reentry_buy_back_pct_on_pullback"),
+        "reentry_buy_back_pct_on_pullback",
+    )
+    reentry_buy_back_pct_on_breakout = _optional_ratio(
+        _value(values, "reentryBuyBackPctOnBreakout", "reentry_buy_back_pct_on_breakout"),
+        "reentry_buy_back_pct_on_breakout",
+    )
+    reentry_thesis_invalidation = _clean_text(
+        _value(values, "reentryThesisInvalidation", "reentry_thesis_invalidation")
+    )
+    has_reentry_plan = _has_reentry_plan_snapshot(
+        reentry_plan_text,
+        reentry_pullback_price,
+        reentry_breakout_price,
+        reentry_thesis_invalidation,
+    )
 
     result = evaluate_trading_discipline(
         symbol=symbol,
@@ -957,6 +1031,7 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
         thesisBroken=thesis_broken,
         positionOverLimit=position_over_limit,
         hasReentryPlan=has_reentry_plan,
+        actualSellPct=actual_sell_pct,
         decisionMood=_clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
     )
 
@@ -966,12 +1041,19 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
         "trading_position_max_pct": trading_position_max_pct,
         "classification_note": classification_note,
         "planned_sell_pct": planned_sell_pct,
+        "actual_sell_pct": actual_sell_pct,
         "sell_reason_type": sell_reason_type,
         "sell_level": result.sellLevel,
         "thesis_broken": int(thesis_broken),
         "position_over_limit": int(position_over_limit),
         "has_reentry_plan": int(has_reentry_plan),
         "reentry_plan_text": reentry_plan_text,
+        "reentry_pullback_price": reentry_pullback_price,
+        "reentry_breakout_price": reentry_breakout_price,
+        "reentry_time_stop_days": reentry_time_stop_days,
+        "reentry_buy_back_pct_on_pullback": reentry_buy_back_pct_on_pullback,
+        "reentry_buy_back_pct_on_breakout": reentry_buy_back_pct_on_breakout,
+        "reentry_thesis_invalidation": reentry_thesis_invalidation,
         "max_allowed_sell_pct": result.maxAllowedSellPct,
         "can_sell_core": int(result.canSellCore),
         "requires_reentry_plan": int(result.requiresReentryPlan),
@@ -989,12 +1071,19 @@ def _empty_trade_discipline_snapshot() -> dict:
         "trading_position_max_pct": None,
         "classification_note": "",
         "planned_sell_pct": None,
+        "actual_sell_pct": None,
         "sell_reason_type": None,
         "sell_level": None,
         "thesis_broken": None,
         "position_over_limit": None,
         "has_reentry_plan": None,
         "reentry_plan_text": None,
+        "reentry_pullback_price": None,
+        "reentry_breakout_price": None,
+        "reentry_time_stop_days": None,
+        "reentry_buy_back_pct_on_pullback": None,
+        "reentry_buy_back_pct_on_breakout": None,
+        "reentry_thesis_invalidation": None,
         "max_allowed_sell_pct": None,
         "can_sell_core": None,
         "requires_reentry_plan": None,
@@ -1003,6 +1092,15 @@ def _empty_trade_discipline_snapshot() -> dict:
         "warnings_json": None,
         "reminder_text": None,
     }
+
+
+def _has_reentry_plan_snapshot(
+    plan_text: str,
+    pullback_price: float | None,
+    breakout_price: float | None,
+    thesis_invalidation: str,
+) -> bool:
+    return bool(plan_text or pullback_price is not None or breakout_price is not None)
 
 
 def _clean_decision_mood(value: object) -> str | None:

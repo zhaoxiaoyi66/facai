@@ -344,14 +344,14 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["position_class"], "A")
             self.assertEqual(saved["planned_sell_pct"], 1.0)
             self.assertEqual(saved["sell_reason_type"], "macro")
-            self.assertEqual(saved["sell_level"], "L3")
+            self.assertEqual(saved["sell_level"], "L1")
             self.assertEqual(saved["discipline_status"], "blocked")
             self.assertIn("a_class_core_clear_requires_thesis_break", saved["blockers"])
             self.assertIn("macro_risk_cannot_trigger_single_name_exit", saved["blockers"])
             self.assertIn("宏观风险", saved["warnings"][0])
-            self.assertEqual(saved["max_allowed_sell_pct"], 0.3)
+            self.assertEqual(saved["max_allowed_sell_pct"], 0.2)
             self.assertEqual(saved["can_sell_core"], 0)
-            self.assertEqual(saved["requires_reentry_plan"], 0)
+            self.assertEqual(saved["requires_reentry_plan"], 1)
             self.assertTrue(saved["reminder_text"])
 
     def test_trade_journal_trim_saves_reentry_plan_requirement(self) -> None:
@@ -381,6 +381,69 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["discipline_status"], "blocked")
             self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
             self.assertEqual(json.loads(saved["blockers_json"]), saved["blockers"])
+
+    def test_trade_journal_trim_saves_structured_reentry_plan(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": False,
+                    "reentryPullbackPrice": 380,
+                    "reentryBreakoutPrice": 420,
+                    "reentryTimeStopDays": 5,
+                    "reentryBuyBackPctOnPullback": 50,
+                    "reentryBuyBackPctOnBreakout": 30,
+                    "reentryThesisInvalidation": "thesis broken",
+                    "reentryPlanText": "Pullback or reclaim buyback plan",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 1)
+            self.assertEqual(saved["reentry_pullback_price"], 380)
+            self.assertEqual(saved["reentry_breakout_price"], 420)
+            self.assertEqual(saved["reentry_time_stop_days"], 5)
+            self.assertEqual(saved["reentry_buy_back_pct_on_pullback"], 0.5)
+            self.assertEqual(saved["reentry_buy_back_pct_on_breakout"], 0.3)
+            self.assertEqual(saved["reentry_thesis_invalidation"], "thesis broken")
+            self.assertEqual(saved["reentry_plan_text"], "Pullback or reclaim buyback plan")
+            self.assertNotIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
+    def test_trade_journal_reentry_checkbox_without_details_does_not_pass(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": True,
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 0)
+            self.assertEqual(saved["discipline_status"], "blocked")
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
 
     def test_trade_journal_buy_add_skip_do_not_require_discipline_fields(self) -> None:
         with TemporaryDirectory() as tmpdir:

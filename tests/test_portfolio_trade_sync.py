@@ -52,6 +52,29 @@ def test_add_trade_sync_updates_weighted_average_cost() -> None:
         assert position["average_cost"] == 150
 
 
+def test_buy_sync_reopens_archived_position_from_zero() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        position_store = PortfolioPositionStore(path)
+        position_store.save_position("NVDA", {"quantity": 158, "average_cost": 100})
+        position_store.deactivate_position("NVDA")
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 1, "price": 120},
+        )
+
+        preview = preview_trade_portfolio_effect(entry["id"], path)
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = position_store.get_position("NVDA")
+
+        assert preview["currentQuantity"] == 0
+        assert preview["afterQuantity"] == 1
+        assert result["status"] == "success"
+        assert position["is_active"] == 1
+        assert position["quantity"] == 1
+        assert position["average_cost"] == 120
+
+
 def test_sell_trade_sync_reduces_position_without_changing_average_cost() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -65,6 +88,41 @@ def test_sell_trade_sync_reduces_position_without_changing_average_cost() -> Non
         position = PortfolioPositionStore(path).get_position("NVDA")
 
         assert position["quantity"] == 6
+        assert position["average_cost"] == 100
+
+
+def test_blocked_sell_cannot_sync_to_portfolio() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "sell",
+                "quantity": 100,
+                "price": 200,
+                "currentPositionQuantity": 158,
+                "positionClass": "A",
+                "corePositionPct": 0.6,
+                "tradingPositionPct": 0.4,
+                "plannedSellPct": 0.1,
+                "sellReasonType": "macro",
+                "thesisBroken": False,
+                "positionOverLimit": False,
+                "reentryPullbackPrice": 180,
+                "reentryBreakoutPrice": 205,
+                "reentryPlanText": "回踩或重新站回卖出价时分批买回",
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NVDA")
+
+        assert entry["discipline_status"] == "blocked"
+        assert result["status"] == "failed"
+        assert "纪律门禁 BLOCK" in result["error"]
+        assert position["quantity"] == 158
         assert position["average_cost"] == 100
 
 
