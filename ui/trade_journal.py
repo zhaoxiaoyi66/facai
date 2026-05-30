@@ -514,9 +514,12 @@ def _discipline_gate_context(
     sell_qty = _number(trade_quantity) or 0.0
     planned_pct = _ratio_value(planned_sell_pct) or 0.0
     actual_pct = _number(actual_sell_pct)
+    uses_planned_fallback = False
     if actual_pct is None and current_qty > 0:
         actual_pct = sell_qty / current_qty
-    actual_pct = actual_pct or 0.0
+    elif actual_pct is None:
+        actual_pct = planned_pct
+        uses_planned_fallback = True
     core_ratio = _ratio_value(core_pct)
     if core_ratio is None:
         core_ratio = POSITION_CLASS_DEFAULTS.get(str(position_class or "").upper(), (0.0, 1.0))[0] or 0.0
@@ -541,6 +544,7 @@ def _discipline_gate_context(
         "plannedBreachQty": planned_breach_qty,
         "actualSellPct": actual_pct,
         "plannedActualDiffPct": abs(actual_pct - planned_pct),
+        "usesPlannedFallback": uses_planned_fallback,
         "coreRatioMin": core_ratio,
         "coreMinQty": float(core_min_qty),
         "tradableQty": tradable_qty,
@@ -653,6 +657,8 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
         reasons.append(
             f"你实际填写卖出 {_quantity_text(context['sellQty'])} 股，但计划卖出比例为 {_pct_point_text(context['plannedSellPct'])}。"
         )
+    if context.get("usesPlannedFallback"):
+        reasons.append("暂时拿不到当前持股，实际卖出比例先按计划卖出比例估算；保存同步前仍会由组合持仓兜底校验。")
     if context["actualBreachesCore"]:
         reasons.append(
             f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，会打穿 A 类核心仓约 {_quantity_text(math.ceil(context['actualBreachQty']))} 股。"
@@ -702,6 +708,9 @@ def _normalized_core_gate_context(context: dict) -> dict:
     current_qty = _number(normalized.get("currentQty")) or 0.0
     sell_qty = _number(normalized.get("sellQty")) or 0.0
     planned_pct = _ratio_value(normalized.get("plannedSellPct")) or 0.0
+    if _number(normalized.get("actualSellPct")) is None:
+        normalized["actualSellPct"] = planned_pct
+        normalized["usesPlannedFallback"] = True
     actual_after_qty = max(0.0, current_qty - sell_qty)
     core_ratio = _ratio_value(normalized.get("coreRatioMin"))
     if core_ratio is None:
@@ -722,6 +731,7 @@ def _normalized_core_gate_context(context: dict) -> dict:
             "plannedRemainingTradableQty": planned_remaining_tradable_qty,
             "plannedBreachesCore": planned_breach_qty > 1e-9,
             "plannedBreachQty": planned_breach_qty,
+            "usesPlannedFallback": bool(normalized.get("usesPlannedFallback")),
             "coreRatioMin": core_ratio,
             "coreMinQty": core_min_qty,
             "tradableQty": tradable_qty,

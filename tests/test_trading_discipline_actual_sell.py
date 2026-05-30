@@ -113,6 +113,21 @@ def test_gate_context_tracks_actual_and_planned_sell_paths() -> None:
     assert round(context["plannedBreachQty"], 1) == 15.8
 
 
+def test_gate_context_falls_back_to_planned_pct_when_current_qty_missing() -> None:
+    context = _discipline_gate_context(
+        position_class="A",
+        current_quantity=None,
+        trade_quantity=30,
+        planned_sell_pct=50,
+        actual_sell_pct=None,
+        core_pct=60,
+    )
+
+    assert context["usesPlannedFallback"] is True
+    assert context["actualSellPct"] == 0.5
+    assert context["plannedSellPct"] == 0.5
+
+
 def test_classification_defaults_normalize_legacy_stock_plan_percent_values() -> None:
     core_pct, trading_pct = _classification_ratio_defaults(
         "A",
