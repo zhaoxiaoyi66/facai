@@ -13,6 +13,11 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.portfolio_trade_sync import (
+    POSITION_AFFECTING_ACTIONS,
+    apply_trade_to_portfolio,
+    preview_trade_values_portfolio_effect,
+)
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
 from data.trading_discipline import evaluate_trading_discipline
@@ -201,6 +206,15 @@ def _render_editor(store: TradeJournalStore) -> None:
         strike_price = option_cols[1].text_input("行权价", value=_entry_number_text(editing_entry, "strike_price"), key=_editor_key("strike", editing_id))
         expiry_date = option_cols[2].text_input("到期日", value=_entry_value(editing_entry, "expiry_date"), placeholder="YYYY-MM-DD", key=_editor_key("expiry", editing_id))
 
+        sync_to_portfolio = _render_portfolio_sync_option(
+            symbol,
+            action_type,
+            quantity,
+            price,
+            default_checked=editing_entry is None,
+            key_suffix=str(editing_id or "new"),
+        )
+
         if action_type in CLASSIFICATION_ACTIONS:
             _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
 
@@ -228,6 +242,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "decision_mood": decision_mood,
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
+                "syncToPortfolio": sync_to_portfolio,
             }
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
@@ -289,6 +304,62 @@ def _render_buy_classification_editor(
           <span>{escape(POSITION_CLASS_COPY.get(position_class, POSITION_CLASS_COPY[""]))}</span>
           <em>{escape(source)}</em>
         </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_portfolio_sync_option(
+    symbol: str,
+    action_type: str,
+    quantity: object,
+    price: object,
+    *,
+    default_checked: bool,
+    key_suffix: str,
+) -> bool:
+    if action_type not in POSITION_AFFECTING_ACTIONS:
+        return False
+    checked = st.checkbox(
+        "保存后同步到组合持仓",
+        value=default_checked,
+        key=f"trade-portfolio-sync-{key_suffix}",
+    )
+    preview = preview_trade_values_portfolio_effect(
+        symbol,
+        {"action_type": action_type, "quantity": quantity, "price": price},
+    )
+    _render_portfolio_sync_preview(preview, checked=checked)
+    return checked
+
+
+def _render_portfolio_sync_preview(preview: dict, *, checked: bool) -> None:
+    tone = "warning" if preview.get("status") == "failed" else "ok"
+    title = "组合持仓同步预览" if checked else "仅保存交易日志，不同步持仓"
+    rows = [
+        ("当前持股", _quantity_text(preview.get("currentQuantity"))),
+        ("当前均价", _money_text(preview.get("currentAverageCost"))),
+        ("本次股数", _quantity_text(preview.get("tradeQuantity"))),
+        ("成交价格", _money_text(preview.get("tradePrice"))),
+        ("同步后持股", _quantity_text(preview.get("afterQuantity"))),
+        ("同步后均价", _money_text(preview.get("afterAverageCost"))),
+    ]
+    if preview.get("afterMarketValue") is not None:
+        rows.append(("同步后市值", _money_text(preview.get("afterMarketValue"))))
+    if preview.get("afterPositionPct") is not None:
+        rows.append(("同步后仓位", _percent_or_dash(preview.get("afterPositionPct"))))
+    content = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in rows
+    )
+    error = str(preview.get("error") or "").strip()
+    hint = error if error else "勾选后，保存成功会同步一次；已同步交易不会重复作用到持仓。"
+    st.markdown(
+        f"""
+        <section class="trade-portfolio-sync-card {escape(tone)}">
+          <div><b>{escape(title)}</b><span>{escape(hint)}</span></div>
+          <div class="trade-portfolio-sync-grid">{content}</div>
+        </section>
         """,
         unsafe_allow_html=True,
     )
@@ -557,10 +628,11 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
     try:
         saved = store.save_entry(symbol, values)
         _sync_stock_classification_profile(saved["symbol"], values)
+        sync_notice = _apply_portfolio_sync_if_requested(saved, values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
-    st.session_state["trade_journal_notice"] = ("success", f"{saved['symbol']} 交易记录已保存。")
+    st.session_state["trade_journal_notice"] = sync_notice or ("success", f"{saved['symbol']} 交易记录已保存。")
     st.rerun()
 
 
@@ -580,12 +652,25 @@ def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: 
     try:
         saved = store.update_entry(entry_id, symbol, values)
         _sync_stock_classification_profile(saved["symbol"], values)
+        sync_notice = _apply_portfolio_sync_if_requested(saved, values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
     _clear_trade_edit_query()
-    st.session_state["trade_journal_notice"] = ("success", f"{saved['symbol']} 交易记录已更新。")
+    st.session_state["trade_journal_notice"] = sync_notice or ("success", f"{saved['symbol']} 交易记录已更新。")
     st.rerun()
+
+
+def _apply_portfolio_sync_if_requested(saved: dict, values: dict) -> tuple[str, str] | None:
+    if not values.get("syncToPortfolio"):
+        return None
+    result = apply_trade_to_portfolio(int(saved.get("id") or 0))
+    status = str(result.get("status") or "")
+    if status == "success":
+        return ("success", f"{saved['symbol']} 交易记录已保存，组合持仓已同步。")
+    if status == "already_synced":
+        return ("error", f"{saved['symbol']} 交易记录已保存，但该交易已经同步过，未重复作用到持仓。")
+    return ("error", f"{saved['symbol']} 交易记录已保存，但持仓同步失败：{result.get('error') or '未知错误'}")
 
 
 def _render_notice() -> None:
@@ -3134,6 +3219,50 @@ def _render_styles() -> None:
             color: #64748B;
             font-size: 0.7rem;
             font-style: normal;
+        }
+        .trade-portfolio-sync-card {
+            margin: 0.45rem 0 0.68rem;
+            padding: 0.62rem 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.88);
+        }
+        .trade-portfolio-sync-card.warning {
+            border-color: rgba(164, 48, 63, 0.18);
+            background: rgba(255, 245, 245, 0.88);
+        }
+        .trade-portfolio-sync-card > div:first-child {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.48rem;
+        }
+        .trade-portfolio-sync-card b {
+            color: #0F172A;
+            font-size: 0.76rem;
+        }
+        .trade-portfolio-sync-card span {
+            color: #64748B;
+            font-size: 0.68rem;
+            text-align: right;
+        }
+        .trade-portfolio-sync-grid {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 0.35rem;
+        }
+        .trade-portfolio-sync-grid div {
+            display: grid;
+            gap: 0.06rem;
+            padding: 0.35rem 0.42rem;
+            border: 1px solid rgba(15, 23, 42, 0.055);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.72);
+        }
+        .trade-portfolio-sync-grid span,
+        .trade-portfolio-sync-grid strong {
+            text-align: left;
+            white-space: nowrap;
         }
         .trade-discipline-card {
             margin: 0.45rem 0 0.68rem;

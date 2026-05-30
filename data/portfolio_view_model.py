@@ -10,6 +10,7 @@ from data.portfolio import (
     PortfolioSettingsStore,
     calculate_portfolio_positions,
 )
+from data.portfolio_trade_sync import unsynced_trade_counts_by_symbol
 from data.prices import CACHE_PATH
 from data.stock_plan import StockPlanStore
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
@@ -37,12 +38,14 @@ def build_portfolio_view_model(
     positions = position_store.list_active_positions()
     prices, price_statuses = _current_prices_for_positions(positions, db_path, current_prices)
     system_refs = _system_refs_for_positions(positions, db_path, prices, system_decision_inputs)
+    unsynced_counts = unsynced_trade_counts_by_symbol(db_path or CACHE_PATH)
     calculated = calculate_portfolio_positions(positions, prices, settings=settings, system_refs=system_refs)
     rows = [
         _row_view(
             row,
             price_statuses.get(str(row.get("symbol") or "").upper(), "missing"),
             system_refs.get(str(row.get("symbol") or "").upper(), {}),
+            unsynced_counts.get(str(row.get("symbol") or "").upper(), 0),
         )
         for row in calculated
     ]
@@ -54,7 +57,7 @@ def build_portfolio_view_model(
     }
 
 
-def _row_view(row: dict, price_status: str, system_ref: dict[str, Any]) -> dict[str, Any]:
+def _row_view(row: dict, price_status: str, system_ref: dict[str, Any], unsynced_trade_count: int = 0) -> dict[str, Any]:
     deviation_warnings = _deviation_warnings(row, system_ref)
     return {
         "symbol": row.get("symbol"),
@@ -90,6 +93,7 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any]) -> dict[
         "blockReasons": list(system_ref.get("blockReasons") or []),
         "reviewReasons": list(system_ref.get("reviewReasons") or []),
         "deviationWarnings": deviation_warnings,
+        "unsyncedTradeCount": int(unsynced_trade_count or 0),
         "actionGroup": _action_group_for_row(row),
     }
 

@@ -333,8 +333,17 @@ def _plan_sub_text(row: dict) -> str:
 
 
 def _row_status_text(row: dict) -> str:
+    if int(row.get("unsyncedTradeCount") or 0) > 0:
+        return "有未同步交易记录"
     deviation = _deviation_text(row)
     return deviation if deviation != "暂无偏离提示" else _price_status_text(row.get("priceStatus"))
+
+
+def _trade_sync_text(row: dict) -> str:
+    count = int(row.get("unsyncedTradeCount") or 0)
+    if count <= 0:
+        return "已同步"
+    return f"有 {count} 条未同步交易记录，请到交易日志处理"
 
 
 def _decision_lane_text(value: object) -> str:
@@ -643,6 +652,7 @@ def _drawer_html(
             ("市值", _money_text(row.get("marketValue"))),
             ("浮动盈亏", _money_text(row.get("unrealizedPnl")) + " / " + _percent_text(row.get("unrealizedPnlPct"))),
             ("当前仓位", _percent_text(row.get("positionPct"))),
+            ("交易同步", _trade_sync_text(row)),
         ]),
         ("系统参考", [
             ("怎么看", _system_explanation_text(row)),
