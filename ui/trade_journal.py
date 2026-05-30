@@ -36,8 +36,6 @@ ACTION_OPTIONS = {
     "卖出": "sell",
     "加仓": "add",
     "减仓": "trim",
-    "卖 Put": "sell_put",
-    "Covered Call": "covered_call",
     "放弃操作": "skip",
 }
 ACTION_LABELS = {value: label for label, value in ACTION_OPTIONS.items()}
@@ -214,11 +212,6 @@ def _render_editor(store: TradeJournalStore) -> None:
             key=_editor_key("snapshot-id", editing_id),
         )
 
-        option_cols = st.columns(3)
-        premium = option_cols[0].text_input("权利金", value=_entry_number_text(editing_entry, "premium"), key=_editor_key("premium", editing_id))
-        strike_price = option_cols[1].text_input("行权价", value=_entry_number_text(editing_entry, "strike_price"), key=_editor_key("strike", editing_id))
-        expiry_date = option_cols[2].text_input("到期日", value=_entry_value(editing_entry, "expiry_date"), placeholder="YYYY-MM-DD", key=_editor_key("expiry", editing_id))
-
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
         discipline_result = None
 
@@ -257,9 +250,6 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "action_type": action_type,
                 "quantity": quantity,
                 "price": price,
-                "premium": premium,
-                "strike_price": strike_price,
-                "expiry_date": expiry_date,
                 "decision_mood": decision_mood,
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
@@ -525,10 +515,10 @@ def _discipline_gate_context(
     if actual_pct is None and current_qty > 0:
         actual_pct = sell_qty / current_qty
     actual_pct = actual_pct or 0.0
-    core_ratio = _number(core_pct)
+    core_ratio = _ratio_value(core_pct)
     if core_ratio is None:
         core_ratio = POSITION_CLASS_DEFAULTS.get(str(position_class or "").upper(), (0.0, 1.0))[0] or 0.0
-    core_min_qty = math.ceil(current_qty * core_ratio) if current_qty > 0 else 0
+    core_min_qty = current_qty * core_ratio if current_qty > 0 else 0.0
     tradable_qty = max(0.0, current_qty - core_min_qty)
     after_sell_qty = max(0.0, current_qty - sell_qty)
     remaining_tradable_qty = max(0.0, after_sell_qty - core_min_qty)
@@ -563,6 +553,7 @@ def _discipline_gate_conclusion(result) -> str:
 
 
 def _render_discipline_gate_explanation(result, context: dict) -> None:
+    context = _normalized_core_gate_context(context)
     conclusion = _discipline_gate_conclusion(result)
     tone = {
         "PASS": "pass",
@@ -654,6 +645,8 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
     if max_allowed_qty > 0:
         reasons.append(f"若卖出超过 {max_allowed_qty} 股，将超过 {sell_level} 卖出上限。")
     for blocker in getattr(result, "blockers", []) or []:
+        if str(blocker) == "a_class_core_floor_breached" and not context["breachesCore"]:
+            continue
         text = _discipline_message_text(blocker)
         if text not in reasons:
             reasons.append(text)
@@ -662,6 +655,32 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
         if text not in reasons:
             reasons.append(text)
     return reasons or ["当前交易纪律检查通过。"]
+
+
+def _normalized_core_gate_context(context: dict) -> dict:
+    normalized = dict(context)
+    current_qty = _number(normalized.get("currentQty")) or 0.0
+    sell_qty = _number(normalized.get("sellQty")) or 0.0
+    after_sell_qty = max(0.0, current_qty - sell_qty)
+    core_ratio = _ratio_value(normalized.get("coreRatioMin"))
+    if core_ratio is None:
+        core_ratio = 0.0
+    core_min_qty = current_qty * core_ratio if current_qty > 0 else 0.0
+    tradable_qty = max(0.0, current_qty - core_min_qty)
+    remaining_tradable_qty = max(0.0, after_sell_qty - core_min_qty)
+    breach_qty = max(0.0, core_min_qty - after_sell_qty)
+    normalized.update(
+        {
+            "coreRatioMin": core_ratio,
+            "coreMinQty": core_min_qty,
+            "tradableQty": tradable_qty,
+            "afterSellQty": after_sell_qty,
+            "remainingTradableQty": remaining_tradable_qty,
+            "breachesCore": breach_qty > 1e-9,
+            "breachQty": breach_qty,
+        }
+    )
+    return normalized
 
 
 def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> list[str]:
@@ -690,7 +709,7 @@ def _ratio_value(value: object) -> float | None:
 
 
 def _pct_point_text(value: object, *, suffix: str = "%") -> str:
-    number = _number(value)
+    number = _ratio_value(value)
     if number is None:
         return BLANK_TEXT
     if suffix == "pct":
@@ -1067,7 +1086,9 @@ def _classification_ratio_defaults(
         core = _number((stock_plan or {}).get("core_position_min_pct"))
     if trading is None:
         trading = _number((stock_plan or {}).get("trading_position_max_pct"))
-    return (core if core is not None else core_default, trading if trading is not None else trading_default)
+    core = _ratio_value(core) if core is not None else core_default
+    trading = _ratio_value(trading) if trading is not None else trading_default
+    return (core, trading)
 
 
 def _ratio_percent_text(value: object) -> str:
@@ -1105,8 +1126,8 @@ def _sync_stock_classification_profile(symbol: str, values: dict) -> None:
         {
             **plan,
             "position_class": position_class,
-            "core_position_min_pct": values.get("corePositionMinPct", values.get("core_position_min_pct")),
-            "trading_position_max_pct": values.get("tradingPositionMaxPct", values.get("trading_position_max_pct")),
+            "core_position_min_pct": _ratio_value(values.get("corePositionMinPct", values.get("core_position_min_pct"))),
+            "trading_position_max_pct": _ratio_value(values.get("tradingPositionMaxPct", values.get("trading_position_max_pct"))),
             "classification_note": values.get("classificationNote", values.get("classification_note", "")),
         },
     )
@@ -1208,8 +1229,8 @@ def _render_weekly_discipline_summary() -> None:
         ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
         ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
         ("NOW 式风险", summary.get("nowStyleRiskCount", 0)),
-        ("blocker", summary.get("disciplineBlockerCount", 0)),
-        ("warning", summary.get("disciplineWarningCount", 0)),
+        ("纪律阻断", summary.get("disciplineBlockerCount", 0)),
+        ("纪律提醒", summary.get("disciplineWarningCount", 0)),
         ("FOMO", summary.get("fomoTradeCount", 0)),
         ("焦虑/恐慌", summary.get("anxietyPanicTradeCount", 0)),
         ("报复交易", summary.get("revengeTradeCount", 0)),
@@ -1282,14 +1303,12 @@ def _load_entries(store: TradeJournalStore, symbols: list[str]) -> list[dict]:
 
 
 def _render_summary(entries: list[dict]) -> None:
-    option_count = sum(1 for entry in entries if entry.get("action_type") in {"sell_put", "covered_call"})
     skip_count = sum(1 for entry in entries if entry.get("action_type") == "skip")
     stock_count = len({str(entry.get("symbol") or "") for entry in entries if entry.get("symbol")})
     latest = entries[0].get("trade_date") if entries else None
     items = [
         ("记录数", str(len(entries)), "ENTRIES"),
         ("覆盖股票", str(stock_count), "SYMBOLS"),
-        ("期权动作", str(option_count), "OPTIONS"),
         ("放弃操作", str(skip_count), "SKIPPED"),
         ("最近日期", str(latest or BLANK_TEXT), "LATEST"),
     ]
@@ -1320,7 +1339,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         )
         return
 
-    headers = ["日期", "股票", "操作", "纪律", "数量 / 价格", "期权参数", "关联信号", "备注", "操作"]
+    headers = ["日期", "股票", "操作", "纪律", "数量 / 价格", "关联信号", "备注", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     row_html = "".join(_entry_row_html(entry) for entry in entries)
     st.markdown(
@@ -1330,7 +1349,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
             '<table class="trade-journal-table trade-terminal-table">'
             "<colgroup>"
             '<col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:9%">'
-            '<col style="width:11%"><col style="width:10%"><col style="width:9%"><col style="width:auto"><col style="width:136px">'
+            '<col style="width:12%"><col style="width:9%"><col style="width:auto"><col style="width:136px">'
             "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
@@ -2323,7 +2342,6 @@ def _entry_row_html(entry: dict) -> str:
         f"<td>{_action_badge(entry)}</td>"
         f"<td>{_discipline_snapshot_badge(entry)}</td>"
         f"<td>{_cell_html(_quantity_text(entry.get('quantity')), _money_text(entry.get('price')))}</td>"
-        f"<td>{_option_text(entry)}</td>"
         f"<td>{escape(_snapshot_text(entry.get('decision_snapshot_id')))}</td>"
         f'<td class="notes">{escape(_text(entry.get("notes")))}</td>'
         f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_actions_html(entry)}</span></td>'
@@ -2490,7 +2508,7 @@ def _sell_reason_label_for_entry(entry: dict | None) -> str:
 
 
 def _discipline_percent(value: object) -> str:
-    number = _number(value)
+    number = _ratio_value(value)
     if number is None:
         return BLANK_TEXT
     return format_percent(number, already_percent=False)
@@ -2528,25 +2546,9 @@ def _action_badge(entry: dict) -> str:
         "add": "buy",
         "sell": "sell",
         "trim": "sell",
-        "sell_put": "option",
-        "covered_call": "option",
         "skip": "skip",
     }.get(action, "skip")
     return f'<span class="trade-action-badge {escape(tone)}">{escape(label)}</span>'
-
-
-def _option_text(entry: dict) -> str:
-    premium = _money_text(entry.get("premium"))
-    strike = _money_text(entry.get("strike_price"))
-    expiry = _text(entry.get("expiry_date"))
-    if premium == BLANK_TEXT and strike == BLANK_TEXT and expiry == BLANK_TEXT:
-        return BLANK_TEXT
-    return (
-        '<div class="trade-journal-cell">'
-        f"<b>{escape('权利金 ' + premium)}</b>"
-        f"<span>{escape('行权价 ' + strike + ' / 到期 ' + expiry)}</span>"
-        "</div>"
-    )
 
 
 def _created_text(entry: dict) -> str:
@@ -2635,9 +2637,9 @@ def _friendly_error(message: str) -> str:
     if "decision_mood is invalid" in message:
         return "请选择有效的交易心理标签。"
     if "must be a number" in message:
-        return "数量、价格、权利金和行权价需要填写数字。"
+        return "数量和价格需要填写数字。"
     if "cannot be negative" in message:
-        return "数量、价格、权利金和行权价不能为负数。"
+        return "数量和价格不能为负数。"
     if "must be an integer" in message:
         return "关联信号 ID 需要填写整数。"
     return "保存失败，请检查输入。"
@@ -3720,11 +3722,6 @@ def _render_styles() -> None:
             border-color: rgba(181, 106, 50, 0.18);
             background: rgba(181, 106, 50, 0.08);
             color: #8A4B00;
-        }
-        .trade-action-badge.option {
-            border-color: rgba(82, 101, 127, 0.16);
-            background: rgba(82, 101, 127, 0.08);
-            color: #475569;
         }
         .trade-action-badge.skip {
             color: #7b8798;

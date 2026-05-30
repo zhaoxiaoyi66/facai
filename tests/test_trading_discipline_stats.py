@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,6 +14,26 @@ CURRENT_DATE = "2026-05-30"
 
 def _store(tmpdir: str) -> TradeJournalStore:
     return TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+
+def _insert_history(tmpdir: str, symbol: str, closes: list[tuple[str, float]]) -> None:
+    db_path = Path(tmpdir) / "decision_log.sqlite"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT,
+                date TEXT,
+                close REAL,
+                fetched_at TEXT
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO price_history VALUES (?, ?, ?, ?)",
+            [(symbol.upper(), day, close, "2026-05-30T00:00:00Z") for day, close in closes],
+        )
+        conn.commit()
 
 
 def _save(store: TradeJournalStore, day: str, action: str = "buy", **overrides) -> None:
@@ -31,6 +53,10 @@ def test_empty_trade_log_returns_normal() -> None:
         assert summary["overTradingLevel"] == "normal"
         assert summary["totalTradesThisWeek"] == 0
         assert summary["warnings"] == []
+        assert summary["disciplineScore"] == 100
+        assert summary["disciplineLevel"] == "normal"
+        assert summary["shouldPauseTrading"] is False
+        assert summary["suggestedAction"] == "纪律正常"
 
 
 def test_six_trades_this_week_triggers_caution() -> None:
@@ -159,6 +185,9 @@ def test_blocker_sell_triggers_danger() -> None:
 
         assert summary["disciplineBlockerCount"] == 1
         assert summary["overTradingLevel"] == "danger"
+        assert summary["disciplineLevel"] in {"danger", "stop"}
+        assert summary["shouldPauseTrading"] is True
+        assert any("纪律阻断" in item for item in summary["mainViolations"])
         assert any("blocker" in warning for warning in summary["warnings"])
 
 
@@ -218,4 +247,83 @@ def test_now_style_risk_count_is_included_in_discipline_stats() -> None:
 
         assert summary["nowStyleRiskCount"] == 1
         assert summary["overTradingLevel"] == "danger"
+        assert summary["disciplineLevel"] == "stop"
+        assert summary["disciplineScore"] <= 70
+        assert summary["shouldPauseTrading"] is True
+        assert any("NOW 式错误风险" in item for item in summary["mainViolations"])
         assert any("NOW 式错误风险" in warning for warning in summary["warnings"])
+
+
+def test_no_reentry_sell_penalizes_discipline_score_heavily() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(
+            store,
+            "2026-05-27",
+            "trim",
+            positionClass="B",
+            corePositionPct=0.0,
+            tradingPositionPct=1.0,
+            unrealizedGainPct=0.2,
+            plannedSellPct=0.1,
+            sellReasonType="technical",
+            thesisBroken=False,
+            positionOverLimit=False,
+            hasReentryPlan=False,
+        )
+
+        summary = _summary(tmpdir)
+
+        assert summary["noReentryPlanSellCount"] == 1
+        assert summary["disciplineScore"] <= 78
+        assert summary["disciplineLevel"] == "danger"
+        assert summary["shouldPauseTrading"] is True
+        assert any("无回补计划卖出" in item for item in summary["mainViolations"])
+
+
+def test_suspected_sell_fly_penalizes_discipline_score() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(store, "2026-05-26", "sell", quantity=10, price=100)
+        _insert_history(
+            tmpdir,
+            "NVDA",
+            [
+                ("2026-05-27", 102),
+                ("2026-05-28", 109),
+                ("2026-05-30", 106),
+            ],
+        )
+
+        summary = _summary(tmpdir)
+
+        assert summary["suspectedSellFlyCount"] == 1
+        assert summary["disciplineScore"] < 100
+        assert any("疑似卖飞" in item for item in summary["mainViolations"])
+
+
+def test_stacked_violations_should_pause_trading() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(
+            store,
+            "2026-05-27",
+            "sell",
+            decision_mood="panic_sell",
+            positionClass="A",
+            corePositionPct=0.7,
+            tradingPositionPct=0.3,
+            unrealizedGainPct=0.1,
+            plannedSellPct=1.0,
+            sellReasonType="macro",
+            thesisBroken=False,
+            positionOverLimit=False,
+            hasReentryPlan=False,
+        )
+
+        summary = _summary(tmpdir)
+
+        assert summary["disciplineLevel"] in {"danger", "stop"}
+        assert summary["shouldPauseTrading"] is True
+        assert summary["pauseReason"]
+        assert len(summary["mainViolations"]) >= 3

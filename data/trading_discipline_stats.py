@@ -7,11 +7,13 @@ from typing import Any
 
 from data.decision_log import TradeJournalStore
 from data.prices import CACHE_PATH
+from data.sell_fly_review import PRIMARY_SELL_FLY_HORIZON, build_sell_fly_review_results
 
 
 SELL_TRIM_ACTIONS = {"sell", "trim"}
-LEVEL_ORDER = {"normal": 0, "caution": 1, "danger": 2}
+LEVEL_ORDER = {"normal": 0, "caution": 1, "danger": 2, "stop": 3}
 NOW_STYLE_RISK_BLOCKER = "now_style_error_risk"
+EMOTIONAL_SELL_MOODS = {"anxiety", "macro_fear", "panic_sell", "regret_chase"}
 NOW_STYLE_RISK_TEXT_PREFIX = "NOW 式错误风险"
 
 
@@ -31,7 +33,14 @@ class TradingDisciplineStatsSummary:
     anxietyPanicTradeCount: int
     revengeTradeCount: int
     reasonedPlanTradeCount: int
+    suspectedSellFlyCount: int
     overTradingLevel: str
+    disciplineScore: int
+    disciplineLevel: str
+    shouldPauseTrading: bool
+    pauseReason: str
+    mainViolations: list[str]
+    suggestedAction: str
     warnings: list[str]
     reminderText: str
 
@@ -85,6 +94,8 @@ def build_trading_discipline_stats(
     anxiety_panic_entries = _mood_entries(entries, {"anxiety", "macro_fear", "panic_sell"})
     revenge_entries = _mood_entries(entries, {"revenge_trade"})
     reasoned_plan_entries = _mood_entries(entries, {"well_reasoned", "plan_execution"})
+    emotional_sell_entries = _mood_entries(sell_trim_entries, EMOTIONAL_SELL_MOODS)
+    suspected_sell_fly_count = _suspected_sell_fly_count(path, period_start, current)
 
     warnings: list[str] = []
     level = "normal"
@@ -112,6 +123,17 @@ def build_trading_discipline_stats(
         level = _max_level(level, "danger")
         warnings.append("本周出现 NOW 式错误风险，建议暂停非必要卖出。")
 
+    score_result = _discipline_score(
+        total_trades=total_count,
+        blocker_count=len(blocker_entries),
+        now_style_risk_count=len(now_style_risk_entries),
+        no_reentry_sell_count=len(no_reentry_sells),
+        suspected_sell_fly_count=suspected_sell_fly_count,
+        emotional_sell_count=len(emotional_sell_entries),
+        a_class_sell_count=len(a_class_sells),
+        macro_sell_count=len(macro_sells),
+    )
+
     summary = TradingDisciplineStatsSummary(
         periodStart=period_start.isoformat(),
         periodEnd=current.isoformat(),
@@ -127,9 +149,16 @@ def build_trading_discipline_stats(
         anxietyPanicTradeCount=len(anxiety_panic_entries),
         revengeTradeCount=len(revenge_entries),
         reasonedPlanTradeCount=len(reasoned_plan_entries),
+        suspectedSellFlyCount=suspected_sell_fly_count,
         overTradingLevel=level,
+        disciplineScore=score_result["disciplineScore"],
+        disciplineLevel=score_result["disciplineLevel"],
+        shouldPauseTrading=score_result["shouldPauseTrading"],
+        pauseReason=score_result["pauseReason"],
+        mainViolations=score_result["mainViolations"],
+        suggestedAction=score_result["suggestedAction"],
         warnings=warnings,
-        reminderText=_reminder_text(level),
+        reminderText=_reminder_text(score_result["disciplineLevel"]),
     )
     return summary.to_dict()
 
@@ -164,6 +193,94 @@ def _has_now_style_risk(entry: dict) -> bool:
     return NOW_STYLE_RISK_BLOCKER in blockers or any(
         NOW_STYLE_RISK_TEXT_PREFIX in warning for warning in warnings
     )
+
+
+def _suspected_sell_fly_count(path: Path, period_start: date, period_end: date) -> int:
+    try:
+        reviews = build_sell_fly_review_results(path, period_end)
+    except Exception:
+        return 0
+    count = 0
+    for item in reviews:
+        if str(item.get("horizon") or "") != PRIMARY_SELL_FLY_HORIZON:
+            continue
+        if not bool(item.get("suspectedSellFly")):
+            continue
+        trade_date = _parse_date(item.get("tradeDate"))
+        if trade_date is not None and period_start <= trade_date <= period_end:
+            count += 1
+    return count
+
+
+def _discipline_score(
+    *,
+    total_trades: int,
+    blocker_count: int,
+    now_style_risk_count: int,
+    no_reentry_sell_count: int,
+    suspected_sell_fly_count: int,
+    emotional_sell_count: int,
+    a_class_sell_count: int,
+    macro_sell_count: int,
+) -> dict[str, Any]:
+    penalties: list[tuple[str, int]] = []
+    _add_penalty(penalties, "纪律阻断", blocker_count, 25)
+    _add_penalty(penalties, "NOW 式错误风险", now_style_risk_count, 30)
+    _add_penalty(penalties, "无回补计划卖出", no_reentry_sell_count, 22)
+    _add_penalty(penalties, "疑似卖飞", suspected_sell_fly_count, 15)
+    _add_penalty(penalties, "情绪型卖出/减仓", emotional_sell_count, 10)
+    _add_penalty(penalties, "A 类核心股卖出/减仓", a_class_sell_count, 8)
+    _add_penalty(penalties, "宏观原因卖出", macro_sell_count, 8)
+    if total_trades > 10:
+        penalties.append(("本周交易次数超过 10 次", 20))
+    elif total_trades > 5:
+        penalties.append(("本周交易次数超过 5 次", 10))
+
+    total_penalty = min(100, sum(points for _, points in penalties))
+    score = max(0, 100 - total_penalty)
+    level = _discipline_level(score, blocker_count, now_style_risk_count, no_reentry_sell_count)
+    main_violations = [label for label, _ in sorted(penalties, key=lambda item: item[1], reverse=True)[:4]]
+    return {
+        "disciplineScore": score,
+        "disciplineLevel": level,
+        "shouldPauseTrading": level in {"danger", "stop"},
+        "pauseReason": _pause_reason(level, main_violations),
+        "mainViolations": main_violations,
+        "suggestedAction": _suggested_action(level),
+    }
+
+
+def _add_penalty(penalties: list[tuple[str, int]], label: str, count: int, points: int) -> None:
+    if count <= 0:
+        return
+    penalties.append((label, count * points))
+
+
+def _discipline_level(score: int, blocker_count: int, now_style_risk_count: int, no_reentry_sell_count: int) -> str:
+    if score < 35 or now_style_risk_count > 0 or blocker_count >= 2:
+        return "stop"
+    if score < 60 or blocker_count > 0 or no_reentry_sell_count > 0:
+        return "danger"
+    if score < 80:
+        return "caution"
+    return "normal"
+
+
+def _pause_reason(level: str, violations: list[str]) -> str:
+    if level not in {"danger", "stop"}:
+        return ""
+    if not violations:
+        return "本周纪律风险偏高。"
+    return "；".join(violations[:3])
+
+
+def _suggested_action(level: str) -> str:
+    return {
+        "normal": "纪律正常",
+        "caution": "本周操作偏多，降低交易频率",
+        "danger": "纪律风险高，暂停非必要交易",
+        "stop": "本周停止主动卖出，只允许复核和计划",
+    }.get(level, "纪律正常")
 
 
 def _is_false(value: object) -> bool:
@@ -208,6 +325,8 @@ def _max_level(current: str, candidate: str) -> str:
 
 
 def _reminder_text(level: str) -> str:
+    if level == "stop":
+        return "本周停止主动卖出，只允许复核、计划和纠错。"
     if level == "danger":
         return "本周纪律风险偏高，建议暂停新增 sell / trim，先复核 thesis、核心仓和回补计划。"
     if level == "caution":
