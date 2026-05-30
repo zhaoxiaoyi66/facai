@@ -24,6 +24,7 @@ from data.dashboard_lanes import (
     row_is_actionable as _row_is_actionable,
     row_value as _row_value,
     summary_lane_groups as _summary_lane_groups,
+    today_priority_rows as _today_priority_rows,
     wait_or_confirm_rows as _wait_or_confirm_rows,
 )
 from data.dashboard_risk_model import (
@@ -251,12 +252,16 @@ def render() -> None:
     _render_record_signal_notice()
 
     _render_market_strip(table)
-    _render_weekly_discipline_strip()
-    _render_data_health_strip(table)
+    data_health_context = _build_data_health_context(table)
     portfolio_view = build_portfolio_view_model()
-    _render_dashboard_risk_radar(build_dashboard_risk_radar(table, portfolio_view))
+    risk_items = build_dashboard_risk_radar(table, portfolio_view)
+    _render_weekly_discipline_strip()
+    _render_data_health_strip(data_health_context)
+    _render_risk_radar_summary_strip(risk_items, table)
     _render_summary_sections(table)
     _render_decision_table(table)
+    _render_data_health_detail_section(data_health_context)
+    _render_dashboard_risk_radar(risk_items)
     _render_client_stock_detail_drawers(table)
 
     st.caption("缺失财务数据显示为 N/A；评分不会用模型补造财务数字。")
@@ -583,19 +588,31 @@ def _render_weekly_discipline_strip() -> None:
     except Exception:
         return
     level = str(summary.get("overTradingLevel") or "normal")
+    emotional_count = (
+        int(summary.get("fomoTradeCount") or 0)
+        + int(summary.get("anxietyPanicTradeCount") or 0)
+        + int(summary.get("revengeTradeCount") or 0)
+    )
+    suspected_sell_fly_count = int(summary.get("suspectedSellFlyCount") or 0)
     items = [
-        ("本周交易", summary.get("totalTradesThisWeek", 0)),
-        ("sell / trim", summary.get("sellTrimCountThisWeek", 0)),
+        ("本周操作", summary.get("totalTradesThisWeek", 0)),
         ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
-        ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
-        ("无回补", summary.get("noReentryPlanSellCount", 0)),
-        ("blocker", summary.get("disciplineBlockerCount", 0)),
+        ("情绪化操作", emotional_count),
+        ("疑似卖飞", suspected_sell_fly_count),
     ]
     item_html = "".join(
         f'<span>{escape(label)} {escape(str(value))}</span>'
         for label, value in items
     )
-    headline = {
+    alert_count = (
+        int(summary.get("aClassSellCountThisWeek") or 0)
+        + int(summary.get("macroSellCountThisWeek") or 0)
+        + int(summary.get("noReentryPlanSellCount") or 0)
+        + int(summary.get("disciplineBlockerCount") or 0)
+        + emotional_count
+        + suspected_sell_fly_count
+    )
+    headline = "暂无纪律警报" if level == "normal" and alert_count == 0 else {
         "normal": "纪律正常",
         "caution": "本周操作偏多，注意是否焦虑驱动",
         "danger": "交易纪律风险高，建议暂停非必要操作",
@@ -630,16 +647,38 @@ def _dashboard_discipline_level_text(level: str) -> str:
     }.get(str(level or ""), "正常")
 
 
-def _render_data_health_strip(table: pd.DataFrame) -> None:
+def _build_data_health_context(table: pd.DataFrame) -> dict[str, object]:
     symbols = _dashboard_symbols(table)
     try:
         summary = build_data_health_summary(watchlist=symbols)
         view = build_dashboard_data_health_view_from_summary(summary, symbols)
         raw_issues = list(summary.get("topIssues") or [])
     except Exception:
+        summary = {}
         view = build_dashboard_data_health_view(table)
         raw_issues = list(view.get("issues") or [])
-    items = list(view.get("items") or [])
+    return {
+        "summary": summary,
+        "view": view,
+        "rawIssues": raw_issues,
+        "symbols": symbols,
+        "lastUpdated": st.session_state.get("dashboard_last_table_loaded_at"),
+    }
+
+
+def _render_data_health_strip(context: dict[str, object]) -> None:
+    view = dict(context.get("view") or {})
+    summary = dict(context.get("summary") or {})
+    raw_issues = list(context.get("rawIssues") or [])
+    healthy_count = int(summary.get("healthyCount") or _data_health_item_value(view, "健康项") or 0)
+    abnormal_count = _data_health_abnormal_count(summary, raw_issues)
+    last_updated = _dashboard_last_updated_text(context.get("lastUpdated"))
+    items = [
+        ("系统状态", view.get("statusLabel") or "注意"),
+        ("健康", healthy_count),
+        ("异常", abnormal_count),
+        ("最后更新", last_updated),
+    ]
     item_html = "".join(
         f'<span>{escape(label)} {escape(str(value))}</span>'
         for label, value in items
@@ -648,17 +687,64 @@ def _render_data_health_strip(table: pd.DataFrame) -> None:
         (
             f'<section id="data-health-strip" class="data-health-strip {escape(str(view.get("tone") or "warning"))}">'
             '<div class="data-health-main-row">'
-            f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>{escape(str(view.get("subtitle") or "本地缓存体检"))}</span></div>'
+            f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>异常驱动展示，本地缓存体检</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
-            '<div class="data-health-detail-label">查看详情</div>'
+            '<div class="data-health-detail-label">详情在下方</div>'
             "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
     )
+
+
+def _render_data_health_detail_section(context: dict[str, object]) -> None:
+    raw_issues = list(context.get("rawIssues") or [])
     _render_data_health_refresh_result()
-    with st.expander("数据健康详情", expanded=False):
+    with st.expander("数据健康详情", expanded=_data_health_should_auto_expand(context)):
         _render_data_health_detail_groups(raw_issues)
+
+
+def _data_health_should_auto_expand(context: dict[str, object]) -> bool:
+    view = dict(context.get("view") or {})
+    summary = dict(context.get("summary") or {})
+    if str(view.get("tone") or "").lower() in {"error", "warning"}:
+        return True
+    return _data_health_abnormal_count(summary, list(context.get("rawIssues") or [])) > 0
+
+
+def _data_health_abnormal_count(summary: dict[str, object], raw_issues: list[object]) -> int:
+    if summary:
+        return sum(
+            int(summary.get(key) or 0)
+            for key in (
+                "missingPriceCount",
+                "stalePriceCount",
+                "missingHistoryCount",
+                "staleHistoryCount",
+                "finalDecisionErrorCount",
+                "portfolioMissingPriceCount",
+                "outcomeMissingCount",
+            )
+        )
+    return len(raw_issues)
+
+
+def _data_health_item_value(view: dict[str, object], label: str) -> object:
+    for item_label, value in list(view.get("items") or []):
+        if label in str(item_label):
+            return value
+    return None
+
+
+def _dashboard_last_updated_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "N/A"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text[:16]
+    return parsed.strftime("%H:%M")
 
 
 def _render_data_health_refresh_result() -> None:
@@ -867,17 +953,61 @@ def _data_health_issue_action_html(action: str, target: str, ticker: str) -> str
     return f'<a class="data-health-detail-action" href="{href}" target="_self">{escape(action)}</a>'
 
 
-def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
-    cards = "".join(_dashboard_risk_radar_item_html(item) for item in items)
+def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.DataFrame) -> None:
+    summary_items = [
+        ("超仓", _risk_item_symbol_count(items, "overweight")),
+        ("禁止追高", _risk_item_symbol_count(items, "noChase")),
+        ("需要核验", _risk_item_symbol_count(items, "review")),
+        ("低置信", _risk_item_symbol_count(items, "lowConfidence")),
+        ("不可新增", _risk_item_symbol_count(items, "noAdd")),
+        ("blocker", _dashboard_blocker_count(table)),
+    ]
+    item_html = "".join(
+        f'<span>{escape(label)} <strong>{escape(str(value))}</strong></span>'
+        for label, value in summary_items
+    )
+    total = sum(int(value or 0) for _, value in summary_items)
+    tone = "warning" if total else "ok"
     st.markdown(
         (
-            '<section class="dashboard-risk-radar">'
-            '<div class="dashboard-risk-radar-head"><strong>风险雷达</strong><span>当前最容易踩雷的位置</span></div>'
-            f'<div class="dashboard-risk-radar-list">{cards}</div>'
+            f'<section class="dashboard-risk-summary-strip {tone}">'
+            '<div class="dashboard-risk-summary-title"><strong>风险雷达</strong><span>默认折叠，先看今日行动</span></div>'
+            f'<div class="dashboard-risk-summary-metrics">{item_html}</div>'
+            '<div class="dashboard-risk-summary-detail">详情在下方</div>'
             "</section>"
         ),
         unsafe_allow_html=True,
     )
+
+
+def _risk_item_symbol_count(items: list[dict[str, object]], key: str) -> int:
+    for item in items:
+        if str(item.get("key") or "") == key:
+            return len([symbol for symbol in item.get("symbols", []) if symbol])
+    return 0
+
+
+def _dashboard_blocker_count(table: pd.DataFrame) -> int:
+    return sum(
+        1
+        for _, row in table.iterrows()
+        if _row_decision_lane(row) == "blocked" or _row_final_action(row) in DASHBOARD_BLOCKED_ACTIONS
+    )
+
+
+def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
+    cards = "".join(_dashboard_risk_radar_item_html(item) for item in items)
+    st.markdown('<div id="dashboard-risk-radar-detail"></div>', unsafe_allow_html=True)
+    with st.expander("风险雷达详情", expanded=bool(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY))):
+        st.markdown(
+            (
+                '<section class="dashboard-risk-radar">'
+                '<div class="dashboard-risk-radar-head"><strong>风险雷达</strong><span>点击风险项筛选观察名单</span></div>'
+                f'<div class="dashboard-risk-radar-list">{cards}</div>'
+                "</section>"
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
@@ -898,13 +1028,13 @@ def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
 def _render_summary_sections(table: pd.DataFrame) -> None:
     summary_groups = _summary_lane_groups(table)
 
+    st.markdown(_dashboard_priority_strip_html(table), unsafe_allow_html=True)
     st.markdown(
         '<section class="decision-terminal-head">'
         "<div><strong>决策台</strong><span>按行动优先级聚合当前观察池</span></div>"
         "</section>",
         unsafe_allow_html=True,
     )
-    st.markdown(_dashboard_priority_strip_html(table), unsafe_allow_html=True)
     st.markdown('<div class="decision-lanes-marker"></div>', unsafe_allow_html=True)
     columns = st.columns(4, gap="small")
     for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
@@ -2085,7 +2215,29 @@ def _market_stat_html(label: object, value: object, detail: object) -> str:
 
 
 def _dashboard_priority_strip_html(table: pd.DataFrame) -> str:
-    return _dashboard_priority_strip_html_base(table, _dashboard_priority_item_html)
+    rows = _today_priority_rows(table, limit=max(5, len(table)))
+    top_rows = rows[:5]
+    hidden_rows = rows[5:]
+    if top_rows:
+        body = "".join(_dashboard_priority_item_html(lane_key, row, color) for lane_key, row, color in top_rows)
+    else:
+        body = '<div class="dashboard-priority-empty">暂无明确可执行机会，优先等待回踩或复核数据。</div>'
+    more_html = ""
+    if hidden_rows:
+        more_body = "".join(_dashboard_priority_item_html(lane_key, row, color) for lane_key, row, color in hidden_rows)
+        more_html = (
+            '<details class="dashboard-priority-more">'
+            f'<summary>查看全部 {len(rows)} 条</summary>'
+            f'<div class="dashboard-priority-more-list">{more_body}</div>'
+            "</details>"
+        )
+    return (
+        '<section class="dashboard-priority-strip">'
+        '<div class="dashboard-priority-head"><strong>今日行动</strong><span>Top 5</span></div>'
+        f'<div class="dashboard-priority-list">{body}</div>'
+        f"{more_html}"
+        "</section>"
+    )
 
 
 def _dashboard_priority_item_html(lane_key: str, row: pd.Series, color: str) -> str:
@@ -3321,6 +3473,8 @@ def _render_dashboard_styles() -> None:
         .terminal-loading-shell,
         .market-ribbon,
         .dashboard-discipline-strip,
+        .data-health-strip,
+        .dashboard-risk-summary-strip,
         .dashboard-risk-radar,
         .decision-terminal-head,
         .dashboard-priority-strip,
@@ -3627,6 +3781,95 @@ def _render_dashboard_styles() -> None:
         .data-health-refresh-result.ok { border-left:2px solid #16A34A; }
         .data-health-refresh-result.warning { border-left:2px solid #D97706; }
         .data-health-refresh-result.error { border-left:2px solid #DC2626; }
+        .dashboard-risk-summary-strip {
+            display:grid;
+            grid-template-columns:128px minmax(0, 1fr) 132px;
+            align-items:stretch;
+            min-height:34px;
+            margin:0 0 0.42rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-left:2px solid #94A3B8;
+            border-radius:7px;
+            background:#FFFFFF;
+            overflow:hidden;
+        }
+        .dashboard-risk-summary-strip.ok {
+            border-left-color:#16A34A;
+            background:#FCFEFC;
+        }
+        .dashboard-risk-summary-strip.warning {
+            border-left-color:#D97706;
+            background:#FFFDF8;
+        }
+        .dashboard-risk-summary-title {
+            display:grid;
+            align-content:center;
+            gap:0.08rem;
+            padding:0.3rem 0.54rem;
+            border-right:1px solid rgba(15, 23, 42, 0.045);
+            background:#F8FAFC;
+        }
+        .dashboard-risk-summary-strip.ok .dashboard-risk-summary-title {
+            background:#F6FBF7;
+        }
+        .dashboard-risk-summary-strip.warning .dashboard-risk-summary-title {
+            background:#FFFAF0;
+        }
+        .dashboard-risk-summary-title strong {
+            color:#0F172A;
+            font-size:11.5px;
+            line-height:1.15;
+            font-weight:760;
+        }
+        .dashboard-risk-summary-title span {
+            color:#94A3B8;
+            font-size:9.5px;
+            line-height:1.2;
+            font-weight:560;
+        }
+        .dashboard-risk-summary-metrics {
+            display:flex;
+            align-items:center;
+            gap:0;
+            min-width:0;
+            overflow:hidden;
+            background:rgba(255, 255, 255, 0.72);
+        }
+        .dashboard-risk-summary-metrics span {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:0;
+            margin:0.25rem 0 0.25rem 0.4rem;
+            height:18px;
+            padding:0 0.36rem;
+            border:1px solid rgba(148, 163, 184, 0.15);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:10px;
+            line-height:18px;
+            font-weight:680;
+            white-space:nowrap;
+        }
+        .dashboard-risk-summary-metrics strong {
+            margin-left:0.14rem;
+            color:#0F172A;
+            font-weight:780;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-risk-summary-detail {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100%;
+            border-left:1px solid rgba(15, 23, 42, 0.05);
+            color:#64748B;
+            font-size:10px;
+            line-height:1.2;
+            font-weight:700;
+            white-space:nowrap;
+        }
         .data-health-popover {
             position:relative;
             min-width:0;
@@ -3912,7 +4155,7 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-priority-strip {
             display:grid;
-            grid-template-columns:90px minmax(0, 1fr);
+            grid-template-columns:82px minmax(0, 1fr);
             align-items:stretch;
             min-height:42px;
             max-width:1080px;
@@ -3943,8 +4186,9 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-priority-head span {
             color:#64748B;
-            font-size:10.5px;
+            font-size:10px;
             font-weight:520;
+            white-space:nowrap;
         }
         .dashboard-priority-list {
             display:grid;
@@ -4078,6 +4322,29 @@ def _render_dashboard_styles() -> None:
             font-size:11.5px;
             font-weight:560;
             padding:0 0.5rem;
+        }
+        .dashboard-priority-more {
+            grid-column:2;
+            border-top:1px solid rgba(148, 163, 184, 0.10);
+            background:rgba(255, 255, 255, 0.58);
+        }
+        .dashboard-priority-more summary {
+            min-height:28px;
+            padding:0.28rem 0.58rem;
+            color:#52657F;
+            font-size:11px;
+            font-weight:720;
+            cursor:pointer;
+            list-style:none;
+        }
+        .dashboard-priority-more summary::-webkit-details-marker {
+            display:none;
+        }
+        .dashboard-priority-more-list {
+            display:grid;
+            grid-template-columns:repeat(5, minmax(0, 1fr));
+            gap:0.4rem;
+            padding:0 0.48rem 0.4rem;
         }
         div[data-testid="stVerticalBlock"] > div:has(.decision-lanes-marker) + div [data-testid="stHorizontalBlock"] {
             max-width:1080px;
