@@ -12,8 +12,11 @@ SELL_ACTIONS = {"sell", "trim"}
 REENTRY_REQUIRED_REASONS = {"technical", "valuation"}
 NOW_STYLE_RISK_BLOCKER = "now_style_error_risk"
 PLANNED_ACTUAL_MISMATCH_BLOCKER = "planned_actual_sell_pct_mismatch"
+ACTUAL_SELL_LEVEL_LIMIT_BLOCKER = "actual_sell_pct_exceeds_sell_level_limit"
+PLANNED_SELL_LEVEL_LIMIT_BLOCKER = "planned_sell_pct_exceeds_sell_level_limit"
 A_CLASS_EMOTIONAL_SELL_CAP_BLOCKER = "a_class_macro_or_emotional_sell_exceeds_20_pct"
 A_CLASS_CORE_FLOOR_BLOCKER = "a_class_core_floor_breached"
+PLANNED_CORE_FLOOR_BLOCKER = "planned_sell_pct_breaches_core_floor"
 NOW_STYLE_RISK_TEXT = (
     "NOW 式错误风险：A 类核心股在投资逻辑未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。"
     "若你不愿右侧追回，就不能全卖低位买到的好公司。"
@@ -112,7 +115,8 @@ def evaluate_trading_discipline(
     if trading_pct is None:
         trading_pct = _number(class_rules.get("trading_position_pct"), max(0.0, 1.0 - core_pct))
 
-    sell_level = _sell_level(planned_action, sell_reason, effective_sell_pct, thesisBroken, positionOverLimit)
+    gate_sell_pct = max(effective_sell_pct, planned_sell_pct)
+    sell_level = _sell_level(planned_action, sell_reason, gate_sell_pct, thesisBroken, positionOverLimit)
     level_rules = dict(rules.get("sell_levels", {}).get(sell_level, DEFAULT_CONFIG["sell_levels"]["L0"]))
     max_allowed_sell_pct = _number(level_rules.get("max_allowed_sell_pct"), 0.0)
     level_allows_core = bool(level_rules.get("can_sell_core", False))
@@ -126,17 +130,21 @@ def evaluate_trading_discipline(
     if a_class_emotional_or_macro:
         max_allowed_sell_pct = max(max_allowed_sell_pct, 0.20)
     requires_reentry_plan = bool(level_rules.get("requires_reentry_plan", False)) or (
-        planned_action in SELL_ACTIONS and sell_reason in REENTRY_REQUIRED_REASONS and effective_sell_pct > 0
+        planned_action in SELL_ACTIONS and sell_reason in REENTRY_REQUIRED_REASONS and gate_sell_pct > 0
     )
-    touches_core = effective_sell_pct > trading_pct + 1e-9
-    clears_position = effective_sell_pct >= max(core_pct + trading_pct, 0.95) - 1e-9
+    actual_touches_core = effective_sell_pct > trading_pct + 1e-9
+    planned_touches_core = planned_sell_pct > trading_pct + 1e-9
+    touches_core = actual_touches_core or planned_touches_core
+    actual_clears_position = effective_sell_pct >= max(core_pct + trading_pct, 0.95) - 1e-9
+    planned_clears_position = planned_sell_pct >= max(core_pct + trading_pct, 0.95) - 1e-9
+    clears_position = actual_clears_position or planned_clears_position
     can_sell_core = bool(level_allows_core and (thesisBroken or position_class != "A"))
     planned_actual_mismatch = abs(effective_sell_pct - planned_sell_pct)
 
     blockers: list[str] = []
     warnings: list[str] = []
 
-    if planned_action in HOLD_ACTIONS or effective_sell_pct <= 0:
+    if planned_action in HOLD_ACTIONS or gate_sell_pct <= 0:
         return TradingDisciplineResult(
             disciplineStatus="hold",
             sellLevel="L0",
@@ -151,15 +159,14 @@ def evaluate_trading_discipline(
         )
 
     if planned_actual_mismatch > 0.02 + 1e-9:
-        if effective_sell_pct > planned_sell_pct:
-            blockers.append(PLANNED_ACTUAL_MISMATCH_BLOCKER)
-        else:
-            warnings.append("计划卖出比例与实际卖出数量不一致。")
+        blockers.append(PLANNED_ACTUAL_MISMATCH_BLOCKER)
     if position_class == "A" and not thesisBroken and clears_position and core_pct > 0:
         blockers.append("a_class_core_clear_requires_thesis_break")
     if position_class == "A" and not thesisBroken and (1.0 - effective_sell_pct) < core_pct - 1e-9:
         blockers.append(A_CLASS_CORE_FLOOR_BLOCKER)
-    if a_class_emotional_or_macro and effective_sell_pct > 0.20 + 1e-9:
+    if position_class == "A" and not thesisBroken and (1.0 - planned_sell_pct) < core_pct - 1e-9:
+        blockers.append(PLANNED_CORE_FLOOR_BLOCKER)
+    if a_class_emotional_or_macro and gate_sell_pct > 0.20 + 1e-9:
         blockers.append(A_CLASS_EMOTIONAL_SELL_CAP_BLOCKER)
     if position_class == "A" and touches_core and _within_core_gain_freeze(unrealized_gain_pct, class_rules):
         blockers.append("a_class_core_sale_blocked_while_gain_0_to_25_pct")
@@ -170,7 +177,9 @@ def evaluate_trading_discipline(
     if requires_reentry_plan and not hasReentryPlan:
         blockers.append("reentry_plan_required_before_trim_or_sell")
     if effective_sell_pct > max_allowed_sell_pct + 1e-9:
-        blockers.append("planned_sell_pct_exceeds_sell_level_limit")
+        blockers.append(ACTUAL_SELL_LEVEL_LIMIT_BLOCKER)
+    if planned_sell_pct > max_allowed_sell_pct + 1e-9:
+        blockers.append(PLANNED_SELL_LEVEL_LIMIT_BLOCKER)
     if (
         position_class == "A"
         and planned_action in SELL_ACTIONS

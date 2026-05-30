@@ -3,6 +3,7 @@ from __future__ import annotations
 from data.trading_discipline import evaluate_trading_discipline
 from ui.trade_journal import (
     _classification_ratio_defaults,
+    _discipline_gate_conclusion,
     _discipline_gate_context,
     _discipline_percent,
     _normalized_core_gate_context,
@@ -49,6 +50,18 @@ def test_a_class_macro_sell_allows_at_most_twenty_percent_when_not_thesis_broken
     assert "a_class_macro_or_emotional_sell_exceeds_20_pct" not in result.blockers
 
 
+def test_planned_sell_ratio_blocks_even_when_actual_quantity_is_safe() -> None:
+    result = _evaluate(plannedSellPct=0.5, actualSellPct=30 / 158)
+
+    assert result.disciplineStatus == "blocked"
+    assert _discipline_gate_conclusion(result) == "BLOCK"
+    assert result.actualSellPct == round(30 / 158, 4)
+    assert "planned_actual_sell_pct_mismatch" in result.blockers
+    assert "planned_sell_pct_exceeds_sell_level_limit" in result.blockers
+    assert "planned_sell_pct_breaches_core_floor" in result.blockers
+    assert "a_class_core_floor_breached" not in result.blockers
+
+
 def test_evaluator_normalizes_core_pct_when_form_submits_sixty() -> None:
     result = _evaluate(
         corePositionPct=60,
@@ -78,6 +91,26 @@ def test_gate_context_normalizes_core_pct_for_share_floor_display() -> None:
     assert _discipline_percent(60) == "60.0%"
     assert _quantity_text(context["coreMinQty"]) == "94.8"
     assert context["coreMinQty"] != 9480
+
+
+def test_gate_context_tracks_actual_and_planned_sell_paths() -> None:
+    context = _discipline_gate_context(
+        position_class="A",
+        current_quantity=158,
+        trade_quantity=30,
+        planned_sell_pct=50,
+        actual_sell_pct=30 / 158,
+        core_pct=60,
+    )
+
+    assert context["actualSellPct"] == 30 / 158
+    assert context["plannedSellPct"] == 0.5
+    assert context["plannedSellQty"] == 79
+    assert context["plannedAfterQty"] == 79
+    assert context["coreMinQty"] == 94.8
+    assert context["actualBreachesCore"] is False
+    assert context["plannedBreachesCore"] is True
+    assert round(context["plannedBreachQty"], 1) == 15.8
 
 
 def test_classification_defaults_normalize_legacy_stock_plan_percent_values() -> None:

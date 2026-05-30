@@ -102,6 +102,7 @@ DISCIPLINE_BLOCKER_LABELS = {
     "sell_level_does_not_allow_core_sale": "当前卖出等级不允许动核心仓。",
     "macro_risk_cannot_trigger_single_name_exit": "宏观风险不能单独触发个股清仓。",
     "reentry_plan_required_before_trim_or_sell": "减仓 / 卖出前需要明确回补计划。",
+    "actual_sell_pct_exceeds_sell_level_limit": "实际卖出比例超过当前纪律等级上限。",
     "planned_sell_pct_exceeds_sell_level_limit": "计划卖出比例超过当前纪律等级上限。",
 }
 DISCIPLINE_BLOCKER_LABELS.update(
@@ -109,6 +110,7 @@ DISCIPLINE_BLOCKER_LABELS.update(
         "planned_actual_sell_pct_mismatch": "计划卖出比例与实际卖出数量不一致。",
         "a_class_macro_or_emotional_sell_exceeds_20_pct": "A 类核心股在宏观或情绪压力下，默认最多只能卖出 20%。",
         "a_class_core_floor_breached": "该操作会打穿 A 类核心仓底仓保护。",
+        "planned_sell_pct_breaches_core_floor": "按计划卖出比例测算会打穿 A 类核心仓底仓保护。",
     }
 )
 FINAL_ACTION_LABELS = {
@@ -520,23 +522,36 @@ def _discipline_gate_context(
         core_ratio = POSITION_CLASS_DEFAULTS.get(str(position_class or "").upper(), (0.0, 1.0))[0] or 0.0
     core_min_qty = current_qty * core_ratio if current_qty > 0 else 0.0
     tradable_qty = max(0.0, current_qty - core_min_qty)
-    after_sell_qty = max(0.0, current_qty - sell_qty)
-    remaining_tradable_qty = max(0.0, after_sell_qty - core_min_qty)
-    breach_qty = max(0.0, core_min_qty - after_sell_qty)
+    actual_after_qty = max(0.0, current_qty - sell_qty)
+    actual_remaining_tradable_qty = max(0.0, actual_after_qty - core_min_qty)
+    actual_breach_qty = max(0.0, core_min_qty - actual_after_qty)
+    planned_sell_qty = round(current_qty * planned_pct) if current_qty > 0 else 0
+    planned_after_qty = max(0.0, current_qty - planned_sell_qty)
+    planned_remaining_tradable_qty = max(0.0, planned_after_qty - core_min_qty)
+    planned_breach_qty = max(0.0, core_min_qty - planned_after_qty)
     return {
         "positionClass": str(position_class or "").upper() or "未分类",
         "currentQty": current_qty,
         "sellQty": sell_qty,
         "plannedSellPct": planned_pct,
+        "plannedSellQty": float(planned_sell_qty),
+        "plannedAfterQty": planned_after_qty,
+        "plannedRemainingTradableQty": planned_remaining_tradable_qty,
+        "plannedBreachesCore": planned_breach_qty > 1e-9,
+        "plannedBreachQty": planned_breach_qty,
         "actualSellPct": actual_pct,
         "plannedActualDiffPct": abs(actual_pct - planned_pct),
         "coreRatioMin": core_ratio,
         "coreMinQty": float(core_min_qty),
         "tradableQty": tradable_qty,
-        "afterSellQty": after_sell_qty,
-        "remainingTradableQty": remaining_tradable_qty,
-        "breachesCore": breach_qty > 1e-9,
-        "breachQty": breach_qty,
+        "actualAfterQty": actual_after_qty,
+        "actualRemainingTradableQty": actual_remaining_tradable_qty,
+        "actualBreachesCore": actual_breach_qty > 1e-9,
+        "actualBreachQty": actual_breach_qty,
+        "afterSellQty": actual_after_qty,
+        "remainingTradableQty": actual_remaining_tradable_qty,
+        "breachesCore": actual_breach_qty > 1e-9 or planned_breach_qty > 1e-9,
+        "breachQty": max(actual_breach_qty, planned_breach_qty),
     }
 
 
@@ -567,9 +582,12 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
     actions = _discipline_gate_actions(result, context, max_allowed_qty)
     metric_rows = [
         ("当前持股", _quantity_text(context["currentQty"])),
-        ("本次卖出", _quantity_text(context["sellQty"])),
-        ("计划卖出", _pct_point_text(context["plannedSellPct"])),
+        ("实际数量", _quantity_text(context["sellQty"])),
         ("实际卖出", _pct_point_text(context["actualSellPct"])),
+        ("实际卖后", _quantity_text(context["actualAfterQty"])),
+        ("计划比例", _pct_point_text(context["plannedSellPct"])),
+        ("计划股数", _quantity_text(context["plannedSellQty"])),
+        ("计划卖后", _quantity_text(context["plannedAfterQty"])),
         ("差异", _pct_point_text(context["plannedActualDiffPct"], suffix="pct")),
         ("卖出等级", str(getattr(result, "sellLevel", "") or "N/A")),
         ("等级上限", _pct_point_text(max_allowed_pct)),
@@ -580,10 +598,10 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
         ("核心仓最低", _pct_point_text(context["coreRatioMin"])),
         ("核心仓底线", _quantity_text(context["coreMinQty"])),
         ("可交易仓", _quantity_text(context["tradableQty"])),
-        ("卖出后持股", _quantity_text(context["afterSellQty"])),
-        ("剩余交易仓", _quantity_text(context["remainingTradableQty"])),
-        ("是否打穿", "是" if context["breachesCore"] else "否"),
-        ("打穿数量", _quantity_text(context["breachQty"])),
+        ("实际是否打穿", "是" if context["actualBreachesCore"] else "否"),
+        ("实际打穿", _quantity_text(context["actualBreachQty"])),
+        ("计划是否打穿", "是" if context["plannedBreachesCore"] else "否"),
+        ("计划打穿", _quantity_text(context["plannedBreachQty"])),
     ]
     reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons)
     action_html = "".join(f"<li>{escape(item)}</li>" for item in actions)
@@ -633,19 +651,41 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
     reasons: list[str] = []
     if context["plannedActualDiffPct"] > 0.02:
         reasons.append(
-            f"你计划卖 {_pct_point_text(context['plannedSellPct'])}，但实际卖出 {_pct_point_text(context['actualSellPct'])}。"
+            f"你实际填写卖出 {_quantity_text(context['sellQty'])} 股，但计划卖出比例为 {_pct_point_text(context['plannedSellPct'])}。"
         )
-    if context["breachesCore"]:
+    if context["actualBreachesCore"]:
         reasons.append(
-            f"卖出后只剩 {_quantity_text(context['afterSellQty'])} 股，低于核心仓底线 {_quantity_text(context['coreMinQty'])} 股。"
+            f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，会打穿 A 类核心仓约 {_quantity_text(math.ceil(context['actualBreachQty']))} 股。"
         )
     else:
-        reasons.append("本次卖出仍在交易仓内，未打穿核心仓。")
+        reasons.append(
+            f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，未打穿核心仓。"
+        )
+    if context["plannedSellPct"] > 0:
+        if context["plannedBreachesCore"]:
+            reasons.append(
+                f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，会打穿 A 类核心仓约 {_quantity_text(math.ceil(context['plannedBreachQty']))} 股。"
+            )
+        else:
+            reasons.append(
+                f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，未打穿核心仓。"
+            )
     sell_level = str(getattr(result, "sellLevel", "") or "N/A")
+    max_allowed_pct = float(getattr(result, "maxAllowedSellPct", 0) or 0)
+    if context["actualSellPct"] > max_allowed_pct + 1e-9:
+        reasons.append(
+            f"实际卖出 {_pct_point_text(context['actualSellPct'])}，超过 {sell_level} 上限 {_pct_point_text(max_allowed_pct)}。"
+        )
+    if context["plannedSellPct"] > max_allowed_pct + 1e-9:
+        reasons.append(
+            f"A 类核心股在宏观风险/恐慌卖出场景下，上限为 {_pct_point_text(max_allowed_pct)}。当前计划卖出 {_pct_point_text(context['plannedSellPct'])}，超过纪律上限。"
+        )
     if max_allowed_qty > 0:
         reasons.append(f"若卖出超过 {max_allowed_qty} 股，将超过 {sell_level} 卖出上限。")
     for blocker in getattr(result, "blockers", []) or []:
-        if str(blocker) == "a_class_core_floor_breached" and not context["breachesCore"]:
+        if str(blocker) == "a_class_core_floor_breached" and not context["actualBreachesCore"]:
+            continue
+        if str(blocker) == "planned_sell_pct_breaches_core_floor" and not context["plannedBreachesCore"]:
             continue
         text = _discipline_message_text(blocker)
         if text not in reasons:
@@ -661,23 +701,38 @@ def _normalized_core_gate_context(context: dict) -> dict:
     normalized = dict(context)
     current_qty = _number(normalized.get("currentQty")) or 0.0
     sell_qty = _number(normalized.get("sellQty")) or 0.0
-    after_sell_qty = max(0.0, current_qty - sell_qty)
+    planned_pct = _ratio_value(normalized.get("plannedSellPct")) or 0.0
+    actual_after_qty = max(0.0, current_qty - sell_qty)
     core_ratio = _ratio_value(normalized.get("coreRatioMin"))
     if core_ratio is None:
         core_ratio = 0.0
     core_min_qty = current_qty * core_ratio if current_qty > 0 else 0.0
     tradable_qty = max(0.0, current_qty - core_min_qty)
-    remaining_tradable_qty = max(0.0, after_sell_qty - core_min_qty)
-    breach_qty = max(0.0, core_min_qty - after_sell_qty)
+    actual_remaining_tradable_qty = max(0.0, actual_after_qty - core_min_qty)
+    actual_breach_qty = max(0.0, core_min_qty - actual_after_qty)
+    planned_sell_qty = round(current_qty * planned_pct) if current_qty > 0 else 0
+    planned_after_qty = max(0.0, current_qty - planned_sell_qty)
+    planned_remaining_tradable_qty = max(0.0, planned_after_qty - core_min_qty)
+    planned_breach_qty = max(0.0, core_min_qty - planned_after_qty)
     normalized.update(
         {
+            "plannedSellPct": planned_pct,
+            "plannedSellQty": float(planned_sell_qty),
+            "plannedAfterQty": planned_after_qty,
+            "plannedRemainingTradableQty": planned_remaining_tradable_qty,
+            "plannedBreachesCore": planned_breach_qty > 1e-9,
+            "plannedBreachQty": planned_breach_qty,
             "coreRatioMin": core_ratio,
             "coreMinQty": core_min_qty,
             "tradableQty": tradable_qty,
-            "afterSellQty": after_sell_qty,
-            "remainingTradableQty": remaining_tradable_qty,
-            "breachesCore": breach_qty > 1e-9,
-            "breachQty": breach_qty,
+            "actualAfterQty": actual_after_qty,
+            "actualRemainingTradableQty": actual_remaining_tradable_qty,
+            "actualBreachesCore": actual_breach_qty > 1e-9,
+            "actualBreachQty": actual_breach_qty,
+            "afterSellQty": actual_after_qty,
+            "remainingTradableQty": actual_remaining_tradable_qty,
+            "breachesCore": actual_breach_qty > 1e-9 or planned_breach_qty > 1e-9,
+            "breachQty": max(actual_breach_qty, planned_breach_qty),
         }
     )
     return normalized
@@ -686,13 +741,19 @@ def _normalized_core_gate_context(context: dict) -> dict:
 def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> list[str]:
     actions: list[str] = []
     if context["plannedActualDiffPct"] > 0.02:
-        planned_qty = math.floor(context["currentQty"] * context["plannedSellPct"]) if context["currentQty"] > 0 else 0
+        planned_qty = int(context["plannedSellQty"])
+        planned_is_blocked = context["plannedBreachesCore"] or (
+            max_allowed_qty > 0 and context["plannedSellQty"] > max_allowed_qty
+        )
+        suffix = f"；但 {_pct_point_text(context['plannedSellPct'])} 计划会被纪律门禁阻止。" if planned_is_blocked else "。"
         actions.append(
-            f"把计划卖出比例改为 {_pct_point_text(context['actualSellPct'])}，或把卖出数量改到约 {planned_qty} 股。"
+            f"请将计划卖出比例改为 {_pct_point_text(context['actualSellPct'])}，或将数量改为与 {_pct_point_text(context['plannedSellPct'])} 一致（约 {planned_qty} 股）{suffix}"
         )
     if max_allowed_qty > 0 and context["sellQty"] > max_allowed_qty:
         actions.append(f"把本次卖出数量降到不超过 {max_allowed_qty} 股。")
-    if context["breachesCore"]:
+    if max_allowed_qty > 0 and context["plannedSellQty"] > max_allowed_qty:
+        actions.append(f"把计划卖出比例降到不超过 {_pct_point_text(max_allowed_qty / context['currentQty'] if context['currentQty'] else 0)}。")
+    if context["actualBreachesCore"] or context["plannedBreachesCore"]:
         actions.append(f"至少保留 {_quantity_text(context['coreMinQty'])} 股 A 类核心仓。")
     if "reentry_plan_required_before_trim_or_sell" in {str(item) for item in (getattr(result, "blockers", []) or [])}:
         actions.append("补全回踩买回价、不跌反涨买回价和时间止损。")
