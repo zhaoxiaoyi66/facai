@@ -14,6 +14,7 @@ from data.decision_log import (
     refresh_decision_outcomes,
 )
 from data.trading_discipline import evaluate_trading_discipline
+from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
 
@@ -102,6 +103,7 @@ def render() -> None:
     outcome_store = DecisionOutcomeStore()
     error_tag_store = DecisionErrorTagStore()
     _render_notice()
+    _render_weekly_discipline_summary()
     st.markdown('<div class="trade-workbench-section">交易记录</div>', unsafe_allow_html=True)
     toolbar_cols = st.columns([3.8, 1])
     toolbar_cols[0].markdown(
@@ -298,6 +300,76 @@ def _render_notice() -> None:
         st.success(message)
     else:
         st.error(message)
+
+
+def _render_weekly_discipline_summary() -> None:
+    try:
+        summary = build_trading_discipline_summary()
+    except Exception:
+        st.markdown(
+            '<section class="weekly-discipline-strip neutral"><div><strong>本周交易纪律</strong><span>暂时无法读取交易纪律统计。</span></div></section>',
+            unsafe_allow_html=True,
+        )
+        return
+    level = str(summary.get("overTradingLevel") or "normal")
+    headline = {
+        "normal": "纪律正常",
+        "caution": "本周操作偏多，注意是否焦虑驱动",
+        "danger": "交易纪律风险高，建议暂停非必要操作",
+    }.get(level, "纪律正常")
+    metrics = [
+        ("本周交易", summary.get("totalTradesThisWeek", 0)),
+        ("sell / trim", summary.get("sellTrimCountThisWeek", 0)),
+        ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
+        ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
+        ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
+        ("blocker", summary.get("disciplineBlockerCount", 0)),
+        ("warning", summary.get("disciplineWarningCount", 0)),
+    ]
+    metric_html = "".join(
+        f"<div><span>{escape(label)}</span><b>{escape(str(value))}</b></div>"
+        for label, value in metrics
+    )
+    warnings = [str(item) for item in (summary.get("warnings") or []) if str(item).strip()]
+    warning_html = "".join(f"<li>{escape(item)}</li>" for item in warnings[:3])
+    warning_block = f"<ul>{warning_html}</ul>" if warning_html else "<em>暂无纪律风险提醒。</em>"
+    period = f"{summary.get('periodStart') or ''} - {summary.get('periodEnd') or ''}".strip(" -")
+    st.markdown(
+        f"""
+        <section class="weekly-discipline-strip {escape(_weekly_discipline_tone(level))}">
+          <div class="weekly-discipline-head">
+            <div>
+              <span>本周交易纪律</span>
+              <strong>{escape(headline)}</strong>
+              <em>{escape(period)}</em>
+            </div>
+            <b>{escape(_over_trading_level_text(level))}</b>
+          </div>
+          <div class="weekly-discipline-grid">{metric_html}</div>
+          <div class="weekly-discipline-reminder">
+            <strong>{escape(str(summary.get("reminderText") or ""))}</strong>
+            {warning_block}
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _weekly_discipline_tone(level: str) -> str:
+    return {
+        "normal": "normal",
+        "caution": "caution",
+        "danger": "danger",
+    }.get(str(level or ""), "normal")
+
+
+def _over_trading_level_text(level: str) -> str:
+    return {
+        "normal": "正常",
+        "caution": "注意",
+        "danger": "危险",
+    }.get(str(level or ""), "正常")
 
 
 def _load_entries(store: TradeJournalStore, symbols: list[str]) -> list[dict]:
@@ -1378,6 +1450,109 @@ def _render_styles() -> None:
         }
         .trade-workbench-section.replay {
             margin-top: 1rem;
+        }
+        .weekly-discipline-strip {
+            margin: 0.65rem 0 0.82rem;
+            padding: 0.62rem 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-left: 3px solid #4f9d78;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.025);
+        }
+        .weekly-discipline-strip.caution {
+            border-left-color: #c59a32;
+            background: linear-gradient(90deg, rgba(197, 154, 50, 0.055), rgba(255, 255, 255, 0.82) 42%);
+        }
+        .weekly-discipline-strip.danger {
+            border-left-color: #b85c50;
+            background: linear-gradient(90deg, rgba(184, 92, 80, 0.06), rgba(255, 255, 255, 0.82) 42%);
+        }
+        .weekly-discipline-head {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            gap: 0.7rem;
+            margin-bottom: 0.48rem;
+        }
+        .weekly-discipline-head span,
+        .weekly-discipline-grid span {
+            display: block;
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 760;
+            line-height: 1.2;
+        }
+        .weekly-discipline-head strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0f172a;
+            font-size: 0.92rem;
+            font-weight: 840;
+            line-height: 1.25;
+        }
+        .weekly-discipline-head em {
+            display: block;
+            margin-top: 0.1rem;
+            color: #94a3b8;
+            font-size: 0.66rem;
+            font-style: normal;
+            font-weight: 650;
+        }
+        .weekly-discipline-head > b {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 0 0.55rem;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.045);
+            color: #334155;
+            font-size: 0.7rem;
+            font-weight: 820;
+            white-space: nowrap;
+        }
+        .weekly-discipline-grid {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            border: 1px solid rgba(15, 23, 42, 0.055);
+            border-radius: 7px;
+            overflow: hidden;
+            background: rgba(248, 250, 252, 0.72);
+        }
+        .weekly-discipline-grid div {
+            padding: 0.42rem 0.5rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.055);
+        }
+        .weekly-discipline-grid div:last-child {
+            border-right: 0;
+        }
+        .weekly-discipline-grid b {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0f172a;
+            font-size: 0.96rem;
+            font-weight: 860;
+            line-height: 1.1;
+        }
+        .weekly-discipline-reminder {
+            margin-top: 0.48rem;
+            color: #475569;
+            font-size: 0.74rem;
+            line-height: 1.38;
+        }
+        .weekly-discipline-reminder > strong {
+            display: block;
+            color: #334155;
+            font-size: 0.76rem;
+            font-weight: 760;
+        }
+        .weekly-discipline-reminder ul {
+            margin: 0.24rem 0 0;
+            padding-left: 1rem;
+        }
+        .weekly-discipline-reminder em {
+            color: #7b8798;
+            font-style: normal;
         }
         .trade-journal-refresh-note {
             display: flex;

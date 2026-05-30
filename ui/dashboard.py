@@ -39,6 +39,7 @@ from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
+from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.total_score import calculate_total_score
@@ -250,6 +251,7 @@ def render() -> None:
     _render_record_signal_notice()
 
     _render_market_strip(table)
+    _render_weekly_discipline_strip()
     _render_data_health_strip(table)
     portfolio_view = build_portfolio_view_model()
     _render_dashboard_risk_radar(build_dashboard_risk_radar(table, portfolio_view))
@@ -573,6 +575,59 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     ]
     cards = "".join(_market_stat_html(label, value, detail) for label, value, detail in metrics)
     st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
+
+
+def _render_weekly_discipline_strip() -> None:
+    try:
+        summary = build_trading_discipline_summary()
+    except Exception:
+        return
+    level = str(summary.get("overTradingLevel") or "normal")
+    items = [
+        ("本周交易", summary.get("totalTradesThisWeek", 0)),
+        ("sell / trim", summary.get("sellTrimCountThisWeek", 0)),
+        ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
+        ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
+        ("无回补", summary.get("noReentryPlanSellCount", 0)),
+        ("blocker", summary.get("disciplineBlockerCount", 0)),
+    ]
+    item_html = "".join(
+        f'<span>{escape(label)} {escape(str(value))}</span>'
+        for label, value in items
+    )
+    headline = {
+        "normal": "纪律正常",
+        "caution": "本周操作偏多，注意是否焦虑驱动",
+        "danger": "交易纪律风险高，建议暂停非必要操作",
+    }.get(level, "纪律正常")
+    st.markdown(
+        (
+            f'<section class="dashboard-discipline-strip {escape(_dashboard_discipline_tone(level))}">'
+            '<div class="dashboard-discipline-main-row">'
+            f'<div class="dashboard-discipline-title"><strong>本周交易纪律：{escape(_dashboard_discipline_level_text(level))}</strong><span>{escape(headline)}</span></div>'
+            f'<div class="dashboard-discipline-metrics">{item_html}</div>'
+            '<div class="dashboard-discipline-detail-label">详情在交易日志</div>'
+            "</div>"
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _dashboard_discipline_tone(level: str) -> str:
+    return {
+        "normal": "ok",
+        "caution": "warning",
+        "danger": "error",
+    }.get(str(level or ""), "ok")
+
+
+def _dashboard_discipline_level_text(level: str) -> str:
+    return {
+        "normal": "正常",
+        "caution": "注意",
+        "danger": "危险",
+    }.get(str(level or ""), "正常")
 
 
 def _render_data_health_strip(table: pd.DataFrame) -> None:
@@ -3265,6 +3320,7 @@ def _render_dashboard_styles() -> None:
         .terminal-refresh-card,
         .terminal-loading-shell,
         .market-ribbon,
+        .dashboard-discipline-strip,
         .dashboard-risk-radar,
         .decision-terminal-head,
         .dashboard-priority-strip,
@@ -3348,6 +3404,102 @@ def _render_dashboard_styles() -> None:
             color:#94A3B8;
             font-size:11px;
             line-height:1.2;
+        }
+        .dashboard-discipline-strip {
+            display:block;
+            margin:0 0 0.42rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-left:2px solid #16A34A;
+            border-radius:7px;
+            background:#FFFFFF;
+            overflow:hidden;
+        }
+        .dashboard-discipline-main-row {
+            display:grid;
+            grid-template-columns:158px minmax(0, 1fr) 132px;
+            gap:0;
+            align-items:stretch;
+            min-height:34px;
+        }
+        .dashboard-discipline-strip.ok {
+            border-left-color:#16A34A;
+            background:#FCFEFC;
+        }
+        .dashboard-discipline-strip.warning {
+            border-left-color:#D97706;
+            background:#FFFDF8;
+        }
+        .dashboard-discipline-strip.error {
+            border-left-color:#DC2626;
+            background:#FFFCFC;
+        }
+        .dashboard-discipline-title {
+            display:grid;
+            align-content:center;
+            gap:0.08rem;
+            padding:0.3rem 0.54rem;
+            border-right:1px solid rgba(15, 23, 42, 0.045);
+        }
+        .dashboard-discipline-strip.ok .dashboard-discipline-title {
+            background:#F6FBF7;
+        }
+        .dashboard-discipline-strip.warning .dashboard-discipline-title {
+            background:#FFFAF0;
+        }
+        .dashboard-discipline-strip.error .dashboard-discipline-title {
+            background:#FEF4F4;
+        }
+        .dashboard-discipline-title strong {
+            color:#0F172A;
+            font-size:11.5px;
+            line-height:1.15;
+            font-weight:760;
+        }
+        .dashboard-discipline-title span {
+            color:#64748B;
+            font-size:9.5px;
+            line-height:1.2;
+            font-weight:560;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .dashboard-discipline-metrics {
+            display:flex;
+            align-items:center;
+            gap:0;
+            min-width:0;
+            overflow:hidden;
+            background:rgba(255, 255, 255, 0.72);
+        }
+        .dashboard-discipline-metrics span {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:0;
+            margin:0.25rem 0 0.25rem 0.4rem;
+            height:18px;
+            padding:0 0.36rem;
+            border:1px solid rgba(148, 163, 184, 0.15);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:10px;
+            line-height:18px;
+            font-weight:680;
+            white-space:nowrap;
+        }
+        .dashboard-discipline-detail-label {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100%;
+            border-left:1px solid rgba(15, 23, 42, 0.05);
+            color:#64748B;
+            font-size:10px;
+            line-height:1.2;
+            font-weight:700;
+            white-space:nowrap;
         }
         .data-health-strip {
             display:block;

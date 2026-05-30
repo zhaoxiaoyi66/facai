@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+from data.decision_log import TradeJournalStore
+from data.prices import CACHE_PATH
+
+
+SELL_TRIM_ACTIONS = {"sell", "trim"}
+LEVEL_ORDER = {"normal": 0, "caution": 1, "danger": 2}
+
+
+@dataclass(frozen=True)
+class TradingDisciplineStatsSummary:
+    periodStart: str
+    periodEnd: str
+    totalTradesThisWeek: int
+    sellTrimCountThisWeek: int
+    aClassSellCountThisWeek: int
+    macroSellCountThisWeek: int
+    noReentryPlanSellCount: int
+    disciplineBlockerCount: int
+    disciplineWarningCount: int
+    overTradingLevel: str
+    warnings: list[str]
+    reminderText: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def build_trading_discipline_stats(
+    path: Path = CACHE_PATH,
+    current_date: date | str | None = None,
+) -> dict[str, Any]:
+    current = _parse_date(current_date) or date.today()
+    period_start = current.fromordinal(current.toordinal() - current.weekday())
+    entries = [
+        entry
+        for entry in TradeJournalStore(path).list_entries()
+        if _entry_in_period(entry, period_start, current)
+    ]
+    sell_trim_entries = [entry for entry in entries if str(entry.get("action_type") or "").lower() in SELL_TRIM_ACTIONS]
+    a_class_sells = [
+        entry
+        for entry in sell_trim_entries
+        if str(entry.get("position_class") or "").strip().upper() == "A"
+    ]
+    macro_sells = [
+        entry
+        for entry in sell_trim_entries
+        if str(entry.get("sell_reason_type") or "").strip().lower() == "macro"
+    ]
+    no_reentry_sells = [
+        entry
+        for entry in sell_trim_entries
+        if _has_discipline_snapshot(entry) and _is_false(entry.get("has_reentry_plan"))
+    ]
+    blocker_entries = [
+        entry
+        for entry in sell_trim_entries
+        if _json_list(entry.get("blockers"), entry.get("blockers_json"))
+    ]
+    warning_entries = [
+        entry
+        for entry in sell_trim_entries
+        if _json_list(entry.get("warnings"), entry.get("warnings_json"))
+    ]
+
+    warnings: list[str] = []
+    level = "normal"
+    total_count = len(entries)
+    if total_count > 10:
+        level = _max_level(level, "danger")
+        warnings.append("本周交易次数超过 10 次，已进入焦虑交易危险区。")
+    elif total_count > 5:
+        level = _max_level(level, "caution")
+        warnings.append("本周交易次数超过 5 次，进入操作频率警戒区。")
+    if len(a_class_sells) > 1:
+        level = _max_level(level, "danger")
+        warnings.append("A 类股票本周 sell / trim 超过 1 次，需暂停复核核心仓纪律。")
+    if macro_sells:
+        level = _max_level(level, "caution")
+        warnings.append("本周存在宏观原因 sell / trim，宏观风险只能降低总仓，不能单独清仓强个股。")
+    if no_reentry_sells:
+        level = _max_level(level, "danger")
+        warnings.append("本周存在无回补计划的 sell / trim，需停止高抛低吸式操作。")
+    if blocker_entries:
+        level = _max_level(level, "danger")
+        warnings.append("本周存在纪律 blocker 的 sell / trim，需先处理阻断项再行动。")
+
+    summary = TradingDisciplineStatsSummary(
+        periodStart=period_start.isoformat(),
+        periodEnd=current.isoformat(),
+        totalTradesThisWeek=total_count,
+        sellTrimCountThisWeek=len(sell_trim_entries),
+        aClassSellCountThisWeek=len(a_class_sells),
+        macroSellCountThisWeek=len(macro_sells),
+        noReentryPlanSellCount=len(no_reentry_sells),
+        disciplineBlockerCount=len(blocker_entries),
+        disciplineWarningCount=len(warning_entries),
+        overTradingLevel=level,
+        warnings=warnings,
+        reminderText=_reminder_text(level),
+    )
+    return summary.to_dict()
+
+
+def build_trading_discipline_summary(
+    path: Path = CACHE_PATH,
+    current_date: date | str | None = None,
+) -> dict[str, Any]:
+    return build_trading_discipline_stats(path, current_date)
+
+
+def _entry_in_period(entry: dict, period_start: date, period_end: date) -> bool:
+    trade_date = _parse_date(entry.get("trade_date"))
+    return bool(trade_date is not None and period_start <= trade_date <= period_end)
+
+
+def _has_discipline_snapshot(entry: dict) -> bool:
+    return bool(str(entry.get("discipline_status") or "").strip())
+
+
+def _is_false(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
+    return str(value).strip().lower() in {"0", "false", "no", "n", "off"}
+
+
+def _json_list(list_value: object, json_value: object) -> list:
+    if isinstance(list_value, list):
+        return list_value
+    if list_value:
+        return [list_value]
+    if not json_value:
+        return []
+    try:
+        import json
+
+        parsed = json.loads(str(json_value))
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else [parsed]
+
+
+def _parse_date(value: date | str | object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _max_level(current: str, candidate: str) -> str:
+    return candidate if LEVEL_ORDER.get(candidate, 0) > LEVEL_ORDER.get(current, 0) else current
+
+
+def _reminder_text(level: str) -> str:
+    if level == "danger":
+        return "本周纪律风险偏高，建议暂停新增 sell / trim，先复核 thesis、核心仓和回补计划。"
+    if level == "caution":
+        return "本周操作频率或卖出理由需要降速，先确认是否属于焦虑式操作。"
+    return "本周交易纪律正常，继续保持低频、高质量操作。"
