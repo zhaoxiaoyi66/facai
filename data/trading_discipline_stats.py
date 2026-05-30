@@ -11,6 +11,8 @@ from data.prices import CACHE_PATH
 
 SELL_TRIM_ACTIONS = {"sell", "trim"}
 LEVEL_ORDER = {"normal": 0, "caution": 1, "danger": 2}
+NOW_STYLE_RISK_BLOCKER = "now_style_error_risk"
+NOW_STYLE_RISK_TEXT_PREFIX = "NOW 式错误风险"
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class TradingDisciplineStatsSummary:
     noReentryPlanSellCount: int
     disciplineBlockerCount: int
     disciplineWarningCount: int
+    nowStyleRiskCount: int
     fomoTradeCount: int
     anxietyPanicTradeCount: int
     revengeTradeCount: int
@@ -73,6 +76,11 @@ def build_trading_discipline_stats(
         for entry in sell_trim_entries
         if _json_list(entry.get("warnings"), entry.get("warnings_json"))
     ]
+    now_style_risk_entries = [
+        entry
+        for entry in sell_trim_entries
+        if _has_now_style_risk(entry)
+    ]
     fomo_entries = _mood_entries(entries, {"fomo"})
     anxiety_panic_entries = _mood_entries(entries, {"anxiety", "macro_fear", "panic_sell"})
     revenge_entries = _mood_entries(entries, {"revenge_trade"})
@@ -100,6 +108,10 @@ def build_trading_discipline_stats(
         level = _max_level(level, "danger")
         warnings.append("本周存在纪律 blocker 的 sell / trim，需先处理阻断项再行动。")
 
+    if now_style_risk_entries:
+        level = _max_level(level, "danger")
+        warnings.append("本周出现 NOW 式错误风险，建议暂停非必要卖出。")
+
     summary = TradingDisciplineStatsSummary(
         periodStart=period_start.isoformat(),
         periodEnd=current.isoformat(),
@@ -110,6 +122,7 @@ def build_trading_discipline_stats(
         noReentryPlanSellCount=len(no_reentry_sells),
         disciplineBlockerCount=len(blocker_entries),
         disciplineWarningCount=len(warning_entries),
+        nowStyleRiskCount=len(now_style_risk_entries),
         fomoTradeCount=len(fomo_entries),
         anxietyPanicTradeCount=len(anxiety_panic_entries),
         revengeTradeCount=len(revenge_entries),
@@ -143,6 +156,14 @@ def _mood_entries(entries: list[dict], moods: set[str]) -> list[dict]:
         for entry in entries
         if str(entry.get("decision_mood") or "").strip().lower() in moods
     ]
+
+
+def _has_now_style_risk(entry: dict) -> bool:
+    blockers = [str(item) for item in _json_list(entry.get("blockers"), entry.get("blockers_json"))]
+    warnings = [str(item) for item in _json_list(entry.get("warnings"), entry.get("warnings_json"))]
+    return NOW_STYLE_RISK_BLOCKER in blockers or any(
+        NOW_STYLE_RISK_TEXT_PREFIX in warning for warning in warnings
+    )
 
 
 def _is_false(value: object) -> bool:

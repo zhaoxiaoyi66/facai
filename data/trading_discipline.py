@@ -10,6 +10,12 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "trading_discipli
 HOLD_ACTIONS = {"", "hold", "none", "watch"}
 SELL_ACTIONS = {"sell", "trim"}
 REENTRY_REQUIRED_REASONS = {"technical", "valuation"}
+NOW_STYLE_RISK_BLOCKER = "now_style_error_risk"
+NOW_STYLE_RISK_TEXT = (
+    "NOW 式错误风险：A 类核心股在 thesis 未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。"
+    "若你不愿右侧追回，就不能全卖低位买到的好公司。"
+)
+NOW_STYLE_RISK_MOODS = {"anxiety", "macro_fear", "panic_sell", "焦虑", "宏观恐慌", "恐慌卖出"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -80,6 +86,8 @@ def evaluate_trading_discipline(
     thesisBroken: bool,
     positionOverLimit: bool,
     hasReentryPlan: bool,
+    decisionMood: str | None = None,
+    emotionTags: list[str] | str | None = None,
     config: dict[str, Any] | None = None,
 ) -> TradingDisciplineResult:
     rules = config or load_trading_discipline_config()
@@ -134,6 +142,16 @@ def evaluate_trading_discipline(
         blockers.append("reentry_plan_required_before_trim_or_sell")
     if planned_sell_pct > max_allowed_sell_pct + 1e-9:
         blockers.append("planned_sell_pct_exceeds_sell_level_limit")
+    if (
+        position_class == "A"
+        and planned_action in SELL_ACTIONS
+        and not thesisBroken
+        and _has_now_style_risk_mood(decisionMood, emotionTags)
+    ):
+        if touches_core:
+            blockers.append(NOW_STYLE_RISK_BLOCKER)
+        else:
+            warnings.append(NOW_STYLE_RISK_TEXT)
 
     if sell_reason == "valuation":
         warnings.append("估值偏贵只能作为减交易仓提示，不能替代投资逻辑破裂。")
@@ -183,6 +201,23 @@ def _within_core_gain_freeze(unrealized_gain_pct: float, class_rules: dict[str, 
     low = _number(class_rules.get("forbid_core_sale_gain_low_pct"), 0.0)
     high = _number(class_rules.get("forbid_core_sale_gain_high_pct"), 0.0)
     return high > low and low <= unrealized_gain_pct <= high
+
+
+def _has_now_style_risk_mood(decision_mood: str | None, emotion_tags: list[str] | str | None) -> bool:
+    values: list[str] = []
+    if decision_mood:
+        values.append(str(decision_mood))
+    if isinstance(emotion_tags, str):
+        values.append(emotion_tags)
+    elif emotion_tags:
+        values.extend(str(item) for item in emotion_tags)
+    for value in values:
+        normalized = value.strip().lower()
+        if normalized in NOW_STYLE_RISK_MOODS:
+            return True
+        if any(token in normalized for token in NOW_STYLE_RISK_MOODS if not token.isascii()):
+            return True
+    return False
 
 
 def _reminder_text(symbol: str, position_class: str, sell_level: str, status: str, planned_sell_pct: float) -> str:

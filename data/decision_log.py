@@ -16,6 +16,7 @@ from data.trading_discipline import evaluate_trading_discipline
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
 DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
+CLASSIFICATION_ACTION_TYPES = {"buy", "add"}
 DECISION_MOOD_TYPES = {
     "well_reasoned",
     "plan_execution",
@@ -42,6 +43,9 @@ DECISION_ERROR_TAGS = {
 TRADE_DISCIPLINE_COLUMNS = {
     "decision_mood": "TEXT",
     "position_class": "TEXT",
+    "core_position_min_pct": "REAL",
+    "trading_position_max_pct": "REAL",
+    "classification_note": "TEXT",
     "planned_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
     "sell_level": "TEXT",
@@ -323,6 +327,9 @@ class TradeJournalStore:
                     notes,
                     decision_mood,
                     position_class,
+                    core_position_min_pct,
+                    trading_position_max_pct,
+                    classification_note,
                     planned_sell_pct,
                     sell_reason_type,
                     sell_level,
@@ -339,7 +346,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -354,6 +361,9 @@ class TradeJournalStore:
                     cleaned["notes"],
                     cleaned["decision_mood"],
                     cleaned["position_class"],
+                    cleaned["core_position_min_pct"],
+                    cleaned["trading_position_max_pct"],
+                    cleaned["classification_note"],
                     cleaned["planned_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_level"],
@@ -394,6 +404,9 @@ class TradeJournalStore:
                     notes = ?,
                     decision_mood = ?,
                     position_class = ?,
+                    core_position_min_pct = ?,
+                    trading_position_max_pct = ?,
+                    classification_note = ?,
                     planned_sell_pct = ?,
                     sell_reason_type = ?,
                     sell_level = ?,
@@ -423,6 +436,9 @@ class TradeJournalStore:
                     cleaned["notes"],
                     cleaned["decision_mood"],
                     cleaned["position_class"],
+                    cleaned["core_position_min_pct"],
+                    cleaned["trading_position_max_pct"],
+                    cleaned["classification_note"],
                     cleaned["planned_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_level"],
@@ -895,10 +911,31 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
 
 def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:
     empty = _empty_trade_discipline_snapshot()
-    if action_type not in DISCIPLINE_ACTION_TYPES:
+    if action_type not in DISCIPLINE_ACTION_TYPES | CLASSIFICATION_ACTION_TYPES:
         return empty
 
-    position_class = _clean_text(_value(values, "positionClass", "position_class")) or "C"
+    position_class = _clean_position_class(_value(values, "positionClass", "position_class"))
+    core_position_min_pct = _optional_ratio(
+        _value(values, "corePositionMinPct", "core_position_min_pct", "corePositionPct", "core_position_pct"),
+        "core_position_min_pct",
+    )
+    trading_position_max_pct = _optional_ratio(
+        _value(values, "tradingPositionMaxPct", "trading_position_max_pct", "tradingPositionPct", "trading_position_pct"),
+        "trading_position_max_pct",
+    )
+    classification_note = _clean_text(_value(values, "classificationNote", "classification_note"))
+
+    if action_type in CLASSIFICATION_ACTION_TYPES:
+        empty.update(
+            {
+                "position_class": position_class or None,
+                "core_position_min_pct": core_position_min_pct,
+                "trading_position_max_pct": trading_position_max_pct,
+                "classification_note": classification_note,
+            }
+        )
+        return empty
+
     planned_sell_pct = _optional_ratio(_value(values, "plannedSellPct", "planned_sell_pct"), "planned_sell_pct")
     if planned_sell_pct is None:
         planned_sell_pct = 0.0
@@ -910,9 +947,9 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
 
     result = evaluate_trading_discipline(
         symbol=symbol,
-        positionClass=position_class,
-        corePositionPct=_optional_ratio(_value(values, "corePositionPct", "core_position_pct"), "core_position_pct"),
-        tradingPositionPct=_optional_ratio(_value(values, "tradingPositionPct", "trading_position_pct"), "trading_position_pct"),
+        positionClass=position_class or "C",
+        corePositionPct=core_position_min_pct,
+        tradingPositionPct=trading_position_max_pct,
         unrealizedGainPct=_optional_ratio(_value(values, "unrealizedGainPct", "unrealized_gain_pct"), "unrealized_gain_pct"),
         plannedAction=action_type,
         plannedSellPct=planned_sell_pct,
@@ -920,10 +957,14 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
         thesisBroken=thesis_broken,
         positionOverLimit=position_over_limit,
         hasReentryPlan=has_reentry_plan,
+        decisionMood=_clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
     )
 
     return {
-        "position_class": position_class.upper(),
+        "position_class": position_class or None,
+        "core_position_min_pct": core_position_min_pct,
+        "trading_position_max_pct": trading_position_max_pct,
+        "classification_note": classification_note,
         "planned_sell_pct": planned_sell_pct,
         "sell_reason_type": sell_reason_type,
         "sell_level": result.sellLevel,
@@ -944,6 +985,9 @@ def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict
 def _empty_trade_discipline_snapshot() -> dict:
     return {
         "position_class": None,
+        "core_position_min_pct": None,
+        "trading_position_max_pct": None,
+        "classification_note": "",
         "planned_sell_pct": None,
         "sell_reason_type": None,
         "sell_level": None,
@@ -1471,6 +1515,11 @@ def _clean_text(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _clean_position_class(value) -> str:
+    text = _clean_text(value).upper()
+    return text if text in {"A", "B", "C"} else ""
 
 
 def _clean_optional_text(value) -> str | None:

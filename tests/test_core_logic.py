@@ -3405,6 +3405,10 @@ class ScoringTests(unittest.TestCase):
                 {
                     "target_position_pct": "8",
                     "planned_position_pct": "3",
+                    "position_class": "A",
+                    "core_position_min_pct": "60",
+                    "trading_position_max_pct": "40",
+                    "classification_note": "long-term core",
                     "first_buy_price": "420",
                     "second_buy_price": "390",
                     "third_buy_price": "",
@@ -3426,6 +3430,10 @@ class ScoringTests(unittest.TestCase):
             loaded = store.get_plan("NOW")
 
             self.assertEqual(saved["target_position_pct"], 8)
+            self.assertEqual(loaded["position_class"], "A")
+            self.assertEqual(loaded["core_position_min_pct"], 60)
+            self.assertEqual(loaded["trading_position_max_pct"], 40)
+            self.assertEqual(loaded["classification_note"], "long-term core")
             self.assertEqual(loaded["tranche_buy_high"], 430)
             self.assertEqual(loaded["heavy_buy_below"], 360)
             self.assertEqual(loaded["invalidation_condition"], "增长明显失速")

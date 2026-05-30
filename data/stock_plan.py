@@ -13,6 +13,8 @@ from data.prices import CACHE_PATH
 NUMERIC_PLAN_FIELDS = [
     "target_position_pct",
     "planned_position_pct",
+    "core_position_min_pct",
+    "trading_position_max_pct",
     "first_buy_price",
     "second_buy_price",
     "third_buy_price",
@@ -25,6 +27,8 @@ NUMERIC_PLAN_FIELDS = [
 ]
 
 TEXT_PLAN_FIELDS = [
+    "position_class",
+    "classification_note",
     "stop_adding_condition",
     "invalidation_condition",
     "earnings_review_points",
@@ -97,7 +101,9 @@ class StockPlanStore:
         for field in NUMERIC_PLAN_FIELDS:
             cleaned[field] = _to_number(values.get(field))
         for field in TEXT_PLAN_FIELDS:
-            if field == "buy_plan_tranches_json":
+            if field == "position_class":
+                cleaned[field] = _clean_position_class(values.get(field, values.get("positionClass")))
+            elif field == "buy_plan_tranches_json":
                 cleaned[field] = _clean_json_text(values.get(field, values.get("buy_plan_tranches")))
             else:
                 cleaned[field] = _clean_text(values.get(field))
@@ -159,6 +165,11 @@ def _clean_text(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _clean_position_class(value) -> str:
+    text = _clean_text(value).upper()
+    return text if text in {"A", "B", "C"} else ""
 
 
 def _clean_json_text(value) -> str:

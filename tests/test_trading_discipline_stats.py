@@ -190,3 +190,29 @@ def test_decision_mood_counts_are_included_in_discipline_stats() -> None:
         assert summary["anxietyPanicTradeCount"] == 2
         assert summary["revengeTradeCount"] == 1
         assert summary["reasonedPlanTradeCount"] == 2
+
+
+def test_now_style_risk_count_is_included_in_discipline_stats() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(
+            store,
+            "2026-05-27",
+            "trim",
+            decision_mood="macro_fear",
+            positionClass="A",
+            corePositionPct=0.7,
+            tradingPositionPct=0.3,
+            unrealizedGainPct=0.5,
+            plannedSellPct=0.1,
+            sellReasonType="position_size",
+            thesisBroken=False,
+            positionOverLimit=True,
+            hasReentryPlan=True,
+        )
+
+        summary = _summary(tmpdir)
+
+        assert summary["nowStyleRiskCount"] == 1
+        assert summary["overTradingLevel"] == "danger"
+        assert any("NOW 式错误风险" in warning for warning in summary["warnings"])

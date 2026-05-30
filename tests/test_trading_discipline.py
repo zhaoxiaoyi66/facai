@@ -102,3 +102,29 @@ def test_percent_point_inputs_are_normalized() -> None:
     assert result.disciplineStatus == "warning"
     assert result.maxAllowedSellPct == 0.1
     assert result.blockers == []
+
+
+def test_now_style_risk_blocks_a_class_core_sell_from_anxiety() -> None:
+    result = _evaluate(plannedAction="sell", plannedSellPct=0.4, unrealizedGainPct=0.5, decisionMood="anxiety")
+
+    assert result.disciplineStatus == "blocked"
+    assert "now_style_error_risk" in result.blockers
+
+
+def test_now_style_risk_warns_on_small_a_class_trim_from_macro_fear() -> None:
+    result = _evaluate(plannedAction="trim", plannedSellPct=0.1, decisionMood="macro_fear")
+
+    assert result.disciplineStatus == "warning"
+    assert any("NOW 式错误风险" in warning for warning in result.warnings)
+    assert "now_style_error_risk" not in result.blockers
+
+
+def test_now_style_risk_only_applies_to_a_class_sell_or_trim() -> None:
+    b_class = _evaluate(positionClass="B", plannedSellPct=0.1, decisionMood="panic_sell")
+    buy = _evaluate(plannedAction="buy", plannedSellPct=0.1, decisionMood="anxiety")
+    add = _evaluate(plannedAction="add", plannedSellPct=0.1, decisionMood="anxiety")
+    skip = _evaluate(plannedAction="skip", plannedSellPct=0.1, decisionMood="anxiety")
+
+    for result in (b_class, buy, add, skip):
+        assert "now_style_error_risk" not in result.blockers
+        assert not any("NOW 式错误风险" in warning for warning in result.warnings)

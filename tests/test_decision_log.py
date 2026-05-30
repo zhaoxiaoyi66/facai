@@ -248,6 +248,33 @@ class DecisionLogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save_entry("msft", {"trade_date": "2026-05-28", "action_type": "buy", "decision_mood": "raw_bad"})
 
+    def test_trade_journal_sell_snapshot_saves_now_style_risk(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "now",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "sell",
+                    "quantity": 1,
+                    "price": 700,
+                    "decision_mood": "anxiety",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.5,
+                    "plannedSellPct": 0.4,
+                    "sellReasonType": "technical",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": True,
+                },
+            )
+
+            self.assertIn("now_style_error_risk", saved["blockers"])
+            self.assertIn("now_style_error_risk", json.loads(saved["blockers_json"]))
+
     def test_trade_journal_store_updates_entry_and_recomputes_discipline_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
@@ -368,6 +395,29 @@ class DecisionLogTests(unittest.TestCase):
             self.assertIsNone(skip["planned_sell_pct"])
             self.assertEqual(skip["blockers"], [])
             self.assertEqual(skip["warnings"], [])
+
+    def test_trade_journal_buy_saves_classification_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "positionClass": "A",
+                    "corePositionMinPct": 60,
+                    "tradingPositionMaxPct": 40,
+                    "classificationNote": "core platform",
+                },
+            )
+
+            self.assertEqual(saved["position_class"], "A")
+            self.assertEqual(saved["core_position_min_pct"], 0.6)
+            self.assertEqual(saved["trading_position_max_pct"], 0.4)
+            self.assertEqual(saved["classification_note"], "core platform")
+            self.assertIsNone(saved["discipline_status"])
+            self.assertEqual(saved["blockers"], [])
 
     def test_trade_journal_reads_persisted_discipline_snapshot_without_recomputing(self) -> None:
         with TemporaryDirectory() as tmpdir:

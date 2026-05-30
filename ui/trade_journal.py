@@ -14,6 +14,7 @@ from data.decision_log import (
     refresh_decision_outcomes,
 )
 from data.sell_fly_review import build_sell_fly_review_results
+from data.stock_plan import StockPlanStore
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
@@ -31,6 +32,25 @@ ACTION_OPTIONS = {
 }
 ACTION_LABELS = {value: label for label, value in ACTION_OPTIONS.items()}
 SELL_DISCIPLINE_ACTIONS = {"sell", "trim"}
+CLASSIFICATION_ACTIONS = {"buy", "add"}
+POSITION_CLASS_OPTIONS = {
+    "未分类": "",
+    "A 类核心股": "A",
+    "B 类赔率股": "B",
+    "C 类交易股": "C",
+}
+POSITION_CLASS_COPY = {
+    "": "未设置分类，后续卖出不会自动套 A 类核心仓纪律。",
+    "A": "长期核心，禁止宏观恐慌清仓。",
+    "B": "有逻辑但不做核心，允许波段。",
+    "C": "短线 / 情绪 / 高波动，快进快出。",
+}
+POSITION_CLASS_DEFAULTS = {
+    "A": (0.60, 0.40),
+    "B": (0.00, 1.00),
+    "C": (0.00, 1.00),
+    "": (None, None),
+}
 SELL_REASON_OPTIONS = {
     "宏观风险": "macro",
     "技术破位 / 过热": "technical",
@@ -67,6 +87,7 @@ DISCIPLINE_STATUS_COMPACT_LABELS = {
     "hold": "无",
 }
 DISCIPLINE_BLOCKER_LABELS = {
+    "now_style_error_risk": "NOW 式错误风险：A 类核心股在 thesis 未破坏时，不应因宏观恐慌或情绪压力卖出核心仓。若你不愿右侧追回，就不能全卖低位买到的好公司。",
     "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在投资逻辑未破裂时清仓。",
     "a_class_core_sale_blocked_while_gain_0_to_25_pct": "A 类持仓在 0-25% 浮盈区间不建议卖核心仓。",
     "sell_level_does_not_allow_core_sale": "当前卖出等级不允许动核心仓。",
@@ -161,11 +182,14 @@ def _render_editor(store: TradeJournalStore) -> None:
         trade_date = top_cols[2].date_input("日期", value=_entry_date(editing_entry), key=_editor_key("date", editing_id))
         action_type = ACTION_OPTIONS[action_label]
 
+        stock_plan = _load_stock_discipline_profile(symbol)
+
         trade_cols = st.columns([1, 1, 1.2, 1])
         quantity = trade_cols[0].text_input("数量", value=_entry_number_text(editing_entry, "quantity"), key=_editor_key("quantity", editing_id))
         price = trade_cols[1].text_input("价格", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
         mood_default = _decision_mood_label_for_entry(editing_entry)
         mood_label = trade_cols[2].selectbox("交易心理标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
+        decision_mood = DECISION_MOOD_OPTIONS.get(mood_label, "")
         decision_snapshot_id = trade_cols[3].text_input(
             "关联信号 ID（可选）",
             value=_entry_int_text(editing_entry, "decision_snapshot_id"),
@@ -177,8 +201,18 @@ def _render_editor(store: TradeJournalStore) -> None:
         strike_price = option_cols[1].text_input("行权价", value=_entry_number_text(editing_entry, "strike_price"), key=_editor_key("strike", editing_id))
         expiry_date = option_cols[2].text_input("到期日", value=_entry_value(editing_entry, "expiry_date"), placeholder="YYYY-MM-DD", key=_editor_key("expiry", editing_id))
 
+        if action_type in CLASSIFICATION_ACTIONS:
+            _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
+
         if action_type in SELL_DISCIPLINE_ACTIONS:
-            _render_trading_discipline_check(symbol, action_type, editing_entry=editing_entry, key_suffix=str(editing_id or "new"))
+            _render_trading_discipline_check(
+                symbol,
+                action_type,
+                decision_mood=decision_mood,
+                editing_entry=editing_entry,
+                stock_plan=stock_plan,
+                key_suffix=str(editing_id or "new"),
+            )
 
         notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
         button_label = "保存修改" if editing_entry else "保存记录"
@@ -191,11 +225,12 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "premium": premium,
                 "strike_price": strike_price,
                 "expiry_date": expiry_date,
-                "decision_mood": DECISION_MOOD_OPTIONS.get(mood_label, ""),
+                "decision_mood": decision_mood,
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
             }
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
+            entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
             if editing_entry:
                 _update_entry(store, int(editing_id or 0), symbol, entry_values)
             else:
@@ -205,30 +240,99 @@ def _render_editor(store: TradeJournalStore) -> None:
             st.rerun()
 
 
+def _render_buy_classification_editor(
+    symbol: str,
+    *,
+    editing_entry: dict | None = None,
+    stock_plan: dict | None = None,
+    key_suffix: str = "new",
+) -> None:
+    st.markdown('<div class="trade-discipline-title">股票纪律分类</div>', unsafe_allow_html=True)
+    default_class = _default_position_class(editing_entry, stock_plan)
+    default_label = _position_class_label(default_class)
+    class_key = f"trade-class-position-{key_suffix}"
+    cols = st.columns([1.2, 0.92, 0.92, 1.6], gap="small")
+    class_label = cols[0].selectbox(
+        "股票纪律分类",
+        list(POSITION_CLASS_OPTIONS),
+        index=list(POSITION_CLASS_OPTIONS).index(default_label),
+        key=class_key,
+    )
+    position_class = POSITION_CLASS_OPTIONS.get(class_label, "")
+    core_default, trading_default = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
+    class_key_part = position_class or "none"
+    cols[1].text_input(
+        "核心仓最低 %",
+        value=_ratio_percent_text(core_default),
+        disabled=not position_class,
+        key=f"trade-class-core-min-{key_suffix}-{class_key_part}",
+    )
+    cols[2].text_input(
+        "交易仓上限 %",
+        value=_ratio_percent_text(trading_default),
+        disabled=not position_class,
+        key=f"trade-class-trading-max-{key_suffix}-{class_key_part}",
+    )
+    note_default = _entry_value(editing_entry, "classification_note") or str((stock_plan or {}).get("classification_note") or "")
+    cols[3].text_input(
+        "分类备注",
+        value=note_default,
+        placeholder="例如：核心云平台，除非 thesis 破裂不清仓",
+        key=f"trade-class-note-{key_suffix}",
+    )
+    summary = _classification_summary(position_class)
+    source = "默认来自股票纪律档案，可在本次买入里更新。" if _profile_position_class(stock_plan) else "未找到股票纪律档案，可从本次买入开始建立。"
+    st.markdown(
+        f"""
+        <div class="trade-classification-summary">
+          <strong>{escape(summary)}</strong>
+          <span>{escape(POSITION_CLASS_COPY.get(position_class, POSITION_CLASS_COPY[""]))}</span>
+          <em>{escape(source)}</em>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_trading_discipline_check(
     symbol: str,
     action_type: str,
     *,
+    decision_mood: str | None = None,
     editing_entry: dict | None = None,
+    stock_plan: dict | None = None,
     key_suffix: str = "new",
 ) -> None:
     st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
     cols = st.columns([0.72, 0.92, 1.2, 0.86, 0.86, 0.92], gap="small")
-    position_options = ["A", "B", "C"]
-    position_default = _entry_value(editing_entry, "position_class") or "A"
+    position_default = _default_position_class(editing_entry, stock_plan)
+    position_default_label = _position_class_label(position_default)
     reason_default = _sell_reason_label_for_entry(editing_entry)
-    position_class = cols[0].selectbox("股票分类", position_options, index=position_options.index(position_default) if position_default in position_options else 0, key=f"trade-discipline-position-class-{key_suffix}")
+    position_label = cols[0].selectbox(
+        "股票分类",
+        list(POSITION_CLASS_OPTIONS),
+        index=list(POSITION_CLASS_OPTIONS).index(position_default_label),
+        key=f"trade-discipline-position-class-{key_suffix}",
+    )
+    position_class = POSITION_CLASS_OPTIONS.get(position_label, "")
     planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value=_entry_percent_text(editing_entry, "planned_sell_pct", "10"), key=f"trade-discipline-planned-sell-pct-{key_suffix}")
     reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
     thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
     position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
     has_reentry_plan = cols[5].checkbox("已有回补计划", value=_entry_bool(editing_entry, "has_reentry_plan"), key=f"trade-discipline-has-reentry-plan-{key_suffix}")
+    core_pct, trading_pct = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
+    st.session_state[f"trade-discipline-core-min-{key_suffix}"] = core_pct
+    st.session_state[f"trade-discipline-trading-max-{key_suffix}"] = trading_pct
+    if position_class:
+        st.caption("股票分类默认来自股票纪律档案；本次卖出/减仓仍可临时覆盖。")
+    else:
+        st.caption("未设置分类：本次不会按 A 类核心仓纪律检查，建议先补股票纪律档案。")
 
     result = evaluate_trading_discipline(
         symbol=symbol,
-        positionClass=position_class,
-        corePositionPct=None,
-        tradingPositionPct=None,
+        positionClass=position_class or "C",
+        corePositionPct=core_pct,
+        tradingPositionPct=trading_pct,
         unrealizedGainPct=None,
         plannedAction=action_type,
         plannedSellPct=_parse_optional_float(planned_sell_pct),
@@ -236,6 +340,7 @@ def _render_trading_discipline_check(
         thesisBroken=thesis_broken,
         positionOverLimit=position_over_limit,
         hasReentryPlan=has_reentry_plan,
+        decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
     )
     _render_trading_discipline_result(result)
 
@@ -244,13 +349,29 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
     if action_type not in SELL_DISCIPLINE_ACTIONS:
         return {}
     reason_label = st.session_state.get(f"trade-discipline-sell-reason-{key_suffix}")
+    position_class = _position_class_from_state(f"trade-discipline-position-class-{key_suffix}")
     return {
-        "positionClass": st.session_state.get(f"trade-discipline-position-class-{key_suffix}") or "C",
+        "positionClass": position_class,
+        "corePositionMinPct": st.session_state.get(f"trade-discipline-core-min-{key_suffix}"),
+        "tradingPositionMaxPct": st.session_state.get(f"trade-discipline-trading-max-{key_suffix}"),
         "plannedSellPct": _parse_optional_float(st.session_state.get(f"trade-discipline-planned-sell-pct-{key_suffix}")),
         "sellReasonType": SELL_REASON_OPTIONS.get(str(reason_label or ""), str(reason_label or "")),
         "thesisBroken": bool(st.session_state.get(f"trade-discipline-thesis-broken-{key_suffix}")),
         "positionOverLimit": bool(st.session_state.get(f"trade-discipline-position-over-limit-{key_suffix}")),
         "hasReentryPlan": bool(st.session_state.get(f"trade-discipline-has-reentry-plan-{key_suffix}")),
+    }
+
+
+def _buy_classification_form_values(action_type: str, key_suffix: str = "new") -> dict:
+    if action_type not in CLASSIFICATION_ACTIONS:
+        return {}
+    position_class = _position_class_from_state(f"trade-class-position-{key_suffix}")
+    key_part = position_class or "none"
+    return {
+        "positionClass": position_class,
+        "corePositionMinPct": _parse_optional_float(st.session_state.get(f"trade-class-core-min-{key_suffix}-{key_part}")),
+        "tradingPositionMaxPct": _parse_optional_float(st.session_state.get(f"trade-class-trading-max-{key_suffix}-{key_part}")),
+        "classificationNote": st.session_state.get(f"trade-class-note-{key_suffix}") or "",
     }
 
 
@@ -325,6 +446,101 @@ def _parse_optional_float(value: object) -> float | None:
         return None
 
 
+def _load_stock_discipline_profile(symbol: str) -> dict:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        return {}
+    try:
+        return StockPlanStore().get_plan(ticker)
+    except Exception:
+        return {}
+
+
+def _profile_position_class(stock_plan: dict | None) -> str:
+    value = str((stock_plan or {}).get("position_class") or "").strip().upper()
+    return value if value in {"A", "B", "C"} else ""
+
+
+def _default_position_class(editing_entry: dict | None, stock_plan: dict | None) -> str:
+    entry_class = str((editing_entry or {}).get("position_class") or "").strip().upper()
+    if entry_class in {"A", "B", "C"}:
+        return entry_class
+    return _profile_position_class(stock_plan)
+
+
+def _position_class_label(position_class: str) -> str:
+    value = str(position_class or "").strip().upper()
+    for label, option_value in POSITION_CLASS_OPTIONS.items():
+        if option_value == value:
+            return label
+    return "未分类"
+
+
+def _position_class_from_state(key: str) -> str:
+    value = st.session_state.get(key)
+    text = str(value or "").strip().upper()
+    if text in {"A", "B", "C"}:
+        return text
+    return POSITION_CLASS_OPTIONS.get(str(value or ""), "")
+
+
+def _classification_ratio_defaults(
+    position_class: str,
+    editing_entry: dict | None,
+    stock_plan: dict | None,
+) -> tuple[float | None, float | None]:
+    core_default, trading_default = POSITION_CLASS_DEFAULTS.get(str(position_class or "").upper(), (None, None))
+    core = _number((editing_entry or {}).get("core_position_min_pct"))
+    trading = _number((editing_entry or {}).get("trading_position_max_pct"))
+    if core is None:
+        core = _number((stock_plan or {}).get("core_position_min_pct"))
+    if trading is None:
+        trading = _number((stock_plan or {}).get("trading_position_max_pct"))
+    return (core if core is not None else core_default, trading if trading is not None else trading_default)
+
+
+def _ratio_percent_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    percent = number * 100 if number <= 1 else number
+    return f"{percent:g}"
+
+
+def _classification_summary(position_class: str) -> str:
+    value = str(position_class or "").strip().upper()
+    if value == "A":
+        return "本次买入将该股票设为 A 类核心股，核心仓最低保留 60%。"
+    if value == "B":
+        return "本次买入将该股票设为 B 类赔率股，不设核心仓，按交易仓管理。"
+    if value == "C":
+        return "本次买入将该股票设为 C 类交易股，不设核心仓，快进快出。"
+    return "本次买入不设置股票纪律分类。"
+
+
+def _sync_stock_classification_profile(symbol: str, values: dict) -> None:
+    if str(values.get("action_type") or "").strip().lower() not in CLASSIFICATION_ACTIONS:
+        return
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        return
+    position_class = str(values.get("positionClass") or values.get("position_class") or "").strip().upper()
+    if position_class not in {"A", "B", "C"}:
+        position_class = ""
+    store = StockPlanStore()
+    plan = store.get_plan(ticker)
+    store.save_plan(
+        ticker,
+        {
+            **plan,
+            "position_class": position_class,
+            "core_position_min_pct": values.get("corePositionMinPct", values.get("core_position_min_pct")),
+            "trading_position_max_pct": values.get("tradingPositionMaxPct", values.get("trading_position_max_pct")),
+            "classification_note": values.get("classificationNote", values.get("classification_note", "")),
+        },
+    )
+
+
 def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
     if not str(symbol or "").strip():
         st.session_state["trade_journal_notice"] = ("error", "请填写股票代码。")
@@ -340,6 +556,7 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
         st.rerun()
     try:
         saved = store.save_entry(symbol, values)
+        _sync_stock_classification_profile(saved["symbol"], values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
@@ -362,6 +579,7 @@ def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: 
         st.rerun()
     try:
         saved = store.update_entry(entry_id, symbol, values)
+        _sync_stock_classification_profile(saved["symbol"], values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
@@ -402,6 +620,7 @@ def _render_weekly_discipline_summary() -> None:
         ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
         ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
         ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
+        ("NOW 式风险", summary.get("nowStyleRiskCount", 0)),
         ("blocker", summary.get("disciplineBlockerCount", 0)),
         ("warning", summary.get("disciplineWarningCount", 0)),
         ("FOMO", summary.get("fomoTradeCount", 0)),
@@ -747,7 +966,7 @@ def _entry_detail_html(entry: dict) -> str:
         '<h4>基础信息</h4>'
         f"{base_html}"
         f"{_decision_mood_warning_html(entry)}"
-        '<h4>卖出纪律快照</h4>'
+        '<h4>交易纪律快照</h4>'
         f"{discipline_html}"
         '<h4>备注</h4>'
         f'<p class="trade-entry-detail-note">{notes}</p>'
@@ -757,6 +976,8 @@ def _entry_detail_html(entry: dict) -> str:
 
 def _entry_discipline_snapshot_html(entry: dict) -> str:
     action = str(entry.get("action_type") or "")
+    if action in CLASSIFICATION_ACTIONS:
+        return _classification_snapshot_html(entry)
     if action not in SELL_DISCIPLINE_ACTIONS:
         return '<div class="trade-entry-discipline-empty">无卖出纪律检查。</div>'
     if not entry.get("discipline_status"):
@@ -779,6 +1000,22 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
         f"{blocker_html}"
         f"{warning_html}"
         f'<div class="trade-entry-reminder">{reminder}</div>'
+    )
+
+
+def _classification_snapshot_html(entry: dict) -> str:
+    position_class = str(entry.get("position_class") or "").strip().upper()
+    if position_class not in {"A", "B", "C"}:
+        return '<div class="trade-entry-discipline-empty">本次买入未设置股票纪律分类。</div>'
+    rows = [
+        ("股票分类", _position_class_label(position_class)),
+        ("核心仓最低", _discipline_percent(entry.get("core_position_min_pct"))),
+        ("交易仓上限", _discipline_percent(entry.get("trading_position_max_pct"))),
+        ("分类备注", _text(entry.get("classification_note"))),
+    ]
+    return (
+        f"{_detail_grid_html(rows)}"
+        f'<div class="trade-entry-reminder">{escape(POSITION_CLASS_COPY.get(position_class, ""))}</div>'
     )
 
 
@@ -1500,6 +1737,11 @@ def _entry_delete_action_html(entry: dict) -> str:
 
 def _discipline_snapshot_badge(entry: dict) -> str:
     action = str(entry.get("action_type") or "")
+    if action in CLASSIFICATION_ACTIONS:
+        position_class = str(entry.get("position_class") or "").strip().upper()
+        if position_class in {"A", "B", "C"}:
+            return f'<span class="trade-discipline-pill ok">{escape(position_class + " 类")}</span>'
+        return '<span class="trade-discipline-pill neutral">未分类</span>'
     if action not in SELL_DISCIPLINE_ACTIONS:
         return '<span class="trade-discipline-pill neutral">无</span>'
     status = str(entry.get("discipline_status") or "").strip().lower()
@@ -2870,6 +3112,28 @@ def _render_styles() -> None:
             font-size: 0.76rem;
             font-weight: 760;
             letter-spacing: 0;
+        }
+        .trade-classification-summary {
+            display: grid;
+            grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr) minmax(220px, 1fr);
+            gap: 0.55rem;
+            align-items: center;
+            margin: 0.45rem 0 0.68rem;
+            padding: 0.56rem 0.68rem;
+            border: 1px solid rgba(15, 23, 42, 0.075);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(255, 255, 255, 0.86));
+        }
+        .trade-classification-summary strong {
+            color: #0F172A;
+            font-size: 0.78rem;
+            font-weight: 820;
+        }
+        .trade-classification-summary span,
+        .trade-classification-summary em {
+            color: #64748B;
+            font-size: 0.7rem;
+            font-style: normal;
         }
         .trade-discipline-card {
             margin: 0.45rem 0 0.68rem;
