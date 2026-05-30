@@ -42,6 +42,12 @@ DISCIPLINE_STATUS_LABELS = {
     "blocked": "纪律不建议执行",
     "hold": "无需卖出",
 }
+DISCIPLINE_STATUS_COMPACT_LABELS = {
+    "allowed": "通过",
+    "warning": "警告",
+    "blocked": "阻断",
+    "hold": "无",
+}
 DISCIPLINE_BLOCKER_LABELS = {
     "a_class_core_clear_requires_thesis_break": "A 类核心仓不能在投资逻辑未破裂时清仓。",
     "a_class_core_sale_blocked_while_gain_0_to_25_pct": "A 类持仓在 0-25% 浮盈区间不建议卖核心仓。",
@@ -82,6 +88,7 @@ ERROR_TAG_OPTIONS = {
     "忽略系统警告": "ignored_system_warning",
 }
 ERROR_TAG_LABELS = {value: label for label, value in ERROR_TAG_OPTIONS.items()}
+SELL_REASON_LABELS = {value: label for label, value in SELL_REASON_OPTIONS.items()}
 BLANK_TEXT = "—"
 OUTCOME_HORIZON_DAYS = {"1d": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180}
 
@@ -110,6 +117,7 @@ def render() -> None:
     _render_summary(entries)
     _render_entry_delete_confirmation(store)
     _render_entries(symbols, entries)
+    _render_entry_detail(store)
     _render_signal_replay(decision_store, outcome_store, error_tag_store)
 
 
@@ -141,20 +149,22 @@ def _render_editor(store: TradeJournalStore) -> None:
 
         notes = st.text_area("备注", height=86, key="trade-journal-notes")
         if st.button("保存记录", key="trade-journal-save", width="stretch"):
+            entry_values = {
+                "trade_date": trade_date.isoformat(),
+                "action_type": action_type,
+                "quantity": quantity,
+                "price": price,
+                "premium": premium,
+                "strike_price": strike_price,
+                "expiry_date": expiry_date,
+                "decision_snapshot_id": decision_snapshot_id,
+                "notes": notes,
+            }
+            entry_values.update(_trade_discipline_form_values(action_type))
             _save_entry(
                 store,
                 symbol,
-                {
-                    "trade_date": trade_date.isoformat(),
-                    "action_type": action_type,
-                    "quantity": quantity,
-                    "price": price,
-                    "premium": premium,
-                    "strike_price": strike_price,
-                    "expiry_date": expiry_date,
-                    "decision_snapshot_id": decision_snapshot_id,
-                    "notes": notes,
-                },
+                entry_values,
             )
 
 
@@ -182,6 +192,20 @@ def _render_trading_discipline_check(symbol: str, action_type: str) -> None:
         hasReentryPlan=has_reentry_plan,
     )
     _render_trading_discipline_result(result)
+
+
+def _trade_discipline_form_values(action_type: str) -> dict:
+    if action_type not in SELL_DISCIPLINE_ACTIONS:
+        return {}
+    reason_label = st.session_state.get("trade-discipline-sell-reason")
+    return {
+        "positionClass": st.session_state.get("trade-discipline-position-class") or "C",
+        "plannedSellPct": _parse_optional_float(st.session_state.get("trade-discipline-planned-sell-pct")),
+        "sellReasonType": SELL_REASON_OPTIONS.get(str(reason_label or ""), str(reason_label or "")),
+        "thesisBroken": bool(st.session_state.get("trade-discipline-thesis-broken")),
+        "positionOverLimit": bool(st.session_state.get("trade-discipline-position-over-limit")),
+        "hasReentryPlan": bool(st.session_state.get("trade-discipline-has-reentry-plan")),
+    }
 
 
 def _render_trading_discipline_result(result) -> None:
@@ -328,7 +352,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         )
         return
 
-    headers = ["日期", "股票", "操作", "数量 / 价格", "期权参数", "关联信号", "备注", "操作"]
+    headers = ["日期", "股票", "操作", "纪律", "数量 / 价格", "期权参数", "关联信号", "备注", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     row_html = "".join(_entry_row_html(entry) for entry in entries)
     st.markdown(
@@ -337,8 +361,8 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
             '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
             '<table class="trade-journal-table trade-terminal-table">'
             "<colgroup>"
-            '<col style="width:12%"><col style="width:9%"><col style="width:9%"><col style="width:13%">'
-            '<col style="width:13%"><col style="width:10%"><col style="width:auto"><col style="width:120px">'
+            '<col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:9%">'
+            '<col style="width:12%"><col style="width:12%"><col style="width:9%"><col style="width:auto"><col style="width:132px">'
             "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
@@ -383,6 +407,107 @@ def _render_entry_delete_confirmation(store: TradeJournalStore) -> None:
     if cols[1].button("取消", key=f"trade-entry-delete-cancel-{entry_id}", width="stretch"):
         _clear_trade_delete_query()
         st.rerun()
+
+
+def _render_entry_detail(store: TradeJournalStore) -> None:
+    entry_id = _query_int("viewTrade")
+    if entry_id is None:
+        return
+    entry = store.get_entry(entry_id)
+    if not entry:
+        _clear_trade_detail_query()
+        st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
+        st.rerun()
+
+    st.markdown('<div id="trade-entry-detail"></div>', unsafe_allow_html=True)
+    head_cols = st.columns([4.4, 0.8])
+    head_cols[0].markdown(
+        (
+            '<div class="trade-entry-detail-head">'
+            "<span>交易记录详情</span>"
+            f"<strong>{escape(_entry_delete_summary(entry))}</strong>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    if head_cols[1].button("关闭", key=f"trade-entry-detail-close-{entry_id}", width="stretch"):
+        _clear_trade_detail_query()
+        st.rerun()
+
+    st.markdown(_entry_detail_html(entry), unsafe_allow_html=True)
+
+
+def _entry_detail_html(entry: dict) -> str:
+    base_rows = [
+        ("日期", _text(entry.get("trade_date"))),
+        ("股票", _text(entry.get("symbol"))),
+        ("操作", ACTION_LABELS.get(str(entry.get("action_type") or ""), "未识别")),
+        ("数量", _quantity_text(entry.get("quantity"))),
+        ("价格", _money_text(entry.get("price"))),
+        ("关联信号", _snapshot_text(entry.get("decision_snapshot_id"))),
+    ]
+    base_html = _detail_grid_html(base_rows)
+    discipline_html = _entry_discipline_snapshot_html(entry)
+    notes = escape(_text(entry.get("notes")))
+    return (
+        '<section class="trade-entry-detail-card">'
+        '<h4>基础信息</h4>'
+        f"{base_html}"
+        '<h4>卖出纪律快照</h4>'
+        f"{discipline_html}"
+        '<h4>备注</h4>'
+        f'<p class="trade-entry-detail-note">{notes}</p>'
+        "</section>"
+    )
+
+
+def _entry_discipline_snapshot_html(entry: dict) -> str:
+    action = str(entry.get("action_type") or "")
+    if action not in SELL_DISCIPLINE_ACTIONS:
+        return '<div class="trade-entry-discipline-empty">无卖出纪律检查。</div>'
+    if not entry.get("discipline_status"):
+        return '<div class="trade-entry-discipline-empty">这条历史卖出 / 减仓记录未保存纪律快照。</div>'
+
+    rows = [
+        ("纪律状态", _discipline_status_text(entry.get("discipline_status"))),
+        ("股票分类", _text(entry.get("position_class"))),
+        ("卖出等级", _text(entry.get("sell_level"))),
+        ("计划卖出", _discipline_percent(entry.get("planned_sell_pct"))),
+        ("等级上限", _discipline_percent(entry.get("max_allowed_sell_pct"))),
+        ("卖出原因", _sell_reason_text(entry.get("sell_reason_type"))),
+        ("已有回补计划", _yes_no(entry.get("has_reentry_plan"))),
+    ]
+    blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
+    warning_html = _discipline_detail_messages_html("复核提醒", entry.get("warnings") or [], is_blocker=False)
+    reminder = escape(_text(entry.get("reminder_text")))
+    return (
+        f"{_detail_grid_html(rows)}"
+        f"{blocker_html}"
+        f"{warning_html}"
+        f'<div class="trade-entry-reminder">{reminder}</div>'
+    )
+
+
+def _detail_grid_html(rows: list[tuple[str, str]]) -> str:
+    return (
+        '<div class="trade-entry-detail-grid">'
+        + "".join(
+            "<div>"
+            f"<span>{escape(label)}</span>"
+            f"<strong>{escape(value)}</strong>"
+            "</div>"
+            for label, value in rows
+        )
+        + "</div>"
+    )
+
+
+def _discipline_detail_messages_html(title: str, items: list[object], *, is_blocker: bool) -> str:
+    if not items:
+        return ""
+    class_name = "blockers" if is_blocker else "warnings"
+    rows = "".join(f"<li>{escape(_discipline_message_text(item))}</li>" for item in items)
+    return f'<div class="trade-entry-detail-messages {class_name}"><b>{escape(title)}</b><ul>{rows}</ul></div>'
 
 
 def _render_signal_replay(
@@ -1019,12 +1144,27 @@ def _entry_row_html(entry: dict) -> str:
         f"<td>{_cell_html(_text(entry.get('trade_date')), _created_text(entry))}</td>"
         f'<td class="symbol">{escape(_text(entry.get("symbol")))}</td>'
         f"<td>{_action_badge(entry)}</td>"
+        f"<td>{_discipline_snapshot_badge(entry)}</td>"
         f"<td>{_cell_html(_quantity_text(entry.get('quantity')), _money_text(entry.get('price')))}</td>"
         f"<td>{_option_text(entry)}</td>"
         f"<td>{escape(_snapshot_text(entry.get('decision_snapshot_id')))}</td>"
         f'<td class="notes">{escape(_text(entry.get("notes")))}</td>'
-        f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_delete_action_html(entry)}</span></td>'
+        f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_actions_html(entry)}</span></td>'
         "</tr>"
+    )
+
+
+def _entry_actions_html(entry: dict) -> str:
+    return f"{_entry_detail_action_html(entry)}{_entry_delete_action_html(entry)}"
+
+
+def _entry_detail_action_html(entry: dict) -> str:
+    entry_id = int(entry.get("id") or 0)
+    if entry_id <= 0:
+        return BLANK_TEXT
+    return (
+        f'<a class="trade-entry-detail-link" href="?page=trade-journal&viewTrade={entry_id}#trade-entry-detail" '
+        'target="_self" title="查看这条交易记录详情">详情</a>'
     )
 
 
@@ -1036,6 +1176,35 @@ def _entry_delete_action_html(entry: dict) -> str:
         f'<a class="trade-entry-delete-link" href="?page=trade-journal&deleteTrade={entry_id}#trade-journal-list" '
         'target="_self" title="删除这条交易记录">删除</a>'
     )
+
+
+def _discipline_snapshot_badge(entry: dict) -> str:
+    action = str(entry.get("action_type") or "")
+    if action not in SELL_DISCIPLINE_ACTIONS:
+        return '<span class="trade-discipline-pill neutral">无</span>'
+    status = str(entry.get("discipline_status") or "").strip().lower()
+    if not status:
+        return '<span class="trade-discipline-pill neutral">未保存</span>'
+    tone = _discipline_status_tone(status)
+    label = DISCIPLINE_STATUS_COMPACT_LABELS.get(status, DISCIPLINE_STATUS_LABELS.get(status, status))
+    return f'<span class="trade-discipline-pill {escape(tone)}">{escape(label)}</span>'
+
+
+def _discipline_status_text(value: object) -> str:
+    status = str(value or "").strip().lower()
+    return DISCIPLINE_STATUS_COMPACT_LABELS.get(status, DISCIPLINE_STATUS_LABELS.get(status, status or BLANK_TEXT))
+
+
+def _sell_reason_text(value: object) -> str:
+    reason = str(value or "").strip().lower()
+    return SELL_REASON_LABELS.get(reason, reason or BLANK_TEXT)
+
+
+def _discipline_percent(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return format_percent(number, already_percent=False)
 
 
 def _entry_delete_summary(entry: dict) -> str:
@@ -1143,6 +1312,11 @@ def _query_int(key: str) -> int | None:
 def _clear_trade_delete_query() -> None:
     if "deleteTrade" in st.query_params:
         st.query_params.pop("deleteTrade")
+
+
+def _clear_trade_detail_query() -> None:
+    if "viewTrade" in st.query_params:
+        st.query_params.pop("viewTrade")
 
 
 def _text(value: object) -> str:
@@ -1814,6 +1988,9 @@ def _render_styles() -> None:
             border: 0;
             background: transparent;
             margin: 0 auto;
+            display: inline-flex;
+            justify-content: center;
+            gap: 0.16rem;
         }
         .trade-entry-actions::after {
             content: "";
@@ -1821,7 +1998,9 @@ def _render_styles() -> None:
             vertical-align: middle;
         }
         .trade-entry-delete-link,
-        .trade-entry-delete-link:visited {
+        .trade-entry-delete-link:visited,
+        .trade-entry-detail-link,
+        .trade-entry-detail-link:visited {
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -1837,11 +2016,46 @@ def _render_styles() -> None:
             text-decoration: none !important;
             white-space: nowrap;
         }
-        .trade-entry-delete-link:hover {
+        .trade-entry-delete-link:hover,
+        .trade-entry-detail-link:hover {
             border-color: rgba(15, 23, 42, 0.08);
             background: #FFFFFF;
             color: #0F172A;
             text-decoration: none !important;
+        }
+        .trade-entry-detail-link,
+        .trade-entry-detail-link:visited {
+            color: #2563eb;
+        }
+        .trade-discipline-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 42px;
+            height: 20px;
+            padding: 0 0.45rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 999px;
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 720;
+            white-space: nowrap;
+        }
+        .trade-discipline-pill.ok {
+            border-color: rgba(79, 157, 120, 0.18);
+            background: rgba(79, 157, 120, 0.08);
+            color: #276749;
+        }
+        .trade-discipline-pill.warning {
+            border-color: rgba(181, 106, 50, 0.18);
+            background: rgba(181, 106, 50, 0.08);
+            color: #8A4B00;
+        }
+        .trade-discipline-pill.blocked {
+            border-color: rgba(185, 28, 28, 0.18);
+            background: rgba(254, 226, 226, 0.72);
+            color: #991b1b;
         }
         .trade-delete-confirm {
             display: flex;
@@ -1890,6 +2104,105 @@ def _render_styles() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .trade-entry-detail-head {
+            margin: 0.75rem 0 0.35rem;
+            padding: 0.58rem 0.68rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.82);
+        }
+        .trade-entry-detail-head span {
+            display: block;
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 760;
+        }
+        .trade-entry-detail-head strong {
+            display: block;
+            margin-top: 0.1rem;
+            color: #0f172a;
+            font-size: 0.88rem;
+            font-weight: 840;
+        }
+        .trade-entry-detail-card {
+            margin: 0.35rem 0 0.9rem;
+            padding: 0.65rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #fff;
+        }
+        .trade-entry-detail-card h4 {
+            margin: 0.1rem 0 0.42rem;
+            color: #0f172a;
+            font-size: 0.82rem;
+            font-weight: 840;
+        }
+        .trade-entry-detail-card h4:not(:first-child) {
+            margin-top: 0.72rem;
+        }
+        .trade-entry-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.45rem;
+        }
+        .trade-entry-detail-grid div {
+            min-height: 48px;
+            padding: 0.42rem 0.5rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 6px;
+            background: rgba(248, 250, 252, 0.72);
+        }
+        .trade-entry-detail-grid span {
+            display: block;
+            color: #64748b;
+            font-size: 0.66rem;
+            font-weight: 760;
+        }
+        .trade-entry-detail-grid strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0f172a;
+            font-size: 0.8rem;
+            font-weight: 820;
+            overflow-wrap: anywhere;
+        }
+        .trade-entry-discipline-empty,
+        .trade-entry-reminder,
+        .trade-entry-detail-note {
+            margin: 0;
+            padding: 0.48rem 0.58rem;
+            border: 1px dashed rgba(15, 23, 42, 0.12);
+            border-radius: 6px;
+            background: rgba(248, 250, 252, 0.74);
+            color: #64748b;
+            font-size: 0.76rem;
+        }
+        .trade-entry-reminder {
+            margin-top: 0.45rem;
+            border-style: solid;
+            background: rgba(239, 246, 255, 0.62);
+            color: #334155;
+        }
+        .trade-entry-detail-messages {
+            margin-top: 0.45rem;
+            padding: 0.48rem 0.58rem;
+            border-radius: 6px;
+            font-size: 0.76rem;
+        }
+        .trade-entry-detail-messages.blockers {
+            border: 1px solid rgba(185, 28, 28, 0.15);
+            background: rgba(254, 226, 226, 0.48);
+            color: #991b1b;
+        }
+        .trade-entry-detail-messages.warnings {
+            border: 1px solid rgba(181, 106, 50, 0.15);
+            background: rgba(255, 251, 235, 0.62);
+            color: #8A4B00;
+        }
+        .trade-entry-detail-messages ul {
+            margin: 0.25rem 0 0;
+            padding-left: 1rem;
         }
         .trade-action-badge {
             display: inline-flex;

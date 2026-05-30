@@ -30,6 +30,7 @@ from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui import dashboard as dashboard_ui
+from ui.action_plan_editor import render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
 from ui.metric_labels import (
     action_label,
     confidence_label,
@@ -831,7 +832,7 @@ def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str
     if source == "manual":
         first_buy = _plan_number(plan, "first_buy_price")
         if first_buy is not None:
-            return "估值折价触发价", first_buy
+            return "第一笔买入价", first_buy
     next_price = getattr(active_zone, "nextTriggerPrice", None)
     next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(active_zone.currentPrice, active_zone.to_plan_fields())
     return _buy_zone_trigger_label(next_label), next_price
@@ -839,7 +840,7 @@ def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str
 
 def _buy_zone_trigger_label(value: str) -> str:
     return {
-        "下一买入触发价": "估值折价触发价",
+        "下一买入触发价": "第一笔买入价",
         "已低于重仓区": "已进入极端恐慌区",
     }.get(str(value or ""), str(value or ""))
 
@@ -1093,18 +1094,12 @@ def _render_action_plan_form(
     active_zone: BuyZoneEstimate,
     final_decision=None,
 ) -> None:
-    render_section_title("操作计划", "系统建议，可按需编辑")
+    render_section_title("操作计划", "系统建议只读，我的买入计划可手动覆盖")
     edit_key = f"stock-plan-editing-{ticker}"
-    summary_rows = [
-        ("估值折价触发价", _format_plan_currency(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice))),
-        ("估值折价区下沿", _format_plan_currency(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice))),
-        ("极端恐慌区触发价", _format_plan_currency(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice))),
-        ("停止加仓条件", plan.get("stop_adding_condition") or suggestion.stopAddingCondition),
-        ("财报复核点", plan.get("earnings_review_points") or suggestion.earningsReviewCondition),
-    ]
+    render_plan_reference_card(active_zone, suggestion, final_decision)
     header_cols = st.columns([4, 1])
     with header_cols[0]:
-        st.markdown(_plan_summary_html(summary_rows), unsafe_allow_html=True)
+        render_plan_preview_card(plan, suggestion, active_zone, final_decision)
     with header_cols[1]:
         st.button(
             "编辑计划",
@@ -1117,61 +1112,19 @@ def _render_action_plan_form(
     if not st.session_state.get(edit_key, False):
         return
 
-    with st.form(f"stock-plan-{ticker}"):
-        st.info("有未保存的操作计划变更。保存后将更新顶部下一触发价。")
-        top = st.columns(2)
-        target_position_pct = top[0].text_input(
-            "组合仓位上限 %",
-            value=_number_text(_plan_or_suggestion(plan, "target_position_pct", _final_max_position(None, final_decision, suggestion))),
-        )
-        planned_position_pct = top[1].text_input(
-            "当前新增建议 %",
-            value=_number_text(_plan_or_suggestion(plan, "planned_position_pct", _final_current_add(None, final_decision, suggestion))),
-        )
-
-        buy_cols = st.columns(3)
-        first_buy_price = buy_cols[0].text_input("估值折价触发价", value=_number_text(_plan_or_suggestion(plan, "first_buy_price", suggestion.firstBuyPrice)))
-        second_buy_price = buy_cols[1].text_input("估值折价区下沿", value=_number_text(_plan_or_suggestion(plan, "second_buy_price", suggestion.secondBuyPrice)))
-        third_buy_price = buy_cols[2].text_input("深度折价触发价", value=_number_text(_plan_or_suggestion(plan, "third_buy_price", suggestion.thirdBuyPrice)))
-
-        zone_cols = st.columns(3)
-        no_chase_above = zone_cols[0].text_input("禁止追高价", value=_number_text(_plan_or_suggestion(plan, "no_chase_above", active_zone.noChaseAbove)))
-        fair_value_low = zone_cols[1].text_input("合理观察区下沿", value=_number_text(_plan_or_suggestion(plan, "fair_value_low", active_zone.fairValueLow)))
-        fair_value_high = zone_cols[2].text_input("合理观察区上沿", value=_number_text(_plan_or_suggestion(plan, "fair_value_high", active_zone.fairValueHigh)))
-
-        tranche_cols = st.columns(3)
-        tranche_buy_low = tranche_cols[0].text_input("估值折价区下沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_low", active_zone.trancheBuyLow)))
-        tranche_buy_high = tranche_cols[1].text_input("估值折价区上沿", value=_number_text(_plan_or_suggestion(plan, "tranche_buy_high", active_zone.trancheBuyHigh)))
-        heavy_buy_below = tranche_cols[2].text_input("极端恐慌区低于", value=_number_text(_plan_or_suggestion(plan, "heavy_buy_below", active_zone.heavyBuyBelow)))
-
-        stop_adding_condition = st.text_area("停止加仓条件", value=plan.get("stop_adding_condition") or suggestion.stopAddingCondition)
-        invalidation_condition = st.text_area("止损 / 逻辑破坏条件", value=plan.get("invalidation_condition") or suggestion.thesisBreakCondition)
-        earnings_review_points = st.text_area("财报复核点", value=plan.get("earnings_review_points") or suggestion.earningsReviewCondition)
-        notes = st.text_area("备注", value=plan.get("notes") or "")
-
-        submitted = st.form_submit_button("保存操作计划", width="stretch")
-        if submitted:
-            values = {
-                "target_position_pct": target_position_pct,
-                "planned_position_pct": planned_position_pct,
-                "first_buy_price": first_buy_price,
-                "second_buy_price": second_buy_price,
-                "third_buy_price": third_buy_price,
-                "no_chase_above": no_chase_above,
-                "fair_value_low": fair_value_low,
-                "fair_value_high": fair_value_high,
-                "tranche_buy_low": tranche_buy_low,
-                "tranche_buy_high": tranche_buy_high,
-                "heavy_buy_below": heavy_buy_below,
-                "stop_adding_condition": stop_adding_condition,
-                "invalidation_condition": invalidation_condition,
-                "earnings_review_points": earnings_review_points,
-                "notes": notes,
-            }
-            plan_store.save_plan(ticker, values)
-            st.session_state[edit_key] = False
-            st.success("操作计划已保存，顶部买区摘要已更新。")
-            st.rerun()
+    saved = render_buy_plan_editor(
+        ticker,
+        plan_store,
+        plan,
+        suggestion,
+        active_zone,
+        final_decision,
+        key_prefix=f"stock-plan-{ticker}",
+    )
+    if saved:
+        st.session_state[edit_key] = False
+        st.success("买入计划已保存，顶部买区摘要已更新。")
+        st.rerun()
 
 
 def _render_research_memo(ticker: str, plan_store: StockPlanStore, plan: dict) -> None:
@@ -1191,7 +1144,7 @@ def _render_research_memo(ticker: str, plan_store: StockPlanStore, plan: dict) -
         return
 
     with st.form(f"research-memo-form-{ticker}"):
-        st.caption("复用操作计划 notes 字段保存，不新增数据库表或 schema。")
+        st.caption("备忘录会和当前操作计划一起保存，不影响系统建议。")
         left, right = st.columns(2)
         with left:
             thesis = st.text_area(
@@ -1721,7 +1674,7 @@ def _research_memo_html(memo: dict[str, str]) -> str:
         + "".join(_memo_item_html(label, value, placeholder) for label, value, placeholder in items)
         + "</div>"
         f'<div class="memo-last-review"><span>上次复盘摘要</span><strong>{escape(last_review or "暂无复盘摘要")}</strong></div>'
-        f'<p class="memo-footnote">{escape("复用操作计划 notes 字段保存，不新增数据库。" if has_saved else "暂未记录。点击「编辑备忘录」后可保存到本地计划。")}</p>'
+        f'<p class="memo-footnote">{escape("已保存到当前操作计划。" if has_saved else "暂未记录。点击「编辑备忘录」后可保存到本地计划。")}</p>'
         "</section>"
     )
 

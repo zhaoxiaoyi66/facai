@@ -25,6 +25,7 @@ from position_plan_engine import PositionPlanSuggestion, generate_position_plan
 from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
+from ui.action_plan_editor import render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
 from ui.metric_labels import action_label, confidence_label, model_type_label
 from ui.theme import render_page_header, render_section_title
 
@@ -915,23 +916,25 @@ def _humanize_buy_zone_explain_item(value: object) -> str:
 
 def _plan_html(row: dict) -> str:
     items = [
-        ("估值折价触发价", _money(row.get("firstBuyPrice"))),
-        ("估值折价区下沿", _money(row.get("secondBuyPrice"))),
-        ("极端恐慌区触发价", _money(row.get("thirdBuyPrice"))),
+        ("第一笔买入价", _money(row.get("firstBuyPrice"))),
+        ("第二笔买入价", _money(row.get("secondBuyPrice"))),
+        ("深度折价买入价", _money(row.get("thirdBuyPrice"))),
         ("禁止追高价", _money(row.get("noChaseAbove"))),
         ("停止加仓条件", str(row.get("stopAddingCondition") or "")),
-        ("财报复核条件", str(row.get("earningsReviewCondition") or "")),
+        ("财报复核点", str(row.get("earningsReviewCondition") or "")),
     ]
     html = "".join(f"<li><span>{escape(label)}</span><b>{escape(value)}</b></li>" for label, value in items)
     return f'<div class="drawer-resolution plan-list"><ul>{html}</ul></div>'
 
 
 def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlanStore) -> None:
-    with st.expander("手动覆盖与高级设置", expanded=False):
+    with st.expander("我的买入计划与高级设置", expanded=False):
+        selected = None
+        symbol = ""
         if rows:
             cols = st.columns([1.2, 1.1, 3.5])
             with cols[0]:
-                symbol = st.selectbox("手动覆盖股票", [str(row["symbol"]) for row in rows], key="buy-zone-manual-symbol")
+                symbol = st.selectbox("选择股票", [str(row["symbol"]) for row in rows], key="buy-zone-manual-symbol")
             selected = next((row for row in rows if row["symbol"] == symbol), None)
             with cols[1]:
                 if selected and st.button("恢复系统建议", width="stretch"):
@@ -940,10 +943,31 @@ def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlan
                     st.toast(f"{symbol} 已恢复系统建议")
                     st.rerun()
             with cols[2]:
-                st.caption("手动覆盖优先于系统建议；高级估值沙盒仅用于临时测算。")
+                st.caption("系统建议只读；我的买入计划会作为手动操作计划保存。高级估值沙盒仅用于临时测算。")
         else:
             st.caption("观察池为空，可先使用高级估值沙盒做单次测算。")
         st.divider()
+        if selected:
+            plan = plan_store.get_plan(symbol)
+            active_zone = selected.get("activeZone")
+            suggestion = selected.get("positionPlan")
+            st.markdown("#### 系统建议")
+            render_plan_reference_card(active_zone, suggestion)
+            st.markdown("#### 当前计划")
+            render_plan_preview_card(plan, suggestion, active_zone)
+            saved = render_buy_plan_editor(
+                symbol,
+                plan_store,
+                plan,
+                suggestion,
+                active_zone,
+                key_prefix=f"buy-zone-plan-{symbol}",
+            )
+            if saved:
+                _load_buy_zone_rows.clear()
+                st.success(f"{symbol} 买入计划已保存。")
+                st.rerun()
+            st.divider()
         if st.checkbox("打开高级估值沙盒", value=False, key="buy-zone-show-valuation-sandbox"):
             _render_valuation_sandbox_body()
         else:
@@ -2313,7 +2337,7 @@ def format_trigger_cell(row: dict) -> tuple[str, str, str]:
 def _trigger_secondary_text(zone: str, label: str) -> str:
     if label:
         mapped = _next_label(label)
-        if mapped not in {"下一买入触发价", "估值折价触发价"}:
+        if mapped not in {"下一买入触发价", "第一笔买入价"}:
             return mapped
     return {
         "fair_observation": "估值折价触发",
@@ -2369,8 +2393,8 @@ def _next_label(value: str) -> str:
         "已低于重仓区": "已低于极端恐慌区",
         "已进入极端恐慌区": "已进入极端恐慌区",
         "已进入买区": "已进入买区",
-        "下一买入触发价": "估值折价触发价",
-        "估值折价触发价": "估值折价触发价",
+        "下一买入触发价": "第一笔买入价",
+        "估值折价触发价": "第一笔买入价",
         "等待回踩到观察区": "等待回踩",
         "等回踩": "等待回踩",
     }.get(value, value)
