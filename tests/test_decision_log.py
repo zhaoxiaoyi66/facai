@@ -544,25 +544,14 @@ class DecisionLogTests(unittest.TestCase):
             self.assertIsNone(trade_store.get_entry(entry["id"])["decision_snapshot_id"])
             self.assertFalse(decision_store.delete_snapshot(snapshot["id"]))
 
-    def test_trade_journal_store_supports_option_and_skip_actions(self) -> None:
+    def test_trade_journal_store_supports_skip_but_rejects_option_actions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
 
-            option_entry = store.save_entry(
-                "hood",
-                {
-                    "trade_date": "2026-05-26",
-                    "action_type": "sell_put",
-                    "premium": "1.2",
-                    "strike_price": "25",
-                    "expiry_date": "2026-06-19",
-                },
-            )
+            with self.assertRaises(ValueError):
+                store.save_entry("hood", {"trade_date": "2026-05-26", "action_type": "sell_put"})
             skip_entry = store.save_entry("hood", {"trade_date": "2026-05-27", "action_type": "skip"})
 
-            self.assertEqual(option_entry["symbol"], "HOOD")
-            self.assertEqual(option_entry["premium"], 1.2)
-            self.assertEqual(option_entry["strike_price"], 25)
             self.assertEqual(skip_entry["action_type"], "skip")
 
     def test_trade_journal_store_lists_all_entries_and_symbols(self) -> None:

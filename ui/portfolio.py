@@ -33,8 +33,6 @@ TRADE_ACTION_LABELS = {
     "sell": "卖出",
     "add": "加仓",
     "trim": "减仓",
-    "sell_put": "卖 Put",
-    "covered_call": "Covered Call",
     "skip": "放弃操作",
 }
 POSITION_CLASS_LABELS = {

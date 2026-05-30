@@ -113,10 +113,10 @@ def test_missing_price_history_returns_missing_without_crashing() -> None:
         assert all(item["suspectedSellFly"] is False for item in results)
 
 
-def test_buy_add_skip_and_options_are_not_reviewed() -> None:
+def test_buy_add_skip_are_not_reviewed() -> None:
     with TemporaryDirectory() as tmpdir:
         store = _store(tmpdir)
-        for action in ("buy", "add", "skip", "sell_put", "covered_call"):
+        for action in ("buy", "add", "skip"):
             _save_trade(store, action)
         _insert_history(tmpdir, "NVDA", [("2026-05-21", 120)])
 

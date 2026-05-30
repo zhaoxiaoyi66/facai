@@ -194,7 +194,7 @@ def _render_editor(store: TradeJournalStore) -> None:
         top_cols = st.columns([1.1, 1.2, 1])
         symbol = top_cols[0].text_input("股票代码", value=_entry_value(editing_entry, "symbol"), key=_editor_key("symbol", editing_id)).strip().upper()
         action_default = _action_label_for_entry(editing_entry)
-        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action", editing_id))
+        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action-stock", editing_id))
         trade_date = top_cols[2].date_input("日期", value=_entry_date(editing_entry), key=_editor_key("date", editing_id))
         action_type = ACTION_OPTIONS[action_label]
 

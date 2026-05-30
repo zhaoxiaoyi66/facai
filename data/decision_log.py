@@ -14,7 +14,7 @@ from data.prices import CACHE_PATH
 from data.trading_discipline import evaluate_trading_discipline
 
 
-ACTION_TYPES = {"buy", "sell", "add", "trim", "sell_put", "covered_call", "skip"}
+ACTION_TYPES = {"buy", "sell", "add", "trim", "skip"}
 DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
 CLASSIFICATION_ACTION_TYPES = {"buy", "add"}
 DECISION_MOOD_TYPES = {
