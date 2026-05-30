@@ -30,7 +30,7 @@ from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui import dashboard as dashboard_ui
-from ui.action_plan_editor import render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
+from ui.action_plan_editor import build_plan_portfolio_context, render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
 from ui.metric_labels import (
     action_label,
     confidence_label,
@@ -78,15 +78,18 @@ def render() -> None:
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
     final_decision = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
     effective_buy_zone = attach_combined_entry(effective_buy_zone, final_decision)
+    portfolio_view = _portfolio_view()
+    portfolio_row = _portfolio_row_for_ticker(ticker, portfolio_view)
+    portfolio_context = build_plan_portfolio_context(ticker, effective_buy_zone, portfolio_view)
 
     with record_signal_slot.container():
         _render_record_signal_button(ticker, snapshot, technicals, final_decision)
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision)
-    _render_current_position_summary(_portfolio_row_for_ticker(ticker))
+    _render_current_position_summary(portfolio_row)
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
     _render_technical_entry_reference(effective_buy_zone)
-    _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision)
+    _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan, effective_buy_zone)
     _render_industry_metrics(score.scoring_model, snapshot, score)
@@ -183,14 +186,18 @@ def _render_record_signal_button(ticker: str, snapshot: dict, technicals: dict, 
         st.success("已记录系统信号。")
 
 
-def _portfolio_row_for_ticker(ticker: str) -> dict | None:
+def _portfolio_view() -> dict:
+    try:
+        return build_portfolio_view_model()
+    except Exception:
+        return {}
+
+
+def _portfolio_row_for_ticker(ticker: str, portfolio_view: dict | None = None) -> dict | None:
     symbol = str(ticker or "").strip().upper()
     if not symbol:
         return None
-    try:
-        rows = build_portfolio_view_model().get("rows", [])
-    except Exception:
-        return None
+    rows = (portfolio_view or _portfolio_view()).get("rows", [])
     return next((row for row in rows if str(row.get("symbol") or "").upper() == symbol), None)
 
 
@@ -1093,6 +1100,7 @@ def _render_action_plan_form(
     suggestion: PositionPlanSuggestion,
     active_zone: BuyZoneEstimate,
     final_decision=None,
+    portfolio_context: dict | None = None,
 ) -> None:
     render_section_title("操作计划", "系统建议只读，我的买入计划可手动覆盖")
     edit_key = f"stock-plan-editing-{ticker}"
@@ -1120,6 +1128,7 @@ def _render_action_plan_form(
         active_zone,
         final_decision,
         key_prefix=f"stock-plan-{ticker}",
+        portfolio_context=portfolio_context,
     )
     if saved:
         st.session_state[edit_key] = False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ TEXT_PLAN_FIELDS = [
     "invalidation_condition",
     "earnings_review_points",
     "notes",
+    "buy_plan_tranches_json",
 ]
 
 
@@ -87,6 +89,7 @@ class StockPlanStore:
             return plan
         for column, value in zip(columns, row):
             plan[column] = value
+        plan["buy_plan_tranches"] = _load_json_list(plan.get("buy_plan_tranches_json"))
         return plan
 
     def save_plan(self, ticker: str, values: dict) -> dict:
@@ -94,7 +97,10 @@ class StockPlanStore:
         for field in NUMERIC_PLAN_FIELDS:
             cleaned[field] = _to_number(values.get(field))
         for field in TEXT_PLAN_FIELDS:
-            cleaned[field] = _clean_text(values.get(field))
+            if field == "buy_plan_tranches_json":
+                cleaned[field] = _clean_json_text(values.get(field, values.get("buy_plan_tranches")))
+            else:
+                cleaned[field] = _clean_text(values.get(field))
         cleaned["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         fields = [*NUMERIC_PLAN_FIELDS, *TEXT_PLAN_FIELDS, "updated_at"]
@@ -111,6 +117,7 @@ class StockPlanStore:
                 """,
                 (ticker.upper(), *(cleaned[field] for field in fields)),
             )
+        cleaned["buy_plan_tranches"] = _load_json_list(cleaned.get("buy_plan_tranches_json"))
         return cleaned
 
     def clear_buy_zone_override(self, ticker: str) -> dict:
@@ -132,6 +139,7 @@ def _empty_plan(ticker: str) -> dict:
         "ticker": ticker.upper(),
         **{field: None for field in NUMERIC_PLAN_FIELDS},
         **{field: "" for field in TEXT_PLAN_FIELDS},
+        "buy_plan_tranches": [],
         "updated_at": None,
     }
 
@@ -151,3 +159,28 @@ def _clean_text(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _clean_json_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return ""
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_json_list(value) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []

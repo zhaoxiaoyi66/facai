@@ -17,6 +17,7 @@ from buy_zone_engine import (
     has_buy_zone_override,
 )
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.portfolio_view_model import build_portfolio_view_model
 from data.providers import get_market_data_provider
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
@@ -25,7 +26,7 @@ from position_plan_engine import PositionPlanSuggestion, generate_position_plan
 from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.total_score import calculate_total_score
 from settings import load_watchlist
-from ui.action_plan_editor import render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
+from ui.action_plan_editor import build_plan_portfolio_context, render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
 from ui.metric_labels import action_label, confidence_label, model_type_label
 from ui.theme import render_page_header, render_section_title
 
@@ -93,6 +94,7 @@ def render() -> None:
     with st.spinner("正在读取观察池、评分和买区计划..."):
         rows = _load_buy_zone_rows(tuple(tickers))
         rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
+        portfolio_view = _safe_portfolio_view()
     load_notice.empty()
     _handle_record_signal_query(rows, "buy_zone")
     _render_record_signal_notice("buy_zone_record_signal_notice")
@@ -102,7 +104,14 @@ def render() -> None:
     visible_rows = _filter_rows(rows, active_filter)
     _render_client_buy_zone_drawers(visible_rows)
     _render_buy_zone_table(rows, visible_rows, plan_store)
-    _render_manual_and_advanced_settings(rows, plan_store)
+    _render_manual_and_advanced_settings(rows, plan_store, portfolio_view)
+
+
+def _safe_portfolio_view() -> dict:
+    try:
+        return build_portfolio_view_model()
+    except Exception:
+        return {}
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -927,7 +936,7 @@ def _plan_html(row: dict) -> str:
     return f'<div class="drawer-resolution plan-list"><ul>{html}</ul></div>'
 
 
-def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlanStore) -> None:
+def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlanStore, portfolio_view: dict | None = None) -> None:
     with st.expander("我的买入计划与高级设置", expanded=False):
         selected = None
         symbol = ""
@@ -962,6 +971,7 @@ def _render_manual_and_advanced_settings(rows: list[dict], plan_store: StockPlan
                 suggestion,
                 active_zone,
                 key_prefix=f"buy-zone-plan-{symbol}",
+                portfolio_context=build_plan_portfolio_context(symbol, active_zone, portfolio_view),
             )
             if saved:
                 _load_buy_zone_rows.clear()

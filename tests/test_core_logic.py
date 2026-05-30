@@ -3417,6 +3417,10 @@ class ScoringTests(unittest.TestCase):
                     "invalidation_condition": "增长明显失速",
                     "earnings_review_points": "RPO / margin",
                     "notes": "只小仓",
+                    "buy_plan_tranches": [
+                        {"label": "第一笔买入", "price": 420, "shares": 5, "amount": 2100, "note": "starter"},
+                        {"label": "第二笔买入", "price": 390, "shares": 8, "amount": 3120},
+                    ],
                 },
             )
             loaded = store.get_plan("NOW")
@@ -3425,6 +3429,8 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(loaded["tranche_buy_high"], 430)
             self.assertEqual(loaded["heavy_buy_below"], 360)
             self.assertEqual(loaded["invalidation_condition"], "增长明显失速")
+            self.assertEqual(loaded["buy_plan_tranches"][0]["shares"], 5)
+            self.assertEqual(loaded["buy_plan_tranches"][1]["amount"], 3120)
 
     def test_dashboard_risk_model_builds_radar_items(self) -> None:
         table = pd.DataFrame(
