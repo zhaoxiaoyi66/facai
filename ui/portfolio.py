@@ -6,6 +6,7 @@ import streamlit as st
 
 from data.decision_log import DecisionLogStore, TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
@@ -333,6 +334,9 @@ def _plan_sub_text(row: dict) -> str:
 
 
 def _row_status_text(row: dict) -> str:
+    reconciliation = row.get("reconciliation") or {}
+    if str(reconciliation.get("status") or "") in {"warning", "mismatch"}:
+        return _reconciliation_reason_text(reconciliation)
     if int(row.get("unsyncedTradeCount") or 0) > 0:
         return "有未同步交易记录"
     deviation = _deviation_text(row)
@@ -344,6 +348,128 @@ def _trade_sync_text(row: dict) -> str:
     if count <= 0:
         return "已同步"
     return f"有 {count} 条未同步交易记录，请到交易日志处理"
+
+
+def _safe_portfolio_reconciliation() -> list[dict]:
+    try:
+        return build_portfolio_reconciliation()
+    except Exception:
+        return []
+
+
+def _attach_reconciliation(row: dict, reconciliation_by_symbol: dict[str, dict]) -> dict:
+    symbol = str(row.get("symbol") or "").upper()
+    return {**row, "reconciliation": reconciliation_by_symbol.get(symbol) or _empty_reconciliation(symbol)}
+
+
+def _empty_reconciliation(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "status": "warning",
+        "reasons": ["position_without_synced_journal"],
+        "unsyncedTradeCount": 0,
+        "quantityDiff": None,
+        "costDiff": None,
+        "positionQuantity": None,
+        "journalQuantity": None,
+        "positionAverageCost": None,
+        "journalAverageCost": None,
+    }
+
+
+def _render_reconciliation_strip(items: list[dict]) -> None:
+    summary = _reconciliation_summary(items)
+    metrics = [
+        ("一致", summary["ok"]),
+        ("未同步交易", summary["unsynced"]),
+        ("数量不一致", summary["quantityMismatch"]),
+        ("成本不一致", summary["costMismatch"]),
+        ("来源不明", summary["unknownSource"]),
+    ]
+    html = "".join(
+        '<div class="portfolio-reconciliation-item">'
+        f"<span>{escape(label)}</span>"
+        f"<strong>{escape(str(value))}</strong>"
+        "</div>"
+        for label, value in metrics
+    )
+    tone = "ok" if summary["problemCount"] == 0 else "warning" if summary["mismatch"] == 0 else "mismatch"
+    title = "账务一致" if summary["problemCount"] == 0 else "账务需复核"
+    st.markdown(
+        (
+            f'<section class="portfolio-reconciliation-strip {escape(tone)}">'
+            f'<div class="portfolio-reconciliation-title"><strong>{escape(title)}</strong><span>交易日志 / 当前持仓</span></div>'
+            f'<div class="portfolio-reconciliation-grid">{html}</div>'
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _reconciliation_summary(items: list[dict]) -> dict[str, int]:
+    ok = warning = mismatch = unsynced = quantity_mismatch = cost_mismatch = unknown_source = 0
+    for item in items:
+        status = str(item.get("status") or "")
+        reasons = {str(reason) for reason in item.get("reasons") or []}
+        if status == "ok":
+            ok += 1
+        elif status == "mismatch":
+            mismatch += 1
+        else:
+            warning += 1
+        if "unsynced_trades_exist" in reasons:
+            unsynced += 1
+        if "quantity_mismatch" in reasons or "synced_journal_without_active_position" in reasons:
+            quantity_mismatch += 1
+        if "average_cost_mismatch" in reasons:
+            cost_mismatch += 1
+        if "position_without_synced_journal" in reasons:
+            unknown_source += 1
+    return {
+        "ok": ok,
+        "warning": warning,
+        "mismatch": mismatch,
+        "unsynced": unsynced,
+        "quantityMismatch": quantity_mismatch,
+        "costMismatch": cost_mismatch,
+        "unknownSource": unknown_source,
+        "problemCount": warning + mismatch,
+    }
+
+
+def _reconciliation_status_text(item: dict | None) -> str:
+    status = str((item or {}).get("status") or "warning")
+    return {
+        "ok": "账务一致",
+        "warning": "账务需复核",
+        "mismatch": "账务不一致",
+    }.get(status, "账务需复核")
+
+
+def _reconciliation_reason_text(item: dict | None) -> str:
+    reasons = [str(reason) for reason in (item or {}).get("reasons") or []]
+    labels = {
+        "unsynced_trades_exist": "有未同步交易记录",
+        "quantity_mismatch": "当前持仓数量和交易流水不一致",
+        "average_cost_mismatch": "当前持仓成本和交易流水不一致",
+        "position_without_synced_journal": "有持仓但找不到同步交易来源",
+        "synced_journal_without_active_position": "交易流水有持仓但当前持仓未启用",
+    }
+    translated = [labels.get(reason, reason) for reason in reasons]
+    return "；".join(translated) if translated else "交易日志和当前持仓一致"
+
+
+def _reconciliation_drawer_items(item: dict | None) -> list[tuple[str, object]]:
+    current = item or {}
+    return [
+        ("状态", _reconciliation_status_text(current)),
+        ("原因", _reconciliation_reason_text(current)),
+        ("未同步交易", int(current.get("unsyncedTradeCount") or 0)),
+        ("持仓数量 / 日志数量", _quantity_text(current.get("positionQuantity")) + " / " + _quantity_text(current.get("journalQuantity"))),
+        ("数量差异", _quantity_text(current.get("quantityDiff"))),
+        ("持仓成本 / 日志成本", _money_text(current.get("positionAverageCost")) + " / " + _money_text(current.get("journalAverageCost"))),
+        ("成本差异", _money_text(current.get("costDiff"))),
+    ]
 
 
 def _decision_lane_text(value: object) -> str:
@@ -409,9 +535,16 @@ def render() -> None:
     view = build_portfolio_view_model()
     settings = view["settings"]
     rows = view["rows"]
+    reconciliation_rows = _safe_portfolio_reconciliation()
+    reconciliation_by_symbol = {
+        str(item.get("symbol") or "").upper(): item
+        for item in reconciliation_rows
+    }
+    rows = [_attach_reconciliation(row, reconciliation_by_symbol) for row in rows]
 
     _render_deactivate_dialog_if_needed(position_store)
     _render_overview_strip(view["summary"])
+    _render_reconciliation_strip(reconciliation_rows)
     _render_action_panel(view["actionGroups"])
     _render_positions_table(rows, position_store, plan_store)
     _render_editor(position_store, settings_store, rows, settings)
@@ -654,6 +787,7 @@ def _drawer_html(
             ("当前仓位", _percent_text(row.get("positionPct"))),
             ("交易同步", _trade_sync_text(row)),
         ]),
+        ("账务一致性", _reconciliation_drawer_items(row.get("reconciliation"))),
         ("系统参考", [
             ("怎么看", _system_explanation_text(row)),
             ("系统动作", _system_action_text(row)),
@@ -1008,6 +1142,68 @@ def _render_final_portfolio_styles() -> None:
             color: #94a3b8;
             opacity: 1;
             font-size: 0.62rem;
+        }
+        .portfolio-reconciliation-strip {
+            display: grid;
+            grid-template-columns: 132px minmax(0, 1fr);
+            gap: 0;
+            margin: -0.3rem 0 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-left: 3px solid #4F9D78;
+            border-radius: 8px;
+            background: #FFFFFF;
+            overflow: hidden;
+        }
+        .portfolio-reconciliation-strip.warning {
+            border-left-color: #C59A32;
+        }
+        .portfolio-reconciliation-strip.mismatch {
+            border-left-color: #B34A4A;
+        }
+        .portfolio-reconciliation-title {
+            display: grid;
+            align-content: center;
+            gap: 0.08rem;
+            padding: 0.42rem 0.62rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.055);
+            background: #F8FAFC;
+        }
+        .portfolio-reconciliation-title strong {
+            color: #0f172a;
+            font-size: 0.74rem;
+            font-weight: 820;
+        }
+        .portfolio-reconciliation-title span {
+            color: #94a3b8;
+            font-size: 0.62rem;
+            font-weight: 680;
+        }
+        .portfolio-reconciliation-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            min-width: 0;
+        }
+        .portfolio-reconciliation-item {
+            display: grid;
+            align-content: center;
+            min-height: 44px;
+            padding: 0.34rem 0.56rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.04);
+        }
+        .portfolio-reconciliation-item:last-child {
+            border-right: 0;
+        }
+        .portfolio-reconciliation-item span {
+            color: #64748b;
+            font-size: 0.62rem;
+            font-weight: 760;
+        }
+        .portfolio-reconciliation-item strong {
+            margin-top: 0.08rem;
+            color: #0f172a;
+            font-size: 0.88rem;
+            font-weight: 820;
+            font-variant-numeric: tabular-nums;
         }
         .portfolio-radar-head {
             display: flex;

@@ -623,7 +623,6 @@ def _render_weekly_discipline_strip() -> None:
             '<div class="dashboard-discipline-main-row">'
             f'<div class="dashboard-discipline-title"><strong>本周交易纪律：{escape(_dashboard_discipline_level_text(level))}</strong><span>{escape(headline)}</span></div>'
             f'<div class="dashboard-discipline-metrics">{item_html}</div>'
-            '<div class="dashboard-discipline-detail-label">详情</div>'
             "</div>"
             "</section>"
         ),
@@ -689,7 +688,6 @@ def _render_data_health_strip(context: dict[str, object]) -> None:
             '<div class="data-health-main-row">'
             f'<div class="data-health-title"><strong>数据健康：{escape(str(view.get("statusLabel") or "注意"))}</strong><span>异常驱动展示，本地缓存体检</span></div>'
             f'<div class="data-health-metrics">{item_html}</div>'
-            '<div class="data-health-detail-label">查看详情</div>'
             "</div>"
             "</section>"
         ),
@@ -973,7 +971,6 @@ def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.D
             f'<section class="dashboard-risk-summary-strip {tone}">'
             '<div class="dashboard-risk-summary-title"><strong>风险雷达</strong><span>风险摘要</span></div>'
             f'<div class="dashboard-risk-summary-metrics">{item_html}</div>'
-            '<div class="dashboard-risk-summary-detail">查看详情</div>'
             "</section>"
         ),
         unsafe_allow_html=True,
@@ -3570,7 +3567,7 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-discipline-main-row {
             display:grid;
-            grid-template-columns:158px minmax(0, 1fr) 132px;
+            grid-template-columns:158px minmax(0, 1fr);
             gap:0;
             align-items:stretch;
             min-height:34px;
@@ -3643,18 +3640,6 @@ def _render_dashboard_styles() -> None:
             font-weight:680;
             white-space:nowrap;
         }
-        .dashboard-discipline-detail-label {
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            height:100%;
-            border-left:1px solid rgba(15, 23, 42, 0.05);
-            color:#64748B;
-            font-size:10px;
-            line-height:1.2;
-            font-weight:700;
-            white-space:nowrap;
-        }
         .data-health-strip {
             display:block;
             margin:0 0 0.42rem;
@@ -3666,7 +3651,7 @@ def _render_dashboard_styles() -> None:
         }
         .data-health-main-row {
             display:grid;
-            grid-template-columns:128px minmax(0, 1fr) 132px;
+            grid-template-columns:128px minmax(0, 1fr);
             gap:0;
             align-items:stretch;
             min-height:34px;
@@ -3740,18 +3725,6 @@ def _render_dashboard_styles() -> None:
         .data-health-metrics span:last-child {
             margin-right:0.4rem;
         }
-        .data-health-detail-label {
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            height:100%;
-            border-left:1px solid rgba(15, 23, 42, 0.05);
-            color:#64748B;
-            font-size:10px;
-            line-height:1.2;
-            font-weight:700;
-            white-space:nowrap;
-        }
         .data-health-refresh-result {
             max-width:1080px;
             margin:0 auto 0.42rem;
@@ -3783,7 +3756,7 @@ def _render_dashboard_styles() -> None:
         .data-health-refresh-result.error { border-left:2px solid #DC2626; }
         .dashboard-risk-summary-strip {
             display:grid;
-            grid-template-columns:128px minmax(0, 1fr) 132px;
+            grid-template-columns:128px minmax(0, 1fr);
             align-items:stretch;
             min-height:34px;
             margin:0 0 0.42rem;
@@ -3857,18 +3830,6 @@ def _render_dashboard_styles() -> None:
             color:#0F172A;
             font-weight:780;
             font-variant-numeric:tabular-nums;
-        }
-        .dashboard-risk-summary-detail {
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            height:100%;
-            border-left:1px solid rgba(15, 23, 42, 0.05);
-            color:#64748B;
-            font-size:10px;
-            line-height:1.2;
-            font-weight:700;
-            white-space:nowrap;
         }
         .data-health-popover {
             position:relative;
