@@ -887,6 +887,8 @@ def _technical_reasons_list(technical: dict, unavailable: bool, review_only: boo
 
 def _humanize_buy_zone_explain_item(value: object) -> str:
     text = str(value or "").strip()
+    if text == "ai_cloud_infra_no_heavy_buy_without_positive_fcf_and_capex_discipline":
+        return "FCF 为负或资本开支过高，不输出深度折价区"
     mapping = {
         "buy_zone_model_not_supported": "暂无专属买区模型",
         "unsupported_buy_zone_model": "暂无专属买区模型",

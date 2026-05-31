@@ -64,6 +64,7 @@ from data.ai_review_assistant import (
     enforce_evidence_only_result,
     validate_ai_review_result,
 )
+from data.ai_cloud_sec_disclosures import refresh_ai_cloud_sec_disclosures
 from data.calculated_metrics import calculate_metrics
 from data.cache_read_model import CacheReadModel
 from data.dashboard_lanes import (
@@ -3174,6 +3175,58 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(source.missingImpact, "BUY_ZONE_MODEL_INPUT")
             self.assertTrue(source.extractionHint)
 
+        ai_cloud = calculate_total_score(
+            {
+                "ticker": "CRWV",
+                "sector": "Technology",
+                "industry": "Data Center / AI Infrastructure",
+                "enterprise_to_revenue": 25,
+                "revenue_growth": 0.80,
+            },
+            {
+                "price": 120,
+                "ema20": 118,
+                "ema50": 110,
+                "ema200": 90,
+                "rsi14": 65,
+                "drawdown_from_high_pct": -12,
+                "gain_20d_pct": 5,
+            },
+        )
+        ai_cloud_keys = (
+            "aiCloudContractedBacklog",
+            "aiCloudRpo",
+            "aiCloudGpuFleetCapacity",
+            "aiCloudUtilization",
+            "aiCloudCapexCommitments",
+            "aiCloudCapexIntensity",
+            "aiCloudNetDebt",
+            "aiCloudDebtMaturity",
+            "aiCloudInterestBurden",
+            "aiCloudCustomerConcentration",
+            "aiCloudNvidiaSupplyExposure",
+            "aiCloudHyperscalerExposure",
+        )
+        self.assertEqual(ai_cloud.modelType, "AI_INFRA_HIGH_RISK")
+        for metric_key in ai_cloud_keys:
+            row = _metric_resolution_by_key(ai_cloud, metric_key)
+            self.assertEqual(row["metricType"], "DISCLOSURE_KPI")
+            self.assertIn(row["resolutionStatus"], {"requires_ir_scrape", "requires_sec_filing"})
+            self.assertTrue(row["defaultReviewQueue"])
+            self.assertIn("AI cloud infra buy-zone", row["explanation"])
+            self.assertIn("Source priority", row["explanation"])
+            self.assertIn("Extraction hint", row["explanation"])
+            self.assertIn("Scope/period", row["explanation"])
+            self.assertIn("Manual confirmation", row["explanation"])
+            self.assertIn("do not substitute P/S, EV/Sales, or revenue growth", row["recommendedAction"])
+            source = metric_source_definition(metric_key)
+            dictionary = metric_definition_by_key(metric_key)
+            self.assertIsNotNone(source)
+            self.assertIsNotNone(dictionary)
+            self.assertTrue(source.extractionHint)
+        self.assertIn("Entry", _metric_resolution_by_key(ai_cloud, "aiCloudUtilization")["affects"])
+        self.assertIn("Risk", _metric_resolution_by_key(ai_cloud, "aiCloudDebtMaturity")["affects"])
+
         nvo = calculate_total_score(
             {
                 "ticker": "NVO",
@@ -3655,7 +3708,7 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(zone.currentZone, "low_confidence_zone")
         self.assertEqual(zone.confidence, "low")
-        self.assertEqual(zone.explainability["explainSummary"], "数据置信度不足，暂不输出可执行买点。")
+        self.assertEqual(zone.explainability["explainSummary"], "数据置信度不足，暂不输出入场买点。")
         self.assertIn("dataConfidence = low", zone.explainability["confidenceReasons"])
         self.assertFalse(zone.isValid)
         self.assertIsNone(zone.trancheBuyHigh)
@@ -3963,7 +4016,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(zone.currentZone, "data_insufficient")
         self.assertEqual(zone.confidence, "low")
         self.assertFalse(zone.isValid)
-        self.assertIn("missing_ai_cloud_infra_operating_context", zone.validationErrors)
+        self.assertIn("data_insufficient", zone.validationErrors)
         self.assertIsNone(zone.fairValueHigh)
         self.assertIsNone(zone.trancheBuyHigh)
         self.assertIsNone(zone.heavyBuyBelow)
@@ -3988,6 +4041,27 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn("P/S", zone.inputsUsed)
         self.assertIsNone(zone.noChaseAbove)
         self.assertIsNone(zone.trancheBuyHigh)
+
+    def test_ai_cloud_infra_ev_sales_with_single_operating_input_blocks_precise_zone(self) -> None:
+        zone = generate_buy_zone(
+            "NBIS",
+            {
+                "price": 100,
+                "enterprise_to_revenue": 28,
+                "capex_commitments": 3_500_000_000,
+                "revenue_growth": 1.0,
+            },
+            {"scoring_model": "AI_CLOUD_INFRA"},
+            "AI_CLOUD_INFRA",
+        )
+
+        self.assertEqual(zone.currentZone, "data_insufficient")
+        self.assertFalse(zone.isValid)
+        self.assertIn("data_insufficient", zone.validationErrors)
+        self.assertIsNone(zone.fairValueHigh)
+        self.assertIsNone(zone.trancheBuyHigh)
+        self.assertIn("RPO / contracted backlog", zone.explainability["missingInputs"])
+        self.assertIn("utilization", zone.explainability["missingInputs"])
 
     def test_invalid_buy_zone_hides_actionable_prices(self) -> None:
         zone = generate_buy_zone(
@@ -5092,6 +5166,325 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(saved["hoodNormalizedEbitda"]["value"], 742_000_000)
         self.assertEqual(saved["hoodNormalizedEbitda"]["period"], "2025 Q3")
 
+    def test_ai_cloud_infra_pipeline_extracts_fake_sec_8k_operating_fields(self) -> None:
+        fake_text = (
+            "CoreWeave Reports Q1 2026 Results. Contracted backlog was $4.2 billion. "
+            "Remaining performance obligations were $3.8 billion. GPU fleet capacity was 250,000 GPUs. "
+            "Fleet utilization was 83%."
+        )
+
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001769628"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return [
+                    SECFiling(
+                        form="8-K",
+                        accession_number="000176962826000001",
+                        filing_date="2026-04-30",
+                        report_date="2026-03-31",
+                        primary_document="crwv-20260430.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1769628/crwv-20260430.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1769628/000176962826000001-index.htm",
+                    )
+                ]
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return [
+                    (
+                        "https://www.sec.gov/Archives/edgar/data/1769628/000176962826000001/crwv-exhibit991.htm",
+                        "CoreWeave Q1 2026 results",
+                    )
+                ]
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                return fake_text
+
+        class OfflineAiCloudPipeline(DisclosurePipeline):
+            def _load_fmp_transcript(self, symbol, definitions, result):
+                self._log(result, symbol, "FMP_TRANSCRIPT", None, "skipped", "test offline")
+
+        expected = {
+            "aiCloudContractedBacklog",
+            "aiCloudRpo",
+            "aiCloudGpuFleetCapacity",
+            "aiCloudUtilization",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ai-cloud.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            result = OfflineAiCloudPipeline(store=disclosure_store, sec_client=FakeSecClient()).run(
+                "CRWV",
+                model_type="AI_CLOUD_INFRA",
+                current_snapshot={"ticker": "CRWV"},
+            )
+
+            saved = {row["metricKey"]: row for row in result["saved"] if row.get("metricKey") in expected}
+
+            self.assertTrue(expected.issubset(saved))
+            self.assertEqual(saved["aiCloudContractedBacklog"]["value"], 4_200_000_000)
+            self.assertEqual(saved["aiCloudRpo"]["value"], 3_800_000_000)
+            self.assertEqual(saved["aiCloudGpuFleetCapacity"]["value"], 250_000)
+            self.assertEqual(saved["aiCloudGpuFleetCapacity"]["unit"], "count")
+            self.assertEqual(saved["aiCloudUtilization"]["value"], 0.83)
+            self.assertTrue(all(row["sourceType"] == "SEC_8K" for row in saved.values()))
+            self.assertTrue(all(row["needsHumanReview"] for row in saved.values()))
+            self.assertFalse(any(row["status"] == "skipped" and "SAAS_SOFTWARE" in str(row["errorMessage"]) for row in result["logs"]))
+
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot("CRWV", {"ticker": "CRWV", "symbol": "CRWV", "scoring_model": "AI_CLOUD_INFRA"})
+            ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            ).build_review_queue_for_symbol("CRWV")
+            extracted = {
+                row["metricKey"]: row
+                for row in queue_store.list_items("CRWV")
+                if row.get("metricKey") in expected and row.get("itemType") == "extracted_value"
+            }
+            self.assertTrue(expected.issubset(extracted))
+            self.assertTrue(all(row.get("evidenceText") for row in extracted.values()))
+
+    def test_ai_cloud_infra_pipeline_extracts_fake_sec_10q_10k_hard_disclosures(self) -> None:
+        fake_text = (
+            "CoreWeave Annual Report FY 2026. Capex commitments were $5.5 billion. "
+            "Debt maturity schedule shows nearest debt maturity in 2029. "
+            "Top customer revenue share was 42%."
+        )
+
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001769628"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return [
+                    SECFiling(
+                        form="10-Q",
+                        accession_number="000176962826000010",
+                        filing_date="2026-05-10",
+                        report_date="2026-03-31",
+                        primary_document="crwv-20260331.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1769628/crwv-20260331.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1769628/000176962826000010-index.htm",
+                    ),
+                    SECFiling(
+                        form="10-K",
+                        accession_number="000176962826000011",
+                        filing_date="2026-03-01",
+                        report_date="2025-12-31",
+                        primary_document="crwv-20251231.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1769628/crwv-20251231.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1769628/000176962826000011-index.htm",
+                    ),
+                ]
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return []
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                return fake_text
+
+        expected = {
+            "aiCloudCapexCommitments",
+            "aiCloudDebtMaturity",
+            "aiCloudCustomerConcentration",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            disclosure_store = DisclosureStore(Path(tmpdir) / "ai-cloud-sec.sqlite")
+            result = DisclosurePipeline(store=disclosure_store, sec_client=FakeSecClient()).run(
+                "CRWV",
+                model_type="AI_CLOUD_INFRA",
+                current_snapshot={"ticker": "CRWV"},
+            )
+
+        saved = {row["metricKey"]: row for row in result["saved"] if row.get("metricKey") in expected}
+        fetched_sources = {row["sourceType"] for row in result["logs"] if row["status"] == "fetched"}
+
+        self.assertTrue(expected.issubset(saved))
+        self.assertIn("SEC_10Q", fetched_sources)
+        self.assertIn("SEC_10K", fetched_sources)
+        self.assertEqual(saved["aiCloudCapexCommitments"]["value"], 5_500_000_000)
+        self.assertEqual(saved["aiCloudDebtMaturity"]["value"], 2029)
+        self.assertEqual(saved["aiCloudCustomerConcentration"]["value"], 0.42)
+        self.assertTrue(all(row["sourceType"] in {"SEC_10Q", "SEC_10K"} for row in saved.values()))
+        self.assertTrue(all(row["needsHumanReview"] for row in saved.values()))
+
+    def test_ai_cloud_infra_pipeline_without_text_keeps_missing_kpis(self) -> None:
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001513845"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return []
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return []
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                raise RuntimeError("offline test has no source text")
+
+        class OfflineAiCloudPipeline(DisclosurePipeline):
+            def _load_fmp_transcript(self, symbol, definitions, result):
+                self._log(result, symbol, "FMP_TRANSCRIPT", None, "skipped", "test offline")
+
+        expected_missing = {
+            "aiCloudContractedBacklog",
+            "aiCloudRpo",
+            "aiCloudGpuFleetCapacity",
+            "aiCloudUtilization",
+            "aiCloudCapexCommitments",
+            "aiCloudDebtMaturity",
+            "aiCloudCustomerConcentration",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            disclosure_store = DisclosureStore(Path(tmpdir) / "ai-cloud-empty.sqlite")
+            result = OfflineAiCloudPipeline(store=disclosure_store, sec_client=FakeSecClient()).run(
+                "NBIS",
+                model_type="AI_INFRA_HIGH_RISK",
+                current_snapshot={"ticker": "NBIS"},
+            )
+
+        self.assertTrue(expected_missing.issubset(set(result["missing"])))
+        self.assertFalse(any(row.get("metricKey") in expected_missing for row in result["saved"]))
+        self.assertFalse(any(row["status"] == "skipped" and "SAAS_SOFTWARE" in str(row["errorMessage"]) for row in result["logs"]))
+
+    def test_refresh_ai_cloud_sec_disclosures_returns_structured_counts_for_fake_sec_text(self) -> None:
+        exhibit_text = (
+            "CoreWeave Reports Q1 2026 Results. Contracted backlog was $4.2 billion. "
+            "Remaining performance obligations were $3.8 billion. GPU capacity was 250,000 GPUs. "
+            "Utilization was 83%."
+        )
+        filing_text = (
+            "CoreWeave Form 10-Q. Capex commitments were $5.5 billion. "
+            "Debt maturity schedule shows nearest debt maturity in 2029. "
+            "Top customer revenue share was 42%."
+        )
+
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001769628"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return [
+                    SECFiling(
+                        form="8-K",
+                        accession_number="000176962826000001",
+                        filing_date="2026-04-30",
+                        report_date="2026-03-31",
+                        primary_document="crwv-20260430.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1769628/crwv-8k.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1769628/000176962826000001-index.htm",
+                    ),
+                    SECFiling(
+                        form="10-Q",
+                        accession_number="000176962826000010",
+                        filing_date="2026-05-10",
+                        report_date="2026-03-31",
+                        primary_document="crwv-20260331.htm",
+                        document_url="https://www.sec.gov/Archives/edgar/data/1769628/crwv-10q.htm",
+                        index_url="https://www.sec.gov/Archives/edgar/data/1769628/000176962826000010-index.htm",
+                    ),
+                ]
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                if filing.form == "8-K":
+                    return [
+                        (
+                            "https://www.sec.gov/Archives/edgar/data/1769628/crwv-exhibit991.htm",
+                            "CoreWeave Q1 2026 results",
+                        )
+                    ]
+                return []
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                if "exhibit991" in url:
+                    return exhibit_text
+                return filing_text
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ai-cloud-refresh.sqlite"
+            result = refresh_ai_cloud_sec_disclosures("CRWV", sec_client=FakeSecClient(), db_path=db_path)
+
+            store = ReviewQueueStore(db_path)
+            extracted = {
+                row["metricKey"]: row
+                for row in store.list_items("CRWV")
+                if row.get("itemType") == "extracted_value"
+            }
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["modelType"], "AI_CLOUD_INFRA")
+        self.assertGreaterEqual(result["cachedTextCount"], 2)
+        self.assertGreaterEqual(result["extractedCandidateCount"], 6)
+        self.assertFalse(result["errors"])
+        for key in {
+            "aiCloudContractedBacklog",
+            "aiCloudRpo",
+            "aiCloudGpuFleetCapacity",
+            "aiCloudUtilization",
+            "aiCloudCapexCommitments",
+            "aiCloudDebtMaturity",
+            "aiCloudCustomerConcentration",
+        }:
+            self.assertIn(key, extracted)
+            self.assertTrue(extracted[key].get("sourceType"))
+            self.assertTrue(extracted[key].get("evidenceText"))
+            self.assertTrue(extracted[key].get("unit"))
+            self.assertTrue(extracted[key].get("metricPeriod") or extracted[key].get("period"))
+            self.assertEqual(extracted[key].get("reviewStatus"), "pending_review")
+
+    def test_refresh_ai_cloud_sec_disclosures_without_text_keeps_missing_kpis(self) -> None:
+        class FakeSecClient:
+            def cik_for_ticker(self, symbol, force_refresh=False):
+                return "0001513845"
+
+            def companyfacts(self, cik, force_refresh=False):
+                return {"facts": {"us-gaap": {}}}
+
+            def recent_filings(self, cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=False):
+                return []
+
+            def filing_exhibit_urls(self, filing, force_refresh=False):
+                return []
+
+            def cached_text(self, key, url, ttl_hours=24, force_refresh=False, normalize_html=True):
+                raise RuntimeError("no text")
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ai-cloud-refresh-empty.sqlite"
+            result = refresh_ai_cloud_sec_disclosures("NBIS", sec_client=FakeSecClient(), db_path=db_path)
+            store = ReviewQueueStore(db_path)
+            missing = [
+                row
+                for row in store.list_items("NBIS")
+                if row.get("itemType") == "missing_kpi" and str(row.get("metricKey") or "").startswith("aiCloud")
+            ]
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["modelType"], "AI_INFRA_HIGH_RISK")
+        self.assertEqual(result["cachedTextCount"], 0)
+        self.assertEqual(result["extractedCandidateCount"], 0)
+        self.assertGreaterEqual(result["missingFieldCount"], 6)
+        self.assertGreaterEqual(len(missing), 6)
+
     def test_crpo_ratio_text_is_not_extracted_as_growth(self) -> None:
         definition = metric_definition_by_key("cRpoGrowth")
         self.assertIsNotNone(definition)
@@ -6107,6 +6500,55 @@ class ScoringTests(unittest.TestCase):
             metric_keys = {(row["symbol"], row["metricKey"]) for row in rows}
             self.assertNotIn(("NOW", "fcfMargin"), metric_keys)
             self.assertNotIn(("JPM", "evToFcf"), metric_keys)
+
+    def test_review_queue_builder_routes_ai_cloud_infra_core_fields_to_missing_kpi(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "review.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            for symbol in ("CRWV", "NBIS"):
+                fundamental_cache.set_snapshot(
+                    symbol,
+                    {
+                        "ticker": symbol,
+                        "sector": "Technology",
+                        "industry": "Data Center / AI Infrastructure",
+                        "enterprise_to_revenue": 30,
+                        "revenue_growth": 0.90,
+                    },
+                )
+            builder = ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            )
+
+            result = builder.build_review_queue_for_watchlist(["CRWV", "NBIS"])
+            rows = queue_store.list_items()
+
+            self.assertGreaterEqual(result.item_type_counts.get("missing_kpi", 0), 20)
+            for symbol in ("CRWV", "NBIS"):
+                symbol_rows = [row for row in rows if row["symbol"] == symbol]
+                metric_keys = {row["metricKey"] for row in symbol_rows}
+                for metric_key in (
+                    "aiCloudContractedBacklog",
+                    "aiCloudRpo",
+                    "aiCloudUtilization",
+                    "aiCloudCapexCommitments",
+                    "aiCloudDebtMaturity",
+                    "aiCloudCustomerConcentration",
+                ):
+                    self.assertIn(metric_key, metric_keys)
+                    row = next(row for row in symbol_rows if row["metricKey"] == metric_key)
+                self.assertEqual(row["itemType"], "missing_kpi")
+                self.assertEqual(row["reviewStatus"], "needs_data")
+                self.assertIn("AI cloud infra buy-zone", row["systemReason"])
+                self.assertIn("Source priority", row["systemReason"])
+                self.assertIn("Extraction hint", row["systemReason"])
+                self.assertIn("Scope/period", row["systemReason"])
+                self.assertIn("Manual confirmation", row["systemReason"])
+                self.assertIn("do not substitute P/S, EV/Sales, or revenue growth", row["recommendedAction"])
 
     def test_review_queue_preserves_terminal_review_decisions(self) -> None:
         with TemporaryDirectory() as tmpdir:

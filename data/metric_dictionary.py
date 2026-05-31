@@ -374,9 +374,105 @@ CRYPTO_FINANCIAL_INFRA_METRICS: tuple[MetricDefinition, ...] = (
 )
 
 
+AI_CLOUD_INFRA_METRICS: tuple[MetricDefinition, ...] = (
+    MetricDefinition(
+        metric_key="aiCloudContractedBacklog",
+        snapshot_key="contracted_backlog",
+        display_name="Contracted backlog / RPO",
+        aliases=("contracted backlog", "revenue backlog", "backlog", "remaining contracted backlog"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K", "IR_PRESENTATION", "SHAREHOLDER_LETTER"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudRpo",
+        snapshot_key="remaining_performance_obligations",
+        display_name="Remaining performance obligations",
+        aliases=("remaining performance obligations", "RPO", "contracted RPO"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "EARNINGS_RELEASE", "IR_RELEASE", "SEC_8K", "IR_PRESENTATION", "SHAREHOLDER_LETTER"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudGpuFleetCapacity",
+        snapshot_key="gpu_fleet_capacity",
+        display_name="GPU fleet / capacity",
+        aliases=("GPU fleet", "GPU capacity", "fleet capacity", "capacity"),
+        preferred_sources=("IR_PRESENTATION", "EARNINGS_RELEASE", "IR_RELEASE", "SHAREHOLDER_LETTER", "SEC_10Q", "SEC_10K"),
+        unit_hint="count",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudUtilization",
+        snapshot_key="utilization",
+        display_name="Utilization",
+        aliases=("utilization", "GPU utilization", "fleet utilization", "capacity utilization"),
+        preferred_sources=("IR_PRESENTATION", "EARNINGS_RELEASE", "IR_RELEASE", "SHAREHOLDER_LETTER", "FMP_TRANSCRIPT"),
+    ),
+    MetricDefinition(
+        metric_key="aiCloudCapexCommitments",
+        snapshot_key="capex_commitments",
+        display_name="Capex commitments",
+        aliases=("capex commitments", "purchase commitments", "remaining capex commitments", "contracted capex commitments"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "EARNINGS_RELEASE", "IR_RELEASE", "IR_PRESENTATION", "SHAREHOLDER_LETTER"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudCapexIntensity",
+        snapshot_key="capex_intensity",
+        display_name="Capex intensity",
+        aliases=("capex intensity", "capex / revenue", "capex to revenue"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "FMP", "EARNINGS_RELEASE"),
+    ),
+    MetricDefinition(
+        metric_key="aiCloudNetDebt",
+        snapshot_key="net_debt",
+        display_name="Net debt",
+        aliases=("net debt", "net indebtedness"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "FMP"),
+        unit_hint="money",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudDebtMaturity",
+        snapshot_key="debt_maturity",
+        display_name="Debt maturity",
+        aliases=("debt maturity", "debt maturities", "maturity schedule", "nearest debt maturity"),
+        preferred_sources=("SEC_10Q", "SEC_10K"),
+        unit_hint="text",
+    ),
+    MetricDefinition(
+        metric_key="aiCloudInterestBurden",
+        snapshot_key="interest_burden",
+        display_name="Interest burden",
+        aliases=("interest burden", "interest expense", "interest coverage"),
+        preferred_sources=("SEC_10Q", "SEC_10K", "FMP"),
+    ),
+    MetricDefinition(
+        metric_key="aiCloudCustomerConcentration",
+        snapshot_key="customer_concentration",
+        display_name="Customer concentration",
+        aliases=("customer concentration", "major customer", "top customer", "top customer revenue share"),
+        preferred_sources=("SEC_10K", "SEC_10Q", "EARNINGS_RELEASE", "IR_RELEASE", "SHAREHOLDER_LETTER"),
+    ),
+    MetricDefinition(
+        metric_key="aiCloudNvidiaSupplyExposure",
+        snapshot_key="nvidia_supply_exposure",
+        display_name="Nvidia supply exposure",
+        aliases=("Nvidia supply exposure", "GPU supplier concentration", "supplier concentration", "Nvidia purchase commitment"),
+        preferred_sources=("SEC_10K", "SEC_10Q", "IR_PRESENTATION", "EARNINGS_RELEASE", "SHAREHOLDER_LETTER"),
+    ),
+    MetricDefinition(
+        metric_key="aiCloudHyperscalerExposure",
+        snapshot_key="hyperscaler_exposure",
+        display_name="Hyperscaler exposure",
+        aliases=("hyperscaler exposure", "hyperscaler customer", "cloud customer", "anchor tenant"),
+        preferred_sources=("SEC_10K", "SEC_10Q", "IR_PRESENTATION", "EARNINGS_RELEASE", "SHAREHOLDER_LETTER"),
+    ),
+)
+
+
 MODEL_METRIC_DICTIONARY = {
     "SAAS_SOFTWARE": SAAS_SOFTWARE_METRICS,
     "CRYPTO_FINANCIAL_INFRA": CRYPTO_FINANCIAL_INFRA_METRICS,
+    "AI_INFRA_HIGH_RISK": AI_CLOUD_INFRA_METRICS,
+    "AI_CLOUD_INFRA": AI_CLOUD_INFRA_METRICS,
 }
 
 

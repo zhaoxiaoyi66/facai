@@ -295,6 +295,36 @@ METRIC_DISPLAY_MAP.update(
     }
 )
 
+METRIC_DISPLAY_MAP.update(
+    {
+        "aicloudcontractedbacklog": "AI云已签约 backlog / RPO",
+        "ai cloud contracted backlog": "AI云已签约 backlog / RPO",
+        "aicloudrpo": "AI云 RPO",
+        "ai cloud rpo": "AI云 RPO",
+        "aicloudgpufleetcapacity": "GPU fleet / capacity",
+        "ai cloud gpu fleet capacity": "GPU fleet / capacity",
+        "aicloudutilization": "AI云利用率",
+        "ai cloud utilization": "AI云利用率",
+        "aicloudcapexcommitments": "AI云资本开支承诺",
+        "ai cloud capex commitments": "AI云资本开支承诺",
+        "aicloudcapexintensity": "AI云资本开支强度",
+        "ai cloud capex intensity": "AI云资本开支强度",
+        "aicloudnetdebt": "AI云净债务",
+        "ai cloud net debt": "AI云净债务",
+        "aiclouddebtmaturity": "AI云债务到期结构",
+        "ai cloud debt maturity": "AI云债务到期结构",
+        "aicloudinterestburden": "AI云利息负担",
+        "ai cloud interest burden": "AI云利息负担",
+        "aicloudcustomerconcentration": "AI云客户集中度",
+        "ai cloud customer concentration": "AI云客户集中度",
+        "aicloudnvidiasupplyexposure": "Nvidia供应依赖",
+        "ai cloud nvidia supply exposure": "Nvidia供应依赖",
+        "aicloudhyperscalerexposure": "Hyperscaler客户暴露",
+        "ai cloud hyperscaler exposure": "Hyperscaler客户暴露",
+        "ai cloud infra no heavy buy without positive fcf and capex discipline": "FCF为负或资本开支过高，不输出深度折价区",
+    }
+)
+
 INTERNAL_DEBUG_FIELDS = {
     "evidencehash",
     "evidence hash",

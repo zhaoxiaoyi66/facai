@@ -21,6 +21,7 @@ PERCENT_PATTERN = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)\s?(?:%|percent|percen
 MULTIPLE_PATTERN = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)\s?x\b", re.IGNORECASE)
 MONEY_PATTERN = re.compile(r"\$\s?(-?\d+(?:\.\d+)?)\s?(billion|million|bn|mm|m)?", re.IGNORECASE)
 NUMBER_PATTERN = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)(?![\w.])")
+COUNT_PATTERN = re.compile(r"(?<![\w.])(-?\d{1,3}(?:,\d{3})+|-?\d+(?:\.\d+)?)(?![\w.])")
 HOOD_MONEY_ROW_BOUNDARY_PATTERN = re.compile(
     r"\b("
     r"transaction-based revenues?|transaction revenues?|net interest revenues?|interest revenues?|"
@@ -173,6 +174,18 @@ def _extract_value(window: str, unit_hint: str, scale_context: str | None = None
         table_amount = _extract_table_money_amount(window, scale_context or window)
         if table_amount is not None:
             return table_amount
+        return None
+
+    if unit_hint == "text":
+        year_match = re.search(r"\b(20[2-9]\d|21\d{2})\b", window)
+        if year_match:
+            return float(year_match.group(1)), "year"
+        return None
+
+    if unit_hint == "count":
+        number = COUNT_PATTERN.search(window)
+        if number and not _number_match_is_year(window, number):
+            return float(number.group(1).replace(",", "")), "count"
         return None
 
     percent = PERCENT_PATTERN.search(window)

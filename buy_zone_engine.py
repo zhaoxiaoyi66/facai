@@ -145,8 +145,8 @@ def generate_buy_zone(symbol: str, stockData: dict, scoringResult=None, modelTyp
             str(model),
             price,
             "data_insufficient",
-            ["missing_ai_cloud_infra_operating_context"],
-            ["missing_ai_cloud_infra_operating_context"],
+            ["data_insufficient"],
+            ["data_insufficient"],
             inputs,
             method="data_insufficient",
         )
@@ -1285,10 +1285,12 @@ def _ai_cloud_infra_core_inputs_missing(model: str, metrics: dict[str, float | N
         value is not None and value > 0
         for value in (metrics.get("ev_to_sales"), metrics.get("ev_to_rpo"), metrics.get("ev_to_backlog"))
     )
+    has_reliable_demand = _ai_cloud_infra_has_reliable_demand(stockData)
+    has_utilization = _ai_cloud_infra_has_ratio(stockData, *AI_CLOUD_INFRA_UTILIZATION_KEYS)
+    has_capex_commitments = _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS)
     has_operating_context = (
-        _ai_cloud_infra_has_reliable_demand(stockData)
-        or _ai_cloud_infra_has_ratio(stockData, *AI_CLOUD_INFRA_UTILIZATION_KEYS)
-        or _ai_cloud_infra_has_clean_money(stockData, *AI_CLOUD_INFRA_CAPEX_COMMITMENT_KEYS)
+        has_reliable_demand
+        or (has_utilization and has_capex_commitments)
     )
     return not (has_valuation_anchor and has_operating_context)
 

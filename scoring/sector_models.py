@@ -1754,6 +1754,8 @@ def _resolution_source_type(context: ScoreContext, keys: tuple[str, ...]) -> str
 def _model_specific_resolution_rows(context: ScoreContext) -> list[dict[str, object]]:
     model_type = context.model_type
     rows: list[MetricResolution] = []
+    if model_type in {"AI_INFRA_HIGH_RISK", "AI_CLOUD_INFRA"}:
+        rows.extend(_ai_cloud_infra_buy_zone_resolution_rows(context))
     if model_type == "BANK_FINANCIAL":
         rows.append(
             MetricResolution(
@@ -1835,6 +1837,300 @@ def _model_specific_resolution_rows(context: ScoreContext) -> list[dict[str, obj
             ]
         )
     return [row.to_dict() if isinstance(row, MetricResolution) else row for row in rows]
+
+
+AI_CLOUD_INFRA_BUY_ZONE_SPECS = (
+    (
+        "aiCloudContractedBacklog",
+        "Contracted backlog / RPO",
+        ("manualAiCloudContractedBacklog", "aiCloudContractedBacklog", "contracted_backlog", "contractedBacklog", "backlog", "revenue_backlog", "revenueBacklog"),
+        "requires_ir_scrape",
+        ("Entry", "ConfidenceOnly"),
+        "Demand visibility is required before AI cloud EV/Sales can support a precise buy zone; revenue growth alone is not enough.",
+        "SEC 10-Q / 10-K, 8-K earnings release, IR presentation, shareholder letter.",
+    ),
+    (
+        "aiCloudRpo",
+        "Remaining performance obligations",
+        ("manualAiCloudRpo", "aiCloudRpo", "remaining_performance_obligations", "remainingPerformanceObligations", "rpo", "RPO", "contracted_rpo", "contractedRpo"),
+        "requires_ir_scrape",
+        ("Entry", "ConfidenceOnly"),
+        "RPO anchors contracted demand quality; missing RPO keeps the AI cloud buy-zone confidence capped.",
+        "SEC 10-Q / 10-K, 8-K earnings release, IR presentation, shareholder letter.",
+    ),
+    (
+        "aiCloudGpuFleetCapacity",
+        "GPU fleet / capacity",
+        ("manualAiCloudGpuFleetCapacity", "aiCloudGpuFleetCapacity", "gpu_fleet_capacity", "gpuFleetCapacity", "gpu_capacity", "gpuCapacity", "fleet_capacity", "fleetCapacity"),
+        "requires_ir_scrape",
+        ("Entry", "ConfidenceOnly"),
+        "Capacity shows whether revenue and backlog can be served; missing capacity prevents false precision.",
+        "IR presentation, earnings release, shareholder letter, 10-Q / 10-K capex notes.",
+    ),
+    (
+        "aiCloudUtilization",
+        "Utilization",
+        ("manualAiCloudUtilization", "aiCloudUtilization", "utilization", "gpu_utilization", "gpuUtilization", "fleet_utilization", "fleetUtilization", "capacity_utilization", "capacityUtilization"),
+        "requires_ir_scrape",
+        ("Entry", "ConfidenceOnly"),
+        "Utilization confirms whether expensive GPU capacity is monetized; missing utilization caps confidence.",
+        "IR presentation, earnings release, shareholder letter, transcript.",
+    ),
+    (
+        "aiCloudCapexCommitments",
+        "Capex commitments",
+        ("manualAiCloudCapexCommitments", "aiCloudCapexCommitments", "capex_commitments", "capexCommitments", "contracted_capex_commitments", "contractedCapexCommitments", "remaining_capex_commitments", "remainingCapexCommitments"),
+        "requires_sec_filing",
+        ("Entry", "Risk", "ConfidenceOnly"),
+        "Capex commitments define funding risk and whether the model may output a precise buy zone.",
+        "SEC 10-Q / 10-K commitments, earnings release, IR presentation, shareholder letter.",
+    ),
+    (
+        "aiCloudCapexIntensity",
+        "Capex intensity",
+        ("manualAiCloudCapexIntensity", "aiCloudCapexIntensity", "capex_intensity", "capexIntensity", "capex_to_revenue", "capexToRevenue"),
+        "requires_sec_filing",
+        ("Entry", "Risk", "ConfidenceOnly"),
+        "High capex intensity blocks heavy-buy output; it cannot be replaced with EV/Sales or revenue growth.",
+        "SEC cash flow statement, 10-Q / 10-K, earnings release capex disclosure.",
+    ),
+    (
+        "aiCloudNetDebt",
+        "Net debt",
+        ("manualAiCloudNetDebt", "aiCloudNetDebt", "net_debt", "netDebt"),
+        "requires_sec_filing",
+        ("Risk", "ConfidenceOnly"),
+        "Net debt is a guardrail for financing risk and no-chase decisions in high capex AI cloud names.",
+        "SEC balance sheet, 10-Q / 10-K, earnings release balance sheet table.",
+    ),
+    (
+        "aiCloudDebtMaturity",
+        "Debt maturity",
+        ("manualAiCloudDebtMaturity", "aiCloudDebtMaturity", "debt_maturity", "debtMaturity", "debt_maturity_schedule", "debtMaturitySchedule", "nearest_debt_maturity", "nearestDebtMaturity", "debt_maturity_pressure", "debtMaturityPressure"),
+        "requires_sec_filing",
+        ("Risk", "ConfidenceOnly"),
+        "Unclear debt maturity prevents high confidence because refinancing risk can dominate the buy zone.",
+        "SEC 10-Q / 10-K debt maturity table, notes to debt, financing agreements.",
+    ),
+    (
+        "aiCloudInterestBurden",
+        "Interest burden",
+        ("manualAiCloudInterestBurden", "aiCloudInterestBurden", "interest_burden", "interestBurden", "interest_expense", "interestExpense", "interest_coverage", "interestCoverage"),
+        "requires_sec_filing",
+        ("Risk", "ConfidenceOnly"),
+        "Interest burden shows whether debt service can absorb cash flow; missing it weakens confidence.",
+        "SEC income statement, 10-Q / 10-K interest expense and debt notes.",
+    ),
+    (
+        "aiCloudCustomerConcentration",
+        "Customer concentration",
+        ("manualAiCloudCustomerConcentration", "aiCloudCustomerConcentration", "customer_concentration", "customerConcentration", "customer_concentration_risk", "customerConcentrationRisk", "top_customer_revenue_share", "topCustomerRevenueShare"),
+        "requires_sec_filing",
+        ("Risk", "ConfidenceOnly"),
+        "Customer concentration caps confidence at medium because a single customer can dominate backlog quality.",
+        "SEC 10-K customer concentration note, 10-Q risk factors, earnings release, shareholder letter.",
+    ),
+    (
+        "aiCloudNvidiaSupplyExposure",
+        "Nvidia supply exposure",
+        ("manualAiCloudNvidiaSupplyExposure", "aiCloudNvidiaSupplyExposure", "nvidia_supply_exposure", "nvidiaSupplyExposure", "gpu_supplier_concentration", "gpuSupplierConcentration"),
+        "requires_ir_scrape",
+        ("Risk", "ConfidenceOnly"),
+        "Nvidia supply exposure is a capacity and margin guardrail for GPU cloud operators.",
+        "IR presentation, shareholder letter, 10-Q / 10-K supplier risk disclosure.",
+    ),
+    (
+        "aiCloudHyperscalerExposure",
+        "Hyperscaler exposure",
+        ("manualAiCloudHyperscalerExposure", "aiCloudHyperscalerExposure", "hyperscaler_exposure", "hyperscalerExposure", "hyperscaler_customer_exposure", "hyperscalerCustomerExposure"),
+        "requires_ir_scrape",
+        ("Risk", "ConfidenceOnly"),
+        "Hyperscaler exposure captures counterparty concentration and pricing risk behind contracted demand.",
+        "IR presentation, shareholder letter, 10-Q / 10-K customer risk disclosure.",
+    ),
+)
+
+
+AI_CLOUD_INFRA_EVIDENCE_PATHS = {
+    "aiCloudContractedBacklog": {
+        "sourcePriority": "SEC 10-Q/10-K backlog or contract note > 8-K earnings release > shareholder letter > investor presentation > transcript/manual.",
+        "extractionHint": "Keywords: contracted backlog, revenue backlog, backlog, contracted future revenue. Unit: USD. Period: latest quarter-end point-in-time; do not use revenue growth.",
+        "scope": "Company total unless the disclosure is clearly a GPU cloud segment metric; preserve segment label when segment-only.",
+        "manualConfirmation": "Confirm whether backlog is signed/contracted future revenue, not pipeline or non-binding demand.",
+    },
+    "aiCloudRpo": {
+        "sourcePriority": "SEC 10-Q/10-K RPO disclosure > 8-K earnings release > shareholder letter > investor presentation > transcript/manual.",
+        "extractionHint": "Keywords: remaining performance obligations, RPO, contracted RPO. Unit: USD. Period: latest quarter-end point-in-time; contracted future revenue only.",
+        "scope": "Company total RPO preferred; keep segment label if only AI cloud/RPO is disclosed.",
+        "manualConfirmation": "Confirm disclosed amount is obligation/backlog, not current-quarter revenue or bookings narrative.",
+    },
+    "aiCloudGpuFleetCapacity": {
+        "sourcePriority": "Investor presentation > shareholder letter > earnings release > SEC 10-Q/10-K capacity/capex notes > transcript/manual.",
+        "extractionHint": "Keywords: GPU fleet, GPU capacity, fleet capacity, MW, clusters, deployed GPUs. Unit: GPU count, MW, or capacity unit. Period: current installed or contracted capacity; label future capacity separately.",
+        "scope": "Segment metric is acceptable if it explicitly refers to AI cloud/GPU cloud capacity.",
+        "manualConfirmation": "Confirm unit and whether the capacity is live, under construction, or contracted future capacity.",
+    },
+    "aiCloudUtilization": {
+        "sourcePriority": "Shareholder letter or earnings release KPI table > investor presentation > transcript/manual > SEC risk discussion.",
+        "extractionHint": "Keywords: utilization, GPU utilization, fleet utilization, capacity utilization. Unit: percent. Period: current quarter or latest reported quarter; do not use revenue growth as proxy.",
+        "scope": "Prefer GPU cloud segment utilization; if company total utilization is used, mark the scope.",
+        "manualConfirmation": "Confirm denominator: deployed fleet, contracted capacity, or total available capacity.",
+    },
+    "aiCloudCapexCommitments": {
+        "sourcePriority": "SEC 10-Q/10-K commitments and contingencies > debt/purchase commitment notes > earnings release > shareholder letter > investor presentation.",
+        "extractionHint": "Keywords: purchase commitments, capex commitments, remaining capex commitments, GPU purchase obligation, supplier commitment. Unit: USD. Period: remaining future commitment as of quarter-end or FY-end.",
+        "scope": "Company total commitment preferred; preserve supplier/project scope if disclosed for GPU cloud only.",
+        "manualConfirmation": "Confirm whether amount is committed/contracted, not planned budget or aspirational capex guide.",
+    },
+    "aiCloudCapexIntensity": {
+        "sourcePriority": "SEC cash flow statement + income statement > FMP structured cash flow/revenue > earnings release capex table > manual calculation.",
+        "extractionHint": "Keywords: capital expenditures, purchases of property and equipment, capex, revenue. Unit: percent ratio. Period: quarterly, TTM, or FY; keep period explicit.",
+        "scope": "Company total ratio by default; segment capex intensity needs explicit segment revenue denominator.",
+        "manualConfirmation": "Confirm numerator/denominator period match before using to block heavy buy.",
+    },
+    "aiCloudNetDebt": {
+        "sourcePriority": "SEC 10-Q/10-K balance sheet > FMP balance sheet > earnings release balance sheet table > manual calculation.",
+        "extractionHint": "Keywords: total debt, notes payable, cash and equivalents, short-term investments. Unit: USD. Period: latest quarter-end point-in-time.",
+        "scope": "Company total balance sheet only; do not use segment-level debt unless explicitly ring-fenced.",
+        "manualConfirmation": "Confirm gross debt, cash, and restricted cash treatment before calculating net debt.",
+    },
+    "aiCloudDebtMaturity": {
+        "sourcePriority": "SEC 10-Q/10-K debt maturity table > debt footnote > financing agreement disclosure > earnings release > manual review.",
+        "extractionHint": "Keywords: debt maturities, maturity schedule, convertible notes, senior notes, credit facility. Unit: USD and maturity date/year. Period: future maturity ladder.",
+        "scope": "Company total debt maturity; list nearest maturity and large maturity walls separately.",
+        "manualConfirmation": "Manual confirmation required because date ladders and refinancing terms are often textual.",
+    },
+    "aiCloudInterestBurden": {
+        "sourcePriority": "SEC income statement and debt note > FMP income statement > earnings release financial table > manual calculation.",
+        "extractionHint": "Keywords: interest expense, interest income expense net, interest coverage, debt service. Unit: USD or coverage multiple. Period: current quarter, TTM, or FY; keep period explicit.",
+        "scope": "Company total interest burden; do not mix quarterly interest expense with FY revenue/EBITDA.",
+        "manualConfirmation": "Confirm whether value is gross interest expense, net interest, or coverage ratio.",
+    },
+    "aiCloudCustomerConcentration": {
+        "sourcePriority": "SEC 10-K customer concentration note > SEC 10-Q risk factors > earnings release/shareholder letter > investor presentation > manual review.",
+        "extractionHint": "Keywords: major customer, customer concentration, top customer, customer A, hyperscaler customer. Unit: percent of revenue/backlog. Period: FY or latest disclosed period.",
+        "scope": "Company total concentration preferred; backlog concentration should be labeled separately from revenue concentration.",
+        "manualConfirmation": "Manual confirmation required because customer names may be anonymized or described qualitatively.",
+    },
+    "aiCloudNvidiaSupplyExposure": {
+        "sourcePriority": "SEC 10-K supplier risk > SEC 10-Q risk factors > purchase commitment note > investor presentation/shareholder letter > transcript/manual.",
+        "extractionHint": "Keywords: Nvidia, GPU supplier, supplier concentration, GPU purchase agreement, supply agreement. Unit: percent, USD commitment, or qualitative exposure. Period: current supplier exposure or future committed supply.",
+        "scope": "Supplier exposure can be qualitative; preserve whether it is company total or GPU cloud segment.",
+        "manualConfirmation": "Manual confirmation required because supply dependency may be disclosed only in risk factors.",
+    },
+    "aiCloudHyperscalerExposure": {
+        "sourcePriority": "SEC 10-K customer risk > SEC 10-Q risk factors > shareholder letter > earnings release > investor presentation > transcript/manual.",
+        "extractionHint": "Keywords: hyperscaler, cloud customer, Microsoft, Google, Amazon, Oracle, anchor tenant. Unit: percent of revenue/backlog or qualitative exposure. Period: FY/current quarter/backlog; label basis.",
+        "scope": "Separate revenue concentration from contracted backlog concentration; preserve named customer if disclosed.",
+        "manualConfirmation": "Manual confirmation required because hyperscaler exposure may be indirect or anonymized.",
+    },
+}
+
+
+def _ai_cloud_infra_buy_zone_resolution_rows(context: ScoreContext) -> list[MetricResolution]:
+    return [
+        _ai_cloud_infra_buy_zone_metric(
+            context,
+            metric_key,
+            display_name,
+            keys,
+            default_status,
+            affects,
+            reason,
+            evidence,
+        )
+        for metric_key, display_name, keys, default_status, affects, reason, evidence in AI_CLOUD_INFRA_BUY_ZONE_SPECS
+    ]
+
+
+def _ai_cloud_infra_buy_zone_metric(
+    context: ScoreContext,
+    metric_key: str,
+    display_name: str,
+    keys: tuple[str, ...],
+    default_status: str,
+    affects: tuple[str, ...],
+    reason: str,
+    evidence: str,
+) -> MetricResolution:
+    value = _ai_cloud_infra_metric_value(context, metric_key, keys)
+    has_value = value is not None or _has_snapshot_value(context, *keys)
+    evidence_path = AI_CLOUD_INFRA_EVIDENCE_PATHS.get(metric_key, {})
+    source_priority = str(evidence_path.get("sourcePriority") or evidence)
+    extraction_hint = str(evidence_path.get("extractionHint") or "")
+    scope = str(evidence_path.get("scope") or "Company total unless disclosure clearly states a segment metric.")
+    manual_confirmation = str(evidence_path.get("manualConfirmation") or "Manual confirmation required before scoring or buy-zone use.")
+    source_metrics = ["SEC 10-Q", "SEC 10-K", "8-K earnings release", "shareholder letter", "investor presentation"]
+    if has_value:
+        return MetricResolution(
+            metricKey=metric_key,
+            displayName=display_name,
+            metricType="DISCLOSURE_KPI",
+            resolutionStatus="available",
+            value=value,
+            sourceType=_resolution_source_type(context, keys),
+            confidence="high",
+            affects=list(affects),
+            isBlocking=False,
+            ratingCapImpact="none",
+            explanation=(
+                f"{display_name} is available for the generic AI cloud infra buy-zone guardrails. "
+                f"Scope/period check: {scope} {manual_confirmation}"
+            ),
+            recommendedAction="No refill needed.",
+            sourceMetricsUsed=source_metrics,
+            priority="high",
+        )
+    return MetricResolution(
+        metricKey=metric_key,
+        displayName=display_name,
+        metricType="DISCLOSURE_KPI",
+        resolutionStatus=default_status,
+        value=None,
+        sourceType="missing",
+        confidence="low",
+        affects=list(affects),
+        isBlocking=False,
+        ratingCapImpact="none",
+        explanation=(
+            f"{display_name} is a required AI cloud infra buy-zone operating input. {reason} "
+            f"Source priority: {source_priority} Extraction hint: {extraction_hint} "
+            f"Scope/period: {scope} Manual confirmation: {manual_confirmation}"
+        ),
+        recommendedAction=(
+            f"Fetch evidence for {display_name} using the source priority above; "
+            "do not substitute P/S, EV/Sales, or revenue growth."
+        ),
+        sourceMetricsUsed=source_metrics,
+        priority="high",
+    )
+
+
+def _ai_cloud_infra_metric_value(context: ScoreContext, metric_key: str, keys: tuple[str, ...]) -> float | None:
+    value = _metric(context, *keys)
+    if value is not None:
+        return value
+    if metric_key == "aiCloudCapexIntensity":
+        capex = _snapshot_number(context.snapshot, "capex", "capital_expenditure", "capitalExpenditure", "capital_expenditures", "capitalExpenditures")
+        revenue = _snapshot_number(context.snapshot, "total_revenue", "totalRevenue", "revenue")
+        if capex is not None and revenue is not None and revenue > 0:
+            return abs(capex) / revenue
+    if metric_key == "aiCloudNetDebt":
+        debt = _snapshot_number(context.snapshot, "total_debt", "totalDebt")
+        cash = _snapshot_number(context.snapshot, "total_cash", "totalCash", "cash_and_cash_equivalents", "cashAndCashEquivalents")
+        if debt is not None and cash is not None:
+            return debt - cash
+    return None
+
+
+def _has_snapshot_value(context: ScoreContext, *keys: str) -> bool:
+    for key in keys:
+        value = context.snapshot.get(key)
+        if value is None:
+            value = context.snapshot.get(_camel_to_snake(key))
+        if value not in {None, ""}:
+            return True
+    return False
 
 
 def _model_disclosure_metric(

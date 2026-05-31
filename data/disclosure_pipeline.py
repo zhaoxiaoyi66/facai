@@ -30,6 +30,7 @@ HOOD_IR_SEED_URLS = (
     "https://investors.robinhood.com/newsroom/default.aspx",
     "https://investors.robinhood.com/financials/quarterly-results/default.aspx",
 )
+DISCLOSURE_PIPELINE_AI_CLOUD_MODELS = {"AI_CLOUD_INFRA", "AI_INFRA_HIGH_RISK"}
 IR_LINK_KEYWORDS = (
     "financial results",
     "earnings",
@@ -70,8 +71,8 @@ class DisclosurePipeline:
         definitions = list(metric_definitions_for_model(model_type))
         result = {"symbol": symbol, "modelType": model_type, "saved": [], "logs": [], "missing": [], "notDisclosed": [], "resolutions": []}
 
-        if model_type != "SAAS_SOFTWARE" and not (model_type == "CRYPTO_FINANCIAL_INFRA" and symbol == "HOOD"):
-            self._log(result, symbol, "PIPELINE", None, "skipped", "MVP 版本先支持 SAAS_SOFTWARE")
+        if not _model_can_run_disclosure_pipeline(model_type, symbol):
+            self._log(result, symbol, "PIPELINE", None, "skipped", "当前模型暂未接入 disclosure pipeline")
             return result
 
         self.store.clear_symbol_metrics(symbol)
@@ -80,9 +81,13 @@ class DisclosurePipeline:
         cik = self._load_cik(symbol, result, force_refresh=force_refresh)
         if cik:
             self._load_sec_xbrl(symbol, cik, result, force_refresh=force_refresh)
-            self._load_sec_filings(symbol, cik, definitions, result, force_refresh=force_refresh)
-        self._load_ir_pages(symbol, definitions, result, force_refresh=force_refresh)
-        self._load_fmp_transcript(symbol, definitions, result)
+            self._load_sec_filings(symbol, cik, definitions, result, force_refresh=force_refresh, model_type=model_type)
+        if _is_ai_cloud_model(model_type):
+            self._log(result, symbol, "IR_RELEASE", None, "skipped", "SEC-first P0：AI 云基础设施暂不抓取 IR / investor presentation")
+            self._log(result, symbol, "FMP_TRANSCRIPT", None, "skipped", "SEC-first P0：AI 云基础设施暂不抓取 transcript")
+        else:
+            self._load_ir_pages(symbol, definitions, result, force_refresh=force_refresh)
+            self._load_fmp_transcript(symbol, definitions, result)
 
         best = self.store.best_metrics(symbol)
         mapping = kpi_mapping_for_ticker(symbol)
@@ -236,7 +241,15 @@ class DisclosurePipeline:
                 "high",
             )
 
-    def _load_sec_filings(self, symbol: str, cik: str, definitions: list[MetricDefinition], result: dict, force_refresh: bool) -> None:
+    def _load_sec_filings(
+        self,
+        symbol: str,
+        cik: str,
+        definitions: list[MetricDefinition],
+        result: dict,
+        force_refresh: bool,
+        model_type: str,
+    ) -> None:
         try:
             filings = self.sec_client.recent_filings(cik, forms=("8-K", "10-Q", "10-K"), limit=10, force_refresh=force_refresh)
         except Exception as exc:
@@ -244,15 +257,44 @@ class DisclosurePipeline:
             return
 
         self._log(result, symbol, "SEC_SUBMISSIONS", None, "available", f"{len(filings)} recent filings")
+        is_ai_cloud = _is_ai_cloud_model(model_type)
         for filing in filings:
+            source_type = f"SEC_{filing.form.replace('-', '')}"
+            if filing.form in {"10-Q", "10-K"}:
+                if not is_ai_cloud:
+                    self._log(result, symbol, source_type, filing.document_url, "skipped", "标准 10-K/10-Q 字段使用 SEC XBRL，暂不做长文 KPI 抽取")
+                    continue
+                try:
+                    text = self.sec_client.cached_text(
+                        f"sec_doc_{filing.accession_number}_{_slug(filing.document_url)}",
+                        filing.document_url,
+                        ttl_hours=24 * 7,
+                        force_refresh=force_refresh,
+                    )
+                except Exception as exc:
+                    self._log(result, symbol, source_type, filing.document_url, "failed", _short_error(exc))
+                    continue
+                self._log(result, symbol, source_type, filing.document_url, "fetched", "AI cloud SEC filing text")
+                self._extract_and_save(
+                    result=result,
+                    symbol=symbol,
+                    definitions=definitions,
+                    text=text,
+                    source_type=source_type,
+                    source_url=filing.document_url,
+                    source_document_title=f"{filing.form} primary document",
+                    period=filing.report_date or filing.filing_date,
+                    confidence="medium",
+                    accession_number=filing.accession_number,
+                )
+                continue
             if filing.form != "8-K":
-                self._log(result, symbol, f"SEC_{filing.form.replace('-', '')}", filing.document_url, "skipped", "标准 10-K/10-Q 字段使用 SEC XBRL，暂不做长文 KPI 抽取")
+                self._log(result, symbol, source_type, filing.document_url, "skipped", "暂不支持该 SEC 表格正文抽取")
                 continue
             for url, title in self.sec_client.filing_exhibit_urls(filing, force_refresh=force_refresh):
                 if url == filing.document_url:
                     self._log(result, symbol, "SEC_8K", url, "skipped", "跳过 8-K 主文，避免把 exhibit 清单或债券条款误判为经营 KPI")
                     continue
-                source_type = "SEC_8K"
                 try:
                     text = self.sec_client.cached_text(
                         f"sec_doc_{filing.accession_number}_{_slug(url)}",
@@ -506,6 +548,7 @@ class DisclosurePipeline:
                 "evidenceText": extracted_text,
                 "extractionRule": "disclosure_pipeline_extraction",
                 "confidence": confidence,
+                "needsHumanReview": source_type not in {"CALCULATED"},
             }
         )
 
@@ -584,11 +627,24 @@ def _candidate_ir_links(raw_html: str, base_url: str) -> list[tuple[str, str]]:
 
 
 def _ir_seed_urls(symbol: str) -> tuple[str, ...]:
-    if symbol.upper() == "NOW":
+    symbol = symbol.upper()
+    if symbol == "NOW":
         return NOW_IR_SEED_URLS
-    if symbol.upper() == "HOOD":
+    if symbol == "HOOD":
         return HOOD_IR_SEED_URLS
     return ()
+
+
+def _model_can_run_disclosure_pipeline(model_type: str, symbol: str) -> bool:
+    if model_type == "SAAS_SOFTWARE":
+        return True
+    if model_type == "CRYPTO_FINANCIAL_INFRA" and symbol.upper() == "HOOD":
+        return True
+    return _is_ai_cloud_model(model_type)
+
+
+def _is_ai_cloud_model(model_type: str) -> bool:
+    return model_type in DISCLOSURE_PIPELINE_AI_CLOUD_MODELS
 
 
 def _xbrl_extracted_text(metric_key: str, supplement: dict) -> str:
