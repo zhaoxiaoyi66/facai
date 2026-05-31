@@ -223,7 +223,7 @@ class DisclosureStore:
         rows = conn.execute(
             """
             SELECT id, symbol, metricKey, metricVariant, period, fiscalYear, fiscalQuarter,
-                   sourceDocumentTitle, extractedText, updatedAt
+                   sourceDocumentTitle, extractedText, reviewStatus, updatedAt
             FROM disclosure_metric_values
             WHERE symbol = ? AND metricVariant = ?
             """,
@@ -498,21 +498,29 @@ def _metric_rank(row: dict) -> tuple[int, int, int, int, str]:
     )
 
 
-def _freshness_sort_key(row: dict) -> tuple[int, int, int, str]:
+def _freshness_sort_key(row: dict) -> tuple[int, int, int, int, int, int, str]:
     """Sort metric values by the period the metric describes, not filing date."""
     period = normalize_metric_period(row).metricPeriod or normalize_metric_period(row).fiscalPeriod or str(row.get("period") or "")
+    review_rank = REVIEW_PRIORITY.get(str(row.get("reviewStatus") or ""), 0)
     year = 0
     quarter = 0
+    month = 0
+    day = 0
     text = str(period or "")
+    date_match = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})", text)
+    if date_match:
+        year = int(date_match.group(1))
+        month = int(date_match.group(2))
+        day = int(date_match.group(3))
     year_match = re.search(r"(20\d{2})", text)
-    if year_match:
+    if year_match and not date_match:
         year = int(year_match.group(1))
     quarter_match = re.search(r"Q([1-4])", text, flags=re.IGNORECASE)
     if quarter_match:
         quarter = int(quarter_match.group(1))
     elif text.upper().startswith("FY"):
         quarter = 5
-    return (year, quarter, int(row.get("id") or 0), str(row.get("updatedAt") or ""))
+    return (review_rank, year, quarter, month, day, int(row.get("id") or 0), str(row.get("updatedAt") or ""))
 
 
 def _source_type_for_scoring(metric_key: str, source_type: str, confidence: str, review_status: str | None = None) -> str:

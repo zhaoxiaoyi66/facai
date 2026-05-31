@@ -459,6 +459,8 @@ class DisclosurePipeline:
                 "FMP_TRANSCRIPT",
             }:
                 continue
+            if not _ai_cloud_metric_source_allowed(definition.metric_key, source_type):
+                continue
             extracted = extractMetricFromText(text, definition, confidence=confidence)
             if not extracted:
                 continue
@@ -695,6 +697,19 @@ def _period_from_text(text: str) -> str | None:
 
 def _metric_period_from_extraction(default_period: str | None, source_document_title: str | None, extracted_text: str | None) -> str | None:
     return _period_from_text(str(source_document_title or "")) or _period_from_text(str(extracted_text or "")) or default_period
+
+
+def _ai_cloud_metric_source_allowed(metric_key: str, source_type: str) -> bool:
+    hard_disclosure_metrics = {
+        "aiCloudRpo",
+        "aiCloudDebtMaturity",
+        "aiCloudInterestBurden",
+        "aiCloudCustomerConcentration",
+        "aiCloudNvidiaSupplyExposure",
+    }
+    if metric_key in hard_disclosure_metrics:
+        return source_type in {"SEC_10Q", "SEC_10K"}
+    return True
 
 
 def _transcript_text(data) -> str:

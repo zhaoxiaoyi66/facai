@@ -395,7 +395,7 @@ AI_CLOUD_INFRA_METRICS: tuple[MetricDefinition, ...] = (
         metric_key="aiCloudGpuFleetCapacity",
         snapshot_key="gpu_fleet_capacity",
         display_name="GPU fleet / capacity",
-        aliases=("GPU fleet", "GPU capacity", "fleet capacity", "capacity"),
+        aliases=("GPU fleet", "GPU capacity", "installed GPUs", "contracted GPU capacity", "GPU count", "GPU accelerators"),
         preferred_sources=("IR_PRESENTATION", "EARNINGS_RELEASE", "IR_RELEASE", "SHAREHOLDER_LETTER", "SEC_10Q", "SEC_10K"),
         unit_hint="count",
     ),
@@ -443,12 +443,13 @@ AI_CLOUD_INFRA_METRICS: tuple[MetricDefinition, ...] = (
         display_name="Interest burden",
         aliases=("interest burden", "interest expense", "interest coverage"),
         preferred_sources=("SEC_10Q", "SEC_10K", "FMP"),
+        unit_hint="money",
     ),
     MetricDefinition(
         metric_key="aiCloudCustomerConcentration",
         snapshot_key="customer_concentration",
         display_name="Customer concentration",
-        aliases=("customer concentration", "major customer", "top customer", "top customer revenue share"),
+        aliases=("customer concentration", "largest customer", "major customer", "top customer", "top customer revenue share"),
         preferred_sources=("SEC_10K", "SEC_10Q", "EARNINGS_RELEASE", "IR_RELEASE", "SHAREHOLDER_LETTER"),
     ),
     MetricDefinition(
@@ -457,6 +458,7 @@ AI_CLOUD_INFRA_METRICS: tuple[MetricDefinition, ...] = (
         display_name="Nvidia supply exposure",
         aliases=("Nvidia supply exposure", "GPU supplier concentration", "supplier concentration", "Nvidia purchase commitment"),
         preferred_sources=("SEC_10K", "SEC_10Q", "IR_PRESENTATION", "EARNINGS_RELEASE", "SHAREHOLDER_LETTER"),
+        unit_hint="qualitative",
     ),
     MetricDefinition(
         metric_key="aiCloudHyperscalerExposure",
@@ -464,6 +466,7 @@ AI_CLOUD_INFRA_METRICS: tuple[MetricDefinition, ...] = (
         display_name="Hyperscaler exposure",
         aliases=("hyperscaler exposure", "hyperscaler customer", "cloud customer", "anchor tenant"),
         preferred_sources=("SEC_10K", "SEC_10Q", "IR_PRESENTATION", "EARNINGS_RELEASE", "SHAREHOLDER_LETTER"),
+        unit_hint="qualitative",
     ),
 )
 

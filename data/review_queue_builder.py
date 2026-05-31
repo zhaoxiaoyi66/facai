@@ -24,6 +24,8 @@ from settings import load_watchlist
 
 
 EXTRACTED_VALUE_SOURCES = {"SEC_8K", "SEC_10Q", "SEC_10K", "IR_RELEASE", "IR_PRESENTATION", "FMP_TRANSCRIPT"}
+AI_CLOUD_RISK_OBSERVATION_METRICS = {"aiCloudNvidiaSupplyExposure", "aiCloudHyperscalerExposure"}
+AI_CLOUD_STRUCTURED_REVIEW_METRICS = {"aiCloudDebtMaturity"}
 HOOD_BUY_ZONE_CORE_METRICS = {
     "hoodAuc",
     "hoodNetDeposits",
@@ -359,6 +361,7 @@ class ReviewQueueStore:
                         aiTriageStatus = COALESCE(?, aiTriageStatus),
                         hiddenByDefault = CASE
                             WHEN ? = 'auto_archived' THEN 1
+                            WHEN ? = 'historical_value' THEN 1
                             WHEN ? = 'pending_review' THEN 0
                             ELSE hiddenByDefault
                         END,
@@ -396,6 +399,7 @@ class ReviewQueueStore:
                         normalized["extractionRule"],
                         normalized["aiTriageStatus"],
                         normalized["reviewStatus"],
+                        normalized["freshnessStatus"],
                         normalized["reviewStatus"],
                         _now(),
                         existing["id"],
@@ -450,7 +454,7 @@ class ReviewQueueStore:
                     normalized["freshnessStatus"],
                     normalized["extractionRule"],
                     normalized["aiTriageStatus"],
-                    1 if normalized["reviewStatus"] == "auto_archived" else 0,
+                    1 if normalized["reviewStatus"] == "auto_archived" or normalized["freshnessStatus"] == "historical_value" else 0,
                     _now(),
                 ),
             )
@@ -1066,7 +1070,7 @@ class ReviewQueueStore:
         for grouped in groups.values():
             if len(grouped) <= 1:
                 continue
-            sorted_group = sorted(grouped, key=lambda row: (str(row.get("updatedAt") or ""), int(row.get("id") or 0)), reverse=True)
+            sorted_group = sorted(grouped, key=_duplicate_candidate_sort_key, reverse=True)
             duplicate_ids.extend(int(row["id"]) for row in sorted_group[1:])
         if not duplicate_ids:
             return 0
@@ -1828,7 +1832,6 @@ class ReviewQueueBuilder:
             counters[outcome] += 1
             item_type = str(item.get("itemType") or "unknown")
             item_type_counts[item_type] = item_type_counts.get(item_type, 0) + 1
-        self.queue_store.archive_duplicate_items(symbols)
         self.queue_store.cleanup_stale_review_items(symbols)
         self.queue_store.archive_superseded_hood_operating_candidates(symbols)
         return QueueBuildResult(
@@ -1854,12 +1857,26 @@ class ReviewQueueBuilder:
                 recommended = "keep as historical value; set current only with confirmation"
             if valid and str(row.get("metricKey") or "") in {"hoodNormalizedEarnings", "hoodNormalizedEbitda"}:
                 recommended = "needs_human_review: confirm non-GAAP normalization basis before scoring or buy-zone use"
+            metric_key = str(row.get("metricKey") or "")
+            ai_triage_status = None if valid else "extraction_rejected_by_rule"
+            review_status = (row.get("reviewStatus") or "pending_review") if valid else "auto_archived"
+            item_type = "qualitative_risk" if valid and metric_key in AI_CLOUD_RISK_OBSERVATION_METRICS else "extracted_value"
+            if item_type == "qualitative_risk":
+                recommended = "risk observation: confirm exposure context before scoring or buy-zone use"
+            if valid and metric_key in AI_CLOUD_STRUCTURED_REVIEW_METRICS:
+                item_type = "qualitative_risk"
+                recommended = "debt maturity structure: manually organize maturity table; do not confirm a single year as a numeric KPI"
+            if valid and _ai_cloud_net_debt_unit_unclear(row):
+                item_type = "evidence_missing_extracted_value"
+                review_status = "needs_evidence"
+                ai_triage_status = "needs_more_source"
+                recommended = "needs_more_source: net debt amount lacks clear million/billion unit or reliable net debt context"
             items.append(
                 {
                     "symbol": symbol,
-                    "metricKey": row.get("metricKey"),
-                    "displayName": row.get("displayName") or row.get("metricKey"),
-                    "itemType": "extracted_value",
+                    "metricKey": metric_key,
+                    "displayName": row.get("displayName") or metric_key,
+                    "itemType": item_type,
                     "value": row.get("value"),
                     "unit": row.get("unit"),
                     "period": _review_period_for_extracted_row(row),
@@ -1870,19 +1887,19 @@ class ReviewQueueBuilder:
                     "evidenceText": evidence_text,
                     "systemReason": "" if valid else reason,
                     "confidence": row.get("confidence") or "low",
-                    "affects": _affects_for_metric(row.get("metricKey")),
-                    "reviewStatus": (row.get("reviewStatus") or "pending_review") if valid else "auto_archived",
-                    "aiTriageStatus": None if valid else "extraction_rejected_by_rule",
+                    "affects": _affects_for_metric(metric_key),
+                    "reviewStatus": review_status,
+                    "aiTriageStatus": ai_triage_status,
                     "recommendedAction": recommended,
                     "resolutionStatus": "available",
                     "sourceKind": "disclosure_metric_values",
                     "sourceMetricId": row.get("id"),
                     "modelType": _model_type_for_symbol(symbol),
-                    "metricVariant": row.get("metricVariant") or metric_variant_for_key(row.get("metricKey")),
-                    "targetBasis": row.get("targetBasis") or target_basis_for_metric(row.get("metricVariant") or row.get("metricKey")),
+                    "metricVariant": row.get("metricVariant") or metric_variant_for_key(metric_key),
+                    "targetBasis": row.get("targetBasis") or target_basis_for_metric(row.get("metricVariant") or metric_key),
                     "freshnessStatus": freshness_status,
                     "recommendedAction": recommended,
-                    "explanation": "Extracted from SEC / IR / transcript; confirmation is required before scoring." if valid else reason,
+                    "explanation": _review_explanation_for_extracted_candidate(metric_key, item_type, valid, reason),
                 }
             )
         return items
@@ -2021,6 +2038,35 @@ def _recommended_action_for_item_type(item_type: str) -> str:
     }.get(item_type, "复核")
 
 
+def _review_explanation_for_extracted_candidate(metric_key: str, item_type: str, valid: bool, reason: str) -> str:
+    if not valid:
+        return reason
+    if metric_key == "aiCloudDebtMaturity":
+        return "Debt maturity is a structured debt-table review item. Organize maturity, rate, and amount before it can inform risk or confidence."
+    if metric_key == "aiCloudNetDebt" and item_type == "evidence_missing_extracted_value":
+        return "Net debt evidence lacks a clear amount scale or reliable net debt context. Fetch a clearer debt/cash disclosure before confirmation."
+    return "Extracted from SEC / IR / transcript; confirmation is required before scoring."
+
+
+def _ai_cloud_net_debt_unit_unclear(row: dict) -> bool:
+    if str(row.get("metricKey") or "") != "aiCloudNetDebt":
+        return False
+    evidence = str(row.get("extractedText") or row.get("evidenceText") or "")
+    text = evidence.lower()
+    value = _number(row.get("value"))
+    if value is None:
+        return True
+    has_scale = bool(re.search(r"\b(?:in millions|in billions|million|millions|billion|billions|bn|mm)\b", text))
+    has_net_debt_context = bool(re.search(r"\b(?:total\s+net\s+debt|net\s+debt|net\s+indebtedness)\b", text))
+    if not has_net_debt_context:
+        return True
+    if abs(value) < 1_000_000 and not has_scale:
+        return True
+    if "market capitalization" in text and not re.search(r"\btotal\s+net\s+debt\b", text):
+        return True
+    return False
+
+
 def _affects_for_metric(metric_key: object) -> str:
     definition = metric_source_definition(str(metric_key or ""))
     if not definition:
@@ -2096,6 +2142,15 @@ def _can_reopen_terminal_queue_item(item: dict, existing: dict) -> bool:
         and str(item.get("sourceKind") or "") == "disclosure_metric_values"
         and item.get("sourceMetricId") is not None
         and str(item.get("reviewStatus") or "") == "pending_review"
+    )
+
+
+def _duplicate_candidate_sort_key(row: dict) -> tuple[int, int, str, int]:
+    return (
+        1 if str(row.get("freshnessStatus") or "") == "active_current" else 0,
+        int(row.get("sourceMetricId") or 0),
+        str(row.get("updatedAt") or ""),
+        int(row.get("id") or 0),
     )
 
 

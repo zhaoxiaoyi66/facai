@@ -297,10 +297,12 @@ METRIC_DISPLAY_MAP.update(
 
 METRIC_DISPLAY_MAP.update(
     {
-        "aicloudcontractedbacklog": "AI云已签约 backlog / RPO",
-        "ai cloud contracted backlog": "AI云已签约 backlog / RPO",
+        "aicloudcontractedbacklog": "AI云 revenue backlog",
+        "ai cloud contracted backlog": "AI云 revenue backlog",
+        "contracted backlog / rpo": "AI云 revenue backlog",
         "aicloudrpo": "AI云 RPO",
         "ai cloud rpo": "AI云 RPO",
+        "remaining performance obligations": "RPO / 剩余履约义务",
         "aicloudgpufleetcapacity": "GPU fleet / capacity",
         "ai cloud gpu fleet capacity": "GPU fleet / capacity",
         "aicloudutilization": "AI云利用率",

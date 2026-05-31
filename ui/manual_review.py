@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html import escape
 
 import streamlit as st
@@ -2199,8 +2200,10 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
 
 def _review_row_source_meta(row: dict) -> str:
     source = source_type_label(row.get("sourceType") or "N/A")
-    updated = row.get("updatedAt") or row.get("sourceDate") or row.get("createdAt") or row.get("fiscalPeriod") or "N/A"
-    return f"{source} · {updated}"
+    if str(row.get("sourceType") or "").strip().lower() == "missing":
+        return f"{source} · 待补证据"
+    period = row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or row.get("sourceDate") or row.get("updatedAt") or "N/A"
+    return f"{source} · {period}"
 
 
 def _affects_tone(value: object) -> str:
@@ -2330,6 +2333,12 @@ def _review_system_reason_text(reason: object) -> str:
     if not text:
         return "暂无系统说明。"
     lowered = text.lower()
+    if "remaining performance obligations is a required ai cloud infra" in lowered:
+        return (
+            "RPO 是 AI 云买区模型的核心经营输入，会影响置信度。"
+            "revenue backlog 可能包含 RPO 以外的已承诺未来收入，不能直接当作纯 RPO 使用；"
+            "需从 SEC 10-Q / 10-K 或 8-K 披露中找到明确的 remaining performance obligations，并人工确认。"
+        )
     if "is a core hood brokerage/fintech operating input" in lowered and "do not substitute" in lowered:
         metric = text.split(" is a core ", 1)[0].strip() or "该字段"
         metric_label_map = {
@@ -2362,9 +2371,7 @@ def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bo
     evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
     system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
     evidence_summary = str((view_item or {}).get("evidenceSummary") or "").strip()
-    source_title = str(row.get("sourceDocumentTitle") or row.get("sourceTitle") or row.get("sourceType") or "N/A")
-    source_url = str(row.get("sourceUrl") or "").strip()
-    source_text = source_title if not source_url else f"{source_title} · {source_url}"
+    source_text = _review_source_display(row)
     ai_explanation = ""
     if ai_result:
         decision = str(ai_result.get("aiDecision") or "")
@@ -2396,6 +2403,33 @@ def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bo
 def _review_drawer_section(title: str, body: object, clipped: bool = False) -> str:
     class_name = "drawer-evidence-section clipped" if clipped else "drawer-evidence-section"
     return f'<section class="{class_name}"><h4>{escape(title)}</h4><p>{escape(str(body or "暂无"))}</p></section>'
+
+
+def _review_source_display(row: dict) -> str:
+    source = source_type_label(row.get("sourceType") or "N/A")
+    title = str(row.get("sourceDocumentTitle") or row.get("sourceTitle") or "").strip()
+    url = str(row.get("sourceUrl") or "").strip()
+    source_type = str(row.get("sourceType") or "").strip().upper()
+    lowered = f"{title} {url}".lower()
+    if source_type == "SEC_8K" and "earnings" in lowered:
+        title = _earnings_release_label(url) or "earnings release"
+    elif title:
+        title = title.replace("8-K Exhibit 99.1", "Exhibit 99.1")
+    parts = [part for part in (source, title) if part and part != "N/A"]
+    text = " / ".join(parts) if parts else "N/A"
+    return text if not url else f"{text} · {url}"
+
+
+def _earnings_release_label(url: str) -> str:
+    lowered = str(url or "").lower()
+    match = re.search(r"([1-4])q(\d{2})", lowered)
+    if not match:
+        match = re.search(r"q([1-4])(\d{2})", lowered)
+    if not match:
+        return "earnings release"
+    quarter = match.group(1)
+    year = 2000 + int(match.group(2))
+    return f"Q{quarter} {year} earnings release"
 
 
 def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None, view_rows: list[dict] | None = None) -> None:

@@ -40,6 +40,10 @@ def extractMetricFromText(text: str, metric_definition: MetricDefinition, confid
         return None
 
     normalized_text = _normalize_whitespace(text)
+    ai_cloud_candidate = _extract_ai_cloud_special_metric(normalized_text, metric_definition, confidence)
+    if ai_cloud_candidate or _ai_cloud_special_metric_only(metric_definition.metric_key):
+        return ai_cloud_candidate
+
     lowered = normalized_text.lower()
     candidates: list[ExtractedMetric] = []
 
@@ -50,6 +54,9 @@ def extractMetricFromText(text: str, metric_definition: MetricDefinition, confid
             index = lowered.find(alias_lower, start)
             if index < 0:
                 break
+            if not _alias_matches_at(lowered, alias_lower, index):
+                start = index + len(alias_lower)
+                continue
             if _looks_like_cost_context(lowered, index):
                 start = index + len(alias_lower)
                 continue
@@ -138,6 +145,9 @@ def validate_extracted_metric_candidate(metric_key: str, evidence_text: str, can
             return False, "原文没有明确 free cash flow margin"
     if metric_value_scope_mismatch(canonical_key, text, candidate_value):
         return False, "金额单位、期间或公司级口径不匹配，不能作为主候选。"
+    ai_cloud_valid, ai_cloud_reason = _validate_ai_cloud_metric_candidate(canonical_key, text, candidate_value)
+    if not ai_cloud_valid:
+        return False, ai_cloud_reason
     return True, "valid"
 
 
@@ -155,6 +165,272 @@ def _canonical_metric_key(metric_key: str) -> str:
         "impliedFcfMargin": "fcfMargin",
     }
     return mapping.get(str(metric_key), str(metric_key))
+
+
+def _validate_ai_cloud_metric_candidate(metric_key: str, text: str, candidate_value: float | None) -> tuple[bool, str]:
+    token = _normalized_metric_token(metric_key)
+    if not token.startswith("aicloud"):
+        return True, "valid"
+
+    if token == "aicloudgpufleetcapacity":
+        has_gpu_capacity_context = bool(
+            re.search(
+                r"\b(?:gpu|gpus|accelerators?)\b.{0,80}\b(?:fleet|capacity|installed|deployed|count)\b|"
+                r"\b(?:fleet|capacity|installed|deployed|count)\b.{0,80}\b(?:gpu|gpus|accelerators?)\b",
+                text,
+            )
+        )
+        has_gpu_count = bool(re.search(r"\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:gpu|gpus|gpu accelerators|accelerators)\b", text))
+        if not has_gpu_capacity_context or not has_gpu_count:
+            return False, "GPU capacity candidate lacks an explicit GPU count."
+        if re.search(r"\b(?:mw|gw|megawatts?|gigawatts?|borrowing capacity|debt|notes?|capex|capital expenditures?)\b", text):
+            return False, "GPU capacity candidate looks like power, debt, or capex rather than GPU count."
+
+    if token == "aicloudrpo":
+        if not re.search(r"\bremaining performance obligations?\b|\brpo\b", text):
+            return False, "RPO candidate lacks explicit remaining performance obligations wording."
+        if re.search(
+            r"\brevenue backlog\b|\bcontracted backlog\b|\bbookings?\b|plus.{0,120}other amounts|"
+            r"other amounts.{0,120}future periods|subject to the satisfaction of delivery and availability",
+            text,
+        ):
+            return False, "RPO candidate is a broader backlog disclosure, not pure RPO."
+        if re.search(r"\b(?:our\s+)?revenue\s+(?:was|were|of)\s+\$", text):
+            return False, "RPO candidate picked up revenue, not remaining performance obligations."
+        if not re.search(r"(?:remaining performance obligations?|rpo).{0,120}\$\s?\d|\$\s?\d.{0,120}(?:remaining performance obligations?|rpo)", text):
+            return False, "RPO candidate lacks an explicit monetary RPO value."
+        if re.search(r"\bcorporate bonds?|commercial paper|marketable securities|general corporate purposes\b", text):
+            return False, "RPO candidate is from corporate finance context, not performance obligations."
+
+    if token == "aicloudcontractedbacklog":
+        if not re.search(r"\b(?:contracted backlog|revenue backlog|remaining contracted backlog|backlog)\b", text):
+            return False, "Backlog candidate lacks explicit backlog wording."
+        if re.search(r"\b(?:sales pipeline|opportunity pipeline|total addressable market|future demand|market opportunity)\b", text):
+            return False, "Backlog candidate looks like pipeline or market opportunity rather than contracted backlog."
+
+    if token == "aicloudcustomerconcentration":
+        has_concentration_context = bool(
+            re.search(
+                r"\b(customer concentration|largest customer|top customer|customer [a-z]\b.{0,80}\b(?:accounted for|represented)|"
+                r"(?:accounted for|represented).{0,80}\b(?:revenue|accounts receivable))\b",
+                text,
+            )
+        )
+        if not has_concentration_context:
+            return False, "Customer concentration candidate lacks explicit concentration disclosure."
+        if candidate_value is not None and candidate_value <= 0.1005 and re.search(r"\b(?:no other customer\b.{0,80})?(?:accounted for|representing|represented)?\s*10\s?(?:%|percent)\s+or\s+more\b", text):
+            return False, "Customer concentration candidate is only the 10% disclosure threshold."
+        if re.search(r"\b(customer wins?|customer demand|customer agreement|customer relationship|strategic customer)\b", text):
+            return False, "Customer concentration candidate looks like customer news, not concentration disclosure."
+
+    if token == "aicloudnvidiasupplyexposure":
+        has_hard_supply_context = bool(
+            re.search(r"\bnvidia\b.{0,120}\b(?:supplier|supply|purchase commitments?|vendor|gpus?)\b|\b(?:supplier|vendor|purchase commitments?|gpus?)\b.{0,120}\bnvidia\b", text)
+            or re.search(r"\b(?:supplier concentration|vendor concentration)\b.{0,120}\b(?:gpus?|nvidia|purchase commitments?)\b", text)
+        )
+        if not has_hard_supply_context:
+            return False, "Nvidia supply exposure candidate is not a hard supply dependency disclosure."
+
+    if token == "aicloudhyperscalerexposure":
+        has_contract_context = bool(
+            re.search(
+                r"\b(?:openai|meta|microsoft|azure|google|amazon|aws|oracle|hyperscaler)\b.{0,160}"
+                r"\b(?:committed|commitment|master services agreement|order form|significant customer|top customer|customer concentration)\b|"
+                r"\b(?:committed|commitment|master services agreement|order form|significant customer|top customer|customer concentration)\b.{0,160}"
+                r"\b(?:openai|meta|microsoft|azure|google|amazon|aws|oracle|hyperscaler)\b",
+                text,
+            )
+        )
+        if not has_contract_context:
+            return False, "Hyperscaler exposure candidate lacks customer contract or concentration context."
+
+    return True, "valid"
+
+
+def _ai_cloud_special_metric_only(metric_key: str) -> bool:
+    return _normalized_metric_token(metric_key) in {
+        "aicloudrpo",
+        "aicloudcustomerconcentration",
+        "aiclouddebtmaturity",
+        "aicloudinterestburden",
+        "aicloudnvidiasupplyexposure",
+        "aicloudhyperscalerexposure",
+    }
+
+
+def _extract_ai_cloud_special_metric(text: str, metric_definition: MetricDefinition, confidence: str) -> ExtractedMetric | None:
+    token = _normalized_metric_token(metric_definition.metric_key)
+    if not token.startswith("aicloud"):
+        return None
+    if token == "aicloudrpo":
+        return _extract_ai_cloud_rpo(text, metric_definition.metric_key, confidence)
+    if token == "aicloudcustomerconcentration":
+        return _extract_ai_cloud_customer_concentration(text, metric_definition.metric_key, confidence)
+    if token == "aiclouddebtmaturity":
+        return _extract_ai_cloud_debt_maturity(text, metric_definition.metric_key, confidence)
+    if token == "aicloudinterestburden":
+        return _extract_ai_cloud_interest_burden(text, metric_definition.metric_key, confidence)
+    if token == "aicloudnvidiasupplyexposure":
+        return _extract_ai_cloud_nvidia_supply_exposure(text, metric_definition.metric_key, confidence)
+    if token == "aicloudhyperscalerexposure":
+        return _extract_ai_cloud_hyperscaler_exposure(text, metric_definition.metric_key, confidence)
+    return None
+
+
+def _extract_ai_cloud_rpo(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    patterns = (
+        r"\b(?:remaining performance obligations?|rpo)\b.{0,220}\$\s?(\d+(?:\.\d+)?)\s?(billion|million|bn|mm|m)?",
+        r"\$\s?(\d+(?:\.\d+)?)\s?(billion|million|bn|mm|m)?[^.]{0,120}\b(?:unsatisfied\s+)?(?:remaining performance obligations?|rpo)\b",
+    )
+    candidates: list[ExtractedMetric] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            evidence = _sentence_window(text, match.start(), match.end(), before=30, after=220)
+            valid, _reason = validate_extracted_metric_candidate(metric_key, evidence, None)
+            if not valid:
+                continue
+            amount = float(match.group(1)) * _money_unit_multiplier((match.group(2) or "").lower(), evidence)
+            candidates.append(ExtractedMetric(metric_key, amount, "usd", evidence, confidence))
+    return _best_candidate(candidates, metric_key)
+
+
+def _extract_ai_cloud_customer_concentration(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    table_match = re.search(
+        r"(Significant Customers.{0,420}?Customer A\s+(\d+(?:\.\d+)?)\s?%.{0,120}?Customer B\s+(\d+(?:\.\d+)?)\s?%)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if table_match:
+        evidence = _sentence_window(text, table_match.start(), table_match.end(), before=80, after=160)
+        value = float(table_match.group(2)) / 100
+        valid, _reason = validate_extracted_metric_candidate(metric_key, evidence, value)
+        if valid:
+            return ExtractedMetric(metric_key, value, "percent", evidence, confidence)
+
+    patterns = (
+        r"\b(?:largest customer|top customer|customer a)\b.{0,120}\b(?:accounted for|represented|recognized).{0,120}?(\d+(?:\.\d+)?)\s?%",
+        r"\b(?:accounted for|represented|recognized).{0,120}?(\d+(?:\.\d+)?)\s?%.{0,120}\b(?:largest customer|top customer|customer a)\b",
+        r"\btop customer revenue share\b.{0,80}?(\d+(?:\.\d+)?)\s?%",
+    )
+    candidates: list[ExtractedMetric] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            value = float(match.group(1)) / 100
+            evidence = _sentence_window(text, match.start(), match.end(), before=180, after=220)
+            valid, _reason = validate_extracted_metric_candidate(metric_key, evidence, value)
+            if valid:
+                candidates.append(ExtractedMetric(metric_key, value, "percent", evidence, confidence))
+    return _best_candidate(candidates, metric_key)
+
+
+def _extract_ai_cloud_debt_maturity(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    debt_table = re.search(r"(?:\b10\.\s*)?Debt\b.{0,200}?(?:total debt obligations are as follows|total debt obligations|debt obligations)", text, flags=re.IGNORECASE)
+    if debt_table:
+        evidence_offset = debt_table.start()
+        search_text = text[debt_table.start() : min(len(text), debt_table.end() + 1600)]
+    else:
+        generic = re.search(r"\b(?:debt maturity|debt maturities|maturity schedule|nearest debt maturity)\b.{0,120}\b(20[2-9]\d)\b", text, flags=re.IGNORECASE)
+        if generic:
+            evidence = _sentence_window(text, generic.start(), generic.end(), before=120, after=180)
+            return ExtractedMetric(metric_key, float(generic.group(1)), "year", evidence, confidence)
+        due_match = re.search(r"\b(?:senior notes?|convertible notes?|term loan|facility)\b.{0,120}\bdue\s+(20[2-9]\d)\b", text, flags=re.IGNORECASE)
+        if due_match:
+            evidence = _sentence_window(text, due_match.start(), due_match.end(), before=120, after=180)
+            return ExtractedMetric(metric_key, float(due_match.group(1)), "year", evidence, confidence)
+        return None
+    facility_matches = list(
+        re.finditer(
+            r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+"
+            r"(20[2-9]\d)\s+(?:\d{1,2}\s?%|[-—]|\$?\s?\d)",
+            search_text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if facility_matches:
+        years = [int(match.group(1)) for match in facility_matches]
+        first_year = min(years)
+        first_match = next(match for match in facility_matches if int(match.group(1)) == first_year)
+        evidence = _sentence_window(text, evidence_offset + first_match.start(), evidence_offset + first_match.end(), before=180, after=320)
+        return ExtractedMetric(metric_key, float(first_year), "year", evidence, confidence)
+    year_matches = list(re.finditer(r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)?\s*(20[2-9]\d)\b", search_text, flags=re.IGNORECASE))
+    years = [int(match.group(1)) for match in year_matches if _debt_maturity_year_context(search_text, match)]
+    if years:
+        first_year = min(years)
+        first_match = next(match for match in year_matches if int(match.group(1)) == first_year)
+        evidence = _sentence_window(text, evidence_offset + first_match.start(), evidence_offset + first_match.end(), before=180, after=320)
+        return ExtractedMetric(metric_key, float(first_year), "year", evidence, confidence)
+    return None
+
+
+def _debt_maturity_year_context(text: str, match: re.Match) -> bool:
+    around = text[max(0, match.start() - 120) : min(len(text), match.end() + 120)].lower()
+    prefix = text[max(0, match.start() - 40) : match.start()].lower()
+    if re.search(r"\b(?:march|june|september|december)\s+31,?\s*$", prefix):
+        return False
+    if re.search(r"\b(?:april|may|january|february|march|june|july|august|september|october|november|december)\s+\d{1,2},?\s*$", prefix):
+        return False
+    return bool(re.search(r"\b(debt|facility|senior notes?|convertible notes?|maturit(?:y|ies)|effective interest rates?)\b", around))
+
+
+def _extract_ai_cloud_interest_burden(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    match = re.search(r"\binterest expense,?\s+net\b.{0,360}", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    evidence = _sentence_window(text, match.start(), match.end(), before=520, after=180)
+    if "interest expense, net" not in evidence.lower() and "interest expense net" not in evidence.lower():
+        return None
+    if re.search(r"\bfinance leases?\b", evidence, flags=re.IGNORECASE) and not re.search(r"\binterest expense,?\s+net\b", evidence, flags=re.IGNORECASE):
+        return None
+    if re.search(r"\binterest expense\b.{0,80}\b\d+(?:\.\d+)?\s?%", evidence, flags=re.IGNORECASE) and "$" not in evidence:
+        return None
+    if re.search(r"\binterest expense\b.{0,80}\bfinance leases?\b|\bfinance leases?\b.{0,80}\binterest expense\b", evidence, flags=re.IGNORECASE):
+        return None
+    post_match_text = text[match.start() : min(len(text), match.end() + 220)]
+    row_amount = re.search(r"\binterest expense,?\s+net\s+\$?\s*\(?\s*(-?\d+(?:\.\d+)?)\s*\)?", post_match_text, flags=re.IGNORECASE)
+    if row_amount:
+        value = float(row_amount.group(1)) * _money_unit_multiplier("", evidence)
+        return ExtractedMetric(metric_key, abs(value), "usd", evidence, confidence)
+    explicit_interest_money = re.search(
+        r"\binterest expense(?:,?\s+net)?\b[^.\n]{0,80}\$\s*\(?\s*(-?\d+(?:\.\d+)?)\s*\)?",
+        evidence,
+        flags=re.IGNORECASE,
+    )
+    if explicit_interest_money:
+        value = float(explicit_interest_money.group(1)) * _money_unit_multiplier("", evidence)
+        return ExtractedMetric(metric_key, abs(value), "usd", evidence, confidence)
+    return None
+
+
+def _extract_ai_cloud_nvidia_supply_exposure(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    patterns = (
+        r"\ball of the GPUs used in our infrastructure today are NVIDIA GPUs\b.{0,260}",
+        r"\bcustomers have contractually specified our use of NVIDIA GPUs\b.{0,260}",
+        r"\bNVIDIA\b.{0,160}\b(?:purchase commitments?|supplier concentration|vendor concentration|supply dependency|GPU supplier)\b.{0,160}",
+        r"\b(?:purchase commitments?|supplier concentration|vendor concentration|supply dependency|GPU supplier)\b.{0,160}\bNVIDIA\b.{0,160}",
+    )
+    return _extract_ai_cloud_risk_observation(text, metric_key, confidence, patterns)
+
+
+def _extract_ai_cloud_hyperscaler_exposure(text: str, metric_key: str, confidence: str) -> ExtractedMetric | None:
+    patterns = (
+        r"\bOpenAI\b.{0,180}\b(?:committed|commitment|master services agreement|order form|significant customer)\b.{0,220}",
+        r"\bMeta\b.{0,180}\b(?:committed|commitment|master services agreement|order form|significant customer)\b.{0,220}",
+        r"\bMicrosoft\b.{0,180}\b(?:top customer|significant customer|customer concentration|revenue)\b.{0,220}",
+        r"\b(?:hyperscalers?|AI labs)\b.{0,160}\b(?:customer wins|agreements|contracts|commitments)\b.{0,220}",
+    )
+    return _extract_ai_cloud_risk_observation(text, metric_key, confidence, patterns)
+
+
+def _extract_ai_cloud_risk_observation(text: str, metric_key: str, confidence: str, patterns: tuple[str, ...]) -> ExtractedMetric | None:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        evidence = _sentence_window(text, match.start(), match.end(), before=100, after=140)
+        valid, _reason = validate_extracted_metric_candidate(metric_key, evidence, 1.0)
+        if valid:
+            return ExtractedMetric(metric_key, 1.0, "flag", evidence, confidence)
+    return None
 
 
 def _extract_value(window: str, unit_hint: str, scale_context: str | None = None) -> tuple[float, str] | None:
@@ -470,6 +746,23 @@ def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
 
 
+def _sentence_window(text: str, start: int, end: int, before: int = 180, after: int = 220) -> str:
+    window_start = max(0, start - before)
+    window_end = min(len(text), end + after)
+    return _normalize_whitespace(text[window_start:window_end])
+
+
 def _looks_like_cost_context(lowered_text: str, index: int) -> bool:
     prefix = lowered_text[max(0, index - 24):index]
     return "cost of" in prefix or "costs of" in prefix
+
+
+def _alias_matches_at(lowered_text: str, alias_lower: str, index: int) -> bool:
+    if not alias_lower.replace(" ", "").isalnum():
+        return True
+    if len(alias_lower) > 3:
+        return True
+    before = lowered_text[index - 1] if index > 0 else ""
+    after_index = index + len(alias_lower)
+    after = lowered_text[after_index] if after_index < len(lowered_text) else ""
+    return not before.isalnum() and not after.isalnum()

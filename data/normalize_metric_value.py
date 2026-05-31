@@ -252,6 +252,8 @@ def _metric_token(metric_key: object) -> str:
 
 def _value_scale(unit_text: str, evidence_text: str, metric_key: str) -> str:
     combined = f"{unit_text} {evidence_text} {metric_key}".lower()
+    if unit_text in {"year", "years", "count", "number"}:
+        return "count"
     if unit_text in {"percent", "%", "percentage"}:
         return "percent"
     if unit_text in {"usd", "currency", "$", "dollar", "dollars"} or "usd" in unit_text or "dollar" in unit_text:

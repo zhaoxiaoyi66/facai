@@ -32,6 +32,9 @@ AUTO_ARCHIVE_ITEM_TYPES = {
     "qualitative_risk",
 }
 RISK_OBSERVATION_ITEM_TYPES = {"qualitative_risk", "generic_risk", "sector_risk"}
+STRUCTURED_DEBT_MATURITY_METRICS = {"aiCloudDebtMaturity"}
+STRUCTURED_DEBT_MATURITY_TEXT = "\u503a\u52a1\u5230\u671f\u7ed3\u6784\uff0c\u9700\u4eba\u5de5\u6574\u7406"
+UNCLEAR_NET_DEBT_TEXT = "\u91d1\u989d\u5355\u4f4d\u4e0d\u6e05\uff0c\u9700\u8865\u5145\u8bc1\u636e"
 GENERIC_RISK_KEYWORDS = (
     "customerconcentration",
     "customerconcentrationrisk",
@@ -321,6 +324,14 @@ def _is_risk_observation_item(row: dict, has_value: bool) -> bool:
     item_type = _normalized_token(row.get("itemType"))
     metric_key = _normalized_token(row.get("metricKey"))
     display_name = _normalized_token(row.get("displayName"))
+    if (
+        str(row.get("metricKey") or "") == "aiCloudCustomerConcentration"
+        and str(row.get("itemType") or "") == "extracted_value"
+        and has_value
+    ):
+        return False
+    if str(row.get("metricKey") or "") in STRUCTURED_DEBT_MATURITY_METRICS:
+        return True
     if str(row.get("itemType") or "").strip().lower() in RISK_OBSERVATION_ITEM_TYPES:
         return True
     if not has_value and ("risk" in metric_key or "risk" in display_name or "风险" in metric_key or "风险" in display_name):
@@ -354,11 +365,15 @@ def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_eviden
     status = str(row.get("reviewStatus") or "").strip()
     if _is_money_scope_mismatch_candidate(row):
         return True
+    if _is_current_revenue_backlog_candidate(row):
+        return False
     if status == "stale" or _is_historical(row):
         return True
     if triage in AUTO_ARCHIVE_TRIAGE_STATUSES:
         return True
     if bool(row.get("hiddenByDefault")):
+        return True
+    if item_type == "derived_low_confidence":
         return True
     if risk_observation:
         if _has_explicit_evidence(row):
@@ -393,6 +408,10 @@ def _priority_score(
 
 
 def _current_value(row: dict) -> object:
+    if str(row.get("metricKey") or "") in STRUCTURED_DEBT_MATURITY_METRICS:
+        return STRUCTURED_DEBT_MATURITY_TEXT
+    if str(row.get("metricKey") or "") == "aiCloudNetDebt" and _net_debt_value_lacks_scale(row):
+        return UNCLEAR_NET_DEBT_TEXT
     for key in ("displayValue", "normalizedValue", "value"):
         value = row.get(key)
         if value not in (None, ""):
@@ -499,6 +518,35 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _net_debt_value_lacks_scale(row: dict) -> bool:
+    value = None
+    for key in ("displayValue", "normalizedValue", "value"):
+        if row.get(key) not in (None, ""):
+            value = row.get(key)
+            break
+    number = _number(value)
+    if number is None:
+        return True
+    evidence = _clean_text(row.get("evidenceText") or row.get("extractedText") or "").lower()
+    has_scale = any(token in evidence for token in ("million", "millions", "billion", "billions", " in millions", " in billions"))
+    return abs(number) < 1_000_000 and not has_scale
+
+
+def _is_current_revenue_backlog_candidate(row: dict) -> bool:
+    value = _number(row.get("normalizedValue") or row.get("value"))
+    evidence = _clean_text(row.get("evidenceText") or row.get("extractedText") or "").lower()
+    return (
+        str(row.get("metricKey") or "") == "aiCloudContractedBacklog"
+        and str(row.get("itemType") or "") == "extracted_value"
+        and str(row.get("reviewStatus") or "") in ACTIVE_REVIEW_STATUSES
+        and (
+            str(row.get("freshnessStatus") or "active_current") == "active_current"
+            or (value is not None and value >= 90_000_000_000 and "nearly $100 billion" in evidence)
+        )
+        and _has_review_value(row)
+    )
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -677,6 +725,8 @@ def _period_key(row: dict) -> str:
 
 
 def _is_historical(row: dict) -> bool:
+    if _is_current_revenue_backlog_candidate(row):
+        return False
     return str(row.get("freshnessStatus") or "").strip() == HISTORICAL_FRESHNESS
 
 

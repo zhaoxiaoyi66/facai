@@ -1549,6 +1549,10 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(metric_label("aiCapexOverbuildRisk"), "AI资本开支过剩风险")
         self.assertEqual(metric_label("merchantPowerExposure"), "市场化电价敞口")
         self.assertEqual(metric_label("pipelineStrength"), "管线强度")
+        self.assertEqual(metric_label("aiCloudContractedBacklog"), "AI云 revenue backlog")
+        self.assertEqual(metric_label("Contracted backlog / RPO"), "AI云 revenue backlog")
+        self.assertEqual(metric_label("aiCloudRpo"), "AI云 RPO")
+        self.assertEqual(metric_label("remaining performance obligations"), "RPO / 剩余履约义务")
 
     def test_metric_label_hides_internal_debug_fields_outside_debug_mode(self) -> None:
         for field in ("evidenceHash", "extractionRule", "rawMetricKey", "sourceType", "reviewStatus", "inputHash", "promptVersion", "accessionNumber"):
@@ -5210,7 +5214,6 @@ class ScoringTests(unittest.TestCase):
 
         expected = {
             "aiCloudContractedBacklog",
-            "aiCloudRpo",
             "aiCloudGpuFleetCapacity",
             "aiCloudUtilization",
         }
@@ -5228,7 +5231,6 @@ class ScoringTests(unittest.TestCase):
 
             self.assertTrue(expected.issubset(saved))
             self.assertEqual(saved["aiCloudContractedBacklog"]["value"], 4_200_000_000)
-            self.assertEqual(saved["aiCloudRpo"]["value"], 3_800_000_000)
             self.assertEqual(saved["aiCloudGpuFleetCapacity"]["value"], 250_000)
             self.assertEqual(saved["aiCloudGpuFleetCapacity"]["unit"], "count")
             self.assertEqual(saved["aiCloudUtilization"]["value"], 0.83)
@@ -5363,6 +5365,261 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(any(row.get("metricKey") in expected_missing for row in result["saved"]))
         self.assertFalse(any(row["status"] == "skipped" and "SAAS_SOFTWARE" in str(row["errorMessage"]) for row in result["logs"]))
 
+    def test_ai_cloud_extractors_reject_noisy_sec_candidates(self) -> None:
+        gpu_capacity = metric_definition_by_key("aiCloudGpuFleetCapacity")
+        rpo = metric_definition_by_key("aiCloudRpo")
+        customer_concentration = metric_definition_by_key("aiCloudCustomerConcentration")
+        nvidia_exposure = metric_definition_by_key("aiCloudNvidiaSupplyExposure")
+        self.assertIsNotNone(gpu_capacity)
+        self.assertIsNotNone(rpo)
+        self.assertIsNotNone(customer_concentration)
+        self.assertIsNotNone(nvidia_exposure)
+
+        self.assertIsNone(
+            extractMetricFromText(
+                "The structure enables CoreWeave to borrow up to $7.5 billion, with borrowing capacity of $8.5 billion.",
+                gpu_capacity,
+            )
+        )
+        self.assertIsNone(
+            extractMetricFromText(
+                "Capital investments included GPU fleet, networking and data center costs of $31 billion.",
+                gpu_capacity,
+            )
+        )
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "Installed GPU capacity was 250,000 GPUs as of quarter end.",
+                gpu_capacity,
+            )
+        )
+
+        self.assertIsNone(
+            extractMetricFromText(
+                "Marketable securities included Commercial paper $12 million and Corporate bonds $22 million.",
+                rpo,
+            )
+        )
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "Remaining performance obligations were $60.7 billion as of December 31, 2025.",
+                rpo,
+            )
+        )
+        rpo_candidate = extractMetricFromText(
+            (
+                "RPO includes both billed and unbilled consideration from committed contracts. "
+                "As of March 31, 2026, the Company had $98.8 billion of unsatisfied RPO, "
+                "of which 36% is expected to be recognized as revenue."
+            ),
+            rpo,
+        )
+        self.assertIsNotNone(rpo_candidate)
+        self.assertEqual(rpo_candidate.value, 98_800_000_000)
+        self.assertIsNone(
+            extractMetricFromText(
+                "Revenue Backlog includes remaining performance obligations of $60.7 billion plus other future committed revenue.",
+                rpo,
+            )
+        )
+
+        self.assertIsNone(
+            extractMetricFromText(
+                "Customer concentration: no other customer represented 10% or more of revenue.",
+                customer_concentration,
+            )
+        )
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "Largest customer accounted for 72% of revenue for the quarter.",
+                customer_concentration,
+            )
+        )
+        q1_customer_table = extractMetricFromText(
+            (
+                "Significant Customers The following customers accounted for 10% or more of revenue: "
+                "Three Months Ended March 31, 2026 2025 Customer A 45 % 72 % Customer B 20 % * "
+                "Customer C * *."
+            ),
+            customer_concentration,
+        )
+        self.assertIsNotNone(q1_customer_table)
+        self.assertAlmostEqual(q1_customer_table.value, 0.45)
+
+        self.assertIsNone(
+            extractMetricFromText(
+                "CoreWeave announced a general Nvidia collaboration for AI cloud services.",
+                nvidia_exposure,
+            )
+        )
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "All of the GPUs used in our infrastructure today are NVIDIA GPUs, and current customers have contractually specified our use of NVIDIA GPUs.",
+                nvidia_exposure,
+            )
+        )
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "Nvidia purchase commitments represented 68% of GPU supplier commitments.",
+                nvidia_exposure,
+            )
+        )
+
+        interest = metric_definition_by_key("aiCloudInterestBurden")
+        debt_maturity = metric_definition_by_key("aiCloudDebtMaturity")
+        hyperscaler = metric_definition_by_key("aiCloudHyperscalerExposure")
+        self.assertIsNotNone(interest)
+        self.assertIsNotNone(debt_maturity)
+        self.assertIsNotNone(hyperscaler)
+
+        interest_candidate = extractMetricFromText(
+            (
+                "Interest Expense, Net Three Months Ended March 31, 2026 2025 Change % Change "
+                "(dollars in millions) Interest expense, net $ (536) $ (264) $ (272) 103 %."
+            ),
+            interest,
+        )
+        self.assertIsNotNone(interest_candidate)
+        self.assertEqual(interest_candidate.value, 536_000_000)
+        self.assertEqual(interest_candidate.unit, "usd")
+
+        debt_candidate = extractMetricFromText(
+            (
+                "10. Debt The total debt obligations are as follows (dollars in millions): "
+                "Maturities Effective Interest Rates March 31, 2026 December 31, 2025 "
+                "DDTL 1.0 Facility March 2028 15 % $ 1,438 $ 1,553 "
+                "DDTL 2.0 Facility August 2030 11 % 4,425 5,037."
+            ),
+            debt_maturity,
+        )
+        self.assertIsNotNone(debt_candidate)
+        self.assertEqual(debt_candidate.value, 2028)
+
+        self.assertIsNotNone(
+            extractMetricFromText(
+                "OpenAI has committed to pay CoreWeave up to approximately $6.5 billion under a master services agreement.",
+                hyperscaler,
+            )
+        )
+
+    def test_ai_cloud_exposure_candidates_route_to_risk_observation(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ai-cloud-risk.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudNvidiaSupplyExposure",
+                1.0,
+                "flag",
+                "2026 Q1",
+                "SEC_10Q",
+                "https://example.com/crwv-10q",
+                "10-Q primary document",
+                "All of the GPUs used in our infrastructure today are NVIDIA GPUs.",
+                "medium",
+            )
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudHyperscalerExposure",
+                1.0,
+                "flag",
+                "2026 Q1",
+                "SEC_10Q",
+                "https://example.com/crwv-10q",
+                "10-Q primary document",
+                "OpenAI has committed to pay CoreWeave up to approximately $6.5 billion under a master services agreement.",
+                "medium",
+            )
+
+            ReviewQueueBuilder(queue_store=queue_store, disclosure_store=disclosure_store).build_review_queue_for_symbol("CRWV")
+            rows = {
+                row["metricKey"]: row
+                for row in queue_store.list_items("CRWV")
+                if row.get("metricKey") in {"aiCloudNvidiaSupplyExposure", "aiCloudHyperscalerExposure"}
+                and row.get("sourceMetricId")
+            }
+
+        self.assertEqual(rows["aiCloudNvidiaSupplyExposure"]["itemType"], "qualitative_risk")
+        self.assertEqual(rows["aiCloudHyperscalerExposure"]["itemType"], "qualitative_risk")
+        self.assertEqual(rows["aiCloudNvidiaSupplyExposure"]["reviewStatus"], "pending_review")
+        self.assertEqual(rows["aiCloudHyperscalerExposure"]["reviewStatus"], "pending_review")
+
+    def test_crwv_review_center_demotes_structured_and_derived_noise(self) -> None:
+        from data.review_center_view_model import build_review_center_view_model
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "ai-cloud-routing.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudDebtMaturity",
+                2026,
+                "year",
+                "2026-03-31",
+                "SEC_10Q",
+                "https://example.com/crwv-10q",
+                "10-Q primary document",
+                "Senior Notes June 2030 10% 2,000. Convertible Promissory Notes April 2026 7% 171.",
+                "medium",
+            )
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudNetDebt",
+                69,
+                "usd",
+                "2026-04-09",
+                "SEC_8K",
+                "https://example.com/crwv-8k",
+                "8-K investor update",
+                "Net Debt Market Capitalization (As of 4/7/2026) 51,051 $69,539 22.5x Enterprise Value.",
+                "medium",
+            )
+
+            ReviewQueueBuilder(queue_store=queue_store, disclosure_store=disclosure_store).build_review_queue_for_symbol("CRWV")
+            rows = queue_store.list_items("CRWV")
+            by_metric = {
+                row["metricKey"]: row
+                for row in rows
+                if row.get("metricKey") in {"aiCloudDebtMaturity", "aiCloudNetDebt"} and row.get("sourceMetricId")
+            }
+            view = build_review_center_view_model(
+                rows=[
+                    *rows,
+                    {
+                        "id": 999,
+                        "symbol": "CRWV",
+                        "metricKey": "fcfMargin",
+                        "displayName": "Implied FCF Margin",
+                        "itemType": "derived_low_confidence",
+                        "value": -0.017,
+                        "unit": "percent",
+                        "sourceType": "derivedFromMarket",
+                        "confidence": "medium",
+                        "affects": "Quality",
+                        "reviewStatus": "pending_review",
+                        "recommendedAction": "review derived market-data explanation",
+                    },
+                ],
+                store=queue_store,
+                symbol="CRWV",
+            )
+            groups = {group["key"]: group for group in view["groups"]}
+
+        self.assertEqual(by_metric["aiCloudDebtMaturity"]["itemType"], "qualitative_risk")
+        self.assertIn("manually organize maturity table", by_metric["aiCloudDebtMaturity"]["recommendedAction"])
+        self.assertEqual(by_metric["aiCloudNetDebt"]["itemType"], "evidence_missing_extracted_value")
+        self.assertEqual(by_metric["aiCloudNetDebt"]["reviewStatus"], "needs_evidence")
+        scoring_metrics = {item["metricKey"] for item in groups["scoringImpactNeedsHuman"]["items"]}
+        archive_metrics = {item["metricKey"] for item in groups["autoArchiveCandidates"]["items"]}
+        risk_metrics = {item["metricKey"] for item in groups["riskObservation"]["items"]}
+        self.assertNotIn("aiCloudDebtMaturity", scoring_metrics)
+        self.assertNotIn("aiCloudNetDebt", scoring_metrics)
+        self.assertNotIn("fcfMargin", scoring_metrics)
+        self.assertIn("aiCloudDebtMaturity", risk_metrics)
+        self.assertIn("fcfMargin", archive_metrics)
+
     def test_refresh_ai_cloud_sec_disclosures_returns_structured_counts_for_fake_sec_text(self) -> None:
         exhibit_text = (
             "CoreWeave Reports Q1 2026 Results. Contracted backlog was $4.2 billion. "
@@ -5371,6 +5628,7 @@ class ScoringTests(unittest.TestCase):
         )
         filing_text = (
             "CoreWeave Form 10-Q. Capex commitments were $5.5 billion. "
+            "As of March 31, 2026, the Company had $3.8 billion of unsatisfied RPO. "
             "Debt maturity schedule shows nearest debt maturity in 2029. "
             "Top customer revenue share was 42%."
         )
@@ -5429,6 +5687,11 @@ class ScoringTests(unittest.TestCase):
                 for row in store.list_items("CRWV")
                 if row.get("itemType") == "extracted_value"
             }
+            debt_rows = [
+                row
+                for row in store.list_items("CRWV")
+                if row.get("metricKey") == "aiCloudDebtMaturity"
+            ]
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["modelType"], "AI_CLOUD_INFRA")
@@ -5441,7 +5704,6 @@ class ScoringTests(unittest.TestCase):
             "aiCloudGpuFleetCapacity",
             "aiCloudUtilization",
             "aiCloudCapexCommitments",
-            "aiCloudDebtMaturity",
             "aiCloudCustomerConcentration",
         }:
             self.assertIn(key, extracted)
@@ -5450,6 +5712,9 @@ class ScoringTests(unittest.TestCase):
             self.assertTrue(extracted[key].get("unit"))
             self.assertTrue(extracted[key].get("metricPeriod") or extracted[key].get("period"))
             self.assertEqual(extracted[key].get("reviewStatus"), "pending_review")
+        self.assertTrue(debt_rows)
+        self.assertEqual(debt_rows[0].get("itemType"), "qualitative_risk")
+        self.assertIn("manually organize maturity table", debt_rows[0].get("recommendedAction", ""))
 
     def test_refresh_ai_cloud_sec_disclosures_without_text_keeps_missing_kpis(self) -> None:
         class FakeSecClient:
@@ -5969,6 +6234,25 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("保存修正", source)
         self.assertIn("仅运行 Qwen 证据复核", source)
         self.assertIn("未配置 Qwen 复核，仍可手动复核。", source)
+
+    def test_manual_review_ai_cloud_backlog_source_and_rpo_copy(self) -> None:
+        source = manual_review._review_source_display(
+            {
+                "sourceType": "SEC_8K",
+                "sourceDocumentTitle": "8-K Exhibit 99.1",
+                "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1769628/000176962826000220/coreweave1q26earningspress.htm",
+            }
+        )
+        self.assertIn("SEC 8-K / Q1 2026 earnings release", source)
+
+        reason = (
+            "Remaining performance obligations is a required AI cloud infra buy-zone operating input. "
+            "RPO anchors contracted demand quality; missing RPO keeps the AI cloud buy-zone confidence capped."
+        )
+        copy = manual_review._review_system_reason_text(reason)
+        self.assertIn("revenue backlog", copy)
+        self.assertIn("不能直接当作纯 RPO", copy)
+        self.assertEqual(manual_review._review_row_source_meta({"sourceType": "missing"}), "暂缺 · 待补证据")
 
     def test_manual_review_client_filter_enforces_selected_symbol(self) -> None:
         rows = [
@@ -8039,6 +8323,114 @@ class MetricVariantFreshnessTests(unittest.TestCase):
             self.assertEqual(rows[("2025 Q4", "cRpoGrowthReported")]["freshnessStatus"], "historical_value")
             scoring_rows = store.best_metrics("NOW", scoring_only=True)
             self.assertAlmostEqual(scoring_rows["cRpoGrowthReported"]["value"], 0.225)
+
+    def test_latest_exact_date_metric_is_active_for_same_year_candidates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = DisclosureStore(Path(tmp) / "cache.db")
+            store.save_metric(
+                "CRWV",
+                "aiCloudContractedBacklog",
+                60_700_000_000,
+                "usd",
+                "2026-04-09",
+                "SEC_8K",
+                "https://example.com/april",
+                "CRWV April 8-K",
+                "Revenue Backlog as of December 31, 2025 includes remaining performance obligations of $60.7 billion.",
+                "medium",
+            )
+            store.save_metric(
+                "CRWV",
+                "aiCloudContractedBacklog",
+                100_000_000_000,
+                "usd",
+                "2026-05-07",
+                "SEC_8K",
+                "https://example.com/may",
+                "CRWV Q1 2026 earnings",
+                "Revenue backlog reaching nearly $100 billion.",
+                "medium",
+            )
+            rows = {(row["period"], row["metricKey"]): row for row in store.get_metrics("CRWV")}
+            self.assertEqual(rows[("2026-05-07", "aiCloudContractedBacklog")]["freshnessStatus"], "active_current")
+            self.assertEqual(rows[("2026-04-09", "aiCloudContractedBacklog")]["freshnessStatus"], "historical_value")
+
+    def test_stale_newer_metric_does_not_steal_current_freshness(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = DisclosureStore(Path(tmp) / "cache.db")
+            store.save_metric(
+                "CRWV",
+                "aiCloudRpo",
+                1,
+                "usd",
+                "2026-05-07",
+                "SEC_8K",
+                "https://example.com/noisy",
+                "Noisy 8-K",
+                "Rejected noisy extraction.",
+                "medium",
+                review_status="stale",
+            )
+            store.save_metric(
+                "CRWV",
+                "aiCloudRpo",
+                98_800_000_000,
+                "usd",
+                "2026-03-31",
+                "SEC_10Q",
+                "https://example.com/q1",
+                "10-Q primary document",
+                "As of March 31, 2026, the Company had $98.8 billion of unsatisfied RPO.",
+                "medium",
+            )
+            rows = {(row["period"], row["metricKey"]): row for row in store.get_metrics("CRWV")}
+            self.assertEqual(rows[("2026-03-31", "aiCloudRpo")]["freshnessStatus"], "active_current")
+            self.assertEqual(rows[("2026-05-07", "aiCloudRpo")]["freshnessStatus"], "historical_value")
+
+    def test_review_queue_reopens_current_duplicate_after_stale_cleanup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cache.db"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudContractedBacklog",
+                100_000_000_000,
+                "usd",
+                "2026-05-07",
+                "SEC_8K",
+                "https://example.com/q1",
+                "CRWV Q1 2026 earnings",
+                "Revenue backlog reaching nearly $100 billion.",
+                "medium",
+            )
+            ReviewQueueBuilder(queue_store=queue_store, disclosure_store=disclosure_store).build_review_queue_for_symbol("CRWV")
+
+            disclosure_store.clear_symbol_metrics("CRWV")
+            disclosure_store.save_metric(
+                "CRWV",
+                "aiCloudContractedBacklog",
+                100_000_000_000,
+                "usd",
+                "2026-05-07",
+                "SEC_8K",
+                "https://example.com/q1",
+                "CRWV Q1 2026 earnings",
+                "Revenue backlog reaching nearly $100 billion.",
+                "medium",
+            )
+            ReviewQueueBuilder(queue_store=queue_store, disclosure_store=disclosure_store).build_review_queue_for_symbol("CRWV")
+
+            rows = [
+                row
+                for row in queue_store.list_items("CRWV")
+                if row.get("metricKey") == "aiCloudContractedBacklog" and row.get("value") == 100_000_000_000
+            ]
+            current = [row for row in rows if row.get("freshnessStatus") == "active_current"]
+            self.assertEqual(len(current), 1)
+            self.assertEqual(current[0]["reviewStatus"], "pending_review")
+            self.assertEqual(current[0]["hiddenByDefault"], 0)
 
     def test_fcf_margin_taxonomy_separates_operating_cash_flow_and_nongaap_fcf(self) -> None:
         ocf = extract_saas_metric_variants("GAAP net cash provided by operating activities as % of total revenues 44.5%.")
