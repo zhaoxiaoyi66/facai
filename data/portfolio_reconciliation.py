@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from data.portfolio import PortfolioPositionStore
-from data.portfolio_trade_sync import BUY_ACTIONS, POSITION_AFFECTING_ACTIONS, SELL_ACTIONS, unsynced_trade_counts_by_symbol
+from data.portfolio_ledger_projection import project_positions_from_trade_rows
+from data.portfolio_trade_sync import unsynced_trade_counts_by_symbol
 from data.prices import CACHE_PATH
 from data.decision_log import TradeJournalStore
 
@@ -86,29 +87,15 @@ def _journal_positions_from_synced_trades(path: Path) -> dict[str, dict[str, flo
             ORDER BY entry.symbol ASC, entry.trade_date ASC, entry.created_at ASC, entry.id ASC
             """
         ).fetchall()
-    journal: dict[str, dict[str, float]] = {}
-    for symbol, action_type, raw_quantity, raw_price in rows:
-        ticker = str(symbol or "").strip().upper()
-        action = str(action_type or "").strip().lower()
-        quantity = _number(raw_quantity) or 0.0
-        price = _number(raw_price) or 0.0
-        if not ticker or action not in POSITION_AFFECTING_ACTIONS or quantity <= 0:
-            continue
-        current = journal.setdefault(ticker, {"quantity": 0.0, "average_cost": 0.0})
-        if action in BUY_ACTIONS:
-            after_quantity = current["quantity"] + quantity
-            current["average_cost"] = (
-                (current["quantity"] * current["average_cost"] + quantity * price) / after_quantity
-                if after_quantity > 0
-                else 0.0
-            )
-            current["quantity"] = after_quantity
-        elif action in SELL_ACTIONS:
-            current["quantity"] = max(0.0, current["quantity"] - quantity)
-            if current["quantity"] <= QUANTITY_TOLERANCE:
-                current["quantity"] = 0.0
-                current["average_cost"] = 0.0
-    return {symbol: _rounded_position(value) for symbol, value in journal.items()}
+    return project_positions_from_trade_rows(
+        {
+            "symbol": symbol,
+            "action_type": action_type,
+            "quantity": raw_quantity,
+            "price": raw_price,
+        }
+        for symbol, action_type, raw_quantity, raw_price in rows
+    )
 
 
 def _status(reasons: list[str]) -> str:
@@ -145,13 +132,6 @@ def _ensure_tables(path: Path) -> None:
             """
         )
         conn.commit()
-
-
-def _rounded_position(position: dict[str, float]) -> dict[str, float]:
-    return {
-        "quantity": round(position["quantity"], 8),
-        "average_cost": round(position["average_cost"], 8),
-    }
 
 
 def _diff(left: float | None, right: float | None) -> float | None:

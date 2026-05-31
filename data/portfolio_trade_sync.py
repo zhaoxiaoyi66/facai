@@ -9,13 +9,13 @@ from typing import Any
 from data.cache_read_model import CacheReadModel
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio_ledger_projection import POSITION_AFFECTING_ACTIONS
+from data.portfolio_ledger_projection import project_trade_effect
 from data.prices import CACHE_PATH
 from data.trade_safety_gate import trade_sync_policy
 
 
 PORTFOLIO_SYNC_ACTIONS = {"buy", "add", "sell", "trim", "skip"}
-POSITION_AFFECTING_ACTIONS = {"buy", "add", "sell", "trim"}
-BUY_ACTIONS = {"buy", "add"}
 
 
 def preview_trade_portfolio_effect(entry_id: int, path: Path = CACHE_PATH) -> dict[str, Any]:
@@ -182,28 +182,23 @@ def _preview_entry_effect(
     if price is None or price <= 0:
         return {**base, "status": "failed", "error": "同步需要有效成交价格"}
 
-    if action_type in BUY_ACTIONS:
-        after_quantity = current_quantity + quantity
-        after_average_cost = (
-            (current_quantity * current_average_cost + quantity * price) / after_quantity
-            if after_quantity > 0
-            else 0.0
-        )
-        quantity_delta = quantity
-    else:
-        if quantity > current_quantity + 1e-9:
-            return {**base, "status": "failed", "error": "卖出数量超过当前组合持仓，不能同步"}
-        after_quantity = max(0.0, current_quantity - quantity)
-        after_average_cost = current_average_cost if after_quantity > 0 else 0.0
-        quantity_delta = -quantity
+    projected = project_trade_effect(
+        current_quantity=current_quantity,
+        current_average_cost=current_average_cost,
+        action_type=action_type,
+        quantity=quantity,
+        price=price,
+    )
+    if projected["status"] != "ready":
+        return {**base, "status": projected["status"], "error": projected["error"]}
 
-    market = _market_effect(symbol, after_quantity, path)
+    market = _market_effect(symbol, projected["afterQuantity"], path)
     return {
         **base,
         "status": "ready",
-        "quantityDelta": quantity_delta,
-        "afterQuantity": round(after_quantity, 8),
-        "afterAverageCost": round(after_average_cost, 8),
+        "quantityDelta": projected["quantityDelta"],
+        "afterQuantity": projected["afterQuantity"],
+        "afterAverageCost": projected["afterAverageCost"],
         "afterMarketValue": market["afterMarketValue"],
         "afterPositionPct": market["afterPositionPct"],
     }
