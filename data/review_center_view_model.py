@@ -4,7 +4,13 @@ import json
 from dataclasses import dataclass
 from typing import Iterable
 
-from data.extract_metric_from_text import metric_value_scope_mismatch
+from data.review_candidate_quality import MONEY_SCOPE_MISMATCH_TEXT
+from data.review_candidate_quality import current_value_override
+from data.review_candidate_quality import is_current_revenue_backlog_candidate
+from data.review_candidate_quality import is_generic_sector_risk
+from data.review_candidate_quality import is_money_scope_mismatch_candidate
+from data.review_candidate_quality import is_risk_observation_item
+from data.review_candidate_quality import risk_canonical_metric
 from data.review_queue_builder import ReviewQueueStore, SCORING_AFFECTS
 
 
@@ -31,27 +37,6 @@ AUTO_ARCHIVE_ITEM_TYPES = {
     "manual_override_needed",
     "qualitative_risk",
 }
-RISK_OBSERVATION_ITEM_TYPES = {"qualitative_risk", "generic_risk", "sector_risk"}
-STRUCTURED_DEBT_MATURITY_METRICS = {"aiCloudDebtMaturity"}
-STRUCTURED_DEBT_MATURITY_TEXT = "\u503a\u52a1\u5230\u671f\u7ed3\u6784\uff0c\u9700\u4eba\u5de5\u6574\u7406"
-UNCLEAR_NET_DEBT_TEXT = "\u91d1\u989d\u5355\u4f4d\u4e0d\u6e05\uff0c\u9700\u8865\u5145\u8bc1\u636e"
-GENERIC_RISK_KEYWORDS = (
-    "customerconcentration",
-    "customerconcentrationrisk",
-    "客户集中",
-    "semiconductorcyclerisk",
-    "半导体周期",
-    "exportcontrolrisk",
-    "chinaregulatoryrisk",
-    "regulatoryrisk",
-    "出口管制",
-    "中国风险",
-    "inventorycorrectionrisk",
-    "库存修正",
-    "cryptocyclesensitivity",
-    "cryptoexposurerisk",
-    "cryptoassetvolatility",
-)
 CONFIDENCE_SCORES = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 HISTORICAL_FRESHNESS = "historical_value"
 METRIC_CANONICAL_MAP = {
@@ -164,7 +149,7 @@ def _prepare_row(row: dict) -> _ReviewCenterRow:
     affects = _affects(row)
     affects_scoring = bool(affects & SCORING_AFFECTS)
     has_value = _has_review_value(row)
-    risk_observation = _is_risk_observation_item(row, has_value)
+    risk_observation = is_risk_observation_item(row, has_value)
     impact_level = "low" if risk_observation else _impact_level(affects)
     has_explicit_evidence = _has_explicit_evidence(row)
     missing_evidence = _missing_evidence(row)
@@ -312,38 +297,7 @@ def _present_review_value(value: object) -> bool:
 
 
 def _is_money_scope_mismatch_candidate(row: dict) -> bool:
-    if str(row.get("itemType") or "").strip() != "extracted_value":
-        return False
-    metric_key = str(row.get("metricKey") or "")
-    evidence = str(row.get("evidenceText") or row.get("extractedText") or "")
-    value = _number(row.get("value"))
-    return metric_value_scope_mismatch(metric_key, evidence, value)
-
-
-def _is_risk_observation_item(row: dict, has_value: bool) -> bool:
-    item_type = _normalized_token(row.get("itemType"))
-    metric_key = _normalized_token(row.get("metricKey"))
-    display_name = _normalized_token(row.get("displayName"))
-    if (
-        str(row.get("metricKey") or "") == "aiCloudCustomerConcentration"
-        and str(row.get("itemType") or "") == "extracted_value"
-        and has_value
-    ):
-        return False
-    if str(row.get("metricKey") or "") in STRUCTURED_DEBT_MATURITY_METRICS:
-        return True
-    if str(row.get("itemType") or "").strip().lower() in RISK_OBSERVATION_ITEM_TYPES:
-        return True
-    if not has_value and ("risk" in metric_key or "risk" in display_name or "风险" in metric_key or "风险" in display_name):
-        return True
-    return any(keyword in metric_key or keyword in display_name for keyword in GENERIC_RISK_KEYWORDS)
-
-
-def _is_generic_sector_risk(row: dict) -> bool:
-    metric_key = _normalized_token(row.get("metricKey"))
-    display_name = _normalized_token(row.get("displayName"))
-    combined = f"{metric_key} {display_name}"
-    return any(keyword in combined for keyword in GENERIC_RISK_KEYWORDS) or str(row.get("sourceType") or "").strip().lower() in {"missing", "system", "model"}
+    return is_money_scope_mismatch_candidate(row)
 
 
 def _can_auto_confirm(row: dict, active: bool, confidence_score: int, has_explicit_evidence: bool, missing_evidence: bool) -> bool:
@@ -378,7 +332,7 @@ def _can_auto_archive(row: dict, active: bool, impact_level: str, missing_eviden
     if risk_observation:
         if _has_explicit_evidence(row):
             return False
-        return missing_evidence or _is_generic_sector_risk(row)
+        return missing_evidence or is_generic_sector_risk(row)
     if impact_level != "low":
         return False
     return missing_evidence and (status in {"needs_data", "needs_evidence"} or item_type in AUTO_ARCHIVE_ITEM_TYPES)
@@ -408,10 +362,9 @@ def _priority_score(
 
 
 def _current_value(row: dict) -> object:
-    if str(row.get("metricKey") or "") in STRUCTURED_DEBT_MATURITY_METRICS:
-        return STRUCTURED_DEBT_MATURITY_TEXT
-    if str(row.get("metricKey") or "") == "aiCloudNetDebt" and _net_debt_value_lacks_scale(row):
-        return UNCLEAR_NET_DEBT_TEXT
+    quality_override = current_value_override(row)
+    if quality_override is not None:
+        return quality_override
     for key in ("displayValue", "normalizedValue", "value"):
         value = row.get(key)
         if value not in (None, ""):
@@ -481,7 +434,7 @@ def _suggested_action(
 
 def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, can_auto_archive: bool, risk_observation: bool = False) -> str:
     if _is_money_scope_mismatch_candidate(row):
-        return "金额单位或口径不匹配，需降级归档，不能作为主候选。"
+        return MONEY_SCOPE_MISMATCH_TEXT
     for key in ("recommendedAction", "aiExplanationZh", "explanation", "systemReason", "correctionNotes"):
         text = _clean_text(row.get(key))
         if text:
@@ -520,33 +473,8 @@ def _number(value: object) -> float | None:
         return None
 
 
-def _net_debt_value_lacks_scale(row: dict) -> bool:
-    value = None
-    for key in ("displayValue", "normalizedValue", "value"):
-        if row.get(key) not in (None, ""):
-            value = row.get(key)
-            break
-    number = _number(value)
-    if number is None:
-        return True
-    evidence = _clean_text(row.get("evidenceText") or row.get("extractedText") or "").lower()
-    has_scale = any(token in evidence for token in ("million", "millions", "billion", "billions", " in millions", " in billions"))
-    return abs(number) < 1_000_000 and not has_scale
-
-
 def _is_current_revenue_backlog_candidate(row: dict) -> bool:
-    value = _number(row.get("normalizedValue") or row.get("value"))
-    evidence = _clean_text(row.get("evidenceText") or row.get("extractedText") or "").lower()
-    return (
-        str(row.get("metricKey") or "") == "aiCloudContractedBacklog"
-        and str(row.get("itemType") or "") == "extracted_value"
-        and str(row.get("reviewStatus") or "") in ACTIVE_REVIEW_STATUSES
-        and (
-            str(row.get("freshnessStatus") or "active_current") == "active_current"
-            or (value is not None and value >= 90_000_000_000 and "nearly $100 billion" in evidence)
-        )
-        and _has_review_value(row)
-    )
+    return is_current_revenue_backlog_candidate(row, ACTIVE_REVIEW_STATUSES)
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -677,35 +605,10 @@ def _mark_auto_archive_candidate(row: _ReviewCenterRow, reason: str) -> None:
 def _canonical_metric(row: dict) -> str:
     metric_key = str(row.get("metricKey") or "")
     metric_variant = str(row.get("metricVariant") or "")
-    risk_metric = _risk_canonical_metric(row)
+    risk_metric = risk_canonical_metric(row)
     if risk_metric:
         return risk_metric
     return METRIC_CANONICAL_MAP.get(metric_variant) or METRIC_CANONICAL_MAP.get(metric_key) or metric_key
-
-
-def _risk_canonical_metric(row: dict) -> str | None:
-    item_type = str(row.get("itemType") or "").strip().lower()
-    metric_key_token = _normalized_token(row.get("metricKey"))
-    display_token = _normalized_token(row.get("displayName"))
-    if item_type not in RISK_OBSERVATION_ITEM_TYPES and "risk" not in metric_key_token and "risk" not in display_token and "风险" not in display_token:
-        return None
-    combined = f"{metric_key_token} {display_token}"
-    if "customerconcentration" in combined:
-        return "customerConcentrationRisk"
-    if "客户集中" in combined:
-        return "customerConcentrationRisk"
-    if "semiconductorcycle" in combined or "半导体周期" in combined:
-        return "semiconductorCycleRisk"
-    if "exportcontrol" in combined or "chinarisk" in combined or "chinaregulatory" in combined or "出口管制" in combined or "中国风险" in combined:
-        return "exportControlChinaRisk"
-    if "inventorycorrection" in combined or "inventoryrisk" in combined or "库存修正" in combined:
-        return "inventoryCorrectionRisk"
-    metric_key = str(row.get("metricKey") or "").strip()
-    return metric_key or str(row.get("displayName") or "qualitativeRisk")
-
-
-def _normalized_token(value: object) -> str:
-    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
 def _dedupe_key(row: dict) -> str:
