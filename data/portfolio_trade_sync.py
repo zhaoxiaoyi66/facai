@@ -10,12 +10,12 @@ from data.cache_read_model import CacheReadModel
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.prices import CACHE_PATH
+from data.trade_safety_gate import trade_sync_policy
 
 
 PORTFOLIO_SYNC_ACTIONS = {"buy", "add", "sell", "trim", "skip"}
 POSITION_AFFECTING_ACTIONS = {"buy", "add", "sell", "trim"}
 BUY_ACTIONS = {"buy", "add"}
-SELL_ACTIONS = {"sell", "trim"}
 
 
 def preview_trade_portfolio_effect(entry_id: int, path: Path = CACHE_PATH) -> dict[str, Any]:
@@ -51,13 +51,14 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
         _write_sync_log(path, result, status="failed")
         return result
 
-    if _entry_sync_blocked_by_discipline(entry):
+    sync_policy = trade_sync_policy(entry)
+    if not sync_policy["canSync"]:
         result = _preview_entry_effect(entry, path)
         result.update(
             {
                 "status": "failed",
                 "syncStatus": "failed",
-                "error": "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。",
+                "error": sync_policy["reason"],
             }
         )
         _write_sync_log(path, result, status="failed")
@@ -114,9 +115,7 @@ def get_trade_portfolio_sync_status(entry_id: int, path: Path = CACHE_PATH) -> d
 
 
 def _entry_sync_blocked_by_discipline(entry: dict[str, Any]) -> bool:
-    action_type = str(entry.get("action_type") or "").strip().lower()
-    discipline_status = str(entry.get("discipline_status") or "").strip().lower()
-    return action_type in SELL_ACTIONS and discipline_status == "blocked"
+    return not bool(trade_sync_policy(entry).get("canSync"))
 
 
 def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:

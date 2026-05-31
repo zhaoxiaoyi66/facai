@@ -11,12 +11,10 @@ from typing import Iterator
 
 from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
-from data.trading_discipline import evaluate_trading_discipline
+from data.trade_safety_gate import build_trade_safety_snapshot
 
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "skip"}
-DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
-CLASSIFICATION_ACTION_TYPES = {"buy", "add"}
 DECISION_MOOD_TYPES = {
     "well_reasoned",
     "plan_execution",
@@ -945,162 +943,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
 
 
 def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:
-    empty = _empty_trade_discipline_snapshot()
-    if action_type not in DISCIPLINE_ACTION_TYPES | CLASSIFICATION_ACTION_TYPES:
-        return empty
-
-    position_class = _clean_position_class(_value(values, "positionClass", "position_class"))
-    core_position_min_pct = _optional_ratio(
-        _value(values, "corePositionMinPct", "core_position_min_pct", "corePositionPct", "core_position_pct"),
-        "core_position_min_pct",
-    )
-    trading_position_max_pct = _optional_ratio(
-        _value(values, "tradingPositionMaxPct", "trading_position_max_pct", "tradingPositionPct", "trading_position_pct"),
-        "trading_position_max_pct",
-    )
-    classification_note = _clean_text(_value(values, "classificationNote", "classification_note"))
-
-    if action_type in CLASSIFICATION_ACTION_TYPES:
-        empty.update(
-            {
-                "position_class": position_class or None,
-                "core_position_min_pct": core_position_min_pct,
-                "trading_position_max_pct": trading_position_max_pct,
-                "classification_note": classification_note,
-            }
-        )
-        return empty
-
-    planned_sell_pct = _optional_ratio(_value(values, "plannedSellPct", "planned_sell_pct"), "planned_sell_pct")
-    if planned_sell_pct is None:
-        planned_sell_pct = 0.0
-    actual_sell_pct = _optional_ratio(_value(values, "actualSellPct", "actual_sell_pct"), "actual_sell_pct")
-    if actual_sell_pct is None:
-        current_position_quantity = _optional_non_negative_number(
-            _value(values, "currentPositionQuantity", "current_position_quantity"),
-            "current_position_quantity",
-        )
-        trade_quantity = _optional_non_negative_number(_value(values, "quantity", "tradeQuantity", "trade_quantity"), "quantity")
-        if current_position_quantity and current_position_quantity > 0 and trade_quantity is not None:
-            actual_sell_pct = trade_quantity / current_position_quantity
-    if actual_sell_pct is None:
-        actual_sell_pct = planned_sell_pct
-    sell_reason_type = _clean_text(_value(values, "sellReasonType", "sell_reason_type"))
-    thesis_broken = _clean_bool(_value(values, "thesisBroken", "thesis_broken"))
-    position_over_limit = _clean_bool(_value(values, "positionOverLimit", "position_over_limit"))
-    reentry_plan_text = _clean_text(_value(values, "reentryPlanText", "reentry_plan_text"))
-    reentry_pullback_price = _optional_non_negative_number(
-        _value(values, "reentryPullbackPrice", "reentry_pullback_price"),
-        "reentry_pullback_price",
-    )
-    reentry_breakout_price = _optional_non_negative_number(
-        _value(values, "reentryBreakoutPrice", "reentry_breakout_price"),
-        "reentry_breakout_price",
-    )
-    reentry_time_stop_days = _optional_int(
-        _value(values, "reentryTimeStopDays", "reentry_time_stop_days"),
-        "reentry_time_stop_days",
-    )
-    reentry_buy_back_pct_on_pullback = _optional_ratio(
-        _value(values, "reentryBuyBackPctOnPullback", "reentry_buy_back_pct_on_pullback"),
-        "reentry_buy_back_pct_on_pullback",
-    )
-    reentry_buy_back_pct_on_breakout = _optional_ratio(
-        _value(values, "reentryBuyBackPctOnBreakout", "reentry_buy_back_pct_on_breakout"),
-        "reentry_buy_back_pct_on_breakout",
-    )
-    reentry_thesis_invalidation = _clean_text(
-        _value(values, "reentryThesisInvalidation", "reentry_thesis_invalidation")
-    )
-    has_reentry_plan = _has_reentry_plan_snapshot(
-        reentry_plan_text,
-        reentry_pullback_price,
-        reentry_breakout_price,
-        reentry_thesis_invalidation,
-    )
-
-    result = evaluate_trading_discipline(
-        symbol=symbol,
-        positionClass=position_class or "C",
-        corePositionPct=core_position_min_pct,
-        tradingPositionPct=trading_position_max_pct,
-        unrealizedGainPct=_optional_ratio(_value(values, "unrealizedGainPct", "unrealized_gain_pct"), "unrealized_gain_pct"),
-        plannedAction=action_type,
-        plannedSellPct=planned_sell_pct,
-        sellReasonType=sell_reason_type,
-        thesisBroken=thesis_broken,
-        positionOverLimit=position_over_limit,
-        hasReentryPlan=has_reentry_plan,
-        actualSellPct=actual_sell_pct,
-        decisionMood=_clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
-    )
-
-    return {
-        "position_class": position_class or None,
-        "core_position_min_pct": core_position_min_pct,
-        "trading_position_max_pct": trading_position_max_pct,
-        "classification_note": classification_note,
-        "planned_sell_pct": planned_sell_pct,
-        "actual_sell_pct": actual_sell_pct,
-        "sell_reason_type": sell_reason_type,
-        "sell_level": result.sellLevel,
-        "thesis_broken": int(thesis_broken),
-        "position_over_limit": int(position_over_limit),
-        "has_reentry_plan": int(has_reentry_plan),
-        "reentry_plan_text": reentry_plan_text,
-        "reentry_pullback_price": reentry_pullback_price,
-        "reentry_breakout_price": reentry_breakout_price,
-        "reentry_time_stop_days": reentry_time_stop_days,
-        "reentry_buy_back_pct_on_pullback": reentry_buy_back_pct_on_pullback,
-        "reentry_buy_back_pct_on_breakout": reentry_buy_back_pct_on_breakout,
-        "reentry_thesis_invalidation": reentry_thesis_invalidation,
-        "max_allowed_sell_pct": result.maxAllowedSellPct,
-        "can_sell_core": int(result.canSellCore),
-        "requires_reentry_plan": int(result.requiresReentryPlan),
-        "discipline_status": result.disciplineStatus,
-        "blockers_json": _reasons_json(result.blockers),
-        "warnings_json": _reasons_json(result.warnings),
-        "reminder_text": result.reminderText,
-    }
-
-
-def _empty_trade_discipline_snapshot() -> dict:
-    return {
-        "position_class": None,
-        "core_position_min_pct": None,
-        "trading_position_max_pct": None,
-        "classification_note": "",
-        "planned_sell_pct": None,
-        "actual_sell_pct": None,
-        "sell_reason_type": None,
-        "sell_level": None,
-        "thesis_broken": None,
-        "position_over_limit": None,
-        "has_reentry_plan": None,
-        "reentry_plan_text": None,
-        "reentry_pullback_price": None,
-        "reentry_breakout_price": None,
-        "reentry_time_stop_days": None,
-        "reentry_buy_back_pct_on_pullback": None,
-        "reentry_buy_back_pct_on_breakout": None,
-        "reentry_thesis_invalidation": None,
-        "max_allowed_sell_pct": None,
-        "can_sell_core": None,
-        "requires_reentry_plan": None,
-        "discipline_status": None,
-        "blockers_json": None,
-        "warnings_json": None,
-        "reminder_text": None,
-    }
-
-
-def _has_reentry_plan_snapshot(
-    plan_text: str,
-    pullback_price: float | None,
-    breakout_price: float | None,
-    thesis_invalidation: str,
-) -> bool:
-    return bool(plan_text or pullback_price is not None or breakout_price is not None)
+    return build_trade_safety_snapshot(symbol, action_type, values)
 
 
 def _clean_decision_mood(value: object) -> str | None:
