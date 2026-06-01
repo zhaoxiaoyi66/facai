@@ -281,6 +281,32 @@ def test_no_reentry_sell_penalizes_discipline_score_heavily() -> None:
         assert any("无回补计划卖出" in item for item in summary["mainViolations"])
 
 
+def test_reentry_checkbox_without_concrete_plan_penalizes_discipline_score() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(
+            store,
+            "2026-05-27",
+            "trim",
+            positionClass="B",
+            corePositionPct=0.0,
+            tradingPositionPct=1.0,
+            unrealizedGainPct=0.2,
+            plannedSellPct=0.1,
+            sellReasonType="technical",
+            thesisBroken=False,
+            positionOverLimit=False,
+            hasReentryPlan=True,
+            reentryThesisInvalidation="thesis broken",
+        )
+
+        summary = _summary(tmpdir)
+
+        assert summary["noReentryPlanSellCount"] == 1
+        assert summary["disciplineLevel"] == "danger"
+        assert summary["shouldPauseTrading"] is True
+
+
 def test_suspected_sell_fly_penalizes_discipline_score() -> None:
     with TemporaryDirectory() as tmpdir:
         store = _store(tmpdir)

@@ -9,6 +9,7 @@ from data.decision_log import TradeJournalStore
 from data.post_sell_obligation import build_post_sell_obligations
 from data.prices import CACHE_PATH
 from data.sell_fly_review import PRIMARY_SELL_FLY_HORIZON, build_sell_fly_review_results
+from data.trade_safety_gate import has_concrete_reentry_plan
 
 
 SELL_TRIM_ACTIONS = {"sell", "trim"}
@@ -78,7 +79,7 @@ def build_trading_discipline_stats(
     no_reentry_sells = [
         entry
         for entry in sell_trim_entries
-        if _has_discipline_snapshot(entry) and _is_false(entry.get("has_reentry_plan"))
+        if _has_discipline_snapshot(entry) and not has_concrete_reentry_plan(entry)
     ]
     blocker_entries = [
         entry
