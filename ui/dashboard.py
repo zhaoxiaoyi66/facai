@@ -587,18 +587,24 @@ def _render_weekly_discipline_strip() -> None:
         summary = build_trading_discipline_summary()
     except Exception:
         return
-    level = str(summary.get("overTradingLevel") or "normal")
+    level = _dashboard_effective_discipline_level(summary)
     emotional_count = (
         int(summary.get("fomoTradeCount") or 0)
         + int(summary.get("anxietyPanicTradeCount") or 0)
         + int(summary.get("revengeTradeCount") or 0)
     )
     suspected_sell_fly_count = int(summary.get("suspectedSellFlyCount") or 0)
+    reentry_alert_count = (
+        int(summary.get("reentryObligationTriggeredCount") or 0)
+        + int(summary.get("reentryObligationOverdueCount") or 0)
+        + int(summary.get("reentryObligationMissingPlanCount") or 0)
+    )
     items = [
         ("本周操作", summary.get("totalTradesThisWeek", 0)),
         ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
         ("情绪化操作", emotional_count),
         ("疑似卖飞", suspected_sell_fly_count),
+        ("回补警报", reentry_alert_count),
     ]
     item_html = "".join(
         f'<span>{escape(label)} {escape(str(value))}</span>'
@@ -611,11 +617,13 @@ def _render_weekly_discipline_strip() -> None:
         + int(summary.get("disciplineBlockerCount") or 0)
         + emotional_count
         + suspected_sell_fly_count
+        + reentry_alert_count
     )
     headline = "暂无纪律警报" if level == "normal" and alert_count == 0 else {
         "normal": "纪律正常",
         "caution": "本周操作偏多，注意是否焦虑驱动",
         "danger": "交易纪律风险高，建议暂停非必要操作",
+        "stop": "本周停止主动卖出，只允许复核和计划",
     }.get(level, "纪律正常")
     st.markdown(
         (
@@ -635,6 +643,7 @@ def _dashboard_discipline_tone(level: str) -> str:
         "normal": "ok",
         "caution": "warning",
         "danger": "error",
+        "stop": "error",
     }.get(str(level or ""), "ok")
 
 
@@ -643,7 +652,18 @@ def _dashboard_discipline_level_text(level: str) -> str:
         "normal": "正常",
         "caution": "注意",
         "danger": "危险",
+        "stop": "停止",
     }.get(str(level or ""), "正常")
+
+
+def _dashboard_effective_discipline_level(summary: dict[str, object]) -> str:
+    over_trading_level = str(summary.get("overTradingLevel") or "normal")
+    score_level = str(summary.get("disciplineLevel") or "normal")
+    return max([over_trading_level, score_level], key=_dashboard_discipline_level_rank)
+
+
+def _dashboard_discipline_level_rank(level: str) -> int:
+    return {"normal": 0, "caution": 1, "danger": 2, "stop": 3}.get(str(level or ""), 0)
 
 
 def _build_data_health_context(table: pd.DataFrame) -> dict[str, object]:

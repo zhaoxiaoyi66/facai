@@ -1287,11 +1287,12 @@ def _render_weekly_discipline_summary() -> None:
             unsafe_allow_html=True,
         )
         return
-    level = str(summary.get("overTradingLevel") or "normal")
+    level = _weekly_effective_discipline_level(summary)
     headline = {
         "normal": "纪律正常",
         "caution": "本周操作偏多，注意是否焦虑驱动",
         "danger": "交易纪律风险高，建议暂停非必要操作",
+        "stop": "本周停止主动卖出，只允许复核和计划",
     }.get(level, "纪律正常")
     metrics = [
         ("本周交易", summary.get("totalTradesThisWeek", 0)),
@@ -1299,6 +1300,9 @@ def _render_weekly_discipline_summary() -> None:
         ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
         ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
         ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
+        ("回补待处理", summary.get("reentryObligationCount", 0)),
+        ("回补触发", summary.get("reentryObligationTriggeredCount", 0)),
+        ("回补逾期", summary.get("reentryObligationOverdueCount", 0)),
         ("NOW 式风险", summary.get("nowStyleRiskCount", 0)),
         ("纪律阻断", summary.get("disciplineBlockerCount", 0)),
         ("纪律提醒", summary.get("disciplineWarningCount", 0)),
@@ -1342,6 +1346,7 @@ def _weekly_discipline_tone(level: str) -> str:
         "normal": "normal",
         "caution": "caution",
         "danger": "danger",
+        "stop": "danger",
     }.get(str(level or ""), "normal")
 
 
@@ -1350,7 +1355,18 @@ def _over_trading_level_text(level: str) -> str:
         "normal": "正常",
         "caution": "注意",
         "danger": "危险",
+        "stop": "停止",
     }.get(str(level or ""), "正常")
+
+
+def _weekly_effective_discipline_level(summary: dict[str, object]) -> str:
+    over_trading_level = str(summary.get("overTradingLevel") or "normal")
+    score_level = str(summary.get("disciplineLevel") or "normal")
+    return max([over_trading_level, score_level], key=_weekly_discipline_level_rank)
+
+
+def _weekly_discipline_level_rank(level: str) -> int:
+    return {"normal": 0, "caution": 1, "danger": 2, "stop": 3}.get(str(level or ""), 0)
 
 
 def _requested_symbol_filter() -> str:
