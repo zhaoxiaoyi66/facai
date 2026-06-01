@@ -2246,6 +2246,8 @@ def _history_is_stale(stockData: dict | None) -> bool:
 def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) -> dict[str, Any]:
     technical = estimate.technicalEntry if isinstance(estimate.technicalEntry, dict) else {}
     valuation_entry = _valuation_entry_price(estimate)
+    if not _precision_field_allowed(estimate, "nextTriggerPrice", "trancheBuyHigh"):
+        valuation_entry = None
     technical_pullback = _first_number_from_value(technical.get("technicalEntryPrice"))
     review_price = _first_number_from_value(technical.get("technicalReviewPrice"))
     blocked = _combined_entry_blocked(estimate, finalDecision)
@@ -2253,7 +2255,7 @@ def _build_combined_entry(estimate: BuyZoneEstimate, finalDecision: Any = None) 
     fair_not_tranche = _estimate_is_fair_not_tranche(estimate)
     distance = _distance_to_valuation_entry_pct(estimate.currentPrice, valuation_entry)
     light_probe = _light_probe_price(estimate, technical, technical_pullback, fair_not_tranche, trend_break)
-    deep_discount = _first_number_from_value(estimate.heavyBuyBelow)
+    deep_discount = _first_number_from_value(estimate.heavyBuyBelow) if _precision_field_allowed(estimate, "heavyBuyBelow") else None
     combined_trigger = _combined_trigger_price(valuation_entry, technical_pullback, blocked or trend_break)
     label = _combined_entry_label(
         estimate,
@@ -2303,6 +2305,14 @@ def _valuation_entry_price(estimate: BuyZoneEstimate) -> float | None:
     if estimate.currentZone in BLOCKED_BUY_ZONE_STATES:
         return None
     return _first_number_from_value(estimate.nextTriggerPrice) or _first_number_from_value(estimate.trancheBuyHigh)
+
+
+def _precision_field_allowed(estimate: BuyZoneEstimate, *fields: str) -> bool:
+    contract = estimate.precisionContract if isinstance(estimate.precisionContract, dict) else {}
+    if not contract:
+        return True
+    allowed = {str(item) for item in contract.get("allowedPriceFields") or []}
+    return any(str(field) in allowed for field in fields)
 
 
 def _combined_trigger_price(

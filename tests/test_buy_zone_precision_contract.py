@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from buy_zone_engine import BuyZoneEstimate, validate_buy_zone_estimate
+from buy_zone_engine import BuyZoneEstimate, attach_combined_entry, validate_buy_zone_estimate
 
 
 def _zone(current_price: float, current_zone: str = "tranche_buy", validation_errors: list[str] | None = None) -> BuyZoneEstimate:
@@ -61,6 +61,17 @@ def test_precision_contract_keeps_fair_observation_separate_from_entry_prices() 
     assert "fair_observation_not_entry" in contract["blockedReasons"]
 
 
+def test_combined_entry_hides_blocked_precise_prices_for_fair_observation() -> None:
+    zone = attach_combined_entry(validate_buy_zone_estimate(_zone(110, "fair_observation")))
+
+    combined = zone.combinedEntry
+
+    assert combined["valuationEntryPrice"] is None
+    assert combined["valuationDiscountPrice"] is None
+    assert combined["combinedTriggerPrice"] is None
+    assert combined["deepDiscountPrice"] is None
+
+
 def test_precision_contract_blocks_all_prices_for_data_insufficient() -> None:
     zone = validate_buy_zone_estimate(
         BuyZoneEstimate(
@@ -107,3 +118,21 @@ def test_precision_contract_can_block_heavy_buy_without_blocking_tranche_referen
     assert "heavyBuyBelow" not in contract["allowedPriceFields"]
     assert "heavyBuyBelow" in contract["blockedPriceFields"]
     assert contract["heavyBuyBlockedReasons"]
+
+
+def test_combined_entry_keeps_tranche_reference_when_only_heavy_is_blocked() -> None:
+    zone = attach_combined_entry(
+        validate_buy_zone_estimate(
+            _zone(
+                95,
+                validation_errors=["ai_cloud_infra_no_heavy_buy_without_positive_fcf_and_capex_discipline"],
+            )
+        )
+    )
+
+    combined = zone.combinedEntry
+
+    assert combined["valuationEntryPrice"] == 100
+    assert combined["valuationDiscountPrice"] == 100
+    assert combined["combinedTriggerPrice"] == 100
+    assert combined["deepDiscountPrice"] is None

@@ -37,6 +37,21 @@ def render_plan_reference_card(active_zone: Any, suggestion: Any, final_decision
     _render_plan_editor_styles()
     combined = _combined_entry(active_zone)
     technical = _technical_entry(active_zone)
+    combined_trigger = _precision_value(
+        active_zone,
+        _first_value(combined.get("combinedTriggerPrice"), _attr(suggestion, "firstBuyPrice")),
+        "nextTriggerPrice",
+        "trancheBuyHigh",
+    )
+    deep_discount = _precision_value(
+        active_zone,
+        _first_value(
+            combined.get("deepDiscountPrice"),
+            _attr(active_zone, "heavyBuyBelow"),
+            _attr(suggestion, "thirdBuyPrice"),
+        ),
+        "heavyBuyBelow",
+    )
     rows = [
         ("估值观察区", _range_money(_attr(active_zone, "fairValueLow"), _attr(active_zone, "fairValueHigh"))),
         (
@@ -50,17 +65,11 @@ def render_plan_reference_card(active_zone: Any, suggestion: Any, final_decision
         ),
         (
             "综合触发价",
-            _money(_first_value(combined.get("combinedTriggerPrice"), _attr(suggestion, "firstBuyPrice"))),
+            _money(combined_trigger),
         ),
         (
             "深度折价区",
-            _money(
-                _first_value(
-                    combined.get("deepDiscountPrice"),
-                    _attr(active_zone, "heavyBuyBelow"),
-                    _attr(suggestion, "thirdBuyPrice"),
-                )
-            ),
+            _money(deep_discount),
         ),
     ]
     st.markdown(_compact_grid_html(rows, "plan-reference-card"), unsafe_allow_html=True)
@@ -271,15 +280,15 @@ def _system_values(suggestion: Any, active_zone: Any, final_decision: Any = None
     return {
         "target_position_pct": _first_value(_attr(final_decision, "maxPortfolioWeightPercent"), _attr(suggestion, "maxPortfolioWeightPercent")),
         "planned_position_pct": _first_value(_attr(final_decision, "currentAddLimitPercent"), _attr(suggestion, "currentAddLimitPercent")),
-        "first_buy_price": _attr(suggestion, "firstBuyPrice"),
-        "second_buy_price": _attr(suggestion, "secondBuyPrice"),
-        "third_buy_price": _attr(suggestion, "thirdBuyPrice"),
-        "no_chase_above": _attr(active_zone, "noChaseAbove"),
-        "fair_value_low": _attr(active_zone, "fairValueLow"),
-        "fair_value_high": _attr(active_zone, "fairValueHigh"),
-        "tranche_buy_low": _attr(active_zone, "trancheBuyLow"),
-        "tranche_buy_high": _attr(active_zone, "trancheBuyHigh"),
-        "heavy_buy_below": _attr(active_zone, "heavyBuyBelow"),
+        "first_buy_price": _precision_value(active_zone, _attr(suggestion, "firstBuyPrice"), "nextTriggerPrice", "trancheBuyHigh"),
+        "second_buy_price": _precision_value(active_zone, _attr(suggestion, "secondBuyPrice"), "trancheBuyLow"),
+        "third_buy_price": _precision_value(active_zone, _attr(suggestion, "thirdBuyPrice"), "heavyBuyBelow"),
+        "no_chase_above": _precision_value(active_zone, _attr(active_zone, "noChaseAbove"), "noChaseAbove"),
+        "fair_value_low": _precision_value(active_zone, _attr(active_zone, "fairValueLow"), "fairValueLow"),
+        "fair_value_high": _precision_value(active_zone, _attr(active_zone, "fairValueHigh"), "fairValueHigh"),
+        "tranche_buy_low": _precision_value(active_zone, _attr(active_zone, "trancheBuyLow"), "trancheBuyLow"),
+        "tranche_buy_high": _precision_value(active_zone, _attr(active_zone, "trancheBuyHigh"), "trancheBuyHigh"),
+        "heavy_buy_below": _precision_value(active_zone, _attr(active_zone, "heavyBuyBelow"), "heavyBuyBelow"),
         "stop_adding_condition": _attr(suggestion, "stopAddingCondition") or "",
         "invalidation_condition": _attr(suggestion, "thesisBreakCondition") or "",
         "earnings_review_points": _attr(suggestion, "earningsReviewCondition") or "",
@@ -307,6 +316,24 @@ def _state_values(system_values: dict[str, Any], plan: dict | None = None) -> di
         saved = saved_tranches[index] if index < len(saved_tranches) and isinstance(saved_tranches[index], dict) else {}
         values[_tranche_field(index, "note")] = str(saved.get("note") or "")
     return values
+
+
+def _precision_contract(source: Any) -> dict[str, Any]:
+    contract = getattr(source, "precisionContract", None)
+    return dict(contract) if isinstance(contract, dict) else {}
+
+
+def _precision_field_allowed(source: Any, field: str) -> bool:
+    contract = _precision_contract(source)
+    if not contract:
+        return True
+    return str(field) in set(contract.get("allowedPriceFields") or [])
+
+
+def _precision_value(source: Any, value: Any, *fields: str) -> Any:
+    if not fields:
+        return value
+    return value if any(_precision_field_allowed(source, field) for field in fields) else None
 
 
 def _ensure_editor_state(key_prefix: str, values: dict[str, str]) -> None:

@@ -4495,6 +4495,53 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(stock_detail._precision_below_text(zone, "heavyBuyBelow", zone.heavyBuyBelow), "不展示精确买点")
         self.assertIn("$100", stock_detail._precision_range_text(zone, "fairValueLow", zone.fairValueLow, "fairValueHigh", zone.fairValueHigh))
 
+    def test_action_plan_system_values_respect_precision_contract(self) -> None:
+        from ui import action_plan_editor
+
+        zone = BuyZoneEstimate(
+            symbol="CRWV",
+            modelType="AI_CLOUD_INFRA",
+            currentPrice=110,
+            noChaseAbove=130,
+            fairValueLow=100,
+            fairValueHigh=120,
+            trancheBuyLow=80,
+            trancheBuyHigh=90,
+            heavyBuyBelow=70,
+            currentZone="fair_observation",
+            confidence="medium",
+            method="guardrail",
+            inputsUsed=[],
+            keyReasons=[],
+            warnings=[],
+            createdAt="now",
+            nextTriggerPrice=90,
+            precisionContract={
+                "canShowPreciseBuyZone": False,
+                "allowedPriceFields": ["noChaseAbove", "fairValueLow", "fairValueHigh"],
+                "blockedPriceFields": ["trancheBuyLow", "trancheBuyHigh", "heavyBuyBelow", "nextTriggerPrice"],
+            },
+        )
+        suggestion = SimpleNamespace(
+            firstBuyPrice=90,
+            secondBuyPrice=80,
+            thirdBuyPrice=70,
+            currentAddLimitPercent=0,
+            maxPortfolioWeightPercent=10,
+        )
+
+        system_values = action_plan_editor._system_values(suggestion, zone)
+
+        self.assertIsNone(system_values["first_buy_price"])
+        self.assertIsNone(system_values["second_buy_price"])
+        self.assertIsNone(system_values["third_buy_price"])
+        self.assertIsNone(system_values["tranche_buy_low"])
+        self.assertIsNone(system_values["tranche_buy_high"])
+        self.assertIsNone(system_values["heavy_buy_below"])
+        self.assertEqual(system_values["fair_value_low"], 100)
+        self.assertEqual(system_values["fair_value_high"], 120)
+        self.assertEqual(system_values["no_chase_above"], 130)
+
     def test_stock_detail_prefers_final_decision_for_action_and_position(self) -> None:
         final_decision = SimpleNamespace(
             finalAction="只观察",
