@@ -7808,6 +7808,41 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertEqual(primary, "合理观察，未到估值买点")
         self.assertEqual(tone, "neutral")
 
+    def test_buy_zone_page_hides_precise_trigger_when_precision_contract_blocks(self) -> None:
+        from ui import buy_zone as buy_zone_page
+
+        row = {
+            "currentZone": "fair_observation",
+            "currentPrice": 110,
+            "fairValueLow": 100,
+            "fairValueHigh": 120,
+            "trancheBuyLow": 80,
+            "trancheBuyHigh": 90,
+            "nextTriggerPrice": 90,
+            "nextBuyPrice": 90,
+            "finalAction": "wait",
+            "decisionLane": "wait",
+            "isActionable": False,
+            "currentAddLimitPercent": 0,
+            "confidence": "high",
+            "dataConfidence": "high",
+            "isValid": True,
+            "precisionContract": {
+                "canShowPreciseBuyZone": False,
+                "allowedPriceFields": ["fairValueLow", "fairValueHigh"],
+                "blockedPriceFields": ["trancheBuyLow", "trancheBuyHigh", "heavyBuyBelow", "nextTriggerPrice"],
+            },
+        }
+
+        primary, secondary, _tone = buy_zone_page.format_trigger_cell(row)
+        ladder_html = buy_zone_page._price_ladder_html(row)
+
+        self.assertEqual(primary, "等待估值折价触发")
+        self.assertEqual(secondary, "不展示精确买点")
+        self.assertNotIn("$90", secondary)
+        self.assertIn("不展示精确买点", ladder_html)
+        self.assertNotIn("$90.00", ladder_html)
+
     def test_stock_detail_buy_point_status_uses_buy_zone_distance_sanity(self) -> None:
         score = SimpleNamespace(
             entry_rating="B+ - 击球区附近",

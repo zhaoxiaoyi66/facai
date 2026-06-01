@@ -240,6 +240,7 @@ def _zone_plan_fields(zone: BuyZoneEstimate, plan: PositionPlanSuggestion, sourc
         "keyReasons": zone.keyReasons,
         "warnings": zone.warnings,
         "validationErrors": list(getattr(zone, "validationErrors", None) or []),
+        "precisionContract": getattr(zone, "precisionContract", None) or {},
         "explainability": getattr(zone, "explainability", None) or {},
         "technicalEntry": getattr(zone, "technicalEntry", None) or {},
         "combinedEntry": getattr(zone, "combinedEntry", None) or {},
@@ -631,10 +632,10 @@ def _buy_zone_drawer_html(row: dict) -> str:
 
 def _price_ladder_html(row: dict) -> str:
     bands = [
-        ("禁止追高", row.get("noChaseAbove")),
-        ("合理观察区", f"{_money(row.get('fairValueLow'))} - {_money(row.get('fairValueHigh'))}"),
-        ("估值折价区", f"{_money(row.get('trancheBuyLow'))} - {_money(row.get('trancheBuyHigh'))}"),
-        ("极端恐慌区", row.get("heavyBuyBelow")),
+        ("禁止追高", _precision_money(row, "noChaseAbove", row.get("noChaseAbove"))),
+        ("合理观察区", _precision_range_text(row, "fairValueLow", row.get("fairValueLow"), "fairValueHigh", row.get("fairValueHigh"))),
+        ("估值折价区", _precision_range_text(row, "trancheBuyLow", row.get("trancheBuyLow"), "trancheBuyHigh", row.get("trancheBuyHigh"))),
+        ("极端恐慌区", _precision_money(row, "heavyBuyBelow", row.get("heavyBuyBelow"))),
     ]
     items = "".join(f"<li><span>{escape(label)}</span><b>{escape(_money(value) if not isinstance(value, str) else value)}</b></li>" for label, value in bands)
     return f'<div class="price-ladder"><ul>{items}</ul><div class="price-marker">当前价格：{escape(_money(row.get("currentPrice")))}</div></div>'
@@ -644,10 +645,10 @@ def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
     items = [
         ("当前区间", _zone_label(zone.currentZone)),
         ("触发条件", _zone_next_trigger_text(zone)),
-        ("禁止追高", _optional_money(zone.noChaseAbove)),
-        ("合理观察区", f"{_optional_money(zone.fairValueLow)} - {_optional_money(zone.fairValueHigh)}"),
-        ("估值折价区", f"{_optional_money(zone.trancheBuyLow)} - {_optional_money(zone.trancheBuyHigh)}"),
-        ("极端恐慌区", _optional_money(zone.heavyBuyBelow)),
+        ("禁止追高", _precision_money(zone, "noChaseAbove", zone.noChaseAbove, optional=True)),
+        ("合理观察区", _precision_range_text(zone, "fairValueLow", zone.fairValueLow, "fairValueHigh", zone.fairValueHigh, optional=True)),
+        ("估值折价区", _precision_range_text(zone, "trancheBuyLow", zone.trancheBuyLow, "trancheBuyHigh", zone.trancheBuyHigh, optional=True)),
+        ("极端恐慌区", _precision_money(zone, "heavyBuyBelow", zone.heavyBuyBelow, optional=True)),
         ("置信度", confidence_label(zone.confidence)),
     ]
     html = "".join(f"<li><span>{escape(label)}</span><b>{escape(value)}</b></li>" for label, value in items)
@@ -2066,8 +2067,8 @@ def resolve_buy_zone_display_category(row: dict) -> dict[str, object]:
     current_add = _first_number(row.get("currentAddLimitPercent"))
     trigger = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
     price = _first_number(row.get("currentPrice"))
-    has_trigger = trigger is not None and trigger > 0
-    trigger_secondary = f"触发价 {format_currency(trigger)}" if has_trigger else "等待条件明确"
+    has_trigger = trigger is not None and trigger > 0 and _precision_field_allowed(row, "nextTriggerPrice")
+    trigger_secondary = f"触发价 {format_currency(trigger)}" if has_trigger else _precision_blocked_text(row)
 
     decision_gate = _final_decision_display_gate(
         row,
@@ -2173,7 +2174,7 @@ def _buy_zone_distance_display_category(
 
     label = str(row.get("nextBuyLabel") or "").strip()
     fallback_primary = _next_label(label) if label else _zone_next_label(zone)
-    return _display_category_result("等回踩", fallback_primary, "等待条件明确", False, "neutral")
+    return _display_category_result("等回踩", fallback_primary, trigger_secondary, False, "neutral")
 
 
 def _buy_point_sanity_label(row: dict, *, zone: str, price: float | None, trigger: float | None) -> str | None:
@@ -2379,6 +2380,8 @@ def _next_trigger_text(row: dict) -> str:
         return "当前价缺失"
     price = _first_number(row.get("nextTriggerPrice"), row.get("nextBuyPrice"))
     label = str(row.get("nextBuyLabel") or "").strip()
+    if price is not None and price > 0 and not _precision_field_allowed(row, "nextTriggerPrice"):
+        return _precision_blocked_text(row)
     if price is not None and price > 0:
         return format_currency(price)
     if label:
@@ -2394,6 +2397,7 @@ def _zone_next_trigger_text(zone: BuyZoneEstimate) -> str:
         "nextBuyLabel": getattr(zone, "nextBuyLabel", ""),
         "isValid": getattr(zone, "isValid", True),
         "validationErrors": getattr(zone, "validationErrors", None) or [],
+        "precisionContract": getattr(zone, "precisionContract", None) or {},
     }
     return _next_trigger_text(row)
 
@@ -2444,6 +2448,53 @@ def _pct_limit(value) -> str:
     if number <= 0:
         return "0%"
     return f"≤{number:.0f}%"
+
+
+def _precision_contract(source: object) -> dict:
+    if isinstance(source, dict):
+        contract = source.get("precisionContract")
+        if isinstance(contract, dict) and contract:
+            return contract
+        active_zone = source.get("activeZone")
+        contract = getattr(active_zone, "precisionContract", None) if active_zone is not None else None
+        return dict(contract) if isinstance(contract, dict) else {}
+    contract = getattr(source, "precisionContract", None)
+    return dict(contract) if isinstance(contract, dict) else {}
+
+
+def _precision_field_allowed(source: object, field: str) -> bool:
+    contract = _precision_contract(source)
+    if not contract:
+        return True
+    return str(field) in set(contract.get("allowedPriceFields") or [])
+
+
+def _precision_blocked_text(source: object) -> str:
+    contract = _precision_contract(source)
+    if contract and not contract.get("canShowPreciseBuyZone", True):
+        return "不展示精确买点"
+    return "等待条件明确"
+
+
+def _precision_money(source: object, field: str, value: object, *, optional: bool = False) -> str:
+    if not _precision_field_allowed(source, field):
+        return "不展示精确买点"
+    return _optional_money(value) if optional else _money(value)
+
+
+def _precision_range_text(
+    source: object,
+    low_field: str,
+    low_value: object,
+    high_field: str,
+    high_value: object,
+    *,
+    optional: bool = False,
+) -> str:
+    if not _precision_field_allowed(source, low_field) or not _precision_field_allowed(source, high_field):
+        return "不展示精确买点"
+    formatter = _optional_money if optional else _money
+    return f"{formatter(low_value)} - {formatter(high_value)}"
 
 
 def _money(value) -> str:
