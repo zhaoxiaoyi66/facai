@@ -22,6 +22,8 @@ def test_trade_entry_detail_shows_concrete_reentry_plan() -> None:
         "has_reentry_plan": 1,
         "reentry_plan_text": "回踩买回",
         "reentry_pullback_price": 95,
+        "reentry_buy_back_pct_on_pullback": 50,
+        "reentry_thesis_invalidation": "thesis broken",
     }
 
     html = trade_journal._entry_reentry_plan_html(entry)

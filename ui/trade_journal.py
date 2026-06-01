@@ -19,11 +19,12 @@ from data.decision_log import (
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
     apply_trade_to_portfolio,
+    preview_trade_portfolio_effect,
     preview_trade_values_portfolio_effect,
 )
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
-from data.trade_safety_gate import has_concrete_reentry_plan
+from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
@@ -175,6 +176,7 @@ def render() -> None:
     symbols = store.list_symbols()
     entries = _load_entries(store, symbols)
     _render_summary(entries)
+    _render_unsynced_trade_sync_panel(entries)
     _render_entry_delete_confirmation(store)
     _render_entry_detail(store)
     _render_entries(symbols, entries)
@@ -1407,6 +1409,105 @@ def _render_summary(entries: list[dict]) -> None:
         for label, value, caption in items
     )
     st.markdown(f'<div class="trade-journal-summary">{html}</div>', unsafe_allow_html=True)
+
+
+def _render_unsynced_trade_sync_panel(entries: list[dict]) -> None:
+    items = _unsynced_trade_sync_items(entries)
+    if not items:
+        return
+
+    st.markdown(
+        (
+            '<section class="trade-unsynced-sync-panel">'
+            '<div class="trade-unsynced-sync-head">'
+            "<strong>未同步交易处理</strong>"
+            f"<span>{len(items)} 条交易尚未进入组合持仓，逐条确认后同步；BLOCK 交易不会同步。</span>"
+            "</div>"
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+    for item in items[:8]:
+        entry = item["entry"]
+        preview = item["preview"]
+        cols = st.columns([0.75, 0.7, 1.1, 1.3, 1.7, 0.82])
+        cols[0].markdown(f"**{escape(str(entry.get('symbol') or ''))}**")
+        cols[1].markdown(_entry_action_plain_text(entry))
+        cols[2].markdown(f"{_quantity_text(entry.get('quantity'))} 股 / {_money_text(entry.get('price'))}")
+        cols[3].markdown(f"同步后 {escape(_quantity_text(preview.get('afterQuantity')))} 股")
+        cols[4].caption(item["reason"])
+        if cols[5].button(
+            "同步",
+            key=f"trade-unsynced-sync-{int(entry.get('id') or 0)}",
+            disabled=not item["canSync"],
+            width="stretch",
+        ):
+            _apply_unsynced_trade_sync(entry)
+    if len(items) > 8:
+        st.caption(f"还有 {len(items) - 8} 条未同步交易，可按股票筛选后逐条处理。")
+
+
+def _unsynced_trade_sync_items(entries: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    for entry in entries:
+        if str(entry.get("action_type") or "").strip().lower() not in POSITION_AFFECTING_ACTIONS:
+            continue
+        entry_id = int(entry.get("id") or 0)
+        if entry_id <= 0:
+            continue
+        preview = preview_trade_portfolio_effect(entry_id)
+        if str(preview.get("syncStatus") or "") == "synced" or str(preview.get("status") or "") == "already_synced":
+            continue
+        policy = trade_sync_policy(entry)
+        preview_ready = str(preview.get("status") or "") == "ready"
+        can_sync = bool(policy.get("canSync")) and preview_ready
+        items.append(
+            {
+                "entry": entry,
+                "preview": preview,
+                "canSync": can_sync,
+                "reason": _unsynced_trade_sync_reason(policy, preview, can_sync),
+            }
+        )
+    return items
+
+
+def _unsynced_trade_sync_reason(policy: dict, preview: dict, can_sync: bool) -> str:
+    if can_sync:
+        return "可同步一次；同步后会更新组合持仓。"
+    if not bool(policy.get("canSync")):
+        return str(policy.get("reason") or "纪律门禁阻止同步。")
+    return str(preview.get("error") or "缺少数量、价格或当前持仓，暂不能同步。")
+
+
+def _apply_unsynced_trade_sync(entry: dict) -> None:
+    symbol = str(entry.get("symbol") or "").strip().upper()
+    try:
+        result = apply_trade_to_portfolio(int(entry.get("id") or 0))
+    except Exception as exc:  # pragma: no cover - defensive UI boundary
+        st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
+        st.rerun()
+    st.session_state["trade_journal_notice"] = _portfolio_sync_result_notice(symbol, result)
+    st.rerun()
+
+
+def _portfolio_sync_result_notice(symbol: str, result: dict) -> tuple[str, str]:
+    status = str(result.get("status") or "")
+    if status == "success":
+        return ("success", f"{symbol} 已同步到组合持仓。")
+    if status == "already_synced":
+        return ("error", f"{symbol} 已同步过，未重复入账。")
+    return ("error", f"{symbol} 未能同步到组合持仓：{result.get('error') or '请检查交易数量、价格和纪律门禁。'}")
+
+
+def _entry_action_plain_text(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").strip().lower()
+    return {
+        "buy": "买入",
+        "add": "加仓",
+        "sell": "卖出",
+        "trim": "减仓",
+    }.get(action, action or BLANK_TEXT)
 
 
 def _render_entries(symbols: list[str], entries: list[dict]) -> None:
@@ -4018,6 +4119,29 @@ def _render_styles() -> None:
             color: #64748B;
             font-size: 0.7rem;
             font-style: normal;
+        }
+        .trade-unsynced-sync-panel {
+            margin: 0.55rem 0 0.42rem;
+            padding: 0.58rem 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.9));
+        }
+        .trade-unsynced-sync-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.9rem;
+        }
+        .trade-unsynced-sync-head strong {
+            color: #0F172A;
+            font-size: 0.82rem;
+            font-weight: 840;
+        }
+        .trade-unsynced-sync-head span {
+            color: #64748B;
+            font-size: 0.7rem;
+            text-align: right;
         }
         .trade-portfolio-sync-card {
             margin: 0.45rem 0 0.68rem;
