@@ -63,6 +63,8 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertFalse(summary["cacheExists"])
             self.assertEqual(summary["healthyCount"], 0)
             self.assertEqual(summary["topIssues"][0]["category"], "cache_missing")
+            self.assertEqual(summary["decisionBlockedCount"], 1)
+            self.assertFalse(summary["decisionReadiness"]["NOW"]["canDecide"])
 
     def test_cache_read_model_prefers_quote_price_and_reports_stale_quote(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -208,6 +210,10 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertEqual(summary["missingPriceCount"], 1)
             self.assertEqual(summary["missingHistoryCount"], 1)
             self.assertEqual(summary["finalDecisionErrorCount"], 1)
+            self.assertEqual(summary["decisionBlockedCount"], 1)
+            self.assertFalse(summary["decisionReadiness"]["CRM"]["canDecide"])
+            self.assertFalse(summary["decisionReadiness"]["CRM"]["canShowPreciseBuyZone"])
+            self.assertIn("NOW", summary["decisionReadiness"])
             categories = {item["category"] for item in summary["topIssues"]}
             self.assertIn("missing_price", categories)
             self.assertIn("stale_quote", categories)

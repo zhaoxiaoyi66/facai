@@ -8,6 +8,7 @@ from typing import Any
 
 from buy_zone_engine import generate_buy_zone
 from data.cache_read_model import CacheReadModel
+from data.decision_readiness import build_decision_readiness
 from data.prices import CACHE_PATH
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -26,7 +27,13 @@ def build_data_health_summary(
     summary = _empty_summary()
     summary["cacheExists"] = path.exists()
     if not path.exists():
-        _add_issue(summary, "cache_missing", None, "cache.sqlite 不存在")
+        cache_issue = _add_issue(summary, "cache_missing", None, "cache.sqlite 不存在")
+        for symbol in symbols:
+            _record_decision_readiness(
+                summary,
+                symbol,
+                build_decision_readiness(symbol, data_health={"topIssues": [cache_issue]}),
+            )
         return summary
 
     current_time = now or datetime.now(timezone.utc)
@@ -40,29 +47,41 @@ def build_data_health_summary(
 
     for symbol in symbols:
         symbol_issues = 0
+        symbol_issue_items: list[dict[str, Any]] = []
         payload = cache.get_quote_payload(symbol)
         current_price = cache.get_current_price(symbol)
         if current_price is None:
             summary["missingPriceCount"] += 1
             symbol_issues += 1
-            _add_issue(summary, "missing_price", symbol, "观察池缺少 current price")
+            symbol_issue_items.append(_add_issue(summary, "missing_price", symbol, "观察池缺少 current price"))
         if cache.get_price_status(symbol) == "stale_quote":
             summary["stalePriceCount"] += 1
             symbol_issues += 1
-            _add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期")
+            symbol_issue_items.append(_add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期"))
         history_status = cache.get_history_status(symbol)
         if history_status == "missing":
             summary["missingHistoryCount"] += 1
             symbol_issues += 1
-            _add_issue(summary, "missing_history", symbol, "price_history 缺失")
+            symbol_issue_items.append(_add_issue(summary, "missing_history", symbol, "price_history 缺失"))
         elif history_status == "stale_history":
             summary["staleHistoryCount"] += 1
             symbol_issues += 1
-            _add_issue(summary, "stale_history", symbol, "price_history 已过期")
-        if not _can_generate_final_decision(cache, symbol, payload):
+            symbol_issue_items.append(_add_issue(summary, "stale_history", symbol, "price_history 已过期"))
+        final_decision, buy_zone = _build_final_decision_inputs(cache, symbol, payload)
+        if not _final_decision_ready(final_decision):
             summary["finalDecisionErrorCount"] += 1
             symbol_issues += 1
-            _add_issue(summary, "final_decision_error", symbol, "finalDecision 无法用本地数据生成")
+            symbol_issue_items.append(_add_issue(summary, "final_decision_error", symbol, "finalDecision 无法用本地数据生成"))
+        _record_decision_readiness(
+            summary,
+            symbol,
+            build_decision_readiness(
+                symbol,
+                data_health={"topIssues": symbol_issue_items},
+                final_decision=final_decision,
+                buy_zone=buy_zone,
+            ),
+        )
         if symbol_issues == 0:
             healthy_symbols += 1
 
@@ -88,6 +107,9 @@ def _empty_summary() -> dict[str, Any]:
         "finalDecisionErrorCount": 0,
         "portfolioMissingPriceCount": 0,
         "outcomeMissingCount": 0,
+        "decisionBlockedCount": 0,
+        "preciseBuyZoneBlockedCount": 0,
+        "decisionReadiness": {},
         "topIssues": [],
     }
 
@@ -119,9 +141,9 @@ def _outcome_missing_count(path: Path) -> int:
     return int(row[0] or 0) if row else 0
 
 
-def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: dict | None) -> bool:
+def _build_final_decision_inputs(cache: CacheReadModel, symbol: str, payload: dict | None) -> tuple[Any | None, Any | None]:
     if not payload:
-        return False
+        return None, None
     cached_price = _first_number(
         payload.get("price"),
         payload.get("current_price"),
@@ -129,7 +151,7 @@ def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: di
         cache.get_current_price(symbol),
     )
     if cached_price is None:
-        return False
+        return None, None
     try:
         history = cache.get_price_history(symbol)
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
@@ -142,8 +164,17 @@ def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: di
         zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
         bundle = build_final_decision_bundle(score, zone, symbol=symbol)
     except Exception:
-        return False
-    return bool(getattr(bundle, "finalAction", None))
+        return None, None
+    return bundle, zone
+
+
+def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: dict | None) -> bool:
+    final_decision, _buy_zone = _build_final_decision_inputs(cache, symbol, payload)
+    return _final_decision_ready(final_decision)
+
+
+def _final_decision_ready(final_decision: Any) -> bool:
+    return bool(getattr(final_decision, "finalAction", None))
 
 
 def _first_number(*values: object) -> float | None:
@@ -156,8 +187,18 @@ def _first_number(*values: object) -> float | None:
             continue
     return None
 
-def _add_issue(summary: dict[str, Any], category: str, symbol: str | None, message: str) -> None:
-    summary["topIssues"].append({"category": category, "symbol": symbol, "message": message})
+def _add_issue(summary: dict[str, Any], category: str, symbol: str | None, message: str) -> dict[str, Any]:
+    issue = {"category": category, "symbol": symbol, "message": message}
+    summary["topIssues"].append(issue)
+    return issue
+
+
+def _record_decision_readiness(summary: dict[str, Any], symbol: str, readiness: dict[str, Any]) -> None:
+    summary["decisionReadiness"][symbol] = readiness
+    if not readiness.get("canDecide"):
+        summary["decisionBlockedCount"] += 1
+    if not readiness.get("canShowPreciseBuyZone"):
+        summary["preciseBuyZoneBlockedCount"] += 1
 
 
 def _normalize_symbols(symbols: list[str]) -> list[str]:
