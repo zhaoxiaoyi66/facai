@@ -112,22 +112,22 @@ def build_trading_discipline_stats(
     total_count = len(entries)
     if total_count > 10:
         level = _max_level(level, "danger")
-        warnings.append("本周交易次数超过 10 次，已进入焦虑交易危险区。")
+        warnings.append("本周交易次数超过 10 次，已进入焦虑交易风险区。")
     elif total_count > 5:
         level = _max_level(level, "caution")
         warnings.append("本周交易次数超过 5 次，进入操作频率警戒区。")
     if len(a_class_sells) > 1:
         level = _max_level(level, "danger")
-        warnings.append("A 类股票本周 sell / trim 超过 1 次，需暂停复核核心仓纪律。")
+        warnings.append("A 类股票本周 sell / trim 超过 1 次，需要暂停复核核心仓纪律。")
     if macro_sells:
         level = _max_level(level, "caution")
         warnings.append("本周存在宏观原因 sell / trim，宏观风险只能降低总仓，不能单独清仓强个股。")
     if no_reentry_sells:
         level = _max_level(level, "danger")
-        warnings.append("本周存在无回补计划的 sell / trim，需停止高抛低吸式操作。")
+        warnings.append("本周存在无回补计划的 sell / trim，需要停止高抛低吸式操作。")
     if blocker_entries:
         level = _max_level(level, "danger")
-        warnings.append("本周存在纪律 blocker 的 sell / trim，需先处理阻断项再行动。")
+        warnings.append("本周存在纪律阻断的 sell / trim，需要先处理阻断项再行动。")
 
     if now_style_risk_entries:
         level = _max_level(level, "danger")
@@ -307,7 +307,7 @@ def _pause_reason(level: str, violations: list[str]) -> str:
         return ""
     if not violations:
         return "本周纪律风险偏高。"
-    return "；".join(violations[:3])
+    return "，".join(violations[:3])
 
 
 def _suggested_action(level: str) -> str:
@@ -317,16 +317,6 @@ def _suggested_action(level: str) -> str:
         "danger": "纪律风险高，暂停非必要交易",
         "stop": "本周停止主动卖出，只允许复核和计划",
     }.get(level, "纪律正常")
-
-
-def _is_false(value: object) -> bool:
-    if value is None or value == "":
-        return False
-    if isinstance(value, bool):
-        return not value
-    if isinstance(value, (int, float)):
-        return value == 0
-    return str(value).strip().lower() in {"0", "false", "no", "n", "off"}
 
 
 def _json_list(list_value: object, json_value: object) -> list:

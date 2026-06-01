@@ -188,7 +188,7 @@ def test_blocker_sell_triggers_danger() -> None:
         assert summary["disciplineLevel"] in {"danger", "stop"}
         assert summary["shouldPauseTrading"] is True
         assert any("纪律阻断" in item for item in summary["mainViolations"])
-        assert any("blocker" in warning for warning in summary["warnings"])
+        assert any("纪律阻断" in warning for warning in summary["warnings"])
 
 
 def test_buy_add_skip_count_frequency_but_not_sell_discipline_violations() -> None:
