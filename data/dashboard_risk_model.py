@@ -105,6 +105,8 @@ def build_dashboard_data_health_error_view(exc: Exception) -> DataHealthView:
 
 
 def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[str]) -> DataHealthView:
+    decision_blocked_count = int(summary.get("decisionBlockedCount") or 0)
+    precision_blocked_count = int(summary.get("preciseBuyZoneBlockedCount") or 0)
     issue_count = (
         int(summary.get("missingPriceCount") or 0)
         + int(summary.get("missingHistoryCount") or 0)
@@ -112,11 +114,12 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
         + int(summary.get("finalDecisionErrorCount") or 0)
         + int(summary.get("portfolioMissingPriceCount") or 0)
         + int(summary.get("outcomeMissingCount") or 0)
+        + decision_blocked_count
     )
     missing_price_count = int(summary.get("missingPriceCount") or 0)
     severe_price_gap = bool(symbols) and missing_price_count >= max(3, int(len(symbols) * 0.2))
     has_final_decision_error = int(summary.get("finalDecisionErrorCount") or 0) > 0
-    if not summary.get("cacheExists") or has_final_decision_error or severe_price_gap:
+    if not summary.get("cacheExists") or has_final_decision_error or severe_price_gap or decision_blocked_count:
         tone = "error"
         status_label = "异常"
     elif issue_count:
@@ -126,19 +129,24 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
         tone = "ok"
         status_label = "正常"
     issues = [data_health_issue_text(issue) for issue in list(summary.get("topIssues") or [])[:3]]
+    items = [
+        ("健康项", summary.get("healthyCount", 0)),
+        ("价格缺失", summary.get("missingPriceCount", 0)),
+        ("历史缺失", summary.get("missingHistoryCount", 0)),
+        ("历史过期", summary.get("staleHistoryCount", 0)),
+        ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
+        ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
+        ("复盘缺失", summary.get("outcomeMissingCount", 0)),
+    ]
+    if decision_blocked_count:
+        items.append(("不能决策", decision_blocked_count))
+    if precision_blocked_count:
+        items.append(("精确买点禁用", precision_blocked_count))
     return {
         "tone": tone,
         "statusLabel": status_label,
         "subtitle": "本地缓存体检",
-        "items": [
-            ("健康项", summary.get("healthyCount", 0)),
-            ("价格缺失", summary.get("missingPriceCount", 0)),
-            ("历史缺失", summary.get("missingHistoryCount", 0)),
-            ("历史过期", summary.get("staleHistoryCount", 0)),
-            ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
-            ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
-            ("复盘缺失", summary.get("outcomeMissingCount", 0)),
-        ],
+        "items": items,
         "issues": issues,
         "issueSummary": f"主要问题 {len(issues)} 项" if issues else "无主要问题",
     }

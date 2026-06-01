@@ -3564,6 +3564,27 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(view["tone"], "error")
         self.assertEqual(data_health_issue_text({"symbol": "AAPL", "category": "missing_price"}), "AAPL 价格缺失")
 
+    def test_dashboard_data_health_view_surfaces_decision_readiness_counts(self) -> None:
+        summary = {
+            "cacheExists": True,
+            "healthyCount": 5,
+            "missingPriceCount": 0,
+            "missingHistoryCount": 0,
+            "staleHistoryCount": 0,
+            "finalDecisionErrorCount": 0,
+            "portfolioMissingPriceCount": 0,
+            "outcomeMissingCount": 0,
+            "decisionBlockedCount": 1,
+            "preciseBuyZoneBlockedCount": 3,
+            "topIssues": [],
+        }
+
+        view = build_dashboard_data_health_view_from_summary(summary, ["NVDA", "NOW", "ADBE"])
+
+        self.assertEqual(view["tone"], "error")
+        self.assertIn(("不能决策", 1), view["items"])
+        self.assertIn(("精确买点禁用", 3), view["items"])
+
     def test_portfolio_tables_do_not_replace_stock_action_plans(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "portfolio.sqlite"
