@@ -301,6 +301,35 @@ def test_suspected_sell_fly_penalizes_discipline_score() -> None:
         assert summary["disciplineScore"] < 100
         assert any("疑似卖飞" in item for item in summary["mainViolations"])
 
+def test_open_reentry_obligations_are_included_even_from_prior_week() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save(
+            store,
+            "2026-05-20",
+            "trim",
+            positionClass="B",
+            corePositionPct=0.0,
+            tradingPositionPct=1.0,
+            unrealizedGainPct=0.2,
+            plannedSellPct=0.1,
+            sellReasonType="technical",
+            thesisBroken=False,
+            positionOverLimit=False,
+            reentryPullbackPrice=95,
+            reentryBreakoutPrice=105,
+            reentryTimeStopDays=5,
+            reentryPlanText="回踩或重新站回卖出价时分批买回",
+        )
+
+        summary = build_trading_discipline_stats(Path(tmpdir) / "decision_log.sqlite", "2026-06-01")
+
+        assert summary["totalTradesThisWeek"] == 0
+        assert summary["reentryObligationCount"] == 1
+        assert summary["reentryObligationOverdueCount"] == 1
+        assert summary["overTradingLevel"] == "danger"
+        assert any("回补计划" in warning for warning in summary["warnings"])
+
 
 def test_stacked_violations_should_pause_trading() -> None:
     with TemporaryDirectory() as tmpdir:

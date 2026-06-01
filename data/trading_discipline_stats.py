@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from data.decision_log import TradeJournalStore
+from data.post_sell_obligation import build_post_sell_obligations
 from data.prices import CACHE_PATH
 from data.sell_fly_review import PRIMARY_SELL_FLY_HORIZON, build_sell_fly_review_results
 
@@ -34,6 +35,10 @@ class TradingDisciplineStatsSummary:
     revengeTradeCount: int
     reasonedPlanTradeCount: int
     suspectedSellFlyCount: int
+    reentryObligationCount: int
+    reentryObligationTriggeredCount: int
+    reentryObligationOverdueCount: int
+    reentryObligationMissingPlanCount: int
     overTradingLevel: str
     disciplineScore: int
     disciplineLevel: str
@@ -96,6 +101,10 @@ def build_trading_discipline_stats(
     reasoned_plan_entries = _mood_entries(entries, {"well_reasoned", "plan_execution"})
     emotional_sell_entries = _mood_entries(sell_trim_entries, EMOTIONAL_SELL_MOODS)
     suspected_sell_fly_count = _suspected_sell_fly_count(path, period_start, current)
+    reentry_obligations = _open_reentry_obligations(path, current)
+    triggered_reentry = [item for item in reentry_obligations if item.get("status") == "triggered"]
+    overdue_reentry = [item for item in reentry_obligations if item.get("status") == "overdue"]
+    missing_plan_obligations = [item for item in reentry_obligations if item.get("status") == "missing_plan"]
 
     warnings: list[str] = []
     level = "normal"
@@ -122,6 +131,16 @@ def build_trading_discipline_stats(
     if now_style_risk_entries:
         level = _max_level(level, "danger")
         warnings.append("本周出现 NOW 式错误风险，建议暂停非必要卖出。")
+
+    if triggered_reentry:
+        level = _max_level(level, "danger")
+        warnings.append("存在已触发的回补计划，先复核是否需要按计划买回。")
+    if overdue_reentry:
+        level = _max_level(level, "danger")
+        warnings.append("存在已到期的回补计划，不能继续假装卖出后不用处理。")
+    if missing_plan_obligations:
+        level = _max_level(level, "danger")
+        warnings.append("存在没有具体回补计划的卖出记录，需要补计划或标记为违规复盘。")
 
     score_result = _discipline_score(
         total_trades=total_count,
@@ -150,6 +169,10 @@ def build_trading_discipline_stats(
         revengeTradeCount=len(revenge_entries),
         reasonedPlanTradeCount=len(reasoned_plan_entries),
         suspectedSellFlyCount=suspected_sell_fly_count,
+        reentryObligationCount=len(reentry_obligations),
+        reentryObligationTriggeredCount=len(triggered_reentry),
+        reentryObligationOverdueCount=len(overdue_reentry),
+        reentryObligationMissingPlanCount=len(missing_plan_obligations),
         overTradingLevel=level,
         disciplineScore=score_result["disciplineScore"],
         disciplineLevel=score_result["disciplineLevel"],
@@ -210,6 +233,18 @@ def _suspected_sell_fly_count(path: Path, period_start: date, period_end: date) 
         if trade_date is not None and period_start <= trade_date <= period_end:
             count += 1
     return count
+
+
+def _open_reentry_obligations(path: Path, current: date) -> list[dict[str, Any]]:
+    try:
+        obligations = build_post_sell_obligations(path, current)
+    except Exception:
+        return []
+    return [
+        item
+        for item in obligations
+        if str(item.get("status") or "") in {"missing_plan", "triggered", "overdue"}
+    ]
 
 
 def _discipline_score(
