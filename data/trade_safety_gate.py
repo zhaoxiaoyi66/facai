@@ -162,7 +162,6 @@ def has_concrete_reentry_plan(values: dict[str, Any]) -> bool:
         _clean_text(values.get("reentry_plan_text") or values.get("reentryPlanText"))
         or pullback_price is not None
         or breakout_price is not None
-        or _clean_text(values.get("reentry_thesis_invalidation") or values.get("reentryThesisInvalidation"))
     )
 
 

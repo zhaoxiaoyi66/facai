@@ -445,6 +445,33 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["discipline_status"], "blocked")
             self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
 
+    def test_trade_journal_reentry_invalidation_only_does_not_pass(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": True,
+                    "reentryThesisInvalidation": "thesis broken",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 0)
+            self.assertEqual(saved["reentry_thesis_invalidation"], "thesis broken")
+            self.assertEqual(saved["discipline_status"], "blocked")
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
     def test_trade_journal_buy_add_skip_do_not_require_discipline_fields(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

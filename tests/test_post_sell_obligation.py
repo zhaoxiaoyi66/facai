@@ -54,6 +54,28 @@ def test_post_sell_obligation_surfaces_time_stop_due() -> None:
         assert obligation["pullbackBuyBackPct"] == 0.5
 
 
+def test_post_sell_obligation_does_not_count_checkbox_or_invalidation_as_plan() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "post_sell.sqlite"
+        TradeJournalStore(path).save_entry(
+            "MSFT",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "trim",
+                "quantity": 2,
+                "price": 400,
+                "hasReentryPlan": True,
+                "reentryThesisInvalidation": "thesis broken",
+            },
+        )
+
+        obligation = build_post_sell_obligations(path, current_date="2026-06-01")[0]
+
+        assert obligation["hasReentryPlan"] is False
+        assert obligation["status"] == "missing_plan"
+        assert obligation["syncRequired"]
+
+
 def test_post_sell_obligation_ignores_buy_add_skip() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "post_sell.sqlite"

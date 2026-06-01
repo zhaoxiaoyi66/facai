@@ -98,11 +98,8 @@ def _status(has_plan: bool, triggers: list[str], time_stop_due: date | None, cur
 
 
 def _has_reentry_plan(entry: dict[str, Any]) -> bool:
-    if _bool(entry.get("has_reentry_plan")):
-        return True
     return bool(
         str(entry.get("reentry_plan_text") or "").strip()
-        or str(entry.get("reentry_thesis_invalidation") or "").strip()
         or _number(entry.get("reentry_pullback_price")) is not None
         or _number(entry.get("reentry_breakout_price")) is not None
     )
