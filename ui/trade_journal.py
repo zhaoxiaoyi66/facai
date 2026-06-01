@@ -1690,7 +1690,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
         ("计划卖出", _discipline_percent(entry.get("planned_sell_pct"))),
         ("等级上限", _discipline_percent(entry.get("max_allowed_sell_pct"))),
         ("卖出原因", _sell_reason_text(entry.get("sell_reason_type"))),
-        ("已有回补计划", _yes_no(entry.get("has_reentry_plan"))),
+        ("已有回补计划", _yes_no(_entry_has_concrete_reentry_plan(entry))),
     ]
     rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
@@ -1709,15 +1709,16 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
 
 
 def _entry_reentry_plan_html(entry: dict) -> str:
-    has_plan = _entry_bool(entry, "has_reentry_plan")
-    has_content = bool(
-        _text(entry.get("reentry_plan_text"))
-        or _text(entry.get("reentry_thesis_invalidation"))
-        or _number(entry.get("reentry_pullback_price")) is not None
-        or _number(entry.get("reentry_breakout_price")) is not None
-    )
-    if not has_plan and not has_content:
+    has_plan = _entry_has_concrete_reentry_plan(entry)
+    invalidation = _entry_text_value(entry.get("reentry_thesis_invalidation"))
+    if not has_plan and not invalidation:
         return '<div class="trade-entry-discipline-empty">未记录具体回补计划。</div>'
+    if not has_plan:
+        return (
+            '<div class="trade-entry-discipline-empty">'
+            f"未记录具体回补计划；仅记录不回补条件：{escape(invalidation)}"
+            "</div>"
+        )
     rows = [
         ("回踩买回", _reentry_price_pct_text(entry.get("reentry_pullback_price"), entry.get("reentry_buy_back_pct_on_pullback"))),
         ("不跌反涨买回", _reentry_price_pct_text(entry.get("reentry_breakout_price"), entry.get("reentry_buy_back_pct_on_breakout"))),
@@ -1732,6 +1733,18 @@ def _entry_reentry_plan_html(entry: dict) -> str:
         f'<p>{summary}</p>'
         "</div>"
     )
+
+
+def _entry_has_concrete_reentry_plan(entry: dict) -> bool:
+    return bool(
+        _entry_text_value(entry.get("reentry_plan_text"))
+        or _number(entry.get("reentry_pullback_price")) is not None
+        or _number(entry.get("reentry_breakout_price")) is not None
+    )
+
+
+def _entry_text_value(value: object) -> str:
+    return str(value or "").strip()
 
 
 def _reentry_price_pct_text(price: object, pct: object) -> str:

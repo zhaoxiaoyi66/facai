@@ -10,6 +10,7 @@ import pandas as pd
 from data.cache_read_model import CacheReadModel
 from data.decision_log import TradeJournalStore
 from data.prices import CACHE_PATH
+from data.trade_safety_gate import has_concrete_reentry_plan
 
 
 SELL_FLY_HORIZONS = {"5d": 5, "10d": 10, "20d": 20}
@@ -149,8 +150,14 @@ def _discipline_snapshot(entry: dict) -> dict[str, Any]:
         "sellLevel": entry.get("sell_level"),
         "thesisBroken": _bool_or_none(entry.get("thesis_broken")),
         "positionOverLimit": _bool_or_none(entry.get("position_over_limit")),
-        "hasReentryPlan": _bool_or_none(entry.get("has_reentry_plan")),
+        "hasReentryPlan": has_concrete_reentry_plan(entry),
         "reentryPlanText": entry.get("reentry_plan_text"),
+        "reentryPullbackPrice": entry.get("reentry_pullback_price"),
+        "reentryBreakoutPrice": entry.get("reentry_breakout_price"),
+        "reentryTimeStopDays": entry.get("reentry_time_stop_days"),
+        "reentryBuyBackPctOnPullback": entry.get("reentry_buy_back_pct_on_pullback"),
+        "reentryBuyBackPctOnBreakout": entry.get("reentry_buy_back_pct_on_breakout"),
+        "reentryThesisInvalidation": entry.get("reentry_thesis_invalidation"),
         "maxAllowedSellPct": entry.get("max_allowed_sell_pct"),
         "canSellCore": _bool_or_none(entry.get("can_sell_core")),
         "requiresReentryPlan": _bool_or_none(entry.get("requires_reentry_plan")),

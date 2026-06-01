@@ -149,6 +149,57 @@ def test_blocker_and_post_sell_rally_marks_violated_discipline() -> None:
         assert ten_day["reason"] == "suspected_sell_fly_with_discipline_blocker"
 
 
+def test_sell_fly_snapshot_requires_concrete_reentry_plan_not_legacy_checkbox() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        entry = store.save_entry(
+            "NVDA",
+            {
+                "trade_date": "2026-05-20",
+                "action_type": "sell",
+                "quantity": 10,
+                "price": 100,
+                "hasReentryPlan": True,
+                "reentryThesisInvalidation": "thesis broken",
+            },
+        )
+        with closing(sqlite3.connect(Path(tmpdir) / "decision_log.sqlite")) as conn:
+            conn.execute("UPDATE trade_journal_entries SET has_reentry_plan = 1 WHERE id = ?", (entry["id"],))
+            conn.commit()
+        _insert_history(tmpdir, "NVDA", [("2026-05-21", 103), ("2026-05-24", 110)])
+
+        ten_day = _result(_review(tmpdir), "10d")
+
+        assert ten_day["disciplineSnapshot"]["hasReentryPlan"] is False
+        assert ten_day["disciplineSnapshot"]["reentryThesisInvalidation"] == "thesis broken"
+
+
+def test_sell_fly_snapshot_includes_concrete_reentry_plan_fields() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save_trade(
+            store,
+            "sell",
+            reentryPullbackPrice=95,
+            reentryBreakoutPrice=105,
+            reentryTimeStopDays=5,
+            reentryBuyBackPctOnPullback=50,
+            reentryBuyBackPctOnBreakout=30,
+            reentryPlanText="buy back on pullback or reclaim",
+        )
+        _insert_history(tmpdir, "NVDA", [("2026-05-21", 103), ("2026-05-24", 104)])
+
+        ten_day = _result(_review(tmpdir), "10d")
+        snapshot = ten_day["disciplineSnapshot"]
+
+        assert snapshot["hasReentryPlan"] is True
+        assert snapshot["reentryPullbackPrice"] == 95
+        assert snapshot["reentryBreakoutPrice"] == 105
+        assert snapshot["reentryTimeStopDays"] == 5
+        assert snapshot["reentryBuyBackPctOnPullback"] == 0.5
+        assert snapshot["reentryBuyBackPctOnBreakout"] == 0.3
+
+
 def test_five_and_twenty_day_horizons_are_calculated_but_not_primary_flags() -> None:
     with TemporaryDirectory() as tmpdir:
         store = _store(tmpdir)
