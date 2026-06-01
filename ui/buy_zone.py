@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -18,6 +19,7 @@ from buy_zone_engine import (
 )
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.portfolio_view_model import build_portfolio_view_model
+from data.price_alerts import PriceAlertStore
 from data.providers import get_market_data_provider
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_percent
@@ -89,6 +91,7 @@ def render() -> None:
         return
 
     plan_store = StockPlanStore()
+    _handle_quick_price_alert_query()
     load_notice = st.empty()
     load_notice.info(f"正在生成买区计划：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
     with st.spinner("正在读取观察池、评分和买区计划..."):
@@ -412,8 +415,37 @@ def _handle_record_signal_query(rows: list[dict], page_key: str) -> None:
     st.rerun()
 
 
+def _handle_quick_price_alert_query() -> None:
+    symbol = str(st.query_params.get("priceAlertSymbol", "")).strip().upper()
+    price = _first_number(st.query_params.get("priceAlertPrice", ""))
+    if not symbol or price is None or price <= 0:
+        return
+    direction = str(st.query_params.get("priceAlertDirection", "below")).strip().lower()
+    reason = str(st.query_params.get("priceAlertReason", "买区提醒")).strip()
+    plan_type = str(st.query_params.get("priceAlertPlan", "buy_plan")).strip()
+    try:
+        PriceAlertStore().create_alert(
+            symbol,
+            triggerDirection=direction,
+            triggerPrice=price,
+            alertReason=reason,
+            linkedPlanType=plan_type,
+            note="买区页快速创建；到价后仍需复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律。",
+        )
+        st.session_state["buy_zone_record_signal_notice"] = f"{symbol} 价格提醒已创建。"
+    except ValueError:
+        st.session_state["buy_zone_record_signal_notice"] = "价格提醒创建失败，请检查价格和方向。"
+    for key in ("priceAlertSymbol", "priceAlertDirection", "priceAlertPrice", "priceAlertReason", "priceAlertPlan"):
+        if key in st.query_params:
+            st.query_params.pop(key)
+    st.rerun()
+
+
 def _render_record_signal_notice(key: str) -> None:
     message = st.session_state.pop(key, "")
+    if "价格提醒" in message:
+        st.success(message)
+        return
     if message == "已记录系统信号。":
         st.success(message)
     elif message:
@@ -616,6 +648,8 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
+        '<div class="drawer-section-title">价格提醒</div>'
+        f'{_quick_price_alerts_html(row)}'
         '<div class="drawer-section-title">生成依据</div>'
         f'<div class="drawer-resolution"><b>输入</b><ul>{"".join(f"<li>{escape(str(item))}</li>" for item in row.get("inputsUsed", [])[:8]) or "<li>暂无可用输入</li>"}</ul></div>'
         f'<div class="drawer-resolution"><b>原因</b><ul>{reasons or "<li>暂无说明</li>"}</ul></div>'
@@ -627,6 +661,56 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<div class="drawer-muted">手动覆盖优先于系统建议。编辑和保存可在单股详情页完成；本页可快速恢复系统建议。</div>'
         "</aside>"
         "</section>"
+    )
+
+
+def _quick_price_alerts_html(row: dict) -> str:
+    items: list[tuple[str, str, float, str]] = []
+    first = _first_number(row.get("firstBuyPrice"))
+    second = _first_number(row.get("secondBuyPrice"))
+    combined = row.get("combinedEntry") if isinstance(row.get("combinedEntry"), dict) else {}
+    technical = row.get("technicalEntry") if isinstance(row.get("technicalEntry"), dict) else {}
+    technical_pullback = _first_number(
+        combined.get("technicalPullbackPrice"),
+        technical.get("technicalEntryPrice"),
+    )
+    combined_trigger = _first_number(combined.get("combinedTriggerPrice"), row.get("nextTriggerPrice"))
+    no_chase = _first_number(row.get("noChaseAbove"))
+    for label, price in (
+        ("第一笔买入价", first),
+        ("第二笔买入价", second),
+        ("技术回踩点", technical_pullback),
+        ("综合触发价", combined_trigger),
+    ):
+        if price is not None and price > 0:
+            items.append((label, "below", price, "buy_plan"))
+    if no_chase is not None and no_chase > 0:
+        items.append(("禁止追高价", "above", no_chase, "risk_review"))
+    if not items:
+        return '<div class="drawer-muted">暂无可用系统价格。可在个股详情页手动设置提醒。</div>'
+    links = "".join(
+        '<a class="drawer-price-alert-link" target="_self" '
+        f'href="?{escape(_price_alert_query(row.get("symbol"), direction, price, label, plan), quote=True)}">'
+        f'<span>{escape(label)}</span><b>{escape(_money(price))}</b></a>'
+        for label, direction, price, plan in items[:5]
+    )
+    return (
+        '<div class="drawer-price-alerts">'
+        "<p>到价只提醒复核，不代表自动可以买；仍需检查 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律。</p>"
+        f'<div class="drawer-price-alert-grid">{links}</div>'
+        "</div>"
+    )
+
+
+def _price_alert_query(symbol: object, direction: str, price: float, reason: str, plan_type: str) -> str:
+    return urlencode(
+        {
+            "priceAlertSymbol": str(symbol or "").upper(),
+            "priceAlertDirection": direction,
+            "priceAlertPrice": f"{price:.4f}",
+            "priceAlertReason": reason,
+            "priceAlertPlan": plan_type,
+        }
     )
 
 
@@ -1846,6 +1930,49 @@ def _render_styles() -> None:
             color:#334155;
             font-size:0.76rem;
             line-height:1.45;
+        }
+        .drawer-price-alerts {
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:8px;
+            background:#FBFCFE;
+            padding:0.7rem;
+            margin-bottom:0.75rem;
+        }
+        .drawer-price-alerts p {
+            margin:0 0 0.55rem;
+            color:#64748B;
+            font-size:0.76rem;
+            line-height:1.45;
+        }
+        .drawer-price-alert-grid {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0.42rem;
+        }
+        .drawer-price-alert-link,
+        .drawer-price-alert-link:visited {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.5rem;
+            min-height:30px;
+            padding:0.34rem 0.48rem;
+            border:1px solid rgba(148, 163, 184, 0.2);
+            border-radius:7px;
+            background:#FFFFFF;
+            color:#334155;
+            text-decoration:none !important;
+            font-size:0.74rem;
+            font-weight:650;
+        }
+        .drawer-price-alert-link b {
+            color:#0F172A;
+            font-variant-numeric:tabular-nums;
+            font-size:0.74rem;
+        }
+        .drawer-price-alert-link:hover {
+            border-color:rgba(37, 99, 235, 0.28);
+            color:#1D4ED8;
         }
         .price-ladder ul,
         .plan-list ul {

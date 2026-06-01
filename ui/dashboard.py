@@ -37,6 +37,7 @@ from data.dashboard_risk_model import (
 from data.data_health import build_data_health_summary
 from data.market_data_refresh import refresh_symbol_market_data
 from data.portfolio_view_model import build_portfolio_view_model
+from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.prices import PriceCache
@@ -256,6 +257,7 @@ def render() -> None:
     portfolio_view = build_portfolio_view_model()
     risk_items = build_dashboard_risk_radar(table, portfolio_view)
     _render_weekly_discipline_strip()
+    _render_price_alert_strip(tickers)
     _render_data_health_strip(data_health_context)
     _render_risk_radar_summary_strip(risk_items, table)
     _render_summary_sections(table)
@@ -633,6 +635,35 @@ def _render_weekly_discipline_strip() -> None:
             f'<div class="dashboard-discipline-metrics">{item_html}</div>'
             "</div>"
             "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_price_alert_strip(tickers: list[str]) -> None:
+    try:
+        alerts = triggered_price_alerts(symbols=tickers)
+    except Exception:
+        return
+    if not alerts:
+        return
+    items = "".join(
+        '<span>'
+        f'<b>{escape(str(alert.get("symbol") or ""))}</b> '
+        f'{escape(format_currency(alert.get("triggerPrice")))}'
+        f'{" · 数据可能过期" if alert.get("priceDataStale") else ""}'
+        '</span>'
+        for alert in alerts[:4]
+    )
+    st.markdown(
+        (
+            '<section class="dashboard-price-alert-strip">'
+            '<div class="dashboard-price-alert-title">'
+            '<strong>价格提醒已触发</strong>'
+            '<span>到价只提醒复核，不代表自动可以买。</span>'
+            '</div>'
+            f'<div class="dashboard-price-alert-items">{items}</div>'
+            '</section>'
         ),
         unsafe_allow_html=True,
     )
@@ -3659,6 +3690,66 @@ def _render_dashboard_styles() -> None:
             line-height:18px;
             font-weight:680;
             white-space:nowrap;
+        }
+        .dashboard-price-alert-strip {
+            display:grid;
+            grid-template-columns:170px minmax(0, 1fr);
+            align-items:stretch;
+            min-height:34px;
+            margin:0 0 0.42rem;
+            border:1px solid rgba(217, 119, 6, 0.18);
+            border-left:2px solid #D97706;
+            border-radius:7px;
+            background:#FFFCF7;
+            overflow:hidden;
+        }
+        .dashboard-price-alert-title {
+            display:grid;
+            align-content:center;
+            gap:0.08rem;
+            padding:0.3rem 0.54rem;
+            border-right:1px solid rgba(217, 119, 6, 0.09);
+            background:#FFF8EC;
+        }
+        .dashboard-price-alert-title strong {
+            color:#0F172A;
+            font-size:11.5px;
+            line-height:1.15;
+            font-weight:760;
+        }
+        .dashboard-price-alert-title span {
+            color:#64748B;
+            font-size:9.5px;
+            line-height:1.2;
+            font-weight:560;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .dashboard-price-alert-items {
+            display:flex;
+            align-items:center;
+            gap:0.4rem;
+            min-width:0;
+            overflow:hidden;
+            padding:0.25rem 0.45rem;
+        }
+        .dashboard-price-alert-items span {
+            display:inline-flex;
+            align-items:center;
+            gap:0.25rem;
+            height:20px;
+            max-width:220px;
+            padding:0 0.45rem;
+            border:1px solid rgba(217, 119, 6, 0.16);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:10px;
+            font-weight:680;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
         }
         .data-health-strip {
             display:block;

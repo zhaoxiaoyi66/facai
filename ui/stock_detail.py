@@ -20,6 +20,7 @@ from data.decision_log import save_decision_snapshot_from_bundle
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
 from data.portfolio_view_model import build_portfolio_view_model
+from data.price_alerts import PriceAlertStore, evaluate_price_alerts
 from data.providers import get_market_data_provider
 from data.stock_plan import StockPlanStore
 from formatting import format_compact_number, format_currency, format_large_number, format_multiple, format_percent
@@ -89,6 +90,7 @@ def render() -> None:
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
     _render_technical_entry_reference(effective_buy_zone)
+    _render_price_alert_panel(ticker, effective_buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_research_memo(ticker, plan_store, plan)
     _render_explanation_cards(score, snapshot, technicals, effective_plan, effective_buy_zone)
@@ -1093,6 +1095,176 @@ def _technical_reasons_list(technical: dict, unavailable: bool, review_only: boo
         return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
     guardrail = "估值买点、技术回踩点、轻仓试探点和极端恐慌区分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
+
+
+def _render_price_alert_panel(ticker: str, active_zone: BuyZoneEstimate) -> None:
+    render_section_title("价格提醒", "到价只提醒复核，不代表可以买")
+    store = PriceAlertStore()
+    alerts = evaluate_price_alerts(symbol=ticker)
+    visible_alerts = [alert for alert in alerts if alert.get("status") in {"active", "triggered"}]
+    triggered = [alert for alert in visible_alerts if alert.get("status") == "triggered"]
+    for alert in [item for item in triggered if item.get("triggeredNow")][:3]:
+        st.warning(alert.get("message") or "价格提醒已触发，请复核计划。")
+
+    with st.form(f"price-alert-form-{ticker}", clear_on_submit=True):
+        cols = st.columns([1.1, 1, 1.2, 1.2], vertical_alignment="bottom")
+        direction_label = cols[0].selectbox("触发方向", ["低于 / 等于", "高于 / 等于"], key=f"price-alert-direction-{ticker}")
+        trigger_price = cols[1].number_input("提醒价格", min_value=0.0, step=0.01, value=0.0, key=f"price-alert-price-{ticker}")
+        linked_label = cols[2].selectbox(
+            "关联计划",
+            ["买入计划", "卖出计划", "风险复核", "手动提醒"],
+            key=f"price-alert-plan-{ticker}",
+        )
+        reason = cols[3].text_input("提醒原因", placeholder="例如 第一笔买入价 / 禁止追高价", key=f"price-alert-reason-{ticker}")
+        is_active = st.checkbox("启用提醒", value=True, key=f"price-alert-active-{ticker}")
+        note = st.text_input(
+            "备注",
+            placeholder="到价后先复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律。",
+            key=f"price-alert-note-{ticker}",
+        )
+        submitted = st.form_submit_button("保存价格提醒", width="stretch")
+        if submitted:
+            if trigger_price <= 0:
+                st.warning("请填写有效提醒价格。")
+            else:
+                store.create_alert(
+                    ticker,
+                    triggerDirection="below" if direction_label.startswith("低于") else "above",
+                    triggerPrice=trigger_price,
+                    alertReason=reason,
+                    linkedPlanType=_price_alert_plan_type(linked_label),
+                    isActive=is_active,
+                    note=note,
+                )
+                st.success("价格提醒已保存；到价后只提醒复核，不会自动买入或改仓位。")
+                st.rerun()
+
+    if visible_alerts:
+        with st.expander("当前价格提醒", expanded=bool(triggered)):
+            for alert in visible_alerts[:8]:
+                cols = st.columns([1.4, 1.1, 1.1, 2.8, 0.8], vertical_alignment="center")
+                cols[0].markdown(f"**{escape(_price_alert_status_label(alert))}**")
+                cols[1].write(_price_alert_direction_label(alert.get("triggerDirection")))
+                cols[2].write(format_currency(alert.get("triggerPrice")))
+                cols[3].caption(alert.get("message") or alert.get("alertReason") or "到价后复核计划")
+                if alert.get("status") != "archived" and cols[4].button("归档", key=f"archive-price-alert-{ticker}-{alert.get('id')}"):
+                    store.archive_alert(int(alert["id"]))
+                    st.rerun()
+
+
+    _render_price_alert_management(ticker, store, alerts)
+
+
+def _render_price_alert_management(ticker: str, store: PriceAlertStore, alerts: list[dict]) -> None:
+    if not alerts:
+        return
+    with st.expander("价格提醒管理", expanded=False):
+        st.caption("统一查看未触发、已触发、已归档和已暂停提醒；删除为软删除，不影响交易记录。")
+        for alert in alerts[:20]:
+            alert_id = int(alert.get("id") or 0)
+            if alert_id <= 0:
+                continue
+            status = _price_alert_status_label(alert)
+            header = st.columns([0.75, 0.85, 1.05, 1.05, 0.9, 1.35, 1.2, 1.25, 1.25], vertical_alignment="center")
+            header[0].markdown(f"**{escape(str(alert.get('symbol') or ticker))}**")
+            header[1].caption(_price_alert_direction_label(alert.get("triggerDirection")))
+            header[2].write(format_currency(alert.get("triggerPrice")))
+            header[3].write(format_currency(alert.get("currentPrice")))
+            header[4].caption(status)
+            header[5].caption(str(alert.get("alertReason") or "手动提醒"))
+            header[6].caption(_price_alert_plan_label(alert.get("linkedPlanType")))
+            header[7].caption(_short_time(alert.get("createdAt")))
+            header[8].caption(_short_time(alert.get("triggeredAt")))
+
+            with st.form(f"price-alert-manage-{ticker}-{alert_id}"):
+                cols = st.columns([1.05, 1.05, 1.25, 1.35, 0.82, 0.82, 0.82, 0.82], vertical_alignment="bottom")
+                direction_options = ["低于 / 等于", "高于 / 等于"]
+                direction_index = 0 if str(alert.get("triggerDirection") or "") == "below" else 1
+                next_direction = cols[0].selectbox("方向", direction_options, index=direction_index, key=f"manage-alert-direction-{alert_id}")
+                next_price = cols[1].number_input(
+                    "提醒价",
+                    min_value=0.0,
+                    step=0.01,
+                    value=float(alert.get("triggerPrice") or 0),
+                    key=f"manage-alert-price-{alert_id}",
+                )
+                plan_options = ["买入计划", "卖出计划", "风险复核", "手动提醒"]
+                plan_label = _price_alert_plan_label(alert.get("linkedPlanType"))
+                next_plan = cols[2].selectbox(
+                    "计划",
+                    plan_options,
+                    index=plan_options.index(plan_label) if plan_label in plan_options else 3,
+                    key=f"manage-alert-plan-{alert_id}",
+                )
+                next_reason = cols[3].text_input("原因", value=str(alert.get("alertReason") or ""), key=f"manage-alert-reason-{alert_id}")
+                save = cols[4].form_submit_button("保存")
+                toggle = cols[5].form_submit_button("启用" if alert.get("status") == "disabled" else "暂停")
+                archive = cols[6].form_submit_button("归档")
+                delete = cols[7].form_submit_button("删除")
+                if save:
+                    store.update_alert(
+                        alert_id,
+                        triggerDirection="below" if next_direction.startswith("低于") else "above",
+                        triggerPrice=next_price,
+                        linkedPlanType=_price_alert_plan_type(next_plan),
+                        alertReason=next_reason,
+                    )
+                    st.success("价格提醒已更新。")
+                    st.rerun()
+                if toggle:
+                    store.set_active(alert_id, alert.get("status") == "disabled")
+                    st.rerun()
+                if archive:
+                    store.archive_alert(alert_id)
+                    st.rerun()
+                if delete:
+                    store.soft_delete_alert(alert_id)
+                    st.rerun()
+
+
+def _price_alert_plan_type(label: str) -> str:
+    if label in {"买入计划", "卖出计划", "风险复核", "手动提醒"}:
+        return {
+            "买入计划": "buy_plan",
+            "卖出计划": "sell_plan",
+            "风险复核": "risk_review",
+            "手动提醒": "manual",
+        }[label]
+    return {
+        "买入计划": "buy_plan",
+        "卖出计划": "sell_plan",
+        "风险复核": "risk_review",
+        "手动提醒": "manual",
+    }.get(label, "manual")
+
+
+def _price_alert_status_label(alert: dict) -> str:
+    return {
+        "active": "未触发",
+        "triggered": "已触发",
+        "archived": "已归档",
+        "disabled": "已暂停",
+    }.get(str(alert.get("status") or ""), "未触发")
+
+
+def _price_alert_plan_label(value: object) -> str:
+    return {
+        "buy_plan": "买入计划",
+        "sell_plan": "卖出计划",
+        "risk_review": "风险复核",
+        "manual": "手动提醒",
+    }.get(str(value or ""), "手动提醒")
+
+
+def _short_time(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    return text[:16].replace("T", " ")
+
+
+def _price_alert_direction_label(value: object) -> str:
+    return "低于 / 等于" if str(value or "") == "below" else "高于 / 等于"
 
 
 def _render_action_plan_form(
