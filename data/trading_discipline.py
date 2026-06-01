@@ -120,17 +120,22 @@ def evaluate_trading_discipline(
     level_rules = dict(rules.get("sell_levels", {}).get(sell_level, DEFAULT_CONFIG["sell_levels"]["L0"]))
     max_allowed_sell_pct = _number(level_rules.get("max_allowed_sell_pct"), 0.0)
     level_allows_core = bool(level_rules.get("can_sell_core", False))
+    emotional_or_macro_sell = planned_action in SELL_ACTIONS and (
+        sell_reason == "macro" or _has_now_style_risk_mood(decisionMood, emotionTags)
+    )
     a_class_emotional_or_macro = (
         position_class == "A"
         and planned_action in SELL_ACTIONS
         and not thesisBroken
         and not positionOverLimit
-        and (sell_reason == "macro" or _has_now_style_risk_mood(decisionMood, emotionTags))
+        and emotional_or_macro_sell
     )
     if a_class_emotional_or_macro:
         max_allowed_sell_pct = max(max_allowed_sell_pct, 0.20)
     requires_reentry_plan = bool(level_rules.get("requires_reentry_plan", False)) or (
         planned_action in SELL_ACTIONS and sell_reason in REENTRY_REQUIRED_REASONS and gate_sell_pct > 0
+    ) or (
+        emotional_or_macro_sell and gate_sell_pct > 0
     )
     actual_touches_core = effective_sell_pct > trading_pct + 1e-9
     planned_touches_core = planned_sell_pct > trading_pct + 1e-9
@@ -201,6 +206,9 @@ def evaluate_trading_discipline(
         warnings.append("宏观风险只能用于降低组合总风险，不能单独清仓强个股。")
     if planned_action in SELL_ACTIONS:
         warnings.append("财报前如需降低风险，优先处理交易仓并保留回补条件。")
+
+    if position_class == "A" and planned_action in SELL_ACTIONS and not hasReentryPlan:
+        warnings.append("A 类核心股卖出 / 减仓前应写清具体回补计划，避免把长期仓当短线筹码处理。")
 
     status = "blocked" if blockers else ("warning" if warnings else "allowed")
     return TradingDisciplineResult(

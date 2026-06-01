@@ -42,6 +42,7 @@ def test_post_sell_obligation_surfaces_time_stop_due() -> None:
                 "reentryTimeStopDays": 5,
                 "reentryBuyBackPctOnPullback": 50,
                 "reentryBuyBackPctOnBreakout": 30,
+                "reentryThesisInvalidation": "thesis broken",
                 "reentryPlanText": "回踩或重新站回卖出价时分批买回",
             },
         )

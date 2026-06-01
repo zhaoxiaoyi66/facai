@@ -23,6 +23,7 @@ from data.portfolio_trade_sync import (
 )
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
+from data.trade_safety_gate import has_concrete_reentry_plan
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
@@ -896,11 +897,7 @@ def _reentry_plan_form_values(key_suffix: str) -> dict:
 
 
 def _has_reentry_plan_values(values: dict) -> bool:
-    return bool(
-        str(values.get("reentryPlanText") or "").strip()
-        or _parse_optional_float(values.get("reentryPullbackPrice")) is not None
-        or _parse_optional_float(values.get("reentryBreakoutPrice")) is not None
-    )
+    return has_concrete_reentry_plan(values)
 
 
 def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> dict[str, str]:
@@ -1690,7 +1687,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
         ("计划卖出", _discipline_percent(entry.get("planned_sell_pct"))),
         ("等级上限", _discipline_percent(entry.get("max_allowed_sell_pct"))),
         ("卖出原因", _sell_reason_text(entry.get("sell_reason_type"))),
-        ("已有回补计划", _yes_no(_entry_has_concrete_reentry_plan(entry))),
+        ("回补计划具体", _yes_no(_entry_has_concrete_reentry_plan(entry))),
     ]
     rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
@@ -1736,11 +1733,7 @@ def _entry_reentry_plan_html(entry: dict) -> str:
 
 
 def _entry_has_concrete_reentry_plan(entry: dict) -> bool:
-    return bool(
-        _entry_text_value(entry.get("reentry_plan_text"))
-        or _number(entry.get("reentry_pullback_price")) is not None
-        or _number(entry.get("reentry_breakout_price")) is not None
-    )
+    return has_concrete_reentry_plan(entry)
 
 
 def _entry_text_value(value: object) -> str:

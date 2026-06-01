@@ -81,6 +81,36 @@ def test_position_size_warning_allows_trading_bucket_trim() -> None:
     assert "仓位过重" in result.warnings[0]
 
 
+def test_a_class_trim_without_reentry_plan_warns_even_when_not_blocked() -> None:
+    result = _evaluate(
+        plannedSellPct=0.1,
+        sellReasonType="position_size",
+        positionOverLimit=True,
+        unrealizedGainPct=0.5,
+        hasReentryPlan=False,
+    )
+
+    assert result.disciplineStatus == "warning"
+    assert any("A 类核心股" in warning and "回补计划" in warning for warning in result.warnings)
+
+
+def test_emotional_sell_requires_reentry_plan_even_when_position_size_reason() -> None:
+    result = _evaluate(
+        positionClass="B",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedSellPct=0.1,
+        sellReasonType="position_size",
+        positionOverLimit=True,
+        decisionMood="anxiety",
+        hasReentryPlan=False,
+    )
+
+    assert result.disciplineStatus == "blocked"
+    assert result.requiresReentryPlan is True
+    assert "reentry_plan_required_before_trim_or_sell" in result.blockers
+
+
 def test_thesis_broken_allows_core_sale_with_level_cap() -> None:
     result = _evaluate(
         unrealizedGainPct=0.5,

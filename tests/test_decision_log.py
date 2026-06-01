@@ -472,6 +472,111 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["discipline_status"], "blocked")
             self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
 
+    def test_trade_journal_reentry_plan_text_only_does_not_pass(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "A",
+                    "corePositionPct": 0.7,
+                    "tradingPositionPct": 0.3,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "hasReentryPlan": True,
+                    "reentryPlanText": "看情况买回",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 0)
+            self.assertEqual(saved["reentry_plan_text"], "看情况买回")
+            self.assertEqual(saved["discipline_status"], "blocked")
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
+    def test_trade_journal_accepts_pullback_reentry_plan_with_pct_and_invalidation(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "B",
+                    "corePositionPct": 0.0,
+                    "tradingPositionPct": 1.0,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "reentryPullbackPrice": 380,
+                    "reentryBuyBackPctOnPullback": 50,
+                    "reentryThesisInvalidation": "thesis broken",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 1)
+            self.assertNotIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
+    def test_trade_journal_accepts_breakout_reentry_plan_with_pct_and_invalidation(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "B",
+                    "corePositionPct": 0.0,
+                    "tradingPositionPct": 1.0,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "reentryBreakoutPrice": 420,
+                    "reentryBuyBackPctOnBreakout": 30,
+                    "reentryThesisInvalidation": "thesis broken",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 1)
+            self.assertNotIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
+    def test_trade_journal_accepts_time_stop_reentry_plan_with_pct_and_invalidation(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "positionClass": "B",
+                    "corePositionPct": 0.0,
+                    "tradingPositionPct": 1.0,
+                    "unrealizedGainPct": 0.4,
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "valuation",
+                    "thesisBroken": False,
+                    "positionOverLimit": False,
+                    "reentryTimeStopDays": 5,
+                    "reentryBuyBackPctOnBreakout": 30,
+                    "reentryThesisInvalidation": "thesis broken",
+                },
+            )
+
+            self.assertEqual(saved["has_reentry_plan"], 1)
+            self.assertNotIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+
     def test_trade_journal_buy_add_skip_do_not_require_discipline_fields(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
@@ -533,8 +638,9 @@ class DecisionLogTests(unittest.TestCase):
             loaded = store.get_entry(saved["id"])
 
             self.assertEqual(loaded["planned_sell_pct"], 0.1)
-            self.assertEqual(loaded["discipline_status"], "warning")
+            self.assertEqual(loaded["discipline_status"], "blocked")
             self.assertEqual(loaded["reentry_plan_text"], "回踩 MA50 回补")
+            self.assertEqual(loaded["blockers"], saved["blockers"])
             self.assertEqual(loaded["warnings"], saved["warnings"])
 
     def test_decision_log_store_deletes_snapshot_and_related_records(self) -> None:

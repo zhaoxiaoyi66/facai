@@ -150,19 +150,38 @@ def empty_trade_safety_snapshot() -> dict[str, Any]:
 
 
 def has_concrete_reentry_plan(values: dict[str, Any]) -> bool:
-    pullback_price = _optional_non_negative_number(
+    thesis_invalidation = _clean_text(values.get("reentry_thesis_invalidation") or values.get("reentryThesisInvalidation"))
+    if not thesis_invalidation:
+        return False
+    pullback_price = _safe_optional_non_negative_number(
         values.get("reentry_pullback_price") or values.get("reentryPullbackPrice"),
         "reentry_pullback_price",
     )
-    breakout_price = _optional_non_negative_number(
+    pullback_pct = _safe_optional_ratio(
+        values.get("reentry_buy_back_pct_on_pullback") or values.get("reentryBuyBackPctOnPullback"),
+        "reentry_buy_back_pct_on_pullback",
+    )
+    breakout_price = _safe_optional_non_negative_number(
         values.get("reentry_breakout_price") or values.get("reentryBreakoutPrice"),
         "reentry_breakout_price",
     )
-    return bool(
-        _clean_text(values.get("reentry_plan_text") or values.get("reentryPlanText"))
-        or pullback_price is not None
-        or breakout_price is not None
+    breakout_pct = _safe_optional_ratio(
+        values.get("reentry_buy_back_pct_on_breakout") or values.get("reentryBuyBackPctOnBreakout"),
+        "reentry_buy_back_pct_on_breakout",
     )
+    time_stop_days = _safe_optional_int(
+        values.get("reentry_time_stop_days") or values.get("reentryTimeStopDays"),
+        "reentry_time_stop_days",
+    )
+    if _positive_number(pullback_price) and _positive_number(pullback_pct):
+        return True
+    if _positive_number(breakout_price) and _positive_number(breakout_pct):
+        return True
+    if time_stop_days is not None and time_stop_days > 0 and (
+        _positive_number(pullback_pct) or _positive_number(breakout_pct)
+    ):
+        return True
+    return False
 
 
 def _actual_sell_pct(values: dict[str, Any], planned_sell_pct: float) -> float:
@@ -233,6 +252,34 @@ def _optional_ratio(value: object, field: str) -> float | None:
     if number is None:
         return None
     return number / 100 if abs(number) > 1 else number
+
+
+def _safe_optional_non_negative_number(value: object, field: str) -> float | None:
+    try:
+        return _optional_non_negative_number(value, field)
+    except ValueError:
+        return None
+
+
+def _safe_optional_ratio(value: object, field: str) -> float | None:
+    try:
+        return _optional_ratio(value, field)
+    except ValueError:
+        return None
+
+
+def _safe_optional_int(value: object, field: str) -> int | None:
+    try:
+        return _optional_int(value, field)
+    except ValueError:
+        return None
+
+
+def _positive_number(value: object) -> bool:
+    try:
+        return value is not None and float(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _optional_number(value: object, field: str) -> float | None:

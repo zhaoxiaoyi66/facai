@@ -185,6 +185,7 @@ def test_sell_fly_snapshot_includes_concrete_reentry_plan_fields() -> None:
             reentryTimeStopDays=5,
             reentryBuyBackPctOnPullback=50,
             reentryBuyBackPctOnBreakout=30,
+            reentryThesisInvalidation="thesis broken",
             reentryPlanText="buy back on pullback or reclaim",
         )
         _insert_history(tmpdir, "NVDA", [("2026-05-21", 103), ("2026-05-24", 104)])
