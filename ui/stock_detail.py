@@ -841,6 +841,8 @@ def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str
         if first_buy is not None:
             return "第一笔买入价", first_buy
     next_price = getattr(active_zone, "nextTriggerPrice", None)
+    if next_price is not None and not _precision_field_allowed(active_zone, "nextTriggerPrice"):
+        return _precision_blocked_text(active_zone), None
     next_label = getattr(active_zone, "nextBuyLabel", "") or _distance_to_zone(active_zone.currentPrice, active_zone.to_plan_fields())
     return _buy_zone_trigger_label(next_label), next_price
 
@@ -933,10 +935,10 @@ def _render_buy_zone(
     validation_errors = list(getattr(active_zone, "validationErrors", None) or [])
     rows = [
         ("当前价格", format_currency(price), _buy_zone_label(active_zone.currentZone), "current"),
-        ("禁止追高价", _above_text(active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
-        ("合理观察区", _range_text(active_zone.fairValueLow, active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
-        ("估值折价区", _range_text(active_zone.trancheBuyLow, active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
-        (DEEP_DISCOUNT_ZONE_LABEL, _below_text(active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
+        ("禁止追高价", _precision_above_text(active_zone, "noChaseAbove", active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
+        ("合理观察区", _precision_range_text(active_zone, "fairValueLow", active_zone.fairValueLow, "fairValueHigh", active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
+        ("估值折价区", _precision_range_text(active_zone, "trancheBuyLow", active_zone.trancheBuyLow, "trancheBuyHigh", active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
+        (DEEP_DISCOUNT_ZONE_LABEL, _precision_below_text(active_zone, "heavyBuyBelow", active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
     ]
     st.markdown(
         '<section class="research-card buy-zone-panel">'
@@ -1550,6 +1552,49 @@ def _range_text(low: float | None, high: float | None) -> str:
     if high is None:
         return f"高于 {format_currency(low)}"
     return f"{format_currency(low)} - {format_currency(high)}"
+
+
+def _precision_contract(source: object) -> dict:
+    contract = getattr(source, "precisionContract", None)
+    return dict(contract) if isinstance(contract, dict) else {}
+
+
+def _precision_field_allowed(source: object, field: str) -> bool:
+    contract = _precision_contract(source)
+    if not contract:
+        return True
+    return str(field) in set(contract.get("allowedPriceFields") or [])
+
+
+def _precision_blocked_text(source: object) -> str:
+    contract = _precision_contract(source)
+    if contract and not contract.get("canShowPreciseBuyZone", True):
+        return "不展示精确买点"
+    return "等待条件明确"
+
+
+def _precision_above_text(source: object, field: str, value: float | None) -> str:
+    if not _precision_field_allowed(source, field):
+        return "不展示精确买点"
+    return _above_text(value)
+
+
+def _precision_below_text(source: object, field: str, value: float | None) -> str:
+    if not _precision_field_allowed(source, field):
+        return "不展示精确买点"
+    return _below_text(value)
+
+
+def _precision_range_text(
+    source: object,
+    low_field: str,
+    low_value: float | None,
+    high_field: str,
+    high_value: float | None,
+) -> str:
+    if not _precision_field_allowed(source, low_field) or not _precision_field_allowed(source, high_field):
+        return "不展示精确买点"
+    return _range_text(low_value, high_value)
 
 
 def _price_chart(history: pd.DataFrame, ticker: str) -> go.Figure:

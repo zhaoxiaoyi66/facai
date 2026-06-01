@@ -4457,6 +4457,44 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn('st.info("尚未设置，需要人工配置。")', source)
         self.assertIn("系统建议买区", source)
 
+    def test_stock_detail_hides_precise_buy_zone_prices_when_precision_contract_blocks(self) -> None:
+        zone = BuyZoneEstimate(
+            symbol="CRWV",
+            modelType="AI_CLOUD_INFRA",
+            currentPrice=110,
+            noChaseAbove=130,
+            fairValueLow=100,
+            fairValueHigh=120,
+            trancheBuyLow=80,
+            trancheBuyHigh=90,
+            heavyBuyBelow=70,
+            currentZone="fair_observation",
+            confidence="medium",
+            method="guardrail",
+            inputsUsed=[],
+            keyReasons=[],
+            warnings=[],
+            createdAt="now",
+            nextTriggerPrice=90,
+            nextBuyLabel="等待估值折价触发",
+            precisionContract={
+                "canShowPreciseBuyZone": False,
+                "allowedPriceFields": ["fairValueLow", "fairValueHigh"],
+                "blockedPriceFields": ["trancheBuyLow", "trancheBuyHigh", "heavyBuyBelow", "nextTriggerPrice"],
+            },
+        )
+
+        next_label, next_price = stock_detail._buy_zone_next_trigger({}, zone, "system")
+
+        self.assertEqual(next_label, "不展示精确买点")
+        self.assertIsNone(next_price)
+        self.assertEqual(
+            stock_detail._precision_range_text(zone, "trancheBuyLow", zone.trancheBuyLow, "trancheBuyHigh", zone.trancheBuyHigh),
+            "不展示精确买点",
+        )
+        self.assertEqual(stock_detail._precision_below_text(zone, "heavyBuyBelow", zone.heavyBuyBelow), "不展示精确买点")
+        self.assertIn("$100", stock_detail._precision_range_text(zone, "fairValueLow", zone.fairValueLow, "fairValueHigh", zone.fairValueHigh))
+
     def test_stock_detail_prefers_final_decision_for_action_and_position(self) -> None:
         final_decision = SimpleNamespace(
             finalAction="只观察",
