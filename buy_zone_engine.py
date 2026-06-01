@@ -72,6 +72,7 @@ class BuyZoneEstimate:
     explainability: dict[str, Any] | None = None
     technicalEntry: dict[str, Any] | None = None
     combinedEntry: dict[str, Any] | None = None
+    precisionContract: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -764,11 +765,118 @@ def _without_actionable_prices(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
     )
 
 
+def _with_precision_contract(buyZone: BuyZoneEstimate) -> BuyZoneEstimate:
+    return replace(buyZone, precisionContract=_build_precision_contract(buyZone))
+
+
 def _with_explainability(buyZone: BuyZoneEstimate, stockData: dict | None = None, scoringResult=None) -> BuyZoneEstimate:
+    contracted = _with_precision_contract(buyZone)
     return replace(
-        buyZone,
-        explainability=_build_explainability(buyZone, stockData or {}, scoringResult),
+        contracted,
+        explainability=_build_explainability(contracted, stockData or {}, scoringResult),
     )
+
+
+def _build_precision_contract(buyZone: BuyZoneEstimate) -> dict[str, Any]:
+    zone = str(buyZone.currentZone or "")
+    confidence = str(buyZone.confidence or "low").lower()
+    validation_errors = [str(item) for item in (buyZone.validationErrors or []) if str(item)]
+    blocked_reasons: list[str] = []
+    precision_warnings: list[str] = []
+    heavy_block_reasons: list[str] = []
+    allowed_fields: list[str] = []
+    blocked_fields = [
+        "noChaseAbove",
+        "fairValueLow",
+        "fairValueHigh",
+        "trancheBuyLow",
+        "trancheBuyHigh",
+        "heavyBuyBelow",
+        "nextTriggerPrice",
+    ]
+
+    if zone in BLOCKED_BUY_ZONE_STATES:
+        blocked_reasons.append(f"zone:{zone}")
+    if zone == "no_chase":
+        blocked_reasons.append("zone:no_chase")
+    if confidence == "low":
+        blocked_reasons.append("confidence:low")
+    if buyZone.isValid is False:
+        blocked_reasons.append("invalid_estimate")
+    for reason in validation_errors:
+        if _precision_validation_blocks_all(reason):
+            blocked_reasons.append(f"validation:{reason}")
+        elif _precision_validation_blocks_heavy(reason):
+            heavy_block_reasons.append(f"validation:{reason}")
+        else:
+            precision_warnings.append(f"validation:{reason}")
+
+    allow_precise = not blocked_reasons and zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}
+    if allow_precise:
+        allowed_fields = [
+            "noChaseAbove",
+            "fairValueLow",
+            "fairValueHigh",
+            "trancheBuyLow",
+            "trancheBuyHigh",
+            "nextTriggerPrice",
+        ]
+        if buyZone.heavyBuyBelow is not None and not heavy_block_reasons:
+            allowed_fields.append("heavyBuyBelow")
+        else:
+            blocked_fields = ["heavyBuyBelow"]
+        if zone in {"heavy_buy", "below_heavy_buy"} and heavy_block_reasons:
+            blocked_reasons.extend(heavy_block_reasons)
+            allow_precise = False
+            allowed_fields = []
+            blocked_fields = [
+                "noChaseAbove",
+                "fairValueLow",
+                "fairValueHigh",
+                "trancheBuyLow",
+                "trancheBuyHigh",
+                "heavyBuyBelow",
+                "nextTriggerPrice",
+            ]
+        elif not heavy_block_reasons:
+            blocked_fields = []
+    elif zone == "fair_observation" and not blocked_reasons:
+        allowed_fields = ["noChaseAbove", "fairValueLow", "fairValueHigh"]
+        blocked_fields = ["trancheBuyLow", "trancheBuyHigh", "heavyBuyBelow", "nextTriggerPrice"]
+        blocked_reasons.append("fair_observation_not_entry")
+
+    return {
+        "version": 1,
+        "canShowPreciseBuyZone": allow_precise,
+        "canShowObservationRange": zone == "fair_observation" and confidence != "low" and buyZone.isValid is not False,
+        "allowedPriceFields": allowed_fields,
+        "blockedPriceFields": blocked_fields,
+        "blockedReasons": list(dict.fromkeys(blocked_reasons)),
+        "precisionWarnings": list(dict.fromkeys(precision_warnings)),
+        "heavyBuyBlockedReasons": list(dict.fromkeys(heavy_block_reasons)),
+        "zone": zone,
+        "confidence": confidence,
+    }
+
+
+def _precision_validation_blocks_all(reason: str) -> bool:
+    lowered = str(reason or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "data_confidence_low",
+            "data_insufficient",
+            "buy_zone_model_not_supported",
+            "invalid",
+            "价格无效",
+            "区间顺序异常",
+        )
+    )
+
+
+def _precision_validation_blocks_heavy(reason: str) -> bool:
+    lowered = str(reason or "").lower()
+    return "heavy_buy" in lowered or "heavy" in lowered or "重仓" in lowered
 
 
 def _build_explainability(buyZone: BuyZoneEstimate, stockData: dict, scoringResult=None) -> dict[str, Any]:
