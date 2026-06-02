@@ -35,12 +35,12 @@ from data.dashboard_risk_model import (
     row_current_add_limit_value as _row_current_add_limit_value,
 )
 from data.data_health import build_data_health_summary
+from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
-from data.prices import PriceCache
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
@@ -511,27 +511,27 @@ def _build_dashboard_table(tickers: tuple[str, ...], refresh_symbols: set[str]) 
 
 def _build_cached_dashboard_table(tickers: tuple[str, ...]) -> pd.DataFrame:
     fundamental_cache = FundamentalCache()
-    price_cache = PriceCache()
     return pd.DataFrame(
-        [_load_cached_dashboard_row(fundamental_cache, price_cache, ticker) for ticker in tickers]
+        [_load_cached_dashboard_row(fundamental_cache, ticker) for ticker in tickers]
     )
 
 
-def _load_cached_dashboard_row(fundamental_cache: FundamentalCache, price_cache: PriceCache, ticker: str) -> dict:
+def _load_cached_dashboard_row(fundamental_cache: FundamentalCache, ticker: str) -> dict:
     try:
         snapshot = fundamental_cache.get_snapshot(ticker, max_age_hours=24 * 3650)
-        history = price_cache.get_history(f"FMP:{ticker}", max_age_hours=24 * 3650, min_rows=20)
-        if snapshot is None and history is None:
+        history = build_market_history(ticker)
+        if snapshot is None and (history is None or history.empty):
             return _error_dashboard_row(ticker, RuntimeError("本地缓存暂无数据；点击“更新观察池”获取。"))
 
         snapshot = dict(snapshot or {"ticker": ticker, "symbol": ticker})
         snapshot.setdefault("ticker", ticker)
         snapshot.setdefault("symbol", ticker)
         snapshot["cache_note"] = "首页默认只读本地缓存；点击“更新观察池”才会联网刷新。"
-        if history is None:
+        if history is None or history.empty:
             history = _empty_price_history()
 
         technicals = latest_technical_snapshot(add_technical_indicators(history))
+        _apply_market_price_to_snapshot(ticker, snapshot, technicals)
         score = calculate_total_score(snapshot, technicals)
         data_quality = {"pct": score.data_quality_pct, "missing": score.missing_data}
         return _build_dashboard_row(ticker, snapshot, technicals, score, data_quality)
@@ -546,13 +546,35 @@ def _empty_price_history() -> pd.DataFrame:
 def _load_dashboard_row(provider, ticker: str, force_refresh: bool) -> dict:
     try:
         snapshot = provider.get_quote(ticker, force_refresh=force_refresh)
-        history = add_technical_indicators(provider.get_price_history(ticker, force_refresh=force_refresh))
+        history = add_technical_indicators(build_market_history(ticker))
         technicals = latest_technical_snapshot(history)
+        _apply_market_price_to_snapshot(ticker, snapshot, technicals)
         score = calculate_total_score(snapshot, technicals)
         data_quality = {"pct": score.data_quality_pct, "missing": score.missing_data}
         return _build_dashboard_row(ticker, snapshot, technicals, score, data_quality)
     except Exception as exc:
         return _error_dashboard_row(ticker, exc)
+
+
+def _apply_market_price_to_snapshot(ticker: str, snapshot: dict, technicals: dict) -> None:
+    market = build_market_context(ticker)
+    market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
+    if market_price is None:
+        return
+    snapshot.setdefault("current_price", market_price)
+    snapshot.setdefault("price", market_price)
+    technicals.setdefault("price", market_price)
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _render_market_strip(table: pd.DataFrame) -> None:
