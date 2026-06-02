@@ -129,6 +129,10 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
                 ON log.entry_id = entry.id AND log.status = 'synced'
             WHERE entry.action_type IN ('buy', 'add', 'sell', 'trim')
               AND log.entry_id IS NULL
+              AND NOT (
+                  entry.action_type IN ('sell', 'trim')
+                  AND LOWER(TRIM(COALESCE(entry.discipline_status, ''))) = 'blocked'
+              )
             GROUP BY entry.symbol
             """
         ).fetchall()

@@ -250,3 +250,32 @@ def test_portfolio_view_model_flags_unsynced_trades_for_symbol() -> None:
         assert counts["ANET"] == 1
         assert before["rows"][0]["unsyncedTradeCount"] == 1
         assert after["rows"][0]["unsyncedTradeCount"] == 0
+
+
+def test_blocked_sell_is_not_counted_as_actionable_unsynced_trade() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
+        TradeJournalStore(path).save_entry(
+            "NVDA",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "sell",
+                "quantity": 100,
+                "price": 200,
+                "currentPositionQuantity": 158,
+                "positionClass": "A",
+                "corePositionPct": 0.6,
+                "tradingPositionPct": 0.4,
+                "plannedSellPct": 0.1,
+                "sellReasonType": "macro",
+                "thesisBroken": False,
+                "positionOverLimit": False,
+            },
+        )
+
+        counts = unsynced_trade_counts_by_symbol(path)
+        view = build_portfolio_view_model(path, {"NVDA": 210})
+
+        assert counts.get("NVDA", 0) == 0
+        assert view["rows"][0]["unsyncedTradeCount"] == 0
