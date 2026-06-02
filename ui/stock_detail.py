@@ -19,6 +19,7 @@ from buy_zone_engine import (
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
+from data.market_context import build_market_context, build_market_history
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import PriceAlertStore, evaluate_price_alerts
 from data.providers import get_market_data_provider
@@ -1398,8 +1399,15 @@ def _load_detail(ticker: str, refresh_token: str | None = None):
     force_refresh = bool(refresh_token)
     provider = get_market_data_provider(full_fundamentals=True)
     snapshot = provider.get_quote(ticker, force_refresh=force_refresh)
-    history = add_technical_indicators(provider.get_price_history(ticker, force_refresh=force_refresh))
+    market = build_market_context(ticker)
+    history = add_technical_indicators(build_market_history(ticker))
     technicals = latest_technical_snapshot(history)
+    market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
+    if market_price is not None:
+        snapshot = dict(snapshot)
+        snapshot.setdefault("current_price", market_price)
+        snapshot.setdefault("price", market_price)
+        technicals.setdefault("price", market_price)
     score = calculate_total_score(snapshot, technicals)
     refreshed_at = FundamentalCache().get_snapshot_fetched_at(ticker)
     return snapshot, history, technicals, score, refreshed_at
