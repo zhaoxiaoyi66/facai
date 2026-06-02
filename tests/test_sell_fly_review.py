@@ -16,7 +16,12 @@ def _store(tmpdir: str) -> TradeJournalStore:
     return TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
 
 
-def _insert_history(tmpdir: str, symbol: str, closes: list[tuple[str, float]]) -> None:
+def _insert_history(
+    tmpdir: str,
+    symbol: str,
+    closes: list[tuple[str, float]],
+    fetched_at: str = "2026-05-30T00:00:00Z",
+) -> None:
     db_path = Path(tmpdir) / "decision_log.sqlite"
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
@@ -31,12 +36,13 @@ def _insert_history(tmpdir: str, symbol: str, closes: list[tuple[str, float]]) -
         )
         conn.executemany(
             "INSERT INTO price_history VALUES (?, ?, ?, ?)",
-            [(symbol.upper(), day, close, "2026-05-30T00:00:00Z") for day, close in closes],
+            [(symbol.upper(), day, close, fetched_at) for day, close in closes],
         )
         conn.commit()
 
 
 def _save_trade(store: TradeJournalStore, action: str, **overrides) -> None:
+    symbol = str(overrides.pop("symbol", "NVDA"))
     values = {
         "trade_date": "2026-05-20",
         "action_type": action,
@@ -44,7 +50,7 @@ def _save_trade(store: TradeJournalStore, action: str, **overrides) -> None:
         "price": 100,
     }
     values.update(overrides)
-    store.save_entry("NVDA", values)
+    store.save_entry(symbol, values)
 
 
 def _review(tmpdir: str) -> list[dict]:
@@ -111,6 +117,20 @@ def test_missing_price_history_returns_missing_without_crashing() -> None:
         assert len(results) == 3
         assert {item["reason"] for item in results} == {"missing_price_history"}
         assert all(item["suspectedSellFly"] is False for item in results)
+
+
+def test_sell_fly_review_uses_market_context_history_key_selection() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = _store(tmpdir)
+        _save_trade(store, "sell", symbol="CRWV")
+        _insert_history(tmpdir, "CRWV", [("2026-05-21", 101), ("2026-05-24", 102)], "2026-05-28T00:00:00Z")
+        _insert_history(tmpdir, "FMP:CRWV", [("2026-05-21", 103), ("2026-05-24", 111)], "2026-05-30T00:00:00Z")
+
+        ten_day = _result(_review(tmpdir), "10d")
+
+        assert ten_day["symbol"] == "CRWV"
+        assert ten_day["maxPriceAfterSell"] == 111
+        assert ten_day["suspectedSellFly"] is True
 
 
 def test_buy_add_skip_are_not_reviewed() -> None:

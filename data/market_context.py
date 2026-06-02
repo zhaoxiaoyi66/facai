@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
 
@@ -66,6 +68,54 @@ def build_market_context(
         "historyTickerKey": history.get("ticker") if history else None,
         "warning": warning,
     }
+
+
+def build_market_history(
+    symbol: str,
+    path: Path = CACHE_PATH,
+    *,
+    now: datetime | None = None,
+    quote_max_age_hours: float | None = 24,
+    history_max_age_hours: float | None = 72,
+) -> pd.DataFrame:
+    context = build_market_context(
+        symbol,
+        path=path,
+        now=now,
+        quote_max_age_hours=quote_max_age_hours,
+        history_max_age_hours=history_max_age_hours,
+    )
+    history_key = str(context.get("historyTickerKey") or "").strip()
+    if not history_key:
+        return _empty_history_frame()
+    return _history_frame_for_key(path, history_key)
+
+
+def _history_frame_for_key(path: Path, history_key: str) -> pd.DataFrame:
+    if not path.exists():
+        return _empty_history_frame()
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "price_history"):
+            return _empty_history_frame()
+        columns = _table_columns(conn, "price_history")
+        selected = [column for column in ("date", "open", "high", "low", "close", "volume") if column in columns]
+        if "date" not in selected or "close" not in selected:
+            return _empty_history_frame()
+        frame = pd.read_sql_query(
+            f"""
+            SELECT {", ".join(selected)}
+            FROM price_history
+            WHERE ticker = ?
+              AND close IS NOT NULL
+            ORDER BY date
+            """,
+            conn,
+            params=(history_key,),
+        )
+    if frame.empty:
+        return frame
+    frame["date"] = pd.to_datetime(frame["date"])
+    return frame
 
 
 def _latest_history_snapshot(path: Path, symbol: str) -> dict[str, Any] | None:
@@ -158,6 +208,14 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _empty_history_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
 
 def _parse_datetime(value: object) -> datetime:

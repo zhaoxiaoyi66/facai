@@ -7,8 +7,8 @@ from typing import Any
 
 import pandas as pd
 
-from data.cache_read_model import CacheReadModel
 from data.decision_log import TradeJournalStore
+from data.market_context import build_market_history
 from data.prices import CACHE_PATH
 from data.trade_safety_gate import has_concrete_reentry_plan
 
@@ -46,7 +46,6 @@ def build_sell_fly_review_results(
 ) -> list[dict[str, Any]]:
     current = _parse_date(current_date) or date.today()
     store = TradeJournalStore(path)
-    cache = CacheReadModel(path)
     results: list[dict[str, Any]] = []
     for entry in store.list_entries():
         if str(entry.get("action_type") or "").lower() not in SELL_TRIM_ACTIONS:
@@ -54,7 +53,7 @@ def build_sell_fly_review_results(
         trade_date = _parse_date(entry.get("trade_date"))
         if trade_date is None or trade_date > current:
             continue
-        history = cache.get_price_history(str(entry.get("symbol") or ""))
+        history = build_market_history(str(entry.get("symbol") or ""), path=path)
         for horizon, days in SELL_FLY_HORIZONS.items():
             results.append(_review_entry(entry, history, current, horizon, days).to_dict())
     return results
