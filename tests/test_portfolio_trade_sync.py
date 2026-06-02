@@ -14,6 +14,7 @@ from data.portfolio_trade_sync import (
     preview_trade_portfolio_effect,
     unsynced_trade_counts_by_symbol,
 )
+from data.trade_safety_gate import trade_sync_policy
 from data.portfolio_view_model import build_portfolio_view_model
 
 
@@ -203,6 +204,15 @@ def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
         assert "BLOCK" in result["error"]
         assert counts.get("NVDA", 0) == 0
         assert position["quantity"] == 158
+
+
+def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
+    sell_policy = trade_sync_policy({"action_type": "sell", "blockers": ["legacy_blocker"]})
+    buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"]})
+
+    assert sell_policy["canSync"] is False
+    assert "BLOCK" in sell_policy["reason"]
+    assert buy_policy["canSync"] is True
 
 
 def test_trim_cannot_sync_more_than_current_position() -> None:
