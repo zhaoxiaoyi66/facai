@@ -426,13 +426,14 @@ class DisclosureStore:
     def metric_supplement(self, symbol: str, scoring_only: bool = True) -> dict:
         rows = self.get_metrics(symbol)
         payload_rows = [row for row in rows if _eligible_for_scoring(row)] if scoring_only else rows
+        critical_pending = _critical_pending_metrics(rows)
         supplement: dict = {
             "metric_sources": {},
             "metric_statuses": {},
             "disclosureMetrics": [_metric_payload(row) for row in payload_rows],
             "disclosureReviewSummary": _review_summary_from_rows(payload_rows),
-            "criticalPendingReviewMetrics": [] if scoring_only else _critical_pending_metrics(rows),
-            "criticalPendingReviewCount": 0 if scoring_only else len(_critical_pending_metrics(rows)),
+            "criticalPendingReviewMetrics": critical_pending,
+            "criticalPendingReviewCount": len(critical_pending),
         }
         for row in ([] if scoring_only else rows):
             definition = metric_definition_by_key(row["metricKey"])

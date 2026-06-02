@@ -6208,6 +6208,50 @@ class ScoringTests(unittest.TestCase):
             self.assertLessEqual(payload_statuses, {"approved", "manually_corrected", "auto_approved_by_ai"})
             self.assertIn("subscription_revenue_growth", supplement)
 
+    def test_scoring_only_metric_supplement_preserves_pending_critical_summary(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = DisclosureStore(Path(tmpdir) / "disclosure.sqlite")
+            store.save_metric(
+                symbol="NOW",
+                metric_key="subscriptionRevenueGrowth",
+                value=0.22,
+                unit="percent",
+                period="2026 Q1",
+                source_type="IR_RELEASE",
+                source_url="https://example.com/release",
+                source_document_title="Release",
+                extracted_text="subscription revenue grew 22%",
+                confidence="high",
+                review_status="pending_review",
+            )
+
+            supplement = store.metric_supplement("NOW", scoring_only=True)
+
+            self.assertNotIn("subscription_revenue_growth", supplement)
+            self.assertEqual(supplement["disclosureMetrics"], [])
+            self.assertEqual(supplement["criticalPendingReviewMetrics"], ["Subscription revenue growth"])
+            self.assertEqual(supplement["criticalPendingReviewCount"], 1)
+
+            enriched = enrich_data_confidence(
+                {
+                    **supplement,
+                    "ticker": "NOW",
+                    "modelType": "SAAS_SOFTWARE",
+                    "forward_revenue_growth": 0.2,
+                    "operating_margin": 0.2,
+                    "fcf_margin": 0.3,
+                    "manualSbcRatio": 0.1,
+                    "manualNetDebtToAdjustedEbitda": 0.5,
+                    "interest_coverage": 10,
+                    "manualRpoGrowth": 0.2,
+                    "manualNonGaapOperatingMargin": 0.3,
+                    "manualNetRetention": 1.1,
+                    "manualLargeCustomerGrowth": 0.2,
+                    "peg_ratio": 1.5,
+                }
+            )
+            self.assertEqual(enriched["dataConfidence"], "medium")
+
     def test_provider_uses_scoring_only_disclosure_supplement(self) -> None:
         class _Disclosure:
             def __init__(self) -> None:
