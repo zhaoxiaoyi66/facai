@@ -537,12 +537,43 @@ class TradeJournalStore:
         return [str(row[0]) for row in rows]
 
     def delete_entry(self, entry_id: int) -> bool:
+        clean_id = _required_int(entry_id, "entry_id")
         with self.connect() as conn:
+            if self._has_synced_portfolio_log(conn, clean_id):
+                return False
             cursor = conn.execute(
                 "DELETE FROM trade_journal_entries WHERE id = ?",
-                (_required_int(entry_id, "entry_id"),),
+                (clean_id,),
             )
         return cursor.rowcount > 0
+
+    def delete_entry_block_reason(self, entry_id: int) -> str:
+        clean_id = _required_int(entry_id, "entry_id")
+        with self.connect() as conn:
+            if self._has_synced_portfolio_log(conn, clean_id):
+                return "这条交易已经同步到组合持仓，不能直接删除；请用冲销/修正交易处理，避免交易日志和持仓变成两套账。"
+        return ""
+
+    def _has_synced_portfolio_log(self, conn: sqlite3.Connection, entry_id: int) -> bool:
+        table = conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'trade_portfolio_sync_logs'
+            """
+        ).fetchone()
+        if not table:
+            return False
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM trade_portfolio_sync_logs
+            WHERE entry_id = ? AND status = 'synced'
+            LIMIT 1
+            """,
+            (entry_id,),
+        ).fetchone()
+        return bool(row)
 
 
 class DecisionOutcomeStore:

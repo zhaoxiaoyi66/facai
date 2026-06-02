@@ -1557,6 +1557,7 @@ def _render_entry_delete_confirmation(store: TradeJournalStore) -> None:
         st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
         st.rerun()
 
+    delete_block_reason = store.delete_entry_block_reason(entry_id)
     st.markdown(
         (
             '<div class="trade-delete-confirm">'
@@ -1569,13 +1570,15 @@ def _render_entry_delete_confirmation(store: TradeJournalStore) -> None:
         ),
         unsafe_allow_html=True,
     )
+    if delete_block_reason:
+        st.warning(delete_block_reason)
     cols = st.columns([1, 1, 4.2])
-    if cols[0].button("确认删除", key=f"trade-entry-delete-confirm-{entry_id}", width="stretch"):
+    if cols[0].button("确认删除", key=f"trade-entry-delete-confirm-{entry_id}", width="stretch", disabled=bool(delete_block_reason)):
         deleted = store.delete_entry(entry_id)
         _clear_trade_delete_query()
         st.session_state["trade_journal_notice"] = (
             "success" if deleted else "error",
-            "交易记录已删除。" if deleted else "交易记录不存在或已删除。",
+            "交易记录已删除。" if deleted else (delete_block_reason or "交易记录不存在或已删除。"),
         )
         st.rerun()
     if cols[1].button("取消", key=f"trade-entry-delete-cancel-{entry_id}", width="stretch"):

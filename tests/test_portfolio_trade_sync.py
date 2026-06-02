@@ -249,6 +249,22 @@ def test_same_trade_cannot_sync_twice() -> None:
         assert position["quantity"] == 2
 
 
+def test_synced_trade_entry_cannot_be_deleted_without_reconciliation() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        store = TradeJournalStore(path)
+        entry = store.save_entry(
+            "CRM",
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 100},
+        )
+
+        apply_trade_to_portfolio(entry["id"], path)
+
+        assert store.delete_entry_block_reason(entry["id"])
+        assert store.delete_entry(entry["id"]) is False
+        assert store.get_entry(entry["id"]) is not None
+
+
 def test_skip_sync_does_not_change_portfolio() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
