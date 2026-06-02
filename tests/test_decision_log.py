@@ -25,11 +25,17 @@ from scoring.final_decision_adapter import build_final_decision_bundle
 
 
 class DecisionLogTests(unittest.TestCase):
-    def _insert_price_history(self, db_path: Path, symbol: str, closes: list[tuple[str, float]]) -> None:
+    def _insert_price_history(
+        self,
+        db_path: Path,
+        symbol: str,
+        closes: list[tuple[str, float]],
+        fetched_at: str = "now",
+    ) -> None:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 """
-                CREATE TABLE price_history (
+                CREATE TABLE IF NOT EXISTS price_history (
                     ticker TEXT,
                     date TEXT,
                     close REAL,
@@ -39,7 +45,7 @@ class DecisionLogTests(unittest.TestCase):
             )
             conn.executemany(
                 "INSERT INTO price_history VALUES (?, ?, ?, ?)",
-                [(symbol.upper(), day, close, "now") for day, close in closes],
+                [(symbol.upper(), day, close, fetched_at) for day, close in closes],
             )
             conn.commit()
 
@@ -840,6 +846,23 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(summary["missingCount"], 0)
             self.assertEqual(outcome_store.get_outcome(snapshot["id"], "1d")["return_pct"], 10)
             self.assertEqual(outcome_store.get_outcome(snapshot["id"], "1m")["return_pct"], 20)
+
+    def test_decision_outcomes_use_market_context_history_key_selection(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            self._insert_price_history(db_path, "CRWV", [("2026-05-27", 105), ("2026-06-25", 110)], "2026-05-28T10:00:00+00:00")
+            self._insert_price_history(db_path, "FMP:CRWV", [("2026-05-27", 120), ("2026-06-25", 140)], "2026-05-30T10:00:00+00:00")
+            snapshot = {
+                "id": 1,
+                "symbol": "CRWV",
+                "decision_date": "2026-05-26",
+                "price": 100,
+            }
+
+            outcomes = {item["horizon"]: item for item in build_decision_outcomes_from_price_history(snapshot, db_path)}
+
+            self.assertEqual(outcomes["1d"]["return_pct"], 20)
+            self.assertEqual(outcomes["1m"]["return_pct"], 40)
 
     def test_refresh_decision_outcomes_overwrites_existing_outcomes(self) -> None:
         with TemporaryDirectory() as tmpdir:

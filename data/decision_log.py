@@ -9,7 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
 
-from data.cache_read_model import CacheReadModel
+from data.market_context import build_market_history
 from data.prices import CACHE_PATH
 from data.trade_safety_gate import build_trade_safety_snapshot
 
@@ -1375,7 +1375,7 @@ def _required_int(value, field: str) -> int:
 
 
 def _history_closes(path: Path, symbol: str, start_date: date, end_date: date) -> list[float]:
-    history = CacheReadModel(path).get_price_history(symbol)
+    history = build_market_history(symbol, path=path)
     if history.empty or "date" not in history or "close" not in history:
         return []
     closes: list[float] = []
