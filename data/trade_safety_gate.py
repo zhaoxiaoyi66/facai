@@ -112,7 +112,8 @@ def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str,
 def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     action_type = str(entry.get("action_type") or "").strip().lower()
     discipline_status = str(entry.get("discipline_status") or "").strip().lower()
-    blocked = action_type in DISCIPLINE_ACTION_TYPES and discipline_status == "blocked"
+    blockers = _reasons_list(entry.get("blockers_json"))
+    blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
     return {
         "canSync": not blocked,
         "reason": SELL_SYNC_BLOCK_REASON if blocked else "",
@@ -328,6 +329,16 @@ def _reasons_json(value: object) -> str:
     if not isinstance(value, (list, tuple, set)):
         value = [value]
     return json.dumps([str(item) for item in value if str(item).strip()], ensure_ascii=False)
+
+
+def _reasons_list(value: object) -> list[str]:
+    try:
+        parsed = json.loads(_reasons_json(value))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
 
 
 def _clean_text(value: object) -> str:

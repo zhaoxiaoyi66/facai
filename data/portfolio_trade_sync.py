@@ -123,20 +123,31 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
     with closing(sqlite3.connect(path)) as conn:
         rows = conn.execute(
             """
-            SELECT entry.symbol, COUNT(*)
+            SELECT
+                entry.symbol,
+                entry.action_type,
+                entry.discipline_status,
+                entry.blockers_json
             FROM trade_journal_entries AS entry
             LEFT JOIN trade_portfolio_sync_logs AS log
                 ON log.entry_id = entry.id AND log.status = 'synced'
             WHERE entry.action_type IN ('buy', 'add', 'sell', 'trim')
               AND log.entry_id IS NULL
-              AND NOT (
-                  entry.action_type IN ('sell', 'trim')
-                  AND LOWER(TRIM(COALESCE(entry.discipline_status, ''))) = 'blocked'
-              )
-            GROUP BY entry.symbol
             """
         ).fetchall()
-    return {str(symbol).upper(): int(count) for symbol, count in rows}
+    counts: dict[str, int] = {}
+    for symbol, action_type, discipline_status, blockers_json in rows:
+        entry = {
+            "symbol": symbol,
+            "action_type": action_type,
+            "discipline_status": discipline_status,
+            "blockers_json": blockers_json,
+        }
+        if _entry_sync_blocked_by_discipline(entry):
+            continue
+        normalized = str(symbol).upper()
+        counts[normalized] = counts.get(normalized, 0) + 1
+    return counts
 
 
 def _preview_entry_effect(

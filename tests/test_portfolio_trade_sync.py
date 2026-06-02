@@ -167,6 +167,36 @@ def test_blocked_sell_cannot_sync_to_portfolio() -> None:
         assert position["average_cost"] == 100
 
 
+def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {"trade_date": "2026-05-30", "action_type": "sell", "quantity": 50, "price": 200},
+        )
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                """
+                UPDATE trade_journal_entries
+                SET discipline_status = NULL,
+                    blockers_json = '["legacy_blocker"]'
+                WHERE id = ?
+                """,
+                (entry["id"],),
+            )
+            conn.commit()
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        counts = unsynced_trade_counts_by_symbol(path)
+        position = PortfolioPositionStore(path).get_position("NVDA")
+
+        assert result["status"] == "failed"
+        assert "BLOCK" in result["error"]
+        assert counts.get("NVDA", 0) == 0
+        assert position["quantity"] == 158
+
+
 def test_trim_cannot_sync_more_than_current_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
