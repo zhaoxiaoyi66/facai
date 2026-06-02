@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from data.cache_read_model import CacheReadModel
+from data.market_context import build_market_context
 from data.prices import CACHE_PATH
 
 
@@ -256,7 +256,6 @@ def evaluate_price_alerts(
     quote_max_age_hours: float | None = 24,
 ) -> list[dict[str, Any]]:
     store = PriceAlertStore(path)
-    cache = CacheReadModel(path, now=now, quote_max_age_hours=quote_max_age_hours)
     selected_symbols = {_symbol(item) for item in (symbols or []) if _symbol(item)}
     if symbol:
         selected_symbols.add(_symbol(symbol))
@@ -265,15 +264,20 @@ def evaluate_price_alerts(
     for alert in alerts:
         if selected_symbols and alert["symbol"] not in selected_symbols:
             continue
-        current_price = cache.get_current_price(alert["symbol"])
-        price_status = cache.get_price_status(alert["symbol"])
-        price_stale = str(price_status).startswith("stale")
+        market = build_market_context(
+            alert["symbol"],
+            path=path,
+            now=now,
+            quote_max_age_hours=quote_max_age_hours,
+        )
+        current_price = market.get("currentPrice")
+        price_stale = bool(market.get("isStale"))
         triggered_now = False
         if _should_trigger(alert, current_price):
             triggered_at = _time_iso(now)
             alert = store.mark_triggered(int(alert["id"]), triggered_at)
             triggered_now = True
-        results.append(_alert_result(alert, current_price, price_status, price_stale, triggered_now))
+        results.append(_alert_result(alert, market, price_stale, triggered_now))
     return results
 
 
@@ -305,16 +309,24 @@ def _should_trigger(alert: dict[str, Any], current_price: float | None) -> bool:
 
 def _alert_result(
     alert: dict[str, Any],
-    current_price: float | None,
-    price_status: str,
+    market: dict[str, Any],
     price_stale: bool,
     triggered_now: bool,
 ) -> dict[str, Any]:
+    current_price = market.get("currentPrice")
     result = dict(alert)
     result.update(
         {
             "currentPrice": current_price,
-            "priceStatus": price_status,
+            "priceStatus": market.get("priceSource"),
+            "priceSource": market.get("priceSource"),
+            "quotePrice": market.get("quotePrice"),
+            "latestClose": market.get("latestClose"),
+            "fetchedAt": market.get("fetchedAt"),
+            "historyStatus": market.get("historyStatus"),
+            "historyLatestDate": market.get("historyLatestDate"),
+            "historyTickerKey": market.get("historyTickerKey"),
+            "marketWarning": market.get("warning") or "",
             "priceDataStale": price_stale,
             "triggeredNow": triggered_now,
             "message": _alert_message(alert, current_price, price_stale),

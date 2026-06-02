@@ -35,6 +35,33 @@ def _insert_quote(db_path: Path, symbol: str, price: float, fetched_at: str = "2
         conn.commit()
 
 
+def _insert_history(db_path: Path, ticker: str, close: float, fetched_at: str = "2026-05-30T10:00:00+00:00") -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (ticker, date)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO price_history (ticker, date, open, high, low, close, volume, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ticker.upper(), "2026-05-30", close, close, close, close, 1000, fetched_at),
+        )
+        conn.commit()
+
+
 def test_below_price_alert_triggers_once() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -56,6 +83,7 @@ def test_below_price_alert_triggers_once() -> None:
         assert second[0]["status"] == "triggered"
         assert second[0]["triggeredNow"] is False
         assert second[0]["triggeredAt"] == first[0]["triggeredAt"]
+        assert first[0]["priceSource"] == "quote_snapshot"
 
 
 def test_above_price_alert_triggers() -> None:
@@ -68,6 +96,21 @@ def test_above_price_alert_triggers() -> None:
 
         assert alerts[0]["status"] == "triggered"
         assert alerts[0]["triggerDirection"] == "above"
+
+
+def test_price_alert_falls_back_to_market_context_latest_close() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_history(path, "FMP:NVDA", 195)
+        PriceAlertStore(path).create_alert("NVDA", triggerDirection="below", triggerPrice=200)
+
+        alerts = evaluate_price_alerts(path, now=NOW)
+
+        assert alerts[0]["status"] == "triggered"
+        assert alerts[0]["currentPrice"] == 195
+        assert alerts[0]["priceSource"] == "price_history"
+        assert alerts[0]["historyTickerKey"] == "FMP:NVDA"
+        assert "current price" in alerts[0]["marketWarning"]
 
 
 def test_price_alert_does_not_trigger_before_price_crosses() -> None:
