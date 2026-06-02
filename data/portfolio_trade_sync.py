@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from data.cache_read_model import CacheReadModel
+from data.market_context import build_market_context
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.portfolio_ledger_projection import POSITION_AFFECTING_ACTIONS
@@ -205,7 +205,7 @@ def _preview_entry_effect(
 
 
 def _market_effect(symbol: str, after_quantity: float, path: Path) -> dict[str, float | None]:
-    current_price = CacheReadModel(path).get_current_price(symbol)
+    current_price = _number(build_market_context(symbol, path=path).get("currentPrice"))
     if current_price is None:
         return {"afterMarketValue": None, "afterPositionPct": None}
     market_value = after_quantity * current_price

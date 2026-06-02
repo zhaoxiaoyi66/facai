@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from data.decision_log import TradeJournalStore
-from data.portfolio import PortfolioPositionStore
+from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.portfolio_trade_sync import (
     apply_trade_to_portfolio,
     preview_trade_portfolio_effect,
@@ -15,6 +19,26 @@ from data.portfolio_view_model import build_portfolio_view_model
 
 def _db(tmpdir: str) -> Path:
     return Path(tmpdir) / "portfolio_trade_sync.sqlite"
+
+
+def _insert_history(path: Path, ticker: str, close: float, fetched_at: str) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                close REAL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (ticker, date)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO price_history VALUES (?, ?, ?, ?)",
+            (ticker.upper(), "2026-05-30", close, fetched_at),
+        )
+        conn.commit()
 
 
 def test_buy_trade_sync_creates_or_increases_position() -> None:
@@ -34,6 +58,23 @@ def test_buy_trade_sync_creates_or_increases_position() -> None:
         assert result["status"] == "success"
         assert position["quantity"] == 10
         assert position["average_cost"] == 500
+
+
+def test_trade_sync_preview_uses_market_context_price() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 10000})
+        _insert_history(path, "CRWV", 60, "2026-05-28T10:00:00+00:00")
+        _insert_history(path, "FMP:CRWV", 70, "2026-05-30T10:00:00+00:00")
+        entry = TradeJournalStore(path).save_entry(
+            "CRWV",
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 50},
+        )
+
+        preview = preview_trade_portfolio_effect(entry["id"], path)
+
+        assert preview["afterMarketValue"] == 140
+        assert preview["afterPositionPct"] == pytest.approx(1.4)
 
 
 def test_add_trade_sync_updates_weighted_average_cost() -> None:
