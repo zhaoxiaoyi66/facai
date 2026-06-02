@@ -7,7 +7,6 @@ from html import escape
 import streamlit as st
 
 from buy_zone_engine import generate_buy_zone
-from data.cache_read_model import CacheReadModel
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
@@ -16,6 +15,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
     apply_trade_to_portfolio,
@@ -907,11 +907,13 @@ def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> d
     pullback = None
     breakout = sell_price
     try:
-        cache = CacheReadModel()
-        snapshot = cache.get_quote_payload(symbol) or {}
-        history = cache.get_price_history(symbol)
+        market = build_market_context(symbol)
+        snapshot = {}
+        if market.get("quotePrice") is not None:
+            snapshot["current_price"] = market.get("quotePrice")
+        history = build_market_history(symbol)
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
-        current_price = _first_number(sell_price, technicals.get("price"), snapshot.get("current_price"), cache.get_current_price(symbol))
+        current_price = _first_number(sell_price, technicals.get("price"), market.get("currentPrice"))
         if current_price is not None:
             stock_data = {**snapshot, **technicals, "price_history": history, "price": current_price}
             score = calculate_total_score(snapshot, technicals)

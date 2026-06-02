@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+import inspect
+
 from ui import trade_journal
+
+
+def test_reentry_plan_suggestion_uses_market_context_helpers() -> None:
+    source = inspect.getsource(trade_journal._build_reentry_plan_suggestion)
+
+    assert "build_market_context" in source
+    assert "build_market_history" in source
+    assert "CacheReadModel" not in source
 
 
 def test_trade_entry_detail_does_not_treat_invalidation_only_as_reentry_plan() -> None:
