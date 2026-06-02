@@ -5,7 +5,7 @@ from typing import Any
 
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.cache_read_model import CacheReadModel
-from data.market_context import build_market_context
+from data.market_context import build_market_context, build_market_history
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
@@ -211,7 +211,7 @@ def _system_refs_for_positions(
         if not snapshot:
             refs[symbol] = _empty_system_ref()
             continue
-        refs[symbol] = _system_ref_from_local_cache(symbol, snapshot, cache, current_prices.get(symbol), plan_store)
+        refs[symbol] = _system_ref_from_local_cache(symbol, snapshot, path, current_prices.get(symbol), plan_store)
     return refs
 
 
@@ -237,12 +237,12 @@ def _system_refs_from_inputs(system_decision_inputs: dict[str, dict[str, Any]] |
 def _system_ref_from_local_cache(
     symbol: str,
     snapshot: dict,
-    cache: CacheReadModel,
+    path: Path,
     current_price: float | None,
     plan_store: StockPlanStore,
 ) -> dict[str, Any]:
     try:
-        history = cache.get_price_history(symbol)
+        history = build_market_history(symbol, path=path)
         technicals = latest_technical_snapshot(add_technical_indicators(history))
         if current_price is not None:
             snapshot = dict(snapshot)

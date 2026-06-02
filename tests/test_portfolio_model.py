@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 import unittest
@@ -15,6 +16,7 @@ from data.portfolio import (
     calculate_portfolio_positions,
 )
 from data.portfolio_view_model import build_portfolio_view_model
+import data.portfolio_view_model as portfolio_view_model_module
 from scoring.final_decision import BUY_ACTIONS
 
 
@@ -311,6 +313,12 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(view["rows"][0]["currentPrice"], 70)
         self.assertEqual(view["rows"][0]["marketValue"], 350)
         self.assertEqual(view["rows"][0]["priceStatus"], "price_history")
+
+    def test_portfolio_system_reference_uses_market_context_history(self) -> None:
+        source = inspect.getsource(portfolio_view_model_module._system_ref_from_local_cache)
+
+        self.assertIn("build_market_history", source)
+        self.assertNotIn("get_price_history", source)
 
     def test_portfolio_view_model_flags_overweight(self) -> None:
         with TemporaryDirectory() as tmpdir:
