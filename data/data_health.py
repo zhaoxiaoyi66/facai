@@ -9,6 +9,7 @@ from typing import Any
 from buy_zone_engine import generate_buy_zone
 from data.cache_read_model import CacheReadModel
 from data.decision_readiness import build_decision_readiness
+from data.market_context import build_market_context, build_market_history
 from data.prices import CACHE_PATH
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -49,16 +50,23 @@ def build_data_health_summary(
         symbol_issues = 0
         symbol_issue_items: list[dict[str, Any]] = []
         payload = cache.get_quote_payload(symbol)
-        current_price = cache.get_current_price(symbol)
+        market = build_market_context(
+            symbol,
+            path=path,
+            now=current_time,
+            quote_max_age_hours=quote_max_age_hours,
+            history_max_age_hours=history_max_age_hours,
+        )
+        current_price = market.get("currentPrice")
         if current_price is None:
             summary["missingPriceCount"] += 1
             symbol_issues += 1
             symbol_issue_items.append(_add_issue(summary, "missing_price", symbol, "观察池缺少 current price"))
-        if cache.get_price_status(symbol) == "stale_quote":
+        if market.get("priceStatus") == "stale_quote":
             summary["stalePriceCount"] += 1
             symbol_issues += 1
             symbol_issue_items.append(_add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期"))
-        history_status = cache.get_history_status(symbol)
+        history_status = str(market.get("historyStatus") or "missing")
         if history_status == "missing":
             summary["missingHistoryCount"] += 1
             symbol_issues += 1
@@ -67,7 +75,7 @@ def build_data_health_summary(
             summary["staleHistoryCount"] += 1
             symbol_issues += 1
             symbol_issue_items.append(_add_issue(summary, "stale_history", symbol, "price_history 已过期"))
-        final_decision, buy_zone = _build_final_decision_inputs(cache, symbol, payload)
+        final_decision, buy_zone = _build_final_decision_inputs(path, symbol, payload, current_price)
         if not _final_decision_ready(final_decision):
             summary["finalDecisionErrorCount"] += 1
             symbol_issues += 1
@@ -86,7 +94,12 @@ def build_data_health_summary(
             healthy_symbols += 1
 
     summary["healthyCount"] = healthy_symbols
-    summary["portfolioMissingPriceCount"] = _portfolio_missing_price_count(path, cache)
+    summary["portfolioMissingPriceCount"] = _portfolio_missing_price_count(
+        path,
+        now=current_time,
+        quote_max_age_hours=quote_max_age_hours,
+        history_max_age_hours=history_max_age_hours,
+    )
     if summary["portfolioMissingPriceCount"]:
         _add_issue(summary, "portfolio_missing_price", None, "组合持仓存在缺价格标的")
     summary["outcomeMissingCount"] = _outcome_missing_count(path)
@@ -114,7 +127,13 @@ def _empty_summary() -> dict[str, Any]:
     }
 
 
-def _portfolio_missing_price_count(path: Path, cache: CacheReadModel) -> int:
+def _portfolio_missing_price_count(
+    path: Path,
+    *,
+    now: datetime,
+    quote_max_age_hours: float,
+    history_max_age_hours: float,
+) -> int:
     with closing(sqlite3.connect(path)) as conn:
         if not _table_exists(conn, "portfolio_positions"):
             return 0
@@ -128,7 +147,14 @@ def _portfolio_missing_price_count(path: Path, cache: CacheReadModel) -> int:
     missing = 0
     for row in rows:
         symbol = _normalize_symbol(row[0])
-        if cache.get_current_price(symbol) is None:
+        market = build_market_context(
+            symbol,
+            path=path,
+            now=now,
+            quote_max_age_hours=quote_max_age_hours,
+            history_max_age_hours=history_max_age_hours,
+        )
+        if market.get("currentPrice") is None:
             missing += 1
     return missing
 
@@ -141,19 +167,24 @@ def _outcome_missing_count(path: Path) -> int:
     return int(row[0] or 0) if row else 0
 
 
-def _build_final_decision_inputs(cache: CacheReadModel, symbol: str, payload: dict | None) -> tuple[Any | None, Any | None]:
+def _build_final_decision_inputs(
+    path: Path,
+    symbol: str,
+    payload: dict | None,
+    current_price: object,
+) -> tuple[Any | None, Any | None]:
     if not payload:
         return None, None
     cached_price = _first_number(
         payload.get("price"),
         payload.get("current_price"),
         payload.get("currentPrice"),
-        cache.get_current_price(symbol),
+        current_price,
     )
     if cached_price is None:
         return None, None
     try:
-        history = cache.get_price_history(symbol)
+        history = build_market_history(symbol, path=path)
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
         score = calculate_total_score(payload, technicals)
         stock_data = {**payload, **technicals}
@@ -168,8 +199,8 @@ def _build_final_decision_inputs(cache: CacheReadModel, symbol: str, payload: di
     return bundle, zone
 
 
-def _can_generate_final_decision(cache: CacheReadModel, symbol: str, payload: dict | None) -> bool:
-    final_decision, _buy_zone = _build_final_decision_inputs(cache, symbol, payload)
+def _can_generate_final_decision(path: Path, symbol: str, payload: dict | None, current_price: object) -> bool:
+    final_decision, _buy_zone = _build_final_decision_inputs(path, symbol, payload, current_price)
     return _final_decision_ready(final_decision)
 
 

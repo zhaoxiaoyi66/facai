@@ -59,6 +59,7 @@ def build_market_context(
         "symbol": normalized,
         "currentPrice": current_price,
         "priceSource": price_source,
+        "priceStatus": price_status,
         "quotePrice": quote_price,
         "latestClose": latest_close,
         "fetchedAt": fetched_at,
