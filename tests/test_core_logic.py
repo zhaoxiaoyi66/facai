@@ -6940,6 +6940,66 @@ class ScoringTests(unittest.TestCase):
                 self.assertIn("Manual confirmation", row["systemReason"])
                 self.assertIn("do not substitute P/S, EV/Sales, or revenue growth", row["recommendedAction"])
 
+    def test_review_queue_archives_resolved_missing_kpi_placeholders(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "review.sqlite"
+            disclosure_store = DisclosureStore(db_path)
+            queue_store = ReviewQueueStore(db_path, disclosure_store=disclosure_store)
+            fundamental_cache = FundamentalCache(db_path)
+            fundamental_cache.set_snapshot(
+                "CRWV",
+                {
+                    "ticker": "CRWV",
+                    "sector": "Technology",
+                    "industry": "Data Center / AI Infrastructure",
+                    "enterprise_to_revenue": 30,
+                    "revenue_growth": 0.90,
+                },
+            )
+            builder = ReviewQueueBuilder(
+                queue_store=queue_store,
+                disclosure_store=disclosure_store,
+                fundamental_cache=fundamental_cache,
+            )
+
+            builder.build_review_queue_for_symbol("CRWV")
+            initial_rpo_missing = [
+                row for row in queue_store.list_items("CRWV")
+                if row["metricKey"] == "aiCloudRpo" and row["itemType"] == "missing_kpi"
+            ]
+            self.assertTrue(initial_rpo_missing)
+            self.assertIn("needs_data", {row["reviewStatus"] for row in initial_rpo_missing})
+
+            disclosure_store.save_metric(
+                symbol="CRWV",
+                metric_key="aiCloudRpo",
+                value=98_800_000_000,
+                unit="usd",
+                period="2026 Q1",
+                source_type="SEC_10Q",
+                source_url="https://example.com/crwv-10q",
+                source_document_title="CRWV Q1 2026 10-Q",
+                extracted_text="Unsatisfied remaining performance obligations were $98.8 billion as of March 31, 2026.",
+                confidence="high",
+                review_status="approved",
+            )
+            builder.build_review_queue_for_symbol("CRWV")
+            builder.build_review_queue_for_symbol("CRWV")
+            rows = queue_store.list_items("CRWV")
+            rpo_missing = [
+                row for row in rows
+                if row["metricKey"] == "aiCloudRpo" and row["itemType"] == "missing_kpi"
+            ]
+            backlog_missing = [
+                row for row in rows
+                if row["metricKey"] == "aiCloudContractedBacklog" and row["itemType"] == "missing_kpi"
+            ]
+
+            self.assertTrue(rpo_missing)
+            self.assertTrue(all(row["reviewStatus"] == "auto_archived" for row in rpo_missing))
+            self.assertTrue(backlog_missing)
+            self.assertIn("needs_data", {row["reviewStatus"] for row in backlog_missing})
+
     def test_review_queue_preserves_terminal_review_decisions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "review.sqlite"

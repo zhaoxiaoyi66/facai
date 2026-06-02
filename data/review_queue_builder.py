@@ -50,8 +50,20 @@ QUEUE_REVIEW_STATUSES = {
 }
 TERMINAL_REVIEW_STATUSES = {"approved", "auto_approved_by_ai", "rejected", "manually_corrected", "auto_archived", "duplicate_archived", "invalid_review_item"}
 SCORING_QUEUE_STATUSES = {"approved", "manually_corrected", "auto_approved_by_ai"}
+ACTIVE_MISSING_REVIEW_STATUSES = {"pending_review", "needs_data", "needs_evidence", "stale"}
 STALE_TRIGGER_STATUSES = SCORING_QUEUE_STATUSES | {"rejected", "auto_archived", "duplicate_archived", "invalid_review_item"}
 SCORING_AFFECTS = {"Quality", "Entry", "Risk"}
+METRIC_CANONICAL_MAP = {
+    "cRpoGrowth": "cRpoGrowth",
+    "cRpoGrowthReported": "cRpoGrowth",
+    "cRpoGrowthConstantCurrency": "cRpoGrowth",
+    "rpoGrowth": "rpoGrowth",
+    "rpoGrowthReported": "rpoGrowth",
+    "rpoGrowthConstantCurrency": "rpoGrowth",
+    "subscriptionRevenueGrowth": "subscriptionRevenueGrowth",
+    "subscriptionRevenueGrowthReported": "subscriptionRevenueGrowth",
+    "subscriptionRevenueGrowthConstantCurrency": "subscriptionRevenueGrowth",
+}
 AI_TRIAGE_STATUSES = {
     "auto_approved_by_ai",
     "ai_recommend_approve",
@@ -531,6 +543,52 @@ class ReviewQueueStore:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def confirmed_value_metric_keys(self, symbol: str) -> set[str]:
+        keys: set[str] = set()
+        for row in self.list_items(symbol=symbol):
+            if str(row.get("reviewStatus") or "") not in SCORING_QUEUE_STATUSES:
+                continue
+            if not _has_queue_review_value(row):
+                continue
+            keys.add(_queue_canonical_metric(row))
+        return keys
+
+    def archive_resolved_missing_placeholders(self, symbols: Iterable[str] | None = None) -> int:
+        normalized_symbols = [str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()]
+        if not normalized_symbols:
+            normalized_symbols = sorted({str(row.get("symbol") or "").upper() for row in self.list_items() if row.get("symbol")})
+        archive_ids: list[int] = []
+        for symbol in normalized_symbols:
+            confirmed_keys = self.confirmed_value_metric_keys(symbol)
+            if not confirmed_keys:
+                continue
+            for row in self.list_items(symbol=symbol):
+                if str(row.get("itemType") or "") != "missing_kpi":
+                    continue
+                if str(row.get("reviewStatus") or "") not in ACTIVE_MISSING_REVIEW_STATUSES:
+                    continue
+                if _has_queue_review_value(row):
+                    continue
+                if _queue_canonical_metric(row) in confirmed_keys:
+                    archive_ids.append(int(row["id"]))
+        if not archive_ids:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                UPDATE review_queue_items
+                SET reviewStatus = 'auto_archived',
+                    aiTriageStatus = 'ai_auto_archived',
+                    recommendedAction = 'resolved_missing_placeholder',
+                    explanation = COALESCE(NULLIF(explanation, ''), 'Resolved by an approved or manually corrected value for the same metric.'),
+                    hiddenByDefault = 1,
+                    updatedAt = ?
+                WHERE id = ?
+                """,
+                [(_now(), item_id) for item_id in archive_ids],
+            )
+        return len(archive_ids)
 
     def summary(self, symbol: str | None = None) -> dict:
         rows = self.list_items(symbol=symbol)
@@ -1833,6 +1891,7 @@ class ReviewQueueBuilder:
             item_type = str(item.get("itemType") or "unknown")
             item_type_counts[item_type] = item_type_counts.get(item_type, 0) + 1
         self.queue_store.cleanup_stale_review_items(symbols)
+        self.queue_store.archive_resolved_missing_placeholders(symbols)
         self.queue_store.archive_superseded_hood_operating_candidates(symbols)
         return QueueBuildResult(
             symbols=symbols,
@@ -1907,10 +1966,13 @@ class ReviewQueueBuilder:
     def _metric_resolution_items(self, symbol: str) -> list[dict]:
         snapshot = self._snapshot_from_cache(symbol)
         score = self._score_from_snapshot(symbol, snapshot)
+        confirmed_metric_keys = self.queue_store.confirmed_value_metric_keys(symbol)
         items = []
         for row in score.metricResolutionStatus:
             item_type = _item_type_for_resolution(row)
             if not item_type:
+                continue
+            if item_type == "missing_kpi" and _queue_canonical_metric(row) in confirmed_metric_keys:
                 continue
             review_status = _review_status_for_resolution(row)
             explanation = row.get("explanation") or ""
@@ -2322,6 +2384,24 @@ def _normalize_queue_item(item: dict) -> dict:
         "extractionRule": item.get("extractionRule"),
         "aiTriageStatus": ai_triage_status,
     }
+
+
+def _queue_canonical_metric(row: dict) -> str:
+    metric_key = str(row.get("metricKey") or "")
+    metric_variant = str(row.get("metricVariant") or "") or metric_variant_for_key(metric_key)
+    return METRIC_CANONICAL_MAP.get(metric_variant) or METRIC_CANONICAL_MAP.get(metric_key) or metric_key
+
+
+def _has_queue_review_value(row: dict) -> bool:
+    return any(_present_queue_review_value(row.get(key)) for key in ("displayValue", "normalizedValue", "value")) or bool(row.get("correctionCandidate"))
+
+
+def _present_queue_review_value(value: object) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, str) and value.strip().lower() in {"n/a", "na", "none", "null", "-", "--"}:
+        return False
+    return True
 
 
 def _normalize_queue_status(status: str) -> str:
