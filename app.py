@@ -7,7 +7,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from data.fmp_queue import get_fmp_request_queue
-from ui import buy_zone, dashboard, manual_review, portfolio, stock_detail, trade_journal, watchlist
+from ui import ai_stock_radar, buy_zone, dashboard, manual_review, portfolio, stock_detail, trade_journal, watchlist
 from ui.theme import render_global_styles
 
 
@@ -29,6 +29,9 @@ PAGE_QUERY_VALUES = {
     "manual-review": PAGE_MANUAL_REVIEW,
 }
 PAGE_TO_QUERY_VALUE = {value: key for key, value in PAGE_QUERY_VALUES.items()}
+PAGE_AI_RADAR = "AI Stock Radar"
+PAGE_QUERY_VALUES["ai-radar"] = PAGE_AI_RADAR
+PAGE_TO_QUERY_VALUE[PAGE_AI_RADAR] = "ai-radar"
 LEGACY_PAGE_ALIASES = {
     "总览仪表盘": PAGE_DASHBOARD,
     "决策仪表盘": PAGE_DASHBOARD,
@@ -56,6 +59,7 @@ PAGES = {
     PAGE_TRADE_JOURNAL: trade_journal.render,
     PAGE_WATCHLIST: watchlist.render,
     PAGE_MANUAL_REVIEW: manual_review.render,
+    PAGE_AI_RADAR: ai_stock_radar.render,
 }
 
 

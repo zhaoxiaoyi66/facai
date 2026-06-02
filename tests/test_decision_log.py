@@ -254,6 +254,34 @@ class DecisionLogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save_entry("msft", {"trade_date": "2026-05-28", "action_type": "buy", "decision_mood": "raw_bad"})
 
+    def test_trade_journal_store_saves_radar_buy_gate_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 210,
+                    "decision_mood": "fomo",
+                    "radarDecision": "BLOCK_CHASE",
+                    "radarBlocked": True,
+                    "radarBlockReasons": ["当前价进入追高禁止区", "情绪交易风险"],
+                    "moodGateBlocked": True,
+                    "positionGateBlocked": False,
+                    "gateCheckedAt": "2026-05-26T12:00:00+00:00",
+                },
+            )
+
+            self.assertEqual(saved["radar_decision"], "BLOCK_CHASE")
+            self.assertTrue(saved["radar_blocked"])
+            self.assertTrue(saved["mood_gate_blocked"])
+            self.assertFalse(saved["position_gate_blocked"])
+            self.assertEqual(saved["gate_checked_at"], "2026-05-26T12:00:00+00:00")
+            self.assertEqual(saved["radar_block_reasons"], ["当前价进入追高禁止区", "情绪交易风险"])
+
     def test_trade_journal_sell_snapshot_saves_now_style_risk(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

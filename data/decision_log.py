@@ -20,6 +20,7 @@ DECISION_MOOD_TYPES = {
     "plan_execution",
     "fomo",
     "anxiety",
+    "bottom_fishing_impulse",
     "macro_fear",
     "revenge_trade",
     "boredom_trade",
@@ -65,6 +66,12 @@ TRADE_DISCIPLINE_COLUMNS = {
     "blockers_json": "TEXT",
     "warnings_json": "TEXT",
     "reminder_text": "TEXT",
+    "radar_decision": "TEXT",
+    "radar_blocked": "INTEGER",
+    "radar_block_reasons_json": "TEXT",
+    "mood_gate_blocked": "INTEGER",
+    "position_gate_blocked": "INTEGER",
+    "gate_checked_at": "TEXT",
 }
 
 
@@ -401,6 +408,7 @@ class TradeJournalStore:
                 ),
             )
             entry_id = cursor.lastrowid
+            _write_radar_gate_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -489,6 +497,8 @@ class TradeJournalStore:
                     clean_id,
                 ),
             )
+            if cursor.rowcount > 0:
+                _write_radar_gate_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -574,6 +584,31 @@ class TradeJournalStore:
             (entry_id,),
         ).fetchone()
         return bool(row)
+
+
+def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            radar_decision = ?,
+            radar_blocked = ?,
+            radar_block_reasons_json = ?,
+            mood_gate_blocked = ?,
+            position_gate_blocked = ?,
+            gate_checked_at = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["radar_decision"],
+            cleaned["radar_blocked"],
+            cleaned["radar_block_reasons_json"],
+            cleaned["mood_gate_blocked"],
+            cleaned["position_gate_blocked"],
+            cleaned["gate_checked_at"],
+            entry_id,
+        ),
+    )
 
 
 class DecisionOutcomeStore:
@@ -970,11 +1005,32 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "created_at": _now(),
     }
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
+    cleaned.update(_clean_radar_gate_snapshot(action_type, values))
     return cleaned
 
 
 def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:
     return build_trade_safety_snapshot(symbol, action_type, values)
+
+
+def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "radar_decision": None,
+            "radar_blocked": False,
+            "radar_block_reasons_json": "[]",
+            "mood_gate_blocked": False,
+            "position_gate_blocked": False,
+            "gate_checked_at": None,
+        }
+    return {
+        "radar_decision": _clean_optional_text(_value(values, "radarDecision", "radar_decision")),
+        "radar_blocked": _clean_bool(_value(values, "radarBlocked", "radar_blocked")),
+        "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
+        "mood_gate_blocked": _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")),
+        "position_gate_blocked": _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")),
+        "gate_checked_at": _clean_optional_text(_value(values, "gateCheckedAt", "gate_checked_at")),
+    }
 
 
 def _clean_decision_mood(value: object) -> str | None:
@@ -1509,6 +1565,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["blockers"] = _load_json_list(item["blockers_json"])
     if "warnings_json" in item:
         item["warnings"] = _load_json_list(item["warnings_json"])
+    if "radar_block_reasons_json" in item:
+        item["radar_block_reasons"] = _load_json_list(item["radar_block_reasons_json"])
     return item
 
 

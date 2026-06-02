@@ -7,6 +7,7 @@ from html import escape
 import streamlit as st
 
 from buy_zone_engine import generate_buy_zone
+from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
@@ -15,6 +16,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
@@ -81,9 +83,10 @@ DECISION_MOOD_OPTIONS = {
     "卖飞后追回": "regret_chase",
     "不确定但想操作": "uncertainty",
 }
+DECISION_MOOD_OPTIONS["抄底冲动"] = "bottom_fishing_impulse"
 DECISION_MOOD_LABELS = {value: label for label, value in DECISION_MOOD_OPTIONS.items() if value}
 SELL_EMOTIONAL_MOODS = {"anxiety", "macro_fear", "panic_sell", "regret_chase"}
-BUY_EMOTIONAL_MOODS = {"fomo", "regret_chase"}
+BUY_EMOTIONAL_MOODS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
 FIX_REQUIRED_BLOCKERS = {"planned_actual_sell_pct_mismatch", "reentry_plan_required_before_trim_or_sell"}
 DISCIPLINE_STATUS_LABELS = {
     "allowed": "允许执行",
@@ -216,11 +219,21 @@ def _render_editor(store: TradeJournalStore) -> None:
             value=_entry_int_text(editing_entry, "decision_snapshot_id"),
             key=_editor_key("snapshot-id", editing_id),
         )
+        notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
 
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
         discipline_result = None
+        radar_gate_result = None
 
         if action_type in CLASSIFICATION_ACTIONS:
+            radar_gate_result = _render_radar_buy_gate(
+                symbol,
+                action_type,
+                decision_mood=decision_mood,
+                portfolio_preview=portfolio_preview,
+                buy_reason=notes,
+                key_suffix=str(editing_id or "new"),
+            )
             _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
 
         if action_type in SELL_DISCIPLINE_ACTIONS:
@@ -244,10 +257,9 @@ def _render_editor(store: TradeJournalStore) -> None:
             default_checked=editing_entry is None,
             key_suffix=str(editing_id or "new"),
             preview=portfolio_preview,
-            discipline_blocked=_discipline_result_blocked(discipline_result),
+            discipline_blocked=_discipline_result_blocked(discipline_result) or _radar_gate_blocks_sync(radar_gate_result),
         )
 
-        notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
         button_label = "保存修改" if editing_entry else "保存记录"
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
             entry_values = {
@@ -260,6 +272,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "notes": notes,
                 "syncToPortfolio": sync_to_portfolio,
             }
+            entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
             if editing_entry:
@@ -269,6 +282,131 @@ def _render_editor(store: TradeJournalStore) -> None:
         if editing_entry and st.button("取消编辑", key=_editor_key("cancel", editing_id), width="stretch"):
             _clear_trade_edit_query()
             st.rerun()
+
+
+def _render_radar_buy_gate(
+    symbol: str,
+    action_type: str,
+    *,
+    decision_mood: str,
+    portfolio_preview: dict,
+    buy_reason: str,
+    key_suffix: str,
+):
+    if action_type not in CLASSIFICATION_ACTIONS:
+        return None
+    st.markdown('<div class="trade-discipline-title">买入前 Radar 门禁</div>', unsafe_allow_html=True)
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        st.markdown(
+            """
+            <section class="trade-radar-gate warning">
+              <div class="trade-radar-gate-head"><b>等待股票代码</b><span>填写 ticker 后读取单票 RadarReport，不会批量刷新。</span></div>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        return None
+    bucket_label = st.selectbox(
+        "本次买入用途",
+        ["交易仓", "核心仓"],
+        key=f"trade-radar-position-bucket-{key_suffix}",
+    )
+    observation_only = st.checkbox(
+        "仅记录观察 / 非真实交易",
+        value=False,
+        key=f"trade-radar-observation-only-{key_suffix}",
+    )
+    position_bucket = "core" if bucket_label == "核心仓" else "trade"
+    report = build_cached_ai_stock_radar_report(ticker)
+    result = evaluate_buy_gate(
+        report,
+        action_type=action_type,
+        position_bucket=position_bucket,
+        planned_after_position_pct=portfolio_preview.get("afterPositionPct"),
+        decision_mood=decision_mood,
+        observation_only=observation_only,
+        buy_reason=buy_reason,
+    )
+    _render_radar_buy_gate_card(report.to_dict(), result.to_dict(), bucket_label=bucket_label, observation_only=observation_only)
+    return result
+
+
+def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str, observation_only: bool) -> None:
+    decision = str(report.get("decision") or "DATA_MISSING")
+    tone = "ok" if bool(result.get("can_continue")) else "blocked"
+    if decision == "WAIT" and observation_only and bool(result.get("can_continue")):
+        tone = "warning"
+    status = "允许继续" if bool(result.get("can_continue")) else "禁止新增"
+    reasons = [str(item) for item in (result.get("reasons") or report.get("block_reasons") or []) if str(item).strip()]
+    required = [str(item) for item in (result.get("required_actions") or []) if str(item).strip()]
+    reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons) or "<li>暂无阻止原因</li>"
+    required_html = "".join(f"<li>{escape(item)}</li>" for item in required)
+    if required_html:
+        required_html = f"<div class=\"trade-radar-requirements\"><b>需补充</b><ul>{required_html}</ul></div>"
+    stale_text = "价格数据可能过期" if bool(report.get("is_stale")) else "价格数据正常"
+    rows = [
+        ("当前结论", decision),
+        ("当前价格", _money_text(report.get("current_price"))),
+        ("击球区", _radar_zone_text(report.get("buy_zone"))),
+        ("观察区", _radar_zone_text(report.get("watch_zone"))),
+        ("追高区", _radar_zone_text(report.get("chase_zone"))),
+        ("综合评分", _score_text(report.get("final_score"))),
+        ("估值评分", _score_text(report.get("valuation_score"))),
+        ("核心仓上限", _pct_value_text(report.get("core_max_pct"))),
+        ("交易仓上限", _pct_value_text(report.get("trade_max_pct"))),
+        ("允许新增", _pct_value_text(report.get("allowed_add_pct"))),
+        ("本次用途", bucket_label),
+        ("数据状态", f"{report.get('data_status') or 'MISSING'} / {stale_text}"),
+    ]
+    metrics_html = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(str(value))}</strong></div>"
+        for label, value in rows
+    )
+    st.markdown(
+        f"""
+        <section class="trade-radar-gate {escape(tone)}">
+          <div class="trade-radar-gate-head">
+            <b>Radar 门禁：{escape(status)}</b>
+            <span>价格提醒不是买入信号；仍需检查买区、技术面、数据健康和交易纪律。</span>
+          </div>
+          <div class="trade-radar-gate-grid">{metrics_html}</div>
+          <div class="trade-radar-reasons"><b>阻止原因</b><ul>{reason_html}</ul></div>
+          {required_html}
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _radar_gate_blocks_sync(result: object) -> bool:
+    if result is None:
+        return False
+    return not bool(getattr(result, "can_sync_portfolio", getattr(result, "can_sync_to_portfolio", False)))
+
+
+def _radar_zone_text(zone: object) -> str:
+    if not isinstance(zone, dict):
+        return BLANK_TEXT
+    lower = _number(zone.get("lower"))
+    upper = _number(zone.get("upper"))
+    if lower is not None and upper is not None:
+        return f"{format_currency(lower)} - {format_currency(upper)}"
+    if lower is not None:
+        return f">= {format_currency(lower)}"
+    if upper is not None:
+        return f"<= {format_currency(upper)}"
+    return BLANK_TEXT
+
+
+def _score_text(value: object) -> str:
+    number = _number(value)
+    return BLANK_TEXT if number is None else f"{number:.0f}"
+
+
+def _pct_value_text(value: object) -> str:
+    number = _number(value)
+    return BLANK_TEXT if number is None else f"{number:.1f}%"
 
 
 def _render_buy_classification_editor(
@@ -1780,7 +1918,7 @@ def _entry_detail_html(entry: dict) -> str:
 def _entry_discipline_snapshot_html(entry: dict) -> str:
     action = str(entry.get("action_type") or "")
     if action in CLASSIFICATION_ACTIONS:
-        return _classification_snapshot_html(entry)
+        return f"{_classification_snapshot_html(entry)}{_entry_radar_gate_snapshot_html(entry)}"
     if action not in SELL_DISCIPLINE_ACTIONS:
         return '<div class="trade-entry-discipline-empty">无卖出纪律检查。</div>'
     if not entry.get("discipline_status"):
@@ -1840,6 +1978,25 @@ def _entry_reentry_plan_html(entry: dict) -> str:
 
 def _entry_has_concrete_reentry_plan(entry: dict) -> bool:
     return has_concrete_reentry_plan(entry)
+
+
+def _entry_radar_gate_snapshot_html(entry: dict) -> str:
+    decision = str(entry.get("radar_decision") or "").strip()
+    if not decision:
+        return '<div class="trade-entry-discipline-empty">这条买入 / 加仓记录未保存 Radar 门禁快照。</div>'
+    reasons = [str(item) for item in (entry.get("radar_block_reasons") or []) if str(item).strip()]
+    rows = [
+        ("Radar 结论", decision),
+        ("Radar 已拦截", _yes_no(entry.get("radar_blocked"))),
+        ("情绪门禁", _yes_no(entry.get("mood_gate_blocked"))),
+        ("仓位门禁", _yes_no(entry.get("position_gate_blocked"))),
+        ("检查时间", _text(entry.get("gate_checked_at"))),
+    ]
+    reason_html = _discipline_detail_messages_html("Radar 阻止原因", reasons, is_blocker=True) if reasons else ""
+    sync_note = ""
+    if entry.get("radar_blocked"):
+        sync_note = '<div class="trade-entry-reminder">Radar 门禁已拦截：这条记录不应同步到组合持仓。</div>'
+    return f"{_detail_grid_html(rows)}{reason_html}{sync_note}"
 
 
 def _entry_text_value(value: object) -> str:
@@ -4102,6 +4259,84 @@ def _render_styles() -> None:
             font-size: 0.76rem;
             font-weight: 820;
             white-space: nowrap;
+        }
+        .trade-radar-gate {
+            margin: 0.45rem 0 0.7rem;
+            padding: 0.68rem 0.74rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.92);
+        }
+        .trade-radar-gate.ok {
+            border-left: 4px solid rgba(22, 101, 52, 0.78);
+            background: rgba(240, 253, 244, 0.64);
+        }
+        .trade-radar-gate.warning {
+            border-left: 4px solid rgba(180, 83, 9, 0.72);
+            background: rgba(255, 251, 235, 0.72);
+        }
+        .trade-radar-gate.blocked {
+            border-left: 4px solid rgba(185, 28, 28, 0.82);
+            background: rgba(255, 241, 242, 0.82);
+        }
+        .trade-radar-gate-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.8rem;
+            align-items: baseline;
+            margin-bottom: 0.5rem;
+        }
+        .trade-radar-gate-head b {
+            color: #0F172A;
+            font-size: 0.84rem;
+            font-weight: 860;
+        }
+        .trade-radar-gate-head span {
+            color: #64748B;
+            font-size: 0.68rem;
+            text-align: right;
+        }
+        .trade-radar-gate-grid {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 7px;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.58);
+        }
+        .trade-radar-gate-grid div {
+            display: grid;
+            min-width: 0;
+            gap: 0.08rem;
+            padding: 0.42rem 0.48rem;
+            border-right: 1px solid rgba(15, 23, 42, 0.055);
+            border-bottom: 1px solid rgba(15, 23, 42, 0.045);
+        }
+        .trade-radar-gate-grid span,
+        .trade-radar-reasons b,
+        .trade-radar-requirements b {
+            color: #64748B;
+            font-size: 0.64rem;
+        }
+        .trade-radar-gate-grid strong {
+            color: #0F172A;
+            font-size: 0.74rem;
+            font-weight: 820;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .trade-radar-reasons,
+        .trade-radar-requirements {
+            margin-top: 0.55rem;
+        }
+        .trade-radar-reasons ul,
+        .trade-radar-requirements ul {
+            margin: 0.22rem 0 0;
+            padding-left: 1.05rem;
+            color: #334155;
+            font-size: 0.7rem;
+            line-height: 1.45;
         }
         .trade-classification-summary {
             display: grid;
