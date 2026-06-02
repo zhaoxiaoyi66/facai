@@ -246,7 +246,8 @@ def _system_ref_from_local_cache(
         technicals = latest_technical_snapshot(add_technical_indicators(history))
         if current_price is not None:
             snapshot = dict(snapshot)
-            snapshot.setdefault("current_price", current_price)
+            snapshot["current_price"] = current_price
+            snapshot["price"] = current_price
             technicals["price"] = current_price
         score = calculate_total_score(snapshot, technicals)
         stock_data = {**snapshot, **technicals}

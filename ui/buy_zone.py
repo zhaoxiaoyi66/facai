@@ -132,9 +132,9 @@ def _load_buy_zone_rows(tickers: tuple[str, ...]) -> list[dict]:
             market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
             if market_price is not None:
                 snapshot = dict(snapshot)
-                snapshot.setdefault("current_price", market_price)
-                snapshot.setdefault("price", market_price)
-                technicals.setdefault("price", market_price)
+                snapshot["current_price"] = market_price
+                snapshot["price"] = market_price
+                technicals["price"] = market_price
             score = calculate_total_score(snapshot, technicals)
             stock_data = {**snapshot, **technicals, "price_history": history}
             if not _valid_price(stock_data.get("price") or stock_data.get("current_price")):

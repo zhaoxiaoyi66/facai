@@ -175,14 +175,17 @@ def _build_final_decision_inputs(
 ) -> tuple[Any | None, Any | None]:
     if not payload:
         return None, None
+    payload = dict(payload)
     cached_price = _first_number(
+        current_price,
         payload.get("price"),
         payload.get("current_price"),
         payload.get("currentPrice"),
-        current_price,
     )
     if cached_price is None:
         return None, None
+    payload["price"] = cached_price
+    payload["current_price"] = cached_price
     try:
         history = build_market_history(symbol, path=path)
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
@@ -191,7 +194,7 @@ def _build_final_decision_inputs(
         price = _first_number(stock_data.get("price"), stock_data.get("current_price"), stock_data.get("currentPrice"), cached_price)
         if price is not None:
             stock_data["price"] = price
-            stock_data.setdefault("current_price", price)
+            stock_data["current_price"] = price
         zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
         bundle = build_final_decision_bundle(score, zone, symbol=symbol)
     except Exception:

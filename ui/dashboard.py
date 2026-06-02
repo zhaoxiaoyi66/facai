@@ -561,9 +561,9 @@ def _apply_market_price_to_snapshot(ticker: str, snapshot: dict, technicals: dic
     market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
     if market_price is None:
         return
-    snapshot.setdefault("current_price", market_price)
-    snapshot.setdefault("price", market_price)
-    technicals.setdefault("price", market_price)
+    snapshot["current_price"] = market_price
+    snapshot["price"] = market_price
+    technicals["price"] = market_price
 
 
 def _first_number(*values: object) -> float | None:

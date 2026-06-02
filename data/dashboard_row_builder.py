@@ -169,7 +169,7 @@ def derive_dashboard_buy_zone(ticker: str, snapshot: dict, technicals: dict, sco
         price = _first_present(technicals.get("price"), snapshot.get("current_price"))
         if price is not None:
             stock_data["price"] = price
-            stock_data.setdefault("current_price", price)
+            stock_data["current_price"] = price
         return generate_buy_zone(ticker, stock_data, score, score.scoring_model)
     except Exception:
         return None

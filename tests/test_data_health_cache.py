@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import unittest
+import inspect
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from tempfile import TemporaryDirectory
 
 from data.cache_read_model import CacheReadModel
 from data.data_health import build_data_health_summary
+import data.data_health as data_health_module
 from data.decision_log import DecisionLogStore, DecisionOutcomeStore
 from data.portfolio import PortfolioPositionStore
 
@@ -172,6 +174,13 @@ class DataHealthCacheTests(unittest.TestCase):
 
             self.assertEqual(summary["staleHistoryCount"], 0)
             self.assertNotIn("stale_history", {item["category"] for item in summary["topIssues"]})
+
+    def test_data_health_final_decision_inputs_prefer_market_context_price(self) -> None:
+        source = inspect.getsource(data_health_module._build_final_decision_inputs)
+
+        self.assertIn("current_price,", source)
+        self.assertIn('payload["current_price"] = cached_price', source)
+        self.assertNotIn('setdefault("current_price"', source)
 
     def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -319,6 +319,8 @@ class PortfolioModelTests(unittest.TestCase):
 
         self.assertIn("build_market_history", source)
         self.assertNotIn("get_price_history", source)
+        self.assertIn('snapshot["current_price"] = current_price', source)
+        self.assertNotIn('setdefault("current_price"', source)
 
     def test_portfolio_view_model_flags_overweight(self) -> None:
         with TemporaryDirectory() as tmpdir:
