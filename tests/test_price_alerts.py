@@ -95,6 +95,7 @@ def test_above_price_alert_triggers() -> None:
         alerts = evaluate_price_alerts(path, now=NOW)
 
         assert alerts[0]["status"] == "triggered"
+        assert alerts[0]["triggeredNow"] is True
         assert alerts[0]["triggerDirection"] == "above"
 
 
@@ -125,7 +126,7 @@ def test_price_alert_does_not_trigger_before_price_crosses() -> None:
         assert alerts[0]["triggeredAt"] is None
 
 
-def test_stale_price_alert_is_marked_stale_when_triggered() -> None:
+def test_stale_price_alert_warns_without_triggering() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 195, "2026-05-28T11:00:00+00:00")
@@ -133,9 +134,12 @@ def test_stale_price_alert_is_marked_stale_when_triggered() -> None:
 
         alerts = evaluate_price_alerts(path, now=NOW, quote_max_age_hours=24)
 
-        assert alerts[0]["status"] == "triggered"
+        assert alerts[0]["status"] == "active"
+        assert alerts[0]["triggeredAt"] is None
+        assert alerts[0]["triggeredNow"] is False
         assert alerts[0]["priceDataStale"] is True
         assert "价格数据可能过期" in alerts[0]["message"]
+        assert "不作为触发信号" in alerts[0]["message"]
 
 
 def test_archived_and_disabled_alerts_do_not_trigger() -> None:

@@ -273,7 +273,7 @@ def evaluate_price_alerts(
         current_price = market.get("currentPrice")
         price_stale = bool(market.get("isStale"))
         triggered_now = False
-        if _should_trigger(alert, current_price):
+        if not price_stale and _should_trigger(alert, current_price):
             triggered_at = _time_iso(now)
             alert = store.mark_triggered(int(alert["id"]), triggered_at)
             triggered_now = True
@@ -329,10 +329,16 @@ def _alert_result(
             "marketWarning": market.get("warning") or "",
             "priceDataStale": price_stale,
             "triggeredNow": triggered_now,
-            "message": _alert_message(alert, current_price, price_stale),
+            "message": _alert_message(alert, current_price, price_stale) + _stale_hold_message(alert, price_stale),
         }
     )
     return result
+
+
+def _stale_hold_message(alert: dict[str, Any], price_stale: bool) -> str:
+    if not price_stale or alert["status"] == "triggered":
+        return ""
+    return " 价格数据可能过期，不作为触发信号。"
 
 
 def _alert_message(alert: dict[str, Any], current_price: float | None, price_stale: bool) -> str:
