@@ -286,6 +286,32 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(view["rows"][0]["marketValue"], 1000)
         self.assertEqual(view["rows"][0]["priceStatus"], "price_history")
 
+    def test_portfolio_view_model_uses_market_context_history_key_selection(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioPositionStore(db_path).save_position("CRWV", {"quantity": 5, "average_cost": 100})
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE price_history (
+                        ticker TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        close REAL,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (ticker, date)
+                    )
+                    """
+                )
+                conn.execute("INSERT INTO price_history VALUES (?, ?, ?, ?)", ("CRWV", "2026-05-27", 60, "2026-05-28T10:00:00+00:00"))
+                conn.execute("INSERT INTO price_history VALUES (?, ?, ?, ?)", ("FMP:CRWV", "2026-05-29", 70, "2026-05-30T10:00:00+00:00"))
+                conn.commit()
+
+            view = build_portfolio_view_model(db_path)
+
+        self.assertEqual(view["rows"][0]["currentPrice"], 70)
+        self.assertEqual(view["rows"][0]["marketValue"], 350)
+        self.assertEqual(view["rows"][0]["priceStatus"], "price_history")
+
     def test_portfolio_view_model_flags_overweight(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "portfolio.sqlite"

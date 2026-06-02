@@ -5,6 +5,7 @@ from typing import Any
 
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.cache_read_model import CacheReadModel
+from data.market_context import build_market_context
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
@@ -169,17 +170,17 @@ def _current_prices_for_positions(
     symbols = [str(position.get("symbol") or "").strip().upper() for position in positions]
     symbols = [symbol for symbol in symbols if symbol]
     path = db_path or CACHE_PATH
-    cache = CacheReadModel(path)
     provided_prices = _normalize_prices(current_prices)
     prices: dict[str, float | None] = {}
     statuses: dict[str, str] = {}
     for symbol in symbols:
-        cache_price = cache.get_current_price(symbol)
-        cache_status = cache.get_price_status(symbol)
+        market = build_market_context(symbol, path=path)
+        market_price = _number(market.get("currentPrice"))
+        market_status = str(market.get("priceSource") or "missing")
         provided_price = _number(provided_prices.get(symbol))
-        if cache_price is not None:
-            prices[symbol] = cache_price
-            statuses[symbol] = cache_status
+        if market_price is not None:
+            prices[symbol] = market_price
+            statuses[symbol] = market_status
         elif provided_price is not None:
             prices[symbol] = provided_price
             statuses[symbol] = "provided"
