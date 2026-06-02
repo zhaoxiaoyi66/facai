@@ -4,9 +4,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from data.cache_read_model import CacheReadModel
 from data.decision_log import TradeJournalStore
+from data.market_context import build_market_context
 from data.prices import CACHE_PATH
+from data.trade_safety_gate import has_concrete_reentry_plan
 
 
 SELL_TRIM_ACTIONS = {"sell", "trim"}
@@ -19,16 +20,17 @@ def build_post_sell_obligations(
 ) -> list[dict[str, Any]]:
     current = _parse_date(current_date) or date.today()
     store = TradeJournalStore(path)
-    cache = CacheReadModel(path)
     obligations: list[dict[str, Any]] = []
     for entry in store.list_entries(symbol=symbol):
         if str(entry.get("action_type") or "").lower() not in SELL_TRIM_ACTIONS:
             continue
-        obligations.append(_build_obligation(entry, cache.get_current_price(str(entry.get("symbol") or "")), current))
+        market = build_market_context(str(entry.get("symbol") or ""), path=path)
+        obligations.append(_build_obligation(entry, market, current))
     return obligations
 
 
-def _build_obligation(entry: dict[str, Any], current_price: float | None, current_date: date) -> dict[str, Any]:
+def _build_obligation(entry: dict[str, Any], market: dict[str, Any], current_date: date) -> dict[str, Any]:
+    current_price = _number(market.get("currentPrice"))
     trade_date = _parse_date(entry.get("trade_date"))
     time_stop_days = _optional_int(entry.get("reentry_time_stop_days"))
     time_stop_due = trade_date + timedelta(days=time_stop_days) if trade_date and time_stop_days is not None else None
@@ -54,6 +56,9 @@ def _build_obligation(entry: dict[str, Any], current_price: float | None, curren
         "status": status,
         "triggers": triggers,
         "currentPrice": current_price,
+        "priceSource": market.get("priceSource"),
+        "priceDataStale": bool(market.get("isStale")),
+        "marketWarning": market.get("warning") or "",
         "pullbackPrice": pullback_price,
         "pullbackBuyBackPct": _ratio(entry.get("reentry_buy_back_pct_on_pullback")),
         "breakoutPrice": breakout_price,
@@ -98,11 +103,7 @@ def _status(has_plan: bool, triggers: list[str], time_stop_due: date | None, cur
 
 
 def _has_reentry_plan(entry: dict[str, Any]) -> bool:
-    return bool(
-        str(entry.get("reentry_plan_text") or "").strip()
-        or _number(entry.get("reentry_pullback_price")) is not None
-        or _number(entry.get("reentry_breakout_price")) is not None
-    )
+    return has_concrete_reentry_plan(entry)
 
 
 def _parse_date(value: date | str | object) -> date | None:
