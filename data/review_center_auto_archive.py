@@ -7,6 +7,20 @@ from data.review_queue_builder import HOOD_BUY_ZONE_CORE_METRICS, ReviewQueueSto
 
 
 PROTECTED_SOURCE_TYPES = {"SEC_8K", "SEC_10Q", "SEC_10K", "IR_RELEASE", "IR_PRESENTATION"}
+PROTECTED_AI_CLOUD_GUARDRAIL_METRICS = {
+    "aiCloudContractedBacklog",
+    "aiCloudRpo",
+    "aiCloudGpuFleetCapacity",
+    "aiCloudUtilization",
+    "aiCloudCapexCommitments",
+    "aiCloudCapexIntensity",
+    "aiCloudNetDebt",
+    "aiCloudDebtMaturity",
+    "aiCloudInterestBurden",
+    "aiCloudCustomerConcentration",
+    "aiCloudNvidiaSupplyExposure",
+    "aiCloudHyperscalerExposure",
+}
 PROTECTED_NORMALIZED_METRIC_TOKENS = {
     "normalizedearnings",
     "normalizedebitda",
@@ -72,6 +86,8 @@ def _safe_to_archive(row: dict, item: dict, reason: str) -> tuple[bool, str]:
         return False, "not_marked_auto_archive"
     if _is_protected_hood_metric(row):
         return False, "protected_hood_operating_field"
+    if _is_protected_ai_cloud_guardrail_metric(row):
+        return False, "protected_ai_cloud_guardrail_field"
     if _is_protected_normalized_metric(row):
         return False, "protected_normalized_profitability_metric"
     if item.get("riskObservation"):
@@ -148,6 +164,11 @@ def _is_protected_hood_metric(row: dict) -> bool:
         return False
     metric_key = str(row.get("metricKey") or "").strip()
     return metric_key in HOOD_BUY_ZONE_CORE_METRICS
+
+
+def _is_protected_ai_cloud_guardrail_metric(row: dict) -> bool:
+    metric_key = str(row.get("metricKey") or "").strip()
+    return metric_key in PROTECTED_AI_CLOUD_GUARDRAIL_METRICS
 
 
 def _is_protected_normalized_metric(row: dict) -> bool:

@@ -73,6 +73,47 @@ class ReviewCenterAutoArchiveTests(unittest.TestCase):
             self.assertEqual(result["skipped"][0]["reason"], "protected_hood_operating_field")
             self.assertEqual(store.list_items(symbol="HOOD")[0]["reviewStatus"], "stale")
 
+    def test_ai_cloud_core_missing_fields_are_not_auto_archived(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = ReviewQueueStore(Path(tmpdir) / "review.sqlite")
+            _insert_item(
+                store,
+                "aiCloudDebtMaturity",
+                symbol="CRWV",
+                item_type="missing_kpi",
+                review_status="needs_data",
+                affects="Risk",
+                source_type="metric_resolution",
+            )
+
+            result = auto_archive_low_priority_review_items(store=store, symbol="CRWV", dry_run=False)
+
+            self.assertEqual(result["eligibleCount"], 0)
+            self.assertEqual(result["archivedCount"], 0)
+            self.assertEqual(result["skipped"][0]["reason"], "protected_ai_cloud_guardrail_field")
+            self.assertEqual(store.list_items(symbol="CRWV")[0]["reviewStatus"], "needs_data")
+
+    def test_ai_cloud_risk_observations_are_not_auto_archived(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = ReviewQueueStore(Path(tmpdir) / "review.sqlite")
+            item = _insert_item(
+                store,
+                "aiCloudNvidiaSupplyExposure",
+                symbol="CRWV",
+                item_type="qualitative_risk",
+                review_status="needs_data",
+                affects="Risk",
+                source_type="SYSTEM",
+            )
+            store.set_ai_triage(int(item["id"]), "ai_auto_archived")
+
+            result = auto_archive_low_priority_review_items(store=store, symbol="CRWV", dry_run=False)
+
+            self.assertEqual(result["eligibleCount"], 0)
+            self.assertEqual(result["archivedCount"], 0)
+            self.assertEqual(result["skipped"][0]["reason"], "protected_ai_cloud_guardrail_field")
+            self.assertEqual(store.list_items(symbol="CRWV")[0]["reviewStatus"], "needs_data")
+
 
 def _insert_item(
     store: ReviewQueueStore,
