@@ -23,7 +23,11 @@ def preview_trade_portfolio_effect(entry_id: int, path: Path = CACHE_PATH) -> di
     entry = TradeJournalStore(path).get_entry(entry_id)
     if not entry:
         return _empty_preview(entry_id, status="failed", error="交易记录不存在")
-    return _preview_entry_effect(entry, path)
+    preview = _preview_entry_effect(entry, path)
+    sync_policy = trade_sync_policy(entry)
+    if not sync_policy["canSync"] and preview.get("status") != "already_synced":
+        preview.update({"status": "failed", "syncStatus": "failed", "error": sync_policy["reason"]})
+    return preview
 
 
 def preview_trade_values_portfolio_effect(

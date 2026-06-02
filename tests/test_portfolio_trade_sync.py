@@ -157,10 +157,14 @@ def test_blocked_sell_cannot_sync_to_portfolio() -> None:
             },
         )
 
+        preview = preview_trade_portfolio_effect(entry["id"], path)
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("NVDA")
 
         assert entry["discipline_status"] == "blocked"
+        assert preview["status"] == "failed"
+        assert preview["syncStatus"] == "failed"
+        assert "BLOCK" in preview["error"]
         assert result["status"] == "failed"
         assert "纪律门禁 BLOCK" in result["error"]
         assert position["quantity"] == 158
@@ -187,10 +191,14 @@ def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
             )
             conn.commit()
 
+        preview = preview_trade_portfolio_effect(entry["id"], path)
         result = apply_trade_to_portfolio(entry["id"], path)
         counts = unsynced_trade_counts_by_symbol(path)
         position = PortfolioPositionStore(path).get_position("NVDA")
 
+        assert preview["status"] == "failed"
+        assert preview["syncStatus"] == "failed"
+        assert "BLOCK" in preview["error"]
         assert result["status"] == "failed"
         assert "BLOCK" in result["error"]
         assert counts.get("NVDA", 0) == 0
