@@ -18,6 +18,7 @@ from buy_zone_engine import (
     has_buy_zone_override,
 )
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.market_context import build_market_context, build_market_history
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import PriceAlertStore
 from data.providers import get_market_data_provider
@@ -125,8 +126,15 @@ def _load_buy_zone_rows(tickers: tuple[str, ...]) -> list[dict]:
         symbol = str(ticker).upper()
         try:
             snapshot = provider.get_quote(symbol, force_refresh=False)
-            history = add_technical_indicators(provider.get_price_history(symbol, force_refresh=False))
+            market = build_market_context(symbol)
+            history = add_technical_indicators(build_market_history(symbol))
             technicals = latest_technical_snapshot(history)
+            market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
+            if market_price is not None:
+                snapshot = dict(snapshot)
+                snapshot.setdefault("current_price", market_price)
+                snapshot.setdefault("price", market_price)
+                technicals.setdefault("price", market_price)
             score = calculate_total_score(snapshot, technicals)
             stock_data = {**snapshot, **technicals, "price_history": history}
             if not _valid_price(stock_data.get("price") or stock_data.get("current_price")):
