@@ -181,3 +181,25 @@ def test_price_alert_can_be_edited_paused_enabled_archived_and_soft_deleted() ->
         assert deleted["status"] == "deleted"
         assert store.list_alerts() == []
         assert store.list_alerts(include_deleted=True)[0]["status"] == "deleted"
+
+
+def test_editing_triggered_price_alert_rearms_changed_trigger() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 195)
+        store = PriceAlertStore(path)
+        alert = store.create_alert("NVDA", triggerDirection="below", triggerPrice=200)
+
+        triggered = evaluate_price_alerts(path, now=NOW)[0]
+        edited = store.update_alert(int(alert["id"]), triggerPrice=190)
+        not_yet = evaluate_price_alerts(path, now=NOW)[0]
+        _insert_quote(path, "NVDA", 185)
+        triggered_again = evaluate_price_alerts(path, now=NOW)[0]
+
+        assert triggered["status"] == "triggered"
+        assert edited["status"] == "active"
+        assert edited["triggeredAt"] is None
+        assert not_yet["status"] == "active"
+        assert not_yet["triggeredNow"] is False
+        assert triggered_again["status"] == "triggered"
+        assert triggered_again["triggeredNow"] is True

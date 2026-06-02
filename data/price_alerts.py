@@ -181,6 +181,8 @@ class PriceAlertStore:
             "note": _clean_text(note) if note is not None else current["note"],
             "updated_at": _now_iso(),
         }
+        changed_trigger = fields["trigger_direction"] != current["triggerDirection"] or fields["trigger_price"] != current["triggerPrice"]
+        triggered_at = None if current["status"] == "triggered" and changed_trigger else current["triggeredAt"]
         with self.connect() as conn:
             conn.execute(
                 """
@@ -190,6 +192,7 @@ class PriceAlertStore:
                     alert_reason = ?,
                     linked_plan_type = ?,
                     note = ?,
+                    triggered_at = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -199,6 +202,7 @@ class PriceAlertStore:
                     fields["alert_reason"],
                     fields["linked_plan_type"],
                     fields["note"],
+                    triggered_at,
                     fields["updated_at"],
                     alert_id,
                 ),
