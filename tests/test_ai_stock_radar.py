@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_report
-from data.trade_gate import evaluate_buy_gate
+from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui.ai_stock_radar import select_radar_symbols
 
 
@@ -355,6 +355,16 @@ def test_watchlist_empty_and_sample_fallback_do_not_override_real_symbols() -> N
     assert select_radar_symbols([]) == ([], "empty watchlist")
     assert select_radar_symbols([], ["nvda"]) == (["NVDA"], "sample fallback")
     assert select_radar_symbols(["msft"], ["nvda"]) == (["MSFT"], "watchlist")
+
+
+def test_missing_buy_gate_result_defaults_to_blocked_entry_fields() -> None:
+    fields = buy_gate_entry_fields(None, action_type="buy")
+
+    assert fields["radarDecision"] == "DATA_MISSING"
+    assert fields["radarBlocked"] is True
+    assert fields["radarBlockReasons"]
+    assert fields["radarObservationOnly"] is False
+    assert fields["gateCheckedAt"]
 
 
 def test_buy_gate_blocks_block_chase_buy() -> None:

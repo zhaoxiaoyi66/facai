@@ -42,12 +42,22 @@ def _insert_history(path: Path, ticker: str, close: float, fetched_at: str) -> N
         conn.commit()
 
 
+def _radar_allowed() -> dict:
+    return {
+        "radarDecision": "ALLOW_BUY",
+        "radarBlocked": False,
+        "radarObservationOnly": False,
+        "radarBlockReasons": [],
+        "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+    }
+
+
 def test_buy_trade_sync_creates_or_increases_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
             "NOW",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 500},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 500, **_radar_allowed()},
         )
 
         preview = preview_trade_portfolio_effect(entry["id"], path)
@@ -61,6 +71,135 @@ def test_buy_trade_sync_creates_or_increases_position() -> None:
         assert position["average_cost"] == 500
 
 
+def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 10,
+                "price": 210,
+                "radarDecision": "BLOCK_CHASE",
+                "radarBlocked": True,
+                "radarBlockReasons": ["当前价进入追高禁止区"],
+                "moodGateBlocked": False,
+                "positionGateBlocked": False,
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+            },
+        )
+
+        preview = preview_trade_portfolio_effect(entry["id"], path)
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NVDA")
+        counts = unsynced_trade_counts_by_symbol(path)
+
+        assert preview["status"] == "failed"
+        assert result["status"] == "failed"
+        assert "Radar" in result["error"]
+        assert position is None
+        assert counts.get("NVDA", 0) == 0
+
+
+def test_radar_observation_only_buy_cannot_sync_to_portfolio() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "MSFT",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "add",
+                "quantity": 3,
+                "price": 420,
+                "radarDecision": "ALLOW_BUY",
+                "radarBlocked": False,
+                "radarObservationOnly": True,
+                "radarBlockReasons": [],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("MSFT")
+
+        assert result["status"] == "failed"
+        assert "Radar" in result["error"]
+        assert position is None
+
+
+def test_missing_radar_gate_buy_cannot_sync_to_portfolio() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "TSLA",
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 1, "price": 250},
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("TSLA")
+
+        assert bool(entry["radar_blocked"]) is True
+        assert entry["radar_decision"] == "DATA_MISSING"
+        assert result["status"] == "failed"
+        assert "Radar" in result["error"]
+        assert position is None
+
+
+def test_radar_passed_buy_can_still_sync_to_portfolio() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "AAPL",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 2,
+                "price": 190,
+                **_radar_allowed(),
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("AAPL")
+
+        assert result["status"] == "success"
+        assert position["quantity"] == 2
+        assert position["average_cost"] == 190
+
+
+def test_editing_buy_entry_to_radar_blocked_cannot_bypass_sync_gate() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        store = TradeJournalStore(path)
+        entry = store.save_entry(
+            "AMD",
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 120, **_radar_allowed()},
+        )
+        updated = store.update_entry(
+            entry["id"],
+            "AMD",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 2,
+                "price": 120,
+                "radarDecision": "BLOCK_CHASE",
+                "radarBlocked": True,
+                "radarBlockReasons": ["当前价进入追高禁止区"],
+                "gateCheckedAt": "2026-05-30T12:10:00+00:00",
+            },
+        )
+
+        result = apply_trade_to_portfolio(updated["id"], path)
+        position = PortfolioPositionStore(path).get_position("AMD")
+
+        assert bool(updated["radar_blocked"]) is True
+        assert result["status"] == "failed"
+        assert "Radar" in result["error"]
+        assert position is None
+
+
 def test_trade_sync_preview_uses_market_context_price() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -69,7 +208,7 @@ def test_trade_sync_preview_uses_market_context_price() -> None:
         _insert_history(path, "FMP:CRWV", 70, "2026-05-30T10:00:00+00:00")
         entry = TradeJournalStore(path).save_entry(
             "CRWV",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 50},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 50, **_radar_allowed()},
         )
 
         preview = preview_trade_portfolio_effect(entry["id"], path)
@@ -84,7 +223,7 @@ def test_add_trade_sync_updates_weighted_average_cost() -> None:
         PortfolioPositionStore(path).save_position("MSFT", {"quantity": 10, "average_cost": 100})
         entry = TradeJournalStore(path).save_entry(
             "MSFT",
-            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 10, "price": 200},
+            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 10, "price": 200, **_radar_allowed()},
         )
 
         apply_trade_to_portfolio(entry["id"], path)
@@ -102,7 +241,7 @@ def test_buy_sync_reopens_archived_position_from_zero() -> None:
         position_store.deactivate_position("NVDA")
         entry = TradeJournalStore(path).save_entry(
             "NVDA",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 1, "price": 120},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 1, "price": 120, **_radar_allowed()},
         )
 
         preview = preview_trade_portfolio_effect(entry["id"], path)
@@ -208,11 +347,19 @@ def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
 
 def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     sell_policy = trade_sync_policy({"action_type": "sell", "blockers": ["legacy_blocker"]})
-    buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"]})
+    buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"], "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00"})
+    missing_gate_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"]})
+    radar_policy = trade_sync_policy({"action_type": "buy", "radar_blocked": 1})
+    observation_policy = trade_sync_policy({"action_type": "add", "radar_observation_only": 1})
 
     assert sell_policy["canSync"] is False
     assert "BLOCK" in sell_policy["reason"]
     assert buy_policy["canSync"] is True
+    assert missing_gate_policy["canSync"] is False
+    assert "Radar" in missing_gate_policy["reason"]
+    assert radar_policy["canSync"] is False
+    assert "Radar" in radar_policy["reason"]
+    assert observation_policy["canSync"] is False
 
 
 def test_trim_cannot_sync_more_than_current_position() -> None:
@@ -237,7 +384,7 @@ def test_same_trade_cannot_sync_twice() -> None:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
             "CRM",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 100},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 100, **_radar_allowed()},
         )
 
         first = apply_trade_to_portfolio(entry["id"], path)
@@ -255,7 +402,7 @@ def test_synced_trade_entry_cannot_be_deleted_without_reconciliation() -> None:
         store = TradeJournalStore(path)
         entry = store.save_entry(
             "CRM",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 100},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 2, "price": 100, **_radar_allowed()},
         )
 
         apply_trade_to_portfolio(entry["id"], path)
@@ -303,7 +450,7 @@ def test_portfolio_view_model_flags_unsynced_trades_for_symbol() -> None:
         PortfolioPositionStore(path).save_position("ANET", {"quantity": 5, "average_cost": 300})
         entry = TradeJournalStore(path).save_entry(
             "ANET",
-            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 1, "price": 310},
+            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 1, "price": 310, **_radar_allowed()},
         )
 
         before = build_portfolio_view_model(path, {"ANET": 320})

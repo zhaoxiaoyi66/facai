@@ -7,6 +7,7 @@ from typing import Any
 
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
+MISSING_BUY_GATE_REASON = "Radar 买入门禁结果缺失，禁止自动同步组合持仓。"
 
 
 @dataclass(frozen=True)
@@ -152,14 +153,25 @@ def evaluate_mood_gate(mood: str) -> list[str]:
     return []
 
 
-def buy_gate_entry_fields(result: BuyGateResult | None) -> dict[str, Any]:
+def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = "") -> dict[str, Any]:
     if result is None:
+        if str(action_type or "").strip().lower() in {"buy", "add"}:
+            return {
+                "radarDecision": "DATA_MISSING",
+                "radarBlocked": True,
+                "radarBlockReasons": [MISSING_BUY_GATE_REASON],
+                "moodGateBlocked": False,
+                "positionGateBlocked": False,
+                "radarObservationOnly": False,
+                "gateCheckedAt": _checked_at(None),
+            }
         return {
             "radarDecision": "",
             "radarBlocked": False,
             "radarBlockReasons": [],
             "moodGateBlocked": False,
             "positionGateBlocked": False,
+            "radarObservationOnly": False,
             "gateCheckedAt": "",
         }
     return {
@@ -168,6 +180,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None) -> dict[str, Any]:
         "radarBlockReasons": result.reasons + result.required_actions,
         "moodGateBlocked": result.mood_gate_blocked,
         "positionGateBlocked": result.position_gate_blocked,
+        "radarObservationOnly": result.is_observation_only,
         "gateCheckedAt": result.gate_checked_at,
     }
 

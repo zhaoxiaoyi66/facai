@@ -11,13 +11,13 @@ from typing import Any
 from data.market_context import build_market_context
 from data.market_context import build_market_history
 from data.prices import CACHE_PATH
+from data.trade_gate import BuyGateResult as RadarBuyGateResult
 from data.trade_gate import evaluate_buy_gate as evaluate_trade_buy_gate
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 
 
 RADAR_DECISIONS = {"ALLOW_BUY", "WAIT", "BLOCK_CHASE", "AVOID", "DATA_MISSING"}
 RADAR_REPORT_VERSION = "AI_STOCK_RADAR_V1_LOCAL_RULES"
-BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
 
 
 @dataclass(frozen=True)
@@ -75,18 +75,6 @@ class RadarReport:
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
 
 
-@dataclass(frozen=True)
-class RadarBuyGateResult:
-    can_continue: bool
-    can_sync_to_portfolio: bool
-    status: str
-    reasons: list[str]
-    required_actions: list[str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
 def evaluate_radar_buy_gate(
     report: RadarReport | dict[str, Any],
     *,
@@ -106,41 +94,6 @@ def evaluate_radar_buy_gate(
         observation_only=observation_only,
         buy_reason=buy_reason,
     )
-    action = str(action_type or "").strip().lower()
-    if action not in {"buy", "add"}:
-        return RadarBuyGateResult(True, True, "not_applicable", [], [])
-    data = report.to_dict() if isinstance(report, RadarReport) else dict(report)
-    decision = str(data.get("decision") or "")
-    reasons: list[str] = []
-    required: list[str] = []
-    if decision in {"DATA_MISSING", "BLOCK_CHASE"}:
-        reasons.extend(str(item) for item in (data.get("block_reasons") or []))
-        if not reasons:
-            reasons.append("Radar 结论禁止新增")
-    elif decision == "AVOID":
-        reasons.append("Radar 结论为 AVOID，禁止新增核心仓")
-    elif decision == "WAIT" and not observation_only:
-        reasons.append("Radar 结论为 WAIT，默认不允许真实买入/加仓")
-        required.append("如只是复盘观察，请标记为仅记录观察/非真实交易")
-    mood = str(decision_mood or "").strip().lower()
-    if mood in BUY_MOOD_BLOCKERS:
-        reasons.append("情绪交易风险：FOMO / 焦虑 / 抄底冲动 / 复仇交易不能绕过 Radar 门禁")
-    limit_reason = _position_limit_reason(data, position_bucket, planned_after_position_pct)
-    if limit_reason:
-        reasons.append(limit_reason)
-    if decision == "ALLOW_BUY" and not str(buy_reason or "").strip():
-        required.append("ALLOW_BUY 仍需填写买入理由")
-    can_continue = not reasons and not required
-    if observation_only and decision == "WAIT" and not mood and not limit_reason:
-        can_continue = True
-    return RadarBuyGateResult(
-        can_continue=can_continue,
-        can_sync_to_portfolio=can_continue and not observation_only,
-        status="pass" if can_continue else "blocked",
-        reasons=reasons,
-        required_actions=required,
-    )
-
 
 def build_ai_stock_radar_report(
     ticker: str,
@@ -747,26 +700,6 @@ def _summary(symbol: str, decision: str, allowed_add_pct: float, block_reasons: 
     return f"{symbol}: wait. {first}."
 
 
-def _position_limit_reason(data: dict[str, Any], position_bucket: str, planned_after_position_pct: float | None) -> str:
-    after_pct = _number(planned_after_position_pct)
-    if after_pct is None:
-        return ""
-    bucket = str(position_bucket or "").strip().lower()
-    if bucket in {"core", "核心仓"}:
-        limit = _number(data.get("core_max_pct"))
-        label = "核心仓"
-    elif bucket in {"trade", "trading", "交易仓"}:
-        limit = _number(data.get("trade_max_pct"))
-        label = "交易仓"
-    else:
-        return "未选择核心仓/交易仓，不能判断买入后是否超过 Radar 仓位上限"
-    if limit is None:
-        return f"缺少 {label} 上限，不能继续新增"
-    if after_pct > limit:
-        return f"买入后仓位 {after_pct:.1f}% 超过 Radar {label}上限 {limit:.1f}%"
-    return ""
-
-
 def _data_block_reason(data_status: str, market: dict[str, Any]) -> str:
     if data_status == "STALE":
         return "缓存过期：价格数据可能过期"
@@ -779,7 +712,6 @@ def _data_block_reason(data_status: str, market: dict[str, Any]) -> str:
     if data_status == "MISSING_BUY_ZONE":
         return "缺击球区：没有纪律买入区"
     return "数据缺失：Radar 不能给买入建议"
-
 
 def _zone(value: RadarZone | dict[str, Any] | None) -> RadarZone | None:
     if value is None:

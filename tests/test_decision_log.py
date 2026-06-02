@@ -282,6 +282,50 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["gate_checked_at"], "2026-05-26T12:00:00+00:00")
             self.assertEqual(saved["radar_block_reasons"], ["当前价进入追高禁止区", "情绪交易风险"])
 
+    def test_trade_journal_store_backfills_radar_gate_columns_on_legacy_schema(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "decision_log.sqlite"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE trade_journal_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        symbol TEXT NOT NULL,
+                        trade_date TEXT NOT NULL,
+                        action_type TEXT NOT NULL,
+                        quantity REAL,
+                        price REAL,
+                        premium REAL,
+                        strike_price REAL,
+                        expiry_date TEXT,
+                        decision_snapshot_id INTEGER,
+                        notes TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.commit()
+
+            store = TradeJournalStore(db_path)
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 210,
+                    "radarDecision": "ALLOW_BUY",
+                    "radarBlocked": False,
+                    "radarObservationOnly": True,
+                    "gateCheckedAt": "2026-05-26T12:00:00+00:00",
+                },
+            )
+
+            self.assertEqual(saved["radar_decision"], "ALLOW_BUY")
+            self.assertFalse(saved["radar_blocked"])
+            self.assertTrue(saved["radar_observation_only"])
+            self.assertEqual(saved["radar_block_reasons"], [])
+
     def test_trade_journal_sell_snapshot_saves_now_style_risk(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

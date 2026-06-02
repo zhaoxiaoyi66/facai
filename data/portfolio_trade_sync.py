@@ -131,7 +131,11 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
                 entry.symbol,
                 entry.action_type,
                 entry.discipline_status,
-                entry.blockers_json
+                entry.blockers_json,
+                entry.radar_blocked,
+                entry.radar_observation_only,
+                entry.radar_decision,
+                entry.gate_checked_at
             FROM trade_journal_entries AS entry
             LEFT JOIN trade_portfolio_sync_logs AS log
                 ON log.entry_id = entry.id AND log.status = 'synced'
@@ -140,12 +144,16 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
             """
         ).fetchall()
     counts: dict[str, int] = {}
-    for symbol, action_type, discipline_status, blockers_json in rows:
+    for symbol, action_type, discipline_status, blockers_json, radar_blocked, radar_observation_only, radar_decision, gate_checked_at in rows:
         entry = {
             "symbol": symbol,
             "action_type": action_type,
             "discipline_status": discipline_status,
             "blockers_json": blockers_json,
+            "radar_blocked": radar_blocked,
+            "radar_observation_only": radar_observation_only,
+            "radar_decision": radar_decision,
+            "gate_checked_at": gate_checked_at,
         }
         if _entry_sync_blocked_by_discipline(entry):
             continue

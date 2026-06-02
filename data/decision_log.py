@@ -71,6 +71,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "radar_block_reasons_json": "TEXT",
     "mood_gate_blocked": "INTEGER",
     "position_gate_blocked": "INTEGER",
+    "radar_observation_only": "INTEGER",
     "gate_checked_at": "TEXT",
 }
 
@@ -596,6 +597,7 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             radar_block_reasons_json = ?,
             mood_gate_blocked = ?,
             position_gate_blocked = ?,
+            radar_observation_only = ?,
             gate_checked_at = ?
         WHERE id = ?
         """,
@@ -605,6 +607,7 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             cleaned["radar_block_reasons_json"],
             cleaned["mood_gate_blocked"],
             cleaned["position_gate_blocked"],
+            cleaned["radar_observation_only"],
             cleaned["gate_checked_at"],
             entry_id,
         ),
@@ -1021,7 +1024,29 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_block_reasons_json": "[]",
             "mood_gate_blocked": False,
             "position_gate_blocked": False,
+            "radar_observation_only": False,
             "gate_checked_at": None,
+        }
+    has_gate_snapshot = any(
+        name in values
+        for name in (
+            "radarDecision",
+            "radar_decision",
+            "radarBlocked",
+            "radar_blocked",
+            "gateCheckedAt",
+            "gate_checked_at",
+        )
+    )
+    if not has_gate_snapshot:
+        return {
+            "radar_decision": "DATA_MISSING",
+            "radar_blocked": True,
+            "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，禁止自动同步组合持仓。"]),
+            "mood_gate_blocked": False,
+            "position_gate_blocked": False,
+            "radar_observation_only": False,
+            "gate_checked_at": _now(),
         }
     return {
         "radar_decision": _clean_optional_text(_value(values, "radarDecision", "radar_decision")),
@@ -1029,6 +1054,7 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
         "mood_gate_blocked": _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")),
         "position_gate_blocked": _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")),
+        "radar_observation_only": _clean_bool(_value(values, "radarObservationOnly", "radar_observation_only")),
         "gate_checked_at": _clean_optional_text(_value(values, "gateCheckedAt", "gate_checked_at")),
     }
 

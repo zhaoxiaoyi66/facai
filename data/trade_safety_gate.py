@@ -22,10 +22,9 @@ DECISION_MOOD_TYPES = {
     "calm",
     "discipline_check",
 }
-SELL_SYNC_BLOCK_REASON = (
-    "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。"
-)
-
+SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。"
+BUY_RADAR_SYNC_BLOCK_REASON = "Radar 买入门禁未通过或标记为仅观察，禁止同步到组合持仓。"
+BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，禁止自动同步到组合持仓。"
 
 def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str, Any]) -> dict[str, Any]:
     """Canonical backend gate for trade discipline snapshots.
@@ -113,11 +112,35 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     action_type = str(entry.get("action_type") or "").strip().lower()
     discipline_status = str(entry.get("discipline_status") or "").strip().lower()
     blockers = _reasons_list(entry.get("blockers"), entry.get("blockers_json"))
-    blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
+    sell_blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
+    buy_blocked = _buy_sync_blocked_by_radar(entry, action_type)
+    buy_missing_gate = _buy_sync_missing_radar_gate(entry, action_type)
+    blocked = sell_blocked or buy_blocked or buy_missing_gate
+    reason = ""
+    if sell_blocked:
+        reason = SELL_SYNC_BLOCK_REASON
+    elif buy_blocked:
+        reason = BUY_RADAR_SYNC_BLOCK_REASON
+    elif buy_missing_gate:
+        reason = BUY_RADAR_MISSING_GATE_REASON
     return {
         "canSync": not blocked,
-        "reason": SELL_SYNC_BLOCK_REASON if blocked else "",
+        "reason": reason,
     }
+
+
+def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
+    return action_type in CLASSIFICATION_ACTION_TYPES and (
+        _clean_bool(entry.get("radar_blocked")) or _clean_bool(entry.get("radar_observation_only"))
+    )
+
+
+def _buy_sync_missing_radar_gate(entry: dict[str, Any], action_type: str) -> bool:
+    return (
+        action_type in CLASSIFICATION_ACTION_TYPES
+        and not str(entry.get("radar_decision") or "").strip()
+        and not str(entry.get("gate_checked_at") or "").strip()
+    )
 
 
 def empty_trade_safety_snapshot() -> dict[str, Any]:

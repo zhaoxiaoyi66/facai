@@ -272,7 +272,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "notes": notes,
                 "syncToPortfolio": sync_to_portfolio,
             }
-            entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None))
+            entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None, action_type=action_type))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
             if editing_entry:
@@ -1990,6 +1990,7 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
         ("Radar 已拦截", _yes_no(entry.get("radar_blocked"))),
         ("情绪门禁", _yes_no(entry.get("mood_gate_blocked"))),
         ("仓位门禁", _yes_no(entry.get("position_gate_blocked"))),
+        ("仅观察记录", _yes_no(entry.get("radar_observation_only"))),
         ("检查时间", _text(entry.get("gate_checked_at"))),
     ]
     reason_html = _discipline_detail_messages_html("Radar 阻止原因", reasons, is_blocker=True) if reasons else ""
