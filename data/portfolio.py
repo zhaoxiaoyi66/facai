@@ -22,6 +22,13 @@ POSITION_NUMERIC_FIELDS = [
 
 SETTINGS_ID = "default"
 TRIM_PRICE_NEAR_PCT = 5.0
+VALID_POSITION_TIERS = {"A", "B", "C"}
+POSITION_TIER_LABELS = {
+    "A": "A类",
+    "B": "B类",
+    "C": "C类",
+}
+POSITION_TIER_MISSING_LABEL = "需设置等级"
 
 
 class PortfolioPositionStore:
@@ -48,6 +55,7 @@ class PortfolioPositionStore:
                     symbol TEXT NOT NULL UNIQUE,
                     quantity REAL NOT NULL,
                     average_cost REAL NOT NULL,
+                    position_tier TEXT,
                     target_position_pct REAL,
                     max_acceptable_position_pct REAL,
                     planned_sell_price REAL,
@@ -67,6 +75,7 @@ class PortfolioPositionStore:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_positions)").fetchall()}
         additions = {
             "target_position_pct": "REAL",
+            "position_tier": "TEXT",
             "max_acceptable_position_pct": "REAL",
             "planned_sell_price": "REAL",
             "first_trim_price": "REAL",
@@ -86,16 +95,23 @@ class PortfolioPositionStore:
         now = _now()
         with self.connect() as conn:
             existing = conn.execute(
-                "SELECT created_at FROM portfolio_positions WHERE symbol = ?",
+                "SELECT created_at, position_tier FROM portfolio_positions WHERE symbol = ?",
                 (cleaned["symbol"],),
             ).fetchone()
             created_at = existing[0] if existing and existing[0] else now
+            position_tier = cleaned["position_tier"]
+            if position_tier is None and existing:
+                try:
+                    position_tier = _clean_position_tier(existing[1], required=False)
+                except ValueError:
+                    position_tier = None
             conn.execute(
                 """
                 INSERT INTO portfolio_positions (
                     symbol,
                     quantity,
                     average_cost,
+                    position_tier,
                     target_position_pct,
                     max_acceptable_position_pct,
                     planned_sell_price,
@@ -107,10 +123,11 @@ class PortfolioPositionStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
                     quantity = excluded.quantity,
                     average_cost = excluded.average_cost,
+                    position_tier = excluded.position_tier,
                     target_position_pct = excluded.target_position_pct,
                     max_acceptable_position_pct = excluded.max_acceptable_position_pct,
                     planned_sell_price = excluded.planned_sell_price,
@@ -125,6 +142,7 @@ class PortfolioPositionStore:
                     cleaned["symbol"],
                     cleaned["quantity"],
                     cleaned["average_cost"],
+                    position_tier,
                     cleaned["target_position_pct"],
                     cleaned["max_acceptable_position_pct"],
                     cleaned["planned_sell_price"],
@@ -329,6 +347,7 @@ def _clean_position(symbol: str, values: dict) -> dict:
         "symbol": _normalize_symbol(symbol),
         "quantity": _to_non_negative_number(values.get("quantity"), "quantity", required=True),
         "average_cost": _to_non_negative_number(values.get("average_cost"), "average_cost", required=True),
+        "position_tier": _clean_position_tier(values.get("position_tier"), required=False),
         "target_position_pct": _to_non_negative_number(values.get("target_position_pct"), "target_position_pct", required=False),
         "max_acceptable_position_pct": _to_non_negative_number(values.get("max_acceptable_position_pct"), "max_acceptable_position_pct", required=False),
         "planned_sell_price": _to_non_negative_number(values.get("planned_sell_price"), "planned_sell_price", required=False),
@@ -345,6 +364,35 @@ def _normalize_symbol(symbol: str) -> str:
     if not normalized:
         raise ValueError("symbol is required")
     return normalized
+
+
+def _clean_position_tier(value, *, required: bool) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError("position_tier is required")
+        return None
+    tier = str(value).strip().upper()
+    if tier not in VALID_POSITION_TIERS:
+        raise ValueError("position_tier must be A, B, or C")
+    return tier
+
+
+def format_position_tier_label(value) -> str:
+    try:
+        tier = _clean_position_tier(value, required=False)
+    except ValueError:
+        tier = None
+    if tier is None:
+        return POSITION_TIER_MISSING_LABEL
+    return POSITION_TIER_LABELS[tier]
+
+
+def position_tier_badge_class(value) -> str:
+    try:
+        tier = _clean_position_tier(value, required=False)
+    except ValueError:
+        tier = None
+    return f"tier-{tier.lower()}" if tier else "tier-missing"
 
 
 def _to_non_negative_number(value, field: str, required: bool) -> float | None:

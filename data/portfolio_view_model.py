@@ -64,6 +64,7 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any], unsynced
         "symbol": row.get("symbol"),
         "quantity": row.get("quantity"),
         "averageCost": row.get("average_cost"),
+        "positionTier": row.get("position_tier"),
         "currentPrice": row.get("currentPrice"),
         "priceStatus": price_status,
         "marketValue": row.get("marketValue"),

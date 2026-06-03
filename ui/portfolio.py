@@ -5,7 +5,12 @@ from urllib.parse import quote
 import streamlit as st
 
 from data.decision_log import DecisionLogStore, TradeJournalStore
-from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio import (
+    PortfolioPositionStore,
+    PortfolioSettingsStore,
+    format_position_tier_label,
+    position_tier_badge_class,
+)
 from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
@@ -19,6 +24,7 @@ EMPTY_POSITION = {
     "symbol": "",
     "quantity": "",
     "average_cost": "",
+    "position_tier": "",
     "target_position_pct": "",
     "max_acceptable_position_pct": "",
     "planned_sell_price": "",
@@ -39,6 +45,12 @@ POSITION_CLASS_LABELS = {
     "A": "A 类核心仓",
     "B": "B 类平衡仓",
     "C": "C 类交易仓",
+}
+POSITION_TIER_FORM_OPTIONS = {
+    "请选择等级": "",
+    "A类：核心仓/核心资产": "A",
+    "B类：中等仓位/优质但非最高确定性": "B",
+    "C类：交易仓/高波动/小仓观察": "C",
 }
 
 
@@ -81,6 +93,19 @@ def _render_editor(
                 "持股数量",
                 value=_input_value(current.get("quantity")),
                 key=f"{form_key}:quantity",
+            )
+            tier_options = list(POSITION_TIER_FORM_OPTIONS.keys())
+            current_tier = str(current.get("position_tier") or "").strip().upper()
+            current_tier_label = next(
+                (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
+                tier_options[0],
+            )
+            st.selectbox(
+                "持仓等级",
+                tier_options,
+                index=tier_options.index(current_tier_label),
+                help="A/B/C 是当前持仓属性，必须手动选择，不自动按股票猜测。",
+                key=f"{form_key}:position_tier",
             )
             cost_cols = st.columns(2)
             average_cost = cost_cols[0].text_input(
@@ -187,6 +212,11 @@ def _form_value(form_key: str, field: str) -> object:
     return st.session_state.get(f"{form_key}:{field}")
 
 
+def _form_position_tier(form_key: str) -> str:
+    selected = str(_form_value(form_key, "position_tier") or "").strip()
+    return POSITION_TIER_FORM_OPTIONS.get(selected, selected).strip().upper()
+
+
 def _form_symbol(form_key: str, fallback: str) -> str:
     if fallback:
         return fallback
@@ -198,11 +228,15 @@ def _form_symbol(form_key: str, fallback: str) -> str:
 
 def _save_position_from_form(position_store: PortfolioPositionStore, symbol: str, form_key: str) -> None:
     try:
+        position_tier = _form_position_tier(form_key)
+        if position_tier not in {"A", "B", "C"}:
+            raise ValueError("请选择持仓等级 A/B/C")
         saved = position_store.save_position(
             _form_symbol(form_key, symbol),
             {
                 "quantity": _form_value(form_key, "quantity"),
                 "average_cost": _form_value(form_key, "average_cost"),
+                "position_tier": position_tier,
                 "target_position_pct": _form_value(form_key, "target_position_pct"),
                 "max_acceptable_position_pct": _form_value(form_key, "max_acceptable_position_pct"),
                 "planned_sell_price": _form_value(form_key, "planned_sell_price"),
@@ -718,7 +752,7 @@ def _position_row_html(row: dict) -> str:
     research_href = f"?page=detail&symbol={quote(symbol)}"
     return (
         "<tr>"
-        f'<td class="portfolio-symbol-cell">{_cell_html(symbol, _row_status_text(row))}</td>'
+        f'<td class="portfolio-symbol-cell">{_symbol_cell_html(row)}</td>'
         f"<td>{_cell_html(_share_count_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
         f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
         f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
@@ -730,6 +764,26 @@ def _position_row_html(row: dict) -> str:
         f'<a class="portfolio-view-link portfolio-archive-link" href="#{escape(archive_id)}">归档</a>'
         "</div></td>"
         "</tr>"
+    )
+
+
+def _symbol_cell_html(row: dict) -> str:
+    symbol = str(row.get("symbol") or "")
+    tier = row.get("positionTier")
+    return (
+        '<div class="portfolio-symbol-stack">'
+        f"<b>{escape(symbol)}</b>"
+        f"<small>{escape(_row_status_text(row))}</small>"
+        f"{_position_tier_badge_html(tier)}"
+        "</div>"
+    )
+
+
+def _position_tier_badge_html(tier: object) -> str:
+    return (
+        f'<em class="portfolio-tier-badge {escape(position_tier_badge_class(tier))}">'
+        f"{escape(format_position_tier_label(tier))}"
+        "</em>"
     )
 
 
@@ -887,6 +941,11 @@ def _drawer_section_html(title: str, items: list[tuple[str, object]]) -> str:
 def _trading_discipline_items(row: dict) -> list[tuple[str, object]]:
     symbol = str(row.get("symbol") or "").upper()
     position_class = _position_class_for_row(row)
+    if position_class not in {"A", "B", "C"}:
+        return [
+            ("鑲＄エ鍒嗙被", format_position_tier_label(row.get("positionTier"))),
+            ("绾緥鎻愰啋", "请先编辑持仓等级；A/B/C 是手动持仓属性，不按股票或仓位自动猜测。"),
+        ]
     config = load_trading_discipline_config()
     class_rules = dict(config.get("position_classes", {}).get(position_class, {}))
     core_pct = _number(class_rules.get("core_position_pct")) or 0.0
@@ -934,17 +993,8 @@ def _trading_discipline_items(row: dict) -> list[tuple[str, object]]:
 
 
 def _position_class_for_row(row: dict) -> str:
-    anchor = (
-        _number(row.get("targetPositionPct"))
-        or _number(row.get("systemMaxPosition"))
-        or _number(row.get("positionPct"))
-        or 0.0
-    )
-    if anchor >= 8:
-        return "A"
-    if anchor >= 4:
-        return "B"
-    return "C"
+    tier = str(row.get("positionTier") or "").strip().upper()
+    return tier if tier in {"A", "B", "C"} else ""
 
 
 def _discipline_reminder_text(row: dict, macro_check, trim_check) -> str:
@@ -1354,7 +1404,7 @@ def _render_final_portfolio_styles() -> None:
             text-transform: none;
         }
         .portfolio-table.terminal td {
-            height: 42px;
+            height: 50px;
             padding: 0.34rem 0.52rem;
             vertical-align: middle;
         }
@@ -1368,9 +1418,61 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-table.terminal tr:hover td {
             background: #FBFCFE;
         }
-        .portfolio-symbol-cell .portfolio-cell b {
+        .portfolio-symbol-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
+            min-width: 0;
+        }
+        .portfolio-symbol-stack b {
             font-size: 0.83rem;
             font-weight: 860;
+            line-height: 1;
+        }
+        .portfolio-symbol-stack small {
+            max-width: 100%;
+            color: #7b8798;
+            font-size: 0.62rem;
+            line-height: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .portfolio-tier-badge {
+            display: inline-flex;
+            align-items: center;
+            height: 16px;
+            padding: 0 6px;
+            border-radius: 999px;
+            border: 1px solid rgba(100, 116, 139, 0.18);
+            background: #F8FAFC;
+            color: #475569;
+            font-size: 0.58rem;
+            font-style: normal;
+            font-weight: 760;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .portfolio-tier-badge.tier-a {
+            border-color: rgba(22, 101, 52, 0.18);
+            background: rgba(240, 253, 244, 0.72);
+            color: #166534;
+        }
+        .portfolio-tier-badge.tier-b {
+            border-color: rgba(146, 64, 14, 0.16);
+            background: rgba(255, 251, 235, 0.78);
+            color: #92400E;
+        }
+        .portfolio-tier-badge.tier-c {
+            border-color: rgba(30, 64, 175, 0.16);
+            background: rgba(239, 246, 255, 0.76);
+            color: #1E40AF;
+        }
+        .portfolio-tier-badge.tier-missing {
+            border-color: rgba(185, 28, 28, 0.16);
+            background: rgba(254, 242, 242, 0.78);
+            color: #991B1B;
         }
         .portfolio-cell {
             gap: 0.1rem;

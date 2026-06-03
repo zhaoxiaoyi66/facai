@@ -14,6 +14,7 @@ from data.portfolio import (
     PortfolioSettingsStore,
     calculate_portfolio_position,
     calculate_portfolio_positions,
+    format_position_tier_label,
 )
 from data.portfolio_view_model import build_portfolio_view_model
 import data.portfolio_view_model as portfolio_view_model_module
@@ -64,6 +65,27 @@ class PortfolioModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save_position("NOW", {"quantity": 1, "average_cost": -500})
 
+    def test_portfolio_position_tier_saves_only_manual_abc_values(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+
+            created = store.save_position("NVDA", {"quantity": 2, "average_cost": 100, "position_tier": "a"})
+
+            self.assertEqual(created["position_tier"], "A")
+            self.assertEqual(format_position_tier_label(created["position_tier"]), "A类")
+
+            with self.assertRaises(ValueError):
+                store.save_position("NVDA", {"quantity": 2, "average_cost": 100, "position_tier": "UNCLASSIFIED"})
+
+    def test_portfolio_position_missing_tier_is_legacy_safe_prompt(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+
+            created = store.save_position("LEGACY", {"quantity": 1, "average_cost": 50})
+
+            self.assertIsNone(created.get("position_tier"))
+            self.assertEqual(format_position_tier_label(created.get("position_tier")), "需设置等级")
+
     def test_portfolio_settings_store_saves_and_loads_defaults(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = PortfolioSettingsStore(Path(tmpdir) / "portfolio.sqlite")
@@ -95,6 +117,25 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(calculated["unrealizedPnl"], 250)
         self.assertEqual(calculated["unrealizedPnlPct"], 25)
         self.assertEqual(calculated["positionPct"], 25)
+
+    def test_position_tier_does_not_change_portfolio_calculation(self) -> None:
+        calculated = calculate_portfolio_position(
+            {"symbol": "now", "quantity": 10, "average_cost": 100, "position_tier": "B"},
+            125,
+            5000,
+        )
+
+        self.assertEqual(calculated["marketValue"], 1250)
+        self.assertEqual(calculated["costBasis"], 1000)
+        self.assertEqual(calculated["positionPct"], 25)
+        self.assertEqual(calculated["position_tier"], "B")
+
+    def test_position_tier_badge_renders_table_label(self) -> None:
+        from ui.portfolio import _position_tier_badge_html
+
+        self.assertIn("B类", _position_tier_badge_html("B"))
+        self.assertIn("需设置等级", _position_tier_badge_html(None))
+
 
     def test_portfolio_positions_calculator_uses_settings_total_value(self) -> None:
         positions = [{"symbol": "NOW", "quantity": 10, "average_cost": 100}]
