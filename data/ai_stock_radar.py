@@ -62,11 +62,13 @@ class RadarReport:
     core_max_pct: float
     trade_max_pct: float
     allowed_add_pct: float
+    price_position: str
     block_reasons: list[str]
     summary: str
     bull_points: list[str]
     risk_points: list[str]
     watch_points: list[str]
+    debug: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,7 +130,16 @@ def build_ai_stock_radar_report(
         metrics=metrics,
     )
     data_status = _data_status(market, score_input, zones["buy_zone"])
-    block_reasons = _block_reasons(current_price, market, score_input, zones["buy_zone"], zones["chase_zone"], data_status)
+    price_position = calculate_price_position(current_price, zones["buy_zone"], zones["chase_zone"], data_status)
+    block_reasons = _block_reasons(
+        current_price,
+        market,
+        score_input,
+        zones["buy_zone"],
+        zones["chase_zone"],
+        data_status,
+        price_position=price_position,
+    )
     decision = calculate_decision(
         current_price=current_price,
         scores=score_input,
@@ -137,7 +148,23 @@ def build_ai_stock_radar_report(
         data_status=data_status,
         block_reasons=block_reasons,
     )
-    position_plan = calculate_position_plan(score_input, decision)
+    risk_incomplete = _risk_fields_incomplete(metrics)
+    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    debug = build_radar_debug(
+        symbol,
+        market=market,
+        metrics=metrics,
+        scores=score_input,
+        zones=zones,
+        buy_zone=buy_zone,
+        watch_zone=watch_zone,
+        chase_zone=chase_zone,
+        data_status=data_status,
+        block_reasons=block_reasons,
+        current_price=current_price,
+        price_position=price_position,
+        path=path,
+    )
     return RadarReport(
         ticker=symbol,
         company_name=company_name or symbol,
@@ -162,11 +189,13 @@ def build_ai_stock_radar_report(
         core_max_pct=position_plan["core_max_pct"],
         trade_max_pct=position_plan["trade_max_pct"],
         allowed_add_pct=position_plan["allowed_add_pct"],
+        price_position=price_position,
         block_reasons=block_reasons,
         summary=_summary(symbol, decision, position_plan["allowed_add_pct"], block_reasons),
         bull_points=list(bull_points or []),
         risk_points=list(risk_points or []),
         watch_points=list(watch_points or []),
+        debug=debug,
     )
 
 
@@ -247,7 +276,16 @@ def build_ai_stock_radar_list_row(
         metrics=metrics,
     )
     data_status = _data_status(market, score_input, zones["buy_zone"])
-    block_reasons = _block_reasons(current_price, market, score_input, zones["buy_zone"], zones["chase_zone"], data_status)
+    price_position = calculate_price_position(current_price, zones["buy_zone"], zones["chase_zone"], data_status)
+    block_reasons = _block_reasons(
+        current_price,
+        market,
+        score_input,
+        zones["buy_zone"],
+        zones["chase_zone"],
+        data_status,
+        price_position=price_position,
+    )
     decision = calculate_decision(
         current_price=current_price,
         scores=score_input,
@@ -256,7 +294,8 @@ def build_ai_stock_radar_list_row(
         data_status=data_status,
         block_reasons=block_reasons,
     )
-    position_plan = calculate_position_plan(score_input, decision)
+    risk_incomplete = _risk_fields_incomplete(metrics)
+    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
     return {
         "ticker": symbol,
         "company_name": company_name or symbol,
@@ -270,6 +309,7 @@ def build_ai_stock_radar_list_row(
         "buy_zone": _zone_dict(zones["buy_zone"]),
         "core_max_pct": position_plan["core_max_pct"],
         "trade_max_pct": position_plan["trade_max_pct"],
+        "price_position": price_position,
         "block_reasons": block_reasons,
         "data_status": data_status,
     }
@@ -321,7 +361,7 @@ def calculate_growth_score(metrics: dict[str, Any]) -> float | None:
 def calculate_valuation_score(metrics: dict[str, Any]) -> float | None:
     forward_pe = _number(metrics.get("forward_pe"))
     trailing_pe = _number(metrics.get("trailing_pe"))
-    ev_sales = _first_metric_number(metrics, "enterprise_to_revenue", "ev_to_sales", "enterpriseToRevenue")
+    ev_sales = _number(metrics.get("enterprise_to_revenue"))
     fcf_yield = _number(metrics.get("free_cash_flow_yield"))
     fcf_margin = _number(metrics.get("fcf_margin"))
     if all(value is None for value in (forward_pe, trailing_pe, ev_sales, fcf_yield, fcf_margin)):
@@ -342,8 +382,8 @@ def calculate_valuation_score(metrics: dict[str, Any]) -> float | None:
 
 def calculate_technical_score(metrics: dict[str, Any]) -> float | None:
     price = _number(metrics.get("current_price"))
-    high = _first_metric_number(metrics, "fifty_two_week_high", "52_week_high")
-    low = _first_metric_number(metrics, "fifty_two_week_low", "52_week_low")
+    high = _number(metrics.get("fifty_two_week_high"))
+    low = _number(metrics.get("fifty_two_week_low"))
     rsi = _number(metrics.get("rsi14"))
     gain_20d = _number(metrics.get("gain_20d_pct"))
     if price is None and rsi is None and gain_20d is None:
@@ -367,11 +407,14 @@ def calculate_technical_score(metrics: dict[str, Any]) -> float | None:
 
 
 def calculate_risk_score(metrics: dict[str, Any]) -> float | None:
-    score = 70.0
     net_debt_to_ebitda = _number(metrics.get("net_debt_to_ebitda"))
     current_ratio = _number(metrics.get("current_ratio"))
     debt = _number(metrics.get("debt"))
     cash = _number(metrics.get("cash"))
+    if _risk_fields_incomplete(metrics):
+        score = 58.0
+    else:
+        score = 70.0
     if net_debt_to_ebitda is not None:
         score -= max(0.0, net_debt_to_ebitda - 2.0) * 12
     elif debt is not None and cash is not None and debt > cash:
@@ -438,8 +481,8 @@ def _derive_price_zones(
     metrics: dict[str, Any],
 ) -> dict[str, RadarZone]:
     current_price = _number(market.get("currentPrice"))
-    high = _first_metric_number(metrics, "fifty_two_week_high", "52_week_high")
-    low = _first_metric_number(metrics, "fifty_two_week_low", "52_week_low")
+    high = _number(metrics.get("fifty_two_week_high"))
+    low = _number(metrics.get("fifty_two_week_low"))
     valuation_score = _number(scores.valuation_score)
     if current_price is None or high is None or low is None or high <= low or valuation_score is None:
         return {
@@ -493,10 +536,12 @@ def _zones_have_buy_upper(zones: dict[str, RadarZone]) -> bool:
     return True
 
 
-def calculate_position_plan(scores: RadarScores, decision: str) -> dict[str, float]:
+def calculate_position_plan(scores: RadarScores, decision: str, *, risk_incomplete: bool = False) -> dict[str, float]:
     if decision in {"DATA_MISSING", "BLOCK_CHASE", "AVOID"}:
         return {"core_max_pct": 0.0, "trade_max_pct": 0.0, "allowed_add_pct": 0.0}
     risk_modifier = _bounded((_value(scores.risk_score) - 35) / 45, 0.2, 1.0)
+    if risk_incomplete:
+        risk_modifier = min(risk_modifier, 0.45)
     final_score = _value(scores.final_score)
     valuation_score = _value(scores.valuation_score)
     core_max = max(0.0, min(8.0, (final_score - 65) * 0.35)) * risk_modifier
@@ -505,6 +550,9 @@ def calculate_position_plan(scores: RadarScores, decision: str) -> dict[str, flo
         core_max = 0.0
     if valuation_score < 40:
         core_max = min(core_max, 2.0)
+        trade_max = min(trade_max, 1.0)
+    if risk_incomplete:
+        core_max = min(core_max, 1.0)
         trade_max = min(trade_max, 1.0)
     allowed_add = min(3.0, max(core_max, trade_max)) if decision == "ALLOW_BUY" else 0.0
     return {
@@ -538,6 +586,372 @@ def calculate_decision(
     if _value(scores.valuation_score) < 40:
         return "WAIT"
     return "WAIT" if block_reasons else "ALLOW_BUY"
+
+
+def calculate_price_position(
+    current_price: float | None,
+    buy_zone: RadarZone,
+    chase_zone: RadarZone,
+    data_status: str = "OK",
+) -> str:
+    if data_status != "OK" or current_price is None or buy_zone.upper is None:
+        return "ZONE_MISSING"
+    if chase_zone.lower is not None and current_price >= chase_zone.lower:
+        return "IN_CHASE_ZONE"
+    if buy_zone.lower is not None and current_price < buy_zone.lower:
+        return "BELOW_BUY_ZONE"
+    if current_price <= buy_zone.upper:
+        return "IN_BUY_ZONE"
+    return "ABOVE_BUY_ZONE"
+
+
+SCORE_FIELD_USAGE = {
+    "quality_score": ["gross_margin", "net_margin", "fcf_margin", "roe"],
+    "growth_score": ["revenue_growth", "gain_20d_pct", "gain_60d_pct"],
+    "valuation_score": ["forward_pe", "trailing_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf_margin"],
+    "technical_score": ["current_price", "fifty_two_week_high", "fifty_two_week_low", "rsi14", "gain_20d_pct"],
+    "risk_score": ["net_debt_to_ebitda", "current_ratio", "debt", "cash", "is_stale"],
+    "final_score": ["quality_score", "growth_score", "valuation_score", "technical_score", "risk_score"],
+    "price_zones": ["manual_zone", "stock_action_plan", "current_price", "fifty_two_week_high", "fifty_two_week_low", "valuation_score"],
+    "position_plan": ["decision", "final_score", "valuation_score", "risk_score"],
+}
+
+RADAR_INPUT_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
+    "current_price": (
+        ("market", "currentPrice"),
+        ("market", "current_price"),
+        ("technicals", "current_price"),
+        ("technicals", "price"),
+        ("snapshot", "current_price"),
+        ("snapshot", "currentPrice"),
+    ),
+    "fifty_two_week_high": (
+        ("technicals", "fifty_two_week_high"),
+        ("technicals", "fiftyTwoWeekHigh"),
+        ("technicals", "52_week_high"),
+        ("snapshot", "fifty_two_week_high"),
+        ("snapshot", "fiftyTwoWeekHigh"),
+        ("snapshot", "52_week_high"),
+    ),
+    "fifty_two_week_low": (
+        ("technicals", "fifty_two_week_low"),
+        ("technicals", "fiftyTwoWeekLow"),
+        ("technicals", "52_week_low"),
+        ("snapshot", "fifty_two_week_low"),
+        ("snapshot", "fiftyTwoWeekLow"),
+        ("snapshot", "52_week_low"),
+    ),
+    "forward_pe": (("snapshot", "forward_pe"), ("snapshot", "forwardPE"), ("snapshot", "forwardPe")),
+    "trailing_pe": (("snapshot", "trailing_pe"), ("snapshot", "trailingPE"), ("snapshot", "trailingPe"), ("snapshot", "pe")),
+    "enterprise_to_revenue": (
+        ("snapshot", "enterprise_to_revenue"),
+        ("snapshot", "enterpriseToRevenue"),
+        ("snapshot", "ev_to_sales"),
+        ("snapshot", "evSales"),
+    ),
+    "free_cash_flow_yield": (
+        ("snapshot", "free_cash_flow_yield"),
+        ("snapshot", "freeCashFlowYield"),
+        ("snapshot", "fcf_yield"),
+    ),
+    "fcf_margin": (("snapshot", "fcf_margin"), ("snapshot", "free_cash_flow_margin"), ("snapshot", "freeCashFlowMargin")),
+    "gross_margin": (("snapshot", "gross_margin"), ("snapshot", "grossMargin")),
+    "net_margin": (("snapshot", "net_margin"), ("snapshot", "netMargin")),
+    "roe": (("snapshot", "roe"), ("snapshot", "return_on_equity"), ("snapshot", "returnOnEquity")),
+    "revenue_growth": (("snapshot", "revenue_growth"), ("snapshot", "revenueGrowth")),
+    "gain_20d_pct": (("technicals", "gain_20d_pct"), ("technicals", "gain20dPct"), ("snapshot", "gain_20d_pct")),
+    "gain_60d_pct": (("technicals", "gain_60d_pct"), ("technicals", "gain60dPct"), ("snapshot", "gain_60d_pct")),
+    "rsi14": (("technicals", "rsi14"), ("technicals", "rsi_14"), ("snapshot", "rsi14")),
+    "net_debt_to_ebitda": (("snapshot", "net_debt_to_ebitda"), ("snapshot", "netDebtToEbitda")),
+    "current_ratio": (("snapshot", "current_ratio"), ("snapshot", "currentRatio")),
+    "debt": (("snapshot", "debt"), ("snapshot", "total_debt"), ("snapshot", "totalDebt")),
+    "cash": (("snapshot", "cash"), ("snapshot", "cash_and_equivalents"), ("snapshot", "cashAndEquivalents")),
+    "is_stale": (("market", "isStale"), ("market", "is_stale")),
+}
+
+
+def build_radar_debug(
+    symbol: str,
+    *,
+    market: dict[str, Any],
+    metrics: dict[str, Any],
+    scores: RadarScores,
+    zones: dict[str, RadarZone],
+    buy_zone: RadarZone | dict[str, Any] | None = None,
+    watch_zone: RadarZone | dict[str, Any] | None = None,
+    chase_zone: RadarZone | dict[str, Any] | None = None,
+    data_status: str,
+    block_reasons: list[str],
+    current_price: float | None = None,
+    price_position: str = "ZONE_MISSING",
+    path: Path = CACHE_PATH,
+) -> dict[str, Any]:
+    plan = _load_plan(path, _symbol(symbol))
+    zone_debug = _price_zone_debug(
+        zones,
+        explicit_zones={"buy_zone": buy_zone, "watch_zone": watch_zone, "chase_zone": chase_zone},
+        plan=plan,
+        current_price=current_price,
+        price_position=price_position,
+    )
+    return {
+        "score_inputs": {
+            "quality_score": _score_debug("quality_score", metrics),
+            "growth_score": _score_debug("growth_score", metrics),
+            "valuation_score": _score_debug("valuation_score", metrics),
+            "technical_score": _score_debug("technical_score", metrics),
+            "risk_score": _score_debug("risk_score", metrics),
+            "final_score": _final_score_debug(scores),
+        },
+        "price_zones": zone_debug,
+        "price_position": price_position,
+        "distance_to_buy_zone_pct": zone_debug.get("distance_to_buy_zone_pct"),
+        "below_buy_zone_reason": zone_debug.get("below_buy_zone_reason"),
+        "wait_reason_is_below_buy_zone": price_position == "BELOW_BUY_ZONE",
+        "position_plan": {
+            "used_fields": ["decision", "final_score", "valuation_score", "risk_score"],
+            "missing_fields": _missing_score_fields(scores, ["final_score", "valuation_score", "risk_score"]),
+            "risk_incomplete": _risk_fields_incomplete(metrics),
+        },
+        "data_status": data_status,
+        "data_missing_fields": _data_missing_fields(data_status, market, scores, zones.get("buy_zone") or RadarZone()),
+        "block_reasons": list(block_reasons),
+        "input_normalization": metrics.get("_normalization", {}),
+        "field_alias_notes": _field_alias_notes(metrics),
+    }
+
+
+def _score_debug(score_name: str, metrics: dict[str, Any]) -> dict[str, Any]:
+    fields = SCORE_FIELD_USAGE[score_name]
+    used = [field for field in fields if _field_number(metrics, field) is not None or _field_bool(metrics, field) is not None]
+    missing = [field for field in fields if field not in used]
+    positive, negative = _score_effect_fields(score_name, metrics)
+    result = {
+        "used_fields": used,
+        "missing_fields": missing,
+        "positive_fields": positive,
+        "negative_fields": negative,
+    }
+    if score_name == "risk_score":
+        result["risk_incomplete"] = _risk_fields_incomplete(metrics)
+        if result["risk_incomplete"]:
+            result["negative_fields"] = list(dict.fromkeys([*negative, "risk_fields_missing"]))
+    return result
+
+
+def _final_score_debug(scores: RadarScores) -> dict[str, Any]:
+    values = {
+        "quality_score": scores.quality_score,
+        "growth_score": scores.growth_score,
+        "valuation_score": scores.valuation_score,
+        "technical_score": scores.technical_score,
+        "risk_score": scores.risk_score,
+    }
+    used = [key for key, value in values.items() if _number(value) is not None]
+    missing = [key for key in values if key not in used]
+    return {
+        "used_fields": used,
+        "missing_fields": missing,
+        "positive_fields": [key for key, value in values.items() if (_number(value) or 0) >= 70],
+        "negative_fields": [key for key, value in values.items() if _number(value) is not None and (_number(value) or 0) < 50],
+    }
+
+
+def _score_effect_fields(score_name: str, metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
+    positive: list[str] = []
+    negative: list[str] = []
+    if score_name == "quality_score":
+        for field in ("gross_margin", "net_margin", "fcf_margin", "roe"):
+            value = _field_number(metrics, field)
+            if value is None:
+                continue
+            (positive if value > 0 else negative).append(field)
+    elif score_name == "growth_score":
+        for field in ("revenue_growth", "gain_20d_pct", "gain_60d_pct"):
+            value = _field_number(metrics, field)
+            if value is None:
+                continue
+            (positive if value > 0 else negative).append(field)
+    elif score_name == "valuation_score":
+        pe = _field_number(metrics, "forward_pe") or _field_number(metrics, "trailing_pe")
+        ev_sales = _field_number(metrics, "enterprise_to_revenue")
+        fcf_yield = _field_number(metrics, "free_cash_flow_yield")
+        fcf_margin = _field_number(metrics, "fcf_margin")
+        if pe is not None:
+            (positive if pe < 35 else negative).append("forward_pe/trailing_pe")
+        if ev_sales is not None:
+            (positive if ev_sales < 8 else negative).append("enterprise_to_revenue")
+        if fcf_yield is not None:
+            (positive if fcf_yield > 0 else negative).append("free_cash_flow_yield")
+        elif fcf_margin is not None:
+            (positive if fcf_margin > 0 else negative).append("fcf_margin")
+    elif score_name == "technical_score":
+        price = _field_number(metrics, "current_price")
+        high = _field_number(metrics, "fifty_two_week_high")
+        low = _field_number(metrics, "fifty_two_week_low")
+        rsi = _field_number(metrics, "rsi14")
+        gain_20d = _field_number(metrics, "gain_20d_pct")
+        if price is not None and high and low and high > low:
+            range_pos = (price - low) / (high - low)
+            (positive if range_pos <= 0.45 else negative).append("52_week_position")
+        if rsi is not None:
+            if 40 <= rsi <= 58:
+                positive.append("rsi14")
+            elif rsi >= 65 or rsi < 30:
+                negative.append("rsi14")
+        if gain_20d is not None and gain_20d > 25:
+            negative.append("gain_20d_pct")
+    elif score_name == "risk_score":
+        net_debt = _field_number(metrics, "net_debt_to_ebitda")
+        current_ratio = _field_number(metrics, "current_ratio")
+        debt = _field_number(metrics, "debt")
+        cash = _field_number(metrics, "cash")
+        if net_debt is not None and net_debt > 2:
+            negative.append("net_debt_to_ebitda")
+        if current_ratio is not None:
+            (positive if current_ratio >= 1 else negative).append("current_ratio")
+        if debt is not None and cash is not None:
+            (positive if cash >= debt else negative).append("debt/cash")
+        if bool(metrics.get("is_stale")):
+            negative.append("is_stale")
+    return positive, negative
+
+
+def _price_zone_debug(
+    zones: dict[str, RadarZone],
+    *,
+    explicit_zones: dict[str, RadarZone | dict[str, Any] | None],
+    plan: dict[str, Any],
+    current_price: float | None = None,
+    price_position: str = "ZONE_MISSING",
+) -> dict[str, Any]:
+    sources = {
+        name: _zone_source(name, zone, explicit_zones.get(name), plan)
+        for name, zone in zones.items()
+    }
+    buy = zones.get("buy_zone") or RadarZone()
+    return {
+        "source": _overall_zone_source(sources),
+        "zone_sources": sources,
+        "price_position": price_position,
+        "distance_to_buy_zone_pct": _distance_to_buy_zone_pct(current_price, buy, price_position),
+        "below_buy_zone_reason": _below_buy_zone_reason() if price_position == "BELOW_BUY_ZONE" else "",
+        "used_fields": SCORE_FIELD_USAGE["price_zones"],
+        "missing_fields": _price_zone_missing_fields(zones),
+    }
+
+
+def _distance_to_buy_zone_pct(current_price: float | None, buy_zone: RadarZone, price_position: str) -> float | None:
+    price = _number(current_price)
+    if price is None:
+        return None
+    if price_position == "BELOW_BUY_ZONE" and buy_zone.lower:
+        return round(((price - buy_zone.lower) / buy_zone.lower) * 100, 1)
+    if price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"} and buy_zone.upper:
+        return round(((price - buy_zone.upper) / buy_zone.upper) * 100, 1)
+    if price_position == "IN_BUY_ZONE":
+        return 0.0
+    return None
+
+
+def _below_buy_zone_reason() -> str:
+    return (
+        "Current price is below the discipline buy zone lower bound. "
+        "This is not automatically a better buy point; review whether fundamentals deteriorated, "
+        "earnings shocked the thesis, or the trend broke before treating it as actionable."
+    )
+
+
+def _zone_source(name: str, zone: RadarZone, explicit: RadarZone | dict[str, Any] | None, plan: dict[str, Any]) -> str:
+    explicit_zone = _zone(explicit)
+    if explicit_zone and _same_zone(zone, explicit_zone):
+        return "manual_input"
+    plan_zone = {
+        "buy_zone": _plan_buy_zone,
+        "watch_zone": _plan_watch_zone,
+        "chase_zone": _plan_chase_zone,
+    }[name](plan)
+    if _same_zone(zone, plan_zone) and (plan_zone.lower is not None or plan_zone.upper is not None):
+        return "stock_action_plan"
+    if str(zone.label or "").startswith("derived_"):
+        return "rules_derived"
+    return "missing"
+
+
+def _overall_zone_source(sources: dict[str, str]) -> str:
+    if any(value == "manual_input" for value in sources.values()):
+        return "manual_input"
+    if any(value == "stock_action_plan" for value in sources.values()):
+        return "stock_action_plan"
+    if any(value == "rules_derived" for value in sources.values()):
+        return "rules_derived"
+    return "missing"
+
+
+def _same_zone(left: RadarZone, right: RadarZone) -> bool:
+    return _number(left.lower) == _number(right.lower) and _number(left.upper) == _number(right.upper)
+
+
+def _price_zone_missing_fields(zones: dict[str, RadarZone]) -> list[str]:
+    missing: list[str] = []
+    buy = zones.get("buy_zone") or RadarZone()
+    if buy.upper is None:
+        missing.append("buy_zone.upper")
+    return missing
+
+
+def _data_missing_fields(data_status: str, market: dict[str, Any], scores: RadarScores, buy_zone: RadarZone) -> list[str]:
+    if data_status == "STALE":
+        return ["current_price_stale"]
+    if data_status == "MISSING_PRICE":
+        return ["current_price"]
+    if data_status == "MISSING_VALUATION":
+        return _missing_valuation_fields()
+    if data_status == "MISSING_SCORE":
+        return _missing_score_fields(scores, SCORE_FIELD_USAGE["final_score"])
+    if data_status == "MISSING_BUY_ZONE" or buy_zone.upper is None:
+        return ["buy_zone.upper"]
+    return []
+
+
+def _missing_valuation_fields() -> list[str]:
+    return ["forward_pe", "trailing_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf_margin"]
+
+
+def _missing_score_fields(scores: RadarScores, fields: list[str]) -> list[str]:
+    return [field for field in fields if _number(getattr(scores, field, None)) is None]
+
+
+def _field_alias_notes(metrics: dict[str, Any]) -> list[str]:
+    normalization = metrics.get("_normalization") if isinstance(metrics.get("_normalization"), dict) else {}
+    sources = normalization.get("canonical_sources") if isinstance(normalization.get("canonical_sources"), dict) else {}
+    notes: list[str] = []
+    for canonical, source in sources.items():
+        raw_field = source.get("raw_field") if isinstance(source, dict) else None
+        if raw_field and raw_field != canonical:
+            notes.append(f"{raw_field} normalized to {canonical}.")
+    if _risk_fields_incomplete(metrics):
+        notes.append("risk fields missing; risk score uses conservative incomplete-risk treatment.")
+    return notes
+
+
+def _risk_fields_incomplete(metrics: dict[str, Any]) -> bool:
+    if not metrics or "_normalization" not in metrics:
+        return False
+    return all(
+        _field_number(metrics, field) is None
+        for field in ("net_debt_to_ebitda", "current_ratio", "debt", "cash")
+    )
+
+
+def _field_number(metrics: dict[str, Any], field: str) -> float | None:
+    return _number(metrics.get(field))
+
+
+def _field_bool(metrics: dict[str, Any], field: str) -> bool | None:
+    if field not in metrics or not isinstance(metrics.get(field), bool):
+        return None
+    return bool(metrics.get(field))
 
 
 def _score_input(
@@ -621,26 +1035,72 @@ def _radar_metrics(
     technicals: dict[str, Any] | None,
     market: dict[str, Any],
 ) -> dict[str, Any]:
+    return normalize_radar_inputs(snapshot=snapshot, technicals=technicals, market=market)
+
+
+def normalize_radar_inputs(
+    *,
+    snapshot: dict[str, Any] | None = None,
+    technicals: dict[str, Any] | None = None,
+    market: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     snapshot = snapshot or {}
     technicals = technicals or {}
-    return {
-        **snapshot,
-        **technicals,
-        "current_price": _first_metric_number(market, "currentPrice", "current_price") or _first_metric_number(technicals, "price", "current_price"),
-        "price_source": market.get("priceSource"),
-        "is_stale": bool(market.get("isStale")),
-        "history_status": market.get("historyStatus"),
-        "history_latest_date": market.get("historyLatestDate"),
-        "fifty_two_week_high": _first_metric_number(technicals, "fifty_two_week_high", "52_week_high") or _first_metric_number(snapshot, "fifty_two_week_high", "52_week_high"),
-        "fifty_two_week_low": _first_metric_number(technicals, "fifty_two_week_low", "52_week_low") or _first_metric_number(snapshot, "fifty_two_week_low", "52_week_low"),
-        "enterprise_to_revenue": _first_metric_number(snapshot, "enterprise_to_revenue", "ev_to_sales", "enterpriseToRevenue"),
-        "fcf_margin": _first_metric_number(snapshot, "fcf_margin", "free_cash_flow_margin"),
-        "gross_margin": _first_metric_number(snapshot, "gross_margin"),
-        "net_margin": _first_metric_number(snapshot, "net_margin"),
-        "roe": _first_metric_number(snapshot, "roe", "return_on_equity"),
-        "debt": _first_metric_number(snapshot, "debt", "total_debt"),
-        "cash": _first_metric_number(snapshot, "cash", "cash_and_equivalents"),
-    }
+    market = market or {}
+    sources = {"snapshot": snapshot, "technicals": technicals, "market": market}
+    metrics: dict[str, Any] = {}
+    normalization: dict[str, Any] = {"aliases": {}, "canonical_sources": {}, "missing_canonical_fields": []}
+    for canonical, aliases in RADAR_INPUT_ALIASES.items():
+        matches = _normalization_matches(canonical, aliases, sources)
+        if not matches:
+            normalization["missing_canonical_fields"].append(canonical)
+            continue
+        chosen = matches[0]
+        metrics[canonical] = chosen["value"]
+        normalization["aliases"][canonical] = matches
+        normalization["canonical_sources"][canonical] = {
+            "source": chosen["source"],
+            "raw_field": chosen["raw_field"],
+        }
+    metrics["price_source"] = market.get("priceSource") or market.get("price_source")
+    metrics["history_status"] = market.get("historyStatus") or market.get("history_status")
+    metrics["history_latest_date"] = market.get("historyLatestDate") or market.get("history_latest_date")
+    metrics["_normalization"] = normalization
+    return metrics
+
+
+def _normalization_matches(
+    canonical: str,
+    aliases: tuple[tuple[str, str], ...],
+    sources: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for source_name, raw_field in aliases:
+        source = sources.get(source_name) or {}
+        if raw_field not in source:
+            continue
+        value = _normalized_input_value(canonical, source.get(raw_field))
+        if value is None:
+            continue
+        matches.append(
+            {
+                "canonical_field": canonical,
+                "source": source_name,
+                "raw_field": raw_field,
+                "value": value,
+            }
+        )
+    return matches
+
+
+def _normalized_input_value(canonical: str, value: Any) -> Any:
+    if canonical == "is_stale":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            return value.strip().lower() == "true"
+        return None
+    return _number(value)
 
 
 def _data_status(market: dict[str, Any], scores: RadarScores, buy_zone: RadarZone) -> str:
@@ -664,6 +1124,8 @@ def _block_reasons(
     buy_zone: RadarZone,
     chase_zone: RadarZone,
     data_status: str,
+    *,
+    price_position: str = "ZONE_MISSING",
 ) -> list[str]:
     reasons: list[str] = []
     if data_status != "OK":
@@ -674,10 +1136,12 @@ def _block_reasons(
         return reasons
     if buy_zone.upper is None:
         reasons.append("missing discipline buy zone")
+    elif price_position == "BELOW_BUY_ZONE":
+        reasons.append(
+            "current price is below the discipline buy zone lower bound; review fundamentals, earnings shock, or trend breakdown before treating it as cheaper"
+        )
     elif current_price > buy_zone.upper:
         reasons.append("current price is above the discipline buy zone")
-    elif buy_zone.lower is not None and current_price < buy_zone.lower:
-        reasons.append("current price is below the planned discipline zone; review data before acting")
     if chase_zone.lower is not None and current_price >= chase_zone.lower:
         reasons.append("current price is in or above chase zone")
     if _value(scores.valuation_score) < 40:

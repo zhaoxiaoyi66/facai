@@ -37,7 +37,7 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
             '<table class="ai-radar-table">'
             "<thead><tr>"
             "<th>Ticker</th><th>Decision</th><th>Block reasons</th><th>公司</th><th>当前价</th><th>更新</th><th>Stale</th><th>总分</th>"
-            "<th>击球区</th><th>核心仓</th><th>交易仓</th><th>数据</th>"
+            "<th>击球区</th><th>Zone</th><th>核心仓</th><th>交易仓</th><th>数据</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -64,7 +64,10 @@ def _render_report(symbol: str) -> None:
     )
     market = build_market_context(symbol)
     st.markdown('<div id="radar-report"></div>', unsafe_allow_html=True)
-    st.markdown(_report_html(report.to_dict(), market), unsafe_allow_html=True)
+    report_dict = report.to_dict()
+    st.markdown(_report_html(report_dict, market), unsafe_allow_html=True)
+    with st.expander("评分依据 / 数据诊断", expanded=False):
+        st.markdown(_debug_html(report_dict.get("debug") or {}), unsafe_allow_html=True)
 
 
 def _list_row(ticker: str) -> dict[str, Any]:
@@ -114,6 +117,7 @@ def _list_row_html(row: dict[str, Any], selected: str) -> str:
         f'<td>{escape("是" if row.get("is_stale") else "否")}</td>'
         f'<td>{escape(_number_text(row.get("final_score")))}</td>'
         f'<td>{escape(_zone_text(row.get("buy_zone")))}</td>'
+        f'<td>{escape(_price_position_label(row.get("price_position")))}</td>'
         f'<td>{escape(_pct(row.get("core_max_pct")))}</td>'
         f'<td>{escape(_pct(row.get("trade_max_pct")))}</td>'
         f'<td>{escape(_data_status_label(str(row.get("data_status") or "")))}</td>'
@@ -133,6 +137,7 @@ def _report_html(report: dict[str, Any], market: dict[str, Any]) -> str:
         f'<div class="wide"><span>阻止原因</span><strong>{escape("；".join(str(item) for item in block_reasons) or "无")}</strong></div>'
         f'<div><span>当前价格</span><strong>{escape(_money(report.get("current_price")))}</strong></div>'
         f'<div><span>击球区</span><strong>{escape(_zone_text(report.get("buy_zone")))}</strong></div>'
+        f'<div><span>Zone status</span><strong>{escape(_price_position_label(report.get("price_position")))}</strong></div>'
         f'<div><span>核心仓上限</span><strong>{escape(_pct(report.get("core_max_pct")))}</strong></div>'
         f'<div><span>交易仓上限</span><strong>{escape(_pct(report.get("trade_max_pct")))}</strong></div>'
         f'<div><span>allowed_add_pct</span><strong>{escape(_pct(report.get("allowed_add_pct")))}</strong></div>'
@@ -154,6 +159,59 @@ def _report_html(report: dict[str, Any], market: dict[str, Any]) -> str:
         f'<span>报告版本：{escape(RADAR_REPORT_VERSION)}</span>'
         "</div>"
         "</section>"
+    )
+
+
+def _debug_html(debug: dict[str, Any]) -> str:
+    if not debug:
+        return '<section class="ai-radar-debug">暂无评分诊断。</section>'
+    score_inputs = _dict_value(debug, "score_inputs") or {}
+    score_labels = [
+        ("quality_score", "质量"),
+        ("growth_score", "成长"),
+        ("valuation_score", "估值"),
+        ("technical_score", "技术"),
+        ("risk_score", "风险"),
+        ("final_score", "总分"),
+    ]
+    rows = []
+    for key, label in score_labels:
+        item = _dict_value(score_inputs, key) or {}
+        rows.append(
+            "<tr>"
+            f"<td>{escape(label)}</td>"
+            f"<td>{escape(_inline_list(item.get('used_fields')))}</td>"
+            f"<td>{escape(_inline_list(item.get('missing_fields')))}</td>"
+            f"<td>{escape(_inline_list(item.get('positive_fields')))}</td>"
+            f"<td>{escape(_inline_list(item.get('negative_fields')))}</td>"
+            "</tr>"
+        )
+    zones = _dict_value(debug, "price_zones") or {}
+    zone_sources = _dict_value(zones, "zone_sources") or {}
+    below_reason = str(debug.get("below_buy_zone_reason") or "").strip()
+    below_note = f'<div class="ai-radar-debug-note">{escape(below_reason)}</div>' if below_reason else ""
+    return (
+        '<section class="ai-radar-debug">'
+        '<div class="ai-radar-debug-summary">'
+        f'<div><span>数据状态</span><strong>{escape(str(debug.get("data_status") or "N/A"))}</strong></div>'
+        f'<div><span>Zone status</span><strong>{escape(_price_position_label(debug.get("price_position")))}</strong></div>'
+        f'<div><span>距买区</span><strong>{escape(_signed_pct(debug.get("distance_to_buy_zone_pct")))}</strong></div>'
+        f'<div><span>缺失字段</span><strong>{escape(_inline_list(debug.get("data_missing_fields")))}</strong></div>'
+        f'<div><span>区间来源</span><strong>{escape(str(zones.get("source") or "missing"))}</strong></div>'
+        f'<div><span>字段别名风险</span><strong>{escape(_inline_list(debug.get("field_alias_notes")))}</strong></div>'
+        '</div>'
+        '<div class="ai-radar-debug-summary compact">'
+        f'<div><span>击球区</span><strong>{escape(str(zone_sources.get("buy_zone") or "missing"))}</strong></div>'
+        f'<div><span>观察区</span><strong>{escape(str(zone_sources.get("watch_zone") or "missing"))}</strong></div>'
+        f'<div><span>追高区</span><strong>{escape(str(zone_sources.get("chase_zone") or "missing"))}</strong></div>'
+        f'<div><span>阻止原因</span><strong>{escape(_inline_list(debug.get("block_reasons")))}</strong></div>'
+        '</div>'
+        f'{below_note}'
+        '<table class="ai-radar-debug-table">'
+        '<thead><tr><th>评分</th><th>使用字段</th><th>缺失字段</th><th>加分字段</th><th>扣分字段</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table>'
+        '</section>'
     )
 
 
@@ -186,6 +244,15 @@ def _text_card_html(title: str, items: list[Any]) -> str:
         cleaned = ["暂无明确内容，先保持复查。"]
     body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:6])
     return f'<article class="ai-radar-card"><h3>{escape(title)}</h3><ul>{body}</ul></article>'
+
+
+def _inline_list(value: Any) -> str:
+    if not value:
+        return "无"
+    if isinstance(value, (list, tuple, set)):
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        return "、".join(cleaned[:8]) if cleaned else "无"
+    return str(value)
 
 
 def _selected_symbol(tickers: list[str]) -> str:
@@ -300,6 +367,17 @@ def _data_status_label(value: str) -> str:
     }.get(value, value or "未知")
 
 
+def _price_position_label(value: Any) -> str:
+    text = str(value or "").strip()
+    return {
+        "IN_BUY_ZONE": "买区内",
+        "ABOVE_BUY_ZONE": "高于买区",
+        "IN_CHASE_ZONE": "追高区",
+        "BELOW_BUY_ZONE": "低于买区，需复核",
+        "ZONE_MISSING": "无法判断",
+    }.get(text, text or "N/A")
+
+
 def _decision_tone(value: str) -> str:
     return {
         "ALLOW_BUY": "allow",
@@ -331,6 +409,11 @@ def _money(value: Any) -> str:
 def _pct(value: Any) -> str:
     number = _number(value)
     return "N/A" if number is None else f"{number:.1f}%"
+
+
+def _signed_pct(value: Any) -> str:
+    number = _number(value)
+    return "N/A" if number is None else f"{number:+.1f}%"
 
 
 def _number_text(value: Any) -> str:
@@ -493,9 +576,66 @@ def _render_styles() -> None:
             border-top:1px solid #E8EEF5;
             padding-top:10px;
         }
+        .ai-radar-debug {
+            border:1px solid #E2E8F0;
+            background:#FFFFFF;
+            border-radius:8px;
+            padding:10px;
+        }
+        .ai-radar-debug-summary {
+            display:grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap:8px;
+            margin-bottom:8px;
+        }
+        .ai-radar-debug-summary div {
+            background:#F8FAFC;
+            border:1px solid #E8EEF5;
+            border-radius:6px;
+            padding:8px;
+        }
+        .ai-radar-debug-summary span {
+            display:block;
+            font-size:11px;
+            color:#64748B;
+            margin-bottom:3px;
+        }
+        .ai-radar-debug-summary strong {
+            color:#0F172A;
+            font-size:12px;
+            line-height:1.35;
+        }
+        .ai-radar-debug-note {
+            border:1px solid #F3D19E;
+            background:#FFFBEB;
+            color:#78350F;
+            border-radius:6px;
+            padding:8px 10px;
+            font-size:12px;
+            line-height:1.4;
+            margin:6px 0 8px;
+        }
+        .ai-radar-debug-table {
+            width:100%;
+            border-collapse:collapse;
+            font-size:12px;
+        }
+        .ai-radar-debug-table th,
+        .ai-radar-debug-table td {
+            border-top:1px solid #E8EEF5;
+            padding:7px 8px;
+            text-align:left;
+            vertical-align:top;
+        }
+        .ai-radar-debug-table th {
+            color:#64748B;
+            background:#F8FAFC;
+            font-weight:700;
+        }
         @media (max-width: 900px) {
             .ai-radar-report-top,
-            .ai-radar-report-grid { grid-template-columns:1fr; }
+            .ai-radar-report-grid,
+            .ai-radar-debug-summary { grid-template-columns:1fr; }
         }
         </style>
         """,

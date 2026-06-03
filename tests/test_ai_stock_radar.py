@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_report
+from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_report, normalize_radar_inputs
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui.ai_stock_radar import select_radar_symbols
 
@@ -136,6 +136,64 @@ def test_price_above_buy_zone_blocks_chase_with_reason() -> None:
         assert "current price is in or above chase zone" in report.block_reasons
 
 
+def test_price_position_in_buy_zone() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.price_position == "IN_BUY_ZONE"
+        assert report.to_dict()["debug"]["price_position"] == "IN_BUY_ZONE"
+
+
+def test_price_position_above_buy_zone_before_chase() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 110)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.price_position == "ABOVE_BUY_ZONE"
+        assert report.decision == "WAIT"
+        assert "current price is above the discipline buy zone" in report.block_reasons
+
+
+def test_price_position_in_chase_zone() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 125)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.price_position == "IN_CHASE_ZONE"
+        assert report.decision == "BLOCK_CHASE"
+
+
 def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -154,6 +212,66 @@ def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:
         assert report.final_score and report.final_score >= 70
         assert "current price is above the discipline buy zone" in report.block_reasons
         assert "current price is in or above chase zone" in report.block_reasons
+
+
+def test_camel_case_fields_are_normalized_and_used_for_scores() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            snapshot={
+                "companyName": "Nvidia",
+                "forwardPE": 18,
+                "enterpriseToRevenue": 6,
+                "freeCashFlowYield": 0.08,
+                "freeCashFlowMargin": 0.22,
+                "grossMargin": 0.72,
+                "netMargin": 0.28,
+                "returnOnEquity": 0.35,
+                "revenueGrowth": 0.25,
+                "currentRatio": 2.0,
+                "totalDebt": 10,
+                "cashAndEquivalents": 20,
+            },
+            technicals={
+                "price": 95,
+                "fiftyTwoWeekHigh": 200,
+                "fiftyTwoWeekLow": 100,
+                "rsi14": 48,
+                "gain20dPct": 4,
+                "gain60dPct": 8,
+            },
+            now=NOW,
+        )
+
+        normalization = report.to_dict()["debug"]["input_normalization"]
+        assert report.final_score is not None
+        assert normalization["canonical_sources"]["revenue_growth"]["raw_field"] == "revenueGrowth"
+        assert normalization["canonical_sources"]["gross_margin"]["raw_field"] == "grossMargin"
+        assert normalization["canonical_sources"]["enterprise_to_revenue"]["raw_field"] == "enterpriseToRevenue"
+        assert normalization["canonical_sources"]["fifty_two_week_high"]["raw_field"] == "fiftyTwoWeekHigh"
+
+
+def test_canonical_fields_take_priority_over_aliases() -> None:
+    metrics = normalize_radar_inputs(
+        snapshot={
+            "revenue_growth": 0.30,
+            "revenueGrowth": -0.50,
+            "enterprise_to_revenue": 5,
+            "enterpriseToRevenue": 18,
+        },
+        technicals={},
+        market={},
+    )
+
+    normalization = metrics["_normalization"]
+    assert metrics["revenue_growth"] == 0.30
+    assert metrics["enterprise_to_revenue"] == 5
+    assert normalization["canonical_sources"]["revenue_growth"]["raw_field"] == "revenue_growth"
+    assert normalization["canonical_sources"]["enterprise_to_revenue"]["raw_field"] == "enterprise_to_revenue"
 
 
 def test_cached_rules_cheap_but_mediocre_company_does_not_allow_buy() -> None:
@@ -221,6 +339,71 @@ def test_missing_valuation_metrics_returns_specific_data_missing_reason() -> Non
         assert report.block_reasons
 
 
+def test_missing_valuation_debug_lists_missing_fields() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "MISS", 95)
+        snapshot = _cached_snapshot()
+        for key in ("forward_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf_margin"):
+            snapshot.pop(key)
+
+        report = build_ai_stock_radar_report(
+            "MISS",
+            path=path,
+            snapshot=snapshot,
+            technicals=_cached_technicals(price=95),
+            now=NOW,
+        )
+
+        debug = report.to_dict()["debug"]
+        assert report.data_status == "MISSING_VALUATION"
+        assert "forward_pe" in debug["data_missing_fields"]
+        assert "enterprise_to_revenue" in debug["data_missing_fields"]
+        assert "free_cash_flow_yield" in debug["data_missing_fields"]
+        assert "forward_pe" in debug["score_inputs"]["valuation_score"]["missing_fields"]
+
+
+def test_manual_zone_debug_marks_manual_source() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        zones_debug = report.to_dict()["debug"]["price_zones"]
+        assert zones_debug["source"] == "manual_input"
+        assert zones_debug["zone_sources"]["buy_zone"] == "manual_input"
+        assert zones_debug["zone_sources"]["watch_zone"] == "manual_input"
+        assert zones_debug["zone_sources"]["chase_zone"] == "manual_input"
+
+
+def test_derived_zone_debug_marks_rules_source() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 120)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=120),
+            now=NOW,
+        )
+
+        zones_debug = report.to_dict()["debug"]["price_zones"]
+        assert zones_debug["source"] == "rules_derived"
+        assert zones_debug["zone_sources"]["buy_zone"] == "rules_derived"
+        assert report.buy_zone["label"] == "derived_discipline_buy_zone"
+
+
 def test_stale_cache_cannot_allow_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -242,6 +425,144 @@ def test_stale_cache_cannot_allow_buy() -> None:
         assert report.is_stale is True
         assert report.allowed_add_pct == 0
         assert "缓存过期" in report.block_reasons[0]
+
+
+def test_stale_debug_marks_price_as_unusable_for_allow_buy() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95, "2026-05-28T11:00:00+00:00")
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+            quote_max_age_hours=24,
+        )
+
+        debug = report.to_dict()["debug"]
+        assert report.decision == "DATA_MISSING"
+        assert "current_price_stale" in debug["data_missing_fields"]
+        assert debug["data_status"] == "STALE"
+
+
+def test_missing_quality_fields_do_not_silently_create_high_score() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "MISS", 95)
+        snapshot = _cached_snapshot()
+        for key in ("gross_margin", "net_margin", "fcf_margin", "roe"):
+            snapshot.pop(key)
+
+        report = build_ai_stock_radar_report(
+            "MISS",
+            path=path,
+            snapshot=snapshot,
+            technicals=_cached_technicals(price=95),
+            now=NOW,
+        )
+
+        debug = report.to_dict()["debug"]
+        assert report.quality_score is None
+        assert report.final_score is None
+        assert report.decision == "DATA_MISSING"
+        assert "gross_margin" in debug["score_inputs"]["quality_score"]["missing_fields"]
+        assert "quality_score" in debug["score_inputs"]["final_score"]["missing_fields"]
+
+
+def test_missing_all_risk_fields_uses_conservative_risk_score() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+        snapshot = _cached_snapshot()
+        for key in ("current_ratio", "debt", "cash"):
+            snapshot.pop(key)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            snapshot=snapshot,
+            technicals=_cached_technicals(price=95),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        debug = report.to_dict()["debug"]
+        assert report.risk_score == 58.0
+        assert report.data_status == "OK"
+        assert debug["score_inputs"]["risk_score"]["risk_incomplete"] is True
+        assert "risk_fields_missing" in debug["score_inputs"]["risk_score"]["negative_fields"]
+        assert "risk fields missing" in " ".join(debug["field_alias_notes"])
+
+
+def test_missing_risk_fields_caps_position_even_when_other_scores_are_high() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+        snapshot = _cached_snapshot(
+            gross_margin=0.85,
+            net_margin=0.45,
+            fcf_margin=0.4,
+            roe=0.5,
+            revenue_growth=0.6,
+            forward_pe=18,
+            enterprise_to_revenue=5,
+            free_cash_flow_yield=0.1,
+        )
+        for key in ("current_ratio", "debt", "cash"):
+            snapshot.pop(key)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            snapshot=snapshot,
+            technicals=_cached_technicals(price=95, fifty_two_week_high=140, fifty_two_week_low=70),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.decision == "ALLOW_BUY"
+        assert report.core_max_pct <= 1.0
+        assert report.trade_max_pct <= 1.0
+        assert report.allowed_add_pct <= 1.0
+        assert report.to_dict()["debug"]["position_plan"]["risk_incomplete"] is True
+
+
+def test_debug_explanation_does_not_change_buy_gate_result() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        gate = evaluate_buy_gate(
+            report,
+            action_type="buy",
+            position_bucket="trade",
+            planned_after_position_pct=1,
+            decision_mood="planned_execution",
+            buy_reason="inside discipline buy zone",
+        )
+
+        assert report.to_dict()["debug"]
+        assert report.decision == "ALLOW_BUY"
+        assert gate.status == "pass"
+        assert gate.can_sync_to_portfolio is True
 
 
 def test_low_valuation_score_cannot_get_heavy_position() -> None:
@@ -325,9 +646,32 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
         )
 
         assert report.decision == "WAIT"
+        assert report.price_position == "BELOW_BUY_ZONE"
         assert report.allowed_add_pct == 0
         assert report.block_reasons
-        assert "current price is below the planned discipline zone; review data before acting" in report.block_reasons
+        assert "current price is below the discipline buy zone lower bound" in report.block_reasons[0]
+        assert "review fundamentals" in report.block_reasons[0]
+        debug = report.to_dict()["debug"]
+        assert debug["wait_reason_is_below_buy_zone"] is True
+        assert debug["below_buy_zone_reason"]
+        assert debug["distance_to_buy_zone_pct"] == -11.1
+
+
+def test_missing_zone_returns_zone_missing_position() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            now=NOW,
+        )
+
+        assert report.decision == "DATA_MISSING"
+        assert report.price_position == "ZONE_MISSING"
+        assert report.to_dict()["debug"]["price_position"] == "ZONE_MISSING"
 
 
 def test_low_final_score_cannot_get_core_position() -> None:
