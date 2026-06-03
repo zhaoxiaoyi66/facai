@@ -274,6 +274,34 @@ def test_canonical_fields_take_priority_over_aliases() -> None:
     assert normalization["canonical_sources"]["enterprise_to_revenue"]["raw_field"] == "enterprise_to_revenue"
 
 
+def test_total_cash_is_normalized_as_cash() -> None:
+    metrics = normalize_radar_inputs(
+        snapshot={
+            "total_cash": 123,
+            "total_debt": 456,
+        },
+        technicals={},
+        market={},
+    )
+
+    normalization = metrics["_normalization"]
+    assert metrics["cash"] == 123
+    assert metrics["debt"] == 456
+    assert normalization["canonical_sources"]["cash"]["raw_field"] == "total_cash"
+
+
+def test_profit_margin_is_normalized_as_net_margin() -> None:
+    metrics = normalize_radar_inputs(
+        snapshot={"profit_margin": 0.18},
+        technicals={},
+        market={},
+    )
+
+    normalization = metrics["_normalization"]
+    assert metrics["net_margin"] == 0.18
+    assert normalization["canonical_sources"]["net_margin"]["raw_field"] == "profit_margin"
+
+
 def test_cached_rules_cheap_but_mediocre_company_does_not_allow_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)

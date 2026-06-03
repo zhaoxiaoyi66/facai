@@ -656,7 +656,15 @@ RADAR_INPUT_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "fcf_margin": (("snapshot", "fcf_margin"), ("snapshot", "free_cash_flow_margin"), ("snapshot", "freeCashFlowMargin")),
     "gross_margin": (("snapshot", "gross_margin"), ("snapshot", "grossMargin")),
-    "net_margin": (("snapshot", "net_margin"), ("snapshot", "netMargin")),
+    "net_margin": (
+        ("snapshot", "net_margin"),
+        ("snapshot", "netMargin"),
+        ("snapshot", "profit_margin"),
+        ("snapshot", "profitMargin"),
+        ("snapshot", "netProfitMargin"),
+        ("snapshot", "netProfitMarginTTM"),
+        ("snapshot", "profitMargins"),
+    ),
     "roe": (("snapshot", "roe"), ("snapshot", "return_on_equity"), ("snapshot", "returnOnEquity")),
     "revenue_growth": (("snapshot", "revenue_growth"), ("snapshot", "revenueGrowth")),
     "gain_20d_pct": (("technicals", "gain_20d_pct"), ("technicals", "gain20dPct"), ("snapshot", "gain_20d_pct")),
@@ -665,7 +673,13 @@ RADAR_INPUT_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "net_debt_to_ebitda": (("snapshot", "net_debt_to_ebitda"), ("snapshot", "netDebtToEbitda")),
     "current_ratio": (("snapshot", "current_ratio"), ("snapshot", "currentRatio")),
     "debt": (("snapshot", "debt"), ("snapshot", "total_debt"), ("snapshot", "totalDebt")),
-    "cash": (("snapshot", "cash"), ("snapshot", "cash_and_equivalents"), ("snapshot", "cashAndEquivalents")),
+    "cash": (
+        ("snapshot", "cash"),
+        ("snapshot", "total_cash"),
+        ("snapshot", "totalCash"),
+        ("snapshot", "cash_and_equivalents"),
+        ("snapshot", "cashAndEquivalents"),
+    ),
     "is_stale": (("market", "isStale"), ("market", "is_stale")),
 }
 
