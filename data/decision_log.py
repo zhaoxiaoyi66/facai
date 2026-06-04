@@ -74,6 +74,13 @@ TRADE_DISCIPLINE_COLUMNS = {
     "position_gate_blocked": "INTEGER",
     "radar_observation_only": "INTEGER",
     "gate_checked_at": "TEXT",
+    "pre_trade_quantity": "REAL",
+    "pre_trade_avg_cost": "REAL",
+    "pre_trade_total_cost": "REAL",
+    "pre_trade_position_tier": "TEXT",
+    "pre_trade_target_sell_price": "REAL",
+    "pre_trade_unrealized_pnl": "REAL",
+    "cost_basis_source": "TEXT",
 }
 
 
@@ -413,11 +420,19 @@ class TradeJournalStore:
             )
             entry_id = cursor.lastrowid
             _write_radar_gate_snapshot(conn, int(entry_id), cleaned)
+            _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
         clean_id = _required_int(entry_id, "entry_id")
+        existing = self.get_entry(clean_id)
+        if not existing:
+            raise ValueError("trade entry not found")
         cleaned = _clean_trade_entry(symbol, values)
+        if str(existing.get("action_type") or "") != cleaned["action_type"]:
+            raise ValueError("历史交易类型不可修改")
+        if _normalize_symbol(existing.get("symbol")) != cleaned["symbol"]:
+            raise ValueError("历史交易股票不可修改")
         with self.connect() as conn:
             cursor = conn.execute(
                 """
@@ -505,6 +520,7 @@ class TradeJournalStore:
             )
             if cursor.rowcount > 0:
                 _write_radar_gate_snapshot(conn, clean_id, cleaned)
+                _write_pre_trade_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -614,6 +630,46 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             cleaned["position_gate_blocked"],
             cleaned["radar_observation_only"],
             cleaned["gate_checked_at"],
+            entry_id,
+        ),
+    )
+
+
+def _write_pre_trade_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, ""}
+        for field in (
+            "pre_trade_quantity",
+            "pre_trade_avg_cost",
+            "pre_trade_total_cost",
+            "pre_trade_position_tier",
+            "pre_trade_target_sell_price",
+            "pre_trade_unrealized_pnl",
+            "cost_basis_source",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            pre_trade_quantity = ?,
+            pre_trade_avg_cost = ?,
+            pre_trade_total_cost = ?,
+            pre_trade_position_tier = ?,
+            pre_trade_target_sell_price = ?,
+            pre_trade_unrealized_pnl = ?,
+            cost_basis_source = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["pre_trade_quantity"],
+            cleaned["pre_trade_avg_cost"],
+            cleaned["pre_trade_total_cost"],
+            cleaned["pre_trade_position_tier"],
+            cleaned["pre_trade_target_sell_price"],
+            cleaned["pre_trade_unrealized_pnl"],
+            cleaned["cost_basis_source"],
             entry_id,
         ),
     )
@@ -1013,9 +1069,42 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "target_sell_price": _optional_non_negative_number(_value(values, "targetSellPrice", "target_sell_price"), "target_sell_price"),
         "created_at": _clean_optional_text(_value(values, "createdAt", "created_at")) or _now(),
     }
+    cleaned.update(_clean_pre_trade_snapshot(values))
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
     cleaned.update(_clean_radar_gate_snapshot(action_type, values))
     return cleaned
+
+
+def _clean_pre_trade_snapshot(values: dict) -> dict:
+    position_tier = _clean_optional_text(_value(values, "preTradePositionTier", "pre_trade_position_tier"))
+    if position_tier:
+        position_tier = position_tier.upper()
+        if position_tier not in {"A", "B", "C"}:
+            position_tier = None
+    return {
+        "pre_trade_quantity": _optional_non_negative_number(
+            _value(values, "preTradeQuantity", "pre_trade_quantity"),
+            "pre_trade_quantity",
+        ),
+        "pre_trade_avg_cost": _optional_non_negative_number(
+            _value(values, "preTradeAvgCost", "pre_trade_avg_cost"),
+            "pre_trade_avg_cost",
+        ),
+        "pre_trade_total_cost": _optional_non_negative_number(
+            _value(values, "preTradeTotalCost", "pre_trade_total_cost"),
+            "pre_trade_total_cost",
+        ),
+        "pre_trade_position_tier": position_tier,
+        "pre_trade_target_sell_price": _optional_non_negative_number(
+            _value(values, "preTradeTargetSellPrice", "pre_trade_target_sell_price"),
+            "pre_trade_target_sell_price",
+        ),
+        "pre_trade_unrealized_pnl": _optional_number(
+            _value(values, "preTradeUnrealizedPnl", "pre_trade_unrealized_pnl"),
+            "pre_trade_unrealized_pnl",
+        ),
+        "cost_basis_source": _clean_optional_text(_value(values, "costBasisSource", "cost_basis_source")),
+    }
 
 
 def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:

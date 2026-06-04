@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from data.trade_performance import calculate_holding_days
+from data.trade_performance import build_manual_cost_basis_lot
 from data.trade_performance import match_realized_trades
 from data.trade_performance import summarize_trade_performance
 
@@ -87,14 +88,15 @@ def test_partial_trim_realized_pnl_uses_matched_quantity_only() -> None:
 def test_sell_below_target_sell_price_marks_discipline_issue() -> None:
     summary = summarize_trade_performance(
         entries=[
-            _entry(1, "ISRG", "buy", 5, 400, "2026-01-01", target_sell_price=520),
-            _entry(2, "ISRG", "sell", 5, 450, "2026-02-01"),
+            _entry(1, "ISRG", "buy", 5, 400, "2026-01-01", position_class="A", target_sell_price=520),
+            _entry(2, "ISRG", "sell", 5, 450, "2026-02-01", position_class="A"),
         ]
     )
 
     trade = summary["realized_trades"][0]
     assert trade["below_target_sell_price"] is True
     assert "低于买入目标价卖出" in trade["discipline_flags"]
+    assert "核心仓卖出需复盘" in trade["discipline_flags"]
 
 
 def test_a_class_sell_without_reentry_plan_marks_discipline_issue() -> None:
@@ -105,7 +107,9 @@ def test_a_class_sell_without_reentry_plan_marks_discipline_issue() -> None:
         ]
     )
 
-    assert "A类卖出缺少具体回补计划" in summary["realized_trades"][0]["discipline_flags"]
+    flags = summary["realized_trades"][0]["discipline_flags"]
+    assert "核心仓卖出需复盘" in flags
+    assert "A类卖出缺少具体回补计划" in flags
 
 
 def test_blocked_and_observation_only_records_do_not_count_realized_pnl() -> None:
@@ -127,7 +131,84 @@ def test_sell_without_buy_lot_marks_missing_cost_basis() -> None:
     trade = summary["realized_trades"][0]
     assert trade["cost_basis_missing"] is True
     assert trade["realized_pnl"] is None
+    assert trade["cost_basis_source"] == "missing"
+    assert trade["cost_basis_status"] == "missing"
+    assert trade["included_in_performance"] is False
+    assert summary["summary"]["missing_cost_count"] == 1
+    assert summary["summary"]["missing_cost_quantity"] == 3
+    assert summary["summary"]["missing_cost_amount"] == 270
     assert summary["unmatched_sells"][0]["reason"] == "缺买入成本"
+
+
+def test_position_snapshot_cost_basis_is_used_when_fifo_lot_is_missing() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(
+                1,
+                "XE",
+                "sell",
+                4,
+                80,
+                "2026-01-05",
+                pre_trade_avg_cost=50,
+                pre_trade_position_tier="C",
+                cost_basis_source="position_snapshot",
+            )
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["cost_basis_missing"] is False
+    assert trade["cost_basis_source"] == "position_snapshot"
+    assert trade["cost_basis_status"] == "position_snapshot"
+    assert trade["realized_pnl"] == 120
+    assert trade["buy_avg_price"] == 50
+    assert trade["holding_days"] is None
+    assert trade["included_in_performance"] is True
+
+
+def test_fifo_lot_takes_priority_over_position_snapshot() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "XE", "buy", 4, 40, "2026-01-01"),
+            _entry(
+                2,
+                "XE",
+                "sell",
+                4,
+                80,
+                "2026-01-05",
+                pre_trade_avg_cost=50,
+                cost_basis_source="position_snapshot",
+            ),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["cost_basis_source"] == "fifo"
+    assert trade["buy_avg_price"] == 40
+    assert trade["realized_pnl"] == 160
+
+
+def test_manual_opening_lot_is_used_only_for_performance_cost_basis() -> None:
+    opening_lot = build_manual_cost_basis_lot(
+        ticker="XE",
+        quantity=4,
+        avg_cost=45,
+        buy_date="2026-01-01",
+        position_tier="B",
+        note="legacy import",
+    )
+
+    summary = summarize_trade_performance(
+        entries=[_entry(1, "XE", "sell", 4, 80, "2026-01-05")],
+        opening_lots=[opening_lot],
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["cost_basis_source"] == "manual_cost_basis"
+    assert trade["position_tier"] == "B"
+    assert trade["realized_pnl"] == 140
 
 
 def test_holding_days_use_hkt_date_from_timestamp() -> None:
@@ -153,15 +234,31 @@ def test_group_by_position_tier_summary_is_correct() -> None:
     summary = summarize_trade_performance(
         entries=[
             _entry(1, "NVDA", "buy", 1, 100, "2026-01-01", position_class="A"),
-            _entry(2, "NVDA", "sell", 1, 120, "2026-01-02", position_class="A"),
+            _entry(2, "NVDA", "sell", 1, 120, "2026-01-11", position_class="A"),
             _entry(3, "NOK", "buy", 1, 10, "2026-01-01", position_class="C"),
-            _entry(4, "NOK", "sell", 1, 9, "2026-01-02", position_class="C"),
+            _entry(4, "NOK", "sell", 1, 9, "2026-01-05", position_class="C"),
         ]
     )
 
     groups = {row["key"]: row for row in summary["groups"]["position_tier"]}
     assert groups["A"]["realized_pnl"] == 20
+    assert groups["A"]["average_holding_days"] == 10
+    assert groups["A"]["discipline_issue_count"] == 1
     assert groups["C"]["realized_pnl"] == -1
+    assert groups["C"]["average_holding_days"] == 4
+    assert groups["C"]["average_loser"] == -1
+
+
+def test_missing_position_tier_legacy_records_are_grouped_safely() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "BSX", "buy", 1, 100, "2026-01-01"),
+            _entry(2, "BSX", "sell", 1, 110, "2026-01-03"),
+        ]
+    )
+
+    groups = {row["key"]: row for row in summary["groups"]["position_tier"]}
+    assert groups["等级缺失"]["realized_pnl"] == 10
 
 
 def test_group_by_mood_summary_is_correct() -> None:

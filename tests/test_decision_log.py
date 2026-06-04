@@ -282,6 +282,35 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["gate_checked_at"], "2026-05-26T12:00:00+00:00")
             self.assertEqual(saved["radar_block_reasons"], ["当前价进入追高禁止区", "情绪交易风险"])
 
+    def test_trade_journal_store_saves_pre_trade_cost_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "sell",
+                    "quantity": 2,
+                    "price": 220,
+                    "preTradeQuantity": 10,
+                    "preTradeAvgCost": 180,
+                    "preTradeTotalCost": 1800,
+                    "preTradePositionTier": "A",
+                    "preTradeTargetSellPrice": 260,
+                    "preTradeUnrealizedPnl": 400,
+                    "costBasisSource": "position_snapshot",
+                },
+            )
+
+            self.assertEqual(saved["pre_trade_quantity"], 10)
+            self.assertEqual(saved["pre_trade_avg_cost"], 180)
+            self.assertEqual(saved["pre_trade_total_cost"], 1800)
+            self.assertEqual(saved["pre_trade_position_tier"], "A")
+            self.assertEqual(saved["pre_trade_target_sell_price"], 260)
+            self.assertEqual(saved["pre_trade_unrealized_pnl"], 400)
+            self.assertEqual(saved["cost_basis_source"], "position_snapshot")
+
     def test_trade_journal_store_backfills_radar_gate_columns_on_legacy_schema(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
@@ -360,16 +389,23 @@ class DecisionLogTests(unittest.TestCase):
                 "nvda",
                 {
                     "trade_date": "2026-05-26",
-                    "action_type": "buy",
+                    "action_type": "trim",
                     "quantity": 1,
                     "price": 200,
                     "decision_mood": "plan_execution",
+                    "positionClass": "A",
+                    "plannedSellPct": 0.1,
+                    "sellReasonType": "technical",
+                    "hasReentryPlan": True,
+                    "reentryPullbackPrice": 180,
+                    "reentryBuyBackPctOnPullback": 50,
+                    "reentryThesisInvalidation": "thesis broken",
                 },
             )
 
             updated = store.update_entry(
                 saved["id"],
-                "msft",
+                "nvda",
                 {
                     "trade_date": "2026-05-27",
                     "action_type": "trim",
@@ -388,7 +424,7 @@ class DecisionLogTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(updated["symbol"], "MSFT")
+            self.assertEqual(updated["symbol"], "NVDA")
             self.assertEqual(updated["action_type"], "trim")
             self.assertEqual(updated["quantity"], 2)
             self.assertEqual(updated["decision_mood"], "anxiety")
@@ -396,6 +432,19 @@ class DecisionLogTests(unittest.TestCase):
             self.assertIn("reentry_plan_required_before_trim_or_sell", updated["blockers"])
             with self.assertRaises(ValueError):
                 store.update_entry(9999, "msft", {"trade_date": "2026-05-27", "action_type": "buy", "quantity": 1, "price": 1})
+
+    def test_trade_journal_store_rejects_history_action_or_symbol_change(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+            buy = store.save_entry("nvda", {"trade_date": "2026-05-26", "action_type": "buy", "quantity": 1, "price": 200})
+            sell = store.save_entry("msft", {"trade_date": "2026-05-26", "action_type": "sell", "quantity": 1, "price": 300})
+
+            with self.assertRaisesRegex(ValueError, "历史交易类型不可修改"):
+                store.update_entry(buy["id"], "nvda", {"trade_date": "2026-05-26", "action_type": "sell", "quantity": 1, "price": 200})
+            with self.assertRaisesRegex(ValueError, "历史交易类型不可修改"):
+                store.update_entry(sell["id"], "msft", {"trade_date": "2026-05-26", "action_type": "buy", "quantity": 1, "price": 300})
+            with self.assertRaisesRegex(ValueError, "历史交易股票不可修改"):
+                store.update_entry(buy["id"], "msft", {"trade_date": "2026-05-26", "action_type": "buy", "quantity": 1, "price": 200})
 
     def test_trade_journal_sell_saves_trading_discipline_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:

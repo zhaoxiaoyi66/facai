@@ -149,6 +149,8 @@ def test_position_tier_is_required_for_portfolio_buy_add() -> None:
 
         with pytest.raises(ValueError):
             submit_portfolio_buy_add("NVDA", _base_values(position_tier="UNCLASSIFIED"), path=path, radar_report=_report())
+        with pytest.raises(ValueError):
+            submit_portfolio_buy_add("NVDA", _base_values(position_tier=""), path=path, radar_report=_report())
 
         assert TradeJournalStore(path).list_entries("NVDA") == []
 

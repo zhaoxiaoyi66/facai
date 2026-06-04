@@ -97,7 +97,7 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
                 "second_trim_price": current.get("second_trim_price"),
                 "review_price": current.get("review_price"),
                 "notes": current.get("notes"),
-                "is_active": True,
+                "is_active": preview["afterQuantity"] > 0,
             },
         )
 

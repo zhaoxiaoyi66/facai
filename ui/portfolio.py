@@ -71,6 +71,7 @@ def _render_editor(
     settings: dict,
 ) -> None:
     _render_portfolio_buy_add_form(position_store, rows)
+    _render_position_tier_editor(position_store, rows)
     _render_portfolio_settings_form(settings_store, settings)
     return
 
@@ -180,6 +181,38 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
         st.session_state["portfolio_save_notice"] = ("error", message)
     st.rerun()
     return
+
+
+def _render_position_tier_editor(position_store: PortfolioPositionStore, rows: list[dict]) -> None:
+    active_rows = [row for row in rows if str(row.get("symbol") or "").strip()]
+    if not active_rows:
+        return
+    with st.expander("编辑持仓属性", expanded=False):
+        st.caption("这里只能修改 A/B/C 持仓属性，不会改变持股数量、成本或仓位。")
+        symbols = [str(row.get("symbol") or "").strip().upper() for row in active_rows]
+        selected = st.selectbox("持仓", symbols, key="portfolio-tier-edit-symbol")
+        row = next((item for item in active_rows if str(item.get("symbol") or "").strip().upper() == selected), {})
+        current_tier = str(row.get("positionTier") or "").strip().upper()
+        tier_labels = [label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value]
+        current_label = next(
+            (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
+            tier_labels[0],
+        )
+        selected_label = st.selectbox(
+            "持仓等级",
+            tier_labels,
+            index=tier_labels.index(current_label),
+            key="portfolio-tier-edit-tier",
+        )
+        if st.button("保存持仓等级", key="portfolio-tier-edit-save", width="stretch"):
+            try:
+                position_store.update_position_tier(selected, POSITION_TIER_FORM_OPTIONS[selected_label])
+            except ValueError as exc:
+                st.session_state["portfolio_save_notice"] = ("error", str(exc))
+            else:
+                st.session_state["portfolio_save_notice"] = ("success", f"{selected} 持仓等级已更新。")
+            st.rerun()
+
 
 def _available_watchlist_symbols(active_symbols: list[str]) -> list[str]:
     active = {symbol.upper() for symbol in active_symbols}

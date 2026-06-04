@@ -56,6 +56,25 @@ class PortfolioModelTests(unittest.TestCase):
             self.assertFalse(inactive["is_active"])
             self.assertEqual(store.list_active_positions(), [])
 
+    def test_zero_quantity_active_position_is_hidden_from_active_views(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            store = PortfolioPositionStore(db_path)
+            store.save_position("XE", {"quantity": 0, "average_cost": 0, "position_tier": "C", "is_active": True})
+
+            self.assertTrue(store.get_position("XE")["is_active"])
+            self.assertEqual(store.list_active_positions(), [])
+
+            calculated = calculate_portfolio_positions(
+                [{"symbol": "XE", "quantity": 0, "average_cost": 0, "is_active": True}],
+                {"XE": 26.27},
+            )
+            view = build_portfolio_view_model(db_path, {"XE": 26.27})
+
+            self.assertEqual(calculated, [])
+            self.assertEqual(view["rows"], [])
+            self.assertEqual(view["summary"]["positionCount"], 0)
+
     def test_portfolio_position_store_rejects_negative_quantity_and_cost(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
@@ -85,6 +104,22 @@ class PortfolioModelTests(unittest.TestCase):
 
             self.assertIsNone(created.get("position_tier"))
             self.assertEqual(format_position_tier_label(created.get("position_tier")), "需设置等级")
+
+    def test_update_position_tier_preserves_quantity_and_cost(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+            store.save_position("NVDA", {"quantity": 2, "average_cost": 100, "position_tier": "A"})
+
+            updated = store.update_position_tier("NVDA", "B")
+
+            self.assertEqual(updated["position_tier"], "B")
+            self.assertEqual(updated["quantity"], 2)
+            self.assertEqual(updated["average_cost"], 100)
+
+            with self.assertRaises(ValueError):
+                store.update_position_tier("NVDA", "")
+            with self.assertRaises(ValueError):
+                store.update_position_tier("NVDA", "UNCLASSIFIED")
 
     def test_portfolio_settings_store_saves_and_loads_defaults(self) -> None:
         with TemporaryDirectory() as tmpdir:

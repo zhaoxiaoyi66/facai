@@ -20,6 +20,7 @@ SELL_ACTIONS = {"sell", "trim"}
 EMOTIONAL_SELL_REASONS = {"macro", "macro_fear", "anxiety", "panic_sell"}
 EMOTIONAL_SELL_MOODS = {"macro_fear", "anxiety", "panic_sell", "regret_chase"}
 HKT = timezone(timedelta(hours=8))
+A_CLASS_SHORT_HOLDING_DAYS = 14
 
 
 @dataclass
@@ -41,10 +42,11 @@ def summarize_trade_performance(
     *,
     path: Path = CACHE_PATH,
     entries: Iterable[dict[str, Any]] | None = None,
+    opening_lots: Iterable[dict[str, Any]] | None = None,
     filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_entries = list(entries) if entries is not None else load_synced_trade_entries(path)
-    matched = match_realized_trades(source_entries)
+    matched = match_realized_trades(source_entries, opening_lots=opening_lots)
     realized = _apply_filters(matched["realized_trades"], filters or {})
     stats = calculate_realized_pnl(realized)
     groups = {
@@ -90,8 +92,29 @@ def load_synced_trade_entries(path: Path = CACHE_PATH) -> list[dict[str, Any]]:
     return [_row_to_dict(columns, row) for row in rows]
 
 
-def build_trade_lots(entries: Iterable[dict[str, Any]]) -> list[TradeLot]:
+def build_manual_cost_basis_lot(
+    *,
+    ticker: str,
+    quantity: float,
+    avg_cost: float,
+    buy_date: str,
+    position_tier: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    return {
+        "ticker": _symbol(ticker),
+        "quantity": quantity,
+        "avg_cost": avg_cost,
+        "buy_date": buy_date,
+        "position_tier": position_tier,
+        "note": note,
+        "cost_basis_source": "manual_cost_basis",
+    }
+
+
+def build_trade_lots(entries: Iterable[dict[str, Any]], opening_lots: Iterable[dict[str, Any]] | None = None) -> list[TradeLot]:
     lots: list[TradeLot] = []
+    lots.extend(_manual_opening_lots(opening_lots or []))
     for entry in _chronological_entries(entries):
         if str(entry.get("action_type") or "").lower() not in BUY_ACTIONS:
             continue
@@ -102,30 +125,101 @@ def build_trade_lots(entries: Iterable[dict[str, Any]]) -> list[TradeLot]:
         trade_date = _entry_date(entry)
         if quantity is None or quantity <= 0 or price is None or price <= 0 or trade_date is None:
             continue
+        lots.append(_entry_to_lot(entry, _symbol(entry.get("symbol")), quantity, price, trade_date))
+    return sorted(lots, key=lambda lot: (lot.ticker, lot.trade_date))
+
+
+def _entry_to_lot(entry: dict[str, Any], symbol: str, quantity: float, price: float, trade_date: date) -> TradeLot:
+    return TradeLot(
+        entry_id=_optional_int(entry.get("id")),
+        ticker=symbol,
+        quantity=quantity,
+        remaining_quantity=quantity,
+        price=price,
+        trade_date=trade_date,
+        position_tier=_position_tier(entry),
+        mood=str(entry.get("decision_mood") or ""),
+        target_sell_price=_number(entry.get("target_sell_price")),
+        buy_reason=str(entry.get("notes") or entry.get("buy_reason") or ""),
+        source_entry={**entry, "cost_basis_source": entry.get("cost_basis_source") or "fifo"},
+    )
+
+
+def _manual_opening_lots(opening_lots: Iterable[dict[str, Any]]) -> list[TradeLot]:
+    lots: list[TradeLot] = []
+    for item in opening_lots:
+        quantity = _number(item.get("quantity"))
+        price = _number(item.get("avg_cost") or item.get("price"))
+        buy_date = _coerce_date(item.get("buy_date") or item.get("trade_date"))
+        if quantity is None or quantity <= 0 or price is None or price <= 0 or buy_date is None:
+            continue
+        tier = str(item.get("position_tier") or item.get("position_class") or "").strip().upper()
         lots.append(
             TradeLot(
-                entry_id=_optional_int(entry.get("id")),
-                ticker=_symbol(entry.get("symbol")),
+                entry_id=None,
+                ticker=_symbol(item.get("ticker") or item.get("symbol")),
                 quantity=quantity,
                 remaining_quantity=quantity,
                 price=price,
-                trade_date=trade_date,
-                position_tier=_position_tier(entry),
-                mood=str(entry.get("decision_mood") or ""),
-                target_sell_price=_number(entry.get("target_sell_price")),
-                buy_reason=str(entry.get("notes") or entry.get("buy_reason") or ""),
-                source_entry=entry,
+                trade_date=buy_date,
+                position_tier=tier if tier in {"A", "B", "C"} else "",
+                mood="",
+                target_sell_price=_number(item.get("target_sell_price")),
+                buy_reason=str(item.get("note") or ""),
+                source_entry={**item, "cost_basis_source": "manual_cost_basis"},
             )
         )
     return lots
 
 
-def match_realized_trades(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def _append_lot(lots: list[TradeLot], lot: TradeLot) -> None:
+    lots.append(lot)
+    lots.sort(key=lambda item: item.trade_date)
+
+
+def _snapshot_cost_basis_match(
+    entry: dict[str, Any],
+    symbol: str,
+    quantity: float,
+    sell_price: float,
+    sell_date: date,
+) -> dict[str, Any] | None:
+    avg_cost = _number(entry.get("pre_trade_avg_cost"))
+    if avg_cost is None or avg_cost <= 0:
+        return None
+    pnl = (sell_price - avg_cost) * quantity
+    pnl_pct = (sell_price / avg_cost - 1) * 100 if avg_cost > 0 else None
+    return {
+        "sell_entry_id": _optional_int(entry.get("id")),
+        "buy_entry_id": None,
+        "ticker": symbol,
+        "matched_quantity": quantity,
+        "buy_date": "",
+        "sell_date": sell_date.isoformat(),
+        "buy_price": avg_cost,
+        "sell_price": sell_price,
+        "realized_pnl": pnl,
+        "realized_pnl_pct": pnl_pct,
+        "holding_days": None,
+        "position_tier": _pre_trade_position_tier(entry) or _position_tier(entry),
+        "buy_mood": "",
+        "sell_mood": str(entry.get("decision_mood") or ""),
+        "sell_reason_type": str(entry.get("sell_reason_type") or ""),
+        "target_sell_price": _number(entry.get("pre_trade_target_sell_price")) or _number(entry.get("target_sell_price")),
+        "buy_reason": "",
+        "sell_notes": str(entry.get("notes") or ""),
+        "cost_basis_source": "position_snapshot",
+    }
+
+
+def match_realized_trades(entries: Iterable[dict[str, Any]], opening_lots: Iterable[dict[str, Any]] | None = None) -> dict[str, Any]:
     lots_by_symbol: dict[str, list[TradeLot]] = defaultdict(list)
     matches: list[dict[str, Any]] = []
     realized_by_sell: dict[int | str, dict[str, Any]] = {}
     unmatched_sells: list[dict[str, Any]] = []
     warnings: list[str] = []
+    for lot in _manual_opening_lots(opening_lots or []):
+        _append_lot(lots_by_symbol[lot.ticker], lot)
 
     for entry in _chronological_entries(entries):
         action = str(entry.get("action_type") or "").lower()
@@ -144,21 +238,7 @@ def match_realized_trades(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
             warnings.append(f"{symbol} {action} 缺交易日期，已跳过。")
             continue
         if action in BUY_ACTIONS:
-            lots_by_symbol[symbol].append(
-                TradeLot(
-                    entry_id=_optional_int(entry.get("id")),
-                    ticker=symbol,
-                    quantity=quantity,
-                    remaining_quantity=quantity,
-                    price=price,
-                    trade_date=trade_date,
-                    position_tier=_position_tier(entry),
-                    mood=str(entry.get("decision_mood") or ""),
-                    target_sell_price=_number(entry.get("target_sell_price")),
-                    buy_reason=str(entry.get("notes") or entry.get("buy_reason") or ""),
-                    source_entry=entry,
-                )
-            )
+            _append_lot(lots_by_symbol[symbol], _entry_to_lot(entry, symbol, quantity, price, trade_date))
             continue
 
         remaining_sell_qty = quantity
@@ -188,6 +268,7 @@ def match_realized_trades(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "target_sell_price": lot.target_sell_price,
                 "buy_reason": lot.buy_reason,
                 "sell_notes": str(entry.get("notes") or ""),
+                "cost_basis_source": str(lot.source_entry.get("cost_basis_source") or "fifo"),
             }
             matches.append(match)
             _accumulate_sell(realized_by_sell, sell_id, entry, match)
@@ -197,6 +278,12 @@ def match_realized_trades(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 lots_by_symbol[symbol].pop(0)
 
         if remaining_sell_qty > 1e-9:
+            snapshot_match = _snapshot_cost_basis_match(entry, symbol, remaining_sell_qty, price, trade_date)
+            if snapshot_match:
+                matches.append(snapshot_match)
+                _accumulate_sell(realized_by_sell, sell_id, entry, snapshot_match)
+                remaining_sell_qty = 0.0
+                continue
             missing = {
                 "sell_entry_id": _optional_int(entry.get("id")),
                 "ticker": symbol,
@@ -226,7 +313,20 @@ def match_realized_trades(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 
 def calculate_realized_pnl(realized_trades: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    rows = [row for row in realized_trades if _number(row.get("realized_pnl")) is not None and _number(row.get("matched_quantity"))]
+    all_rows = list(realized_trades)
+    rows = [row for row in all_rows if _number(row.get("realized_pnl")) is not None and _number(row.get("matched_quantity"))]
+    missing_rows = [row for row in all_rows if row.get("cost_basis_missing")]
+    missing_quantity = sum(float(_number(row.get("unmatched_quantity")) or _number(row.get("sell_quantity")) or 0) for row in missing_rows)
+    missing_amount = sum(
+        float(_number(row.get("sell_price")) or 0)
+        * float(_number(row.get("unmatched_quantity")) or _number(row.get("sell_quantity")) or 0)
+        for row in missing_rows
+    )
+    missing_stats = {
+        "missing_cost_count": len(missing_rows),
+        "missing_cost_quantity": round(missing_quantity, 8),
+        "missing_cost_amount": round(missing_amount, 2),
+    }
     if not rows:
         return {
             "total_realized_pnl": 0.0,
@@ -241,6 +341,7 @@ def calculate_realized_pnl(realized_trades: Iterable[dict[str, Any]]) -> dict[st
             "average_holding_days": None,
             "median_holding_days": None,
             "discipline_issue_count": 0,
+            **missing_stats,
         }
     total_pnl = sum(float(row["realized_pnl"]) for row in rows)
     total_cost = sum(float(row.get("cost_basis") or 0) for row in rows)
@@ -261,6 +362,7 @@ def calculate_realized_pnl(realized_trades: Iterable[dict[str, Any]]) -> dict[st
         "average_holding_days": round(sum(float(day) for day in holding_days) / len(holding_days), 1) if holding_days else None,
         "median_holding_days": round(float(median(holding_days)), 1) if holding_days else None,
         "discipline_issue_count": issue_count,
+        **missing_stats,
     }
 
 
@@ -279,8 +381,12 @@ def _accumulate_sell(target: dict[int | str, dict[str, Any]], key: int | str, se
     row["sell_quantity"] += matched_qty
     row["realized_pnl"] += float(match["realized_pnl"])
     row["cost_basis"] += float(match["buy_price"]) * matched_qty
-    row["holding_days_weighted_total"] += (float(match["holding_days"] or 0) * matched_qty)
+    holding_days = _number(match.get("holding_days"))
+    if holding_days is not None:
+        row["holding_days_weighted_total"] += holding_days * matched_qty
+        row["holding_days_quantity"] += matched_qty
     row["matched_lots"].append(match)
+    row["cost_basis_source"] = _merge_cost_basis_source(row.get("cost_basis_source"), match.get("cost_basis_source"))
     if not row.get("position_tier"):
         row["position_tier"] = match.get("position_tier") or ""
     if not row.get("buy_mood"):
@@ -294,6 +400,8 @@ def _accumulate_unmatched(target: dict[int | str, dict[str, Any]], key: int | st
     row["sell_quantity"] += float(missing.get("unmatched_quantity") or 0)
     row["unmatched_quantity"] += float(missing.get("unmatched_quantity") or 0)
     row["cost_basis_missing"] = True
+    row["cost_basis_source"] = "missing"
+    row["cost_basis_status"] = "missing"
 
 
 def _base_sell_trade(entry: dict[str, Any]) -> dict[str, Any]:
@@ -311,8 +419,12 @@ def _base_sell_trade(entry: dict[str, Any]) -> dict[str, Any]:
         "realized_pnl": 0.0,
         "realized_pnl_pct": None,
         "cost_basis": 0.0,
+        "cost_basis_source": "missing",
+        "cost_basis_status": "missing",
+        "included_in_performance": False,
         "holding_days": None,
         "holding_days_weighted_total": 0.0,
+        "holding_days_quantity": 0.0,
         "holding_days_bucket": "",
         "position_tier": _position_tier(entry),
         "buy_mood": "",
@@ -339,46 +451,71 @@ def _finalize_sell_trade(row: dict[str, Any]) -> dict[str, Any]:
         row["buy_avg_price"] = round(cost_basis / matched_qty, 4)
         row["realized_pnl"] = round(float(row["realized_pnl"]), 2)
         row["realized_pnl_pct"] = round(float(row["realized_pnl"]) / cost_basis * 100, 2)
-        row["holding_days"] = round(float(row["holding_days_weighted_total"]) / matched_qty, 1)
-        row["holding_days_bucket"] = _holding_bucket(row["holding_days"])
+        holding_qty = float(row.get("holding_days_quantity") or 0)
+        if holding_qty > 0:
+            row["holding_days"] = round(float(row["holding_days_weighted_total"]) / holding_qty, 1)
+            row["holding_days_bucket"] = _holding_bucket(row["holding_days"])
+        else:
+            row["holding_days"] = None
+            row["holding_days_bucket"] = "缺买入日期"
+        row["cost_basis_missing"] = False
+        row["cost_basis_status"] = _cost_basis_status(row.get("cost_basis_source"))
+        row["included_in_performance"] = True
     else:
         row["realized_pnl"] = None
         row["realized_pnl_pct"] = None
         row["holding_days"] = None
-        row["holding_days_bucket"] = "缺数据"
+        row["holding_days_bucket"] = "缺买入日期"
+        row["cost_basis_source"] = "missing"
+        row["cost_basis_status"] = "missing"
+        row["included_in_performance"] = False
     flags = _discipline_flags(row)
     row["discipline_flags"] = flags
     row["discipline_issue"] = bool(flags)
     row["below_target_sell_price"] = "低于买入目标价卖出" in flags
     row.pop("holding_days_weighted_total", None)
+    row.pop("holding_days_quantity", None)
     return row
 
 
 def _discipline_flags(row: dict[str, Any]) -> list[str]:
     flags: list[str] = []
+    a_class_review_needed = False
+    is_a_class = str(row.get("position_tier") or "").upper() == "A"
     sell_price = _number(row.get("sell_price"))
     target = _number(row.get("target_sell_price"))
     if sell_price is not None and target is not None and sell_price < target:
         flags.append("低于买入目标价卖出")
-    if str(row.get("position_tier") or "").upper() == "A" and not has_concrete_reentry_plan(row.get("raw_entry") or {}):
+        a_class_review_needed = a_class_review_needed or is_a_class
+    if is_a_class and not has_concrete_reentry_plan(row.get("raw_entry") or {}):
         flags.append("A类卖出缺少具体回补计划")
+        a_class_review_needed = True
     reason = str(row.get("sell_reason_type") or "").lower()
     mood = str(row.get("sell_mood") or "").lower()
     if reason in EMOTIONAL_SELL_REASONS or mood in EMOTIONAL_SELL_MOODS:
         flags.append("宏观/情绪型卖出")
+        a_class_review_needed = a_class_review_needed or is_a_class
+    holding_days = _number(row.get("holding_days"))
+    if is_a_class and holding_days is not None and holding_days <= A_CLASS_SHORT_HOLDING_DAYS:
+        flags.append("A类持仓天数过短")
+        a_class_review_needed = True
     zone = str((row.get("raw_entry") or {}).get("zone_status") or (row.get("raw_entry") or {}).get("buy_zone_status") or "")
     if zone in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"}:
         flags.append("卖出时处于买区/低于买区")
+        a_class_review_needed = a_class_review_needed or is_a_class
     blockers = [str(item) for item in (row.get("blockers") or [])]
     if blockers:
         flags.append("卖出门禁曾阻断")
+    if a_class_review_needed:
+        flags.insert(0, "核心仓卖出需复盘")
     return flags
 
 
 def _group_summary(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[str(row.get(key) or "未记录")].append(row)
+        missing_label = "等级缺失" if key == "position_tier" else "未记录"
+        groups[str(row.get(key) or missing_label)].append(row)
     result: list[dict[str, Any]] = []
     for label, items in groups.items():
         stats = calculate_realized_pnl(items)
@@ -387,11 +524,39 @@ def _group_summary(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
                 "key": label,
                 "count": stats["completed_sell_count"],
                 "realized_pnl": stats["total_realized_pnl"],
+                "realized_pnl_pct": stats["realized_pnl_pct"],
                 "win_rate": stats["win_rate"],
+                "average_winner": stats["average_winner"],
+                "average_loser": stats["average_loser"],
                 "average_holding_days": stats["average_holding_days"],
+                "median_holding_days": stats["median_holding_days"],
+                "discipline_issue_count": stats["discipline_issue_count"],
             }
         )
     return sorted(result, key=lambda item: (str(item["key"])))
+
+
+def _merge_cost_basis_source(current: object, incoming: object) -> str:
+    current_text = str(current or "").strip() or "missing"
+    incoming_text = str(incoming or "").strip() or "fifo"
+    if current_text == "missing":
+        return incoming_text
+    if current_text == incoming_text:
+        return current_text
+    return "mixed"
+
+
+def _cost_basis_status(source: object) -> str:
+    value = str(source or "").strip()
+    if value == "fifo":
+        return "matched_fifo"
+    if value == "position_snapshot":
+        return "position_snapshot"
+    if value == "manual_cost_basis":
+        return "manual_cost_basis"
+    if value == "mixed":
+        return "mixed"
+    return "missing"
 
 
 def _apply_filters(rows: list[dict[str, Any]], filters: dict[str, Any]) -> list[dict[str, Any]]:
@@ -487,6 +652,11 @@ def _holding_bucket(days: object) -> str:
 
 def _position_tier(entry: dict[str, Any]) -> str:
     value = str(entry.get("position_tier") or entry.get("position_class") or "").strip().upper()
+    return value if value in {"A", "B", "C"} else ""
+
+
+def _pre_trade_position_tier(entry: dict[str, Any]) -> str:
+    value = str(entry.get("pre_trade_position_tier") or "").strip().upper()
     return value if value in {"A", "B", "C"} else ""
 
 

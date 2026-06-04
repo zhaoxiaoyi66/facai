@@ -227,9 +227,11 @@ def _render_editor(store: TradeJournalStore) -> None:
             action_options = list(SELL_ENTRY_ACTION_OPTIONS)
             action_label = top_cols[1].selectbox("操作类型", action_options, key=_editor_key("action-stock", editing_id))
         else:
-            symbol = top_cols[0].text_input("股票代码", value=_entry_value(editing_entry, "symbol"), key=_editor_key("symbol", editing_id)).strip().upper()
+            symbol = str((editing_entry or {}).get("symbol") or "").strip().upper()
+            top_cols[0].text_input("股票代码", value=symbol, disabled=True, key=_editor_key("symbol", editing_id))
             action_default = _action_label_for_entry(editing_entry)
-            action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action-stock", editing_id))
+            top_cols[1].text_input("操作类型", value=action_default, disabled=True, key=_editor_key("action-stock", editing_id))
+            action_label = action_default
         trade_date = top_cols[2].date_input("日期", value=_entry_date(editing_entry), key=_editor_key("date", editing_id))
         action_type = SELL_ENTRY_ACTION_OPTIONS.get(action_label, ACTION_OPTIONS.get(action_label, "trim"))
 
@@ -311,6 +313,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             }
             if selected_position:
                 entry_values["targetSellPrice"] = selected_position.get("plannedSellPrice")
+                entry_values.update(_pre_trade_snapshot_values(selected_position))
             entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None, action_type=action_type))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
@@ -485,6 +488,24 @@ def _stock_plan_with_position_tier(stock_plan: dict, position_row: dict | None) 
     if trading is not None:
         merged["trading_position_max_pct"] = trading
     return merged
+
+
+def _pre_trade_snapshot_values(position_row: dict) -> dict:
+    quantity = _number(position_row.get("quantity"))
+    avg_cost = _number(position_row.get("averageCost"))
+    total_cost = _number(position_row.get("costBasis"))
+    if total_cost is None and quantity is not None and avg_cost is not None:
+        total_cost = quantity * avg_cost
+    tier = str(position_row.get("positionTier") or "").strip().upper()
+    return {
+        "preTradeQuantity": quantity,
+        "preTradeAvgCost": avg_cost,
+        "preTradeTotalCost": total_cost,
+        "preTradePositionTier": tier if tier in {"A", "B", "C"} else "",
+        "preTradeTargetSellPrice": _number(position_row.get("plannedSellPrice")),
+        "preTradeUnrealizedPnl": _number(position_row.get("unrealizedPnl")),
+        "costBasisSource": "position_snapshot" if avg_cost is not None else "",
+    }
 
 
 def _render_sell_reference_card(symbol: str, position_row: dict) -> None:
@@ -1755,7 +1776,10 @@ def _render_trade_performance_cards(summary: dict) -> None:
     items = [
         ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "REALIZED"),
         ("已实现盈亏率", _percent_or_dash(summary.get("realized_pnl_pct")), "RETURN"),
-        ("完成卖出", str(summary.get("completed_sell_count") or 0), "SELLS"),
+        ("可计算卖出", str(summary.get("completed_sell_count") or 0), "SELLS"),
+        ("缺成本卖出", str(summary.get("missing_cost_count") or 0), "MISSING"),
+        ("缺成本数量", _quantity_text(summary.get("missing_cost_quantity")), "SHARES"),
+        ("缺成本金额", _money_text(summary.get("missing_cost_amount")), "VALUE"),
         ("胜率", _percent_or_dash(summary.get("win_rate")), "WIN RATE"),
         ("平均盈利", _money_text(summary.get("average_winner")), "AVG WIN"),
         ("平均亏损", _money_text(summary.get("average_loser")), "AVG LOSS"),
@@ -1792,6 +1816,11 @@ def _render_trade_performance_table(rows: list[dict]) -> None:
         "买入心情",
         "卖出心情",
         "卖出原因",
+        "目标价",
+        "低于目标",
+        "成本来源",
+        "成本状态",
+        "计入统计",
         "纪律问题",
     ]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
@@ -1814,25 +1843,80 @@ def _render_trade_performance_table(rows: list[dict]) -> None:
 def _trade_performance_row_html(row: dict) -> str:
     pnl = _number(row.get("realized_pnl"))
     tone = "gain" if pnl is not None and pnl >= 0 else "loss"
-    issue = "；".join(str(item) for item in (row.get("discipline_flags") or [])[:2]) or "无"
+    if row.get("cost_basis_missing"):
+        issue = "成本基准缺失；建议补录 opening lot"
+    else:
+        issue = "；".join(str(item) for item in (row.get("discipline_flags") or [])[:2]) or "无"
+    below_target = "是" if row.get("below_target_sell_price") else "否"
     return (
         "<tr>"
         f"<td>{escape(_text(row.get('sell_date')))}</td>"
         f'<td class="symbol">{escape(_text(row.get("ticker")))}</td>'
         f"<td>{escape(_performance_action_text(row.get('action_type')))}</td>"
         f"<td>{escape(_quantity_text(row.get('sell_quantity')))}</td>"
-        f"<td>{escape(_money_text(row.get('buy_avg_price')))}</td>"
+        f"<td>{escape(_buy_avg_cost_text(row))}</td>"
         f"<td>{escape(_money_text(row.get('sell_price')))}</td>"
-        f'<td class="{tone}">{escape(_money_text(row.get("realized_pnl")))}</td>'
-        f"<td>{escape(_percent_or_dash(row.get('realized_pnl_pct')))}</td>"
-        f"<td>{escape(_days_text(row.get('holding_days')))}</td>"
+        f'<td class="{tone}">{escape(_realized_pnl_text(row))}</td>'
+        f"<td>{escape(_realized_pct_text(row))}</td>"
+        f"<td>{escape(_holding_days_text(row))}</td>"
         f"<td>{escape(_text(row.get('position_tier')))}</td>"
         f"<td>{escape(_mood_text(row.get('buy_mood')))}</td>"
         f"<td>{escape(_mood_text(row.get('sell_mood')))}</td>"
         f"<td>{escape(_sell_reason_text(row.get('sell_reason_type')))}</td>"
+        f"<td>{escape(_money_text(row.get('target_sell_price')))}</td>"
+        f"<td>{escape(below_target)}</td>"
+        f"<td>{escape(_cost_basis_source_text(row.get('cost_basis_source')))}</td>"
+        f"<td>{escape(_cost_basis_status_text(row.get('cost_basis_status')))}</td>"
+        f"<td>{escape('是' if row.get('included_in_performance') else '否')}</td>"
         f'<td class="notes">{escape(issue)}</td>'
         "</tr>"
     )
+
+
+def _buy_avg_cost_text(row: dict) -> str:
+    if row.get("cost_basis_missing"):
+        return "缺成本"
+    return _money_text(row.get("buy_avg_price"))
+
+
+def _realized_pnl_text(row: dict) -> str:
+    if row.get("cost_basis_missing"):
+        return "未计算"
+    return _money_text(row.get("realized_pnl"))
+
+
+def _realized_pct_text(row: dict) -> str:
+    if row.get("cost_basis_missing"):
+        return "未计算"
+    return _percent_or_dash(row.get("realized_pnl_pct"))
+
+
+def _holding_days_text(row: dict) -> str:
+    if row.get("cost_basis_missing"):
+        return "缺买入日期"
+    if str(row.get("cost_basis_source") or "") == "position_snapshot" and row.get("holding_days") is None:
+        return "缺买入日期"
+    return _days_text(row.get("holding_days"))
+
+
+def _cost_basis_source_text(value: object) -> str:
+    return {
+        "fifo": "FIFO buy/add lot",
+        "position_snapshot": "持仓快照",
+        "manual_cost_basis": "手动成本基准",
+        "mixed": "混合来源",
+        "missing": "缺 buy/add lot",
+    }.get(str(value or ""), "缺 buy/add lot")
+
+
+def _cost_basis_status_text(value: object) -> str:
+    return {
+        "matched_fifo": "逐笔匹配",
+        "position_snapshot": "快照估算",
+        "manual_cost_basis": "手动补录",
+        "mixed": "混合计算",
+        "missing": "需补录成本",
+    }.get(str(value or ""), "需补录成本")
 
 
 def _render_trade_performance_lots(rows: list[dict]) -> None:
@@ -1867,6 +1951,9 @@ def _render_trade_performance_groups(groups: dict) -> None:
         rows = groups.get(key) or []
         if not rows:
             continue
+        if key == "position_tier":
+            _render_position_tier_performance_group(rows)
+            continue
         st.markdown(f"**{title}**")
         body = "".join(
             "<tr>"
@@ -1890,7 +1977,42 @@ def _render_trade_performance_groups(groups: dict) -> None:
         )
 
 
+def _render_position_tier_performance_group(rows: list[dict]) -> None:
+    st.markdown("**按 A/B/C 分类表现**")
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(_group_label('position_tier', row.get('key')))}</td>"
+        f"<td>{escape(str(row.get('count') or 0))}</td>"
+        f"<td>{escape(_money_text(row.get('realized_pnl')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('realized_pnl_pct')))}</td>"
+        f"<td>{escape(_percent_or_dash(row.get('win_rate')))}</td>"
+        f"<td>{escape(_money_text(row.get('average_winner')))}</td>"
+        f"<td>{escape(_money_text(row.get('average_loser')))}</td>"
+        f"<td>{escape(_days_text(row.get('average_holding_days')))}</td>"
+        f"<td>{escape(_days_text(row.get('median_holding_days')))}</td>"
+        f"<td>{escape(str(row.get('discipline_issue_count') or 0))}</td>"
+        "</tr>"
+        for row in rows
+    )
+    st.markdown(
+        (
+            '<div class="trade-journal-table-wrap performance group tier">'
+            '<table class="trade-journal-table performance group tier">'
+            "<thead><tr>"
+            "<th>等级</th><th>完成交易</th><th>已实现盈亏</th><th>盈亏率</th><th>胜率</th>"
+            "<th>平均盈利</th><th>平均亏损</th><th>平均持仓</th><th>中位持仓</th><th>纪律问题</th>"
+            "</tr></thead>"
+            f"<tbody>{body}</tbody>"
+            "</table></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _group_label(group_key: str, value: object) -> str:
+    if group_key == "position_tier":
+        text = _text(value)
+        return "等级缺失" if text in {"未记录", "-"} else text
     if group_key in {"buy_mood", "sell_mood"}:
         return _mood_text(value)
     if group_key == "sell_reason":

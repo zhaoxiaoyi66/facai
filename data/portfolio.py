@@ -174,12 +174,32 @@ class PortfolioPositionStore:
                 SELECT *
                 FROM portfolio_positions
                 WHERE is_active = 1
+                  AND COALESCE(quantity, 0) > 0
                 ORDER BY symbol
                 """
             )
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
+
+    def update_position_tier(self, symbol: str, position_tier: str) -> dict:
+        clean_symbol = _normalize_symbol(symbol)
+        clean_tier = _clean_position_tier(position_tier, required=True)
+        now = _now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE portfolio_positions
+                SET position_tier = ?,
+                    updated_at = ?
+                WHERE symbol = ?
+                  AND is_active = 1
+                """,
+                (clean_tier, now, clean_symbol),
+            )
+        if cursor.rowcount <= 0:
+            raise ValueError("position not found")
+        return self.get_position(clean_symbol) or {"symbol": clean_symbol, "position_tier": clean_tier}
 
     def deactivate_position(self, symbol: str) -> dict | None:
         now = _now()
@@ -281,7 +301,11 @@ def calculate_portfolio_positions(
     system_refs: dict[str, dict] | None = None,
     trim_near_pct: float = TRIM_PRICE_NEAR_PCT,
 ) -> list[dict]:
-    active_positions = [position for position in positions if position.get("is_active", True)]
+    active_positions = [
+        position
+        for position in positions
+        if position.get("is_active", True) and _has_position_quantity(position)
+    ]
     market_values = {
         _normalize_symbol(str(position.get("symbol") or "")): _market_value(position, current_prices)
         for position in active_positions
@@ -375,6 +399,11 @@ def _clean_position_tier(value, *, required: bool) -> str | None:
     if tier not in VALID_POSITION_TIERS:
         raise ValueError("position_tier must be A, B, or C")
     return tier
+
+
+def _has_position_quantity(position: dict) -> bool:
+    quantity = _to_non_negative_number(position.get("quantity"), "quantity", required=True) or 0.0
+    return quantity > 0
 
 
 def format_position_tier_label(value) -> str:

@@ -290,7 +290,12 @@ def test_full_exit_must_come_from_sell_trade_sync() -> None:
         assert result["status"] == "success"
         assert position is not None
         assert position["quantity"] == 0
-        assert position["is_active"] is True
+        assert position["is_active"] is False
+        assert PortfolioPositionStore(path).list_active_positions() == []
+
+        view = build_portfolio_view_model(path, {"NVDA": 150})
+        assert view["summary"]["positionCount"] == 0
+        assert view["rows"] == []
 
 
 def test_blocked_sell_cannot_sync_to_portfolio() -> None:
