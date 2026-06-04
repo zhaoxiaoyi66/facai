@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from data.watchlist_store import get_watchlist_symbols
+from data.watchlist_store import save_watchlist_entries
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = PROJECT_ROOT / "config"
@@ -54,14 +56,14 @@ def load_watchlist(path: Path = WATCHLIST_PATH) -> list[str]:
         save_watchlist(DEFAULT_TICKERS, path)
         return DEFAULT_TICKERS.copy()
 
-    tickers = _parse_watchlist_yaml(path.read_text(encoding="utf-8"))
+    tickers = get_watchlist_symbols(path, default_symbols=DEFAULT_TICKERS)
     return normalize_tickers(tickers) or DEFAULT_TICKERS.copy()
 
 
 def save_watchlist(tickers: list[str] | str, path: Path = WATCHLIST_PATH) -> list[str]:
     normalized = normalize_tickers(tickers)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_dump_watchlist_yaml(normalized), encoding="utf-8")
+    save_watchlist_entries([{"ticker": ticker, "status": "active"} for ticker in normalized], path)
     return normalized
 
 
