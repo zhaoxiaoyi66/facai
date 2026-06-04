@@ -27,7 +27,7 @@ from data.portfolio_trade_sync import (
 from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
-from data.trade_performance import summarize_trade_performance
+from data.trade_performance import EVENT_EXIT_REASONS, EVENT_PLAN_KEYWORDS, summarize_trade_performance
 from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
@@ -74,6 +74,15 @@ SELL_REASON_OPTIONS = {
     "技术破位 / 过热": "technical",
     "估值过高": "valuation",
     "仓位过重": "position_size",
+    "目标价触发": "target_price",
+    "财报催化结束": "earnings_catalyst_done",
+    "事件交易结束": "event_trade_done",
+    "催化失败": "catalyst_failed",
+    "财报后无反应": "no_post_earnings_reaction",
+    "按计划退出": "planned_exit",
+    "降级为观察": "downgrade_watch",
+    "买入逻辑不清": "unclear_thesis",
+    "风险控制": "risk_control",
     "投资假设破裂": "thesis_broken",
 }
 DECISION_MOOD_OPTIONS = {
@@ -115,6 +124,8 @@ DISCIPLINE_BLOCKER_LABELS = {
     "reentry_plan_required_before_trim_or_sell": "减仓 / 卖出前需要明确回补计划。",
     "actual_sell_pct_exceeds_sell_level_limit": "实际卖出比例超过当前纪律等级上限。",
     "planned_sell_pct_exceeds_sell_level_limit": "计划卖出比例超过当前纪律等级上限。",
+    "b_class_position_size_requires_actual_overlimit": "B 类不能把“仓位过重”当作默认放行理由；需要确认实际仓位已经超出 B 类上限。",
+    "b_class_low_sell_requires_downgrade_or_thesis": "B 类低于目标价或买区内卖出，需要选择降级为观察、买入逻辑不清、thesis 失效或风险控制，并写清逻辑变化。",
 }
 DISCIPLINE_BLOCKER_LABELS.update(
     {
@@ -253,8 +264,9 @@ def _render_editor(store: TradeJournalStore) -> None:
             key=_editor_key("snapshot-id", editing_id),
         )
         notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
+        sell_reference_context = _sell_reference_context(symbol, selected_position) if selected_position else {}
         if editing_entry is None and selected_position:
-            _render_sell_reference_card(symbol, selected_position)
+            _render_sell_reference_card(symbol, selected_position, context=sell_reference_context)
 
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
         discipline_result = None
@@ -281,6 +293,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 current_quantity=portfolio_preview.get("currentQuantity"),
                 editing_entry=editing_entry,
                 stock_plan=stock_plan,
+                sell_reference=sell_reference_context,
                 key_suffix=str(editing_id or "new"),
             )
 
@@ -508,7 +521,7 @@ def _pre_trade_snapshot_values(position_row: dict) -> dict:
     }
 
 
-def _render_sell_reference_card(symbol: str, position_row: dict) -> None:
+def _sell_reference_context(symbol: str, position_row: dict) -> dict:
     try:
         report = build_cached_ai_stock_radar_report(symbol).to_dict()
     except Exception:
@@ -520,6 +533,24 @@ def _render_sell_reference_card(symbol: str, position_row: dict) -> None:
         distance_to_target = (current_price - target_sell) / target_sell * 100
     zone_status = str(report.get("price_position") or report.get("zone_status") or "ZONE_MISSING")
     buy_zone_text = _radar_zone_text(report.get("buy_zone"))
+    return {
+        "currentPrice": current_price,
+        "targetSellPrice": target_sell,
+        "distanceToTarget": distance_to_target,
+        "zoneStatus": zone_status,
+        "buyZoneText": buy_zone_text,
+        "belowTargetSellPrice": bool(current_price is not None and target_sell is not None and target_sell > 0 and current_price < target_sell),
+        "inBuyZoneOrBelow": zone_status.strip().upper() in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"},
+    }
+
+
+def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dict | None = None) -> None:
+    context = context or _sell_reference_context(symbol, position_row)
+    current_price = _number(context.get("currentPrice"))
+    target_sell = _number(context.get("targetSellPrice"))
+    distance_to_target = _number(context.get("distanceToTarget"))
+    zone_status = str(context.get("zoneStatus") or "ZONE_MISSING")
+    buy_zone_text = str(context.get("buyZoneText") or BLANK_TEXT)
     reference_rows = [
         ("当前价", _money_text(current_price)),
         ("Radar 买区", buy_zone_text),
@@ -720,6 +751,7 @@ def _render_trading_discipline_check(
     current_quantity: object = None,
     editing_entry: dict | None = None,
     stock_plan: dict | None = None,
+    sell_reference: dict | None = None,
     key_suffix: str = "new",
 ) -> None:
     st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
@@ -737,6 +769,8 @@ def _render_trading_discipline_check(
     actual_sell_pct = _actual_sell_pct(trade_quantity, current_quantity)
     st.session_state[f"trade-discipline-actual-sell-pct-{key_suffix}"] = actual_sell_pct
     st.session_state[f"trade-discipline-current-quantity-{key_suffix}"] = _number(current_quantity)
+    st.session_state[f"trade-discipline-below-target-{key_suffix}"] = bool((sell_reference or {}).get("belowTargetSellPrice"))
+    st.session_state[f"trade-discipline-in-buy-zone-or-below-{key_suffix}"] = bool((sell_reference or {}).get("inBuyZoneOrBelow"))
     computed_sell_pct = "" if actual_sell_pct is None else f"{actual_sell_pct * 100:.2f}"
     st.session_state[f"trade-discipline-planned-sell-pct-{key_suffix}"] = computed_sell_pct
     cols[1].metric("卖出比例", _pct_point_text(actual_sell_pct))
@@ -775,6 +809,8 @@ def _render_trading_discipline_check(
         hasReentryPlan=True,
         actualSellPct=actual_sell_pct,
         decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
+        belowTargetSellPrice=bool((sell_reference or {}).get("belowTargetSellPrice")),
+        inBuyZoneOrBelow=bool((sell_reference or {}).get("inBuyZoneOrBelow")),
     )
     gate_conclusion = _discipline_gate_conclusion(gate_result)
     hard_blocked = gate_conclusion in {"BLOCK", "FIX_REQUIRED"}
@@ -811,6 +847,8 @@ def _render_trading_discipline_check(
         hasReentryPlan=has_reentry_plan,
         actualSellPct=actual_sell_pct,
         decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
+        belowTargetSellPrice=bool((sell_reference or {}).get("belowTargetSellPrice")),
+        inBuyZoneOrBelow=bool((sell_reference or {}).get("inBuyZoneOrBelow")),
     )
     _render_discipline_gate_explanation(result, discipline_context)
     return result
@@ -930,7 +968,7 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
         f"""
         <section class="trade-gate-card {escape(tone)}">
           <div class="trade-gate-head">
-            <strong>门禁结论：{escape(conclusion)}</strong>
+            <strong>门禁结论：{escape(_discipline_gate_conclusion_label(conclusion))}</strong>
             <span>{escape(_discipline_gate_summary(conclusion))}</span>
           </div>
           <div class="trade-gate-body">
@@ -966,8 +1004,19 @@ def _discipline_gate_summary(conclusion: str) -> str:
     }.get(conclusion, "需要复核。")
 
 
+def _discipline_gate_conclusion_label(conclusion: str) -> str:
+    return {
+        "PASS": "通过",
+        "WARN": "需要复核",
+        "FIX_REQUIRED": "需要修正",
+        "BLOCK": "硬性拦截",
+    }.get(str(conclusion or ""), "需要复核")
+
+
 def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> list[str]:
     reasons: list[str] = []
+    position_class = str(context.get("positionClass") or "").strip().upper()
+    floor_label = "A 类核心仓" if position_class == "A" else "B 类持仓底线" if position_class == "B" else "持仓底线"
     if context["plannedActualDiffPct"] > 0.02:
         reasons.append(
             f"你实际填写卖出 {_quantity_text(context['sellQty'])} 股，但计划卖出比例为 {_pct_point_text(context['plannedSellPct'])}。"
@@ -976,21 +1025,19 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
         reasons.append("暂时拿不到当前持股，实际卖出比例先按计划卖出比例估算；保存同步前仍会由组合持仓兜底校验。")
     if context["actualBreachesCore"]:
         reasons.append(
-            f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，会打穿 A 类核心仓约 {_quantity_text(math.ceil(context['actualBreachQty']))} 股。"
+            f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，会低于{floor_label}约 {_quantity_text(math.ceil(context['actualBreachQty']))} 股。"
         )
     else:
-        reasons.append(
-            f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，未打穿核心仓。"
-        )
+        safe_text = "未打穿核心仓" if position_class == "A" else "未低于 B 类持仓底线" if position_class == "B" else "未低于持仓底线"
+        reasons.append(f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，{safe_text}。")
     if context["plannedSellPct"] > 0:
         if context["plannedBreachesCore"]:
             reasons.append(
-                f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，会打穿 A 类核心仓约 {_quantity_text(math.ceil(context['plannedBreachQty']))} 股。"
+                f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，会低于{floor_label}约 {_quantity_text(math.ceil(context['plannedBreachQty']))} 股。"
             )
         else:
-            reasons.append(
-                f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，未打穿核心仓。"
-            )
+            safe_text = "未打穿核心仓" if position_class == "A" else "未低于 B 类持仓底线" if position_class == "B" else "未低于持仓底线"
+            reasons.append(f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，{safe_text}。")
     sell_level = str(getattr(result, "sellLevel", "") or "N/A")
     max_allowed_pct = float(getattr(result, "maxAllowedSellPct", 0) or 0)
     if context["actualSellPct"] > max_allowed_pct + 1e-9:
@@ -998,9 +1045,18 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
             f"实际卖出 {_pct_point_text(context['actualSellPct'])}，超过 {sell_level} 上限 {_pct_point_text(max_allowed_pct)}。"
         )
     if context["plannedSellPct"] > max_allowed_pct + 1e-9:
-        reasons.append(
-            f"A 类核心股在宏观风险/恐慌卖出场景下，上限为 {_pct_point_text(max_allowed_pct)}。当前计划卖出 {_pct_point_text(context['plannedSellPct'])}，超过纪律上限。"
-        )
+        if position_class == "B":
+            reasons.append(
+                f"B 类本次卖出上限为 {_pct_point_text(max_allowed_pct)}。当前计划卖出 {_pct_point_text(context['plannedSellPct'])}，超过纪律上限。"
+            )
+        elif position_class == "A":
+            reasons.append(
+                f"A 类核心股在宏观风险/恐慌卖出场景下，上限为 {_pct_point_text(max_allowed_pct)}。当前计划卖出 {_pct_point_text(context['plannedSellPct'])}，超过纪律上限。"
+            )
+        else:
+            reasons.append(
+                f"当前卖出上限为 {_pct_point_text(max_allowed_pct)}。当前计划卖出 {_pct_point_text(context['plannedSellPct'])}，超过纪律上限。"
+            )
     if max_allowed_qty > 0:
         reasons.append(f"若卖出超过 {max_allowed_qty} 股，将超过 {sell_level} 卖出上限。")
     for blocker in getattr(result, "blockers", []) or []:
@@ -1065,6 +1121,7 @@ def _normalized_core_gate_context(context: dict) -> dict:
 
 def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> list[str]:
     actions: list[str] = []
+    position_class = str(context.get("positionClass") or "").strip().upper()
     if context["plannedActualDiffPct"] > 0.02:
         planned_qty = int(context["plannedSellQty"])
         planned_is_blocked = context["plannedBreachesCore"] or (
@@ -1079,7 +1136,12 @@ def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> lis
     if max_allowed_qty > 0 and context["plannedSellQty"] > max_allowed_qty:
         actions.append(f"把计划卖出比例降到不超过 {_pct_point_text(max_allowed_qty / context['currentQty'] if context['currentQty'] else 0)}。")
     if context["actualBreachesCore"] or context["plannedBreachesCore"]:
-        actions.append(f"至少保留 {_quantity_text(context['coreMinQty'])} 股 A 类核心仓。")
+        if position_class == "B":
+            actions.append("如果确实要卖到该比例，请改选降级为观察、买入逻辑不清、thesis 失效或风险控制，并写清后续复核计划。")
+        elif position_class == "A":
+            actions.append(f"至少保留 {_quantity_text(context['coreMinQty'])} 股 A 类核心仓。")
+        else:
+            actions.append(f"至少保留 {_quantity_text(context['coreMinQty'])} 股持仓底线。")
     if "reentry_plan_required_before_trim_or_sell" in {str(item) for item in (getattr(result, "blockers", []) or [])}:
         actions.append("补全回踩买回价、不跌反涨买回价和时间止损。")
     if not actions:
@@ -1324,6 +1386,8 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
         "thesisBroken": bool(st.session_state.get(f"trade-discipline-thesis-broken-{key_suffix}")),
         "positionOverLimit": bool(st.session_state.get(f"trade-discipline-position-over-limit-{key_suffix}")),
         "hasReentryPlan": False if hard_blocked else _has_reentry_plan_values(reentry_values),
+        "belowTargetSellPrice": bool(st.session_state.get(f"trade-discipline-below-target-{key_suffix}")),
+        "inBuyZoneOrBelow": bool(st.session_state.get(f"trade-discipline-in-buy-zone-or-below-{key_suffix}")),
         **reentry_values,
     }
 
@@ -1570,7 +1634,7 @@ def _apply_portfolio_sync_if_requested(saved: dict, values: dict) -> tuple[str, 
     if not values.get("syncToPortfolio"):
         return None
     if str(saved.get("action_type") or "") in SELL_DISCIPLINE_ACTIONS and str(saved.get("discipline_status") or "") == "blocked":
-        return ("error", f"{saved['symbol']} 已保存为违规交易记录；纪律门禁 BLOCK，未同步到组合持仓。")
+        return ("error", f"{saved['symbol']} 已保存为违规交易记录；纪律门禁硬性拦截，未同步到组合持仓。")
     result = apply_trade_to_portfolio(int(saved.get("id") or 0))
     status = str(result.get("status") or "")
     if status == "success":
@@ -1803,25 +1867,16 @@ def _render_trade_performance_cards(summary: dict) -> None:
 
 def _render_trade_performance_table(rows: list[dict]) -> None:
     headers = [
-        "卖出日期",
-        "Ticker",
+        "日期",
+        "股票",
         "操作",
         "数量",
-        "买入均价",
         "卖出价",
         "盈亏",
-        "盈亏率",
-        "持仓天数",
+        "持仓",
         "等级",
-        "买入心情",
-        "卖出心情",
         "卖出原因",
-        "目标价",
-        "低于目标",
-        "成本来源",
-        "成本状态",
-        "计入统计",
-        "纪律问题",
+        "状态",
     ]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body = "".join(_trade_performance_row_html(row) for row in rows[:80])
@@ -1843,33 +1898,108 @@ def _render_trade_performance_table(rows: list[dict]) -> None:
 def _trade_performance_row_html(row: dict) -> str:
     pnl = _number(row.get("realized_pnl"))
     tone = "gain" if pnl is not None and pnl >= 0 else "loss"
-    if row.get("cost_basis_missing"):
-        issue = "成本基准缺失；建议补录 opening lot"
-    else:
-        issue = "；".join(str(item) for item in (row.get("discipline_flags") or [])[:2]) or "无"
-    below_target = "是" if row.get("below_target_sell_price") else "否"
+    status_html = _performance_status_badges(row)
+    detail_html = _trade_performance_detail_html(row)
     return (
         "<tr>"
         f"<td>{escape(_text(row.get('sell_date')))}</td>"
         f'<td class="symbol">{escape(_text(row.get("ticker")))}</td>'
         f"<td>{escape(_performance_action_text(row.get('action_type')))}</td>"
         f"<td>{escape(_quantity_text(row.get('sell_quantity')))}</td>"
-        f"<td>{escape(_buy_avg_cost_text(row))}</td>"
         f"<td>{escape(_money_text(row.get('sell_price')))}</td>"
-        f'<td class="{tone}">{escape(_realized_pnl_text(row))}</td>'
-        f"<td>{escape(_realized_pct_text(row))}</td>"
-        f"<td>{escape(_holding_days_text(row))}</td>"
-        f"<td>{escape(_text(row.get('position_tier')))}</td>"
-        f"<td>{escape(_mood_text(row.get('buy_mood')))}</td>"
-        f"<td>{escape(_mood_text(row.get('sell_mood')))}</td>"
+        f'<td class="{tone}">{_performance_pnl_cell(row)}</td>'
+        f"<td>{_performance_holding_cell(row)}</td>"
+        f"<td>{escape(_position_tier_text(row.get('position_tier')))}</td>"
         f"<td>{escape(_sell_reason_text(row.get('sell_reason_type')))}</td>"
-        f"<td>{escape(_money_text(row.get('target_sell_price')))}</td>"
-        f"<td>{escape(below_target)}</td>"
-        f"<td>{escape(_cost_basis_source_text(row.get('cost_basis_source')))}</td>"
-        f"<td>{escape(_cost_basis_status_text(row.get('cost_basis_status')))}</td>"
-        f"<td>{escape('是' if row.get('included_in_performance') else '否')}</td>"
-        f'<td class="notes">{escape(issue)}</td>'
+        f'<td class="performance-status">{status_html}</td>'
         "</tr>"
+        f'<tr class="performance-detail-row"><td colspan="10">{detail_html}</td></tr>'
+    )
+
+
+def _trade_performance_detail_html(row: dict) -> str:
+    below_target = "是" if row.get("below_target_sell_price") else "否"
+    flags = row.get("discipline_flags") or []
+    flag_text = "；".join(str(item) for item in flags) if flags else "无"
+    reentry = _text(row.get("reentry_plan_text"))
+    note = _text(row.get("notes"))
+    action = "补录成本" if row.get("cost_basis_missing") else "继续复盘"
+    left_rows = [
+        ("买入均价", _buy_avg_cost_text(row)),
+        ("卖出价", _money_text(row.get("sell_price"))),
+        ("目标价", _money_text(row.get("target_sell_price"))),
+        ("是否低于目标", below_target),
+        ("买入心情", _mood_text(row.get("buy_mood"))),
+        ("卖出心情", _mood_text(row.get("sell_mood"))),
+        ("卖出原因", _sell_reason_text(row.get("sell_reason_type"))),
+        ("备注", note),
+    ]
+    right_rows = [
+        ("成本来源", _cost_basis_source_text(row.get("cost_basis_source"))),
+        ("成本状态", _cost_basis_status_text(row.get("cost_basis_status"))),
+        ("是否计入统计", "是" if row.get("included_in_performance") else "否"),
+        ("持仓天数说明", _holding_days_text(row)),
+        ("事件交易", _event_trade_note_text(row)),
+        ("纪律问题", flag_text),
+        ("回补计划", reentry),
+        ("建议动作", action),
+    ]
+    return (
+        '<div class="performance-detail-grid">'
+        f'<div><b>交易信息</b>{_performance_detail_list(left_rows)}</div>'
+        f'<div><b>统计与纪律状态</b>{_performance_detail_list(right_rows)}</div>'
+        "</div>"
+    )
+
+
+def _performance_detail_list(rows: list[tuple[str, str]]) -> str:
+    return "".join(
+        "<p>"
+        f"<span>{escape(label)}</span>"
+        f"<strong>{escape(value)}</strong>"
+        "</p>"
+        for label, value in rows
+    )
+
+
+def _performance_pnl_cell(row: dict) -> str:
+    if row.get("cost_basis_missing"):
+        return '<strong>未计算</strong><small>缺成本</small>'
+    return (
+        f"<strong>{escape(_money_text(row.get('realized_pnl')))}</strong>"
+        f"<small>{escape(_percent_or_dash(row.get('realized_pnl_pct')))}</small>"
+    )
+
+
+def _performance_holding_cell(row: dict) -> str:
+    if row.get("cost_basis_missing") or (
+        str(row.get("cost_basis_source") or "") == "position_snapshot" and row.get("holding_days") is None
+    ):
+        return '<strong>—</strong><small>缺日期</small>'
+    return f"<strong>{escape(_days_text(row.get('holding_days')))}</strong>"
+
+
+def _performance_status_badges(row: dict) -> str:
+    badges: list[tuple[str, str]] = []
+    if row.get("included_in_performance"):
+        badges.append(("ok", "已计入"))
+    else:
+        badges.append(("muted", "未计入"))
+    if row.get("cost_basis_missing"):
+        badges.extend([("warn", "缺成本"), ("warn", "需补录")])
+    event_status = str(row.get("event_trade_status") or "")
+    if event_status == "planned_exit":
+        badges.extend([("ok", "计划内退出"), ("muted", "事件交易结束")])
+    elif event_status == "needs_review":
+        badges.append(("review", "需复盘"))
+    has_core_review = any("核心仓卖出需复盘" in str(item) for item in (row.get("discipline_flags") or []))
+    if has_core_review:
+        badges.append(("review", "核心仓需复盘"))
+    if not row.get("cost_basis_missing") and not has_core_review and not event_status:
+        badges.append(("muted", "已匹配"))
+    return "".join(
+        f'<span class="performance-badge {escape(tone)}">{escape(label)}</span>'
+        for tone, label in badges
     )
 
 
@@ -1899,6 +2029,11 @@ def _holding_days_text(row: dict) -> str:
     return _days_text(row.get("holding_days"))
 
 
+def _event_trade_note_text(row: dict) -> str:
+    note = str(row.get("event_trade_note") or "").strip()
+    return note or "无"
+
+
 def _cost_basis_source_text(value: object) -> str:
     return {
         "fifo": "FIFO buy/add lot",
@@ -1917,6 +2052,13 @@ def _cost_basis_status_text(value: object) -> str:
         "mixed": "混合计算",
         "missing": "需补录成本",
     }.get(str(value or ""), "需补录成本")
+
+
+def _position_tier_text(value: object) -> str:
+    tier = str(value or "").strip().upper()
+    if tier in {"A", "B", "C"}:
+        return f"{tier}类"
+    return "等级缺失"
 
 
 def _render_trade_performance_lots(rows: list[dict]) -> None:
@@ -2058,7 +2200,7 @@ def _render_unsynced_trade_sync_panel(entries: list[dict]) -> None:
             '<section class="trade-unsynced-sync-panel">'
             '<div class="trade-unsynced-sync-head">'
             "<strong>未同步交易处理</strong>"
-            f"<span>{len(items)} 条交易尚未进入组合持仓，逐条确认后同步；BLOCK 交易不会同步。</span>"
+            f"<span>{len(items)} 条交易尚未进入组合持仓，逐条确认后同步；硬性拦截交易不会同步。</span>"
             "</div>"
             "</section>"
         ),
@@ -2432,7 +2574,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
     ]
     rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
-        rows.append(("同步限制", "纪律门禁 BLOCK，禁止同步到组合持仓"))
+        rows.append(("同步限制", "纪律门禁硬性拦截，禁止同步到组合持仓"))
     reentry_html = _entry_reentry_plan_html(entry)
     blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
     warning_html = _discipline_detail_messages_html("复核提醒", entry.get("warnings") or [], is_blocker=False)
@@ -3265,6 +3407,11 @@ def _discipline_snapshot_badge(entry: dict) -> str:
     status = str(entry.get("discipline_status") or "").strip().lower()
     if not status:
         return '<span class="trade-discipline-pill neutral">未保存</span>'
+    event_status = _entry_event_trade_status(entry)
+    if status != "blocked" and event_status == "planned_exit":
+        return '<span class="trade-discipline-pill ok">计划内退出</span>'
+    if status != "blocked" and event_status == "needs_review":
+        return '<span class="trade-discipline-pill warning">需复盘</span>'
     tone = _discipline_status_tone(status)
     label = DISCIPLINE_STATUS_COMPACT_LABELS.get(status, DISCIPLINE_STATUS_LABELS.get(status, status))
     return f'<span class="trade-discipline-pill {escape(tone)}">{escape(label)}</span>'
@@ -3294,7 +3441,30 @@ def _decision_mood_warning_html(entry: dict) -> str:
         text = "该买入可能是追涨或卖飞后追回，不应替代原计划。"
     else:
         return ""
-    return f'<div class="trade-entry-mood-warning"><b>WARN</b><span>{escape(text)}</span></div>'
+    return f'<div class="trade-entry-mood-warning"><b>复核</b><span>{escape(text)}</span></div>'
+
+
+def _entry_event_trade_status(entry: dict) -> str:
+    position_class = str(
+        entry.get("position_class") or entry.get("position_tier") or entry.get("pre_trade_position_tier") or ""
+    ).strip().upper()
+    reason = str(entry.get("sell_reason_type") or "").strip().lower()
+    if position_class != "C" or reason not in EVENT_EXIT_REASONS:
+        return ""
+    return "planned_exit" if _entry_has_event_exit_plan(entry) else "needs_review"
+
+
+def _entry_has_event_exit_plan(entry: dict) -> bool:
+    text_parts = [
+        entry.get("notes"),
+        entry.get("buy_reason"),
+        entry.get("classification_note"),
+        entry.get("reentry_plan_text"),
+        entry.get("exit_plan"),
+        entry.get("event_plan"),
+    ]
+    text = " ".join(str(item or "") for item in text_parts)
+    return any(keyword in text for keyword in EVENT_PLAN_KEYWORDS)
 
 
 def _editor_key(field: str, entry_id: int | None) -> str:
@@ -4205,7 +4375,7 @@ def _render_styles() -> None:
             margin-top: 0.36rem;
         }
         .trade-journal-table.performance {
-            min-width: 1280px;
+            min-width: 920px;
         }
         .trade-journal-table.performance.group {
             min-width: 520px;
@@ -4253,6 +4423,94 @@ def _render_styles() -> None:
         .trade-journal-table .loss {
             color: #B91C1C;
             font-weight: 760;
+        }
+        .trade-journal-table.performance td strong,
+        .trade-journal-table.performance td small {
+            display: block;
+            line-height: 1.16;
+        }
+        .trade-journal-table.performance td small {
+            margin-top: 0.12rem;
+            color: #64748b;
+            font-size: 10.5px;
+            font-weight: 620;
+        }
+        .trade-journal-table.performance .performance-status {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.18rem;
+            align-items: center;
+        }
+        .performance-badge {
+            display: inline-flex;
+            align-items: center;
+            height: 20px;
+            padding: 0 0.42rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 999px;
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 10.5px;
+            font-weight: 720;
+            white-space: nowrap;
+        }
+        .performance-badge.ok {
+            border-color: rgba(79, 157, 120, 0.18);
+            background: rgba(79, 157, 120, 0.08);
+            color: #276749;
+        }
+        .performance-badge.warn {
+            border-color: rgba(181, 106, 50, 0.18);
+            background: rgba(255, 251, 235, 0.9);
+            color: #8A4B00;
+        }
+        .performance-badge.review {
+            border-color: rgba(37, 99, 235, 0.16);
+            background: rgba(239, 246, 255, 0.9);
+            color: #1d4ed8;
+        }
+        .performance-detail-row td {
+            height: auto;
+            padding: 0.42rem 0.62rem 0.64rem;
+            background: rgba(248, 250, 252, 0.68);
+        }
+        .trade-journal-table tr.performance-detail-row:hover td {
+            background: rgba(248, 250, 252, 0.78);
+        }
+        .performance-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.6rem;
+        }
+        .performance-detail-grid > div {
+            padding: 0.5rem 0.56rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.76);
+        }
+        .performance-detail-grid b {
+            display: block;
+            margin-bottom: 0.36rem;
+            color: #0f172a;
+            font-size: 11px;
+            font-weight: 820;
+        }
+        .performance-detail-grid p {
+            display: grid;
+            grid-template-columns: 96px minmax(0, 1fr);
+            gap: 0.42rem;
+            margin: 0.16rem 0;
+            color: #475569;
+            font-size: 11px;
+        }
+        .performance-detail-grid span {
+            color: #94a3b8;
+        }
+        .performance-detail-grid strong {
+            min-width: 0;
+            color: #334155;
+            font-weight: 700;
+            overflow-wrap: anywhere;
         }
         .sell-fly-muted {
             color: #94a3b8;

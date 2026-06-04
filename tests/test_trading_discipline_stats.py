@@ -373,6 +373,8 @@ def test_open_reentry_obligations_are_included_even_from_prior_week() -> None:
             reentryPullbackPrice=95,
             reentryBreakoutPrice=105,
             reentryTimeStopDays=5,
+            reentryBuyBackPctOnPullback=50,
+            reentryThesisInvalidation="投资逻辑破坏则不回补",
             reentryPlanText="回踩或重新站回卖出价时分批买回",
         )
 

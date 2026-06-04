@@ -125,6 +125,20 @@ def test_blocked_and_observation_only_records_do_not_count_realized_pnl() -> Non
     assert summary["summary"]["total_realized_pnl"] == 0
 
 
+def test_synced_buy_counts_as_cost_lot_even_if_old_radar_blocked_flag_exists() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "XE", "buy", 200, 25.8, "2026-06-04", radar_blocked=1, _portfolio_synced=True),
+            _entry(2, "XE", "sell", 200, 25.7, "2026-06-04", _portfolio_synced=True),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["cost_basis_missing"] is False
+    assert trade["buy_avg_price"] == 25.8
+    assert trade["realized_pnl"] == -20
+
+
 def test_sell_without_buy_lot_marks_missing_cost_basis() -> None:
     summary = summarize_trade_performance(entries=[_entry(1, "NVO", "sell", 3, 90, "2026-01-05")])
 
@@ -215,6 +229,39 @@ def test_holding_days_use_hkt_date_from_timestamp() -> None:
     assert calculate_holding_days("2026-01-01T23:30:00+00:00", "2026-01-03") == 1
 
 
+def test_fifo_orders_same_day_timezone_timestamps_by_real_time() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(
+                7,
+                "XE",
+                "buy",
+                200,
+                25.8,
+                "2026-06-04",
+                created_at="2026-06-04T11:57:13.027878+08:00",
+                position_class="C",
+            ),
+            _entry(
+                8,
+                "XE",
+                "sell",
+                200,
+                25.7,
+                "2026-06-04",
+                created_at="2026-06-04T10:37:43.863134+00:00",
+                position_class="C",
+            ),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["cost_basis_missing"] is False
+    assert trade["buy_avg_price"] == 25.8
+    assert trade["realized_pnl"] == -20
+    assert trade["holding_days"] == 0
+
+
 def test_group_by_ticker_summary_is_correct() -> None:
     summary = summarize_trade_performance(
         entries=[
@@ -271,3 +318,84 @@ def test_group_by_mood_summary_is_correct() -> None:
 
     assert summary["groups"]["buy_mood"][0]["key"] == "plan_execution"
     assert summary["groups"]["sell_mood"][0]["key"] == "macro_fear"
+
+
+def test_c_class_planned_event_exit_is_not_discipline_issue() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(
+                1,
+                "XE",
+                "buy",
+                200,
+                25.8,
+                "2026-06-04",
+                position_class="C",
+                target_sell_price=33,
+            ),
+            _entry(
+                2,
+                "XE",
+                "sell",
+                200,
+                25.7,
+                "2026-06-04",
+                position_class="C",
+                sell_reason_type="no_post_earnings_reaction",
+                notes="财报后无波动，按计划卖出，赌的就是财报，小亏几十U。",
+            ),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["event_trade_status"] == "planned_exit"
+    assert trade["discipline_issue"] is False
+    assert trade["discipline_flags"] == []
+    assert trade["realized_pnl"] == -20
+
+
+def test_c_class_unstructured_event_exit_needs_review_not_warning() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "XE", "buy", 200, 25.8, "2026-06-04", position_class="C"),
+            _entry(
+                2,
+                "XE",
+                "sell",
+                200,
+                25.7,
+                "2026-06-04",
+                position_class="C",
+                sell_reason_type="event_trade_done",
+                notes="赌财报。",
+            ),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["event_trade_status"] == "needs_review"
+    assert "事件交易计划未结构化" in trade["event_trade_note"]
+    assert trade["discipline_issue"] is False
+
+
+def test_non_c_event_exit_still_needs_discipline_review() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "NVDA", "buy", 1, 100, "2026-01-01", position_class="A"),
+            _entry(
+                2,
+                "NVDA",
+                "sell",
+                1,
+                120,
+                "2026-01-02",
+                position_class="A",
+                sell_reason_type="event_trade_done",
+                notes="赌财报。",
+            ),
+        ]
+    )
+
+    flags = summary["realized_trades"][0]["discipline_flags"]
+    assert "核心仓卖出需复盘" in flags
+    assert "非 C 类事件交易需复核" in flags

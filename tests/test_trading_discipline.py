@@ -72,7 +72,7 @@ def test_position_size_warning_allows_trading_bucket_trim() -> None:
         plannedSellPct=0.2,
         sellReasonType="position_size",
         positionOverLimit=True,
-        hasReentryPlan=False,
+        hasReentryPlan=True,
     )
 
     assert result.disciplineStatus == "warning"
@@ -158,3 +158,107 @@ def test_now_style_risk_only_applies_to_a_class_sell_or_trim() -> None:
     for result in (b_class, buy, add, skip):
         assert "now_style_error_risk" not in result.blockers
         assert not any("NOW 式错误风险" in warning for warning in result.warnings)
+
+
+def test_b_class_ordinary_trim_allows_small_review_path_with_reentry_plan() -> None:
+    result = _evaluate(
+        positionClass="B",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedSellPct=0.2,
+        actualSellPct=0.2,
+        sellReasonType="technical",
+        hasReentryPlan=True,
+    )
+
+    assert result.disciplineStatus == "warning"
+    assert result.maxAllowedSellPct == 0.25
+    assert not result.blockers
+    assert any("B 类普通减仓" in warning for warning in result.warnings)
+
+
+def test_b_class_position_size_reason_requires_actual_over_limit() -> None:
+    result = _evaluate(
+        positionClass="B",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedSellPct=0.5,
+        actualSellPct=0.5,
+        sellReasonType="position_size",
+        positionOverLimit=False,
+        hasReentryPlan=True,
+    )
+
+    assert result.disciplineStatus == "blocked"
+    assert "b_class_position_size_requires_actual_overlimit" in result.blockers
+    assert "planned_sell_pct_exceeds_sell_level_limit" in result.blockers
+
+
+def test_b_class_large_downgrade_can_enter_review_with_complete_plan() -> None:
+    result = _evaluate(
+        positionClass="B",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedSellPct=0.5,
+        actualSellPct=0.5,
+        sellReasonType="downgrade_watch",
+        hasReentryPlan=True,
+    )
+
+    assert result.disciplineStatus == "warning"
+    assert result.maxAllowedSellPct == 0.5
+    assert result.requiresReentryPlan is True
+    assert not result.blockers
+    assert any("B 类降级为观察" in warning for warning in result.warnings)
+
+
+def test_b_class_low_sell_without_thesis_change_is_blocked() -> None:
+    result = _evaluate(
+        positionClass="B",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedSellPct=0.2,
+        actualSellPct=0.2,
+        sellReasonType="technical",
+        thesisBroken=False,
+        hasReentryPlan=True,
+        belowTargetSellPrice=True,
+        inBuyZoneOrBelow=True,
+    )
+
+    assert result.disciplineStatus == "blocked"
+    assert "b_class_low_sell_requires_downgrade_or_thesis" in result.blockers
+
+
+def test_c_class_planned_event_exit_can_close_position_without_warning() -> None:
+    result = _evaluate(
+        positionClass="C",
+        corePositionPct=0.0,
+        tradingPositionPct=1.0,
+        plannedAction="sell",
+        plannedSellPct=1.0,
+        actualSellPct=1.0,
+        sellReasonType="no_post_earnings_reaction",
+        hasReentryPlan=False,
+    )
+
+    assert result.disciplineStatus == "allowed"
+    assert result.maxAllowedSellPct == 1.0
+    assert result.blockers == []
+    assert result.warnings == []
+
+
+def test_a_class_event_exit_still_uses_core_discipline() -> None:
+    result = _evaluate(
+        positionClass="A",
+        corePositionPct=0.7,
+        tradingPositionPct=0.3,
+        plannedAction="sell",
+        plannedSellPct=1.0,
+        actualSellPct=1.0,
+        sellReasonType="event_trade_done",
+        hasReentryPlan=False,
+    )
+
+    assert result.disciplineStatus == "blocked"
+    assert "a_class_core_clear_requires_thesis_break" in result.blockers

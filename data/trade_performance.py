@@ -21,6 +21,14 @@ EMOTIONAL_SELL_REASONS = {"macro", "macro_fear", "anxiety", "panic_sell"}
 EMOTIONAL_SELL_MOODS = {"macro_fear", "anxiety", "panic_sell", "regret_chase"}
 HKT = timezone(timedelta(hours=8))
 A_CLASS_SHORT_HOLDING_DAYS = 14
+EVENT_EXIT_REASONS = {
+    "earnings_catalyst_done",
+    "event_trade_done",
+    "catalyst_failed",
+    "no_post_earnings_reaction",
+    "planned_exit",
+}
+EVENT_PLAN_KEYWORDS = ("按计划", "退出", "无反应", "无波动", "催化失败", "事件结束", "止损", "目标", "小亏", "卖出计划", "退出条件")
 
 
 @dataclass
@@ -89,7 +97,10 @@ def load_synced_trade_entries(path: Path = CACHE_PATH) -> list[dict[str, Any]]:
         )
         rows = cursor.fetchall()
         columns = [description[0] for description in cursor.description] if cursor.description else []
-    return [_row_to_dict(columns, row) for row in rows]
+    items = [_row_to_dict(columns, row) for row in rows]
+    for item in items:
+        item["_portfolio_synced"] = True
+    return items
 
 
 def build_manual_cost_basis_lot(
@@ -473,6 +484,9 @@ def _finalize_sell_trade(row: dict[str, Any]) -> dict[str, Any]:
     row["discipline_flags"] = flags
     row["discipline_issue"] = bool(flags)
     row["below_target_sell_price"] = "低于买入目标价卖出" in flags
+    event_status = _event_trade_status(row)
+    row["event_trade_status"] = event_status["status"]
+    row["event_trade_note"] = event_status["note"]
     row.pop("holding_days_weighted_total", None)
     row.pop("holding_days_quantity", None)
     return row
@@ -482,9 +496,10 @@ def _discipline_flags(row: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     a_class_review_needed = False
     is_a_class = str(row.get("position_tier") or "").upper() == "A"
+    is_c_planned_event_exit = _is_c_class_planned_event_exit(row)
     sell_price = _number(row.get("sell_price"))
     target = _number(row.get("target_sell_price"))
-    if sell_price is not None and target is not None and sell_price < target:
+    if sell_price is not None and target is not None and sell_price < target and not is_c_planned_event_exit:
         flags.append("低于买入目标价卖出")
         a_class_review_needed = a_class_review_needed or is_a_class
     if is_a_class and not has_concrete_reentry_plan(row.get("raw_entry") or {}):
@@ -500,15 +515,49 @@ def _discipline_flags(row: dict[str, Any]) -> list[str]:
         flags.append("A类持仓天数过短")
         a_class_review_needed = True
     zone = str((row.get("raw_entry") or {}).get("zone_status") or (row.get("raw_entry") or {}).get("buy_zone_status") or "")
-    if zone in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"}:
+    if zone in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"} and not is_c_planned_event_exit:
         flags.append("卖出时处于买区/低于买区")
         a_class_review_needed = a_class_review_needed or is_a_class
+    if _is_event_exit_reason(row) and str(row.get("position_tier") or "").upper() in {"A", "B"}:
+        flags.append("非 C 类事件交易需复核")
     blockers = [str(item) for item in (row.get("blockers") or [])]
     if blockers:
         flags.append("卖出门禁曾阻断")
     if a_class_review_needed:
         flags.insert(0, "核心仓卖出需复盘")
     return flags
+
+
+def _event_trade_status(row: dict[str, Any]) -> dict[str, str]:
+    if str(row.get("position_tier") or "").upper() != "C" or not _is_event_exit_reason(row):
+        return {"status": "", "note": ""}
+    if _has_structured_event_exit_plan(row):
+        return {"status": "planned_exit", "note": "C类事件交易按计划退出。"}
+    return {"status": "needs_review", "note": "事件交易计划未结构化，不是纪律违规，但需要补全复盘。"}
+
+
+def _is_c_class_planned_event_exit(row: dict[str, Any]) -> bool:
+    status = _event_trade_status(row)
+    return status["status"] == "planned_exit"
+
+
+def _is_event_exit_reason(row: dict[str, Any]) -> bool:
+    return str(row.get("sell_reason_type") or "").strip().lower() in EVENT_EXIT_REASONS
+
+
+def _has_structured_event_exit_plan(row: dict[str, Any]) -> bool:
+    raw = row.get("raw_entry") or {}
+    text_parts = [
+        row.get("notes"),
+        row.get("buy_reason"),
+        row.get("reentry_plan_text"),
+        raw.get("notes"),
+        raw.get("buy_reason"),
+        raw.get("reentry_plan_text"),
+        raw.get("classification_note"),
+    ]
+    text = " ".join(str(item or "") for item in text_parts)
+    return any(keyword in text for keyword in EVENT_PLAN_KEYWORDS)
 
 
 def _group_summary(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
@@ -589,7 +638,7 @@ def _chronological_entries(entries: Iterable[dict[str, Any]]) -> list[dict[str, 
         [dict(entry) for entry in entries],
         key=lambda entry: (
             _entry_date(entry) or date.max,
-            str(entry.get("created_at") or ""),
+            _entry_time(entry),
             _optional_int(entry.get("id")) or 0,
         ),
     )
@@ -601,9 +650,10 @@ def _is_real_trade(entry: dict[str, Any]) -> bool:
         return False
     if _bool(entry.get("radar_observation_only")):
         return False
-    if action in BUY_ACTIONS and _bool(entry.get("radar_blocked")):
+    portfolio_synced = _bool(entry.get("_portfolio_synced"))
+    if action in BUY_ACTIONS and _bool(entry.get("radar_blocked")) and not portfolio_synced:
         return False
-    if action in SELL_ACTIONS and str(entry.get("discipline_status") or "").lower() == "blocked":
+    if action in SELL_ACTIONS and str(entry.get("discipline_status") or "").lower() == "blocked" and not portfolio_synced:
         return False
     return True
 
@@ -614,6 +664,35 @@ def _entry_date(entry: dict[str, Any]) -> date | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _entry_time(entry: dict[str, Any]) -> datetime:
+    for key in ("executed_at", "created_at", "trade_date"):
+        parsed = _coerce_datetime(entry.get(key))
+        if parsed is not None:
+            return parsed
+    return datetime.max.replace(tzinfo=HKT)
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(HKT) if value.tzinfo else value.replace(tzinfo=HKT)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=HKT)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.astimezone(HKT) if parsed.tzinfo else parsed.replace(tzinfo=HKT)
+    except ValueError:
+        try:
+            parsed_date = date.fromisoformat(text[:10])
+            return datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=HKT)
+        except ValueError:
+            return None
 
 
 def _coerce_date(value: object) -> date | None:
