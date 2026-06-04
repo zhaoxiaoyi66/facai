@@ -68,12 +68,30 @@ TRADE_DISCIPLINE_COLUMNS = {
     "warnings_json": "TEXT",
     "reminder_text": "TEXT",
     "radar_decision": "TEXT",
+    "radar_data_status": "TEXT",
+    "radar_is_stale": "INTEGER",
     "radar_blocked": "INTEGER",
     "radar_block_reasons_json": "TEXT",
     "mood_gate_blocked": "INTEGER",
     "position_gate_blocked": "INTEGER",
     "radar_observation_only": "INTEGER",
     "gate_checked_at": "TEXT",
+    "entry_mode": "TEXT",
+    "buy_plan_id": "TEXT",
+    "buy_plan_level": "TEXT",
+    "planned_ladder_buy": "INTEGER",
+    "plan_trigger_price": "REAL",
+    "plan_planned_quantity": "REAL",
+    "plan_remaining_quantity": "REAL",
+    "plan_max_position_pct": "REAL",
+    "plan_match_status": "TEXT",
+    "plan_block_reasons_json": "TEXT",
+    "starter_position": "INTEGER",
+    "starter_max_pct": "REAL",
+    "starter_position_before_pct": "REAL",
+    "starter_position_after_pct": "REAL",
+    "starter_match_status": "TEXT",
+    "starter_block_reasons_json": "TEXT",
     "pre_trade_quantity": "REAL",
     "pre_trade_avg_cost": "REAL",
     "pre_trade_total_cost": "REAL",
@@ -420,6 +438,8 @@ class TradeJournalStore:
             )
             entry_id = cursor.lastrowid
             _write_radar_gate_snapshot(conn, int(entry_id), cleaned)
+            _write_buy_plan_snapshot(conn, int(entry_id), cleaned)
+            _write_starter_snapshot(conn, int(entry_id), cleaned)
             _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
@@ -520,6 +540,8 @@ class TradeJournalStore:
             )
             if cursor.rowcount > 0:
                 _write_radar_gate_snapshot(conn, clean_id, cleaned)
+                _write_buy_plan_snapshot(conn, clean_id, cleaned)
+                _write_starter_snapshot(conn, clean_id, cleaned)
                 _write_pre_trade_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
@@ -614,6 +636,8 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
         UPDATE trade_journal_entries
         SET
             radar_decision = ?,
+            radar_data_status = ?,
+            radar_is_stale = ?,
             radar_blocked = ?,
             radar_block_reasons_json = ?,
             mood_gate_blocked = ?,
@@ -624,12 +648,72 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
         """,
         (
             cleaned["radar_decision"],
+            cleaned["radar_data_status"],
+            cleaned["radar_is_stale"],
             cleaned["radar_blocked"],
             cleaned["radar_block_reasons_json"],
             cleaned["mood_gate_blocked"],
             cleaned["position_gate_blocked"],
             cleaned["radar_observation_only"],
             cleaned["gate_checked_at"],
+            entry_id,
+        ),
+    )
+
+
+def _write_buy_plan_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            entry_mode = ?,
+            buy_plan_id = ?,
+            buy_plan_level = ?,
+            planned_ladder_buy = ?,
+            plan_trigger_price = ?,
+            plan_planned_quantity = ?,
+            plan_remaining_quantity = ?,
+            plan_max_position_pct = ?,
+            plan_match_status = ?,
+            plan_block_reasons_json = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["entry_mode"],
+            cleaned["buy_plan_id"],
+            cleaned["buy_plan_level"],
+            cleaned["planned_ladder_buy"],
+            cleaned["plan_trigger_price"],
+            cleaned["plan_planned_quantity"],
+            cleaned["plan_remaining_quantity"],
+            cleaned["plan_max_position_pct"],
+            cleaned["plan_match_status"],
+            cleaned["plan_block_reasons_json"],
+            entry_id,
+        ),
+    )
+
+
+def _write_starter_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            starter_position = ?,
+            starter_max_pct = ?,
+            starter_position_before_pct = ?,
+            starter_position_after_pct = ?,
+            starter_match_status = ?,
+            starter_block_reasons_json = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["starter_position"],
+            cleaned["starter_max_pct"],
+            cleaned["starter_position_before_pct"],
+            cleaned["starter_position_after_pct"],
+            cleaned["starter_match_status"],
+            cleaned["starter_block_reasons_json"],
             entry_id,
         ),
     )
@@ -1072,6 +1156,8 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_pre_trade_snapshot(values))
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
     cleaned.update(_clean_radar_gate_snapshot(action_type, values))
+    cleaned.update(_clean_buy_plan_snapshot(action_type, values))
+    cleaned.update(_clean_starter_snapshot(action_type, values))
     return cleaned
 
 
@@ -1115,6 +1201,8 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
     if action_type not in {"buy", "add"}:
         return {
             "radar_decision": None,
+            "radar_data_status": None,
+            "radar_is_stale": False,
             "radar_blocked": False,
             "radar_block_reasons_json": "[]",
             "mood_gate_blocked": False,
@@ -1136,6 +1224,8 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
     if not has_gate_snapshot:
         return {
             "radar_decision": "DATA_MISSING",
+            "radar_data_status": "DATA_MISSING",
+            "radar_is_stale": False,
             "radar_blocked": True,
             "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，禁止自动同步组合持仓。"]),
             "mood_gate_blocked": False,
@@ -1145,6 +1235,8 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         }
     return {
         "radar_decision": _clean_optional_text(_value(values, "radarDecision", "radar_decision")),
+        "radar_data_status": _clean_optional_text(_value(values, "radarDataStatus", "radar_data_status")),
+        "radar_is_stale": _clean_bool(_value(values, "radarIsStale", "radar_is_stale")),
         "radar_blocked": _clean_bool(_value(values, "radarBlocked", "radar_blocked")),
         "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
         "mood_gate_blocked": _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")),
@@ -1152,6 +1244,80 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         "radar_observation_only": _clean_bool(_value(values, "radarObservationOnly", "radar_observation_only")),
         "gate_checked_at": _clean_optional_text(_value(values, "gateCheckedAt", "gate_checked_at")),
     }
+
+
+def _clean_buy_plan_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "entry_mode": None,
+            "buy_plan_id": None,
+            "buy_plan_level": None,
+            "planned_ladder_buy": False,
+            "plan_trigger_price": None,
+            "plan_planned_quantity": None,
+            "plan_remaining_quantity": None,
+            "plan_max_position_pct": None,
+            "plan_match_status": None,
+            "plan_block_reasons_json": "[]",
+        }
+    return {
+        "entry_mode": _clean_entry_mode(_value(values, "entryMode", "entry_mode")),
+        "buy_plan_id": _clean_optional_text(_value(values, "buyPlanId", "buy_plan_id")),
+        "buy_plan_level": _clean_optional_text(_value(values, "buyPlanLevel", "buy_plan_level")),
+        "planned_ladder_buy": _clean_bool(_value(values, "plannedLadderBuy", "planned_ladder_buy")),
+        "plan_trigger_price": _optional_non_negative_number(_value(values, "planTriggerPrice", "plan_trigger_price"), "plan_trigger_price"),
+        "plan_planned_quantity": _optional_non_negative_number(
+            _value(values, "planPlannedQuantity", "plan_planned_quantity"),
+            "plan_planned_quantity",
+        ),
+        "plan_remaining_quantity": _optional_non_negative_number(
+            _value(values, "planRemainingQuantity", "plan_remaining_quantity"),
+            "plan_remaining_quantity",
+        ),
+        "plan_max_position_pct": _optional_non_negative_number(
+            _value(values, "planMaxPositionPct", "plan_max_position_pct"),
+            "plan_max_position_pct",
+        ),
+        "plan_match_status": _clean_optional_text(_value(values, "planMatchStatus", "plan_match_status")),
+        "plan_block_reasons_json": _reasons_json(
+            _value(values, "planBlockReasons", "plan_block_reasons", "plan_block_reasons_json")
+        ),
+    }
+
+
+def _clean_starter_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "starter_position": False,
+            "starter_max_pct": None,
+            "starter_position_before_pct": None,
+            "starter_position_after_pct": None,
+            "starter_match_status": None,
+            "starter_block_reasons_json": "[]",
+        }
+    return {
+        "starter_position": _clean_bool(_value(values, "starterPosition", "starter_position")),
+        "starter_max_pct": _optional_non_negative_number(_value(values, "starterMaxPct", "starter_max_pct"), "starter_max_pct"),
+        "starter_position_before_pct": _optional_non_negative_number(
+            _value(values, "starterPositionBeforePct", "starter_position_before_pct"),
+            "starter_position_before_pct",
+        ),
+        "starter_position_after_pct": _optional_non_negative_number(
+            _value(values, "starterPositionAfterPct", "starter_position_after_pct"),
+            "starter_position_after_pct",
+        ),
+        "starter_match_status": _clean_optional_text(_value(values, "starterMatchStatus", "starter_match_status")),
+        "starter_block_reasons_json": _reasons_json(
+            _value(values, "starterBlockReasons", "starter_block_reasons", "starter_block_reasons_json")
+        ),
+    }
+
+
+def _clean_entry_mode(value: object) -> str:
+    text = _clean_text(value or "normal_buy")
+    if text not in {"normal_buy", "planned_ladder_buy", "starter_position"}:
+        return "normal_buy"
+    return text
 
 
 def _clean_decision_mood(value: object) -> str | None:

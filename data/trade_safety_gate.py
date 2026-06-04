@@ -26,6 +26,7 @@ SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，禁止同步到组合持仓；该
 BUY_RADAR_SYNC_BLOCK_REASON = "Radar 买入门禁未通过或标记为仅观察，禁止同步到组合持仓。"
 BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，禁止自动同步到组合持仓。"
 BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，禁止同步到组合持仓。"
+BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整或不合格，禁止同步到组合持仓。"
 
 
 def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +86,8 @@ def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str,
         hasReentryPlan=has_reentry_plan,
         actualSellPct=actual_sell_pct,
         decisionMood=_clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
+        belowTargetSellPrice=_clean_bool(_value(values, "belowTargetSellPrice", "below_target_sell_price")),
+        inBuyZoneOrBelow=_clean_bool(_value(values, "inBuyZoneOrBelow", "in_buy_zone_or_below")),
     )
 
     return {
@@ -116,14 +119,17 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     blockers = _reasons_list(entry.get("blockers"), entry.get("blockers_json"))
     sell_blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
     buy_blocked = _buy_sync_blocked_by_radar(entry, action_type)
+    buy_invalid_plan = _buy_sync_invalid_radar_override(entry, action_type)
     buy_missing_gate = _buy_sync_missing_radar_gate(entry, action_type)
     buy_missing_tier = _buy_sync_missing_position_class(entry, action_type)
-    blocked = sell_blocked or buy_blocked or buy_missing_gate or buy_missing_tier
+    blocked = sell_blocked or buy_blocked or buy_invalid_plan or buy_missing_gate or buy_missing_tier
     reason = ""
     if sell_blocked:
         reason = SELL_SYNC_BLOCK_REASON
     elif buy_blocked:
         reason = BUY_RADAR_SYNC_BLOCK_REASON
+    elif buy_invalid_plan:
+        reason = BUY_PLANNED_LADDER_INVALID_REASON
     elif buy_missing_gate:
         reason = BUY_RADAR_MISSING_GATE_REASON
     elif buy_missing_tier:
@@ -138,6 +144,81 @@ def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
     return action_type in CLASSIFICATION_ACTION_TYPES and (
         _clean_bool(entry.get("radar_blocked")) or _clean_bool(entry.get("radar_observation_only"))
     )
+
+
+def _buy_sync_invalid_radar_override(entry: dict[str, Any], action_type: str) -> bool:
+    if action_type not in CLASSIFICATION_ACTION_TYPES:
+        return False
+    if _clean_bool(entry.get("radar_blocked")) or _clean_bool(entry.get("radar_observation_only")):
+        return False
+    decision = str(entry.get("radar_decision") or "").strip().upper()
+    if decision not in {"BLOCK_CHASE", "WAIT", "DATA_MISSING", "AVOID"} and not decision.startswith("BLOCK"):
+        return False
+    if decision == "DATA_MISSING":
+        return True
+    data_status = str(entry.get("radar_data_status") or "").strip().upper()
+    if not data_status or data_status in {"DATA_MISSING", "MISSING", "STALE"}:
+        return True
+    if _clean_bool(entry.get("radar_is_stale")):
+        return True
+    if _buy_sync_valid_planned_ladder_snapshot(entry) or _buy_sync_valid_starter_snapshot(entry):
+        return False
+    return True
+
+
+def _buy_sync_valid_planned_ladder_snapshot(entry: dict[str, Any]) -> bool:
+    if not _clean_bool(entry.get("planned_ladder_buy")):
+        return False
+    if str(entry.get("plan_match_status") or "").strip() != "allow_planned_add":
+        return False
+    if not str(entry.get("buy_plan_id") or "").strip():
+        return False
+    if not str(entry.get("buy_plan_level") or "").strip():
+        return False
+    if _safe_number(entry.get("plan_trigger_price")) is None:
+        return False
+    remaining = _safe_number(entry.get("plan_remaining_quantity"))
+    quantity = _safe_number(entry.get("quantity"))
+    if remaining is None or quantity is None or remaining + 1e-9 < quantity:
+        return False
+    if _safe_number(entry.get("plan_max_position_pct")) is None:
+        return False
+    if _reasons_list(entry.get("plan_block_reasons_json")):
+        return False
+    return True
+
+
+def _buy_sync_valid_starter_snapshot(entry: dict[str, Any]) -> bool:
+    if not _clean_bool(entry.get("starter_position")):
+        return False
+    decision = str(entry.get("radar_decision") or "").strip().upper()
+    if decision == "BLOCK_CHASE":
+        return False
+    for reason in _reasons_list(entry.get("radar_block_reasons_json")):
+        if _is_explicit_chase_block_reason(reason):
+            return False
+    if str(entry.get("starter_match_status") or "").strip() != "allow_starter_position":
+        return False
+    if _safe_number(entry.get("starter_max_pct")) is None:
+        return False
+    before_pct = _safe_number(entry.get("starter_position_before_pct"))
+    after_pct = _safe_number(entry.get("starter_position_after_pct"))
+    max_pct = _safe_number(entry.get("starter_max_pct"))
+    if before_pct is None or after_pct is None or max_pct is None:
+        return False
+    if after_pct > max_pct + 1e-9:
+        return False
+    if _reasons_list(entry.get("starter_block_reasons_json")):
+        return False
+    return True
+
+
+def _is_explicit_chase_block_reason(reason: object) -> bool:
+    text = str(reason or "").strip()
+    lower = text.lower()
+    if "chase zone" in lower or "block_chase" in lower:
+        return True
+    return any(marker in text for marker in ("进入追高区", "追高区", "极端追高"))
 
 
 def _buy_sync_missing_radar_gate(entry: dict[str, Any], action_type: str) -> bool:
@@ -341,6 +422,15 @@ def _clean_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _safe_number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _value(values: dict[str, Any], *names: str) -> Any:

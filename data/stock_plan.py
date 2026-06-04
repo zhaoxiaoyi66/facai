@@ -24,17 +24,38 @@ NUMERIC_PLAN_FIELDS = [
     "tranche_buy_low",
     "tranche_buy_high",
     "heavy_buy_below",
+    "max_position_pct",
+    "target_sell_price",
+    "stop_loss_price",
 ]
 
 TEXT_PLAN_FIELDS = [
+    "plan_type",
     "position_class",
     "classification_note",
+    "thesis",
+    "follow_up_plan",
     "stop_adding_condition",
     "invalidation_condition",
     "earnings_review_points",
+    "event_name",
+    "event_date",
+    "exit_if_no_reaction",
     "notes",
     "buy_plan_tranches_json",
 ]
+
+VALID_PLAN_TYPES = {"starter_position", "ladder_buy", "event_trade", "watch_only"}
+BUY_PLAN_STATUS_LABELS = {
+    "no_plan": "暂无计划",
+    "waiting": "等待触发",
+    "near_trigger": "接近触发",
+    "triggered": "已触发",
+    "over_allocated": "需复核",
+    "stale_or_missing_data": "数据需复核",
+    "executed": "已执行",
+    "needs_review": "需复核",
+}
 
 
 class StockPlanStore:
@@ -62,6 +83,8 @@ class StockPlanStore:
                     ticker TEXT PRIMARY KEY,
                     {numeric_columns},
                     {text_columns},
+                    created_at TEXT,
+                    material_updated_at TEXT,
                     updated_at TEXT NOT NULL
                 )
                 """
@@ -76,6 +99,10 @@ class StockPlanStore:
         for field in TEXT_PLAN_FIELDS:
             if field not in existing:
                 conn.execute(f"ALTER TABLE stock_action_plans ADD COLUMN {field} TEXT")
+        if "created_at" not in existing:
+            conn.execute("ALTER TABLE stock_action_plans ADD COLUMN created_at TEXT")
+        if "material_updated_at" not in existing:
+            conn.execute("ALTER TABLE stock_action_plans ADD COLUMN material_updated_at TEXT")
         if "updated_at" not in existing:
             conn.execute("ALTER TABLE stock_action_plans ADD COLUMN updated_at TEXT")
 
@@ -99,17 +126,33 @@ class StockPlanStore:
     def save_plan(self, ticker: str, values: dict) -> dict:
         cleaned = _empty_plan(ticker)
         for field in NUMERIC_PLAN_FIELDS:
-            cleaned[field] = _to_number(values.get(field))
+            cleaned[field] = _to_number(values.get(field, values.get(_camel_case(field))))
         for field in TEXT_PLAN_FIELDS:
             if field == "position_class":
                 cleaned[field] = _clean_position_class(values.get(field, values.get("positionClass")))
+            elif field == "plan_type":
+                cleaned[field] = _clean_plan_type(values.get(field, values.get("planType")))
             elif field == "buy_plan_tranches_json":
                 cleaned[field] = _clean_json_text(values.get(field, values.get("buy_plan_tranches")))
             else:
-                cleaned[field] = _clean_text(values.get(field))
-        cleaned["updated_at"] = datetime.now(timezone.utc).isoformat()
+                cleaned[field] = _clean_text(values.get(field, values.get(_camel_case(field))))
+        now = datetime.now(timezone.utc).isoformat()
+        existing_created_at = _clean_text(values.get("created_at"))
+        if not existing_created_at:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT created_at FROM stock_action_plans WHERE ticker = ?",
+                    (ticker.upper(),),
+                ).fetchone()
+            existing_created_at = _clean_text(row[0]) if row and row[0] else ""
+        cleaned["created_at"] = existing_created_at or now
+        existing_material_updated_at = _clean_text(values.get("material_updated_at"))
+        if not existing_material_updated_at:
+            existing_material_updated_at = _clean_text(values.get("materialUpdatedAt"))
+        cleaned["material_updated_at"] = existing_material_updated_at or now
+        cleaned["updated_at"] = now
 
-        fields = [*NUMERIC_PLAN_FIELDS, *TEXT_PLAN_FIELDS, "updated_at"]
+        fields = [*NUMERIC_PLAN_FIELDS, *TEXT_PLAN_FIELDS, "created_at", "material_updated_at", "updated_at"]
         columns = ["ticker", *fields]
         placeholders = ", ".join("?" for _ in columns)
         assignments = ", ".join(f"{field} = excluded.{field}" for field in fields)
@@ -146,7 +189,74 @@ def _empty_plan(ticker: str) -> dict:
         **{field: None for field in NUMERIC_PLAN_FIELDS},
         **{field: "" for field in TEXT_PLAN_FIELDS},
         "buy_plan_tranches": [],
+        "created_at": None,
+        "material_updated_at": None,
         "updated_at": None,
+    }
+
+
+def get_buy_plan_status(
+    plan: dict,
+    *,
+    current_price: object = None,
+    is_stale: bool = False,
+    prior_level_quantities: dict[str, float] | None = None,
+) -> dict:
+    levels = _plan_levels_with_remaining(plan, prior_level_quantities or {})
+    plan_type = _clean_plan_type(plan.get("plan_type") or plan.get("planType"))
+    if not plan_type and not levels:
+        return _plan_status("no_plan", None, None, "暂无计划")
+    if is_stale:
+        return _plan_status("stale_or_missing_data", None, None, "价格数据缺失或过期")
+    if not _clean_text(plan.get("thesis")) or not _clean_text(plan.get("invalidation_condition")):
+        return _plan_status("needs_review", levels[0] if levels else None, None, "计划缺少 thesis 或失效条件")
+    if not levels:
+        return _plan_status("needs_review", None, None, "计划缺少买入档位")
+    next_level = next((level for level in levels if (level.get("remaining_quantity") or 0) > 0), None)
+    if next_level is None:
+        return _plan_status("executed", levels[-1], 0, "计划档位已执行完")
+    price = _to_number(current_price)
+    trigger = next_level.get("trigger_price")
+    if price is None or trigger is None:
+        return _plan_status("stale_or_missing_data", next_level, None, "缺少当前价或触发价")
+    distance_pct = (price - trigger) / trigger * 100 if trigger else None
+    if price <= trigger:
+        return _plan_status("triggered", next_level, distance_pct, "当前价已触发计划档位")
+    if distance_pct is not None and distance_pct <= 3:
+        return _plan_status("near_trigger", next_level, distance_pct, "距离计划档位 3% 以内")
+    return _plan_status("waiting", next_level, distance_pct, "等待触发")
+
+
+def _plan_levels_with_remaining(plan: dict, prior: dict[str, float]) -> list[dict]:
+    raw = plan.get("buy_plan_tranches") or []
+    levels: list[dict] = []
+    for index, item in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(item, dict):
+            continue
+        label = _clean_text(item.get("label")) or f"第 {index + 1} 档"
+        trigger = _to_number(item.get("trigger_price", item.get("price")))
+        qty = _to_number(item.get("planned_quantity", item.get("shares")))
+        bought = float(prior.get(label) or 0)
+        remaining = None if qty is None else max(0.0, qty - bought)
+        levels.append(
+            {
+                "label": label,
+                "trigger_price": trigger,
+                "planned_quantity": qty,
+                "remaining_quantity": remaining,
+                "note": _clean_text(item.get("note")),
+            }
+        )
+    return levels
+
+
+def _plan_status(status: str, level: dict | None, distance_pct: float | None, message: str) -> dict:
+    return {
+        "status": status,
+        "label": BUY_PLAN_STATUS_LABELS.get(status, status),
+        "level": level,
+        "distance_pct": distance_pct,
+        "message": message,
     }
 
 
@@ -170,6 +280,16 @@ def _clean_text(value) -> str:
 def _clean_position_class(value) -> str:
     text = _clean_text(value).upper()
     return text if text in {"A", "B", "C"} else ""
+
+
+def _clean_plan_type(value) -> str:
+    text = _clean_text(value).lower()
+    return text if text in VALID_PLAN_TYPES else ""
+
+
+def _camel_case(value: str) -> str:
+    parts = value.split("_")
+    return parts[0] + "".join(part.capitalize() for part in parts[1:])
 
 
 def _clean_json_text(value) -> str:

@@ -105,6 +105,284 @@ def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
         assert counts.get("NVDA", 0) == 0
 
 
+def test_blocked_radar_buy_with_incomplete_planned_ladder_snapshot_cannot_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NOK",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 50,
+                "price": 4.8,
+                "radarDecision": "BLOCK_CHASE",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": ["current price is in or above chase zone"],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "C",
+                "plannedLadderBuy": True,
+                "planMatchStatus": "allow_planned_add",
+                "buyPlanId": "NOK",
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NOK")
+
+        assert result["status"] == "failed"
+        assert "计划内加仓快照" in result["error"]
+        assert position is None
+
+
+def test_data_missing_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NOK",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 50,
+                "price": 4.8,
+                "radarDecision": "DATA_MISSING",
+                "radarDataStatus": "DATA_MISSING",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": [],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "C",
+                "plannedLadderBuy": True,
+                "planMatchStatus": "allow_planned_add",
+                "buyPlanId": "NOK",
+                "buyPlanLevel": "第一笔买入",
+                "planTriggerPrice": 5,
+                "planRemainingQuantity": 100,
+                "planMaxPositionPct": 12,
+                "planBlockReasons": [],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NOK")
+
+        assert result["status"] == "failed"
+        assert "计划内加仓快照" in result["error"]
+        assert position is None
+
+
+def test_stale_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NOK",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "add",
+                "quantity": 50,
+                "price": 4.8,
+                "radarDecision": "BLOCK_CHASE",
+                "radarDataStatus": "OK",
+                "radarIsStale": True,
+                "radarBlocked": False,
+                "radarBlockReasons": [],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "C",
+                "plannedLadderBuy": True,
+                "planMatchStatus": "allow_planned_add",
+                "buyPlanId": "NOK",
+                "buyPlanLevel": "第一笔买入",
+                "planTriggerPrice": 5,
+                "planRemainingQuantity": 100,
+                "planMaxPositionPct": 12,
+                "planBlockReasons": [],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NOK")
+
+        assert result["status"] == "failed"
+        assert "计划内加仓快照" in result["error"]
+        assert position is None
+
+
+def test_planned_ladder_snapshot_with_block_reasons_cannot_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NOK",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 50,
+                "price": 4.8,
+                "radarDecision": "BLOCK_CHASE",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": [],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "C",
+                "plannedLadderBuy": True,
+                "planMatchStatus": "allow_planned_add",
+                "buyPlanId": "NOK",
+                "buyPlanLevel": "第一笔买入",
+                "planTriggerPrice": 5,
+                "planRemainingQuantity": 100,
+                "planMaxPositionPct": 12,
+                "planBlockReasons": ["计划仍有阻断原因"],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NOK")
+
+        assert result["status"] == "failed"
+        assert "计划内加仓快照" in result["error"]
+        assert position is None
+
+
+def test_blocked_radar_buy_with_incomplete_starter_snapshot_cannot_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "AVGO",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 25,
+                "price": 406,
+                "radarDecision": "BLOCK_CHASE",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": ["current price is in or above chase zone"],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "A",
+                "entryMode": "starter_position",
+                "starterPosition": True,
+                "starterMatchStatus": "allow_starter_position",
+                "starterMaxPct": 7,
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("AVGO")
+
+        assert result["status"] == "failed"
+        assert "计划内加仓" in result["error"]
+        assert position is None
+
+
+def test_wait_radar_buy_with_valid_starter_snapshot_can_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "AVGO",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 25,
+                "price": 406,
+                "radarDecision": "WAIT",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": [
+                    "current price is above the discipline buy zone",
+                    "财报后大跌 / 高波动：不等同于追高，但仍需遵守底仓上限。",
+                ],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "A",
+                "entryMode": "starter_position",
+                "starterPosition": True,
+                "starterMatchStatus": "allow_starter_position",
+                "starterMaxPct": 7,
+                "starterPositionBeforePct": 0,
+                "starterPositionAfterPct": 6.8,
+                "starterBlockReasons": [],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("AVGO")
+
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 25
+
+
+def test_block_chase_radar_buy_cannot_be_synced_by_starter_snapshot() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "AVGO",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 25,
+                "price": 406,
+                "radarDecision": "BLOCK_CHASE",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": ["current price is in or above chase zone"],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "A",
+                "entryMode": "starter_position",
+                "starterPosition": True,
+                "starterMatchStatus": "allow_starter_position",
+                "starterMaxPct": 7,
+                "starterPositionBeforePct": 0,
+                "starterPositionAfterPct": 6.8,
+                "starterBlockReasons": [],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("AVGO")
+
+        assert result["status"] == "failed"
+        assert result["error"]
+        assert position is None
+
+
+def test_starter_snapshot_with_block_reasons_cannot_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "AVGO",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 25,
+                "price": 406,
+                "radarDecision": "WAIT",
+                "radarDataStatus": "OK",
+                "radarIsStale": False,
+                "radarBlocked": False,
+                "radarBlockReasons": ["current price is above the discipline buy zone"],
+                "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "A",
+                "entryMode": "starter_position",
+                "starterPosition": True,
+                "starterMatchStatus": "allow_starter_position",
+                "starterMaxPct": 7,
+                "starterPositionBeforePct": 0,
+                "starterPositionAfterPct": 6.8,
+                "starterBlockReasons": ["缺少后续加仓计划"],
+            },
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("AVGO")
+
+        assert result["status"] == "failed"
+        assert position is None
+
+
 def test_radar_observation_only_buy_cannot_sync_to_portfolio() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)

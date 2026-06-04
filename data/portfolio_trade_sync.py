@@ -136,8 +136,25 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
                 entry.radar_blocked,
                 entry.radar_observation_only,
                 entry.radar_decision,
+                entry.radar_data_status,
+                entry.radar_is_stale,
                 entry.gate_checked_at,
-                entry.position_class
+                entry.position_class,
+                entry.quantity,
+                entry.buy_plan_id,
+                entry.buy_plan_level,
+                entry.planned_ladder_buy,
+                entry.plan_trigger_price,
+                entry.plan_remaining_quantity,
+                entry.plan_max_position_pct,
+                entry.plan_match_status,
+                entry.plan_block_reasons_json,
+                entry.starter_position,
+                entry.starter_max_pct,
+                entry.starter_position_before_pct,
+                entry.starter_position_after_pct,
+                entry.starter_match_status,
+                entry.starter_block_reasons_json
             FROM trade_journal_entries AS entry
             LEFT JOIN trade_portfolio_sync_logs AS log
                 ON log.entry_id = entry.id AND log.status = 'synced'
@@ -146,7 +163,34 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
             """
         ).fetchall()
     counts: dict[str, int] = {}
-    for symbol, action_type, discipline_status, blockers_json, radar_blocked, radar_observation_only, radar_decision, gate_checked_at, position_class in rows:
+    for (
+        symbol,
+        action_type,
+        discipline_status,
+        blockers_json,
+        radar_blocked,
+        radar_observation_only,
+        radar_decision,
+        radar_data_status,
+        radar_is_stale,
+        gate_checked_at,
+        position_class,
+        quantity,
+        buy_plan_id,
+        buy_plan_level,
+        planned_ladder_buy,
+        plan_trigger_price,
+        plan_remaining_quantity,
+        plan_max_position_pct,
+        plan_match_status,
+        plan_block_reasons_json,
+        starter_position,
+        starter_max_pct,
+        starter_position_before_pct,
+        starter_position_after_pct,
+        starter_match_status,
+        starter_block_reasons_json,
+    ) in rows:
         entry = {
             "symbol": symbol,
             "action_type": action_type,
@@ -155,8 +199,25 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
             "radar_blocked": radar_blocked,
             "radar_observation_only": radar_observation_only,
             "radar_decision": radar_decision,
+            "radar_data_status": radar_data_status,
+            "radar_is_stale": radar_is_stale,
             "gate_checked_at": gate_checked_at,
             "position_class": position_class,
+            "quantity": quantity,
+            "buy_plan_id": buy_plan_id,
+            "buy_plan_level": buy_plan_level,
+            "planned_ladder_buy": planned_ladder_buy,
+            "plan_trigger_price": plan_trigger_price,
+            "plan_remaining_quantity": plan_remaining_quantity,
+            "plan_max_position_pct": plan_max_position_pct,
+            "plan_match_status": plan_match_status,
+            "plan_block_reasons_json": plan_block_reasons_json,
+            "starter_position": starter_position,
+            "starter_max_pct": starter_max_pct,
+            "starter_position_before_pct": starter_position_before_pct,
+            "starter_position_after_pct": starter_position_after_pct,
+            "starter_match_status": starter_match_status,
+            "starter_block_reasons_json": starter_block_reasons_json,
         }
         if _entry_sync_blocked_by_discipline(entry):
             continue
