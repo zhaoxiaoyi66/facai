@@ -45,6 +45,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "core_position_min_pct": "REAL",
     "trading_position_max_pct": "REAL",
     "classification_note": "TEXT",
+    "target_sell_price": "REAL",
     "planned_sell_pct": "REAL",
     "actual_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
@@ -343,6 +344,7 @@ class TradeJournalStore:
                     core_position_min_pct,
                     trading_position_max_pct,
                     classification_note,
+                    target_sell_price,
                     planned_sell_pct,
                     actual_sell_pct,
                     sell_reason_type,
@@ -366,7 +368,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -384,6 +386,7 @@ class TradeJournalStore:
                     cleaned["core_position_min_pct"],
                     cleaned["trading_position_max_pct"],
                     cleaned["classification_note"],
+                    cleaned["target_sell_price"],
                     cleaned["planned_sell_pct"],
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
@@ -435,6 +438,7 @@ class TradeJournalStore:
                     core_position_min_pct = ?,
                     trading_position_max_pct = ?,
                     classification_note = ?,
+                    target_sell_price = ?,
                     planned_sell_pct = ?,
                     actual_sell_pct = ?,
                     sell_reason_type = ?,
@@ -474,6 +478,7 @@ class TradeJournalStore:
                     cleaned["core_position_min_pct"],
                     cleaned["trading_position_max_pct"],
                     cleaned["classification_note"],
+                    cleaned["target_sell_price"],
                     cleaned["planned_sell_pct"],
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
@@ -1005,7 +1010,8 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
         "decision_snapshot_id": _optional_int(values.get("decision_snapshot_id"), "decision_snapshot_id"),
         "notes": _clean_text(values.get("notes")),
         "decision_mood": _clean_decision_mood(_value(values, "decisionMood", "decision_mood")),
-        "created_at": _now(),
+        "target_sell_price": _optional_non_negative_number(_value(values, "targetSellPrice", "target_sell_price"), "target_sell_price"),
+        "created_at": _clean_optional_text(_value(values, "createdAt", "created_at")) or _now(),
     }
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
     cleaned.update(_clean_radar_gate_snapshot(action_type, values))

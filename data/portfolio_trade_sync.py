@@ -89,9 +89,10 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
             {
                 "quantity": preview["afterQuantity"],
                 "average_cost": preview["afterAverageCost"],
+                "position_tier": _entry_position_tier(entry, current),
                 "target_position_pct": current.get("target_position_pct"),
                 "max_acceptable_position_pct": current.get("max_acceptable_position_pct"),
-                "planned_sell_price": current.get("planned_sell_price"),
+                "planned_sell_price": entry.get("target_sell_price") or current.get("planned_sell_price"),
                 "first_trim_price": current.get("first_trim_price"),
                 "second_trim_price": current.get("second_trim_price"),
                 "review_price": current.get("review_price"),
@@ -135,7 +136,8 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
                 entry.radar_blocked,
                 entry.radar_observation_only,
                 entry.radar_decision,
-                entry.gate_checked_at
+                entry.gate_checked_at,
+                entry.position_class
             FROM trade_journal_entries AS entry
             LEFT JOIN trade_portfolio_sync_logs AS log
                 ON log.entry_id = entry.id AND log.status = 'synced'
@@ -144,7 +146,7 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
             """
         ).fetchall()
     counts: dict[str, int] = {}
-    for symbol, action_type, discipline_status, blockers_json, radar_blocked, radar_observation_only, radar_decision, gate_checked_at in rows:
+    for symbol, action_type, discipline_status, blockers_json, radar_blocked, radar_observation_only, radar_decision, gate_checked_at, position_class in rows:
         entry = {
             "symbol": symbol,
             "action_type": action_type,
@@ -154,6 +156,7 @@ def unsynced_trade_counts_by_symbol(path: Path = CACHE_PATH) -> dict[str, int]:
             "radar_observation_only": radar_observation_only,
             "radar_decision": radar_decision,
             "gate_checked_at": gate_checked_at,
+            "position_class": position_class,
         }
         if _entry_sync_blocked_by_discipline(entry):
             continue
@@ -252,6 +255,14 @@ def _position_is_active(position: dict[str, Any]) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() not in {"0", "false", "no", "n", "off"}
+
+
+def _entry_position_tier(entry: dict[str, Any], current: dict[str, Any]) -> str | None:
+    position_class = str(entry.get("position_class") or "").strip().upper()
+    if position_class in {"A", "B", "C"}:
+        return position_class
+    current_tier = str(current.get("position_tier") or "").strip().upper()
+    return current_tier if current_tier in {"A", "B", "C"} else None
 
 
 def _ensure_sync_schema(path: Path) -> None:

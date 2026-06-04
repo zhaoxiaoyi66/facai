@@ -24,6 +24,7 @@ from data.portfolio_trade_sync import (
     preview_trade_portfolio_effect,
     preview_trade_values_portfolio_effect,
 )
+from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
 from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
@@ -43,6 +44,10 @@ ACTION_OPTIONS = {
     "放弃操作": "skip",
 }
 ACTION_LABELS = {value: label for label, value in ACTION_OPTIONS.items()}
+SELL_ENTRY_ACTION_OPTIONS = {
+    "减仓": "trim",
+    "清仓": "sell",
+}
 SELL_DISCIPLINE_ACTIONS = {"sell", "trim"}
 CLASSIFICATION_ACTIONS = {"buy", "add"}
 POSITION_CLASS_OPTIONS = {
@@ -195,21 +200,45 @@ def _render_editor(store: TradeJournalStore) -> None:
         st.session_state["trade_journal_notice"] = ("error", "交易记录不存在或已删除。")
         st.rerun()
     editor_open = bool(st.session_state.get("trade_journal_editor_open", False)) or editing_entry is not None
-    title = "编辑交易记录" if editing_entry else "新增交易记录"
+    title = "编辑交易记录" if editing_entry else "卖出 / 减仓记录"
     st.markdown('<div id="trade-journal-editor"></div>', unsafe_allow_html=True)
     with st.expander(title, expanded=editor_open):
         st.session_state["trade_journal_editor_open"] = False
+        active_positions = _active_sell_positions()
+        if editing_entry is None:
+            st.caption("买入/加仓请前往组合持仓页操作；这里只记录减仓、清仓，并继续走卖出纪律门禁。")
+            if not active_positions:
+                st.info("当前没有可卖出的 active 持仓。")
+                return
         top_cols = st.columns([1.1, 1.2, 1])
-        symbol = top_cols[0].text_input("股票代码", value=_entry_value(editing_entry, "symbol"), key=_editor_key("symbol", editing_id)).strip().upper()
-        action_default = _action_label_for_entry(editing_entry)
-        action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action-stock", editing_id))
+        selected_position = None
+        if editing_entry is None:
+            position_options = [str(row.get("symbol") or "").strip().upper() for row in active_positions]
+            label_by_symbol = {str(row.get("symbol") or "").strip().upper(): _sell_position_option_label(row) for row in active_positions}
+            symbol = top_cols[0].selectbox(
+                "持仓",
+                position_options,
+                format_func=lambda value: label_by_symbol.get(str(value), str(value)),
+                key=_editor_key("symbol", editing_id),
+            ).strip().upper()
+            selected_position = next((row for row in active_positions if str(row.get("symbol") or "").strip().upper() == symbol), None)
+            action_options = list(SELL_ENTRY_ACTION_OPTIONS)
+            action_label = top_cols[1].selectbox("操作类型", action_options, key=_editor_key("action-stock", editing_id))
+        else:
+            symbol = top_cols[0].text_input("股票代码", value=_entry_value(editing_entry, "symbol"), key=_editor_key("symbol", editing_id)).strip().upper()
+            action_default = _action_label_for_entry(editing_entry)
+            action_label = top_cols[1].selectbox("操作类型", list(ACTION_OPTIONS), index=list(ACTION_OPTIONS).index(action_default), key=_editor_key("action-stock", editing_id))
         trade_date = top_cols[2].date_input("日期", value=_entry_date(editing_entry), key=_editor_key("date", editing_id))
-        action_type = ACTION_OPTIONS[action_label]
+        action_type = SELL_ENTRY_ACTION_OPTIONS.get(action_label, ACTION_OPTIONS.get(action_label, "trim"))
 
-        stock_plan = _load_stock_discipline_profile(symbol)
+        stock_plan = _stock_plan_with_position_tier(_load_stock_discipline_profile(symbol), selected_position)
 
         trade_cols = st.columns([1, 1, 1.2, 1])
-        quantity = trade_cols[0].text_input("数量", value=_entry_number_text(editing_entry, "quantity"), key=_editor_key("quantity", editing_id))
+        quantity_default = _entry_number_text(editing_entry, "quantity")
+        if editing_entry is None and action_type == "sell":
+            selected_quantity = _number((selected_position or {}).get("quantity"))
+            quantity_default = "" if selected_quantity is None else f"{selected_quantity:g}"
+        quantity = trade_cols[0].text_input("数量", value=quantity_default, key=_editor_key("quantity", editing_id))
         price = trade_cols[1].text_input("价格", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
         mood_default = _decision_mood_label_for_entry(editing_entry)
         mood_label = trade_cols[2].selectbox("交易心理标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
@@ -220,6 +249,8 @@ def _render_editor(store: TradeJournalStore) -> None:
             key=_editor_key("snapshot-id", editing_id),
         )
         notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
+        if editing_entry is None and selected_position:
+            _render_sell_reference_card(symbol, selected_position)
 
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
         discipline_result = None
@@ -262,6 +293,10 @@ def _render_editor(store: TradeJournalStore) -> None:
 
         button_label = "保存修改" if editing_entry else "保存记录"
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
+            quantity_error = _sell_quantity_validation_error(action_type, quantity, portfolio_preview.get("currentQuantity"))
+            if quantity_error:
+                st.session_state["trade_journal_notice"] = ("error", quantity_error)
+                st.rerun()
             entry_values = {
                 "trade_date": trade_date.isoformat(),
                 "action_type": action_type,
@@ -272,6 +307,8 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "notes": notes,
                 "syncToPortfolio": sync_to_portfolio,
             }
+            if selected_position:
+                entry_values["targetSellPrice"] = selected_position.get("plannedSellPrice")
             entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None, action_type=action_type))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
@@ -409,6 +446,103 @@ def _pct_value_text(value: object) -> str:
     return BLANK_TEXT if number is None else f"{number:.1f}%"
 
 
+def _active_sell_positions() -> list[dict]:
+    try:
+        rows = list((build_portfolio_view_model().get("rows") or []))
+    except Exception:
+        return []
+    return [
+        row
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+        and (_number(row.get("quantity")) or 0) > 0
+    ]
+
+
+def _sell_position_option_label(row: dict) -> str:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    quantity = _quantity_text(row.get("quantity"))
+    average_cost = _money_text(row.get("averageCost"))
+    tier = str(row.get("positionTier") or "").strip().upper()
+    tier_text = f"{tier}类" if tier in {"A", "B", "C"} else "需设置等级"
+    target = _money_text(row.get("plannedSellPrice"))
+    return f"{symbol}｜持有 {quantity}｜均价 {average_cost}｜{tier_text}｜目标卖出价 {target}"
+
+
+def _stock_plan_with_position_tier(stock_plan: dict, position_row: dict | None) -> dict:
+    if not position_row:
+        return stock_plan
+    tier = str(position_row.get("positionTier") or "").strip().upper()
+    if tier not in {"A", "B", "C"}:
+        return stock_plan
+    core, trading = POSITION_CLASS_DEFAULTS.get(tier, (None, None))
+    merged = dict(stock_plan or {})
+    merged["position_class"] = tier
+    if core is not None:
+        merged["core_position_min_pct"] = core
+    if trading is not None:
+        merged["trading_position_max_pct"] = trading
+    return merged
+
+
+def _render_sell_reference_card(symbol: str, position_row: dict) -> None:
+    try:
+        report = build_cached_ai_stock_radar_report(symbol).to_dict()
+    except Exception:
+        report = {}
+    current_price = _first_number(position_row.get("currentPrice"), report.get("current_price"))
+    target_sell = _number(position_row.get("plannedSellPrice"))
+    distance_to_target = None
+    if current_price is not None and target_sell is not None and target_sell > 0:
+        distance_to_target = (current_price - target_sell) / target_sell * 100
+    zone_status = str(report.get("price_position") or report.get("zone_status") or "ZONE_MISSING")
+    buy_zone_text = _radar_zone_text(report.get("buy_zone"))
+    reference_rows = [
+        ("当前价", _money_text(current_price)),
+        ("Radar 买区", buy_zone_text),
+        ("区间状态", _zone_status_text(zone_status)),
+        ("目标卖出价", _money_text(target_sell)),
+        ("距目标", _percent_or_dash(distance_to_target)),
+        ("回补参考", buy_zone_text),
+    ]
+    hint = _sell_reference_hint(zone_status, current_price, target_sell)
+    metrics_html = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in reference_rows
+    )
+    st.markdown(
+        f"""
+        <section class="trade-sell-reference-card">
+          <div><b>卖出纪律参考</b><span>{escape(hint)}</span></div>
+          <div class="trade-portfolio-sync-grid">{metrics_html}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _zone_status_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "IN_BUY_ZONE": "在纪律买区",
+        "ABOVE_BUY_ZONE": "高于买区",
+        "IN_CHASE_ZONE": "进入追高区",
+        "BELOW_BUY_ZONE": "低于买区，需复核",
+        "ZONE_MISSING": "区间缺失",
+    }.get(text, text or BLANK_TEXT)
+
+
+def _sell_reference_hint(zone_status: str, current_price: float | None, target_sell: float | None) -> str:
+    status = str(zone_status or "").strip().upper()
+    if status in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"}:
+        return "当前并非自然卖出区；卖出需要证明基本面恶化、仓位超限或交易计划触发。"
+    if current_price is not None and target_sell is not None and target_sell > 0 and current_price < target_sell:
+        return "当前价低于买入时设定的卖出目标，先复核是否真的需要卖。"
+    if status == "IN_CHASE_ZONE":
+        return "价格进入追高区，可复核是否按计划减交易仓，核心仓仍需纪律门禁。"
+    return "卖出前先看目标价、买区位置和回补计划，避免临场卖飞。"
+
+
 def _render_buy_classification_editor(
     symbol: str,
     *,
@@ -503,6 +637,20 @@ def _discipline_result_blocked(result: object) -> bool:
     return str(getattr(result, "disciplineStatus", "") or "") == "blocked"
 
 
+def _sell_quantity_validation_error(action_type: str, quantity: object, current_quantity: object) -> str:
+    if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
+        return ""
+    sell_quantity = _number(quantity)
+    current = _number(current_quantity)
+    if sell_quantity is None or sell_quantity <= 0:
+        return "卖出/减仓数量必须大于 0。"
+    if current is None or current <= 0:
+        return "只能卖出当前组合持仓里已有的股票。"
+    if sell_quantity > current:
+        return f"卖出数量不能超过当前持仓：当前 {_quantity_text(current)}，本次 {_quantity_text(sell_quantity)}。"
+    return ""
+
+
 def _render_portfolio_sync_preview(preview: dict, *, checked: bool, discipline_blocked: bool = False) -> None:
     tone = "warning" if preview.get("status") == "failed" or discipline_blocked else "ok"
     title = "组合持仓同步预览" if checked else "仅保存交易日志，不同步持仓"
@@ -566,7 +714,10 @@ def _render_trading_discipline_check(
     actual_sell_pct = _actual_sell_pct(trade_quantity, current_quantity)
     st.session_state[f"trade-discipline-actual-sell-pct-{key_suffix}"] = actual_sell_pct
     st.session_state[f"trade-discipline-current-quantity-{key_suffix}"] = _number(current_quantity)
-    planned_sell_pct = cols[1].text_input("计划卖出比例（%）", value=_entry_percent_text(editing_entry, "planned_sell_pct", "10"), key=f"trade-discipline-planned-sell-pct-{key_suffix}")
+    computed_sell_pct = "" if actual_sell_pct is None else f"{actual_sell_pct * 100:.2f}"
+    st.session_state[f"trade-discipline-planned-sell-pct-{key_suffix}"] = computed_sell_pct
+    cols[1].metric("卖出比例", _pct_point_text(actual_sell_pct))
+    planned_sell_pct = computed_sell_pct
     reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
     thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
     position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")

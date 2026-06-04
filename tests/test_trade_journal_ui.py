@@ -5,6 +5,27 @@ import inspect
 from ui import trade_journal
 
 
+def test_new_trade_entry_actions_are_sell_trim_only() -> None:
+    assert set(trade_journal.SELL_ENTRY_ACTION_OPTIONS.values()) == {"sell", "trim"}
+    assert "buy" not in trade_journal.SELL_ENTRY_ACTION_OPTIONS.values()
+    assert "add" not in trade_journal.SELL_ENTRY_ACTION_OPTIONS.values()
+
+
+def test_new_trade_entry_uses_active_position_dropdown() -> None:
+    source = inspect.getsource(trade_journal._render_editor)
+
+    assert "_active_sell_positions" in source
+    assert "SELL_ENTRY_ACTION_OPTIONS" in source
+    assert "买入/加仓请前往组合持仓页操作" in source
+
+
+def test_sell_quantity_cannot_exceed_current_position() -> None:
+    assert trade_journal._sell_quantity_validation_error("sell", 11, 10)
+    assert trade_journal._sell_quantity_validation_error("trim", 11, 10)
+    assert trade_journal._sell_quantity_validation_error("sell", 10, 10) == ""
+    assert trade_journal._sell_quantity_validation_error("buy", 11, 10) == ""
+
+
 def test_reentry_plan_suggestion_uses_market_context_helpers() -> None:
     source = inspect.getsource(trade_journal._build_reentry_plan_suggestion)
 

@@ -12,6 +12,7 @@ from data.portfolio import (
     position_tier_badge_class,
 )
 from data.portfolio_reconciliation import build_portfolio_reconciliation
+from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.stock_plan import StockPlanStore
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
@@ -52,6 +53,15 @@ POSITION_TIER_FORM_OPTIONS = {
     "B类：中等仓位/优质但非最高确定性": "B",
     "C类：交易仓/高波动/小仓观察": "C",
 }
+PORTFOLIO_BUY_MOOD_OPTIONS = {
+    "请选择": "",
+    "深思熟虑": "well_reasoned",
+    "计划内执行": "plan_execution",
+    "FOMO": "fomo",
+    "焦虑": "anxiety",
+    "抄底冲动": "bottom_fishing_impulse",
+    "复仇交易": "revenge_trade",
+}
 
 
 def _render_editor(
@@ -60,109 +70,12 @@ def _render_editor(
     rows: list[dict],
     settings: dict,
 ) -> None:
-    position_open = bool(st.session_state.get("portfolio_position_editor_open", False))
-    with st.expander("添加/编辑持仓", expanded=position_open):
-        st.session_state["portfolio_position_editor_open"] = False
-        symbols = [str(row.get("symbol") or "") for row in rows]
-        options = ["新增持仓", *symbols]
-        preferred = st.session_state.pop("portfolio_edit_symbol", "")
-        if preferred in options:
-            st.session_state["portfolio-edit-symbol"] = preferred
-        selected_index = options.index(preferred) if preferred in options else 0
-        selected = st.selectbox("编辑对象", options, index=selected_index, key="portfolio-edit-symbol")
-        editing = selected != "新增持仓"
-        current = position_store.get_position(selected) if editing else None
-        current = current or EMPTY_POSITION
-        watchlist_symbols = _available_watchlist_symbols(symbols)
-        form_key = _position_form_key(selected)
-        save_symbol = str(current.get("symbol") or "") if editing else ""
+    _render_portfolio_buy_add_form(position_store, rows)
+    _render_portfolio_settings_form(settings_store, settings)
+    return
 
-        with st.form("portfolio-position-form"):
-            st.markdown('<div class="portfolio-form-section">基础持仓</div>', unsafe_allow_html=True)
-            basic_cols = st.columns(2)
-            if editing:
-                symbol = basic_cols[0].text_input(
-                    "股票代码",
-                    value=str(current.get("symbol") or ""),
-                    disabled=True,
-                    key=f"{form_key}:symbol-disabled",
-                )
-            else:
-                _symbol_input_from_watchlist(basic_cols[0], watchlist_symbols, form_key)
-            quantity = basic_cols[1].text_input(
-                "持股数量",
-                value=_input_value(current.get("quantity")),
-                key=f"{form_key}:quantity",
-            )
-            tier_options = list(POSITION_TIER_FORM_OPTIONS.keys())
-            current_tier = str(current.get("position_tier") or "").strip().upper()
-            current_tier_label = next(
-                (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
-                tier_options[0],
-            )
-            st.selectbox(
-                "持仓等级",
-                tier_options,
-                index=tier_options.index(current_tier_label),
-                help="A/B/C 是当前持仓属性，必须手动选择，不自动按股票猜测。",
-                key=f"{form_key}:position_tier",
-            )
-            cost_cols = st.columns(2)
-            average_cost = cost_cols[0].text_input(
-                "平均成本",
-                value=_input_value(current.get("average_cost")),
-                key=f"{form_key}:average_cost",
-            )
-            cost_cols[1].write("")
 
-            st.markdown('<div class="portfolio-form-section">计划参数</div>', unsafe_allow_html=True)
-            plan_cols = st.columns(2)
-            target_position_pct = plan_cols[0].text_input(
-                "目标仓位",
-                value=_input_value(current.get("target_position_pct")),
-                key=f"{form_key}:target_position_pct",
-            )
-            max_acceptable_position_pct = plan_cols[1].text_input(
-                "最大可接受仓位",
-                value=_input_value(current.get("max_acceptable_position_pct")),
-                key=f"{form_key}:max_acceptable_position_pct",
-            )
-            sell_cols = st.columns(2)
-            planned_sell_price = sell_cols[0].text_input(
-                "计划卖出价",
-                value=_input_value(current.get("planned_sell_price")),
-                key=f"{form_key}:planned_sell_price",
-            )
-            first_trim_price = sell_cols[1].text_input(
-                "第一减仓价",
-                value=_input_value(current.get("first_trim_price")),
-                key=f"{form_key}:first_trim_price",
-            )
-            review_cols = st.columns(2)
-            second_trim_price = review_cols[0].text_input(
-                "第二减仓价",
-                value=_input_value(current.get("second_trim_price")),
-                key=f"{form_key}:second_trim_price",
-            )
-            review_price = review_cols[1].text_input(
-                "复核线",
-                value=_input_value(current.get("review_price")),
-                key=f"{form_key}:review_price",
-            )
-            notes = st.text_area(
-                "备注",
-                value=str(current.get("notes") or ""),
-                height=96,
-                key=f"{form_key}:notes",
-            )
-
-            st.form_submit_button(
-                "保存持仓",
-                width="stretch",
-                on_click=_save_position_from_form,
-                args=(position_store, save_symbol, form_key),
-            )
-
+def _render_portfolio_settings_form(settings_store: PortfolioSettingsStore, settings: dict) -> None:
     with st.expander("组合设置", expanded=False):
         with st.form("portfolio-settings-form"):
             st.caption("组合总资产用于仓位基准；现金由总资产减当前证券市值自动得出。")
@@ -183,24 +96,94 @@ def _render_editor(
                     st.error(str(exc))
 
 
+def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows: list[dict]) -> None:
+    position_open = bool(st.session_state.get("portfolio_position_editor_open", False))
+    st.markdown('<div id="portfolio-trade-entry"></div>', unsafe_allow_html=True)
+    with st.expander("买入 / 加仓", expanded=position_open):
+        st.session_state["portfolio_position_editor_open"] = False
+        symbols = [str(row.get("symbol") or "") for row in rows]
+        options = ["手动输入", *symbols, *_available_watchlist_symbols(symbols)]
+        preferred = st.session_state.pop("portfolio_edit_symbol", "")
+        if preferred in options:
+            st.session_state["portfolio-edit-symbol"] = preferred
+        selected_index = options.index(preferred) if preferred in options else 0
+        selected = st.selectbox("交易对象", options, index=selected_index, key="portfolio-edit-symbol")
+        selected_symbol = "" if selected == "手动输入" else str(selected or "").strip().upper()
+        current = position_store.get_position(selected_symbol) if selected_symbol else None
+        current = current or EMPTY_POSITION
+        form_key = _position_form_key(selected)
+        with st.form("portfolio-buy-add-form"):
+            st.markdown('<div class="portfolio-form-section">真实买入 / 加仓</div>', unsafe_allow_html=True)
+            basic_cols = st.columns([1.2, 1, 1])
+            if selected_symbol:
+                basic_cols[0].text_input("股票代码", value=selected_symbol, disabled=True, key=f"{form_key}:symbol-disabled")
+            else:
+                basic_cols[0].text_input("股票代码", key=f"{form_key}:symbol")
+            basic_cols[1].text_input("数量", key=f"{form_key}:quantity")
+            basic_cols[2].text_input("成交价", key=f"{form_key}:price")
+            tier_options = list(POSITION_TIER_FORM_OPTIONS.keys())
+            current_tier = str(current.get("position_tier") or "").strip().upper()
+            current_tier_label = next(
+                (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
+                tier_options[0],
+            )
+            discipline_cols = st.columns([1.2, 1.2, 1])
+            discipline_cols[0].selectbox(
+                "持仓等级",
+                tier_options,
+                index=tier_options.index(current_tier_label),
+                help="A/B/C 是当前持仓属性，必须手动选择，不自动按股票猜测。",
+                key=f"{form_key}:position_tier",
+            )
+            discipline_cols[1].selectbox("交易心理", list(PORTFOLIO_BUY_MOOD_OPTIONS), key=f"{form_key}:decision_mood")
+            discipline_cols[2].text_input(
+                "卖出目标价",
+                value=_input_value(current.get("planned_sell_price")),
+                key=f"{form_key}:target_sell_price",
+            )
+            st.checkbox("仅观察记录，不同步到组合持仓", key=f"{form_key}:observation_only")
+            st.text_area("买入理由", height=86, key=f"{form_key}:buy_reason")
+            if st.form_submit_button("提交买入 / 加仓", width="stretch"):
+                _submit_portfolio_buy_add(form_key, selected_symbol)
+
+
+def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
+    symbol = selected_symbol or str(_form_value(form_key, "symbol") or "").strip().upper()
+    try:
+        result = submit_portfolio_buy_add(
+            symbol,
+            {
+                "quantity": _form_value(form_key, "quantity"),
+                "price": _form_value(form_key, "price"),
+                "position_tier": _form_position_tier(form_key),
+                "decision_mood": PORTFOLIO_BUY_MOOD_OPTIONS.get(str(_form_value(form_key, "decision_mood") or ""), ""),
+                "buy_reason": _form_value(form_key, "buy_reason"),
+                "target_sell_price": _form_value(form_key, "target_sell_price"),
+                "radar_observation_only": bool(_form_value(form_key, "observation_only")),
+            },
+        )
+    except ValueError as exc:
+        st.session_state["portfolio_save_notice"] = ("error", str(exc))
+        st.rerun()
+    gate = result.get("gate") or {}
+    entry = result.get("entry") or {}
+    sync = result.get("sync") or {}
+    if result.get("synced"):
+        message = f"{entry.get('symbol')} 买入/加仓已记录，组合持仓已同步。"
+        st.session_state["portfolio_save_notice"] = ("success", message)
+    elif bool(gate.get("is_blocked")) or bool(gate.get("is_observation_only")):
+        reasons = "；".join(str(item) for item in (gate.get("reasons") or gate.get("required_actions") or []) if str(item).strip())
+        message = f"{entry.get('symbol')} 已保存为交易日志，未同步组合持仓。{reasons}"
+        st.session_state["portfolio_save_notice"] = ("error", message)
+    else:
+        message = f"{entry.get('symbol')} 已保存为交易日志，但组合持仓同步失败：{sync.get('error') or '未知错误'}"
+        st.session_state["portfolio_save_notice"] = ("error", message)
+    st.rerun()
+    return
+
 def _available_watchlist_symbols(active_symbols: list[str]) -> list[str]:
     active = {symbol.upper() for symbol in active_symbols}
     return [symbol for symbol in load_watchlist() if symbol.upper() not in active]
-
-
-def _symbol_input_from_watchlist(column, watchlist_symbols: list[str], form_key: str) -> None:
-    if watchlist_symbols:
-        choice = column.selectbox(
-            "股票代码",
-            [*watchlist_symbols, "手动输入"],
-            help="优先从观察池选择。",
-            key=f"{form_key}:symbol-choice",
-        )
-        if choice != "手动输入":
-            return
-        column.text_input("手动股票代码", key=f"{form_key}:manual-symbol")
-        return
-    column.text_input("股票代码", help="观察池股票都已有持仓，可手动输入其他代码。", key=f"{form_key}:symbol")
 
 
 def _position_form_key(selected: str) -> str:
@@ -215,44 +198,6 @@ def _form_value(form_key: str, field: str) -> object:
 def _form_position_tier(form_key: str) -> str:
     selected = str(_form_value(form_key, "position_tier") or "").strip()
     return POSITION_TIER_FORM_OPTIONS.get(selected, selected).strip().upper()
-
-
-def _form_symbol(form_key: str, fallback: str) -> str:
-    if fallback:
-        return fallback
-    choice = str(_form_value(form_key, "symbol-choice") or "").strip()
-    if choice and choice != "手动输入":
-        return choice
-    return str(_form_value(form_key, "manual-symbol") or _form_value(form_key, "symbol") or "").strip()
-
-
-def _save_position_from_form(position_store: PortfolioPositionStore, symbol: str, form_key: str) -> None:
-    try:
-        position_tier = _form_position_tier(form_key)
-        if position_tier not in {"A", "B", "C"}:
-            raise ValueError("请选择持仓等级 A/B/C")
-        saved = position_store.save_position(
-            _form_symbol(form_key, symbol),
-            {
-                "quantity": _form_value(form_key, "quantity"),
-                "average_cost": _form_value(form_key, "average_cost"),
-                "position_tier": position_tier,
-                "target_position_pct": _form_value(form_key, "target_position_pct"),
-                "max_acceptable_position_pct": _form_value(form_key, "max_acceptable_position_pct"),
-                "planned_sell_price": _form_value(form_key, "planned_sell_price"),
-                "first_trim_price": _form_value(form_key, "first_trim_price"),
-                "second_trim_price": _form_value(form_key, "second_trim_price"),
-                "review_price": _form_value(form_key, "review_price"),
-                "notes": _form_value(form_key, "notes"),
-                "is_active": True,
-            },
-        )
-        saved_symbol = str(saved.get("symbol") or "").strip().upper()
-        st.session_state["portfolio-drawer-action-symbol"] = saved_symbol
-        st.session_state["portfolio_save_notice"] = ("success", f"{saved_symbol} 持仓已保存。")
-    except ValueError as exc:
-        st.session_state["portfolio_position_editor_open"] = True
-        st.session_state["portfolio_save_notice"] = ("error", str(exc))
 
 
 def _action_group_tone(key: object) -> str:
@@ -619,7 +564,6 @@ def render() -> None:
     }
     rows = [_attach_reconciliation(row, reconciliation_by_symbol) for row in rows]
 
-    _render_deactivate_dialog_if_needed(position_store)
     _render_overview_strip(view["summary"])
     _render_reconciliation_strip(reconciliation_rows)
     _render_action_panel(view["actionGroups"])
@@ -718,7 +662,6 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
     decision_store = DecisionLogStore()
     trade_store = TradeJournalStore()
     drawer_html = "".join(_drawer_html(row, plan_store, decision_store, trade_store) for row in rows)
-    archive_html = "".join(_archive_confirm_html(row) for row in rows)
     colgroup = (
         '<colgroup>'
         '<col class="portfolio-col-symbol">'
@@ -739,8 +682,7 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         f"<tbody>{body_html}</tbody>"
         "</table>"
         "</div>"
-        f"{drawer_html}"
-        f"{archive_html}",
+        f"{drawer_html}",
         unsafe_allow_html=True,
     )
 
@@ -748,8 +690,8 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
 def _position_row_html(row: dict) -> str:
     symbol = str(row.get("symbol") or "")
     drawer_id = _drawer_id(symbol)
-    archive_id = _archive_id(symbol)
     research_href = f"?page=detail&symbol={quote(symbol)}"
+    add_href = f"?page=portfolio&portfolioEdit={quote(symbol)}#portfolio-trade-entry"
     return (
         "<tr>"
         f'<td class="portfolio-symbol-cell">{_symbol_cell_html(row)}</td>'
@@ -759,9 +701,9 @@ def _position_row_html(row: dict) -> str:
         f"<td>{_system_cell_html(row)}</td>"
         f"<td>{_plan_cell_html(row)}</td>"
         '<td><div class="portfolio-row-actions">'
+        f'<a class="portfolio-view-link" href="{escape(add_href, quote=True)}" target="_self">加仓</a>'
         f'<a class="portfolio-view-link" href="#{escape(drawer_id)}">查看</a>'
         f'<a class="portfolio-view-link portfolio-research-link" href="{escape(research_href, quote=True)}" target="_self">研究</a>'
-        f'<a class="portfolio-view-link portfolio-archive-link" href="#{escape(archive_id)}">归档</a>'
         "</div></td>"
         "</tr>"
     )
@@ -784,29 +726,6 @@ def _position_tier_badge_html(tier: object) -> str:
         f'<em class="portfolio-tier-badge {escape(position_tier_badge_class(tier))}">'
         f"{escape(format_position_tier_label(tier))}"
         "</em>"
-    )
-
-
-def _archive_confirm_html(row: dict) -> str:
-    symbol = str(row.get("symbol") or "")
-    archive_id = _archive_id(symbol)
-    return (
-        f'<aside id="{escape(archive_id)}" class="portfolio-archive-modal">'
-        '<a class="portfolio-archive-backdrop" href="#portfolio-table"></a>'
-        '<div class="portfolio-archive-card">'
-        "<span>归档持仓</span>"
-        f"<strong>{escape(symbol)}</strong>"
-        "<p>确认后，该标的将从当前持仓视图移出，并作为历史持仓留档。</p>"
-        '<div class="portfolio-archive-actions">'
-        '<a href="#portfolio-table">取消</a>'
-        '<form method="get" action="/">'
-        '<input type="hidden" name="page" value="portfolio">'
-        f'<input type="hidden" name="portfolioArchiveConfirm" value="{escape(symbol, quote=True)}">'
-        '<button type="submit">确认归档</button>'
-        "</form>"
-        "</div>"
-        "</div>"
-        "</aside>"
     )
 
 
@@ -1133,40 +1052,9 @@ def _system_review_with_position(row: dict) -> bool:
     return quantity is not None and quantity > 0 and lane == "review"
 
 
-def _render_deactivate_dialog_if_needed(position_store: PortfolioPositionStore) -> None:
-    confirmed = str(st.query_params.get("portfolioArchiveConfirm", "")).strip().upper()
-    if confirmed:
-        position_store.deactivate_position(confirmed)
-        if "portfolioArchiveConfirm" in st.query_params:
-            st.query_params.pop("portfolioArchiveConfirm")
-        st.session_state["portfolio_save_notice"] = ("success", f"{confirmed} 已归档。")
-        st.rerun()
-    symbol = str(st.session_state.get("portfolio_archive_symbol", "")).strip().upper()
-    if symbol:
-        _confirm_deactivate_dialog(symbol, position_store)
-
-
-@st.dialog("归档持仓")
-def _confirm_deactivate_dialog(symbol: str, position_store: PortfolioPositionStore) -> None:
-    st.write(f"确认将 {symbol} 移入归档？归档后该标的将退出当前持仓视图，仅保留历史持仓记录。")
-    cols = st.columns(2)
-    if cols[0].button("确认归档", type="primary", width="stretch"):
-        position_store.deactivate_position(symbol)
-        st.session_state.pop("portfolio_archive_symbol", None)
-        st.rerun()
-    if cols[1].button("取消", width="stretch"):
-        st.session_state.pop("portfolio_archive_symbol", None)
-        st.rerun()
-
-
 def _drawer_id(symbol: str) -> str:
     safe = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"-", "_"})
     return f"portfolio-drawer-{safe or 'position'}"
-
-
-def _archive_id(symbol: str) -> str:
-    safe = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"-", "_"})
-    return f"portfolio-archive-{safe or 'position'}"
 
 
 def _money_or_dash(value: object, zero_dash: bool = False) -> str:
@@ -1392,7 +1280,7 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-col-weight { width: 130px; }
         .portfolio-col-system { width: 220px; }
         .portfolio-col-plan { width: 150px; }
-        .portfolio-col-actions { width: 130px; }
+        .portfolio-col-actions { width: 165px; }
         .portfolio-table.terminal th {
             height: 28px;
             padding: 0.28rem 0.52rem;
@@ -1410,7 +1298,7 @@ def _render_final_portfolio_styles() -> None:
         }
         .portfolio-table.terminal th:last-child,
         .portfolio-table.terminal td:last-child {
-            width: 130px;
+            width: 165px;
             padding-left: 0.4rem;
             padding-right: 0.4rem;
             text-align: center;
@@ -1538,99 +1426,6 @@ def _render_final_portfolio_styles() -> None:
             color: #52657F;
             background: transparent;
             border-color: transparent;
-        }
-        .portfolio-archive-link {
-            color: #6b7280;
-            background: transparent;
-            border-color: transparent;
-            padding-left: 0.2rem;
-            padding-right: 0.2rem;
-            font-weight: 650;
-        }
-        .portfolio-archive-link:hover {
-            color: #334155;
-            background: #FFFFFF;
-            border-color: rgba(15, 23, 42, 0.10);
-        }
-        .portfolio-archive-modal {
-            pointer-events: none;
-            position: fixed;
-            inset: 0;
-            z-index: 10000;
-            opacity: 0;
-            transition: opacity 0.14s ease;
-        }
-        .portfolio-archive-modal:target {
-            pointer-events: auto;
-            opacity: 1;
-        }
-        .portfolio-archive-backdrop {
-            position: absolute;
-            inset: 0;
-            background: rgba(15, 23, 42, 0.18);
-        }
-        .portfolio-archive-card {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: min(360px, calc(100vw - 2rem));
-            transform: translate(-50%, -50%);
-            border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 10px;
-            background: #FFFFFF;
-            box-shadow: 0 22px 52px rgba(15, 23, 42, 0.16);
-            padding: 1rem;
-        }
-        .portfolio-archive-card span {
-            display: block;
-            color: #64748b;
-            font-size: 0.72rem;
-            font-weight: 760;
-        }
-        .portfolio-archive-card strong {
-            display: block;
-            margin-top: 0.2rem;
-            color: #0f172a;
-            font-size: 1.05rem;
-            font-weight: 860;
-        }
-        .portfolio-archive-card p {
-            margin: 0.55rem 0 0;
-            color: #64748b;
-            font-size: 0.78rem;
-            line-height: 1.55;
-        }
-        .portfolio-archive-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 0.5rem;
-            margin-top: 0.85rem;
-        }
-        .portfolio-archive-actions form {
-            margin: 0;
-        }
-        .portfolio-archive-actions a,
-        .portfolio-archive-actions button {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            height: 30px;
-            padding: 0 0.8rem;
-            border-radius: 7px;
-            font-size: 0.72rem;
-            font-weight: 760;
-            text-decoration: none;
-            cursor: pointer;
-        }
-        .portfolio-archive-actions a {
-            border: 1px solid rgba(15, 23, 42, 0.10);
-            color: #334155;
-            background: #FFFFFF;
-        }
-        .portfolio-archive-actions button {
-            border: 1px solid #B42318;
-            color: #FFFFFF;
-            background: #B42318;
         }
         .portfolio-system-cell,
         .portfolio-plan-cell {
@@ -2008,14 +1803,6 @@ def _render_styles() -> None:
             color: #52657F;
             background: transparent;
             border-color: transparent;
-        }
-        .portfolio-archive-link {
-            color: #6b7280;
-            background: transparent;
-            border-color: transparent;
-            padding-left: 0.2rem;
-            padding-right: 0.2rem;
-            font-weight: 650;
         }
         .portfolio-detail-panel {
             margin: 0.65rem 0 1rem;

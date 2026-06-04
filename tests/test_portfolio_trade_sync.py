@@ -49,6 +49,9 @@ def _radar_allowed() -> dict:
         "radarObservationOnly": False,
         "radarBlockReasons": [],
         "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+        "positionClass": "A",
+        "corePositionMinPct": 0.6,
+        "tradingPositionMaxPct": 0.4,
     }
 
 
@@ -272,6 +275,24 @@ def test_sell_trade_sync_reduces_position_without_changing_average_cost() -> Non
         assert position["average_cost"] == 100
 
 
+def test_full_exit_must_come_from_sell_trade_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 5, "average_cost": 100, "position_tier": "A"})
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {"trade_date": "2026-05-30", "action_type": "sell", "quantity": 5, "price": 150},
+        )
+
+        result = apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NVDA")
+
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 0
+        assert position["is_active"] is True
+
+
 def test_blocked_sell_cannot_sync_to_portfolio() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
@@ -347,7 +368,8 @@ def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
 
 def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     sell_policy = trade_sync_policy({"action_type": "sell", "blockers": ["legacy_blocker"]})
-    buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"], "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00"})
+    buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"], "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00", "position_class": "A"})
+    missing_tier_policy = trade_sync_policy({"action_type": "buy", "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00"})
     missing_gate_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"]})
     radar_policy = trade_sync_policy({"action_type": "buy", "radar_blocked": 1})
     observation_policy = trade_sync_policy({"action_type": "add", "radar_observation_only": 1})
@@ -355,6 +377,7 @@ def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     assert sell_policy["canSync"] is False
     assert "BLOCK" in sell_policy["reason"]
     assert buy_policy["canSync"] is True
+    assert missing_tier_policy["canSync"] is False
     assert missing_gate_policy["canSync"] is False
     assert "Radar" in missing_gate_policy["reason"]
     assert radar_policy["canSync"] is False
