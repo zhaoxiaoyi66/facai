@@ -27,6 +27,7 @@ from data.portfolio_trade_sync import (
 from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
+from data.trade_performance import summarize_trade_performance
 from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
@@ -184,6 +185,7 @@ def render() -> None:
     symbols = store.list_symbols()
     entries = _load_entries(store, symbols)
     _render_summary(entries)
+    _render_trade_performance_stats(store, symbols)
     _render_unsynced_trade_sync_panel(entries)
     _render_entry_delete_confirmation(store)
     _render_entry_detail(store)
@@ -1700,6 +1702,228 @@ def _render_summary(entries: list[dict]) -> None:
         for label, value, caption in items
     )
     st.markdown(f'<div class="trade-journal-summary">{html}</div>', unsafe_allow_html=True)
+
+
+def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]) -> None:
+    with st.expander("战绩统计", expanded=True):
+        st.caption("只统计已同步到组合持仓的真实 buy/add/sell/trim；blocked 和仅观察记录不计入已实现盈亏。")
+        filters = _trade_performance_filters(symbols)
+        try:
+            result = summarize_trade_performance(path=store.path, filters=filters)
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            st.warning(f"战绩统计暂时无法读取：{_friendly_error(str(exc))}")
+            return
+        summary = result.get("summary") or {}
+        rows = result.get("realized_trades") or []
+        _render_trade_performance_cards(summary)
+        if not rows:
+            st.info("暂无已完成交易。只有已同步到组合持仓的卖出 / 减仓才会进入真实战绩。")
+            return
+        _render_trade_performance_table(rows)
+        with st.expander("匹配 lot 明细", expanded=False):
+            _render_trade_performance_lots(rows)
+        with st.expander("分组统计", expanded=False):
+            _render_trade_performance_groups(result.get("groups") or {})
+
+
+def _trade_performance_filters(symbols: list[str]) -> dict:
+    cols = st.columns([1.0, 1.0, 0.8, 1.0, 1.0])
+    period = cols[0].selectbox("时间范围", ["全部", "近30天", "近90天", "今年"], key="trade-performance-period")
+    ticker = cols[1].selectbox("Ticker", ["全部", *symbols], key="trade-performance-ticker")
+    tier = cols[2].selectbox("A/B/C", ["全部", "A", "B", "C"], key="trade-performance-tier")
+    outcome_label = cols[3].selectbox("盈亏", ["全部", "只看盈利", "只看亏损"], key="trade-performance-outcome")
+    issue_only = cols[4].checkbox("只看疑似纪律问题", key="trade-performance-discipline-only")
+    today = date.today()
+    date_from = None
+    if period == "近30天":
+        date_from = today - timedelta(days=30)
+    elif period == "近90天":
+        date_from = today - timedelta(days=90)
+    elif period == "今年":
+        date_from = date(today.year, 1, 1)
+    outcome = {"只看盈利": "profit", "只看亏损": "loss"}.get(outcome_label, "")
+    return {
+        "date_from": date_from,
+        "ticker": "" if ticker == "全部" else ticker,
+        "position_tier": "" if tier == "全部" else tier,
+        "outcome": outcome,
+        "discipline_issue_only": issue_only,
+    }
+
+
+def _render_trade_performance_cards(summary: dict) -> None:
+    items = [
+        ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "REALIZED"),
+        ("已实现盈亏率", _percent_or_dash(summary.get("realized_pnl_pct")), "RETURN"),
+        ("完成卖出", str(summary.get("completed_sell_count") or 0), "SELLS"),
+        ("胜率", _percent_or_dash(summary.get("win_rate")), "WIN RATE"),
+        ("平均盈利", _money_text(summary.get("average_winner")), "AVG WIN"),
+        ("平均亏损", _money_text(summary.get("average_loser")), "AVG LOSS"),
+        ("最大盈利", _money_text(summary.get("max_winner")), "BEST"),
+        ("最大亏损", _money_text(summary.get("max_loser")), "WORST"),
+        ("平均持仓", _days_text(summary.get("average_holding_days")), "AVG DAYS"),
+        ("中位持仓", _days_text(summary.get("median_holding_days")), "MEDIAN DAYS"),
+    ]
+    html = "".join(
+        (
+            '<div class="trade-journal-summary-item">'
+            f"<span>{escape(label)}</span>"
+            f"<strong>{escape(value)}</strong>"
+            f"<em>{escape(caption)}</em>"
+            "</div>"
+        )
+        for label, value, caption in items
+    )
+    st.markdown(f'<div class="trade-journal-summary performance">{html}</div>', unsafe_allow_html=True)
+
+
+def _render_trade_performance_table(rows: list[dict]) -> None:
+    headers = [
+        "卖出日期",
+        "Ticker",
+        "操作",
+        "数量",
+        "买入均价",
+        "卖出价",
+        "盈亏",
+        "盈亏率",
+        "持仓天数",
+        "等级",
+        "买入心情",
+        "卖出心情",
+        "卖出原因",
+        "纪律问题",
+    ]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body = "".join(_trade_performance_row_html(row) for row in rows[:80])
+    st.markdown(
+        (
+            '<div class="trade-journal-table-wrap performance">'
+            '<table class="trade-journal-table performance">'
+            f"<thead><tr>{header_html}</tr></thead>"
+            f"<tbody>{body}</tbody>"
+            "</table>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    if len(rows) > 80:
+        st.caption(f"仅显示前 80 条已实现交易；当前过滤后共 {len(rows)} 条。")
+
+
+def _trade_performance_row_html(row: dict) -> str:
+    pnl = _number(row.get("realized_pnl"))
+    tone = "gain" if pnl is not None and pnl >= 0 else "loss"
+    issue = "；".join(str(item) for item in (row.get("discipline_flags") or [])[:2]) or "无"
+    return (
+        "<tr>"
+        f"<td>{escape(_text(row.get('sell_date')))}</td>"
+        f'<td class="symbol">{escape(_text(row.get("ticker")))}</td>'
+        f"<td>{escape(_performance_action_text(row.get('action_type')))}</td>"
+        f"<td>{escape(_quantity_text(row.get('sell_quantity')))}</td>"
+        f"<td>{escape(_money_text(row.get('buy_avg_price')))}</td>"
+        f"<td>{escape(_money_text(row.get('sell_price')))}</td>"
+        f'<td class="{tone}">{escape(_money_text(row.get("realized_pnl")))}</td>'
+        f"<td>{escape(_percent_or_dash(row.get('realized_pnl_pct')))}</td>"
+        f"<td>{escape(_days_text(row.get('holding_days')))}</td>"
+        f"<td>{escape(_text(row.get('position_tier')))}</td>"
+        f"<td>{escape(_mood_text(row.get('buy_mood')))}</td>"
+        f"<td>{escape(_mood_text(row.get('sell_mood')))}</td>"
+        f"<td>{escape(_sell_reason_text(row.get('sell_reason_type')))}</td>"
+        f'<td class="notes">{escape(issue)}</td>'
+        "</tr>"
+    )
+
+
+def _render_trade_performance_lots(rows: list[dict]) -> None:
+    for row in rows[:30]:
+        lots = row.get("matched_lots") or []
+        title = f"{row.get('ticker')} {row.get('sell_date')} / {_quantity_text(row.get('matched_quantity'))} 股"
+        st.markdown(f"**{title}**")
+        if not lots:
+            st.caption("缺买入成本或未匹配到 buy lot。")
+            continue
+        lot_lines = [
+            (
+                f"- {lot.get('buy_date')} 买入 {_quantity_text(lot.get('matched_quantity'))} 股，"
+                f"{_money_text(lot.get('buy_price'))} -> {_money_text(lot.get('sell_price'))}，"
+                f"盈亏 {_money_text(lot.get('realized_pnl'))}，持仓 {_days_text(lot.get('holding_days'))}"
+            )
+            for lot in lots
+        ]
+        st.markdown("\n".join(lot_lines))
+
+
+def _render_trade_performance_groups(groups: dict) -> None:
+    labels = {
+        "ticker": "按 ticker",
+        "position_tier": "按 A/B/C",
+        "buy_mood": "按买入心情",
+        "sell_mood": "按卖出心情",
+        "sell_reason": "按卖出原因",
+        "holding_bucket": "按持仓天数",
+    }
+    for key, title in labels.items():
+        rows = groups.get(key) or []
+        if not rows:
+            continue
+        st.markdown(f"**{title}**")
+        body = "".join(
+            "<tr>"
+            f"<td>{escape(_group_label(key, row.get('key')))}</td>"
+            f"<td>{escape(str(row.get('count') or 0))}</td>"
+            f"<td>{escape(_money_text(row.get('realized_pnl')))}</td>"
+            f"<td>{escape(_percent_or_dash(row.get('win_rate')))}</td>"
+            f"<td>{escape(_days_text(row.get('average_holding_days')))}</td>"
+            "</tr>"
+            for row in rows
+        )
+        st.markdown(
+            (
+                '<div class="trade-journal-table-wrap performance group">'
+                '<table class="trade-journal-table performance group">'
+                "<thead><tr><th>分组</th><th>次数</th><th>盈亏</th><th>胜率</th><th>平均持仓</th></tr></thead>"
+                f"<tbody>{body}</tbody>"
+                "</table></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+def _group_label(group_key: str, value: object) -> str:
+    if group_key in {"buy_mood", "sell_mood"}:
+        return _mood_text(value)
+    if group_key == "sell_reason":
+        return _sell_reason_text(value)
+    return _text(value)
+
+
+def _performance_action_text(value: object) -> str:
+    return {"sell": "清仓", "trim": "减仓"}.get(str(value or ""), _text(value))
+
+
+def _mood_text(value: object) -> str:
+    mood = str(value or "")
+    return {
+        "well_reasoned": "深思熟虑",
+        "plan_execution": "计划内执行",
+        "fomo": "FOMO",
+        "anxiety": "焦虑",
+        "bottom_fishing_impulse": "抄底冲动",
+        "macro_fear": "宏观恐慌",
+        "revenge_trade": "复仇交易",
+        "boredom_trade": "手痒交易",
+        "panic_sell": "恐慌卖出",
+        "regret_chase": "卖飞后追回",
+        "uncertainty": "不确定",
+    }.get(mood, _text(mood))
+
+
+def _days_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return f"{number:g} 天"
 
 
 def _render_unsynced_trade_sync_panel(entries: list[dict]) -> None:
@@ -3855,6 +4079,16 @@ def _render_styles() -> None:
         .trade-journal-table.sell-fly {
             min-width: 1080px;
         }
+        .trade-journal-summary.performance {
+            margin-top: 0.36rem;
+        }
+        .trade-journal-table.performance {
+            min-width: 1280px;
+        }
+        .trade-journal-table.performance.group {
+            min-width: 520px;
+            margin-bottom: 0.55rem;
+        }
         .trade-journal-table th {
             height: 28px;
             padding: 0 10px;
@@ -3889,6 +4123,14 @@ def _render_styles() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .trade-journal-table .gain {
+            color: #15803D;
+            font-weight: 760;
+        }
+        .trade-journal-table .loss {
+            color: #B91C1C;
+            font-weight: 760;
         }
         .sell-fly-muted {
             color: #94a3b8;
