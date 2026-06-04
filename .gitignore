@@ -12,6 +12,7 @@ coverage/
 backups/
 *.db
 *.sqlite
+*.sqlite.backup-*
 *.sqlite3
 logs/
 cache/
