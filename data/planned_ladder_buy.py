@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 
 BLOCKED_BUY_MOODS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
-MIN_PLAN_AGE_MINUTES = 30
+FRESH_PLAN_REVIEW_MINUTES = 30
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,9 @@ class PlannedLadderBuyResult:
     plan_max_position_pct: float | None
     plan_block_reasons: list[str]
     plan_notes: list[str]
+    fresh_plan_execution: bool = False
+    plan_age_minutes: float | None = None
+    plan_recently_created_or_modified: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -58,31 +61,31 @@ def evaluate_planned_ladder_buy(
 
     if not levels:
         return _blocked(symbol, "no_plan", ["未找到分批买入计划。"], max_position_pct=max_position_pct)
-    timestamp_error = _plan_timestamp_error(active_plan, trade_created_at)
-    if timestamp_error:
-        status, reason = timestamp_error
-        return _blocked(symbol, status, [reason], max_position_pct=max_position_pct)
+
+    timing = _plan_timing_snapshot(active_plan, trade_created_at)
+
     if current_price is None:
-        return _blocked(symbol, "price_missing", ["缺少当前价格，不能匹配分批买入计划。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "price_missing", ["缺少当前价格，不能匹配分批买入计划。"], max_position_pct=max_position_pct, timing=timing)
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING" or is_stale:
-        return _blocked(symbol, "data_missing", ["价格或 Radar 数据缺失 / 过期，不能按计划同步真实买入。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "data_missing", ["价格或 Radar 数据缺失 / 过期，不能按计划同步真实买入。"], max_position_pct=max_position_pct, timing=timing)
     if qty is None or qty <= 0:
-        return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct, timing=timing)
     if mood in BLOCKED_BUY_MOODS:
-        return _blocked(symbol, "mood_blocked", ["当前交易心理属于情绪交易风险，不能用计划内加仓绕过门禁。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "mood_blocked", ["当前交易心理属于情绪交易风险，不能用计划内加仓绕过门禁。"], max_position_pct=max_position_pct, timing=timing)
     if not _has_exit_or_invalidation(active_plan):
-        return _blocked(symbol, "missing_exit_condition", ["分批买入计划缺少失效条件 / 退出条件。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "missing_exit_condition", ["分批买入计划缺少失效条件 / 退出条件。"], max_position_pct=max_position_pct, timing=timing)
     if max_position_pct is None:
-        return _blocked(symbol, "missing_position_limit", ["分批买入计划缺少买后仓位上限。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "missing_position_limit", ["分批买入计划缺少买后仓位上限。"], max_position_pct=max_position_pct, timing=timing)
     if after_pct is not None and after_pct > max_position_pct + 1e-9:
         return _blocked(
             symbol,
             "position_exceeds_plan",
             [f"买入后仓位 {after_pct:.1f}% 超过计划上限 {max_position_pct:.1f}%。"],
             max_position_pct=max_position_pct,
+            timing=timing,
         )
     if valuation_score is not None and valuation_score < 40 and not _has_review_note(active_plan):
-        return _blocked(symbol, "valuation_review_required", ["估值评分低于 40，计划缺少复核说明。"], max_position_pct=max_position_pct)
+        return _blocked(symbol, "valuation_review_required", ["估值评分低于 40，计划缺少复核说明。"], max_position_pct=max_position_pct, timing=timing)
 
     eligible = [level for level in levels if level["trigger_price"] is not None and current_price <= level["trigger_price"]]
     if not eligible:
@@ -91,7 +94,7 @@ def evaluate_planned_ladder_buy(
         reason = "当前价尚未触发下一档分批买入价格。"
         if trigger is not None:
             reason = f"当前价 {current_price:g} 高于下一档触发价 {trigger:g}。"
-        return _blocked(symbol, "not_triggered", [reason], max_position_pct=max_position_pct)
+        return _blocked(symbol, "not_triggered", [reason], max_position_pct=max_position_pct, timing=timing)
 
     level = eligible[0]
     remaining = level["remaining_quantity"]
@@ -102,6 +105,7 @@ def evaluate_planned_ladder_buy(
             [f"{level['label']} 已没有剩余可买数量。"],
             level=level,
             max_position_pct=max_position_pct,
+            timing=timing,
         )
     if qty > remaining + 1e-9:
         return _blocked(
@@ -110,7 +114,15 @@ def evaluate_planned_ladder_buy(
             [f"买入数量 {qty:g} 股超过 {level['label']} 剩余计划数量 {remaining:g} 股。"],
             level=level,
             max_position_pct=max_position_pct,
+            timing=timing,
         )
+
+    notes = [
+        f"已匹配 {level['label']}：当前价不高于触发价 {level['trigger_price']:g}。",
+        f"本次数量 {qty:g} 股不超过剩余计划数量 {remaining:g} 股。",
+    ]
+    if timing["fresh_plan_execution"]:
+        notes.append("该计划刚创建或刚修改，本次执行会被标记为临时计划执行，供复盘参考。")
 
     return PlannedLadderBuyResult(
         planned_ladder_buy=True,
@@ -123,10 +135,10 @@ def evaluate_planned_ladder_buy(
         plan_remaining_quantity=remaining,
         plan_max_position_pct=max_position_pct,
         plan_block_reasons=[],
-        plan_notes=[
-            f"已匹配 {level['label']}：当前价不高于触发价 {level['trigger_price']:g}。",
-            f"本次数量 {qty:g} 股不超过剩余计划数量 {remaining:g} 股。",
-        ],
+        plan_notes=notes,
+        fresh_plan_execution=timing["fresh_plan_execution"],
+        plan_age_minutes=timing["plan_age_minutes"],
+        plan_recently_created_or_modified=timing["plan_recently_created_or_modified"],
     )
 
 
@@ -161,8 +173,10 @@ def _blocked(
     *,
     level: dict[str, Any] | None = None,
     max_position_pct: float | None = None,
+    timing: dict[str, Any] | None = None,
 ) -> PlannedLadderBuyResult:
     level = level or {}
+    timing = timing or {}
     return PlannedLadderBuyResult(
         planned_ladder_buy=False,
         can_sync_to_portfolio=False,
@@ -175,6 +189,9 @@ def _blocked(
         plan_max_position_pct=max_position_pct,
         plan_block_reasons=reasons,
         plan_notes=[],
+        fresh_plan_execution=bool(timing.get("fresh_plan_execution")),
+        plan_age_minutes=timing.get("plan_age_minutes"),
+        plan_recently_created_or_modified=bool(timing.get("plan_recently_created_or_modified")),
     )
 
 
@@ -190,20 +207,25 @@ def _has_review_note(plan: dict[str, Any]) -> bool:
     return bool(text.strip())
 
 
-def _plan_timestamp_error(plan: dict[str, Any], trade_created_at: object | None) -> tuple[str, str] | None:
+def _plan_timing_snapshot(plan: dict[str, Any], trade_created_at: object | None) -> dict[str, Any]:
     trade_time = _parse_datetime(trade_created_at)
     created_at = _parse_datetime(plan.get("created_at"))
     material_updated_at = _parse_datetime(plan.get("material_updated_at")) or _parse_datetime(plan.get("updated_at"))
-    if trade_time is None or created_at is None or material_updated_at is None:
-        return "plan_timestamp_missing", "分批买入计划缺少创建/更新时间，不能覆盖 Radar 门禁。"
-    if created_at >= trade_time:
-        return "plan_created_too_late", "分批买入计划创建时间不早于本次交易，不能作为事前计划。"
-    if material_updated_at >= trade_time:
-        return "plan_modified_too_late", "分批买入计划修改时间不早于本次交易，不能作为事前计划。"
-    latest_material_time = max(created_at, material_updated_at)
-    if trade_time - latest_material_time < timedelta(minutes=MIN_PLAN_AGE_MINUTES):
-        return "plan_cooldown_not_met", "买入计划刚创建或刚修改，不能立即作为事前计划放行；请等待冷静期结束，或按普通 Radar 门禁处理。"
-    return None
+    candidates = [value for value in (created_at, material_updated_at) if value is not None]
+    if trade_time is None or not candidates:
+        return {
+            "fresh_plan_execution": False,
+            "plan_age_minutes": None,
+            "plan_recently_created_or_modified": False,
+        }
+    effective_plan_time = max(candidates)
+    age_minutes = max(0.0, (trade_time - effective_plan_time).total_seconds() / 60)
+    is_fresh = age_minutes < FRESH_PLAN_REVIEW_MINUTES
+    return {
+        "fresh_plan_execution": is_fresh,
+        "plan_age_minutes": round(age_minutes, 2),
+        "plan_recently_created_or_modified": is_fresh,
+    }
 
 
 def _parse_datetime(value: object) -> datetime | None:

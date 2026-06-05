@@ -86,6 +86,9 @@ TRADE_DISCIPLINE_COLUMNS = {
     "plan_max_position_pct": "REAL",
     "plan_match_status": "TEXT",
     "plan_block_reasons_json": "TEXT",
+    "fresh_plan_execution": "INTEGER",
+    "plan_age_minutes": "REAL",
+    "plan_recently_created_or_modified": "INTEGER",
     "starter_position": "INTEGER",
     "starter_max_pct": "REAL",
     "starter_position_before_pct": "REAL",
@@ -675,7 +678,10 @@ def _write_buy_plan_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: d
             plan_remaining_quantity = ?,
             plan_max_position_pct = ?,
             plan_match_status = ?,
-            plan_block_reasons_json = ?
+            plan_block_reasons_json = ?,
+            fresh_plan_execution = ?,
+            plan_age_minutes = ?,
+            plan_recently_created_or_modified = ?
         WHERE id = ?
         """,
         (
@@ -689,6 +695,9 @@ def _write_buy_plan_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: d
             cleaned["plan_max_position_pct"],
             cleaned["plan_match_status"],
             cleaned["plan_block_reasons_json"],
+            cleaned["fresh_plan_execution"],
+            cleaned["plan_age_minutes"],
+            cleaned["plan_recently_created_or_modified"],
             entry_id,
         ),
     )
@@ -1259,6 +1268,9 @@ def _clean_buy_plan_snapshot(action_type: str, values: dict) -> dict:
             "plan_max_position_pct": None,
             "plan_match_status": None,
             "plan_block_reasons_json": "[]",
+            "fresh_plan_execution": False,
+            "plan_age_minutes": None,
+            "plan_recently_created_or_modified": False,
         }
     return {
         "entry_mode": _clean_entry_mode(_value(values, "entryMode", "entry_mode")),
@@ -1281,6 +1293,11 @@ def _clean_buy_plan_snapshot(action_type: str, values: dict) -> dict:
         "plan_match_status": _clean_optional_text(_value(values, "planMatchStatus", "plan_match_status")),
         "plan_block_reasons_json": _reasons_json(
             _value(values, "planBlockReasons", "plan_block_reasons", "plan_block_reasons_json")
+        ),
+        "fresh_plan_execution": _clean_bool(_value(values, "freshPlanExecution", "fresh_plan_execution")),
+        "plan_age_minutes": _optional_non_negative_number(_value(values, "planAgeMinutes", "plan_age_minutes"), "plan_age_minutes"),
+        "plan_recently_created_or_modified": _clean_bool(
+            _value(values, "planRecentlyCreatedOrModified", "plan_recently_created_or_modified")
         ),
     }
 

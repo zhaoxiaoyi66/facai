@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from html import escape
 from urllib.parse import quote
 import streamlit as st
@@ -83,7 +83,7 @@ BUY_PLAN_INVALIDATION_OPTIONS = [
     "自定义",
 ]
 BUY_PLAN_DEFAULT_MAX_PCT = {"A": 10, "B": 8, "C": 3}
-BUY_PLAN_COOLDOWN_MINUTES = 30
+FRESH_PLAN_REVIEW_MINUTES = 30
 
 
 def _render_editor(
@@ -133,49 +133,50 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         selected_index = options.index(preferred) if preferred in options else 0
         selected = st.selectbox("交易对象", options, index=selected_index, key="portfolio-edit-symbol")
         selected_symbol = "" if selected == "手动输入" else str(selected or "").strip().upper()
-        current = position_store.get_position(selected_symbol) if selected_symbol else None
+        form_key = _position_form_key(selected_symbol or "manual")
+        manual_symbol = ""
+        if not selected_symbol:
+            manual_symbol = st.text_input("股票代码", key=f"{form_key}:symbol")
+        effective_ticker = _effective_trade_ticker(selected_symbol, manual_symbol)
+        current = position_store.get_position(effective_ticker) if effective_ticker else None
         current = current or EMPTY_POSITION
-        form_key = _position_form_key(selected)
+        tier_options = list(POSITION_TIER_FORM_OPTIONS.keys())
+        current_tier = str(current.get("position_tier") or "").strip().upper()
+        current_tier_label = next(
+            (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
+            tier_options[0],
+        )
+        tier_choice = st.selectbox(
+            "持仓等级",
+            tier_options,
+            index=tier_options.index(current_tier_label),
+            help="A/B/C 是当前持仓属性，必须手动选择，不自动按股票猜测。",
+            key=f"{form_key}:position_tier",
+        )
+        selected_tier = POSITION_TIER_FORM_OPTIONS.get(str(tier_choice), "")
+        _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
         with st.form("portfolio-buy-add-form"):
             st.markdown('<div class="portfolio-form-section">真实买入 / 加仓</div>', unsafe_allow_html=True)
             basic_cols = st.columns([1.2, 1, 1])
-            if selected_symbol:
-                basic_cols[0].text_input("股票代码", value=selected_symbol, disabled=True, key=f"{form_key}:symbol-disabled")
-            else:
-                basic_cols[0].text_input("股票代码", key=f"{form_key}:symbol")
+            basic_cols[0].text_input("股票代码", value=effective_ticker, disabled=True, key=f"{form_key}:symbol-disabled")
             basic_cols[1].text_input("数量", key=f"{form_key}:quantity")
             basic_cols[2].text_input("成交价", key=f"{form_key}:price")
-            tier_options = list(POSITION_TIER_FORM_OPTIONS.keys())
-            current_tier = str(current.get("position_tier") or "").strip().upper()
-            current_tier_label = next(
-                (label for label, value in POSITION_TIER_FORM_OPTIONS.items() if value == current_tier),
-                tier_options[0],
-            )
-            discipline_cols = st.columns([1.2, 1.2, 1])
-            discipline_cols[0].selectbox(
-                "持仓等级",
-                tier_options,
-                index=tier_options.index(current_tier_label),
-                help="A/B/C 是当前持仓属性，必须手动选择，不自动按股票猜测。",
-                key=f"{form_key}:position_tier",
-            )
-            discipline_cols[1].selectbox("交易心理", list(PORTFOLIO_BUY_MOOD_OPTIONS), key=f"{form_key}:decision_mood")
-            discipline_cols[2].text_input(
+            discipline_cols = st.columns([1.2, 1])
+            discipline_cols[0].selectbox("交易心理", list(PORTFOLIO_BUY_MOOD_OPTIONS), key=f"{form_key}:decision_mood")
+            discipline_cols[1].text_input(
                 "卖出目标价",
-                value=_input_value(current.get("planned_sell_price")),
+                value=_input_value(_plan_target_sell_price(StockPlanStore().get_plan(effective_ticker)) or current.get("planned_sell_price")),
                 key=f"{form_key}:target_sell_price",
             )
-            st.selectbox("建仓模式", list(ENTRY_MODE_OPTIONS), key=f"{form_key}:entry_mode")
-            _render_ladder_buy_plan_reference(selected_symbol)
-            starter_cols = st.columns(3)
-            starter_cols[0].text_input("底仓 thesis / 买入逻辑", key=f"{form_key}:starter_thesis")
-            starter_cols[1].text_input("后续加仓计划", key=f"{form_key}:starter_add_plan")
-            starter_cols[2].text_input("失效条件", key=f"{form_key}:starter_invalidation")
-            _render_starter_check_card(form_key, current)
             st.checkbox("仅观察记录，不同步到组合持仓", key=f"{form_key}:observation_only")
-            st.text_area("买入理由", height=86, key=f"{form_key}:buy_reason")
+            st.text_area(
+                "买入理由",
+                height=86,
+                placeholder="本次为什么执行？例如：触发计划第1档 / 建底仓第一笔 / 仅观察记录",
+                key=f"{form_key}:buy_reason",
+            )
             if st.form_submit_button("提交买入 / 加仓", width="stretch"):
-                _submit_portfolio_buy_add(form_key, selected_symbol)
+                _submit_portfolio_buy_add(form_key, effective_ticker)
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
@@ -212,22 +213,160 @@ def _render_starter_check_card(form_key: str, current: dict) -> None:
     )
 
 
+def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "") -> None:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        st.markdown(
+            '<div class="buy-execution-plan-summary is-empty">'
+            "<strong>计划摘要</strong>"
+            "<span>先选择或输入股票代码，系统会读取该股票的买入计划。</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    plan = StockPlanStore().get_plan(ticker)
+    if not _plan_has_buy_execution_evidence(plan):
+        href = f"?page=portfolio&portfolioPlan={quote(ticker)}#portfolio-buy-plan"
+        missing_text = _missing_buy_plan_summary_text(ticker, tier)
+        create_text = _create_buy_plan_link_text(tier)
+        st.markdown(
+            '<div class="buy-execution-plan-summary is-empty">'
+            "<strong>计划摘要</strong>"
+            f"<span>{escape(missing_text)} 本次买入将按 Radar / 普通买入门禁判断。</span>"
+            f'<a href="{escape(href, quote=True)}" target="_self">{escape(create_text)}</a>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    status = get_buy_plan_status(plan, current_price=current.get("currentPrice"), is_stale=False)
+    level = status.get("level") or {}
+    cooldown = _buy_plan_cooldown_status(plan)
+    condition = _execution_plan_condition_text(plan, status, cooldown)
+    rows = [
+        ("计划类型", _buy_plan_type_display(plan.get("plan_type"))),
+        ("下一档触发价", _money_text(level.get("trigger_price"))),
+        ("计划股数", _share_count_text(level.get("planned_quantity"))),
+        ("剩余可买", _share_count_text(level.get("remaining_quantity"))),
+        ("最大仓位", _percent_plain(plan.get("max_position_pct") or plan.get("target_position_pct"))),
+        ("目标卖出价", _money_text(plan.get("target_sell_price"))),
+        ("失效条件", str(plan.get("invalidation_condition") or BLANK_TEXT)),
+        ("复盘标记", str(cooldown.get("label") or BLANK_TEXT)),
+        ("执行条件", condition),
+    ]
+    html = "".join(
+        '<div class="buy-execution-plan-summary-item">'
+        f"<span>{escape(label)}</span>"
+        f"<b>{escape(str(value or BLANK_TEXT))}</b>"
+        "</div>"
+        for label, value in rows
+    )
+    st.markdown(
+        '<div class="buy-execution-plan-summary">'
+        "<strong>计划摘要</strong>"
+        f"{html}"
+        "<small>计划只提供执行依据；真正提交仍会经过 Radar / 计划内加仓 / 底仓建仓门禁。</small>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _effective_trade_ticker(selected_symbol: object, manual_symbol: object) -> str:
+    return str(selected_symbol or manual_symbol or "").strip().upper()
+
+
+def _missing_buy_plan_summary_text(ticker: str, tier: object) -> str:
+    label = _plan_tier_label(tier)
+    if label == "A":
+        return f"未找到 {ticker} A 类底仓/分批买入计划。"
+    if label == "B":
+        return f"未找到 {ticker} B 类分批买入计划。"
+    if label == "C":
+        return f"未找到 {ticker} C 类事件/观察计划。"
+    return f"未找到 {ticker} 买入计划。"
+
+
+def _create_buy_plan_link_text(tier: object) -> str:
+    label = _plan_tier_label(tier)
+    if label == "A":
+        return "创建 A 类底仓或分批买入计划"
+    if label == "B":
+        return "创建 B 类分批买入计划"
+    if label == "C":
+        return "创建 C 类事件/观察计划"
+    return "创建买入计划"
+
+
+def _plan_tier_label(tier: object) -> str:
+    value = str(tier or "").strip().upper()
+    return value if value in {"A", "B", "C"} else ""
+
+
+def _execution_plan_condition_text(plan: dict, status: dict, cooldown: dict) -> str:
+    plan_type = str(plan.get("plan_type") or "").strip()
+    fresh_suffix = "；临时计划执行将供复盘" if bool(cooldown.get("fresh")) else ""
+    if status.get("status") == "triggered":
+        return f"当前价格已触发计划档位{fresh_suffix}"
+    if status.get("status") == "near_trigger":
+        return f"接近触发，仍需提交时校验{fresh_suffix}"
+    if plan_type == "starter_position":
+        return f"底仓资料将由计划区提供{fresh_suffix}"
+    if status.get("status") == "needs_review":
+        return "计划资料需复核"
+    if status.get("status") == "stale_or_missing_data":
+        return "价格数据需复核"
+    return f"尚未触发计划档位{fresh_suffix}"
+
+
+def _plan_has_buy_execution_evidence(plan: dict) -> bool:
+    if not plan:
+        return False
+    if str(plan.get("plan_type") or "").strip():
+        return True
+    return bool(plan.get("buy_plan_tranches") or plan.get("target_sell_price") or plan.get("thesis"))
+
+
+def _plan_target_sell_price(plan: dict) -> object:
+    return (plan or {}).get("target_sell_price") or (plan or {}).get("planned_sell_price")
+
+
+def _buy_execution_plan_submit_fields(plan: dict, tier: str) -> dict[str, object]:
+    plan_type = str((plan or {}).get("plan_type") or "").strip()
+    clean_tier = str(tier or "").strip().upper()
+    if plan_type == "ladder_buy":
+        entry_mode = "planned_ladder_buy"
+    elif plan_type == "starter_position" and clean_tier == "A":
+        entry_mode = "starter_position"
+    else:
+        entry_mode = "normal_buy"
+    starter_plan = plan if entry_mode == "starter_position" else {}
+    return {
+        "entry_mode": entry_mode,
+        "starter_thesis": str(starter_plan.get("thesis") or "").strip(),
+        "starter_add_plan": str(starter_plan.get("follow_up_plan") or "").strip(),
+        "starter_invalidation_condition": str(starter_plan.get("invalidation_condition") or "").strip(),
+    }
+
+
 def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
     symbol = selected_symbol or str(_form_value(form_key, "symbol") or "").strip().upper()
+    plan = StockPlanStore().get_plan(symbol) if symbol else {}
+    tier = _form_position_tier(form_key)
+    plan_fields = _buy_execution_plan_submit_fields(plan, tier)
     try:
         result = submit_portfolio_buy_add(
             symbol,
             {
                 "quantity": _form_value(form_key, "quantity"),
                 "price": _form_value(form_key, "price"),
-                "position_tier": _form_position_tier(form_key),
+                "position_tier": tier,
                 "decision_mood": PORTFOLIO_BUY_MOOD_OPTIONS.get(str(_form_value(form_key, "decision_mood") or ""), ""),
-                "entry_mode": ENTRY_MODE_OPTIONS.get(str(_form_value(form_key, "entry_mode") or ""), "normal_buy"),
+                "entry_mode": plan_fields["entry_mode"],
                 "buy_reason": _form_value(form_key, "buy_reason"),
                 "target_sell_price": _form_value(form_key, "target_sell_price"),
-                "starter_thesis": _form_value(form_key, "starter_thesis"),
-                "starter_add_plan": _form_value(form_key, "starter_add_plan"),
-                "starter_invalidation_condition": _form_value(form_key, "starter_invalidation"),
+                "starter_thesis": plan_fields["starter_thesis"],
+                "starter_add_plan": plan_fields["starter_add_plan"],
+                "starter_invalidation_condition": plan_fields["starter_invalidation_condition"],
                 "radar_observation_only": bool(_form_value(form_key, "observation_only")),
             },
         )
@@ -255,6 +394,7 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
                 "starterGate": result.get("starterGate") or {},
                 "marketStatus": result.get("marketStatus") or {},
                 "entryMode": entry.get("entry_mode") or result.get("actionType"),
+                "positionTier": tier,
             },
         )
     else:
@@ -359,7 +499,7 @@ def _render_buy_plan_status(symbol: str, plan: dict, status: dict) -> None:
         f"<span>当前计划：{escape(plan_type)}</span>"
         f"<small>最大仓位：{escape(max_pct)} / 下一档：{escape(next_line)}</small>"
         f"<small>当前状态：{escape(str(status.get('label') or '暂无计划'))}</small>"
-        f"<small>冷静期：{escape(cooldown['label'])}</small>"
+        f"<small>计划时间：{escape(cooldown['label'])}</small>"
         f"<small>可作为计划内依据：{escape('是' if _buy_plan_can_be_gate_evidence(plan, status) else '否')}</small>"
         f"<small>{escape(str(status.get('message') or ''))}</small>"
         "</div>",
@@ -566,12 +706,7 @@ def _prefill_buy_form_from_plan(symbol: str, plan: dict, level: dict) -> None:
     st.session_state[f"{form_key}:price"] = _input_value(level.get("trigger_price"))
     st.session_state[f"{form_key}:target_sell_price"] = _input_value(plan.get("target_sell_price"))
     st.session_state[f"{form_key}:position_tier"] = _position_tier_form_label(plan.get("position_class"))
-    plan_type = str(plan.get("plan_type") or "").strip()
-    st.session_state[f"{form_key}:entry_mode"] = "A类底仓建仓" if plan_type == "starter_position" else "分批计划买入"
     st.session_state[f"{form_key}:decision_mood"] = "计划内执行"
-    st.session_state[f"{form_key}:starter_thesis"] = str(plan.get("thesis") or "")
-    st.session_state[f"{form_key}:starter_add_plan"] = str(plan.get("follow_up_plan") or "")
-    st.session_state[f"{form_key}:starter_invalidation"] = str(plan.get("invalidation_condition") or "")
     st.session_state[f"{form_key}:buy_reason"] = f"执行买入计划：{level.get('label') or '计划档位'}"
 
 
@@ -626,20 +761,31 @@ def _buy_plan_cooldown_status(plan: dict, *, now: datetime | None = None) -> dic
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     current = current.astimezone(timezone.utc)
-    if created_at is None or material_updated_at is None:
-        return {"met": False, "remaining_minutes": None, "label": "缺少计划时间"}
-    effective = max(created_at, material_updated_at)
-    remaining = timedelta(minutes=BUY_PLAN_COOLDOWN_MINUTES) - (current - effective)
-    if remaining <= timedelta(0):
-        return {"met": True, "remaining_minutes": 0, "label": "已满足"}
-    minutes = max(1, int((remaining.total_seconds() + 59) // 60))
-    return {"met": False, "remaining_minutes": minutes, "label": f"还需 {minutes} 分钟"}
+    candidates = [value for value in (created_at, material_updated_at) if value is not None]
+    if not candidates:
+        return {"met": True, "fresh": False, "remaining_minutes": None, "plan_age_minutes": None, "label": "计划时间缺失，仅供复盘"}
+    effective = max(candidates)
+    age_minutes = max(0.0, (current - effective).total_seconds() / 60)
+    if age_minutes < FRESH_PLAN_REVIEW_MINUTES:
+        return {
+            "met": True,
+            "fresh": True,
+            "remaining_minutes": 0,
+            "plan_age_minutes": round(age_minutes, 2),
+            "label": "临时计划执行标记",
+        }
+    return {
+        "met": True,
+        "fresh": False,
+        "remaining_minutes": 0,
+        "plan_age_minutes": round(age_minutes, 2),
+        "label": "计划时间已记录",
+    }
 
 
 def _buy_plan_can_be_gate_evidence(plan: dict, status: dict) -> bool:
     return bool(
         status.get("status") in {"triggered", "near_trigger"}
-        and _buy_plan_cooldown_status(plan).get("met")
         and str(plan.get("thesis") or "").strip()
         and str(plan.get("invalidation_condition") or "").strip()
     )
@@ -1124,13 +1270,14 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
     starter_gate = dict(data.get("starterGate") or {})
     market_status = dict(data.get("marketStatus") or {})
     entry_mode = str(data.get("entryMode") or "").strip()
+    tier = str(data.get("positionTier") or data.get("positionClass") or "").strip().upper()
     reasons = _portfolio_buy_gate_reasons(gate)
     plan_reasons = [] if entry_mode == "starter_position" else _portfolio_buy_plan_reasons(plan_gate)
     starter_reasons = _portfolio_starter_reasons(starter_gate)
     primary_reasons = starter_reasons if entry_mode == "starter_position" and starter_reasons else reasons
     primary_title = "底仓检查结果" if entry_mode == "starter_position" else "Radar 拦截原因"
     market_items = _portfolio_buy_market_status_items(market_status, gate)
-    actions = _portfolio_buy_gate_actions(plan_reasons, starter_reasons)
+    actions = _portfolio_buy_gate_actions(plan_reasons, starter_reasons, tier=tier)
     reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>Radar / 买入门禁未通过。</li>"
     market_html = "".join(f"<li>{escape(item)}</li>" for item in market_items) or "<li>当前市场状态需复核。</li>"
     action_html = "".join(f"<li>{escape(item)}</li>" for item in actions)
@@ -1198,15 +1345,34 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
     return _dedupe_text(items)
 
 
-def _portfolio_buy_gate_actions(plan_reasons: list[str] | None = None, starter_reasons: list[str] | None = None) -> list[str]:
-    actions = [
-        "等待回到纪律买入区。",
-        "建立 A 类底仓计划。",
-        "建立分批买入计划。",
-        "降低买入数量，直到买入后仓位不超过 Radar 上限。",
-        "改为仅观察记录，不同步真实组合。",
-        "重新复核该股票的 Radar 区间和买入计划。",
-    ]
+def _portfolio_buy_gate_actions(
+    plan_reasons: list[str] | None = None,
+    starter_reasons: list[str] | None = None,
+    *,
+    tier: object = "",
+) -> list[str]:
+    clean_tier = str(tier or "").strip().upper()
+    actions = ["等待回到纪律买入区。"]
+    if clean_tier == "A":
+        actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
+    elif clean_tier == "B":
+        actions.extend(
+            [
+                "建立 B 类分批买入计划。",
+                "如果你认为它应是 A 类，请改为 A 类并创建 A 类底仓计划。",
+            ]
+        )
+    elif clean_tier == "C":
+        actions.extend(["建立 C 类事件交易计划。", "建立小仓观察计划。"])
+    else:
+        actions.append("先选择 A/B/C 持仓等级，再创建对应买入计划。")
+    actions.extend(
+        [
+            "降低买入数量，直到买入后仓位不超过 Radar 上限。",
+            "改为仅观察记录，不同步真实组合。",
+            "重新复核该股票的 Radar 区间和买入计划。",
+        ]
+    )
     context_items = [*(plan_reasons or []), *(starter_reasons or [])]
     for item in context_items:
         if item and item not in actions:
@@ -1226,10 +1392,10 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "price_missing": "缺少当前价格，不能匹配计划。",
         "quantity_missing": "买入数量无效，不能匹配计划档位。",
         "level_filled": "该计划档位已没有剩余可买数量。",
-        "plan_created_too_late": "分批买入计划不是事前创建，不能作为放行依据。",
-        "plan_modified_too_late": "分批买入计划刚被修改，不能作为放行依据。",
-        "plan_timestamp_missing": "分批买入计划缺少创建/更新时间，不能覆盖 Radar 门禁。",
-        "plan_cooldown_not_met": "买入计划刚创建或刚修改，不能立即作为事前计划放行。",
+        "plan_created_too_late": "计划创建时间较近；现在仅作为复盘标记，不再硬拦截。",
+        "plan_modified_too_late": "计划修改时间较近；现在仅作为复盘标记，不再硬拦截。",
+        "plan_timestamp_missing": "计划时间戳缺失；仅影响复盘标记，不作为硬拦截。",
+        "plan_cooldown_not_met": "计划刚创建或刚修改；现在仅作为复盘标记，不再硬拦截。",
         "missing_position_limit": "计划缺少买后仓位上限。",
         "missing_exit_condition": "计划缺少失效条件 / 退出条件。",
         "valuation_review_required": "估值评分低于 40，计划缺少复核说明。",
@@ -2704,6 +2870,50 @@ def _render_styles() -> None:
             font-weight: 820;
             letter-spacing: 0.05em;
             text-transform: uppercase;
+        }
+        .buy-execution-plan-summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.48rem 0.72rem;
+            margin: 0.5rem 0 0.72rem;
+            padding: 0.7rem 0.78rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #F8FAFC;
+        }
+        .buy-execution-plan-summary strong,
+        .buy-execution-plan-summary small,
+        .buy-execution-plan-summary a,
+        .buy-execution-plan-summary > span {
+            grid-column: 1 / -1;
+        }
+        .buy-execution-plan-summary strong {
+            color: var(--zhx-text);
+            font-size: 0.84rem;
+        }
+        .buy-execution-plan-summary small,
+        .buy-execution-plan-summary > span {
+            color: var(--zhx-muted);
+            font-size: 0.72rem;
+        }
+        .buy-execution-plan-summary a {
+            color: #1D4ED8;
+            font-size: 0.76rem;
+            font-weight: 760;
+            text-decoration: none;
+        }
+        .buy-execution-plan-summary-item {
+            min-width: 0;
+        }
+        .buy-execution-plan-summary-item span {
+            display: block;
+            color: var(--zhx-muted);
+            font-size: 0.66rem;
+        }
+        .buy-execution-plan-summary-item b {
+            color: var(--zhx-text);
+            font-size: 0.75rem;
+            overflow-wrap: anywhere;
         }
         @media (max-width: 1100px) {
             .portfolio-overview {

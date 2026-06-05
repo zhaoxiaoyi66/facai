@@ -282,6 +282,38 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["gate_checked_at"], "2026-05-26T12:00:00+00:00")
             self.assertEqual(saved["radar_block_reasons"], ["当前价进入追高禁止区", "情绪交易风险"])
 
+    def test_trade_journal_store_saves_fresh_buy_plan_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nok",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 50,
+                    "price": 4.8,
+                    "entryMode": "planned_ladder_buy",
+                    "buyPlanId": "NOK",
+                    "buyPlanLevel": "first",
+                    "plannedLadderBuy": True,
+                    "planTriggerPrice": 5,
+                    "planPlannedQuantity": 100,
+                    "planRemainingQuantity": 100,
+                    "planMaxPositionPct": 12,
+                    "planMatchStatus": "allow_planned_add",
+                    "freshPlanExecution": True,
+                    "planAgeMinutes": 1.5,
+                    "planRecentlyCreatedOrModified": True,
+                },
+            )
+
+            self.assertEqual(saved["entry_mode"], "planned_ladder_buy")
+            self.assertTrue(saved["planned_ladder_buy"])
+            self.assertTrue(saved["fresh_plan_execution"])
+            self.assertEqual(saved["plan_age_minutes"], 1.5)
+            self.assertTrue(saved["plan_recently_created_or_modified"])
+
     def test_trade_journal_store_saves_pre_trade_cost_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

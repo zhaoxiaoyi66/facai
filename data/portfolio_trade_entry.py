@@ -202,6 +202,9 @@ def _buy_plan_entry_fields(plan_gate) -> dict[str, Any]:
         "planMaxPositionPct": plan_gate.plan_max_position_pct,
         "planMatchStatus": plan_gate.plan_match_status,
         "planBlockReasons": plan_gate.plan_block_reasons,
+        "freshPlanExecution": plan_gate.fresh_plan_execution,
+        "planAgeMinutes": plan_gate.plan_age_minutes,
+        "planRecentlyCreatedOrModified": plan_gate.plan_recently_created_or_modified,
     }
 
 

@@ -281,7 +281,7 @@ def test_buy_plan_form_rejects_invalid_level_with_clear_error() -> None:
         )
 
 
-def test_buy_plan_cooldown_status_is_human_readable() -> None:
+def test_buy_plan_timing_status_marks_recent_plan_for_review() -> None:
     from ui.portfolio import _buy_plan_cooldown_status
 
     plan = {
@@ -290,13 +290,15 @@ def test_buy_plan_cooldown_status_is_human_readable() -> None:
         "updated_at": "2026-06-04T01:59:00+00:00",
     }
 
-    waiting = _buy_plan_cooldown_status(plan, now=datetime(2026, 6, 4, 2, 0, tzinfo=timezone.utc))
-    ready = _buy_plan_cooldown_status(plan, now=datetime(2026, 6, 4, 2, 20, tzinfo=timezone.utc))
+    fresh = _buy_plan_cooldown_status(plan, now=datetime(2026, 6, 4, 2, 0, tzinfo=timezone.utc))
+    old = _buy_plan_cooldown_status(plan, now=datetime(2026, 6, 4, 2, 20, tzinfo=timezone.utc))
 
-    assert waiting["met"] is False
-    assert "还需" in waiting["label"]
-    assert ready["met"] is True
-    assert ready["label"] == "已满足"
+    assert fresh["met"] is True
+    assert fresh["fresh"] is True
+    assert fresh["label"] == "临时计划执行标记"
+    assert old["met"] is True
+    assert old["fresh"] is False
+    assert old["label"] == "计划时间已记录"
 
 
 def test_buy_plan_form_keeps_event_fields_inside_event_trade_branch() -> None:
@@ -422,63 +424,7 @@ def test_planned_ladder_buy_can_sync_when_radar_blocks_chase_but_plan_matches() 
         assert position["quantity"] == 50
 
 
-def test_planned_ladder_buy_does_not_sync_when_plan_created_after_trade(monkeypatch: pytest.MonkeyPatch) -> None:
-    fixed = datetime(2026, 6, 4, 10, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
-    monkeypatch.setattr(portfolio_trade_entry, "_hkt_now", lambda: fixed)
-    with TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "cache.sqlite"
-        _save_ladder_plan(path)
-        _set_plan_timestamps(
-            path,
-            "NOK",
-            created_at="2026-06-04T03:00:00+00:00",
-            updated_at="2026-06-04T01:00:00+00:00",
-        )
-
-        result = submit_portfolio_buy_add(
-            "NOK",
-            _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
-            path=path,
-            radar_report=_blocked_chase_report(),
-        )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_created_too_late"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
-
-
-def test_planned_ladder_buy_does_not_sync_when_plan_modified_after_trade(monkeypatch: pytest.MonkeyPatch) -> None:
-    fixed = datetime(2026, 6, 4, 10, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
-    monkeypatch.setattr(portfolio_trade_entry, "_hkt_now", lambda: fixed)
-    with TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "cache.sqlite"
-        _save_ladder_plan(path)
-        _set_plan_timestamps(
-            path,
-            "NOK",
-            created_at="2026-06-04T01:00:00+00:00",
-            updated_at="2026-06-04T03:00:00+00:00",
-        )
-
-        result = submit_portfolio_buy_add(
-            "NOK",
-            _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
-            path=path,
-            radar_report=_blocked_chase_report(),
-        )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_modified_too_late"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
-
-
-def test_planned_ladder_buy_does_not_sync_when_plan_created_inside_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_planned_ladder_buy_allows_freshly_created_plan_and_marks_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     fixed = datetime(2026, 6, 4, 10, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
     monkeypatch.setattr(portfolio_trade_entry, "_hkt_now", lambda: fixed)
     with TemporaryDirectory() as tmpdir:
@@ -500,14 +446,18 @@ def test_planned_ladder_buy_does_not_sync_when_plan_created_inside_cooldown(monk
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NOK")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_cooldown_not_met"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
+        assert position is not None
+        assert not entry["radar_blocked"]
+        assert entry["plan_match_status"] == "allow_planned_add"
+        assert entry["fresh_plan_execution"]
+        assert entry["plan_recently_created_or_modified"]
+        assert entry["plan_age_minutes"] == pytest.approx(1.0)
+        assert result["synced"] is True
 
 
-def test_planned_ladder_buy_does_not_sync_when_plan_modified_inside_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_planned_ladder_buy_allows_freshly_modified_plan_and_marks_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     fixed = datetime(2026, 6, 4, 10, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
     monkeypatch.setattr(portfolio_trade_entry, "_hkt_now", lambda: fixed)
     with TemporaryDirectory() as tmpdir:
@@ -529,11 +479,15 @@ def test_planned_ladder_buy_does_not_sync_when_plan_modified_inside_cooldown(mon
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NOK")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_cooldown_not_met"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
+        assert position is not None
+        assert not entry["radar_blocked"]
+        assert entry["plan_match_status"] == "allow_planned_add"
+        assert entry["fresh_plan_execution"]
+        assert entry["plan_recently_created_or_modified"]
+        assert entry["plan_age_minutes"] == pytest.approx(1.0)
+        assert result["synced"] is True
 
 
 def test_planned_ladder_buy_falls_back_to_updated_at_when_material_timestamp_missing(
@@ -564,12 +518,14 @@ def test_planned_ladder_buy_falls_back_to_updated_at_when_material_timestamp_mis
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_cooldown_not_met"
-        assert result["sync"] is None
+        assert not entry["radar_blocked"]
+        assert entry["plan_match_status"] == "allow_planned_add"
+        assert entry["fresh_plan_execution"]
+        assert entry["plan_age_minutes"] == pytest.approx(1.0)
+        assert result["synced"] is True
 
 
-def test_planned_ladder_buy_ignores_non_material_note_update_for_cooldown(
+def test_planned_ladder_buy_keeps_non_material_note_update_as_review_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixed = datetime(2026, 6, 4, 10, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
@@ -600,10 +556,11 @@ def test_planned_ladder_buy_ignores_non_material_note_update_for_cooldown(
         assert entry is not None
         assert position is not None
         assert entry["plan_match_status"] == "allow_planned_add"
+        assert not entry["fresh_plan_execution"]
         assert result["synced"] is True
 
 
-def test_planned_ladder_buy_does_not_sync_when_plan_timestamps_are_missing() -> None:
+def test_planned_ladder_buy_allows_missing_plan_timestamps_without_fresh_marker() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path)
@@ -617,11 +574,14 @@ def test_planned_ladder_buy_does_not_sync_when_plan_timestamps_are_missing() -> 
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NOK")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "plan_timestamp_missing"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
+        assert position is not None
+        assert entry["plan_match_status"] == "allow_planned_add"
+        assert not entry["fresh_plan_execution"]
+        assert not entry["plan_recently_created_or_modified"]
+        assert entry["plan_age_minutes"] is None
+        assert result["synced"] is True
 
 
 def test_planned_ladder_buy_does_not_sync_when_price_has_not_triggered_level() -> None:
