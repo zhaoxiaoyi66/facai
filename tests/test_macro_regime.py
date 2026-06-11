@@ -579,6 +579,7 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     assert hy_result["value"] == 3.72
     assert hy_result["used_cache"] is True
     assert "timeout" in hy_result["error"]
+    assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
 
 
 def test_hy_oas_timeout_uses_hyg_credit_proxy_when_no_cache(tmp_path, monkeypatch) -> None:
@@ -786,6 +787,40 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
     assert loaded.value == 28
+
+
+def test_stale_fear_greed_cache_uses_internal_sentiment_proxy(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=FEAR_GREED,
+            value=28,
+            source="CNN cached",
+            updated_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 22.0],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("CNN HTTP 418")),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["indicators"][FEAR_GREED]["status"] == "stale"
+    assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
 
 
 def test_fear_greed_http_418_uses_internal_sentiment_proxy_without_cache(tmp_path, monkeypatch) -> None:

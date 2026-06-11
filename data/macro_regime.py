@@ -642,7 +642,7 @@ def _macro_refresh_result_missing(result: dict[str, Any] | None) -> bool:
         return True
     status = str(result.get("status") or "")
     value = _number(result.get("value"))
-    if status in {"success", "cached_fallback", "stale"} and value is not None:
+    if status in {"success", "cached_fallback"} and value is not None:
         if str(result.get("indicator") or result.get("label") or "").lower() == VIX and value <= 0:
             return True
         return False
