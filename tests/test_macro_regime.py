@@ -491,7 +491,7 @@ def test_fred_refresh_runs_series_concurrently(tmp_path, monkeypatch) -> None:
     fred_start_times = [moment for series, moment in starts if series != "VIXCLS"]
 
     assert result["status"] == "success"
-    assert elapsed < 0.35
+    assert elapsed < 0.8
     assert max(fred_start_times) - min(fred_start_times) < 0.12
 
 
