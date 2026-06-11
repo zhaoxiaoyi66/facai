@@ -390,6 +390,35 @@ def test_zero_vix_falls_back_to_recent_cache_and_never_displays_zero(tmp_path, m
     assert "VIX 0.0" not in status_text
 
 
+def test_vix_recent_cache_is_used_before_fred_when_quotes_are_invalid(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=VIX,
+            value=21.7,
+            source="VIX cached",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+    fred_calls: list[str] = []
+
+    result = refresh_macro_indicators(
+        path,
+        provider=ZeroVixProvider(),
+        fred_fetcher=lambda series_id: fred_calls.append(series_id) or (_ for _ in ()).throw(RuntimeError("unexpected fred")),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["indicators"][VIX]["status"] == "cached_fallback"
+    assert result["indicators"][VIX]["value"] == 21.7
+    assert "VIXCLS" not in fred_calls
+
+
 def test_fred_zero_vix_is_invalid_and_falls_back_to_cache(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
@@ -849,6 +878,52 @@ def test_fear_greed_http_418_uses_internal_sentiment_proxy_without_cache(tmp_pat
     assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
     assert result["indicators"][SENTIMENT_PROXY]["category"] == "auxiliary"
     assert "情绪代理" in macro_regime_status_text(snapshot)
+
+
+def test_fear_greed_http_418_opens_circuit_and_skips_next_frontend_request(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    cnn_calls: list[str] = []
+
+    def failing_fear_greed(url: str):
+        cnn_calls.append(url)
+        raise RuntimeError("CNN HTTP 418")
+
+    first = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 22.0],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=failing_fear_greed,
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    second = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 22.0],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=failing_fear_greed,
+        now=datetime(2026, 6, 10, 21, 5, tzinfo=timezone.utc),
+    )
+
+    assert first["indicators"][FEAR_GREED]["status"] == "failed"
+    assert second["indicators"][FEAR_GREED]["status"] == "failed"
+    assert "circuit" in str(second["indicators"][FEAR_GREED]["error"]).lower()
+    assert second["indicators"][SENTIMENT_PROXY]["status"] == "success"
+    assert len(cnn_calls) == 1
 
 
 def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:

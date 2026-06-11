@@ -54,6 +54,7 @@ MACRO_REFRESH_MAX_WORKERS = 8
 FRED_CIRCUIT_FAILURE_THRESHOLD = 2
 FRED_CIRCUIT_OPEN_HOURS = 8
 FRED_PROVIDER = "fred"
+FEAR_GREED_PROVIDER = "cnn_fear_greed"
 
 REGIME_RISK_ON = "风险偏好"
 REGIME_NEUTRAL = "中性"
@@ -1005,6 +1006,10 @@ def _fetch_vix_snapshot(
             except Exception as exc:
                 errors.append(f"{symbol}: {_short_error(exc)}")
 
+    cached = store.load_indicator(VIX, now=now)
+    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
+        return cached
+
     try:
         return _fetch_fred_snapshot_with_circuit(VIX, FRED_VIX_SERIES, store=store, fred_fetcher=fred_fetcher, now=now)
     except Exception as exc:
@@ -1199,7 +1204,22 @@ def _fetch_cached_or_fear_greed_snapshot(
     cached = store.load_indicator(FEAR_GREED, now=now)
     if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
         return cached
-    return _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
+    open_circuit, last_error = store.is_provider_circuit_open(FEAR_GREED_PROVIDER, now=now)
+    if open_circuit:
+        raise RuntimeError(f"CNN Fear & Greed circuit open, using proxy/cache; last error: {last_error or 'unknown'}")
+    try:
+        snapshot = _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
+    except Exception as exc:
+        store.record_provider_failure(
+            FEAR_GREED_PROVIDER,
+            _short_error(exc),
+            now=now,
+            failure_threshold=1,
+            open_for_hours=FRED_CIRCUIT_OPEN_HOURS,
+        )
+        raise
+    store.record_provider_success(FEAR_GREED_PROVIDER)
+    return snapshot
 
 
 def _fetch_fred_snapshot(
