@@ -145,15 +145,16 @@ def _entry_rating_cell_html(row: pd.Series) -> str:
         label, grade, _title = _entry_rating_display_parts(row)
         hint = _entry_rating_chip_text(label, grade)
         reason = hint
-    tone = _buy_point_label_tone(label)
+    compact_label, compact_hint = _dashboard_compact_entry_text(display, row)
+    tone = _buy_point_label_tone(compact_label or label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
     title = "；".join(part for part in (label, hint, reason) if part)
     return (
         '<div class="decision-cell entry-rating-cell">'
         f'<span class="entry-rating-token" title="{escape(title)}" '
         f'style="background:{background};color:{foreground};border:1px solid {border};">'
-        f"<strong>{escape(label or '待确认')}</strong>"
-        f"<em>{escape(hint)}</em>"
+        f"<strong>{escape(compact_label or '待确认')}</strong>"
+        f"<em>{escape(compact_hint)}</em>"
         "</span></div>"
     )
 
@@ -175,6 +176,8 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
             "entry_display_label": radar_label,
             "entry_display_reason": radar_reason,
             "entry_action_hint": radar_hint,
+            "price_position": _row_value(row, "radar_price_position") or _row_value(row, "price_position") or _row_value(row, "zone_status"),
+            "data_status": _row_value(row, "radar_data_status") or _row_value(row, "data_status") or _row_value(row, "dataStatus"),
             "entry_reference_low": _row_value(row, "entry_reference_low"),
             "entry_reference_high": _row_value(row, "entry_reference_high"),
             "next_action_price": _row_value(row, "next_action_price"),
@@ -191,6 +194,67 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
         valuation_score=_number(_row_value(row, "valuationScore")),
         risk_score=_number(_row_value(row, "riskScore")),
     )
+
+
+def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple[str, str]:
+    missing_fields = _text_list(display.get("missing_entry_fields"))
+    label = str(display.get("entry_display_label") or "").strip()
+    hint = str(display.get("entry_action_hint") or "").strip()
+    price_position = str(display.get("price_position") or _row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
+    if missing_fields or "暂无参考买区" in label or "缺" in label:
+        return "数据不足", "补数据"
+    if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
+        return "买区内", "需复核" if "复核" in hint else "可复核"
+    if price_position == "ABOVE_BUY_ZONE" or label.startswith("等待回落"):
+        return "买区外", "等回落"
+    if price_position == "IN_CHASE_ZONE" or "禁止追高" in label:
+        return "追高区", "禁止新增"
+    if price_position == "BELOW_BUY_ZONE" or label.startswith("低于买区"):
+        return "低于买区", "不自动买入"
+    if price_position == "ZONE_MISSING":
+        return "无买区", "补数据"
+    if label:
+        return _short_entry_status(label), _short_entry_hint(hint, "看详情")
+    return "", ""
+
+
+def _short_entry_status(label: str) -> str:
+    if "买区内" in label:
+        return "买区内"
+    if "等待回落" in label or "高于买区" in label:
+        return "买区外"
+    if "追高" in label:
+        return "追高区"
+    if "低于买区" in label:
+        return "低于买区"
+    if "数据" in label or "暂无" in label:
+        return "数据不足"
+    return _short_badge_text(label)
+
+
+def _short_entry_hint(hint: str, fallback: str) -> str:
+    text = str(hint or "").strip()
+    if "禁止" in text:
+        return "禁止新增"
+    if "等待" in text or "回落" in text:
+        return "等回落"
+    if "低于买区" in text:
+        return "不自动买入"
+    if "补齐" in text or "数据" in text:
+        return "补数据"
+    if "需复核" in text or "复核" in text:
+        return "需复核"
+    if "交易计划" in text or "买区" in text:
+        return "可复核"
+    return fallback
+
+
+def _text_list(value: object) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
 
 
 def _price_position_from_dashboard_zone(value: object) -> str:
@@ -248,15 +312,15 @@ def _number(value: object) -> float | None:
 
 def _buy_point_label_tone(label: object) -> str:
     text = str(label or "").strip()
-    if "禁止追高" in text:
+    if "追高区" in text or "禁止追高" in text:
         return "red"
-    if "暂无参考买区" in text or "数据" in text:
+    if "无买区" in text or "暂无参考买区" in text or "数据" in text:
         return "gray"
     if "低于买区" in text:
         return "yellow"
     if "买区内" in text:
         return "green"
-    if "等待回落" in text:
+    if "买区外" in text or "等待回落" in text:
         return "blue"
     if "极贵" in text:
         return "deepred"

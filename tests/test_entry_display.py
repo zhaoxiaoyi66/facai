@@ -117,7 +117,7 @@ def test_zone_formatters_are_shared() -> None:
     assert format_zone_status("ZONE_MISSING") == "无法判断"
 
 
-def test_dashboard_watchlist_entry_cell_shows_price_reference() -> None:
+def test_dashboard_watchlist_entry_cell_shows_compact_status_and_keeps_price_in_tooltip() -> None:
     row = pd.Series(
         {
             "symbol": "NVDA",
@@ -138,8 +138,9 @@ def test_dashboard_watchlist_entry_cell_shows_price_reference() -> None:
 
     html = _entry_rating_cell_html(row)
 
+    assert "<strong>买区外</strong>" in html
+    assert "<em>等回落</em>" in html
     assert "等待回落 $90.00 - $100.00" in html
-    assert "只观察，等待回到纪律买区" in html
     assert "追高禁区 &gt;$120.00" in html
 
 
@@ -176,11 +177,39 @@ def test_dashboard_watchlist_missing_buy_zone_shows_engine_reason() -> None:
 
     html = _entry_rating_cell_html(row)
 
+    assert "<strong>数据不足</strong>" in html
+    assert "<em>补数据</em>" in html
     assert "暂无参考买区：缺估值指标" in html
     assert "暂无专属买区模型" not in html
 
 
-def test_dashboard_watchlist_entry_cell_prefers_radar_display_over_legacy_zone() -> None:
+def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
+    cases = [
+        ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "买区内", "可复核"),
+        ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区外", "等回落"),
+        ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
+        ("BELOW_BUY_ZONE", "低于买区 $90.00 - $100.00", "低于买区", "不自动买入"),
+    ]
+
+    for price_position, display_label, compact_label, compact_hint in cases:
+        row = pd.Series(
+            {
+                "symbol": "TEST",
+                "entryRating": "B - 等回踩",
+                "entry_display_label": display_label,
+                "entry_action_hint": "进入追高区，禁止新增" if price_position == "IN_CHASE_ZONE" else "只观察，等待回到纪律买区",
+                "entry_display_reason": "当前位于纪律买区",
+                "radar_price_position": price_position,
+            }
+        )
+
+        html = _entry_rating_cell_html(row)
+
+        assert f"<strong>{compact_label}</strong>" in html
+        assert f"<em>{compact_hint}</em>" in html
+
+
+def test_dashboard_watchlist_entry_cell_prefers_radar_status_over_legacy_zone() -> None:
     row = pd.Series(
         {
             "symbol": "MSFT",
@@ -201,6 +230,7 @@ def test_dashboard_watchlist_entry_cell_prefers_radar_display_over_legacy_zone()
 
     html = _entry_rating_cell_html(row)
 
+    assert "<strong>买区内</strong>" in html
     assert "$394.12 - $425.99" in html
     assert "$241.88 - $300.37" not in html
 
@@ -298,5 +328,6 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     assert row["radar_buy_zone"] == {"lower": 190, "upper": 210}
     assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
+    assert "<strong>买区外</strong>" in html
     assert "等待回落 $190.00 - $210.00" in html
     assert "$90.00 - $100.00" not in html

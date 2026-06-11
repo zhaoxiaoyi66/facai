@@ -2791,10 +2791,15 @@ class ScoringTests(unittest.TestCase):
 
         source = inspect.getsource(dashboard_drawer.drawer_html)
         combined_source = inspect.getsource(dashboard_drawer._combined_entry_note)
+        radar_card_source = inspect.getsource(dashboard_drawer._drawer_radar_entry_card_html)
 
         self.assertIn("估值/计划参考解释", source)
         self.assertIn("不等同于主表 Radar 纪律买区", source)
         self.assertIn("legacy 估值参考", combined_source)
+        self.assertIn("Radar 纪律买区：", radar_card_source)
+        self.assertIn("当前相对买区距离", radar_card_source)
+        self.assertIn("追高禁区", radar_card_source)
+        self.assertIn("缺失字段", radar_card_source)
         self.assertNotIn('"买点解释"', source)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:

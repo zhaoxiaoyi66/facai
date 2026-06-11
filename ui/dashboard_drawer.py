@@ -8,6 +8,7 @@ import json
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from data.entry_display import format_buy_zone, format_zone_status
 from ui.dashboard_tables import _buy_point_label_tone, _entry_rating_chip_text, _entry_rating_display_parts
 from ui.metric_labels import model_type_label, resolution_status_label
 
@@ -258,6 +259,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         drawer_deps.badge_span_html(row.get("action"), drawer_deps.badge_color_for_cell("action", row.get("action"), row)),
     ]
     explanation_cards = [
+        _drawer_radar_entry_card_html(row),
         _drawer_card_html("公司质量解释", str(row.get("qualityRating") or "N/A"), [
             "主要加分：" + drawer_deps.translated_join(row.get("keyPositiveDrivers"), limit=4),
             "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
@@ -344,6 +346,27 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
     )
 
 
+def _drawer_radar_entry_card_html(row: pd.Series) -> str:
+    label = str(row.get("entry_display_label") or "").strip() or "暂无 Radar 纪律买区"
+    hint = str(row.get("entry_action_hint") or "").strip()
+    reason = str(row.get("entry_display_reason") or "").strip()
+    buy_zone = row.get("radar_buy_zone") or row.get("buy_zone") or {}
+    price_position = str(row.get("radar_price_position") or row.get("price_position") or row.get("zone_status") or "").strip()
+    missing_fields = _drawer_text_list(row.get("missing_entry_fields"))
+    lines = [
+        "Radar 纪律买区：" + format_buy_zone(buy_zone),
+        "当前价：" + str(row.get("price") or "N/A"),
+        "当前相对买区距离：" + _drawer_pct_text(row.get("current_vs_entry_pct")),
+        "追高禁区：" + _drawer_money_text(row.get("chase_above_price")),
+        "zone_status / price_position：" + format_zone_status(price_position),
+        "动作提示：" + (hint or "看详情"),
+        "判断原因：" + (reason or "暂无说明"),
+    ]
+    if missing_fields:
+        lines.append("缺失字段：" + "、".join(missing_fields))
+    return _drawer_card_html("Radar 纪律买区", label, lines)
+
+
 def _drawer_position_guidance_html(row: pd.Series) -> str:
     return (
         '<div class="drawer-position-card" data-drawer-section="position">'
@@ -359,6 +382,32 @@ def _drawer_position_guidance_html(row: pd.Series) -> str:
         '</div>'
         '</div>'
     )
+
+
+def _drawer_money_text(value: object) -> str:
+    try:
+        if value in (None, ""):
+            return "N/A"
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _drawer_pct_text(value: object) -> str:
+    try:
+        if value in (None, ""):
+            return "N/A"
+        return f"{float(value):+.1f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _drawer_text_list(value: object) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
 
 
 def _drawer_industry_metrics_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
