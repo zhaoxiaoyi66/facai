@@ -658,6 +658,7 @@ def _render_dashboard_status_bar(
         ),
         unsafe_allow_html=True,
     )
+    _render_macro_refresh_result()
 
 
 def _render_weekly_discipline_strip() -> None:
@@ -909,6 +910,106 @@ def _render_data_health_refresh_result() -> None:
         ),
         unsafe_allow_html=True,
     )
+
+
+def _render_macro_refresh_result() -> None:
+    result = st.session_state.get("dashboard_macro_last_refresh_result")
+    if not isinstance(result, dict):
+        return
+    status = str(result.get("overall_status") or result.get("status") or "failed")
+    tone = {"success": "ok", "partial": "warning"}.get(status, "error")
+    duration = result.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "未知"
+    headline = f"大盘环境刷新完成：{_macro_refresh_status_label(status)}，用时 {duration_text}"
+    indicator_results = list(result.get("indicator_results") or [])
+    if not indicator_results:
+        indicator_results = [
+            {"indicator": key, **dict(value)}
+            for key, value in dict(result.get("indicators") or {}).items()
+            if isinstance(value, dict)
+        ]
+    rows = "".join(_macro_refresh_indicator_row_html(item) for item in indicator_results)
+    error = str(result.get("error") or "").strip()
+    error_html = f'<div class="macro-refresh-error">错误摘要：{escape(error)}</div>' if error else ""
+    st.markdown(
+        (
+            f'<section class="macro-refresh-result {escape(tone)}">'
+            f"<strong>{escape(headline)}</strong>"
+            f'<div class="macro-refresh-grid">{rows}</div>'
+            f"{error_html}"
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _macro_refresh_indicator_row_html(item: dict) -> str:
+    indicator = str(item.get("indicator") or "")
+    label = str(item.get("label") or _macro_indicator_label(indicator))
+    status = str(item.get("status") or "failed")
+    value = _macro_refresh_value_text(item)
+    source = str(item.get("source") or "未知来源")
+    observation_date = str(item.get("observation_date") or item.get("fetched_at") or "无日期")
+    duration = item.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "—"
+    used_cache = bool(item.get("used_cache"))
+    error = str(item.get("error") or "").strip()
+    meta = []
+    if used_cache:
+        meta.append("使用缓存")
+    if error:
+        meta.append(f"错误：{error}")
+    meta_text = "｜".join(meta) if meta else "无错误"
+    return (
+        "<div>"
+        f"<b>{escape(label)}</b>"
+        f"<span>{escape(_macro_refresh_indicator_status_label(status))}｜{escape(value)}｜{escape(source)}｜{escape(observation_date)}｜{escape(duration_text)}</span>"
+        f"<em>{escape(meta_text)}</em>"
+        "</div>"
+    )
+
+
+def _macro_indicator_label(indicator: str) -> str:
+    return {
+        "vix": "VIX 波动率指数",
+        "hy_oas": "美高收益债信用利差",
+        "fear_greed": "恐惧与贪婪指数",
+        "ten_year_yield": "10年美债收益率",
+        "yield_curve_10y2y": "美债10Y-2Y利差",
+        "market_trend": "大盘趋势",
+        "market_breadth": "市场宽度",
+        "dollar_index": "美元指数",
+    }.get(str(indicator or ""), str(indicator or "未知指标"))
+
+
+def _macro_refresh_status_label(status: str) -> str:
+    return {"success": "成功", "partial": "部分成功", "failed": "失败"}.get(status, status)
+
+
+def _macro_refresh_indicator_status_label(status: str) -> str:
+    return {
+        "success": "成功",
+        "failed": "失败",
+        "cached_fallback": "使用缓存",
+        "stale": "过期",
+        "skipped": "跳过",
+    }.get(status, status)
+
+
+def _macro_refresh_value_text(item: dict) -> str:
+    value = item.get("value")
+    if value is None or value == "":
+        return "缺失"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    indicator = str(item.get("indicator") or "")
+    if indicator == "fear_greed":
+        return f"{numeric:.0f}"
+    if indicator in {"hy_oas", "ten_year_yield", "yield_curve_10y2y", "market_breadth"}:
+        return f"{numeric:.1f}%"
+    return f"{numeric:.1f}"
 
 
 def _render_data_health_detail_groups(issues: list[object]) -> None:
@@ -2860,6 +2961,49 @@ def _render_dashboard_styles() -> None:
         .macro-regime-detail-grid ul {
             margin:0.35rem 0 0;
             padding-left:1.05rem;
+        }
+        .macro-refresh-result {
+            max-width:1440px;
+            margin:-0.15rem auto 0.6rem;
+            padding:0.58rem 0.72rem;
+            border:1px solid rgba(148, 163, 184, 0.2);
+            border-radius:10px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:12px;
+            box-shadow:0 10px 22px rgba(15,23,42,0.035);
+        }
+        .macro-refresh-result.warning {
+            border-color:rgba(217,119,6,0.25);
+            background:#FFFBEB;
+        }
+        .macro-refresh-result.error {
+            border-color:rgba(185,28,28,0.24);
+            background:#FEF2F2;
+        }
+        .macro-refresh-grid {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0.42rem 0.7rem;
+            margin-top:0.45rem;
+        }
+        .macro-refresh-grid div {
+            display:flex;
+            flex-direction:column;
+            gap:0.12rem;
+            padding:0.38rem 0.46rem;
+            border:1px solid rgba(226,232,240,0.95);
+            border-radius:8px;
+            background:rgba(255,255,255,0.75);
+        }
+        .macro-refresh-grid span,
+        .macro-refresh-grid em,
+        .macro-refresh-error {
+            color:#64748B;
+            font-style:normal;
+        }
+        .macro-refresh-error {
+            margin-top:0.45rem;
         }
         .st-key-dashboard_recompute_score button,
         .st-key-dashboard_update_watchlist button {

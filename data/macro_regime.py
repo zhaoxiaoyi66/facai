@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -37,6 +38,7 @@ FRED_10Y2Y_SERIES = "T10Y2Y"
 FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+MACRO_REQUEST_TIMEOUT_SECONDS = 8
 
 REGIME_RISK_ON = "风险偏好"
 REGIME_NEUTRAL = "中性"
@@ -215,6 +217,29 @@ class MacroRegimeStore:
                 )
             conn.commit()
 
+    def record_refresh_log(self, result: dict[str, Any]) -> None:
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO macro_refresh_log (
+                    started_at, finished_at, duration_seconds, overall_status,
+                    refreshed_count, failed_count, stale_count, result_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result.get("started_at"),
+                    result.get("finished_at"),
+                    result.get("duration_seconds"),
+                    result.get("overall_status") or result.get("status"),
+                    int(result.get("refreshed_count") or 0),
+                    int(result.get("failed_count") or 0),
+                    int(result.get("stale_count") or 0),
+                    json.dumps(result, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+
     def load_indicator(
         self,
         indicator: str,
@@ -295,6 +320,21 @@ class MacroRegimeStore:
             }.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE macro_indicator_snapshots ADD COLUMN {column} {definition}")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS macro_refresh_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    duration_seconds REAL,
+                    overall_status TEXT,
+                    refreshed_count INTEGER,
+                    failed_count INTEGER,
+                    stale_count INTEGER,
+                    result_json TEXT
+                )
+                """
+            )
             conn.commit()
 
 
@@ -307,6 +347,8 @@ def refresh_macro_indicators(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    started_at = current.isoformat()
+    started_timer = perf_counter()
     store = MacroRegimeStore(path)
     loaders = {
         VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, now=current),
@@ -319,55 +361,103 @@ def refresh_macro_indicators(
         FEAR_GREED: lambda: _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=current),
     }
     indicators: dict[str, dict[str, Any]] = {}
+    indicator_results: list[dict[str, Any]] = []
     errors: list[str] = []
 
     for indicator, loader in loaders.items():
+        indicator_started = perf_counter()
         try:
             snapshot = loader()
             store.save_indicator(snapshot)
-            indicators[indicator] = {
-                "status": "refreshed",
-                "value": snapshot.value,
-                "source": snapshot.source,
-                "error": None,
-            }
+            result = _macro_indicator_refresh_result(
+                snapshot,
+                status="success",
+                duration_seconds=perf_counter() - indicator_started,
+            )
         except Exception as exc:
             message = _short_error(exc)
             store.record_indicator_error(indicator, message, now=current)
             cached = store.load_indicator(indicator, now=current)
             if indicator == FEAR_GREED and cached is not None and cached.value is not None:
-                indicators[indicator] = {
-                    "status": "cached_fallback",
-                    "value": cached.value,
-                    "source": cached.source,
-                    "error": message,
-                    "is_stale": cached.is_stale,
-                }
+                result = _macro_indicator_refresh_result(
+                    cached,
+                    status="stale" if cached.is_stale else "cached_fallback",
+                    error=message,
+                    duration_seconds=perf_counter() - indicator_started,
+                    used_cache=True,
+                )
             else:
-                indicators[indicator] = {
-                    "status": "failed",
-                    "value": cached.value if cached is not None else None,
-                    "source": cached.source if cached is not None else "refresh error",
-                    "error": message,
-                    "is_stale": True,
-                }
+                result = _macro_indicator_refresh_result(
+                    cached,
+                    indicator=indicator,
+                    status="failed",
+                    error=message,
+                    duration_seconds=perf_counter() - indicator_started,
+                    used_cache=cached is not None and cached.value is not None,
+                )
             errors.append(f"{indicator}: {message}")
+        indicators[indicator] = result
+        indicator_results.append(result)
 
     required_indicators = set(loaders) - {DOLLAR_INDEX}
-    refreshed_count = sum(1 for name, item in indicators.items() if name in required_indicators and item["status"] == "refreshed")
-    fallback_count = sum(1 for name, item in indicators.items() if name in required_indicators and item["status"] == "cached_fallback")
-    if refreshed_count == len(required_indicators):
-        status = "success"
-    elif refreshed_count or fallback_count:
-        status = "partial"
-    else:
-        status = "failed"
-    return {
+    required_results = [item for item in indicator_results if item["indicator"] in required_indicators]
+    status = _macro_refresh_overall_status(required_results)
+    refreshed_count = sum(1 for item in indicator_results if item["status"] == "success")
+    failed_count = sum(1 for item in indicator_results if item["status"] == "failed")
+    stale_count = sum(1 for item in indicator_results if item["status"] == "stale" or item.get("is_stale"))
+    finished_at = datetime.now(timezone.utc).isoformat()
+    result = {
         "status": status,
-        "fetchedAt": current.isoformat(),
+        "overall_status": status,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": round(perf_counter() - started_timer, 3),
+        "refreshed_count": refreshed_count,
+        "failed_count": failed_count,
+        "stale_count": stale_count,
+        "fetchedAt": finished_at,
         "indicators": indicators,
+        "indicator_results": indicator_results,
         "error": "; ".join(errors) if errors else None,
     }
+    store.record_refresh_log(result)
+    return result
+
+
+def _macro_indicator_refresh_result(
+    snapshot: MacroIndicatorSnapshot | None,
+    *,
+    status: str,
+    indicator: str | None = None,
+    error: str | None = None,
+    duration_seconds: float = 0.0,
+    used_cache: bool = False,
+) -> dict[str, Any]:
+    normalized = _normalize_indicator(indicator or (snapshot.indicator if snapshot is not None else ""))
+    return {
+        "indicator": normalized,
+        "label": INDICATOR_LABELS.get(normalized, normalized),
+        "status": status,
+        "value": snapshot.value if snapshot is not None else None,
+        "observation_date": snapshot.observation_date if snapshot is not None else None,
+        "fetched_at": snapshot.fetched_at if snapshot is not None else None,
+        "source": snapshot.source if snapshot is not None else "refresh error",
+        "error": error or (snapshot.error if snapshot is not None else None),
+        "duration_seconds": round(max(duration_seconds, 0.0), 3),
+        "used_cache": used_cache,
+        "is_stale": bool(snapshot.is_stale) if snapshot is not None else status == "failed",
+    }
+
+
+def _macro_refresh_overall_status(results: list[dict[str, Any]]) -> str:
+    if results and all(item.get("status") == "success" for item in results):
+        return "success"
+    usable = [
+        item
+        for item in results
+        if item.get("status") in {"success", "cached_fallback", "stale"} and item.get("value") is not None
+    ]
+    return "partial" if usable else "failed"
 
 
 def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -> MacroRegimeSnapshot:
@@ -1233,7 +1323,7 @@ def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:
     return "缺失", "低"
 
 
-def _read_url_text(url: str, *, timeout_seconds: int = 12) -> str:
+def _read_url_text(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SECONDS) -> str:
     request = Request(url, headers={"User-Agent": "ZHX-Research/1.0"})
     with urlopen(request, timeout=timeout_seconds) as response:
         return response.read().decode("utf-8")

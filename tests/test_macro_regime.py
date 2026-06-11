@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import inspect
+import json
+import sqlite3
 
 import pandas as pd
 
@@ -289,7 +291,10 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     )
     loaded = MacroRegimeStore(path).load_indicator(FEAR_GREED, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
+    assert result["status"] == "partial"
+    assert result["overall_status"] == "partial"
     assert result["indicators"][FEAR_GREED]["status"] == "cached_fallback"
+    assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
     assert loaded.value == 28
     assert loaded.error is not None
@@ -341,6 +346,68 @@ def test_market_trend_and_breadth_use_local_price_cache(tmp_path, monkeypatch) -
     assert breadth.value == 50.0
 
 
+def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "BAMLH0A0HYM2": [3.8, 3.9],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+                "DTWEXBGS": [120.0, 120.3],
+            }
+        ),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 41, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "success"
+    assert result["overall_status"] == "success"
+    assert result["duration_seconds"] >= 0
+    assert result["refreshed_count"] >= 7
+    assert result["failed_count"] == 0
+    assert result["indicator_results"]
+    vix_result = result["indicators"][VIX]
+    assert vix_result["status"] == "success"
+    assert vix_result["source"] == "FRED VIXCLS"
+    assert "duration_seconds" in vix_result
+    assert "observation_date" in vix_result
+
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT overall_status, refreshed_count, failed_count, result_json FROM macro_refresh_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "success"
+    assert row[1] >= 7
+    assert row[2] == 0
+    assert json.loads(row[3])["overall_status"] == "success"
+
+
+def test_all_macro_refresh_failures_return_failed_status(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=lambda series_id: (_ for _ in ()).throw(RuntimeError(f"{series_id} timeout")),
+        fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("cnn timeout")),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failed_count"] >= 7
+    assert result["indicators"][VIX]["status"] == "failed"
+    assert "timeout" in str(result["error"])
+
+
 def test_high_vix_and_qqq_below_50_is_at_least_risk_off() -> None:
     snapshot = evaluate_macro_regime(
         [
@@ -374,11 +441,14 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     from ui import dashboard
 
     header_source = inspect.getsource(dashboard._render_dashboard_header)
+    refresh_result_source = inspect.getsource(dashboard._render_macro_refresh_result)
 
     assert "刷新大盘环境" in header_source
     assert "dashboard_refresh_macro_regime_cache" in header_source
     assert "_refresh_macro_cache_for_dashboard()" in header_source
     assert "refresh_macro_indicators" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
+    assert "indicator_results" in refresh_result_source
+    assert "大盘环境刷新完成" in refresh_result_source
 
 
 def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:
