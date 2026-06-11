@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import inspect
 import json
 import sqlite3
+import time
 
 import pandas as pd
 
@@ -57,6 +58,20 @@ class FailingProvider:
 
     def get_price_history(self, ticker: str, force_refresh: bool = False):
         raise RuntimeError("provider down")
+
+
+class SystemIndexHistoryProvider(FailingProvider):
+    def __init__(self, path) -> None:
+        self.path = path
+        self.history_calls: list[tuple[str, bool]] = []
+
+    def get_price_history(self, ticker: str, force_refresh: bool = False):
+        self.history_calls.append((ticker.upper(), force_refresh))
+        if ticker.upper() not in {"SPY", "QQQ"}:
+            raise RuntimeError("only system indices are supported")
+        closes = [100.0] * 219 + [110.0]
+        _seed_history(self.path, ticker.upper(), closes)
+        return PriceCache(self.path).get_history(ticker.upper(), max_age_hours=24 * 3650, min_rows=20)
 
 
 def _fred_fetcher(series_values: dict[str, list[float]]):
@@ -259,6 +274,113 @@ def test_vix_refresh_failure_does_not_block_hy_oas_update(tmp_path, monkeypatch)
     assert hy.value == 4.2
 
 
+def test_fred_refresh_runs_series_concurrently(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    starts: list[tuple[str, float]] = []
+
+    def fred_fetcher(series_id: str) -> str:
+        starts.append((series_id, time.perf_counter()))
+        time.sleep(0.08)
+        return _fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "BAMLH0A0HYM2": [3.8, 3.9],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+                "DTWEXBGS": [120.0, 120.3],
+            }
+        )(series_id)
+
+    started = time.perf_counter()
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    elapsed = time.perf_counter() - started
+    fred_start_times = [moment for series, moment in starts if series != "VIXCLS"]
+
+    assert result["status"] == "success"
+    assert elapsed < 0.35
+    assert max(fred_start_times) - min(fred_start_times) < 0.12
+
+
+def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=HY_OAS,
+            value=3.72,
+            source="FRED cached BAMLH0A0HYM2",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "BAMLH0A0HYM2":
+            raise RuntimeError("FRED timeout 3.0s")
+        return _fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+                "DTWEXBGS": [120.0, 120.3],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    hy_result = result["indicators"][HY_OAS]
+    assert result["status"] == "partial"
+    assert hy_result["status"] == "cached_fallback"
+    assert hy_result["value"] == 3.72
+    assert hy_result["used_cache"] is True
+    assert "timeout" in hy_result["error"]
+
+
+def test_dollar_index_failure_does_not_change_overall_success(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "DTWEXBGS":
+            raise RuntimeError("dollar index timeout")
+        return _fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "BAMLH0A0HYM2": [3.8, 3.9],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "success"
+    assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
+
+
 def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
@@ -344,6 +466,52 @@ def test_market_trend_and_breadth_use_local_price_cache(tmp_path, monkeypatch) -
     assert "QQQ 跌破 50 日均线" in " ".join(trend.action_hints + trend.reasons)
     assert breadth is not None
     assert breadth.value == 50.0
+
+
+def test_macro_refresh_updates_spy_qqq_system_index_cache_when_missing(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_history(path, "AAA", [100.0] * 219 + [110.0])
+    _seed_history(path, "BBB", [100.0] * 219 + [90.0])
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    provider = SystemIndexHistoryProvider(path)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=provider,
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.0, 18.2],
+                "BAMLH0A0HYM2": [3.7, 3.8],
+                "DGS10": [4.0, 4.1],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    trend = MacroRegimeStore(path).load_indicator(MARKET_TREND, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    assert result["indicators"][MARKET_TREND]["status"] == "success"
+    assert ("SPY", True) in provider.history_calls
+    assert ("QQQ", True) in provider.history_calls
+    assert trend is not None
+    assert trend.value is not None
+
+
+def test_vix_and_market_breadth_keep_macro_regime_partially_usable() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 22.0),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_BREADTH,
+                value=35.0,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+        ]
+    )
+
+    assert snapshot.regime != REGIME_DATA_GAP
+    assert snapshot.data_status == "部分可用"
 
 
 def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, monkeypatch) -> None:

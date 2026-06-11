@@ -4,6 +4,7 @@ import json
 import sqlite3
 import csv
 import io
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -37,8 +38,10 @@ FRED_TEN_YEAR_SERIES = "DGS10"
 FRED_10Y2Y_SERIES = "T10Y2Y"
 FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-MACRO_REQUEST_TIMEOUT_SECONDS = 8
+MACRO_REQUEST_TIMEOUT_SECONDS = 4
+MACRO_REFRESH_MAX_WORKERS = 8
 
 REGIME_RISK_ON = "风险偏好"
 REGIME_NEUTRAL = "中性"
@@ -364,26 +367,30 @@ def refresh_macro_indicators(
     indicator_results: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    for indicator, loader in loaders.items():
-        indicator_started = perf_counter()
+    with ThreadPoolExecutor(max_workers=min(MACRO_REFRESH_MAX_WORKERS, len(loaders))) as executor:
+        futures = {indicator: executor.submit(_run_macro_loader, indicator, loader) for indicator, loader in loaders.items()}
+
+    for indicator, future in futures.items():
+        indicator, snapshot, exc, duration_seconds = future.result()
         try:
-            snapshot = loader()
+            if exc is not None:
+                raise exc
             store.save_indicator(snapshot)
             result = _macro_indicator_refresh_result(
                 snapshot,
                 status="success",
-                duration_seconds=perf_counter() - indicator_started,
+                duration_seconds=duration_seconds,
             )
         except Exception as exc:
             message = _short_error(exc)
             store.record_indicator_error(indicator, message, now=current)
             cached = store.load_indicator(indicator, now=current)
-            if indicator == FEAR_GREED and cached is not None and cached.value is not None:
+            if cached is not None and cached.value is not None:
                 result = _macro_indicator_refresh_result(
                     cached,
                     status="stale" if cached.is_stale else "cached_fallback",
                     error=message,
-                    duration_seconds=perf_counter() - indicator_started,
+                    duration_seconds=duration_seconds,
                     used_cache=True,
                 )
             else:
@@ -392,7 +399,7 @@ def refresh_macro_indicators(
                     indicator=indicator,
                     status="failed",
                     error=message,
-                    duration_seconds=perf_counter() - indicator_started,
+                    duration_seconds=duration_seconds,
                     used_cache=cached is not None and cached.value is not None,
                 )
             errors.append(f"{indicator}: {message}")
@@ -422,6 +429,17 @@ def refresh_macro_indicators(
     }
     store.record_refresh_log(result)
     return result
+
+
+def _run_macro_loader(
+    indicator: str,
+    loader: Any,
+) -> tuple[str, MacroIndicatorSnapshot | None, Exception | None, float]:
+    started = perf_counter()
+    try:
+        return indicator, loader(), None, perf_counter() - started
+    except Exception as exc:
+        return indicator, None, exc, perf_counter() - started
 
 
 def _macro_indicator_refresh_result(
@@ -772,7 +790,7 @@ def _fetch_fred_snapshot(
     fred_fetcher: Any | None,
     now: datetime,
 ) -> MacroIndicatorSnapshot:
-    payload = fred_fetcher(series_id) if fred_fetcher else _read_url_text(FRED_CSV_URL.format(series_id=quote(series_id)))
+    payload = _fetch_fred_payload(series_id, fred_fetcher=fred_fetcher)
     rows = _series_rows_from_payload(payload, value_key=series_id)
     if not rows:
         raise RuntimeError(f"FRED {series_id} 没有可用观测值")
@@ -797,6 +815,20 @@ def _fetch_fred_snapshot(
     )
 
 
+def _fetch_fred_payload(series_id: str, *, fred_fetcher: Any | None) -> Any:
+    if fred_fetcher:
+        return fred_fetcher(series_id)
+    errors: list[str] = []
+    encoded = quote(series_id)
+    for url_template in (FRED_CSV_URL, FRED_DOWNLOAD_CSV_URL):
+        url = url_template.format(series_id=encoded)
+        try:
+            return _read_url_text(url, timeout_seconds=MACRO_REQUEST_TIMEOUT_SECONDS)
+        except Exception as exc:
+            errors.append(_short_error(exc))
+    raise RuntimeError(f"FRED {series_id} CSV 拉取失败：" + "; ".join(errors))
+
+
 def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime) -> MacroIndicatorSnapshot:
     payload = fear_greed_fetcher(CNN_FEAR_GREED_URL) if fear_greed_fetcher else _read_json(CNN_FEAR_GREED_URL)
     value = _extract_fear_greed_value(payload)
@@ -818,10 +850,18 @@ def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime)
 
 def _fetch_market_trend_snapshot(path: Path, *, provider: Any | None, now: datetime) -> MacroIndicatorSnapshot:
     errors: list[str] = []
-    if provider is not None:
+    market_provider = provider
+    if market_provider is None:
+        try:
+            from data.providers import get_market_data_provider
+
+            market_provider = get_market_data_provider(full_fundamentals=False)
+        except Exception as exc:
+            errors.append(f"SPY/QQQ 行情源初始化失败：{_short_error(exc)}")
+    if market_provider is not None:
         for symbol in ("SPY", "QQQ"):
             try:
-                provider.get_price_history(symbol, force_refresh=True)
+                market_provider.get_price_history(symbol, force_refresh=True)
             except Exception as exc:
                 errors.append(f"{symbol} 刷新失败：{_short_error(exc)}")
     spy = _trend_state_for_symbol("SPY", path)
