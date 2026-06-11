@@ -249,21 +249,18 @@ def render() -> None:
         return
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
+    _handle_lane_filter_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
 
-    _render_market_strip(table)
     data_health_context = _build_data_health_context(table)
     portfolio_view = build_portfolio_view_model()
     risk_items = build_dashboard_risk_radar(table, portfolio_view)
-    _render_weekly_discipline_strip()
+    _render_dashboard_status_bar(table, data_health_context, risk_items)
     _render_price_alert_strip(tickers)
-    _render_data_health_strip(data_health_context)
-    _render_risk_radar_summary_strip(risk_items, table)
     _render_summary_sections(table)
     _render_decision_table(table)
-    _render_data_health_detail_section(data_health_context)
-    _render_dashboard_risk_radar(risk_items)
+    _render_dashboard_system_status(data_health_context, risk_items, table)
     _render_client_stock_detail_drawers(table)
 
     st.caption("缺失财务数据显示为 N/A；评分不会用模型补造财务数字。")
@@ -608,6 +605,34 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
 
 
+def _render_dashboard_status_bar(table: pd.DataFrame, data_health_context: dict[str, object], risk_items: list[dict[str, object]]) -> None:
+    data_health_view = dict(data_health_context.get("view") or {})
+    last_updated = _dashboard_last_updated_text(data_health_context.get("lastUpdated"))
+    items = [
+        ("观察", len(table)),
+        ("可行动", len(_actionable_rows(table))),
+        ("接近买区", len(_near_buy_zone_rows(table))),
+        ("风险隔离", len(_blocked_or_risky_rows(table))),
+        ("数据", data_health_view.get("statusLabel") or "注意"),
+        ("最后更新", last_updated),
+        ("数据源", "本地缓存 · FMP Starter"),
+    ]
+    item_html = "".join(
+        f'<span><b>{escape(str(label))}</b>{escape(str(value))}</span>'
+        for label, value in items
+    )
+    risk_total = _dashboard_risk_total_count(risk_items, table)
+    st.markdown(
+        (
+            '<section class="dashboard-status-bar">'
+            f'<div class="dashboard-status-items">{item_html}</div>'
+            f'<a class="dashboard-status-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_weekly_discipline_strip() -> None:
     try:
         summary = build_trading_discipline_summary()
@@ -774,6 +799,19 @@ def _render_data_health_detail_section(context: dict[str, object]) -> None:
     raw_issues = list(context.get("rawIssues") or [])
     _render_data_health_refresh_result()
     with st.expander("数据健康详情", expanded=_data_health_should_auto_expand(context)):
+        _render_data_health_detail_groups(raw_issues)
+
+
+def _render_dashboard_system_status(data_health_context: dict[str, object], risk_items: list[dict[str, object]], table: pd.DataFrame) -> None:
+    raw_issues = list(data_health_context.get("rawIssues") or [])
+    expanded = bool(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY))
+    st.markdown('<div id="dashboard-system-status"></div>', unsafe_allow_html=True)
+    with st.expander("系统状态 / 风险雷达", expanded=expanded):
+        _render_risk_radar_summary_strip(risk_items, table)
+        st.markdown(_dashboard_risk_radar_html(risk_items), unsafe_allow_html=True)
+        _render_weekly_discipline_strip()
+        _render_data_health_refresh_result()
+        st.markdown('<div class="drawer-section-title">数据健康详情</div>', unsafe_allow_html=True)
         _render_data_health_detail_groups(raw_issues)
 
 
@@ -1052,6 +1090,20 @@ def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.D
     )
 
 
+def _dashboard_risk_total_count(items: list[dict[str, object]], table: pd.DataFrame) -> int:
+    return sum(
+        int(value or 0)
+        for value in (
+            _risk_item_symbol_count(items, "overweight"),
+            _risk_item_symbol_count(items, "noChase"),
+            _risk_item_symbol_count(items, "review"),
+            _risk_item_symbol_count(items, "lowConfidence"),
+            _risk_item_symbol_count(items, "noAdd"),
+            _dashboard_blocker_count(table),
+        )
+    )
+
+
 def _risk_item_symbol_count(items: list[dict[str, object]], key: str) -> int:
     for item in items:
         if str(item.get("key") or "") == key:
@@ -1068,18 +1120,19 @@ def _dashboard_blocker_count(table: pd.DataFrame) -> int:
 
 
 def _render_dashboard_risk_radar(items: list[dict[str, object]]) -> None:
-    cards = "".join(_dashboard_risk_radar_item_html(item) for item in items)
     st.markdown('<div id="dashboard-risk-radar-detail"></div>', unsafe_allow_html=True)
     with st.expander("风险雷达详情", expanded=bool(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY))):
-        st.markdown(
-            (
-                '<section class="dashboard-risk-radar">'
-                '<div class="dashboard-risk-radar-head"><strong>风险雷达</strong><span>点击风险项筛选观察名单</span></div>'
-                f'<div class="dashboard-risk-radar-list">{cards}</div>'
-                "</section>"
-            ),
-            unsafe_allow_html=True,
-        )
+        st.markdown(_dashboard_risk_radar_html(items), unsafe_allow_html=True)
+
+
+def _dashboard_risk_radar_html(items: list[dict[str, object]]) -> str:
+    cards = "".join(_dashboard_risk_radar_item_html(item) for item in items)
+    return (
+        '<section class="dashboard-risk-radar">'
+        '<div class="dashboard-risk-radar-head"><strong>风险雷达</strong><span>点击风险项筛选观察名单</span></div>'
+        f'<div class="dashboard-risk-radar-list">{cards}</div>'
+        "</section>"
+    )
 
 
 def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
@@ -1099,22 +1152,32 @@ def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
     summary_groups = _summary_lane_groups(table)
-
-    st.markdown(_dashboard_priority_strip_html(table), unsafe_allow_html=True)
+    chips = [_dashboard_filter_chip_html("all", "全部", len(table))]
+    chips.extend(
+        _dashboard_filter_chip_html(lane_key, title, len(rows), color)
+        for lane_key, title, _subtitle, rows, color in summary_groups
+    )
     st.markdown(
-        '<section class="decision-terminal-head">'
-        "<div><strong>决策台</strong><span>行动优先级</span></div>"
+        '<section class="dashboard-filter-strip">'
+        '<div class="dashboard-filter-title"><strong>决策筛选</strong><span>点击聚焦主表</span></div>'
+        f'<div class="dashboard-filter-chips">{"".join(chips)}</div>'
         "</section>",
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="decision-lanes-marker"></div>', unsafe_allow_html=True)
-    columns = st.columns(4, gap="small")
-    for column, (lane_key, title, subtitle, rows, color) in zip(columns, summary_groups):
-        with column:
-            st.markdown(_summary_panel_head_html(title, subtitle, len(rows), color), unsafe_allow_html=True)
-            st.markdown(_lane_stack_html(rows[:4]), unsafe_allow_html=True)
-            _render_lane_more_button(lane_key)
-    st.markdown('<div class="decision-lanes-end"></div>', unsafe_allow_html=True)
+
+
+def _dashboard_filter_chip_html(lane_key: str, label: str, count: int, color: str = "gray") -> str:
+    active_lane = str(st.session_state.get(LANE_FILTER_SESSION_KEY) or "")
+    active_risk = str(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY) or "")
+    is_active = (lane_key == "all" and not active_lane and not active_risk) or (lane_key != "all" and active_lane == lane_key)
+    active = " active" if is_active else ""
+    href = "?page=dashboard&laneFilter=all#watchlist-table" if lane_key == "all" else f"?page=dashboard&laneFilter={escape(lane_key, quote=True)}#watchlist-table"
+    return (
+        f'<a class="dashboard-filter-chip tone-{escape(color)}{active}" href="{href}" target="_self" '
+        f'title="筛选：{escape(label)}">'
+        f'<span>{escape(label)}</span><strong>{escape(str(count))}</strong>'
+        "</a>"
+    )
 
 
 def _render_decision_table(table: pd.DataFrame) -> None:
@@ -1269,6 +1332,19 @@ def _handle_risk_radar_filter_query() -> None:
         st.session_state.pop(LANE_FILTER_SESSION_KEY, None)
     if "riskFilter" in st.query_params:
         st.query_params.pop("riskFilter")
+        st.rerun()
+
+
+def _handle_lane_filter_query() -> None:
+    key = str(st.query_params.get("laneFilter", "")).strip()
+    if key == "all":
+        st.session_state.pop(LANE_FILTER_SESSION_KEY, None)
+        st.session_state.pop(RISK_RADAR_FILTER_SESSION_KEY, None)
+    elif key in LANE_FILTER_LABELS:
+        st.session_state[LANE_FILTER_SESSION_KEY] = key
+        st.session_state.pop(RISK_RADAR_FILTER_SESSION_KEY, None)
+    if "laneFilter" in st.query_params:
+        st.query_params.pop("laneFilter")
         st.rerun()
 
 
@@ -2634,6 +2710,56 @@ def _render_dashboard_styles() -> None:
             font-weight: 650;
             font-variant-numeric: tabular-nums;
         }
+        .dashboard-status-bar {
+            max-width:1440px;
+            margin:0 auto 0.55rem;
+            min-height:34px;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.65rem;
+            padding:0.38rem 0.58rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:9px;
+            background:#FFFFFF;
+            color:#64748B;
+            box-shadow:0 10px 26px rgba(15, 23, 42, 0.035);
+        }
+        .dashboard-status-items {
+            display:flex;
+            align-items:center;
+            gap:0.42rem;
+            min-width:0;
+            overflow:hidden;
+            white-space:nowrap;
+        }
+        .dashboard-status-items span {
+            display:inline-flex;
+            align-items:center;
+            gap:0.18rem;
+            min-width:0;
+            color:#64748B;
+            font-size:11px;
+            line-height:1;
+            font-weight:650;
+        }
+        .dashboard-status-items b {
+            color:#94A3B8;
+            font-weight:650;
+        }
+        .dashboard-status-link {
+            flex:0 0 auto;
+            color:#334155 !important;
+            font-size:11px;
+            font-weight:720;
+            text-decoration:none !important;
+            white-space:nowrap;
+        }
+        .dashboard-status-link:hover,
+        .dashboard-status-link:visited {
+            color:#0F172A !important;
+            text-decoration:none !important;
+        }
         .st-key-dashboard_recompute_score button,
         .st-key-dashboard_update_watchlist button {
             min-height: 36px !important;
@@ -3983,6 +4109,78 @@ def _render_dashboard_styles() -> None:
             color:#0F172A;
             font-weight:780;
             font-variant-numeric:tabular-nums;
+        }
+        .dashboard-filter-strip {
+            max-width:1440px;
+            margin:0 auto 0.52rem;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.75rem;
+            padding:0.42rem 0.52rem;
+            border:1px solid rgba(148, 163, 184, 0.16);
+            border-radius:9px;
+            background:#FFFFFF;
+        }
+        .dashboard-filter-title {
+            display:grid;
+            gap:0.04rem;
+            flex:0 0 auto;
+        }
+        .dashboard-filter-title strong {
+            color:#0F172A;
+            font-size:12px;
+            font-weight:780;
+            line-height:1.15;
+        }
+        .dashboard-filter-title span {
+            color:#94A3B8;
+            font-size:10px;
+            font-weight:620;
+            line-height:1.15;
+        }
+        .dashboard-filter-chips {
+            display:flex;
+            align-items:center;
+            justify-content:flex-end;
+            gap:0.35rem;
+            min-width:0;
+            flex-wrap:wrap;
+        }
+        .dashboard-filter-chip {
+            display:inline-flex;
+            align-items:center;
+            gap:0.22rem;
+            height:26px;
+            padding:0 0.48rem;
+            border:1px solid rgba(148, 163, 184, 0.20);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#475569 !important;
+            font-size:11px;
+            font-weight:700;
+            text-decoration:none !important;
+            white-space:nowrap;
+        }
+        .dashboard-filter-chip strong {
+            color:#0F172A;
+            font-weight:800;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-filter-chip.active {
+            border-color:rgba(15, 23, 42, 0.22);
+            background:#F8FAFC;
+            color:#0F172A !important;
+        }
+        .dashboard-filter-chip.tone-green.active { background:#F4FAF6; border-color:#DDEBE2; }
+        .dashboard-filter-chip.tone-blue.active { background:#F4F7FB; border-color:#DCE6F2; }
+        .dashboard-filter-chip.tone-yellow.active { background:#FCFAF0; border-color:#EEE6C8; }
+        .dashboard-filter-chip.tone-red.active { background:#FDF1F1; border-color:#E7B9B9; }
+        .dashboard-filter-chip:hover,
+        .dashboard-filter-chip:visited {
+            color:#0F172A !important;
+            text-decoration:none !important;
+            background:#F8FAFC;
         }
         .data-health-popover {
             position:relative;

@@ -1490,12 +1490,40 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertEqual(filtered["symbol"].tolist(), ["NOW"])
 
-    def test_summary_sections_cap_lanes_at_four_rows(self) -> None:
+    def test_summary_sections_render_filter_chips_not_large_lane_cards(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         source = inspect.getsource(dashboard_module._render_summary_sections)
 
-        self.assertIn("rows[:4]", source)
-        self.assertIn("_render_lane_more_button", source)
+        self.assertIn("dashboard-filter-strip", source)
+        self.assertIn("_dashboard_filter_chip_html", source)
+        self.assertNotIn("_lane_stack_html", source)
+        self.assertNotIn("_summary_panel_head_html", source)
+        self.assertNotIn("_dashboard_priority_strip_html", source)
+
+    def test_dashboard_home_keeps_risk_radar_in_system_status_expander(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        render_source = inspect.getsource(dashboard_module.render)
+        system_status_source = inspect.getsource(dashboard_module._render_dashboard_system_status)
+
+        self.assertIn("_render_dashboard_status_bar", render_source)
+        self.assertIn("_render_summary_sections(table)", render_source)
+        self.assertIn("_render_decision_table(table)", render_source)
+        self.assertIn("_render_dashboard_system_status", render_source)
+        self.assertNotIn("_render_dashboard_risk_radar(risk_items)", render_source)
+        self.assertNotIn("_render_data_health_strip(data_health_context)", render_source)
+        self.assertIn('st.expander("系统状态 / 风险雷达"', system_status_source)
+        self.assertIn("_render_risk_radar_summary_strip", system_status_source)
+        self.assertIn("_dashboard_risk_radar_html", system_status_source)
+
+    def test_dashboard_filter_chip_links_drive_table_filters(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+
+        html = dashboard_module._dashboard_filter_chip_html("nearBuyZone", "接近买区", 2, "blue")
+
+        self.assertIn("dashboard-filter-chip", html)
+        self.assertIn("laneFilter=nearBuyZone", html)
+        self.assertIn("接近买区", html)
+        self.assertIn("<strong>2</strong>", html)
 
     def test_metric_resolution_groups_collapse_derived_and_qualitative_into_low_priority(self) -> None:
         groups = _metric_resolution_groups(
