@@ -1313,6 +1313,8 @@ def test_portfolio_table_labels_system_reference_as_valuation_reference() -> Non
 
     assert "系统估值参考" in source
     assert "系统估值参考" in drawer_source
+    assert "估值参考状态" in drawer_source
+    assert "Radar 买区" not in drawer_source
 
 
 def test_portfolio_ui_has_no_archive_or_direct_position_save_path() -> None:

@@ -81,8 +81,8 @@ def render() -> None:
     _render_styles()
     # Test anchor for the original system-plan page contract: 系统根据评分、估值、风险和技术位置自动生成买区
     render_page_header(
-        "系统估值买区计划",
-        "根据评分、估值、风险和技术位置生成系统估值买区，辅助执行加仓与等待策略；不代表 Radar ALLOW_BUY。",
+        "计划建仓区 / 系统估值买区",
+        "根据评分、估值、风险和技术位置生成系统估值买区，辅助制定分批建仓计划；不等同于 Radar 纪律买区，也不代表 Radar ALLOW_BUY。",
     )
 
     tickers = load_watchlist()
@@ -94,8 +94,8 @@ def render() -> None:
     plan_store = StockPlanStore()
     _handle_quick_price_alert_query()
     load_notice = st.empty()
-    load_notice.info(f"正在生成系统估值买区计划：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
-    with st.spinner("正在读取观察池、评分和系统估值买区计划..."):
+    load_notice.info(f"正在生成计划建仓区 / 系统估值买区：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
+    with st.spinner("正在读取观察池、评分和计划建仓区..."):
         rows = _load_buy_zone_rows(tuple(tickers))
         rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
         portfolio_view = _safe_portfolio_view()
@@ -383,8 +383,8 @@ def _render_execution_toolbar(rows: list[dict]) -> str:
         st.markdown(
             """
             <div class="execution-toolbar-title">
-              <strong>买区执行台</strong>
-              <span>只保留执行判断，完整买区进入详情。</span>
+              <strong>计划建仓执行台</strong>
+              <span>只保留计划建仓参考；完整估值买区进入详情。</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -438,7 +438,7 @@ def _handle_quick_price_alert_query() -> None:
             triggerPrice=price,
             alertReason=reason,
             linkedPlanType=plan_type,
-            note="买区页快速创建；到价后仍需复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律。",
+            note="计划建仓区快速创建；到价后仍需复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律；不等同于 Radar 纪律买区。",
         )
         st.session_state["buy_zone_record_signal_notice"] = f"{symbol} 价格提醒已创建。"
     except ValueError:
@@ -629,10 +629,10 @@ def _buy_zone_drawer_html(row: dict) -> str:
     validation_errors = "".join(f"<li>{escape(_humanize_buy_zone_explain_item(error))}</li>" for error in (row.get("validationErrors") or [])[:5])
     return (
         f'<section id="{escape(drawer_id, quote=True)}" class="buy-zone-drawer-shell">'
-        '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭买区详情"></a>'
+        '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭估值买区详情"></a>'
         '<aside class="stock-drawer buy-zone-drawer">'
         '<a class="drawer-close-link" href="#buy-zone-table" title="关闭">×</a>'
-        '<div class="drawer-topline">系统估值买区详情</div>'
+        '<div class="drawer-topline">计划建仓区 / 系统估值买区详情</div>'
         f'<div class="drawer-head"><div><div class="drawer-symbol">{escape(symbol)}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or ""))}</div></div>'
         f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
@@ -654,6 +654,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">系统估值入场参考</div>'
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
+        '<div class="drawer-muted">本页来自 legacy buy_zone_engine，用于计划建仓与估值参考；不等同于 Radar 纪律买区，也不直接代表 ALLOW_BUY。</div>'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
         '<div class="drawer-section-title">价格提醒</div>'

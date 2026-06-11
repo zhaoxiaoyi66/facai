@@ -8,7 +8,6 @@ import json
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-
 from ui.dashboard_tables import _buy_point_label_tone, _entry_rating_chip_text, _entry_rating_display_parts
 from ui.metric_labels import model_type_label, resolution_status_label
 
@@ -264,7 +263,8 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
             "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
             str(summary.get("quality") or ""),
         ]),
-        _drawer_card_html("买点解释", entry_display or str(row.get("entryRating") or "N/A"), [
+        _drawer_card_html("估值/计划参考解释", entry_display or str(row.get("entryRating") or "N/A"), [
+            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 纪律买区。",
             _clean_buy_point_summary_text(summary.get("valuation"), row),
             _clean_buy_point_summary_text(summary.get("technical"), row),
             _clean_buy_point_summary_text(summary.get("entry"), row),
@@ -350,7 +350,7 @@ def _drawer_position_guidance_html(row: pd.Series) -> str:
         '<div>'
         '<span>当前新增建议</span>'
         f'<strong>{escape(str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A"))}</strong>'
-        '<em>由买点结论、估值位置和当前趋势决定。</em>'
+        '<em>由 legacy 估值参考、估值位置和当前趋势决定；不等同于 Radar 纪律买区。</em>'
         '</div>'
         '<div>'
         '<span>组合仓位上限</span>'
@@ -422,7 +422,7 @@ def _decision_conclusion_text(row: pd.Series, symbol: str, model: str, action: s
     risk = str(row.get("riskRating") or "")
     entry = str(row.get("entryRating") or "")
     if _is_high_quality_text(quality) and risk == "低" and _is_observe_or_wait_action(action, entry):
-        return f"{symbol} 是高质量{model}，但当前买点一般，适合{_short_action_for_sentence(action)}。"
+        return f"{symbol} 是高质量{model}，但当前估值参考一般，适合{_short_action_for_sentence(action)}。"
     if "数据" in str(row.get("dataStatus") or "") or row.get("dataConfidence") == "low":
         return f"{symbol} 的评分仍受数据置信度限制，先复核关键数据再提高仓位。"
     return f"{symbol} 当前动作是{_short_action_for_sentence(action)}，先按仓位纪律执行。"
@@ -431,12 +431,12 @@ def _decision_conclusion_text(row: pd.Series, symbol: str, model: str, action: s
 def _decision_why_text(row: pd.Series, quality: str, entry: str, risk: str, summary: dict[str, str]) -> str:
     action = str(row.get("action") or "")
     if _is_high_quality_text(quality) and risk == "低" and _is_observe_or_wait_action(action, entry):
-        return f"公司风险低，但买点结论为 {entry}，当前新增仓位受限；这不是公司质量问题，而是估值买点还没到。"
+        return f"公司风险低，但 legacy 估值参考为 {entry}，当前新增仓位受限；这不是公司质量问题，而是估值参考还没到。"
     parts = [_combined_entry_note(row), str(summary.get("technical") or ""), str(summary.get("valuation") or "")]
     if not parts[0]:
         parts.insert(0, str(summary.get("entry") or ""))
     text = " ".join(_clean_buy_point_summary_text(part, row) for part in parts if part).strip()
-    return text or "当前建议由质量、买点、风险、估值和数据置信度综合得出。"
+    return text or "当前建议由质量、legacy 估值参考、风险、估值和数据置信度综合得出。"
 
 
 def _combined_entry_note(row: pd.Series) -> str:
@@ -444,7 +444,7 @@ def _combined_entry_note(row: pd.Series) -> str:
     if not isinstance(combined, dict):
         return ""
     label = str(combined.get("entryLabel") or "").strip()
-    return f"买点结论：{label}。" if label else ""
+    return f"legacy 估值参考：{label}。" if label else ""
 
 
 def _clean_buy_point_summary_text(text: object, row: pd.Series) -> str:
@@ -453,8 +453,8 @@ def _clean_buy_point_summary_text(text: object, row: pd.Series) -> str:
     display = _entry_rating_chip_text(entry_label, entry_grade)
     raw = str(row.get("entryRating") or "").strip()
     if raw and display:
-        value = value.replace(f"买点评级为{raw}", f"买点结论为{display}")
-        value = value.replace(f"买点评级为 {raw}", f"买点结论为 {display}")
+        value = value.replace(f"买点评级为{raw}", f"legacy 估值参考为{display}")
+        value = value.replace(f"买点评级为 {raw}", f"legacy 估值参考为 {display}")
     if display:
         value = value.replace("击球区附近", display)
     return value
@@ -478,7 +478,7 @@ def _waiting_conditions(row: pd.Series, deps: DashboardDrawerDeps | None = None)
 def _entry_context_note(row: pd.Series) -> str:
     action = str(row.get("action") or "")
     if _is_high_quality_text(str(row.get("qualityRating") or "")) and _is_observe_or_wait_action(action, str(row.get("entryRating") or "")):
-        return "只观察不是因为公司质量差，而是因为当前买点不够理想。"
+        return "只观察不是因为公司质量差，而是因为当前 legacy 估值参考不够理想；主表 Radar 买区仍以 Radar 纪律口径为准。"
     return ""
 
 

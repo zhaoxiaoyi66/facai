@@ -2781,9 +2781,21 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn("st.dataframe", source)
         self.assertIn("数据可信度", source)
         self.assertIn("公司质量解释", source)
-        self.assertIn("估值买点解释", source)
+        self.assertIn("估值/计划参考解释", source)
+        self.assertIn("不等同于主表 Radar 纪律买区", source)
         self.assertIn("风险解释", source)
         self.assertIn("数据补全状态", inspect.getsource(_render_metric_resolution_groups))
+
+    def test_dashboard_drawer_labels_legacy_entry_reference(self) -> None:
+        from ui import dashboard_drawer
+
+        source = inspect.getsource(dashboard_drawer.drawer_html)
+        combined_source = inspect.getsource(dashboard_drawer._combined_entry_note)
+
+        self.assertIn("估值/计划参考解释", source)
+        self.assertIn("不等同于主表 Radar 纪律买区", source)
+        self.assertIn("legacy 估值参考", combined_source)
+        self.assertNotIn('"买点解释"', source)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(
@@ -7857,8 +7869,9 @@ class BuyZonePlanPageTests(unittest.TestCase):
         from ui import buy_zone as buy_zone_page
 
         source = inspect.getsource(buy_zone_page.render)
-        self.assertIn("系统估值买区计划", source)
+        self.assertIn("计划建仓区 / 系统估值买区", source)
         self.assertIn("根据评分、估值、风险和技术位置生成系统估值买区", source)
+        self.assertIn("不等同于 Radar 纪律买区", source)
         self.assertIn("不代表 Radar ALLOW_BUY", source)
         self.assertIn("_load_buy_zone_rows", source)
         self.assertNotIn("买区计算器", source)
@@ -7872,7 +7885,8 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertIn("data-buy-zone-drawer-open", source)
         self.assertIn("buy-zone-drawer", source)
         self.assertIn("高级估值沙盒", source)
-        self.assertIn("系统估值买区详情", source)
+        self.assertIn("计划建仓区 / 系统估值买区详情", source)
+        self.assertIn("legacy buy_zone_engine", source)
 
     def test_zero_price_is_not_used_for_valid_buy_zone(self) -> None:
         zone = generate_buy_zone("ZERO", {"current_price": 0, "price_to_fcf": 20, "free_cash_flow_yield": 0.05}, None, "SAAS_SOFTWARE")

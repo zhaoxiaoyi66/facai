@@ -1169,13 +1169,13 @@ def _decision_lane_text(value: object) -> str:
 def _buy_zone_status_text(value: object) -> str:
     return {
         "fair_observation": "观察区",
-        "tranche_buy": "分批买区",
-        "heavy_buy": "重仓买区",
+        "tranche_buy": "估值分批区",
+        "heavy_buy": "估值重仓区",
         "below_heavy_buy": "低于重仓区",
         "no_chase": "禁止追高",
         "data_insufficient": "数据不足",
-        "invalid_zone": "买区异常",
-        "low_confidence_zone": "低置信买区",
+        "invalid_zone": "估值参考异常",
+        "low_confidence_zone": "低置信估值参考",
     }.get(str(value), "未生成")
 
 
@@ -1186,7 +1186,7 @@ def _reason_text(value: object) -> str:
 
 def _translated_reasons(value: object) -> list[str]:
     labels = {
-        "buy_zone": "买区阻断",
+        "buy_zone": "系统估值参考阻断",
         "data_confidence": "数据置信度",
         "valuation_status": "估值状态",
         "entry_rating": "入场评级",
@@ -1674,7 +1674,7 @@ def _drawer_html(
             ("系统上限", _percent_text(row.get("systemMaxPosition"))),
             ("当前可加", _percent_text(row.get("systemCurrentAdd"))),
             ("决策通道", _decision_lane_text(row.get("decisionLane"))),
-            ("买区状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
+            ("估值参考状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
             ("阻断原因", _reason_text(row.get("blockReasons"))),
             ("复核原因", _reason_text(row.get("reviewReasons"))),
         ]),

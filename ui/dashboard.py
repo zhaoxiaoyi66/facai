@@ -1208,9 +1208,10 @@ def _render_score_explanation(row: pd.Series) -> None:
         entry_display = _entry_rating_chip_text(entry_label, entry_grade)
         st.markdown(
             _score_card_html(
-                "估值买点解释",
+                "估值/计划参考解释",
                 entry_display or str(row.get("entryRating") or "N/A"),
                 [
+                    "该区域来自 legacy 估值参考，不等同于主表 Radar 纪律买区。",
                     "估值状态：" + str(row.get("valuationStatus") or "N/A"),
                     "回撤幅度：" + str(row.get("drawdownFromHigh") or "N/A"),
                     "技术状态：" + _technical_state_text(row),
