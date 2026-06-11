@@ -4887,19 +4887,22 @@ def _render_dashboard_styles() -> None:
             justify-content:flex-start;
         }
         .entry-rating-token {
-            display:inline-flex;
-            align-items:center;
-            gap:5px;
-            height:21px;
+            display:flex;
+            flex-direction:column;
+            align-items:flex-start;
+            gap:1px;
+            min-height:34px;
+            height:auto;
             max-width:100%;
             min-width:0;
-            padding:0 7px;
+            padding:4px 7px;
             border-radius:6px;
             box-sizing:border-box;
             overflow:hidden;
-            white-space:nowrap;
+            white-space:normal;
         }
         .entry-rating-token strong {
+            max-width:100%;
             min-width:0;
             overflow:hidden;
             text-overflow:ellipsis;
@@ -4907,15 +4910,19 @@ def _render_dashboard_styles() -> None:
             color:inherit;
             font-size:11px;
             font-weight:650;
-            line-height:21px;
+            line-height:14px;
         }
         .entry-rating-token em {
-            flex:0 0 auto;
+            max-width:100%;
+            min-width:0;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
             color:#64748B;
             font-size:10px;
             font-style:normal;
             font-weight:650;
-            line-height:21px;
+            line-height:12px;
             opacity:0.82;
             font-variant-numeric:tabular-nums;
         }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from buy_zone_engine import generate_buy_zone
+from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_multiple, format_percent
@@ -68,6 +68,8 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     direct_fcf_margin = fcf_metric.value if fcf_metric.sourceType != "derivedFromMarket" else None
     implied_fcf_margin = fcf_metric.value if fcf_metric.sourceType == "derivedFromMarket" else None
     buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
+    plan = StockPlanStore().get_plan(ticker)
+    active_buy_zone = buy_zone_with_manual_override(buy_zone, plan) if buy_zone is not None else None
     final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score, buy_zone=buy_zone)
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
@@ -90,6 +92,8 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "decisionLane": final_decision.decisionLane,
         "displayCategory": final_decision.displayCategory,
         "buyZoneStatus": getattr(buy_zone, "currentZone", None),
+        "systemZone": buy_zone,
+        "activeZone": active_buy_zone,
         "combinedEntry": getattr(buy_zone, "combinedEntry", None) or {},
         "isActionable": final_decision.isActionable,
         "decisionBlockReasons": final_decision.blockReasons,

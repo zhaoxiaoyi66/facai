@@ -140,14 +140,17 @@ def _entry_rating_cell_html(row: pd.Series) -> str:
     display = _dashboard_entry_display(row)
     label = str(display.get("entry_display_label") or "").strip()
     hint = str(display.get("entry_action_hint") or display.get("entry_display_reason") or "").strip()
+    reason = str(display.get("entry_display_reason") or "").strip()
     if not label:
         label, grade, _title = _entry_rating_display_parts(row)
         hint = _entry_rating_chip_text(label, grade)
+        reason = hint
     tone = _buy_point_label_tone(label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
+    title = "；".join(part for part in (label, hint, reason) if part)
     return (
         '<div class="decision-cell entry-rating-cell">'
-        f'<span class="entry-rating-token" title="{escape(label)}" '
+        f'<span class="entry-rating-token" title="{escape(title)}" '
         f'style="background:{background};color:{foreground};border:1px solid {border};">'
         f"<strong>{escape(label or '待确认')}</strong>"
         f"<em>{escape(hint)}</em>"
@@ -173,12 +176,14 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
     price_position = _price_position_from_dashboard_zone(_zone_value(zone, "currentZone"))
     data_status = "MISSING_BUY_ZONE" if price_position == "ZONE_MISSING" else "OK"
     current_price = _row_value(row, "price") or _row_value(row, "currentPrice") or _zone_value(zone, "currentPrice")
+    missing_entry_fields = _dashboard_missing_entry_fields(zone, price_position)
     return build_entry_display(
         current_price=current_price,
         buy_zone=buy_zone,
         chase_zone=chase_zone,
         data_status=data_status,
         price_position=price_position,
+        missing_entry_fields=missing_entry_fields,
         decision=str(_row_value(row, "finalDecision") or _row_value(row, "decision") or ""),
         final_score=_number(_row_value(row, "finalScore") or _row_value(row, "totalScore")),
         valuation_score=_number(_row_value(row, "valuationScore")),
@@ -197,6 +202,31 @@ def _price_position_from_dashboard_zone(value: object) -> str:
     if zone == "fair_observation":
         return "ABOVE_BUY_ZONE"
     return "ZONE_MISSING"
+
+
+def _dashboard_missing_entry_fields(zone: object, price_position: str) -> list[str]:
+    if price_position != "ZONE_MISSING":
+        return []
+    if zone is None:
+        return ["无法生成纪律买区"]
+    current_zone = str(_zone_value(zone, "currentZone") or "").strip()
+    explain = _zone_value(zone, "explainability")
+    missing_inputs: list[str] = []
+    if isinstance(explain, dict):
+        missing_inputs = [str(item).strip() for item in (explain.get("missingInputs") or []) if str(item).strip()]
+    if current_zone == "unsupported_buy_zone_model":
+        return ["暂无专属买区模型", "无法生成纪律买区"]
+    if current_zone == "data_insufficient":
+        if missing_inputs:
+            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成纪律买区"]
+        return ["缺估值指标", "无法生成纪律买区"]
+    if current_zone == "low_confidence_zone":
+        return ["数据置信度不足", "无法生成纪律买区"]
+    if current_zone in {"invalid_zone", "invalid_manual_override"}:
+        if missing_inputs:
+            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成纪律买区"]
+        return ["买区输入异常", "无法生成纪律买区"]
+    return ["无法生成纪律买区"]
 
 
 def _zone_value(zone: object, key: str) -> object:

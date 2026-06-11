@@ -25,7 +25,8 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     valuation_score = _number(_value(source, "valuation_score", "valuationScore"))
     risk_score = _number(_value(source, "risk_score", "riskScore"))
     distance_pct = current_vs_entry_pct(current_price, buy_zone, price_position)
-    missing_fields = explain_missing_entry_fields(
+    explicit_missing_fields = _list_value(_value(source, "missing_entry_fields", "missingEntryFields"))
+    missing_fields = explicit_missing_fields or explain_missing_entry_fields(
         data_status=data_status,
         buy_zone=buy_zone,
         valuation_score=valuation_score,
@@ -232,6 +233,15 @@ def _value(source: dict[str, Any], *keys: str) -> Any:
         if key in source:
             return source.get(key)
     return None
+
+
+def _list_value(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
 
 
 def _number(value: Any) -> float | None:

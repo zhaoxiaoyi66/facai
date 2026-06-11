@@ -98,6 +98,19 @@ def test_entry_display_missing_data_shows_specific_reason() -> None:
     assert result["entry_action_hint"] == "补齐数据后再复核"
 
 
+def test_entry_display_uses_explicit_missing_fields() -> None:
+    result = build_entry_display(
+        current_price=110,
+        buy_zone={},
+        data_status="MISSING_BUY_ZONE",
+        price_position="ZONE_MISSING",
+        missing_entry_fields=["暂无专属买区模型", "无法生成纪律买区"],
+    )
+
+    assert result["entry_display_label"] == "暂无参考买区：暂无专属买区模型、无法生成纪律买区"
+    assert result["missing_entry_fields"] == ["暂无专属买区模型", "无法生成纪律买区"]
+
+
 def test_zone_formatters_are_shared() -> None:
     assert format_buy_zone(BUY_ZONE) == "$90.00 - $100.00"
     assert format_zone_status("IN_BUY_ZONE") == "买区内"
@@ -124,3 +137,113 @@ def test_dashboard_watchlist_entry_cell_shows_price_reference() -> None:
 
     assert "等待回落 $90.00 - $100.00" in html
     assert "只观察，等待回到纪律买区" in html
+    assert "追高禁区 &gt;$120.00" in html
+
+
+def test_dashboard_watchlist_entry_cell_uses_two_line_layout() -> None:
+    import inspect
+    import ui.dashboard as dashboard
+
+    source = inspect.getsource(dashboard._render_dashboard_styles)
+
+    assert ".entry-rating-token" in source
+    assert "flex-direction:column" in source
+    assert "min-height:34px" in source
+
+
+def test_dashboard_watchlist_missing_buy_zone_shows_engine_reason() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NVO",
+            "price": 42.81,
+            "entryRating": "C - 只观察",
+            "activeZone": SimpleNamespace(
+                currentPrice=42.81,
+                trancheBuyLow=None,
+                trancheBuyHigh=None,
+                noChaseAbove=None,
+                currentZone="unsupported_buy_zone_model",
+                explainability={"missingInputs": ["专属买区模型"]},
+            ),
+        }
+    )
+
+    html = _entry_rating_cell_html(row)
+
+    assert "暂无参考买区：暂无专属买区模型、无法生成纪律买区" in html
+    assert "缺 52 周高低" not in html
+
+
+def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -> None:
+    import data.dashboard_row_builder as builder
+
+    zone = SimpleNamespace(
+        currentPrice=110,
+        trancheBuyLow=90,
+        trancheBuyHigh=100,
+        noChaseAbove=120,
+        currentZone="fair_observation",
+        combinedEntry={},
+    )
+
+    class DummyPlanStore:
+        def get_plan(self, _symbol: str) -> dict:
+            return {}
+
+    monkeypatch.setattr(builder, "derive_dashboard_buy_zone", lambda *_args, **_kwargs: zone)
+    monkeypatch.setattr(builder, "buy_zone_with_manual_override", lambda buy_zone, _plan: buy_zone)
+    monkeypatch.setattr(builder, "StockPlanStore", DummyPlanStore)
+    monkeypatch.setattr(
+        builder,
+        "derive_dashboard_final_decision",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            currentAddLimitPercent=0,
+            maxPortfolioWeightPercent=5,
+            finalAction="只观察",
+            decisionLane="wait",
+            displayCategory="持有观察",
+            isActionable=False,
+            blockReasons=[],
+            reviewReasons=[],
+            dataConfidence="high",
+        ),
+    )
+    score = SimpleNamespace(
+        risk_flags=[],
+        trading_signals=[],
+        scoring_model="SEMICONDUCTOR",
+        data_quality_pct=100,
+        data_confidence="high",
+        missing_data=[],
+        quality_rating="A",
+        entry_rating="B - 等回踩",
+        risk_rating="低",
+        valuation_status="合理",
+        action="只观察",
+        proxy_confidence="high",
+        missing_industry_metrics=[],
+        proxy_metrics_used=[],
+        key_positives=[],
+        key_risks=[],
+        total_score=75,
+        value_zone="合理",
+        rating="B",
+        max_suggested_position_percent=0,
+        overheat_score=0,
+        overheat_status="正常",
+        overheat_action="只观察",
+        overheat_recommendation="等待回落",
+        overheat_reasons=[],
+    )
+
+    row = builder.build_dashboard_row(
+        "NVDA",
+        {"ticker": "NVDA", "current_price": 110, "market_cap": 1_000_000_000},
+        {"price": 110},
+        score,
+        {"pct": 100, "missing": []},
+    )
+
+    assert row["activeZone"] is zone
+    html = _entry_rating_cell_html(pd.Series(row))
+    assert "等待回落 $90.00 - $100.00" in html
