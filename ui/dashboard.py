@@ -47,6 +47,8 @@ from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
+from data.portfolio import PortfolioPositionStore
+from data.refresh_policy import RefreshMode, refresh_symbols_by_mode
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
@@ -300,15 +302,14 @@ def _render_dashboard_header(tickers: list[str]) -> None:
         )
     command_cols = st.columns([0.72, 0.86, 2.95, 0.52], vertical_alignment="center")
     with command_cols[0]:
-        if st.button("重新评分", width="stretch", help="个股不重新拉取；会尝试更新大盘环境缓存后重新计算评分。", key="dashboard_recompute_score"):
-            _refresh_macro_cache_for_dashboard()
+        if st.button("更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
+            _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
             _clear_dashboard_table_cache()
             st.rerun()
     with command_cols[1]:
-        if st.button("更新观察池", width="stretch", help="更新当前 watchlist 的数据，会逐只刷新。", key="dashboard_update_watchlist"):
-            _refresh_macro_cache_for_dashboard()
+        if st.button("更新日线 / 技术", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
+            _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
             _clear_dashboard_table_cache()
-            st.session_state["dashboard_force_fmp_refresh"] = True
             st.rerun()
     with command_cols[3]:
         with st.popover("更多 ▾", use_container_width=True):
@@ -323,13 +324,16 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.divider()
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
+            if st.button("财报后刷新基本面", width="stretch", key="dashboard_refresh_fundamentals_if_event", help="只刷新有财报/披露事件的股票；其他股票跳过。"):
+                _refresh_dashboard_cache_for_mode(tickers, RefreshMode.FUNDAMENTALS_IF_EVENT)
+                _clear_dashboard_table_cache()
+                st.rerun()
+            if st.button("强制全量刷新", width="stretch", key="dashboard_force_full_refresh", help="逐只刷新 quote、日线和基本面。只在财报后或数据大面积异常时使用。"):
+                _refresh_dashboard_cache_for_mode(tickers, RefreshMode.FULL_REFRESH)
+                _clear_dashboard_table_cache()
+                st.rerun()
             if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、趋势宽度等宏观缓存，不刷新个股。"):
                 _refresh_macro_cache_for_dashboard()
-                st.rerun()
-            if st.button("强制刷新 FMP 缓存", width="stretch", key="dashboard_force_refresh_fmp_cache"):
-                _refresh_macro_cache_for_dashboard()
-                _clear_dashboard_table_cache()
-                st.session_state["dashboard_force_fmp_refresh"] = True
                 st.rerun()
             st.button("运行缺失数据补全", width="stretch", key="dashboard_run_missing_fill", disabled=True, help="批量补全入口待接入；当前可在单股详情页运行。")
             if st.button("查看刷新日志", width="stretch", key="dashboard_open_refresh_log"):
@@ -437,6 +441,42 @@ def _refresh_macro_cache_for_dashboard() -> None:
     st.session_state["dashboard_macro_last_refresh_result"] = result
 
 
+def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> None:
+    symbols = _dashboard_refresh_symbols(tickers)
+    try:
+        result = refresh_symbols_by_mode(symbols, mode)
+    except Exception as exc:
+        result = {
+            "mode": mode.value,
+            "status": "failed",
+            "refreshed_count": 0,
+            "skipped_count": 0,
+            "failed_count": len(symbols),
+            "duration_seconds": 0,
+            "ticker_results": [{"ticker": symbol, "status": "failed", "message": str(exc), "duration_seconds": 0} for symbol in symbols],
+        }
+    st.session_state["dashboard_refresh_mode_last_result"] = result
+
+
+def _dashboard_refresh_symbols(tickers: list[str]) -> list[str]:
+    symbols = [str(ticker or "").strip().upper() for ticker in tickers if str(ticker or "").strip()]
+    try:
+        positions = PortfolioPositionStore().list_active_positions()
+    except Exception:
+        positions = []
+    for position in positions:
+        symbol = str(position.get("symbol") or "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for symbol in symbols:
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            unique.append(symbol)
+    return unique
+
+
 def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_key: tuple[tuple[str, ...], int]) -> pd.DataFrame:
     symbol = symbol.upper()
     table = _session_dashboard_table(cache_key)
@@ -539,12 +579,12 @@ def _load_cached_dashboard_row(fundamental_cache: FundamentalCache, ticker: str)
         snapshot = fundamental_cache.get_snapshot(ticker, max_age_hours=24 * 3650)
         history = build_market_history(ticker)
         if snapshot is None and (history is None or history.empty):
-            return _error_dashboard_row(ticker, RuntimeError("本地缓存暂无数据；点击“更新观察池”获取。"))
+            return _error_dashboard_row(ticker, RuntimeError("本地缓存暂无数据；点击“更新价格”获取 quote，或在更多里强制全量刷新。"))
 
         snapshot = dict(snapshot or {"ticker": ticker, "symbol": ticker})
         snapshot.setdefault("ticker", ticker)
         snapshot.setdefault("symbol", ticker)
-        snapshot["cache_note"] = "首页默认只读本地缓存；点击“更新观察池”才会联网刷新。"
+        snapshot["cache_note"] = "首页默认只读本地缓存；点击“更新价格”只刷新 quote，基本面沿用缓存。"
         if history is None or history.empty:
             history = _empty_price_history()
 
@@ -658,6 +698,7 @@ def _render_dashboard_status_bar(
         ),
         unsafe_allow_html=True,
     )
+    _render_dashboard_refresh_mode_result()
     _render_macro_refresh_result()
 
 
@@ -943,6 +984,60 @@ def _render_macro_refresh_result() -> None:
     )
 
 
+def _render_dashboard_refresh_mode_result() -> None:
+    result = st.session_state.get("dashboard_refresh_mode_last_result")
+    if not isinstance(result, dict):
+        return
+    mode = str(result.get("mode") or "")
+    status = str(result.get("status") or "failed")
+    tone = {"success": "ok", "partial": "warning"}.get(status, "error")
+    duration = result.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "未知"
+    ticker_results = list(result.get("ticker_results") or [])
+    details = " · ".join(
+        [
+            f"成功 {int(result.get('refreshed_count') or 0)}",
+            f"跳过 {int(result.get('skipped_count') or 0)}",
+            f"失败 {int(result.get('failed_count') or 0)}",
+            f"用时 {duration_text}",
+        ]
+    )
+    sample_rows = "".join(_dashboard_refresh_ticker_row_html(item) for item in ticker_results[:6])
+    st.markdown(
+        (
+            f'<section class="dashboard-refresh-result {escape(tone)}">'
+            f"<strong>{escape(_refresh_mode_label(mode))}：{escape(_refresh_status_label(status))}</strong>"
+            f"<span>{escape(details)}</span>"
+            f'<div class="dashboard-refresh-result-grid">{sample_rows}</div>'
+            "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _dashboard_refresh_ticker_row_html(item: dict) -> str:
+    ticker = str(item.get("ticker") or "")
+    status = str(item.get("status") or "")
+    message = str(item.get("message") or "")
+    duration = item.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "—"
+    return (
+        "<div>"
+        f"<b>{escape(ticker)}</b>"
+        f"<span>{escape(_refresh_status_label(status))}｜{escape(duration_text)}｜{escape(message)}</span>"
+        "</div>"
+    )
+
+
+def _refresh_mode_label(mode: str) -> str:
+    return {
+        "PRICE_ONLY": "更新价格",
+        "DAILY_TECHNICAL": "更新日线 / 技术",
+        "FUNDAMENTALS_IF_EVENT": "财报后刷新基本面",
+        "FULL_REFRESH": "强制全量刷新",
+    }.get(mode, mode or "刷新")
+
+
 def _macro_refresh_indicator_row_html(item: dict) -> str:
     indicator = str(item.get("indicator") or "")
     label = str(item.get("label") or _macro_indicator_label(indicator))
@@ -1142,6 +1237,7 @@ def _refresh_status_label(status: str) -> str:
         "success": "成功",
         "partial": "部分成功",
         "failed": "失败",
+        "skipped": "跳过",
     }.get(status, "完成")
 
 
@@ -3005,8 +3101,50 @@ def _render_dashboard_styles() -> None:
         .macro-refresh-error {
             margin-top:0.45rem;
         }
-        .st-key-dashboard_recompute_score button,
-        .st-key-dashboard_update_watchlist button {
+        .dashboard-refresh-result {
+            max-width:1440px;
+            margin:-0.15rem auto 0.6rem;
+            padding:0.54rem 0.72rem;
+            border:1px solid rgba(148, 163, 184, 0.2);
+            border-radius:10px;
+            background:#FFFFFF;
+            color:#334155;
+            font-size:12px;
+            box-shadow:0 10px 22px rgba(15,23,42,0.035);
+        }
+        .dashboard-refresh-result.warning {
+            border-color:rgba(217,119,6,0.25);
+            background:#FFFBEB;
+        }
+        .dashboard-refresh-result.error {
+            border-color:rgba(185,28,28,0.24);
+            background:#FEF2F2;
+        }
+        .dashboard-refresh-result > span {
+            display:block;
+            color:#64748B;
+            margin-top:0.16rem;
+        }
+        .dashboard-refresh-result-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:0.32rem 0.5rem;
+            margin-top:0.42rem;
+        }
+        .dashboard-refresh-result-grid div {
+            display:flex;
+            flex-direction:column;
+            gap:0.08rem;
+            padding:0.32rem 0.42rem;
+            border:1px solid rgba(226,232,240,0.95);
+            border-radius:8px;
+            background:rgba(255,255,255,0.75);
+        }
+        .dashboard-refresh-result-grid span {
+            color:#64748B;
+        }
+        .st-key-dashboard_refresh_price_only button,
+        .st-key-dashboard_refresh_daily_technical button {
             min-height: 36px !important;
             height: 36px !important;
             border-radius: 10px !important;
@@ -3015,17 +3153,17 @@ def _render_dashboard_styles() -> None:
             font-weight: 720 !important;
             box-shadow: none !important;
         }
-        .st-key-dashboard_recompute_score button {
+        .st-key-dashboard_refresh_price_only button {
             background: rgba(255,255,255,0.92) !important;
             color: var(--dash-text) !important;
             border: 1px solid var(--dash-border) !important;
         }
-        .st-key-dashboard_update_watchlist button {
+        .st-key-dashboard_refresh_daily_technical button {
             background: #1F2937 !important;
             color: #FFFFFF !important;
             border: 1px solid #1F2937 !important;
         }
-        .st-key-dashboard_update_watchlist button:hover {
+        .st-key-dashboard_refresh_daily_technical button:hover {
             background: #111827 !important;
             border-color: #111827 !important;
             color: #FFFFFF !important;
