@@ -343,6 +343,36 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["pre_trade_unrealized_pnl"], 400)
             self.assertEqual(saved["cost_basis_source"], "position_snapshot")
 
+    def test_trade_journal_store_saves_sell_context_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "quantity": 2,
+                    "price": 220,
+                    "sellContextSnapshot": {
+                        "ticker": "NVDA",
+                        "position_tier": "A",
+                        "target_sell_price": 260,
+                        "buy_zone": {"lower": 200, "upper": 230},
+                        "zone_status": "IN_BUY_ZONE",
+                        "holding_days_reference": 8,
+                        "below_target_at_sell": True,
+                        "in_or_below_buy_zone_at_sell": True,
+                        "missing_snapshot_fields": [],
+                    },
+                },
+            )
+
+            self.assertEqual(saved["sell_context_snapshot"]["ticker"], "NVDA")
+            self.assertEqual(saved["sell_context_snapshot"]["position_tier"], "A")
+            self.assertEqual(saved["sell_context_snapshot"]["zone_status"], "IN_BUY_ZONE")
+            self.assertIn("sell_context_snapshot_json", saved)
+
     def test_trade_journal_store_backfills_radar_gate_columns_on_legacy_schema(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"
@@ -386,6 +416,7 @@ class DecisionLogTests(unittest.TestCase):
             self.assertFalse(saved["radar_blocked"])
             self.assertTrue(saved["radar_observation_only"])
             self.assertEqual(saved["radar_block_reasons"], [])
+            self.assertIn("sell_context_snapshot_json", saved)
 
     def test_trade_journal_sell_snapshot_saves_now_style_risk(self) -> None:
         with TemporaryDirectory() as tmpdir:

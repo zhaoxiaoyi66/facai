@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 
 import streamlit as st
@@ -335,6 +336,17 @@ def _render_editor(store: TradeJournalStore) -> None:
             entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None, action_type=action_type))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
+            if selected_position and action_type in SELL_DISCIPLINE_ACTIONS:
+                entry_values.update(
+                    _sell_context_snapshot_values(
+                        symbol=symbol,
+                        action_type=action_type,
+                        trade_date=trade_date.isoformat(),
+                        entry_values=entry_values,
+                        position_row=selected_position,
+                        sell_reference=sell_reference_context,
+                    )
+                )
             if editing_entry:
                 _update_entry(store, int(editing_id or 0), symbol, entry_values)
             else:
@@ -560,9 +572,19 @@ def _sell_reference_context(symbol: str, position_row: dict) -> dict:
     if current_price is not None and target_sell is not None and target_sell > 0:
         distance_to_target = (current_price - target_sell) / target_sell * 100
     zone_status = str(report.get("price_position") or report.get("zone_status") or "ZONE_MISSING")
+    data_status = str(report.get("data_status") or "missing")
     buy_zone_text = _radar_zone_text(report.get("buy_zone"))
     holding_days = _holding_days(position_row.get("createdAt") or position_row.get("created_at"))
     position_tier = str(position_row.get("positionTier") or position_row.get("position_tier") or "").strip().upper()
+    missing_fields = []
+    if not report:
+        missing_fields.append("radar_report")
+    if not report.get("buy_zone"):
+        missing_fields.append("buy_zone")
+    if zone_status == "ZONE_MISSING":
+        missing_fields.append("zone_status")
+    if current_price is None:
+        missing_fields.append("current_price")
     return {
         "currentPrice": current_price,
         "averageCost": average_cost,
@@ -573,10 +595,81 @@ def _sell_reference_context(symbol: str, position_row: dict) -> dict:
         "targetSellPrice": target_sell,
         "distanceToTarget": distance_to_target,
         "zoneStatus": zone_status,
+        "pricePosition": zone_status,
+        "buyZone": report.get("buy_zone") if isinstance(report.get("buy_zone"), dict) else None,
         "buyZoneText": buy_zone_text,
+        "radarDecision": report.get("decision"),
+        "dataStatus": data_status,
+        "isStale": bool(report.get("is_stale")),
+        "missingSnapshotFields": missing_fields,
         "belowTargetSellPrice": bool(current_price is not None and target_sell is not None and target_sell > 0 and current_price < target_sell),
         "inBuyZoneOrBelow": zone_status.strip().upper() in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"},
     }
+
+
+def _sell_context_snapshot_values(
+    *,
+    symbol: str,
+    action_type: str,
+    trade_date: str,
+    entry_values: dict,
+    position_row: dict,
+    sell_reference: dict,
+) -> dict:
+    quantity_before = _number(entry_values.get("preTradeQuantity"))
+    sell_quantity = _number(entry_values.get("quantity"))
+    sell_price = _number(entry_values.get("price"))
+    target_sell = _first_number(entry_values.get("preTradeTargetSellPrice"), sell_reference.get("targetSellPrice"))
+    holding_days = _number(sell_reference.get("holdingDays"))
+    sell_pct = sell_quantity / quantity_before if quantity_before and sell_quantity is not None else None
+    missing_fields = list(sell_reference.get("missingSnapshotFields") or [])
+    field_checks = {
+        "quantity_before": quantity_before,
+        "average_cost": entry_values.get("preTradeAvgCost"),
+        "position_tier": entry_values.get("preTradePositionTier"),
+        "target_sell_price": target_sell,
+        "sell_quantity": sell_quantity,
+        "sell_price": sell_price,
+        "holding_days_reference": holding_days,
+    }
+    for field, value in field_checks.items():
+        if value in (None, "") and field not in missing_fields:
+            missing_fields.append(field)
+    snapshot = {
+        "ticker": str(symbol or "").strip().upper(),
+        "quantity_before": quantity_before,
+        "average_cost": _number(entry_values.get("preTradeAvgCost")),
+        "total_cost": _number(entry_values.get("preTradeTotalCost")),
+        "position_tier": entry_values.get("preTradePositionTier"),
+        "position_class": entry_values.get("positionClass"),
+        "position_created_at": position_row.get("createdAt") or position_row.get("created_at"),
+        "holding_days_reference": holding_days,
+        "target_sell_price": target_sell,
+        "action": action_type,
+        "sell_quantity": sell_quantity,
+        "sell_price": sell_price,
+        "sell_pct": sell_pct,
+        "sell_reason": entry_values.get("sellReasonType"),
+        "mood": entry_values.get("decision_mood"),
+        "replenishment_plan": entry_values.get("reentryPlanText"),
+        "created_at": entry_values.get("created_at"),
+        "trade_date": trade_date,
+        "radar_decision": sell_reference.get("radarDecision"),
+        "buy_zone": sell_reference.get("buyZone"),
+        "zone_status": sell_reference.get("zoneStatus"),
+        "price_position": sell_reference.get("pricePosition"),
+        "current_price": sell_reference.get("currentPrice"),
+        "distance_to_target_sell_price": sell_reference.get("distanceToTarget"),
+        "data_status": sell_reference.get("dataStatus"),
+        "is_stale": bool(sell_reference.get("isStale")),
+        "below_target_at_sell": bool(
+            sell_price is not None and target_sell is not None and target_sell > 0 and sell_price < target_sell
+        ),
+        "in_or_below_buy_zone_at_sell": bool(sell_reference.get("inBuyZoneOrBelow")),
+        "missing_snapshot_fields": sorted(set(str(item) for item in missing_fields if str(item).strip())),
+        "snapshot_created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {"sellContextSnapshot": snapshot}
 
 
 def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dict | None = None) -> None:
@@ -2676,6 +2769,7 @@ def _entry_sell_review_html(entry: dict) -> str:
     if action not in SELL_DISCIPLINE_ACTIONS:
         return ""
     review = evaluate_sell_review_flags(entry)
+    snapshot = _entry_sell_context_snapshot(entry)
     rows = [
         ("卖出复盘标签", format_sell_review_label(review)),
         ("低于目标价", _yes_no(review.get("below_target_sell"))),
@@ -2686,12 +2780,37 @@ def _entry_sell_review_html(entry: dict) -> str:
         ("疑似卖飞风险", _yes_no(review.get("suspected_sell_fly"))),
         ("数据缺口", "、".join(str(item) for item in (review.get("data_missing_fields") or [])) or "无"),
     ]
+    if snapshot:
+        rows.extend(
+            [
+                ("卖出时等级", _position_class_label(snapshot.get("position_tier") or snapshot.get("position_class"))),
+                ("卖出时目标价", _money_text(snapshot.get("target_sell_price"))),
+                ("卖出时买区", _radar_zone_text(snapshot.get("buy_zone"))),
+                ("卖出时区间状态", _zone_status_text(snapshot.get("zone_status") or snapshot.get("price_position"))),
+                ("卖出时持仓天数", _position_holding_days_text(snapshot.get("holding_days_reference"))),
+                ("快照缺失字段", "、".join(str(item) for item in (snapshot.get("missing_snapshot_fields") or [])) or "无"),
+            ]
+        )
     return (
         '<div class="trade-entry-reentry-plan">'
         '<b>卖出复盘</b>'
         f"{_detail_grid_html(rows)}"
         "</div>"
     )
+
+
+def _entry_sell_context_snapshot(entry: dict) -> dict:
+    snapshot = entry.get("sell_context_snapshot")
+    if isinstance(snapshot, dict):
+        return snapshot
+    raw = entry.get("sell_context_snapshot_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _entry_reentry_plan_html(entry: dict) -> str:

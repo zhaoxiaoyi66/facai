@@ -163,6 +163,34 @@ def test_trade_performance_summary_counts_sell_review_flags() -> None:
     assert summary["summary"]["a_class_short_hold_sell_count"] == 1
 
 
+def test_trade_performance_uses_sell_context_snapshot_for_sell_review() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "NVDA", "buy", 1, 100, "2026-01-01", position_class="A", target_sell_price=150),
+            _entry(
+                2,
+                "NVDA",
+                "sell",
+                1,
+                120,
+                "2026-01-03",
+                position_class="A",
+                sell_context_snapshot={
+                    "sell_price": 120,
+                    "target_sell_price": 150,
+                    "position_tier": "A",
+                    "zone_status": "IN_BUY_ZONE",
+                    "holding_days_reference": 2,
+                },
+            ),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["sell_review"]["sell_in_buy_zone"] is True
+    assert summary["summary"]["buy_zone_sell_count"] == 1
+
+
 def test_synced_buy_counts_as_cost_lot_even_if_old_radar_blocked_flag_exists() -> None:
     summary = summarize_trade_performance(
         entries=[

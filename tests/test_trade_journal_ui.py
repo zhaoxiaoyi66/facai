@@ -379,3 +379,70 @@ def test_trade_entry_detail_shows_sell_review_snapshot() -> None:
     assert "卖出复盘" in html
     assert "低于目标价" in html
     assert "疑似卖飞风险" in html
+
+
+def test_sell_context_snapshot_values_include_position_and_radar_context() -> None:
+    result = trade_journal._sell_context_snapshot_values(
+        symbol="nvda",
+        action_type="trim",
+        trade_date="2026-06-04",
+        entry_values={
+            "quantity": "2",
+            "price": "220",
+            "decision_mood": "well_reasoned",
+            "preTradeQuantity": 10,
+            "preTradeAvgCost": 180,
+            "preTradeTotalCost": 1800,
+            "preTradePositionTier": "A",
+            "preTradeTargetSellPrice": 260,
+            "positionClass": "A",
+            "sellReasonType": "target_price",
+            "reentryPlanText": "回踩买回",
+        },
+        position_row={"createdAt": "2026-06-01T09:30:00+08:00"},
+        sell_reference={
+            "currentPrice": 220,
+            "targetSellPrice": 260,
+            "buyZone": {"lower": 200, "upper": 230},
+            "zoneStatus": "IN_BUY_ZONE",
+            "pricePosition": "IN_BUY_ZONE",
+            "radarDecision": "WAIT",
+            "dataStatus": "fresh",
+            "isStale": False,
+            "distanceToTarget": -15.38,
+            "holdingDays": 3,
+            "inBuyZoneOrBelow": True,
+            "missingSnapshotFields": [],
+        },
+    )
+
+    snapshot = result["sellContextSnapshot"]
+    assert snapshot["ticker"] == "NVDA"
+    assert snapshot["position_tier"] == "A"
+    assert snapshot["target_sell_price"] == 260
+    assert snapshot["buy_zone"] == {"lower": 200, "upper": 230}
+    assert snapshot["zone_status"] == "IN_BUY_ZONE"
+    assert snapshot["below_target_at_sell"] is True
+    assert snapshot["in_or_below_buy_zone_at_sell"] is True
+
+
+def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
+    html = trade_journal._entry_sell_review_html(
+        {
+            "action_type": "trim",
+            "sell_context_snapshot": {
+                "sell_price": 220,
+                "target_sell_price": 260,
+                "position_tier": "A",
+                "buy_zone": {"lower": 200, "upper": 230},
+                "zone_status": "IN_BUY_ZONE",
+                "holding_days_reference": 3,
+                "missing_snapshot_fields": [],
+            },
+        }
+    )
+
+    assert "卖出时等级" in html
+    assert "卖出时目标价" in html
+    assert "卖出时买区" in html
+    assert "卖出时区间状态" in html

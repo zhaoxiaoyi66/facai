@@ -102,6 +102,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "pre_trade_target_sell_price": "REAL",
     "pre_trade_unrealized_pnl": "REAL",
     "cost_basis_source": "TEXT",
+    "sell_context_snapshot_json": "TEXT",
 }
 
 
@@ -444,6 +445,7 @@ class TradeJournalStore:
             _write_buy_plan_snapshot(conn, int(entry_id), cleaned)
             _write_starter_snapshot(conn, int(entry_id), cleaned)
             _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
+            _write_sell_context_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -546,6 +548,7 @@ class TradeJournalStore:
                 _write_buy_plan_snapshot(conn, clean_id, cleaned)
                 _write_starter_snapshot(conn, clean_id, cleaned)
                 _write_pre_trade_snapshot(conn, clean_id, cleaned)
+                _write_sell_context_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -765,6 +768,20 @@ def _write_pre_trade_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: 
             cleaned["cost_basis_source"],
             entry_id,
         ),
+    )
+
+
+def _write_sell_context_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    snapshot_json = cleaned.get("sell_context_snapshot_json")
+    if not snapshot_json:
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET sell_context_snapshot_json = ?
+        WHERE id = ?
+        """,
+        (snapshot_json, entry_id),
     )
 
 
@@ -1167,6 +1184,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_radar_gate_snapshot(action_type, values))
     cleaned.update(_clean_buy_plan_snapshot(action_type, values))
     cleaned.update(_clean_starter_snapshot(action_type, values))
+    cleaned.update(_clean_sell_context_snapshot(action_type, values))
     return cleaned
 
 
@@ -1328,6 +1346,26 @@ def _clean_starter_snapshot(action_type: str, values: dict) -> dict:
             _value(values, "starterBlockReasons", "starter_block_reasons", "starter_block_reasons_json")
         ),
     }
+
+
+def _clean_sell_context_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"sell", "trim"}:
+        return {"sell_context_snapshot_json": None}
+    snapshot = _value(values, "sellContextSnapshot", "sell_context_snapshot", "sell_context_snapshot_json")
+    if snapshot in (None, ""):
+        return {"sell_context_snapshot_json": None}
+    if isinstance(snapshot, str):
+        try:
+            parsed = json.loads(snapshot)
+        except json.JSONDecodeError:
+            parsed = {}
+    elif isinstance(snapshot, dict):
+        parsed = dict(snapshot)
+    else:
+        parsed = {}
+    if not parsed:
+        return {"sell_context_snapshot_json": None}
+    return {"sell_context_snapshot_json": json.dumps(parsed, ensure_ascii=False, sort_keys=True)}
 
 
 def _clean_entry_mode(value: object) -> str:
@@ -1871,6 +1909,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["warnings"] = _load_json_list(item["warnings_json"])
     if "radar_block_reasons_json" in item:
         item["radar_block_reasons"] = _load_json_list(item["radar_block_reasons_json"])
+    if "sell_context_snapshot_json" in item:
+        item["sell_context_snapshot"] = _load_json_dict(item["sell_context_snapshot_json"])
     return item
 
 
@@ -1882,6 +1922,16 @@ def _load_json_list(value) -> list:
     except (TypeError, json.JSONDecodeError):
         return []
     return parsed if isinstance(parsed, list) else [parsed]
+
+
+def _load_json_dict(value) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _now() -> str:

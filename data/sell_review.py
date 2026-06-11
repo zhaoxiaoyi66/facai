@@ -51,18 +51,20 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         return _empty_review()
 
     raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
-    tier = _position_tier(trade) or _position_tier(raw)
+    snapshot = _sell_context_snapshot(trade) or _sell_context_snapshot(raw)
+    tier = _position_tier(snapshot) or _position_tier(trade) or _position_tier(raw)
     is_a_class = tier == "A"
     is_c_planned_event_exit = tier == "C" and _is_event_exit_reason(trade) and _has_structured_event_exit_plan(trade)
 
-    sell_price = _number(trade.get("sell_price")) or _number(trade.get("price"))
+    sell_price = _first_number(snapshot.get("sell_price"), trade.get("sell_price"), trade.get("price"))
     target_price = _first_number(
+        snapshot.get("target_sell_price"),
         trade.get("target_sell_price"),
         trade.get("pre_trade_target_sell_price"),
         raw.get("target_sell_price"),
         raw.get("pre_trade_target_sell_price"),
     )
-    holding_days = _number(trade.get("holding_days"))
+    holding_days = _first_number(snapshot.get("holding_days_reference"), snapshot.get("holding_days"), trade.get("holding_days"))
 
     below_target = bool(
         sell_price is not None
@@ -71,14 +73,14 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         and sell_price < target_price
         and not is_c_planned_event_exit
     )
-    sell_in_buy_zone = bool(_sell_in_buy_zone(trade, sell_price) and not is_c_planned_event_exit)
+    sell_in_buy_zone = bool(_sell_in_buy_zone(trade, sell_price, snapshot) and not is_c_planned_event_exit)
     a_short_hold = bool(is_a_class and holding_days is not None and holding_days <= A_CLASS_SHORT_HOLDING_DAYS)
     missing_reentry = bool(is_a_class and not has_concrete_reentry_plan(raw or trade))
     emotional = _is_emotional_sell(trade)
     full_exit_without_review = bool(action == "sell" and not _has_meaningful_exit_review(trade))
     non_c_event_review = bool(tier in {"A", "B"} and _is_event_exit_reason(trade))
     gate_blocked = bool([str(item) for item in (trade.get("blockers") or raw.get("blockers") or [])])
-    missing_fields = _missing_fields(trade, sell_price, target_price, holding_days)
+    missing_fields = _missing_fields(trade, sell_price, target_price, holding_days, snapshot)
     context_too_sparse = _context_too_sparse(missing_fields)
 
     flag_keys: list[str] = []
@@ -182,10 +184,16 @@ def _empty_review() -> dict[str, Any]:
     }
 
 
-def _sell_in_buy_zone(trade: dict[str, Any], sell_price: float | None) -> bool:
+def _sell_in_buy_zone(trade: dict[str, Any], sell_price: float | None, snapshot: dict[str, Any] | None = None) -> bool:
     raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    snapshot = snapshot or {}
+    explicit = snapshot.get("in_or_below_buy_zone_at_sell")
+    if isinstance(explicit, bool):
+        return explicit
     zone = str(
-        trade.get("zone_status")
+        snapshot.get("zone_status")
+        or snapshot.get("price_position")
+        or trade.get("zone_status")
         or trade.get("buy_zone_status")
         or raw.get("zone_status")
         or raw.get("buy_zone_status")
@@ -193,7 +201,13 @@ def _sell_in_buy_zone(trade: dict[str, Any], sell_price: float | None) -> bool:
     ).strip().upper()
     if zone in BUY_ZONE_STATUSES:
         return True
-    buy_zone = trade.get("buy_zone") or trade.get("radar_buy_zone") or raw.get("buy_zone") or raw.get("radar_buy_zone")
+    buy_zone = (
+        snapshot.get("buy_zone")
+        or trade.get("buy_zone")
+        or trade.get("radar_buy_zone")
+        or raw.get("buy_zone")
+        or raw.get("radar_buy_zone")
+    )
     lower, upper = _zone_bounds(buy_zone)
     return bool(sell_price is not None and lower is not None and upper is not None and lower <= sell_price <= upper)
 
@@ -290,8 +304,10 @@ def _missing_fields(
     sell_price: float | None,
     target_price: float | None,
     holding_days: float | None,
+    snapshot: dict[str, Any] | None = None,
 ) -> list[str]:
     missing: list[str] = []
+    snapshot = snapshot or _sell_context_snapshot(trade)
     if sell_price is None:
         missing.append("sell_price")
     if target_price is None:
@@ -303,6 +319,9 @@ def _missing_fields(
         trade.get("zone_status")
         or trade.get("buy_zone_status")
         or trade.get("buy_zone")
+        or snapshot.get("zone_status")
+        or snapshot.get("price_position")
+        or snapshot.get("buy_zone")
         or raw.get("zone_status")
         or raw.get("buy_zone_status")
         or raw.get("buy_zone")
@@ -324,6 +343,20 @@ def _position_tier(item: dict[str, Any]) -> str:
         or ""
     ).strip().upper()
     return value if value in {"A", "B", "C"} else ""
+
+
+def _sell_context_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    snapshot = item.get("sell_context_snapshot")
+    if isinstance(snapshot, dict):
+        return snapshot
+    snapshot_json = item.get("sell_context_snapshot_json")
+    if isinstance(snapshot_json, str) and snapshot_json.strip():
+        try:
+            parsed = json.loads(snapshot_json)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _first_number(*values: object) -> float | None:

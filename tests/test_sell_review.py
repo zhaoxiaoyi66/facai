@@ -37,6 +37,30 @@ def test_sell_inside_or_below_buy_zone_is_flagged() -> None:
     assert below_buy_zone["sell_in_buy_zone"] is True
 
 
+def test_sell_review_prefers_sell_context_snapshot_for_buy_zone() -> None:
+    review = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "sell_price": 120,
+            "position_tier": "A",
+            "raw_entry": {
+                "sell_context_snapshot": {
+                    "sell_price": 120,
+                    "target_sell_price": 150,
+                    "position_tier": "A",
+                    "zone_status": "IN_BUY_ZONE",
+                    "holding_days_reference": 9,
+                }
+            },
+        }
+    )
+
+    assert review["below_target_sell"] is True
+    assert review["sell_in_buy_zone"] is True
+    assert review["a_class_short_hold"] is True
+    assert review["suspected_sell_fly"] is True
+
+
 def test_a_class_short_hold_and_missing_reentry_are_flagged() -> None:
     review = evaluate_sell_review_flags(
         {
