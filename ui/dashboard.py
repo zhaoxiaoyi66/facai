@@ -546,6 +546,8 @@ def _empty_price_history() -> pd.DataFrame:
 def _load_dashboard_row(provider, ticker: str, force_refresh: bool) -> dict:
     try:
         snapshot = provider.get_quote(ticker, force_refresh=force_refresh)
+        if force_refresh:
+            provider.get_price_history(ticker, force_refresh=True)
         history = add_technical_indicators(build_market_history(ticker))
         technicals = latest_technical_snapshot(history)
         _apply_market_price_to_snapshot(ticker, snapshot, technicals)

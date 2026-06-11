@@ -13,6 +13,7 @@ def test_dashboard_loaders_use_market_context_for_price_history() -> None:
     assert "build_market_history" in cached_source
     assert "build_market_history" in refresh_source
     assert "price_cache.get_history" not in cached_source
-    assert "provider.get_price_history" not in refresh_source
+    assert "if force_refresh:" in refresh_source
+    assert "provider.get_price_history(ticker, force_refresh=True)" in refresh_source
     assert 'snapshot["current_price"] = market_price' in price_source
     assert "setdefault(\"current_price\"" not in price_source
