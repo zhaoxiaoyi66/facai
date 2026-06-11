@@ -210,6 +210,8 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
             "entry_display_reason": radar_reason,
             "entry_action_hint": radar_hint,
             "price_position": _row_value(row, "radar_price_position") or _row_value(row, "price_position") or _row_value(row, "zone_status"),
+            "technical_position": _row_value(row, "technical_position") or _row_value(row, "radar_technical_position"),
+            "entry_context_status": _row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status"),
             "data_status": _row_value(row, "radar_data_status") or _row_value(row, "data_status") or _row_value(row, "dataStatus"),
             "entry_reference_low": _row_value(row, "entry_reference_low"),
             "entry_reference_high": _row_value(row, "entry_reference_high"),
@@ -234,8 +236,15 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
     label = str(display.get("entry_display_label") or "").strip()
     hint = str(display.get("entry_action_hint") or "").strip()
     price_position = str(display.get("price_position") or _row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
+    context_status = str(display.get("entry_context_status") or _row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
     if missing_fields or "暂无参考买区" in label or "缺" in label:
         return "数据不足", "补数据"
+    if context_status == "IN_TECHNICAL_PULLBACK_ZONE" or label.startswith("回踩区内"):
+        return "回踩区内", "需复核"
+    if context_status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
+        return "买区外", "等回踩"
+    if context_status == "BELOW_TECHNICAL_PULLBACK_ZONE" or label.startswith("跌破回踩区"):
+        return "跌破回踩区", "先复核"
     if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
         return "买区内", "需复核" if "复核" in hint else "可复核"
     if price_position == "ABOVE_BUY_ZONE" or label.startswith(("等待回落", "等待技术回踩")):
@@ -254,6 +263,10 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
 
 
 def _short_entry_status(label: str) -> str:
+    if "回踩区内" in label:
+        return "回踩区内"
+    if "跌破回踩区" in label:
+        return "跌破回踩区"
     if "买区内" in label:
         return "买区内"
     if "等待技术回踩" in label:

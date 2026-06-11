@@ -362,8 +362,46 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.technical_entry_zone_low == 102.0
         assert report.technical_entry_zone_high == 117.5
         assert report.entry_display_label == "等待技术回踩 $102.00 - $117.50"
+        assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
+        assert report.entry_context_status == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert "深度估值区 $32.60 - $55.00" in report.entry_display_reason
         assert report.debug["technical_entry_zone"]["source"] == "ema_pullback"
+
+
+def test_price_inside_technical_pullback_zone_updates_display_status_without_allowing_buy() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NOK", 113)
+
+        report = build_ai_stock_radar_report(
+            "NOK",
+            path=path,
+            snapshot=_cached_snapshot(company_name="Nokia"),
+            technicals=_cached_technicals(
+                price=113,
+                fifty_two_week_low=20,
+                fifty_two_week_high=160,
+                ema20=116,
+                ema50=105,
+                ema100=95,
+                ema200=80,
+                atr14=5,
+                recent_swing_low=108,
+                recent_breakout_level=114,
+                ema50_slope_20d_pct=1.5,
+                ema200_slope_20d_pct=0.8,
+            ),
+            scores=_scores(final_score=78, valuation_score=48, technical_score=72),
+            now=NOW,
+        )
+
+        assert report.decision == "WAIT"
+        assert report.allowed_add_pct == 0
+        assert report.price_position == "ABOVE_BUY_ZONE"
+        assert report.technical_position == "IN_TECHNICAL_PULLBACK_ZONE"
+        assert report.entry_context_status == "IN_TECHNICAL_PULLBACK_ZONE"
+        assert report.entry_display_label == "回踩区内 $102.00 - $117.50"
+        assert report.entry_action_hint == "需复核，不自动买入"
 
 
 def test_technical_entry_zone_needs_trend_confirmation() -> None:

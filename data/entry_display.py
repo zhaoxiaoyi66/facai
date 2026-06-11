@@ -55,6 +55,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         or _value(technical_zone, "source")
         or ""
     ).strip()
+    technical_position = _technical_position(current_price, technical_low, technical_high)
     technical_zone_text = _zone_text(technical_low, technical_high)
     result: dict[str, Any] = {
         "entry_reference_low": reference_low,
@@ -67,6 +68,8 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "technical_entry_zone_high": technical_high,
         "technical_entry_source": technical_source,
         "technical_entry_reason": technical_reason,
+        "technical_position": technical_position,
+        "entry_context_status": price_position,
         "valuation_deep_zone_label": format_buy_zone(buy_zone),
         "entry_display_label": "",
         "entry_display_reason": "",
@@ -80,6 +83,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_display_label": f"暂无参考买区：{reason}",
                 "entry_display_reason": reason,
                 "entry_action_hint": "补齐数据后再复核",
+                "entry_context_status": "ZONE_MISSING",
             }
         )
         return result
@@ -106,6 +110,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_display_label": f"禁止追高，技术回踩参考 {label_zone}",
                 "entry_display_reason": reason,
                 "entry_action_hint": "进入追高区，禁止新增",
+                "entry_context_status": "IN_CHASE_ZONE",
             }
         )
         return result
@@ -113,20 +118,34 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         label = f"等待回落 {zone_text}"
         reason = _distance_reason(distance_pct, "高于买区", chase_above)
         hint = "只观察，等待回到纪律买区"
+        context_status = price_position
         if use_technical_pullback:
-            label = f"等待技术回踩 {technical_zone_text}"
             reason = _technical_pullback_reason(
                 technical_zone_text,
                 zone_text,
                 technical_reason,
                 fallback=reason,
             )
-            hint = "只观察，等待技术回踩或基本面复核"
+            if technical_position == "IN_TECHNICAL_PULLBACK_ZONE":
+                label = f"回踩区内 {technical_zone_text}"
+                reason = "当前价已进入技术回踩区上沿；" + reason
+                hint = "需复核，不自动买入"
+                context_status = "IN_TECHNICAL_PULLBACK_ZONE"
+            elif technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
+                label = f"跌破回踩区 {technical_zone_text}"
+                reason = "当前价跌破技术回踩区；" + reason
+                hint = "先复核，不自动买入"
+                context_status = "BELOW_TECHNICAL_PULLBACK_ZONE"
+            else:
+                label = f"等待技术回踩 {technical_zone_text}"
+                hint = "只观察，等待技术回踩或基本面复核"
+                context_status = "ABOVE_TECHNICAL_PULLBACK_ZONE"
         result.update(
             {
                 "entry_display_label": label,
                 "entry_display_reason": reason,
                 "entry_action_hint": hint,
+                "entry_context_status": context_status,
             }
         )
         return result
@@ -135,6 +154,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
             {
                 "entry_display_label": f"买区内 {zone_text}",
                 "entry_display_reason": "当前位于纪律买区",
+                "entry_context_status": "IN_DISCIPLINE_BUY_ZONE",
                 "entry_action_hint": format_entry_action_hint(
                     decision=decision,
                     final_score=final_score,
@@ -150,6 +170,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_display_label": f"跌破买区 {zone_text}",
                 "entry_display_reason": "跌破买区不等于更便宜，需确认基本面恶化、财报冲击、趋势破位或市场重新定价",
                 "entry_action_hint": "跌破买区，先复核",
+                "entry_context_status": "BELOW_DISCIPLINE_BUY_ZONE",
             }
         )
         return result
@@ -159,6 +180,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
             "entry_display_label": f"参考买区 {zone_text}",
             "entry_display_reason": "可参考纪律买区，但当前价格状态无法精确归类",
             "entry_action_hint": "只观察，等待数据复核",
+            "entry_context_status": price_position,
         }
     )
     return result
@@ -279,6 +301,19 @@ def _is_deep_value_zone_far_from_price(current_price: float | None, buy_zone_upp
     if price is None or upper is None or price <= 0:
         return False
     return upper <= price * 0.75
+
+
+def _technical_position(current_price: float | None, technical_low: float | None, technical_high: float | None) -> str:
+    price = _number(current_price)
+    low = _number(technical_low)
+    high = _number(technical_high)
+    if price is None or low is None or high is None:
+        return ""
+    if price < low:
+        return "BELOW_TECHNICAL_PULLBACK_ZONE"
+    if price <= high:
+        return "IN_TECHNICAL_PULLBACK_ZONE"
+    return "ABOVE_TECHNICAL_PULLBACK_ZONE"
 
 
 def _missing_reason_text(fields: list[str]) -> str:

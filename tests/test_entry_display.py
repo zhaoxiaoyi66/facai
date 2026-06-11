@@ -54,9 +54,58 @@ def test_entry_display_prefers_technical_pullback_when_value_zone_is_far() -> No
 
     assert result["entry_display_label"] == "等待技术回踩 $108.00 - $116.00"
     assert result["entry_action_hint"] == "只观察，等待技术回踩或基本面复核"
+    assert result["technical_position"] == "ABOVE_TECHNICAL_PULLBACK_ZONE"
+    assert result["entry_context_status"] == "ABOVE_TECHNICAL_PULLBACK_ZONE"
     assert result["valuation_deep_zone_label"] == "$30.00 - $50.00"
     assert "技术回踩区 $108.00 - $116.00" in result["entry_display_reason"]
     assert "深度估值区 $30.00 - $50.00" in result["entry_display_reason"]
+
+
+def test_entry_display_marks_price_inside_technical_pullback_zone() -> None:
+    result = build_entry_display(
+        current_price=113,
+        buy_zone={"lower": 30, "upper": 50},
+        chase_zone={"lower": 145},
+        technical_entry_zone={
+            "low": 108,
+            "high": 116,
+            "source": "ema_pullback",
+            "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+        },
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=78,
+        valuation_score=45,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "回踩区内 $108.00 - $116.00"
+    assert result["entry_action_hint"] == "需复核，不自动买入"
+    assert result["technical_position"] == "IN_TECHNICAL_PULLBACK_ZONE"
+    assert result["entry_context_status"] == "IN_TECHNICAL_PULLBACK_ZONE"
+    assert "当前价已进入技术回踩区上沿" in result["entry_display_reason"]
+    assert "深度估值区 $30.00 - $50.00" in result["entry_display_reason"]
+
+
+def test_chase_zone_still_has_priority_over_technical_pullback_status() -> None:
+    result = build_entry_display(
+        current_price=113,
+        buy_zone={"lower": 30, "upper": 50},
+        chase_zone={"lower": 110},
+        technical_entry_zone={"low": 108, "high": 116, "source": "ema_pullback"},
+        data_status="OK",
+        price_position="IN_CHASE_ZONE",
+        decision="BLOCK_CHASE",
+        final_score=78,
+        valuation_score=45,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "禁止追高，技术回踩参考 $108.00 - $116.00"
+    assert result["entry_action_hint"] == "进入追高区，禁止新增"
+    assert result["technical_position"] == "IN_TECHNICAL_PULLBACK_ZONE"
+    assert result["entry_context_status"] == "IN_CHASE_ZONE"
 
 
 def test_entry_display_inside_buy_zone_preserves_wait_hint() -> None:
@@ -216,6 +265,7 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
         ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "买区内", "可复核"),
         ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区外", "等回落"),
         ("ABOVE_BUY_ZONE", "等待技术回踩 $90.00 - $100.00", "买区外", "等回踩"),
+        ("ABOVE_BUY_ZONE", "回踩区内 $90.00 - $100.00", "回踩区内", "需复核"),
         ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
         ("BELOW_BUY_ZONE", "跌破买区 $90.00 - $100.00", "跌破买区", "先复核"),
     ]
@@ -229,6 +279,8 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
                 "entry_action_hint": (
                     "进入追高区，禁止新增"
                     if price_position == "IN_CHASE_ZONE"
+                    else "需复核，不自动买入"
+                    if "回踩区内" in display_label
                     else "只观察，等待技术回踩或基本面复核"
                     if "技术回踩" in display_label
                     else "只观察，等待回到纪律买区"

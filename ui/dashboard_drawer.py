@@ -325,6 +325,7 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     technical_high = row.get("technical_entry_zone_high") or row.get("radar_technical_entry_zone_high")
     technical_reason = str(row.get("technical_entry_reason") or row.get("radar_technical_entry_reason") or "").strip()
     technical_source = str(row.get("technical_entry_source") or row.get("radar_technical_entry_source") or "").strip()
+    entry_context_status = str(row.get("entry_context_status") or row.get("radar_entry_context_status") or "").strip()
     valuation_deep_zone = str(
         row.get("valuation_deep_zone_label")
         or row.get("radar_valuation_deep_zone_label")
@@ -338,6 +339,7 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         "当前相对买区距离：" + _drawer_pct_text(row.get("current_vs_entry_pct")),
         "追高禁区：" + _drawer_money_text(row.get("chase_above_price")),
         "zone_status / price_position：" + format_zone_status(price_position),
+        "当前展示状态：" + _drawer_entry_context_status_text(entry_context_status, price_position),
         "动作提示：" + (hint or "看详情"),
         "判断原因：" + (reason or "暂无说明"),
     ]
@@ -349,6 +351,23 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     if missing_fields:
         lines.append("缺失字段：" + "、".join(missing_fields))
     return _drawer_card_html("Radar 纪律买区", label, lines)
+
+
+def _drawer_entry_context_status_text(entry_context_status: str, price_position: str) -> str:
+    status = str(entry_context_status or "").strip()
+    if status == "IN_TECHNICAL_PULLBACK_ZONE":
+        return "已进入技术回踩区上沿"
+    if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
+        return "高于技术回踩区，继续等回踩"
+    if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
+        return "跌破技术回踩区，先复核"
+    if status == "IN_DISCIPLINE_BUY_ZONE":
+        return "位于 Radar 纪律买区"
+    if status == "BELOW_DISCIPLINE_BUY_ZONE":
+        return "跌破 Radar 纪律买区，先复核"
+    if status == "IN_CHASE_ZONE":
+        return "进入追高区，禁止新增"
+    return format_zone_status(price_position)
 
 
 def _drawer_zone_range_text(low: object, high: object) -> str:

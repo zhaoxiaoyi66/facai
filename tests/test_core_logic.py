@@ -2838,6 +2838,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("技术回踩区", radar_card_source)
         self.assertIn("估值深度区", radar_card_source)
         self.assertIn("当前相对买区距离", radar_card_source)
+        self.assertIn("当前展示状态", radar_card_source)
         self.assertIn("追高禁区", radar_card_source)
         self.assertIn("缺失字段", radar_card_source)
         self.assertNotIn('"买点解释"', source)
@@ -2869,6 +2870,7 @@ class ScoringTests(unittest.TestCase):
                     "technical_entry_zone_high": 117.5,
                     "technical_entry_source": "ema_pullback",
                     "technical_entry_reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+                    "entry_context_status": "IN_TECHNICAL_PULLBACK_ZONE",
                     "valuation_deep_zone_label": "$32.60 - $55.00",
                 }
             )
@@ -2876,6 +2878,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("Radar 最终纪律买区：$32.60 - $55.00", pullback_html)
         self.assertIn("技术回踩区：$102.00 - $117.50", pullback_html)
         self.assertIn("估值深度区：$32.60 - $55.00", pullback_html)
+        self.assertIn("当前展示状态：已进入技术回踩区上沿", pullback_html)
         self.assertIn("技术区说明", pullback_html)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:

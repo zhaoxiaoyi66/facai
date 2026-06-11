@@ -74,6 +74,8 @@ class RadarReport:
     technical_entry_zone_high: float | None
     technical_entry_source: str
     technical_entry_reason: str
+    technical_position: str
+    entry_context_status: str
     nearest_support_price: float | None
     ema20: float | None
     ema50: float | None
@@ -236,6 +238,8 @@ def build_ai_stock_radar_report(
         technical_entry_zone_high=entry_display.get("technical_entry_zone_high"),
         technical_entry_source=str(entry_display.get("technical_entry_source") or ""),
         technical_entry_reason=str(entry_display.get("technical_entry_reason") or ""),
+        technical_position=str(entry_display.get("technical_position") or ""),
+        entry_context_status=str(entry_display.get("entry_context_status") or price_position),
         nearest_support_price=technical_entry.get("nearest_support_price"),
         ema20=technical_entry.get("ema20"),
         ema50=technical_entry.get("ema50"),
