@@ -18,6 +18,7 @@ from data.decision_log import (
     refresh_decision_outcomes,
 )
 from data.entry_display import format_buy_zone, format_zone_status
+from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
@@ -224,6 +225,7 @@ def _render_editor(store: TradeJournalStore) -> None:
         active_positions = _active_sell_positions()
         if editing_entry is None:
             st.caption("买入/加仓请前往组合持仓页操作；这里只记录减仓、清仓，并继续走卖出纪律门禁。")
+            _render_macro_regime_sell_hint()
             if not active_positions:
                 st.info("当前没有可卖出的 active 持仓。")
                 return
@@ -706,6 +708,14 @@ def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dic
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_macro_regime_sell_hint() -> None:
+    try:
+        snapshot = load_macro_regime()
+    except Exception:
+        return
+    st.info(macro_regime_trade_hint_text(snapshot, context="sell"))
 
 
 def _sell_reference_alerts(context: dict) -> list[str]:

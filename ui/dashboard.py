@@ -37,6 +37,7 @@ from data.dashboard_risk_model import (
 from data.data_health import build_data_health_summary
 from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
+from data.macro_regime import load_macro_regime, macro_regime_detail_html, macro_regime_status_html
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
@@ -256,11 +257,12 @@ def render() -> None:
     data_health_context = _build_data_health_context(table)
     portfolio_view = build_portfolio_view_model()
     risk_items = build_dashboard_risk_radar(table, portfolio_view)
-    _render_dashboard_status_bar(table, data_health_context, risk_items)
+    macro_regime = load_macro_regime()
+    _render_dashboard_status_bar(table, data_health_context, risk_items, macro_regime)
     _render_price_alert_strip(tickers)
     _render_summary_sections(table)
     _render_decision_table(table)
-    _render_dashboard_system_status(data_health_context, risk_items, table)
+    _render_dashboard_system_status(data_health_context, risk_items, table, macro_regime)
     _render_client_stock_detail_drawers(table)
 
     st.caption("缺失财务数据显示为 N/A；评分不会用模型补造财务数字。")
@@ -605,7 +607,12 @@ def _render_market_strip(table: pd.DataFrame) -> None:
     st.markdown(f'<section class="market-ribbon">{cards}</section>', unsafe_allow_html=True)
 
 
-def _render_dashboard_status_bar(table: pd.DataFrame, data_health_context: dict[str, object], risk_items: list[dict[str, object]]) -> None:
+def _render_dashboard_status_bar(
+    table: pd.DataFrame,
+    data_health_context: dict[str, object],
+    risk_items: list[dict[str, object]],
+    macro_regime,
+) -> None:
     data_health_view = dict(data_health_context.get("view") or {})
     last_updated = _dashboard_last_updated_text(data_health_context.get("lastUpdated"))
     items = [
@@ -628,6 +635,7 @@ def _render_dashboard_status_bar(table: pd.DataFrame, data_health_context: dict[
             f'<div class="dashboard-status-items">{item_html}</div>'
             f'<a class="dashboard-status-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
             "</section>"
+            f"{macro_regime_status_html(macro_regime)}"
         ),
         unsafe_allow_html=True,
     )
@@ -802,11 +810,18 @@ def _render_data_health_detail_section(context: dict[str, object]) -> None:
         _render_data_health_detail_groups(raw_issues)
 
 
-def _render_dashboard_system_status(data_health_context: dict[str, object], risk_items: list[dict[str, object]], table: pd.DataFrame) -> None:
+def _render_dashboard_system_status(
+    data_health_context: dict[str, object],
+    risk_items: list[dict[str, object]],
+    table: pd.DataFrame,
+    macro_regime,
+) -> None:
     raw_issues = list(data_health_context.get("rawIssues") or [])
     expanded = bool(st.session_state.get(RISK_RADAR_FILTER_SESSION_KEY))
     st.markdown('<div id="dashboard-system-status"></div>', unsafe_allow_html=True)
     with st.expander("系统状态 / 风险雷达", expanded=expanded):
+        st.markdown('<div class="drawer-section-title">大盘环境</div>', unsafe_allow_html=True)
+        st.markdown(macro_regime_detail_html(macro_regime), unsafe_allow_html=True)
         _render_risk_radar_summary_strip(risk_items, table)
         st.markdown(_dashboard_risk_radar_html(risk_items), unsafe_allow_html=True)
         _render_weekly_discipline_strip()
@@ -2759,6 +2774,73 @@ def _render_dashboard_styles() -> None:
         .dashboard-status-link:visited {
             color:#0F172A !important;
             text-decoration:none !important;
+        }
+        .macro-regime-status {
+            max-width:1440px;
+            margin:-0.2rem auto 0.55rem;
+            padding:0.44rem 0.66rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:9px;
+            background:#FFFFFF;
+            color:#334155;
+            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            font-size:12px;
+            line-height:1.35;
+        }
+        .macro-regime-status strong {
+            font-weight:720;
+        }
+        .macro-regime-status.warning,
+        .macro-regime-status.stress {
+            border-color:rgba(217, 119, 6, 0.24);
+            background:#FFFBEB;
+            color:#7C4A1D;
+        }
+        .macro-regime-status.panic {
+            border-color:rgba(185, 28, 28, 0.22);
+            background:#FEF2F2;
+            color:#7F1D1D;
+        }
+        .macro-regime-detail {
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:10px;
+            padding:0.75rem;
+            background:#FFFFFF;
+            color:#334155;
+            margin-bottom:0.75rem;
+        }
+        .macro-regime-detail > div:first-child {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.75rem;
+            margin-bottom:0.55rem;
+        }
+        .macro-regime-detail span {
+            color:#64748B;
+            font-size:12px;
+        }
+        .macro-regime-detail table {
+            width:100%;
+            border-collapse:collapse;
+            font-size:12px;
+            margin-bottom:0.6rem;
+        }
+        .macro-regime-detail th,
+        .macro-regime-detail td {
+            border-bottom:1px solid rgba(226,232,240,0.92);
+            padding:0.38rem 0.4rem;
+            text-align:left;
+        }
+        .macro-regime-detail-grid {
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:0.7rem;
+            font-size:12px;
+        }
+        .macro-regime-detail-grid ul {
+            margin:0.35rem 0 0;
+            padding-left:1.05rem;
         }
         .st-key-dashboard_recompute_score button,
         .st-key-dashboard_update_watchlist button {

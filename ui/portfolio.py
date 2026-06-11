@@ -15,6 +15,7 @@ from data.portfolio import (
 from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
+from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.stock_plan import StockPlanStore, get_buy_plan_status
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
@@ -155,6 +156,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         )
         selected_tier = POSITION_TIER_FORM_OPTIONS.get(str(tier_choice), "")
         _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
+        _render_macro_regime_buy_hint()
         with st.form("portfolio-buy-add-form"):
             st.markdown('<div class="portfolio-form-section">真实买入 / 加仓</div>', unsafe_allow_html=True)
             basic_cols = st.columns([1.2, 1, 1])
@@ -177,6 +179,14 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
             )
             if st.form_submit_button("提交买入 / 加仓", width="stretch"):
                 _submit_portfolio_buy_add(form_key, effective_ticker)
+
+
+def _render_macro_regime_buy_hint() -> None:
+    try:
+        snapshot = load_macro_regime()
+    except Exception:
+        return
+    st.info(macro_regime_trade_hint_text(snapshot, context="buy"))
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
