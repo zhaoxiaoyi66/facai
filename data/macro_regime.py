@@ -18,14 +18,23 @@ import pandas as pd
 from data.cache_read_model import CacheReadModel
 from data.market_context import build_market_context
 from data.prices import CACHE_PATH
+from settings import load_watchlist
 
 
 FEAR_GREED = "fear_greed"
 VIX = "vix"
 HY_OAS = "hy_oas"
+TEN_YEAR_YIELD = "ten_year_yield"
+YIELD_CURVE_10Y2Y = "yield_curve_10y2y"
+MARKET_TREND = "market_trend"
+MARKET_BREADTH = "market_breadth"
+DOLLAR_INDEX = "dollar_index"
 
 FRED_VIX_SERIES = "VIXCLS"
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
+FRED_TEN_YEAR_SERIES = "DGS10"
+FRED_10Y2Y_SERIES = "T10Y2Y"
+FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 
@@ -40,6 +49,11 @@ INDICATOR_LABELS = {
     FEAR_GREED: "恐惧与贪婪指数",
     VIX: "VIX 波动率指数",
     HY_OAS: "美高收益债信用利差",
+    TEN_YEAR_YIELD: "10年美债收益率",
+    YIELD_CURVE_10Y2Y: "美债10Y-2Y利差",
+    MARKET_TREND: "大盘趋势",
+    MARKET_BREADTH: "市场宽度",
+    DOLLAR_INDEX: "美元指数",
 }
 
 
@@ -297,6 +311,11 @@ def refresh_macro_indicators(
     loaders = {
         VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, now=current),
         HY_OAS: lambda: _fetch_fred_snapshot(HY_OAS, FRED_HY_OAS_SERIES, fred_fetcher=fred_fetcher, now=current),
+        TEN_YEAR_YIELD: lambda: _fetch_fred_snapshot(TEN_YEAR_YIELD, FRED_TEN_YEAR_SERIES, fred_fetcher=fred_fetcher, now=current),
+        YIELD_CURVE_10Y2Y: lambda: _fetch_fred_snapshot(YIELD_CURVE_10Y2Y, FRED_10Y2Y_SERIES, fred_fetcher=fred_fetcher, now=current),
+        MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=current),
+        MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=current),
+        DOLLAR_INDEX: lambda: _fetch_fred_snapshot(DOLLAR_INDEX, FRED_DOLLAR_INDEX_SERIES, fred_fetcher=fred_fetcher, now=current),
         FEAR_GREED: lambda: _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=current),
     }
     indicators: dict[str, dict[str, Any]] = {}
@@ -334,9 +353,10 @@ def refresh_macro_indicators(
                 }
             errors.append(f"{indicator}: {message}")
 
-    refreshed_count = sum(1 for item in indicators.values() if item["status"] == "refreshed")
-    fallback_count = sum(1 for item in indicators.values() if item["status"] == "cached_fallback")
-    if refreshed_count == len(loaders):
+    required_indicators = set(loaders) - {DOLLAR_INDEX}
+    refreshed_count = sum(1 for name, item in indicators.items() if name in required_indicators and item["status"] == "refreshed")
+    fallback_count = sum(1 for name, item in indicators.items() if name in required_indicators and item["status"] == "cached_fallback")
+    if refreshed_count == len(required_indicators):
         status = "success"
     elif refreshed_count or fallback_count:
         status = "partial"
@@ -358,6 +378,11 @@ def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -
         market_vix if market_vix is not None and not market_vix.is_stale else stored_vix or market_vix,
         store.load_indicator(FEAR_GREED, now=now),
         store.load_indicator(HY_OAS, now=now),
+        store.load_indicator(TEN_YEAR_YIELD, now=now),
+        store.load_indicator(YIELD_CURVE_10Y2Y, now=now),
+        store.load_indicator(MARKET_TREND, now=now),
+        store.load_indicator(MARKET_BREADTH, now=now),
+        store.load_indicator(DOLLAR_INDEX, now=now),
     ]
     return evaluate_macro_regime([item for item in indicators if item is not None], now=now)
 
@@ -373,11 +398,22 @@ def evaluate_macro_regime(
     vix = by_name.get(VIX)
     fear = by_name.get(FEAR_GREED)
     hy = by_name.get(HY_OAS)
+    ten_year = by_name.get(TEN_YEAR_YIELD)
+    yield_curve = by_name.get(YIELD_CURVE_10Y2Y)
+    market_trend = by_name.get(MARKET_TREND)
+    market_breadth = by_name.get(MARKET_BREADTH)
     data_status, confidence = _macro_data_status(normalized_items)
     vix_value = _usable_value(vix)
     fear_value = _usable_value(fear)
     hy_value = _usable_value(hy)
+    ten_year_value = _usable_value(ten_year)
+    curve_value = _usable_value(yield_curve)
+    trend_value = _usable_value(market_trend)
+    breadth_value = _usable_value(market_breadth)
     credit_widening = _credit_spread_widening(hy)
+    qqq_below_50 = _indicator_flag(market_trend, "qqq_below_50")
+    spy_below_200 = _indicator_flag(market_trend, "spy_below_200")
+    breadth_weak = breadth_value is not None and breadth_value < 40
     any_stale = any(item.is_stale for item in normalized_items if item.value is not None)
     reasons: list[str] = []
 
@@ -407,12 +443,41 @@ def evaluate_macro_regime(
         reasons.append("信用利差走阔，风险偏好收缩。")
     if fear_value is not None:
         reasons.append(f"恐惧与贪婪指数当前 {fear_value:.0f}。")
+    if ten_year_value is not None:
+        reasons.append(f"10年美债收益率当前 {ten_year_value:.2f}%。")
+        if _rate_rising_fast(ten_year):
+            reasons.append("10年美债快速上行，成长股估值承压。")
+    if curve_value is not None:
+        reasons.append(f"美债10Y-2Y利差当前 {curve_value:.2f}%。")
+    if qqq_below_50:
+        reasons.append("QQQ 跌破 50 日均线，AI/软件不追涨。")
+    if spy_below_200:
+        reasons.append("SPY 跌破 200 日均线，只允许 A 类计划内买入提示。")
+    if breadth_weak:
+        reasons.append("观察池市场宽度恶化，C 类暂停新增提示。")
 
-    if vix_value is not None and vix_value > 30 and fear_value is not None and fear_value <= 25:
+    if (
+        vix_value is not None
+        and vix_value > 30
+        and fear_value is not None
+        and fear_value <= 25
+        and (credit_widening or (hy_value is not None and hy_value >= 4.5))
+    ):
         regime = REGIME_PANIC
-    elif vix_value is not None and vix_value > 25 and (credit_widening or (hy_value is not None and hy_value >= 4.5)):
+    elif (
+        vix_value is not None
+        and vix_value > 25
+        and (credit_widening or (hy_value is not None and hy_value >= 4.5) or qqq_below_50)
+    ):
         regime = REGIME_STRESS
-    elif (vix_value is not None and vix_value > 20) or credit_widening or (hy_value is not None and hy_value >= 4.0):
+    elif (
+        (vix_value is not None and vix_value > 20)
+        or credit_widening
+        or (hy_value is not None and hy_value >= 4.0)
+        or qqq_below_50
+        or spy_below_200
+        or breadth_weak
+    ):
         regime = REGIME_RISK_OFF
     elif (
         not any_stale
@@ -427,13 +492,34 @@ def evaluate_macro_regime(
 
     if any_stale and regime == REGIME_RISK_ON:
         regime = REGIME_NEUTRAL
-    risk_score = _macro_risk_score(vix_value, fear_value, hy_value, credit_widening, any_stale)
+    risk_score = _macro_risk_score(
+        vix_value,
+        fear_value,
+        hy_value,
+        credit_widening,
+        any_stale,
+        ten_year=ten_year_value,
+        ten_year_rising=_rate_rising_fast(ten_year),
+        qqq_below_50=qqq_below_50,
+        spy_below_200=spy_below_200,
+        breadth_weak=breadth_weak,
+    )
+    hints = _action_hints(regime)
+    hints = _dedupe(
+        [
+            *hints,
+            *(["成长股估值压力上升，AI/软件只等回踩，不追涨。"] if _rate_rising_fast(ten_year) else []),
+            *(["QQQ 跌破 50 日均线，AI/软件不追涨。"] if qqq_below_50 else []),
+            *(["SPY 跌破 200 日均线，只允许 A 类计划内买入提示。"] if spy_below_200 else []),
+            *(["观察池宽度恶化，C 类暂停新增提示。"] if breadth_weak else []),
+        ]
+    )
     return MacroRegimeSnapshot(
         regime=regime,
         risk_score=risk_score,
         indicators=normalized_items,
         reasons=_dedupe(reasons),
-        action_hints=_action_hints(regime),
+        action_hints=hints,
         updated_at=_latest_updated_at(normalized_items),
         is_stale=any_stale,
         confidence=confidence,
@@ -445,10 +531,12 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     fear = _indicator_value_text(snapshot.indicator(FEAR_GREED), empty="缺")
     vix = _indicator_value_text(snapshot.indicator(VIX), empty="缺")
     hy = _indicator_value_text(snapshot.indicator(HY_OAS), empty="缺", suffix="%")
+    ten_year = _indicator_value_text(snapshot.indicator(TEN_YEAR_YIELD), empty="缺", suffix="%")
+    trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
     hint = snapshot.action_hints[0] if snapshot.action_hints else "按个股纪律执行。"
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜高收益债利差 {hy}｜恐惧与贪婪 {fear}｜纪律提示：{hint}"
+        f"｜VIX {vix}｜高收益债利差 {hy}｜10Y {ten_year}｜{trend_hint}｜恐惧与贪婪 {fear}｜纪律提示：{hint}"
     )
 
 
@@ -465,7 +553,7 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     rows = "".join(
         "<tr>"
         f"<td>{escape(item.label)}</td>"
-        f"<td>{escape(_indicator_value_text(item, empty='缺'))}{'%' if item.indicator == HY_OAS and item.value is not None else ''}</td>"
+        f"<td>{escape(_indicator_value_text(item, empty='缺', suffix='%' if item.indicator in {HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y} else ''))}</td>"
         f"<td>{escape(_change_text(item))}</td>"
         f"<td>{escape(item.source or 'cache/manual')}</td>"
         f"<td>{escape(_indicator_cache_status_text(item))}</td>"
@@ -638,6 +726,128 @@ def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime)
     )
 
 
+def _fetch_market_trend_snapshot(path: Path, *, provider: Any | None, now: datetime) -> MacroIndicatorSnapshot:
+    errors: list[str] = []
+    if provider is not None:
+        for symbol in ("SPY", "QQQ"):
+            try:
+                provider.get_price_history(symbol, force_refresh=True)
+            except Exception as exc:
+                errors.append(f"{symbol} 刷新失败：{_short_error(exc)}")
+    spy = _trend_state_for_symbol("SPY", path)
+    qqq = _trend_state_for_symbol("QQQ", path)
+    if spy is None and qqq is None:
+        raise RuntimeError("缺少 SPY/QQQ K 线缓存，无法计算大盘趋势")
+    states = [item for item in (spy, qqq) if item is not None]
+    risk_value = max(float(item["risk_value"]) for item in states)
+    reasons: list[str] = []
+    hints: list[str] = []
+    for label, state in (("SPY", spy), ("QQQ", qqq)):
+        if state is None:
+            reasons.append(f"{label} 缺 K 线。")
+            continue
+        relation = []
+        relation.append("高于50日" if state["above_50"] else "跌破50日")
+        relation.append("高于200日" if state["above_200"] else "跌破200日")
+        reasons.append(f"{label} 当前 {state['current']:.2f}，{','.join(relation)}。")
+    if qqq and not qqq["above_50"]:
+        hints.append("QQQ 跌破 50 日均线，AI/软件不追涨。")
+    if spy and not spy["above_200"]:
+        hints.append("SPY 跌破 200 日均线，只允许 A 类计划内买入提示。")
+    return MacroIndicatorSnapshot(
+        indicator=MARKET_TREND,
+        value=risk_value,
+        source="本地 SPY/QQQ K线缓存",
+        updated_at=now.isoformat(),
+        fetched_at=now.isoformat(),
+        observation_date=_latest_state_date(states),
+        is_stale=any(bool(item.get("is_stale")) for item in states),
+        reasons=[*reasons, *errors],
+        action_hints=hints,
+        raw_payload=_compact_raw_payload({"SPY": spy, "QQQ": qqq}),
+    )
+
+
+def _fetch_market_breadth_snapshot(path: Path, *, now: datetime) -> MacroIndicatorSnapshot:
+    tickers = [str(item).strip().upper() for item in load_watchlist() if str(item).strip()]
+    states = [_trend_state_for_symbol(ticker, path) for ticker in tickers]
+    available = [state for state in states if state is not None]
+    if not available:
+        raise RuntimeError("观察池缺少 K 线缓存，无法计算市场宽度")
+    above_50 = sum(1 for state in available if state["above_50"])
+    above_200 = sum(1 for state in available if state["above_200"])
+    pct_above_50 = round(above_50 / len(available) * 100, 1)
+    pct_above_200 = round(above_200 / len(available) * 100, 1)
+    reasons = [
+        f"观察池 {len(available)}/{len(tickers)} 只有可用 K 线。",
+        f"高于50日均线比例 {pct_above_50:.1f}%。",
+        f"高于200日均线比例 {pct_above_200:.1f}%。",
+    ]
+    hints = ["观察池宽度恶化，C 类暂停新增提示。"] if pct_above_50 < 40 else []
+    return MacroIndicatorSnapshot(
+        indicator=MARKET_BREADTH,
+        value=pct_above_50,
+        change_20d=round(pct_above_50 - pct_above_200, 1),
+        source="本地观察池 K线缓存",
+        updated_at=now.isoformat(),
+        fetched_at=now.isoformat(),
+        observation_date=_latest_state_date(available),
+        is_stale=any(bool(item.get("is_stale")) for item in available),
+        reasons=reasons,
+        action_hints=hints,
+        raw_payload=_compact_raw_payload({"tickerCount": len(tickers), "availableCount": len(available), "pctAbove50": pct_above_50, "pctAbove200": pct_above_200}),
+    )
+
+
+def _trend_state_for_symbol(symbol: str, path: Path) -> dict[str, Any] | None:
+    history = build_market_context(symbol, path=path, quote_max_age_hours=36, history_max_age_hours=120)
+    frame = CacheReadModel(path, quote_max_age_hours=36, history_max_age_hours=120).get_price_history(symbol)
+    if frame is None or frame.empty:
+        from data.market_context import build_market_history
+
+        frame = build_market_history(symbol, path=path, quote_max_age_hours=36, history_max_age_hours=120)
+    closes = _numeric_closes(frame)
+    if closes.empty or len(closes) < 50:
+        return None
+    current = _number(history.get("currentPrice")) or _number(closes.iloc[-1])
+    if current is None:
+        return None
+    ma50 = float(closes.tail(50).mean())
+    ma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else None
+    above_50 = current >= ma50
+    above_200 = True if ma200 is None else current >= ma200
+    risk_value = 25
+    if not above_50:
+        risk_value = 58
+    if ma200 is not None and not above_200:
+        risk_value = 78
+    return {
+        "symbol": symbol.upper(),
+        "current": round(float(current), 4),
+        "ma50": round(ma50, 4),
+        "ma200": round(ma200, 4) if ma200 is not None else None,
+        "above_50": above_50,
+        "above_200": above_200,
+        "risk_value": risk_value,
+        "latest_date": _latest_history_date(frame),
+        "is_stale": bool(history.get("isStale")),
+    }
+
+
+def _latest_history_date(frame: pd.DataFrame) -> str | None:
+    if frame is None or frame.empty or "date" not in frame.columns:
+        return None
+    try:
+        return pd.to_datetime(frame["date"]).max().date().isoformat()
+    except Exception:
+        return None
+
+
+def _latest_state_date(states: list[dict[str, Any]]) -> str | None:
+    dates = [str(item.get("latest_date") or "") for item in states if item.get("latest_date")]
+    return max(dates) if dates else None
+
+
 def _with_indicator_regime(snapshot: MacroIndicatorSnapshot) -> MacroIndicatorSnapshot:
     regime, score, reasons, hints = _indicator_regime(snapshot)
     return MacroIndicatorSnapshot(
@@ -694,6 +904,36 @@ def _indicator_regime(snapshot: MacroIndicatorSnapshot) -> tuple[str, float, lis
         if value >= 4 or _credit_spread_widening(snapshot):
             return REGIME_RISK_OFF, 64, ["信用利差走阔或偏高。"], ["不追涨。"]
         return REGIME_NEUTRAL, 35, ["信用利差未显示压力。"], ["按计划执行。"]
+    if snapshot.indicator == TEN_YEAR_YIELD:
+        if _rate_rising_fast(snapshot):
+            return REGIME_RISK_OFF, 62, ["10年美债快速上行。"], ["成长股估值承压，AI/软件不追涨。"]
+        if value >= 5:
+            return REGIME_RISK_OFF, 64, ["10年美债收益率偏高。"], ["压低成长股估值预期。"]
+        return REGIME_NEUTRAL, 35, ["10年美债收益率未显示极端压力。"], ["按个股纪律执行。"]
+    if snapshot.indicator == YIELD_CURVE_10Y2Y:
+        if value < -0.5:
+            return REGIME_RISK_OFF, 60, ["10Y-2Y 曲线深度倒挂。"], ["关注衰退和盈利下修风险。"]
+        if value < 0:
+            return REGIME_NEUTRAL, 45, ["10Y-2Y 曲线倒挂。"], ["复核盈利周期。"]
+        return REGIME_NEUTRAL, 35, ["10Y-2Y 曲线未显示明显压力。"], ["按计划执行。"]
+    if snapshot.indicator == MARKET_TREND:
+        spy_below_200 = _indicator_flag(snapshot, "spy_below_200")
+        qqq_below_50 = _indicator_flag(snapshot, "qqq_below_50")
+        if spy_below_200:
+            return REGIME_RISK_OFF, 72, ["SPY 跌破 200 日均线。"], ["只允许 A 类计划内买入提示。"]
+        if qqq_below_50:
+            return REGIME_RISK_OFF, 62, ["QQQ 跌破 50 日均线。"], ["AI/软件不追涨。"]
+        return REGIME_NEUTRAL, 30, ["SPY/QQQ 趋势未显示系统性破位。"], ["按个股纪律执行。"]
+    if snapshot.indicator == MARKET_BREADTH:
+        if value < 25:
+            return REGIME_STRESS, 76, ["观察池市场宽度显著恶化。"], ["C类暂停新增，先复核风险。"]
+        if value < 40:
+            return REGIME_RISK_OFF, 62, ["观察池市场宽度恶化。"], ["C类暂停新增提示。"]
+        return REGIME_NEUTRAL, 35, ["观察池市场宽度尚可。"], ["按计划执行。"]
+    if snapshot.indicator == DOLLAR_INDEX:
+        if snapshot.change_20d is not None and snapshot.change_20d >= 3:
+            return REGIME_RISK_OFF, 55, ["美元指数短期走强。"], ["复核美元走强对海外收入和风险资产的压力。"]
+        return REGIME_NEUTRAL, 30, ["美元指数未作为核心压力信号。"], ["低优先级参考。"]
     return REGIME_DATA_GAP, 50, [], []
 
 
@@ -703,6 +943,12 @@ def _macro_risk_score(
     hy: float | None,
     credit_widening: bool,
     stale: bool,
+    *,
+    ten_year: float | None = None,
+    ten_year_rising: bool = False,
+    qqq_below_50: bool = False,
+    spy_below_200: bool = False,
+    breadth_weak: bool = False,
 ) -> float:
     scores: list[float] = []
     if vix is not None:
@@ -713,6 +959,16 @@ def _macro_risk_score(
         scores.append(max(0, min(100, (hy - 2.5) * 22)))
     if credit_widening:
         scores.append(65)
+    if ten_year is not None:
+        scores.append(max(0, min(100, (ten_year - 3.5) * 35)))
+    if ten_year_rising:
+        scores.append(62)
+    if qqq_below_50:
+        scores.append(62)
+    if spy_below_200:
+        scores.append(76)
+    if breadth_weak:
+        scores.append(64)
     if stale:
         scores.append(55)
     if not scores:
@@ -751,6 +1007,38 @@ def _credit_spread_tightening(snapshot: MacroIndicatorSnapshot | None) -> bool:
         return False
     changes = [snapshot.change_5d, snapshot.change_20d]
     return any(change is not None and change <= -0.10 for change in changes)
+
+
+def _rate_rising_fast(snapshot: MacroIndicatorSnapshot | None) -> bool:
+    if snapshot is None or snapshot.value is None or snapshot.is_stale:
+        return False
+    return any(
+        change is not None and change >= threshold
+        for change, threshold in (
+            (snapshot.change_5d, 0.15),
+            (snapshot.change_20d, 0.35),
+        )
+    )
+
+
+def _indicator_flag(snapshot: MacroIndicatorSnapshot | None, key: str) -> bool:
+    if snapshot is None or not snapshot.raw_payload:
+        return False
+    payload = _json_dict(snapshot.raw_payload)
+    if snapshot.indicator == MARKET_TREND:
+        spy = payload.get("SPY") if isinstance(payload.get("SPY"), dict) else {}
+        qqq = payload.get("QQQ") if isinstance(payload.get("QQQ"), dict) else {}
+        if key == "spy_below_200":
+            return spy.get("above_200") is False
+        if key == "spy_below_50":
+            return spy.get("above_50") is False
+        if key == "qqq_below_200":
+            return qqq.get("above_200") is False
+        if key == "qqq_below_50":
+            return qqq.get("above_50") is False
+    if isinstance(payload.get(key), bool):
+        return bool(payload.get(key))
+    return False
 
 
 def _usable_value(snapshot: MacroIndicatorSnapshot | None) -> float | None:
@@ -801,8 +1089,32 @@ def _indicator_value_text(snapshot: MacroIndicatorSnapshot | None, *, empty: str
     if snapshot is None or snapshot.value is None:
         return empty
     value = float(snapshot.value)
-    text = f"{value:.0f}" if snapshot.indicator == FEAR_GREED else f"{value:.1f}"
+    if snapshot.indicator == FEAR_GREED:
+        text = f"{value:.0f}"
+    elif snapshot.indicator == MARKET_TREND:
+        text = _trend_summary_text(snapshot)
+        suffix = ""
+    elif snapshot.indicator == MARKET_BREADTH:
+        text = f"{value:.1f}% 高于50日"
+        suffix = ""
+    else:
+        text = f"{value:.1f}"
     return f"{text}{suffix}"
+
+
+def _trend_summary_text(snapshot: MacroIndicatorSnapshot | None) -> str:
+    if snapshot is None or snapshot.value is None:
+        return "大盘趋势 缺"
+    payload = _json_dict(snapshot.raw_payload)
+    spy = payload.get("SPY") if isinstance(payload.get("SPY"), dict) else {}
+    qqq = payload.get("QQQ") if isinstance(payload.get("QQQ"), dict) else {}
+    if spy.get("above_200") is False:
+        return "SPY跌破200日"
+    if qqq.get("above_50") is False:
+        return "QQQ跌破50日"
+    if spy or qqq:
+        return "趋势正常"
+    return f"趋势风险 {float(snapshot.value):.0f}"
 
 
 def _indicator_cache_status_text(snapshot: MacroIndicatorSnapshot) -> str:
@@ -894,6 +1206,15 @@ def _normalize_indicator(value: object) -> str:
         "hy_oas": HY_OAS,
         "bamlh0a0hym2": HY_OAS,
         "hy spread": HY_OAS,
+        "dgs10": TEN_YEAR_YIELD,
+        "10y": TEN_YEAR_YIELD,
+        "ten_year_yield": TEN_YEAR_YIELD,
+        "t10y2y": YIELD_CURVE_10Y2Y,
+        "yield_curve_10y2y": YIELD_CURVE_10Y2Y,
+        "market_trend": MARKET_TREND,
+        "market_breadth": MARKET_BREADTH,
+        "dtwexbgs": DOLLAR_INDEX,
+        "dollar_index": DOLLAR_INDEX,
     }
     return aliases.get(text, text)
 

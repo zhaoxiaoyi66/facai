@@ -3,14 +3,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import inspect
 
+import pandas as pd
+
 from data.macro_regime import (
+    DOLLAR_INDEX,
     FEAR_GREED,
     HY_OAS,
+    MARKET_BREADTH,
+    MARKET_TREND,
     REGIME_DATA_GAP,
     REGIME_PANIC,
     REGIME_RISK_OFF,
     REGIME_STRESS,
+    TEN_YEAR_YIELD,
     VIX,
+    YIELD_CURVE_10Y2Y,
     MacroIndicatorSnapshot,
     MacroRegimeStore,
     evaluate_macro_regime,
@@ -18,6 +25,7 @@ from data.macro_regime import (
     macro_regime_trade_hint_text,
     refresh_macro_indicators,
 )
+from data.prices import PriceCache
 
 
 def _indicator(
@@ -39,6 +47,52 @@ def _indicator(
         updated_at=datetime.now(timezone.utc).isoformat(),
         is_stale=is_stale,
     )
+
+
+class FailingProvider:
+    def get_quote(self, ticker: str, force_refresh: bool = False):
+        raise RuntimeError("provider down")
+
+    def get_price_history(self, ticker: str, force_refresh: bool = False):
+        raise RuntimeError("provider down")
+
+
+def _fred_fetcher(series_values: dict[str, list[float]]):
+    def fetch(series_id: str) -> str:
+        values = series_values.get(series_id)
+        if values is None:
+            raise RuntimeError(f"{series_id} unavailable")
+        rows = [f"observation_date,{series_id}"]
+        for index, value in enumerate(values):
+            rows.append(f"2026-06-{index + 1:02d},{value}")
+        return "\n".join(rows)
+
+    return fetch
+
+
+def _seed_history(path, symbol: str, closes: list[float]) -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2025-10-01", periods=len(closes), freq="D"),
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": [1_000_000] * len(closes),
+        }
+    )
+    PriceCache(path).set_history(symbol, frame)
+
+
+def _seed_macro_market_cache(path, *, spy_below_200: bool = False, qqq_below_50: bool = False) -> None:
+    spy_closes = [100.0] * 220
+    qqq_closes = [100.0] * 220
+    spy_closes[-1] = 80.0 if spy_below_200 else 110.0
+    qqq_closes[-1] = 90.0 if qqq_below_50 else 110.0
+    _seed_history(path, "SPY", spy_closes)
+    _seed_history(path, "QQQ", qqq_closes)
+    _seed_history(path, "AAA", [100.0] * 219 + [110.0])
+    _seed_history(path, "BBB", [100.0] * 219 + [90.0])
 
 
 def test_high_vix_marks_risk_off() -> None:
@@ -64,6 +118,7 @@ def test_high_vix_and_extreme_fear_marks_panic() -> None:
     snapshot = evaluate_macro_regime(
         [
             _indicator(VIX, 32.0),
+            _indicator(HY_OAS, 4.8, change_5d=0.3),
             _indicator(FEAR_GREED, 18.0),
         ]
     )
@@ -127,75 +182,74 @@ def test_macro_store_supports_manual_cache_values(tmp_path) -> None:
     assert loaded.source == "manual FRED BAMLH0A0HYM2"
 
 
-def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path) -> None:
-    class FailingProvider:
-        def get_quote(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
-
-        def get_price_history(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
-
-    def fred_fetcher(series_id: str) -> str:
-        return "\n".join(
-            [
-                f"observation_date,{series_id}",
-                "2026-06-05,18.0",
-                "2026-06-08,20.8",
-                "2026-06-09,22.4",
-                "2026-06-10,22.9",
-            ]
-        )
+def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
 
     result = refresh_macro_indicators(
-        tmp_path / "macro.sqlite",
+        path,
         provider=FailingProvider(),
-        fred_fetcher=fred_fetcher,
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.0, 20.8, 22.4, 22.9],
+                "BAMLH0A0HYM2": [3.8, 3.9, 4.0, 4.1],
+                "DGS10": [4.2, 4.3, 4.4, 4.5],
+                "T10Y2Y": [-0.5, -0.4, -0.3, -0.2],
+                "DTWEXBGS": [120.0, 120.4, 120.5, 120.7],
+            }
+        ),
         fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 35, "timestamp": "2026-06-10T20:00:00+00:00"}},
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
     )
 
-    store = MacroRegimeStore(tmp_path / "macro.sqlite")
+    store = MacroRegimeStore(path)
     vix = store.load_indicator(VIX, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
     hy = store.load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    ten_year = store.load_indicator(TEN_YEAR_YIELD, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    curve = store.load_indicator(YIELD_CURVE_10Y2Y, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    dollar = store.load_indicator(DOLLAR_INDEX, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
     assert result["status"] == "success"
     assert vix is not None
     assert vix.value == 22.9
     assert vix.source == "FRED VIXCLS"
     assert hy is not None
-    assert hy.value == 22.9
+    assert hy.value == 4.1
+    assert ten_year is not None
+    assert ten_year.value == 4.5
+    assert curve is not None
+    assert curve.value == -0.2
+    assert dollar is not None
+    assert dollar.value == 120.7
 
 
-def test_vix_refresh_failure_does_not_block_hy_oas_update(tmp_path) -> None:
-    class FailingProvider:
-        def get_quote(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
-
-        def get_price_history(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
+def test_vix_refresh_failure_does_not_block_hy_oas_update(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
 
     def fred_fetcher(series_id: str) -> str:
         if series_id == "VIXCLS":
             raise RuntimeError("fred vix unavailable")
-        return "\n".join(
-            [
-                "observation_date,BAMLH0A0HYM2",
-                "2026-06-05,3.8",
-                "2026-06-08,3.9",
-                "2026-06-09,4.0",
-                "2026-06-10,4.2",
-            ]
-        )
+        return _fred_fetcher(
+            {
+                "BAMLH0A0HYM2": [3.8, 3.9, 4.0, 4.2],
+                "DGS10": [4.1, 4.2, 4.3, 4.4],
+                "T10Y2Y": [-0.5, -0.4, -0.3, -0.2],
+                "DTWEXBGS": [120, 121, 122, 123],
+            }
+        )(series_id)
 
     result = refresh_macro_indicators(
-        tmp_path / "macro.sqlite",
+        path,
         provider=FailingProvider(),
         fred_fetcher=fred_fetcher,
         fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("cnn unavailable")),
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
     )
 
-    hy = MacroRegimeStore(tmp_path / "macro.sqlite").load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    hy = MacroRegimeStore(path).load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
     assert result["status"] == "partial"
     assert result["indicators"][VIX]["status"] == "failed"
@@ -203,15 +257,10 @@ def test_vix_refresh_failure_does_not_block_hy_oas_update(tmp_path) -> None:
     assert hy.value == 4.2
 
 
-def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path) -> None:
-    class FailingProvider:
-        def get_quote(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
-
-        def get_price_history(self, ticker: str, force_refresh: bool = False):
-            raise RuntimeError("provider down")
-
+def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
     store = MacroRegimeStore(path)
     store.save_indicator(
         MacroIndicatorSnapshot(
@@ -226,7 +275,15 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path) -> None:
     result = refresh_macro_indicators(
         path,
         provider=FailingProvider(),
-        fred_fetcher=lambda series_id: "\n".join([f"observation_date,{series_id}", "2026-06-10,18.5"]),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 18.6],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+                "DTWEXBGS": [120.0, 120.2],
+            }
+        ),
         fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("cnn unavailable")),
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
     )
@@ -250,6 +307,67 @@ def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
     assert snapshot.regime == REGIME_STRESS
     assert snapshot.data_status == "部分可用"
     assert snapshot.confidence == "中"
+
+
+def test_market_trend_and_breadth_use_local_price_cache(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path, qqq_below_50=True)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.0, 18.2],
+                "BAMLH0A0HYM2": [3.7, 3.8],
+                "DGS10": [4.0, 4.1],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    store = MacroRegimeStore(path)
+    trend = store.load_indicator(MARKET_TREND, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    breadth = store.load_indicator(MARKET_BREADTH, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["status"] == "success"
+    assert trend is not None
+    assert trend.value and trend.value >= 58
+    assert "QQQ 跌破 50 日均线" in " ".join(trend.action_hints + trend.reasons)
+    assert breadth is not None
+    assert breadth.value == 50.0
+
+
+def test_high_vix_and_qqq_below_50_is_at_least_risk_off() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 22.0),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_TREND,
+                value=58,
+                raw_payload='{"QQQ": {"above_50": false, "above_200": true}, "SPY": {"above_50": true, "above_200": true}}',
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+        ]
+    )
+
+    assert snapshot.regime == REGIME_RISK_OFF
+    assert any("QQQ 跌破 50 日均线" in hint for hint in snapshot.action_hints)
+
+
+def test_ten_year_fast_rise_adds_growth_valuation_pressure_hint() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 18.0),
+            _indicator(TEN_YEAR_YIELD, 4.7, change_20d=0.42),
+        ]
+    )
+
+    assert any("成长股估值压力" in hint for hint in snapshot.action_hints)
+    assert any("10年美债快速上行" in reason for reason in snapshot.reasons)
 
 
 def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
