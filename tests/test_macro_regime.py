@@ -16,6 +16,7 @@ from data.macro_regime import (
     evaluate_macro_regime,
     macro_regime_status_text,
     macro_regime_trade_hint_text,
+    refresh_macro_indicators,
 )
 
 
@@ -124,6 +125,140 @@ def test_macro_store_supports_manual_cache_values(tmp_path) -> None:
     assert loaded.value == 4.1
     assert loaded.change_5d == 0.2
     assert loaded.source == "manual FRED BAMLH0A0HYM2"
+
+
+def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path) -> None:
+    class FailingProvider:
+        def get_quote(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+        def get_price_history(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+    def fred_fetcher(series_id: str) -> str:
+        return "\n".join(
+            [
+                f"observation_date,{series_id}",
+                "2026-06-05,18.0",
+                "2026-06-08,20.8",
+                "2026-06-09,22.4",
+                "2026-06-10,22.9",
+            ]
+        )
+
+    result = refresh_macro_indicators(
+        tmp_path / "macro.sqlite",
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 35, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    store = MacroRegimeStore(tmp_path / "macro.sqlite")
+    vix = store.load_indicator(VIX, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    hy = store.load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["status"] == "success"
+    assert vix is not None
+    assert vix.value == 22.9
+    assert vix.source == "FRED VIXCLS"
+    assert hy is not None
+    assert hy.value == 22.9
+
+
+def test_vix_refresh_failure_does_not_block_hy_oas_update(tmp_path) -> None:
+    class FailingProvider:
+        def get_quote(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+        def get_price_history(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "VIXCLS":
+            raise RuntimeError("fred vix unavailable")
+        return "\n".join(
+            [
+                "observation_date,BAMLH0A0HYM2",
+                "2026-06-05,3.8",
+                "2026-06-08,3.9",
+                "2026-06-09,4.0",
+                "2026-06-10,4.2",
+            ]
+        )
+
+    result = refresh_macro_indicators(
+        tmp_path / "macro.sqlite",
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("cnn unavailable")),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    hy = MacroRegimeStore(tmp_path / "macro.sqlite").load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["status"] == "partial"
+    assert result["indicators"][VIX]["status"] == "failed"
+    assert hy is not None
+    assert hy.value == 4.2
+
+
+def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path) -> None:
+    class FailingProvider:
+        def get_quote(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+        def get_price_history(self, ticker: str, force_refresh: bool = False):
+            raise RuntimeError("provider down")
+
+    path = tmp_path / "macro.sqlite"
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=FEAR_GREED,
+            value=28,
+            source="CNN cached",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=lambda series_id: "\n".join([f"observation_date,{series_id}", "2026-06-10,18.5"]),
+        fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("cnn unavailable")),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    loaded = MacroRegimeStore(path).load_indicator(FEAR_GREED, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["indicators"][FEAR_GREED]["status"] == "cached_fallback"
+    assert loaded is not None
+    assert loaded.value == 28
+    assert loaded.error is not None
+
+
+def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 27.0),
+            _indicator(HY_OAS, 4.6),
+            _indicator(FEAR_GREED, 18.0, is_stale=True),
+        ]
+    )
+
+    assert snapshot.regime == REGIME_STRESS
+    assert snapshot.data_status == "部分可用"
+    assert snapshot.confidence == "中"
+
+
+def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
+    from ui import dashboard
+
+    header_source = inspect.getsource(dashboard._render_dashboard_header)
+
+    assert "_refresh_macro_cache_for_dashboard()" in header_source
+    assert "refresh_macro_indicators" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
 
 
 def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:

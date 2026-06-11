@@ -37,7 +37,12 @@ from data.dashboard_risk_model import (
 from data.data_health import build_data_health_summary
 from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
-from data.macro_regime import load_macro_regime, macro_regime_detail_html, macro_regime_status_html
+from data.macro_regime import (
+    load_macro_regime,
+    macro_regime_detail_html,
+    macro_regime_status_html,
+    refresh_macro_indicators,
+)
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
@@ -295,11 +300,13 @@ def _render_dashboard_header(tickers: list[str]) -> None:
         )
     command_cols = st.columns([0.72, 0.86, 2.95, 0.52], vertical_alignment="center")
     with command_cols[0]:
-        if st.button("重新评分", width="stretch", help="不重新拉取数据，只基于当前缓存重新计算评分。", key="dashboard_recompute_score"):
+        if st.button("重新评分", width="stretch", help="个股不重新拉取；会尝试更新大盘环境缓存后重新计算评分。", key="dashboard_recompute_score"):
+            _refresh_macro_cache_for_dashboard()
             _clear_dashboard_table_cache()
             st.rerun()
     with command_cols[1]:
         if st.button("更新观察池", width="stretch", help="更新当前 watchlist 的数据，会逐只刷新。", key="dashboard_update_watchlist"):
+            _refresh_macro_cache_for_dashboard()
             _clear_dashboard_table_cache()
             st.session_state["dashboard_force_fmp_refresh"] = True
             st.rerun()
@@ -317,6 +324,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
             if st.button("强制刷新 FMP 缓存", width="stretch", key="dashboard_force_refresh_fmp_cache"):
+                _refresh_macro_cache_for_dashboard()
                 _clear_dashboard_table_cache()
                 st.session_state["dashboard_force_fmp_refresh"] = True
                 st.rerun()
@@ -416,6 +424,14 @@ def _clear_dashboard_table_cache() -> None:
     _load_dashboard.clear()
     st.session_state.pop("dashboard_table_cache", None)
     st.session_state.pop("dashboard_table_cache_key", None)
+
+
+def _refresh_macro_cache_for_dashboard() -> None:
+    try:
+        result = refresh_macro_indicators()
+    except Exception as exc:
+        result = {"status": "failed", "error": str(exc), "indicators": {}}
+    st.session_state["dashboard_macro_last_refresh_result"] = result
 
 
 def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_key: tuple[tuple[str, ...], int]) -> pd.DataFrame:
