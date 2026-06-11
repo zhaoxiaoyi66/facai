@@ -969,14 +969,24 @@ def _render_macro_refresh_result() -> None:
             for key, value in dict(result.get("indicators") or {}).items()
             if isinstance(value, dict)
         ]
-    rows = "".join(_macro_refresh_indicator_row_html(item) for item in indicator_results)
+    core_rows = "".join(
+        _macro_refresh_indicator_row_html(item)
+        for item in indicator_results
+        if _macro_refresh_indicator_category(item) == "core"
+    )
+    auxiliary_rows = "".join(
+        _macro_refresh_indicator_row_html(item)
+        for item in indicator_results
+        if _macro_refresh_indicator_category(item) != "core"
+    )
     error = str(result.get("error") or "").strip()
     error_html = f'<div class="macro-refresh-error">错误摘要：{escape(error)}</div>' if error else ""
     st.markdown(
         (
             f'<section class="macro-refresh-result {escape(tone)}">'
             f"<strong>{escape(headline)}</strong>"
-            f'<div class="macro-refresh-grid">{rows}</div>'
+            f'<div class="macro-refresh-group"><b>核心指标</b><div class="macro-refresh-grid">{core_rows}</div></div>'
+            f'<div class="macro-refresh-group muted"><b>辅助指标</b><div class="macro-refresh-grid">{auxiliary_rows}</div></div>'
             f"{error_html}"
             "</section>"
         ),
@@ -1062,6 +1072,14 @@ def _macro_refresh_indicator_row_html(item: dict) -> str:
         f"<em>{escape(meta_text)}</em>"
         "</div>"
     )
+
+
+def _macro_refresh_indicator_category(item: dict) -> str:
+    category = str(item.get("category") or "").strip().lower()
+    if category:
+        return category
+    indicator = str(item.get("indicator") or "")
+    return "core" if indicator in {"vix", "ten_year_yield", "yield_curve_10y2y", "market_trend", "market_breadth"} else "auxiliary"
 
 
 def _macro_indicator_label(indicator: str) -> str:
@@ -3082,6 +3100,16 @@ def _render_dashboard_styles() -> None:
             grid-template-columns:repeat(2, minmax(0, 1fr));
             gap:0.42rem 0.7rem;
             margin-top:0.45rem;
+        }
+        .macro-refresh-group {
+            margin-top:0.5rem;
+        }
+        .macro-refresh-group > b {
+            color:#0F172A;
+            font-size:12px;
+        }
+        .macro-refresh-group.muted {
+            opacity:0.82;
         }
         .macro-refresh-grid div {
             display:flex;

@@ -32,6 +32,8 @@ YIELD_CURVE_10Y2Y = "yield_curve_10y2y"
 MARKET_TREND = "market_trend"
 MARKET_BREADTH = "market_breadth"
 DOLLAR_INDEX = "dollar_index"
+CORE_MACRO_INDICATORS = {VIX, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, MARKET_TREND, MARKET_BREADTH}
+AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX}
 
 FRED_VIX_SERIES = "VIXCLS"
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
@@ -452,8 +454,8 @@ def refresh_macro_indicators(
     store = MacroRegimeStore(path)
     treasury_loader = _TreasurySnapshotLoader(provider=provider, now=current)
     loaders = {
-        VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, now=current),
-        HY_OAS: lambda: _fetch_fred_snapshot_with_circuit(
+        VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, store=store, now=current),
+        HY_OAS: lambda: _fetch_cached_or_fred_snapshot(
             HY_OAS, FRED_HY_OAS_SERIES, store=store, fred_fetcher=fred_fetcher, now=current
         ),
         TEN_YEAR_YIELD: lambda: _fetch_treasury_or_fred_snapshot(
@@ -474,10 +476,10 @@ def refresh_macro_indicators(
         ),
         MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=current),
         MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=current),
-        DOLLAR_INDEX: lambda: _fetch_fred_snapshot_with_circuit(
-            DOLLAR_INDEX, FRED_DOLLAR_INDEX_SERIES, store=store, fred_fetcher=fred_fetcher, now=current
+        DOLLAR_INDEX: lambda: _fetch_optional_cached_indicator(DOLLAR_INDEX, store=store, now=current),
+        FEAR_GREED: lambda: _fetch_cached_or_fear_greed_snapshot(
+            store=store, fear_greed_fetcher=fear_greed_fetcher, now=current
         ),
-        FEAR_GREED: lambda: _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=current),
     }
     indicators: dict[str, dict[str, Any]] = {}
     indicator_results: list[dict[str, Any]] = []
@@ -494,14 +496,14 @@ def refresh_macro_indicators(
             store.save_indicator(snapshot)
             result = _macro_indicator_refresh_result(
                 snapshot,
-                status="success",
+                status=_macro_refresh_status_for_snapshot(snapshot),
                 duration_seconds=duration_seconds,
             )
         except Exception as exc:
             message = _short_error(exc)
             store.record_indicator_error(indicator, message, now=current)
             cached = store.load_indicator(indicator, now=current)
-            if cached is not None and cached.value is not None:
+            if _refresh_snapshot_value_usable(cached):
                 result = _macro_indicator_refresh_result(
                     cached,
                     status="stale" if cached.is_stale else "cached_fallback",
@@ -522,9 +524,8 @@ def refresh_macro_indicators(
         indicators[indicator] = result
         indicator_results.append(result)
 
-    required_indicators = set(loaders) - {DOLLAR_INDEX}
-    required_results = [item for item in indicator_results if item["indicator"] in required_indicators]
-    status = _macro_refresh_overall_status(required_results)
+    core_results = [item for item in indicator_results if item["indicator"] in CORE_MACRO_INDICATORS]
+    status = _macro_refresh_overall_status(core_results)
     refreshed_count = sum(1 for item in indicator_results if item["status"] == "success")
     failed_count = sum(1 for item in indicator_results if item["status"] == "failed")
     stale_count = sum(1 for item in indicator_results if item["status"] == "stale" or item.get("is_stale"))
@@ -571,6 +572,7 @@ def _macro_indicator_refresh_result(
     return {
         "indicator": normalized,
         "label": INDICATOR_LABELS.get(normalized, normalized),
+        "category": "core" if normalized in CORE_MACRO_INDICATORS else "auxiliary",
         "status": status,
         "value": snapshot.value if snapshot is not None else None,
         "observation_date": snapshot.observation_date if snapshot is not None else None,
@@ -578,7 +580,7 @@ def _macro_indicator_refresh_result(
         "source": snapshot.source if snapshot is not None else "refresh error",
         "error": error or (snapshot.error if snapshot is not None else None),
         "duration_seconds": round(max(duration_seconds, 0.0), 3),
-        "used_cache": used_cache,
+        "used_cache": used_cache or status in {"cached_fallback", "stale"},
         "is_stale": bool(snapshot.is_stale) if snapshot is not None else status == "failed",
     }
 
@@ -592,6 +594,22 @@ def _macro_refresh_overall_status(results: list[dict[str, Any]]) -> str:
         if item.get("status") in {"success", "cached_fallback", "stale"} and item.get("value") is not None
     ]
     return "partial" if usable else "failed"
+
+
+def _macro_refresh_status_for_snapshot(snapshot: MacroIndicatorSnapshot) -> str:
+    source = str(snapshot.source or "").lower()
+    if "cache" in source or "cached" in source or source.startswith("缓存"):
+        return "stale" if snapshot.is_stale else "cached_fallback"
+    return "success"
+
+
+def _refresh_snapshot_value_usable(snapshot: MacroIndicatorSnapshot | None) -> bool:
+    if snapshot is None or snapshot.value is None:
+        return False
+    value = _number(snapshot.value)
+    if snapshot.indicator == VIX and (value is None or value <= 0):
+        return False
+    return value is not None
 
 
 def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -> MacroRegimeSnapshot:
@@ -752,15 +770,14 @@ def evaluate_macro_regime(
 
 
 def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
-    fear = _indicator_value_text(snapshot.indicator(FEAR_GREED), empty="缺")
     vix = _indicator_value_text(snapshot.indicator(VIX), empty="缺")
-    hy = _indicator_value_text(snapshot.indicator(HY_OAS), empty="缺", suffix="%")
     ten_year = _indicator_value_text(snapshot.indicator(TEN_YEAR_YIELD), empty="缺", suffix="%")
     trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
+    breadth = _indicator_value_text(snapshot.indicator(MARKET_BREADTH), empty="缺")
     hint = snapshot.action_hints[0] if snapshot.action_hints else "按个股纪律执行。"
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜高收益债利差 {hy}｜10Y {ten_year}｜{trend_hint}｜恐惧与贪婪 {fear}｜纪律提示：{hint}"
+        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜纪律提示：{hint}"
     )
 
 
@@ -821,7 +838,7 @@ def _load_vix_snapshot(path: Path, *, now: datetime | None = None) -> MacroIndic
             history_max_age_hours=96,
         )
         value = _number(context.get("currentPrice"))
-        if value is None:
+        if not _valid_vix_value(value):
             continue
         history = CacheReadModel(
             path,
@@ -851,6 +868,7 @@ def _fetch_vix_snapshot(
     *,
     provider: Any | None,
     fred_fetcher: Any | None,
+    store: MacroRegimeStore,
     now: datetime,
 ) -> MacroIndicatorSnapshot:
     errors: list[str] = []
@@ -868,7 +886,7 @@ def _fetch_vix_snapshot(
             try:
                 quote = market_provider.get_quote(symbol, force_refresh=True)
                 value = _number(_value_from_mapping(quote, "current_price", "price", "value"))
-                if value is None:
+                if not _valid_vix_value(value):
                     errors.append(f"{symbol} 无有效报价")
                     continue
                 history = market_provider.get_price_history(symbol, force_refresh=True)
@@ -893,7 +911,7 @@ def _fetch_vix_snapshot(
                 errors.append(f"{symbol}: {_short_error(exc)}")
 
     try:
-        return _fetch_fred_snapshot(VIX, FRED_VIX_SERIES, fred_fetcher=fred_fetcher, now=now)
+        return _fetch_fred_snapshot_with_circuit(VIX, FRED_VIX_SERIES, store=store, fred_fetcher=fred_fetcher, now=now)
     except Exception as exc:
         errors.append(f"FRED {FRED_VIX_SERIES}: {_short_error(exc)}")
     raise RuntimeError("; ".join(errors) or "VIX 刷新失败")
@@ -1049,6 +1067,44 @@ def _fetch_fred_snapshot_with_circuit(
         raise
     store.record_provider_success(FRED_PROVIDER)
     return snapshot
+
+
+def _fetch_cached_or_fred_snapshot(
+    indicator: str,
+    series_id: str,
+    *,
+    store: MacroRegimeStore,
+    fred_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(indicator, now=now)
+    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
+        return cached
+    return _fetch_fred_snapshot_with_circuit(indicator, series_id, store=store, fred_fetcher=fred_fetcher, now=now)
+
+
+def _fetch_optional_cached_indicator(
+    indicator: str,
+    *,
+    store: MacroRegimeStore,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(indicator, now=now)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
+    raise RuntimeError(f"{INDICATOR_LABELS.get(indicator, indicator)} front refresh skipped; no usable cache")
+
+
+def _fetch_cached_or_fear_greed_snapshot(
+    *,
+    store: MacroRegimeStore,
+    fear_greed_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(FEAR_GREED, now=now)
+    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
+        return cached
+    return _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
 
 
 def _fetch_fred_snapshot(
@@ -1283,6 +1339,8 @@ def _indicator_regime(snapshot: MacroIndicatorSnapshot) -> tuple[str, float, lis
     if snapshot.is_stale:
         return REGIME_DATA_GAP, 55, [f"{snapshot.label}数据过期。"], ["过期数据不能当成风险偏好。"]
     value = float(snapshot.value)
+    if snapshot.indicator == VIX and not _valid_vix_value(value):
+        return REGIME_DATA_GAP, 60, ["VIX 报价无效。"], ["补齐有效 VIX 后再判断大盘波动。"]
     if snapshot.indicator == VIX:
         if value > 30:
             return REGIME_PANIC, 90, ["VIX 高于 30。"], ["只做计划内核心仓。"]
@@ -1451,6 +1509,8 @@ def _usable_value(snapshot: MacroIndicatorSnapshot | None) -> float | None:
         return None
     if snapshot.is_stale:
         return None
+    if snapshot.indicator == VIX and not _valid_vix_value(snapshot.value):
+        return None
     return _number(snapshot.value)
 
 
@@ -1494,6 +1554,8 @@ def _indicator_value_text(snapshot: MacroIndicatorSnapshot | None, *, empty: str
     if snapshot is None or snapshot.value is None:
         return empty
     value = float(snapshot.value)
+    if snapshot.indicator == VIX and not _valid_vix_value(value):
+        return empty
     if snapshot.indicator == FEAR_GREED:
         text = f"{value:.0f}"
     elif snapshot.indicator == MARKET_TREND:
@@ -1600,6 +1662,11 @@ def _number(value: object) -> float | None:
         return None
 
 
+def _valid_vix_value(value: object) -> bool:
+    numeric = _number(value)
+    return numeric is not None and numeric > 0
+
+
 def _normalize_indicator(value: object) -> str:
     text = str(value or "").strip().lower()
     aliases = {
@@ -1626,15 +1693,23 @@ def _normalize_indicator(value: object) -> str:
 
 
 def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:
-    usable = [item for item in items if item.value is not None and not item.is_stale]
-    stale = [item for item in items if item.value is not None and item.is_stale]
-    if len(usable) >= 3:
+    usable_core = [
+        item
+        for item in items
+        if item.indicator in CORE_MACRO_INDICATORS and _usable_value(item) is not None
+    ]
+    stale_core = [
+        item
+        for item in items
+        if item.indicator in CORE_MACRO_INDICATORS and item.value is not None and item.is_stale
+    ]
+    if len(usable_core) >= 4:
         return "完整", "高"
-    if len(usable) >= 2:
+    if len(usable_core) >= 2:
         return "部分可用", "中"
-    if len(usable) == 1:
+    if len(usable_core) == 1:
         return "部分可用", "低"
-    if stale:
+    if stale_core:
         return "过期", "低"
     return "缺失", "低"
 

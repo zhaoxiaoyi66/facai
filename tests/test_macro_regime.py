@@ -25,6 +25,7 @@ from data.macro_regime import (
     MacroIndicatorSnapshot,
     MacroRegimeStore,
     evaluate_macro_regime,
+    load_macro_regime,
     macro_regime_status_text,
     macro_regime_trade_hint_text,
     refresh_macro_indicators,
@@ -112,6 +113,26 @@ class TreasuryAndVixProvider(VixQuoteProvider):
             {"date": "2026-06-09", "year2": 4.55, "year10": 4.35},
             {"date": "2026-06-10", "year2": 4.6, "year10": 4.42},
         ]
+
+
+class ZeroAvixThenValidVixProvider(VixQuoteProvider):
+    def __init__(self) -> None:
+        self.quote_calls: list[str] = []
+
+    def get_quote(self, ticker: str, force_refresh: bool = False):
+        self.quote_calls.append(ticker.upper())
+        if ticker.upper() == "AVIX":
+            return {"symbol": ticker.upper(), "price": 0.0, "date": "2026-06-10"}
+        if ticker.upper() in {"^VIX", "VIX"}:
+            return {"symbol": ticker.upper(), "price": 22.2, "date": "2026-06-10"}
+        raise RuntimeError("only vix is supported")
+
+
+class ZeroVixProvider(VixQuoteProvider):
+    def get_quote(self, ticker: str, force_refresh: bool = False):
+        if ticker.upper() in {"AVIX", "^VIX", "VIX"}:
+            return {"symbol": ticker.upper(), "price": 0.0, "date": "2026-06-10"}
+        raise RuntimeError("only vix is supported")
 
 
 def _fred_fetcher(series_values: dict[str, list[float]]):
@@ -210,9 +231,9 @@ def test_macro_status_text_is_chinese_and_contains_three_indicators() -> None:
     text = macro_regime_status_text(snapshot)
 
     assert "大盘环境" in text
-    assert "恐惧与贪婪" in text
     assert "VIX 22.4" in text
-    assert "高收益债利差 4.1%" in text
+    assert "高收益债利差" not in text
+    assert "恐惧与贪婪" not in text
     assert "纪律提示" in text
 
 
@@ -278,7 +299,8 @@ def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, mo
     assert curve is not None
     assert curve.value == -0.2
     assert dollar is not None
-    assert dollar.value == 120.7
+    assert dollar.value is None
+    assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
 
 
 def test_vix_quote_success_skips_fred_vixcls(tmp_path, monkeypatch) -> None:
@@ -309,6 +331,58 @@ def test_vix_quote_success_skips_fred_vixcls(tmp_path, monkeypatch) -> None:
     assert result["indicators"][VIX]["status"] == "success"
     assert result["indicators"][VIX]["value"] == 21.6
     assert "VIXCLS" not in fred_calls
+
+
+def test_zero_vix_quote_is_invalid_and_falls_back_to_next_symbol(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    provider = ZeroAvixThenValidVixProvider()
+    fred_calls: list[str] = []
+
+    result = refresh_macro_indicators(
+        path,
+        provider=provider,
+        fred_fetcher=lambda series_id: fred_calls.append(series_id) or (_ for _ in ()).throw(RuntimeError("unexpected fred")),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["indicators"][VIX]["status"] == "success"
+    assert result["indicators"][VIX]["value"] == 22.2
+    assert result["indicators"][VIX]["source"].startswith("^VIX")
+    assert provider.quote_calls[:2] == ["AVIX", "^VIX"]
+    assert "VIXCLS" not in fred_calls
+
+
+def test_zero_vix_falls_back_to_recent_cache_and_never_displays_zero(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=VIX,
+            value=21.9,
+            source="VIX cached",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+
+    result = refresh_macro_indicators(
+        path,
+        provider=ZeroVixProvider(),
+        fred_fetcher=lambda series_id: (_ for _ in ()).throw(RuntimeError("FRED timeout")),
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    status_text = macro_regime_status_text(snapshot)
+
+    assert result["indicators"][VIX]["status"] == "cached_fallback"
+    assert result["indicators"][VIX]["value"] == 21.9
+    assert "VIX 0.0" not in status_text
 
 
 def test_fmp_treasury_success_skips_fred_rates(tmp_path, monkeypatch) -> None:
@@ -431,8 +505,8 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
             indicator=HY_OAS,
             value=3.72,
             source="FRED cached BAMLH0A0HYM2",
-            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
-            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            updated_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
         )
     )
 
@@ -457,11 +531,44 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     )
 
     hy_result = result["indicators"][HY_OAS]
-    assert result["status"] == "partial"
-    assert hy_result["status"] == "cached_fallback"
+    assert result["status"] == "success"
+    assert hy_result["status"] == "stale"
     assert hy_result["value"] == 3.72
     assert hy_result["used_cache"] is True
     assert "timeout" in hy_result["error"]
+
+
+def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=HY_OAS,
+            value=3.72,
+            source="FRED cached BAMLH0A0HYM2",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+    fred_calls: list[str] = []
+
+    def fred_fetcher(series_id: str) -> str:
+        fred_calls.append(series_id)
+        return _fred_fetcher({"DGS10": [4.2], "T10Y2Y": [-0.2], "DTWEXBGS": [120.0]})(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=TreasuryAndVixProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["indicators"][HY_OAS]["status"] == "cached_fallback"
+    assert result["indicators"][HY_OAS]["category"] == "auxiliary"
+    assert "BAMLH0A0HYM2" not in fred_calls
 
 
 def test_default_fred_fetch_uses_short_foreground_timeouts(monkeypatch) -> None:
@@ -491,8 +598,8 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
             indicator=HY_OAS,
             value=3.72,
             source="FRED cached BAMLH0A0HYM2",
-            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
-            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            updated_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
         )
     )
     provider = TreasuryAndVixProvider()
@@ -507,7 +614,16 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
     )
-    assert first["indicators"][HY_OAS]["status"] == "cached_fallback"
+    assert first["indicators"][HY_OAS]["status"] == "stale"
+
+    second = refresh_macro_indicators(
+        path,
+        provider=provider,
+        fred_fetcher=timeout_fred,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, 3, tzinfo=timezone.utc),
+    )
+    assert second["indicators"][HY_OAS]["status"] == "stale"
 
     fred_calls: list[str] = []
 
@@ -515,7 +631,7 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         fred_calls.append(series_id)
         return _fred_fetcher({"BAMLH0A0HYM2": [3.9], "DTWEXBGS": [120.0]})(series_id)
 
-    second = refresh_macro_indicators(
+    third = refresh_macro_indicators(
         path,
         provider=provider,
         fred_fetcher=unexpected_fred,
@@ -523,8 +639,8 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         now=datetime(2026, 6, 10, 21, 5, tzinfo=timezone.utc),
     )
 
-    assert second["indicators"][HY_OAS]["status"] == "cached_fallback"
-    assert "circuit" in str(second["indicators"][HY_OAS]["error"]).lower()
+    assert third["indicators"][HY_OAS]["status"] == "stale"
+    assert "circuit" in str(third["indicators"][HY_OAS]["error"]).lower()
     assert fred_calls == []
 
 
@@ -589,13 +705,12 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     )
     loaded = MacroRegimeStore(path).load_indicator(FEAR_GREED, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
-    assert result["status"] == "partial"
-    assert result["overall_status"] == "partial"
+    assert result["status"] == "success"
+    assert result["overall_status"] == "success"
     assert result["indicators"][FEAR_GREED]["status"] == "cached_fallback"
     assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
     assert loaded.value == 28
-    assert loaded.error is not None
 
 
 def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
@@ -609,7 +724,7 @@ def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
 
     assert snapshot.regime == REGIME_STRESS
     assert snapshot.data_status == "部分可用"
-    assert snapshot.confidence == "中"
+    assert snapshot.confidence == "低"
 
 
 def test_market_trend_and_breadth_use_local_price_cache(tmp_path, monkeypatch) -> None:
@@ -690,6 +805,33 @@ def test_vix_and_market_breadth_keep_macro_regime_partially_usable() -> None:
     assert snapshot.data_status == "部分可用"
 
 
+def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 22.0),
+            _indicator(TEN_YEAR_YIELD, 4.4),
+            _indicator(YIELD_CURVE_10Y2Y, -0.2),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_TREND,
+                value=30,
+                raw_payload='{"QQQ": {"above_50": true, "above_200": true}, "SPY": {"above_50": true, "above_200": true}}',
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_BREADTH,
+                value=38.0,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+        ]
+    )
+
+    assert snapshot.regime != REGIME_DATA_GAP
+    assert snapshot.data_status == "完整"
+    assert snapshot.confidence == "高"
+    assert "VIX 22.0" in macro_regime_status_text(snapshot)
+    assert "高收益债利差" not in macro_regime_status_text(snapshot)
+
+
 def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
@@ -715,7 +857,7 @@ def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, mo
     assert result["overall_status"] == "success"
     assert result["duration_seconds"] >= 0
     assert result["refreshed_count"] >= 7
-    assert result["failed_count"] == 0
+    assert result["failed_count"] == 1
     assert result["indicator_results"]
     vix_result = result["indicators"][VIX]
     assert vix_result["status"] == "success"
@@ -730,7 +872,7 @@ def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, mo
     assert row is not None
     assert row[0] == "success"
     assert row[1] >= 7
-    assert row[2] == 0
+    assert row[2] == 1
     assert json.loads(row[3])["overall_status"] == "success"
 
 
@@ -793,6 +935,8 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     assert "refresh_macro_indicators" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
     assert "indicator_results" in refresh_result_source
     assert "大盘环境刷新完成" in refresh_result_source
+    assert "核心指标" in refresh_result_source
+    assert "辅助指标" in refresh_result_source
 
 
 def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:
