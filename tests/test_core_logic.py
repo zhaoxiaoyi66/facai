@@ -2806,7 +2806,9 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("估值/计划参考解释", detail_source)
         self.assertIn("不等同于主表 Radar 纪律买区", detail_source)
         self.assertIn("legacy 估值参考", combined_source)
-        self.assertIn("Radar 纪律买区：", radar_card_source)
+        self.assertIn("Radar 最终纪律买区", radar_card_source)
+        self.assertIn("技术回踩区", radar_card_source)
+        self.assertIn("估值深度区", radar_card_source)
         self.assertIn("当前相对买区距离", radar_card_source)
         self.assertIn("追高禁区", radar_card_source)
         self.assertIn("缺失字段", radar_card_source)
@@ -2826,6 +2828,27 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("跌破买区不等于更便宜", below_html)
         self.assertIn("复核清单", below_html)
         self.assertIn("财报/指引是否恶化", below_html)
+        pullback_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "等待技术回踩 $102.00 - $117.50",
+                    "entry_display_reason": "技术回踩区 $102.00 - $117.50；深度估值区 $32.60 - $55.00",
+                    "entry_action_hint": "只观察，等待技术回踩或基本面复核",
+                    "radar_buy_zone": {"lower": 32.6, "upper": 55.0},
+                    "radar_price_position": "ABOVE_BUY_ZONE",
+                    "price": "$120.00",
+                    "technical_entry_zone_low": 102.0,
+                    "technical_entry_zone_high": 117.5,
+                    "technical_entry_source": "ema_pullback",
+                    "technical_entry_reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+                    "valuation_deep_zone_label": "$32.60 - $55.00",
+                }
+            )
+        )
+        self.assertIn("Radar 最终纪律买区：$32.60 - $55.00", pullback_html)
+        self.assertIn("技术回踩区：$102.00 - $117.50", pullback_html)
+        self.assertIn("估值深度区：$32.60 - $55.00", pullback_html)
+        self.assertIn("技术区说明", pullback_html)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(

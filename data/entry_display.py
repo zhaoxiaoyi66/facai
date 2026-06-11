@@ -34,6 +34,28 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     reference_low = _zone_number(buy_zone, "lower")
     reference_high = _zone_number(buy_zone, "upper")
     chase_above = _zone_number(chase_zone, "lower")
+    technical_zone = _value(source, "technical_entry_zone", "technicalEntryZone") or {}
+    technical_low = (
+        _zone_number(technical_zone, "low")
+        or _zone_number(technical_zone, "lower")
+        or _number(_value(source, "technical_entry_zone_low", "technicalEntryZoneLow"))
+    )
+    technical_high = (
+        _zone_number(technical_zone, "high")
+        or _zone_number(technical_zone, "upper")
+        or _number(_value(source, "technical_entry_zone_high", "technicalEntryZoneHigh"))
+    )
+    technical_reason = str(
+        _value(source, "technical_entry_reason", "technicalEntryReason")
+        or _value(technical_zone, "reason")
+        or ""
+    ).strip()
+    technical_source = str(
+        _value(source, "technical_entry_source", "technicalEntrySource")
+        or _value(technical_zone, "source")
+        or ""
+    ).strip()
+    technical_zone_text = _zone_text(technical_low, technical_high)
     result: dict[str, Any] = {
         "entry_reference_low": reference_low,
         "entry_reference_high": reference_high,
@@ -41,6 +63,11 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "chase_above_price": chase_above,
         "current_vs_entry_pct": distance_pct,
         "missing_entry_fields": missing_fields,
+        "technical_entry_zone_low": technical_low,
+        "technical_entry_zone_high": technical_high,
+        "technical_entry_source": technical_source,
+        "technical_entry_reason": technical_reason,
+        "valuation_deep_zone_label": format_buy_zone(buy_zone),
         "entry_display_label": "",
         "entry_display_reason": "",
         "entry_action_hint": "",
@@ -58,21 +85,48 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         return result
 
     zone_text = format_buy_zone(buy_zone)
+    use_technical_pullback = (
+        technical_low is not None
+        and technical_high is not None
+        and price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}
+        and _is_deep_value_zone_far_from_price(current_price, reference_high)
+    )
     if price_position == "IN_CHASE_ZONE":
+        label_zone = technical_zone_text if use_technical_pullback else zone_text
+        reason = _distance_reason(distance_pct, "高于买区", chase_above)
+        if use_technical_pullback:
+            reason = _technical_pullback_reason(
+                technical_zone_text,
+                zone_text,
+                technical_reason,
+                fallback=reason,
+            )
         result.update(
             {
-                "entry_display_label": f"禁止追高，参考买区 {zone_text}",
-                "entry_display_reason": _distance_reason(distance_pct, "高于买区", chase_above),
+                "entry_display_label": f"禁止追高，技术回踩参考 {label_zone}",
+                "entry_display_reason": reason,
                 "entry_action_hint": "进入追高区，禁止新增",
             }
         )
         return result
     if price_position == "ABOVE_BUY_ZONE":
+        label = f"等待回落 {zone_text}"
+        reason = _distance_reason(distance_pct, "高于买区", chase_above)
+        hint = "只观察，等待回到纪律买区"
+        if use_technical_pullback:
+            label = f"等待技术回踩 {technical_zone_text}"
+            reason = _technical_pullback_reason(
+                technical_zone_text,
+                zone_text,
+                technical_reason,
+                fallback=reason,
+            )
+            hint = "只观察，等待技术回踩或基本面复核"
         result.update(
             {
-                "entry_display_label": f"等待回落 {zone_text}",
-                "entry_display_reason": _distance_reason(distance_pct, "高于买区", chase_above),
-                "entry_action_hint": "只观察，等待回到纪律买区",
+                "entry_display_label": label,
+                "entry_display_reason": reason,
+                "entry_action_hint": hint,
             }
         )
         return result
@@ -113,6 +167,10 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
 def format_buy_zone(buy_zone: Any) -> str:
     lower = _zone_number(buy_zone, "lower")
     upper = _zone_number(buy_zone, "upper")
+    return _zone_text(lower, upper)
+
+
+def _zone_text(lower: float | None, upper: float | None) -> str:
     if lower is not None and upper is not None:
         return f"{_price_text(lower)} - {_price_text(upper)}"
     if upper is not None:
@@ -195,6 +253,32 @@ def _distance_reason(distance_pct: float | None, prefix: str, chase_above_price:
     if chase_above_price is not None:
         parts.append(f"追高禁区 >{_price_text(chase_above_price)}")
     return "；".join(parts) if parts else "等待价格回到纪律买区"
+
+
+def _technical_pullback_reason(
+    technical_zone_text: str,
+    deep_value_zone_text: str,
+    technical_reason: str,
+    *,
+    fallback: str,
+) -> str:
+    parts = [
+        f"技术回踩区 {technical_zone_text}",
+        f"深度估值区 {deep_value_zone_text}",
+    ]
+    if technical_reason:
+        parts.append(technical_reason)
+    if fallback:
+        parts.append(fallback)
+    return "；".join(parts)
+
+
+def _is_deep_value_zone_far_from_price(current_price: float | None, buy_zone_upper: float | None) -> bool:
+    price = _number(current_price)
+    upper = _number(buy_zone_upper)
+    if price is None or upper is None or price <= 0:
+        return False
+    return upper <= price * 0.75
 
 
 def _missing_reason_text(fields: list[str]) -> str:

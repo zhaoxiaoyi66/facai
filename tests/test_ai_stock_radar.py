@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_list_row, build_ai_stock_radar_report, normalize_radar_inputs
+from data.ai_stock_radar import (
+    RadarScores,
+    RadarZone,
+    build_ai_stock_radar_list_row,
+    build_ai_stock_radar_report,
+    build_technical_entry_zone,
+    normalize_radar_inputs,
+)
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui.ai_stock_radar import select_radar_symbols
 
@@ -320,6 +327,61 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         assert row["entry_display_label"] == "等待回落 $90.00 - $100.00"
         assert row["entry_reference_high"] == 100
         assert row["current_vs_entry_pct"] == 10.0
+
+
+def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_decision() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NOK", 120)
+
+        report = build_ai_stock_radar_report(
+            "NOK",
+            path=path,
+            snapshot=_cached_snapshot(company_name="Nokia"),
+            technicals=_cached_technicals(
+                price=120,
+                fifty_two_week_low=20,
+                fifty_two_week_high=160,
+                ema20=116,
+                ema50=105,
+                ema100=95,
+                ema200=80,
+                atr14=5,
+                recent_swing_low=108,
+                recent_breakout_level=114,
+                ema50_slope_20d_pct=1.5,
+                ema200_slope_20d_pct=0.8,
+            ),
+            scores=_scores(final_score=78, valuation_score=48, technical_score=72),
+            now=NOW,
+        )
+
+        assert report.decision == "WAIT"
+        assert report.price_position == "ABOVE_BUY_ZONE"
+        assert report.buy_zone == {"lower": 32.6, "upper": 55.0, "label": "derived_discipline_buy_zone"}
+        assert report.technical_entry_zone_low == 102.0
+        assert report.technical_entry_zone_high == 117.5
+        assert report.entry_display_label == "等待技术回踩 $102.00 - $117.50"
+        assert "深度估值区 $32.60 - $55.00" in report.entry_display_reason
+        assert report.debug["technical_entry_zone"]["source"] == "ema_pullback"
+
+
+def test_technical_entry_zone_needs_trend_confirmation() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 80,
+            "ema20": 83,
+            "ema50": 86,
+            "ema200": 100,
+            "atr14": 2,
+            "recent_swing_low": 78,
+        }
+    )
+
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["source"] == "trend_review"
+    assert "不自动生成技术买点" in zone["reason"]
 
 
 def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:

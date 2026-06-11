@@ -321,8 +321,19 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     buy_zone = row.get("radar_buy_zone") or row.get("buy_zone") or {}
     price_position = str(row.get("radar_price_position") or row.get("price_position") or row.get("zone_status") or "").strip()
     missing_fields = _drawer_text_list(row.get("missing_entry_fields"))
+    technical_low = row.get("technical_entry_zone_low") or row.get("radar_technical_entry_zone_low")
+    technical_high = row.get("technical_entry_zone_high") or row.get("radar_technical_entry_zone_high")
+    technical_reason = str(row.get("technical_entry_reason") or row.get("radar_technical_entry_reason") or "").strip()
+    technical_source = str(row.get("technical_entry_source") or row.get("radar_technical_entry_source") or "").strip()
+    valuation_deep_zone = str(
+        row.get("valuation_deep_zone_label")
+        or row.get("radar_valuation_deep_zone_label")
+        or format_buy_zone(buy_zone)
+    ).strip()
     lines = [
-        "Radar 纪律买区：" + format_buy_zone(buy_zone),
+        "Radar 最终纪律买区：" + format_buy_zone(buy_zone),
+        "技术回踩区：" + _drawer_zone_range_text(technical_low, technical_high),
+        "估值深度区：" + (valuation_deep_zone or "N/A"),
         "当前价：" + str(row.get("price") or "N/A"),
         "当前相对买区距离：" + _drawer_pct_text(row.get("current_vs_entry_pct")),
         "追高禁区：" + _drawer_money_text(row.get("chase_above_price")),
@@ -330,11 +341,26 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         "动作提示：" + (hint or "看详情"),
         "判断原因：" + (reason or "暂无说明"),
     ]
+    if technical_reason:
+        source_suffix = f"（{technical_source}）" if technical_source else ""
+        lines.append("技术区说明：" + technical_reason + source_suffix)
     if price_position == "BELOW_BUY_ZONE":
         lines.extend(_drawer_below_buy_zone_review_lines())
     if missing_fields:
         lines.append("缺失字段：" + "、".join(missing_fields))
     return _drawer_card_html("Radar 纪律买区", label, lines)
+
+
+def _drawer_zone_range_text(low: object, high: object) -> str:
+    low_text = _drawer_money_text(low)
+    high_text = _drawer_money_text(high)
+    if low_text != "N/A" and high_text != "N/A":
+        return f"{low_text} - {high_text}"
+    if high_text != "N/A":
+        return "<= " + high_text
+    if low_text != "N/A":
+        return ">= " + low_text
+    return "N/A"
 
 
 def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:

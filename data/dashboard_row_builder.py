@@ -194,6 +194,19 @@ RADAR_ENTRY_DISPLAY_KEYS = (
     "chase_above_price",
     "current_vs_entry_pct",
     "missing_entry_fields",
+    "technical_entry_zone_low",
+    "technical_entry_zone_high",
+    "technical_entry_source",
+    "technical_entry_reason",
+    "valuation_deep_zone_label",
+    "nearest_support_price",
+    "ema20",
+    "ema50",
+    "ema100",
+    "ema200",
+    "atr14",
+    "recent_swing_low",
+    "recent_breakout_level",
     "entry_display_label",
     "entry_display_reason",
     "entry_action_hint",
@@ -210,8 +223,29 @@ def _radar_entry_display_fields(ticker: str, snapshot: dict, technicals: dict) -
             missing_entry_fields=["Radar 纪律买区缺失"],
         )
         row.update({"buy_zone": {}, "price_position": "ZONE_MISSING", "decision": "DATA_MISSING", "data_status": "MISSING_BUY_ZONE"})
+    public_entry_keys = {
+        "next_action_price",
+        "chase_above_price",
+        "current_vs_entry_pct",
+        "missing_entry_fields",
+        "technical_entry_zone_low",
+        "technical_entry_zone_high",
+        "technical_entry_source",
+        "technical_entry_reason",
+        "valuation_deep_zone_label",
+        "nearest_support_price",
+        "ema20",
+        "ema50",
+        "ema100",
+        "ema200",
+        "atr14",
+        "recent_swing_low",
+        "recent_breakout_level",
+    }
     return {f"radar_{key}": row.get(key) for key in RADAR_ENTRY_DISPLAY_KEYS} | {
-        key: row.get(key) for key in RADAR_ENTRY_DISPLAY_KEYS if key.startswith("entry_") or key in {"next_action_price", "chase_above_price", "current_vs_entry_pct", "missing_entry_fields"}
+        key: row.get(key)
+        for key in RADAR_ENTRY_DISPLAY_KEYS
+        if key.startswith("entry_") or key in public_entry_keys
     }
 
 

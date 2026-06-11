@@ -33,6 +33,32 @@ def test_entry_display_above_buy_zone_is_consistent() -> None:
     assert "追高禁区 >$120.00" in result["entry_display_reason"]
 
 
+def test_entry_display_prefers_technical_pullback_when_value_zone_is_far() -> None:
+    result = build_entry_display(
+        current_price=120,
+        buy_zone={"lower": 30, "upper": 50},
+        chase_zone={"lower": 145},
+        technical_entry_zone={
+            "low": 108,
+            "high": 116,
+            "source": "ema_pullback",
+            "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+        },
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=78,
+        valuation_score=45,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "等待技术回踩 $108.00 - $116.00"
+    assert result["entry_action_hint"] == "只观察，等待技术回踩或基本面复核"
+    assert result["valuation_deep_zone_label"] == "$30.00 - $50.00"
+    assert "技术回踩区 $108.00 - $116.00" in result["entry_display_reason"]
+    assert "深度估值区 $30.00 - $50.00" in result["entry_display_reason"]
+
+
 def test_entry_display_inside_buy_zone_preserves_wait_hint() -> None:
     result = build_entry_display(
         current_price=95,
@@ -189,6 +215,7 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
     cases = [
         ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "买区内", "可复核"),
         ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区外", "等回落"),
+        ("ABOVE_BUY_ZONE", "等待技术回踩 $90.00 - $100.00", "买区外", "等回踩"),
         ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
         ("BELOW_BUY_ZONE", "跌破买区 $90.00 - $100.00", "跌破买区", "先复核"),
     ]
@@ -199,7 +226,13 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
                 "symbol": "TEST",
                 "entryRating": "B - 等回踩",
                 "entry_display_label": display_label,
-                "entry_action_hint": "进入追高区，禁止新增" if price_position == "IN_CHASE_ZONE" else "只观察，等待回到纪律买区",
+                "entry_action_hint": (
+                    "进入追高区，禁止新增"
+                    if price_position == "IN_CHASE_ZONE"
+                    else "只观察，等待技术回踩或基本面复核"
+                    if "技术回踩" in display_label
+                    else "只观察，等待回到纪律买区"
+                ),
                 "entry_display_reason": "当前位于纪律买区",
                 "radar_price_position": price_position,
             }

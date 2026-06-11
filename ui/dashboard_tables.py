@@ -238,7 +238,9 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "数据不足", "补数据"
     if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
         return "买区内", "需复核" if "复核" in hint else "可复核"
-    if price_position == "ABOVE_BUY_ZONE" or label.startswith("等待回落"):
+    if price_position == "ABOVE_BUY_ZONE" or label.startswith(("等待回落", "等待技术回踩")):
+        if "技术回踩" in label or "技术回踩" in hint:
+            return "买区外", "等回踩"
         return "买区外", "等回落"
     if price_position == "IN_CHASE_ZONE" or "禁止追高" in label:
         return "追高区", "禁止新增"
@@ -254,6 +256,8 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
 def _short_entry_status(label: str) -> str:
     if "买区内" in label:
         return "买区内"
+    if "等待技术回踩" in label:
+        return "买区外"
     if "等待回落" in label or "高于买区" in label:
         return "买区外"
     if "追高" in label:
@@ -269,6 +273,8 @@ def _short_entry_hint(hint: str, fallback: str) -> str:
     text = str(hint or "").strip()
     if "禁止" in text:
         return "禁止新增"
+    if "技术回踩" in text:
+        return "等回踩"
     if "等待" in text or "回落" in text:
         return "等回落"
     if "跌破买区" in text or "低于买区" in text:

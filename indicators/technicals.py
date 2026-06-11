@@ -40,8 +40,28 @@ def calculate_ema50(prices: pd.Series) -> pd.Series:
     return calculate_ema(prices, span=50)
 
 
+def calculate_ema100(prices: pd.Series) -> pd.Series:
+    return calculate_ema(prices, span=100)
+
+
 def calculate_ema200(prices: pd.Series) -> pd.Series:
     return calculate_ema(prices, span=200)
+
+
+def calculate_atr14(highs: pd.Series, lows: pd.Series, closes: pd.Series) -> pd.Series:
+    highs = pd.to_numeric(highs, errors="coerce")
+    lows = pd.to_numeric(lows, errors="coerce")
+    closes = pd.to_numeric(closes, errors="coerce")
+    previous_close = closes.shift(1)
+    true_range = pd.concat(
+        [
+            highs - lows,
+            (highs - previous_close).abs(),
+            (lows - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.rolling(14, min_periods=14).mean()
 
 
 def calculate_drawdown_from_52_week_high(
@@ -67,14 +87,21 @@ def add_technical_indicators(history: pd.DataFrame) -> pd.DataFrame:
 
     df["ema20"] = calculate_ema20(df["close"])
     df["ema50"] = calculate_ema50(df["close"])
+    df["ema100"] = calculate_ema100(df["close"])
     df["ema200"] = calculate_ema200(df["close"])
+    df["atr14"] = calculate_atr14(high_series, low_series, df["close"])
     df["rsi14"] = calculate_rsi14(df["close"])
     df["fifty_two_week_high"] = high_series.rolling(TRADING_DAYS_IN_YEAR, min_periods=30).max()
     df["fifty_two_week_low"] = low_series.rolling(TRADING_DAYS_IN_YEAR, min_periods=30).min()
+    df["recent_swing_low"] = low_series.rolling(20, min_periods=10).min()
+    df["recent_swing_high"] = high_series.rolling(20, min_periods=10).max()
+    df["recent_breakout_level"] = high_series.shift(1).rolling(60, min_periods=20).max()
     df["drawdown_from_high_pct"] = calculate_drawdown_from_52_week_high(df["close"], high_series)
     df["pct_above_ema20"] = (df["close"] / df["ema20"] - 1.0) * 100.0
     df["pct_above_ema50"] = (df["close"] / df["ema50"] - 1.0) * 100.0
     df["pct_above_ema200"] = (df["close"] / df["ema200"] - 1.0) * 100.0
+    df["ema50_slope_20d_pct"] = (df["ema50"] / df["ema50"].shift(20) - 1.0) * 100.0
+    df["ema200_slope_20d_pct"] = (df["ema200"] / df["ema200"].shift(20) - 1.0) * 100.0
     df["daily_return_pct"] = df["close"].pct_change(periods=1) * 100.0
     df["gain_20d_pct"] = calculate_gain_over_trading_days(df["close"], days=20)
     df["gain_60d_pct"] = calculate_gain_over_trading_days(df["close"], days=60)
@@ -95,14 +122,21 @@ def latest_technical_snapshot(history_with_indicators: pd.DataFrame) -> dict:
             "price": None,
             "ema20": None,
             "ema50": None,
+            "ema100": None,
             "ema200": None,
+            "atr14": None,
             "rsi14": None,
             "fifty_two_week_high": None,
             "fifty_two_week_low": None,
+            "recent_swing_low": None,
+            "recent_swing_high": None,
+            "recent_breakout_level": None,
             "drawdown_from_high_pct": None,
             "pct_above_ema20": None,
             "pct_above_ema50": None,
             "pct_above_ema200": None,
+            "ema50_slope_20d_pct": None,
+            "ema200_slope_20d_pct": None,
             "daily_return_pct": None,
             "gain_20d_pct": None,
             "gain_60d_pct": None,
@@ -115,14 +149,21 @@ def latest_technical_snapshot(history_with_indicators: pd.DataFrame) -> dict:
         "price": _clean(latest.get("close")),
         "ema20": _clean(latest.get("ema20")),
         "ema50": _clean(latest.get("ema50")),
+        "ema100": _clean(latest.get("ema100")),
         "ema200": _clean(latest.get("ema200")),
+        "atr14": _clean(latest.get("atr14")),
         "rsi14": _clean(latest.get("rsi14")),
         "fifty_two_week_high": _clean(latest.get("fifty_two_week_high")),
         "fifty_two_week_low": _clean(latest.get("fifty_two_week_low")),
+        "recent_swing_low": _clean(latest.get("recent_swing_low")),
+        "recent_swing_high": _clean(latest.get("recent_swing_high")),
+        "recent_breakout_level": _clean(latest.get("recent_breakout_level")),
         "drawdown_from_high_pct": _clean(latest.get("drawdown_from_high_pct")),
         "pct_above_ema20": _clean(latest.get("pct_above_ema20")),
         "pct_above_ema50": _clean(latest.get("pct_above_ema50")),
         "pct_above_ema200": _clean(latest.get("pct_above_ema200")),
+        "ema50_slope_20d_pct": _clean(latest.get("ema50_slope_20d_pct")),
+        "ema200_slope_20d_pct": _clean(latest.get("ema200_slope_20d_pct")),
         "daily_return_pct": _clean(latest.get("daily_return_pct")),
         "gain_20d_pct": _clean(latest.get("gain_20d_pct")),
         "gain_60d_pct": _clean(latest.get("gain_60d_pct")),

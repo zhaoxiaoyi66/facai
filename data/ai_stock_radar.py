@@ -70,6 +70,18 @@ class RadarReport:
     chase_above_price: float | None
     current_vs_entry_pct: float | None
     missing_entry_fields: list[str]
+    technical_entry_zone_low: float | None
+    technical_entry_zone_high: float | None
+    technical_entry_source: str
+    technical_entry_reason: str
+    nearest_support_price: float | None
+    ema20: float | None
+    ema50: float | None
+    ema100: float | None
+    ema200: float | None
+    atr14: float | None
+    recent_swing_low: float | None
+    recent_breakout_level: float | None
     entry_display_label: str
     entry_display_reason: str
     entry_action_hint: str
@@ -160,10 +172,12 @@ def build_ai_stock_radar_report(
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
     position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    technical_entry = build_technical_entry_zone(technicals or {}, data_status=data_status)
     entry_display = calculate_entry_display(
         current_price=current_price,
         buy_zone=zones["buy_zone"],
         chase_zone=zones["chase_zone"],
+        technical_entry_zone=technical_entry,
         data_status=data_status,
         price_position=price_position,
         decision=decision,
@@ -184,6 +198,7 @@ def build_ai_stock_radar_report(
         block_reasons=block_reasons,
         current_price=current_price,
         price_position=price_position,
+        technical_entry=technical_entry,
         path=path,
     )
     return RadarReport(
@@ -217,6 +232,18 @@ def build_ai_stock_radar_report(
         chase_above_price=entry_display["chase_above_price"],
         current_vs_entry_pct=entry_display["current_vs_entry_pct"],
         missing_entry_fields=list(entry_display.get("missing_entry_fields") or []),
+        technical_entry_zone_low=entry_display.get("technical_entry_zone_low"),
+        technical_entry_zone_high=entry_display.get("technical_entry_zone_high"),
+        technical_entry_source=str(entry_display.get("technical_entry_source") or ""),
+        technical_entry_reason=str(entry_display.get("technical_entry_reason") or ""),
+        nearest_support_price=technical_entry.get("nearest_support_price"),
+        ema20=technical_entry.get("ema20"),
+        ema50=technical_entry.get("ema50"),
+        ema100=technical_entry.get("ema100"),
+        ema200=technical_entry.get("ema200"),
+        atr14=technical_entry.get("atr14"),
+        recent_swing_low=technical_entry.get("recent_swing_low"),
+        recent_breakout_level=technical_entry.get("recent_breakout_level"),
         entry_display_label=entry_display["entry_display_label"],
         entry_display_reason=entry_display["entry_display_reason"],
         entry_action_hint=entry_display["entry_action_hint"],
@@ -326,10 +353,12 @@ def build_ai_stock_radar_list_row(
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
     position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    technical_entry = build_technical_entry_zone(technicals or {}, data_status=data_status)
     entry_display = calculate_entry_display(
         current_price=current_price,
         buy_zone=zones["buy_zone"],
         chase_zone=zones["chase_zone"],
+        technical_entry_zone=technical_entry,
         data_status=data_status,
         price_position=price_position,
         decision=decision,
@@ -352,6 +381,14 @@ def build_ai_stock_radar_list_row(
         "trade_max_pct": position_plan["trade_max_pct"],
         "price_position": price_position,
         **entry_display,
+        "nearest_support_price": technical_entry.get("nearest_support_price"),
+        "ema20": technical_entry.get("ema20"),
+        "ema50": technical_entry.get("ema50"),
+        "ema100": technical_entry.get("ema100"),
+        "ema200": technical_entry.get("ema200"),
+        "atr14": technical_entry.get("atr14"),
+        "recent_swing_low": technical_entry.get("recent_swing_low"),
+        "recent_breakout_level": technical_entry.get("recent_breakout_level"),
         "block_reasons": block_reasons,
         "data_status": data_status,
     }
@@ -647,6 +684,86 @@ def calculate_price_position(
     return "ABOVE_BUY_ZONE"
 
 
+def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str = "OK") -> dict[str, Any]:
+    price = _first_number(technicals, "price", "current_price", "currentPrice")
+    ema20 = _first_number(technicals, "ema20", "EMA20")
+    ema50 = _first_number(technicals, "ema50", "EMA50")
+    ema100 = _first_number(technicals, "ema100", "EMA100")
+    ema200 = _first_number(technicals, "ema200", "EMA200")
+    atr14 = _first_number(technicals, "atr14", "ATR14")
+    recent_swing_low = _first_number(technicals, "recent_swing_low", "recentSwingLow")
+    recent_breakout_level = _first_number(technicals, "recent_breakout_level", "recentBreakoutLevel")
+    ema50_slope = _first_number(technicals, "ema50_slope_20d_pct", "ema50Slope20dPct")
+    ema200_slope = _first_number(technicals, "ema200_slope_20d_pct", "ema200Slope20dPct")
+    missing = [
+        label
+        for label, value in (
+            ("current_price", price),
+            ("ema20", ema20),
+            ("ema50", ema50),
+            ("ema200", ema200),
+        )
+        if value is None
+    ]
+    base = {
+        "low": None,
+        "high": None,
+        "source": "",
+        "reason": "",
+        "missing_fields": missing,
+        "nearest_support_price": None,
+        "ema20": ema20,
+        "ema50": ema50,
+        "ema100": ema100,
+        "ema200": ema200,
+        "atr14": atr14,
+        "recent_swing_low": recent_swing_low,
+        "recent_breakout_level": recent_breakout_level,
+    }
+    if data_status != "OK":
+        return base | {"source": "data_unavailable", "reason": "Radar 数据缺失或 stale，技术回踩区仅作缺口提示"}
+    if missing:
+        return base | {"source": "missing_technical_data", "reason": "缺 K 线历史 / EMA，不能生成技术回踩区"}
+    assert price is not None and ema20 is not None and ema50 is not None and ema200 is not None
+    if price < ema200 or ema50 < ema200:
+        return base | {
+            "source": "trend_review",
+            "reason": "价格或 EMA50 低于 EMA200，属于弱趋势/破位结构；不自动生成技术买点",
+        }
+    slope_confirmed = (ema50_slope is None or ema50_slope >= -0.5) and (ema200_slope is None or ema200_slope >= -0.5)
+    if not slope_confirmed:
+        return base | {
+            "source": "trend_review",
+            "reason": "EMA50 / EMA200 斜率未确认向上，先做破位复核",
+        }
+    supports = [value for value in (ema20, ema50, recent_swing_low, recent_breakout_level) if value is not None and value > 0]
+    nearby_supports = [value for value in supports if value <= price * 1.08]
+    if not nearby_supports:
+        return base | {
+            "source": "missing_nearby_support",
+            "reason": "缺少 EMA / swing 附近支撑，不能生成技术回踩区",
+        }
+    buffer = _technical_zone_buffer(price, atr14)
+    low = max(0.01, min(nearby_supports) - buffer)
+    high = max(nearby_supports) + buffer * 0.5
+    nearest = min(nearby_supports, key=lambda value: abs(price - value))
+    return base | {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "source": "ema_pullback",
+        "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+        "missing_fields": [],
+        "nearest_support_price": round(nearest, 2),
+    }
+
+
+def _technical_zone_buffer(price: float, atr14: float | None) -> float:
+    atr = _number(atr14)
+    if atr is not None and atr > 0:
+        return min(price * 0.06, max(atr * 0.6, price * 0.012))
+    return price * 0.018
+
+
 SCORE_FIELD_USAGE = {
     "quality_score": ["gross_margin", "net_margin", "fcf_margin", "roe"],
     "growth_score": ["revenue_growth", "gain_20d_pct", "gain_60d_pct"],
@@ -740,6 +857,7 @@ def build_radar_debug(
     block_reasons: list[str],
     current_price: float | None = None,
     price_position: str = "ZONE_MISSING",
+    technical_entry: dict[str, Any] | None = None,
     path: Path = CACHE_PATH,
 ) -> dict[str, Any]:
     plan = _load_plan(path, _symbol(symbol))
@@ -764,6 +882,7 @@ def build_radar_debug(
         "distance_to_buy_zone_pct": zone_debug.get("distance_to_buy_zone_pct"),
         "below_buy_zone_reason": zone_debug.get("below_buy_zone_reason"),
         "wait_reason_is_below_buy_zone": price_position == "BELOW_BUY_ZONE",
+        "technical_entry_zone": technical_entry or {},
         "position_plan": {
             "used_fields": ["decision", "final_score", "valuation_score", "risk_score"],
             "missing_fields": _missing_score_fields(scores, ["final_score", "valuation_score", "risk_score"]),
