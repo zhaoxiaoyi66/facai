@@ -45,6 +45,8 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         or _zone_number(technical_zone, "upper")
         or _number(_value(source, "technical_entry_zone_high", "technicalEntryZoneHigh"))
     )
+    technical_chase_overlap = _technical_chase_overlap(technical_high, chase_above)
+    effective_technical_high = _effective_technical_high(technical_high, chase_above) if technical_chase_overlap else technical_high
     technical_reason = str(
         _value(source, "technical_entry_reason", "technicalEntryReason")
         or _value(technical_zone, "reason")
@@ -57,6 +59,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     ).strip()
     technical_position = _technical_position(current_price, technical_low, technical_high)
     technical_zone_text = _zone_text(technical_low, technical_high)
+    effective_technical_zone_text = _zone_text(technical_low, effective_technical_high)
     result: dict[str, Any] = {
         "entry_reference_low": reference_low,
         "entry_reference_high": reference_high,
@@ -66,6 +69,9 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "missing_entry_fields": missing_fields,
         "technical_entry_zone_low": technical_low,
         "technical_entry_zone_high": technical_high,
+        "effective_technical_entry_zone_low": technical_low,
+        "effective_technical_entry_zone_high": effective_technical_high,
+        "technical_chase_overlap": technical_chase_overlap,
         "technical_entry_source": technical_source,
         "technical_entry_reason": technical_reason,
         "technical_position": technical_position,
@@ -95,14 +101,16 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         and price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}
     )
     if price_position == "IN_CHASE_ZONE":
-        label_zone = technical_zone_text if use_technical_pullback else zone_text
+        label_zone = effective_technical_zone_text if use_technical_pullback else zone_text
         reason = _distance_reason(distance_pct, "高于买区", chase_above)
         if use_technical_pullback:
             reason = _technical_pullback_reason(
-                technical_zone_text,
+                effective_technical_zone_text,
                 zone_text,
                 technical_reason,
                 fallback=reason,
+                overlap=technical_chase_overlap,
+                raw_technical_zone_text=technical_zone_text,
             )
         result.update(
             {
@@ -120,23 +128,25 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         context_status = price_position
         if use_technical_pullback:
             reason = _technical_pullback_reason(
-                technical_zone_text,
+                effective_technical_zone_text,
                 zone_text,
                 technical_reason,
                 fallback=reason,
+                overlap=technical_chase_overlap,
+                raw_technical_zone_text=technical_zone_text,
             )
             if technical_position == "IN_TECHNICAL_PULLBACK_ZONE":
-                label = f"回踩区内 {technical_zone_text}"
+                label = f"回踩区内 {effective_technical_zone_text}"
                 reason = "当前价已进入技术回踩区上沿；" + reason
                 hint = "需复核，不自动买入"
                 context_status = "IN_TECHNICAL_PULLBACK_ZONE"
             elif technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
-                label = f"跌破回踩区 {technical_zone_text}"
+                label = f"跌破回踩区 {effective_technical_zone_text}"
                 reason = "当前价跌破技术回踩区；" + reason
                 hint = "先复核，不自动买入"
                 context_status = "BELOW_TECHNICAL_PULLBACK_ZONE"
             else:
-                label = f"等待技术回踩 {technical_zone_text}"
+                label = f"等待技术回踩 {effective_technical_zone_text}"
                 hint = "只观察，等待技术回踩或基本面复核"
                 context_status = "ABOVE_TECHNICAL_PULLBACK_ZONE"
         result.update(
@@ -282,11 +292,15 @@ def _technical_pullback_reason(
     technical_reason: str,
     *,
     fallback: str,
+    overlap: bool = False,
+    raw_technical_zone_text: str = "",
 ) -> str:
     parts = [
         f"技术回踩区 {technical_zone_text}",
         f"深度估值区 {deep_value_zone_text}",
     ]
+    if overlap:
+        parts.append(f"原技术回踩区 {raw_technical_zone_text} 与追高禁区重叠，超过追高线部分不作为新增参考")
     if technical_reason:
         parts.append(technical_reason)
     if fallback:
@@ -313,6 +327,22 @@ def _technical_position(current_price: float | None, technical_low: float | None
     if price <= high:
         return "IN_TECHNICAL_PULLBACK_ZONE"
     return "ABOVE_TECHNICAL_PULLBACK_ZONE"
+
+
+def _technical_chase_overlap(technical_high: float | None, chase_above: float | None) -> bool:
+    high = _number(technical_high)
+    chase = _number(chase_above)
+    return bool(high is not None and chase is not None and high > chase)
+
+
+def _effective_technical_high(technical_high: float | None, chase_above: float | None) -> float | None:
+    high = _number(technical_high)
+    chase = _number(chase_above)
+    if high is None:
+        return chase
+    if chase is None:
+        return high
+    return min(high, chase)
 
 
 def _missing_reason_text(fields: list[str]) -> str:

@@ -128,10 +128,13 @@ def test_chase_zone_still_has_priority_over_technical_pullback_status() -> None:
         risk_score=70,
     )
 
-    assert result["entry_display_label"] == "禁止追高，技术回踩参考 $108.00 - $116.00"
+    assert result["entry_display_label"] == "禁止追高，技术回踩参考 $108.00 - $110.00"
     assert result["entry_action_hint"] == "进入追高区，禁止新增"
     assert result["technical_position"] == "IN_TECHNICAL_PULLBACK_ZONE"
     assert result["entry_context_status"] == "IN_CHASE_ZONE"
+    assert result["technical_chase_overlap"] is True
+    assert result["effective_technical_entry_zone_high"] == 110
+    assert "超过追高线部分不作为新增参考" in result["entry_display_reason"]
 
 
 def test_entry_display_inside_buy_zone_preserves_wait_hint() -> None:

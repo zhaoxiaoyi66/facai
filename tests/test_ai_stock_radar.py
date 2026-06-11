@@ -404,6 +404,44 @@ def test_price_inside_technical_pullback_zone_updates_display_status_without_all
         assert report.entry_action_hint == "需复核，不自动买入"
 
 
+def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NOK", 113)
+
+        report = build_ai_stock_radar_report(
+            "NOK",
+            path=path,
+            snapshot=_cached_snapshot(company_name="Nokia"),
+            technicals=_cached_technicals(
+                price=113,
+                fifty_two_week_low=20,
+                fifty_two_week_high=160,
+                ema20=116,
+                ema50=105,
+                ema100=95,
+                ema200=80,
+                atr14=5,
+                recent_swing_low=108,
+                recent_breakout_level=114,
+                ema50_slope_20d_pct=1.5,
+                ema200_slope_20d_pct=0.8,
+            ),
+            scores=_scores(final_score=78, valuation_score=48, technical_score=72),
+            buy_zone=RadarZone(lower=30, upper=50, label="discipline_buy_zone"),
+            chase_zone=RadarZone(lower=110, upper=None, label="chase_zone"),
+            now=NOW,
+        )
+
+        assert report.decision == "BLOCK_CHASE"
+        assert report.allowed_add_pct == 0
+        assert report.entry_context_status == "IN_CHASE_ZONE"
+        assert report.technical_chase_overlap is True
+        assert report.technical_entry_zone_high and report.technical_entry_zone_high > 110
+        assert report.effective_technical_entry_zone_high == 110
+        assert report.entry_display_label.endswith("- $110.00")
+
+
 def test_technical_entry_zone_needs_trend_confirmation() -> None:
     zone = build_technical_entry_zone(
         {

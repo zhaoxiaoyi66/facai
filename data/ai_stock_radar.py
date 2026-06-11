@@ -72,6 +72,9 @@ class RadarReport:
     missing_entry_fields: list[str]
     technical_entry_zone_low: float | None
     technical_entry_zone_high: float | None
+    effective_technical_entry_zone_low: float | None
+    effective_technical_entry_zone_high: float | None
+    technical_chase_overlap: bool
     technical_entry_source: str
     technical_entry_reason: str
     technical_position: str
@@ -237,6 +240,9 @@ def build_ai_stock_radar_report(
         missing_entry_fields=list(entry_display.get("missing_entry_fields") or []),
         technical_entry_zone_low=entry_display.get("technical_entry_zone_low"),
         technical_entry_zone_high=entry_display.get("technical_entry_zone_high"),
+        effective_technical_entry_zone_low=entry_display.get("effective_technical_entry_zone_low"),
+        effective_technical_entry_zone_high=entry_display.get("effective_technical_entry_zone_high"),
+        technical_chase_overlap=bool(entry_display.get("technical_chase_overlap")),
         technical_entry_source=str(entry_display.get("technical_entry_source") or ""),
         technical_entry_reason=str(entry_display.get("technical_entry_reason") or ""),
         technical_position=str(entry_display.get("technical_position") or ""),
