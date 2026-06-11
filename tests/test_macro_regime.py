@@ -12,6 +12,7 @@ import data.macro_regime as macro_regime
 from data.macro_regime import (
     DOLLAR_INDEX,
     FEAR_GREED,
+    HYG_CREDIT_PROXY,
     HY_OAS,
     MARKET_BREADTH,
     MARKET_TREND,
@@ -22,6 +23,7 @@ from data.macro_regime import (
     TEN_YEAR_YIELD,
     VIX,
     YIELD_CURVE_10Y2Y,
+    SENTIMENT_PROXY,
     MacroIndicatorSnapshot,
     MacroRegimeStore,
     evaluate_macro_regime,
@@ -171,6 +173,9 @@ def _seed_macro_market_cache(path, *, spy_below_200: bool = False, qqq_below_50:
     _seed_history(path, "QQQ", qqq_closes)
     _seed_history(path, "AAA", [100.0] * 219 + [110.0])
     _seed_history(path, "BBB", [100.0] * 219 + [90.0])
+    _seed_history(path, "HYG", [100.0] * 220)
+    _seed_history(path, "LQD", [100.0] * 220)
+    _seed_history(path, "IEF", [100.0] * 220)
 
 
 def test_high_vix_marks_risk_off() -> None:
@@ -385,6 +390,44 @@ def test_zero_vix_falls_back_to_recent_cache_and_never_displays_zero(tmp_path, m
     assert "VIX 0.0" not in status_text
 
 
+def test_fred_zero_vix_is_invalid_and_falls_back_to_cache(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    store = MacroRegimeStore(path)
+    store.save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=VIX,
+            value=22.8,
+            source="VIX cached",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "VIXCLS":
+            return _fred_fetcher({"VIXCLS": [0.0]})(series_id)
+        return _fred_fetcher(
+            {
+                "BAMLH0A0HYM2": [3.8],
+                "DGS10": [4.2],
+                "T10Y2Y": [-0.2],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert result["indicators"][VIX]["status"] == "cached_fallback"
+    assert result["indicators"][VIX]["value"] == 22.8
+
+
 def test_fmp_treasury_success_skips_fred_rates(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
@@ -536,6 +579,38 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     assert hy_result["value"] == 3.72
     assert hy_result["used_cache"] is True
     assert "timeout" in hy_result["error"]
+
+
+def test_hy_oas_timeout_uses_hyg_credit_proxy_when_no_cache(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "BAMLH0A0HYM2":
+            raise RuntimeError("FRED timeout 3.0s")
+        return _fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["status"] == "success"
+    assert result["indicators"][HY_OAS]["status"] == "failed"
+    assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
+    assert result["indicators"][HYG_CREDIT_PROXY]["category"] == "auxiliary"
+    assert "信用proxy" in macro_regime_status_text(snapshot)
 
 
 def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None:
@@ -711,6 +786,34 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
     assert loaded.value == 28
+
+
+def test_fear_greed_http_418_uses_internal_sentiment_proxy_without_cache(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 22.0],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=lambda url: (_ for _ in ()).throw(RuntimeError("CNN HTTP 418")),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["status"] == "success"
+    assert result["indicators"][FEAR_GREED]["status"] == "failed"
+    assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
+    assert result["indicators"][SENTIMENT_PROXY]["category"] == "auxiliary"
+    assert "情绪代理" in macro_regime_status_text(snapshot)
 
 
 def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:

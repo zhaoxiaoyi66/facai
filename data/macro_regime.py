@@ -32,8 +32,10 @@ YIELD_CURVE_10Y2Y = "yield_curve_10y2y"
 MARKET_TREND = "market_trend"
 MARKET_BREADTH = "market_breadth"
 DOLLAR_INDEX = "dollar_index"
+HYG_CREDIT_PROXY = "hyg_credit_proxy"
+SENTIMENT_PROXY = "sentiment_proxy"
 CORE_MACRO_INDICATORS = {VIX, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, MARKET_TREND, MARKET_BREADTH}
-AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX}
+AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
 
 FRED_VIX_SERIES = "VIXCLS"
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
@@ -69,6 +71,8 @@ INDICATOR_LABELS = {
     MARKET_TREND: "大盘趋势",
     MARKET_BREADTH: "市场宽度",
     DOLLAR_INDEX: "美元指数",
+    HYG_CREDIT_PROXY: "信用风险代理",
+    SENTIMENT_PROXY: "内部情绪代理",
 }
 
 
@@ -524,6 +528,27 @@ def refresh_macro_indicators(
         indicators[indicator] = result
         indicator_results.append(result)
 
+    _append_macro_proxy_result(
+        HYG_CREDIT_PROXY,
+        indicators,
+        indicator_results,
+        errors,
+        lambda: _fetch_hyg_credit_proxy_snapshot(path, provider=provider, now=current),
+        store=store,
+        now=current,
+        when=_macro_refresh_result_missing(indicators.get(HY_OAS)),
+    )
+    _append_macro_proxy_result(
+        SENTIMENT_PROXY,
+        indicators,
+        indicator_results,
+        errors,
+        lambda: _build_sentiment_proxy_snapshot(indicators, now=current),
+        store=store,
+        now=current,
+        when=_macro_refresh_result_missing(indicators.get(FEAR_GREED)),
+    )
+
     core_results = [item for item in indicator_results if item["indicator"] in CORE_MACRO_INDICATORS]
     status = _macro_refresh_overall_status(core_results)
     refreshed_count = sum(1 for item in indicator_results if item["status"] == "success")
@@ -612,6 +637,58 @@ def _refresh_snapshot_value_usable(snapshot: MacroIndicatorSnapshot | None) -> b
     return value is not None
 
 
+def _macro_refresh_result_missing(result: dict[str, Any] | None) -> bool:
+    if not result:
+        return True
+    status = str(result.get("status") or "")
+    value = _number(result.get("value"))
+    if status in {"success", "cached_fallback", "stale"} and value is not None:
+        if str(result.get("indicator") or result.get("label") or "").lower() == VIX and value <= 0:
+            return True
+        return False
+    return True
+
+
+def _append_macro_proxy_result(
+    indicator: str,
+    indicators: dict[str, dict[str, Any]],
+    indicator_results: list[dict[str, Any]],
+    errors: list[str],
+    loader: Any,
+    *,
+    store: MacroRegimeStore,
+    now: datetime,
+    when: bool,
+) -> None:
+    if not when:
+        return
+    started = perf_counter()
+    snapshot: MacroIndicatorSnapshot | None = None
+    try:
+        snapshot = loader()
+        store.save_indicator(snapshot)
+        result = _macro_indicator_refresh_result(
+            snapshot,
+            status=_macro_refresh_status_for_snapshot(snapshot),
+            duration_seconds=perf_counter() - started,
+        )
+    except Exception as exc:
+        message = _short_error(exc)
+        store.record_indicator_error(indicator, message, now=now)
+        cached = store.load_indicator(indicator, now=now)
+        result = _macro_indicator_refresh_result(
+            cached,
+            indicator=indicator,
+            status="failed",
+            error=message,
+            duration_seconds=perf_counter() - started,
+            used_cache=cached is not None and cached.value is not None,
+        )
+        errors.append(f"{indicator}: {message}")
+    indicators[indicator] = result
+    indicator_results.append(result)
+
+
 def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -> MacroRegimeSnapshot:
     store = MacroRegimeStore(path)
     market_vix = _load_vix_snapshot(path, now=now)
@@ -625,6 +702,8 @@ def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -
         store.load_indicator(MARKET_TREND, now=now),
         store.load_indicator(MARKET_BREADTH, now=now),
         store.load_indicator(DOLLAR_INDEX, now=now),
+        store.load_indicator(HYG_CREDIT_PROXY, now=now),
+        store.load_indicator(SENTIMENT_PROXY, now=now),
     ]
     return evaluate_macro_regime([item for item in indicators if item is not None], now=now)
 
@@ -640,6 +719,8 @@ def evaluate_macro_regime(
     vix = by_name.get(VIX)
     fear = by_name.get(FEAR_GREED)
     hy = by_name.get(HY_OAS)
+    credit_proxy = by_name.get(HYG_CREDIT_PROXY)
+    sentiment_proxy = by_name.get(SENTIMENT_PROXY)
     ten_year = by_name.get(TEN_YEAR_YIELD)
     yield_curve = by_name.get(YIELD_CURVE_10Y2Y)
     market_trend = by_name.get(MARKET_TREND)
@@ -648,11 +729,17 @@ def evaluate_macro_regime(
     vix_value = _usable_value(vix)
     fear_value = _usable_value(fear)
     hy_value = _usable_value(hy)
+    credit_proxy_value = _usable_value(credit_proxy)
+    sentiment_proxy_value = _usable_value(sentiment_proxy)
+    sentiment_value = fear_value if fear_value is not None else sentiment_proxy_value
     ten_year_value = _usable_value(ten_year)
     curve_value = _usable_value(yield_curve)
     trend_value = _usable_value(market_trend)
     breadth_value = _usable_value(market_breadth)
     credit_widening = _credit_spread_widening(hy)
+    credit_proxy_pressure = _credit_proxy_pressure(credit_proxy)
+    credit_pressure = credit_widening or credit_proxy_pressure
+    credit_stress = (hy_value is not None and hy_value >= 4.5) or _credit_proxy_stress(credit_proxy)
     qqq_below_50 = _indicator_flag(market_trend, "qqq_below_50")
     spy_below_200 = _indicator_flag(market_trend, "spy_below_200")
     breadth_weak = breadth_value is not None and breadth_value < 40
@@ -683,8 +770,12 @@ def evaluate_macro_regime(
         reasons.append(f"美高收益债信用利差当前 {hy_value:.1f}%。")
     if credit_widening:
         reasons.append("信用利差走阔，风险偏好收缩。")
+    if hy_value is None and credit_proxy_value is not None:
+        reasons.append(_credit_proxy_reason_text(credit_proxy))
     if fear_value is not None:
         reasons.append(f"恐惧与贪婪指数当前 {fear_value:.0f}。")
+    elif sentiment_proxy_value is not None:
+        reasons.append(_sentiment_proxy_reason_text(sentiment_proxy))
     if ten_year_value is not None:
         reasons.append(f"10年美债收益率当前 {ten_year_value:.2f}%。")
         if _rate_rising_fast(ten_year):
@@ -701,21 +792,22 @@ def evaluate_macro_regime(
     if (
         vix_value is not None
         and vix_value > 30
-        and fear_value is not None
-        and fear_value <= 25
-        and (credit_widening or (hy_value is not None and hy_value >= 4.5))
+        and sentiment_value is not None
+        and sentiment_value <= 25
+        and (credit_pressure or credit_stress)
     ):
         regime = REGIME_PANIC
     elif (
         vix_value is not None
         and vix_value > 25
-        and (credit_widening or (hy_value is not None and hy_value >= 4.5) or qqq_below_50)
+        and (credit_pressure or credit_stress or qqq_below_50)
     ):
         regime = REGIME_STRESS
     elif (
         (vix_value is not None and vix_value > 20)
-        or credit_widening
+        or credit_pressure
         or (hy_value is not None and hy_value >= 4.0)
+        or _credit_proxy_pressure(credit_proxy)
         or qqq_below_50
         or spy_below_200
         or breadth_weak
@@ -726,7 +818,7 @@ def evaluate_macro_regime(
         and vix_value is not None
         and vix_value < 15
         and _credit_spread_tightening(hy)
-        and (fear_value is None or 45 <= fear_value <= 80)
+        and (sentiment_value is None or 45 <= sentiment_value <= 80)
     ):
         regime = REGIME_RISK_ON
     else:
@@ -742,6 +834,7 @@ def evaluate_macro_regime(
         any_stale,
         ten_year=ten_year_value,
         ten_year_rising=_rate_rising_fast(ten_year),
+        credit_proxy=credit_proxy_value,
         qqq_below_50=qqq_below_50,
         spy_below_200=spy_below_200,
         breadth_weak=breadth_weak,
@@ -774,10 +867,12 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     ten_year = _indicator_value_text(snapshot.indicator(TEN_YEAR_YIELD), empty="缺", suffix="%")
     trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
     breadth = _indicator_value_text(snapshot.indicator(MARKET_BREADTH), empty="缺")
+    credit = _credit_summary_text(snapshot)
+    sentiment = _sentiment_summary_text(snapshot)
     hint = snapshot.action_hints[0] if snapshot.action_hints else "按个股纪律执行。"
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜纪律提示：{hint}"
+        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜{credit}｜{sentiment}｜纪律提示：{hint}"
     )
 
 
@@ -1119,6 +1214,8 @@ def _fetch_fred_snapshot(
     if not rows:
         raise RuntimeError(f"FRED {series_id} 没有可用观测值")
     latest_date, latest_value = rows[-1]
+    if indicator == VIX and not _valid_vix_value(latest_value):
+        raise RuntimeError(f"FRED {series_id} returned invalid VIX value")
     values = [value for _, value in rows]
     fetched_at = now.isoformat()
     raw_payload = _compact_raw_payload(payload)
@@ -1260,6 +1357,158 @@ def _fetch_market_breadth_snapshot(path: Path, *, now: datetime) -> MacroIndicat
     )
 
 
+def _fetch_hyg_credit_proxy_snapshot(
+    path: Path,
+    *,
+    provider: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    errors: list[str] = []
+    market_provider = provider
+    if market_provider is None:
+        try:
+            from data.providers import get_market_data_provider
+
+            market_provider = get_market_data_provider(full_fundamentals=False)
+        except Exception as exc:
+            errors.append(f"HYG 行情源初始化失败：{_short_error(exc)}")
+    if market_provider is not None:
+        for symbol in ("HYG", "LQD", "IEF"):
+            try:
+                market_provider.get_price_history(symbol, force_refresh=True)
+            except Exception as exc:
+                errors.append(f"{symbol} 刷新失败：{_short_error(exc)}")
+
+    hyg = _trend_state_for_symbol("HYG", path)
+    if hyg is None:
+        raise RuntimeError("缺少 HYG K 线缓存，无法生成信用风险代理")
+    hyg_change_20d = _history_return_pct("HYG", path, days=20)
+    hyg_vs_lqd_20d = _relative_return_pct("HYG", "LQD", path, days=20)
+    hyg_vs_ief_20d = _relative_return_pct("HYG", "IEF", path, days=20)
+    risk_value = float(hyg["risk_value"])
+    reasons: list[str] = []
+    hints: list[str] = []
+    if hyg.get("above_200") is False:
+        risk_value = max(risk_value, 78)
+        reasons.append("HYG 跌破 200 日均线，信用风险代理偏紧。")
+        hints.append("信用代理转弱，非核心新增要降速。")
+    elif hyg.get("above_50") is False:
+        risk_value = max(risk_value, 62)
+        reasons.append("HYG 跌破 50 日均线，信用风险代理转弱。")
+        hints.append("不追涨，等待信用代理修复。")
+    else:
+        reasons.append("HYG 仍在 50/200 日均线上方，信用代理稳定。")
+    if hyg_change_20d is not None and hyg_change_20d <= -5:
+        risk_value = max(risk_value, 66)
+        reasons.append(f"HYG 20 日跌幅 {hyg_change_20d:.1f}%，信用风险升温。")
+    if hyg_vs_lqd_20d is not None and hyg_vs_lqd_20d <= -3:
+        risk_value = max(risk_value, 64)
+        reasons.append(f"HYG 相对 LQD 20 日走弱 {hyg_vs_lqd_20d:.1f}%。")
+    if hyg_vs_ief_20d is not None and hyg_vs_ief_20d <= -3:
+        risk_value = max(risk_value, 64)
+        reasons.append(f"HYG 相对 IEF 20 日走弱 {hyg_vs_ief_20d:.1f}%。")
+    if risk_value < 60:
+        hints.append("信用 proxy 稳定，仍按个股纪律执行。")
+    payload = {
+        "proxy": "HYG",
+        "hyg": hyg,
+        "hyg_change_20d": hyg_change_20d,
+        "hyg_vs_lqd_20d": hyg_vs_lqd_20d,
+        "hyg_vs_ief_20d": hyg_vs_ief_20d,
+        "errors": errors,
+    }
+    return MacroIndicatorSnapshot(
+        indicator=HYG_CREDIT_PROXY,
+        value=round(risk_value, 1),
+        change_20d=hyg_change_20d,
+        source="HYG 信用风险代理",
+        updated_at=now.isoformat(),
+        fetched_at=now.isoformat(),
+        observation_date=str(hyg.get("latest_date") or "") or None,
+        is_stale=bool(hyg.get("is_stale")),
+        reasons=[*reasons, *errors],
+        action_hints=_dedupe(hints),
+        raw_payload=_compact_raw_payload(payload),
+    )
+
+
+def _build_sentiment_proxy_snapshot(
+    indicators: dict[str, dict[str, Any]],
+    *,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    vix = _number((indicators.get(VIX) or {}).get("value"))
+    trend = _number((indicators.get(MARKET_TREND) or {}).get("value"))
+    breadth = _number((indicators.get(MARKET_BREADTH) or {}).get("value"))
+    credit = _number((indicators.get(HYG_CREDIT_PROXY) or {}).get("value"))
+    score = 50.0
+    reasons: list[str] = []
+    if vix is not None:
+        if vix > 30:
+            score -= 25
+            reasons.append("VIX 高于 30，情绪代理偏恐慌。")
+        elif vix > 25:
+            score -= 18
+            reasons.append("VIX 高于 25，情绪代理偏恐惧。")
+        elif vix > 20:
+            score -= 10
+            reasons.append("VIX 高于 20，情绪代理偏谨慎。")
+        elif vix < 15:
+            score += 8
+            reasons.append("VIX 低位，情绪代理偏稳定。")
+    if trend is not None:
+        if trend >= 70:
+            score -= 15
+            reasons.append("大盘趋势压力较高。")
+        elif trend >= 58:
+            score -= 8
+            reasons.append("大盘趋势转弱。")
+    if breadth is not None:
+        if breadth < 25:
+            score -= 18
+            reasons.append("市场宽度显著恶化。")
+        elif breadth < 40:
+            score -= 10
+            reasons.append("市场宽度偏弱。")
+        elif breadth >= 60:
+            score += 8
+            reasons.append("市场宽度较健康。")
+    if credit is not None:
+        if credit >= 75:
+            score -= 15
+            reasons.append("信用 proxy 压力较高。")
+        elif credit >= 60:
+            score -= 10
+            reasons.append("信用 proxy 转弱。")
+        elif credit < 40:
+            score += 5
+            reasons.append("信用 proxy 稳定。")
+    usable_inputs = [item for item in (vix, trend, breadth, credit) if item is not None]
+    if len(usable_inputs) < 2:
+        raise RuntimeError("缺少 VIX/趋势/宽度/信用 proxy，无法生成内部情绪代理")
+    score = round(max(0.0, min(100.0, score)), 1)
+    label = _sentiment_proxy_label(score)
+    return MacroIndicatorSnapshot(
+        indicator=SENTIMENT_PROXY,
+        value=score,
+        source="内部情绪代理",
+        updated_at=now.isoformat(),
+        fetched_at=now.isoformat(),
+        observation_date=now.date().isoformat(),
+        reasons=[f"情绪代理：{label}。", *reasons],
+        action_hints=["情绪代理只做提示，不改变买卖门禁。"],
+        raw_payload=_compact_raw_payload(
+            {
+                "vix": vix,
+                "market_trend": trend,
+                "market_breadth": breadth,
+                "credit_proxy": credit,
+                "label": label,
+            }
+        ),
+    )
+
+
 def _trend_state_for_symbol(symbol: str, path: Path) -> dict[str, Any] | None:
     history = build_market_context(symbol, path=path, quote_max_age_hours=36, history_max_age_hours=120)
     frame = CacheReadModel(path, quote_max_age_hours=36, history_max_age_hours=120).get_price_history(symbol)
@@ -1293,6 +1542,28 @@ def _trend_state_for_symbol(symbol: str, path: Path) -> dict[str, Any] | None:
         "latest_date": _latest_history_date(frame),
         "is_stale": bool(history.get("isStale")),
     }
+
+
+def _history_return_pct(symbol: str, path: Path, *, days: int) -> float | None:
+    frame = CacheReadModel(path, quote_max_age_hours=36, history_max_age_hours=120).get_price_history(symbol)
+    if frame is None or frame.empty:
+        return None
+    closes = _numeric_closes(frame)
+    if closes.empty or len(closes) <= days:
+        return None
+    current = _number(closes.iloc[-1])
+    base = _number(closes.iloc[-days - 1])
+    if current is None or base is None or base == 0:
+        return None
+    return round((current - base) / base * 100, 1)
+
+
+def _relative_return_pct(symbol: str, benchmark: str, path: Path, *, days: int) -> float | None:
+    left = _history_return_pct(symbol, path, days=days)
+    right = _history_return_pct(benchmark, path, days=days)
+    if left is None or right is None:
+        return None
+    return round(left - right, 1)
 
 
 def _latest_history_date(frame: pd.DataFrame) -> str | None:
@@ -1367,6 +1638,20 @@ def _indicator_regime(snapshot: MacroIndicatorSnapshot) -> tuple[str, float, lis
         if value >= 4 or _credit_spread_widening(snapshot):
             return REGIME_RISK_OFF, 64, ["信用利差走阔或偏高。"], ["不追涨。"]
         return REGIME_NEUTRAL, 35, ["信用利差未显示压力。"], ["按计划执行。"]
+    if snapshot.indicator == HYG_CREDIT_PROXY:
+        if value >= 75:
+            return REGIME_STRESS, 78, ["HYG 信用代理显示压力较高。"], ["减少非核心新增。"]
+        if value >= 60:
+            return REGIME_RISK_OFF, 64, ["HYG 信用代理转弱。"], ["不追涨。"]
+        return REGIME_NEUTRAL, 35, ["HYG 信用代理稳定。"], ["按计划执行。"]
+    if snapshot.indicator == SENTIMENT_PROXY:
+        if value <= 20:
+            return REGIME_PANIC, 82, ["内部情绪代理偏恐慌。"], ["避免情绪化杀跌。"]
+        if value <= 35:
+            return REGIME_RISK_OFF, 62, ["内部情绪代理偏恐惧。"], ["等待确认。"]
+        if value >= 80:
+            return REGIME_RISK_ON, 35, ["内部情绪代理偏贪婪。"], ["不因情绪追涨。"]
+        return REGIME_NEUTRAL, 40, ["内部情绪代理中性。"], ["按计划执行。"]
     if snapshot.indicator == TEN_YEAR_YIELD:
         if _rate_rising_fast(snapshot):
             return REGIME_RISK_OFF, 62, ["10年美债快速上行。"], ["成长股估值承压，AI/软件不追涨。"]
@@ -1409,6 +1694,7 @@ def _macro_risk_score(
     *,
     ten_year: float | None = None,
     ten_year_rising: bool = False,
+    credit_proxy: float | None = None,
     qqq_below_50: bool = False,
     spy_below_200: bool = False,
     breadth_weak: bool = False,
@@ -1422,6 +1708,8 @@ def _macro_risk_score(
         scores.append(max(0, min(100, (hy - 2.5) * 22)))
     if credit_widening:
         scores.append(65)
+    if credit_proxy is not None:
+        scores.append(max(0, min(100, credit_proxy)))
     if ten_year is not None:
         scores.append(max(0, min(100, (ten_year - 3.5) * 35)))
     if ten_year_rising:
@@ -1470,6 +1758,44 @@ def _credit_spread_tightening(snapshot: MacroIndicatorSnapshot | None) -> bool:
         return False
     changes = [snapshot.change_5d, snapshot.change_20d]
     return any(change is not None and change <= -0.10 for change in changes)
+
+
+def _credit_proxy_pressure(snapshot: MacroIndicatorSnapshot | None) -> bool:
+    value = _usable_value(snapshot)
+    return value is not None and value >= 60
+
+
+def _credit_proxy_stress(snapshot: MacroIndicatorSnapshot | None) -> bool:
+    value = _usable_value(snapshot)
+    return value is not None and value >= 75
+
+
+def _credit_proxy_reason_text(snapshot: MacroIndicatorSnapshot | None) -> str:
+    value = _usable_value(snapshot)
+    if value is None:
+        return "信用利差缺失，HYG 信用 proxy 暂不可用。"
+    if value >= 75:
+        return f"信用利差缺失，HYG 信用 proxy 压力较高（{value:.0f}）。"
+    if value >= 60:
+        return f"信用利差缺失，HYG 信用 proxy 转弱（{value:.0f}）。"
+    return f"信用利差缺失，HYG 信用 proxy 稳定（{value:.0f}）。"
+
+
+def _sentiment_proxy_reason_text(snapshot: MacroIndicatorSnapshot | None) -> str:
+    value = _usable_value(snapshot)
+    if value is None:
+        return "CNN 恐惧与贪婪缺失，内部情绪代理暂不可用。"
+    return f"CNN 恐惧与贪婪缺失，内部情绪代理{_sentiment_proxy_label(value)}（{value:.0f}）。"
+
+
+def _sentiment_proxy_label(value: float) -> str:
+    if value <= 25:
+        return "偏恐慌"
+    if value <= 40:
+        return "偏恐惧"
+    if value >= 75:
+        return "偏贪婪"
+    return "中性"
 
 
 def _rate_rising_fast(snapshot: MacroIndicatorSnapshot | None) -> bool:
@@ -1584,6 +1910,34 @@ def _trend_summary_text(snapshot: MacroIndicatorSnapshot | None) -> str:
     return f"趋势风险 {float(snapshot.value):.0f}"
 
 
+def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
+    hy = snapshot.indicator(HY_OAS)
+    hy_value = _usable_value(hy)
+    if hy_value is not None:
+        return f"信用利差 {hy_value:.1f}%"
+    proxy = snapshot.indicator(HYG_CREDIT_PROXY)
+    proxy_value = _usable_value(proxy)
+    if proxy_value is None:
+        return "信用缺失"
+    if proxy_value >= 75:
+        return "信用proxy承压"
+    if proxy_value >= 60:
+        return "信用proxy转弱"
+    return "信用proxy稳定"
+
+
+def _sentiment_summary_text(snapshot: MacroRegimeSnapshot) -> str:
+    fear = snapshot.indicator(FEAR_GREED)
+    fear_value = _usable_value(fear)
+    if fear_value is not None:
+        return f"恐惧贪婪 {fear_value:.0f}"
+    proxy = snapshot.indicator(SENTIMENT_PROXY)
+    proxy_value = _usable_value(proxy)
+    if proxy_value is None:
+        return "情绪缺失"
+    return f"情绪代理{_sentiment_proxy_label(proxy_value)}"
+
+
 def _indicator_cache_status_text(snapshot: MacroIndicatorSnapshot) -> str:
     if snapshot.value is None:
         return "缺失" + (f"：{snapshot.error}" if snapshot.error else "")
@@ -1688,6 +2042,10 @@ def _normalize_indicator(value: object) -> str:
         "market_breadth": MARKET_BREADTH,
         "dtwexbgs": DOLLAR_INDEX,
         "dollar_index": DOLLAR_INDEX,
+        "hyg_credit_proxy": HYG_CREDIT_PROXY,
+        "credit_proxy": HYG_CREDIT_PROXY,
+        "sentiment_proxy": SENTIMENT_PROXY,
+        "internal_sentiment_proxy": SENTIMENT_PROXY,
     }
     return aliases.get(text, text)
 
