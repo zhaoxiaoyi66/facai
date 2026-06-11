@@ -93,7 +93,6 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         technical_low is not None
         and technical_high is not None
         and price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}
-        and _is_deep_value_zone_far_from_price(current_price, reference_high)
     )
     if price_position == "IN_CHASE_ZONE":
         label_zone = technical_zone_text if use_technical_pullback else zone_text

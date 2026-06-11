@@ -88,6 +88,32 @@ def test_entry_display_marks_price_inside_technical_pullback_zone() -> None:
     assert "深度估值区 $30.00 - $50.00" in result["entry_display_reason"]
 
 
+def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_near() -> None:
+    result = build_entry_display(
+        current_price=372.10,
+        buy_zone={"lower": 264.22, "upper": 304.80},
+        chase_zone={"lower": 423.99},
+        technical_entry_zone={
+            "low": 355.02,
+            "high": 377.98,
+            "source": "ema_pullback",
+            "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+        },
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=68,
+        valuation_score=35,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "回踩区内 $355.02 - $377.98"
+    assert result["entry_action_hint"] == "需复核，不自动买入"
+    assert result["technical_position"] == "IN_TECHNICAL_PULLBACK_ZONE"
+    assert result["entry_context_status"] == "IN_TECHNICAL_PULLBACK_ZONE"
+    assert "深度估值区 $264.22 - $304.80" in result["entry_display_reason"]
+
+
 def test_chase_zone_still_has_priority_over_technical_pullback_status() -> None:
     result = build_entry_display(
         current_price=113,
