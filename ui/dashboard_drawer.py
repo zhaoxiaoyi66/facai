@@ -330,6 +330,8 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         "动作提示：" + (hint or "看详情"),
         "判断原因：" + (reason or "暂无说明"),
     ]
+    if price_position == "BELOW_BUY_ZONE":
+        lines.extend(_drawer_below_buy_zone_review_lines())
     if missing_fields:
         lines.append("缺失字段：" + "、".join(missing_fields))
     return _drawer_card_html("Radar 纪律买区", label, lines)
@@ -461,7 +463,7 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
         "IN_BUY_ZONE": "买区内",
         "ABOVE_BUY_ZONE": "买区外",
         "IN_CHASE_ZONE": "追高区",
-        "BELOW_BUY_ZONE": "低于买区",
+        "BELOW_BUY_ZONE": "跌破买区",
         "ZONE_MISSING": "无买区",
     }
     if status in mapping:
@@ -469,8 +471,8 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
     label = str(row.get("entry_display_label") or row.get("entryRating") or "").strip()
     if "追高" in label:
         return "追高区"
-    if "低于买区" in label:
-        return "低于买区"
+    if "跌破买区" in label or "低于买区" in label:
+        return "跌破买区"
     if "买区内" in label:
         return "买区内"
     if "等待回落" in label or "高于买区" in label:
@@ -478,6 +480,13 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
     if "暂无" in label or "数据" in label:
         return "数据不足"
     return "待复核"
+
+
+def _drawer_below_buy_zone_review_lines() -> list[str]:
+    return [
+        "跌破买区不等于更便宜。需确认基本面恶化、财报冲击、趋势破位或市场重新定价。",
+        "复核清单：财报/指引是否恶化；营收增速/利润率是否下修；估值是否被重新定价；技术趋势是否破位；是否只是市场错杀。",
+    ]
 
 
 def _drawer_data_status_text(row: pd.Series) -> str:

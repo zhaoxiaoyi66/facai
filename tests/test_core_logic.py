@@ -2811,6 +2811,21 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("追高禁区", radar_card_source)
         self.assertIn("缺失字段", radar_card_source)
         self.assertNotIn('"买点解释"', source)
+        below_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "跌破买区 $90.00 - $100.00",
+                    "entry_display_reason": "跌破买区不等于更便宜",
+                    "entry_action_hint": "跌破买区，先复核",
+                    "radar_buy_zone": {"lower": 90, "upper": 100},
+                    "radar_price_position": "BELOW_BUY_ZONE",
+                    "price": "$80.00",
+                }
+            )
+        )
+        self.assertIn("跌破买区不等于更便宜", below_html)
+        self.assertIn("复核清单", below_html)
+        self.assertIn("财报/指引是否恶化", below_html)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(

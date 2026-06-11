@@ -76,8 +76,9 @@ def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
 
     assert chase["entry_display_label"].startswith("禁止追高")
     assert chase["entry_action_hint"] == "进入追高区，禁止新增"
-    assert below["entry_display_label"] == "低于买区 $90.00 - $100.00"
-    assert "不等于自动更便宜" in below["entry_display_reason"]
+    assert below["entry_display_label"] == "跌破买区 $90.00 - $100.00"
+    assert "不等于更便宜" in below["entry_display_reason"]
+    assert below["entry_action_hint"] == "跌破买区，先复核"
 
 
 def test_entry_display_missing_data_shows_specific_reason() -> None:
@@ -114,6 +115,7 @@ def test_entry_display_uses_explicit_missing_fields() -> None:
 def test_zone_formatters_are_shared() -> None:
     assert format_buy_zone(BUY_ZONE) == "$90.00 - $100.00"
     assert format_zone_status("IN_BUY_ZONE") == "买区内"
+    assert format_zone_status("BELOW_BUY_ZONE") == "跌破买区，需复核"
     assert format_zone_status("ZONE_MISSING") == "无法判断"
 
 
@@ -188,7 +190,7 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
         ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "买区内", "可复核"),
         ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区外", "等回落"),
         ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
-        ("BELOW_BUY_ZONE", "低于买区 $90.00 - $100.00", "低于买区", "不自动买入"),
+        ("BELOW_BUY_ZONE", "跌破买区 $90.00 - $100.00", "跌破买区", "先复核"),
     ]
 
     for price_position, display_label, compact_label, compact_hint in cases:

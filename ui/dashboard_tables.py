@@ -242,8 +242,8 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "买区外", "等回落"
     if price_position == "IN_CHASE_ZONE" or "禁止追高" in label:
         return "追高区", "禁止新增"
-    if price_position == "BELOW_BUY_ZONE" or label.startswith("低于买区"):
-        return "低于买区", "不自动买入"
+    if price_position == "BELOW_BUY_ZONE" or label.startswith(("低于买区", "跌破买区")):
+        return "跌破买区", "先复核"
     if price_position == "ZONE_MISSING":
         return "无买区", "补数据"
     if label:
@@ -258,8 +258,8 @@ def _short_entry_status(label: str) -> str:
         return "买区外"
     if "追高" in label:
         return "追高区"
-    if "低于买区" in label:
-        return "低于买区"
+    if "跌破买区" in label or "低于买区" in label:
+        return "跌破买区"
     if "数据" in label or "暂无" in label:
         return "数据不足"
     return _short_badge_text(label)
@@ -271,8 +271,8 @@ def _short_entry_hint(hint: str, fallback: str) -> str:
         return "禁止新增"
     if "等待" in text or "回落" in text:
         return "等回落"
-    if "低于买区" in text:
-        return "不自动买入"
+    if "跌破买区" in text or "低于买区" in text:
+        return "先复核"
     if "补齐" in text or "数据" in text:
         return "补数据"
     if "需复核" in text or "复核" in text:
@@ -349,7 +349,7 @@ def _buy_point_label_tone(label: object) -> str:
         return "red"
     if "无买区" in text or "暂无参考买区" in text or "数据" in text:
         return "gray"
-    if "低于买区" in text:
+    if "跌破买区" in text or "低于买区" in text:
         return "yellow"
     if "买区内" in text:
         return "green"

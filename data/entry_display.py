@@ -7,7 +7,7 @@ PRICE_POSITIONS = {
     "IN_BUY_ZONE": "买区内",
     "ABOVE_BUY_ZONE": "高于买区",
     "IN_CHASE_ZONE": "追高区",
-    "BELOW_BUY_ZONE": "低于买区，需复核",
+    "BELOW_BUY_ZONE": "跌破买区，需复核",
     "ZONE_MISSING": "无法判断",
 }
 
@@ -93,9 +93,9 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     if price_position == "BELOW_BUY_ZONE":
         result.update(
             {
-                "entry_display_label": f"低于买区 {zone_text}",
-                "entry_display_reason": "低于买区不等于自动更便宜，需确认基本面恶化、财报冲击、趋势破位",
-                "entry_action_hint": "低于买区，不自动买入",
+                "entry_display_label": f"跌破买区 {zone_text}",
+                "entry_display_reason": "跌破买区不等于更便宜，需确认基本面恶化、财报冲击、趋势破位或市场重新定价",
+                "entry_action_hint": "跌破买区，先复核",
             }
         )
         return result
