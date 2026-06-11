@@ -375,6 +375,8 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
 
     header_source = inspect.getsource(dashboard._render_dashboard_header)
 
+    assert "刷新大盘环境" in header_source
+    assert "dashboard_refresh_macro_regime_cache" in header_source
     assert "_refresh_macro_cache_for_dashboard()" in header_source
     assert "refresh_macro_indicators" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
 

@@ -323,6 +323,9 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.divider()
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
+            if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、趋势宽度等宏观缓存，不刷新个股。"):
+                _refresh_macro_cache_for_dashboard()
+                st.rerun()
             if st.button("强制刷新 FMP 缓存", width="stretch", key="dashboard_force_refresh_fmp_cache"):
                 _refresh_macro_cache_for_dashboard()
                 _clear_dashboard_table_cache()
