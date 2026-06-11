@@ -24,6 +24,7 @@ from data.portfolio_trade_sync import (
     preview_trade_portfolio_effect,
     preview_trade_values_portfolio_effect,
 )
+from data.portfolio import PortfolioPositionStore
 from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
 from data.stock_plan import StockPlanStore
@@ -248,7 +249,9 @@ def _render_editor(store: TradeJournalStore) -> None:
 
         stock_plan = _stock_plan_with_position_tier(_load_stock_discipline_profile(symbol), selected_position)
 
-        trade_cols = st.columns([1, 1, 1.2, 1])
+        if editing_entry is None and selected_position:
+            _render_sell_quantity_shortcuts(selected_position, key_suffix=str(editing_id or "new"))
+        trade_cols = st.columns([1, 1, 1.2])
         quantity_default = _entry_number_text(editing_entry, "quantity")
         if editing_entry is None and action_type == "sell":
             selected_quantity = _number((selected_position or {}).get("quantity"))
@@ -258,12 +261,13 @@ def _render_editor(store: TradeJournalStore) -> None:
         mood_default = _decision_mood_label_for_entry(editing_entry)
         mood_label = trade_cols[2].selectbox("交易心理标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
         decision_mood = DECISION_MOOD_OPTIONS.get(mood_label, "")
-        decision_snapshot_id = trade_cols[3].text_input(
-            "关联信号 ID（可选）",
-            value=_entry_int_text(editing_entry, "decision_snapshot_id"),
-            key=_editor_key("snapshot-id", editing_id),
-        )
         notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
+        with st.expander("高级信息", expanded=False):
+            decision_snapshot_id = st.text_input(
+                "关联信号 ID（可选）",
+                value=_entry_int_text(editing_entry, "decision_snapshot_id"),
+                key=_editor_key("snapshot-id", editing_id),
+            )
         sell_reference_context = _sell_reference_context(symbol, selected_position) if selected_position else {}
         if editing_entry is None and selected_position:
             _render_sell_reference_card(symbol, selected_position, context=sell_reference_context)
@@ -467,14 +471,22 @@ def _pct_value_text(value: object) -> str:
 def _active_sell_positions() -> list[dict]:
     try:
         rows = list((build_portfolio_view_model().get("rows") or []))
+        raw_positions = {
+            str(row.get("symbol") or "").strip().upper(): row
+            for row in PortfolioPositionStore().list_active_positions()
+        }
     except Exception:
         return []
-    return [
-        row
-        for row in rows
-        if str(row.get("symbol") or "").strip()
-        and (_number(row.get("quantity")) or 0) > 0
-    ]
+    active_rows: list[dict] = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or (_number(row.get("quantity")) or 0) <= 0:
+            continue
+        raw = raw_positions.get(symbol) or {}
+        enriched = dict(row)
+        enriched["createdAt"] = raw.get("created_at") or row.get("createdAt")
+        active_rows.append(enriched)
+    return active_rows
 
 
 def _sell_position_option_label(row: dict) -> str:
@@ -485,6 +497,18 @@ def _sell_position_option_label(row: dict) -> str:
     tier_text = f"{tier}类" if tier in {"A", "B", "C"} else "需设置等级"
     target = _money_text(row.get("plannedSellPrice"))
     return f"{symbol}｜持有 {quantity}｜均价 {average_cost}｜{tier_text}｜目标卖出价 {target}"
+
+
+def _render_sell_quantity_shortcuts(position_row: dict, *, key_suffix: str) -> None:
+    current_quantity = _number(position_row.get("quantity"))
+    if current_quantity is None or current_quantity <= 0:
+        return
+    st.caption("快捷数量会写入卖出数量；卖出比例仍由系统按当前持仓自动计算。")
+    cols = st.columns(4)
+    for index, (label, ratio) in enumerate((("10%", 0.10), ("25%", 0.25), ("50%", 0.50), ("100% 清仓", 1.00))):
+        quantity = current_quantity if ratio >= 1 else current_quantity * ratio
+        if cols[index].button(label, key=f"trade-sell-qty-shortcut-{key_suffix}-{int(ratio * 100)}", width="stretch"):
+            st.session_state[_editor_key("quantity", None)] = f"{quantity:g}"
 
 
 def _stock_plan_with_position_tier(stock_plan: dict, position_row: dict | None) -> dict:
@@ -527,14 +551,24 @@ def _sell_reference_context(symbol: str, position_row: dict) -> dict:
     except Exception:
         report = {}
     current_price = _first_number(position_row.get("currentPrice"), report.get("current_price"))
+    average_cost = _number(position_row.get("averageCost"))
+    unrealized_pnl = _number(position_row.get("unrealizedPnl"))
+    unrealized_pnl_pct = _number(position_row.get("unrealizedPnlPct"))
     target_sell = _number(position_row.get("plannedSellPrice"))
     distance_to_target = None
     if current_price is not None and target_sell is not None and target_sell > 0:
         distance_to_target = (current_price - target_sell) / target_sell * 100
     zone_status = str(report.get("price_position") or report.get("zone_status") or "ZONE_MISSING")
     buy_zone_text = _radar_zone_text(report.get("buy_zone"))
+    holding_days = _holding_days(position_row.get("createdAt") or position_row.get("created_at"))
+    position_tier = str(position_row.get("positionTier") or position_row.get("position_tier") or "").strip().upper()
     return {
         "currentPrice": current_price,
+        "averageCost": average_cost,
+        "unrealizedPnl": unrealized_pnl,
+        "unrealizedPnlPct": unrealized_pnl_pct,
+        "holdingDays": holding_days,
+        "positionTier": position_tier if position_tier in {"A", "B", "C"} else "",
         "targetSellPrice": target_sell,
         "distanceToTarget": distance_to_target,
         "zoneStatus": zone_status,
@@ -547,32 +581,61 @@ def _sell_reference_context(symbol: str, position_row: dict) -> dict:
 def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dict | None = None) -> None:
     context = context or _sell_reference_context(symbol, position_row)
     current_price = _number(context.get("currentPrice"))
+    average_cost = _number(context.get("averageCost"))
+    unrealized_pnl = _number(context.get("unrealizedPnl"))
+    unrealized_pnl_pct = _number(context.get("unrealizedPnlPct"))
+    holding_days = _number(context.get("holdingDays"))
+    position_tier = str(context.get("positionTier") or "").strip().upper()
     target_sell = _number(context.get("targetSellPrice"))
     distance_to_target = _number(context.get("distanceToTarget"))
     zone_status = str(context.get("zoneStatus") or "ZONE_MISSING")
     buy_zone_text = str(context.get("buyZoneText") or BLANK_TEXT)
     reference_rows = [
         ("当前价", _money_text(current_price)),
+        ("成本价", _money_text(average_cost)),
+        ("浮盈亏", _pnl_text(unrealized_pnl, unrealized_pnl_pct)),
+        ("持仓天数", _position_holding_days_text(holding_days)),
+        ("持仓等级", _position_class_label(position_tier) if position_tier else "需设置等级"),
+        ("目标卖出价", _money_text(target_sell)),
         ("Radar 买区", buy_zone_text),
         ("区间状态", _zone_status_text(zone_status)),
-        ("目标卖出价", _money_text(target_sell)),
         ("距目标", _percent_or_dash(distance_to_target)),
         ("回补参考", buy_zone_text),
     ]
     hint = _sell_reference_hint(zone_status, current_price, target_sell)
+    alerts = _sell_reference_alerts(context)
     metrics_html = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
         for label, value in reference_rows
     )
+    alerts_html = "".join(f"<li>{escape(item)}</li>" for item in alerts)
+    alerts_block = f'<ul class="trade-sell-reference-alerts">{alerts_html}</ul>' if alerts_html else ""
     st.markdown(
         f"""
         <section class="trade-sell-reference-card">
           <div><b>卖出纪律参考</b><span>{escape(hint)}</span></div>
           <div class="trade-portfolio-sync-grid">{metrics_html}</div>
+          {alerts_block}
         </section>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _sell_reference_alerts(context: dict) -> list[str]:
+    position_tier = str(context.get("positionTier") or "").strip().upper()
+    if position_tier != "A":
+        return []
+    alerts: list[str] = []
+    if context.get("belowTargetSellPrice"):
+        alerts.append("A 类核心仓：当前低于目标价，卖出前先确认目标逻辑是否失效。")
+    if context.get("inBuyZoneOrBelow"):
+        alerts.append("A 类核心仓：仍在买区或低于买区，卖出必须证明基本面恶化、仓位超限或计划触发。")
+    holding_days = _number(context.get("holdingDays"))
+    if holding_days is not None and holding_days < 30:
+        alerts.append("A 类核心仓：持仓天数偏短，注意 NOW 式卖飞风险。")
+    alerts.append("A 类核心仓：下方必须写清具体回补计划，否则卖出纪律会拦截或要求复核。")
+    return alerts
 
 
 def _zone_status_text(value: object) -> str:
@@ -3592,6 +3655,32 @@ def _money_text(value: object) -> str:
     if number is None:
         return BLANK_TEXT
     return format_currency(number)
+
+
+def _pnl_text(amount: object, pct: object = None) -> str:
+    amount_number = _number(amount)
+    pct_number = _number(pct)
+    if amount_number is None and pct_number is None:
+        return BLANK_TEXT
+    if amount_number is None:
+        return _percent_or_dash(pct_number)
+    if pct_number is None:
+        return _money_text(amount_number)
+    return f"{_money_text(amount_number)} / {_percent_or_dash(pct_number)}"
+
+
+def _holding_days(value: object) -> int | None:
+    opened_at = _parse_iso_date(value)
+    if opened_at is None:
+        return None
+    return max(0, (date.today() - opened_at).days)
+
+
+def _position_holding_days_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return f"{int(number)} 天"
 
 
 def _percent_or_dash(value: object) -> str:

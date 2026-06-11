@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 from ui import trade_journal
@@ -18,6 +19,82 @@ def test_new_trade_entry_uses_active_position_dropdown() -> None:
     assert "_active_sell_positions" in source
     assert "SELL_ENTRY_ACTION_OPTIONS" in source
     assert "买入/加仓请前往组合持仓页操作" in source
+    assert "selectbox(" in source
+    assert '"持仓"' in source
+
+
+def test_sell_position_dropdown_label_includes_position_context() -> None:
+    label = trade_journal._sell_position_option_label(
+        {
+            "symbol": "NVDA",
+            "quantity": 210,
+            "averageCost": 215,
+            "positionTier": "A",
+            "plannedSellPrice": 300,
+        }
+    )
+
+    assert "NVDA" in label
+    assert "持有 210" in label
+    assert "均价 $215.00" in label
+    assert "A类" in label
+    assert "目标卖出价 $300.00" in label
+
+
+def test_sell_reference_context_includes_position_and_radar_state(monkeypatch) -> None:
+    class FakeReport:
+        def to_dict(self) -> dict:
+            return {
+                "buy_zone": {"lower": 90, "upper": 110},
+                "price_position": "IN_BUY_ZONE",
+            }
+
+    monkeypatch.setattr(trade_journal, "build_cached_ai_stock_radar_report", lambda symbol: FakeReport())
+
+    context = trade_journal._sell_reference_context(
+        "NVDA",
+        {
+            "currentPrice": 100,
+            "averageCost": 80,
+            "unrealizedPnl": 200,
+            "unrealizedPnlPct": 25,
+            "positionTier": "A",
+            "plannedSellPrice": 120,
+            "createdAt": (date.today() - timedelta(days=12)).isoformat(),
+        },
+    )
+
+    assert context["currentPrice"] == 100
+    assert context["averageCost"] == 80
+    assert context["unrealizedPnl"] == 200
+    assert context["positionTier"] == "A"
+    assert context["holdingDays"] == 12
+    assert context["belowTargetSellPrice"] is True
+    assert context["inBuyZoneOrBelow"] is True
+
+
+def test_a_class_sell_reference_alerts_flag_core_risks() -> None:
+    alerts = trade_journal._sell_reference_alerts(
+        {
+            "positionTier": "A",
+            "belowTargetSellPrice": True,
+            "inBuyZoneOrBelow": True,
+            "holdingDays": 5,
+        }
+    )
+
+    assert any("低于目标价" in item for item in alerts)
+    assert any("仍在买区或低于买区" in item for item in alerts)
+    assert any("持仓天数偏短" in item for item in alerts)
+    assert any("具体回补计划" in item for item in alerts)
+
+
+def test_sell_form_keeps_signal_id_in_advanced_section_and_has_quantity_shortcuts() -> None:
+    source = inspect.getsource(trade_journal._render_editor)
+
+    assert "_render_sell_quantity_shortcuts" in source
+    assert "高级信息" in source
+    assert "trade_cols[3].text_input" not in source
 
 
 def test_edit_trade_entry_locks_symbol_and_action_type() -> None:
@@ -176,7 +253,7 @@ def test_trade_performance_row_shows_missing_cost_basis_text() -> None:
 
     assert "缺成本" in html
     assert "未计算" in html
-    assert "缺买入日期" in html
+    assert "缺日期" in html
     assert "缺 buy/add lot" in html
     assert "需补录成本" in html
     assert "未计入" in html
