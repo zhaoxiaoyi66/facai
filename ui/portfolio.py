@@ -1488,13 +1488,13 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         st.markdown(
             '<div class="portfolio-empty">'
             "<div>暂无持仓</div>"
-            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统参考和计划状态。</span>"
+            "<span>添加第一只股票后，这里会显示仓位、盈亏、系统估值参考和计划状态。</span>"
             "</div>",
             unsafe_allow_html=True,
         )
         return
 
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统参考", "我的计划", "操作"]
+    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统估值参考", "我的计划", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row, plan_store) for row in rows)
     decision_store = DecisionLogStore()
@@ -1668,7 +1668,7 @@ def _drawer_html(
             ("交易同步", _trade_sync_text(row)),
         ]),
         ("账务一致性", _reconciliation_drawer_items(row.get("reconciliation"))),
-        ("系统参考", [
+        ("系统估值参考", [
             ("怎么看", _system_explanation_text(row)),
             ("系统动作", _system_action_text(row)),
             ("系统上限", _percent_text(row.get("systemMaxPosition"))),
@@ -1873,7 +1873,7 @@ def _system_explanation_text(row: dict) -> str:
         return f"系统当前阻断新增；主要原因：{reason}。"
     if lane == "wait":
         return f"系统建议等待，不急于新增；主要原因：{reason}。"
-    return "系统参考不足，先按手动计划管理。"
+    return "系统估值参考不足，先按手动计划管理。"
 
 
 def _main_reason_text(row: dict) -> str:

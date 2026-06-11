@@ -103,7 +103,7 @@ DASHBOARD_COLUMNS = [
     {"key": "price", "label": "现价", "align": "right"},
     {"key": "marketCap", "label": "市值", "align": "right"},
     {"key": "qualityRating", "label": "质量", "kind": "badge"},
-    {"key": "entryRating", "label": "买点", "kind": "badge"},
+    {"key": "entryRating", "label": "估值买点", "kind": "badge"},
     {"key": "riskRating", "label": "风险", "kind": "badge"},
     {"key": "valuationStatus", "label": "估值状态"},
     {"key": "action", "label": "操作建议"},
@@ -116,7 +116,7 @@ WATCHLIST_COLUMNS = [
     {"key": "symbol", "label": "代码", "align": "left"},
     {"key": "priceMarket", "label": "价格 / 市值"},
     {"key": "qualityRating", "label": "质量", "kind": "badge"},
-    {"key": "entryRating", "label": "买点", "kind": "badge"},
+    {"key": "entryRating", "label": "估值买点", "kind": "badge"},
     {"key": "riskRating", "label": "风险", "kind": "badge"},
     {"key": "actionSummary", "label": "动作"},
     {"key": "dataStatus", "label": "数据"},
@@ -1206,7 +1206,7 @@ def _render_score_explanation(row: pd.Series) -> None:
         entry_display = _entry_rating_chip_text(entry_label, entry_grade)
         st.markdown(
             _score_card_html(
-                "买点解释",
+                "估值买点解释",
                 entry_display or str(row.get("entryRating") or "N/A"),
                 [
                     "估值状态：" + str(row.get("valuationStatus") or "N/A"),

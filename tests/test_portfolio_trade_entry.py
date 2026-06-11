@@ -1304,6 +1304,17 @@ def test_portfolio_row_does_not_render_archive_entry() -> None:
     assert "加仓" in html
 
 
+def test_portfolio_table_labels_system_reference_as_valuation_reference() -> None:
+    import inspect
+    import ui.portfolio as portfolio
+
+    source = inspect.getsource(portfolio._render_positions_table)
+    drawer_source = inspect.getsource(portfolio._drawer_html)
+
+    assert "系统估值参考" in source
+    assert "系统估值参考" in drawer_source
+
+
 def test_portfolio_ui_has_no_archive_or_direct_position_save_path() -> None:
     import inspect
     import ui.portfolio as portfolio

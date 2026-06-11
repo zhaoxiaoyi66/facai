@@ -1040,7 +1040,7 @@ class DashboardLayoutTests(unittest.TestCase):
                 "现价",
                 "市值",
                 "质量",
-                "买点",
+                "估值买点",
                 "风险",
                 "估值状态",
                 "操作建议",
@@ -2781,7 +2781,7 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn("st.dataframe", source)
         self.assertIn("数据可信度", source)
         self.assertIn("公司质量解释", source)
-        self.assertIn("买点解释", source)
+        self.assertIn("估值买点解释", source)
         self.assertIn("风险解释", source)
         self.assertIn("数据补全状态", inspect.getsource(_render_metric_resolution_groups))
 
@@ -7857,8 +7857,9 @@ class BuyZonePlanPageTests(unittest.TestCase):
         from ui import buy_zone as buy_zone_page
 
         source = inspect.getsource(buy_zone_page.render)
-        self.assertIn("买区计划", source)
-        self.assertIn("系统根据评分、估值、风险和技术位置自动生成买区", source)
+        self.assertIn("系统估值买区计划", source)
+        self.assertIn("根据评分、估值、风险和技术位置生成系统估值买区", source)
+        self.assertIn("不代表 Radar ALLOW_BUY", source)
         self.assertIn("_load_buy_zone_rows", source)
         self.assertNotIn("买区计算器", source)
 
@@ -7871,6 +7872,7 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertIn("data-buy-zone-drawer-open", source)
         self.assertIn("buy-zone-drawer", source)
         self.assertIn("高级估值沙盒", source)
+        self.assertIn("系统估值买区详情", source)
 
     def test_zero_price_is_not_used_for_valid_buy_zone(self) -> None:
         zone = generate_buy_zone("ZERO", {"current_price": 0, "price_to_fcf": 20, "free_cash_flow_yield": 0.05}, None, "SAAS_SOFTWARE")

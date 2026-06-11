@@ -81,8 +81,8 @@ def render() -> None:
     _render_styles()
     # Test anchor for the original system-plan page contract: 系统根据评分、估值、风险和技术位置自动生成买区
     render_page_header(
-        "买区计划",
-        "根据评分、估值、风险和技术位置生成买区，辅助执行加仓与等待策略。",
+        "系统估值买区计划",
+        "根据评分、估值、风险和技术位置生成系统估值买区，辅助执行加仓与等待策略；不代表 Radar ALLOW_BUY。",
     )
 
     tickers = load_watchlist()
@@ -94,8 +94,8 @@ def render() -> None:
     plan_store = StockPlanStore()
     _handle_quick_price_alert_query()
     load_notice = st.empty()
-    load_notice.info(f"正在生成买区计划：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
-    with st.spinner("正在读取观察池、评分和买区计划..."):
+    load_notice.info(f"正在生成系统估值买区计划：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
+    with st.spinner("正在读取观察池、评分和系统估值买区计划..."):
         rows = _load_buy_zone_rows(tuple(tickers))
         rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
         portfolio_view = _safe_portfolio_view()
@@ -632,7 +632,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭买区详情"></a>'
         '<aside class="stock-drawer buy-zone-drawer">'
         '<a class="drawer-close-link" href="#buy-zone-table" title="关闭">×</a>'
-        '<div class="drawer-topline">买区详情</div>'
+        '<div class="drawer-topline">系统估值买区详情</div>'
         f'<div class="drawer-head"><div><div class="drawer-symbol">{escape(symbol)}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or ""))}</div></div>'
         f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
@@ -646,13 +646,13 @@ def _buy_zone_drawer_html(row: dict) -> str:
         '<div class="drawer-card-title">顶部结论</div>'
         f'<div class="drawer-decision-headline">当前处于 {escape(row["zoneLabel"])}，当前新增建议 {_pct_limit(row.get("currentAddLimitPercent"))}，组合仓位上限 {_pct_limit(row.get("maxPortfolioWeightPercent"))}。</div>'
         "</div>"
-        '<div class="drawer-section-title">系统建议买区</div>'
+        '<div class="drawer-section-title">系统估值建议买区</div>'
         f'{_zone_snapshot_html(system_zone)}'
-        '<div class="drawer-section-title">当前使用买区</div>'
+        '<div class="drawer-section-title">当前使用估值买区</div>'
         f'{_price_ladder_html(row)}'
-        '<div class="drawer-section-title">买区解释</div>'
+        '<div class="drawer-section-title">系统估值买区解释</div>'
         f'{_buy_zone_explainability_html(row)}'
-        '<div class="drawer-section-title">综合入场参考</div>'
+        '<div class="drawer-section-title">系统估值入场参考</div>'
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
@@ -805,7 +805,7 @@ def _fallback_buy_zone_explainability(row: dict) -> dict[str, object]:
         "invalid_manual_override": ("手动买区需复核", "手动覆盖后的区间异常，暂不输出入场买点。"),
         "no_chase": ("当前不追高", "当前价格高于系统买区上沿，不建议新增。"),
     }
-    title, summary = fallback_by_zone.get(zone, ("系统买区已生成", f"当前状态为 {_zone_label(zone)}，买点解释来自系统买区结果。"))
+    title, summary = fallback_by_zone.get(zone, ("系统估值买区已生成", f"当前状态为 {_zone_label(zone)}，入场解释来自系统估值买区结果。"))
     guardrails = validation_errors or warnings
     if not guardrails and zone in {"no_chase", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model", "invalid_zone", "invalid_manual_override"}:
         guardrails = [summary]
