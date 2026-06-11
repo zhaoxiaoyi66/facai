@@ -45,6 +45,25 @@ class FakeFmpQuoteOnlyProvider(FakeRefreshProvider):
         ]
 
 
+class FakeBatchEmptyQuoteProvider(FakeFmpQuoteOnlyProvider):
+    def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
+        self.calls.append((endpoint, str(params.get("symbol")), force_refresh))
+        symbol_text = str(params.get("symbol") or "")
+        if "," in symbol_text:
+            return []
+        if symbol_text in self.fail_quote:
+            return []
+        return [
+            {
+                "symbol": symbol_text,
+                "price": 88.8,
+                "changesPercentage": 0.7,
+                "volume": 111,
+                "marketCap": 222,
+            }
+        ]
+
+
 def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
     path = tmp_path / "refresh.sqlite"
     cache = FundamentalCache(path)
@@ -80,6 +99,28 @@ def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
     assert updated["total_revenue"] == 10
     assert updated["refresh_mode"] == "PRICE_ONLY"
     assert updated["fundamental_updated_at"]
+
+
+def test_price_only_falls_back_to_single_quote_when_batch_returns_empty(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeBatchEmptyQuoteProvider()
+
+    result = refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    now_snapshot = cache.get_snapshot("NOW", max_age_hours=24 * 3650)
+    adbe_snapshot = cache.get_snapshot("ADBE", max_age_hours=24 * 3650)
+    assert result["status"] == "success"
+    assert result["refreshed_count"] == 2
+    assert provider.fundamental_calls == 0
+    assert provider.calls == [
+        ("quote", "NOW,ADBE", True),
+        ("quote", "NOW", True),
+        ("quote", "ADBE", True),
+    ]
+    assert now_snapshot is not None
+    assert now_snapshot["current_price"] == 88.8
+    assert adbe_snapshot is not None
+    assert adbe_snapshot["current_price"] == 88.8
 
 
 def test_price_only_single_ticker_failure_does_not_block_others(tmp_path) -> None:

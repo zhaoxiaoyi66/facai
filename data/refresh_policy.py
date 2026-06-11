@@ -171,6 +171,7 @@ def _refresh_full(symbol: str, *, provider: Any) -> RefreshTickerResult:
 
 
 def _quote_rows(tickers: list[str], provider: Any) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
     if hasattr(provider, "_get_json"):
         try:
             payload = provider._get_json(  # noqa: SLF001 - this is the existing FMP quote endpoint without fundamentals.
@@ -180,11 +181,28 @@ def _quote_rows(tickers: list[str], provider: Any) -> dict[str, dict]:
                 retries=1,
                 force_refresh=True,
             )
-            rows = payload if isinstance(payload, list) else [payload]
-            return {_quote_symbol(row): row for row in rows if isinstance(row, dict) and _quote_symbol(row)}
+            batch_rows = payload if isinstance(payload, list) else [payload]
+            rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
         except Exception:
-            return {}
-    rows: dict[str, dict] = {}
+            rows = {}
+        missing = [symbol for symbol in tickers if symbol not in rows]
+        for symbol in missing:
+            try:
+                payload = provider._get_json(  # noqa: SLF001 - quote-only fallback, still avoids fundamentals.
+                    "quote",
+                    {"symbol": symbol},
+                    timeout_seconds=8,
+                    retries=1,
+                    force_refresh=True,
+                )
+            except Exception:
+                continue
+            single_rows = payload if isinstance(payload, list) else [payload]
+            for row in single_rows:
+                if isinstance(row, dict) and _quote_symbol(row) == symbol:
+                    rows[symbol] = row
+                    break
+        return rows
     for symbol in tickers:
         try:
             quote = provider.get_quote(symbol, force_refresh=True)
