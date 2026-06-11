@@ -53,6 +53,12 @@ class ScoreResult:
     proxy_confidence: str = "high"
     missing_industry_metrics: list[str] | None = None
     proxy_metrics_used: list[str] | None = None
+    hard_missing_fields: list[str] | None = None
+    not_disclosed_fields: list[str] | None = None
+    not_applicable_fields: list[str] | None = None
+    proxy_used_fields: list[str] | None = None
+    confidence_penalty_reasons: list[str] | None = None
+    model_fit_notes: list[str] | None = None
     missing_metric_impacts: list[dict[str, str]] | None = None
     missing_data_explanation: list[str] | None = None
     rating_cap: str | None = None
@@ -116,6 +122,30 @@ class ScoreResult:
     @property
     def proxyMetricsUsed(self) -> list[str]:
         return self.proxy_metrics_used or []
+
+    @property
+    def hardMissingFields(self) -> list[str]:
+        return self.hard_missing_fields or []
+
+    @property
+    def notDisclosedFields(self) -> list[str]:
+        return self.not_disclosed_fields or []
+
+    @property
+    def notApplicableFields(self) -> list[str]:
+        return self.not_applicable_fields or []
+
+    @property
+    def proxyUsedFields(self) -> list[str]:
+        return self.proxy_used_fields or []
+
+    @property
+    def confidencePenaltyReasons(self) -> list[str]:
+        return self.confidence_penalty_reasons or []
+
+    @property
+    def modelFitNotes(self) -> list[str]:
+        return self.model_fit_notes or []
 
     @property
     def missingMetricImpact(self) -> list[dict[str, str]]:
@@ -203,6 +233,12 @@ def calculate_total_score(snapshot: dict, technicals: dict) -> ScoreResult:
         proxy_confidence=sector_score.proxy_confidence,
         missing_industry_metrics=sector_score.missing_industry_metrics,
         proxy_metrics_used=sector_score.proxy_metrics_used,
+        hard_missing_fields=sector_score.hard_missing_fields,
+        not_disclosed_fields=sector_score.not_disclosed_fields,
+        not_applicable_fields=sector_score.not_applicable_fields,
+        proxy_used_fields=sector_score.proxy_used_fields,
+        confidence_penalty_reasons=sector_score.confidence_penalty_reasons,
+        model_fit_notes=sector_score.model_fit_notes,
         missing_metric_impacts=sector_score.missing_metric_impacts,
         missing_data_explanation=sector_score.missing_data_explanation,
         rating_cap=sector_score.rating_cap,

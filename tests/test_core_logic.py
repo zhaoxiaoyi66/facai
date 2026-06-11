@@ -2589,7 +2589,7 @@ class ScoringTests(unittest.TestCase):
         self.assertNotEqual(result.action, "数据不足，需复核")
         self.assertNotEqual(result.qualityRating, "数据不足")
 
-    def test_empty_proxy_metrics_make_proxy_confidence_not_applicable(self) -> None:
+    def test_saas_operating_proxies_are_reported_for_missing_customer_growth(self) -> None:
         result = calculate_total_score(
             {
                 "ticker": "NOW",
@@ -2629,8 +2629,9 @@ class ScoringTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result.proxyMetricsUsed, [])
-        self.assertEqual(result.proxyConfidence, "不适用")
+        self.assertIn("RPO growth", result.proxyMetricsUsed)
+        self.assertIn("subscription revenue growth", result.proxyMetricsUsed)
+        self.assertEqual(result.proxyConfidence, "high")
 
     def test_high_impact_missing_metrics_populate_missing_industry_metrics(self) -> None:
         result = calculate_total_score(
@@ -2661,8 +2662,116 @@ class ScoringTests(unittest.TestCase):
 
         self.assertIn("subscription revenue growth", result.missingIndustryMetrics)
         self.assertIn("non-GAAP operating margin", result.missingIndustryMetrics)
-        self.assertIn("net retention rate", result.missingIndustryMetrics)
+        self.assertIn("net retention rate", result.notDisclosedFields)
+        self.assertNotIn("net retention rate", result.hardMissingFields)
         self.assertNotEqual(result.dataConfidence, "high")
+
+    def test_saas_nrr_with_operating_proxies_is_not_hard_missing(self) -> None:
+        result = calculate_total_score(
+            {
+                "ticker": "NOW",
+                "sector": "Technology",
+                "industry": "Software - Application",
+                "revenue_growth": 0.30,
+                "gross_margin": 0.84,
+                "operating_margin": 0.34,
+                "return_on_invested_capital": 0.21,
+                "free_cash_flow": 3_800,
+                "total_revenue": 10_000,
+                "price_to_sales": 8,
+                "enterprise_to_revenue": 8,
+                "price_to_fcf": 24,
+                "free_cash_flow_yield": 0.042,
+                "manualSubscriptionRevenueGrowth": 0.28,
+                "manualNonGaapOperatingMargin": 0.36,
+                "manualRpoGrowth": 0.24,
+                "manualSbcRatio": 0.08,
+                "net_debt_to_ebitda": -1,
+                "total_cash": 5_000,
+                "total_debt": 1_000,
+                "current_ratio": 1.4,
+                "manualDebtMaturityPressure": 10,
+                "interest_coverage": 20,
+            },
+            _missing_resolution_technicals(),
+        )
+
+        self.assertEqual(result.dataConfidence, "medium")
+        self.assertEqual(result.hardMissingFields, [])
+        self.assertIn("net retention rate", result.notDisclosedFields)
+        self.assertIn("RPO growth", result.proxyUsedFields)
+        self.assertIn("subscription revenue growth", result.proxyUsedFields)
+        self.assertEqual(result.confidencePenaltyReasons, [])
+
+    def test_adbe_and_crm_use_saas_proxy_metrics_without_hard_missing(self) -> None:
+        cases = {
+            "ADBE": {
+                "revenue_growth": 0.12,
+                "gross_margin": 0.89,
+                "operating_margin": 0.36,
+                "free_cash_flow": 7_200,
+                "total_revenue": 21_000,
+                "rpo_growth": 0.13,
+                "rpo": 22_000,
+            },
+            "CRM": {
+                "revenue_growth": 0.08,
+                "gross_margin": 0.77,
+                "operating_margin": 0.20,
+                "free_cash_flow": 12_000,
+                "total_revenue": 35_000,
+                "rpo_growth": 0.06,
+                "rpo": 68_000,
+            },
+        }
+        for ticker, overrides in cases.items():
+            with self.subTest(ticker=ticker):
+                result = calculate_total_score(
+                    {
+                        "ticker": ticker,
+                        "sector": "Technology",
+                        "industry": "Software - Application",
+                        "price_to_sales": 5,
+                        "enterprise_to_revenue": 5,
+                        "price_to_fcf": 15,
+                        "free_cash_flow_yield": 0.07,
+                        "total_cash": 10_000,
+                        "total_debt": 7_000,
+                        "ebitda": 7_500,
+                        "interest_coverage": 30,
+                        **overrides,
+                    },
+                    _missing_resolution_technicals(),
+                )
+
+                self.assertEqual(result.dataConfidence, "medium")
+                self.assertEqual(result.hardMissingFields, [])
+                self.assertIn("net retention rate", result.notDisclosedFields)
+                self.assertIn("RPO growth", result.proxyUsedFields)
+                self.assertIn("FCF margin", result.proxyUsedFields)
+                self.assertTrue(result.modelFitNotes)
+
+    def test_saas_true_valuation_missing_remains_hard_missing(self) -> None:
+        result = calculate_total_score(
+            {
+                "ticker": "NOW",
+                "sector": "Technology",
+                "industry": "Software - Application",
+                "revenue_growth": 0.28,
+                "gross_margin": 0.84,
+                "operating_margin": 0.32,
+                "free_cash_flow": 4_000,
+                "total_revenue": 10_000,
+                "manualSubscriptionRevenueGrowth": 0.28,
+                "manualRpoGrowth": 0.24,
+            },
+            _missing_resolution_technicals(),
+        )
+
+        self.assertEqual(result.dataConfidence, "low")
+        self.assertIn("core valuation multiple", result.hardMissingFields)
+        self.assertIn("cash-flow valuation", result.hardMissingFields)
+        self.assertIn("hard_missing:core valuation multiple", result.confidencePenaltyReasons)
 
     def test_deep_drawdown_is_entry_positive_not_primary_negative(self) -> None:
         result = calculate_total_score(

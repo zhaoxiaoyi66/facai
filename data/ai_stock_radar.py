@@ -203,6 +203,7 @@ def build_ai_stock_radar_report(
         technical_entry=technical_entry,
         path=path,
     )
+    debug.update(_score_gap_debug(scores))
     return RadarReport(
         ticker=symbol,
         company_name=company_name or symbol,
@@ -385,6 +386,7 @@ def build_ai_stock_radar_list_row(
         "trade_max_pct": position_plan["trade_max_pct"],
         "price_position": price_position,
         **entry_display,
+        **_score_gap_debug(scores),
         "nearest_support_price": technical_entry.get("nearest_support_price"),
         "ema20": technical_entry.get("ema20"),
         "ema50": technical_entry.get("ema50"),
@@ -1131,6 +1133,30 @@ def _field_bool(metrics: dict[str, Any], field: str) -> bool | None:
     if field not in metrics or not isinstance(metrics.get(field), bool):
         return None
     return bool(metrics.get(field))
+
+
+def _score_gap_debug(scores: RadarScores | dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "hard_missing_fields": _score_gap_list(scores, "hard_missing_fields", "hardMissingFields"),
+        "not_disclosed_fields": _score_gap_list(scores, "not_disclosed_fields", "notDisclosedFields"),
+        "not_applicable_fields": _score_gap_list(scores, "not_applicable_fields", "notApplicableFields"),
+        "proxy_used_fields": _score_gap_list(scores, "proxy_used_fields", "proxyUsedFields", "proxy_metrics_used", "proxyMetricsUsed"),
+        "confidence_penalty_reasons": _score_gap_list(scores, "confidence_penalty_reasons", "confidencePenaltyReasons"),
+        "model_fit_notes": _score_gap_list(scores, "model_fit_notes", "modelFitNotes"),
+    }
+
+
+def _score_gap_list(scores: RadarScores | dict[str, Any] | None, *keys: str) -> list[str]:
+    if scores is None or isinstance(scores, RadarScores):
+        return []
+    for key in keys:
+        if isinstance(scores, dict):
+            value = scores.get(key)
+        else:
+            value = getattr(scores, key, None)
+        if isinstance(value, list):
+            return [str(item) for item in value if item]
+    return []
 
 
 def _score_input(

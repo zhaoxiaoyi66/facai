@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from data.calculated_metrics import apply_calculated_metrics_to_snapshot
@@ -212,6 +212,12 @@ class SectorScore:
     proxy_confidence: str = "high"
     missing_industry_metrics: list[str] | None = None
     proxy_metrics_used: list[str] | None = None
+    hard_missing_fields: list[str] | None = None
+    not_disclosed_fields: list[str] | None = None
+    not_applicable_fields: list[str] | None = None
+    proxy_used_fields: list[str] | None = None
+    confidence_penalty_reasons: list[str] | None = None
+    model_fit_notes: list[str] | None = None
     missing_metric_impacts: list[dict[str, str]] | None = None
     missing_data_explanation: list[str] | None = None
     rating_cap: str | None = None
@@ -277,6 +283,30 @@ class SectorScore:
         return self.proxy_metrics_used or []
 
     @property
+    def hardMissingFields(self) -> list[str]:
+        return self.hard_missing_fields or []
+
+    @property
+    def notDisclosedFields(self) -> list[str]:
+        return self.not_disclosed_fields or []
+
+    @property
+    def notApplicableFields(self) -> list[str]:
+        return self.not_applicable_fields or []
+
+    @property
+    def proxyUsedFields(self) -> list[str]:
+        return self.proxy_used_fields or []
+
+    @property
+    def confidencePenaltyReasons(self) -> list[str]:
+        return self.confidence_penalty_reasons or []
+
+    @property
+    def modelFitNotes(self) -> list[str]:
+        return self.model_fit_notes or []
+
+    @property
     def missingMetricImpact(self) -> list[dict[str, str]]:
         return self.missing_metric_impacts or []
 
@@ -311,6 +341,12 @@ class ProxyAssessment:
     proxy_confidence: str
     missing_industry_metrics: list[str]
     proxy_metrics_used: list[str]
+    hard_missing_fields: list[str] = field(default_factory=list)
+    not_disclosed_fields: list[str] = field(default_factory=list)
+    not_applicable_fields: list[str] = field(default_factory=list)
+    proxy_used_fields: list[str] = field(default_factory=list)
+    confidence_penalty_reasons: list[str] = field(default_factory=list)
+    model_fit_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -479,6 +515,12 @@ def score_stock_by_model(snapshot: dict, technicals: dict) -> SectorScore:
         proxy_confidence=proxy_assessment.proxy_confidence,
         missing_industry_metrics=proxy_assessment.missing_industry_metrics,
         proxy_metrics_used=proxy_assessment.proxy_metrics_used,
+        hard_missing_fields=proxy_assessment.hard_missing_fields,
+        not_disclosed_fields=proxy_assessment.not_disclosed_fields,
+        not_applicable_fields=proxy_assessment.not_applicable_fields,
+        proxy_used_fields=proxy_assessment.proxy_used_fields,
+        confidence_penalty_reasons=proxy_assessment.confidence_penalty_reasons,
+        model_fit_notes=proxy_assessment.model_fit_notes,
         missing_metric_impacts=missing_metric_impacts,
         missing_data_explanation=_missing_data_explanations(missing_metric_impacts),
         rating_cap=rating_cap,
@@ -613,6 +655,12 @@ def _score_saas_software(context: ScoreContext, profile: ModelProfile) -> Sector
         proxy_confidence=proxy_assessment.proxy_confidence,
         missing_industry_metrics=proxy_assessment.missing_industry_metrics,
         proxy_metrics_used=proxy_assessment.proxy_metrics_used,
+        hard_missing_fields=proxy_assessment.hard_missing_fields,
+        not_disclosed_fields=proxy_assessment.not_disclosed_fields,
+        not_applicable_fields=proxy_assessment.not_applicable_fields,
+        proxy_used_fields=proxy_assessment.proxy_used_fields,
+        confidence_penalty_reasons=proxy_assessment.confidence_penalty_reasons,
+        model_fit_notes=proxy_assessment.model_fit_notes,
         missing_metric_impacts=missing_metric_impacts,
         missing_data_explanation=_missing_data_explanations(missing_metric_impacts),
         rating_cap=rating_cap,
@@ -2964,6 +3012,196 @@ def _has_direct_metric(context: ScoreContext, *keys: str) -> bool:
     return False
 
 
+def _saas_gap_assessment(
+    context: ScoreContext,
+    base_confidence: str,
+    data_insufficient: bool,
+    missing_metric_impacts: list[dict[str, str]],
+    metric_resolution_statuses: list[dict[str, object]],
+) -> ProxyAssessment:
+    unresolved_impacts = [
+        row
+        for row in missing_metric_impacts
+        if not _is_metric_resolved(str(row.get("metric") or ""), metric_resolution_statuses)
+    ]
+    available_proxies, operating_proxies = _saas_available_proxy_fields(context)
+    has_saas_proxy_coverage = bool(operating_proxies and len(available_proxies) >= 2)
+    hard_missing: list[str] = []
+    not_disclosed: list[str] = []
+    not_applicable: list[str] = []
+    proxy_used: list[str] = []
+    penalty_reasons: list[str] = []
+    model_notes = _saas_model_fit_notes(context)
+
+    for impact in unresolved_impacts:
+        metric = str(impact.get("metric") or "")
+        if not metric:
+            continue
+        resolution = _resolution_row_for_missing_metric(metric, metric_resolution_statuses)
+        route = str((resolution or {}).get("missingResolutionRoute") or "")
+        status = str((resolution or {}).get("resolutionStatus") or impact.get("resolutionStatus") or "")
+        category = str(impact.get("impactCategory") or "")
+
+        if route == "company_not_disclosed" or status == "company_not_disclosed":
+            not_disclosed.append(metric)
+            if has_saas_proxy_coverage and _is_saas_proxy_eligible_gap(metric):
+                proxy_used.extend(available_proxies)
+            continue
+        if route == "low_priority_archive" or status == "not_applicable":
+            not_applicable.append(metric)
+            continue
+        if route in {"analyst_estimates_required", "auto_calculate"}:
+            continue
+        if route == "proxy_available":
+            proxy_used.append(metric)
+            continue
+        if has_saas_proxy_coverage and _is_saas_proxy_eligible_gap(metric):
+            proxy_used.extend(available_proxies)
+            continue
+        if category in {"CRITICAL_QUALITY", "CRITICAL_RISK"}:
+            hard_missing.append(metric)
+            penalty_reasons.append(f"hard_missing:{metric}")
+
+    core_missing = _saas_core_missing_fields(context)
+    hard_missing.extend(core_missing)
+    penalty_reasons.extend([f"hard_missing:{field}" for field in core_missing])
+    if data_insufficient:
+        penalty_reasons.append("data_insufficient")
+
+    hard_missing = _dedupe(hard_missing)
+    not_disclosed = _dedupe(not_disclosed)
+    not_applicable = _dedupe(not_applicable)
+    proxy_used = _dedupe(proxy_used)
+    penalty_reasons = _dedupe(penalty_reasons)
+
+    if data_insufficient:
+        data_confidence = "low"
+    elif hard_missing:
+        if any(field in hard_missing for field in {"core valuation multiple", "cash-flow valuation", "FCF margin"}):
+            data_confidence = "low"
+        else:
+            hard_impacts = [row for row in unresolved_impacts if str(row.get("metric") or "") in set(hard_missing)]
+            data_confidence = _confidence_with_missing_impacts(base_confidence, hard_impacts)
+    elif proxy_used or not_disclosed or not_applicable:
+        data_confidence = "medium" if base_confidence == "high" else base_confidence
+    else:
+        data_confidence = base_confidence
+
+    proxy_confidence = "medium" if proxy_used and hard_missing else "high" if proxy_used else "不适用"
+    return ProxyAssessment(
+        data_confidence=data_confidence,
+        proxy_confidence=proxy_confidence,
+        missing_industry_metrics=hard_missing,
+        proxy_metrics_used=proxy_used,
+        hard_missing_fields=hard_missing,
+        not_disclosed_fields=not_disclosed,
+        not_applicable_fields=not_applicable,
+        proxy_used_fields=proxy_used,
+        confidence_penalty_reasons=penalty_reasons,
+        model_fit_notes=model_notes,
+    )
+
+
+def _saas_available_proxy_fields(context: ScoreContext) -> tuple[list[str], list[str]]:
+    proxies: list[str] = []
+    operating: list[str] = []
+
+    def add(label: str, *keys: str, operating_metric: bool = False) -> None:
+        if _has_saas_proxy_metric(context, *keys):
+            proxies.append(label)
+            if operating_metric:
+                operating.append(label)
+
+    add("subscription revenue growth", "manualSubscriptionRevenueGrowth", "subscription_revenue_growth", operating_metric=True)
+    add("RPO growth", "manualRpoGrowth", "manualArrGrowth", "rpo_growth", operating_metric=True)
+    add("cRPO growth", "manualCrpoGrowth", "manualCRPOGrowth", "cRpoGrowth", "crpo_growth", operating_metric=True)
+    add("RPO backlog", "rpo", "remaining_performance_obligation", "remaining_performance_obligations", operating_metric=True)
+    add("deferred revenue growth", "deferred_revenue_growth", operating_metric=True)
+    add("large customer growth", "manualLargeCustomerGrowth", "largeCustomerGrowth", "large_customer_growth", operating_metric=True)
+    add("non-GAAP operating margin", "manualNonGaapOperatingMargin", "non_gaap_operating_margin", operating_metric=True)
+    add("operating margin", "operating_margin")
+    add("gross margin", "gross_margin")
+    add("FCF yield", "free_cash_flow_yield")
+    if fcf_margin_metric(context.snapshot).value is not None:
+        proxies.append("FCF margin")
+    return _dedupe(proxies), _dedupe(operating)
+
+
+def _has_saas_proxy_metric(context: ScoreContext, *keys: str) -> bool:
+    blocked_sources = {"missing", "not_disclosed", "vendor_unavailable", "requires_ir_scrape", "requires_estimates"}
+    for key in keys:
+        value = context.snapshot.get(key)
+        if value is None:
+            value = context.snapshot.get(_camel_to_snake(key))
+        if _number(value) is None:
+            continue
+        sources = context.snapshot.get("metric_sources")
+        raw_source = None
+        if isinstance(sources, dict):
+            raw_source = sources.get(key) or sources.get(_camel_to_snake(key))
+        source_type = ""
+        if isinstance(raw_source, dict):
+            source_type = str(raw_source.get("sourceType") or "")
+        elif raw_source:
+            source_type = str(raw_source)
+        if source_type and source_type in blocked_sources:
+            continue
+        return True
+    return False
+
+
+def _saas_core_missing_fields(context: ScoreContext) -> list[str]:
+    missing: list[str] = []
+    if not _has_metric(context, "price_to_sales", "enterprise_to_revenue"):
+        missing.append("core valuation multiple")
+    if not (_has_metric(context, "price_to_fcf", "ev_to_fcf") or _has_metric(context, "free_cash_flow_yield")):
+        missing.append("cash-flow valuation")
+    if fcf_margin_metric(context.snapshot).value is None:
+        missing.append("FCF margin")
+    return missing
+
+
+def _is_saas_proxy_eligible_gap(metric: str) -> bool:
+    return _contains_any(
+        metric.lower(),
+        (
+            "net retention",
+            "dbnrr",
+            "large customer",
+            "subscription revenue",
+            "non-gaap operating",
+            "rpo",
+            "crpo",
+            "sbc",
+            "stock-based",
+        ),
+    )
+
+
+def _resolution_row_for_missing_metric(metric: str, rows: list[dict[str, object]]) -> dict[str, object] | None:
+    lowered = metric.lower()
+    metric_key = _metric_key_from_name(metric).lower()
+    for row in rows:
+        row_key = str(row.get("metricKey") or "").lower()
+        display_name = str(row.get("displayName") or "").lower()
+        if row_key == metric_key or display_name == lowered:
+            return row
+        if display_name and (display_name in lowered or lowered in display_name):
+            return row
+    return None
+
+
+def _saas_model_fit_notes(context: ScoreContext) -> list[str]:
+    symbol = _symbol(context)
+    if symbol == "NOW":
+        return ["NOW may not disclose NRR every period; use cRPO/RPO, subscription growth, customer growth, and FCF margin as review proxies."]
+    if symbol == "ADBE":
+        return ["ADBE is not a pure seat-based SaaS model; use Digital Media ARR/subscription mix, RPO, subscription growth, margins, and FCF as proxies."]
+    if symbol == "CRM":
+        return ["CRM can use cRPO/RPO, subscription/support growth, operating margin, and FCF margin as SaaS quality proxies."]
+    return []
+
+
 def _proxy_assessment(
     context: ScoreContext,
     data_quality_pct: float,
@@ -2978,14 +3216,13 @@ def _proxy_assessment(
 
     if model_type == "SAAS_SOFTWARE":
         base_confidence = str(snapshot_confidence) if snapshot_confidence in {"high", "medium", "low"} else _confidence_from_pct(data_quality_pct, data_insufficient)
-        unresolved_impacts = [
-            row
-            for row in (missing_metric_impacts or [])
-            if not _is_metric_resolved(str(row.get("metric") or ""), metric_resolution_statuses or [])
-        ]
-        industry_missing = _industry_missing_from_impacts(unresolved_impacts, metric_resolution_statuses or [])
-        return ProxyAssessment(_confidence_with_missing_impacts(base_confidence, unresolved_impacts), "不适用", industry_missing, [])
-
+        return _saas_gap_assessment(
+            context,
+            base_confidence,
+            data_insufficient,
+            missing_metric_impacts or [],
+            metric_resolution_statuses or [],
+        )
     if model_type == "POWER_GENERATION":
         if not _has_direct_metric(context, "manualAdjustedEbitda", "adjustedEbitda", "adjusted_ebitda"):
             missing.append("adjusted EBITDA")
