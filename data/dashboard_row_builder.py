@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
+from data.ai_stock_radar import build_ai_stock_radar_list_row
+from data.entry_display import build_entry_display
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
 from formatting import format_currency, format_multiple, format_percent
@@ -73,6 +75,7 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score, buy_zone=buy_zone)
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
+    radar_entry_display = _radar_entry_display_fields(ticker, snapshot, technicals)
 
     return {
         "symbol": ticker,
@@ -164,6 +167,7 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "overheatAction": score.overheat_action,
         "overheatRecommendation": score.overheat_recommendation,
         "overheatReasons": score.overheat_reasons or [],
+        **radar_entry_display,
     }
 
 
@@ -177,6 +181,38 @@ def derive_dashboard_buy_zone(ticker: str, snapshot: dict, technicals: dict, sco
         return generate_buy_zone(ticker, stock_data, score, score.scoring_model)
     except Exception:
         return None
+
+
+RADAR_ENTRY_DISPLAY_KEYS = (
+    "buy_zone",
+    "price_position",
+    "decision",
+    "data_status",
+    "entry_reference_low",
+    "entry_reference_high",
+    "next_action_price",
+    "chase_above_price",
+    "current_vs_entry_pct",
+    "missing_entry_fields",
+    "entry_display_label",
+    "entry_display_reason",
+    "entry_action_hint",
+)
+
+
+def _radar_entry_display_fields(ticker: str, snapshot: dict, technicals: dict) -> dict[str, Any]:
+    try:
+        row = build_ai_stock_radar_list_row(ticker, snapshot=snapshot, technicals=technicals)
+    except Exception:
+        row = build_entry_display(
+            data_status="MISSING_BUY_ZONE",
+            price_position="ZONE_MISSING",
+            missing_entry_fields=["Radar 纪律买区缺失"],
+        )
+        row.update({"buy_zone": {}, "price_position": "ZONE_MISSING", "decision": "DATA_MISSING", "data_status": "MISSING_BUY_ZONE"})
+    return {f"radar_{key}": row.get(key) for key in RADAR_ENTRY_DISPLAY_KEYS} | {
+        key: row.get(key) for key in RADAR_ENTRY_DISPLAY_KEYS if key.startswith("entry_") or key in {"next_action_price", "chase_above_price", "current_vs_entry_pct", "missing_entry_fields"}
+    }
 
 
 def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score, *, buy_zone: Any = None):

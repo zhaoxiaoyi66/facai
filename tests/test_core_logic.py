@@ -1040,7 +1040,7 @@ class DashboardLayoutTests(unittest.TestCase):
                 "现价",
                 "市值",
                 "质量",
-                "估值买点",
+                "Radar 买区",
                 "风险",
                 "估值状态",
                 "操作建议",

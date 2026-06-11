@@ -123,6 +123,9 @@ def test_dashboard_watchlist_entry_cell_shows_price_reference() -> None:
             "symbol": "NVDA",
             "price": 110,
             "entryRating": "B - 等回踩",
+            "entry_display_label": "等待回落 $90.00 - $100.00",
+            "entry_action_hint": "只观察，等待回到纪律买区",
+            "entry_display_reason": "当前高于买区 10%；追高禁区 >$120.00",
             "activeZone": SimpleNamespace(
                 currentPrice=110,
                 trancheBuyLow=90,
@@ -157,6 +160,9 @@ def test_dashboard_watchlist_missing_buy_zone_shows_engine_reason() -> None:
             "symbol": "NVO",
             "price": 42.81,
             "entryRating": "C - 只观察",
+            "entry_display_label": "暂无参考买区：缺估值指标",
+            "entry_action_hint": "补齐数据后再复核",
+            "entry_display_reason": "缺估值指标",
             "activeZone": SimpleNamespace(
                 currentPrice=42.81,
                 trancheBuyLow=None,
@@ -170,8 +176,33 @@ def test_dashboard_watchlist_missing_buy_zone_shows_engine_reason() -> None:
 
     html = _entry_rating_cell_html(row)
 
-    assert "暂无参考买区：暂无专属买区模型、无法生成纪律买区" in html
-    assert "缺 52 周高低" not in html
+    assert "暂无参考买区：缺估值指标" in html
+    assert "暂无专属买区模型" not in html
+
+
+def test_dashboard_watchlist_entry_cell_prefers_radar_display_over_legacy_zone() -> None:
+    row = pd.Series(
+        {
+            "symbol": "MSFT",
+            "price": 397,
+            "entryRating": "B - 等回踩",
+            "entry_display_label": "买区内 $394.12 - $425.99",
+            "entry_action_hint": "买区内但总分低于 70，需复核",
+            "entry_display_reason": "当前位于纪律买区",
+            "activeZone": SimpleNamespace(
+                currentPrice=397,
+                trancheBuyLow=241.88,
+                trancheBuyHigh=300.37,
+                noChaseAbove=520,
+                currentZone="fair_observation",
+            ),
+        }
+    )
+
+    html = _entry_rating_cell_html(row)
+
+    assert "$394.12 - $425.99" in html
+    assert "$241.88 - $300.37" not in html
 
 
 def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -> None:
@@ -193,6 +224,25 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     monkeypatch.setattr(builder, "derive_dashboard_buy_zone", lambda *_args, **_kwargs: zone)
     monkeypatch.setattr(builder, "buy_zone_with_manual_override", lambda buy_zone, _plan: buy_zone)
     monkeypatch.setattr(builder, "StockPlanStore", DummyPlanStore)
+    monkeypatch.setattr(
+        builder,
+        "build_ai_stock_radar_list_row",
+        lambda *_args, **_kwargs: {
+            "buy_zone": {"lower": 190, "upper": 210},
+            "price_position": "ABOVE_BUY_ZONE",
+            "decision": "WAIT",
+            "data_status": "OK",
+            "entry_reference_low": 190,
+            "entry_reference_high": 210,
+            "next_action_price": 210,
+            "chase_above_price": 250,
+            "current_vs_entry_pct": 4.8,
+            "missing_entry_fields": [],
+            "entry_display_label": "等待回落 $190.00 - $210.00",
+            "entry_display_reason": "当前高于买区 4.8%",
+            "entry_action_hint": "只观察，等待回到纪律买区",
+        },
+    )
     monkeypatch.setattr(
         builder,
         "derive_dashboard_final_decision",
@@ -245,5 +295,8 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     )
 
     assert row["activeZone"] is zone
+    assert row["radar_buy_zone"] == {"lower": 190, "upper": 210}
+    assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
-    assert "等待回落 $90.00 - $100.00" in html
+    assert "等待回落 $190.00 - $210.00" in html
+    assert "$90.00 - $100.00" not in html

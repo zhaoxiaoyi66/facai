@@ -167,23 +167,25 @@ def _entry_rating_chip_text(label: object, grade: object) -> str:
 
 
 def _dashboard_entry_display(row: pd.Series | dict) -> dict:
-    zone = _row_value(row, "activeZone") or _row_value(row, "systemZone")
-    buy_zone = {
-        "lower": _zone_value(zone, "trancheBuyLow"),
-        "upper": _zone_value(zone, "trancheBuyHigh"),
-    }
-    chase_zone = {"lower": _zone_value(zone, "noChaseAbove")}
-    price_position = _price_position_from_dashboard_zone(_zone_value(zone, "currentZone"))
-    data_status = "MISSING_BUY_ZONE" if price_position == "ZONE_MISSING" else "OK"
-    current_price = _row_value(row, "price") or _row_value(row, "currentPrice") or _zone_value(zone, "currentPrice")
-    missing_entry_fields = _dashboard_missing_entry_fields(zone, price_position)
+    radar_label = str(_row_value(row, "entry_display_label") or "").strip()
+    radar_reason = str(_row_value(row, "entry_display_reason") or "").strip()
+    radar_hint = str(_row_value(row, "entry_action_hint") or "").strip()
+    if radar_label or radar_reason or radar_hint:
+        return {
+            "entry_display_label": radar_label,
+            "entry_display_reason": radar_reason,
+            "entry_action_hint": radar_hint,
+            "entry_reference_low": _row_value(row, "entry_reference_low"),
+            "entry_reference_high": _row_value(row, "entry_reference_high"),
+            "next_action_price": _row_value(row, "next_action_price"),
+            "chase_above_price": _row_value(row, "chase_above_price"),
+            "current_vs_entry_pct": _row_value(row, "current_vs_entry_pct"),
+            "missing_entry_fields": _row_value(row, "missing_entry_fields") or [],
+        }
     return build_entry_display(
-        current_price=current_price,
-        buy_zone=buy_zone,
-        chase_zone=chase_zone,
-        data_status=data_status,
-        price_position=price_position,
-        missing_entry_fields=missing_entry_fields,
+        data_status="MISSING_BUY_ZONE",
+        price_position="ZONE_MISSING",
+        missing_entry_fields=["Radar 纪律买区缺失"],
         decision=str(_row_value(row, "finalDecision") or _row_value(row, "decision") or ""),
         final_score=_number(_row_value(row, "finalScore") or _row_value(row, "totalScore")),
         valuation_score=_number(_row_value(row, "valuationScore")),
