@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Any
 from urllib.parse import quote
@@ -37,11 +38,18 @@ FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
 FRED_TEN_YEAR_SERIES = "DGS10"
 FRED_10Y2Y_SERIES = "T10Y2Y"
 FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
+VIX_MARKET_SYMBOLS = ("AVIX", "^VIX", "VIX")
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 MACRO_REQUEST_TIMEOUT_SECONDS = 4
+FRED_PRIMARY_TIMEOUT_SECONDS = 2
+FRED_FALLBACK_TIMEOUT_SECONDS = 1
+FEAR_GREED_TIMEOUT_SECONDS = 2
 MACRO_REFRESH_MAX_WORKERS = 8
+FRED_CIRCUIT_FAILURE_THRESHOLD = 2
+FRED_CIRCUIT_OPEN_HOURS = 8
+FRED_PROVIDER = "fred"
 
 REGIME_RISK_ON = "风险偏好"
 REGIME_NEUTRAL = "中性"
@@ -243,6 +251,84 @@ class MacroRegimeStore:
             )
             conn.commit()
 
+    def is_provider_circuit_open(self, provider: str, *, now: datetime | None = None) -> tuple[bool, str | None]:
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with closing(sqlite3.connect(self.path)) as conn:
+            if not _table_exists(conn, "macro_provider_health"):
+                return False, None
+            row = conn.execute(
+                """
+                SELECT circuit_open_until, last_error
+                FROM macro_provider_health
+                WHERE provider = ?
+                """,
+                (provider,),
+            ).fetchone()
+        if not row or not row[0]:
+            return False, None
+        open_until = _parse_datetime(row[0])
+        if open_until is None or open_until <= current:
+            return False, None
+        return True, str(row[1] or "") or None
+
+    def record_provider_success(self, provider: str) -> None:
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO macro_provider_health (
+                    provider, failure_count, last_failure_at, circuit_open_until, last_error
+                )
+                VALUES (?, 0, NULL, NULL, NULL)
+                ON CONFLICT(provider) DO UPDATE SET
+                    failure_count = 0,
+                    circuit_open_until = NULL,
+                    last_error = NULL
+                """,
+                (provider,),
+            )
+            conn.commit()
+
+    def record_provider_failure(
+        self,
+        provider: str,
+        error: str,
+        *,
+        now: datetime | None = None,
+        failure_threshold: int = FRED_CIRCUIT_FAILURE_THRESHOLD,
+        open_for_hours: int = FRED_CIRCUIT_OPEN_HOURS,
+    ) -> None:
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO macro_provider_health (
+                    provider, failure_count, last_failure_at, circuit_open_until, last_error
+                )
+                VALUES (?, 1, ?, NULL, ?)
+                ON CONFLICT(provider) DO UPDATE SET
+                    failure_count = macro_provider_health.failure_count + 1,
+                    last_failure_at = excluded.last_failure_at,
+                    last_error = excluded.last_error
+                """,
+                (provider, current.isoformat(), error),
+            )
+            row = conn.execute(
+                "SELECT failure_count FROM macro_provider_health WHERE provider = ?",
+                (provider,),
+            ).fetchone()
+            failure_count = int(row[0] or 0) if row else 1
+            circuit_open_until = (
+                (current + timedelta(hours=open_for_hours)).isoformat()
+                if failure_count >= failure_threshold
+                else None
+            )
+            if circuit_open_until:
+                conn.execute(
+                    "UPDATE macro_provider_health SET circuit_open_until = ? WHERE provider = ?",
+                    (circuit_open_until, provider),
+                )
+            conn.commit()
+
     def load_indicator(
         self,
         indicator: str,
@@ -338,6 +424,17 @@ class MacroRegimeStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS macro_provider_health (
+                    provider TEXT PRIMARY KEY,
+                    failure_count INTEGER DEFAULT 0,
+                    last_failure_at TEXT,
+                    circuit_open_until TEXT,
+                    last_error TEXT
+                )
+                """
+            )
             conn.commit()
 
 
@@ -353,14 +450,33 @@ def refresh_macro_indicators(
     started_at = current.isoformat()
     started_timer = perf_counter()
     store = MacroRegimeStore(path)
+    treasury_loader = _TreasurySnapshotLoader(provider=provider, now=current)
     loaders = {
         VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, now=current),
-        HY_OAS: lambda: _fetch_fred_snapshot(HY_OAS, FRED_HY_OAS_SERIES, fred_fetcher=fred_fetcher, now=current),
-        TEN_YEAR_YIELD: lambda: _fetch_fred_snapshot(TEN_YEAR_YIELD, FRED_TEN_YEAR_SERIES, fred_fetcher=fred_fetcher, now=current),
-        YIELD_CURVE_10Y2Y: lambda: _fetch_fred_snapshot(YIELD_CURVE_10Y2Y, FRED_10Y2Y_SERIES, fred_fetcher=fred_fetcher, now=current),
+        HY_OAS: lambda: _fetch_fred_snapshot_with_circuit(
+            HY_OAS, FRED_HY_OAS_SERIES, store=store, fred_fetcher=fred_fetcher, now=current
+        ),
+        TEN_YEAR_YIELD: lambda: _fetch_treasury_or_fred_snapshot(
+            TEN_YEAR_YIELD,
+            FRED_TEN_YEAR_SERIES,
+            treasury_loader=treasury_loader,
+            store=store,
+            fred_fetcher=fred_fetcher,
+            now=current,
+        ),
+        YIELD_CURVE_10Y2Y: lambda: _fetch_treasury_or_fred_snapshot(
+            YIELD_CURVE_10Y2Y,
+            FRED_10Y2Y_SERIES,
+            treasury_loader=treasury_loader,
+            store=store,
+            fred_fetcher=fred_fetcher,
+            now=current,
+        ),
         MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=current),
         MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=current),
-        DOLLAR_INDEX: lambda: _fetch_fred_snapshot(DOLLAR_INDEX, FRED_DOLLAR_INDEX_SERIES, fred_fetcher=fred_fetcher, now=current),
+        DOLLAR_INDEX: lambda: _fetch_fred_snapshot_with_circuit(
+            DOLLAR_INDEX, FRED_DOLLAR_INDEX_SERIES, store=store, fred_fetcher=fred_fetcher, now=current
+        ),
         FEAR_GREED: lambda: _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=current),
     }
     indicators: dict[str, dict[str, Any]] = {}
@@ -696,7 +812,7 @@ def macro_regime_trade_hint_text(snapshot: MacroRegimeSnapshot, *, context: str 
 
 
 def _load_vix_snapshot(path: Path, *, now: datetime | None = None) -> MacroIndicatorSnapshot | None:
-    for symbol in ("^VIX", "VIX"):
+    for symbol in VIX_MARKET_SYMBOLS:
         context = build_market_context(
             symbol,
             path=path,
@@ -748,7 +864,7 @@ def _fetch_vix_snapshot(
             errors.append(f"行情源初始化失败：{_short_error(exc)}")
 
     if market_provider is not None:
-        for symbol in ("^VIX", "VIX"):
+        for symbol in VIX_MARKET_SYMBOLS:
             try:
                 quote = market_provider.get_quote(symbol, force_refresh=True)
                 value = _number(_value_from_mapping(quote, "current_price", "price", "value"))
@@ -781,6 +897,158 @@ def _fetch_vix_snapshot(
     except Exception as exc:
         errors.append(f"FRED {FRED_VIX_SERIES}: {_short_error(exc)}")
     raise RuntimeError("; ".join(errors) or "VIX 刷新失败")
+
+
+class _TreasurySnapshotLoader:
+    def __init__(self, *, provider: Any | None, now: datetime) -> None:
+        self.provider = provider
+        self.now = now
+        self._lock = Lock()
+        self._loaded = False
+        self._snapshots: dict[str, MacroIndicatorSnapshot] = {}
+        self._error: Exception | None = None
+
+    def get(self, indicator: str) -> MacroIndicatorSnapshot:
+        with self._lock:
+            if not self._loaded:
+                try:
+                    self._snapshots = _fetch_fmp_treasury_snapshots(provider=self.provider, now=self.now)
+                except Exception as exc:
+                    self._error = exc
+                self._loaded = True
+        snapshot = self._snapshots.get(indicator)
+        if snapshot is not None:
+            return snapshot
+        if self._error is not None:
+            raise self._error
+        raise RuntimeError("FMP Treasury has no usable rate data")
+
+
+def _fetch_treasury_or_fred_snapshot(
+    indicator: str,
+    series_id: str,
+    *,
+    treasury_loader: _TreasurySnapshotLoader,
+    store: MacroRegimeStore,
+    fred_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    try:
+        return treasury_loader.get(indicator)
+    except Exception as treasury_error:
+        try:
+            return _fetch_fred_snapshot_with_circuit(
+                indicator,
+                series_id,
+                store=store,
+                fred_fetcher=fred_fetcher,
+                now=now,
+            )
+        except Exception as fred_error:
+            raise RuntimeError(f"FMP Treasury: {_short_error(treasury_error)}; FRED {series_id}: {_short_error(fred_error)}") from fred_error
+
+
+def _fetch_fmp_treasury_snapshots(*, provider: Any | None, now: datetime) -> dict[str, MacroIndicatorSnapshot]:
+    market_provider = provider
+    if market_provider is None:
+        from data.providers import get_market_data_provider
+
+        market_provider = get_market_data_provider(full_fundamentals=False)
+    if not hasattr(market_provider, "_get_json"):
+        raise RuntimeError("market provider does not support FMP Treasury")
+    payload = market_provider._get_json(  # noqa: SLF001 - existing low-level FMP endpoint.
+        "treasury-rates",
+        {
+            "from": (now - timedelta(days=45)).date().isoformat(),
+            "to": now.date().isoformat(),
+        },
+        timeout_seconds=3,
+        retries=0,
+        force_refresh=True,
+    )
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        rows = [rows]
+    parsed_rows = [row for row in rows if isinstance(row, dict)]
+    parsed_rows.sort(key=lambda row: str(row.get("date") or row.get("observation_date") or ""))
+    ten_year_rows: list[tuple[str, float]] = []
+    curve_rows: list[tuple[str, float]] = []
+    for row in parsed_rows:
+        date = str(row.get("date") or row.get("observation_date") or "")[:10]
+        ten_year = _number(_value_from_mapping(row, "year10", "year_10", "tenYear", "ten_year", "10y", "10Y"))
+        two_year = _number(_value_from_mapping(row, "year2", "year_2", "twoYear", "two_year", "2y", "2Y"))
+        if date and ten_year is not None:
+            ten_year_rows.append((date, ten_year))
+        if date and ten_year is not None and two_year is not None:
+            curve_rows.append((date, round(ten_year - two_year, 3)))
+    snapshots: dict[str, MacroIndicatorSnapshot] = {}
+    if ten_year_rows:
+        snapshots[TEN_YEAR_YIELD] = _series_snapshot_from_rows(
+            TEN_YEAR_YIELD,
+            ten_year_rows,
+            source="FMP Treasury",
+            now=now,
+            raw_payload=payload,
+        )
+    if curve_rows:
+        snapshots[YIELD_CURVE_10Y2Y] = _series_snapshot_from_rows(
+            YIELD_CURVE_10Y2Y,
+            curve_rows,
+            source="FMP Treasury calculated",
+            now=now,
+            raw_payload=payload,
+        )
+    if not snapshots:
+        raise RuntimeError("FMP Treasury has no usable 10Y/2Y values")
+    return snapshots
+
+
+def _series_snapshot_from_rows(
+    indicator: str,
+    rows: list[tuple[str, float]],
+    *,
+    source: str,
+    now: datetime,
+    raw_payload: Any | None = None,
+) -> MacroIndicatorSnapshot:
+    latest_date, latest_value = rows[-1]
+    values = [value for _, value in rows]
+    fetched_at = now.isoformat()
+    return MacroIndicatorSnapshot(
+        indicator=indicator,
+        value=latest_value,
+        change_1d=_series_change(values, 1),
+        change_5d=_series_change(values, 5),
+        change_20d=_series_change(values, 20),
+        percentile_1y=_series_percentile(values[-252:], latest_value),
+        percentile_5y=_series_percentile(values[-1260:], latest_value),
+        source=source,
+        updated_at=fetched_at,
+        fetched_at=fetched_at,
+        observation_date=latest_date,
+        is_stale=_observation_date_stale(latest_date, now=now, max_days=7),
+        raw_payload=_compact_raw_payload(raw_payload),
+    )
+
+
+def _fetch_fred_snapshot_with_circuit(
+    indicator: str,
+    series_id: str,
+    *,
+    store: MacroRegimeStore,
+    fred_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    open_circuit, last_error = store.is_provider_circuit_open(FRED_PROVIDER, now=now)
+    if open_circuit:
+        raise RuntimeError(f"FRED circuit open, using cache; last error: {last_error or 'unknown'}")
+    try:
+        snapshot = _fetch_fred_snapshot(indicator, series_id, fred_fetcher=fred_fetcher, now=now)
+    except Exception as exc:
+        store.record_provider_failure(FRED_PROVIDER, _short_error(exc), now=now)
+        raise
+    store.record_provider_success(FRED_PROVIDER)
+    return snapshot
 
 
 def _fetch_fred_snapshot(
@@ -820,17 +1088,24 @@ def _fetch_fred_payload(series_id: str, *, fred_fetcher: Any | None) -> Any:
         return fred_fetcher(series_id)
     errors: list[str] = []
     encoded = quote(series_id)
-    for url_template in (FRED_CSV_URL, FRED_DOWNLOAD_CSV_URL):
+    for url_template, timeout_seconds in (
+        (FRED_CSV_URL, FRED_PRIMARY_TIMEOUT_SECONDS),
+        (FRED_DOWNLOAD_CSV_URL, FRED_FALLBACK_TIMEOUT_SECONDS),
+    ):
         url = url_template.format(series_id=encoded)
         try:
-            return _read_url_text(url, timeout_seconds=MACRO_REQUEST_TIMEOUT_SECONDS)
+            return _read_url_text(url, timeout_seconds=timeout_seconds)
         except Exception as exc:
             errors.append(_short_error(exc))
     raise RuntimeError(f"FRED {series_id} CSV 拉取失败：" + "; ".join(errors))
 
 
 def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime) -> MacroIndicatorSnapshot:
-    payload = fear_greed_fetcher(CNN_FEAR_GREED_URL) if fear_greed_fetcher else _read_json(CNN_FEAR_GREED_URL)
+    payload = (
+        fear_greed_fetcher(CNN_FEAR_GREED_URL)
+        if fear_greed_fetcher
+        else _read_json(CNN_FEAR_GREED_URL, timeout_seconds=FEAR_GREED_TIMEOUT_SECONDS)
+    )
     value = _extract_fear_greed_value(payload)
     if value is None:
         raise RuntimeError("CNN 恐惧与贪婪指数没有可用数值")
@@ -1333,6 +1608,7 @@ def _normalize_indicator(value: object) -> str:
         "cnn_fear_greed": FEAR_GREED,
         "vix": VIX,
         "^vix": VIX,
+        "avix": VIX,
         "hy_oas": HY_OAS,
         "bamlh0a0hym2": HY_OAS,
         "hy spread": HY_OAS,
@@ -1369,8 +1645,8 @@ def _read_url_text(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SEC
         return response.read().decode("utf-8")
 
 
-def _read_json(url: str) -> Any:
-    return json.loads(_read_url_text(url))
+def _read_json(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SECONDS) -> Any:
+    return json.loads(_read_url_text(url, timeout_seconds=timeout_seconds))
 
 
 def _series_rows_from_payload(payload: Any, *, value_key: str) -> list[tuple[str, float]]:
