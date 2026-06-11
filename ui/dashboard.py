@@ -3559,6 +3559,31 @@ def _render_dashboard_styles() -> None:
             font-size: 0.78rem;
             line-height: 1.45;
         }
+        .drawer-entry-zone-table {
+            width: 100%;
+            margin-top: 0.55rem;
+            border-collapse: collapse;
+            font-size: 0.76rem;
+            color: var(--dash-secondary);
+        }
+        .drawer-entry-zone-table th,
+        .drawer-entry-zone-table td {
+            border-bottom: 1px solid rgba(229,231,235,0.72);
+            padding: 0.36rem 0.3rem;
+            text-align: left;
+            vertical-align: top;
+        }
+        .drawer-entry-zone-table th {
+            color: var(--dash-muted);
+            font-size: 0.68rem;
+            font-weight: 760;
+            text-transform: uppercase;
+        }
+        .drawer-entry-zone-table td:first-child {
+            color: var(--dash-text);
+            font-weight: 760;
+            white-space: nowrap;
+        }
         .drawer-resolution {
             margin-bottom: 0.5rem;
         }

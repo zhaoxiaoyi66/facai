@@ -331,26 +331,248 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         or row.get("radar_valuation_deep_zone_label")
         or format_buy_zone(buy_zone)
     ).strip()
-    lines = [
-        "Radar 最终纪律买区：" + format_buy_zone(buy_zone),
-        "技术回踩区：" + _drawer_zone_range_text(technical_low, technical_high),
-        "估值深度区：" + (valuation_deep_zone or "N/A"),
-        "当前价：" + str(row.get("price") or "N/A"),
-        "当前相对买区距离：" + _drawer_pct_text(row.get("current_vs_entry_pct")),
-        "追高禁区：" + _drawer_money_text(row.get("chase_above_price")),
-        "zone_status / price_position：" + format_zone_status(price_position),
-        "当前展示状态：" + _drawer_entry_context_status_text(entry_context_status, price_position),
-        "动作提示：" + (hint or "看详情"),
-        "判断原因：" + (reason or "暂无说明"),
-    ]
+    chase_above = row.get("chase_above_price")
+    current_price = _drawer_number(row.get("price"))
+    overlap = _drawer_zone_overlaps_chase(technical_low, technical_high, chase_above)
+
+    conclusion = _drawer_entry_current_conclusion_html(
+        row,
+        entry_context_status=entry_context_status,
+        price_position=price_position,
+        label=label,
+        hint=hint,
+        reason=reason,
+    )
+    lines = []
+    if reason:
+        lines.append("判断原因：" + reason)
     if technical_reason:
         source_suffix = f"（{technical_source}）" if technical_source else ""
         lines.append("技术区说明：" + technical_reason + source_suffix)
+    if overlap:
+        lines.append("技术回踩区与追高禁区重叠；超过追高线部分不作为新增参考。")
+        lines.append(
+            "有效技术复核区："
+            + _drawer_zone_range_text(technical_low, _drawer_effective_technical_high(technical_high, chase_above))
+        )
     if price_position == "BELOW_BUY_ZONE":
         lines.extend(_drawer_below_buy_zone_review_lines())
     if missing_fields:
         lines.append("缺失字段：" + "、".join(missing_fields))
-    return _drawer_card_html("Radar 纪律买区", label, lines)
+    zone_table = _drawer_entry_zone_structure_html(
+        row,
+        buy_zone=buy_zone,
+        technical_low=technical_low,
+        technical_high=technical_high,
+        valuation_deep_zone=valuation_deep_zone,
+        chase_above=chase_above,
+        current_price=current_price,
+        entry_context_status=entry_context_status,
+        price_position=price_position,
+        overlap=overlap,
+        notes=lines,
+    )
+    return conclusion + zone_table
+
+
+def _drawer_entry_current_conclusion_html(
+    row: pd.Series,
+    *,
+    entry_context_status: str,
+    price_position: str,
+    label: str,
+    hint: str,
+    reason: str,
+) -> str:
+    status = _drawer_entry_primary_status_text(entry_context_status, price_position)
+    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or hint or "只观察")
+    current_add = _drawer_number(row.get("currentAddLimitPercent"))
+    allowed = "是" if _drawer_bool(row.get("isActionable")) or (current_add is not None and current_add > 0) else "否"
+    summary_reason = _drawer_entry_summary_reason(
+        entry_context_status=entry_context_status,
+        price_position=price_position,
+        label=label,
+        hint=hint,
+        reason=reason,
+    )
+    return _drawer_card_html(
+        "当前结论",
+        status,
+        [
+            "当前状态：" + status,
+            "当前动作：" + action,
+            "是否允许新增：" + allowed,
+            "原因：" + summary_reason,
+        ],
+    )
+
+
+def _drawer_entry_zone_structure_html(
+    row: pd.Series,
+    *,
+    buy_zone: object,
+    technical_low: object,
+    technical_high: object,
+    valuation_deep_zone: str,
+    chase_above: object,
+    current_price: float | None,
+    entry_context_status: str,
+    price_position: str,
+    overlap: bool,
+    notes: list[str],
+) -> str:
+    effective_high = _drawer_effective_technical_high(technical_high, chase_above) if overlap else technical_high
+    technical_range = _drawer_zone_range_text(technical_low, technical_high)
+    if overlap:
+        technical_range = f"原 {technical_range}；有效 {_drawer_zone_range_text(technical_low, effective_high)}"
+    rows = [
+        (
+            "技术回踩区",
+            technical_range,
+            _drawer_zone_relationship(current_price, technical_low, effective_high),
+            "近端复核区",
+        ),
+        (
+            "深度估值区",
+            valuation_deep_zone or format_buy_zone(buy_zone),
+            _drawer_buy_zone_relationship(current_price, buy_zone),
+            "极端安全区，不是当前近端买点",
+        ),
+        (
+            "追高禁区",
+            "> " + _drawer_money_text(chase_above) if _drawer_number(chase_above) is not None else "N/A",
+            _drawer_chase_relationship(current_price, chase_above, overlap),
+            "超过后禁止新增",
+        ),
+        (
+            "最终纪律判断",
+            _drawer_entry_context_status_text(entry_context_status, price_position),
+            _drawer_compact_action_text(row.get("finalAction") or row.get("action") or ""),
+            "交易纪律结果，不等同于自动买入",
+        ),
+    ]
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(kind)}</td>"
+        f"<td>{escape(zone)}</td>"
+        f"<td>{escape(relation)}</td>"
+        f"<td>{escape(usage)}</td>"
+        "</tr>"
+        for kind, zone, relation, usage in rows
+    )
+    notes_html = ""
+    if notes:
+        note_items = "".join(f"<li>{escape(str(item))}</li>" for item in notes if item)
+        notes_html = f'<details class="drawer-low-priority"><summary>一致性提示</summary><ul>{note_items}</ul></details>'
+    return (
+        '<div class="drawer-card drawer-entry-zone-card">'
+        '<div class="drawer-card-title">买区结构</div>'
+        '<div class="drawer-card-headline">技术回踩区 / 深度估值区 / 追高禁区分开展示</div>'
+        '<table class="drawer-entry-zone-table">'
+        '<thead><tr><th>类型</th><th>区间 / 价格</th><th>当前关系</th><th>用途</th></tr></thead>'
+        f"<tbody>{body}</tbody>"
+        "</table>"
+        f"{notes_html}"
+        "</div>"
+    )
+
+
+def _drawer_entry_primary_status_text(entry_context_status: str, price_position: str) -> str:
+    status = str(entry_context_status or "").strip()
+    if status == "IN_TECHNICAL_PULLBACK_ZONE":
+        return "技术回踩区内"
+    if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
+        return "买区外"
+    if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
+        return "跌破回踩区"
+    if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
+        return "追高区"
+    if status == "IN_DISCIPLINE_BUY_ZONE" or price_position == "IN_BUY_ZONE":
+        return "买区内"
+    if status == "BELOW_DISCIPLINE_BUY_ZONE" or price_position == "BELOW_BUY_ZONE":
+        return "跌破买区"
+    if status == "ZONE_MISSING" or price_position == "ZONE_MISSING":
+        return "数据不足"
+    return format_zone_status(price_position)
+
+
+def _drawer_entry_summary_reason(
+    *,
+    entry_context_status: str,
+    price_position: str,
+    label: str,
+    hint: str,
+    reason: str,
+) -> str:
+    status = str(entry_context_status or "").strip()
+    if status == "IN_TECHNICAL_PULLBACK_ZONE":
+        return "进入技术回踩区，但未满足 ALLOW_BUY，需确认趋势修复和估值风险。"
+    if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
+        return "价格仍高于技术回踩区，等待更好的近端复核位置。"
+    if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
+        return "价格跌破技术回踩区，先复核基本面和趋势是否恶化。"
+    if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
+        return "价格进入追高禁区，禁止新增。"
+    if price_position == "BELOW_BUY_ZONE":
+        return "跌破买区不等于更便宜，需确认基本面恶化、财报冲击、趋势破位或市场重新定价。"
+    return reason or hint or label or "暂无说明。"
+
+
+def _drawer_zone_overlaps_chase(technical_low: object, technical_high: object, chase_above: object) -> bool:
+    high = _drawer_number(technical_high)
+    chase = _drawer_number(chase_above)
+    return high is not None and chase is not None and high > chase
+
+
+def _drawer_effective_technical_high(technical_high: object, chase_above: object) -> object:
+    high = _drawer_number(technical_high)
+    chase = _drawer_number(chase_above)
+    if high is None:
+        return chase_above
+    if chase is None:
+        return technical_high
+    return min(high, chase)
+
+
+def _drawer_zone_relationship(current_price: float | None, low: object, high: object) -> str:
+    low_number = _drawer_number(low)
+    high_number = _drawer_number(high)
+    if current_price is None or low_number is None or high_number is None:
+        return "数据不足"
+    if current_price < low_number:
+        return "当前低于区间"
+    if current_price <= high_number:
+        return "当前在区内"
+    return "当前高于区间"
+
+
+def _drawer_buy_zone_relationship(current_price: float | None, buy_zone: object) -> str:
+    low = None
+    high = None
+    if isinstance(buy_zone, dict):
+        low = buy_zone.get("lower")
+        high = buy_zone.get("upper")
+    else:
+        low = getattr(buy_zone, "lower", None)
+        high = getattr(buy_zone, "upper", None)
+    high_number = _drawer_number(high)
+    relation = _drawer_zone_relationship(current_price, low, high)
+    if current_price is not None and high_number:
+        pct = ((current_price - high_number) / high_number) * 100
+        if pct > 0:
+            return f"当前高于 {pct:.1f}%"
+    return relation
+
+
+def _drawer_chase_relationship(current_price: float | None, chase_above: object, overlap: bool) -> str:
+    chase = _drawer_number(chase_above)
+    if current_price is None or chase is None:
+        return "数据不足"
+    if current_price > chase:
+        return "当前已超过"
+    if overlap:
+        return "与技术区重叠"
+    return "当前未超过"
 
 
 def _drawer_entry_context_status_text(entry_context_status: str, price_position: str) -> str:
@@ -463,6 +685,25 @@ def _drawer_money_text(value: object) -> str:
         return f"${float(value):,.2f}"
     except (TypeError, ValueError):
         return "N/A"
+
+
+def _drawer_number(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").replace("%", "").strip()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _drawer_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "是"}
+    return bool(value)
 
 
 def _drawer_pct_text(value: object) -> str:

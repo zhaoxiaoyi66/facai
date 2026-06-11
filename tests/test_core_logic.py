@@ -2826,7 +2826,13 @@ class ScoringTests(unittest.TestCase):
         source = inspect.getsource(dashboard_drawer.drawer_html)
         detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)
         combined_source = inspect.getsource(dashboard_drawer._combined_entry_note)
-        radar_card_source = inspect.getsource(dashboard_drawer._drawer_radar_entry_card_html)
+        radar_card_source = "\n".join(
+            [
+                inspect.getsource(dashboard_drawer._drawer_radar_entry_card_html),
+                inspect.getsource(dashboard_drawer._drawer_entry_current_conclusion_html),
+                inspect.getsource(dashboard_drawer._drawer_entry_zone_structure_html),
+            ]
+        )
 
         self.assertIn("_drawer_detail_basis_html", source)
         self.assertIn("<details", detail_source)
@@ -2834,12 +2840,12 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("估值/计划参考解释", detail_source)
         self.assertIn("不等同于主表 Radar 纪律买区", detail_source)
         self.assertIn("legacy 估值参考", combined_source)
-        self.assertIn("Radar 最终纪律买区", radar_card_source)
+        self.assertIn("当前结论", radar_card_source)
+        self.assertIn("买区结构", radar_card_source)
         self.assertIn("技术回踩区", radar_card_source)
-        self.assertIn("估值深度区", radar_card_source)
-        self.assertIn("当前相对买区距离", radar_card_source)
-        self.assertIn("当前展示状态", radar_card_source)
+        self.assertIn("深度估值区", radar_card_source)
         self.assertIn("追高禁区", radar_card_source)
+        self.assertIn("有效技术复核区", radar_card_source)
         self.assertIn("缺失字段", radar_card_source)
         self.assertNotIn('"买点解释"', source)
         below_html = dashboard_drawer._drawer_radar_entry_card_html(
@@ -2875,11 +2881,59 @@ class ScoringTests(unittest.TestCase):
                 }
             )
         )
-        self.assertIn("Radar 最终纪律买区：$32.60 - $55.00", pullback_html)
-        self.assertIn("技术回踩区：$102.00 - $117.50", pullback_html)
-        self.assertIn("估值深度区：$32.60 - $55.00", pullback_html)
-        self.assertIn("当前展示状态：已进入技术回踩区上沿", pullback_html)
+        self.assertIn("当前结论", pullback_html)
+        self.assertIn("当前状态：技术回踩区内", pullback_html)
+        self.assertIn("是否允许新增：否", pullback_html)
+        self.assertIn("买区结构", pullback_html)
+        self.assertIn("技术回踩区", pullback_html)
+        self.assertIn("$102.00 - $117.50", pullback_html)
+        self.assertIn("深度估值区", pullback_html)
+        self.assertIn("$32.60 - $55.00", pullback_html)
+        self.assertIn("近端复核区", pullback_html)
         self.assertIn("技术区说明", pullback_html)
+
+        overlap_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "回踩区内 $194.09 - $215.13",
+                    "entry_display_reason": "当前价已进入技术回踩区上沿；技术回踩区 $194.09 - $215.13；深度估值区 $159.03 - $174.34",
+                    "entry_action_hint": "需复核，不自动买入",
+                    "radar_buy_zone": {"lower": 159.03, "upper": 174.34},
+                    "radar_price_position": "ABOVE_BUY_ZONE",
+                    "price": "$200.42",
+                    "technical_entry_zone_low": 194.09,
+                    "technical_entry_zone_high": 215.13,
+                    "chase_above_price": 209.75,
+                    "entry_context_status": "IN_TECHNICAL_PULLBACK_ZONE",
+                    "valuation_deep_zone_label": "$159.03 - $174.34",
+                }
+            )
+        )
+        self.assertIn("技术回踩区与追高禁区重叠", overlap_html)
+        self.assertIn("超过追高线部分不作为新增参考", overlap_html)
+        self.assertIn("原 $194.09 - $215.13；有效 $194.09 - $209.75", overlap_html)
+        self.assertIn("有效技术复核区：$194.09 - $209.75", overlap_html)
+
+        chase_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "禁止追高，技术回踩参考 $194.09 - $215.13",
+                    "entry_display_reason": "价格进入追高禁区",
+                    "entry_action_hint": "进入追高区，禁止新增",
+                    "radar_buy_zone": {"lower": 159.03, "upper": 174.34},
+                    "radar_price_position": "IN_CHASE_ZONE",
+                    "price": "$216.00",
+                    "technical_entry_zone_low": 194.09,
+                    "technical_entry_zone_high": 215.13,
+                    "chase_above_price": 209.75,
+                    "entry_context_status": "IN_CHASE_ZONE",
+                    "valuation_deep_zone_label": "$159.03 - $174.34",
+                }
+            )
+        )
+        self.assertIn("当前状态：追高区", chase_html)
+        self.assertIn("当前动作：禁止新增", chase_html)
+        self.assertIn("是否允许新增：否", chase_html)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(
