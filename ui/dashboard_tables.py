@@ -85,22 +85,25 @@ def _decision_table_cell_html(
         )
     if key == "actionSummary":
         action = _display_table_text(_safe_table_value("action", row_final_action(row)), fallback="待复核")
-        valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
-        entry_label, _entry_grade, _entry_raw = _entry_rating_display_parts(row)
-        raw_entry = str(row.get("entryRating") or "")
-        if "击球区" in valuation or "击球区" in raw_entry or "接近买点" in raw_entry:
-            valuation = entry_label or valuation
         position = _display_table_text(row_current_add_text(row), fallback="")
-        secondary_parts = [_short_badge_text(valuation)]
-        if position and position not in {"不建议新增", "待补"}:
-            secondary_parts.append(position)
-        elif position == "不建议新增":
-            secondary_parts.append(position)
+        valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
+        compact_action = _compact_action_summary_text(action)
+        title = "；".join(
+            part
+            for part in (
+                f"当前动作：{action}",
+                f"当前新增：{position}" if position else "",
+                f"估值/计划参考：{valuation}" if valuation else "",
+            )
+            if part
+        )
+        background, foreground, border = BADGE_STYLES.get(_action_summary_tone(compact_action), BADGE_STYLES["gray"])
         return (
-            '<div class="decision-cell decision-cell-stack action-cell">'
-            f'<strong>{escape(_short_badge_text(action))}</strong>'
-            f'<span>{escape(" · ".join(secondary_parts))}</span>'
-            "</div>"
+            '<div class="decision-cell action-cell">'
+            f'<span class="decision-badge" title="{escape(title)}" '
+            f'style="background:{background};color:{foreground};border:1px solid {border};">'
+            f"{escape(compact_action)}"
+            "</span></div>"
         )
     if key == "dataStatus":
         value = _display_table_text(_safe_table_value(key, row.get(key)), fallback="待复核")
@@ -134,6 +137,36 @@ def _compact_watchlist_badge_text(key: str, value: object) -> str:
         if first:
             return first
     return _short_badge_text(text)
+
+
+def _compact_action_summary_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "待复核"
+    if any(token in text for token in ("禁止", "追高", "阻止", "BLOCK")):
+        return "禁止新增"
+    if any(token in text for token in ("可加仓", "可小仓", "可正常", "分批", "ALLOW")):
+        return "可加仓"
+    if any(token in text for token in ("复核", "确认", "REVIEW")):
+        return "待复核"
+    if any(token in text for token in ("只观察", "观察", "等回踩", "等待")):
+        return "只观察"
+    if any(token in text for token in ("暂不", "不建议新增", "WAIT", "AVOID")):
+        return "暂不处理"
+    return _short_badge_text(text)
+
+
+def _action_summary_tone(value: object) -> str:
+    text = str(value or "")
+    if "可加仓" in text:
+        return "green"
+    if "禁止" in text:
+        return "red"
+    if "待复核" in text:
+        return "yellow"
+    if "只观察" in text:
+        return "blue"
+    return "gray"
 
 
 def _entry_rating_cell_html(row: pd.Series) -> str:

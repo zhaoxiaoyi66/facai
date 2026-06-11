@@ -163,6 +163,7 @@ from scoring.total_score import calculate_total_score
 from scoring.valuation import calculate_valuation_score
 from ui.dashboard import (
     DASHBOARD_COLUMNS,
+    WATCHLIST_COLUMNS,
     _action_recommendation,
     _loading_shell_html,
     _metric_resolution_groups,
@@ -1073,6 +1074,10 @@ class DashboardLayoutTests(unittest.TestCase):
             "距高点回撤",
         }
         self.assertTrue(hidden_default_columns.isdisjoint(labels))
+        self.assertEqual(
+            [column["label"] for column in WATCHLIST_COLUMNS],
+            ["代码", "价格 / 市值", "质量", "Radar 买区", "风险", "动作", "数据", "操作"],
+        )
 
     def test_dashboard_loading_uses_productized_shell_not_streamlit_spinner(self) -> None:
         source = inspect.getsource(__import__("ui.dashboard", fromlist=[""]))
@@ -1355,7 +1360,8 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         self.assertIn("只观察", html)
-        self.assertIn("不建议新增", html)
+        self.assertIn("title=\"当前动作：只观察；当前新增：不建议新增", html)
+        self.assertNotIn("<span>不建议新增</span>", html)
         self.assertNotIn("可小仓", html)
 
     def test_stock_detail_drawer_has_fixed_close_control(self) -> None:
@@ -2790,11 +2796,15 @@ class ScoringTests(unittest.TestCase):
         from ui import dashboard_drawer
 
         source = inspect.getsource(dashboard_drawer.drawer_html)
+        detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)
         combined_source = inspect.getsource(dashboard_drawer._combined_entry_note)
         radar_card_source = inspect.getsource(dashboard_drawer._drawer_radar_entry_card_html)
 
-        self.assertIn("估值/计划参考解释", source)
-        self.assertIn("不等同于主表 Radar 纪律买区", source)
+        self.assertIn("_drawer_detail_basis_html", source)
+        self.assertIn("<details", detail_source)
+        self.assertIn("详细依据", detail_source)
+        self.assertIn("估值/计划参考解释", detail_source)
+        self.assertIn("不等同于主表 Radar 纪律买区", detail_source)
         self.assertIn("legacy 估值参考", combined_source)
         self.assertIn("Radar 纪律买区：", radar_card_source)
         self.assertIn("当前相对买区距离", radar_card_source)
@@ -3008,9 +3018,11 @@ class ScoringTests(unittest.TestCase):
         )
         html = dashboard_module._drawer_html(row)
 
-        self.assertIn("当前结论", html)
+        self.assertIn("决策摘要", html)
+        self.assertIn("下一步动作", html)
         self.assertIn("当前新增建议", html)
         self.assertIn("组合仓位上限", html)
+        self.assertIn("详细依据", html)
         self.assertIn("15%-20%", html)
         self.assertIn("只观察不是因为公司质量差", html)
         self.assertIn("风险评级低代表公司基本面风险较低", html)

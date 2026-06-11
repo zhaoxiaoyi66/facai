@@ -3332,8 +3332,13 @@ def _render_dashboard_styles() -> None:
         .drawer-decision-grid,
         .drawer-position-card {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 0.55rem;
+        }
+        .drawer-decision-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .drawer-position-card {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
         }
         .drawer-decision-grid span,
         .drawer-position-card > div {
@@ -3369,6 +3374,18 @@ def _render_dashboard_styles() -> None:
             font-size: 0.72rem;
             font-style: normal;
             line-height: 1.45;
+        }
+        .drawer-next-action-card {
+            margin-top: 0.65rem;
+        }
+        .drawer-detail-basis {
+            margin-top: 0.78rem;
+        }
+        .drawer-detail-basis > summary {
+            cursor: pointer;
+            color: var(--dash-secondary);
+            font-size: 0.78rem;
+            font-weight: 780;
         }
         .drawer-waiting {
             margin-top: 0.62rem;
@@ -4719,13 +4736,13 @@ def _render_dashboard_styles() -> None:
                 minmax(72px, 0.44fr)
                 minmax(126px, 0.78fr)
                 minmax(64px, 0.42fr)
-                minmax(170px, 0.90fr)
+                minmax(102px, 0.56fr)
                 minmax(68px, 0.42fr)
                 110px;
             align-items:center;
             gap:0.56rem;
             min-height:44px;
-            min-width:964px;
+            min-width:896px;
             width:100%;
             padding:0 12px;
             box-sizing:border-box;
@@ -4842,7 +4859,11 @@ def _render_dashboard_styles() -> None:
         }
         .action-cell {
             width:100%;
-            max-width:220px;
+            max-width:120px;
+            justify-content:flex-start;
+        }
+        .action-cell .decision-badge {
+            max-width:100px;
         }
         .decision-cell-stack span,
         .action-cell span {

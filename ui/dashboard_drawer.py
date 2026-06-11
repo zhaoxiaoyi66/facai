@@ -258,26 +258,6 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
         drawer_deps.badge_span_html(row.get("action"), drawer_deps.badge_color_for_cell("action", row.get("action"), row)),
     ]
-    explanation_cards = [
-        _drawer_radar_entry_card_html(row),
-        _drawer_card_html("公司质量解释", str(row.get("qualityRating") or "N/A"), [
-            "主要加分：" + drawer_deps.translated_join(row.get("keyPositiveDrivers"), limit=4),
-            "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
-            str(summary.get("quality") or ""),
-        ]),
-        _drawer_card_html("估值/计划参考解释", entry_display or str(row.get("entryRating") or "N/A"), [
-            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 纪律买区。",
-            _clean_buy_point_summary_text(summary.get("valuation"), row),
-            _clean_buy_point_summary_text(summary.get("technical"), row),
-            _clean_buy_point_summary_text(summary.get("entry"), row),
-            _entry_context_note(row),
-        ]),
-        _drawer_card_html("风险解释", str(row.get("riskRating") or "N/A"), [
-            "风险来源：" + drawer_deps.translated_join(drawer_deps.risk_items(row), limit=4),
-            str(summary.get("risk") or ""),
-            _risk_context_note(row),
-        ]),
-    ]
     return (
         '<div class="drawer-backdrop"></div>'
         '<aside class="stock-drawer">'
@@ -299,18 +279,9 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<div class="drawer-badges">{"".join(badges)}</div>'
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
         f'{_drawer_decision_summary_html(row, drawer_deps)}'
-        f'{_drawer_position_guidance_html(row)}'
-        f'<div class="drawer-section">{"".join(explanation_cards)}</div>'
-        f'{_drawer_industry_metrics_html(row, drawer_deps)}'
-        '<div class="drawer-section-title">数据复核状态</div>'
-        f'{drawer_review_summary_html(row)}'
-        '<div data-drawer-section="resolution">'
-        '<div class="drawer-section-title">数据补全状态</div>'
-        f'{_drawer_resolution_html(row, drawer_deps)}'
-        '</div>'
-        '<details class="drawer-raw"><summary>原始指标</summary>'
-        f'{_drawer_raw_metrics_html(row, drawer_deps)}'
-        '</details>'
+        f'{_drawer_radar_entry_card_html(row)}'
+        f'{_drawer_next_action_html(row, drawer_deps)}'
+        f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
         '</aside>'
     )
 
@@ -319,7 +290,7 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
     drawer_deps = _drawer_deps(deps)
     symbol = str(row.get("symbol") or "该股票")
     model = model_type_label(row.get("modelType"))
-    action = str(row.get("action") or "只观察")
+    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "只观察")
     quality = str(row.get("qualityRating") or "N/A")
     entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
     entry = _entry_rating_chip_text(entry_label, entry_grade) or str(row.get("entryRating") or "N/A")
@@ -329,19 +300,16 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
         summary = {}
     conclusion = _decision_conclusion_text(row, symbol, model, action)
     why = _decision_why_text(row, quality, entry, risk, summary)
-    wait_items = "".join(f"<li>{escape(item)}</li>" for item in _waiting_conditions(row, drawer_deps))
     return (
         '<div class="drawer-decision-card">'
-        '<div class="drawer-card-title">当前结论</div>'
+        '<div class="drawer-card-title">决策摘要</div>'
         f'<div class="drawer-decision-headline">{escape(conclusion)}</div>'
         f'<p>{escape(why)}</p>'
         '<div class="drawer-decision-grid">'
-        f'<span><b>当前新增建议</b><strong>{escape(str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A"))}</strong></span>'
-        f'<span><b>组合仓位上限</b><strong>{escape(str(row.get("maxPortfolioWeight") or "N/A"))}</strong></span>'
+        f'<span><b>当前动作</b><strong>{escape(action)}</strong></span>'
+        f'<span><b>Radar 状态</b><strong>{escape(_drawer_radar_status_text(row))}</strong></span>'
+        f'<span><b>数据可信度</b><strong>{escape(_drawer_data_status_text(row))}</strong></span>'
         '</div>'
-        '<div class="drawer-waiting"><b>等待条件</b><ul>'
-        f'{wait_items or "<li>等待估值、趋势或关键经营数据进一步确认。</li>"}'
-        '</ul></div>'
         '</div>'
     )
 
@@ -367,20 +335,77 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     return _drawer_card_html("Radar 纪律买区", label, lines)
 
 
-def _drawer_position_guidance_html(row: pd.Series) -> str:
+def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
+    drawer_deps = _drawer_deps(deps)
+    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "")
+    current_add = str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A")
+    max_weight = str(row.get("maxPortfolioWeight") or "N/A")
+    waiting = _waiting_conditions(row, drawer_deps)
+    if not waiting:
+        waiting = ["等待估值、趋势或关键经营数据进一步确认。"]
+    wait_items = "".join(f"<li>{escape(item)}</li>" for item in waiting)
+    block_reason = _drawer_primary_block_reason(row)
     return (
         '<div class="drawer-position-card" data-drawer-section="position">'
         '<div>'
-        '<span>当前新增建议</span>'
-        f'<strong>{escape(str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A"))}</strong>'
-        '<em>由 legacy 估值参考、估值位置和当前趋势决定；不等同于 Radar 纪律买区。</em>'
+        '<span>下一步动作</span>'
+        f'<strong>{escape(action)}</strong>'
+        f'<em>{escape(block_reason)}</em>'
         '</div>'
         '<div>'
-        '<span>组合仓位上限</span>'
-        f'<strong>{escape(str(row.get("maxPortfolioWeight") or "N/A"))}</strong>'
-        '<em>由公司质量和基本面风险决定。</em>'
+        '<span>当前新增建议</span>'
+        f'<strong>{escape(current_add)}</strong>'
+        f'<em>组合仓位上限：{escape(max_weight)}</em>'
         '</div>'
         '</div>'
+        '<div class="drawer-card drawer-next-action-card">'
+        '<div class="drawer-card-title">等待条件</div>'
+        f'<ul>{wait_items}</ul>'
+        '</div>'
+    )
+
+
+def _drawer_detail_basis_html(
+    row: pd.Series,
+    deps: DashboardDrawerDeps | None,
+    summary: dict[str, str],
+    entry_display: str,
+) -> str:
+    drawer_deps = _drawer_deps(deps)
+    explanation_cards = [
+        _drawer_card_html("公司质量解释", str(row.get("qualityRating") or "N/A"), [
+            "主要加分：" + drawer_deps.translated_join(row.get("keyPositiveDrivers"), limit=4),
+            "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
+            str(summary.get("quality") or ""),
+        ]),
+        _drawer_card_html("估值/计划参考解释", entry_display or str(row.get("entryRating") or "N/A"), [
+            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 纪律买区。",
+            _clean_buy_point_summary_text(summary.get("valuation"), row),
+            _clean_buy_point_summary_text(summary.get("technical"), row),
+            _clean_buy_point_summary_text(summary.get("entry"), row),
+            _entry_context_note(row),
+        ]),
+        _drawer_card_html("风险解释", str(row.get("riskRating") or "N/A"), [
+            "风险来源：" + drawer_deps.translated_join(drawer_deps.risk_items(row), limit=4),
+            str(summary.get("risk") or ""),
+            _risk_context_note(row),
+        ]),
+    ]
+    return (
+        '<details class="drawer-raw drawer-detail-basis">'
+        '<summary>详细依据</summary>'
+        f'<div class="drawer-section">{"".join(explanation_cards)}</div>'
+        f'{_drawer_industry_metrics_html(row, drawer_deps)}'
+        '<div class="drawer-section-title">数据复核状态</div>'
+        f'{drawer_review_summary_html(row)}'
+        '<div data-drawer-section="resolution">'
+        '<div class="drawer-section-title">数据补全状态</div>'
+        f'{_drawer_resolution_html(row, drawer_deps)}'
+        '</div>'
+        '<details class="drawer-low-priority"><summary>原始指标</summary>'
+        f'{_drawer_raw_metrics_html(row, drawer_deps)}'
+        '</details>'
+        '</details>'
     )
 
 
@@ -408,6 +433,82 @@ def _drawer_text_list(value: object) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def _drawer_compact_action_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "待复核"
+    if any(token in text for token in ("禁止", "追高", "阻止", "BLOCK")):
+        return "禁止新增"
+    if any(token in text for token in ("可加仓", "可小仓", "可正常", "分批", "ALLOW")):
+        return "可加仓"
+    if any(token in text for token in ("复核", "确认", "REVIEW")):
+        return "待复核"
+    if any(token in text for token in ("只观察", "观察", "等回踩", "等待")):
+        return "只观察"
+    if any(token in text for token in ("暂不", "不建议新增", "WAIT", "AVOID")):
+        return "暂不处理"
+    return text
+
+
+def _drawer_radar_status_text(row: pd.Series) -> str:
+    missing_fields = _drawer_text_list(row.get("missing_entry_fields"))
+    if missing_fields:
+        return "数据不足"
+    status = str(row.get("radar_price_position") or row.get("price_position") or row.get("zone_status") or "").strip()
+    mapping = {
+        "IN_BUY_ZONE": "买区内",
+        "ABOVE_BUY_ZONE": "买区外",
+        "IN_CHASE_ZONE": "追高区",
+        "BELOW_BUY_ZONE": "低于买区",
+        "ZONE_MISSING": "无买区",
+    }
+    if status in mapping:
+        return mapping[status]
+    label = str(row.get("entry_display_label") or row.get("entryRating") or "").strip()
+    if "追高" in label:
+        return "追高区"
+    if "低于买区" in label:
+        return "低于买区"
+    if "买区内" in label:
+        return "买区内"
+    if "等待回落" in label or "高于买区" in label:
+        return "买区外"
+    if "暂无" in label or "数据" in label:
+        return "数据不足"
+    return "待复核"
+
+
+def _drawer_data_status_text(row: pd.Series) -> str:
+    text = str(row.get("dataStatus") or row.get("radar_data_status") or row.get("data_status") or "").strip()
+    confidence = str(row.get("dataConfidence") or "").strip().lower()
+    if "完整" in text or confidence == "high":
+        return "完整"
+    if "中" in text or confidence == "medium":
+        return "中"
+    if "低" in text or confidence == "low":
+        return "低"
+    if "不足" in text or "缺" in text or "missing" in text.lower():
+        return "不足"
+    return text or "待复核"
+
+
+def _drawer_primary_block_reason(row: pd.Series) -> str:
+    reasons = _drawer_text_list(row.get("blockReasons") or row.get("block_reasons") or row.get("radar_block_reasons"))
+    if reasons:
+        return reasons[0]
+    hint = str(row.get("entry_action_hint") or "").strip()
+    if hint:
+        return hint
+    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "")
+    if action == "可加仓":
+        return "仍需按交易计划控制仓位。"
+    if action == "禁止新增":
+        return "当前不满足纪律新增条件。"
+    if action == "待复核":
+        return "先复核数据、估值或买区条件。"
+    return "保持观察，等待更清晰的买区或数据确认。"
 
 
 def _drawer_industry_metrics_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
