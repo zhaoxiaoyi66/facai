@@ -27,6 +27,7 @@ from data.portfolio_trade_sync import (
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
+from data.sell_review import evaluate_sell_review_flags, format_sell_review_label
 from data.stock_plan import StockPlanStore
 from data.trade_performance import EVENT_EXIT_REASONS, EVENT_PLAN_KEYWORDS, summarize_trade_performance
 from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
@@ -1914,6 +1915,11 @@ def _render_trade_performance_cards(summary: dict) -> None:
         ("最大亏损", _money_text(summary.get("max_loser")), "WORST"),
         ("平均持仓", _days_text(summary.get("average_holding_days")), "AVG DAYS"),
         ("中位持仓", _days_text(summary.get("median_holding_days")), "MEDIAN DAYS"),
+        ("疑似卖飞", str(summary.get("suspected_sell_fly_count") or 0), "REVIEW"),
+        ("A类疑似卖飞", str(summary.get("a_class_suspected_sell_fly_count") or 0), "A REVIEW"),
+        ("情绪型卖出", str(summary.get("emotional_sell_count") or 0), "MOOD"),
+        ("买区内卖出", str(summary.get("buy_zone_sell_count") or 0), "ZONE"),
+        ("低于目标卖出", str(summary.get("below_target_sell_count") or 0), "TARGET"),
     ]
     html = "".join(
         (
@@ -1984,6 +1990,10 @@ def _trade_performance_detail_html(row: dict) -> str:
     below_target = "是" if row.get("below_target_sell_price") else "否"
     flags = row.get("discipline_flags") or []
     flag_text = "；".join(str(item) for item in flags) if flags else "无"
+    review = row.get("sell_review") if isinstance(row.get("sell_review"), dict) else {}
+    review_text = format_sell_review_label(review or flags)
+    sell_fly_text = "是" if (review.get("suspected_sell_fly") or row.get("suspected_sell_fly_risk")) else "否"
+    missing_review_fields = "、".join(str(item) for item in (review.get("data_missing_fields") or row.get("sell_review_missing_fields") or [])) or "无"
     reentry = _text(row.get("reentry_plan_text"))
     note = _text(row.get("notes"))
     action = "补录成本" if row.get("cost_basis_missing") else "继续复盘"
@@ -2004,6 +2014,9 @@ def _trade_performance_detail_html(row: dict) -> str:
         ("持仓天数说明", _holding_days_text(row)),
         ("事件交易", _event_trade_note_text(row)),
         ("纪律问题", flag_text),
+        ("卖出复盘", review_text),
+        ("疑似卖飞风险", sell_fly_text),
+        ("复盘数据缺口", missing_review_fields),
         ("回补计划", reentry),
         ("建议动作", action),
     ]
@@ -2058,7 +2071,12 @@ def _performance_status_badges(row: dict) -> str:
     has_core_review = any("核心仓卖出需复盘" in str(item) for item in (row.get("discipline_flags") or []))
     if has_core_review:
         badges.append(("review", "核心仓需复盘"))
-    if not row.get("cost_basis_missing") and not has_core_review and not event_status:
+    review = row.get("sell_review") if isinstance(row.get("sell_review"), dict) else {}
+    if review.get("suspected_sell_fly") or row.get("suspected_sell_fly_risk"):
+        badges.append(("review", "疑似卖飞"))
+    elif row.get("discipline_flags") and not has_core_review:
+        badges.append(("review", "纪律问题"))
+    if not row.get("cost_basis_missing") and not row.get("discipline_flags") and not event_status:
         badges.append(("muted", "已匹配"))
     return "".join(
         f'<span class="performance-badge {escape(tone)}">{escape(label)}</span>'
@@ -2639,15 +2657,40 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
         rows.append(("同步限制", "纪律门禁硬性拦截，禁止同步到组合持仓"))
     reentry_html = _entry_reentry_plan_html(entry)
+    sell_review_html = _entry_sell_review_html(entry)
     blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
     warning_html = _discipline_detail_messages_html("复核提醒", entry.get("warnings") or [], is_blocker=False)
     reminder = escape(_text(entry.get("reminder_text")))
     return (
         f"{_detail_grid_html(rows)}"
         f"{reentry_html}"
+        f"{sell_review_html}"
         f"{blocker_html}"
         f"{warning_html}"
         f'<div class="trade-entry-reminder">{reminder}</div>'
+    )
+
+
+def _entry_sell_review_html(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").strip().lower()
+    if action not in SELL_DISCIPLINE_ACTIONS:
+        return ""
+    review = evaluate_sell_review_flags(entry)
+    rows = [
+        ("卖出复盘标签", format_sell_review_label(review)),
+        ("低于目标价", _yes_no(review.get("below_target_sell"))),
+        ("买区内/低于买区", _yes_no(review.get("sell_in_buy_zone"))),
+        ("A类短持", _yes_no(review.get("a_class_short_hold"))),
+        ("缺具体回补计划", _yes_no(review.get("a_class_missing_reentry"))),
+        ("情绪型卖出", _yes_no(review.get("emotional_sell"))),
+        ("疑似卖飞风险", _yes_no(review.get("suspected_sell_fly"))),
+        ("数据缺口", "、".join(str(item) for item in (review.get("data_missing_fields") or [])) or "无"),
+    ]
+    return (
+        '<div class="trade-entry-reentry-plan">'
+        '<b>卖出复盘</b>'
+        f"{_detail_grid_html(rows)}"
+        "</div>"
     )
 
 

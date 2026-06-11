@@ -11,7 +11,7 @@ from statistics import median
 from typing import Any, Iterable
 
 from data.prices import CACHE_PATH
-from data.trade_safety_gate import has_concrete_reentry_plan
+from data.sell_review import evaluate_sell_review_flags, summarize_sell_review_flags
 
 
 REAL_ACTIONS = {"buy", "add", "sell", "trim"}
@@ -54,9 +54,12 @@ def summarize_trade_performance(
     filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_entries = list(entries) if entries is not None else load_synced_trade_entries(path)
+    review_entries = list(source_entries) if entries is not None else load_trade_entries_for_sell_review(path)
     matched = match_realized_trades(source_entries, opening_lots=opening_lots)
     realized = _apply_filters(matched["realized_trades"], filters or {})
     stats = calculate_realized_pnl(realized)
+    review_rows = _apply_filters(_sell_review_rows(review_entries, matched["realized_trades"]), filters or {})
+    stats.update(summarize_sell_review_flags(review_rows))
     groups = {
         "ticker": _group_summary(realized, "ticker"),
         "position_tier": _group_summary(realized, "position_tier"),
@@ -100,6 +103,38 @@ def load_synced_trade_entries(path: Path = CACHE_PATH) -> list[dict[str, Any]]:
     items = [_row_to_dict(columns, row) for row in rows]
     for item in items:
         item["_portfolio_synced"] = True
+    return items
+
+
+def load_trade_entries_for_sell_review(path: Path = CACHE_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with closing(sqlite3.connect(path)) as conn:
+        if not _table_exists(conn, "trade_journal_entries"):
+            return []
+        join_clause = ""
+        sync_column = "0 AS portfolio_synced"
+        if _table_exists(conn, "trade_portfolio_sync_logs"):
+            join_clause = """
+            LEFT JOIN trade_portfolio_sync_logs AS log
+                ON log.entry_id = entry.id
+               AND log.status = 'synced'
+            """
+            sync_column = "CASE WHEN log.id IS NULL THEN 0 ELSE 1 END AS portfolio_synced"
+        cursor = conn.execute(
+            f"""
+            SELECT entry.*, {sync_column}
+            FROM trade_journal_entries AS entry
+            {join_clause}
+            WHERE entry.action_type IN ('sell', 'trim')
+            ORDER BY entry.trade_date ASC, entry.created_at ASC, entry.id ASC
+            """
+        )
+        rows = cursor.fetchall()
+        columns = [description[0] for description in cursor.description] if cursor.description else []
+    items = [_row_to_dict(columns, row) for row in rows]
+    for item in items:
+        item["_portfolio_synced"] = _bool(item.get("portfolio_synced"))
     return items
 
 
@@ -385,6 +420,58 @@ def calculate_holding_days(buy_date: date | datetime | str, sell_date: date | da
     return max(0, (sell - buy).days)
 
 
+def _sell_review_rows(entries: Iterable[dict[str, Any]], realized_rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_by_entry_id: dict[int, dict[str, Any]] = {}
+    fallback_rows: list[dict[str, Any]] = []
+    for row in realized_rows:
+        entry_id = _optional_int(row.get("sell_entry_id"))
+        if entry_id is not None:
+            rows_by_entry_id[entry_id] = row
+        else:
+            fallback_rows.append(row)
+    for entry in entries:
+        action = str(entry.get("action_type") or "").strip().lower()
+        if action not in SELL_ACTIONS:
+            continue
+        entry_id = _optional_int(entry.get("id"))
+        if entry_id is not None and entry_id in rows_by_entry_id:
+            continue
+        fallback_rows.append(_raw_sell_review_row(entry))
+    return [*rows_by_entry_id.values(), *fallback_rows]
+
+
+def _raw_sell_review_row(entry: dict[str, Any]) -> dict[str, Any]:
+    trade_date = _entry_date(entry)
+    row = {
+        "sell_entry_id": _optional_int(entry.get("id")),
+        "ticker": _symbol(entry.get("symbol")),
+        "action_type": str(entry.get("action_type") or ""),
+        "sell_date": trade_date.isoformat() if trade_date else "",
+        "sell_quantity": _number(entry.get("quantity")) or 0,
+        "sell_price": _number(entry.get("price")),
+        "position_tier": _pre_trade_position_tier(entry) or _position_tier(entry),
+        "sell_mood": str(entry.get("decision_mood") or ""),
+        "sell_reason_type": str(entry.get("sell_reason_type") or ""),
+        "target_sell_price": _number(entry.get("pre_trade_target_sell_price")) or _number(entry.get("target_sell_price")),
+        "holding_days": _number(entry.get("holding_days")),
+        "reentry_plan_text": str(entry.get("reentry_plan_text") or ""),
+        "notes": str(entry.get("notes") or ""),
+        "blockers": list(entry.get("blockers") or _load_json_list(entry.get("blockers_json"))),
+        "warnings": list(entry.get("warnings") or _load_json_list(entry.get("warnings_json"))),
+        "raw_entry": entry,
+        "included_in_performance": False,
+    }
+    review = evaluate_sell_review_flags(row)
+    row["sell_review"] = review
+    row["sell_review_labels"] = list(review.get("labels") or [])
+    row["discipline_flags"] = list(review.get("labels") or [])
+    row["discipline_issue"] = bool(row["discipline_flags"])
+    row["below_target_sell_price"] = bool(review.get("below_target_sell"))
+    row["suspected_sell_fly_risk"] = bool(review.get("suspected_sell_fly"))
+    row["sell_review_missing_fields"] = list(review.get("data_missing_fields") or [])
+    return row
+
+
 def _accumulate_sell(target: dict[int | str, dict[str, Any]], key: int | str, sell_entry: dict, match: dict) -> None:
     row = target.setdefault(key, _base_sell_trade(sell_entry))
     matched_qty = float(match["matched_quantity"])
@@ -480,6 +567,11 @@ def _finalize_sell_trade(row: dict[str, Any]) -> dict[str, Any]:
         row["cost_basis_source"] = "missing"
         row["cost_basis_status"] = "missing"
         row["included_in_performance"] = False
+    review = evaluate_sell_review_flags(row)
+    row["sell_review"] = review
+    row["sell_review_labels"] = list(review.get("labels") or [])
+    row["suspected_sell_fly_risk"] = bool(review.get("suspected_sell_fly"))
+    row["sell_review_missing_fields"] = list(review.get("data_missing_fields") or [])
     flags = _discipline_flags(row)
     row["discipline_flags"] = flags
     row["discipline_issue"] = bool(flags)
@@ -493,39 +585,8 @@ def _finalize_sell_trade(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _discipline_flags(row: dict[str, Any]) -> list[str]:
-    flags: list[str] = []
-    a_class_review_needed = False
-    is_a_class = str(row.get("position_tier") or "").upper() == "A"
-    is_c_planned_event_exit = _is_c_class_planned_event_exit(row)
-    sell_price = _number(row.get("sell_price"))
-    target = _number(row.get("target_sell_price"))
-    if sell_price is not None and target is not None and sell_price < target and not is_c_planned_event_exit:
-        flags.append("低于买入目标价卖出")
-        a_class_review_needed = a_class_review_needed or is_a_class
-    if is_a_class and not has_concrete_reentry_plan(row.get("raw_entry") or {}):
-        flags.append("A类卖出缺少具体回补计划")
-        a_class_review_needed = True
-    reason = str(row.get("sell_reason_type") or "").lower()
-    mood = str(row.get("sell_mood") or "").lower()
-    if reason in EMOTIONAL_SELL_REASONS or mood in EMOTIONAL_SELL_MOODS:
-        flags.append("宏观/情绪型卖出")
-        a_class_review_needed = a_class_review_needed or is_a_class
-    holding_days = _number(row.get("holding_days"))
-    if is_a_class and holding_days is not None and holding_days <= A_CLASS_SHORT_HOLDING_DAYS:
-        flags.append("A类持仓天数过短")
-        a_class_review_needed = True
-    zone = str((row.get("raw_entry") or {}).get("zone_status") or (row.get("raw_entry") or {}).get("buy_zone_status") or "")
-    if zone in {"IN_BUY_ZONE", "BELOW_BUY_ZONE"} and not is_c_planned_event_exit:
-        flags.append("卖出时处于买区/低于买区")
-        a_class_review_needed = a_class_review_needed or is_a_class
-    if _is_event_exit_reason(row) and str(row.get("position_tier") or "").upper() in {"A", "B"}:
-        flags.append("非 C 类事件交易需复核")
-    blockers = [str(item) for item in (row.get("blockers") or [])]
-    if blockers:
-        flags.append("卖出门禁曾阻断")
-    if a_class_review_needed:
-        flags.insert(0, "核心仓卖出需复盘")
-    return flags
+    review = row.get("sell_review") if isinstance(row.get("sell_review"), dict) else evaluate_sell_review_flags(row)
+    return list(review.get("labels") or [])
 
 
 def _event_trade_status(row: dict[str, Any]) -> dict[str, str]:

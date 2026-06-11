@@ -125,6 +125,44 @@ def test_blocked_and_observation_only_records_do_not_count_realized_pnl() -> Non
     assert summary["summary"]["total_realized_pnl"] == 0
 
 
+def test_blocked_sell_can_count_in_discipline_review_without_realized_pnl() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(
+                1,
+                "NVDA",
+                "sell",
+                5,
+                120,
+                "2026-01-10",
+                position_class="A",
+                target_sell_price=150,
+                discipline_status="blocked",
+            ),
+        ]
+    )
+
+    assert summary["realized_trades"] == []
+    assert summary["summary"]["total_realized_pnl"] == 0
+    assert summary["summary"]["suspected_sell_fly_count"] == 1
+    assert summary["summary"]["a_class_suspected_sell_fly_count"] == 1
+
+
+def test_trade_performance_summary_counts_sell_review_flags() -> None:
+    summary = summarize_trade_performance(
+        entries=[
+            _entry(1, "NVDA", "buy", 1, 100, "2026-01-01", position_class="A", target_sell_price=150),
+            _entry(2, "NVDA", "sell", 1, 120, "2026-01-03", position_class="A", buy_zone_status="IN_BUY_ZONE"),
+        ]
+    )
+
+    trade = summary["realized_trades"][0]
+    assert trade["sell_review"]["suspected_sell_fly"] is True
+    assert summary["summary"]["below_target_sell_count"] == 1
+    assert summary["summary"]["buy_zone_sell_count"] == 1
+    assert summary["summary"]["a_class_short_hold_sell_count"] == 1
+
+
 def test_synced_buy_counts_as_cost_lot_even_if_old_radar_blocked_flag_exists() -> None:
     summary = summarize_trade_performance(
         entries=[

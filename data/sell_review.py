@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Iterable
+
+from data.trade_safety_gate import has_concrete_reentry_plan
+
+
+A_CLASS_SHORT_HOLDING_DAYS = 14
+BUY_ZONE_STATUSES = {"IN_BUY_ZONE", "BELOW_BUY_ZONE"}
+EMOTIONAL_SELL_REASONS = {"macro", "macro_fear", "anxiety", "panic_sell"}
+EMOTIONAL_SELL_MOODS = {"macro_fear", "anxiety", "panic_sell", "regret_chase", "revenge_trade"}
+PLANNED_EXECUTION_MOODS = {"plan_execution", "well_reasoned", "thoughtful"}
+EVENT_EXIT_REASONS = {
+    "earnings_catalyst_done",
+    "event_trade_done",
+    "catalyst_failed",
+    "no_post_earnings_reaction",
+    "planned_exit",
+}
+EVENT_PLAN_KEYWORDS = (
+    "按计划",
+    "退出",
+    "无反应",
+    "无波动",
+    "催化失败",
+    "事件结束",
+    "止损",
+    "目标",
+    "小亏",
+    "卖出计划",
+    "退出条件",
+)
+
+FLAG_LABELS = {
+    "below_target_sell": "低于买入目标价卖出",
+    "sell_in_buy_zone": "卖出时处于买区/低于买区",
+    "a_class_short_hold": "A类持仓天数过短",
+    "a_class_missing_reentry": "A类卖出缺少具体回补计划",
+    "emotional_sell": "宏观/情绪型卖出",
+    "full_exit_without_review": "清仓无复盘",
+    "non_c_event_review": "非 C 类事件交易需复核",
+    "gate_blocked": "卖出门禁曾阻断",
+    "core_review": "核心仓卖出需复盘",
+}
+
+
+def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
+    action = str(trade.get("action_type") or trade.get("action") or "").strip().lower()
+    if action not in {"sell", "trim"}:
+        return _empty_review()
+
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    tier = _position_tier(trade) or _position_tier(raw)
+    is_a_class = tier == "A"
+    is_c_planned_event_exit = tier == "C" and _is_event_exit_reason(trade) and _has_structured_event_exit_plan(trade)
+
+    sell_price = _number(trade.get("sell_price")) or _number(trade.get("price"))
+    target_price = _first_number(
+        trade.get("target_sell_price"),
+        trade.get("pre_trade_target_sell_price"),
+        raw.get("target_sell_price"),
+        raw.get("pre_trade_target_sell_price"),
+    )
+    holding_days = _number(trade.get("holding_days"))
+
+    below_target = bool(
+        sell_price is not None
+        and target_price is not None
+        and target_price > 0
+        and sell_price < target_price
+        and not is_c_planned_event_exit
+    )
+    sell_in_buy_zone = bool(_sell_in_buy_zone(trade, sell_price) and not is_c_planned_event_exit)
+    a_short_hold = bool(is_a_class and holding_days is not None and holding_days <= A_CLASS_SHORT_HOLDING_DAYS)
+    missing_reentry = bool(is_a_class and not has_concrete_reentry_plan(raw or trade))
+    emotional = _is_emotional_sell(trade)
+    full_exit_without_review = bool(action == "sell" and not _has_meaningful_exit_review(trade))
+    non_c_event_review = bool(tier in {"A", "B"} and _is_event_exit_reason(trade))
+    gate_blocked = bool([str(item) for item in (trade.get("blockers") or raw.get("blockers") or [])])
+
+    flag_keys: list[str] = []
+    core_review_needed = False
+    if below_target:
+        flag_keys.append("below_target_sell")
+        core_review_needed = core_review_needed or is_a_class
+    if missing_reentry:
+        flag_keys.append("a_class_missing_reentry")
+        core_review_needed = True
+    if emotional:
+        flag_keys.append("emotional_sell")
+        core_review_needed = core_review_needed or is_a_class
+    if a_short_hold:
+        flag_keys.append("a_class_short_hold")
+        core_review_needed = True
+    if sell_in_buy_zone:
+        flag_keys.append("sell_in_buy_zone")
+        core_review_needed = core_review_needed or is_a_class
+    if full_exit_without_review:
+        flag_keys.append("full_exit_without_review")
+    if non_c_event_review:
+        flag_keys.append("non_c_event_review")
+    if gate_blocked:
+        flag_keys.append("gate_blocked")
+
+    suspected = bool(
+        (is_a_class and (below_target or sell_in_buy_zone or missing_reentry))
+        or (emotional and not _is_plan_execution(trade))
+        or (a_short_hold and not _has_meaningful_exit_review(trade))
+        or gate_blocked
+    )
+    labels = [FLAG_LABELS[key] for key in _dedupe(flag_keys)]
+    if core_review_needed:
+        labels.insert(0, FLAG_LABELS["core_review"])
+
+    missing_fields = _missing_fields(trade, sell_price, target_price, holding_days)
+    return {
+        "flags": _dedupe(flag_keys),
+        "labels": _dedupe(labels),
+        "below_target_sell": below_target,
+        "sell_in_buy_zone": sell_in_buy_zone,
+        "a_class_short_hold": a_short_hold,
+        "a_class_missing_reentry": missing_reentry,
+        "emotional_sell": emotional,
+        "full_exit_without_review": full_exit_without_review,
+        "suspected_sell_fly": suspected,
+        "data_missing_fields": missing_fields,
+        "position_tier": tier,
+    }
+
+
+def summarize_sell_review_flags(trades: Iterable[dict[str, Any]]) -> dict[str, int]:
+    reviews = [_review(trade) for trade in trades]
+    return {
+        "suspected_sell_fly_count": sum(1 for item in reviews if item.get("suspected_sell_fly")),
+        "a_class_suspected_sell_fly_count": sum(
+            1
+            for item in reviews
+            if item.get("suspected_sell_fly") and str(item.get("position_tier") or "").upper() == "A"
+        ),
+        "emotional_sell_count": sum(1 for item in reviews if item.get("emotional_sell")),
+        "buy_zone_sell_count": sum(1 for item in reviews if item.get("sell_in_buy_zone")),
+        "below_target_sell_count": sum(1 for item in reviews if item.get("below_target_sell")),
+        "a_class_short_hold_sell_count": sum(1 for item in reviews if item.get("a_class_short_hold")),
+        "a_class_missing_reentry_count": sum(1 for item in reviews if item.get("a_class_missing_reentry")),
+        "full_exit_without_review_count": sum(1 for item in reviews if item.get("full_exit_without_review")),
+    }
+
+
+def format_sell_review_label(flags: dict[str, Any] | list[str] | None) -> str:
+    if flags is None:
+        return "数据不足"
+    if isinstance(flags, list):
+        labels = [str(item) for item in flags if str(item).strip()]
+    else:
+        labels = [str(item) for item in flags.get("labels") or [] if str(item).strip()]
+    return " / ".join(labels) if labels else "无明显复盘标签"
+
+
+def _review(trade: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(trade.get("sell_review"), dict):
+        return trade["sell_review"]
+    return evaluate_sell_review_flags(trade)
+
+
+def _empty_review() -> dict[str, Any]:
+    return {
+        "flags": [],
+        "labels": [],
+        "below_target_sell": False,
+        "sell_in_buy_zone": False,
+        "a_class_short_hold": False,
+        "a_class_missing_reentry": False,
+        "emotional_sell": False,
+        "full_exit_without_review": False,
+        "suspected_sell_fly": False,
+        "data_missing_fields": [],
+        "position_tier": "",
+    }
+
+
+def _sell_in_buy_zone(trade: dict[str, Any], sell_price: float | None) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    zone = str(
+        trade.get("zone_status")
+        or trade.get("buy_zone_status")
+        or raw.get("zone_status")
+        or raw.get("buy_zone_status")
+        or ""
+    ).strip().upper()
+    if zone in BUY_ZONE_STATUSES:
+        return True
+    buy_zone = trade.get("buy_zone") or trade.get("radar_buy_zone") or raw.get("buy_zone") or raw.get("radar_buy_zone")
+    lower, upper = _zone_bounds(buy_zone)
+    return bool(sell_price is not None and lower is not None and upper is not None and lower <= sell_price <= upper)
+
+
+def _zone_bounds(value: object) -> tuple[float | None, float | None]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return (None, None)
+    if isinstance(value, dict):
+        lower = _first_number(value.get("lower"), value.get("low"), value.get("min"), value.get("from"))
+        upper = _first_number(value.get("upper"), value.get("high"), value.get("max"), value.get("to"))
+        return (lower, upper)
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return (_number(value[0]), _number(value[1]))
+    return (None, None)
+
+
+def _is_emotional_sell(trade: dict[str, Any]) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
+    mood = str(trade.get("sell_mood") or trade.get("decision_mood") or raw.get("decision_mood") or "").strip().lower()
+    text = " ".join(
+        str(item or "")
+        for item in (
+            trade.get("sell_reason"),
+            trade.get("notes"),
+            raw.get("notes"),
+            raw.get("sell_reason"),
+        )
+    )
+    keywords = ("焦虑", "恐慌", "宏观恐慌", "害怕回撤", "复仇交易", "临时害怕")
+    return bool(reason in EMOTIONAL_SELL_REASONS or mood in EMOTIONAL_SELL_MOODS or any(item in text for item in keywords))
+
+
+def _is_plan_execution(trade: dict[str, Any]) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    mood = str(trade.get("sell_mood") or trade.get("decision_mood") or raw.get("decision_mood") or "").strip().lower()
+    reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
+    text = " ".join(str(item or "") for item in (trade.get("notes"), raw.get("notes"), trade.get("reentry_plan_text")))
+    return bool(mood in PLANNED_EXECUTION_MOODS or reason in {"target_price", "planned_exit"} or "按计划" in text)
+
+
+def _has_meaningful_exit_review(trade: dict[str, Any]) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    if has_concrete_reentry_plan(raw or trade):
+        return True
+    text = " ".join(
+        str(item or "")
+        for item in (
+            trade.get("reentry_plan_text"),
+            trade.get("post_sell_plan"),
+            trade.get("sell_review_reason"),
+            trade.get("notes"),
+            raw.get("reentry_plan_text"),
+            raw.get("post_sell_plan"),
+            raw.get("sell_review_reason"),
+            raw.get("notes"),
+        )
+    ).strip()
+    if len(text) >= 12:
+        return True
+    reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
+    return reason in {"target_price", "thesis_broken", "risk_control", "planned_exit"}
+
+
+def _is_event_exit_reason(trade: dict[str, Any]) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    return str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower() in EVENT_EXIT_REASONS
+
+
+def _has_structured_event_exit_plan(trade: dict[str, Any]) -> bool:
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    text = " ".join(
+        str(item or "")
+        for item in (
+            trade.get("notes"),
+            trade.get("buy_reason"),
+            trade.get("reentry_plan_text"),
+            raw.get("notes"),
+            raw.get("buy_reason"),
+            raw.get("reentry_plan_text"),
+            raw.get("classification_note"),
+            raw.get("exit_plan"),
+            raw.get("event_plan"),
+        )
+    )
+    return any(keyword in text for keyword in EVENT_PLAN_KEYWORDS)
+
+
+def _missing_fields(
+    trade: dict[str, Any],
+    sell_price: float | None,
+    target_price: float | None,
+    holding_days: float | None,
+) -> list[str]:
+    missing: list[str] = []
+    if sell_price is None:
+        missing.append("sell_price")
+    if target_price is None:
+        missing.append("target_sell_price")
+    if holding_days is None:
+        missing.append("holding_days")
+    raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    if not (
+        trade.get("zone_status")
+        or trade.get("buy_zone_status")
+        or trade.get("buy_zone")
+        or raw.get("zone_status")
+        or raw.get("buy_zone_status")
+        or raw.get("buy_zone")
+    ):
+        missing.append("zone_status")
+    return missing
+
+
+def _position_tier(item: dict[str, Any]) -> str:
+    value = str(
+        item.get("position_tier")
+        or item.get("position_class")
+        or item.get("pre_trade_position_tier")
+        or ""
+    ).strip().upper()
+    return value if value in {"A", "B", "C"} else ""
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        parsed = _number(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _number(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe(items: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        if item and item not in result:
+            result.append(item)
+    return result

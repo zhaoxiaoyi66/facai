@@ -331,3 +331,51 @@ def test_trade_performance_row_shows_compact_pnl_and_detail_fields() -> None:
     assert "核心仓需复盘" in html
     assert "FIFO buy/add lot" in html
     assert "回踩买回" in html
+
+
+def test_trade_performance_row_shows_sell_review_labels() -> None:
+    html = trade_journal._trade_performance_row_html(
+        {
+            "sell_date": "2026-06-04",
+            "ticker": "NVDA",
+            "action_type": "sell",
+            "sell_quantity": 20,
+            "sell_price": 230,
+            "buy_avg_price": 215,
+            "realized_pnl": 300,
+            "realized_pnl_pct": 7,
+            "holding_days": 5,
+            "cost_basis_missing": False,
+            "cost_basis_source": "fifo",
+            "cost_basis_status": "matched_fifo",
+            "included_in_performance": True,
+            "position_tier": "A",
+            "target_sell_price": 300,
+            "discipline_flags": ["核心仓卖出需复盘", "低于买入目标价卖出"],
+            "sell_review": {
+                "labels": ["核心仓卖出需复盘", "低于买入目标价卖出"],
+                "suspected_sell_fly": True,
+                "data_missing_fields": [],
+            },
+        }
+    )
+
+    assert "卖出复盘" in html
+    assert "疑似卖飞" in html
+    assert "低于买入目标价卖出" in html
+
+
+def test_trade_entry_detail_shows_sell_review_snapshot() -> None:
+    html = trade_journal._entry_sell_review_html(
+        {
+            "action_type": "sell",
+            "price": 120,
+            "target_sell_price": 150,
+            "position_class": "A",
+            "holding_days": 5,
+        }
+    )
+
+    assert "卖出复盘" in html
+    assert "低于目标价" in html
+    assert "疑似卖飞风险" in html
