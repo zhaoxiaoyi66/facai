@@ -90,7 +90,47 @@ def test_old_records_with_missing_fields_do_not_crash() -> None:
 
     assert review["suspected_sell_fly"] is False
     assert "sell_price" in review["data_missing_fields"]
-    assert format_sell_review_label(review) == "无明显复盘标签"
+    assert format_sell_review_label(review) == "数据不足"
+
+
+def test_sparse_a_class_legacy_record_is_data_insufficient_not_sell_fly() -> None:
+    review = evaluate_sell_review_flags({"action_type": "trim", "position_tier": "A"})
+
+    assert review["suspected_sell_fly"] is False
+    assert review["labels"] == []
+    assert format_sell_review_label(review) == "数据不足"
+
+
+def test_a_class_below_target_still_marks_sell_fly() -> None:
+    review = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "position_tier": "A",
+            "sell_price": 100,
+            "target_sell_price": 120,
+        }
+    )
+
+    assert review["below_target_sell"] is True
+    assert review["suspected_sell_fly"] is True
+    assert "核心仓卖出需复盘" in review["labels"]
+
+
+def test_a_class_concrete_reentry_does_not_mark_missing_reentry() -> None:
+    review = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "position_tier": "A",
+            "sell_price": 100,
+            "target_sell_price": 120,
+            "reentry_pullback_price": 90,
+            "reentry_buy_back_pct_on_pullback": 50,
+            "reentry_thesis_invalidation": "thesis broken",
+        }
+    )
+
+    assert review["a_class_missing_reentry"] is False
+    assert "A类卖出缺少具体回补计划" not in review["labels"]
 
 
 def test_summary_counts_review_flags() -> None:

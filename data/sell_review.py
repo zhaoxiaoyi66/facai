@@ -78,13 +78,15 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
     full_exit_without_review = bool(action == "sell" and not _has_meaningful_exit_review(trade))
     non_c_event_review = bool(tier in {"A", "B"} and _is_event_exit_reason(trade))
     gate_blocked = bool([str(item) for item in (trade.get("blockers") or raw.get("blockers") or [])])
+    missing_fields = _missing_fields(trade, sell_price, target_price, holding_days)
+    context_too_sparse = _context_too_sparse(missing_fields)
 
     flag_keys: list[str] = []
     core_review_needed = False
     if below_target:
         flag_keys.append("below_target_sell")
         core_review_needed = core_review_needed or is_a_class
-    if missing_reentry:
+    if missing_reentry and not context_too_sparse:
         flag_keys.append("a_class_missing_reentry")
         core_review_needed = True
     if emotional:
@@ -96,7 +98,7 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
     if sell_in_buy_zone:
         flag_keys.append("sell_in_buy_zone")
         core_review_needed = core_review_needed or is_a_class
-    if full_exit_without_review:
+    if full_exit_without_review and not context_too_sparse:
         flag_keys.append("full_exit_without_review")
     if non_c_event_review:
         flag_keys.append("non_c_event_review")
@@ -104,7 +106,7 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         flag_keys.append("gate_blocked")
 
     suspected = bool(
-        (is_a_class and (below_target or sell_in_buy_zone or missing_reentry))
+        (is_a_class and (below_target or sell_in_buy_zone or (missing_reentry and not context_too_sparse)))
         or (emotional and not _is_plan_execution(trade))
         or (a_short_hold and not _has_meaningful_exit_review(trade))
         or gate_blocked
@@ -113,7 +115,6 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
     if core_review_needed:
         labels.insert(0, FLAG_LABELS["core_review"])
 
-    missing_fields = _missing_fields(trade, sell_price, target_price, holding_days)
     return {
         "flags": _dedupe(flag_keys),
         "labels": _dedupe(labels),
@@ -154,6 +155,8 @@ def format_sell_review_label(flags: dict[str, Any] | list[str] | None) -> str:
         labels = [str(item) for item in flags if str(item).strip()]
     else:
         labels = [str(item) for item in flags.get("labels") or [] if str(item).strip()]
+        if not labels and flags.get("data_missing_fields"):
+            return "数据不足"
     return " / ".join(labels) if labels else "无明显复盘标签"
 
 
@@ -306,6 +309,11 @@ def _missing_fields(
     ):
         missing.append("zone_status")
     return missing
+
+
+def _context_too_sparse(missing_fields: list[str]) -> bool:
+    critical = {"sell_price", "target_sell_price", "holding_days", "zone_status"}
+    return critical.issubset(set(missing_fields))
 
 
 def _position_tier(item: dict[str, Any]) -> str:
