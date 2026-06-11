@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
+from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context
 from settings import load_watchlist
 from ui.theme import render_page_header
@@ -37,7 +38,7 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
             '<table class="ai-radar-table">'
             "<thead><tr>"
             "<th>Ticker</th><th>Decision</th><th>Block reasons</th><th>公司</th><th>当前价</th><th>更新</th><th>Stale</th><th>总分</th>"
-            "<th>击球区</th><th>Zone</th><th>核心仓</th><th>交易仓</th><th>数据</th>"
+            "<th>买点</th><th>Zone</th><th>核心仓</th><th>交易仓</th><th>数据</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -116,7 +117,7 @@ def _list_row_html(row: dict[str, Any], selected: str) -> str:
         f'<td>{escape(_short_time(row.get("data_updated_at")))}</td>'
         f'<td>{escape("是" if row.get("is_stale") else "否")}</td>'
         f'<td>{escape(_number_text(row.get("final_score")))}</td>'
-        f'<td>{escape(_zone_text(row.get("buy_zone")))}</td>'
+        f'<td>{_entry_display_html(row)}</td>'
         f'<td>{escape(_price_position_label(row.get("price_position")))}</td>'
         f'<td>{escape(_pct(row.get("core_max_pct")))}</td>'
         f'<td>{escape(_pct(row.get("trade_max_pct")))}</td>'
@@ -136,6 +137,7 @@ def _report_html(report: dict[str, Any], market: dict[str, Any]) -> str:
         f'<div><span>是否允许新增</span><strong>{escape("允许" if allowed else "不允许")}</strong></div>'
         f'<div class="wide"><span>阻止原因</span><strong>{escape("；".join(str(item) for item in block_reasons) or "无")}</strong></div>'
         f'<div><span>当前价格</span><strong>{escape(_money(report.get("current_price")))}</strong></div>'
+        f'<div><span>买点参考</span>{_entry_display_html(report)}</div>'
         f'<div><span>击球区</span><strong>{escape(_zone_text(report.get("buy_zone")))}</strong></div>'
         f'<div><span>Zone status</span><strong>{escape(_price_position_label(report.get("price_position")))}</strong></div>'
         f'<div><span>核心仓上限</span><strong>{escape(_pct(report.get("core_max_pct")))}</strong></div>'
@@ -353,6 +355,19 @@ def _list_value(row: dict[str, Any] | None, key: str) -> list[str]:
     return [str(value)] if value else []
 
 
+def _entry_display_html(row: dict[str, Any]) -> str:
+    label = str(row.get("entry_display_label") or "暂无参考买区").strip()
+    hint = str(row.get("entry_action_hint") or row.get("entry_display_reason") or "").strip()
+    if not hint:
+        hint = "只读参考，不改变门禁"
+    return (
+        '<div class="ai-radar-entry-ref">'
+        f'<strong>{escape(label)}</strong>'
+        f'<span>{escape(hint)}</span>'
+        "</div>"
+    )
+
+
 def _decision_label(value: str) -> str:
     return value if value else "UNKNOWN"
 
@@ -368,14 +383,7 @@ def _data_status_label(value: str) -> str:
 
 
 def _price_position_label(value: Any) -> str:
-    text = str(value or "").strip()
-    return {
-        "IN_BUY_ZONE": "买区内",
-        "ABOVE_BUY_ZONE": "高于买区",
-        "IN_CHASE_ZONE": "追高区",
-        "BELOW_BUY_ZONE": "低于买区，需复核",
-        "ZONE_MISSING": "无法判断",
-    }.get(text, text or "N/A")
+    return format_zone_status(value)
 
 
 def _decision_tone(value: str) -> str:
@@ -389,16 +397,7 @@ def _decision_tone(value: str) -> str:
 
 
 def _zone_text(value: Any) -> str:
-    zone = value if isinstance(value, dict) else {}
-    lower = _number(zone.get("lower"))
-    upper = _number(zone.get("upper"))
-    if lower is not None and upper is not None:
-        return f"{_money(lower)} - {_money(upper)}"
-    if upper is not None:
-        return f"<= {_money(upper)}"
-    if lower is not None:
-        return f">= {_money(lower)}"
-    return "N/A"
+    return format_buy_zone(value)
 
 
 def _money(value: Any) -> str:
@@ -481,6 +480,23 @@ def _render_styles() -> None:
         .ai-radar-table tr.active td { background:#F8FBFF; }
         .ai-radar-table a { color:#0F172A; font-weight:750; text-decoration:none; }
         .ai-radar-reasons { max-width:340px; color:#64748B !important; }
+        .ai-radar-entry-ref {
+            min-width:150px;
+            max-width:230px;
+            line-height:1.25;
+        }
+        .ai-radar-entry-ref strong {
+            display:block;
+            color:#0F172A;
+            font-size:12px;
+            font-weight:750;
+        }
+        .ai-radar-entry-ref span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-top:3px;
+        }
         .ai-radar-decision {
             display:inline-flex;
             padding:2px 8px;

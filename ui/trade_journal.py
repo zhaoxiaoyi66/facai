@@ -17,6 +17,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.entry_display import format_buy_zone, format_zone_status
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
@@ -458,17 +459,8 @@ def _radar_gate_blocks_sync(result: object) -> bool:
 
 
 def _radar_zone_text(zone: object) -> str:
-    if not isinstance(zone, dict):
-        return BLANK_TEXT
-    lower = _number(zone.get("lower"))
-    upper = _number(zone.get("upper"))
-    if lower is not None and upper is not None:
-        return f"{format_currency(lower)} - {format_currency(upper)}"
-    if lower is not None:
-        return f">= {format_currency(lower)}"
-    if upper is not None:
-        return f"<= {format_currency(upper)}"
-    return BLANK_TEXT
+    text = format_buy_zone(zone)
+    return BLANK_TEXT if text == "N/A" else text
 
 
 def _score_text(value: object) -> str:
@@ -733,14 +725,8 @@ def _sell_reference_alerts(context: dict) -> list[str]:
 
 
 def _zone_status_text(value: object) -> str:
-    text = str(value or "").strip().upper()
-    return {
-        "IN_BUY_ZONE": "在纪律买区",
-        "ABOVE_BUY_ZONE": "高于买区",
-        "IN_CHASE_ZONE": "进入追高区",
-        "BELOW_BUY_ZONE": "低于买区，需复核",
-        "ZONE_MISSING": "区间缺失",
-    }.get(text, text or BLANK_TEXT)
+    text = format_zone_status(value)
+    return BLANK_TEXT if text == "N/A" else text
 
 
 def _sell_reference_hint(zone_status: str, current_price: float | None, target_sell: float | None) -> str:

@@ -6,6 +6,7 @@ from html import escape
 import pandas as pd
 
 from data.dashboard_lanes import row_current_add_text, row_final_action
+from data.entry_display import build_entry_display
 
 
 BADGE_STYLES = {
@@ -136,15 +137,20 @@ def _compact_watchlist_badge_text(key: str, value: object) -> str:
 
 
 def _entry_rating_cell_html(row: pd.Series) -> str:
-    label, grade, _title = _entry_rating_display_parts(row)
+    display = _dashboard_entry_display(row)
+    label = str(display.get("entry_display_label") or "").strip()
+    hint = str(display.get("entry_action_hint") or display.get("entry_display_reason") or "").strip()
+    if not label:
+        label, grade, _title = _entry_rating_display_parts(row)
+        hint = _entry_rating_chip_text(label, grade)
     tone = _buy_point_label_tone(label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
-    display_text = _entry_rating_chip_text(label, grade)
     return (
         '<div class="decision-cell entry-rating-cell">'
-        f'<span class="entry-rating-token" title="{escape(display_text)}" '
+        f'<span class="entry-rating-token" title="{escape(label)}" '
         f'style="background:{background};color:{foreground};border:1px solid {border};">'
-        f"<strong>{escape(display_text)}</strong>"
+        f"<strong>{escape(label or '待确认')}</strong>"
+        f"<em>{escape(hint)}</em>"
         "</span></div>"
     )
 
@@ -157,8 +163,69 @@ def _entry_rating_chip_text(label: object, grade: object) -> str:
     return label_text or grade_text or "待确认"
 
 
+def _dashboard_entry_display(row: pd.Series | dict) -> dict:
+    zone = _row_value(row, "activeZone") or _row_value(row, "systemZone")
+    buy_zone = {
+        "lower": _zone_value(zone, "trancheBuyLow"),
+        "upper": _zone_value(zone, "trancheBuyHigh"),
+    }
+    chase_zone = {"lower": _zone_value(zone, "noChaseAbove")}
+    price_position = _price_position_from_dashboard_zone(_zone_value(zone, "currentZone"))
+    data_status = "MISSING_BUY_ZONE" if price_position == "ZONE_MISSING" else "OK"
+    current_price = _row_value(row, "price") or _row_value(row, "currentPrice") or _zone_value(zone, "currentPrice")
+    return build_entry_display(
+        current_price=current_price,
+        buy_zone=buy_zone,
+        chase_zone=chase_zone,
+        data_status=data_status,
+        price_position=price_position,
+        decision=str(_row_value(row, "finalDecision") or _row_value(row, "decision") or ""),
+        final_score=_number(_row_value(row, "finalScore") or _row_value(row, "totalScore")),
+        valuation_score=_number(_row_value(row, "valuationScore")),
+        risk_score=_number(_row_value(row, "riskScore")),
+    )
+
+
+def _price_position_from_dashboard_zone(value: object) -> str:
+    zone = str(value or "").strip()
+    if zone in {"tranche_buy", "heavy_buy"}:
+        return "IN_BUY_ZONE"
+    if zone == "below_heavy_buy":
+        return "BELOW_BUY_ZONE"
+    if zone == "no_chase":
+        return "IN_CHASE_ZONE"
+    if zone == "fair_observation":
+        return "ABOVE_BUY_ZONE"
+    return "ZONE_MISSING"
+
+
+def _zone_value(zone: object, key: str) -> object:
+    if isinstance(zone, dict):
+        return zone.get(key)
+    return getattr(zone, key, None)
+
+
+def _number(value: object) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _buy_point_label_tone(label: object) -> str:
     text = str(label or "").strip()
+    if "禁止追高" in text:
+        return "red"
+    if "暂无参考买区" in text or "数据" in text:
+        return "gray"
+    if "低于买区" in text:
+        return "yellow"
+    if "买区内" in text:
+        return "green"
+    if "等待回落" in text:
+        return "blue"
     if "极贵" in text:
         return "deepred"
     if "偏贵" in text:

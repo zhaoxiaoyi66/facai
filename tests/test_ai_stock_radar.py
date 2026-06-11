@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_report, normalize_radar_inputs
+from data.ai_stock_radar import RadarScores, RadarZone, build_ai_stock_radar_list_row, build_ai_stock_radar_report, normalize_radar_inputs
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui.ai_stock_radar import select_radar_symbols
 
@@ -192,6 +192,134 @@ def test_price_position_in_chase_zone() -> None:
 
         assert report.price_position == "IN_CHASE_ZONE"
         assert report.decision == "BLOCK_CHASE"
+
+
+def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 110)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.decision == "WAIT"
+        assert report.entry_reference_low == 90
+        assert report.entry_reference_high == 100
+        assert report.next_action_price == 100
+        assert report.chase_above_price == 120
+        assert report.current_vs_entry_pct == 10.0
+        assert report.entry_display_label == "等待回落 $90.00 - $100.00"
+        assert "当前高于买区 10%" in report.entry_display_reason
+        assert "追高禁区 >$120.00" in report.entry_display_reason
+
+
+def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 125)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.decision == "BLOCK_CHASE"
+        assert report.entry_display_label.startswith("禁止追高")
+        assert report.entry_action_hint == "进入追高区，禁止新增"
+
+
+def test_entry_display_inside_buy_zone_can_still_wait_on_low_score() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(final_score=65),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.decision == "WAIT"
+        assert report.price_position == "IN_BUY_ZONE"
+        assert report.entry_display_label == "买区内 $90.00 - $100.00"
+        assert report.entry_action_hint == "买区内但总分低于 70，需复核"
+
+
+def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 80)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert report.decision == "WAIT"
+        assert report.price_position == "BELOW_BUY_ZONE"
+        assert report.entry_display_label == "低于买区 $90.00 - $100.00"
+        assert "不等于自动更便宜" in report.entry_display_reason
+        assert report.entry_action_hint == "低于买区，不自动买入"
+
+
+def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            now=NOW,
+        )
+
+        assert report.decision == "DATA_MISSING"
+        assert report.entry_display_label.startswith("暂无参考买区：")
+        assert "无法生成纪律买区" in report.entry_display_label
+        assert report.entry_action_hint == "补齐数据后再复核"
+
+
+def test_list_row_includes_entry_display_fields_without_changing_decision() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 110)
+
+        row = build_ai_stock_radar_list_row(
+            "NVDA",
+            path=path,
+            scores=_scores(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        )
+
+        assert row["decision"] == "WAIT"
+        assert row["entry_display_label"] == "等待回落 $90.00 - $100.00"
+        assert row["entry_reference_high"] == 100
+        assert row["current_vs_entry_pct"] == 10.0
 
 
 def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:

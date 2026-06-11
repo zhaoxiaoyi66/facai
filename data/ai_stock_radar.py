@@ -11,6 +11,7 @@ from typing import Any
 from data.market_context import build_market_context
 from data.market_context import build_market_history
 from data.prices import CACHE_PATH
+from data.entry_display import build_entry_display as calculate_entry_display
 from data.trade_gate import BuyGateResult as RadarBuyGateResult
 from data.trade_gate import evaluate_buy_gate as evaluate_trade_buy_gate
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
@@ -63,6 +64,15 @@ class RadarReport:
     trade_max_pct: float
     allowed_add_pct: float
     price_position: str
+    entry_reference_low: float | None
+    entry_reference_high: float | None
+    next_action_price: float | None
+    chase_above_price: float | None
+    current_vs_entry_pct: float | None
+    missing_entry_fields: list[str]
+    entry_display_label: str
+    entry_display_reason: str
+    entry_action_hint: str
     block_reasons: list[str]
     summary: str
     bull_points: list[str]
@@ -150,6 +160,17 @@ def build_ai_stock_radar_report(
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
     position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    entry_display = calculate_entry_display(
+        current_price=current_price,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        data_status=data_status,
+        price_position=price_position,
+        decision=decision,
+        final_score=score_input.final_score,
+        valuation_score=score_input.valuation_score,
+        risk_score=score_input.risk_score,
+    )
     debug = build_radar_debug(
         symbol,
         market=market,
@@ -190,6 +211,15 @@ def build_ai_stock_radar_report(
         trade_max_pct=position_plan["trade_max_pct"],
         allowed_add_pct=position_plan["allowed_add_pct"],
         price_position=price_position,
+        entry_reference_low=entry_display["entry_reference_low"],
+        entry_reference_high=entry_display["entry_reference_high"],
+        next_action_price=entry_display["next_action_price"],
+        chase_above_price=entry_display["chase_above_price"],
+        current_vs_entry_pct=entry_display["current_vs_entry_pct"],
+        missing_entry_fields=list(entry_display.get("missing_entry_fields") or []),
+        entry_display_label=entry_display["entry_display_label"],
+        entry_display_reason=entry_display["entry_display_reason"],
+        entry_action_hint=entry_display["entry_action_hint"],
         block_reasons=block_reasons,
         summary=_summary(symbol, decision, position_plan["allowed_add_pct"], block_reasons),
         bull_points=list(bull_points or []),
@@ -296,6 +326,17 @@ def build_ai_stock_radar_list_row(
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
     position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    entry_display = calculate_entry_display(
+        current_price=current_price,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        data_status=data_status,
+        price_position=price_position,
+        decision=decision,
+        final_score=score_input.final_score,
+        valuation_score=score_input.valuation_score,
+        risk_score=score_input.risk_score,
+    )
     return {
         "ticker": symbol,
         "company_name": company_name or symbol,
@@ -310,6 +351,7 @@ def build_ai_stock_radar_list_row(
         "core_max_pct": position_plan["core_max_pct"],
         "trade_max_pct": position_plan["trade_max_pct"],
         "price_position": price_position,
+        **entry_display,
         "block_reasons": block_reasons,
         "data_status": data_status,
     }

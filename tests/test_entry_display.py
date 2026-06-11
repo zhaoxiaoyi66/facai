@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pandas as pd
+
+from data.entry_display import build_entry_display, format_buy_zone, format_zone_status
+from ui.dashboard_tables import _entry_rating_cell_html
+
+
+BUY_ZONE = {"lower": 90, "upper": 100}
+CHASE_ZONE = {"lower": 120}
+
+
+def test_entry_display_above_buy_zone_is_consistent() -> None:
+    result = build_entry_display(
+        current_price=110,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "等待回落 $90.00 - $100.00"
+    assert result["entry_reference_low"] == 90
+    assert result["entry_reference_high"] == 100
+    assert result["chase_above_price"] == 120
+    assert result["current_vs_entry_pct"] == 10.0
+    assert "追高禁区 >$120.00" in result["entry_display_reason"]
+
+
+def test_entry_display_inside_buy_zone_preserves_wait_hint() -> None:
+    result = build_entry_display(
+        current_price=95,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="OK",
+        price_position="IN_BUY_ZONE",
+        decision="WAIT",
+        final_score=65,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "买区内 $90.00 - $100.00"
+    assert result["entry_action_hint"] == "买区内但总分低于 70，需复核"
+
+
+def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
+    chase = build_entry_display(
+        current_price=125,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="OK",
+        price_position="IN_CHASE_ZONE",
+        decision="BLOCK_CHASE",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+    below = build_entry_display(
+        current_price=80,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="OK",
+        price_position="BELOW_BUY_ZONE",
+        decision="WAIT",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert chase["entry_display_label"].startswith("禁止追高")
+    assert chase["entry_action_hint"] == "进入追高区，禁止新增"
+    assert below["entry_display_label"] == "低于买区 $90.00 - $100.00"
+    assert "不等于自动更便宜" in below["entry_display_reason"]
+
+
+def test_entry_display_missing_data_shows_specific_reason() -> None:
+    result = build_entry_display(
+        current_price=None,
+        buy_zone={},
+        chase_zone={},
+        data_status="MISSING_PRICE",
+        price_position="ZONE_MISSING",
+        decision="DATA_MISSING",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "暂无参考买区：缺当前价格"
+    assert result["missing_entry_fields"] == ["缺当前价格"]
+    assert result["entry_action_hint"] == "补齐数据后再复核"
+
+
+def test_zone_formatters_are_shared() -> None:
+    assert format_buy_zone(BUY_ZONE) == "$90.00 - $100.00"
+    assert format_zone_status("IN_BUY_ZONE") == "买区内"
+    assert format_zone_status("ZONE_MISSING") == "无法判断"
+
+
+def test_dashboard_watchlist_entry_cell_shows_price_reference() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NVDA",
+            "price": 110,
+            "entryRating": "B - 等回踩",
+            "activeZone": SimpleNamespace(
+                currentPrice=110,
+                trancheBuyLow=90,
+                trancheBuyHigh=100,
+                noChaseAbove=120,
+                currentZone="fair_observation",
+            ),
+        }
+    )
+
+    html = _entry_rating_cell_html(row)
+
+    assert "等待回落 $90.00 - $100.00" in html
+    assert "只观察，等待回到纪律买区" in html

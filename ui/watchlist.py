@@ -104,8 +104,9 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None
         st.info("观察池为空。先用快速添加加入研究标的。")
         return
 
-    header = st.columns([0.75, 0.9, 1.2, 0.8, 1.0, 0.95, 1.0, 1.5, 0.8, 0.75, 0.75])
-    labels = ["Ticker", "状态", "主题", "持仓", "Radar", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
+    widths = [0.75, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
+    header = st.columns(widths)
+    labels = ["Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
     for col, label in zip(header, labels):
         col.markdown(f'<span class="watchlist-th">{escape(label)}</span>', unsafe_allow_html=True)
 
@@ -113,20 +114,21 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None
         ticker = entry["ticker"]
         radar = _safe_radar_summary(ticker)
         held = ticker in active_positions
-        row = st.columns([0.75, 0.9, 1.2, 0.8, 1.0, 0.95, 1.0, 1.5, 0.8, 0.75, 0.75])
+        row = st.columns(widths)
         row[0].markdown(f'<strong class="watchlist-ticker">{escape(ticker)}</strong>', unsafe_allow_html=True)
         row[1].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
         row[2].caption(str(entry.get("theme") or "未设置"))
         row[3].caption("当前已持仓" if held else "未持仓")
         row[4].markdown(_decision_badge_html(radar.get("decision")), unsafe_allow_html=True)
-        row[5].caption(_data_status_label(radar.get("data_status")))
-        row[6].caption(_date_text(entry.get("added_at")))
-        row[7].caption(str(entry.get("note") or entry.get("added_reason") or ""))
-        row[8].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
-        if row[9].button("编辑", key=f"watchlist-edit:{ticker}"):
+        row[5].markdown(_entry_display_html(radar), unsafe_allow_html=True)
+        row[6].caption(_data_status_label(radar.get("data_status")))
+        row[7].caption(_date_text(entry.get("added_at")))
+        row[8].caption(str(entry.get("note") or entry.get("added_reason") or ""))
+        row[9].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
+        if row[10].button("编辑", key=f"watchlist-edit:{ticker}"):
             st.session_state["watchlist_edit_symbol"] = ticker
             st.rerun()
-        if row[10].button("移除", key=f"watchlist-remove:{ticker}"):
+        if row[11].button("移除", key=f"watchlist-remove:{ticker}"):
             result = remove_watchlist_symbol(ticker, path=WATCHLIST_PATH)
             if result["action"] == "removed":
                 if held:
@@ -211,7 +213,24 @@ def _safe_radar_summary(ticker: str) -> dict:
     try:
         return build_ai_stock_radar_list_row(ticker)
     except Exception:
-        return {"decision": "DATA_MISSING", "data_status": "missing", "block_reasons": ["缺少本地缓存"]}
+        return {
+            "decision": "DATA_MISSING",
+            "data_status": "missing",
+            "block_reasons": ["缺少本地缓存"],
+            "entry_display_label": "暂无参考买区：缺少本地缓存",
+            "entry_action_hint": "补齐本地缓存后再复核",
+        }
+
+
+def _entry_display_html(row: dict) -> str:
+    label = str(row.get("entry_display_label") or "暂无参考买区").strip()
+    hint = str(row.get("entry_action_hint") or row.get("entry_display_reason") or "只读参考，不改变门禁").strip()
+    return (
+        '<div class="watchlist-entry-ref">'
+        f'<strong>{escape(label)}</strong>'
+        f'<span>{escape(hint)}</span>'
+        "</div>"
+    )
 
 
 def _status_badge_html(status: object) -> str:
@@ -282,6 +301,22 @@ def _render_styles() -> None:
             color:#0F172A;
             font-size:13px;
             letter-spacing:.02em;
+        }
+        .watchlist-entry-ref {
+            line-height:1.25;
+            max-width:240px;
+        }
+        .watchlist-entry-ref strong {
+            display:block;
+            color:#0F172A;
+            font-size:12px;
+            font-weight:750;
+        }
+        .watchlist-entry-ref span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-top:3px;
         }
         .watchlist-badge {
             display:inline-flex;
