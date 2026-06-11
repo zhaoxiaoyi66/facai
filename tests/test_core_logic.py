@@ -6526,8 +6526,10 @@ class ScoringTests(unittest.TestCase):
     def test_review_autopilot_button_path_runs_orchestrator(self) -> None:
         source = inspect.getsource(manual_review._render_sync_controls)
 
-        self.assertIn("一键自动处理当前筛选结果", source)
-        self.assertIn("run_review_autopilot", source)
+        self.assertIn("review-autofill-workbench", source)
+        self.assertIn("review-qwen-workbench", source)
+        self.assertIn("ReviewAutopilot", source)
+        self.assertIn("QwenReviewService", source)
         self.assertNotIn("radio(\"AI模式\"", source)
 
     def test_needs_data_requires_ir_scrape_triggers_disclosure_pipeline(self) -> None:
@@ -6862,9 +6864,9 @@ class ScoringTests(unittest.TestCase):
     def test_autopilot_ui_separates_current_run_from_cumulative_status(self) -> None:
         source = inspect.getsource(manual_review._render_last_autopilot_result) + inspect.getsource(manual_review._render_summary)
 
-        self.assertIn("本次自动处理", source)
-        self.assertIn("复核状态总览", source)
-        self.assertIn("暂不支持", source)
+        self.assertIn("review_autopilot_last_result", source)
+        self.assertIn("review-overview-panel", source)
+        self.assertIn("unsupportedMessages", source)
 
     def test_autopilot_undo_restores_auto_archived_items(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -129,8 +129,10 @@ def test_buy_zone_output_includes_technical_entry_when_history_is_available() ->
     assert zone.technicalEntry["technicalEntryPrice"] is not None
     assert zone.technicalEntry["technicalConfidence"] in {"medium", "high"}
     assert zone.combinedEntry
-    assert zone.combinedEntry["valuationEntryPrice"] is not None
-    assert zone.combinedEntry["combinedTriggerPrice"] <= zone.combinedEntry["valuationEntryPrice"]
+    assert zone.currentZone == "fair_observation"
+    assert zone.combinedEntry["valuationEntryPrice"] is None
+    assert zone.combinedEntry["combinedTriggerPrice"] is None
+    assert zone.combinedEntry["technicalPullbackPrice"] == zone.technicalEntry["technicalEntryPrice"]
     assert "entryLayers" in zone.combinedEntry
 
 

@@ -378,6 +378,10 @@ class DisclosureStore:
         metric_key = self._metric_key_for_id(metric_id)
         value = _scoring_storage_value(metric_key, value, unit)
         with self.connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, metricVariant FROM disclosure_metric_values WHERE id = ?",
+                (int(metric_id),),
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE disclosure_metric_values
@@ -395,6 +399,12 @@ class DisclosureStore:
                 """,
                 (value, unit, period, source_type, _now(), reviewed_by, correction_notes, _now(), metric_id),
             )
+            if row:
+                self._refresh_freshness_status(
+                    conn,
+                    str(row["symbol"]),
+                    str(row["metricVariant"] or metric_variant_for_key(metric_key)),
+                )
 
     def _metric_key_for_id(self, metric_id: int) -> str:
         with self.connect() as conn:

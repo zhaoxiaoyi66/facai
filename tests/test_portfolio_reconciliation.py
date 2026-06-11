@@ -17,12 +17,23 @@ def _row(rows: list[dict], symbol: str) -> dict:
     return {row["symbol"]: row for row in rows}[symbol]
 
 
+def _radar_allowed() -> dict:
+    return {
+        "radarDecision": "ALLOW_BUY",
+        "radarBlocked": False,
+        "radarObservationOnly": False,
+        "radarBlockReasons": [],
+        "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+        "positionClass": "A",
+    }
+
+
 def test_reconciliation_returns_ok_when_portfolio_matches_synced_journal() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
             "NOW",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 500},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 500, **_radar_allowed()},
         )
         apply_trade_to_portfolio(entry["id"], path)
 
@@ -42,12 +53,12 @@ def test_reconciliation_warns_when_symbol_has_unsynced_trade() -> None:
         path = _db(tmpdir)
         synced = TradeJournalStore(path).save_entry(
             "MSFT",
-            {"trade_date": "2026-05-29", "action_type": "buy", "quantity": 5, "price": 300},
+            {"trade_date": "2026-05-29", "action_type": "buy", "quantity": 5, "price": 300, **_radar_allowed()},
         )
         apply_trade_to_portfolio(synced["id"], path)
         TradeJournalStore(path).save_entry(
             "MSFT",
-            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 1, "price": 320},
+            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 1, "price": 320, **_radar_allowed()},
         )
 
         result = _row(build_portfolio_reconciliation(path), "MSFT")
@@ -64,7 +75,7 @@ def test_reconciliation_flags_quantity_mismatch() -> None:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
             "NVDA",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 100},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 10, "price": 100, **_radar_allowed()},
         )
         apply_trade_to_portfolio(entry["id"], path)
         PortfolioPositionStore(path).save_position("NVDA", {"quantity": 8, "average_cost": 100})
@@ -81,11 +92,11 @@ def test_reconciliation_warns_on_average_cost_mismatch() -> None:
         path = _db(tmpdir)
         first = TradeJournalStore(path).save_entry(
             "ADBE",
-            {"trade_date": "2026-05-29", "action_type": "buy", "quantity": 10, "price": 400},
+            {"trade_date": "2026-05-29", "action_type": "buy", "quantity": 10, "price": 400, **_radar_allowed()},
         )
         second = TradeJournalStore(path).save_entry(
             "ADBE",
-            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 10, "price": 500},
+            {"trade_date": "2026-05-30", "action_type": "add", "quantity": 10, "price": 500, **_radar_allowed()},
         )
         apply_trade_to_portfolio(first["id"], path)
         apply_trade_to_portfolio(second["id"], path)
@@ -116,7 +127,7 @@ def test_reconciliation_flags_synced_journal_without_active_position() -> None:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
             "COIN",
-            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 4, "price": 250},
+            {"trade_date": "2026-05-30", "action_type": "buy", "quantity": 4, "price": 250, **_radar_allowed()},
         )
         apply_trade_to_portfolio(entry["id"], path)
         PortfolioPositionStore(path).deactivate_position("COIN")
