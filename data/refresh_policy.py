@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
@@ -261,36 +262,62 @@ def _quote_rows(tickers: list[str], provider: Any) -> dict[str, dict]:
                 retries=1,
                 force_refresh=True,
             )
-            batch_rows = payload if isinstance(payload, list) else [payload]
+            batch_rows = _quote_payload_rows(payload)
             rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
         except Exception:
             rows = {}
         missing = [symbol for symbol in tickers if symbol not in rows]
-        for symbol in missing:
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(missing)))) as executor:
+            futures = {executor.submit(_fetch_single_quote_row, provider, symbol): symbol for symbol in missing}
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    row = future.result()
+                except Exception:
+                    continue
+                if row is not None:
+                    rows[symbol] = row
+        return rows
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(tickers)))) as executor:
+        futures = {executor.submit(_fetch_provider_quote_row, provider, symbol): symbol for symbol in tickers}
+        for future in as_completed(futures):
+            symbol = futures[future]
             try:
-                payload = provider._get_json(  # noqa: SLF001 - quote-only fallback, still avoids fundamentals.
-                    "quote",
-                    {"symbol": symbol},
-                    timeout_seconds=8,
-                    retries=1,
-                    force_refresh=True,
-                )
+                quote = future.result()
             except Exception:
                 continue
-            single_rows = payload if isinstance(payload, list) else [payload]
-            for row in single_rows:
-                if isinstance(row, dict) and _quote_symbol(row) == symbol:
-                    rows[symbol] = row
-                    break
-        return rows
-    for symbol in tickers:
-        try:
-            quote = provider.get_quote(symbol, force_refresh=True)
-        except Exception:
-            continue
-        if isinstance(quote, dict) and quote:
-            rows[symbol] = quote
+            if isinstance(quote, dict) and quote:
+                rows[symbol] = quote
     return rows
+
+
+def _fetch_single_quote_row(provider: Any, symbol: str) -> dict | None:
+    payload = provider._get_json(  # noqa: SLF001 - quote-only fallback, still avoids fundamentals.
+        "quote",
+        {"symbol": symbol},
+        timeout_seconds=8,
+        retries=1,
+        force_refresh=True,
+    )
+    for row in _quote_payload_rows(payload):
+        if isinstance(row, dict) and _quote_symbol(row) == symbol:
+            return row
+    return None
+
+
+def _fetch_provider_quote_row(provider: Any, symbol: str) -> dict | None:
+    quote = provider.get_quote(symbol, force_refresh=True)
+    return quote if isinstance(quote, dict) and quote else None
+
+
+def _quote_payload_rows(payload: Any) -> list:
+    if isinstance(payload, dict):
+        for key in ("data", "results", "quotes"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        return [payload]
+    return payload if isinstance(payload, list) else []
 
 
 def _merge_quote_snapshot(
@@ -309,7 +336,7 @@ def _merge_quote_snapshot(
     field_map = {
         "current_price": ("price", "current_price", "currentPrice"),
         "price_change": ("change", "price_change"),
-        "price_change_pct": ("changesPercentage", "change_pct", "price_change_pct"),
+        "price_change_pct": ("changesPercentage", "changePercentage", "change_pct", "price_change_pct"),
         "volume": ("volume",),
         "market_cap": ("marketCap", "market_cap"),
         "fifty_two_week_high": ("yearHigh", "fifty_two_week_high"),

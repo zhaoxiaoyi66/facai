@@ -63,11 +63,30 @@ class FakeBatchEmptyQuoteProvider(FakeFmpQuoteOnlyProvider):
             {
                 "symbol": symbol_text,
                 "price": 88.8,
-                "changesPercentage": 0.7,
+                "changePercentage": 0.7,
                 "volume": 111,
                 "marketCap": 222,
             }
         ]
+
+
+class FakeWrappedBatchQuoteProvider(FakeRefreshProvider):
+    def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
+        self.calls.append((endpoint, str(params.get("symbol")), force_refresh))
+        symbols = str(params.get("symbol") or "").split(",")
+        return {
+            "data": [
+                {
+                    "symbol": symbol,
+                    "price": 77.7,
+                    "changePercentage": -1.3,
+                    "volume": 321,
+                    "marketCap": 654,
+                }
+                for symbol in symbols
+                if symbol
+            ]
+        }
 
 
 def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
@@ -125,8 +144,22 @@ def test_price_only_falls_back_to_single_quote_when_batch_returns_empty(tmp_path
     ]
     assert now_snapshot is not None
     assert now_snapshot["current_price"] == 88.8
+    assert now_snapshot["price_change_pct"] == 0.7
     assert adbe_snapshot is not None
     assert adbe_snapshot["current_price"] == 88.8
+
+
+def test_price_only_accepts_wrapped_batch_quote_payload(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeWrappedBatchQuoteProvider()
+
+    result = refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    assert result["status"] == "success"
+    assert result["refreshed_count"] == 2
+    assert provider.calls == [("quote", "NOW,ADBE", True)]
+    assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["current_price"] == 77.7
+    assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["price_change_pct"] == -1.3
 
 
 def test_price_only_single_ticker_failure_does_not_block_others(tmp_path) -> None:
