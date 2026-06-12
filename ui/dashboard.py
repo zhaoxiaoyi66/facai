@@ -27,6 +27,10 @@ from data.dashboard_lanes import (
     today_priority_rows as _today_priority_rows,
     wait_or_confirm_rows as _wait_or_confirm_rows,
 )
+from data.dashboard_freshness import (
+    build_dashboard_data_freshness,
+    dashboard_data_freshness_strip_html,
+)
 from data.dashboard_risk_model import (
     build_dashboard_data_health_view,
     build_dashboard_data_health_view_from_summary,
@@ -264,7 +268,7 @@ def render() -> None:
     portfolio_view = build_portfolio_view_model()
     risk_items = build_dashboard_risk_radar(table, portfolio_view)
     macro_regime = load_macro_regime()
-    _render_dashboard_status_bar(table, data_health_context, risk_items, macro_regime)
+    _render_dashboard_status_bar(table, data_health_context, risk_items, macro_regime, tickers=tickers)
     _render_price_alert_strip(tickers)
     _render_summary_sections(table)
     _render_decision_table(table)
@@ -670,6 +674,8 @@ def _render_dashboard_status_bar(
     data_health_context: dict[str, object],
     risk_items: list[dict[str, object]],
     macro_regime,
+    *,
+    tickers: list[str] | None = None,
 ) -> None:
     data_health_view = dict(data_health_context.get("view") or {})
     last_updated = _dashboard_last_updated_text(data_health_context.get("lastUpdated"))
@@ -687,6 +693,15 @@ def _render_dashboard_status_bar(
         for label, value in items
     )
     risk_total = _dashboard_risk_total_count(risk_items, table)
+    freshness = build_dashboard_data_freshness(
+        _dashboard_refresh_symbols(tickers or []),
+        macro_regime=macro_regime,
+    )
+    freshness_html = dashboard_data_freshness_strip_html(
+        freshness,
+        last_refresh_result=st.session_state.get("dashboard_refresh_mode_last_result"),
+        last_macro_refresh_result=st.session_state.get("dashboard_macro_last_refresh_result"),
+    )
     st.markdown(
         (
             '<section class="dashboard-status-bar">'
@@ -694,6 +709,7 @@ def _render_dashboard_status_bar(
             f'<a class="dashboard-status-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
             "</section>"
             f"{macro_regime_status_html(macro_regime)}"
+            f"{freshness_html}"
         ),
         unsafe_allow_html=True,
     )
@@ -3034,6 +3050,113 @@ def _render_dashboard_styles() -> None:
             border-color:rgba(185, 28, 28, 0.22);
             background:#FEF2F2;
             color:#7F1D1D;
+        }
+        .dashboard-freshness-strip {
+            max-width:1440px;
+            margin:-0.2rem auto 0.6rem;
+            padding:0.38rem 0.62rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:9px;
+            background:#FFFFFF;
+            color:#334155;
+            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            font-size:11px;
+            line-height:1.35;
+        }
+        .dashboard-freshness-main {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.6rem;
+        }
+        .dashboard-freshness-main > strong {
+            flex:0 0 auto;
+            color:#64748B;
+            font-size:11px;
+            font-weight:720;
+        }
+        .dashboard-freshness-items {
+            display:flex;
+            flex-wrap:wrap;
+            justify-content:flex-end;
+            gap:0.34rem;
+            min-width:0;
+        }
+        .dashboard-freshness-pill {
+            display:inline-flex;
+            align-items:center;
+            gap:0.18rem;
+            min-height:20px;
+            padding:0 0.45rem;
+            border:1px solid rgba(148, 163, 184, 0.22);
+            border-radius:999px;
+            background:#F8FAFC;
+            color:#475467;
+            font-weight:650;
+            white-space:nowrap;
+        }
+        .dashboard-freshness-pill b {
+            color:#94A3B8;
+            font-weight:650;
+        }
+        .dashboard-freshness-pill.fresh {
+            border-color:rgba(22, 163, 74, 0.20);
+            background:#F0FDF4;
+            color:#166534;
+        }
+        .dashboard-freshness-pill.warn {
+            border-color:rgba(217, 119, 6, 0.22);
+            background:#FFFBEB;
+            color:#92400E;
+        }
+        .dashboard-freshness-pill.stale {
+            border-color:rgba(185, 28, 28, 0.22);
+            background:#FEF2F2;
+            color:#991B1B;
+        }
+        .dashboard-freshness-pill.missing {
+            border-color:rgba(148, 163, 184, 0.22);
+            background:#F8FAFC;
+            color:#64748B;
+        }
+        .dashboard-freshness-detail {
+            margin-top:0.28rem;
+            color:#64748B;
+        }
+        .dashboard-freshness-detail summary {
+            cursor:pointer;
+            color:#64748B;
+            font-size:11px;
+            font-weight:650;
+        }
+        .dashboard-freshness-detail-grid {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0.34rem 0.55rem;
+            margin-top:0.35rem;
+        }
+        .dashboard-freshness-detail-grid div {
+            display:flex;
+            flex-direction:column;
+            gap:0.06rem;
+            padding:0.32rem 0.4rem;
+            border:1px solid rgba(226,232,240,0.95);
+            border-radius:8px;
+            background:rgba(248,250,252,0.62);
+        }
+        .dashboard-freshness-detail-grid b {
+            color:#334155;
+            font-size:11px;
+        }
+        .dashboard-freshness-detail-grid span,
+        .dashboard-freshness-detail-grid em,
+        .dashboard-freshness-refresh {
+            color:#64748B;
+            font-style:normal;
+            font-size:11px;
+        }
+        .dashboard-freshness-refresh {
+            margin-top:0.32rem;
         }
         .macro-regime-detail {
             border:1px solid rgba(148, 163, 184, 0.18);
