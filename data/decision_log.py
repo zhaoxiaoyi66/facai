@@ -103,6 +103,11 @@ TRADE_DISCIPLINE_COLUMNS = {
     "pre_trade_unrealized_pnl": "REAL",
     "cost_basis_source": "TEXT",
     "sell_context_snapshot_json": "TEXT",
+    "structure_status": "TEXT",
+    "structure_score": "REAL",
+    "structure_reasons_json": "TEXT",
+    "structure_warnings_json": "TEXT",
+    "structure_checked_at": "TEXT",
 }
 
 
@@ -446,6 +451,7 @@ class TradeJournalStore:
             _write_starter_snapshot(conn, int(entry_id), cleaned)
             _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
             _write_sell_context_snapshot(conn, int(entry_id), cleaned)
+            _write_structure_entry_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -549,6 +555,7 @@ class TradeJournalStore:
                 _write_starter_snapshot(conn, clean_id, cleaned)
                 _write_pre_trade_snapshot(conn, clean_id, cleaned)
                 _write_sell_context_snapshot(conn, clean_id, cleaned)
+                _write_structure_entry_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -782,6 +789,40 @@ def _write_sell_context_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
         WHERE id = ?
         """,
         (snapshot_json, entry_id),
+    )
+
+
+def _write_structure_entry_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, "", "[]"}
+        for field in (
+            "structure_status",
+            "structure_score",
+            "structure_reasons_json",
+            "structure_warnings_json",
+            "structure_checked_at",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            structure_status = ?,
+            structure_score = ?,
+            structure_reasons_json = ?,
+            structure_warnings_json = ?,
+            structure_checked_at = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["structure_status"],
+            cleaned["structure_score"],
+            cleaned["structure_reasons_json"],
+            cleaned["structure_warnings_json"],
+            cleaned["structure_checked_at"],
+            entry_id,
+        ),
     )
 
 
@@ -1185,6 +1226,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_buy_plan_snapshot(action_type, values))
     cleaned.update(_clean_starter_snapshot(action_type, values))
     cleaned.update(_clean_sell_context_snapshot(action_type, values))
+    cleaned.update(_clean_structure_entry_snapshot(action_type, values))
     return cleaned
 
 
@@ -1366,6 +1408,31 @@ def _clean_sell_context_snapshot(action_type: str, values: dict) -> dict:
     if not parsed:
         return {"sell_context_snapshot_json": None}
     return {"sell_context_snapshot_json": json.dumps(parsed, ensure_ascii=False, sort_keys=True)}
+
+
+def _clean_structure_entry_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "structure_status": None,
+            "structure_score": None,
+            "structure_reasons_json": "[]",
+            "structure_warnings_json": "[]",
+            "structure_checked_at": None,
+        }
+    return {
+        "structure_status": _clean_optional_text(_value(values, "structureStatus", "structure_status")),
+        "structure_score": _optional_non_negative_number(
+            _value(values, "structureScore", "structure_score"),
+            "structure_score",
+        ),
+        "structure_reasons_json": _reasons_json(
+            _value(values, "structureReasons", "structure_reasons", "structure_reasons_json")
+        ),
+        "structure_warnings_json": _reasons_json(
+            _value(values, "structureWarnings", "structure_warnings", "structure_warnings_json")
+        ),
+        "structure_checked_at": _clean_optional_text(_value(values, "structureCheckedAt", "structure_checked_at")),
+    }
 
 
 def _clean_entry_mode(value: object) -> str:
@@ -1911,6 +1978,10 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["radar_block_reasons"] = _load_json_list(item["radar_block_reasons_json"])
     if "sell_context_snapshot_json" in item:
         item["sell_context_snapshot"] = _load_json_dict(item["sell_context_snapshot_json"])
+    if "structure_reasons_json" in item:
+        item["structure_reasons"] = _load_json_list(item["structure_reasons_json"])
+    if "structure_warnings_json" in item:
+        item["structure_warnings"] = _load_json_list(item["structure_warnings_json"])
     return item
 
 

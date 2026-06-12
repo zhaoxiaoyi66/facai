@@ -2952,6 +2952,7 @@ class ScoringTests(unittest.TestCase):
         source = inspect.getsource(dashboard_drawer.drawer_html)
         detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)
         combined_source = inspect.getsource(dashboard_drawer._combined_entry_note)
+        structure_source = inspect.getsource(dashboard_drawer._drawer_structure_entry_card_html)
         radar_card_source = "\n".join(
             [
                 inspect.getsource(dashboard_drawer._drawer_radar_entry_card_html),
@@ -2961,11 +2962,14 @@ class ScoringTests(unittest.TestCase):
         )
 
         self.assertIn("_drawer_detail_basis_html", source)
+        self.assertIn("_drawer_structure_entry_card_html", source)
         self.assertIn("<details", detail_source)
         self.assertIn("详细依据", detail_source)
         self.assertIn("估值/计划参考解释", detail_source)
         self.assertIn("不等同于主表 Radar 纪律买区", detail_source)
         self.assertIn("legacy 估值参考", combined_source)
+        self.assertIn("结构买入提示", structure_source)
+        self.assertIn("只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct", structure_source)
         self.assertIn("当前结论", radar_card_source)
         self.assertIn("买区结构", radar_card_source)
         self.assertIn("技术回踩区", radar_card_source)
@@ -3060,6 +3064,41 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("当前状态：追高区", chase_html)
         self.assertIn("当前动作：禁止新增", chase_html)
         self.assertIn("是否允许新增：否", chase_html)
+
+        structure_html = dashboard_drawer._drawer_structure_entry_card_html(
+            pd.Series(
+                {
+                    "structureEntryAdvisor": {
+                        "status_label": "结构形成中",
+                        "structure_score": 68,
+                        "decline_reason": "宏观冲击",
+                        "thesis_status": "INTACT",
+                        "support_confirmation": "有初步承接",
+                        "close_confirmation": "收盘初步确认",
+                        "relative_strength_status": "相对中性",
+                        "volume_confirmation": "量能正常",
+                        "structure_reasons": ["守住 EMA50"],
+                        "structure_warnings": ["收盘确认不足"],
+                        "next_confirmation_steps": ["等待收盘确认"],
+                    }
+                }
+            )
+        )
+        self.assertIn("结构买入提示", structure_html)
+        self.assertIn("结构形成中", structure_html)
+        self.assertIn("只读提示，不改变 ALLOW_BUY", structure_html)
+
+    def test_portfolio_buy_form_renders_structure_advisor_without_gate_control(self) -> None:
+        from ui import portfolio
+
+        form_source = inspect.getsource(portfolio._render_portfolio_buy_add_form)
+        hint_source = inspect.getsource(portfolio._render_structure_entry_buy_hint)
+
+        self.assertIn("_render_structure_entry_buy_hint(effective_ticker)", form_source)
+        self.assertIn("build_structure_entry_advisor_for_symbol", hint_source)
+        self.assertIn("structure_entry_hint_html", hint_source)
+        self.assertNotIn("disabled=True", hint_source)
+        self.assertNotIn("allowed_add_pct", hint_source)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(

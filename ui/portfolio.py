@@ -17,6 +17,7 @@ from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.stock_plan import StockPlanStore, get_buy_plan_status
+from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_hint_html
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
 from settings import load_watchlist
@@ -157,6 +158,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         selected_tier = POSITION_TIER_FORM_OPTIONS.get(str(tier_choice), "")
         _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
         _render_macro_regime_buy_hint()
+        _render_structure_entry_buy_hint(effective_ticker)
         with st.form("portfolio-buy-add-form"):
             st.markdown('<div class="portfolio-form-section">真实买入 / 加仓</div>', unsafe_allow_html=True)
             basic_cols = st.columns([1.2, 1, 1])
@@ -187,6 +189,17 @@ def _render_macro_regime_buy_hint() -> None:
     except Exception:
         return
     st.info(macro_regime_trade_hint_text(snapshot, context="buy"))
+
+
+def _render_structure_entry_buy_hint(ticker: str) -> None:
+    symbol = str(ticker or "").strip().upper()
+    if not symbol:
+        return
+    try:
+        advisor = build_structure_entry_advisor_for_symbol(symbol)
+    except Exception:
+        return
+    st.markdown(structure_entry_hint_html(advisor), unsafe_allow_html=True)
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
@@ -2924,6 +2937,25 @@ def _render_styles() -> None:
             color: var(--zhx-text);
             font-size: 0.75rem;
             overflow-wrap: anywhere;
+        }
+        .structure-entry-advisor {
+            display: grid;
+            gap: 0.28rem;
+            margin: 0.45rem 0 0.72rem;
+            padding: 0.66rem 0.72rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #F8FAFC;
+            color: var(--zhx-text);
+            font-size: 0.74rem;
+        }
+        .structure-entry-advisor strong {
+            font-size: 0.82rem;
+        }
+        .structure-entry-advisor span,
+        .structure-entry-advisor small {
+            color: var(--zhx-muted);
+            line-height: 1.45;
         }
         @media (max-width: 1100px) {
             .portfolio-overview {

@@ -373,6 +373,31 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["sell_context_snapshot"]["zone_status"], "IN_BUY_ZONE")
             self.assertIn("sell_context_snapshot_json", saved)
 
+    def test_trade_journal_store_saves_structure_entry_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "avgo",
+                {
+                    "trade_date": "2026-06-12",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 372,
+                    "structureStatus": "STRUCTURE_FORMING",
+                    "structureScore": 68,
+                    "structureReasons": ["宏观回调", "守住 EMA50"],
+                    "structureWarnings": ["收盘确认不足"],
+                    "structureCheckedAt": "2026-06-12T10:30:00+08:00",
+                },
+            )
+
+            self.assertEqual(saved["structure_status"], "STRUCTURE_FORMING")
+            self.assertEqual(saved["structure_score"], 68)
+            self.assertEqual(saved["structure_reasons"], ["宏观回调", "守住 EMA50"])
+            self.assertEqual(saved["structure_warnings"], ["收盘确认不足"])
+            self.assertEqual(saved["structure_checked_at"], "2026-06-12T10:30:00+08:00")
+
     def test_trade_journal_store_backfills_radar_gate_columns_on_legacy_schema(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"

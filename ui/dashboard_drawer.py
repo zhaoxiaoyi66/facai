@@ -280,6 +280,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
         f'{_drawer_decision_summary_html(row, drawer_deps)}'
         f'{_drawer_radar_entry_card_html(row)}'
+        f'{_drawer_structure_entry_card_html(row)}'
         f'{_drawer_next_action_html(row, drawer_deps)}'
         f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
         '</aside>'
@@ -602,6 +603,60 @@ def _drawer_zone_range_text(low: object, high: object) -> str:
     if low_text != "N/A":
         return ">= " + low_text
     return "N/A"
+
+
+def _drawer_structure_entry_card_html(row: pd.Series) -> str:
+    advisor = row.get("structureEntryAdvisor")
+    if not isinstance(advisor, dict):
+        advisor = {}
+    status = str(advisor.get("status_label") or _structure_status_label(row.get("structureStatus")) or "数据不足")
+    score = advisor.get("structure_score", row.get("structureScore"))
+    decline = str(advisor.get("decline_reason") or "未知")
+    thesis = str(advisor.get("thesis_status") or "UNKNOWN")
+    support = str(advisor.get("support_confirmation") or "数据不足")
+    close = str(advisor.get("close_confirmation") or "数据不足")
+    relative = str(advisor.get("relative_strength_status") or "数据不足")
+    volume = str(advisor.get("volume_confirmation") or "数据不足")
+    reasons = _drawer_text_list(advisor.get("structure_reasons") or row.get("structureReasons"))
+    warnings = _drawer_text_list(advisor.get("structure_warnings") or row.get("structureWarnings"))
+    steps = _drawer_text_list(advisor.get("next_confirmation_steps") or row.get("structureNextSteps"))
+    numeric_score = _drawer_number(score)
+    score_text = "N/A" if numeric_score is None else f"{numeric_score:.0f} 分"
+    lines = [
+        "只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
+        f"下跌原因：{decline}",
+        f"主线状态：{_structure_thesis_label(thesis)}",
+        f"技术承接：{support}",
+        f"收盘确认：{close}",
+        f"相对强弱：{relative}",
+        f"量能确认：{volume}",
+    ]
+    if reasons:
+        lines.append("依据：" + "；".join(reasons[:2]))
+    if warnings:
+        lines.append("风险：" + "；".join(warnings[:2]))
+    if steps:
+        lines.append("下一步：" + "；".join(steps[:2]))
+    return _drawer_card_html("结构买入提示", f"{status}｜{score_text}", lines)
+
+
+def _structure_status_label(value: object) -> str:
+    return {
+        "STRUCTURE_CONFIRMED": "结构确认",
+        "STRUCTURE_FORMING": "结构形成中",
+        "DIP_ONLY": "只是下跌",
+        "STRUCTURE_BROKEN": "结构破坏",
+        "DATA_MISSING": "数据不足",
+    }.get(str(value or ""), "")
+
+
+def _structure_thesis_label(value: object) -> str:
+    return {
+        "INTACT": "主线仍在",
+        "WEAKENING": "主线走弱",
+        "BROKEN": "主线破坏",
+        "UNKNOWN": "未知",
+    }.get(str(value or "").upper(), str(value or "未知"))
 
 
 def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:

@@ -13,6 +13,7 @@ from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfo
 from data.prices import CACHE_PATH
 from data.stock_plan import StockPlanStore
 from data.starter_position import evaluate_starter_position
+from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_snapshot_fields
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 
 
@@ -49,6 +50,7 @@ def submit_portfolio_buy_add(
         path=path,
     )
     report = radar_report or build_cached_ai_stock_radar_report(ticker)
+    structure_advisor = build_structure_entry_advisor_for_symbol(ticker, path=path, now=submitted_at)
     plan = StockPlanStore(path).get_plan(ticker)
     prior_level_quantities = _planned_ladder_prior_quantities(ticker, path)
     plan_gate = evaluate_planned_ladder_buy(
@@ -131,6 +133,7 @@ def submit_portfolio_buy_add(
         **gate_fields,
         **plan_fields,
         **starter_fields,
+        **structure_entry_snapshot_fields(structure_advisor, checked_at=submitted_at.isoformat()),
         "gateCheckedAt": submitted_at.isoformat(),
     }
     saved = TradeJournalStore(path).save_entry(ticker, entry_values)
@@ -143,6 +146,7 @@ def submit_portfolio_buy_add(
         "gate": gate.to_dict(),
         "planGate": plan_gate.to_dict(),
         "starterGate": starter_gate.to_dict(),
+        "structureEntry": structure_advisor.to_dict(),
         "marketStatus": _buy_market_status(report, gate),
         "sync": sync_result,
         "actionType": action_type,

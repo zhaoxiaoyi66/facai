@@ -15,6 +15,7 @@ from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.stock_plan import StockPlanStore, get_buy_plan_status
+from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
 
 
 def _report(decision: str = "ALLOW_BUY") -> dict:
@@ -350,6 +351,41 @@ def test_portfolio_buy_add_allowed_creates_journal_and_syncs_position() -> None:
         assert position["average_cost"] == 100
         assert position["position_tier"] == "A"
         assert position["planned_sell_price"] == 180
+
+
+def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch: pytest.MonkeyPatch) -> None:
+    advisor = StructureEntryAdvisor(
+        structure_status=STRUCTURE_BROKEN,
+        structure_score=22,
+        decline_reason="公司基本面恶化",
+        thesis_status="BROKEN",
+        support_confirmation="承接不足",
+        close_confirmation="收盘未确认",
+        relative_strength_status="弱于 SPY/QQQ",
+        volume_confirmation="量能不足",
+        structure_reasons=["主线破坏"],
+        structure_warnings=["结构破坏仅提示，不作为门禁"],
+        next_confirmation_steps=["等待重新确认主线"],
+        structure_checked_at="2026-06-12T10:30:00+08:00",
+    )
+    monkeypatch.setattr(portfolio_trade_entry, "build_structure_entry_advisor_for_symbol", lambda *args, **kwargs: advisor)
+
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+
+        result = submit_portfolio_buy_add("NVDA", _base_values(), path=path, radar_report=_report())
+
+        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NVDA")
+        assert result["synced"] is True
+        assert position is not None
+        assert result["gate"]["allowed_add_pct"] == 3
+        assert result["structureEntry"]["structure_status"] == STRUCTURE_BROKEN
+        assert entry is not None
+        assert entry["structure_status"] == STRUCTURE_BROKEN
+        assert entry["structure_score"] == 22
+        assert entry["structure_reasons"] == ["主线破坏"]
+        assert entry["structure_warnings"] == ["结构破坏仅提示，不作为门禁"]
 
 
 def test_portfolio_buy_add_records_hkt_trade_time(monkeypatch: pytest.MonkeyPatch) -> None:

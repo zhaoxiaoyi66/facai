@@ -7,6 +7,7 @@ from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.entry_display import build_entry_display
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
+from data.structure_entry import evaluate_structure_entry
 from formatting import format_currency, format_multiple, format_percent
 from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
@@ -76,6 +77,12 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
     radar_entry_display = _radar_entry_display_fields(ticker, snapshot, technicals)
+    structure_entry = evaluate_structure_entry(
+        ticker=ticker,
+        technicals=technicals,
+        decline_reason=str(snapshot.get("decline_reason") or snapshot.get("declineReason") or "未知"),
+        thesis_status=str(snapshot.get("thesis_status") or snapshot.get("thesisStatus") or "UNKNOWN"),
+    )
 
     return {
         "symbol": ticker,
@@ -173,6 +180,12 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "overheatAction": score.overheat_action,
         "overheatRecommendation": score.overheat_recommendation,
         "overheatReasons": score.overheat_reasons or [],
+        "structureEntryAdvisor": structure_entry.to_dict(),
+        "structureStatus": structure_entry.structure_status,
+        "structureScore": structure_entry.structure_score,
+        "structureReasons": structure_entry.structure_reasons,
+        "structureWarnings": structure_entry.structure_warnings,
+        "structureNextSteps": structure_entry.next_confirmation_steps,
         **radar_entry_display,
     }
 
