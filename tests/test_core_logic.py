@@ -3019,6 +3019,9 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct", structure_source)
         self.assertIn("当前结论", radar_card_source)
         self.assertIn("买区结构", radar_card_source)
+        self.assertIn("关键区间", radar_card_source)
+        self.assertIn("查看完整买区结构", radar_card_source)
+        self.assertIn("当前最重要观察区", radar_card_source)
         self.assertIn("技术回踩区", radar_card_source)
         self.assertIn("估值参考", radar_card_source)
         self.assertIn("追高禁区", radar_card_source)
@@ -3250,6 +3253,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("结构买入提示", structure_html)
         self.assertIn("结构形成中", structure_html)
         self.assertIn("只读提示，不改变 ALLOW_BUY", structure_html)
+        self.assertIn("查看结构依据", structure_html)
 
         missing_structure_html = dashboard_drawer._drawer_structure_entry_card_html(
             pd.Series(

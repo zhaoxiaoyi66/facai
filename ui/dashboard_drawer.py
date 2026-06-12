@@ -371,6 +371,21 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     current_price = _drawer_number(row.get("price"))
     overlap = _drawer_zone_overlaps_chase(technical_low, technical_high, chase_above)
 
+    focus_line = _drawer_primary_entry_focus_text(
+        entry_context_status=entry_context_status,
+        price_position=price_position,
+        technical_low=technical_low,
+        technical_high=technical_high,
+        chase_above=chase_above,
+        near_term_repair_low=near_term_repair_low,
+        near_term_repair_high=near_term_repair_high,
+        trend_reclaim_low=trend_reclaim_low,
+        trend_reclaim_high=trend_reclaim_high,
+        confirmation_price=confirmation_price,
+        invalidation_price=invalidation_price,
+        technical_missing_reason=technical_missing_reason or technical_reason or _drawer_technical_missing_reason(technical_missing_fields),
+        overlap=overlap,
+    )
     conclusion = _drawer_entry_current_conclusion_html(
         row,
         entry_context_status=entry_context_status,
@@ -378,6 +393,7 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         label=label,
         hint=hint,
         reason=reason,
+        focus_line=focus_line,
     )
     lines = []
     if reason:
@@ -453,6 +469,7 @@ def _drawer_entry_current_conclusion_html(
     label: str,
     hint: str,
     reason: str,
+    focus_line: str = "",
 ) -> str:
     status = _drawer_entry_primary_status_text(entry_context_status, price_position)
     action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or hint or "只观察")
@@ -465,16 +482,15 @@ def _drawer_entry_current_conclusion_html(
         hint=hint,
         reason=reason,
     )
-    return _drawer_card_html(
-        "当前结论",
-        status,
-        [
-            "当前状态：" + status,
-            "当前动作：" + action,
-            "是否允许新增：" + allowed,
-            "原因：" + summary_reason,
-        ],
-    )
+    lines = [
+        "当前状态：" + status,
+        "当前动作：" + action,
+        "是否允许新增：" + allowed,
+        "一句话结论：" + summary_reason,
+    ]
+    if focus_line:
+        lines.append("当前最重要观察区：" + focus_line)
+    return _drawer_card_html("当前结论", status, lines)
 
 
 def _drawer_entry_zone_structure_html(
@@ -598,7 +614,40 @@ def _drawer_entry_zone_structure_html(
             "交易纪律结果，不等同于自动买入",
         ),
     ]
-    body = "".join(
+    key_rows = _drawer_select_key_entry_zone_rows(
+        rows,
+        entry_context_status=entry_context_status,
+        price_position=price_position,
+        technical_available=technical_available,
+    )
+    key_body = _drawer_entry_zone_table_html(key_rows)
+    full_body = _drawer_entry_zone_table_html(rows)
+    notes_html = ""
+    if notes:
+        note_items = "".join(f"<li>{escape(str(item))}</li>" for item in notes if item)
+        notes_html = f'<details class="drawer-low-priority"><summary>一致性提示</summary><ul>{note_items}</ul></details>'
+    return (
+        '<div class="drawer-card drawer-entry-zone-card">'
+        '<div class="drawer-card-title">买区结构</div>'
+        '<div class="drawer-card-headline">关键区间</div>'
+        '<table class="drawer-entry-zone-table">'
+        '<thead><tr><th>类型</th><th>区间 / 价格</th><th>当前关系</th><th>用途</th></tr></thead>'
+        f"<tbody>{key_body}</tbody>"
+        "</table>"
+        '<details class="drawer-low-priority">'
+        '<summary>查看完整买区结构</summary>'
+        '<table class="drawer-entry-zone-table">'
+        '<thead><tr><th>类型</th><th>区间 / 价格</th><th>当前关系</th><th>用途</th></tr></thead>'
+        f"<tbody>{full_body}</tbody>"
+        "</table>"
+        "</details>"
+        f"{notes_html}"
+        "</div>"
+    )
+
+
+def _drawer_entry_zone_table_html(rows: list[tuple[str, str, str, str]]) -> str:
+    return "".join(
         "<tr>"
         f"<td>{escape(kind)}</td>"
         f"<td>{escape(zone)}</td>"
@@ -607,21 +656,135 @@ def _drawer_entry_zone_structure_html(
         "</tr>"
         for kind, zone, relation, usage in rows
     )
-    notes_html = ""
-    if notes:
-        note_items = "".join(f"<li>{escape(str(item))}</li>" for item in notes if item)
-        notes_html = f'<details class="drawer-low-priority"><summary>一致性提示</summary><ul>{note_items}</ul></details>'
-    return (
-        '<div class="drawer-card drawer-entry-zone-card">'
-        '<div class="drawer-card-title">买区结构</div>'
-        '<div class="drawer-card-headline">技术结构 / 估值参考 / 追高禁区分开展示</div>'
-        '<table class="drawer-entry-zone-table">'
-        '<thead><tr><th>类型</th><th>区间 / 价格</th><th>当前关系</th><th>用途</th></tr></thead>'
-        f"<tbody>{body}</tbody>"
-        "</table>"
-        f"{notes_html}"
-        "</div>"
-    )
+
+
+def _drawer_select_key_entry_zone_rows(
+    rows: list[tuple[str, str, str, str]],
+    *,
+    entry_context_status: str,
+    price_position: str,
+    technical_available: bool,
+) -> list[tuple[str, str, str, str]]:
+    status = str(entry_context_status or "").strip()
+    price_status = str(price_position or "").strip()
+    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+        preferred = ["近端修复观察区", "确认线", "趋势确认区"]
+    elif status == "IN_TECHNICAL_PULLBACK_ZONE":
+        preferred = ["技术回踩区", "追高禁区", "确认线"]
+    elif status == "IN_CHASE_ZONE" or price_status == "IN_CHASE_ZONE":
+        preferred = ["追高禁区", "技术回踩区", "最终纪律判断"]
+    elif status in {"BELOW_TECHNICAL_PULLBACK_ZONE", "BELOW_VALUATION_REFERENCE", "BELOW_DISCIPLINE_BUY_ZONE"} or (
+        price_status == "BELOW_BUY_ZONE"
+    ):
+        preferred = ["近端修复观察区", "失效线", "确认线"]
+    elif status == "ZONE_MISSING" or price_status == "ZONE_MISSING":
+        preferred = ["技术回踩区", "技术结构", "最终纪律判断"]
+    elif technical_available:
+        preferred = ["技术回踩区", "确认线", "追高禁区"]
+    else:
+        preferred = ["近端修复观察区", "确认线", "趋势确认区"]
+
+    selected: list[tuple[str, str, str, str]] = []
+    for label in preferred:
+        row = _drawer_find_entry_zone_row(rows, label)
+        if row and (label in {"技术结构", "技术回踩区", "最终纪律判断"} or _drawer_entry_zone_row_has_value(row)):
+            selected.append(row)
+
+    for row in rows:
+        if len(selected) >= 3:
+            break
+        if row in selected:
+            continue
+        if _drawer_entry_zone_row_has_value(row):
+            selected.append(row)
+    return selected[:3] or rows[:3]
+
+
+def _drawer_find_entry_zone_row(
+    rows: list[tuple[str, str, str, str]], label: str
+) -> tuple[str, str, str, str] | None:
+    for row in rows:
+        if row[0] == label:
+            return row
+    return None
+
+
+def _drawer_entry_zone_row_has_value(row: tuple[str, str, str, str]) -> bool:
+    value = str(row[1] or "").strip()
+    return value not in {"", "N/A", "暂缺", "> N/A", "<= N/A", ">= N/A"}
+
+
+def _drawer_primary_entry_focus_text(
+    *,
+    entry_context_status: str,
+    price_position: str,
+    technical_low: object,
+    technical_high: object,
+    chase_above: object,
+    near_term_repair_low: object,
+    near_term_repair_high: object,
+    trend_reclaim_low: object,
+    trend_reclaim_high: object,
+    confirmation_price: object,
+    invalidation_price: object,
+    technical_missing_reason: str,
+    overlap: bool,
+) -> str:
+    status = str(entry_context_status or "").strip()
+    price_status = str(price_position or "").strip()
+    technical_available = _drawer_technical_zone_available(technical_low, technical_high)
+    effective_high = _drawer_effective_technical_high(technical_high, chase_above) if overlap else technical_high
+    confirmation = _drawer_money_text(confirmation_price)
+    invalidation = _drawer_money_text(invalidation_price)
+
+    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+        parts = []
+        near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
+        trend = _drawer_zone_range_text(trend_reclaim_low, trend_reclaim_high)
+        if near != "N/A":
+            parts.append("近端观察 " + near)
+        if confirmation != "N/A":
+            parts.append("确认线 " + confirmation)
+        elif trend != "N/A":
+            parts.append("趋势确认 " + trend)
+        return "；".join(parts)
+
+    if status == "IN_TECHNICAL_PULLBACK_ZONE" and technical_available:
+        parts = ["有效技术复核区 " + _drawer_zone_range_text(technical_low, effective_high)]
+        chase = _drawer_money_text(chase_above)
+        if chase != "N/A":
+            parts.append("追高线 " + chase)
+        return "；".join(parts)
+
+    if status == "IN_CHASE_ZONE" or price_status == "IN_CHASE_ZONE":
+        chase = _drawer_money_text(chase_above)
+        if chase != "N/A":
+            return "追高线 " + chase + "；等回踩"
+        if technical_available:
+            return "回踩等待区 " + _drawer_zone_range_text(technical_low, technical_high)
+
+    if status in {"BELOW_TECHNICAL_PULLBACK_ZONE", "BELOW_VALUATION_REFERENCE", "BELOW_DISCIPLINE_BUY_ZONE"} or (
+        price_status == "BELOW_BUY_ZONE"
+    ):
+        parts = []
+        near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
+        if near != "N/A":
+            parts.append("近端观察 " + near)
+        if invalidation != "N/A":
+            parts.append("失效线 " + invalidation)
+        if confirmation != "N/A":
+            parts.append("确认线 " + confirmation)
+        return "；".join(parts)
+
+    if status == "ZONE_MISSING" or price_status == "ZONE_MISSING":
+        return "缺失原因：" + _strip_missing_prefix(technical_missing_reason or "缺 EMA / ATR / swing / K线")
+
+    if technical_available:
+        return "技术回踩区 " + _drawer_zone_range_text(technical_low, effective_high)
+    near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
+    if near != "N/A":
+        return "近端观察 " + near
+    return ""
 
 
 def _drawer_entry_primary_status_text(entry_context_status: str, price_position: str) -> str:
@@ -848,18 +1011,16 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
     is_data_missing = status_code == "DATA_MISSING" or status == "数据不足"
     score_text = "待补数据" if is_data_missing else ("N/A" if numeric_score is None else f"{numeric_score:.0f} 分")
     gaps: list[str] = []
-    lines = [
-        "只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
-    ]
+    detail_lines: list[str] = []
     if _is_unknown_structure_text(decline):
         gaps.append("下跌原因未维护")
     else:
-        lines.append(f"下跌原因：{decline}")
+        detail_lines.append(f"下跌原因：{decline}")
     thesis_label = _structure_thesis_label(thesis)
     if _is_unknown_structure_text(thesis_label):
         gaps.append("主线状态未维护")
     else:
-        lines.append(f"主线状态：{thesis_label}")
+        detail_lines.append(f"主线状态：{thesis_label}")
     for label, value, gap in (
         ("技术承接", support, "缺 K 线或支撑数据"),
         ("收盘确认", close, "缺收盘确认数据"),
@@ -869,16 +1030,47 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
         if _is_structure_missing_value(value):
             gaps.append(gap)
         else:
-            lines.append(f"{label}：{value}")
+            detail_lines.append(f"{label}：{value}")
+    if reasons:
+        detail_lines.append("依据：" + "；".join(reasons[:2]))
+    if warnings:
+        detail_lines.append("风险：" + "；".join(warnings[:2]))
+    lines = [
+        "只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
+        "一句话提示：" + _structure_entry_summary_hint(status_code, status, is_data_missing, bool(gaps)),
+    ]
     if gaps:
         lines.append("关键缺口：" + "；".join(_dedupe_text(gaps)[:4]))
-    if reasons:
-        lines.append("依据：" + "；".join(reasons[:2]))
-    if warnings:
-        lines.append("风险：" + "；".join(warnings[:2]))
     if steps:
         lines.append("下一步：" + "；".join(steps[:2]))
-    return _drawer_card_html("结构买入提示", f"{status}｜{score_text}", lines)
+    detail_html = ""
+    if detail_lines:
+        items = "".join(f"<li>{escape(str(line))}</li>" for line in detail_lines if line)
+        detail_html = f'<details class="drawer-low-priority"><summary>查看结构依据</summary><ul>{items}</ul></details>'
+    items = "".join(f"<li>{escape(str(line))}</li>" for line in lines if line)
+    return (
+        '<div class="drawer-card">'
+        '<div class="drawer-card-title">结构买入提示</div>'
+        f'<div class="drawer-card-headline">{escape(status)}｜{escape(score_text)}</div>'
+        f"<ul>{items}</ul>"
+        f"{detail_html}"
+        "</div>"
+    )
+
+
+def _structure_entry_summary_hint(status_code: str, status_label: str, is_data_missing: bool, has_gaps: bool) -> str:
+    code = str(status_code or "").strip()
+    if is_data_missing or has_gaps:
+        return "关键数据不足，结构待确认；不要把缺数据当成结构破坏。"
+    if code == "STRUCTURE_CONFIRMED" or status_label == "结构确认":
+        return "结构较好，可结合仓位计划复核执行。"
+    if code == "STRUCTURE_FORMING" or status_label == "结构形成中":
+        return "结构正在形成，仍需收盘和相对强弱确认。"
+    if code == "DIP_ONLY" or status_label == "只是下跌":
+        return "价格下跌但承接证据不足，先观察买方是否出现。"
+    if code == "STRUCTURE_BROKEN" or status_label == "结构破坏":
+        return "已有结构破坏信号，先复核基本面和趋势。"
+    return "结构状态待确认，先看下一步验证条件。"
 
 
 def _structure_status_label(value: object) -> str:
