@@ -5695,29 +5695,6 @@ def _render_styles() -> None:
             font-size: 0.7rem;
             font-style: normal;
         }
-        .trade-unsynced-sync-panel {
-            margin: 0.55rem 0 0.42rem;
-            padding: 0.58rem 0.72rem;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 8px;
-            background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.9));
-        }
-        .trade-unsynced-sync-head {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 0.9rem;
-        }
-        .trade-unsynced-sync-head strong {
-            color: #0F172A;
-            font-size: 0.82rem;
-            font-weight: 840;
-        }
-        .trade-unsynced-sync-head span {
-            color: #64748B;
-            font-size: 0.7rem;
-            text-align: right;
-        }
         .trade-portfolio-sync-card {
             margin: 0.45rem 0 0.68rem;
             padding: 0.62rem 0.72rem;

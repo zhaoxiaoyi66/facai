@@ -7,7 +7,7 @@ from typing import Any
 
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
-MISSING_BUY_GATE_REASON = "Radar 买入门禁结果缺失，禁止自动同步组合持仓。"
+MISSING_BUY_GATE_REASON = "Radar 买入门禁结果缺失，不能自动入账。"
 
 
 @dataclass(frozen=True)

@@ -1395,7 +1395,7 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_data_status": "DATA_MISSING",
             "radar_is_stale": False,
             "radar_blocked": True,
-            "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，禁止自动同步组合持仓。"]),
+            "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，不能自动入账。"]),
             "gate_hard_blocked": True,
             "radar_advisory_only": False,
             "radar_advisory_warnings_json": "[]",

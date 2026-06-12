@@ -16,6 +16,7 @@ from data.portfolio import PortfolioPositionStore
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.stock_plan import StockPlanStore, get_buy_plan_status
 from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
+from data.trade_gate import buy_gate_entry_fields
 
 
 def _report(decision: str = "ALLOW_BUY") -> dict:
@@ -136,6 +137,13 @@ def _blocked_chase_report(**overrides) -> dict:
     )
     report.update(overrides)
     return report
+
+
+def test_missing_buy_gate_fields_use_ledger_language() -> None:
+    fields = buy_gate_entry_fields(None, action_type="buy")
+
+    assert fields["radarBlockReasons"] == ["Radar 买入门禁结果缺失，不能自动入账。"]
+    assert "同步" not in fields["radarBlockReasons"][0]
 
 
 def test_stock_plan_old_schema_adds_created_at_column_without_crashing() -> None:
