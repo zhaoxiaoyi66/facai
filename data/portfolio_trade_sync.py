@@ -71,7 +71,7 @@ def apply_trade_to_portfolio(entry_id: int, path: Path = CACHE_PATH) -> dict[str
     existing = _sync_log(path, entry_id)
     if existing and existing.get("status") == "synced":
         preview = _preview_entry_effect(entry, path)
-        preview.update({"status": "already_synced", "syncStatus": "synced", "error": "这条交易已经同步过"})
+        preview.update({"status": "already_synced", "syncStatus": "synced", "error": "这条交易已经入账过"})
         return preview
 
     preview = _preview_entry_effect(entry, path)
@@ -263,15 +263,15 @@ def _preview_entry_effect(
     }
 
     if sync_status == "synced":
-        return {**base, "status": "already_synced", "error": "这条交易已经同步过"}
+        return {**base, "status": "already_synced", "error": "这条交易已经入账过"}
     if action_type == "skip":
         return {**base, "status": "no_effect"}
     if action_type not in POSITION_AFFECTING_ACTIONS:
-        return {**base, "status": "failed", "error": "该交易类型暂不支持同步到组合持仓"}
+        return {**base, "status": "failed", "error": "该交易类型暂不支持入账到组合持仓"}
     if quantity is None or quantity <= 0:
-        return {**base, "status": "failed", "error": "同步需要有效成交数量"}
+        return {**base, "status": "failed", "error": "入账需要有效成交数量"}
     if price is None or price <= 0:
-        return {**base, "status": "failed", "error": "同步需要有效成交价格"}
+        return {**base, "status": "failed", "error": "入账需要有效成交价格"}
 
     projected = project_trade_effect(
         current_quantity=current_quantity,

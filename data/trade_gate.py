@@ -125,7 +125,7 @@ def evaluate_buy_gate(
     is_blocked = bool(reasons or required)
     can_sync = not is_blocked and not bool(observation_only)
     if observation_only:
-        advisory_warnings.append("仅观察记录不会同步到组合持仓；这不是一笔真实买入。")
+        advisory_warnings.append("仅观察不是一笔真实买入；请用计划买入或价格提醒记录观察，不写入真实账本。")
 
     severity = "block" if is_blocked else "pass"
     return BuyGateResult(
@@ -267,7 +267,7 @@ def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation
     if decision == "WAIT":
         reason = "Radar 结论为 WAIT，系统建议等待或复核；不作为买入硬拦截。"
         if observation_only:
-            reason = "Radar 结论为 WAIT；本次标记为仅观察，不同步组合持仓。"
+            reason = "Radar 结论为 WAIT；仅观察不是一笔真实买入，请用计划买入或价格提醒记录。"
         return [reason]
     if decision == "ALLOW_BUY":
         return []

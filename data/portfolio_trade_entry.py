@@ -42,6 +42,8 @@ def submit_portfolio_buy_add(
         values.get("starter_invalidation_condition") or values.get("invalidation_condition") or values.get("starterInvalidationCondition") or ""
     ).strip()
     observation_only = bool(values.get("radar_observation_only") or values.get("radarObservationOnly"))
+    if observation_only:
+        raise ValueError("仅观察不是真实成交；请用计划买入或价格提醒记录观察，不写入交易日志。")
     action_type = _portfolio_trade_action(ticker, path, values.get("action_type"))
     submitted_at = _hkt_now()
     portfolio_preview = preview_trade_values_portfolio_effect(
@@ -158,8 +160,6 @@ def submit_portfolio_buy_add(
         **structure_entry_snapshot_fields(structure_advisor, checked_at=submitted_at.isoformat()),
         "gateCheckedAt": submitted_at.isoformat(),
     }
-    saved = TradeJournalStore(path).save_entry(ticker, entry_values)
-    sync_result = None
     can_sync = _can_sync_buy_entry(
         entry_mode=entry_mode,
         gate=gate,
@@ -167,8 +167,14 @@ def submit_portfolio_buy_add(
         starter_gate=starter_gate,
         observation_only=observation_only,
     )
-    if can_sync:
-        sync_result = apply_trade_to_portfolio(int(saved.get("id") or 0), path=path)
+    if not can_sync:
+        raise ValueError(_buy_entry_block_reason(gate=gate, plan_gate=plan_gate, starter_gate=starter_gate, entry_mode=entry_mode))
+    store = TradeJournalStore(path)
+    saved = store.save_entry(ticker, entry_values)
+    sync_result = apply_trade_to_portfolio(int(saved.get("id") or 0), path=path)
+    if str(sync_result.get("status") or "") != "success":
+        store.delete_entry(int(saved.get("id") or 0))
+        raise ValueError(str(sync_result.get("error") or "成交入账失败，交易日志未保存。"))
     return {
         "entry": saved,
         "gate": gate.to_dict(),
@@ -180,6 +186,17 @@ def submit_portfolio_buy_add(
         "actionType": action_type,
         "synced": bool(sync_result and sync_result.get("status") == "success"),
     }
+
+
+def _buy_entry_block_reason(*, gate: Any, plan_gate: Any, starter_gate: Any, entry_mode: str) -> str:
+    if entry_mode == "planned_ladder_buy" and not bool(plan_gate.can_sync_to_portfolio):
+        reasons = [str(item) for item in getattr(plan_gate, "plan_block_reasons", []) if str(item).strip()]
+        return "；".join(reasons) or "计划买入条件未触发，未入账。"
+    if entry_mode == "starter_position" and not bool(starter_gate.can_sync_to_portfolio):
+        reasons = [str(item) for item in getattr(starter_gate, "starter_block_reasons", []) if str(item).strip()]
+        return "；".join(reasons) or "底仓建仓条件未通过，未入账。"
+    reasons = [str(item) for item in [*getattr(gate, "reasons", []), *getattr(gate, "required_actions", [])] if str(item).strip()]
+    return "；".join(reasons) or "买入校验未通过，未入账。"
 
 
 def _can_sync_buy_entry(

@@ -178,14 +178,13 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
                 value=_input_value(_plan_target_sell_price(StockPlanStore().get_plan(effective_ticker)) or current.get("planned_sell_price")),
                 key=f"{form_key}:target_sell_price",
             )
-            st.checkbox("仅观察记录，不同步到组合持仓", key=f"{form_key}:observation_only")
             st.text_area(
                 "买入理由",
                 height=86,
-                placeholder="本次为什么执行？例如：触发计划第1档 / 建底仓第一笔 / 仅观察记录",
+                placeholder="本次为什么执行？例如：触发计划第1档 / 建底仓第一笔 / 价格回踩后确认执行",
                 key=f"{form_key}:buy_reason",
             )
-            if st.form_submit_button("提交买入 / 加仓", width="stretch"):
+            if st.form_submit_button("确认买入 / 加仓并入账", width="stretch"):
                 _submit_portfolio_buy_add(form_key, effective_ticker)
 
 
@@ -396,7 +395,6 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
                 "starter_thesis": plan_fields["starter_thesis"],
                 "starter_add_plan": plan_fields["starter_add_plan"],
                 "starter_invalidation_condition": plan_fields["starter_invalidation_condition"],
-                "radar_observation_only": bool(_form_value(form_key, "observation_only")),
             },
         )
     except ValueError as exc:
@@ -409,9 +407,9 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
         plan_gate = result.get("planGate") or {}
         if bool(plan_gate.get("planned_ladder_buy")):
             level = str(plan_gate.get("buy_plan_level") or "计划档位").strip()
-            message = f"{entry.get('symbol')} 已按分批买入计划（{level}）记录并同步持仓。"
+            message = f"{entry.get('symbol')} 已按分批买入计划（{level}）入账。"
         else:
-            message = f"{entry.get('symbol')} 买入/加仓已记录，组合持仓已同步。"
+            message = f"{entry.get('symbol')} 买入/加仓已入账。"
         st.session_state["portfolio_save_notice"] = (
             "success_trade",
             {
@@ -420,21 +418,8 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
                 "entryId": entry.get("id"),
             },
         )
-    elif bool(gate.get("is_blocked")) or bool(gate.get("is_observation_only")):
-        st.session_state["portfolio_save_notice"] = (
-            "buy_gate_blocked",
-            {
-                "symbol": entry.get("symbol"),
-                "gate": gate,
-                "planGate": result.get("planGate") or {},
-                "starterGate": result.get("starterGate") or {},
-                "marketStatus": result.get("marketStatus") or {},
-                "entryMode": entry.get("entry_mode") or result.get("actionType"),
-                "positionTier": tier,
-            },
-        )
     else:
-        message = f"{entry.get('symbol')} 已保存为交易日志，但组合持仓同步失败：{sync.get('error') or '未知错误'}"
+        message = f"{entry.get('symbol')} 未能入账：{sync.get('error') or '未知错误'}"
         st.session_state["portfolio_save_notice"] = ("error", message)
     st.rerun()
     return
@@ -571,7 +556,7 @@ def _render_buy_plan_actions(symbol: str, plan: dict, status: dict) -> None:
         detail = st.text_input("补充说明", key=f"buy-plan-pause-note:{symbol}")
         if st.form_submit_button("记录暂缓 / 不买", width="stretch"):
             _save_buy_plan_pause_note(symbol, plan, reason, detail)
-            st.success("已暂停计划并同步暂停提醒；未创建交易日志，未改变持仓。")
+            st.success("已暂停计划并联动暂停提醒；未创建交易日志，未改变持仓。")
             st.rerun()
 
 
@@ -598,7 +583,7 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
             "计划股数",
             value=_input_value(calculated_shares if calculated_shares is not None else plan.get("planned_shares")),
             disabled=True,
-            help="由计划金额 ÷ 目标提醒价自动计算，保存后会同步到计划。",
+            help="由计划金额 ÷ 目标提醒价自动计算，保存后会写入计划。",
         )
 
         quick = st.columns([1, 1])
@@ -698,7 +683,7 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
                 st.session_state["portfolio_plan_symbol"] = symbol
                 st.session_state["portfolio_buy_plan_notice"] = (
                     "success",
-                    f"已保存 {symbol} 买入计划，并同步价格提醒。created_at: {saved.get('created_at') or '—'} / updated_at: {saved.get('updated_at') or '—'}",
+                    f"已保存 {symbol} 买入计划，并联动价格提醒。created_at: {saved.get('created_at') or '—'} / updated_at: {saved.get('updated_at') or '—'}",
                 )
             st.rerun()
 
@@ -828,7 +813,7 @@ def _save_buy_plan_pause_note(symbol: str, plan: dict, reason: str, detail: str)
 
 def _cancel_buy_plan(symbol: str, plan: dict) -> None:
     notes = str(plan.get("notes") or "").strip()
-    plan["notes"] = "\n".join(item for item in (notes, "计划已取消；提醒同步停用。") if item)
+    plan["notes"] = "\n".join(item for item in (notes, "计划已取消；提醒已停用。") if item)
     plan["plan_status"] = "cancelled"
     plan["material_updated_at"] = plan.get("material_updated_at") or plan.get("updated_at") or plan.get("created_at")
     saved = StockPlanStore().save_plan(symbol, plan)
@@ -1184,7 +1169,7 @@ def _row_status_text(row: dict) -> str:
     if str(reconciliation.get("status") or "") in {"warning", "mismatch"}:
         return _reconciliation_reason_text(reconciliation)
     if int(row.get("unsyncedTradeCount") or 0) > 0:
-        return "有未同步交易记录"
+        return "有旧系统未入账记录"
     deviation = _deviation_text(row)
     return deviation if deviation != "暂无偏离提示" else _price_status_text(row.get("priceStatus"))
 
@@ -1192,8 +1177,8 @@ def _row_status_text(row: dict) -> str:
 def _trade_sync_text(row: dict) -> str:
     count = int(row.get("unsyncedTradeCount") or 0)
     if count <= 0:
-        return "已同步"
-    return f"有 {count} 条未同步交易记录，请到交易日志处理"
+        return "已入账"
+    return f"有 {count} 条旧系统未入账记录"
 
 
 def _safe_portfolio_reconciliation() -> list[dict]:
@@ -1247,7 +1232,7 @@ def _unsynced_trade_action_html(symbol: str) -> str:
     href = _trade_journal_symbol_href(ticker)
     return (
         f'<a class="portfolio-reconciliation-action" '
-        f'href="{escape(href, quote=True)}" target="_self">查看未同步交易</a>'
+        f'href="{escape(href, quote=True)}" target="_self">查看历史记录</a>'
     )
 
 
@@ -1265,7 +1250,7 @@ def _render_reconciliation_strip(items: list[dict]) -> None:
     summary = _reconciliation_summary(items)
     metrics = [
         ("一致", summary["ok"]),
-        ("未同步交易", summary["unsynced"]),
+        ("旧未入账", summary["unsynced"]),
         ("数量不一致", summary["quantityMismatch"]),
         ("成本不一致", summary["costMismatch"]),
         ("来源不明", summary["unknownSource"]),
@@ -1336,10 +1321,10 @@ def _reconciliation_status_text(item: dict | None) -> str:
 def _reconciliation_reason_text(item: dict | None) -> str:
     reasons = [str(reason) for reason in (item or {}).get("reasons") or []]
     labels = {
-        "unsynced_trades_exist": "有未同步交易记录",
+        "unsynced_trades_exist": "有旧系统未入账记录",
         "quantity_mismatch": "当前持仓数量和交易流水不一致",
         "average_cost_mismatch": "当前持仓成本和交易流水不一致",
-        "position_without_synced_journal": "有持仓但找不到同步交易来源",
+        "position_without_synced_journal": "有持仓但找不到入账交易来源",
         "synced_journal_without_active_position": "交易流水有持仓但当前持仓未启用",
     }
     translated = [labels.get(reason, reason) for reason in reasons]
@@ -1351,7 +1336,7 @@ def _reconciliation_drawer_items(item: dict | None) -> list[tuple[str, object]]:
     items = [
         ("状态", _reconciliation_status_text(current)),
         ("原因", _reconciliation_reason_text(current)),
-        ("未同步交易", int(current.get("unsyncedTradeCount") or 0)),
+        ("旧未入账", int(current.get("unsyncedTradeCount") or 0)),
         ("持仓数量 / 日志数量", _quantity_text(current.get("positionQuantity")) + " / " + _quantity_text(current.get("journalQuantity"))),
         ("数量差异", _quantity_text(current.get("quantityDiff"))),
         ("持仓成本 / 日志成本", _money_text(current.get("positionAverageCost")) + " / " + _money_text(current.get("journalAverageCost"))),
@@ -1473,7 +1458,7 @@ def _render_portfolio_notice() -> None:
 
 def _portfolio_trade_success_notice_html(payload: object) -> str:
     data = dict(payload or {}) if isinstance(payload, dict) else {"message": str(payload or "")}
-    message = str(data.get("message") or "买入/加仓已记录，组合持仓已同步。")
+    message = str(data.get("message") or "买入/加仓已入账。")
     symbol = str(data.get("symbol") or "").strip().upper()
     entry_id = int(data.get("entryId") or 0)
     href = "?page=trade-journal"
@@ -1513,8 +1498,8 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
     return (
         '<section class="portfolio-gate-notice">'
         '<div class="portfolio-gate-notice-head">'
-        f"<strong>{escape(symbol)} 已保存日志，未同步持仓</strong>"
-        "<span>这不是系统错误；真实组合持仓没有变化。</span>"
+        f"<strong>{escape(symbol)} 未入账</strong>"
+        "<span>这不是交易记录；真实组合持仓没有变化。</span>"
         "</div>"
         '<div class="portfolio-gate-notice-grid">'
         f"<div><b>{escape(primary_title)}</b><ul>{reason_html}</ul></div>"
@@ -1549,7 +1534,7 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     for needle, label in mappings:
         if needle in lower:
             return label
-    if "Radar" in text or "买入后仓位" in text or "情绪交易风险" in text or "仅观察记录" in text:
+    if "Radar" in text or "买入后仓位" in text or "情绪交易风险" in text:
         return text
     return text or "Radar / 买入门禁未通过。"
 
@@ -1595,7 +1580,7 @@ def _portfolio_buy_gate_actions(
     actions.extend(
         [
             "降低买入数量，直到买入后仓位不超过明确仓位上限。",
-            "改为仅观察记录，不同步真实组合。",
+            "改为计划买入或价格提醒，不写入真实账本。",
             "重新复核该股票的 Radar 区间、技术回踩区和买入计划。",
         ]
     )
@@ -1614,7 +1599,7 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "quantity_exceeds_level": "买入数量超过计划档位剩余数量。",
         "position_exceeds_plan": "买入后仓位超过计划上限。",
         "mood_blocked": "交易心理不符合计划内执行。",
-        "data_missing": "价格或 Radar 数据缺失 / 过期，不能按计划同步。",
+        "data_missing": "价格或 Radar 数据缺失 / 过期，不能按计划入账。",
         "price_missing": "缺少当前价格，不能匹配计划。",
         "quantity_missing": "买入数量无效，不能匹配计划档位。",
         "level_filled": "该计划档位已没有剩余可买数量。",
@@ -1637,7 +1622,7 @@ def _portfolio_starter_reasons(starter_gate: dict) -> list[str]:
     labels = {
         "not_selected": "",
         "starter_blocked": "A 类底仓建仓条件未通过。",
-        "starter_review_required": "估值评分过低，底仓建仓需要复核，不能直接同步。",
+        "starter_review_required": "估值评分过低，底仓建仓需要复核，不能直接入账。",
         "allow_starter_position": "已匹配 A 类底仓建仓条件。",
     }
     reasons = [labels.get(status, status)] if labels.get(status, status) else []
@@ -1891,7 +1876,7 @@ def _drawer_html(
             ("市值", _money_text(row.get("marketValue"))),
             ("浮动盈亏", _money_text(row.get("unrealizedPnl")) + " / " + _percent_text(row.get("unrealizedPnlPct"))),
             ("当前仓位", _percent_text(row.get("positionPct"))),
-            ("交易同步", _trade_sync_text(row)),
+            ("入账状态", _trade_sync_text(row)),
         ]),
         ("账务一致性", _reconciliation_drawer_items(row.get("reconciliation"))),
         ("系统估值参考", [

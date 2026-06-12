@@ -72,6 +72,20 @@ def _save_ladder_plan(path: Path, symbol: str = "NOK", **overrides) -> dict:
     return StockPlanStore(path).get_plan(symbol)
 
 
+def _assert_rejected_trade_leaves_no_journal(
+    symbol: str,
+    values: dict,
+    *,
+    path: Path,
+    radar_report: dict,
+    match: str | None = None,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        submit_portfolio_buy_add(symbol, values, path=path, radar_report=radar_report)
+    assert TradeJournalStore(path).list_entries(symbol) == []
+    assert PortfolioPositionStore(path).get_position(symbol) is None
+
+
 def _set_plan_timestamps(
     path: Path,
     symbol: str,
@@ -322,7 +336,7 @@ def test_portfolio_success_notice_links_to_trade_journal_entry() -> None:
 
     html = _portfolio_trade_success_notice_html(
         {
-            "message": "NVDA 买入/加仓已记录，组合持仓已同步。",
+            "message": "NVDA 买入/加仓已入账。",
             "symbol": "NVDA",
             "entryId": 26,
         }
@@ -695,48 +709,35 @@ def test_planned_ladder_buy_allows_missing_plan_timestamps_without_fresh_marker(
         assert result["synced"] is True
 
 
-def test_planned_ladder_buy_does_not_sync_when_price_has_not_triggered_level() -> None:
+def test_planned_ladder_buy_rejects_when_price_has_not_triggered_level() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path, buy_plan_tranches=[{"label": "第一笔买入", "price": 4, "shares": 100}])
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NOK",
             _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
             path=path,
             radar_report=_blocked_chase_report(current_price=4.8),
+            match="高于下一档触发价",
         )
 
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert not entry["planned_ladder_buy"]
-        assert entry["plan_match_status"] == "not_triggered"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
 
-
-def test_planned_ladder_buy_does_not_sync_when_quantity_exceeds_level() -> None:
+def test_planned_ladder_buy_rejects_when_quantity_exceeds_level() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path, buy_plan_tranches=[{"label": "第一笔买入", "price": 5, "shares": 10}])
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NOK",
             _base_values(quantity=20, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
             path=path,
             radar_report=_blocked_chase_report(),
+            match="超过 .*剩余计划数量",
         )
 
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "quantity_exceeds_level"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
 
-
-def test_planned_ladder_buy_does_not_sync_when_after_position_exceeds_plan_max(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_planned_ladder_buy_rejects_when_after_position_exceeds_plan_max(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         portfolio_trade_entry,
         "preview_trade_values_portfolio_effect",
@@ -750,19 +751,13 @@ def test_planned_ladder_buy_does_not_sync_when_after_position_exceeds_plan_max(m
             buy_plan_tranches=[{"label": "第一笔买入", "price": 5, "shares": 100}],
         )
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NOK",
             _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
             path=path,
             radar_report=_blocked_chase_report(),
+            match="超过计划上限",
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["plan_match_status"] == "position_exceeds_plan"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
 
 
 def test_planned_ladder_buy_subtracts_previously_synced_same_level_quantity() -> None:
@@ -776,41 +771,41 @@ def test_planned_ladder_buy_subtracts_previously_synced_same_level_quantity() ->
             path=path,
             radar_report=_blocked_chase_report(),
         )
-        second = submit_portfolio_buy_add(
-            "NOK",
-            _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
-            path=path,
-            radar_report=_blocked_chase_report(),
-        )
+        with pytest.raises(ValueError, match="超过 .*剩余计划数量"):
+            submit_portfolio_buy_add(
+                "NOK",
+                _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
+                path=path,
+                radar_report=_blocked_chase_report(),
+            )
 
-        second_entry = TradeJournalStore(path).get_entry(int(second["entry"]["id"]))
         position = PortfolioPositionStore(path).get_position("NOK")
         assert first["synced"] is True
-        assert second_entry is not None
-        assert second_entry["plan_match_status"] == "quantity_exceeds_level"
-        assert second_entry["plan_remaining_quantity"] == 40
-        assert second["sync"] is None
+        entries = TradeJournalStore(path).list_entries("NOK")
+        assert len(entries) == 1
         assert position is not None
         assert position["quantity"] == 60
 
 
-def test_planned_ladder_buy_blocked_and_observation_only_do_not_consume_level_quantity() -> None:
+def test_planned_ladder_buy_rejected_attempts_do_not_consume_level_quantity() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path, buy_plan_tranches=[{"label": "第一笔买入", "price": 5, "shares": 100}])
 
-        blocked = submit_portfolio_buy_add(
-            "NOK",
-            _base_values(quantity=100, price=4.8, position_tier="C", decision_mood="fomo", entry_mode="planned_ladder_buy"),
-            path=path,
-            radar_report=_blocked_chase_report(),
-        )
-        observed = submit_portfolio_buy_add(
-            "NOK",
-            _base_values(quantity=100, price=4.8, position_tier="C", radar_observation_only=True, entry_mode="planned_ladder_buy"),
-            path=path,
-            radar_report=_blocked_chase_report(),
-        )
+        with pytest.raises(ValueError, match="情绪交易风险"):
+            submit_portfolio_buy_add(
+                "NOK",
+                _base_values(quantity=100, price=4.8, position_tier="C", decision_mood="fomo", entry_mode="planned_ladder_buy"),
+                path=path,
+                radar_report=_blocked_chase_report(),
+            )
+        with pytest.raises(ValueError, match="仅观察不是真实成交"):
+            submit_portfolio_buy_add(
+                "NOK",
+                _base_values(quantity=100, price=4.8, position_tier="C", radar_observation_only=True, entry_mode="planned_ladder_buy"),
+                path=path,
+                radar_report=_blocked_chase_report(),
+            )
         allowed = submit_portfolio_buy_add(
             "NOK",
             _base_values(quantity=100, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
@@ -820,8 +815,6 @@ def test_planned_ladder_buy_blocked_and_observation_only_do_not_consume_level_qu
 
         allowed_entry = TradeJournalStore(path).get_entry(int(allowed["entry"]["id"]))
         position = PortfolioPositionStore(path).get_position("NOK")
-        assert blocked["sync"] is None
-        assert observed["sync"] is None
         assert allowed_entry is not None
         assert allowed_entry["plan_remaining_quantity"] == 100
         assert allowed["synced"] is True
@@ -829,46 +822,32 @@ def test_planned_ladder_buy_blocked_and_observation_only_do_not_consume_level_qu
         assert position["quantity"] == 100
 
 
-def test_planned_ladder_buy_does_not_sync_with_fomo_mood() -> None:
+def test_planned_ladder_buy_rejects_fomo_mood_without_journal() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path)
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NOK",
             _base_values(quantity=50, price=4.8, position_tier="C", decision_mood="fomo", entry_mode="planned_ladder_buy"),
             path=path,
             radar_report=_blocked_chase_report(),
+            match="情绪交易风险",
         )
 
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert not entry["planned_ladder_buy"]
-        assert entry["plan_match_status"] == "mood_blocked"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
 
-
-def test_planned_ladder_buy_does_not_sync_with_anxiety_mood() -> None:
+def test_planned_ladder_buy_rejects_anxiety_mood_without_journal() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path)
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NOK",
             _base_values(quantity=50, price=4.8, position_tier="C", decision_mood="anxiety", entry_mode="planned_ladder_buy"),
             path=path,
             radar_report=_blocked_chase_report(),
+            match="情绪交易风险",
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert not entry["planned_ladder_buy"]
-        assert entry["plan_match_status"] == "mood_blocked"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
 
 
 def test_planned_ladder_buy_treats_radar_data_missing_or_stale_as_advisory() -> None:
@@ -977,7 +956,7 @@ def test_a_class_starter_position_in_chase_zone_records_advisory_and_syncs(monke
         assert position["quantity"] == 25
 
 
-def test_a_class_starter_position_blocks_when_after_position_exceeds_starter_max(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_class_starter_position_rejects_when_after_position_exceeds_starter_max(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         portfolio_trade_entry,
         "preview_trade_values_portfolio_effect",
@@ -986,7 +965,7 @@ def test_a_class_starter_position_blocks_when_after_position_exceeds_starter_max
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "AVGO",
             _base_values(
                 quantity=25,
@@ -1002,14 +981,6 @@ def test_a_class_starter_position_blocks_when_after_position_exceeds_starter_max
             radar_report=_blocked_chase_report(ticker="AVGO", current_price=406, valuation_score=42),
         )
 
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert not entry["starter_position"]
-        assert entry["starter_match_status"] == "starter_blocked"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("AVGO") is None
-
 
 def test_b_or_c_class_cannot_use_starter_position(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -1020,7 +991,7 @@ def test_b_or_c_class_cannot_use_starter_position(monkeypatch: pytest.MonkeyPatc
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "AVGO",
             _base_values(
                 quantity=25,
@@ -1036,14 +1007,8 @@ def test_b_or_c_class_cannot_use_starter_position(monkeypatch: pytest.MonkeyPatc
             radar_report=_blocked_chase_report(ticker="AVGO", current_price=406, valuation_score=42),
         )
 
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["starter_match_status"] == "starter_blocked"
-        assert result["sync"] is None
 
-
-def test_starter_position_does_not_sync_with_fomo_mood(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_starter_position_rejects_fomo_mood_without_journal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         portfolio_trade_entry,
         "preview_trade_values_portfolio_effect",
@@ -1052,7 +1017,7 @@ def test_starter_position_does_not_sync_with_fomo_mood(monkeypatch: pytest.Monke
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "AVGO",
             _base_values(
                 quantity=25,
@@ -1074,13 +1039,6 @@ def test_starter_position_does_not_sync_with_fomo_mood(monkeypatch: pytest.Monke
                 block_reasons=["current price is above the discipline buy zone"],
             ),
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["starter_match_status"] == "starter_blocked"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("AVGO") is None
 
 
 def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1134,23 +1092,12 @@ def test_starter_position_requires_thesis_add_plan_and_invalidation(monkeypatch:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "AVGO",
             _base_values(quantity=25, price=406, position_tier="A", entry_mode="starter_position", target_sell_price=460),
             path=path,
             radar_report=_blocked_chase_report(ticker="AVGO", current_price=406, valuation_score=42),
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["starter_match_status"] == "starter_blocked"
-        reasons = json.loads(entry["radar_block_reasons_json"])
-        assert not any("缺少 thesis" in reason for reason in reasons)
-        assert any("缺少后续加仓计划" in reason for reason in reasons)
-        assert any("缺少失效条件" in reason for reason in reasons)
-        assert not any("未找到分批买入计划" in reason for reason in reasons)
-        assert result["sync"] is None
 
 
 def test_starter_position_uses_buy_reason_as_thesis_and_allows_small_valuation_warning(
@@ -1210,22 +1157,17 @@ def test_starter_position_uses_buy_reason_as_thesis_and_allows_small_valuation_w
         assert position["quantity"] == 25
 
 
-def test_observation_only_saves_journal_but_does_not_sync_position() -> None:
+def test_observation_only_is_rejected_without_journal() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NVDA",
             _base_values(radar_observation_only=True),
             path=path,
             radar_report=_report(),
+            match="仅观察不是真实成交",
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["radar_observation_only"]
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NVDA") is None
 
 
 def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
@@ -1257,8 +1199,8 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
         }
     )
 
-    assert "NOK 已保存日志，未同步持仓" in html
-    assert "这不是系统错误" in html
+    assert "NOK 未入账" in html
+    assert "这不是交易记录" in html
     assert "\u4e70\u5165\u6267\u884c\u95e8\u7981" in html
     assert "当前市场状态" in html
     assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e Radar \u53c2\u8003\u4e70\u533a" in html
@@ -1336,7 +1278,7 @@ def test_portfolio_buy_gate_notice_shows_post_earnings_drop_without_overheated_c
         }
     )
 
-    assert "AVGO 已保存日志，未同步持仓" in html
+    assert "AVGO 未入账" in html
     assert "财报后大跌" in html
     assert "高波动" in html
     assert "估值仍偏高" in html
@@ -1385,22 +1327,17 @@ def test_portfolio_buy_entry_returns_market_status_for_big_drop_block() -> None:
         assert PortfolioPositionStore(path).get_position("AVGO") is not None
 
 
-def test_fomo_mood_blocks_sync_even_when_radar_allows_buy() -> None:
+def test_fomo_mood_rejects_trade_even_when_radar_allows_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        result = submit_portfolio_buy_add(
+        _assert_rejected_trade_leaves_no_journal(
             "NVDA",
             _base_values(decision_mood="fomo"),
             path=path,
             radar_report=_report(),
+            match="情绪交易风险",
         )
-
-        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
-        assert entry is not None
-        assert entry["mood_gate_blocked"]
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NVDA") is None
 
 
 def test_position_tier_is_required_for_portfolio_buy_add() -> None:

@@ -26,11 +26,11 @@ def project_trade_effect(
         "error": None,
     }
     if action not in POSITION_AFFECTING_ACTIONS:
-        return {**base, "status": "failed", "error": "该交易类型暂不支持同步到组合持仓"}
+        return {**base, "status": "failed", "error": "该交易类型暂不支持入账到组合持仓"}
     if quantity is None or quantity <= 0:
-        return {**base, "status": "failed", "error": "同步需要有效成交数量"}
+        return {**base, "status": "failed", "error": "入账需要有效成交数量"}
     if price is None or price <= 0:
-        return {**base, "status": "failed", "error": "同步需要有效成交价格"}
+        return {**base, "status": "failed", "error": "入账需要有效成交价格"}
 
     if action in BUY_ACTIONS:
         after_quantity = current_quantity + quantity
@@ -42,7 +42,7 @@ def project_trade_effect(
         quantity_delta = quantity
     else:
         if quantity > current_quantity + QUANTITY_TOLERANCE:
-            return {**base, "status": "failed", "error": "卖出数量超过当前组合持仓，不能同步"}
+            return {**base, "status": "failed", "error": "卖出数量超过当前组合持仓，不能入账"}
         after_quantity = max(0.0, current_quantity - quantity)
         after_average_cost = current_average_cost if after_quantity > 0 else 0.0
         quantity_delta = -quantity

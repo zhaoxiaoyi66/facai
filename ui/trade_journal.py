@@ -24,7 +24,7 @@ from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
     apply_trade_to_portfolio,
-    preview_trade_portfolio_effect,
+    get_trade_portfolio_sync_status,
     preview_trade_values_portfolio_effect,
 )
 from data.portfolio import PortfolioPositionStore
@@ -33,7 +33,7 @@ from data.sell_fly_review import build_sell_fly_review_results
 from data.sell_review import evaluate_sell_review_flags, format_sell_review_label
 from data.stock_plan import StockPlanStore
 from data.trade_performance import EVENT_EXIT_REASONS, EVENT_PLAN_KEYWORDS, summarize_trade_performance
-from data.trade_safety_gate import has_concrete_reentry_plan, trade_sync_policy
+from data.trade_safety_gate import has_concrete_reentry_plan
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
@@ -218,25 +218,26 @@ def render() -> None:
         st.session_state["trade_journal_editor_open"] = True
     symbols = store.list_symbols()
     entries = _load_entries(store, symbols)
-    sync_groups = _trade_sync_item_groups(entries)
+    real_entries = _executed_trade_entries(entries)
+    historical_entries = _historical_non_trade_entries(entries, real_entries)
     performance_summary = _load_trade_performance_summary(store)
-    _render_summary(entries, performance_summary, pending_count=len(sync_groups["actionable"]))
+    _render_summary(real_entries, performance_summary, legacy_count=len(historical_entries))
 
-    sell_tab, entries_tab, stats_tab, pending_tab = st.tabs(["卖出 / 减仓", "交易流水", "战绩统计", "待处理"])
+    sell_tab, entries_tab, stats_tab, history_tab = st.tabs(["卖出 / 减仓", "真实交易流水", "战绩统计", "历史非成交记录"])
     with sell_tab:
         _render_editor(store)
     with entries_tab:
         _render_entry_delete_confirmation(store)
         _render_entry_detail(store)
-        _render_entries(symbols, entries)
+        _render_entries(symbols, real_entries)
     with stats_tab:
         _render_trade_performance_stats(store, symbols)
         with st.expander("卖飞复盘", expanded=False):
             _render_sell_fly_review()
         with st.expander("系统信号复盘", expanded=False):
             _render_signal_replay(decision_store, outcome_store, error_tag_store)
-    with pending_tab:
-        _render_unsynced_trade_sync_panel(sync_groups)
+    with history_tab:
+        _render_historical_non_trade_records(historical_entries)
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -335,22 +336,23 @@ def _render_editor(store: TradeJournalStore) -> None:
                 key_suffix=str(editing_id or "new"),
             )
 
-        sync_to_portfolio = _render_portfolio_sync_option(
+        _render_portfolio_ledger_preview(
             symbol,
             action_type,
             quantity,
             price,
-            default_checked=editing_entry is None,
-            key_suffix=str(editing_id or "new"),
             preview=portfolio_preview,
-            discipline_blocked=_discipline_result_blocked(discipline_result) or _radar_gate_blocks_sync(radar_gate_result),
+            discipline_blocked=_discipline_result_blocked(discipline_result),
         )
 
-        button_label = "保存修改" if editing_entry else "保存记录"
+        button_label = "保存修改" if editing_entry else ("确认卖出并入账" if action_type == "sell" else "确认减仓并入账")
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
             quantity_error = _sell_quantity_validation_error(action_type, quantity, portfolio_preview.get("currentQuantity"))
             if quantity_error:
                 st.session_state["trade_journal_notice"] = ("error", quantity_error)
+                st.rerun()
+            if not editing_entry and action_type in SELL_DISCIPLINE_ACTIONS and _discipline_result_blocked(discipline_result):
+                st.session_state["trade_journal_notice"] = ("error", "卖出纪律未通过，本次成交未入账，也未写入交易日志。")
                 st.rerun()
             entry_values = {
                 "trade_date": trade_date.isoformat(),
@@ -360,7 +362,6 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "decision_mood": decision_mood,
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
-                "syncToPortfolio": sync_to_portfolio,
             }
             if selected_position:
                 entry_values["targetSellPrice"] = selected_position.get("plannedSellPrice")
@@ -399,7 +400,7 @@ def _render_radar_buy_gate(
 ):
     if action_type not in CLASSIFICATION_ACTIONS:
         return None
-    st.markdown('<div class="trade-discipline-title">买入前 Radar 门禁</div>', unsafe_allow_html=True)
+    st.markdown('<div class="trade-discipline-title">买入前 Radar 提示</div>', unsafe_allow_html=True)
     ticker = str(symbol or "").strip().upper()
     if not ticker:
         st.markdown(
@@ -416,11 +417,6 @@ def _render_radar_buy_gate(
         ["交易仓", "核心仓"],
         key=f"trade-radar-position-bucket-{key_suffix}",
     )
-    observation_only = st.checkbox(
-        "仅记录观察 / 非真实交易",
-        value=False,
-        key=f"trade-radar-observation-only-{key_suffix}",
-    )
     position_bucket = "core" if bucket_label == "核心仓" else "trade"
     report = build_cached_ai_stock_radar_report(ticker)
     result = evaluate_buy_gate(
@@ -429,19 +425,17 @@ def _render_radar_buy_gate(
         position_bucket=position_bucket,
         planned_after_position_pct=portfolio_preview.get("afterPositionPct"),
         decision_mood=decision_mood,
-        observation_only=observation_only,
+        observation_only=False,
         buy_reason=buy_reason,
     )
-    _render_radar_buy_gate_card(report.to_dict(), result.to_dict(), bucket_label=bucket_label, observation_only=observation_only)
+    _render_radar_buy_gate_card(report.to_dict(), result.to_dict(), bucket_label=bucket_label)
     return result
 
 
-def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str, observation_only: bool) -> None:
+def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str) -> None:
     decision = str(report.get("decision") or "DATA_MISSING")
     tone = "ok" if bool(result.get("can_continue")) else "blocked"
-    if decision == "WAIT" and observation_only and bool(result.get("can_continue")):
-        tone = "warning"
-    status = "允许继续" if bool(result.get("can_continue")) else "禁止新增"
+    status = "提示可复核" if bool(result.get("can_continue")) else "提示需谨慎"
     reasons = [str(item) for item in (result.get("reasons") or report.get("block_reasons") or []) if str(item).strip()]
     required = [str(item) for item in (result.get("required_actions") or []) if str(item).strip()]
     reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons) or "<li>暂无阻止原因</li>"
@@ -459,7 +453,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         ("估值评分", _score_text(report.get("valuation_score"))),
         ("核心仓上限", _pct_value_text(report.get("core_max_pct"))),
         ("交易仓上限", _pct_value_text(report.get("trade_max_pct"))),
-        ("允许新增", _pct_value_text(report.get("allowed_add_pct"))),
+        ("系统参考", _pct_value_text(report.get("allowed_add_pct"))),
         ("本次用途", bucket_label),
         ("数据状态", f"{report.get('data_status') or 'MISSING'} / {stale_text}"),
     ]
@@ -471,22 +465,16 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         f"""
         <section class="trade-radar-gate {escape(tone)}">
           <div class="trade-radar-gate-head">
-            <b>Radar 门禁：{escape(status)}</b>
-            <span>价格提醒不是买入信号；仍需检查买区、技术面、数据健康和交易纪律。</span>
+            <b>Radar 提示：{escape(status)}</b>
+            <span>价格提醒不是买入信号；真实成交入账仍需由用户确认。</span>
           </div>
           <div class="trade-radar-gate-grid">{metrics_html}</div>
-          <div class="trade-radar-reasons"><b>阻止原因</b><ul>{reason_html}</ul></div>
+          <div class="trade-radar-reasons"><b>提示原因</b><ul>{reason_html}</ul></div>
           {required_html}
         </section>
         """,
         unsafe_allow_html=True,
     )
-
-
-def _radar_gate_blocks_sync(result: object) -> bool:
-    if result is None:
-        return False
-    return not bool(getattr(result, "can_sync_portfolio", getattr(result, "can_sync_to_portfolio", False)))
 
 
 def _radar_zone_text(zone: object) -> str:
@@ -839,31 +827,19 @@ def _render_buy_classification_editor(
     )
 
 
-def _render_portfolio_sync_option(
+def _render_portfolio_ledger_preview(
     symbol: str,
     action_type: str,
     quantity: object,
     price: object,
     *,
-    default_checked: bool,
-    key_suffix: str,
     preview: dict | None = None,
     discipline_blocked: bool = False,
-) -> bool:
+) -> None:
     if action_type not in POSITION_AFFECTING_ACTIONS:
-        return False
-    sync_key = f"trade-portfolio-sync-{key_suffix}"
-    if discipline_blocked:
-        st.session_state[sync_key] = False
-    checked = st.checkbox(
-        "保存后同步到组合持仓",
-        value=False if discipline_blocked else default_checked,
-        key=sync_key,
-        disabled=discipline_blocked,
-    )
+        return
     current_preview = preview or _portfolio_sync_preview(symbol, action_type, quantity, price)
-    _render_portfolio_sync_preview(current_preview, checked=checked, discipline_blocked=discipline_blocked)
-    return False if discipline_blocked else checked
+    _render_portfolio_sync_preview(current_preview, checked=True, discipline_blocked=discipline_blocked)
 
 
 def _portfolio_sync_preview(symbol: str, action_type: str, quantity: object, price: object) -> dict:
@@ -895,29 +871,29 @@ def _sell_quantity_validation_error(action_type: str, quantity: object, current_
 
 def _render_portfolio_sync_preview(preview: dict, *, checked: bool, discipline_blocked: bool = False) -> None:
     tone = "warning" if preview.get("status") == "failed" or discipline_blocked else "ok"
-    title = "组合持仓同步预览" if checked else "仅保存交易日志，不同步持仓"
+    title = "成交入账预览"
     if discipline_blocked:
-        title = "纪律门禁阻止同步"
+        title = "纪律门禁阻止入账"
     rows = [
         ("当前持股", _quantity_text(preview.get("currentQuantity"))),
         ("当前均价", _money_text(preview.get("currentAverageCost"))),
         ("本次股数", _quantity_text(preview.get("tradeQuantity"))),
         ("成交价格", _money_text(preview.get("tradePrice"))),
-        ("同步后持股", _quantity_text(preview.get("afterQuantity"))),
-        ("同步后均价", _money_text(preview.get("afterAverageCost"))),
+        ("入账后持股", _quantity_text(preview.get("afterQuantity"))),
+        ("入账后均价", _money_text(preview.get("afterAverageCost"))),
     ]
     if preview.get("afterMarketValue") is not None:
-        rows.append(("同步后市值", _money_text(preview.get("afterMarketValue"))))
+        rows.append(("入账后市值", _money_text(preview.get("afterMarketValue"))))
     if preview.get("afterPositionPct") is not None:
-        rows.append(("同步后仓位", _percent_or_dash(preview.get("afterPositionPct"))))
+        rows.append(("入账后仓位", _percent_or_dash(preview.get("afterPositionPct"))))
     content = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
         for label, value in rows
     )
     error = str(preview.get("error") or "").strip()
-    hint = error if error else "勾选后，保存成功会同步一次；已同步交易不会重复作用到持仓。"
+    hint = error if error else "确认成交后会同时写入交易日志并更新组合持仓。"
     if discipline_blocked:
-        hint = "当前交易未通过纪律门禁，只能保存为违规记录，不能同步到组合持仓。"
+        hint = "当前交易未通过纪律门禁，不能入账，也不会写入交易日志。"
     st.markdown(
         f"""
         <section class="trade-portfolio-sync-card {escape(tone)}">
@@ -1060,7 +1036,7 @@ def _render_structured_sell_reason_editor(
         list(SELL_CONTEXT_TYPE_OPTIONS),
         index=list(SELL_CONTEXT_TYPE_OPTIONS).index(context_default),
         key=f"trade-sell-context-type-{key_suffix}",
-        help="只用于记录和复盘，不改变卖出门禁和组合持仓同步。",
+        help="只用于记录和复盘，不改变卖出门禁；真实成交入账仍由用户确认。",
     )
     context_type = SELL_CONTEXT_TYPE_OPTIONS.get(context_label, "")
     if context_type == "fundamental_change":
@@ -1271,10 +1247,10 @@ def _discipline_gate_metric_html(rows: list[tuple[str, str]]) -> str:
 
 def _discipline_gate_summary(conclusion: str) -> str:
     return {
-        "PASS": "可以保存并同步，但仍按计划执行。",
-        "WARN": "可以同步前继续复核，避免情绪驱动。",
-        "FIX_REQUIRED": "先修正比例、数量或回补计划；暂不允许同步。",
-        "BLOCK": "硬性拦截；只能保存为违规记录，不能同步持仓。",
+        "PASS": "可以确认入账，但仍按计划执行。",
+        "WARN": "入账前继续复核，避免情绪驱动。",
+        "FIX_REQUIRED": "先修正比例、数量或回补计划；暂不允许入账。",
+        "BLOCK": "硬性拦截；不能入账，也不会写入交易日志。",
     }.get(conclusion, "需要复核。")
 
 
@@ -1296,7 +1272,7 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
             f"你实际填写卖出 {_quantity_text(context['sellQty'])} 股，但计划卖出比例为 {_pct_point_text(context['plannedSellPct'])}。"
         )
     if context.get("usesPlannedFallback"):
-        reasons.append("暂时拿不到当前持股，实际卖出比例先按计划卖出比例估算；保存同步前仍会由组合持仓兜底校验。")
+        reasons.append("暂时拿不到当前持股，实际卖出比例先按计划卖出比例估算；入账前仍会由组合持仓兜底校验。")
     if context["actualBreachesCore"]:
         reasons.append(
             f"按实际数量测算，卖后剩 {_quantity_text(context['actualAfterQty'])} 股，会低于{floor_label}约 {_quantity_text(math.ceil(context['actualBreachQty']))} 股。"
@@ -1419,7 +1395,7 @@ def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> lis
     if "reentry_plan_required_before_trim_or_sell" in {str(item) for item in (getattr(result, "blockers", []) or [])}:
         actions.append("补全回踩买回价、不跌反涨买回价和时间止损。")
     if not actions:
-        actions.append("按计划保存；同步前再次确认不是宏观恐慌或焦虑驱动。")
+        actions.append("按计划入账前再次确认不是宏观恐慌或焦虑驱动。")
     return actions
 
 
@@ -1889,11 +1865,11 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
     try:
         saved = store.save_entry(symbol, values)
         _sync_stock_classification_profile(saved["symbol"], values)
-        sync_notice = _apply_portfolio_sync_if_requested(saved, values)
+        ledger_notice = _apply_portfolio_ledger_or_remove(store, saved)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
-    st.session_state["trade_journal_notice"] = sync_notice or ("success", f"{saved['symbol']} 交易记录已保存。")
+    st.session_state["trade_journal_notice"] = ledger_notice
     st.rerun()
 
 
@@ -1913,27 +1889,30 @@ def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: 
     try:
         saved = store.update_entry(entry_id, symbol, values)
         _sync_stock_classification_profile(saved["symbol"], values)
-        sync_notice = _apply_portfolio_sync_if_requested(saved, values)
     except ValueError as exc:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
     _clear_trade_edit_query()
-    st.session_state["trade_journal_notice"] = sync_notice or ("success", f"{saved['symbol']} 交易记录已更新。")
+    st.session_state["trade_journal_notice"] = ("success", f"{saved['symbol']} 交易记录已更新。")
     st.rerun()
 
 
-def _apply_portfolio_sync_if_requested(saved: dict, values: dict) -> tuple[str, str] | None:
-    if not values.get("syncToPortfolio"):
-        return None
+def _apply_portfolio_ledger_or_remove(store: TradeJournalStore, saved: dict) -> tuple[str, str]:
+    action = str(saved.get("action_type") or "").strip().lower()
+    if action not in POSITION_AFFECTING_ACTIONS:
+        store.delete_entry(int(saved.get("id") or 0))
+        return ("error", "交易日志只记录真实 buy/add/sell/trim，本次未入账。")
     if str(saved.get("action_type") or "") in SELL_DISCIPLINE_ACTIONS and str(saved.get("discipline_status") or "") == "blocked":
-        return ("error", f"{saved['symbol']} 已保存为违规交易记录；纪律门禁硬性拦截，未同步到组合持仓。")
+        store.delete_entry(int(saved.get("id") or 0))
+        return ("error", f"{saved['symbol']} 卖出纪律未通过，本次未入账，也未写入交易日志。")
     result = apply_trade_to_portfolio(int(saved.get("id") or 0))
     status = str(result.get("status") or "")
     if status == "success":
-        return ("success", f"{saved['symbol']} 交易记录已保存，组合持仓已同步。")
+        return ("success", f"{saved['symbol']} 成交已入账。")
     if status == "already_synced":
-        return ("error", f"{saved['symbol']} 交易记录已保存，但该交易已经同步过，未重复作用到持仓。")
-    return ("error", f"{saved['symbol']} 交易记录已保存，但持仓同步失败：{result.get('error') or '未知错误'}")
+        return ("error", f"{saved['symbol']} 已入账过，未重复作用到持仓。")
+    store.delete_entry(int(saved.get("id") or 0))
+    return ("error", f"{saved['symbol']} 入账失败：{result.get('error') or '未知错误'}。交易日志未保存。")
 
 
 def _render_notice() -> None:
@@ -2066,14 +2045,55 @@ def _load_trade_performance_summary(store: TradeJournalStore) -> dict:
     return result.get("summary") or {}
 
 
-def _render_summary(entries: list[dict], performance_summary: dict | None = None, *, pending_count: int = 0) -> None:
+def _executed_trade_entries(entries: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen_ids: set[int] = set()
+    for entry in entries:
+        entry_id = int(entry.get("id") or 0)
+        if entry_id in seen_ids:
+            continue
+        if _is_executed_trade_entry(entry):
+            result.append(entry)
+            seen_ids.add(entry_id)
+    return result
+
+
+def _historical_non_trade_entries(entries: list[dict], executed_entries: list[dict]) -> list[dict]:
+    executed_ids = {int(entry.get("id") or 0) for entry in executed_entries}
+    result: list[dict] = []
+    seen_ids: set[int] = set(executed_ids)
+    for entry in entries:
+        entry_id = int(entry.get("id") or 0)
+        if entry_id in seen_ids:
+            continue
+        result.append(entry)
+        seen_ids.add(entry_id)
+    return result
+
+
+def _is_executed_trade_entry(entry: dict) -> bool:
+    action = str(entry.get("action_type") or "").strip().lower()
+    if action not in {"buy", "add", "sell", "trim"}:
+        return False
+    if bool(entry.get("radar_observation_only")):
+        return False
+    if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
+        return False
+    entry_id = int(entry.get("id") or 0)
+    if entry_id <= 0:
+        return False
+    status = get_trade_portfolio_sync_status(entry_id)
+    return str(status.get("syncStatus") or "") == "synced"
+
+
+def _render_summary(entries: list[dict], performance_summary: dict | None = None, *, legacy_count: int = 0) -> None:
     summary = performance_summary or {}
     items = [
         ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "真实盈亏"),
         ("胜率", _percent_or_dash(summary.get("win_rate")), "已完成卖出"),
         ("平均持仓天数", _days_text(summary.get("average_holding_days")), "FIFO 统计"),
         ("疑似卖飞次数", str(summary.get("suspected_sell_fly_count") or 0), "复盘提示"),
-        ("待处理事项", str(pending_count), "可同步记录"),
+        ("历史非成交", str(legacy_count), "旧系统记录"),
     ]
     html = "".join(
         (
@@ -2090,7 +2110,7 @@ def _render_summary(entries: list[dict], performance_summary: dict | None = None
 
 def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]) -> None:
     with st.expander("完整战绩统计", expanded=False):
-        st.caption("只统计已同步到组合持仓的真实 buy/add/sell/trim；blocked 和仅观察记录不计入已实现盈亏。")
+        st.caption("只统计已入账的真实 buy/add/sell/trim；旧系统 blocked 和仅观察记录不计入已实现盈亏。")
         filters = _trade_performance_filters(symbols)
         try:
             result = summarize_trade_performance(path=store.path, filters=filters)
@@ -2101,7 +2121,7 @@ def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]
         rows = result.get("realized_trades") or []
         _render_trade_performance_cards(summary)
         if not rows:
-            st.info("暂无已完成交易。只有已同步到组合持仓的卖出 / 减仓才会进入真实战绩。")
+            st.info("暂无已完成交易。只有已入账的卖出 / 减仓才会进入真实战绩。")
             return
         _render_trade_performance_table(rows)
         with st.expander("匹配 lot 明细", expanded=False):
@@ -2513,114 +2533,51 @@ def _days_text(value: object) -> str:
     return f"{number:g} 天"
 
 
-def _render_unsynced_trade_sync_panel(groups_or_entries: dict[str, list[dict]] | list[dict]) -> None:
-    groups = groups_or_entries if isinstance(groups_or_entries, dict) else _trade_sync_item_groups(groups_or_entries)
-    items = list(groups.get("actionable") or [])
-    archived_items = list(groups.get("archived") or [])
-
+def _render_historical_non_trade_records(entries: list[dict]) -> None:
+    if not entries:
+        st.info("暂无历史非成交记录。")
+        return
+    st.caption("这里仅兼容旧系统留下的非成交记录；默认交易流水和战绩统计不会读取这些记录。")
+    headers = ["日期", "股票", "类型", "数量 / 价格", "原因", "操作"]
+    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body = "".join(_historical_non_trade_row_html(entry) for entry in entries[:80])
     st.markdown(
         (
-            '<section class="trade-unsynced-sync-panel">'
-            '<div class="trade-unsynced-sync-head">'
-            "<strong>待处理同步</strong>"
-            f"<span>{len(items)} 条真正可同步记录；拦截、仅观察和缺条件记录已移入折叠区。</span>"
+            '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
+            '<table class="trade-journal-table trade-terminal-table">'
+            f"<thead><tr>{header_html}</tr></thead>"
+            f"<tbody>{body}</tbody>"
+            "</table>"
             "</div>"
-            "</section>"
         ),
         unsafe_allow_html=True,
     )
-    if not items:
-        st.info("暂无真正需要处理的同步记录。")
-    else:
-        _render_sync_item_rows(items)
-    if archived_items:
-        with st.expander(f"已记录 / 被拦截 / 仅观察记录（{len(archived_items)}）", expanded=False):
-            _render_sync_item_rows(archived_items, archived=True)
+    if len(entries) > 80:
+        st.caption(f"仅显示前 80 条历史非成交记录；当前过滤后共 {len(entries)} 条。")
 
 
-def _render_sync_item_rows(items: list[dict], *, archived: bool = False) -> None:
-    for item in items[:8]:
-        entry = item["entry"]
-        preview = item["preview"]
-        cols = st.columns([0.75, 0.7, 1.1, 1.3, 1.7, 0.82])
-        cols[0].markdown(f"**{escape(str(entry.get('symbol') or ''))}**")
-        cols[1].markdown(_entry_action_plain_text(entry))
-        cols[2].markdown(f"{_quantity_text(entry.get('quantity'))} 股 / {_money_text(entry.get('price'))}")
-        cols[3].markdown(f"同步后 {escape(_quantity_text(preview.get('afterQuantity')))} 股")
-        cols[4].caption(item["reason"])
-        if cols[5].button(
-            "已记录" if archived else "同步",
-            key=f"trade-unsynced-sync-{int(entry.get('id') or 0)}{'-archived' if archived else ''}",
-            disabled=not item["canSync"],
-            width="stretch",
-        ):
-            _apply_unsynced_trade_sync(entry)
-    if len(items) > 8:
-        st.caption(f"还有 {len(items) - 8} 条记录，可按股票筛选后查看。")
+def _historical_non_trade_row_html(entry: dict) -> str:
+    return (
+        "<tr>"
+        f"<td>{_cell_html(_text(entry.get('trade_date')), _created_text(entry))}</td>"
+        f'<td class="symbol">{escape(_text(entry.get("symbol")))}</td>'
+        f"<td>{_action_badge(entry)}</td>"
+        f"<td>{_cell_html(_quantity_text(entry.get('quantity')), _money_text(entry.get('price')))}</td>"
+        f"<td>{escape(_historical_non_trade_reason(entry))}</td>"
+        f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_detail_action_html(entry)}</span></td>'
+        "</tr>"
+    )
 
 
-def _unsynced_trade_sync_items(entries: list[dict]) -> list[dict]:
-    return _trade_sync_item_groups(entries)["actionable"]
-
-
-def _trade_sync_item_groups(entries: list[dict]) -> dict[str, list[dict]]:
-    items: list[dict] = []
-    archived: list[dict] = []
-    seen_entry_ids: set[int] = set()
-    for entry in entries:
-        if str(entry.get("action_type") or "").strip().lower() not in POSITION_AFFECTING_ACTIONS:
-            continue
-        entry_id = int(entry.get("id") or 0)
-        if entry_id <= 0:
-            continue
-        if entry_id in seen_entry_ids:
-            continue
-        seen_entry_ids.add(entry_id)
-        preview = preview_trade_portfolio_effect(entry_id)
-        if str(preview.get("syncStatus") or "") == "synced" or str(preview.get("status") or "") == "already_synced":
-            continue
-        policy = trade_sync_policy(entry)
-        preview_ready = str(preview.get("status") or "") == "ready"
-        can_sync = bool(policy.get("canSync")) and preview_ready
-        item = {
-            "entry": entry,
-            "preview": preview,
-            "canSync": can_sync,
-            "reason": _unsynced_trade_sync_reason(policy, preview, can_sync),
-        }
-        if can_sync:
-            items.append(item)
-        else:
-            archived.append(item)
-    return {"actionable": items, "archived": archived}
-
-
-def _unsynced_trade_sync_reason(policy: dict, preview: dict, can_sync: bool) -> str:
-    if can_sync:
-        return "可同步一次；同步后会更新组合持仓。"
-    if not bool(policy.get("canSync")):
-        return str(policy.get("reason") or "纪律门禁阻止同步。")
-    return str(preview.get("error") or "缺少数量、价格或当前持仓，暂不能同步。")
-
-
-def _apply_unsynced_trade_sync(entry: dict) -> None:
-    symbol = str(entry.get("symbol") or "").strip().upper()
-    try:
-        result = apply_trade_to_portfolio(int(entry.get("id") or 0))
-    except Exception as exc:  # pragma: no cover - defensive UI boundary
-        st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
-        st.rerun()
-    st.session_state["trade_journal_notice"] = _portfolio_sync_result_notice(symbol, result)
-    st.rerun()
-
-
-def _portfolio_sync_result_notice(symbol: str, result: dict) -> tuple[str, str]:
-    status = str(result.get("status") or "")
-    if status == "success":
-        return ("success", f"{symbol} 已同步到组合持仓。")
-    if status == "already_synced":
-        return ("error", f"{symbol} 已同步过，未重复入账。")
-    return ("error", f"{symbol} 未能同步到组合持仓：{result.get('error') or '请检查交易数量、价格和纪律门禁。'}")
+def _historical_non_trade_reason(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").strip().lower()
+    if action not in {"buy", "add", "sell", "trim"}:
+        return "旧系统非成交动作"
+    if bool(entry.get("radar_observation_only")):
+        return "旧系统仅观察记录"
+    if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
+        return "旧系统拦截记录"
+    return "旧系统未入账记录"
 
 
 def _entry_action_plain_text(entry: dict) -> str:
@@ -2919,7 +2876,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
     ]
     rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
-        rows.append(("同步限制", "纪律门禁硬性拦截，禁止同步到组合持仓"))
+        rows.append(("入账限制", "纪律门禁硬性拦截，不能入账"))
     reentry_html = _entry_reentry_plan_html(entry)
     sell_review_html = _entry_sell_review_html(entry)
     blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
@@ -3088,7 +3045,7 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
     reason_html = _discipline_detail_messages_html("Radar 阻止原因", reasons, is_blocker=True) if reasons else ""
     sync_note = ""
     if entry.get("radar_blocked"):
-        sync_note = '<div class="trade-entry-reminder">Radar 门禁已拦截：这条记录不应同步到组合持仓。</div>'
+        sync_note = '<div class="trade-entry-reminder">Radar 旧门禁曾拦截：这条旧记录不是默认真实成交。</div>'
     return f"{_detail_grid_html(rows)}{reason_html}{sync_note}"
 
 

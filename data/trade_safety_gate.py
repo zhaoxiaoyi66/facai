@@ -22,11 +22,11 @@ DECISION_MOOD_TYPES = {
     "calm",
     "discipline_check",
 }
-SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。"
-BUY_RADAR_SYNC_BLOCK_REASON = "买入执行门禁未通过或标记为仅观察，禁止同步到组合持仓。"
-BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，禁止自动同步到组合持仓。"
-BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，禁止同步到组合持仓。"
-BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整或不合格，禁止同步到组合持仓。"
+SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，不能入账；本次不会写入真实交易日志。"
+BUY_RADAR_SYNC_BLOCK_REASON = "买入执行门禁未通过或标记为仅观察，不能入账。"
+BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，不能自动入账。"
+BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，不能入账。"
+BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整或不合格，不能入账。"
 
 
 def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str, Any]) -> dict[str, Any]:

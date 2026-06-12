@@ -381,7 +381,7 @@ def test_trade_journal_top_summary_uses_core_metrics_only() -> None:
     assert "胜率" in source
     assert "平均持仓天数" in source
     assert "疑似卖飞次数" in source
-    assert "待处理事项" in source
+    assert "历史非成交" in source
     assert "ENTRIES" not in source
     assert "SYMBOLS" not in source
     assert "SKIPPED" not in source
@@ -422,36 +422,28 @@ def test_trade_performance_row_keeps_details_collapsed_in_one_row() -> None:
     assert html.count("<tr>") == 1
 
 
-def test_unsynced_trade_groups_show_only_actionable_items_and_dedupe(monkeypatch) -> None:
+def test_trade_journal_separates_executed_ledger_from_historical_non_trades(monkeypatch) -> None:
     entries = [
         {"id": 1, "symbol": "AVGO", "action_type": "add"},
         {"id": 1, "symbol": "AVGO", "action_type": "add"},
         {"id": 2, "symbol": "AVGO", "action_type": "add", "radar_observation_only": 1},
-        {"id": 3, "symbol": "AVGO", "action_type": "sell"},
+        {"id": 3, "symbol": "AVGO", "action_type": "sell", "discipline_status": "blocked"},
         {"id": 4, "symbol": "AVGO", "action_type": "add"},
     ]
 
-    def fake_preview(entry_id: int) -> dict:
-        return {
-            1: {"status": "ready", "afterQuantity": 11},
-            2: {"status": "ready", "afterQuantity": 12},
-            3: {"status": "failed", "error": "缺少当前持仓"},
-            4: {"status": "already_synced", "syncStatus": "synced"},
-        }[entry_id]
+    def fake_status(entry_id: int) -> dict:
+        return {"syncStatus": "synced"} if entry_id == 1 else {"syncStatus": "not_synced"}
 
-    def fake_policy(entry: dict) -> dict:
-        if entry.get("radar_observation_only"):
-            return {"canSync": False, "reason": "仅观察记录，不同步组合。"}
-        return {"canSync": True, "reason": ""}
+    monkeypatch.setattr(trade_journal, "get_trade_portfolio_sync_status", fake_status)
 
-    monkeypatch.setattr(trade_journal, "preview_trade_portfolio_effect", fake_preview)
-    monkeypatch.setattr(trade_journal, "trade_sync_policy", fake_policy)
+    executed = trade_journal._executed_trade_entries(entries)
+    historical = trade_journal._historical_non_trade_entries(entries, executed)
 
-    groups = trade_journal._trade_sync_item_groups(entries)
-
-    assert [item["entry"]["id"] for item in groups["actionable"]] == [1]
-    assert [item["entry"]["id"] for item in groups["archived"]] == [2, 3]
-    assert [item["entry"]["id"] for item in trade_journal._unsynced_trade_sync_items(entries)] == [1]
+    assert [entry["id"] for entry in executed] == [1]
+    assert [entry["id"] for entry in historical] == [2, 3, 4]
+    assert trade_journal._historical_non_trade_reason(entries[2]) == "旧系统仅观察记录"
+    assert trade_journal._historical_non_trade_reason(entries[3]) == "旧系统拦截记录"
+    assert trade_journal._historical_non_trade_reason(entries[4]) == "旧系统未入账记录"
 
 
 def test_trade_entry_detail_shows_sell_review_snapshot() -> None:
