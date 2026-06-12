@@ -1418,7 +1418,17 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         "radar_is_stale": _clean_bool(_value(values, "radarIsStale", "radar_is_stale")),
         "radar_blocked": _clean_bool(_value(values, "radarBlocked", "radar_blocked")),
         "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
-        "gate_hard_blocked": _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked", "radarBlocked", "radar_blocked")),
+        "gate_hard_blocked": _clean_bool(
+            _value(
+                values,
+                "gateHardBlocked",
+                "gate_hard_blocked",
+                "moodGateBlocked",
+                "mood_gate_blocked",
+                "positionGateBlocked",
+                "position_gate_blocked",
+            )
+        ),
         "radar_advisory_only": _clean_bool(_value(values, "radarAdvisoryOnly", "radar_advisory_only")),
         "radar_advisory_warnings_json": _reasons_json(
             _value(values, "radarAdvisoryWarnings", "radar_advisory_warnings", "radar_advisory_warnings_json")

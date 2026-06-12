@@ -58,6 +58,7 @@ def evaluate_planned_ladder_buy(
     is_stale = bool(_report_value(radar_report, "is_stale"))
     valuation_score = _number(_report_value(radar_report, "valuation_score"))
     mood = str(decision_mood or "").strip().lower()
+    notes: list[str] = []
 
     if not levels:
         return _blocked(symbol, "no_plan", ["未找到分批买入计划。"], max_position_pct=max_position_pct)
@@ -67,7 +68,7 @@ def evaluate_planned_ladder_buy(
     if current_price is None:
         return _blocked(symbol, "price_missing", ["缺少当前价格，不能匹配分批买入计划。"], max_position_pct=max_position_pct, timing=timing)
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING" or is_stale:
-        return _blocked(symbol, "data_missing", ["价格或 Radar 数据缺失 / 过期，不能按计划同步真实买入。"], max_position_pct=max_position_pct, timing=timing)
+        notes.append("Radar buy-zone data is missing or stale; this is an advisory warning and does not block a matched plan buy.")
     if qty is None or qty <= 0:
         return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct, timing=timing)
     if mood in BLOCKED_BUY_MOODS:
@@ -117,10 +118,10 @@ def evaluate_planned_ladder_buy(
             timing=timing,
         )
 
-    notes = [
+    notes.extend([
         f"已匹配 {level['label']}：当前价不高于触发价 {level['trigger_price']:g}。",
         f"本次数量 {qty:g} 股不超过剩余计划数量 {remaining:g} 股。",
-    ]
+    ])
     if timing["fresh_plan_execution"]:
         notes.append("该计划刚创建或刚修改，本次执行会被标记为临时计划执行，供复盘参考。")
 

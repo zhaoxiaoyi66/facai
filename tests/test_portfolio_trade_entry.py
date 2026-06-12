@@ -800,7 +800,7 @@ def test_planned_ladder_buy_does_not_sync_with_anxiety_mood() -> None:
         assert PortfolioPositionStore(path).get_position("NOK") is None
 
 
-def test_planned_ladder_buy_does_not_sync_when_radar_data_missing_or_stale() -> None:
+def test_planned_ladder_buy_treats_radar_data_missing_or_stale_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
         _save_ladder_plan(path)
@@ -813,12 +813,16 @@ def test_planned_ladder_buy_does_not_sync_when_radar_data_missing_or_stale() -> 
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NOK")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert not entry["planned_ladder_buy"]
-        assert entry["plan_match_status"] == "data_missing"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NOK") is None
+        assert not entry["radar_blocked"]
+        assert entry["radar_advisory_only"]
+        assert entry["planned_ladder_buy"]
+        assert entry["plan_match_status"] == "allow_planned_add"
+        assert json.loads(entry["radar_advisory_warnings_json"])
+        assert result["synced"] is True
+        assert position is not None
+        assert position["quantity"] == 50
 
 
 def test_a_class_starter_position_can_sync_when_small_and_complete(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1008,7 +1012,7 @@ def test_starter_position_does_not_sync_with_fomo_mood(monkeypatch: pytest.Monke
         assert PortfolioPositionStore(path).get_position("AVGO") is None
 
 
-def test_starter_position_cannot_override_data_missing_or_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         portfolio_trade_entry,
         "preview_trade_values_portfolio_effect",
@@ -1040,10 +1044,14 @@ def test_starter_position_cannot_override_data_missing_or_stale(monkeypatch: pyt
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("AVGO")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert entry["starter_match_status"] == "starter_blocked"
-        assert result["sync"] is None
+        assert not entry["radar_blocked"]
+        assert entry["radar_advisory_only"]
+        assert entry["starter_match_status"] == "allow_starter_position"
+        assert json.loads(entry["radar_advisory_warnings_json"])
+        assert result["synced"] is True
+        assert position is not None
 
 
 def test_starter_position_requires_thesis_add_plan_and_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:

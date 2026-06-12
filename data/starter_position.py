@@ -76,9 +76,9 @@ def evaluate_starter_position(
     if not str(invalidation_condition or "").strip():
         reasons.append("缺少失效条件。")
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING":
-        reasons.append("Radar 数据缺失，不能用底仓建仓覆盖门禁。")
+        notes.append("Radar buy-zone data is missing; this is an advisory warning and does not block starter sync.")
     if is_stale:
-        reasons.append("Radar / 价格数据过期，不能用底仓建仓覆盖门禁。")
+        notes.append("Radar / price data is stale; this is an advisory warning and does not block starter sync.")
 
     if reasons:
         return _blocked("starter_blocked", reasons, max_pct, before_pct, after_pct)

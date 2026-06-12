@@ -147,7 +147,7 @@ def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
         return True
     if "gate_hard_blocked" in entry and entry.get("gate_hard_blocked") is not None:
         return _clean_bool(entry.get("gate_hard_blocked"))
-    return _clean_bool(entry.get("radar_blocked"))
+    return _clean_bool(entry.get("mood_gate_blocked")) or _clean_bool(entry.get("position_gate_blocked"))
 
 
 def _buy_sync_invalid_radar_override(entry: dict[str, Any], action_type: str) -> bool:
@@ -164,10 +164,6 @@ def _buy_sync_invalid_radar_override(entry: dict[str, Any], action_type: str) ->
 
 def _buy_sync_valid_planned_ladder_snapshot(entry: dict[str, Any]) -> bool:
     if not _clean_bool(entry.get("planned_ladder_buy")):
-        return False
-    data_status = str(entry.get("radar_data_status") or "").strip().upper()
-    decision = str(entry.get("radar_decision") or "").strip().upper()
-    if data_status in {"DATA_MISSING", "MISSING", "STALE"} or decision == "DATA_MISSING" or _clean_bool(entry.get("radar_is_stale")):
         return False
     if str(entry.get("plan_match_status") or "").strip() != "allow_planned_add":
         return False
@@ -190,10 +186,6 @@ def _buy_sync_valid_planned_ladder_snapshot(entry: dict[str, Any]) -> bool:
 
 def _buy_sync_valid_starter_snapshot(entry: dict[str, Any]) -> bool:
     if not _clean_bool(entry.get("starter_position")):
-        return False
-    data_status = str(entry.get("radar_data_status") or "").strip().upper()
-    decision = str(entry.get("radar_decision") or "").strip().upper()
-    if data_status in {"DATA_MISSING", "MISSING", "STALE"} or decision == "DATA_MISSING" or _clean_bool(entry.get("radar_is_stale")):
         return False
     if str(entry.get("starter_match_status") or "").strip() != "allow_starter_position":
         return False

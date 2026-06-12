@@ -74,7 +74,7 @@ def test_buy_trade_sync_creates_or_increases_position() -> None:
         assert position["average_cost"] == 500
 
 
-def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
+def test_legacy_radar_blocked_price_zone_buy_can_sync_when_snapshot_is_complete() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
@@ -90,6 +90,7 @@ def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
                 "gateCheckedAt": "2026-05-30T12:00:00+00:00",
+                "positionClass": "A",
             },
         )
 
@@ -98,10 +99,10 @@ def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
         position = PortfolioPositionStore(path).get_position("NVDA")
         counts = unsynced_trade_counts_by_symbol(path)
 
-        assert preview["status"] == "failed"
-        assert result["status"] == "failed"
-        assert "买入执行门禁" in result["error"]
-        assert position is None
+        assert preview["status"] == "ready"
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 10
         assert counts.get("NVDA", 0) == 0
 
 
@@ -136,7 +137,7 @@ def test_blocked_radar_buy_with_incomplete_planned_ladder_snapshot_cannot_sync()
         assert position is None
 
 
-def test_data_missing_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() -> None:
+def test_data_missing_radar_buy_can_sync_with_valid_planned_ladder_snapshot() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
@@ -167,12 +168,12 @@ def test_data_missing_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() ->
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("NOK")
 
-        assert result["status"] == "failed"
-        assert "计划内加仓快照" in result["error"]
-        assert position is None
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 50
 
 
-def test_stale_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() -> None:
+def test_stale_radar_buy_can_sync_with_valid_planned_ladder_snapshot() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
@@ -203,9 +204,9 @@ def test_stale_radar_buy_cannot_be_synced_by_planned_ladder_snapshot() -> None:
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("NOK")
 
-        assert result["status"] == "failed"
-        assert "计划内加仓快照" in result["error"]
-        assert position is None
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 50
 
 
 def test_planned_ladder_snapshot_with_block_reasons_cannot_sync() -> None:
@@ -449,7 +450,7 @@ def test_radar_passed_buy_can_still_sync_to_portfolio() -> None:
         assert position["average_cost"] == 190
 
 
-def test_editing_buy_entry_to_radar_blocked_cannot_bypass_sync_gate() -> None:
+def test_editing_buy_entry_to_radar_price_zone_block_keeps_advisory_sync() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         store = TradeJournalStore(path)
@@ -469,16 +470,18 @@ def test_editing_buy_entry_to_radar_blocked_cannot_bypass_sync_gate() -> None:
                 "radarBlocked": True,
                 "radarBlockReasons": ["当前价进入追高禁止区"],
                 "gateCheckedAt": "2026-05-30T12:10:00+00:00",
-            },
-        )
+                "positionClass": "A",
+                },
+            )
 
         result = apply_trade_to_portfolio(updated["id"], path)
         position = PortfolioPositionStore(path).get_position("AMD")
 
         assert bool(updated["radar_blocked"]) is True
-        assert result["status"] == "failed"
-        assert "买入执行门禁" in result["error"]
-        assert position is None
+        assert bool(updated["gate_hard_blocked"]) is False
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 2
 
 
 def test_trade_sync_preview_uses_market_context_price() -> None:
@@ -655,6 +658,17 @@ def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     missing_tier_policy = trade_sync_policy({"action_type": "buy", "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00"})
     missing_gate_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"]})
     radar_policy = trade_sync_policy({"action_type": "buy", "radar_blocked": 1})
+    legacy_price_zone_policy = trade_sync_policy(
+        {
+            "action_type": "buy",
+            "radar_blocked": 1,
+            "radar_decision": "BLOCK_CHASE",
+            "gate_checked_at": "2026-05-30T12:00:00+00:00",
+            "position_class": "A",
+            "mood_gate_blocked": 0,
+            "position_gate_blocked": 0,
+        }
+    )
     observation_policy = trade_sync_policy({"action_type": "add", "radar_observation_only": 1})
 
     assert sell_policy["canSync"] is False
@@ -664,7 +678,8 @@ def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     assert missing_gate_policy["canSync"] is False
     assert "Radar" in missing_gate_policy["reason"]
     assert radar_policy["canSync"] is False
-    assert "买入执行门禁" in radar_policy["reason"]
+    assert "Radar" in radar_policy["reason"]
+    assert legacy_price_zone_policy["canSync"] is True
     assert observation_policy["canSync"] is False
 
 
