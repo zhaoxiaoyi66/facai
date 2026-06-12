@@ -315,7 +315,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     elif price_position == "IN_CHASE_ZONE" or decision == "BLOCK_CHASE":
         technical_status = "技术偏热 / 追高风险"
     elif price_position == "BELOW_BUY_ZONE":
-        technical_status = "低于买区，需复核基本面"
+        technical_status = "低于估值参考，等待结构确认"
     else:
         technical_status = "正常波动"
 
@@ -324,7 +324,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     elif valuation_score < 40:
         valuation_status = "估值仍偏高"
     elif price_position == "BELOW_BUY_ZONE":
-        valuation_status = "价格低于买区，需确认基本面"
+        valuation_status = "价格低于估值参考，需确认基本面"
     else:
         valuation_status = "估值需复核"
 
@@ -335,7 +335,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     elif price_position == "IN_BUY_ZONE":
         discipline_status = "进入纪律买区"
     elif price_position == "BELOW_BUY_ZONE":
-        discipline_status = "低于买区需复核"
+        discipline_status = "低于估值参考需复核"
     elif price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}:
         discipline_status = "未进入参考买区"
     else:

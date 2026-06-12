@@ -243,8 +243,10 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "回踩区内", "需复核"
     if context_status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
         return "买区外", "等回踩"
-    if context_status == "BELOW_TECHNICAL_PULLBACK_ZONE" or label.startswith("跌破回踩区"):
-        return "跌破回踩区", "先复核"
+    if context_status == "BELOW_TECHNICAL_PULLBACK_ZONE" or label.startswith(("跌破回踩区", "跌破结构区")):
+        return "跌破结构区", "先复核"
+    if context_status == "BELOW_VALUATION_REFERENCE" or label.startswith("低于估值参考"):
+        return "低于估值参考", "待复核"
     if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
         return "买区内", "需复核" if "复核" in hint else "可复核"
     if price_position == "ABOVE_BUY_ZONE" or label.startswith(("等待回落", "等待技术回踩")):
@@ -253,8 +255,10 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "买区外", "等回落"
     if price_position == "IN_CHASE_ZONE" or "禁止追高" in label:
         return "追高区", "禁止新增"
+    if label.startswith("跌破结构区"):
+        return "跌破结构区", "先复核"
     if price_position == "BELOW_BUY_ZONE" or label.startswith(("低于买区", "跌破买区")):
-        return "跌破买区", "先复核"
+        return "低于估值参考", "待复核"
     if price_position == "ZONE_MISSING":
         return "无买区", "补数据"
     if label:
@@ -266,7 +270,11 @@ def _short_entry_status(label: str) -> str:
     if "回踩区内" in label:
         return "回踩区内"
     if "跌破回踩区" in label:
-        return "跌破回踩区"
+        return "跌破结构区"
+    if "跌破结构区" in label:
+        return "跌破结构区"
+    if "低于估值参考" in label:
+        return "低于估值参考"
     if "买区内" in label:
         return "买区内"
     if "等待技术回踩" in label:
@@ -276,7 +284,7 @@ def _short_entry_status(label: str) -> str:
     if "追高" in label:
         return "追高区"
     if "跌破买区" in label or "低于买区" in label:
-        return "跌破买区"
+        return "低于估值参考"
     if "数据" in label or "暂无" in label:
         return "数据不足"
     return _short_badge_text(label)
@@ -290,7 +298,9 @@ def _short_entry_hint(hint: str, fallback: str) -> str:
         return "等回踩"
     if "等待" in text or "回落" in text:
         return "等回落"
-    if "跌破买区" in text or "低于买区" in text:
+    if "低于估值参考" in text or "等待结构确认" in text:
+        return "待复核"
+    if "跌破结构区" in text or "跌破买区" in text or "低于买区" in text:
         return "先复核"
     if "补齐" in text or "数据" in text:
         return "补数据"
@@ -368,7 +378,7 @@ def _buy_point_label_tone(label: object) -> str:
         return "red"
     if "无买区" in text or "暂无参考买区" in text or "数据" in text:
         return "gray"
-    if "跌破买区" in text or "低于买区" in text:
+    if "低于估值参考" in text or "跌破结构区" in text or "跌破买区" in text or "低于买区" in text:
         return "yellow"
     if "买区内" in text:
         return "green"

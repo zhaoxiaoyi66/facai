@@ -368,7 +368,10 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
             + _drawer_zone_range_text(technical_low, _drawer_effective_technical_high(technical_high, chase_above))
         )
     if price_position == "BELOW_BUY_ZONE":
-        lines.extend(_drawer_below_buy_zone_review_lines())
+        if entry_context_status == "BELOW_TECHNICAL_PULLBACK_ZONE":
+            lines.extend(_drawer_broken_structure_review_lines())
+        else:
+            lines.extend(_drawer_below_valuation_reference_lines())
     if missing_fields:
         lines.append("缺失字段：" + "、".join(missing_fields))
     zone_table = _drawer_entry_zone_structure_html(
@@ -503,13 +506,13 @@ def _drawer_entry_primary_status_text(entry_context_status: str, price_position:
     if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
         return "买区外"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
-        return "跌破回踩区"
+        return "跌破结构区"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "追高区"
     if status == "IN_DISCIPLINE_BUY_ZONE" or price_position == "IN_BUY_ZONE":
         return "买区内"
-    if status == "BELOW_DISCIPLINE_BUY_ZONE" or price_position == "BELOW_BUY_ZONE":
-        return "跌破买区"
+    if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"} or price_position == "BELOW_BUY_ZONE":
+        return "低于估值参考"
     if status == "ZONE_MISSING" or price_position == "ZONE_MISSING":
         return "数据不足"
     return format_zone_status(price_position)
@@ -529,11 +532,11 @@ def _drawer_entry_summary_reason(
     if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
         return "价格仍高于技术回踩区，等待更好的近端复核位置。"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
-        return "价格跌破技术回踩区，先复核基本面和趋势是否恶化。"
+        return "价格跌破技术结构参考区，先复核基本面和趋势是否恶化。"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "价格进入追高禁区，禁止新增。"
     if price_position == "BELOW_BUY_ZONE":
-        return "跌破买区不等于更便宜，需确认基本面恶化、财报冲击、趋势破位或市场重新定价。"
+        return "当前低于估值参考，不等于结构破坏；需等待 EMA、相对强弱和收盘确认。"
     return reason or hint or label or "暂无说明。"
 
 
@@ -637,11 +640,11 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
     if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
         return "高于技术回踩区，继续等回踩"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
-        return "跌破技术回踩区，先复核"
+        return "跌破结构区，先复核"
     if status == "IN_DISCIPLINE_BUY_ZONE":
         return "位于 Radar 纪律买区"
-    if status == "BELOW_DISCIPLINE_BUY_ZONE":
-        return "跌破 Radar 纪律买区，先复核"
+    if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:
+        return "低于估值参考，等待结构确认"
     if status == "IN_CHASE_ZONE":
         return "进入追高区，禁止新增"
     return format_zone_status(price_position)
@@ -908,7 +911,7 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
         "IN_BUY_ZONE": "买区内",
         "ABOVE_BUY_ZONE": "买区外",
         "IN_CHASE_ZONE": "追高区",
-        "BELOW_BUY_ZONE": "跌破买区",
+        "BELOW_BUY_ZONE": "低于估值参考",
         "ZONE_MISSING": "无买区",
     }
     if status in mapping:
@@ -916,8 +919,10 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
     label = str(row.get("entry_display_label") or row.get("entryRating") or "").strip()
     if "追高" in label:
         return "追高区"
-    if "跌破买区" in label or "低于买区" in label:
-        return "跌破买区"
+    if "跌破结构区" in label:
+        return "跌破结构区"
+    if "跌破买区" in label or "低于买区" in label or "低于估值参考" in label:
+        return "低于估值参考"
     if "买区内" in label:
         return "买区内"
     if "等待回落" in label or "高于买区" in label:
@@ -927,10 +932,17 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
     return "待复核"
 
 
-def _drawer_below_buy_zone_review_lines() -> list[str]:
+def _drawer_below_valuation_reference_lines() -> list[str]:
     return [
-        "跌破买区不等于更便宜。需确认基本面恶化、财报冲击、趋势破位或市场重新定价。",
-        "复核清单：财报/指引是否恶化；营收增速/利润率是否下修；估值是否被重新定价；技术趋势是否破位；是否只是市场错杀。",
+        "低于估值参考不等于结构破坏，也不等于自动买入。",
+        "等待结构确认：EMA / 相对强弱 / 收盘确认；同时复核基本面、财报冲击和市场重新定价。",
+    ]
+
+
+def _drawer_broken_structure_review_lines() -> list[str]:
+    return [
+        "跌破结构区表示价格已跌破技术支撑参考，需要先复核趋势和基本面。",
+        "复核清单：是否跌破 recent swing low / EMA200；相对强弱是否恶化；财报/指引是否恶化；是否只是市场错杀。",
     ]
 
 

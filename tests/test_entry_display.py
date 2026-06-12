@@ -211,9 +211,61 @@ def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
 
     assert chase["entry_display_label"].startswith("禁止追高")
     assert chase["entry_action_hint"] == "进入追高区，禁止新增"
-    assert below["entry_display_label"] == "跌破买区 $90.00 - $100.00"
-    assert "不等于更便宜" in below["entry_display_reason"]
-    assert below["entry_action_hint"] == "跌破买区，先复核"
+    assert below["entry_display_label"] == "低于估值参考 $90.00 - $100.00"
+    assert "低于估值参考不等于结构破坏" in below["entry_display_reason"]
+    assert below["entry_action_hint"] == "待复核，等结构确认"
+    assert below["entry_context_status"] == "BELOW_VALUATION_REFERENCE"
+
+
+def test_below_deep_valuation_without_technical_break_is_not_broken_structure() -> None:
+    result = build_entry_display(
+        current_price=390,
+        buy_zone={"lower": 394.12, "upper": 425.99},
+        chase_zone={"lower": 520},
+        technical_entry_zone={
+            "source": "missing_technical_data",
+            "missing_reason": "技术回踩区暂缺：缺 EMA / ATR / swing low",
+            "missing_fields": ["ema50", "atr14", "recent_swing_low"],
+            "confidence": "missing",
+        },
+        data_status="OK",
+        price_position="BELOW_BUY_ZONE",
+        decision="WAIT",
+        final_score=84,
+        valuation_score=72,
+        risk_score=80,
+    )
+
+    assert result["entry_display_label"] == "低于估值参考 $394.12 - $425.99"
+    assert result["entry_context_status"] == "BELOW_VALUATION_REFERENCE"
+    assert "当前低于估值参考 1%" in result["entry_display_reason"]
+    assert "技术回踩区暂缺" in result["entry_display_reason"]
+    assert "跌破买区" not in result["entry_display_label"]
+    assert "跌破结构" not in result["entry_display_label"]
+
+
+def test_below_technical_pullback_zone_is_broken_structure() -> None:
+    result = build_entry_display(
+        current_price=88,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        technical_entry_zone={
+            "low": 92,
+            "high": 105,
+            "source": "ema_pullback",
+            "reason": "跌破 recent swing low / EMA50 参考区",
+        },
+        data_status="OK",
+        price_position="BELOW_BUY_ZONE",
+        decision="WAIT",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "跌破结构区 $92.00 - $105.00"
+    assert result["entry_context_status"] == "BELOW_TECHNICAL_PULLBACK_ZONE"
+    assert result["entry_action_hint"] == "跌破结构区，先复核"
 
 
 def test_entry_display_missing_data_shows_specific_reason() -> None:
@@ -250,7 +302,7 @@ def test_entry_display_uses_explicit_missing_fields() -> None:
 def test_zone_formatters_are_shared() -> None:
     assert format_buy_zone(BUY_ZONE) == "$90.00 - $100.00"
     assert format_zone_status("IN_BUY_ZONE") == "买区内"
-    assert format_zone_status("BELOW_BUY_ZONE") == "跌破买区，需复核"
+    assert format_zone_status("BELOW_BUY_ZONE") == "低于估值参考，待复核"
     assert format_zone_status("ZONE_MISSING") == "无法判断"
 
 
@@ -327,7 +379,8 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
         ("ABOVE_BUY_ZONE", "等待技术回踩 $90.00 - $100.00", "买区外", "等回踩"),
         ("ABOVE_BUY_ZONE", "回踩区内 $90.00 - $100.00", "回踩区内", "需复核"),
         ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
-        ("BELOW_BUY_ZONE", "跌破买区 $90.00 - $100.00", "跌破买区", "先复核"),
+        ("BELOW_BUY_ZONE", "低于估值参考 $90.00 - $100.00", "低于估值参考", "待复核"),
+        ("BELOW_BUY_ZONE", "跌破结构区 $90.00 - $100.00", "跌破结构区", "先复核"),
     ]
 
     for price_position, display_label, compact_label, compact_hint in cases:

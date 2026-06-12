@@ -285,9 +285,10 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
 
         assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "跌破买区 $90.00 - $100.00"
-        assert "不等于更便宜" in report.entry_display_reason
-        assert report.entry_action_hint == "跌破买区，先复核"
+        assert report.entry_display_label == "低于估值参考 $90.00 - $100.00"
+        assert "低于估值参考不等于结构破坏" in report.entry_display_reason
+        assert report.entry_action_hint == "待复核，等结构确认"
+        assert report.entry_context_status == "BELOW_VALUATION_REFERENCE"
 
 
 def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:

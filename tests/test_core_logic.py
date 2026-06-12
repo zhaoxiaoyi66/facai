@@ -3028,18 +3028,36 @@ class ScoringTests(unittest.TestCase):
         below_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
                 {
-                    "entry_display_label": "跌破买区 $90.00 - $100.00",
-                    "entry_display_reason": "跌破买区不等于更便宜",
-                    "entry_action_hint": "跌破买区，先复核",
+                    "entry_display_label": "低于估值参考 $90.00 - $100.00",
+                    "entry_display_reason": "低于估值参考不等于结构破坏",
+                    "entry_action_hint": "待复核，等结构确认",
+                    "entry_context_status": "BELOW_VALUATION_REFERENCE",
                     "radar_buy_zone": {"lower": 90, "upper": 100},
                     "radar_price_position": "BELOW_BUY_ZONE",
                     "price": "$80.00",
                 }
             )
         )
-        self.assertIn("跌破买区不等于更便宜", below_html)
-        self.assertIn("复核清单", below_html)
-        self.assertIn("财报/指引是否恶化", below_html)
+        self.assertIn("低于估值参考不等于结构破坏", below_html)
+        self.assertIn("等待结构确认", below_html)
+        self.assertNotIn("跌破买区", below_html)
+        broken_structure_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "跌破结构区 $90.00 - $100.00",
+                    "entry_display_reason": "当前价跌破技术结构参考",
+                    "entry_action_hint": "跌破结构区，先复核",
+                    "entry_context_status": "BELOW_TECHNICAL_PULLBACK_ZONE",
+                    "radar_buy_zone": {"lower": 80, "upper": 90},
+                    "technical_entry_zone_low": 90,
+                    "technical_entry_zone_high": 100,
+                    "radar_price_position": "BELOW_BUY_ZONE",
+                    "price": "$80.00",
+                }
+            )
+        )
+        self.assertIn("跌破结构区", broken_structure_html)
+        self.assertIn("跌破 recent swing low / EMA200", broken_structure_html)
         pullback_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
                 {

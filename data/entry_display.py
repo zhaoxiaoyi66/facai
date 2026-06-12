@@ -8,7 +8,9 @@ PRICE_POSITIONS = {
     "IN_BUY_ZONE": "买区内",
     "ABOVE_BUY_ZONE": "高于买区",
     "IN_CHASE_ZONE": "追高区",
-    "BELOW_BUY_ZONE": "跌破买区，需复核",
+    "BELOW_BUY_ZONE": "低于估值参考，待复核",
+    "BELOW_VALUATION_REFERENCE": "低于估值参考，待复核",
+    "BELOW_TECHNICAL_PULLBACK_ZONE": "跌破结构区，先复核",
     "ZONE_MISSING": "无法判断",
 }
 
@@ -160,9 +162,9 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 hint = "需复核，不自动买入"
                 context_status = "IN_TECHNICAL_PULLBACK_ZONE"
             elif technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
-                label = f"跌破回踩区 {effective_technical_zone_text}"
-                reason = "当前价跌破技术回踩区；" + reason
-                hint = "先复核，不自动买入"
+                label = f"跌破结构区 {effective_technical_zone_text}"
+                reason = "当前价跌破技术结构参考；" + reason
+                hint = "跌破结构区，先复核"
                 context_status = "BELOW_TECHNICAL_PULLBACK_ZONE"
             else:
                 label = f"等待技术回踩 {effective_technical_zone_text}"
@@ -193,12 +195,45 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         )
         return result
     if price_position == "BELOW_BUY_ZONE":
+        if technical_low is not None and technical_high is not None:
+            if technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
+                result.update(
+                    {
+                        "entry_display_label": f"跌破结构区 {effective_technical_zone_text}",
+                        "entry_display_reason": _technical_breakdown_reason(
+                            effective_technical_zone_text,
+                            zone_text,
+                            technical_reason,
+                            fallback=_below_valuation_reference_reason(distance_pct, technical_missing_reason),
+                        ),
+                        "entry_action_hint": "跌破结构区，先复核",
+                        "entry_context_status": "BELOW_TECHNICAL_PULLBACK_ZONE",
+                    }
+                )
+                return result
+            if technical_position == "IN_TECHNICAL_PULLBACK_ZONE":
+                result.update(
+                    {
+                        "entry_display_label": f"回踩区内 {effective_technical_zone_text}",
+                        "entry_display_reason": _technical_pullback_reason(
+                            effective_technical_zone_text,
+                            zone_text,
+                            technical_reason,
+                            fallback=_below_valuation_reference_reason(distance_pct, technical_missing_reason),
+                            overlap=technical_chase_overlap,
+                            raw_technical_zone_text=technical_zone_text,
+                        ),
+                        "entry_action_hint": "需复核，不自动买入",
+                        "entry_context_status": "IN_TECHNICAL_PULLBACK_ZONE",
+                    }
+                )
+                return result
         result.update(
             {
-                "entry_display_label": f"跌破买区 {zone_text}",
-                "entry_display_reason": "跌破买区不等于更便宜，需确认基本面恶化、财报冲击、趋势破位或市场重新定价",
-                "entry_action_hint": "跌破买区，先复核",
-                "entry_context_status": "BELOW_DISCIPLINE_BUY_ZONE",
+                "entry_display_label": f"低于估值参考 {zone_text}",
+                "entry_display_reason": _below_valuation_reference_reason(distance_pct, technical_missing_reason),
+                "entry_action_hint": "待复核，等结构确认",
+                "entry_context_status": "BELOW_VALUATION_REFERENCE",
             }
         )
         return result
@@ -324,6 +359,37 @@ def _technical_pullback_reason(
         parts.append(technical_reason)
     if fallback:
         parts.append(fallback)
+    return "；".join(parts)
+
+
+def _technical_breakdown_reason(
+    technical_zone_text: str,
+    deep_value_zone_text: str,
+    technical_reason: str,
+    *,
+    fallback: str,
+) -> str:
+    parts = [
+        f"当前价跌破技术结构参考 {technical_zone_text}",
+        f"估值参考区 {deep_value_zone_text}",
+        "只有跌破技术支撑 / EMA / swing low 或基本面恶化时，才按跌破结构处理",
+    ]
+    if technical_reason:
+        parts.append(technical_reason)
+    if fallback:
+        parts.append(fallback)
+    return "；".join(parts)
+
+
+def _below_valuation_reference_reason(distance_pct: float | None, technical_missing_reason: str = "") -> str:
+    parts: list[str] = []
+    if distance_pct is not None:
+        parts.append(f"当前低于估值参考 {abs(distance_pct):g}%")
+    parts.append("低于估值参考不等于结构破坏，需要等待 EMA / 相对强弱 / 收盘确认")
+    if technical_missing_reason:
+        parts.append(technical_missing_reason)
+    else:
+        parts.append("技术回踩区未确认")
     return "；".join(parts)
 
 
