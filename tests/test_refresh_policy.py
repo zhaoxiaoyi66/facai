@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from data.fundamentals import FundamentalCache
-from data.refresh_policy import RefreshMode, refresh_symbols_by_mode, should_refresh_fundamentals
+from data.refresh_policy import (
+    RefreshMode,
+    refresh_symbols_by_mode,
+    should_refresh_fundamentals,
+    should_refresh_technicals,
+    summarize_refresh_result,
+)
 
 
 class FakeRefreshProvider:
@@ -151,6 +157,20 @@ def test_daily_technical_refresh_does_not_call_fundamentals(tmp_path) -> None:
     assert provider.fundamental_calls == 0
 
 
+def test_should_refresh_technicals_detects_stale_or_missing_timestamp() -> None:
+    now = datetime(2026, 6, 11, 12, tzinfo=timezone.utc)
+
+    assert should_refresh_technicals({}, now=now)
+    assert should_refresh_technicals(
+        {"technical_updated_at": datetime(2026, 6, 9, 12, tzinfo=timezone.utc).isoformat()},
+        now=now,
+    )
+    assert not should_refresh_technicals(
+        {"technical_updated_at": datetime(2026, 6, 11, 6, tzinfo=timezone.utc).isoformat()},
+        now=now,
+    )
+
+
 def test_should_refresh_fundamentals_detects_earnings_event() -> None:
     snapshot = {"next_earnings_date": "2026-06-12"}
 
@@ -192,3 +212,39 @@ def test_full_refresh_calls_quote_and_history(tmp_path) -> None:
     assert result["status"] == "success"
     assert provider.calls == [("quote", "NVDA", True), ("history", "NVDA", True)]
     assert provider.fundamental_calls == 1
+
+
+def test_macro_only_refresh_calls_macro_refresher_without_stock_provider(tmp_path) -> None:
+    provider = FakeRefreshProvider()
+    macro_calls: list[str] = []
+
+    def macro_refresher() -> dict:
+        macro_calls.append("macro")
+        return {"status": "partial", "duration_seconds": 0.4, "indicators": {"vix": {"status": "success", "value": 19.4}}}
+
+    result = refresh_symbols_by_mode(
+        ["NVDA", "MSFT"],
+        RefreshMode.MACRO_ONLY,
+        provider=provider,
+        cache=FundamentalCache(tmp_path / "refresh.sqlite"),
+        macro_refresher=macro_refresher,
+    )
+
+    assert result["mode"] == "MACRO_ONLY"
+    assert result["status"] == "partial"
+    assert result["refreshed_count"] == 1
+    assert result["ticker_results"] == []
+    assert result["macro_result"]["indicators"]["vix"]["value"] == 19.4
+    assert macro_calls == ["macro"]
+    assert provider.calls == []
+    assert provider.fundamental_calls == 0
+
+
+def test_summarize_refresh_result_uses_mode_specific_label() -> None:
+    assert summarize_refresh_result(
+        RefreshMode.PRICE_ONLY,
+        refreshed_count=31,
+        skipped_count=0,
+        failed_count=2,
+        duration_seconds=2.1,
+    ) == "更新价格完成：31只成功，0只跳过，2只失败，用时 2.1s"

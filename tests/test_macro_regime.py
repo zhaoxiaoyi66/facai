@@ -1134,8 +1134,8 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
 
     assert "刷新大盘环境" in header_source
     assert "dashboard_refresh_macro_regime_cache" in header_source
-    assert "_refresh_macro_cache_for_dashboard()" in header_source
-    assert "refresh_macro_indicators" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
+    assert "RefreshMode.MACRO_ONLY" in header_source
+    assert "RefreshMode.MACRO_ONLY" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
     assert "indicator_results" in refresh_result_source
     assert "大盘环境刷新完成" in refresh_result_source
     assert "核心指标" in refresh_result_source

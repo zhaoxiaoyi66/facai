@@ -41,7 +41,6 @@ from data.macro_regime import (
     load_macro_regime,
     macro_regime_detail_html,
     macro_regime_status_html,
-    refresh_macro_indicators,
 )
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
@@ -307,7 +306,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             _clear_dashboard_table_cache()
             st.rerun()
     with command_cols[1]:
-        if st.button("更新日线 / 技术", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
+        if st.button("更新技术", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
             _clear_dashboard_table_cache()
             st.rerun()
@@ -324,6 +323,9 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.divider()
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
+            if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、趋势宽度等宏观缓存，不刷新个股。"):
+                _refresh_dashboard_cache_for_mode(tickers, RefreshMode.MACRO_ONLY)
+                st.rerun()
             if st.button("财报后刷新基本面", width="stretch", key="dashboard_refresh_fundamentals_if_event", help="只刷新有财报/披露事件的股票；其他股票跳过。"):
                 _refresh_dashboard_cache_for_mode(tickers, RefreshMode.FUNDAMENTALS_IF_EVENT)
                 _clear_dashboard_table_cache()
@@ -331,9 +333,6 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             if st.button("强制全量刷新", width="stretch", key="dashboard_force_full_refresh", help="逐只刷新 quote、日线和基本面。只在财报后或数据大面积异常时使用。"):
                 _refresh_dashboard_cache_for_mode(tickers, RefreshMode.FULL_REFRESH)
                 _clear_dashboard_table_cache()
-                st.rerun()
-            if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、趋势宽度等宏观缓存，不刷新个股。"):
-                _refresh_macro_cache_for_dashboard()
                 st.rerun()
             st.button("运行缺失数据补全", width="stretch", key="dashboard_run_missing_fill", disabled=True, help="批量补全入口待接入；当前可在单股详情页运行。")
             if st.button("查看刷新日志", width="stretch", key="dashboard_open_refresh_log"):
@@ -434,17 +433,15 @@ def _clear_dashboard_table_cache() -> None:
 
 
 def _refresh_macro_cache_for_dashboard() -> None:
-    try:
-        result = refresh_macro_indicators()
-    except Exception as exc:
-        result = {"status": "failed", "error": str(exc), "indicators": {}}
-    st.session_state["dashboard_macro_last_refresh_result"] = result
+    _refresh_dashboard_cache_for_mode([], RefreshMode.MACRO_ONLY)
 
 
 def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> None:
-    symbols = _dashboard_refresh_symbols(tickers)
+    symbols = [] if mode == RefreshMode.MACRO_ONLY else _dashboard_refresh_symbols(tickers)
     try:
         result = refresh_symbols_by_mode(symbols, mode)
+        if mode == RefreshMode.MACRO_ONLY:
+            st.session_state["dashboard_macro_last_refresh_result"] = result.get("macro_result") or {}
     except Exception as exc:
         result = {
             "mode": mode.value,
@@ -455,6 +452,8 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
             "duration_seconds": 0,
             "ticker_results": [{"ticker": symbol, "status": "failed", "message": str(exc), "duration_seconds": 0} for symbol in symbols],
         }
+        if mode == RefreshMode.MACRO_ONLY:
+            st.session_state["dashboard_macro_last_refresh_result"] = {"status": "failed", "error": str(exc), "indicators": {}}
     st.session_state["dashboard_refresh_mode_last_result"] = result
 
 
@@ -1042,8 +1041,9 @@ def _dashboard_refresh_ticker_row_html(item: dict) -> str:
 def _refresh_mode_label(mode: str) -> str:
     return {
         "PRICE_ONLY": "更新价格",
-        "DAILY_TECHNICAL": "更新日线 / 技术",
+        "DAILY_TECHNICAL": "更新技术",
         "FUNDAMENTALS_IF_EVENT": "财报后刷新基本面",
+        "MACRO_ONLY": "刷新大盘环境",
         "FULL_REFRESH": "强制全量刷新",
     }.get(mode, mode or "刷新")
 

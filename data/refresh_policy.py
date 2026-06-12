@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Any, Iterable
 
 from data.fundamentals import FundamentalCache
+from data.macro_regime import refresh_macro_indicators
 from data.prices import CACHE_PATH
 
 
@@ -14,6 +15,7 @@ class RefreshMode(str, Enum):
     PRICE_ONLY = "PRICE_ONLY"
     DAILY_TECHNICAL = "DAILY_TECHNICAL"
     FUNDAMENTALS_IF_EVENT = "FUNDAMENTALS_IF_EVENT"
+    MACRO_ONLY = "MACRO_ONLY"
     FULL_REFRESH = "FULL_REFRESH"
 
 
@@ -25,24 +27,44 @@ class RefreshTickerResult:
     duration_seconds: float
 
 
+@dataclass(frozen=True)
+class RefreshResult:
+    mode: str
+    status: str
+    refreshed_count: int
+    skipped_count: int
+    failed_count: int
+    duration_seconds: float
+    fetchedAt: str
+    ticker_results: list[dict[str, Any]]
+    summary: str
+    macro_result: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.__dict__.copy()
+        return payload
+
+
 def refresh_symbols_by_mode(
     symbols: Iterable[str],
     mode: RefreshMode | str,
     *,
     provider: Any | None = None,
     cache: FundamentalCache | None = None,
+    macro_refresher: Any | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     normalized_mode = RefreshMode(mode)
     started = perf_counter()
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     tickers = _normalize_symbols(symbols)
-    market_provider = provider or _market_data_provider(full_fundamentals=normalized_mode == RefreshMode.FULL_REFRESH)
     fundamental_cache = cache or FundamentalCache(CACHE_PATH)
 
     if normalized_mode == RefreshMode.PRICE_ONLY:
+        market_provider = provider or _market_data_provider(full_fundamentals=False)
         ticker_results = _refresh_price_only(tickers, provider=market_provider, cache=fundamental_cache, now=timestamp)
     elif normalized_mode == RefreshMode.DAILY_TECHNICAL:
+        market_provider = provider or _market_data_provider(full_fundamentals=False)
         ticker_results = [_refresh_daily_technical(symbol, provider=market_provider) for symbol in tickers]
     elif normalized_mode == RefreshMode.FUNDAMENTALS_IF_EVENT:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
@@ -50,6 +72,22 @@ def refresh_symbols_by_mode(
             _refresh_fundamentals_if_event(symbol, provider=full_provider, cache=fundamental_cache, now=timestamp)
             for symbol in tickers
         ]
+    elif normalized_mode == RefreshMode.MACRO_ONLY:
+        macro_result = (macro_refresher or refresh_macro_indicators)()
+        status = str(macro_result.get("status") or macro_result.get("overall_status") or "failed")
+        result = RefreshResult(
+            mode=normalized_mode.value,
+            status=status,
+            refreshed_count=1 if status in {"success", "partial"} else 0,
+            skipped_count=0,
+            failed_count=0 if status in {"success", "partial"} else 1,
+            duration_seconds=round(perf_counter() - started, 3),
+            fetchedAt=timestamp.isoformat(),
+            ticker_results=[],
+            summary="刷新大盘环境完成",
+            macro_result=macro_result,
+        )
+        return result.to_dict()
     else:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
         ticker_results = [_refresh_full(symbol, provider=full_provider) for symbol in tickers]
@@ -58,16 +96,24 @@ def refresh_symbols_by_mode(
     refreshed_count = sum(1 for item in ticker_results if item.status == "success")
     skipped_count = sum(1 for item in ticker_results if item.status == "skipped")
     failed_count = sum(1 for item in ticker_results if item.status == "failed")
-    return {
-        "mode": normalized_mode.value,
-        "status": _overall_status(refreshed_count=refreshed_count, skipped_count=skipped_count, failed_count=failed_count),
-        "refreshed_count": refreshed_count,
-        "skipped_count": skipped_count,
-        "failed_count": failed_count,
-        "duration_seconds": round(perf_counter() - started, 3),
-        "fetchedAt": timestamp.isoformat(),
-        "ticker_results": results,
-    }
+    result = RefreshResult(
+        mode=normalized_mode.value,
+        status=_overall_status(refreshed_count=refreshed_count, skipped_count=skipped_count, failed_count=failed_count),
+        refreshed_count=refreshed_count,
+        skipped_count=skipped_count,
+        failed_count=failed_count,
+        duration_seconds=round(perf_counter() - started, 3),
+        fetchedAt=timestamp.isoformat(),
+        ticker_results=results,
+        summary=summarize_refresh_result(
+            normalized_mode.value,
+            refreshed_count=refreshed_count,
+            skipped_count=skipped_count,
+            failed_count=failed_count,
+            duration_seconds=round(perf_counter() - started, 3),
+        ),
+    )
+    return result.to_dict()
 
 
 def should_refresh_fundamentals(
@@ -100,6 +146,40 @@ def should_refresh_fundamentals(
         if event_time and (updated_at is None or event_time > updated_at):
             return True
     return False
+
+
+def should_refresh_technicals(snapshot: dict | None, *, now: datetime | None = None, max_age_hours: int = 24) -> bool:
+    data = dict(snapshot or {})
+    current = now or datetime.now(timezone.utc)
+    updated_at = _parse_datetime(
+        data.get("technical_updated_at")
+        or data.get("technicalUpdatedAt")
+        or data.get("history_updated_at")
+        or data.get("price_history_updated_at")
+        or data.get("updated_at")
+    )
+    if updated_at is None:
+        return True
+    return current.astimezone(timezone.utc) - updated_at > timedelta(hours=max_age_hours)
+
+
+def summarize_refresh_result(
+    mode: RefreshMode | str,
+    *,
+    refreshed_count: int,
+    skipped_count: int,
+    failed_count: int,
+    duration_seconds: float,
+) -> str:
+    mode_value = mode.value if isinstance(mode, RefreshMode) else str(mode)
+    label = {
+        RefreshMode.PRICE_ONLY.value: "更新价格",
+        RefreshMode.DAILY_TECHNICAL.value: "更新技术",
+        RefreshMode.FUNDAMENTALS_IF_EVENT.value: "财报后刷新基本面",
+        RefreshMode.MACRO_ONLY.value: "刷新大盘环境",
+        RefreshMode.FULL_REFRESH.value: "强制全量刷新",
+    }.get(mode_value, mode_value)
+    return f"{label}完成：{refreshed_count}只成功，{skipped_count}只跳过，{failed_count}只失败，用时 {duration_seconds:.1f}s"
 
 
 def _refresh_price_only(
