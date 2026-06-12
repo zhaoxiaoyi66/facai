@@ -3081,7 +3081,7 @@ class ScoringTests(unittest.TestCase):
         )
         self.assertIn("当前结论", pullback_html)
         self.assertIn("当前状态：技术回踩区内", pullback_html)
-        self.assertIn("是否允许新增：否", pullback_html)
+        self.assertIn("交易权限：由用户确认；买区提示不改变买入权限。", pullback_html)
         self.assertIn("买区结构", pullback_html)
         self.assertIn("技术回踩区", pullback_html)
         self.assertIn("$102.00 - $117.50", pullback_html)
@@ -3188,6 +3188,36 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("深度支撑区", now_repair_html)
         self.assertIn("$82.39 - $86.97", now_repair_html)
 
+        value_review_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "价值复核 $210.00 - $240.00",
+                    "entry_display_reason": "估值已具备复核价值，当前价位于近端修复观察区 $192.85 - $203.29；但趋势和结构尚未确认。",
+                    "entry_action_hint": "结构待确认",
+                    "entry_context_status": "VALUE_REVIEW_NEAR_TERM_REPAIR",
+                    "radar_buy_zone": {"lower": 210, "upper": 240},
+                    "radar_price_position": "BELOW_BUY_ZONE",
+                    "price": "$202.00",
+                    "technical_structure_status": "WEAK_TREND_REPAIR",
+                    "technical_structure_label": "弱趋势修复中",
+                    "near_term_repair_zone_low": 192.85,
+                    "near_term_repair_zone_high": 203.29,
+                    "trend_reclaim_zone_low": 230.0,
+                    "trend_reclaim_zone_high": 245.0,
+                    "confirmation_price": 241.15,
+                    "invalidation_price": 196.90,
+                    "zone_semantic_label": "估值参考区",
+                    "primary_entry_interpretation": "价值复核，结构待确认",
+                    "valuation_deep_zone_label": "$210.00 - $240.00",
+                }
+            )
+        )
+        self.assertIn("当前状态：价值复核", value_review_html)
+        self.assertIn("系统建议：待复核", value_review_html)
+        self.assertIn("近端修复观察区", value_review_html)
+        self.assertIn("$192.85 - $203.29", value_review_html)
+        self.assertNotIn("禁止追高", value_review_html)
+
         overlap_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
                 {
@@ -3228,8 +3258,8 @@ class ScoringTests(unittest.TestCase):
             )
         )
         self.assertIn("当前状态：追高区", chase_html)
-        self.assertIn("当前动作：禁止新增", chase_html)
-        self.assertIn("是否允许新增：否", chase_html)
+        self.assertIn("系统建议：禁止新增", chase_html)
+        self.assertIn("交易权限：由用户确认；买区提示不改变买入权限。", chase_html)
 
         structure_html = dashboard_drawer._drawer_structure_entry_card_html(
             pd.Series(

@@ -11,6 +11,7 @@ PRICE_POSITIONS = {
     "BELOW_BUY_ZONE": "低于估值参考，待复核",
     "BELOW_VALUATION_REFERENCE": "低于估值参考，待复核",
     "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED": "估值可复核，技术待确认",
+    "VALUE_REVIEW_NEAR_TERM_REPAIR": "价值复核，结构待确认",
     "BELOW_TECHNICAL_PULLBACK_ZONE": "跌破结构区，先复核",
     "ZONE_MISSING": "无法判断",
 }
@@ -26,6 +27,8 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     price_position = str(_value(source, "price_position", "zone_status", "zoneStatus") or "ZONE_MISSING").strip()
     decision = str(_value(source, "decision", "radar_decision", "radarDecision") or "").strip()
     final_score = _number(_value(source, "final_score", "finalScore"))
+    quality_score = _number(_value(source, "quality_score", "qualityScore"))
+    quality_rating = str(_value(source, "quality_rating", "qualityRating") or "").strip()
     valuation_score = _number(_value(source, "valuation_score", "valuationScore"))
     risk_score = _number(_value(source, "risk_score", "riskScore"))
     distance_pct = current_vs_entry_pct(current_price, buy_zone, price_position)
@@ -299,6 +302,32 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         )
         return result
     if price_position == "BELOW_BUY_ZONE":
+        if _is_value_review_near_term_repair(
+            current_price=current_price,
+            near_term_repair_low=near_term_repair_low,
+            near_term_repair_high=near_term_repair_high,
+            invalidation_price=invalidation_price,
+            chase_above_price=chase_above,
+            technical_structure_status=technical_structure_status,
+            quality_score=quality_score,
+            quality_rating=quality_rating,
+            final_score=final_score,
+            valuation_score=valuation_score,
+        ):
+            near_zone_text = _zone_text(near_term_repair_low, near_term_repair_high)
+            result.update(
+                {
+                    "entry_display_label": f"价值复核 {zone_text}",
+                    "entry_display_reason": (
+                        f"估值已具备复核价值，当前价位于近端修复观察区 {near_zone_text}；"
+                        "但趋势和结构尚未确认，需等待收盘、相对强弱和基本面复核。"
+                    ),
+                    "entry_action_hint": "结构待确认",
+                    "entry_context_status": "VALUE_REVIEW_NEAR_TERM_REPAIR",
+                    "primary_entry_interpretation": "价值复核，结构待确认",
+                }
+            )
+            return result
         if technical_low is not None and technical_high is not None:
             if technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
                 result.update(
@@ -570,6 +599,39 @@ def _below_reference_is_valuation_review(
     if price is None or low is None or high is None:
         return False
     return price <= high and price >= low * 0.85
+
+
+def _is_value_review_near_term_repair(
+    *,
+    current_price: float | None,
+    near_term_repair_low: float | None,
+    near_term_repair_high: float | None,
+    invalidation_price: float | None,
+    chase_above_price: float | None,
+    technical_structure_status: str,
+    quality_score: float | None,
+    quality_rating: str,
+    final_score: float | None,
+    valuation_score: float | None,
+) -> bool:
+    price = _number(current_price)
+    low = _number(near_term_repair_low)
+    high = _number(near_term_repair_high)
+    if price is None or low is None or high is None or not (low <= price <= high):
+        return False
+    chase = _number(chase_above_price)
+    if chase is not None and price >= chase:
+        return False
+    invalidation = _number(invalidation_price)
+    if invalidation is not None and price < invalidation:
+        return False
+    if str(technical_structure_status or "").strip() == "BREAKDOWN_REVIEW":
+        return False
+    quality_high = (quality_score is not None and quality_score >= 70) or str(quality_rating or "").strip().upper().startswith("A")
+    valuation_attractive = (valuation_score is not None and valuation_score >= 60) or (
+        valuation_score is None and final_score is not None and final_score >= 82
+    )
+    return bool(quality_high and valuation_attractive)
 
 
 def _is_deep_value_zone_far_from_price(current_price: float | None, buy_zone_upper: float | None) -> bool:

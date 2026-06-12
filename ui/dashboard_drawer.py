@@ -472,9 +472,7 @@ def _drawer_entry_current_conclusion_html(
     focus_line: str = "",
 ) -> str:
     status = _drawer_entry_primary_status_text(entry_context_status, price_position)
-    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or hint or "只观察")
-    current_add = _drawer_number(row.get("currentAddLimitPercent"))
-    allowed = "是" if _drawer_bool(row.get("isActionable")) or (current_add is not None and current_add > 0) else "否"
+    action = _drawer_compact_action_text(hint or row.get("finalAction") or row.get("action") or "只观察")
     summary_reason = _drawer_entry_summary_reason(
         entry_context_status=entry_context_status,
         price_position=price_position,
@@ -484,8 +482,8 @@ def _drawer_entry_current_conclusion_html(
     )
     lines = [
         "当前状态：" + status,
-        "当前动作：" + action,
-        "是否允许新增：" + allowed,
+        "系统建议：" + action,
+        "交易权限：由用户确认；买区提示不改变买入权限。",
         "一句话结论：" + summary_reason,
     ]
     if focus_line:
@@ -667,7 +665,7 @@ def _drawer_select_key_entry_zone_rows(
 ) -> list[tuple[str, str, str, str]]:
     status = str(entry_context_status or "").strip()
     price_status = str(price_position or "").strip()
-    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+    if status in {"VALUATION_REVIEW_TECHNICAL_UNCONFIRMED", "VALUE_REVIEW_NEAR_TERM_REPAIR"}:
         preferred = ["近端修复观察区", "确认线", "趋势确认区"]
     elif status == "IN_TECHNICAL_PULLBACK_ZONE":
         preferred = ["技术回踩区", "追高禁区", "确认线"]
@@ -737,7 +735,7 @@ def _drawer_primary_entry_focus_text(
     confirmation = _drawer_money_text(confirmation_price)
     invalidation = _drawer_money_text(invalidation_price)
 
-    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+    if status in {"VALUATION_REVIEW_TECHNICAL_UNCONFIRMED", "VALUE_REVIEW_NEAR_TERM_REPAIR"}:
         parts = []
         near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
         trend = _drawer_zone_range_text(trend_reclaim_low, trend_reclaim_high)
@@ -797,6 +795,8 @@ def _drawer_entry_primary_status_text(entry_context_status: str, price_position:
         return "跌破结构区"
     if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
         return "估值可复核"
+    if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
+        return "价值复核"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "追高区"
     if status == "IN_DISCIPLINE_BUY_ZONE" or price_position == "IN_BUY_ZONE":
@@ -825,6 +825,8 @@ def _drawer_entry_summary_reason(
         return "价格跌破技术结构参考区，先复核基本面和趋势是否恶化。"
     if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
         return "估值进入复核区，但技术结构仍在弱趋势修复中；等待短期均线和收盘确认。"
+    if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
+        return "当前估值已具备复核价值，价格位于近端修复观察区；趋势和结构尚未确认，系统建议先复核，不自动买入。"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "价格进入追高禁区，禁止新增。"
     if price_position == "BELOW_BUY_ZONE":
@@ -970,6 +972,8 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
         return "跌破结构区，先复核"
     if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
         return "估值可复核，技术待确认"
+    if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
+        return "价值复核，结构待确认"
     if status == "IN_DISCIPLINE_BUY_ZONE":
         return "位于 Radar 纪律买区"
     if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:
@@ -1270,8 +1274,13 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
         "ABOVE_BUY_ZONE": "买区外",
         "IN_CHASE_ZONE": "追高区",
         "BELOW_BUY_ZONE": "低于估值参考",
+        "VALUE_REVIEW_NEAR_TERM_REPAIR": "价值复核",
+        "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED": "估值可复核",
         "ZONE_MISSING": "无买区",
     }
+    context_status = str(row.get("entry_context_status") or row.get("radar_entry_context_status") or "").strip()
+    if context_status in mapping:
+        return mapping[context_status]
     if status in mapping:
         return mapping[status]
     label = str(row.get("entry_display_label") or row.get("entryRating") or "").strip()
@@ -1279,6 +1288,8 @@ def _drawer_radar_status_text(row: pd.Series) -> str:
         return "追高区"
     if "跌破结构区" in label:
         return "跌破结构区"
+    if "价值复核" in label:
+        return "价值复核"
     if "跌破买区" in label or "低于买区" in label or "低于估值参考" in label:
         return "低于估值参考"
     if "买区内" in label:

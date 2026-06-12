@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from data.entry_display import build_entry_display, format_buy_zone, format_zone_status
-from ui.dashboard_tables import _entry_rating_cell_html
+from ui.dashboard_tables import _dashboard_compact_entry_text, _decision_table_cell_html, _entry_rating_cell_html
 
 
 BUY_ZONE = {"lower": 90, "upper": 100}
@@ -205,6 +205,63 @@ def test_weak_trend_below_near_valuation_reference_shows_review_not_below_refere
     assert result["zone_semantic_label"] == "估值参考区"
     assert result["valuation_reference_zone_low"] == 105.99
     assert result["valuation_reference_zone_high"] == 126.82
+
+
+def test_high_quality_value_review_inside_near_term_repair_zone() -> None:
+    result = build_entry_display(
+        current_price=202.0,
+        buy_zone={"lower": 210.0, "upper": 240.0},
+        chase_zone={"lower": 310.0},
+        technical_entry_zone={
+            "source": "trend_review",
+            "technical_structure_status": "WEAK_TREND_REPAIR",
+            "technical_structure_label": "弱趋势修复中",
+            "near_term_repair_zone_low": 192.85,
+            "near_term_repair_zone_high": 203.29,
+            "trend_reclaim_zone_low": 230.0,
+            "trend_reclaim_zone_high": 245.0,
+            "confirmation_price": 241.15,
+            "invalidation_price": 196.90,
+            "confidence": "review",
+        },
+        data_status="OK",
+        price_position="BELOW_BUY_ZONE",
+        decision="WAIT",
+        final_score=84,
+        quality_score=86,
+        valuation_score=78,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "价值复核 $210.00 - $240.00"
+    assert result["entry_action_hint"] == "结构待确认"
+    assert result["entry_context_status"] == "VALUE_REVIEW_NEAR_TERM_REPAIR"
+    assert result["primary_entry_interpretation"] == "价值复核，结构待确认"
+    assert "近端修复观察区 $192.85 - $203.29" in result["entry_display_reason"]
+    assert "禁止追高" not in result["entry_display_label"]
+    assert "低于估值参考" not in result["entry_display_label"]
+
+
+def test_dashboard_value_review_action_does_not_show_chase_block() -> None:
+    display = {
+        "entry_display_label": "价值复核 $210.00 - $240.00",
+        "entry_action_hint": "结构待确认",
+        "entry_context_status": "VALUE_REVIEW_NEAR_TERM_REPAIR",
+    }
+    row = pd.Series(
+        {
+            **display,
+            "finalAction": "需要复核或禁止追高，技术面不转买点",
+            "decisionLane": "blocked",
+            "dataConfidence": "high",
+        }
+    )
+
+    assert _dashboard_compact_entry_text(display, row) == ("价值复核", "结构待确认")
+    html = _decision_table_cell_html(row, {"key": "actionSummary"}, "ADBE")
+    assert "禁止新增" not in html
+    assert "禁止追高" not in html
+    assert "待复核" in html
 
 
 def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_near() -> None:

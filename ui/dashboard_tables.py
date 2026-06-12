@@ -85,6 +85,10 @@ def _decision_table_cell_html(
         )
     if key == "actionSummary":
         action = _display_table_text(_safe_table_value("action", row_final_action(row)), fallback="待复核")
+        entry_hint = str(_row_value(row, "entry_action_hint") or "").strip()
+        entry_context = str(_row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
+        if entry_context in {"VALUE_REVIEW_NEAR_TERM_REPAIR", "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED"} and not _row_is_chase_context(row):
+            action = entry_hint or "待复核"
         position = _display_table_text(row_current_add_text(row), fallback="")
         valuation = _display_table_text(_safe_table_value("valuationStatus", row.get("valuationStatus")), fallback="估值待确认")
         compact_action = _compact_action_summary_text(action)
@@ -247,6 +251,8 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "跌破结构区", "先复核"
     if context_status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED" or label.startswith("估值可复核"):
         return "估值可复核", "技术待确认"
+    if context_status == "VALUE_REVIEW_NEAR_TERM_REPAIR" or label.startswith("价值复核"):
+        return "价值复核", "结构待确认"
     if context_status == "BELOW_VALUATION_REFERENCE" or label.startswith("低于估值参考"):
         return "低于估值参考", "待复核"
     if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
@@ -277,6 +283,8 @@ def _short_entry_status(label: str) -> str:
         return "跌破结构区"
     if "低于估值参考" in label:
         return "低于估值参考"
+    if "价值复核" in label:
+        return "价值复核"
     if "估值可复核" in label:
         return "估值可复核"
     if "买区内" in label:
@@ -303,6 +311,8 @@ def _short_entry_hint(hint: str, fallback: str) -> str:
     if "等待" in text or "回落" in text:
         return "等回落"
     if "低于估值参考" in text or "等待结构确认" in text:
+        return "待复核"
+    if "结构待确认" in text:
         return "待复核"
     if "技术待确认" in text:
         return "技术待确认"
@@ -385,6 +395,8 @@ def _buy_point_label_tone(label: object) -> str:
     if "无买区" in text or "暂无参考买区" in text or "数据" in text:
         return "gray"
     if "低于估值参考" in text or "跌破结构区" in text or "跌破买区" in text or "低于买区" in text:
+        return "yellow"
+    if "价值复核" in text:
         return "yellow"
     if "买区内" in text:
         return "green"
@@ -472,11 +484,18 @@ def _misleading_entry_fallback_label(row: pd.Series | dict, label: str) -> str:
         return ""
     action_text = str(_row_value(row, "finalAction") or _row_value(row, "action") or "")
     lane = str(_row_value(row, "decisionLane") or "")
-    if "禁止追高" in action_text or lane == "blocked":
+    if _row_is_chase_context(row) and ("禁止追高" in action_text or lane == "blocked"):
         return "禁止追高，未到估值买点"
     if "复核" in action_text or str(_row_value(row, "dataConfidence") or "") == "low":
         return "需复核，未到估值买点"
     return "合理观察，未到估值买点"
+
+
+def _row_is_chase_context(row: pd.Series | dict) -> bool:
+    context = str(_row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
+    price_position = str(_row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
+    label = str(_row_value(row, "entry_display_label") or "").strip()
+    return context == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE" or label.startswith("禁止追高")
 
 
 def _looks_like_rating_token(value: object) -> bool:

@@ -214,6 +214,7 @@ def build_ai_stock_radar_report(
         price_position=price_position,
         decision=decision,
         final_score=score_input.final_score,
+        quality_score=score_input.quality_score,
         valuation_score=score_input.valuation_score,
         risk_score=score_input.risk_score,
     )
@@ -427,6 +428,7 @@ def build_ai_stock_radar_list_row(
         price_position=price_position,
         decision=decision,
         final_score=score_input.final_score,
+        quality_score=score_input.quality_score,
         valuation_score=score_input.valuation_score,
         risk_score=score_input.risk_score,
     )
