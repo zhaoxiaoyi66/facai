@@ -17,7 +17,7 @@ from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
-from data.stock_plan import StockPlanStore, get_buy_plan_status
+from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_hint_html
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
@@ -252,7 +252,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
             unsafe_allow_html=True,
         )
         return
-    plan = StockPlanStore().get_plan(ticker)
+    plan = _current_buy_plan(StockPlanStore().get_plan(ticker))
     if not _plan_has_buy_execution_evidence(plan):
         href = f"?page=portfolio&portfolioPlan={quote(ticker)}#portfolio-buy-plan"
         missing_text = _missing_buy_plan_summary_text(ticker, tier)
@@ -486,8 +486,8 @@ def _render_buy_plan_manager(rows: list[dict]) -> None:
         symbol = str(selected or "").strip().upper()
         row = next((item for item in rows if str(item.get("symbol") or "").strip().upper() == symbol), {})
         store = StockPlanStore()
-        plan = store.get_plan(symbol)
-        status = get_buy_plan_status(plan, current_price=row.get("currentPrice"), is_stale=False)
+        plan = _current_buy_plan(store.get_plan(symbol))
+        status = _current_buy_plan_status(plan, symbol=symbol, current_price=row.get("currentPrice"))
         _render_buy_plan_status(symbol, plan, status, row)
         _render_buy_plan_actions(symbol, plan, status)
         _render_buy_plan_form(store, symbol, plan, row)
@@ -502,6 +502,42 @@ def _render_buy_plan_notice() -> None:
         st.error(str(message))
     else:
         st.success(str(message))
+
+
+def _current_buy_plan(plan: dict) -> dict:
+    return plan if is_active_buy_plan(plan) else {}
+
+
+def _current_buy_plan_status(plan: dict, *, symbol: str, current_price: object) -> dict:
+    if not is_active_buy_plan(plan):
+        return {"status": "no_plan", "label": "暂无计划", "message": ""}
+    return get_buy_plan_status(
+        plan,
+        current_price=current_price,
+        is_stale=False,
+        prior_level_quantities=_buy_plan_prior_level_quantities(symbol),
+    )
+
+
+def _buy_plan_prior_level_quantities(symbol: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        return result
+    try:
+        entries = TradeJournalStore().list_entries(ticker)
+    except Exception:
+        return result
+    for entry in entries:
+        if not bool(entry.get("planned_ladder_buy")):
+            continue
+        if bool(entry.get("radar_blocked")) or bool(entry.get("radar_observation_only")):
+            continue
+        level = str(entry.get("buy_plan_level") or "").strip()
+        if not level:
+            continue
+        result[level] = result.get(level, 0.0) + float(entry.get("quantity") or 0)
+    return result
 
 
 def _render_buy_plan_status(symbol: str, plan: dict, status: dict, row: dict | None = None) -> None:
@@ -812,11 +848,7 @@ def _save_buy_plan_pause_note(symbol: str, plan: dict, reason: str, detail: str)
 
 
 def _cancel_buy_plan(symbol: str, plan: dict) -> None:
-    notes = str(plan.get("notes") or "").strip()
-    plan["notes"] = "\n".join(item for item in (notes, "计划已取消；提醒已停用。") if item)
-    plan["plan_status"] = "cancelled"
-    plan["material_updated_at"] = plan.get("material_updated_at") or plan.get("updated_at") or plan.get("created_at")
-    saved = StockPlanStore().save_plan(symbol, plan)
+    saved = StockPlanStore().close_plan(symbol, "cancelled", note="计划已取消；提醒已停用。")
     sync_buy_plan_price_alert(symbol=symbol, plan=saved, is_active=False)
     st.session_state["portfolio_buy_plan_notice"] = ("success", f"已取消 {symbol} 买入计划，并暂停对应提醒。")
 
@@ -1814,8 +1846,8 @@ def _buy_plan_status_for_row(row: dict, plan_store: StockPlanStore) -> dict:
     if not symbol or plan_store is None:
         return {"status": "no_plan", "label": "暂无计划", "message": ""}
     try:
-        plan = plan_store.get_plan(symbol)
-        return get_buy_plan_status(plan, current_price=row.get("currentPrice"), is_stale=False)
+        plan = _current_buy_plan(plan_store.get_plan(symbol))
+        return _current_buy_plan_status(plan, symbol=symbol, current_price=row.get("currentPrice"))
     except Exception:
         return {"status": "needs_review", "label": "需复核", "message": "计划读取失败"}
 

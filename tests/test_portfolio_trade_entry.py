@@ -12,9 +12,10 @@ import pytest
 
 import data.portfolio_trade_entry as portfolio_trade_entry
 from data.decision_log import TradeJournalStore
+from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_trade_entry import submit_portfolio_buy_add
-from data.stock_plan import StockPlanStore, get_buy_plan_status
+from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
 from data.trade_gate import buy_gate_entry_fields
 
@@ -54,6 +55,7 @@ def _base_values(**overrides):
 def _save_ladder_plan(path: Path, symbol: str = "NOK", **overrides) -> dict:
     values = {
         "target_position_pct": 12,
+        "thesis": "计划内分批买入",
         "invalidation_condition": "跌破财报 thesis 或事件失效则停止加仓",
         "notes": "下跌分批买入，按计划执行",
         "buy_plan_tranches": [
@@ -279,6 +281,38 @@ def test_stock_plan_quick_target_status_without_ladder_levels() -> None:
         assert near["status"] == "near_trigger"
         assert near["level"]["label"] == "目标提醒价"
         assert triggered["status"] == "triggered"
+
+
+def test_closing_buy_plan_marks_it_inactive_for_current_plan_ui() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        store = StockPlanStore(path)
+        plan = store.save_plan(
+            "ADBE",
+            {
+                "plan_type": "starter_position",
+                "position_class": "A",
+                "target_alert_price": 220,
+                "planned_amount": 3000,
+                "alert_mode": "price_below",
+                "thesis": "watch target price",
+            },
+        )
+        sync_buy_plan_price_alert(path, symbol="ADBE", plan=plan)
+
+        cancelled = store.close_plan("ADBE", "cancelled", note="用户取消计划。")
+        sync_buy_plan_price_alert(path, symbol="ADBE", plan=cancelled, is_active=False)
+        alert = PriceAlertStore(path).find_source_alert(
+            symbol="ADBE",
+            alertType="BUY_PLAN_TRIGGER",
+            source="buy_plan",
+            sourceId="ADBE",
+        )
+
+        assert cancelled["plan_status"] == "cancelled"
+        assert is_active_buy_plan(cancelled) is False
+        assert alert is not None
+        assert alert["status"] == "disabled"
 
 
 def test_stock_plan_status_requires_thesis_and_invalidation() -> None:
@@ -816,6 +850,63 @@ def test_planned_ladder_buy_records_remaining_quantity_warning_without_blocking(
         assert any("剩余计划数量" in item for item in warnings)
         assert position is not None
         assert position["quantity"] == 110
+
+
+def test_planned_ladder_buy_final_level_completes_plan_and_disables_alert() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        plan = _save_ladder_plan(path, buy_plan_tranches=[{"label": "第一笔买入", "price": 5, "shares": 50}])
+        sync_buy_plan_price_alert(path, symbol="NOK", plan=plan)
+
+        result = submit_portfolio_buy_add(
+            "NOK",
+            _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
+            path=path,
+            radar_report=_blocked_chase_report(),
+        )
+
+        saved_plan = StockPlanStore(path).get_plan("NOK")
+        alert = PriceAlertStore(path).find_source_alert(
+            symbol="NOK",
+            alertType="BUY_PLAN_TRIGGER",
+            source="buy_plan",
+            sourceId="NOK",
+        )
+        assert result["synced"] is True
+        assert saved_plan["plan_status"] == "completed"
+        assert is_active_buy_plan(saved_plan) is False
+        assert alert is not None
+        assert alert["status"] == "disabled"
+
+
+def test_planned_ladder_buy_partial_execution_keeps_plan_active() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        plan = _save_ladder_plan(path, buy_plan_tranches=[{"label": "第一笔买入", "price": 5, "shares": 100}])
+        sync_buy_plan_price_alert(path, symbol="NOK", plan=plan)
+
+        result = submit_portfolio_buy_add(
+            "NOK",
+            _base_values(quantity=50, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
+            path=path,
+            radar_report=_blocked_chase_report(),
+        )
+
+        saved_plan = StockPlanStore(path).get_plan("NOK")
+        alert = PriceAlertStore(path).find_source_alert(
+            symbol="NOK",
+            alertType="BUY_PLAN_TRIGGER",
+            source="buy_plan",
+            sourceId="NOK",
+        )
+        status = get_buy_plan_status(saved_plan, current_price=4.8, prior_level_quantities={"第一笔买入": 50})
+        assert result["synced"] is True
+        assert saved_plan["plan_status"] == "active"
+        assert is_active_buy_plan(saved_plan) is True
+        assert status["status"] == "triggered"
+        assert status["level"]["remaining_quantity"] == 50
+        assert alert is not None
+        assert alert["status"] == "active"
 
 
 def test_planned_ladder_buy_advisory_attempts_are_real_trades_when_confirmed() -> None:

@@ -53,6 +53,7 @@ TEXT_PLAN_FIELDS = [
 
 VALID_PLAN_TYPES = {"starter_position", "ladder_buy", "event_trade", "watch_only"}
 VALID_PLAN_STATUSES = {"active", "triggered", "paused", "completed", "cancelled", "expired"}
+INACTIVE_PLAN_STATUSES = {"completed", "cancelled", "expired"}
 VALID_ALERT_MODES = {"price_below", "price_near", "radar_pullback"}
 BUY_PLAN_STATUS_LABELS = {
     "no_plan": "暂无计划",
@@ -198,6 +199,20 @@ class StockPlanStore:
             plan[field] = None
         return self.save_plan(ticker, plan)
 
+    def close_plan(self, ticker: str, status: str, note: str = "") -> dict:
+        clean_status = _clean_plan_status(status)
+        if clean_status not in INACTIVE_PLAN_STATUSES:
+            raise ValueError("plan close status must be completed, cancelled, or expired")
+        plan = self.get_plan(ticker)
+        if not _has_plan_content(plan):
+            return plan
+        existing_notes = _clean_text(plan.get("notes"))
+        clean_note = _clean_text(note)
+        if clean_note:
+            plan["notes"] = "\n".join(item for item in (existing_notes, clean_note) if item)
+        plan["plan_status"] = clean_status
+        return self.save_plan(ticker, plan)
+
 
 def _empty_plan(ticker: str) -> dict:
     return {
@@ -209,6 +224,24 @@ def _empty_plan(ticker: str) -> dict:
         "material_updated_at": None,
         "updated_at": None,
     }
+
+
+def is_active_buy_plan(plan: dict) -> bool:
+    if not _has_plan_content(plan):
+        return False
+    status = _clean_plan_status(plan.get("plan_status") or plan.get("planStatus"))
+    return status not in INACTIVE_PLAN_STATUSES
+
+
+def _has_plan_content(plan: dict | None) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    if _clean_plan_type(plan.get("plan_type") or plan.get("planType")):
+        return True
+    if _to_number(plan.get("target_alert_price") or plan.get("targetAlertPrice")) is not None:
+        return True
+    tranches = plan.get("buy_plan_tranches") or plan.get("buyPlanTranches") or []
+    return isinstance(tranches, list) and bool(tranches)
 
 
 def get_buy_plan_status(

@@ -14,7 +14,8 @@ from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfolio_sync_status, preview_trade_values_portfolio_effect
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
-from data.stock_plan import StockPlanStore
+from data.price_alerts import sync_buy_plan_price_alert
+from data.stock_plan import StockPlanStore, is_active_buy_plan
 from data.starter_position import evaluate_starter_position
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_snapshot_fields
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
@@ -158,6 +159,13 @@ def submit_portfolio_buy_add(
     if str(sync_result.get("status") or "") != "success":
         store.delete_entry(int(saved.get("id") or 0))
         raise ValueError(str(sync_result.get("error") or "成交入账失败，交易日志未保存。"))
+    completed_plan = _complete_buy_plan_after_success(
+        ticker=ticker,
+        plan=plan,
+        entry_mode=entry_mode,
+        plan_gate=plan_gate,
+        path=path,
+    )
     return {
         "entry": saved,
         "gate": gate.to_dict(),
@@ -165,6 +173,7 @@ def submit_portfolio_buy_add(
         "starterGate": starter_gate.to_dict(),
         "structureEntry": structure_advisor.to_dict(),
         "marketStatus": _buy_market_status(report, gate),
+        "completedPlan": completed_plan,
         "sync": sync_result,
         "actionType": action_type,
         "synced": bool(sync_result and sync_result.get("status") == "success"),
@@ -227,6 +236,46 @@ def _buy_advisory_context_fields(*, path: Path, checked_at: str, warnings: list[
         "macroRegime": macro_regime_text,
         "portfolioStructureStatus": portfolio_structure_status,
     }
+
+
+def _complete_buy_plan_after_success(
+    *,
+    ticker: str,
+    plan: dict[str, Any],
+    entry_mode: str,
+    plan_gate: Any,
+    path: Path,
+) -> dict[str, Any]:
+    if not is_active_buy_plan(plan):
+        return {}
+    should_complete = False
+    levels = plan.get("buy_plan_tranches") if isinstance(plan, dict) else []
+    if entry_mode == "planned_ladder_buy":
+        if bool(getattr(plan_gate, "planned_ladder_buy", False)):
+            should_complete = _planned_ladder_plan_filled(plan, _planned_ladder_prior_quantities(ticker, path))
+    else:
+        should_complete = not levels or str(plan.get("plan_type") or "").strip() in {"starter_position", "event_trade", "watch_only"}
+    if not should_complete:
+        return {}
+    closed = StockPlanStore(path).close_plan(ticker, "completed", note="计划已执行；提醒已停用。")
+    sync_buy_plan_price_alert(path, symbol=ticker, plan=closed, is_active=False)
+    return closed
+
+
+def _planned_ladder_plan_filled(plan: dict[str, Any], prior_level_quantities: dict[str, float]) -> bool:
+    levels = plan.get("buy_plan_tranches") if isinstance(plan, dict) else []
+    if not isinstance(levels, list) or not levels:
+        return False
+    for index, item in enumerate(levels):
+        if not isinstance(item, dict):
+            return False
+        label = str(item.get("label") or f"第 {index + 1} 档").strip()
+        planned_quantity = _number(item.get("shares") or item.get("planned_quantity"))
+        if planned_quantity is None or planned_quantity <= 0:
+            return False
+        if float(prior_level_quantities.get(label) or 0.0) + 1e-9 < planned_quantity:
+            return False
+    return True
 
 
 def _portfolio_trade_action(symbol: str, path: Path, requested: object = None) -> str:
