@@ -1539,6 +1539,30 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("dashboard-command-center", styles_source)
         self.assertIn("dashboard-command-details", styles_source)
 
+    def test_dashboard_header_prominently_shows_cnn_fear_greed(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import FEAR_GREED, MacroIndicatorSnapshot, evaluate_macro_regime
+
+        class FreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "刚刚", "tone": "fresh"})()
+
+        macro_regime = evaluate_macro_regime(
+            [
+                MacroIndicatorSnapshot(
+                    indicator=FEAR_GREED,
+                    value=34,
+                    rating="fear",
+                    source="CNN Fear & Greed graphdata",
+                )
+            ]
+        )
+
+        items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
+        values = [value for _label, value, _tone in items]
+
+        self.assertIn("CNN恐惧与贪婪：34｜恐惧", values)
+
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         tables_module = __import__("ui.dashboard_tables", fromlist=[""])

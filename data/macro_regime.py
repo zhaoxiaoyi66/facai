@@ -884,12 +884,16 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
     breadth = _indicator_value_text(snapshot.indicator(MARKET_BREADTH), empty="缺")
     credit = _credit_summary_text(snapshot)
-    sentiment = _sentiment_summary_text(snapshot)
+    sentiment = macro_regime_sentiment_status_text(snapshot)
     hint = snapshot.action_hints[0] if snapshot.action_hints else "按个股纪律执行。"
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
         f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜{credit}｜{sentiment}｜纪律提示：{hint}"
     )
+
+
+def macro_regime_sentiment_status_text(snapshot: MacroRegimeSnapshot) -> str:
+    return _sentiment_summary_text(snapshot)
 
 
 def macro_regime_status_html(snapshot: MacroRegimeSnapshot) -> str:
@@ -914,9 +918,11 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     )
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in snapshot.reasons) or "<li>暂无宏观判断原因。</li>"
     hints = "".join(f"<li>{escape(hint)}</li>" for hint in snapshot.action_hints) or "<li>按个股纪律执行。</li>"
+    sentiment_html = _macro_regime_sentiment_detail_html(snapshot)
     return (
         '<section class="macro-regime-detail">'
         f"<div><strong>大盘环境：{escape(snapshot.regime)}</strong><span>置信度：{escape(snapshot.confidence)}，只读提示，不改变买卖门禁。</span></div>"
+        f"{sentiment_html}"
         '<table><thead><tr><th>指标</th><th>当前值</th><th>近期变化</th><th>来源</th><th>状态</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
         f'<div class="macro-regime-detail-grid"><div><b>判断原因</b><ul>{reasons}</ul></div><div><b>纪律提示</b><ul>{hints}</ul></div></div>'
@@ -2041,27 +2047,112 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     return "信用proxy稳定"
 
 
+def _macro_regime_sentiment_detail_html(snapshot: MacroRegimeSnapshot) -> str:
+    fear = snapshot.indicator(FEAR_GREED)
+    proxy = snapshot.indicator(SENTIMENT_PROXY)
+    cnn_line = _cnn_fear_greed_display_text(fear)
+    cnn_status = _indicator_display_status(fear) if fear is not None else "暂缺"
+    proxy_value = _usable_value(proxy)
+    proxy_line = (
+        f"内部情绪代理：{_sentiment_proxy_label(proxy_value)}"
+        if proxy_value is not None
+        else "内部情绪代理：暂缺"
+    )
+    proxy_status = _indicator_display_status(proxy) if proxy is not None else "暂缺"
+    return (
+        '<div class="macro-regime-sentiment-lines">'
+        f"<span>{escape(cnn_line)}｜{escape(cnn_status)}</span>"
+        f"<span>{escape(proxy_line)}｜{escape(proxy_status)}</span>"
+        "</div>"
+    )
+
+
 def _sentiment_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     fear = snapshot.indicator(FEAR_GREED)
-    fear_value = _usable_value(fear)
     proxy = snapshot.indicator(SENTIMENT_PROXY)
     proxy_value = _usable_value(proxy)
-    if fear_value is not None:
-        suffix = "（缓存）" if _is_cached_source(fear) else ""
-        base = f"CNN恐惧与贪婪 {fear_value:.0f}{suffix}"
-        if _is_cached_source(fear) and proxy_value is not None:
-            return f"{base}｜情绪代理 {_sentiment_proxy_label(proxy_value)}"
-        return base
+    cnn_text = _cnn_fear_greed_display_text(fear)
+    if _fear_greed_display_value(fear) is not None and not bool(getattr(fear, "is_stale", False)):
+        return cnn_text
     if proxy_value is None:
-        return "CNN恐惧与贪婪 缺失"
-    return f"CNN恐惧与贪婪 缺失｜情绪代理 {_sentiment_proxy_label(proxy_value)}"
-    if fear_value is not None:
-        return f"恐惧贪婪 {fear_value:.0f}"
-    proxy = snapshot.indicator(SENTIMENT_PROXY)
-    proxy_value = _usable_value(proxy)
-    if proxy_value is None:
-        return "情绪缺失"
-    return f"情绪代理{_sentiment_proxy_label(proxy_value)}"
+        return cnn_text
+    return f"{cnn_text}｜情绪代理：{_sentiment_proxy_label(proxy_value)}"
+
+
+def _cnn_fear_greed_display_text(snapshot: MacroIndicatorSnapshot | None, *, now: datetime | None = None) -> str:
+    value = _fear_greed_display_value(snapshot)
+    if value is None:
+        return "CNN恐惧与贪婪：暂缺"
+    parts = [
+        f"CNN恐惧与贪婪：{value:.0f}",
+        _fear_greed_rating_label(getattr(snapshot, "rating", None), value),
+    ]
+    cache_text = _fear_greed_cache_age_text(snapshot, now=now)
+    if cache_text:
+        parts.append(cache_text)
+    return "｜".join(parts)
+
+
+def _fear_greed_display_value(snapshot: MacroIndicatorSnapshot | None) -> float | None:
+    if snapshot is None or snapshot.value is None:
+        return None
+    return _number(snapshot.value)
+
+
+def _fear_greed_rating_label(rating: str | None, value: float) -> str:
+    normalized = str(rating or "").strip().lower().replace("_", " ").replace("-", " ")
+    mapping = {
+        "extreme fear": "极度恐惧",
+        "fear": "恐惧",
+        "neutral": "中性",
+        "greed": "贪婪",
+        "extreme greed": "极度贪婪",
+    }
+    if normalized in mapping:
+        return mapping[normalized]
+    if value <= 25:
+        return "极度恐惧"
+    if value <= 45:
+        return "恐惧"
+    if value < 55:
+        return "中性"
+    if value < 75:
+        return "贪婪"
+    return "极度贪婪"
+
+
+def _fear_greed_cache_age_text(snapshot: MacroIndicatorSnapshot | None, *, now: datetime | None = None) -> str:
+    if snapshot is None:
+        return ""
+    has_cache_semantics = _is_cached_source(snapshot) or bool(snapshot.error)
+    timestamp = snapshot.fetched_at or snapshot.updated_at
+    if not has_cache_semantics:
+        return "过期" if snapshot.is_stale else ""
+    if not timestamp:
+        return "过期缓存" if snapshot.is_stale else ("缓存" if snapshot.error else "")
+    prefix = "过期缓存" if snapshot.is_stale else "缓存"
+    age = _relative_age_text(timestamp, now=now)
+    return f"{prefix} {age}" if age else prefix
+
+
+def _relative_age_text(value: object, *, now: datetime | None = None) -> str:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return ""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    delta = max(timedelta(0), current.astimezone(timezone.utc) - parsed)
+    days = delta.days
+    if days >= 1:
+        return f"{days}天前"
+    hours = int(delta.total_seconds() // 3600)
+    if hours >= 1:
+        return f"{hours}小时前"
+    minutes = int(delta.total_seconds() // 60)
+    if minutes >= 1:
+        return f"{minutes}分钟前"
+    return "刚刚"
 
 def _is_cached_source(snapshot: MacroIndicatorSnapshot | None) -> bool:
     return bool(snapshot and "cache" in str(snapshot.source or "").lower())
@@ -2072,7 +2163,8 @@ def _indicator_cache_status_text(snapshot: MacroIndicatorSnapshot) -> str:
 
 
 def _indicator_display_status(snapshot: MacroIndicatorSnapshot) -> str:
-    if _usable_value(snapshot) is None:
+    raw_value = _number(snapshot.value)
+    if raw_value is None or (snapshot.indicator == VIX and not _valid_vix_value(raw_value)):
         return "暂缺"
     source = str(snapshot.source or "").lower()
     if snapshot.indicator in {HYG_CREDIT_PROXY, SENTIMENT_PROXY} or "proxy" in source or "代理" in source:

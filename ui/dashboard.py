@@ -43,6 +43,7 @@ from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
     load_macro_regime,
     macro_regime_detail_html,
+    macro_regime_sentiment_status_text,
 )
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
@@ -723,6 +724,7 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
         ("", f"{len(table)}只观察", "neutral"),
         ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
         ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
+        ("", macro_regime_sentiment_status_text(macro_regime), "neutral"),
         ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
         ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
         ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
@@ -3676,6 +3678,19 @@ def _render_dashboard_styles() -> None:
         .macro-regime-detail span {
             color:#64748B;
             font-size:12px;
+        }
+        .macro-regime-sentiment-lines {
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap:0.5rem;
+            margin:0 0 0.6rem;
+        }
+        .macro-regime-sentiment-lines span {
+            padding:0.38rem 0.5rem;
+            border:1px solid rgba(226,232,240,0.92);
+            border-radius:8px;
+            background:#F8FAFC;
+            color:#475569;
         }
         .macro-regime-detail table {
             width:100%;

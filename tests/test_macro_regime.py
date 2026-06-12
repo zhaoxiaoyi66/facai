@@ -28,6 +28,7 @@ from data.macro_regime import (
     MacroRegimeStore,
     evaluate_macro_regime,
     load_macro_regime,
+    macro_regime_sentiment_status_text,
     macro_regime_status_text,
     macro_regime_trade_hint_text,
     refresh_macro_indicators,
@@ -229,7 +230,7 @@ def test_macro_status_text_is_chinese_and_contains_three_indicators() -> None:
         [
             _indicator(VIX, 22.4),
             _indicator(HY_OAS, 4.1, change_5d=0.2),
-            _indicator(FEAR_GREED, 28),
+            MacroIndicatorSnapshot(indicator=FEAR_GREED, value=28, rating="fear", source="CNN Fear & Greed graphdata"),
         ]
     )
 
@@ -238,8 +239,60 @@ def test_macro_status_text_is_chinese_and_contains_three_indicators() -> None:
     assert "大盘环境" in text
     assert "VIX 22.4" in text
     assert "高收益债利差" not in text
-    assert "CNN恐惧与贪婪 28" in text
+    assert "CNN恐惧与贪婪：28｜恐惧" in text
     assert "纪律提示" in text
+
+
+def test_cnn_fear_greed_sentiment_text_shows_live_rating() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            MacroIndicatorSnapshot(
+                indicator=FEAR_GREED,
+                value=34,
+                rating="fear",
+                source="CNN Fear & Greed graphdata",
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+    )
+
+    assert macro_regime_sentiment_status_text(snapshot) == "CNN恐惧与贪婪：34｜恐惧"
+
+
+def test_cnn_fear_greed_sentiment_text_shows_cache_age() -> None:
+    cached_at = datetime.now(timezone.utc) - timedelta(days=2, minutes=5)
+    snapshot = evaluate_macro_regime(
+        [
+            MacroIndicatorSnapshot(
+                indicator=FEAR_GREED,
+                value=34,
+                rating="fear",
+                source="CNN Fear & Greed cache",
+                updated_at=cached_at.isoformat(),
+                fetched_at=cached_at.isoformat(),
+                error="CNN HTTP 418",
+            )
+        ]
+    )
+
+    text = macro_regime_sentiment_status_text(snapshot)
+
+    assert "CNN恐惧与贪婪：34｜恐惧｜缓存 2天前" in text
+    assert "CNN HTTP 418" not in text
+
+
+def test_cnn_fear_greed_missing_uses_internal_sentiment_proxy_label() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            MacroIndicatorSnapshot(indicator=FEAR_GREED, value=None, error="CNN HTTP 418"),
+            MacroIndicatorSnapshot(indicator=SENTIMENT_PROXY, value=35, source="internal sentiment proxy"),
+        ]
+    )
+
+    text = macro_regime_sentiment_status_text(snapshot)
+
+    assert text == "CNN恐惧与贪婪：暂缺｜情绪代理：偏恐惧"
+    assert "CNN HTTP 418" not in text
 
 
 def test_macro_store_supports_manual_cache_values(tmp_path) -> None:
@@ -1152,6 +1205,17 @@ def test_macro_indicator_detail_status_uses_cache_semantics_for_error_with_value
     )
 
     assert macro_regime._indicator_cache_status_text(snapshot) == "使用缓存"
+    assert (
+        macro_regime._indicator_cache_status_text(
+            MacroIndicatorSnapshot(
+                indicator=FEAR_GREED,
+                value=28,
+                source="CNN Fear & Greed cache",
+                is_stale=True,
+            )
+        )
+        == "过期缓存"
+    )
 
 
 def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, monkeypatch) -> None:
