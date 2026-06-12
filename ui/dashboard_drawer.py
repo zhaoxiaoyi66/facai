@@ -281,6 +281,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
         f'{_drawer_decision_summary_html(row, drawer_deps)}'
         f'{_drawer_radar_entry_card_html(row)}'
+        f'{_drawer_pullback_acceptance_card_html(row)}'
         f'{_drawer_structure_entry_card_html(row)}'
         f'{_drawer_next_action_html(row, drawer_deps)}'
         f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
@@ -1060,6 +1061,67 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
         f"{detail_html}"
         "</div>"
     )
+
+
+def _drawer_pullback_acceptance_card_html(row: pd.Series) -> str:
+    snapshot = row.get("pullbackAcceptance")
+    if not isinstance(snapshot, dict):
+        snapshot = {
+            "acceptance_status": row.get("acceptanceStatus"),
+            "acceptance_score": row.get("acceptanceScore"),
+            "acceptance_reasons": row.get("acceptanceReasons"),
+            "acceptance_warnings": row.get("acceptanceWarnings"),
+            "next_acceptance_steps": row.get("acceptanceNextSteps"),
+        }
+    status_code = str(snapshot.get("acceptance_status") or snapshot.get("acceptanceStatus") or "").strip()
+    status = str(snapshot.get("status_label") or _acceptance_status_label(status_code) or "数据不足")
+    score = _drawer_number(snapshot.get("acceptance_score", snapshot.get("acceptanceScore")))
+    score_text = "待补数据" if status_code == "DATA_MISSING" else ("N/A" if score is None else f"{score:.0f} 分")
+    support = _drawer_clean_text(snapshot.get("support_hold_status") or snapshot.get("supportHoldStatus"))
+    close = _drawer_clean_text(snapshot.get("close_confirmation_status") or snapshot.get("closeConfirmationStatus"))
+    volume = _drawer_clean_text(snapshot.get("volume_confirmation_status") or snapshot.get("volumeConfirmationStatus"))
+    relative = _drawer_clean_text(
+        snapshot.get("relative_strength_confirmation_status") or snapshot.get("relativeStrengthConfirmationStatus")
+    )
+    vwap = _drawer_clean_text(snapshot.get("vwap_confirmation_status") or snapshot.get("vwapConfirmationStatus"))
+    reasons = _drawer_text_list(snapshot.get("acceptance_reasons") or snapshot.get("acceptanceReasons"))
+    warnings = _drawer_text_list(snapshot.get("acceptance_warnings") or snapshot.get("acceptanceWarnings"))
+    steps = _drawer_text_list(snapshot.get("next_acceptance_steps") or snapshot.get("nextAcceptanceSteps"))
+    lines = [
+        "只读提示：不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
+        f"支撑：{support or '数据不足'}",
+        f"收盘：{close or '数据不足'}",
+        f"量能：{volume or '数据不足'}",
+        f"相对强弱：{relative or '数据不足'}",
+        f"VWAP：{vwap or '缺失，使用日线替代'}",
+    ]
+    if warnings:
+        lines.append("风险：" + "；".join(warnings[:2]))
+    if steps:
+        lines.append("下一步：" + "；".join(steps[:2]))
+    detail_html = ""
+    if reasons:
+        items = "".join(f"<li>{escape(str(line))}</li>" for line in reasons[:4] if line)
+        detail_html = f'<details class="drawer-low-priority"><summary>查看承接依据</summary><ul>{items}</ul></details>'
+    items = "".join(f"<li>{escape(str(line))}</li>" for line in lines if line)
+    return (
+        '<div class="drawer-card">'
+        '<div class="drawer-card-title">回踩承接确认</div>'
+        f'<div class="drawer-card-headline">{escape(status)}｜{escape(score_text)}</div>'
+        f"<ul>{items}</ul>"
+        f"{detail_html}"
+        "</div>"
+    )
+
+
+def _acceptance_status_label(value: object) -> str:
+    return {
+        "ACCEPTANCE_CONFIRMED": "承接确认",
+        "ACCEPTANCE_FORMING": "承接形成中",
+        "ACCEPTANCE_UNCONFIRMED": "承接未确认",
+        "ACCEPTANCE_FAILED": "承接失败",
+        "DATA_MISSING": "数据不足",
+    }.get(str(value or ""), "")
 
 
 def _structure_entry_summary_hint(status_code: str, status_label: str, is_data_missing: bool, has_gaps: bool) -> str:

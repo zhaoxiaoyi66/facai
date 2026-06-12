@@ -51,6 +51,7 @@ def test_buy_execution_context_reuses_radar_technical_structure_snapshot() -> No
     assert context.structure_hint.status == STRUCTURE_PARTIAL
     assert context.structure_hint.source == "radar_technical_structure"
     assert "结构待确认" in html
+    assert "回踩承接确认" in html
     assert "待补数据" not in html
     assert "技术：" in html
     assert "Radar：" in html
@@ -106,4 +107,3 @@ def test_buy_execution_context_only_marks_missing_when_core_context_is_absent() 
 
     assert context.structure_hint.status == STRUCTURE_MISSING
     assert {"price", "K-line", "EMA", "swing"}.issubset(set(context.structure_hint.missing_fields))
-

@@ -15,6 +15,7 @@ from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfo
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
 from data.price_alerts import sync_buy_plan_price_alert
+from data.pullback_acceptance import evaluate_pullback_acceptance, pullback_acceptance_snapshot_fields
 from data.stock_plan import StockPlanStore, is_active_buy_plan
 from data.starter_position import evaluate_starter_position
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_snapshot_fields
@@ -61,6 +62,11 @@ def submit_portfolio_buy_add(
     )
     report = radar_report or build_cached_ai_stock_radar_report(ticker)
     structure_advisor = build_structure_entry_advisor_for_symbol(ticker, path=path, now=submitted_at)
+    pullback_acceptance = evaluate_pullback_acceptance(
+        ticker=ticker,
+        technicals=_report_dict(report),
+        checked_at=submitted_at,
+    )
     plan = StockPlanStore(path).get_plan(ticker)
     prior_level_quantities = _planned_ladder_prior_quantities(ticker, path)
     plan_gate = evaluate_planned_ladder_buy(
@@ -141,6 +147,7 @@ def submit_portfolio_buy_add(
         **plan_fields,
         **starter_fields,
         **structure_entry_snapshot_fields(structure_advisor, checked_at=submitted_at.isoformat()),
+        **pullback_acceptance_snapshot_fields(pullback_acceptance, checked_at=submitted_at.isoformat()),
         **advisory_context_fields,
         "gateCheckedAt": submitted_at.isoformat(),
     }
@@ -172,6 +179,7 @@ def submit_portfolio_buy_add(
         "planGate": plan_gate.to_dict(),
         "starterGate": starter_gate.to_dict(),
         "structureEntry": structure_advisor.to_dict(),
+        "pullbackAcceptance": pullback_acceptance.to_dict(),
         "marketStatus": _buy_market_status(report, gate),
         "completedPlan": completed_plan,
         "sync": sync_result,
@@ -468,6 +476,19 @@ def _report_value(report: object, key: str) -> Any:
         if isinstance(data, dict):
             return data.get(key)
     return None
+
+
+def _report_dict(report: object) -> dict[str, Any]:
+    if isinstance(report, dict):
+        return dict(report)
+    if hasattr(report, "to_dict"):
+        try:
+            data = report.to_dict()
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            return dict(data)
+    return {}
 
 
 def _first_report_value(report: object, *keys: str) -> Any:

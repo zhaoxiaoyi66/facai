@@ -125,6 +125,11 @@ TRADE_DISCIPLINE_COLUMNS = {
     "structure_reasons_json": "TEXT",
     "structure_warnings_json": "TEXT",
     "structure_checked_at": "TEXT",
+    "acceptance_status": "TEXT",
+    "acceptance_score": "REAL",
+    "acceptance_reasons_json": "TEXT",
+    "acceptance_warnings_json": "TEXT",
+    "acceptance_checked_at": "TEXT",
     "buy_advisory_warnings_json": "TEXT",
     "buy_advisory_acknowledged": "INTEGER",
     "advisory_checked_at": "TEXT",
@@ -486,6 +491,7 @@ class TradeJournalStore:
             _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
             _write_sell_context_snapshot(conn, int(entry_id), cleaned)
             _write_structure_entry_snapshot(conn, int(entry_id), cleaned)
+            _write_pullback_acceptance_snapshot(conn, int(entry_id), cleaned)
             _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
@@ -603,6 +609,7 @@ class TradeJournalStore:
                 _write_pre_trade_snapshot(conn, clean_id, cleaned)
                 _write_sell_context_snapshot(conn, clean_id, cleaned)
                 _write_structure_entry_snapshot(conn, clean_id, cleaned)
+                _write_pullback_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_buy_advisory_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
@@ -891,6 +898,40 @@ def _write_structure_entry_snapshot(conn: sqlite3.Connection, entry_id: int, cle
             cleaned["structure_reasons_json"],
             cleaned["structure_warnings_json"],
             cleaned["structure_checked_at"],
+            entry_id,
+        ),
+    )
+
+
+def _write_pullback_acceptance_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, "", "[]"}
+        for field in (
+            "acceptance_status",
+            "acceptance_score",
+            "acceptance_reasons_json",
+            "acceptance_warnings_json",
+            "acceptance_checked_at",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            acceptance_status = ?,
+            acceptance_score = ?,
+            acceptance_reasons_json = ?,
+            acceptance_warnings_json = ?,
+            acceptance_checked_at = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["acceptance_status"],
+            cleaned["acceptance_score"],
+            cleaned["acceptance_reasons_json"],
+            cleaned["acceptance_warnings_json"],
+            cleaned["acceptance_checked_at"],
             entry_id,
         ),
     )
@@ -1332,6 +1373,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_starter_snapshot(action_type, values))
     cleaned.update(_clean_sell_context_snapshot(action_type, values))
     cleaned.update(_clean_structure_entry_snapshot(action_type, values))
+    cleaned.update(_clean_pullback_acceptance_snapshot(action_type, values))
     cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
     return cleaned
 
@@ -1637,6 +1679,31 @@ def _clean_structure_entry_snapshot(action_type: str, values: dict) -> dict:
             _value(values, "structureWarnings", "structure_warnings", "structure_warnings_json")
         ),
         "structure_checked_at": _clean_optional_text(_value(values, "structureCheckedAt", "structure_checked_at")),
+    }
+
+
+def _clean_pullback_acceptance_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "acceptance_status": None,
+            "acceptance_score": None,
+            "acceptance_reasons_json": "[]",
+            "acceptance_warnings_json": "[]",
+            "acceptance_checked_at": None,
+        }
+    return {
+        "acceptance_status": _clean_optional_text(_value(values, "acceptanceStatus", "acceptance_status")),
+        "acceptance_score": _optional_non_negative_number(
+            _value(values, "acceptanceScore", "acceptance_score"),
+            "acceptance_score",
+        ),
+        "acceptance_reasons_json": _reasons_json(
+            _value(values, "acceptanceReasons", "acceptance_reasons", "acceptance_reasons_json")
+        ),
+        "acceptance_warnings_json": _reasons_json(
+            _value(values, "acceptanceWarnings", "acceptance_warnings", "acceptance_warnings_json")
+        ),
+        "acceptance_checked_at": _clean_optional_text(_value(values, "acceptanceCheckedAt", "acceptance_checked_at")),
     }
 
 
@@ -2239,6 +2306,10 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["structure_reasons"] = _load_json_list(item["structure_reasons_json"])
     if "structure_warnings_json" in item:
         item["structure_warnings"] = _load_json_list(item["structure_warnings_json"])
+    if "acceptance_reasons_json" in item:
+        item["acceptance_reasons"] = _load_json_list(item["acceptance_reasons_json"])
+    if "acceptance_warnings_json" in item:
+        item["acceptance_warnings"] = _load_json_list(item["acceptance_warnings_json"])
     if "buy_advisory_warnings_json" in item:
         item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
     return item

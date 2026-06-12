@@ -521,6 +521,41 @@ def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch
         assert entry["structure_warnings"] == ["结构破坏仅提示，不作为门禁"]
 
 
+def test_portfolio_buy_add_saves_pullback_acceptance_snapshot() -> None:
+    report = _report()
+    report.update(
+        {
+            "close": 112,
+            "open": 106,
+            "low": 101,
+            "high": 113,
+            "near_term_repair_zone_low": 100,
+            "confirmation_price": 110,
+            "invalidation_price": 98,
+            "ema20": 108,
+            "volume": 1_300_000,
+            "avg_volume": 1_000_000,
+            "relative_strength_vs_QQQ": 0.04,
+            "vwap": 109,
+        }
+    )
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+
+        result = submit_portfolio_buy_add("NVDA", _base_values(), path=path, radar_report=report)
+
+        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NVDA")
+        assert result["synced"] is True
+        assert position is not None
+        assert result["pullbackAcceptance"]["acceptance_status"] == "ACCEPTANCE_CONFIRMED"
+        assert entry is not None
+        assert entry["acceptance_status"] == "ACCEPTANCE_CONFIRMED"
+        assert entry["acceptance_score"] >= 80
+        assert entry["acceptance_reasons"]
+        assert entry["acceptance_checked_at"]
+
+
 def test_portfolio_buy_add_records_hkt_trade_time(monkeypatch: pytest.MonkeyPatch) -> None:
     fixed = datetime(2026, 6, 4, 15, 30, 12, tzinfo=ZoneInfo("Asia/Hong_Kong"))
     monkeypatch.setattr(portfolio_trade_entry, "_hkt_now", lambda: fixed)

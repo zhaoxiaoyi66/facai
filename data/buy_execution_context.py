@@ -12,6 +12,7 @@ from data.market_context import build_market_context
 from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
+from data.pullback_acceptance import PullbackAcceptanceSnapshot, evaluate_pullback_acceptance, pullback_acceptance_hint_html
 from data.structure_entry import (
     DATA_MISSING,
     StructureEntryAdvisor,
@@ -66,6 +67,7 @@ class BuyExecutionAdvisoryContext:
     radar_report: dict[str, Any]
     structure_hint: BuyExecutionStructureHint
     structure_advisor: StructureEntryAdvisor | None
+    pullback_acceptance: PullbackAcceptanceSnapshot
     macro_regime: str | None
     portfolio_structure_status: str | None
     data_source_text: str
@@ -102,6 +104,11 @@ def build_buy_execution_advisory_context(
         now=current_time,
         structure_advisor=structure_advisor,
     )
+    pullback_acceptance = evaluate_pullback_acceptance(
+        ticker=symbol,
+        technicals={**report, **market},
+        checked_at=current_time,
+    )
     macro_regime, macro_freshness = _macro_context(path=path, now=current_time)
     portfolio_structure_status = _portfolio_structure_status(path=path, macro_regime=None)
     technical_freshness = _technical_freshness(report, market, current_time)
@@ -113,6 +120,7 @@ def build_buy_execution_advisory_context(
         radar_report=report,
         structure_hint=structure_hint,
         structure_advisor=structure_advisor,
+        pullback_acceptance=pullback_acceptance,
         macro_regime=macro_regime,
         portfolio_structure_status=portfolio_structure_status,
         data_source_text=data_source_text,
@@ -126,7 +134,7 @@ def buy_execution_advisory_context_html(context: BuyExecutionAdvisoryContext) ->
     hint = context.structure_hint
     details = _join_text([*hint.warnings[:2], *hint.next_steps[:2]])
     detail_html = f"<small>{escape(details)}</small>" if details else ""
-    return (
+    structure_html = (
         '<div class="structure-entry-advisor buy-execution-advisory-context">'
         f"<strong>结构买入提示：{escape(hint.label)}</strong>"
         f"<span>{escape(hint.message)}</span>"
@@ -135,6 +143,7 @@ def buy_execution_advisory_context_html(context: BuyExecutionAdvisoryContext) ->
         "<small>仅作买入提示，不阻止真实买入 / 加仓入账。</small>"
         "</div>"
     )
+    return structure_html + pullback_acceptance_hint_html(context.pullback_acceptance)
 
 
 def _build_structure_hint(

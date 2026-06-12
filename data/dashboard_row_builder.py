@@ -5,6 +5,7 @@ from typing import Any
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.entry_display import build_entry_display
+from data.pullback_acceptance import evaluate_pullback_acceptance
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
 from data.structure_entry import evaluate_structure_entry
@@ -82,6 +83,10 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         technicals=technicals,
         decline_reason=str(snapshot.get("decline_reason") or snapshot.get("declineReason") or "未知"),
         thesis_status=str(snapshot.get("thesis_status") or snapshot.get("thesisStatus") or "UNKNOWN"),
+    )
+    pullback_acceptance = evaluate_pullback_acceptance(
+        ticker=ticker,
+        technicals={**technicals, **snapshot, **radar_entry_display},
     )
 
     return {
@@ -186,6 +191,12 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "structureReasons": structure_entry.structure_reasons,
         "structureWarnings": structure_entry.structure_warnings,
         "structureNextSteps": structure_entry.next_confirmation_steps,
+        "pullbackAcceptance": pullback_acceptance.to_dict(),
+        "acceptanceStatus": pullback_acceptance.acceptance_status,
+        "acceptanceScore": pullback_acceptance.acceptance_score,
+        "acceptanceReasons": pullback_acceptance.acceptance_reasons,
+        "acceptanceWarnings": pullback_acceptance.acceptance_warnings,
+        "acceptanceNextSteps": pullback_acceptance.next_acceptance_steps,
         **radar_entry_display,
     }
 
