@@ -633,7 +633,7 @@ def _refresh_snapshot_value_usable(snapshot: MacroIndicatorSnapshot | None) -> b
     if snapshot is None or snapshot.value is None:
         return False
     value = _number(snapshot.value)
-    if snapshot.indicator == VIX and (value is None or value <= 0):
+    if snapshot.indicator == VIX and not _valid_vix_value(value):
         return False
     return value is not None
 
@@ -968,6 +968,12 @@ def _fetch_vix_snapshot(
     now: datetime,
 ) -> MacroIndicatorSnapshot:
     errors: list[str] = []
+    local_snapshot = _load_vix_snapshot(path, now=now)
+    if local_snapshot is not None:
+        return local_snapshot
+    cached = store.load_indicator(VIX, now=now)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
     market_provider = provider
     if market_provider is None:
         try:
@@ -1005,10 +1011,6 @@ def _fetch_vix_snapshot(
                 )
             except Exception as exc:
                 errors.append(f"{symbol}: {_short_error(exc)}")
-
-    cached = store.load_indicator(VIX, now=now)
-    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
-        return cached
 
     try:
         return _fetch_fred_snapshot_with_circuit(VIX, FRED_VIX_SERIES, store=store, fred_fetcher=fred_fetcher, now=now)
@@ -1051,6 +1053,9 @@ def _fetch_treasury_or_fred_snapshot(
     fred_fetcher: Any | None,
     now: datetime,
 ) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(indicator, now=now)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
     try:
         return treasury_loader.get(indicator)
     except Exception as treasury_error:
@@ -1178,8 +1183,10 @@ def _fetch_cached_or_fred_snapshot(
     now: datetime,
 ) -> MacroIndicatorSnapshot:
     cached = store.load_indicator(indicator, now=now)
-    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
+    if cached is not None and _refresh_snapshot_value_usable(cached):
         return cached
+    if fred_fetcher is None:
+        raise RuntimeError(f"FRED {series_id} front refresh skipped; use cache/proxy")
     return _fetch_fred_snapshot_with_circuit(indicator, series_id, store=store, fred_fetcher=fred_fetcher, now=now)
 
 
@@ -1202,11 +1209,13 @@ def _fetch_cached_or_fear_greed_snapshot(
     now: datetime,
 ) -> MacroIndicatorSnapshot:
     cached = store.load_indicator(FEAR_GREED, now=now)
-    if cached is not None and not cached.is_stale and _refresh_snapshot_value_usable(cached):
+    if cached is not None and _refresh_snapshot_value_usable(cached):
         return cached
     open_circuit, last_error = store.is_provider_circuit_open(FEAR_GREED_PROVIDER, now=now)
     if open_circuit:
         raise RuntimeError(f"CNN Fear & Greed circuit open, using proxy/cache; last error: {last_error or 'unknown'}")
+    if fear_greed_fetcher is None:
+        raise RuntimeError("CNN Fear & Greed front refresh skipped; use proxy/cache")
     try:
         snapshot = _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
     except Exception as exc:
@@ -1298,6 +1307,8 @@ def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime)
 
 def _fetch_market_trend_snapshot(path: Path, *, provider: Any | None, now: datetime) -> MacroIndicatorSnapshot:
     errors: list[str] = []
+    spy = _trend_state_for_symbol("SPY", path)
+    qqq = _trend_state_for_symbol("QQQ", path)
     market_provider = provider
     if market_provider is None:
         try:
@@ -1306,7 +1317,7 @@ def _fetch_market_trend_snapshot(path: Path, *, provider: Any | None, now: datet
             market_provider = get_market_data_provider(full_fundamentals=False)
         except Exception as exc:
             errors.append(f"SPY/QQQ 行情源初始化失败：{_short_error(exc)}")
-    if market_provider is not None:
+    if market_provider is not None and not _trend_states_fresh(spy, qqq):
         for symbol in ("SPY", "QQQ"):
             try:
                 market_provider.get_price_history(symbol, force_refresh=True)
@@ -1384,6 +1395,7 @@ def _fetch_hyg_credit_proxy_snapshot(
     now: datetime,
 ) -> MacroIndicatorSnapshot:
     errors: list[str] = []
+    hyg = _trend_state_for_symbol("HYG", path)
     market_provider = provider
     if market_provider is None:
         try:
@@ -1392,6 +1404,8 @@ def _fetch_hyg_credit_proxy_snapshot(
             market_provider = get_market_data_provider(full_fundamentals=False)
         except Exception as exc:
             errors.append(f"HYG 行情源初始化失败：{_short_error(exc)}")
+    if _trend_states_fresh(hyg):
+        market_provider = None
     if market_provider is not None:
         for symbol in ("HYG", "LQD", "IEF"):
             try:
@@ -1562,6 +1576,11 @@ def _trend_state_for_symbol(symbol: str, path: Path) -> dict[str, Any] | None:
         "latest_date": _latest_history_date(frame),
         "is_stale": bool(history.get("isStale")),
     }
+
+
+def _trend_states_fresh(*states: dict[str, Any] | None) -> bool:
+    usable = [state for state in states if state is not None]
+    return bool(usable) and all(not bool(state.get("is_stale")) for state in usable)
 
 
 def _history_return_pct(symbol: str, path: Path, *, days: int) -> float | None:
@@ -2038,7 +2057,7 @@ def _number(value: object) -> float | None:
 
 def _valid_vix_value(value: object) -> bool:
     numeric = _number(value)
-    return numeric is not None and numeric > 0
+    return numeric is not None and numeric >= 1
 
 
 def _normalize_indicator(value: object) -> str:

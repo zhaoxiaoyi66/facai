@@ -607,7 +607,7 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     assert hy_result["status"] == "stale"
     assert hy_result["value"] == 3.72
     assert hy_result["used_cache"] is True
-    assert "timeout" in hy_result["error"]
+    assert hy_result["error"] is None
     assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
 
 
@@ -697,16 +697,6 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
     monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
-    store = MacroRegimeStore(path)
-    store.save_indicator(
-        MacroIndicatorSnapshot(
-            indicator=HY_OAS,
-            value=3.72,
-            source="FRED cached BAMLH0A0HYM2",
-            updated_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
-            fetched_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
-        )
-    )
     provider = TreasuryAndVixProvider()
 
     def timeout_fred(series_id: str) -> str:
@@ -719,7 +709,7 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
     )
-    assert first["indicators"][HY_OAS]["status"] == "stale"
+    assert first["indicators"][HY_OAS]["status"] == "failed"
 
     second = refresh_macro_indicators(
         path,
@@ -728,7 +718,7 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
         now=datetime(2026, 6, 10, 21, 3, tzinfo=timezone.utc),
     )
-    assert second["indicators"][HY_OAS]["status"] == "stale"
+    assert second["indicators"][HY_OAS]["status"] == "failed"
 
     fred_calls: list[str] = []
 
@@ -744,7 +734,7 @@ def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeout
         now=datetime(2026, 6, 10, 21, 5, tzinfo=timezone.utc),
     )
 
-    assert third["indicators"][HY_OAS]["status"] == "stale"
+    assert third["indicators"][HY_OAS]["status"] == "failed"
     assert "circuit" in str(third["indicators"][HY_OAS]["error"]).lower()
     assert fred_calls == []
 
