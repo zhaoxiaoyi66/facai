@@ -65,6 +65,11 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         raw.get("pre_trade_target_sell_price"),
     )
     holding_days = _first_number(snapshot.get("holding_days_reference"), snapshot.get("holding_days"), trade.get("holding_days"))
+    sell_context_type = _sell_context_type(trade, raw, snapshot)
+    fundamental_change = bool(sell_context_type == "fundamental_change" or _fundamental_change_types(trade, raw, snapshot))
+    valuation_compression = bool(sell_context_type == "valuation_compression")
+    liquidity_shock = bool(sell_context_type == "liquidity_shock")
+    planned_reduction = bool(sell_context_type == "planned_reduction")
 
     below_target = bool(
         sell_price is not None
@@ -125,6 +130,11 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         "a_class_short_hold": a_short_hold,
         "a_class_missing_reentry": missing_reentry,
         "emotional_sell": emotional,
+        "sell_context_type": sell_context_type,
+        "fundamental_change_sell": fundamental_change,
+        "valuation_compression_sell": valuation_compression,
+        "liquidity_shock_sell": liquidity_shock,
+        "planned_reduction_sell": planned_reduction,
         "full_exit_without_review": full_exit_without_review,
         "suspected_sell_fly": suspected,
         "data_missing_fields": missing_fields,
@@ -177,6 +187,11 @@ def _empty_review() -> dict[str, Any]:
         "a_class_short_hold": False,
         "a_class_missing_reentry": False,
         "emotional_sell": False,
+        "sell_context_type": "",
+        "fundamental_change_sell": False,
+        "valuation_compression_sell": False,
+        "liquidity_shock_sell": False,
+        "planned_reduction_sell": False,
         "full_exit_without_review": False,
         "suspected_sell_fly": False,
         "data_missing_fields": [],
@@ -229,6 +244,10 @@ def _zone_bounds(value: object) -> tuple[float | None, float | None]:
 
 def _is_emotional_sell(trade: dict[str, Any]) -> bool:
     raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    snapshot = _sell_context_snapshot(trade) or _sell_context_snapshot(raw)
+    context_type = _sell_context_type(trade, raw, snapshot)
+    if context_type == "emotional_sell":
+        return True
     reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
     mood = str(trade.get("sell_mood") or trade.get("decision_mood") or raw.get("decision_mood") or "").strip().lower()
     text = " ".join(
@@ -236,8 +255,11 @@ def _is_emotional_sell(trade: dict[str, Any]) -> bool:
         for item in (
             trade.get("sell_reason"),
             trade.get("notes"),
+            trade.get("sell_thesis_note"),
             raw.get("notes"),
             raw.get("sell_reason"),
+            raw.get("sell_thesis_note"),
+            snapshot.get("sell_thesis_note"),
         )
     )
     keywords = ("焦虑", "恐慌", "宏观恐慌", "害怕回撤", "复仇交易", "临时害怕")
@@ -246,6 +268,9 @@ def _is_emotional_sell(trade: dict[str, Any]) -> bool:
 
 def _is_plan_execution(trade: dict[str, Any]) -> bool:
     raw = trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {}
+    snapshot = _sell_context_snapshot(trade) or _sell_context_snapshot(raw)
+    if _sell_context_type(trade, raw, snapshot) == "planned_reduction":
+        return True
     mood = str(trade.get("sell_mood") or trade.get("decision_mood") or raw.get("decision_mood") or "").strip().lower()
     reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
     text = " ".join(str(item or "") for item in (trade.get("notes"), raw.get("notes"), trade.get("reentry_plan_text")))
@@ -273,6 +298,44 @@ def _has_meaningful_exit_review(trade: dict[str, Any]) -> bool:
         return True
     reason = str(trade.get("sell_reason_type") or raw.get("sell_reason_type") or "").strip().lower()
     return reason in {"target_price", "thesis_broken", "risk_control", "planned_exit"}
+
+
+def _sell_context_type(trade: dict[str, Any], raw: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None) -> str:
+    raw = raw or (trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {})
+    snapshot = snapshot or _sell_context_snapshot(trade) or _sell_context_snapshot(raw)
+    return str(
+        trade.get("sell_context_type")
+        or raw.get("sell_context_type")
+        or snapshot.get("sell_context_type")
+        or ""
+    ).strip().lower()
+
+
+def _fundamental_change_types(
+    trade: dict[str, Any],
+    raw: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
+) -> list[str]:
+    raw = raw or (trade.get("raw_entry") if isinstance(trade.get("raw_entry"), dict) else {})
+    snapshot = snapshot or _sell_context_snapshot(trade) or _sell_context_snapshot(raw)
+    value = (
+        trade.get("fundamental_change_types")
+        or trade.get("fundamental_change_type")
+        or raw.get("fundamental_change_types")
+        or raw.get("fundamental_change_type")
+        or snapshot.get("fundamental_change_type")
+        or snapshot.get("fundamental_change_types")
+    )
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = [value] if value.strip() else []
+    elif isinstance(value, (list, tuple, set)):
+        parsed = list(value)
+    else:
+        parsed = []
+    return [str(item) for item in parsed if str(item).strip()]
 
 
 def _is_event_exit_reason(trade: dict[str, Any]) -> bool:

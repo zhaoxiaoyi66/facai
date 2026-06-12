@@ -569,6 +569,32 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["requires_reentry_plan"], 1)
             self.assertTrue(saved["reminder_text"])
 
+    def test_trade_journal_sell_saves_structured_sell_reason_fields(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "trim",
+                    "sellContextType": "fundamental_change",
+                    "fundamentalChangeType": ["revenue_growth_deterioration", "margin_deterioration"],
+                    "valuationCompressionReason": "risk premium up",
+                    "liquidityShockReason": "market panic",
+                    "positionRiskReason": "single name over target",
+                    "sellThesisNote": "growth path changed",
+                },
+            )
+
+            self.assertEqual(saved["sell_context_type"], "fundamental_change")
+            self.assertEqual(saved["fundamental_change_types"], ["revenue_growth_deterioration", "margin_deterioration"])
+            self.assertEqual(json.loads(saved["fundamental_change_type"]), saved["fundamental_change_types"])
+            self.assertEqual(saved["valuation_compression_reason"], "risk premium up")
+            self.assertEqual(saved["liquidity_shock_reason"], "market panic")
+            self.assertEqual(saved["position_risk_reason"], "single name over target")
+            self.assertEqual(saved["sell_thesis_note"], "growth path changed")
+
     def test_trade_journal_trim_saves_reentry_plan_requirement(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

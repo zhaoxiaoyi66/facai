@@ -80,9 +80,41 @@ def test_a_class_short_hold_and_missing_reentry_are_flagged() -> None:
 def test_emotional_sell_is_flagged_from_mood_and_reason_keywords() -> None:
     by_mood = evaluate_sell_review_flags({"action_type": "trim", "sell_price": 100, "decision_mood": "panic_sell"})
     by_text = evaluate_sell_review_flags({"action_type": "trim", "sell_price": 100, "notes": "宏观恐慌，害怕回撤"})
+    by_context = evaluate_sell_review_flags({"action_type": "trim", "sell_price": 100, "sell_context_type": "emotional_sell"})
 
     assert by_mood["emotional_sell"] is True
     assert by_text["emotional_sell"] is True
+    assert by_context["emotional_sell"] is True
+    assert by_context["suspected_sell_fly"] is True
+
+
+def test_structured_sell_context_fields_are_exposed_for_review() -> None:
+    review = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "sell_price": 100,
+            "sell_context_type": "fundamental_change",
+            "fundamental_change_type": ["revenue_growth_deterioration"],
+        }
+    )
+
+    assert review["sell_context_type"] == "fundamental_change"
+    assert review["fundamental_change_sell"] is True
+    assert review["valuation_compression_sell"] is False
+
+
+def test_planned_reduction_context_is_not_treated_as_emotional_sell() -> None:
+    review = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "sell_price": 100,
+            "sell_context_type": "planned_reduction",
+            "notes": "按计划减仓",
+        }
+    )
+
+    assert review["planned_reduction_sell"] is True
+    assert review["emotional_sell"] is False
 
 
 def test_full_exit_without_review_is_flagged() -> None:

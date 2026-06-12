@@ -97,6 +97,15 @@ def test_sell_form_keeps_signal_id_in_advanced_section_and_has_quantity_shortcut
     assert "trade_cols[3].text_input" not in source
 
 
+def test_sell_form_renders_structured_sell_reason_advisory() -> None:
+    source = inspect.getsource(trade_journal._render_structured_sell_reason_editor)
+
+    assert "卖出原因复盘" in source
+    assert "sellContextType" not in source
+    assert "这可能是在流动性最差时卖出核心资产" in source
+    assert "只用于复盘，不改变门禁" in source
+
+
 def test_edit_trade_entry_locks_symbol_and_action_type() -> None:
     source = inspect.getsource(trade_journal._render_editor)
 
@@ -397,6 +406,10 @@ def test_sell_context_snapshot_values_include_position_and_radar_context() -> No
             "preTradeTargetSellPrice": 260,
             "positionClass": "A",
             "sellReasonType": "target_price",
+            "sellContextType": "liquidity_shock",
+            "fundamentalChangeType": ["demand_path_change"],
+            "liquidityShockReason": "市场恐慌",
+            "sellThesisNote": "先降风险，等流动性恢复再回补",
             "reentryPlanText": "回踩买回",
         },
         position_row={"createdAt": "2026-06-01T09:30:00+08:00"},
@@ -424,6 +437,10 @@ def test_sell_context_snapshot_values_include_position_and_radar_context() -> No
     assert snapshot["zone_status"] == "IN_BUY_ZONE"
     assert snapshot["below_target_at_sell"] is True
     assert snapshot["in_or_below_buy_zone_at_sell"] is True
+    assert snapshot["sell_context_type"] == "liquidity_shock"
+    assert snapshot["fundamental_change_type"] == ["demand_path_change"]
+    assert snapshot["liquidity_shock_reason"] == "市场恐慌"
+    assert snapshot["sell_thesis_note"] == "先降风险，等流动性恢复再回补"
 
 
 def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
@@ -434,6 +451,10 @@ def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
                 "sell_price": 220,
                 "target_sell_price": 260,
                 "position_tier": "A",
+                "sell_context_type": "valuation_compression",
+                "fundamental_change_type": ["margin_deterioration"],
+                "valuation_compression_reason": "风险溢价上升",
+                "sell_thesis_note": "估值压缩但主线未破坏，等回补",
                 "buy_zone": {"lower": 200, "upper": 230},
                 "zone_status": "IN_BUY_ZONE",
                 "holding_days_reference": 3,
@@ -446,3 +467,7 @@ def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
     assert "卖出时目标价" in html
     assert "卖出时买区" in html
     assert "卖出时区间状态" in html
+    assert "卖出原因类型" in html
+    assert "估值压缩 / 风险溢价上升" in html
+    assert "利润率恶化" in html
+    assert "估值压缩但主线未破坏" in html

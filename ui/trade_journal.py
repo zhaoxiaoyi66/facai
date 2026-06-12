@@ -90,6 +90,26 @@ SELL_REASON_OPTIONS = {
     "风险控制": "risk_control",
     "投资假设破裂": "thesis_broken",
 }
+SELL_CONTEXT_TYPE_OPTIONS = {
+    "请选择": "",
+    "估值压缩 / 风险溢价上升": "valuation_compression",
+    "流动性冲击 / 市场恐慌": "liquidity_shock",
+    "基本面改写": "fundamental_change",
+    "仓位超限": "position_risk",
+    "计划内减仓": "planned_reduction",
+    "情绪性卖出": "emotional_sell",
+}
+SELL_CONTEXT_TYPE_LABELS = {value: label for label, value in SELL_CONTEXT_TYPE_OPTIONS.items()}
+FUNDAMENTAL_CHANGE_OPTIONS = {
+    "收入增速恶化": "revenue_growth_deterioration",
+    "利润率恶化": "margin_deterioration",
+    "需求路径变化": "demand_path_change",
+    "融资条件变化": "financing_condition_change",
+    "监管环境变化": "regulatory_change",
+    "竞争格局变化": "competitive_landscape_change",
+    "管理层执行问题": "management_execution_issue",
+}
+FUNDAMENTAL_CHANGE_LABELS = {value: label for label, value in FUNDAMENTAL_CHANGE_OPTIONS.items()}
 DECISION_MOOD_OPTIONS = {
     "请选择": "",
     "深思熟虑": "well_reasoned",
@@ -644,6 +664,12 @@ def _sell_context_snapshot_values(
         "sell_price": sell_price,
         "sell_pct": sell_pct,
         "sell_reason": entry_values.get("sellReasonType"),
+        "sell_context_type": entry_values.get("sellContextType"),
+        "fundamental_change_type": entry_values.get("fundamentalChangeType") or [],
+        "valuation_compression_reason": entry_values.get("valuationCompressionReason"),
+        "liquidity_shock_reason": entry_values.get("liquidityShockReason"),
+        "position_risk_reason": entry_values.get("positionRiskReason"),
+        "sell_thesis_note": entry_values.get("sellThesisNote"),
         "mood": entry_values.get("decision_mood"),
         "replenishment_plan": entry_values.get("reentryPlanText"),
         "created_at": entry_values.get("created_at"),
@@ -947,6 +973,11 @@ def _render_trading_discipline_check(
         st.caption("股票分类默认来自股票纪律档案；本次卖出/减仓仍可临时覆盖。")
     else:
         st.caption("未设置分类：本次不会按 A 类核心仓纪律检查，建议先补股票纪律档案。")
+    _render_structured_sell_reason_editor(
+        position_class=position_class,
+        editing_entry=editing_entry,
+        key_suffix=key_suffix,
+    )
 
     gate_result = evaluate_trading_discipline(
         symbol=symbol,
@@ -1005,6 +1036,87 @@ def _render_trading_discipline_check(
     )
     _render_discipline_gate_explanation(result, discipline_context)
     return result
+
+
+def _render_structured_sell_reason_editor(
+    *,
+    position_class: str,
+    editing_entry: dict | None = None,
+    key_suffix: str = "new",
+) -> None:
+    st.markdown('<div class="trade-discipline-title">卖出原因复盘</div>', unsafe_allow_html=True)
+    context_default = _sell_context_type_label_for_entry(editing_entry)
+    context_label = st.selectbox(
+        "卖出原因类型",
+        list(SELL_CONTEXT_TYPE_OPTIONS),
+        index=list(SELL_CONTEXT_TYPE_OPTIONS).index(context_default),
+        key=f"trade-sell-context-type-{key_suffix}",
+        help="只用于记录和复盘，不改变卖出门禁和组合持仓同步。",
+    )
+    context_type = SELL_CONTEXT_TYPE_OPTIONS.get(context_label, "")
+    if context_type == "fundamental_change":
+        selected_changes = st.multiselect(
+            "基本面改写类型",
+            list(FUNDAMENTAL_CHANGE_OPTIONS),
+            default=_fundamental_change_labels_for_entry(editing_entry),
+            key=f"trade-fundamental-change-type-{key_suffix}",
+        )
+        if not selected_changes:
+            st.warning("选择“基本面改写”时，请至少选择一项具体改写类型；本提示只用于复盘，不改变门禁。")
+    reason_cols = st.columns([1, 1, 1])
+    reason_cols[0].text_area(
+        "估值压缩 / 风险溢价原因",
+        value=_entry_value(editing_entry, "valuation_compression_reason"),
+        height=62,
+        key=f"trade-valuation-compression-reason-{key_suffix}",
+        placeholder="例如：无风险利率上行、风险溢价抬升、估值倍数回归。",
+    )
+    reason_cols[1].text_area(
+        "流动性冲击 / 市场恐慌原因",
+        value=_entry_value(editing_entry, "liquidity_shock_reason"),
+        height=62,
+        key=f"trade-liquidity-shock-reason-{key_suffix}",
+        placeholder="例如：市场恐慌、ETF 抛压、信用收缩、流动性踩踏。",
+    )
+    reason_cols[2].text_area(
+        "仓位风险原因",
+        value=_entry_value(editing_entry, "position_risk_reason"),
+        height=62,
+        key=f"trade-position-risk-reason-{key_suffix}",
+        placeholder="例如：单票超限、C 类过高、组合集中度过高。",
+    )
+    st.text_area(
+        "卖出 thesis / 复盘说明",
+        value=_entry_value(editing_entry, "sell_thesis_note"),
+        height=74,
+        key=f"trade-sell-thesis-note-{key_suffix}",
+        placeholder="这次卖出是理性调整，还是恐慌砍核心仓？请写清判断依据和回补条件。",
+    )
+    if str(position_class or "").upper() == "A" and context_type in {"valuation_compression", "liquidity_shock"}:
+        st.warning("这可能是在流动性最差时卖出核心资产。请确认是否有回补计划。")
+    if context_type == "emotional_sell":
+        st.warning("你已标记为情绪性卖出。Sell Review 会保留该复盘标签，但不会改变本次卖出门禁。")
+
+
+def _sell_context_type_label_for_entry(entry: dict | None) -> str:
+    value = str((entry or {}).get("sell_context_type") or "").strip()
+    return SELL_CONTEXT_TYPE_LABELS.get(value, "请选择")
+
+
+def _fundamental_change_labels_for_entry(entry: dict | None) -> list[str]:
+    raw = (entry or {}).get("fundamental_change_types")
+    if raw is None:
+        raw = (entry or {}).get("fundamental_change_type")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [raw] if raw.strip() else []
+    elif isinstance(raw, (list, tuple, set)):
+        parsed = list(raw)
+    else:
+        parsed = []
+    return [FUNDAMENTAL_CHANGE_LABELS.get(str(item), str(item)) for item in parsed if str(item).strip()]
 
 
 def _discipline_gate_context(
@@ -1542,6 +1654,24 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
         "belowTargetSellPrice": bool(st.session_state.get(f"trade-discipline-below-target-{key_suffix}")),
         "inBuyZoneOrBelow": bool(st.session_state.get(f"trade-discipline-in-buy-zone-or-below-{key_suffix}")),
         **reentry_values,
+        **_structured_sell_reason_form_values(key_suffix),
+    }
+
+
+def _structured_sell_reason_form_values(key_suffix: str = "new") -> dict:
+    context_label = st.session_state.get(f"trade-sell-context-type-{key_suffix}")
+    fundamental_labels = st.session_state.get(f"trade-fundamental-change-type-{key_suffix}") or []
+    return {
+        "sellContextType": SELL_CONTEXT_TYPE_OPTIONS.get(str(context_label or ""), str(context_label or "")),
+        "fundamentalChangeType": [
+            FUNDAMENTAL_CHANGE_OPTIONS.get(str(label), str(label))
+            for label in fundamental_labels
+            if str(label).strip()
+        ],
+        "valuationCompressionReason": st.session_state.get(f"trade-valuation-compression-reason-{key_suffix}") or "",
+        "liquidityShockReason": st.session_state.get(f"trade-liquidity-shock-reason-{key_suffix}") or "",
+        "positionRiskReason": st.session_state.get(f"trade-position-risk-reason-{key_suffix}") or "",
+        "sellThesisNote": st.session_state.get(f"trade-sell-thesis-note-{key_suffix}") or "",
     }
 
 
@@ -2768,6 +2898,13 @@ def _entry_sell_review_html(entry: dict) -> str:
     snapshot = _entry_sell_context_snapshot(entry)
     rows = [
         ("卖出复盘标签", format_sell_review_label(review)),
+        ("卖出原因类型", _sell_context_type_text(_structured_sell_context_type(entry, snapshot))),
+        ("是否基本面改写", _yes_no(_structured_sell_context_type(entry, snapshot) == "fundamental_change")),
+        ("基本面改写类型", _fundamental_change_text(entry, snapshot)),
+        ("是否估值压缩", _yes_no(_structured_sell_context_type(entry, snapshot) == "valuation_compression")),
+        ("是否流动性冲击", _yes_no(_structured_sell_context_type(entry, snapshot) == "liquidity_shock")),
+        ("是否计划内减仓", _yes_no(_structured_sell_context_type(entry, snapshot) == "planned_reduction")),
+        ("是否情绪性卖出", _yes_no(review.get("emotional_sell") or _structured_sell_context_type(entry, snapshot) == "emotional_sell")),
         ("低于目标价", _yes_no(review.get("below_target_sell"))),
         ("买区内/低于买区", _yes_no(review.get("sell_in_buy_zone"))),
         ("A类短持", _yes_no(review.get("a_class_short_hold"))),
@@ -2791,8 +2928,58 @@ def _entry_sell_review_html(entry: dict) -> str:
         '<div class="trade-entry-reentry-plan">'
         '<b>卖出复盘</b>'
         f"{_detail_grid_html(rows)}"
+        f"{_structured_sell_note_html(entry, snapshot)}"
         "</div>"
     )
+
+
+def _structured_sell_context_type(entry: dict, snapshot: dict | None = None) -> str:
+    snapshot = snapshot or {}
+    return str(entry.get("sell_context_type") or snapshot.get("sell_context_type") or "").strip()
+
+
+def _sell_context_type_text(value: object) -> str:
+    return SELL_CONTEXT_TYPE_LABELS.get(str(value or "").strip(), "未记录")
+
+
+def _fundamental_change_text(entry: dict, snapshot: dict | None = None) -> str:
+    values = _structured_fundamental_change_values(entry, snapshot)
+    labels = [FUNDAMENTAL_CHANGE_LABELS.get(str(item), str(item)) for item in values if str(item).strip()]
+    return "、".join(labels) if labels else "未记录"
+
+
+def _structured_fundamental_change_values(entry: dict, snapshot: dict | None = None) -> list[str]:
+    snapshot = snapshot or {}
+    raw = (
+        entry.get("fundamental_change_types")
+        or entry.get("fundamental_change_type")
+        or snapshot.get("fundamental_change_type")
+        or snapshot.get("fundamental_change_types")
+    )
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [raw] if raw.strip() else []
+    elif isinstance(raw, (list, tuple, set)):
+        parsed = list(raw)
+    else:
+        parsed = []
+    return [str(item) for item in parsed if str(item).strip()]
+
+
+def _structured_sell_note_html(entry: dict, snapshot: dict | None = None) -> str:
+    snapshot = snapshot or {}
+    notes = [
+        ("估值压缩说明", entry.get("valuation_compression_reason") or snapshot.get("valuation_compression_reason")),
+        ("流动性冲击说明", entry.get("liquidity_shock_reason") or snapshot.get("liquidity_shock_reason")),
+        ("仓位风险说明", entry.get("position_risk_reason") or snapshot.get("position_risk_reason")),
+        ("卖出 thesis", entry.get("sell_thesis_note") or snapshot.get("sell_thesis_note")),
+    ]
+    rows = [(label, _text(value)) for label, value in notes if _entry_text_value(value)]
+    if not rows:
+        return ""
+    return _detail_grid_html(rows)
 
 
 def _entry_sell_context_snapshot(entry: dict) -> dict:

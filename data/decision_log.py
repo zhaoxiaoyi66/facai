@@ -49,6 +49,12 @@ TRADE_DISCIPLINE_COLUMNS = {
     "planned_sell_pct": "REAL",
     "actual_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
+    "sell_context_type": "TEXT",
+    "fundamental_change_type": "TEXT",
+    "valuation_compression_reason": "TEXT",
+    "liquidity_shock_reason": "TEXT",
+    "position_risk_reason": "TEXT",
+    "sell_thesis_note": "TEXT",
     "sell_level": "TEXT",
     "thesis_broken": "INTEGER",
     "position_over_limit": "INTEGER",
@@ -382,6 +388,12 @@ class TradeJournalStore:
                     planned_sell_pct,
                     actual_sell_pct,
                     sell_reason_type,
+                    sell_context_type,
+                    fundamental_change_type,
+                    valuation_compression_reason,
+                    liquidity_shock_reason,
+                    position_risk_reason,
+                    sell_thesis_note,
                     sell_level,
                     thesis_broken,
                     position_over_limit,
@@ -402,7 +414,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -424,6 +436,12 @@ class TradeJournalStore:
                     cleaned["planned_sell_pct"],
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
+                    cleaned["sell_context_type"],
+                    cleaned["fundamental_change_type"],
+                    cleaned["valuation_compression_reason"],
+                    cleaned["liquidity_shock_reason"],
+                    cleaned["position_risk_reason"],
+                    cleaned["sell_thesis_note"],
                     cleaned["sell_level"],
                     cleaned["thesis_broken"],
                     cleaned["position_over_limit"],
@@ -488,6 +506,12 @@ class TradeJournalStore:
                     planned_sell_pct = ?,
                     actual_sell_pct = ?,
                     sell_reason_type = ?,
+                    sell_context_type = ?,
+                    fundamental_change_type = ?,
+                    valuation_compression_reason = ?,
+                    liquidity_shock_reason = ?,
+                    position_risk_reason = ?,
+                    sell_thesis_note = ?,
                     sell_level = ?,
                     thesis_broken = ?,
                     position_over_limit = ?,
@@ -528,6 +552,12 @@ class TradeJournalStore:
                     cleaned["planned_sell_pct"],
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
+                    cleaned["sell_context_type"],
+                    cleaned["fundamental_change_type"],
+                    cleaned["valuation_compression_reason"],
+                    cleaned["liquidity_shock_reason"],
+                    cleaned["position_risk_reason"],
+                    cleaned["sell_thesis_note"],
                     cleaned["sell_level"],
                     cleaned["thesis_broken"],
                     cleaned["position_over_limit"],
@@ -1222,6 +1252,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     }
     cleaned.update(_clean_pre_trade_snapshot(values))
     cleaned.update(_clean_trade_discipline_snapshot(cleaned["symbol"], action_type, values))
+    cleaned.update(_clean_structured_sell_reason(action_type, values))
     cleaned.update(_clean_radar_gate_snapshot(action_type, values))
     cleaned.update(_clean_buy_plan_snapshot(action_type, values))
     cleaned.update(_clean_starter_snapshot(action_type, values))
@@ -1264,6 +1295,30 @@ def _clean_pre_trade_snapshot(values: dict) -> dict:
 
 def _clean_trade_discipline_snapshot(symbol: str, action_type: str, values: dict) -> dict:
     return build_trade_safety_snapshot(symbol, action_type, values)
+
+
+def _clean_structured_sell_reason(action_type: str, values: dict) -> dict:
+    if action_type not in {"sell", "trim"}:
+        return {
+            "sell_context_type": None,
+            "fundamental_change_type": None,
+            "valuation_compression_reason": None,
+            "liquidity_shock_reason": None,
+            "position_risk_reason": None,
+            "sell_thesis_note": None,
+        }
+    return {
+        "sell_context_type": _clean_optional_text(_value(values, "sellContextType", "sell_context_type")),
+        "fundamental_change_type": _reasons_json(
+            _value(values, "fundamentalChangeType", "fundamental_change_type", "fundamental_change_types")
+        ),
+        "valuation_compression_reason": _clean_optional_text(
+            _value(values, "valuationCompressionReason", "valuation_compression_reason")
+        ),
+        "liquidity_shock_reason": _clean_optional_text(_value(values, "liquidityShockReason", "liquidity_shock_reason")),
+        "position_risk_reason": _clean_optional_text(_value(values, "positionRiskReason", "position_risk_reason")),
+        "sell_thesis_note": _clean_optional_text(_value(values, "sellThesisNote", "sell_thesis_note")),
+    }
 
 
 def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
@@ -1978,6 +2033,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["radar_block_reasons"] = _load_json_list(item["radar_block_reasons_json"])
     if "sell_context_snapshot_json" in item:
         item["sell_context_snapshot"] = _load_json_dict(item["sell_context_snapshot_json"])
+    if "fundamental_change_type" in item:
+        item["fundamental_change_types"] = _load_json_list(item["fundamental_change_type"])
     if "structure_reasons_json" in item:
         item["structure_reasons"] = _load_json_list(item["structure_reasons_json"])
     if "structure_warnings_json" in item:
