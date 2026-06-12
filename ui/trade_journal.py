@@ -216,18 +216,27 @@ def render() -> None:
     if toolbar_cols[1].button("新增记录", key="trade-journal-open", width="stretch"):
         _clear_trade_edit_query()
         st.session_state["trade_journal_editor_open"] = True
-    _render_editor(store)
-
     symbols = store.list_symbols()
     entries = _load_entries(store, symbols)
-    _render_summary(entries)
-    _render_trade_performance_stats(store, symbols)
-    _render_unsynced_trade_sync_panel(entries)
-    _render_entry_delete_confirmation(store)
-    _render_entry_detail(store)
-    _render_entries(symbols, entries)
-    _render_sell_fly_review()
-    _render_signal_replay(decision_store, outcome_store, error_tag_store)
+    sync_groups = _trade_sync_item_groups(entries)
+    performance_summary = _load_trade_performance_summary(store)
+    _render_summary(entries, performance_summary, pending_count=len(sync_groups["actionable"]))
+
+    sell_tab, entries_tab, stats_tab, pending_tab = st.tabs(["卖出 / 减仓", "交易流水", "战绩统计", "待处理"])
+    with sell_tab:
+        _render_editor(store)
+    with entries_tab:
+        _render_entry_delete_confirmation(store)
+        _render_entry_detail(store)
+        _render_entries(symbols, entries)
+    with stats_tab:
+        _render_trade_performance_stats(store, symbols)
+        with st.expander("卖飞复盘", expanded=False):
+            _render_sell_fly_review()
+        with st.expander("系统信号复盘", expanded=False):
+            _render_signal_replay(decision_store, outcome_store, error_tag_store)
+    with pending_tab:
+        _render_unsynced_trade_sync_panel(sync_groups)
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -2049,15 +2058,22 @@ def _load_entries(store: TradeJournalStore, symbols: list[str]) -> list[dict]:
     return store.list_entries(selected)
 
 
-def _render_summary(entries: list[dict]) -> None:
-    skip_count = sum(1 for entry in entries if entry.get("action_type") == "skip")
-    stock_count = len({str(entry.get("symbol") or "") for entry in entries if entry.get("symbol")})
-    latest = entries[0].get("trade_date") if entries else None
+def _load_trade_performance_summary(store: TradeJournalStore) -> dict:
+    try:
+        result = summarize_trade_performance(path=store.path, filters={})
+    except Exception:  # pragma: no cover - summary strip should not block journal rendering
+        return {}
+    return result.get("summary") or {}
+
+
+def _render_summary(entries: list[dict], performance_summary: dict | None = None, *, pending_count: int = 0) -> None:
+    summary = performance_summary or {}
     items = [
-        ("记录数", str(len(entries)), "ENTRIES"),
-        ("覆盖股票", str(stock_count), "SYMBOLS"),
-        ("放弃操作", str(skip_count), "SKIPPED"),
-        ("最近日期", str(latest or BLANK_TEXT), "LATEST"),
+        ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "真实盈亏"),
+        ("胜率", _percent_or_dash(summary.get("win_rate")), "已完成卖出"),
+        ("平均持仓天数", _days_text(summary.get("average_holding_days")), "FIFO 统计"),
+        ("疑似卖飞次数", str(summary.get("suspected_sell_fly_count") or 0), "复盘提示"),
+        ("待处理事项", str(pending_count), "可同步记录"),
     ]
     html = "".join(
         (
@@ -2073,7 +2089,7 @@ def _render_summary(entries: list[dict]) -> None:
 
 
 def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]) -> None:
-    with st.expander("战绩统计", expanded=True):
+    with st.expander("完整战绩统计", expanded=False):
         st.caption("只统计已同步到组合持仓的真实 buy/add/sell/trim；blocked 和仅观察记录不计入已实现盈亏。")
         filters = _trade_performance_filters(symbols)
         try:
@@ -2165,6 +2181,7 @@ def _render_trade_performance_table(rows: list[dict]) -> None:
         "等级",
         "卖出原因",
         "状态",
+        "详情",
     ]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body = "".join(_trade_performance_row_html(row) for row in rows[:80])
@@ -2188,6 +2205,12 @@ def _trade_performance_row_html(row: dict) -> str:
     tone = "gain" if pnl is not None and pnl >= 0 else "loss"
     status_html = _performance_status_badges(row)
     detail_html = _trade_performance_detail_html(row)
+    detail_toggle = (
+        '<details class="trade-row-detail-toggle">'
+        '<summary>查看详情</summary>'
+        f"{detail_html}"
+        "</details>"
+    )
     return (
         "<tr>"
         f"<td>{escape(_text(row.get('sell_date')))}</td>"
@@ -2200,8 +2223,8 @@ def _trade_performance_row_html(row: dict) -> str:
         f"<td>{escape(_position_tier_text(row.get('position_tier')))}</td>"
         f"<td>{escape(_sell_reason_text(row.get('sell_reason_type')))}</td>"
         f'<td class="performance-status">{status_html}</td>'
+        f"<td>{detail_toggle}</td>"
         "</tr>"
-        f'<tr class="performance-detail-row"><td colspan="10">{detail_html}</td></tr>'
     )
 
 
@@ -2490,22 +2513,32 @@ def _days_text(value: object) -> str:
     return f"{number:g} 天"
 
 
-def _render_unsynced_trade_sync_panel(entries: list[dict]) -> None:
-    items = _unsynced_trade_sync_items(entries)
-    if not items:
-        return
+def _render_unsynced_trade_sync_panel(groups_or_entries: dict[str, list[dict]] | list[dict]) -> None:
+    groups = groups_or_entries if isinstance(groups_or_entries, dict) else _trade_sync_item_groups(groups_or_entries)
+    items = list(groups.get("actionable") or [])
+    archived_items = list(groups.get("archived") or [])
 
     st.markdown(
         (
             '<section class="trade-unsynced-sync-panel">'
             '<div class="trade-unsynced-sync-head">'
-            "<strong>未同步交易处理</strong>"
-            f"<span>{len(items)} 条交易尚未进入组合持仓，逐条确认后同步；硬性拦截交易不会同步。</span>"
+            "<strong>待处理同步</strong>"
+            f"<span>{len(items)} 条真正可同步记录；拦截、仅观察和缺条件记录已移入折叠区。</span>"
             "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
     )
+    if not items:
+        st.info("暂无真正需要处理的同步记录。")
+    else:
+        _render_sync_item_rows(items)
+    if archived_items:
+        with st.expander(f"已记录 / 被拦截 / 仅观察记录（{len(archived_items)}）", expanded=False):
+            _render_sync_item_rows(archived_items, archived=True)
+
+
+def _render_sync_item_rows(items: list[dict], *, archived: bool = False) -> None:
     for item in items[:8]:
         entry = item["entry"]
         preview = item["preview"]
@@ -2516,39 +2549,50 @@ def _render_unsynced_trade_sync_panel(entries: list[dict]) -> None:
         cols[3].markdown(f"同步后 {escape(_quantity_text(preview.get('afterQuantity')))} 股")
         cols[4].caption(item["reason"])
         if cols[5].button(
-            "同步",
-            key=f"trade-unsynced-sync-{int(entry.get('id') or 0)}",
+            "已记录" if archived else "同步",
+            key=f"trade-unsynced-sync-{int(entry.get('id') or 0)}{'-archived' if archived else ''}",
             disabled=not item["canSync"],
             width="stretch",
         ):
             _apply_unsynced_trade_sync(entry)
     if len(items) > 8:
-        st.caption(f"还有 {len(items) - 8} 条未同步交易，可按股票筛选后逐条处理。")
+        st.caption(f"还有 {len(items) - 8} 条记录，可按股票筛选后查看。")
 
 
 def _unsynced_trade_sync_items(entries: list[dict]) -> list[dict]:
+    return _trade_sync_item_groups(entries)["actionable"]
+
+
+def _trade_sync_item_groups(entries: list[dict]) -> dict[str, list[dict]]:
     items: list[dict] = []
+    archived: list[dict] = []
+    seen_entry_ids: set[int] = set()
     for entry in entries:
         if str(entry.get("action_type") or "").strip().lower() not in POSITION_AFFECTING_ACTIONS:
             continue
         entry_id = int(entry.get("id") or 0)
         if entry_id <= 0:
             continue
+        if entry_id in seen_entry_ids:
+            continue
+        seen_entry_ids.add(entry_id)
         preview = preview_trade_portfolio_effect(entry_id)
         if str(preview.get("syncStatus") or "") == "synced" or str(preview.get("status") or "") == "already_synced":
             continue
         policy = trade_sync_policy(entry)
         preview_ready = str(preview.get("status") or "") == "ready"
         can_sync = bool(policy.get("canSync")) and preview_ready
-        items.append(
-            {
-                "entry": entry,
-                "preview": preview,
-                "canSync": can_sync,
-                "reason": _unsynced_trade_sync_reason(policy, preview, can_sync),
-            }
-        )
-    return items
+        item = {
+            "entry": entry,
+            "preview": preview,
+            "canSync": can_sync,
+            "reason": _unsynced_trade_sync_reason(policy, preview, can_sync),
+        }
+        if can_sync:
+            items.append(item)
+        else:
+            archived.append(item)
+    return {"actionable": items, "archived": archived}
 
 
 def _unsynced_trade_sync_reason(policy: dict, preview: dict, can_sync: bool) -> str:
@@ -2603,7 +2647,7 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
         )
         return
 
-    headers = ["日期", "股票", "操作", "纪律", "数量 / 价格", "关联信号", "备注", "操作"]
+    headers = ["日期", "股票", "操作", "数量 / 价格", "盈亏", "持仓天数", "A/B/C", "卖出原因", "复盘标签", "状态", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     row_html = "".join(_entry_row_html(entry) for entry in entries)
     st.markdown(
@@ -2612,8 +2656,9 @@ def _render_entries(symbols: list[str], entries: list[dict]) -> None:
             '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
             '<table class="trade-journal-table trade-terminal-table">'
             "<colgroup>"
-            '<col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:9%">'
-            '<col style="width:12%"><col style="width:9%"><col style="width:auto"><col style="width:136px">'
+            '<col style="width:9%"><col style="width:7%"><col style="width:7%"><col style="width:10%">'
+            '<col style="width:8%"><col style="width:8%"><col style="width:7%"><col style="width:10%">'
+            '<col style="width:auto"><col style="width:8%"><col style="width:132px">'
             "</colgroup>"
             f"<thead><tr>{header_html}</tr></thead>"
             f"<tbody>{row_html}</tbody>"
@@ -3744,13 +3789,58 @@ def _entry_row_html(entry: dict) -> str:
         f"<td>{_cell_html(_text(entry.get('trade_date')), _created_text(entry))}</td>"
         f'<td class="symbol">{escape(_text(entry.get("symbol")))}</td>'
         f"<td>{_action_badge(entry)}</td>"
-        f"<td>{_discipline_snapshot_badge(entry)}</td>"
         f"<td>{_cell_html(_quantity_text(entry.get('quantity')), _money_text(entry.get('price')))}</td>"
-        f"<td>{escape(_snapshot_text(entry.get('decision_snapshot_id')))}</td>"
-        f'<td class="notes">{escape(_text(entry.get("notes")))}</td>'
+        f"<td>{escape(_entry_realized_pnl_text(entry))}</td>"
+        f"<td>{escape(_entry_holding_days_text(entry))}</td>"
+        f"<td>{escape(_entry_position_class_text(entry))}</td>"
+        f"<td>{escape(_entry_sell_reason_summary(entry))}</td>"
+        f'<td class="notes">{_entry_review_tags_html(entry)}</td>'
+        f"<td>{_discipline_snapshot_badge(entry)}</td>"
         f'<td class="trade-entry-actions"><span class="zhx-action-group trade-entry-action-group">{_entry_actions_html(entry)}</span></td>'
         "</tr>"
     )
+
+
+def _entry_realized_pnl_text(entry: dict) -> str:
+    for key in ("realized_pnl", "realizedPnl"):
+        if entry.get(key) is not None:
+            return _money_text(entry.get(key))
+    return BLANK_TEXT
+
+
+def _entry_holding_days_text(entry: dict) -> str:
+    snapshot = _entry_sell_context_snapshot(entry)
+    value = entry.get("holding_days") or snapshot.get("holding_days_reference")
+    return _days_text(value)
+
+
+def _entry_position_class_text(entry: dict) -> str:
+    snapshot = _entry_sell_context_snapshot(entry)
+    value = (
+        entry.get("position_class")
+        or entry.get("pre_trade_position_tier")
+        or snapshot.get("position_tier")
+        or snapshot.get("position_class")
+    )
+    return _position_tier_text(value)
+
+
+def _entry_sell_reason_summary(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").strip().lower()
+    if action not in SELL_DISCIPLINE_ACTIONS:
+        return BLANK_TEXT
+    return _sell_reason_text(entry.get("sell_reason_type"))
+
+
+def _entry_review_tags_html(entry: dict) -> str:
+    action = str(entry.get("action_type") or "").strip().lower()
+    if action not in SELL_DISCIPLINE_ACTIONS:
+        return '<span class="trade-muted-cell">—</span>'
+    review = evaluate_sell_review_flags(entry)
+    label = format_sell_review_label(review)
+    if not label or label == "无":
+        return '<span class="trade-muted-cell">无</span>'
+    return f'<span class="trade-review-compact">{escape(label)}</span>'
 
 
 def _entry_actions_html(entry: dict) -> str:
@@ -4945,6 +5035,51 @@ def _render_styles() -> None:
             color: #334155;
             font-weight: 700;
             overflow-wrap: anywhere;
+        }
+        .trade-row-detail-toggle {
+            min-width: 92px;
+        }
+        .trade-row-detail-toggle summary {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 24px;
+            padding: 0 0.5rem;
+            border: 1px solid rgba(15, 23, 42, 0.1);
+            border-radius: 999px;
+            background: #fff;
+            color: #334155;
+            font-size: 11px;
+            font-weight: 760;
+            cursor: pointer;
+            list-style: none;
+            white-space: nowrap;
+        }
+        .trade-row-detail-toggle summary::-webkit-details-marker {
+            display: none;
+        }
+        .trade-row-detail-toggle[open] {
+            min-width: 520px;
+        }
+        .trade-row-detail-toggle[open] summary {
+            margin-bottom: 0.42rem;
+            color: #0f172a;
+            background: #f8fafc;
+        }
+        .trade-review-compact {
+            display: inline-block;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+            color: #334155;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .trade-muted-cell {
+            color: #94a3b8;
+            font-size: 11px;
         }
         .sell-fly-muted {
             color: #94a3b8;

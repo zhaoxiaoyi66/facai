@@ -374,6 +374,86 @@ def test_trade_performance_row_shows_sell_review_labels() -> None:
     assert "低于买入目标价卖出" in html
 
 
+def test_trade_journal_top_summary_uses_core_metrics_only() -> None:
+    source = inspect.getsource(trade_journal._render_summary)
+
+    assert "已实现盈亏" in source
+    assert "胜率" in source
+    assert "平均持仓天数" in source
+    assert "疑似卖飞次数" in source
+    assert "待处理事项" in source
+    assert "ENTRIES" not in source
+    assert "SYMBOLS" not in source
+    assert "SKIPPED" not in source
+
+
+def test_trade_performance_stats_default_collapsed() -> None:
+    source = inspect.getsource(trade_journal._render_trade_performance_stats)
+
+    assert 'st.expander("完整战绩统计", expanded=False)' in source
+    assert 'st.expander("战绩统计", expanded=True)' not in source
+
+
+def test_trade_performance_row_keeps_details_collapsed_in_one_row() -> None:
+    html = trade_journal._trade_performance_row_html(
+        {
+            "sell_date": "2026-06-04",
+            "ticker": "NVDA",
+            "action_type": "trim",
+            "sell_quantity": 20,
+            "sell_price": 230,
+            "buy_avg_price": 215,
+            "realized_pnl": 300,
+            "realized_pnl_pct": 7,
+            "holding_days": 18,
+            "cost_basis_missing": False,
+            "cost_basis_source": "fifo",
+            "cost_basis_status": "matched_fifo",
+            "included_in_performance": True,
+            "position_tier": "A",
+            "sell_reason_type": "target_price",
+            "discipline_flags": ["核心仓卖出需复盘"],
+        }
+    )
+
+    assert '<details class="trade-row-detail-toggle">' in html
+    assert "<summary>查看详情</summary>" in html
+    assert "performance-detail-row" not in html
+    assert html.count("<tr>") == 1
+
+
+def test_unsynced_trade_groups_show_only_actionable_items_and_dedupe(monkeypatch) -> None:
+    entries = [
+        {"id": 1, "symbol": "AVGO", "action_type": "add"},
+        {"id": 1, "symbol": "AVGO", "action_type": "add"},
+        {"id": 2, "symbol": "AVGO", "action_type": "add", "radar_observation_only": 1},
+        {"id": 3, "symbol": "AVGO", "action_type": "sell"},
+        {"id": 4, "symbol": "AVGO", "action_type": "add"},
+    ]
+
+    def fake_preview(entry_id: int) -> dict:
+        return {
+            1: {"status": "ready", "afterQuantity": 11},
+            2: {"status": "ready", "afterQuantity": 12},
+            3: {"status": "failed", "error": "缺少当前持仓"},
+            4: {"status": "already_synced", "syncStatus": "synced"},
+        }[entry_id]
+
+    def fake_policy(entry: dict) -> dict:
+        if entry.get("radar_observation_only"):
+            return {"canSync": False, "reason": "仅观察记录，不同步组合。"}
+        return {"canSync": True, "reason": ""}
+
+    monkeypatch.setattr(trade_journal, "preview_trade_portfolio_effect", fake_preview)
+    monkeypatch.setattr(trade_journal, "trade_sync_policy", fake_policy)
+
+    groups = trade_journal._trade_sync_item_groups(entries)
+
+    assert [item["entry"]["id"] for item in groups["actionable"]] == [1]
+    assert [item["entry"]["id"] for item in groups["archived"]] == [2, 3]
+    assert [item["entry"]["id"] for item in trade_journal._unsynced_trade_sync_items(entries)] == [1]
+
+
 def test_trade_entry_detail_shows_sell_review_snapshot() -> None:
     html = trade_journal._entry_sell_review_html(
         {
