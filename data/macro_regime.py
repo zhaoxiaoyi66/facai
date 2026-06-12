@@ -1241,10 +1241,6 @@ def _fetch_cached_or_fear_greed_snapshot(
                 error=f"CNN Fear & Greed circuit open; last error: {last_error or 'unknown'}",
             )
         raise RuntimeError(f"CNN Fear & Greed circuit open, using proxy/cache; last error: {last_error or 'unknown'}")
-    if fear_greed_fetcher is None:
-        if cached is not None and _refresh_snapshot_value_usable(cached):
-            return _as_cached_fear_greed_snapshot(cached, now=now, error="CNN Fear & Greed front refresh skipped")
-        raise RuntimeError("CNN Fear & Greed front refresh skipped; use proxy/cache")
     try:
         snapshot = _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
     except Exception as exc:

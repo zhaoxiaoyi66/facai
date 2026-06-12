@@ -893,6 +893,48 @@ def test_fear_greed_graphdata_success_writes_cnn_cache_with_rating(tmp_path, mon
     assert loaded.rating == "fear"
 
 
+def test_refresh_macro_indicators_attempts_cnn_provider_without_injected_fetcher(tmp_path, monkeypatch) -> None:
+    from data.fear_greed_provider import FearGreedReading
+
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    calls: list[str] = []
+
+    def fake_cnn_provider(*, fetcher, url, timeout_seconds, now):
+        calls.append(url)
+        assert fetcher is None
+        assert timeout_seconds <= 5
+        return FearGreedReading(
+            value=34,
+            rating="fear",
+            observation_date="2026-06-10",
+            source="CNN Fear & Greed graphdata",
+            raw_payload="{}",
+        )
+
+    monkeypatch.setattr(macro_regime, "fetch_cnn_fear_greed", fake_cnn_provider)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 18.6],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert calls == [macro_regime.CNN_FEAR_GREED_URL]
+    assert result["indicators"][FEAR_GREED]["status"] == "success"
+    assert result["indicators"][FEAR_GREED]["value"] == 34
+    assert result["indicators"][FEAR_GREED]["source"] == "CNN Fear & Greed graphdata"
+
+
 def test_fear_greed_same_day_success_cache_skips_cnn_request(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -10,6 +11,8 @@ from urllib.request import Request, urlopen
 CNN_FEAR_GREED_GRAPH_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 CNN_FEAR_GREED_REFERER = "https://www.cnn.com/markets/fear-and-greed"
 CNN_FEAR_GREED_TIMEOUT_SECONDS = 4
+FEAR_GREED_PACKAGE_MODULES = ("fear_and_greed", "fearandgreed", "fear_and_greed_index")
+FEAR_GREED_PACKAGE_CALLS = ("get", "get_fear_and_greed", "get_fear_greed", "get_index", "get_latest")
 
 
 @dataclass(frozen=True)
@@ -24,23 +27,28 @@ class FearGreedReading:
 def fetch_cnn_fear_greed(
     *,
     fetcher: Any | None = None,
+    package_reader: Any | None = None,
     url: str = CNN_FEAR_GREED_GRAPH_URL,
     timeout_seconds: int = CNN_FEAR_GREED_TIMEOUT_SECONDS,
     now: datetime | None = None,
 ) -> FearGreedReading:
-    payload = fetcher(url) if fetcher else _read_cnn_graphdata(url, timeout_seconds=timeout_seconds)
-    parsed = _parse_json_payload(payload)
-    value = _extract_value(parsed)
-    if value is None:
-        raise RuntimeError("CNN Fear & Greed graphdata did not include a usable score")
-    current = _current_payload(parsed)
-    return FearGreedReading(
-        value=value,
-        rating=_extract_rating(parsed),
-        observation_date=_extract_observation_date(parsed, now=now or datetime.now(timezone.utc)),
-        source="CNN Fear & Greed graphdata",
-        raw_payload=_compact_payload(current or parsed),
-    )
+    errors: list[str] = []
+    current = now or datetime.now(timezone.utc)
+    try:
+        payload = fetcher(url) if fetcher else _read_cnn_graphdata(url, timeout_seconds=timeout_seconds)
+        return _reading_from_payload(
+            payload,
+            now=current,
+            source="CNN Fear & Greed graphdata",
+            missing_error="CNN Fear & Greed graphdata did not include a usable score",
+        )
+    except Exception as exc:
+        errors.append(f"graphdata: {_short_error(exc)}")
+    try:
+        return _read_optional_package(package_reader=package_reader, now=current)
+    except Exception as exc:
+        errors.append(f"package: {_short_error(exc)}")
+    raise RuntimeError("CNN Fear & Greed fetch failed; " + "; ".join(errors))
 
 
 def _read_cnn_graphdata(url: str, *, timeout_seconds: int) -> Any:
@@ -65,6 +73,54 @@ def _parse_json_payload(payload: Any) -> Any:
     if isinstance(payload, str):
         return json.loads(payload)
     return payload
+
+
+def _reading_from_payload(payload: Any, *, now: datetime, source: str, missing_error: str) -> FearGreedReading:
+    parsed = _parse_json_payload(payload)
+    value = _extract_value(parsed)
+    if value is None:
+        raise RuntimeError(missing_error)
+    current = _current_payload(parsed)
+    return FearGreedReading(
+        value=value,
+        rating=_extract_rating(parsed),
+        observation_date=_extract_observation_date(parsed, now=now),
+        source=source,
+        raw_payload=_compact_payload(current or parsed),
+    )
+
+
+def _read_optional_package(*, package_reader: Any | None, now: datetime) -> FearGreedReading:
+    if package_reader is not None:
+        payload = package_reader()
+        return _reading_from_payload(
+            payload,
+            now=now,
+            source="CNN Fear & Greed package",
+            missing_error="fear-and-greed package did not include a usable score",
+        )
+    errors: list[str] = []
+    for module_name in FEAR_GREED_PACKAGE_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:
+            errors.append(f"{module_name}: {_short_error(exc)}")
+            continue
+        for call_name in FEAR_GREED_PACKAGE_CALLS:
+            callable_obj = getattr(module, call_name, None)
+            if not callable(callable_obj):
+                continue
+            try:
+                payload = callable_obj()
+                return _reading_from_payload(
+                    payload,
+                    now=now,
+                    source=f"CNN Fear & Greed package ({module_name}.{call_name})",
+                    missing_error=f"{module_name}.{call_name} did not include a usable score",
+                )
+            except Exception as exc:
+                errors.append(f"{module_name}.{call_name}: {_short_error(exc)}")
+    raise RuntimeError("optional fear-and-greed package unavailable; " + "; ".join(errors))
 
 
 def _current_payload(payload: Any) -> dict[str, Any]:
@@ -98,11 +154,25 @@ def _extract_value(payload: Any) -> float | None:
                     value = _number(row.get("y") or row.get("value") or row.get("score"))
                     if value is not None:
                         return value
+    if not isinstance(payload, (str, bytes, dict)):
+        for attr in ("score", "value", "index", "fear_greed_index"):
+            value = _number(getattr(payload, attr, None))
+            if value is not None:
+                return value
+    if isinstance(payload, (list, tuple)) and payload:
+        for item in payload:
+            value = _number(item)
+            if value is not None:
+                return value
     return None
 
 
 def _extract_rating(payload: Any) -> str | None:
     if not isinstance(payload, dict):
+        for attr in ("rating", "status", "classification", "description"):
+            rating = getattr(payload, attr, None)
+            if rating not in (None, ""):
+                return str(rating)
         return None
     for candidate in (payload, _current_payload(payload)):
         rating = candidate.get("rating") or candidate.get("status") or candidate.get("classification")
@@ -123,6 +193,11 @@ def _extract_observation_date(payload: Any, *, now: datetime) -> str:
         if isinstance(historical, list) and historical:
             last = next((row for row in reversed(historical) if isinstance(row, dict)), {})
             timestamp = last.get("x") or last.get("timestamp") or last.get("date")
+    if timestamp in (None, "") and not isinstance(payload, (str, bytes, dict)):
+        for attr in ("timestamp", "as_of", "asOf", "date", "last_update", "lastUpdated"):
+            timestamp = getattr(payload, attr, None)
+            if timestamp not in (None, ""):
+                break
     return _timestamp_or_date_to_date(timestamp) or now.date().isoformat()
 
 
@@ -157,3 +232,8 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _short_error(exc: Exception) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    return text[:240]
