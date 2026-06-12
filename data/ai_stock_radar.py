@@ -87,6 +87,16 @@ class RadarReport:
     technical_pullback_zone_high: float | None
     technical_repair_zone_low: float | None
     technical_repair_zone_high: float | None
+    near_term_repair_zone_low: float | None
+    near_term_repair_zone_high: float | None
+    trend_reclaim_zone_low: float | None
+    trend_reclaim_zone_high: float | None
+    valuation_reference_zone_low: float | None
+    valuation_reference_zone_high: float | None
+    deep_support_zone_low: float | None
+    deep_support_zone_high: float | None
+    zone_semantic_label: str
+    primary_entry_interpretation: str
     support_watch_zone_low: float | None
     support_watch_zone_high: float | None
     confirmation_price: float | None
@@ -271,6 +281,16 @@ def build_ai_stock_radar_report(
         technical_pullback_zone_high=entry_display.get("technical_pullback_zone_high"),
         technical_repair_zone_low=entry_display.get("technical_repair_zone_low"),
         technical_repair_zone_high=entry_display.get("technical_repair_zone_high"),
+        near_term_repair_zone_low=entry_display.get("near_term_repair_zone_low"),
+        near_term_repair_zone_high=entry_display.get("near_term_repair_zone_high"),
+        trend_reclaim_zone_low=entry_display.get("trend_reclaim_zone_low"),
+        trend_reclaim_zone_high=entry_display.get("trend_reclaim_zone_high"),
+        valuation_reference_zone_low=entry_display.get("valuation_reference_zone_low"),
+        valuation_reference_zone_high=entry_display.get("valuation_reference_zone_high"),
+        deep_support_zone_low=entry_display.get("deep_support_zone_low"),
+        deep_support_zone_high=entry_display.get("deep_support_zone_high"),
+        zone_semantic_label=str(entry_display.get("zone_semantic_label") or ""),
+        primary_entry_interpretation=str(entry_display.get("primary_entry_interpretation") or ""),
         support_watch_zone_low=entry_display.get("support_watch_zone_low"),
         support_watch_zone_high=entry_display.get("support_watch_zone_high"),
         confirmation_price=entry_display.get("confirmation_price"),
@@ -776,6 +796,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "technical_pullback_zone_high": None,
         "technical_repair_zone_low": None,
         "technical_repair_zone_high": None,
+        "near_term_repair_zone_low": None,
+        "near_term_repair_zone_high": None,
+        "trend_reclaim_zone_low": None,
+        "trend_reclaim_zone_high": None,
+        "deep_support_zone_low": None,
+        "deep_support_zone_high": None,
         "support_watch_zone_low": None,
         "support_watch_zone_high": None,
         "confirmation_price": None,
@@ -813,8 +839,11 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         }
     assert price is not None and ema20 is not None and ema50 is not None and ema200 is not None
     buffer = _technical_zone_buffer(price, atr14)
-    repair_zone = _technical_observation_zone((ema20, ema50, ema200), buffer)
+    near_term_repair_zone = _near_term_repair_zone(price, ema20, ema50, recent_swing_low, atr14)
+    trend_reclaim_zone = _trend_reclaim_zone(price, ema100, ema200, recent_breakout_level, atr14)
+    repair_zone = near_term_repair_zone
     support_watch_zone = _technical_observation_zone((recent_swing_low,), buffer * 0.6)
+    deep_support_zone = support_watch_zone
     confirmation_price = _technical_confirmation_price(price, ema20, ema50, ema200, recent_swing_high)
     invalidation_price = _technical_invalidation_price(price, recent_swing_low, ema200, buffer)
     breakdown_evidence = _technical_breakdown_evidence(
@@ -838,6 +867,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "technical_structure_label": "破位复核",
             "technical_repair_zone_low": repair_zone[0],
             "technical_repair_zone_high": repair_zone[1],
+            "near_term_repair_zone_low": near_term_repair_zone[0],
+            "near_term_repair_zone_high": near_term_repair_zone[1],
+            "trend_reclaim_zone_low": trend_reclaim_zone[0],
+            "trend_reclaim_zone_high": trend_reclaim_zone[1],
+            "deep_support_zone_low": deep_support_zone[0],
+            "deep_support_zone_high": deep_support_zone[1],
             "support_watch_zone_low": support_watch_zone[0],
             "support_watch_zone_high": support_watch_zone[1],
             "confirmation_price": confirmation_price,
@@ -871,6 +906,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "technical_structure_label": label,
             "technical_repair_zone_low": repair_zone[0],
             "technical_repair_zone_high": repair_zone[1],
+            "near_term_repair_zone_low": near_term_repair_zone[0],
+            "near_term_repair_zone_high": near_term_repair_zone[1],
+            "trend_reclaim_zone_low": trend_reclaim_zone[0],
+            "trend_reclaim_zone_high": trend_reclaim_zone[1],
+            "deep_support_zone_low": deep_support_zone[0],
+            "deep_support_zone_high": deep_support_zone[1],
             "support_watch_zone_low": support_watch_zone[0],
             "support_watch_zone_high": support_watch_zone[1],
             "confirmation_price": confirmation_price,
@@ -897,6 +938,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "technical_structure_label": "弱趋势修复中",
             "technical_repair_zone_low": repair_zone[0],
             "technical_repair_zone_high": repair_zone[1],
+            "near_term_repair_zone_low": near_term_repair_zone[0],
+            "near_term_repair_zone_high": near_term_repair_zone[1],
+            "trend_reclaim_zone_low": trend_reclaim_zone[0],
+            "trend_reclaim_zone_high": trend_reclaim_zone[1],
+            "deep_support_zone_low": deep_support_zone[0],
+            "deep_support_zone_high": deep_support_zone[1],
             "support_watch_zone_low": support_watch_zone[0],
             "support_watch_zone_high": support_watch_zone[1],
             "confirmation_price": confirmation_price,
@@ -950,6 +997,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "technical_pullback_zone_high": pullback_high,
         "technical_repair_zone_low": repair_zone[0],
         "technical_repair_zone_high": repair_zone[1],
+        "near_term_repair_zone_low": near_term_repair_zone[0],
+        "near_term_repair_zone_high": near_term_repair_zone[1],
+        "trend_reclaim_zone_low": trend_reclaim_zone[0],
+        "trend_reclaim_zone_high": trend_reclaim_zone[1],
+        "deep_support_zone_low": deep_support_zone[0],
+        "deep_support_zone_high": deep_support_zone[1],
         "support_watch_zone_low": support_watch_zone[0],
         "support_watch_zone_high": support_watch_zone[1],
         "confirmation_price": confirmation_price,
@@ -976,6 +1029,53 @@ def _technical_observation_zone(values: tuple[float | None, ...], buffer: float)
     if not usable:
         return None, None
     return round(max(0.01, min(usable) - buffer), 2), round(max(usable) + buffer * 0.5, 2)
+
+
+def _near_term_repair_zone(
+    price: float,
+    ema20: float | None,
+    ema50: float | None,
+    recent_swing_low: float | None,
+    atr14: float | None,
+) -> tuple[float | None, float | None]:
+    candidates = [price]
+    candidates.extend(value for value in (ema20, ema50) if value is not None and value <= price * 1.12)
+    if recent_swing_low is not None and recent_swing_low >= price * 0.92:
+        candidates.append(recent_swing_low)
+    low_buffer = _near_repair_low_buffer(price, atr14)
+    high_buffer = _near_repair_high_buffer(price, atr14)
+    return round(max(0.01, min(candidates) - low_buffer), 2), round(max(candidates) + high_buffer, 2)
+
+
+def _trend_reclaim_zone(
+    price: float,
+    ema100: float | None,
+    ema200: float | None,
+    recent_breakout_level: float | None,
+    atr14: float | None,
+) -> tuple[float | None, float | None]:
+    anchor = ema200 or ema100 or recent_breakout_level
+    if anchor is None or anchor <= 0:
+        return None, None
+    lower_buffer = max(_value(atr14) * 1.2, price * 0.06)
+    upper_buffer = min(_value(atr14) * 0.3, price * 0.03)
+    low = max(0.01, anchor - lower_buffer)
+    high = anchor + upper_buffer
+    return round(low, 2), round(high, 2)
+
+
+def _near_repair_low_buffer(price: float, atr14: float | None) -> float:
+    atr = _number(atr14)
+    if atr is not None and atr > 0:
+        return min(price * 0.028, atr * 0.34)
+    return price * 0.02
+
+
+def _near_repair_high_buffer(price: float, atr14: float | None) -> float:
+    atr = _number(atr14)
+    if atr is not None and atr > 0:
+        return min(price * 0.006, atr * 0.08)
+    return price * 0.006
 
 
 def _technical_confirmation_price(

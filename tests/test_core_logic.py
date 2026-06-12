@@ -3020,7 +3020,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("当前结论", radar_card_source)
         self.assertIn("买区结构", radar_card_source)
         self.assertIn("技术回踩区", radar_card_source)
-        self.assertIn("深度估值区", radar_card_source)
+        self.assertIn("估值参考", radar_card_source)
         self.assertIn("追高禁区", radar_card_source)
         self.assertIn("有效技术复核区", radar_card_source)
         self.assertIn("缺失字段", radar_card_source)
@@ -3109,7 +3109,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("技术回踩区", missing_pullback_html)
         self.assertIn("暂缺", missing_pullback_html)
         self.assertIn("缺失原因：缺 EMA / ATR / swing low", missing_pullback_html)
-        self.assertIn("暂不提供近端技术参考", missing_pullback_html)
+        self.assertIn("暂不提供近端技术买点", missing_pullback_html)
 
         weak_trend_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
@@ -3147,6 +3147,43 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("$142.00", weak_trend_html)
         self.assertIn("失效线", weak_trend_html)
         self.assertIn("$132.00", weak_trend_html)
+
+        now_repair_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "估值可复核 $105.99 - $126.82",
+                    "entry_display_reason": "低于估值参考不等于结构破坏",
+                    "entry_action_hint": "技术待确认",
+                    "entry_context_status": "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED",
+                    "radar_buy_zone": {"lower": 105.99, "upper": 126.82},
+                    "radar_price_position": "BELOW_BUY_ZONE",
+                    "price": "$103.08",
+                    "technical_structure_status": "WEAK_TREND_REPAIR",
+                    "technical_structure_label": "弱趋势修复中",
+                    "near_term_repair_zone_low": 100.19,
+                    "near_term_repair_zone_high": 108.92,
+                    "trend_reclaim_zone_low": 120.24,
+                    "trend_reclaim_zone_high": 132.97,
+                    "deep_support_zone_low": 82.39,
+                    "deep_support_zone_high": 86.97,
+                    "confirmation_price": 105.28,
+                    "invalidation_price": 85.44,
+                    "zone_semantic_label": "估值参考区",
+                    "primary_entry_interpretation": "估值可复核，技术待确认",
+                    "next_technical_steps": ["收盘重新站回 EMA20 / EMA50 / EMA200。"],
+                    "valuation_deep_zone_label": "$105.99 - $126.82",
+                }
+            )
+        )
+        self.assertIn("当前状态：估值可复核", now_repair_html)
+        self.assertIn("近端修复观察区", now_repair_html)
+        self.assertIn("$100.19 - $108.92", now_repair_html)
+        self.assertIn("趋势确认区", now_repair_html)
+        self.assertIn("$120.24 - $132.97", now_repair_html)
+        self.assertIn("估值参考区", now_repair_html)
+        self.assertIn("估值可复核，技术待确认", now_repair_html)
+        self.assertIn("深度支撑区", now_repair_html)
+        self.assertIn("$82.39 - $86.97", now_repair_html)
 
         overlap_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(

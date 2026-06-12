@@ -466,8 +466,12 @@ def test_technical_entry_zone_needs_trend_confirmation() -> None:
     assert zone["source"] == "trend_review"
     assert zone["technical_structure_status"] == "WEAK_TREND_REPAIR"
     assert zone["technical_structure_label"] == "弱趋势修复中"
-    assert zone["technical_repair_zone_low"] == 81.8
-    assert zone["technical_repair_zone_high"] == 100.6
+    assert zone["technical_repair_zone_low"] == 77.32
+    assert zone["technical_repair_zone_high"] == 86.16
+    assert zone["near_term_repair_zone_low"] == 77.32
+    assert zone["near_term_repair_zone_high"] == 86.16
+    assert zone["trend_reclaim_zone_low"] == 95.2
+    assert zone["trend_reclaim_zone_high"] == 100.6
     assert zone["confirmation_price"] == 83
     assert zone["invalidation_price"] == 78
     assert "收盘重新站回 EMA20 / EMA50 / EMA200" in zone["next_technical_steps"][0]
@@ -491,8 +495,12 @@ def test_technical_structure_map_marks_ema50_below_ema200_as_repair() -> None:
     assert zone["low"] is None
     assert zone["high"] is None
     assert zone["technical_structure_status"] == "WEAK_TREND_REPAIR"
-    assert zone["technical_repair_zone_low"] == 94.2
-    assert zone["technical_repair_zone_high"] == 112.9
+    assert zone["technical_repair_zone_low"] == 94.98
+    assert zone["technical_repair_zone_high"] == 105.24
+    assert zone["near_term_repair_zone_low"] == 94.98
+    assert zone["near_term_repair_zone_high"] == 105.24
+    assert zone["trend_reclaim_zone_low"] == 105.7
+    assert zone["trend_reclaim_zone_high"] == 112.9
     assert zone["support_watch_zone_low"] == 98.92
     assert zone["support_watch_zone_high"] == 100.54
     assert "当前不是技术买点" in zone["reason"]
@@ -540,6 +548,10 @@ def test_technical_structure_map_marks_range_base_building() -> None:
     assert zone["high"] is None
     assert zone["technical_structure_status"] == "RANGE_BASE_BUILDING"
     assert zone["technical_structure_label"] == "区间筑底"
+    assert zone["near_term_repair_zone_low"] == 92.32
+    assert zone["near_term_repair_zone_high"] == 100.16
+    assert zone["trend_reclaim_zone_low"] == 99.0
+    assert zone["trend_reclaim_zone_high"] == 105.6
     assert zone["support_watch_zone_low"] == 92.28
     assert zone["support_watch_zone_high"] == 93.36
 
@@ -575,12 +587,45 @@ def test_pltr_like_weak_trend_gets_structure_map_not_only_missing_zone() -> None
         assert report.technical_entry_zone_high is None
         assert report.technical_structure_status == "WEAK_TREND_REPAIR"
         assert report.technical_structure_label == "弱趋势修复中"
-        assert report.technical_repair_zone_low == 131.4
-        assert report.technical_repair_zone_high == 151.8
+        assert report.technical_repair_zone_low == 129.96
+        assert report.technical_repair_zone_high == 142.48
+        assert report.near_term_repair_zone_low == 129.96
+        assert report.near_term_repair_zone_high == 142.48
+        assert report.trend_reclaim_zone_low == 141.72
+        assert report.trend_reclaim_zone_high == 151.8
         assert report.confirmation_price == 142
         assert report.invalidation_price == 132
         assert "不自动生成技术买点" in report.technical_structure_reason
         assert report.decision in {"WAIT", "ALLOW_BUY", "BLOCK_CHASE"}
+
+
+def test_now_like_weak_trend_splits_repair_and_trend_reclaim_zones() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 103.08,
+            "ema20": 108.29953636075712,
+            "ema50": 105.28233793989949,
+            "ema100": 112.58098700776137,
+            "ema200": 130.4251765733172,
+            "atr14": 8.485714285714284,
+            "recent_swing_low": 85.44,
+            "recent_breakout_level": 139.2,
+            "gain_20d_pct": 1.2,
+            "volume_trend": 0.12,
+        }
+    )
+
+    assert zone["technical_structure_status"] == "WEAK_TREND_REPAIR"
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["near_term_repair_zone_low"] == 100.19
+    assert zone["near_term_repair_zone_high"] == 108.92
+    assert zone["trend_reclaim_zone_low"] == 120.24
+    assert zone["trend_reclaim_zone_high"] == 132.97
+    assert zone["deep_support_zone_low"] == 82.39
+    assert zone["deep_support_zone_high"] == 86.97
+    assert zone["confirmation_price"] == 105.28
+    assert zone["invalidation_price"] == 85.44
 
 
 def test_technical_entry_zone_rejects_nan_inputs_with_missing_reason() -> None:

@@ -10,6 +10,7 @@ PRICE_POSITIONS = {
     "IN_CHASE_ZONE": "追高区",
     "BELOW_BUY_ZONE": "低于估值参考，待复核",
     "BELOW_VALUATION_REFERENCE": "低于估值参考，待复核",
+    "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED": "估值可复核，技术待确认",
     "BELOW_TECHNICAL_PULLBACK_ZONE": "跌破结构区，先复核",
     "ZONE_MISSING": "无法判断",
 }
@@ -99,6 +100,30 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         _value(source, "technical_repair_zone_high", "technicalRepairZoneHigh")
         or _value(technical_zone, "technical_repair_zone_high", "technicalRepairZoneHigh")
     )
+    near_term_repair_low = _number(
+        _value(source, "near_term_repair_zone_low", "nearTermRepairZoneLow")
+        or _value(technical_zone, "near_term_repair_zone_low", "nearTermRepairZoneLow")
+    )
+    near_term_repair_high = _number(
+        _value(source, "near_term_repair_zone_high", "nearTermRepairZoneHigh")
+        or _value(technical_zone, "near_term_repair_zone_high", "nearTermRepairZoneHigh")
+    )
+    trend_reclaim_low = _number(
+        _value(source, "trend_reclaim_zone_low", "trendReclaimZoneLow")
+        or _value(technical_zone, "trend_reclaim_zone_low", "trendReclaimZoneLow")
+    )
+    trend_reclaim_high = _number(
+        _value(source, "trend_reclaim_zone_high", "trendReclaimZoneHigh")
+        or _value(technical_zone, "trend_reclaim_zone_high", "trendReclaimZoneHigh")
+    )
+    deep_support_low = _number(
+        _value(source, "deep_support_zone_low", "deepSupportZoneLow")
+        or _value(technical_zone, "deep_support_zone_low", "deepSupportZoneLow")
+    )
+    deep_support_high = _number(
+        _value(source, "deep_support_zone_high", "deepSupportZoneHigh")
+        or _value(technical_zone, "deep_support_zone_high", "deepSupportZoneHigh")
+    )
     support_watch_low = _number(
         _value(source, "support_watch_zone_low", "supportWatchZoneLow")
         or _value(technical_zone, "support_watch_zone_low", "supportWatchZoneLow")
@@ -157,6 +182,16 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "technical_pullback_zone_high": technical_pullback_high,
         "technical_repair_zone_low": technical_repair_low,
         "technical_repair_zone_high": technical_repair_high,
+        "near_term_repair_zone_low": near_term_repair_low,
+        "near_term_repair_zone_high": near_term_repair_high,
+        "trend_reclaim_zone_low": trend_reclaim_low,
+        "trend_reclaim_zone_high": trend_reclaim_high,
+        "valuation_reference_zone_low": reference_low,
+        "valuation_reference_zone_high": reference_high,
+        "deep_support_zone_low": deep_support_low,
+        "deep_support_zone_high": deep_support_high,
+        "zone_semantic_label": _zone_semantic_label(current_price, reference_low, reference_high),
+        "primary_entry_interpretation": "",
         "support_watch_zone_low": support_watch_low,
         "support_watch_zone_high": support_watch_high,
         "confirmation_price": confirmation_price,
@@ -299,10 +334,17 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 return result
         result.update(
             {
-                "entry_display_label": f"低于估值参考 {zone_text}",
+                "entry_display_label": _below_reference_label(
+                    zone_text,
+                    technical_structure_status=technical_structure_status,
+                    current_price=current_price,
+                    reference_low=reference_low,
+                    reference_high=reference_high,
+                ),
                 "entry_display_reason": _below_valuation_reference_reason(distance_pct, technical_missing_reason),
-                "entry_action_hint": "待复核，等结构确认",
-                "entry_context_status": "BELOW_VALUATION_REFERENCE",
+                "entry_action_hint": _below_reference_hint(technical_structure_status),
+                "entry_context_status": _below_reference_context_status(technical_structure_status),
+                "primary_entry_interpretation": _below_reference_interpretation(technical_structure_status),
             }
         )
         return result
@@ -460,6 +502,74 @@ def _below_valuation_reference_reason(distance_pct: float | None, technical_miss
     else:
         parts.append("技术回踩区未确认")
     return "；".join(parts)
+
+
+def _zone_semantic_label(current_price: float | None, reference_low: float | None, reference_high: float | None) -> str:
+    price = _number(current_price)
+    low = _number(reference_low)
+    high = _number(reference_high)
+    if low is None or high is None:
+        return "估值参考区"
+    if price is None:
+        return "估值参考区"
+    if high <= price * 0.75:
+        return "深度估值区"
+    if low <= price * 1.08 or price <= high:
+        return "估值参考区"
+    return "估值复核区"
+
+
+def _below_reference_label(
+    zone_text: str,
+    *,
+    technical_structure_status: str,
+    current_price: float | None,
+    reference_low: float | None,
+    reference_high: float | None,
+) -> str:
+    if _below_reference_is_valuation_review(
+        technical_structure_status,
+        current_price=current_price,
+        reference_low=reference_low,
+        reference_high=reference_high,
+    ):
+        return f"估值可复核 {zone_text}"
+    return f"低于估值参考 {zone_text}"
+
+
+def _below_reference_hint(technical_structure_status: str) -> str:
+    if str(technical_structure_status or "").strip() == "WEAK_TREND_REPAIR":
+        return "技术待确认"
+    return "待复核，等结构确认"
+
+
+def _below_reference_context_status(technical_structure_status: str) -> str:
+    if str(technical_structure_status or "").strip() == "WEAK_TREND_REPAIR":
+        return "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED"
+    return "BELOW_VALUATION_REFERENCE"
+
+
+def _below_reference_interpretation(technical_structure_status: str) -> str:
+    if str(technical_structure_status or "").strip() == "WEAK_TREND_REPAIR":
+        return "估值可复核，技术待确认"
+    return "低于估值参考，等待结构确认"
+
+
+def _below_reference_is_valuation_review(
+    technical_structure_status: str,
+    *,
+    current_price: float | None,
+    reference_low: float | None,
+    reference_high: float | None,
+) -> bool:
+    if str(technical_structure_status or "").strip() != "WEAK_TREND_REPAIR":
+        return False
+    price = _number(current_price)
+    low = _number(reference_low)
+    high = _number(reference_high)
+    if price is None or low is None or high is None:
+        return False
+    return price <= high and price >= low * 0.85
 
 
 def _is_deep_value_zone_far_from_price(current_price: float | None, buy_zone_upper: float | None) -> bool:

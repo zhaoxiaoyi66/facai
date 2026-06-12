@@ -344,6 +344,16 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     )
     technical_repair_low = row.get("technical_repair_zone_low") or row.get("radar_technical_repair_zone_low")
     technical_repair_high = row.get("technical_repair_zone_high") or row.get("radar_technical_repair_zone_high")
+    near_term_repair_low = row.get("near_term_repair_zone_low") or row.get("radar_near_term_repair_zone_low")
+    near_term_repair_high = row.get("near_term_repair_zone_high") or row.get("radar_near_term_repair_zone_high")
+    trend_reclaim_low = row.get("trend_reclaim_zone_low") or row.get("radar_trend_reclaim_zone_low")
+    trend_reclaim_high = row.get("trend_reclaim_zone_high") or row.get("radar_trend_reclaim_zone_high")
+    deep_support_low = row.get("deep_support_zone_low") or row.get("radar_deep_support_zone_low")
+    deep_support_high = row.get("deep_support_zone_high") or row.get("radar_deep_support_zone_high")
+    zone_semantic_label = _drawer_clean_text(row.get("zone_semantic_label") or row.get("radar_zone_semantic_label"))
+    primary_interpretation = _drawer_clean_text(
+        row.get("primary_entry_interpretation") or row.get("radar_primary_entry_interpretation")
+    )
     support_watch_low = row.get("support_watch_zone_low") or row.get("radar_support_watch_zone_low")
     support_watch_high = row.get("support_watch_zone_high") or row.get("radar_support_watch_zone_high")
     confirmation_price = row.get("confirmation_price") or row.get("radar_confirmation_price")
@@ -419,6 +429,14 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         technical_repair_high=technical_repair_high,
         support_watch_low=support_watch_low,
         support_watch_high=support_watch_high,
+        near_term_repair_low=near_term_repair_low,
+        near_term_repair_high=near_term_repair_high,
+        trend_reclaim_low=trend_reclaim_low,
+        trend_reclaim_high=trend_reclaim_high,
+        deep_support_low=deep_support_low,
+        deep_support_high=deep_support_high,
+        zone_semantic_label=zone_semantic_label,
+        primary_interpretation=primary_interpretation,
         confirmation_price=confirmation_price,
         invalidation_price=invalidation_price,
         next_technical_steps=next_technical_steps,
@@ -479,6 +497,14 @@ def _drawer_entry_zone_structure_html(
     technical_repair_high: object,
     support_watch_low: object,
     support_watch_high: object,
+    near_term_repair_low: object,
+    near_term_repair_high: object,
+    trend_reclaim_low: object,
+    trend_reclaim_high: object,
+    deep_support_low: object,
+    deep_support_high: object,
+    zone_semantic_label: str,
+    primary_interpretation: str,
     confirmation_price: object,
     invalidation_price: object,
     next_technical_steps: list[str],
@@ -492,11 +518,17 @@ def _drawer_entry_zone_structure_html(
     technical_relation = _drawer_zone_relationship(current_price, technical_low, effective_high) if technical_available else (
         "缺失原因：" + _strip_missing_prefix(technical_missing_reason or "缺 EMA / ATR / swing / K线")
     )
-    technical_usage = "近端复核区" if technical_available else "当前使用：深度估值区 / 暂不提供近端技术参考"
+    technical_usage = "近端复核区" if technical_available else "当前使用：估值参考 / 暂不提供近端技术买点"
     structure_label = technical_structure_label or _drawer_technical_structure_label(technical_structure_status)
     structure_reason = _strip_missing_prefix(technical_structure_reason) if technical_structure_reason else "等待技术结构确认"
-    repair_available = _drawer_technical_zone_available(technical_repair_low, technical_repair_high)
-    support_available = _drawer_technical_zone_available(support_watch_low, support_watch_high)
+    near_term_repair_low = near_term_repair_low if _drawer_number(near_term_repair_low) is not None else technical_repair_low
+    near_term_repair_high = near_term_repair_high if _drawer_number(near_term_repair_high) is not None else technical_repair_high
+    deep_support_low = deep_support_low if _drawer_number(deep_support_low) is not None else support_watch_low
+    deep_support_high = deep_support_high if _drawer_number(deep_support_high) is not None else support_watch_high
+    near_repair_available = _drawer_technical_zone_available(near_term_repair_low, near_term_repair_high)
+    trend_reclaim_available = _drawer_technical_zone_available(trend_reclaim_low, trend_reclaim_high)
+    deep_support_available = _drawer_technical_zone_available(deep_support_low, deep_support_high)
+    valuation_label = zone_semantic_label or _drawer_valuation_zone_label(current_price, buy_zone)
     next_step = next_technical_steps[0] if next_technical_steps else "等待收盘确认和相对强弱修复"
     rows = [
         (
@@ -512,20 +544,20 @@ def _drawer_entry_zone_structure_html(
             technical_usage,
         ),
         (
-            "修复观察区",
-            _drawer_zone_range_text(technical_repair_low, technical_repair_high) if repair_available else "暂缺",
-            _drawer_zone_relationship(current_price, technical_repair_low, technical_repair_high)
-            if repair_available
+            "近端修复观察区",
+            _drawer_zone_range_text(near_term_repair_low, near_term_repair_high) if near_repair_available else "暂缺",
+            _drawer_zone_relationship(current_price, near_term_repair_low, near_term_repair_high)
+            if near_repair_available
             else "缺 EMA20 / EMA50 / EMA200",
-            "弱趋势修复观察，不是自动买点",
+            "观察短线止跌和承接，不是自动买点",
         ),
         (
-            "支撑观察区",
-            _drawer_zone_range_text(support_watch_low, support_watch_high) if support_available else "暂缺",
-            _drawer_zone_relationship(current_price, support_watch_low, support_watch_high)
-            if support_available
-            else "缺 recent swing low",
-            "失效线附近的承接观察",
+            "趋势确认区",
+            _drawer_zone_range_text(trend_reclaim_low, trend_reclaim_high) if trend_reclaim_available else "暂缺",
+            _drawer_zone_relationship(current_price, trend_reclaim_low, trend_reclaim_high)
+            if trend_reclaim_available
+            else "缺 EMA100 / EMA200",
+            "确认中期趋势修复",
         ),
         (
             "确认线",
@@ -540,10 +572,18 @@ def _drawer_entry_zone_structure_html(
             "不把下跌自动当买点",
         ),
         (
-            "深度估值区",
+            valuation_label,
             valuation_deep_zone or format_buy_zone(buy_zone),
             _drawer_buy_zone_relationship(current_price, buy_zone),
-            "极端安全区，不是当前近端买点",
+            _drawer_valuation_zone_usage(valuation_label, primary_interpretation),
+        ),
+        (
+            "深度支撑区",
+            _drawer_zone_range_text(deep_support_low, deep_support_high) if deep_support_available else "暂缺",
+            _drawer_zone_relationship(current_price, deep_support_low, deep_support_high)
+            if deep_support_available
+            else "缺 recent swing low",
+            "极端回撤支撑，不是常规目标",
         ),
         (
             "追高禁区",
@@ -574,7 +614,7 @@ def _drawer_entry_zone_structure_html(
     return (
         '<div class="drawer-card drawer-entry-zone-card">'
         '<div class="drawer-card-title">买区结构</div>'
-        '<div class="drawer-card-headline">技术回踩区 / 深度估值区 / 追高禁区分开展示</div>'
+        '<div class="drawer-card-headline">技术结构 / 估值参考 / 追高禁区分开展示</div>'
         '<table class="drawer-entry-zone-table">'
         '<thead><tr><th>类型</th><th>区间 / 价格</th><th>当前关系</th><th>用途</th></tr></thead>'
         f"<tbody>{body}</tbody>"
@@ -592,6 +632,8 @@ def _drawer_entry_primary_status_text(entry_context_status: str, price_position:
         return "买区外"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
         return "跌破结构区"
+    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+        return "估值可复核"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "追高区"
     if status == "IN_DISCIPLINE_BUY_ZONE" or price_position == "IN_BUY_ZONE":
@@ -618,6 +660,8 @@ def _drawer_entry_summary_reason(
         return "价格仍高于技术回踩区，等待更好的近端复核位置。"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
         return "价格跌破技术结构参考区，先复核基本面和趋势是否恶化。"
+    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+        return "估值进入复核区，但技术结构仍在弱趋势修复中；等待短期均线和收盘确认。"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
         return "价格进入追高禁区，禁止新增。"
     if price_position == "BELOW_BUY_ZONE":
@@ -633,6 +677,31 @@ def _drawer_zone_overlaps_chase(technical_low: object, technical_high: object, c
 
 def _drawer_technical_zone_available(technical_low: object, technical_high: object) -> bool:
     return _drawer_number(technical_low) is not None and _drawer_number(technical_high) is not None
+
+
+def _drawer_valuation_zone_label(current_price: float | None, buy_zone: object) -> str:
+    low = high = None
+    if isinstance(buy_zone, dict):
+        low = _drawer_number(buy_zone.get("lower"))
+        high = _drawer_number(buy_zone.get("upper"))
+    else:
+        low = _drawer_number(getattr(buy_zone, "lower", None))
+        high = _drawer_number(getattr(buy_zone, "upper", None))
+    if current_price is None or low is None or high is None:
+        return "估值参考区"
+    if high <= current_price * 0.75:
+        return "深度估值区"
+    if low <= current_price * 1.08 or current_price <= high:
+        return "估值参考区"
+    return "估值复核区"
+
+
+def _drawer_valuation_zone_usage(label: str, primary_interpretation: str) -> str:
+    if primary_interpretation:
+        return primary_interpretation
+    if label == "深度估值区":
+        return "极端安全区，不是当前近端买点"
+    return "估值进入研究区，不等于自动买入"
 
 
 def _drawer_technical_structure_label(status: str) -> str:
@@ -736,6 +805,8 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
         return "高于技术回踩区，继续等回踩"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
         return "跌破结构区，先复核"
+    if status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED":
+        return "估值可复核，技术待确认"
     if status == "IN_DISCIPLINE_BUY_ZONE":
         return "位于 Radar 纪律买区"
     if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:

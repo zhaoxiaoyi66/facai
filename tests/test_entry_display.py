@@ -132,6 +132,12 @@ def test_entry_display_preserves_technical_structure_map_when_pullback_missing()
             "technical_structure_label": "弱趋势修复中",
             "technical_repair_zone_low": 131.4,
             "technical_repair_zone_high": 151.8,
+            "near_term_repair_zone_low": 100.19,
+            "near_term_repair_zone_high": 108.92,
+            "trend_reclaim_zone_low": 120.24,
+            "trend_reclaim_zone_high": 132.97,
+            "deep_support_zone_low": 82.39,
+            "deep_support_zone_high": 86.97,
             "support_watch_zone_low": 129.84,
             "support_watch_zone_high": 132.54,
             "confirmation_price": 142,
@@ -154,9 +160,51 @@ def test_entry_display_preserves_technical_structure_map_when_pullback_missing()
     assert result["technical_structure_label"] == "弱趋势修复中"
     assert result["technical_repair_zone_low"] == 131.4
     assert result["technical_repair_zone_high"] == 151.8
+    assert result["near_term_repair_zone_low"] == 100.19
+    assert result["near_term_repair_zone_high"] == 108.92
+    assert result["trend_reclaim_zone_low"] == 120.24
+    assert result["trend_reclaim_zone_high"] == 132.97
+    assert result["deep_support_zone_low"] == 82.39
+    assert result["deep_support_zone_high"] == 86.97
     assert result["confirmation_price"] == 142
     assert result["invalidation_price"] == 132
     assert result["next_technical_steps"] == ["收盘重新站回 EMA20 / EMA50 / EMA200。"]
+
+
+def test_weak_trend_below_near_valuation_reference_shows_review_not_below_reference() -> None:
+    result = build_entry_display(
+        current_price=103.08,
+        buy_zone={"lower": 105.99, "upper": 126.82},
+        chase_zone={"lower": 175.01},
+        technical_entry_zone={
+            "source": "trend_review",
+            "technical_structure_status": "WEAK_TREND_REPAIR",
+            "technical_structure_label": "弱趋势修复中",
+            "near_term_repair_zone_low": 100.19,
+            "near_term_repair_zone_high": 108.92,
+            "trend_reclaim_zone_low": 120.24,
+            "trend_reclaim_zone_high": 132.97,
+            "deep_support_zone_low": 82.39,
+            "deep_support_zone_high": 86.97,
+            "confirmation_price": 105.28,
+            "invalidation_price": 85.44,
+            "confidence": "review",
+        },
+        data_status="OK",
+        price_position="BELOW_BUY_ZONE",
+        decision="WAIT",
+        final_score=80,
+        valuation_score=70,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "估值可复核 $105.99 - $126.82"
+    assert result["entry_action_hint"] == "技术待确认"
+    assert result["entry_context_status"] == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED"
+    assert result["primary_entry_interpretation"] == "估值可复核，技术待确认"
+    assert result["zone_semantic_label"] == "估值参考区"
+    assert result["valuation_reference_zone_low"] == 105.99
+    assert result["valuation_reference_zone_high"] == 126.82
 
 
 def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_near() -> None:

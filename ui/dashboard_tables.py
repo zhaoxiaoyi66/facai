@@ -245,6 +245,8 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
         return "买区外", "等回踩"
     if context_status == "BELOW_TECHNICAL_PULLBACK_ZONE" or label.startswith(("跌破回踩区", "跌破结构区")):
         return "跌破结构区", "先复核"
+    if context_status == "VALUATION_REVIEW_TECHNICAL_UNCONFIRMED" or label.startswith("估值可复核"):
+        return "估值可复核", "技术待确认"
     if context_status == "BELOW_VALUATION_REFERENCE" or label.startswith("低于估值参考"):
         return "低于估值参考", "待复核"
     if price_position == "IN_BUY_ZONE" or label.startswith("买区内"):
@@ -275,6 +277,8 @@ def _short_entry_status(label: str) -> str:
         return "跌破结构区"
     if "低于估值参考" in label:
         return "低于估值参考"
+    if "估值可复核" in label:
+        return "估值可复核"
     if "买区内" in label:
         return "买区内"
     if "等待技术回踩" in label:
@@ -300,6 +304,8 @@ def _short_entry_hint(hint: str, fallback: str) -> str:
         return "等回落"
     if "低于估值参考" in text or "等待结构确认" in text:
         return "待复核"
+    if "技术待确认" in text:
+        return "技术待确认"
     if "跌破结构区" in text or "跌破买区" in text or "低于买区" in text:
         return "先复核"
     if "补齐" in text or "数据" in text:
