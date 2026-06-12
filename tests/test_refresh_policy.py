@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import perf_counter, sleep
 
 import pandas as pd
+import pytest
 
 from data.fundamentals import FundamentalCache
 from data.refresh_policy import (
     RefreshMode,
+    _reset_quote_provider_capabilities,
     refresh_symbols_by_mode,
     should_refresh_fundamentals,
     should_refresh_technicals,
     summarize_refresh_result,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_quote_capabilities() -> None:
+    _reset_quote_provider_capabilities()
 
 
 class FakeRefreshProvider:
@@ -34,13 +42,16 @@ class FakeRefreshProvider:
 
 class FakeFmpQuoteOnlyProvider(FakeRefreshProvider):
     def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
-        self.calls.append((endpoint, str(params.get("symbol")), force_refresh))
-        symbols = str(params.get("symbol") or "").split(",")
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        if endpoint == "batch-quote":
+            raise RuntimeError("FMP 402 batch quote unavailable")
+        symbols = symbol_text.split(",")
         return [
             {
                 "symbol": symbol,
                 "price": 123.4,
-                "changesPercentage": 1.2,
+                "change": 1.4613,
                 "volume": 123456,
                 "marketCap": 9_000_000,
                 "yearHigh": 150,
@@ -53,9 +64,11 @@ class FakeFmpQuoteOnlyProvider(FakeRefreshProvider):
 
 class FakeBatchEmptyQuoteProvider(FakeFmpQuoteOnlyProvider):
     def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
-        self.calls.append((endpoint, str(params.get("symbol")), force_refresh))
-        symbol_text = str(params.get("symbol") or "")
-        if "," in symbol_text:
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        if endpoint == "batch-quote":
+            raise RuntimeError("FMP 402 batch quote unavailable")
+        if endpoint == "quote" and "," in symbol_text:
             return []
         if symbol_text in self.fail_quote:
             return []
@@ -72,8 +85,11 @@ class FakeBatchEmptyQuoteProvider(FakeFmpQuoteOnlyProvider):
 
 class FakeWrappedBatchQuoteProvider(FakeRefreshProvider):
     def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
-        self.calls.append((endpoint, str(params.get("symbol")), force_refresh))
-        symbols = str(params.get("symbol") or "").split(",")
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        symbols = symbol_text.split(",")
+        if endpoint != "batch-quote":
+            return []
         return {
             "data": [
                 {
@@ -87,6 +103,31 @@ class FakeWrappedBatchQuoteProvider(FakeRefreshProvider):
                 if symbol
             ]
         }
+
+
+class FakeSlowSingleQuoteProvider(FakeRefreshProvider):
+    def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        if endpoint == "batch-quote":
+            raise RuntimeError("FMP 402 batch quote unavailable")
+        if endpoint == "quote" and "," in symbol_text:
+            return []
+        sleep(0.2)
+        return [{"symbol": symbol_text, "price": 50.0, "change": 1.0, "volume": 10}]
+
+
+class FakeSingleFailureProvider(FakeFmpQuoteOnlyProvider):
+    def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        if endpoint == "batch-quote":
+            raise RuntimeError("FMP 402 batch quote unavailable")
+        if endpoint == "quote" and "," in symbol_text:
+            return []
+        if symbol_text in self.fail_quote:
+            raise RuntimeError(f"{symbol_text} unavailable")
+        return [{"symbol": symbol_text, "price": 91.0, "change": 1.0, "volume": 10}]
 
 
 def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
@@ -114,11 +155,13 @@ def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
     updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
     assert result["status"] == "success"
     assert result["refreshed_count"] == 1
+    assert result["live_success_count"] == 1
+    assert result["cache_fallback_count"] == 0
     assert provider.fundamental_calls == 0
-    assert provider.calls == [("quote", "NVDA", True)]
+    assert provider.calls == [("batch-quote", "NVDA", True), ("quote-short", "NVDA", True)]
     assert updated is not None
     assert updated["current_price"] == 123.4
-    assert updated["price_change_pct"] == 1.2
+    assert updated["price_change_pct"] == pytest.approx(1.2, rel=0.01)
     assert updated["volume"] == 123456
     assert updated["market_cap"] == 9_000_000
     assert updated["total_revenue"] == 10
@@ -136,17 +179,72 @@ def test_price_only_falls_back_to_single_quote_when_batch_returns_empty(tmp_path
     adbe_snapshot = cache.get_snapshot("ADBE", max_age_hours=24 * 3650)
     assert result["status"] == "success"
     assert result["refreshed_count"] == 2
+    assert result["live_success_count"] == 2
     assert provider.fundamental_calls == 0
-    assert provider.calls == [
-        ("quote", "NOW,ADBE", True),
-        ("quote", "NOW", True),
-        ("quote", "ADBE", True),
-    ]
+    assert ("batch-quote", "NOW,ADBE", True) in provider.calls
+    assert ("quote", "NOW,ADBE", True) in provider.calls
+    assert ("quote-short", "NOW", True) in provider.calls
+    assert ("quote-short", "ADBE", True) in provider.calls
     assert now_snapshot is not None
     assert now_snapshot["current_price"] == 88.8
     assert now_snapshot["price_change_pct"] == 0.7
     assert adbe_snapshot is not None
     assert adbe_snapshot["current_price"] == 88.8
+
+
+def test_price_only_disables_batch_quote_after_402(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeBatchEmptyQuoteProvider()
+
+    first = refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+    provider.calls.clear()
+    second = refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert not any(call[0] == "batch-quote" for call in provider.calls)
+    assert any("batch quote disabled" in note for note in second["provider_notes"])
+
+
+def test_price_only_disables_empty_multi_symbol_quote(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeBatchEmptyQuoteProvider()
+
+    refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+    provider.calls.clear()
+    refresh_symbols_by_mode(["NOW", "ADBE"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    assert not any(call[0] == "quote" and call[1] == "NOW,ADBE" for call in provider.calls)
+
+
+def test_price_only_single_quote_fallback_runs_concurrently(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeSlowSingleQuoteProvider()
+    symbols = ["A", "B", "C", "D"]
+
+    started = perf_counter()
+    result = refresh_symbols_by_mode(symbols, RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+    duration = perf_counter() - started
+
+    assert result["status"] == "success"
+    assert result["live_success_count"] == 4
+    assert duration < 0.65
+    assert all(("quote-short", symbol, True) in provider.calls for symbol in symbols)
+
+
+def test_price_only_uses_cache_fallback_for_failed_single_quote(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    cache.set_snapshot("MSFT", {"ticker": "MSFT", "current_price": 300.0, "quote_updated_at": "2026-06-01T00:00:00+00:00"})
+    provider = FakeSingleFailureProvider(fail_quote={"MSFT"})
+
+    result = refresh_symbols_by_mode(["NVDA", "MSFT"], RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    assert result["status"] == "success"
+    assert result["live_success_count"] == 1
+    assert result["cache_fallback_count"] == 1
+    msft = cache.get_snapshot("MSFT", max_age_hours=24 * 3650)
+    assert msft["current_price"] == 300.0
+    assert msft["quote_updated_at"] == "2026-06-01T00:00:00+00:00"
 
 
 def test_price_only_accepts_wrapped_batch_quote_payload(tmp_path) -> None:
@@ -157,7 +255,7 @@ def test_price_only_accepts_wrapped_batch_quote_payload(tmp_path) -> None:
 
     assert result["status"] == "success"
     assert result["refreshed_count"] == 2
-    assert provider.calls == [("quote", "NOW,ADBE", True)]
+    assert provider.calls == [("batch-quote", "NOW,ADBE", True)]
     assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["current_price"] == 77.7
     assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["price_change_pct"] == -1.3
 

@@ -1027,6 +1027,14 @@ def _render_dashboard_refresh_mode_result() -> None:
             f"用时 {duration_text}",
         ]
     )
+    if mode == "PRICE_ONLY":
+        live_count = int(result.get("live_success_count") or 0)
+        cache_count = int(result.get("cache_fallback_count") or 0)
+        quote_source = str(result.get("quote_source") or "quote")
+        details = " · ".join([details, f"实时 {live_count}", f"缓存兜底 {cache_count}", f"来源 {quote_source}"])
+        notes = [str(note) for note in (result.get("provider_notes") or []) if str(note).strip()]
+        if notes:
+            details = " · ".join([details, "；".join(notes[:2])])
     sample_rows = "".join(_dashboard_refresh_ticker_row_html(item) for item in ticker_results[:6])
     st.markdown(
         (

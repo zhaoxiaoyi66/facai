@@ -4,8 +4,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+import json
 from time import perf_counter
 from typing import Any, Iterable
+from urllib.parse import urlencode
+from urllib.request import Request
 
 from data.fundamentals import FundamentalCache
 from data.macro_regime import refresh_macro_indicators
@@ -26,6 +29,7 @@ class RefreshTickerResult:
     status: str
     message: str
     duration_seconds: float
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,10 +44,32 @@ class RefreshResult:
     ticker_results: list[dict[str, Any]]
     summary: str
     macro_result: dict[str, Any] | None = None
+    live_success_count: int | None = None
+    cache_fallback_count: int | None = None
+    quote_source: str | None = None
+    provider_notes: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.__dict__.copy()
         return payload
+
+
+@dataclass(frozen=True)
+class QuoteFetchResult:
+    rows: dict[str, dict]
+    live_symbols: set[str]
+    failed_symbols: set[str]
+    source: str
+    provider_notes: list[str]
+
+
+QUOTE_SINGLE_WORKERS = 8
+QUOTE_SINGLE_TIMEOUT_SECONDS = 4
+QUOTE_BATCH_PROBE_MAX_SYMBOLS = 10
+QUOTE_CAPABILITY_DISABLE_HOURS = 6
+_QUOTE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {}
+BATCH_QUOTE_CAPABILITY = "batch_quote"
+MULTI_SYMBOL_QUOTE_CAPABILITY = "multi_symbol_quote"
 
 
 def refresh_symbols_by_mode(
@@ -64,15 +90,27 @@ def refresh_symbols_by_mode(
     if normalized_mode == RefreshMode.PRICE_ONLY:
         market_provider = provider or _market_data_provider(full_fundamentals=False)
         ticker_results = _refresh_price_only(tickers, provider=market_provider, cache=fundamental_cache, now=timestamp)
+        live_success_count = sum(1 for item in ticker_results if item.source == "live_quote")
+        cache_fallback_count = sum(1 for item in ticker_results if item.source == "cache_fallback")
+        quote_source = getattr(market_provider, "_last_quote_source", None)
+        provider_notes = list(getattr(market_provider, "_last_quote_provider_notes", []) or [])
     elif normalized_mode == RefreshMode.DAILY_TECHNICAL:
         market_provider = provider or _market_data_provider(full_fundamentals=False)
         ticker_results = [_refresh_daily_technical(symbol, provider=market_provider) for symbol in tickers]
+        live_success_count = None
+        cache_fallback_count = None
+        quote_source = None
+        provider_notes = None
     elif normalized_mode == RefreshMode.FUNDAMENTALS_IF_EVENT:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
         ticker_results = [
             _refresh_fundamentals_if_event(symbol, provider=full_provider, cache=fundamental_cache, now=timestamp)
             for symbol in tickers
         ]
+        live_success_count = None
+        cache_fallback_count = None
+        quote_source = None
+        provider_notes = None
     elif normalized_mode == RefreshMode.MACRO_ONLY:
         macro_result = (macro_refresher or refresh_macro_indicators)()
         status = str(macro_result.get("status") or macro_result.get("overall_status") or "failed")
@@ -92,6 +130,10 @@ def refresh_symbols_by_mode(
     else:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
         ticker_results = [_refresh_full(symbol, provider=full_provider) for symbol in tickers]
+        live_success_count = None
+        cache_fallback_count = None
+        quote_source = None
+        provider_notes = None
 
     results = [result.__dict__ for result in ticker_results]
     refreshed_count = sum(1 for item in ticker_results if item.status == "success")
@@ -113,6 +155,10 @@ def refresh_symbols_by_mode(
             failed_count=failed_count,
             duration_seconds=round(perf_counter() - started, 3),
         ),
+        live_success_count=live_success_count,
+        cache_fallback_count=cache_fallback_count,
+        quote_source=quote_source,
+        provider_notes=provider_notes,
     )
     return result.to_dict()
 
@@ -190,19 +236,27 @@ def _refresh_price_only(
     cache: FundamentalCache,
     now: datetime,
 ) -> list[RefreshTickerResult]:
-    quote_rows = _quote_rows(tickers, provider)
+    quote_result = _quote_rows(tickers, provider)
+    quote_rows = quote_result.rows
+    setattr(provider, "_last_quote_source", quote_result.source)
+    setattr(provider, "_last_quote_provider_notes", quote_result.provider_notes)
     results: list[RefreshTickerResult] = []
     for symbol in tickers:
         started = perf_counter()
         quote = quote_rows.get(symbol)
         if not quote:
-            results.append(_ticker_result(symbol, "failed", "quote 刷新失败或无返回", started))
+            existing = cache.get_snapshot(symbol, max_age_hours=24 * 3650) or {}
+            if existing and _has_cached_quote(existing):
+                results.append(_ticker_result(symbol, "success", "实时 quote 失败，沿用最近价格缓存", started, source="cache_fallback"))
+                continue
+            results.append(_ticker_result(symbol, "failed", "quote 刷新失败且无可用缓存", started, source="failed"))
             continue
         existing = cache.get_snapshot(symbol, max_age_hours=24 * 3650) or {}
         previous_fetched_at = cache.get_snapshot_fetched_at(symbol)
         merged = _merge_quote_snapshot(symbol, existing, quote, previous_fetched_at=previous_fetched_at, now=now)
         cache.set_snapshot(symbol, merged)
-        results.append(_ticker_result(symbol, "success", "价格已更新，基本面沿用缓存", started))
+        results.append(_ticker_result(symbol, "success", "价格已更新，基本面沿用缓存", started, source="live_quote"))
+        continue
     return results
 
 
@@ -251,57 +305,142 @@ def _refresh_full(symbol: str, *, provider: Any) -> RefreshTickerResult:
     return _ticker_result(symbol, "failed", "全量刷新失败：" + "; ".join(errors), started)
 
 
-def _quote_rows(tickers: list[str], provider: Any) -> dict[str, dict]:
+def _quote_rows(tickers: list[str], provider: Any) -> QuoteFetchResult:
     rows: dict[str, dict] = {}
+    live_symbols: set[str] = set()
+    failed_symbols: set[str] = set()
+    provider_notes: list[str] = []
+    source = "provider_quote"
     if hasattr(provider, "_get_json"):
-        try:
-            payload = provider._get_json(  # noqa: SLF001 - this is the existing FMP quote endpoint without fundamentals.
-                "quote",
-                {"symbol": ",".join(tickers)},
-                timeout_seconds=8,
-                retries=1,
-                force_refresh=True,
-            )
-            batch_rows = _quote_payload_rows(payload)
-            rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
-        except Exception:
-            rows = {}
+        now = datetime.now(timezone.utc)
+        should_probe_batch = len(tickers) <= QUOTE_BATCH_PROBE_MAX_SYMBOLS
+        if not should_probe_batch:
+            provider_notes.append("batch/multi quote probe skipped for large PRICE_ONLY refresh")
+        if should_probe_batch and not _quote_capability_disabled(BATCH_QUOTE_CAPABILITY, now):
+            try:
+                payload = provider._get_json(  # noqa: SLF001 - quote-only endpoint, no fundamentals.
+                    "batch-quote",
+                    {"symbols": ",".join(tickers)},
+                    timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
+                    retries=0,
+                    force_refresh=True,
+                )
+                batch_rows = _quote_payload_rows(payload)
+                rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
+                if rows:
+                    source = "batch_quote"
+            except Exception as exc:
+                reason = _short_error(exc)
+                if "402" in reason:
+                    _disable_quote_capability(BATCH_QUOTE_CAPABILITY, reason, now)
+                    provider_notes.append(f"batch quote disabled: {reason}")
+                else:
+                    provider_notes.append(f"batch quote failed: {reason}")
+        elif should_probe_batch:
+            reason = _quote_capability_reason(BATCH_QUOTE_CAPABILITY, now)
+            provider_notes.append(f"batch quote disabled: {reason}")
+
+        if should_probe_batch and not rows and len(tickers) > 1 and not _quote_capability_disabled(MULTI_SYMBOL_QUOTE_CAPABILITY, now):
+            try:
+                payload = provider._get_json(  # noqa: SLF001 - existing FMP multi-symbol quote endpoint.
+                    "quote",
+                    {"symbol": ",".join(tickers)},
+                    timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
+                    retries=0,
+                    force_refresh=True,
+                )
+                batch_rows = _quote_payload_rows(payload)
+                rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
+                if rows:
+                    source = "multi_symbol_quote"
+                elif len(tickers) > 1:
+                    reason = "empty response"
+                    _disable_quote_capability(MULTI_SYMBOL_QUOTE_CAPABILITY, reason, now)
+                    provider_notes.append(f"multi-symbol quote disabled: {reason}")
+            except Exception as exc:
+                provider_notes.append(f"multi-symbol quote failed: {_short_error(exc)}")
+        elif should_probe_batch and not rows and len(tickers) > 1:
+            reason = _quote_capability_reason(MULTI_SYMBOL_QUOTE_CAPABILITY, now)
+            provider_notes.append(f"multi-symbol quote disabled: {reason}")
+
         missing = [symbol for symbol in tickers if symbol not in rows]
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(missing)))) as executor:
+        if rows:
+            live_symbols.update(rows)
+        if missing:
+            source = source if source in {"batch_quote", "multi_symbol_quote"} else "concurrent_single_quote"
+            provider_notes.append(f"using concurrent single quote fallback: {len(missing)} symbols")
+        with ThreadPoolExecutor(max_workers=min(QUOTE_SINGLE_WORKERS, max(1, len(missing)))) as executor:
             futures = {executor.submit(_fetch_single_quote_row, provider, symbol): symbol for symbol in missing}
             for future in as_completed(futures):
                 symbol = futures[future]
                 try:
                     row = future.result()
                 except Exception:
+                    failed_symbols.add(symbol)
                     continue
                 if row is not None:
                     rows[symbol] = row
-        return rows
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(tickers)))) as executor:
+                    live_symbols.add(symbol)
+                else:
+                    failed_symbols.add(symbol)
+        return QuoteFetchResult(rows=rows, live_symbols=live_symbols, failed_symbols=failed_symbols, source=source, provider_notes=provider_notes)
+    source = "concurrent_provider_quote"
+    with ThreadPoolExecutor(max_workers=min(QUOTE_SINGLE_WORKERS, max(1, len(tickers)))) as executor:
         futures = {executor.submit(_fetch_provider_quote_row, provider, symbol): symbol for symbol in tickers}
         for future in as_completed(futures):
             symbol = futures[future]
             try:
                 quote = future.result()
             except Exception:
+                failed_symbols.add(symbol)
                 continue
             if isinstance(quote, dict) and quote:
                 rows[symbol] = quote
-    return rows
+                live_symbols.add(symbol)
+            else:
+                failed_symbols.add(symbol)
+    return QuoteFetchResult(rows=rows, live_symbols=live_symbols, failed_symbols=failed_symbols, source=source, provider_notes=provider_notes)
 
 
 def _fetch_single_quote_row(provider: Any, symbol: str) -> dict | None:
-    payload = provider._get_json(  # noqa: SLF001 - quote-only fallback, still avoids fundamentals.
-        "quote",
-        {"symbol": symbol},
-        timeout_seconds=8,
-        retries=1,
-        force_refresh=True,
-    )
-    for row in _quote_payload_rows(payload):
-        if isinstance(row, dict) and _quote_symbol(row) == symbol:
-            return row
+    direct_row = _fetch_direct_fmp_quote_short(provider, symbol)
+    if direct_row is not None:
+        return direct_row
+    for endpoint in ("quote-short", "quote"):
+        try:
+            payload = provider._get_json(  # noqa: SLF001 - quote-only fallback, still avoids fundamentals.
+                endpoint,
+                {"symbol": symbol},
+                timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
+                retries=0,
+                force_refresh=True,
+            )
+        except Exception:
+            continue
+        for row in _quote_payload_rows(payload):
+            if isinstance(row, dict) and _quote_symbol(row) == symbol:
+                return row
+    return None
+
+
+def _fetch_direct_fmp_quote_short(provider: Any, symbol: str) -> dict | None:
+    api_key = str(getattr(provider, "api_key", "") or "")
+    if not api_key:
+        return None
+    try:
+        from data.providers import _read_url
+
+        query = urlencode({"symbol": symbol, "apikey": api_key})
+        request = Request(
+            f"https://financialmodelingprep.com/stable/quote-short?{query}",
+            headers={"User-Agent": "ZHX-Research/1.0"},
+        )
+        payload = _read_url(request, timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS)
+        for row in _quote_payload_rows(json.loads(payload)):
+            if isinstance(row, dict) and _quote_symbol(row) == symbol:
+                return row
+    except Exception:
+        return None
     return None
 
 
@@ -347,6 +486,12 @@ def _merge_quote_snapshot(
         value = _first_present(quote, *keys)
         if value is not None:
             merged[target] = value
+    if merged.get("price_change_pct") in (None, ""):
+        price = _number(merged.get("current_price"))
+        change = _number(merged.get("price_change"))
+        previous_close = price - change if price is not None and change is not None else None
+        if previous_close not in (None, 0):
+            merged["price_change_pct"] = round((change / previous_close) * 100, 4)
     merged["quote_updated_at"] = now.isoformat()
     merged["price_updated_at"] = now.isoformat()
     merged["refresh_mode"] = RefreshMode.PRICE_ONLY.value
@@ -366,6 +511,45 @@ def _first_present(row: dict, *keys: str) -> Any:
     return None
 
 
+def _number(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_cached_quote(snapshot: dict) -> bool:
+    return _number(snapshot.get("current_price") or snapshot.get("price")) is not None
+
+
+def _quote_capability_disabled(capability: str, now: datetime) -> bool:
+    state = _QUOTE_PROVIDER_CAPABILITIES.get(capability) or {}
+    disabled_until = state.get("disabled_until")
+    return isinstance(disabled_until, datetime) and disabled_until > now
+
+
+def _quote_capability_reason(capability: str, now: datetime) -> str:
+    state = _QUOTE_PROVIDER_CAPABILITIES.get(capability) or {}
+    disabled_until = state.get("disabled_until")
+    reason = str(state.get("reason") or "unavailable")
+    if isinstance(disabled_until, datetime) and disabled_until > now:
+        return f"{reason}; disabled until {disabled_until.isoformat()}"
+    return reason
+
+
+def _disable_quote_capability(capability: str, reason: str, now: datetime) -> None:
+    _QUOTE_PROVIDER_CAPABILITIES[capability] = {
+        "reason": reason,
+        "failure_count": int((_QUOTE_PROVIDER_CAPABILITIES.get(capability) or {}).get("failure_count") or 0) + 1,
+        "last_failure_at": now,
+        "disabled_until": now + timedelta(hours=QUOTE_CAPABILITY_DISABLE_HOURS),
+    }
+
+
+def _reset_quote_provider_capabilities() -> None:
+    _QUOTE_PROVIDER_CAPABILITIES.clear()
+
+
 def _normalize_symbols(symbols: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -377,12 +561,13 @@ def _normalize_symbols(symbols: Iterable[str]) -> list[str]:
     return result
 
 
-def _ticker_result(symbol: str, status: str, message: str, started: float) -> RefreshTickerResult:
+def _ticker_result(symbol: str, status: str, message: str, started: float, *, source: str = "") -> RefreshTickerResult:
     return RefreshTickerResult(
         ticker=symbol,
         status=status,
         message=message,
         duration_seconds=round(perf_counter() - started, 3),
+        source=source,
     )
 
 
