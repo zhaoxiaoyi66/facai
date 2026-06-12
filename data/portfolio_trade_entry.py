@@ -7,9 +7,12 @@ from zoneinfo import ZoneInfo
 
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.decision_log import TradeJournalStore
+from data.macro_regime import load_macro_regime
 from data.planned_ladder_buy import evaluate_planned_ladder_buy
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfolio_sync_status, preview_trade_values_portfolio_effect
+from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
 from data.stock_plan import StockPlanStore
 from data.starter_position import evaluate_starter_position
@@ -44,6 +47,10 @@ def submit_portfolio_buy_add(
     observation_only = bool(values.get("radar_observation_only") or values.get("radarObservationOnly"))
     if observation_only:
         raise ValueError("仅观察不是真实成交；请用计划买入或价格提醒记录观察，不写入交易日志。")
+    _require_positive_number(quantity, "quantity")
+    _require_positive_number(price, "price")
+    if not buy_reason:
+        raise ValueError("buy_reason is required")
     action_type = _portfolio_trade_action(ticker, path, values.get("action_type"))
     submitted_at = _hkt_now()
     portfolio_preview = preview_trade_values_portfolio_effect(
@@ -94,49 +101,24 @@ def submit_portfolio_buy_add(
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
-    if entry_mode == "planned_ladder_buy" and plan_gate.can_sync_to_portfolio:
+    if entry_mode == "planned_ladder_buy":
         advisory_notes.extend(plan_gate.plan_notes)
-    if entry_mode == "starter_position" and starter_gate.can_sync_to_portfolio:
+        advisory_notes.extend(plan_gate.plan_block_reasons)
+    if entry_mode == "starter_position":
         advisory_notes.extend(starter_gate.starter_notes)
+        advisory_notes.extend(starter_gate.starter_block_reasons)
     gate_fields["radarAdvisoryWarnings"] = _dedupe_text(advisory_notes)
-    if gate_fields["radarAdvisoryWarnings"] and not bool(gate_fields.get("gateHardBlocked")):
-        gate_fields["radarAdvisoryOnly"] = True
-    selected_entry_block_reasons: list[str] = []
-    if entry_mode == "planned_ladder_buy" and not plan_gate.can_sync_to_portfolio:
-        selected_entry_block_reasons.extend(plan_gate.plan_block_reasons)
-    if entry_mode == "starter_position" and not starter_gate.can_sync_to_portfolio:
-        selected_entry_block_reasons.extend(starter_gate.starter_block_reasons)
-    if selected_entry_block_reasons:
-        gate_fields["radarBlocked"] = True
-        gate_fields["gateHardBlocked"] = True
-        gate_fields["radarAdvisoryOnly"] = False
-        gate_fields["radarBlockReasons"] = [
-            *gate.reasons,
-            *gate.required_actions,
-            *selected_entry_block_reasons,
-        ]
-    if (plan_gate.can_sync_to_portfolio or starter_gate.can_sync_to_portfolio) and gate.is_blocked and not observation_only:
-        override_notes = plan_gate.plan_notes if plan_gate.can_sync_to_portfolio else starter_gate.starter_notes
-        gate_fields.update(
-            {
-                "radarBlocked": False,
-                "radarBlockReasons": [
-                    *gate.reasons,
-                    *gate.required_actions,
-                    *override_notes,
-                ],
-                "positionGateBlocked": False,
-                "moodGateBlocked": False,
-            }
-        )
-    elif gate.is_blocked or observation_only:
-        plan_block_reasons = plan_gate.plan_block_reasons if entry_mode == "planned_ladder_buy" else []
-        gate_fields["radarBlockReasons"] = [
-            *gate.reasons,
-            *gate.required_actions,
-            *plan_block_reasons,
-            *starter_gate.starter_block_reasons,
-        ]
+    gate_fields["radarAdvisoryOnly"] = bool(gate_fields["radarAdvisoryWarnings"])
+    gate_fields["radarBlocked"] = False
+    gate_fields["gateHardBlocked"] = False
+    gate_fields["moodGateBlocked"] = False
+    gate_fields["positionGateBlocked"] = False
+    gate_fields["radarBlockReasons"] = []
+    advisory_context_fields = _buy_advisory_context_fields(
+        path=path,
+        checked_at=submitted_at.isoformat(),
+        warnings=gate_fields["radarAdvisoryWarnings"],
+    )
     core_pct, trading_pct = _tier_ratio_defaults(tier)
     entry_values = {
         "trade_date": str(values.get("trade_date") or submitted_at.date().isoformat()),
@@ -158,6 +140,7 @@ def submit_portfolio_buy_add(
         **plan_fields,
         **starter_fields,
         **structure_entry_snapshot_fields(structure_advisor, checked_at=submitted_at.isoformat()),
+        **advisory_context_fields,
         "gateCheckedAt": submitted_at.isoformat(),
     }
     can_sync = _can_sync_buy_entry(
@@ -191,12 +174,12 @@ def submit_portfolio_buy_add(
 def _buy_entry_block_reason(*, gate: Any, plan_gate: Any, starter_gate: Any, entry_mode: str) -> str:
     if entry_mode == "planned_ladder_buy" and not bool(plan_gate.can_sync_to_portfolio):
         reasons = [str(item) for item in getattr(plan_gate, "plan_block_reasons", []) if str(item).strip()]
-        return "；".join(reasons) or "计划买入条件未触发，未入账。"
+        return "；".join(reasons) or "计划买入条件未触发，请按普通买入确认。"
     if entry_mode == "starter_position" and not bool(starter_gate.can_sync_to_portfolio):
         reasons = [str(item) for item in getattr(starter_gate, "starter_block_reasons", []) if str(item).strip()]
-        return "；".join(reasons) or "底仓建仓条件未通过，未入账。"
+        return "；".join(reasons) or "底仓建仓条件建议复核。"
     reasons = [str(item) for item in [*getattr(gate, "reasons", []), *getattr(gate, "required_actions", [])] if str(item).strip()]
-    return "；".join(reasons) or "买入校验未通过，未入账。"
+    return "；".join(reasons) or "买入校验未通过。"
 
 
 def _can_sync_buy_entry(
@@ -207,13 +190,7 @@ def _can_sync_buy_entry(
     starter_gate: Any,
     observation_only: bool,
 ) -> bool:
-    if observation_only or gate.gate_hard_blocked:
-        return False
-    if entry_mode == "planned_ladder_buy":
-        return bool(plan_gate.can_sync_to_portfolio)
-    if entry_mode == "starter_position":
-        return bool(starter_gate.can_sync_to_portfolio)
-    return bool(gate.can_sync_to_portfolio)
+    return not observation_only
 
 
 def _dedupe_text(items: list[Any]) -> list[str]:
@@ -226,6 +203,30 @@ def _dedupe_text(items: list[Any]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _buy_advisory_context_fields(*, path: Path, checked_at: str, warnings: list[str]) -> dict[str, Any]:
+    macro_regime_text = None
+    portfolio_structure_status = None
+    macro_snapshot = None
+    try:
+        macro_snapshot = load_macro_regime(path)
+        macro_regime_text = str(getattr(macro_snapshot, "regime", "") or "") or None
+    except Exception:
+        macro_snapshot = None
+    try:
+        portfolio_view = build_portfolio_view_model(path)
+        structure_check = build_portfolio_structure_check(portfolio_view, macro_regime=macro_snapshot)
+        portfolio_structure_status = str(getattr(structure_check, "status", "") or "") or None
+    except Exception:
+        portfolio_structure_status = None
+    return {
+        "buyAdvisoryWarnings": _dedupe_text(warnings),
+        "buyAdvisoryAcknowledged": bool(warnings),
+        "advisoryCheckedAt": checked_at,
+        "macroRegime": macro_regime_text,
+        "portfolioStructureStatus": portfolio_structure_status,
+    }
 
 
 def _portfolio_trade_action(symbol: str, path: Path, requested: object = None) -> str:
@@ -257,6 +258,13 @@ def _clean_position_tier(value: object) -> str:
 def _clean_entry_mode(value: object) -> str:
     mode = str(value or "normal_buy").strip().lower()
     return mode if mode in VALID_ENTRY_MODES else "normal_buy"
+
+
+def _require_positive_number(value: object, field: str) -> float:
+    number = _number(value)
+    if number is None or number <= 0:
+        raise ValueError(f"{field} must be positive")
+    return number
 
 
 def _position_bucket_for_tier(tier: str) -> str:

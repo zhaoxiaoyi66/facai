@@ -260,7 +260,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
         st.markdown(
             '<div class="buy-execution-plan-summary is-empty">'
             "<strong>计划摘要</strong>"
-            f"<span>{escape(missing_text)} 本次买入将按 Radar / 普通买入门禁判断。</span>"
+            f"<span>{escape(missing_text)} Radar / 计划信息只作为风险提示，确认后可入账。</span>"
             f'<a href="{escape(href, quote=True)}" target="_self">{escape(create_text)}</a>'
             "</div>",
             unsafe_allow_html=True,
@@ -293,7 +293,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
         '<div class="buy-execution-plan-summary">'
         "<strong>计划摘要</strong>"
         f"{html}"
-        "<small>计划只提供执行依据；真正提交仍会经过 Radar / 计划内加仓 / 底仓建仓门禁。</small>"
+        "<small>计划只提供执行依据；Radar / 计划 / 结构提示会保存为复盘快照，不单独阻止买入。</small>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -435,7 +435,7 @@ def _render_ladder_buy_plan_reference(symbol: str) -> None:
         st.markdown(
             '<div class="ladder-buy-reference is-empty">'
             "<strong>分批买入计划</strong>"
-            "<span>未找到计划；本次买入将按 Radar / 买入门禁判断。</span>"
+            "<span>未找到计划；本次买入仍可确认入账，计划缺口会记录为提示。</span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1489,17 +1489,17 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
     plan_reasons = [] if entry_mode == "starter_position" else _portfolio_buy_plan_reasons(plan_gate)
     starter_reasons = _portfolio_starter_reasons(starter_gate)
     primary_reasons = starter_reasons if entry_mode == "starter_position" and starter_reasons else reasons
-    primary_title = "底仓检查结果" if entry_mode == "starter_position" else "买入执行门禁"
+    primary_title = "底仓提示" if entry_mode == "starter_position" else "买入风险提示"
     market_items = _portfolio_buy_market_status_items(market_status, gate)
     actions = _portfolio_buy_gate_actions(plan_reasons, starter_reasons, tier=tier)
-    reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>Radar / 买入门禁未通过。</li>"
+    reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>当前买入偏离系统建议，请人工确认。</li>"
     market_html = "".join(f"<li>{escape(item)}</li>" for item in market_items) or "<li>当前市场状态需复核。</li>"
     action_html = "".join(f"<li>{escape(item)}</li>" for item in actions)
     return (
         '<section class="portfolio-gate-notice">'
         '<div class="portfolio-gate-notice-head">'
-        f"<strong>{escape(symbol)} 未入账</strong>"
-        "<span>这不是交易记录；真实组合持仓没有变化。</span>"
+        f"<strong>{escape(symbol)} 买入风险提示</strong>"
+        "<span>系统不阻止买入；确认成交后会入账，并记录这些提示用于复盘。</span>"
         "</div>"
         '<div class="portfolio-gate-notice-grid">'
         f"<div><b>{escape(primary_title)}</b><ul>{reason_html}</ul></div>"
@@ -1522,10 +1522,10 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     mappings = [
         ("current price is above the discipline buy zone", "当前价高于 Radar 参考买区，属于买区提示。"),
         ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩，但不单独阻止买入。"),
-        ("valuation score below 40", "估值评分低于 40，禁止高仓位。"),
-        ("final score below 70", "综合评分低于 70，禁止核心仓。"),
-        ("core position is not allowed", "不允许核心仓。"),
-        ("heavy position is not allowed", "不允许高仓位。"),
+        ("valuation score below 40", "估值评分低于 40，系统建议降低仓位。"),
+        ("final score below 70", "综合评分低于 70，系统建议不要作为核心仓。"),
+        ("core position is not allowed", "系统不建议作为核心仓。"),
+        ("heavy position is not allowed", "系统不建议高仓位。"),
         ("data missing", "买区数据不足，需人工判断。"),
         ("stale", "缓存已过期，需人工判断。"),
         ("missing current price", "缺少当前价格。"),
@@ -1536,7 +1536,7 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
             return label
     if "Radar" in text or "买入后仓位" in text or "情绪交易风险" in text:
         return text
-    return text or "Radar / 买入门禁未通过。"
+    return text or "当前买入偏离系统建议，请人工确认。"
 
 
 def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[str]:
@@ -1579,8 +1579,8 @@ def _portfolio_buy_gate_actions(
         actions.append("先选择 A/B/C 持仓等级，再创建对应买入计划。")
     actions.extend(
         [
-            "降低买入数量，直到买入后仓位不超过明确仓位上限。",
-            "改为计划买入或价格提醒，不写入真实账本。",
+            "可降低买入数量，让仓位更接近参考上限。",
+            "也可改为计划买入或价格提醒，先观察再执行。",
             "重新复核该股票的 Radar 区间、技术回踩区和买入计划。",
         ]
     )
@@ -1599,9 +1599,9 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "quantity_exceeds_level": "买入数量超过计划档位剩余数量。",
         "position_exceeds_plan": "买入后仓位超过计划上限。",
         "mood_blocked": "交易心理不符合计划内执行。",
-        "data_missing": "价格或 Radar 数据缺失 / 过期，不能按计划入账。",
-        "price_missing": "缺少当前价格，不能匹配计划。",
-        "quantity_missing": "买入数量无效，不能匹配计划档位。",
+        "data_missing": "价格或 Radar 数据缺失 / 过期，无法匹配计划，仅作为提示。",
+        "price_missing": "缺少当前价格，无法匹配计划。",
+        "quantity_missing": "买入数量无效，无法匹配计划档位。",
         "level_filled": "该计划档位已没有剩余可买数量。",
         "plan_created_too_late": "计划创建时间较近；现在仅作为复盘标记，不再硬拦截。",
         "plan_modified_too_late": "计划修改时间较近；现在仅作为复盘标记，不再硬拦截。",
@@ -1621,8 +1621,8 @@ def _portfolio_starter_reasons(starter_gate: dict) -> list[str]:
     status = str(starter_gate.get("starter_match_status") or "").strip()
     labels = {
         "not_selected": "",
-        "starter_blocked": "A 类底仓建仓条件未通过。",
-        "starter_review_required": "估值评分过低，底仓建仓需要复核，不能直接入账。",
+        "starter_blocked": "A 类底仓建仓条件建议复核。",
+        "starter_review_required": "估值评分过低，底仓建仓需要复核。",
         "allow_starter_position": "已匹配 A 类底仓建仓条件。",
     }
     reasons = [labels.get(status, status)] if labels.get(status, status) else []

@@ -1461,10 +1461,8 @@ def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:
 
 
 def test_macro_module_is_not_imported_by_gate_or_sync_logic() -> None:
-    import data.decision_log as decision_log
     import data.portfolio_trade_sync as portfolio_trade_sync
     import data.trade_safety_gate as trade_safety_gate
 
     assert "macro_regime" not in inspect.getsource(trade_safety_gate)
     assert "macro_regime" not in inspect.getsource(portfolio_trade_sync)
-    assert "macro_regime" not in inspect.getsource(decision_log)

@@ -72,7 +72,7 @@ def evaluate_planned_ladder_buy(
     if qty is None or qty <= 0:
         return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct, timing=timing)
     if mood in BLOCKED_BUY_MOODS:
-        return _blocked(symbol, "mood_blocked", ["当前交易心理属于情绪交易风险，不能用计划内加仓绕过门禁。"], max_position_pct=max_position_pct, timing=timing)
+        return _blocked(symbol, "mood_blocked", ["当前交易心理属于情绪交易风险；系统不阻止买入，但建议确认不是情绪交易。"], max_position_pct=max_position_pct, timing=timing)
     if not _has_exit_or_invalidation(active_plan):
         return _blocked(symbol, "missing_exit_condition", ["分批买入计划缺少失效条件 / 退出条件。"], max_position_pct=max_position_pct, timing=timing)
     if max_position_pct is None:

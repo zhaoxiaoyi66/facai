@@ -1185,12 +1185,15 @@ def test_watchlist_empty_and_sample_fallback_do_not_override_real_symbols() -> N
     assert select_radar_symbols(["msft"], ["nvda"]) == (["MSFT"], "watchlist")
 
 
-def test_missing_buy_gate_result_defaults_to_blocked_entry_fields() -> None:
+def test_missing_buy_gate_result_defaults_to_advisory_entry_fields() -> None:
     fields = buy_gate_entry_fields(None, action_type="buy")
 
     assert fields["radarDecision"] == "DATA_MISSING"
-    assert fields["radarBlocked"] is True
-    assert fields["radarBlockReasons"]
+    assert fields["radarBlocked"] is False
+    assert fields["radarBlockReasons"] == []
+    assert fields["gateHardBlocked"] is False
+    assert fields["radarAdvisoryOnly"] is True
+    assert fields["radarAdvisoryWarnings"]
     assert fields["radarObservationOnly"] is False
     assert fields["gateCheckedAt"]
 
@@ -1218,7 +1221,7 @@ def test_buy_gate_treats_block_chase_as_advisory() -> None:
             buy_reason="plan execution",
         )
 
-        assert gate.status == "pass"
+        assert gate.status == "warning"
         assert gate.can_continue is True
         assert gate.can_sync_to_portfolio is True
         assert gate.reasons == []
@@ -1248,7 +1251,7 @@ def test_buy_gate_treats_data_missing_as_advisory() -> None:
         )
 
         assert report.decision == "DATA_MISSING"
-        assert gate.status == "pass"
+        assert gate.status == "warning"
         assert gate.can_sync_to_portfolio is True
         assert gate.advisory_warnings
         assert gate.radar_advisory_only is True
@@ -1281,7 +1284,7 @@ def test_buy_gate_treats_price_zone_positions_as_advisory() -> None:
             buy_reason="plan execution",
         )
 
-        assert gate.status == "pass"
+        assert gate.status == "warning"
         assert gate.gate_hard_blocked is False
         assert gate.can_sync_to_portfolio is True
         assert gate.price_position == price_position
@@ -1348,7 +1351,7 @@ def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
         assert gate.can_sync_to_portfolio is True
 
 
-def test_buy_gate_blocks_fomo_even_inside_buy_zone() -> None:
+def test_buy_gate_treats_fomo_as_advisory_even_inside_buy_zone() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 95)
@@ -1372,11 +1375,14 @@ def test_buy_gate_blocks_fomo_even_inside_buy_zone() -> None:
         )
 
         assert report.decision == "ALLOW_BUY"
-        assert gate.status == "blocked"
-        assert gate.can_sync_to_portfolio is False
+        assert gate.status == "warning"
+        assert gate.can_sync_to_portfolio is True
+        assert gate.gate_hard_blocked is False
+        assert gate.mood_gate_blocked is False
+        assert any("情绪" in item or "FOMO" in item for item in gate.advisory_warnings)
 
 
-def test_buy_gate_blocks_core_position_above_core_max_pct() -> None:
+def test_buy_gate_treats_core_position_above_core_max_pct_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 95)
@@ -1399,11 +1405,14 @@ def test_buy_gate_blocks_core_position_above_core_max_pct() -> None:
             buy_reason="inside discipline buy zone",
         )
 
-        assert gate.status == "blocked"
-        assert gate.can_sync_to_portfolio is False
+        assert gate.status == "warning"
+        assert gate.can_sync_to_portfolio is True
+        assert gate.gate_hard_blocked is False
+        assert gate.position_gate_blocked is False
+        assert any("仓位" in item or "参考上限" in item for item in gate.advisory_warnings)
 
 
-def test_buy_gate_blocks_trade_position_above_trade_max_pct() -> None:
+def test_buy_gate_treats_trade_position_above_trade_max_pct_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 95)
@@ -1426,6 +1435,8 @@ def test_buy_gate_blocks_trade_position_above_trade_max_pct() -> None:
             buy_reason="inside discipline buy zone",
         )
 
-        assert gate.status == "blocked"
-        assert gate.can_continue is False
-        assert gate.can_sync_to_portfolio is False
+        assert gate.status == "warning"
+        assert gate.can_continue is True
+        assert gate.can_sync_to_portfolio is True
+        assert gate.gate_hard_blocked is False
+        assert any("仓位" in item or "参考上限" in item for item in gate.advisory_warnings)

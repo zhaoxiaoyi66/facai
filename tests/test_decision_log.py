@@ -276,11 +276,14 @@ class DecisionLogTests(unittest.TestCase):
             )
 
             self.assertEqual(saved["radar_decision"], "BLOCK_CHASE")
-            self.assertTrue(saved["radar_blocked"])
-            self.assertTrue(saved["mood_gate_blocked"])
+            self.assertFalse(saved["radar_blocked"])
+            self.assertFalse(saved["mood_gate_blocked"])
             self.assertFalse(saved["position_gate_blocked"])
+            self.assertTrue(saved["radar_advisory_only"])
             self.assertEqual(saved["gate_checked_at"], "2026-05-26T12:00:00+00:00")
-            self.assertEqual(saved["radar_block_reasons"], ["当前价进入追高禁止区", "情绪交易风险"])
+            self.assertEqual(saved["radar_block_reasons"], [])
+            self.assertIn("当前价进入追高禁止区", saved["radar_advisory_warnings"])
+            self.assertIn("情绪交易风险", saved["radar_advisory_warnings"])
 
     def test_missing_radar_snapshot_uses_ledger_language(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -296,8 +299,8 @@ class DecisionLogTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(saved["radar_block_reasons"], ["Radar 买入门禁结果缺失，不能自动入账。"])
-            self.assertNotIn("同步", saved["radar_block_reasons"][0])
+            self.assertEqual(saved["radar_block_reasons"], [])
+            self.assertEqual(saved["radar_advisory_warnings"], ["Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"])
 
     def test_trade_journal_store_saves_fresh_buy_plan_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -23,10 +23,10 @@ DECISION_MOOD_TYPES = {
     "discipline_check",
 }
 SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，不能入账；本次不会写入真实交易日志。"
-BUY_RADAR_SYNC_BLOCK_REASON = "买入执行门禁未通过或标记为仅观察，不能入账。"
-BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，不能自动入账。"
+BUY_RADAR_SYNC_BLOCK_REASON = "仅观察记录不是真实成交，不能入账。"
+BUY_RADAR_MISSING_GATE_REASON = "Radar 买入提示快照缺失；不作为买入硬拦截。"
 BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，不能入账。"
-BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整或不合格，不能入账。"
+BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整；仅作为买入提示记录。"
 
 
 def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -119,8 +119,8 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     blockers = _reasons_list(entry.get("blockers"), entry.get("blockers_json"))
     sell_blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
     buy_blocked = _buy_sync_blocked_by_radar(entry, action_type)
-    buy_invalid_plan = _buy_sync_invalid_radar_override(entry, action_type)
-    buy_missing_gate = _buy_sync_missing_radar_gate(entry, action_type)
+    buy_invalid_plan = False
+    buy_missing_gate = False
     buy_missing_tier = _buy_sync_missing_position_class(entry, action_type)
     blocked = sell_blocked or buy_blocked or buy_invalid_plan or buy_missing_gate or buy_missing_tier
     reason = ""
@@ -143,11 +143,7 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
 def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
     if action_type not in CLASSIFICATION_ACTION_TYPES:
         return False
-    if _clean_bool(entry.get("radar_observation_only")):
-        return True
-    if "gate_hard_blocked" in entry and entry.get("gate_hard_blocked") is not None:
-        return _clean_bool(entry.get("gate_hard_blocked"))
-    return _clean_bool(entry.get("mood_gate_blocked")) or _clean_bool(entry.get("position_gate_blocked"))
+    return _clean_bool(entry.get("radar_observation_only"))
 
 
 def _buy_sync_invalid_radar_override(entry: dict[str, Any], action_type: str) -> bool:

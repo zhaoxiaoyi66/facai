@@ -7,7 +7,7 @@ from typing import Any
 
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
-MISSING_BUY_GATE_REASON = "Radar 买入门禁结果缺失，不能自动入账。"
+MISSING_BUY_GATE_REASON = "Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,11 @@ class BuyGateResult:
 
     @property
     def status(self) -> str:
-        return "blocked" if self.is_blocked else "pass"
+        if self.is_blocked:
+            return "blocked"
+        if self.severity == "warning":
+            return "warning"
+        return "pass"
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -115,19 +119,19 @@ def evaluate_buy_gate(
 
     advisory_warnings = _decision_advisory_warnings(data, decision, bool(observation_only))
     mood_reasons = evaluate_mood_gate(mood)
-    reasons.extend(mood_reasons)
+    advisory_warnings.extend(mood_reasons)
     position_reasons = evaluate_position_limit(data, bucket, planned_after_position_pct)
-    reasons.extend(position_reasons)
+    advisory_warnings.extend(position_reasons)
     advisory_warnings.extend(evaluate_position_advisory(data, bucket, planned_after_position_pct))
     if decision == "ALLOW_BUY" and not str(buy_reason or "").strip():
-        required.append("ALLOW_BUY 仍需填写买入理由，防止临场拍脑袋。")
+        advisory_warnings.append("ALLOW_BUY 仍建议填写买入理由，防止临场拍脑袋。")
 
-    is_blocked = bool(reasons or required)
-    can_sync = not is_blocked and not bool(observation_only)
+    is_blocked = False
+    can_sync = not bool(observation_only)
     if observation_only:
         advisory_warnings.append("仅观察不是一笔真实买入；请用计划买入或价格提醒记录观察，不写入真实账本。")
 
-    severity = "block" if is_blocked else "pass"
+    severity = "warning" if advisory_warnings else "pass"
     return BuyGateResult(
         ticker=ticker,
         action=action,
@@ -143,10 +147,10 @@ def evaluate_buy_gate(
         position_bucket=bucket,
         mood=mood,
         is_observation_only=bool(observation_only),
-        mood_gate_blocked=bool(mood_reasons),
-        position_gate_blocked=bool(position_reasons),
-        gate_hard_blocked=is_blocked,
-        radar_advisory_only=bool(advisory_warnings and not is_blocked),
+        mood_gate_blocked=False,
+        position_gate_blocked=False,
+        gate_hard_blocked=False,
+        radar_advisory_only=bool(advisory_warnings),
         price_position=_price_position(data),
         entry_display_label=str(data.get("entry_display_label") or ""),
         entry_action_hint=str(data.get("entry_action_hint") or ""),
@@ -172,11 +176,11 @@ def evaluate_position_limit(data: dict[str, Any], position_bucket: str, planned_
         limit = _number(data.get("trade_max_pct"))
         label = "交易仓"
     else:
-        return ["未选择核心仓/交易仓，不能判断买入后是否超过 Radar 仓位上限。"]
+        return ["未选择核心仓/交易仓，无法判断买入后是否偏离 Radar 仓位参考。"]
     if limit is None or limit <= 0:
         return []
     if after_pct > limit:
-        return [f"买入后仓位 {after_pct:.1f}% 超过 Radar {label}上限 {limit:.1f}%。"]
+        return [f"当前买入偏离系统建议：买入后仓位 {after_pct:.1f}% 高于 Radar {label}参考上限 {limit:.1f}%；系统不阻止买入，会记录用于复盘。"]
     return []
 
 
@@ -203,7 +207,7 @@ def evaluate_position_advisory(data: dict[str, Any], position_bucket: str, plann
 def evaluate_mood_gate(mood: str) -> list[str]:
     text = str(mood or "").strip().lower()
     if text in BUY_MOOD_BLOCKERS:
-        return ["情绪交易风险：FOMO / 焦虑 / 抄底冲动 / 复仇交易不能绕过 Radar 门禁。"]
+        return ["买入风险提示：当前存在 FOMO / 焦虑 / 抄底冲动 / 复仇交易倾向。系统不阻止买入，但建议确认这不是情绪交易。"]
     return []
 
 
@@ -212,11 +216,11 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         if str(action_type or "").strip().lower() in {"buy", "add"}:
             return {
                 "radarDecision": "DATA_MISSING",
-                "radarBlocked": True,
-                "radarBlockReasons": [MISSING_BUY_GATE_REASON],
-                "gateHardBlocked": True,
-                "radarAdvisoryOnly": False,
-                "radarAdvisoryWarnings": [],
+                "radarBlocked": False,
+                "radarBlockReasons": [],
+                "gateHardBlocked": False,
+                "radarAdvisoryOnly": True,
+                "radarAdvisoryWarnings": [MISSING_BUY_GATE_REASON],
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
                 "radarObservationOnly": False,
@@ -236,9 +240,9 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         }
     return {
         "radarDecision": result.decision,
-        "radarBlocked": result.is_blocked,
+        "radarBlocked": False,
         "radarBlockReasons": result.reasons + result.required_actions,
-        "gateHardBlocked": result.gate_hard_blocked,
+        "gateHardBlocked": False,
         "radarAdvisoryOnly": result.radar_advisory_only,
         "radarAdvisoryWarnings": result.advisory_warnings,
         "pricePosition": result.price_position,

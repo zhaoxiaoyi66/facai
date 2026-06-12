@@ -125,6 +125,11 @@ TRADE_DISCIPLINE_COLUMNS = {
     "structure_reasons_json": "TEXT",
     "structure_warnings_json": "TEXT",
     "structure_checked_at": "TEXT",
+    "buy_advisory_warnings_json": "TEXT",
+    "buy_advisory_acknowledged": "INTEGER",
+    "advisory_checked_at": "TEXT",
+    "macro_regime": "TEXT",
+    "portfolio_structure_status": "TEXT",
 }
 
 
@@ -481,6 +486,7 @@ class TradeJournalStore:
             _write_pre_trade_snapshot(conn, int(entry_id), cleaned)
             _write_sell_context_snapshot(conn, int(entry_id), cleaned)
             _write_structure_entry_snapshot(conn, int(entry_id), cleaned)
+            _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -597,6 +603,7 @@ class TradeJournalStore:
                 _write_pre_trade_snapshot(conn, clean_id, cleaned)
                 _write_sell_context_snapshot(conn, clean_id, cleaned)
                 _write_structure_entry_snapshot(conn, clean_id, cleaned)
+                _write_buy_advisory_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -884,6 +891,40 @@ def _write_structure_entry_snapshot(conn: sqlite3.Connection, entry_id: int, cle
             cleaned["structure_reasons_json"],
             cleaned["structure_warnings_json"],
             cleaned["structure_checked_at"],
+            entry_id,
+        ),
+    )
+
+
+def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, "", "[]", False}
+        for field in (
+            "buy_advisory_warnings_json",
+            "buy_advisory_acknowledged",
+            "advisory_checked_at",
+            "macro_regime",
+            "portfolio_structure_status",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            buy_advisory_warnings_json = ?,
+            buy_advisory_acknowledged = ?,
+            advisory_checked_at = ?,
+            macro_regime = ?,
+            portfolio_structure_status = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["buy_advisory_warnings_json"],
+            cleaned["buy_advisory_acknowledged"],
+            cleaned["advisory_checked_at"],
+            cleaned["macro_regime"],
+            cleaned["portfolio_structure_status"],
             entry_id,
         ),
     )
@@ -1291,6 +1332,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_starter_snapshot(action_type, values))
     cleaned.update(_clean_sell_context_snapshot(action_type, values))
     cleaned.update(_clean_structure_entry_snapshot(action_type, values))
+    cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
     return cleaned
 
 
@@ -1394,11 +1436,11 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_decision": "DATA_MISSING",
             "radar_data_status": "DATA_MISSING",
             "radar_is_stale": False,
-            "radar_blocked": True,
-            "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，不能自动入账。"]),
-            "gate_hard_blocked": True,
-            "radar_advisory_only": False,
-            "radar_advisory_warnings_json": "[]",
+            "radar_blocked": False,
+            "radar_block_reasons_json": "[]",
+            "gate_hard_blocked": False,
+            "radar_advisory_only": True,
+            "radar_advisory_warnings_json": _reasons_json(["Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"]),
             "price_position": None,
             "entry_display_label": None,
             "entry_action_hint": None,
@@ -1412,27 +1454,16 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_observation_only": False,
             "gate_checked_at": _now(),
         }
+    advisory_warnings = _buy_advisory_warnings_from_values(values)
     return {
         "radar_decision": _clean_optional_text(_value(values, "radarDecision", "radar_decision")),
         "radar_data_status": _clean_optional_text(_value(values, "radarDataStatus", "radar_data_status")),
         "radar_is_stale": _clean_bool(_value(values, "radarIsStale", "radar_is_stale")),
-        "radar_blocked": _clean_bool(_value(values, "radarBlocked", "radar_blocked")),
-        "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
-        "gate_hard_blocked": _clean_bool(
-            _value(
-                values,
-                "gateHardBlocked",
-                "gate_hard_blocked",
-                "moodGateBlocked",
-                "mood_gate_blocked",
-                "positionGateBlocked",
-                "position_gate_blocked",
-            )
-        ),
-        "radar_advisory_only": _clean_bool(_value(values, "radarAdvisoryOnly", "radar_advisory_only")),
-        "radar_advisory_warnings_json": _reasons_json(
-            _value(values, "radarAdvisoryWarnings", "radar_advisory_warnings", "radar_advisory_warnings_json")
-        ),
+        "radar_blocked": False,
+        "radar_block_reasons_json": "[]",
+        "gate_hard_blocked": False,
+        "radar_advisory_only": bool(advisory_warnings) or _clean_bool(_value(values, "radarAdvisoryOnly", "radar_advisory_only")),
+        "radar_advisory_warnings_json": _reasons_json(advisory_warnings),
         "price_position": _clean_optional_text(_value(values, "pricePosition", "price_position", "zoneStatus", "zone_status")),
         "entry_display_label": _clean_optional_text(_value(values, "entryDisplayLabel", "entry_display_label")),
         "entry_action_hint": _clean_optional_text(_value(values, "entryActionHint", "entry_action_hint")),
@@ -1443,11 +1474,50 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         ),
         "deep_valuation_zone_json": _dict_json(_value(values, "deepValuationZone", "deep_valuation_zone", "deep_valuation_zone_json")),
         "chase_above_price": _optional_non_negative_number(_value(values, "chaseAbovePrice", "chase_above_price"), "chase_above_price"),
-        "mood_gate_blocked": _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")),
-        "position_gate_blocked": _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")),
+        "mood_gate_blocked": False,
+        "position_gate_blocked": False,
         "radar_observation_only": _clean_bool(_value(values, "radarObservationOnly", "radar_observation_only")),
         "gate_checked_at": _clean_optional_text(_value(values, "gateCheckedAt", "gate_checked_at")),
     }
+
+
+def _buy_advisory_warnings_from_values(values: dict) -> list[str]:
+    warnings: list[str] = []
+    for key_group in (
+        ("radarAdvisoryWarnings", "radar_advisory_warnings", "radar_advisory_warnings_json"),
+        ("radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json"),
+    ):
+        warnings.extend(_reasons_list(_value(values, *key_group)))
+    if _clean_bool(_value(values, "radarBlocked", "radar_blocked")) and not warnings:
+        warnings.append("Radar 买区提示需人工复核；不作为买入硬拦截。")
+    if _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked")) and not warnings:
+        warnings.append("旧买入门禁标记已按提示保存；不作为买入硬拦截。")
+    if _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")):
+        warnings.append("买入情绪提示：请确认这不是 FOMO / 焦虑 / 复仇交易。")
+    if _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")):
+        warnings.append("买入仓位提示：买入后仓位偏离系统参考上限。")
+    return _dedupe_text(warnings)
+
+
+def _reasons_list(value) -> list[str]:
+    try:
+        parsed = json.loads(_reasons_json(value))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    return [str(item) for item in parsed if str(item).strip()]
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _clean_buy_plan_snapshot(action_type: str, values: dict) -> dict:
@@ -1567,6 +1637,29 @@ def _clean_structure_entry_snapshot(action_type: str, values: dict) -> dict:
             _value(values, "structureWarnings", "structure_warnings", "structure_warnings_json")
         ),
         "structure_checked_at": _clean_optional_text(_value(values, "structureCheckedAt", "structure_checked_at")),
+    }
+
+
+def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "buy_advisory_warnings_json": "[]",
+            "buy_advisory_acknowledged": False,
+            "advisory_checked_at": None,
+            "macro_regime": None,
+            "portfolio_structure_status": None,
+        }
+    warnings = _reasons_list(_value(values, "buyAdvisoryWarnings", "buy_advisory_warnings", "buy_advisory_warnings_json"))
+    if not warnings:
+        warnings = _buy_advisory_warnings_from_values(values)
+    return {
+        "buy_advisory_warnings_json": _reasons_json(_dedupe_text(warnings)),
+        "buy_advisory_acknowledged": _clean_bool(_value(values, "buyAdvisoryAcknowledged", "buy_advisory_acknowledged")),
+        "advisory_checked_at": _clean_optional_text(_value(values, "advisoryCheckedAt", "advisory_checked_at", "gateCheckedAt", "gate_checked_at")),
+        "macro_regime": _clean_optional_text(_value(values, "macroRegime", "macro_regime")),
+        "portfolio_structure_status": _clean_optional_text(
+            _value(values, "portfolioStructureStatus", "portfolio_structure_status")
+        ),
     }
 
 
@@ -2146,6 +2239,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["structure_reasons"] = _load_json_list(item["structure_reasons_json"])
     if "structure_warnings_json" in item:
         item["structure_warnings"] = _load_json_list(item["structure_warnings_json"])
+    if "buy_advisory_warnings_json" in item:
+        item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
     return item
 
 
