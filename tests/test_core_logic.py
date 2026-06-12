@@ -1539,6 +1539,22 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("dashboard-command-center", styles_source)
         self.assertIn("dashboard-command-details", styles_source)
 
+    def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        tables_module = __import__("ui.dashboard_tables", fromlist=[""])
+        theme_module = __import__("ui.theme", fromlist=[""])
+        styles_source = inspect.getsource(dashboard_module._render_dashboard_styles)
+        table_source = inspect.getsource(tables_module)
+        theme_source = inspect.getsource(theme_module.render_global_styles)
+
+        self.assertIn("max-width: 1360px", styles_source)
+        self.assertIn("--dash-success-bg", styles_source)
+        self.assertIn("--dash-shadow", styles_source)
+        self.assertIn("font-family:ui-monospace", styles_source)
+        self.assertIn("min-height:50px", styles_source)
+        self.assertIn("var(--dash-success-bg)", table_source)
+        self.assertIn("width: 224px", theme_source)
+
     def test_dashboard_filter_chip_links_drive_table_filters(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
 

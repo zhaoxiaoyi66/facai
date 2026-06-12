@@ -555,9 +555,9 @@ def render_global_styles() -> None:
         }
 
         [data-testid="stMainBlockContainer"] {
-            margin-left: 272px !important;
-            margin-right: 2rem !important;
-            max-width: 1440px;
+            margin-left: 252px !important;
+            margin-right: 1.25rem !important;
+            max-width: 1480px;
         }
 
         .zhx-fixed-sidebar {
@@ -566,8 +566,8 @@ def render_global_styles() -> None:
             top: 0;
             left: 0;
             bottom: 0;
-            width: 240px;
-            padding: 24px;
+            width: 224px;
+            padding: 18px 16px;
             box-sizing: border-box;
             background: #0B1220;
             border-right: 1px solid rgba(255, 255, 255, 0.06);
@@ -575,32 +575,32 @@ def render_global_styles() -> None:
             display: flex;
             flex-direction: column;
             overflow-y: auto;
-            box-shadow: 18px 0 36px rgba(15, 23, 42, 0.10);
+            box-shadow: 14px 0 30px rgba(15, 23, 42, 0.10);
         }
 
         .zhx-side-brand {
-            margin-bottom: 1.35rem;
+            margin-bottom: 1rem;
         }
 
         .zhx-side-title {
             color: #F8FAFC;
-            font-size: 1.08rem;
+            font-size: 1rem;
             font-weight: 820;
             letter-spacing: 0.01em;
             line-height: 1.15;
         }
 
         .zhx-side-subtitle {
-            margin-top: 0.28rem;
+            margin-top: 0.22rem;
             color: #94A3B8;
-            font-size: 0.72rem;
+            font-size: 0.66rem;
             font-weight: 650;
             letter-spacing: 0.06em;
             text-transform: uppercase;
         }
 
         .zhx-side-section {
-            margin: 1.05rem 0 0.42rem;
+            margin: 0.82rem 0 0.34rem;
             color: #64748B;
             font-size: 0.68rem;
             font-weight: 800;
@@ -609,13 +609,13 @@ def render_global_styles() -> None:
         }
 
         .zhx-side-section.workspace {
-            margin-top: 1.25rem;
+            margin-top: 0.96rem;
         }
 
         .zhx-side-data-card {
-            padding: 0.58rem 0.65rem;
+            padding: 0.48rem 0.56rem;
             border: 1px solid rgba(148, 163, 184, 0.12);
-            border-radius: 10px;
+            border-radius: 8px;
             background: rgba(15, 23, 42, 0.48);
             line-height: 1.38;
         }
@@ -623,7 +623,7 @@ def render_global_styles() -> None:
         .zhx-side-data-card strong {
             display: block;
             color: #CBD5E1;
-            font-size: 0.78rem;
+            font-size: 0.73rem;
             font-weight: 720;
         }
 
@@ -631,7 +631,7 @@ def render_global_styles() -> None:
         .zhx-side-queue {
             display: block;
             color: #64748B;
-            font-size: 0.72rem;
+            font-size: 0.67rem;
         }
 
         .zhx-side-queue {
@@ -641,21 +641,21 @@ def render_global_styles() -> None:
         .zhx-side-nav {
             display: flex;
             flex-direction: column;
-            gap: 0.22rem;
+            gap: 0.16rem;
         }
 
         .zhx-side-nav-item {
             position: relative;
-            min-height: 40px;
-            border-radius: 10px;
-            padding: 0.48rem 0.7rem 0.48rem 0.78rem;
+            min-height: 36px;
+            border-radius: 8px;
+            padding: 0.38rem 0.58rem 0.38rem 0.66rem;
             border: 1px solid transparent;
             color: #94A3B8 !important;
             text-decoration: none !important;
             display: flex;
             align-items: center;
-            gap: 0.62rem;
-            font-size: 0.88rem;
+            gap: 0.54rem;
+            font-size: 0.82rem;
             font-weight: 650;
             transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
         }
@@ -675,26 +675,26 @@ def render_global_styles() -> None:
             content: "";
             position: absolute;
             left: 0;
-            top: 9px;
-            bottom: 9px;
+            top: 8px;
+            bottom: 8px;
             width: 3px;
             border-radius: 999px;
             background: #60A5FA;
         }
 
         .zhx-side-nav-icon {
-            width: 1.05rem;
+            width: 0.96rem;
             color: inherit;
             text-align: center;
-            font-size: 0.95rem;
+            font-size: 0.9rem;
         }
 
         .zhx-side-footer {
             margin-top: auto;
-            padding-top: 0.9rem;
+            padding-top: 0.72rem;
             border-top: 1px solid rgba(255, 255, 255, 0.10);
             color: #94A3B8;
-            font-size: 0.76rem;
+            font-size: 0.7rem;
             font-weight: 650;
             display: flex;
             gap: 0.4rem;

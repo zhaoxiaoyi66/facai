@@ -10,13 +10,13 @@ from data.entry_display import build_entry_display
 
 
 BADGE_STYLES = {
-    "green": ("#F4FAF6", "#166534", "#DDEBE2"),
-    "blue": ("#F4F7FB", "#36516F", "#DCE6F2"),
-    "yellow": ("#FCFAF0", "#7A5C12", "#EEE6C8"),
-    "orange": ("#FBF7F1", "#7C4A1D", "#ECDCC8"),
-    "red": ("#FBF5F5", "#8A1F1F", "#ECD5D5"),
-    "deepred": ("#FDF1F1", "#6F1111", "#E7B9B9"),
-    "gray": ("#F8FAFC", "#475569", "#E4EAF1"),
+    "green": ("var(--dash-success-bg)", "var(--dash-success)", "var(--dash-success-border)"),
+    "blue": ("var(--dash-info-bg)", "var(--dash-info)", "var(--dash-info-border)"),
+    "yellow": ("var(--dash-warning-bg)", "var(--dash-warning)", "var(--dash-warning-border)"),
+    "orange": ("var(--dash-orange-bg)", "var(--dash-orange)", "var(--dash-orange-border)"),
+    "red": ("var(--dash-danger-bg)", "var(--dash-danger)", "var(--dash-danger-border)"),
+    "deepred": ("var(--dash-danger-bg)", "var(--dash-danger-strong)", "var(--dash-danger-border)"),
+    "gray": ("var(--dash-neutral-bg)", "var(--dash-neutral)", "var(--dash-neutral-border)"),
 }
 
 TECHNICAL_ERROR_HINTS = (
