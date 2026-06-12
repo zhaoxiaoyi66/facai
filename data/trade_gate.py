@@ -19,6 +19,7 @@ class BuyGateResult:
     can_sync_portfolio: bool
     severity: str
     reasons: list[str]
+    advisory_warnings: list[str]
     allowed_add_pct: float
     core_max_pct: float
     trade_max_pct: float
@@ -27,6 +28,16 @@ class BuyGateResult:
     is_observation_only: bool
     mood_gate_blocked: bool
     position_gate_blocked: bool
+    gate_hard_blocked: bool
+    radar_advisory_only: bool
+    price_position: str
+    entry_display_label: str
+    entry_action_hint: str
+    entry_display_reason: str
+    buy_zone_snapshot: Any
+    technical_entry_zone: Any
+    deep_valuation_zone: Any
+    chase_above_price: float | None
     required_actions: list[str]
     gate_checked_at: str
 
@@ -79,6 +90,7 @@ def evaluate_buy_gate(
             can_sync_portfolio=True,
             severity="not_applicable",
             reasons=[],
+            advisory_warnings=[],
             allowed_add_pct=_number(data.get("allowed_add_pct")) or 0.0,
             core_max_pct=_number(data.get("core_max_pct")) or 0.0,
             trade_max_pct=_number(data.get("trade_max_pct")) or 0.0,
@@ -87,22 +99,33 @@ def evaluate_buy_gate(
             is_observation_only=bool(observation_only),
             mood_gate_blocked=False,
             position_gate_blocked=False,
+            gate_hard_blocked=False,
+            radar_advisory_only=False,
+            price_position=_price_position(data),
+            entry_display_label=str(data.get("entry_display_label") or ""),
+            entry_action_hint=str(data.get("entry_action_hint") or ""),
+            entry_display_reason=str(data.get("entry_display_reason") or ""),
+            buy_zone_snapshot=data.get("buy_zone"),
+            technical_entry_zone=_technical_entry_zone(data),
+            deep_valuation_zone=data.get("deep_valuation_zone") or data.get("buy_zone"),
+            chase_above_price=_number(data.get("chase_above_price")),
             required_actions=[],
             gate_checked_at=_checked_at(checked_at),
         )
 
-    reasons.extend(_decision_gate_reasons(data, decision, bool(observation_only)))
+    advisory_warnings = _decision_advisory_warnings(data, decision, bool(observation_only))
     mood_reasons = evaluate_mood_gate(mood)
     reasons.extend(mood_reasons)
     position_reasons = evaluate_position_limit(data, bucket, planned_after_position_pct)
     reasons.extend(position_reasons)
+    advisory_warnings.extend(evaluate_position_advisory(data, bucket, planned_after_position_pct))
     if decision == "ALLOW_BUY" and not str(buy_reason or "").strip():
         required.append("ALLOW_BUY 仍需填写买入理由，防止临场拍脑袋。")
 
     is_blocked = bool(reasons or required)
     can_sync = not is_blocked and not bool(observation_only)
-    if observation_only and is_blocked:
-        required.append("仅观察记录不会同步到组合持仓；这不是一笔真实买入。")
+    if observation_only:
+        advisory_warnings.append("仅观察记录不会同步到组合持仓；这不是一笔真实买入。")
 
     severity = "block" if is_blocked else "pass"
     return BuyGateResult(
@@ -113,6 +136,7 @@ def evaluate_buy_gate(
         can_sync_portfolio=can_sync,
         severity=severity,
         reasons=_dedupe(reasons),
+        advisory_warnings=_dedupe(advisory_warnings),
         allowed_add_pct=_number(data.get("allowed_add_pct")) or 0.0,
         core_max_pct=_number(data.get("core_max_pct")) or 0.0,
         trade_max_pct=_number(data.get("trade_max_pct")) or 0.0,
@@ -121,6 +145,16 @@ def evaluate_buy_gate(
         is_observation_only=bool(observation_only),
         mood_gate_blocked=bool(mood_reasons),
         position_gate_blocked=bool(position_reasons),
+        gate_hard_blocked=is_blocked,
+        radar_advisory_only=bool(advisory_warnings and not is_blocked),
+        price_position=_price_position(data),
+        entry_display_label=str(data.get("entry_display_label") or ""),
+        entry_action_hint=str(data.get("entry_action_hint") or ""),
+        entry_display_reason=str(data.get("entry_display_reason") or ""),
+        buy_zone_snapshot=data.get("buy_zone"),
+        technical_entry_zone=_technical_entry_zone(data),
+        deep_valuation_zone=data.get("deep_valuation_zone") or data.get("buy_zone"),
+        chase_above_price=_number(data.get("chase_above_price")),
         required_actions=_dedupe(required),
         gate_checked_at=_checked_at(checked_at),
     )
@@ -139,10 +173,30 @@ def evaluate_position_limit(data: dict[str, Any], position_bucket: str, planned_
         label = "交易仓"
     else:
         return ["未选择核心仓/交易仓，不能判断买入后是否超过 Radar 仓位上限。"]
-    if limit is None:
-        return [f"缺少 {label} 上限，不能继续新增。"]
+    if limit is None or limit <= 0:
+        return []
     if after_pct > limit:
         return [f"买入后仓位 {after_pct:.1f}% 超过 Radar {label}上限 {limit:.1f}%。"]
+    return []
+
+
+def evaluate_position_advisory(data: dict[str, Any], position_bucket: str, planned_after_position_pct: float | None) -> list[str]:
+    after_pct = _number(planned_after_position_pct)
+    if after_pct is None:
+        return []
+    bucket = _position_bucket(position_bucket)
+    if bucket == "core":
+        limit = _number(data.get("core_max_pct"))
+        label = "核心仓"
+    elif bucket == "trade":
+        limit = _number(data.get("trade_max_pct"))
+        label = "交易仓"
+    else:
+        return ["未选择核心仓/交易仓，无法给出 Radar 仓位参考。"]
+    if limit is None:
+        return [f"缺少 Radar {label}参考上限，需人工判断仓位。"]
+    if limit <= 0:
+        return [f"Radar {label}参考上限为 0%，这是风险提示，不单独阻止买入。"]
     return []
 
 
@@ -160,6 +214,9 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
                 "radarDecision": "DATA_MISSING",
                 "radarBlocked": True,
                 "radarBlockReasons": [MISSING_BUY_GATE_REASON],
+                "gateHardBlocked": True,
+                "radarAdvisoryOnly": False,
+                "radarAdvisoryWarnings": [],
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
                 "radarObservationOnly": False,
@@ -169,6 +226,9 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "radarDecision": "",
             "radarBlocked": False,
             "radarBlockReasons": [],
+            "gateHardBlocked": False,
+            "radarAdvisoryOnly": False,
+            "radarAdvisoryWarnings": [],
             "moodGateBlocked": False,
             "positionGateBlocked": False,
             "radarObservationOnly": False,
@@ -178,6 +238,17 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "radarDecision": result.decision,
         "radarBlocked": result.is_blocked,
         "radarBlockReasons": result.reasons + result.required_actions,
+        "gateHardBlocked": result.gate_hard_blocked,
+        "radarAdvisoryOnly": result.radar_advisory_only,
+        "radarAdvisoryWarnings": result.advisory_warnings,
+        "pricePosition": result.price_position,
+        "entryDisplayLabel": result.entry_display_label,
+        "entryActionHint": result.entry_action_hint,
+        "entryDisplayReason": result.entry_display_reason,
+        "buyZoneSnapshot": result.buy_zone_snapshot,
+        "technicalEntryZone": result.technical_entry_zone,
+        "deepValuationZone": result.deep_valuation_zone,
+        "chaseAbovePrice": result.chase_above_price,
         "moodGateBlocked": result.mood_gate_blocked,
         "positionGateBlocked": result.position_gate_blocked,
         "radarObservationOnly": result.is_observation_only,
@@ -185,20 +256,37 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
     }
 
 
-def _decision_gate_reasons(data: dict[str, Any], decision: str, observation_only: bool) -> list[str]:
+def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation_only: bool) -> list[str]:
     block_reasons = [str(item) for item in (data.get("block_reasons") or []) if str(item).strip()]
-    if decision in {"DATA_MISSING", "BLOCK_CHASE"}:
-        return block_reasons or [f"Radar 结论为 {decision}，禁止新增。"]
+    if decision == "DATA_MISSING":
+        return block_reasons or ["Radar / 买区数据不足，需人工判断；不作为买入硬拦截。"]
+    if decision == "BLOCK_CHASE":
+        return block_reasons or ["当前处于追高风险区，系统建议等待回踩；不作为买入硬拦截。"]
     if decision == "AVOID":
-        return ["Radar 结论为 AVOID，禁止把风险票当成新增仓位。"]
+        return block_reasons or ["Radar 结论为 AVOID，请人工复核风险；不作为买入硬拦截。"]
     if decision == "WAIT":
-        reason = "Radar 结论为 WAIT，默认禁止真实买入/加仓。"
+        reason = "Radar 结论为 WAIT，系统建议等待或复核；不作为买入硬拦截。"
         if observation_only:
-            reason = "Radar 结论为 WAIT；仅可保存为观察记录，不同步组合持仓。"
+            reason = "Radar 结论为 WAIT；本次标记为仅观察，不同步组合持仓。"
         return [reason]
     if decision == "ALLOW_BUY":
         return []
-    return [f"Radar 结论未知：{decision or 'missing'}，禁止新增。"]
+    return [f"Radar 结论未知：{decision or 'missing'}，需人工判断；不作为买入硬拦截。"]
+
+
+def _price_position(data: dict[str, Any]) -> str:
+    debug = data.get("debug") if isinstance(data.get("debug"), dict) else {}
+    return str(data.get("price_position") or data.get("zone_status") or debug.get("price_position") or "").strip().upper()
+
+
+def _technical_entry_zone(data: dict[str, Any]) -> Any:
+    if data.get("technical_entry_zone") not in (None, ""):
+        return data.get("technical_entry_zone")
+    low = _number(data.get("technical_entry_zone_low"))
+    high = _number(data.get("technical_entry_zone_high"))
+    if low is None and high is None:
+        return None
+    return {"lower": low, "upper": high}
 
 
 def _report_dict(report: object) -> dict[str, Any]:

@@ -23,7 +23,7 @@ DECISION_MOOD_TYPES = {
     "discipline_check",
 }
 SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，禁止同步到组合持仓；该记录只能作为违规交易记录用于复盘。"
-BUY_RADAR_SYNC_BLOCK_REASON = "Radar 买入门禁未通过或标记为仅观察，禁止同步到组合持仓。"
+BUY_RADAR_SYNC_BLOCK_REASON = "买入执行门禁未通过或标记为仅观察，禁止同步到组合持仓。"
 BUY_RADAR_MISSING_GATE_REASON = "Radar 买入门禁快照缺失，禁止自动同步到组合持仓。"
 BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，禁止同步到组合持仓。"
 BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整或不合格，禁止同步到组合持仓。"
@@ -141,33 +141,33 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
-    return action_type in CLASSIFICATION_ACTION_TYPES and (
-        _clean_bool(entry.get("radar_blocked")) or _clean_bool(entry.get("radar_observation_only"))
-    )
+    if action_type not in CLASSIFICATION_ACTION_TYPES:
+        return False
+    if _clean_bool(entry.get("radar_observation_only")):
+        return True
+    if "gate_hard_blocked" in entry and entry.get("gate_hard_blocked") is not None:
+        return _clean_bool(entry.get("gate_hard_blocked"))
+    return _clean_bool(entry.get("radar_blocked"))
 
 
 def _buy_sync_invalid_radar_override(entry: dict[str, Any], action_type: str) -> bool:
     if action_type not in CLASSIFICATION_ACTION_TYPES:
         return False
-    if _clean_bool(entry.get("radar_blocked")) or _clean_bool(entry.get("radar_observation_only")):
+    if _buy_sync_blocked_by_radar(entry, action_type):
         return False
-    decision = str(entry.get("radar_decision") or "").strip().upper()
-    if decision not in {"BLOCK_CHASE", "WAIT", "DATA_MISSING", "AVOID"} and not decision.startswith("BLOCK"):
-        return False
-    if decision == "DATA_MISSING":
-        return True
-    data_status = str(entry.get("radar_data_status") or "").strip().upper()
-    if not data_status or data_status in {"DATA_MISSING", "MISSING", "STALE"}:
-        return True
-    if _clean_bool(entry.get("radar_is_stale")):
-        return True
-    if _buy_sync_valid_planned_ladder_snapshot(entry) or _buy_sync_valid_starter_snapshot(entry):
-        return False
-    return True
+    if _clean_bool(entry.get("planned_ladder_buy")):
+        return not _buy_sync_valid_planned_ladder_snapshot(entry)
+    if _clean_bool(entry.get("starter_position")) or str(entry.get("entry_mode") or "").strip() == "starter_position":
+        return not _buy_sync_valid_starter_snapshot(entry)
+    return False
 
 
 def _buy_sync_valid_planned_ladder_snapshot(entry: dict[str, Any]) -> bool:
     if not _clean_bool(entry.get("planned_ladder_buy")):
+        return False
+    data_status = str(entry.get("radar_data_status") or "").strip().upper()
+    decision = str(entry.get("radar_decision") or "").strip().upper()
+    if data_status in {"DATA_MISSING", "MISSING", "STALE"} or decision == "DATA_MISSING" or _clean_bool(entry.get("radar_is_stale")):
         return False
     if str(entry.get("plan_match_status") or "").strip() != "allow_planned_add":
         return False
@@ -191,12 +191,10 @@ def _buy_sync_valid_planned_ladder_snapshot(entry: dict[str, Any]) -> bool:
 def _buy_sync_valid_starter_snapshot(entry: dict[str, Any]) -> bool:
     if not _clean_bool(entry.get("starter_position")):
         return False
+    data_status = str(entry.get("radar_data_status") or "").strip().upper()
     decision = str(entry.get("radar_decision") or "").strip().upper()
-    if decision == "BLOCK_CHASE":
+    if data_status in {"DATA_MISSING", "MISSING", "STALE"} or decision == "DATA_MISSING" or _clean_bool(entry.get("radar_is_stale")):
         return False
-    for reason in _reasons_list(entry.get("radar_block_reasons_json")):
-        if _is_explicit_chase_block_reason(reason):
-            return False
     if str(entry.get("starter_match_status") or "").strip() != "allow_starter_position":
         return False
     if _safe_number(entry.get("starter_max_pct")) is None:

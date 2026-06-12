@@ -418,17 +418,21 @@ def test_portfolio_add_uses_add_action_for_existing_position() -> None:
         assert round(position["average_cost"], 2) == 100
 
 
-def test_blocked_gate_saves_journal_but_does_not_sync_position() -> None:
+def test_radar_chase_warning_saves_journal_and_syncs_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
         result = submit_portfolio_buy_add("NVDA", _base_values(), path=path, radar_report=_report("BLOCK_CHASE"))
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NVDA")
         assert entry is not None
-        assert entry["radar_blocked"]
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("NVDA") is None
+        assert not entry["radar_blocked"]
+        assert entry["radar_advisory_only"]
+        assert json.loads(entry["radar_advisory_warnings_json"])
+        assert result["synced"] is True
+        assert position is not None
+        assert position["quantity"] == 2
 
 
 def test_planned_ladder_buy_can_sync_when_radar_blocks_chase_but_plan_matches() -> None:
@@ -861,7 +865,7 @@ def test_a_class_starter_position_can_sync_when_small_and_complete(monkeypatch: 
         assert entry["starter_position_after_pct"] == 6.8
 
 
-def test_a_class_starter_position_in_chase_zone_requires_review_not_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_class_starter_position_in_chase_zone_records_advisory_and_syncs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         portfolio_trade_entry,
         "preview_trade_values_portfolio_effect",
@@ -887,12 +891,15 @@ def test_a_class_starter_position_in_chase_zone_requires_review_not_sync(monkeyp
         )
 
         entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("AVGO")
         assert entry is not None
-        assert entry["radar_blocked"]
+        assert not entry["radar_blocked"]
+        assert entry["radar_advisory_only"]
         assert entry["starter_position"]
-        assert entry["starter_match_status"] == "starter_review_required"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("AVGO") is None
+        assert entry["starter_match_status"] == "allow_starter_position"
+        assert result["synced"] is True
+        assert position is not None
+        assert position["quantity"] == 25
 
 
 def test_a_class_starter_position_blocks_when_after_position_exceeds_starter_max(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1114,9 +1121,9 @@ def test_starter_position_uses_buy_reason_as_thesis_and_allows_small_valuation_w
         assert not entry["radar_blocked"]
         assert entry["starter_position"]
         assert entry["starter_match_status"] == "allow_starter_position"
+        warnings = json.loads(entry["radar_advisory_warnings_json"])
         reasons = json.loads(entry["radar_block_reasons_json"])
-        assert any("估值评分低于 40" in reason for reason in reasons)
-        assert any("综合评分低于 70" in reason for reason in reasons)
+        assert len(warnings) >= 2
         assert not any("缺少 thesis" in reason for reason in reasons)
         assert not any("未找到分批买入计划" in reason for reason in reasons)
         assert result["synced"] is True
@@ -1173,13 +1180,13 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
 
     assert "NOK 已保存日志，未同步持仓" in html
     assert "这不是系统错误" in html
-    assert "Radar 拦截原因" in html
+    assert "\u4e70\u5165\u6267\u884c\u95e8\u7981" in html
     assert "当前市场状态" in html
-    assert "当前价高于纪律买入区" in html
-    assert "当前仍未进入纪律买入区" in html
+    assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e Radar \u53c2\u8003\u4e70\u533a" in html
+    assert "\u4e0d\u5355\u72ec\u963b\u6b62\u4e70\u5165" in html
     assert "估值评分低于 40" in html
     assert "综合评分低于 70" in html
-    assert "当前 Radar 允许新增仓位为 0%" in html
+    assert "0%" in html
     assert "技术偏热" in html
     assert "估值仍偏高" in html
     assert "未找到分批买入计划" in html
@@ -1294,9 +1301,9 @@ def test_portfolio_buy_entry_returns_market_status_for_big_drop_block() -> None:
         market_status = result["marketStatus"]
         assert market_status["technical_status"] == "财报后大跌 / 高波动"
         assert market_status["valuation_status"] == "估值仍偏高"
-        assert market_status["discipline_status"] == "当前允许新增仓位为 0%"
-        assert result["sync"] is None
-        assert PortfolioPositionStore(path).get_position("AVGO") is None
+        assert market_status["discipline_status"] == "\u7cfb\u7edf\u53c2\u8003\u65b0\u589e\u4ed3\u4f4d\u4e3a 0%\uff0c\u4ec5\u4f5c\u98ce\u9669\u63d0\u793a"
+        assert result["synced"] is True
+        assert PortfolioPositionStore(path).get_position("AVGO") is not None
 
 
 def test_fomo_mood_blocks_sync_even_when_radar_allows_buy() -> None:

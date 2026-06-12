@@ -84,17 +84,7 @@ def evaluate_starter_position(
         return _blocked("starter_blocked", reasons, max_pct, before_pct, after_pct)
 
     if (decision == "BLOCK_CHASE" or _has_chase_reason(radar_report)) and not _is_large_down_day(radar_report):
-        notes.append("当前价进入追高区，A 类底仓只能进入复核，不能直接同步真实持仓。")
-        return StarterPositionResult(
-            starter_position=True,
-            can_sync_to_portfolio=False,
-            starter_match_status="starter_review_required",
-            starter_max_pct=max_pct,
-            starter_position_before_pct=before_pct,
-            starter_position_after_pct=after_pct,
-            starter_block_reasons=notes,
-            starter_notes=[],
-        )
+        notes.append("当前价进入追高区，属于 Radar 买区提示；需复核后再买，但不单独阻止底仓同步。")
 
     if valuation_score is not None and valuation_score < 40:
         notes.append("估值评分低于 40：只允许作为 A 类小底仓，并保留估值风险提示。")

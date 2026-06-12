@@ -78,6 +78,17 @@ TRADE_DISCIPLINE_COLUMNS = {
     "radar_is_stale": "INTEGER",
     "radar_blocked": "INTEGER",
     "radar_block_reasons_json": "TEXT",
+    "gate_hard_blocked": "INTEGER",
+    "radar_advisory_only": "INTEGER",
+    "radar_advisory_warnings_json": "TEXT",
+    "price_position": "TEXT",
+    "entry_display_label": "TEXT",
+    "entry_action_hint": "TEXT",
+    "entry_display_reason": "TEXT",
+    "buy_zone_snapshot_json": "TEXT",
+    "technical_entry_zone_json": "TEXT",
+    "deep_valuation_zone_json": "TEXT",
+    "chase_above_price": "REAL",
     "mood_gate_blocked": "INTEGER",
     "position_gate_blocked": "INTEGER",
     "radar_observation_only": "INTEGER",
@@ -683,6 +694,17 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             radar_is_stale = ?,
             radar_blocked = ?,
             radar_block_reasons_json = ?,
+            gate_hard_blocked = ?,
+            radar_advisory_only = ?,
+            radar_advisory_warnings_json = ?,
+            price_position = ?,
+            entry_display_label = ?,
+            entry_action_hint = ?,
+            entry_display_reason = ?,
+            buy_zone_snapshot_json = ?,
+            technical_entry_zone_json = ?,
+            deep_valuation_zone_json = ?,
+            chase_above_price = ?,
             mood_gate_blocked = ?,
             position_gate_blocked = ?,
             radar_observation_only = ?,
@@ -695,6 +717,17 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             cleaned["radar_is_stale"],
             cleaned["radar_blocked"],
             cleaned["radar_block_reasons_json"],
+            cleaned["gate_hard_blocked"],
+            cleaned["radar_advisory_only"],
+            cleaned["radar_advisory_warnings_json"],
+            cleaned["price_position"],
+            cleaned["entry_display_label"],
+            cleaned["entry_action_hint"],
+            cleaned["entry_display_reason"],
+            cleaned["buy_zone_snapshot_json"],
+            cleaned["technical_entry_zone_json"],
+            cleaned["deep_valuation_zone_json"],
+            cleaned["chase_above_price"],
             cleaned["mood_gate_blocked"],
             cleaned["position_gate_blocked"],
             cleaned["radar_observation_only"],
@@ -1329,6 +1362,17 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_is_stale": False,
             "radar_blocked": False,
             "radar_block_reasons_json": "[]",
+            "gate_hard_blocked": False,
+            "radar_advisory_only": False,
+            "radar_advisory_warnings_json": "[]",
+            "price_position": None,
+            "entry_display_label": None,
+            "entry_action_hint": None,
+            "entry_display_reason": None,
+            "buy_zone_snapshot_json": None,
+            "technical_entry_zone_json": None,
+            "deep_valuation_zone_json": None,
+            "chase_above_price": None,
             "mood_gate_blocked": False,
             "position_gate_blocked": False,
             "radar_observation_only": False,
@@ -1352,6 +1396,17 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_is_stale": False,
             "radar_blocked": True,
             "radar_block_reasons_json": _reasons_json(["Radar 买入门禁结果缺失，禁止自动同步组合持仓。"]),
+            "gate_hard_blocked": True,
+            "radar_advisory_only": False,
+            "radar_advisory_warnings_json": "[]",
+            "price_position": None,
+            "entry_display_label": None,
+            "entry_action_hint": None,
+            "entry_display_reason": None,
+            "buy_zone_snapshot_json": None,
+            "technical_entry_zone_json": None,
+            "deep_valuation_zone_json": None,
+            "chase_above_price": None,
             "mood_gate_blocked": False,
             "position_gate_blocked": False,
             "radar_observation_only": False,
@@ -1363,6 +1418,21 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         "radar_is_stale": _clean_bool(_value(values, "radarIsStale", "radar_is_stale")),
         "radar_blocked": _clean_bool(_value(values, "radarBlocked", "radar_blocked")),
         "radar_block_reasons_json": _reasons_json(_value(values, "radarBlockReasons", "radar_block_reasons", "radar_block_reasons_json")),
+        "gate_hard_blocked": _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked", "radarBlocked", "radar_blocked")),
+        "radar_advisory_only": _clean_bool(_value(values, "radarAdvisoryOnly", "radar_advisory_only")),
+        "radar_advisory_warnings_json": _reasons_json(
+            _value(values, "radarAdvisoryWarnings", "radar_advisory_warnings", "radar_advisory_warnings_json")
+        ),
+        "price_position": _clean_optional_text(_value(values, "pricePosition", "price_position", "zoneStatus", "zone_status")),
+        "entry_display_label": _clean_optional_text(_value(values, "entryDisplayLabel", "entry_display_label")),
+        "entry_action_hint": _clean_optional_text(_value(values, "entryActionHint", "entry_action_hint")),
+        "entry_display_reason": _clean_optional_text(_value(values, "entryDisplayReason", "entry_display_reason")),
+        "buy_zone_snapshot_json": _dict_json(_value(values, "buyZoneSnapshot", "buy_zone_snapshot", "buy_zone_snapshot_json")),
+        "technical_entry_zone_json": _dict_json(
+            _value(values, "technicalEntryZone", "technical_entry_zone", "technical_entry_zone_json")
+        ),
+        "deep_valuation_zone_json": _dict_json(_value(values, "deepValuationZone", "deep_valuation_zone", "deep_valuation_zone_json")),
+        "chase_above_price": _optional_non_negative_number(_value(values, "chaseAbovePrice", "chase_above_price"), "chase_above_price"),
         "mood_gate_blocked": _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")),
         "position_gate_blocked": _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")),
         "radar_observation_only": _clean_bool(_value(values, "radarObservationOnly", "radar_observation_only")),
@@ -2003,6 +2073,25 @@ def _reasons_json(value) -> str:
     return json.dumps(parsed)
 
 
+def _dict_json(value) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(value, dict):
+        parsed = dict(value)
+    elif isinstance(value, (list, tuple)) and len(value) >= 2:
+        parsed = {"lower": value[0], "upper": value[1]}
+    else:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
+
+
 def _clean_text(value) -> str:
     if value is None:
         return ""
@@ -2031,6 +2120,14 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["warnings"] = _load_json_list(item["warnings_json"])
     if "radar_block_reasons_json" in item:
         item["radar_block_reasons"] = _load_json_list(item["radar_block_reasons_json"])
+    if "radar_advisory_warnings_json" in item:
+        item["radar_advisory_warnings"] = _load_json_list(item["radar_advisory_warnings_json"])
+    if "buy_zone_snapshot_json" in item:
+        item["buy_zone_snapshot"] = _load_json_dict(item["buy_zone_snapshot_json"])
+    if "technical_entry_zone_json" in item:
+        item["technical_entry_zone"] = _load_json_dict(item["technical_entry_zone_json"])
+    if "deep_valuation_zone_json" in item:
+        item["deep_valuation_zone"] = _load_json_dict(item["deep_valuation_zone_json"])
     if "sell_context_snapshot_json" in item:
         item["sell_context_snapshot"] = _load_json_dict(item["sell_context_snapshot_json"])
     if "fundamental_change_type" in item:

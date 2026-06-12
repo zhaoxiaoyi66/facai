@@ -91,6 +91,28 @@ def submit_portfolio_buy_add(
     gate_fields = buy_gate_entry_fields(gate, action_type=action_type)
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
+    advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
+    if entry_mode == "planned_ladder_buy" and plan_gate.can_sync_to_portfolio:
+        advisory_notes.extend(plan_gate.plan_notes)
+    if entry_mode == "starter_position" and starter_gate.can_sync_to_portfolio:
+        advisory_notes.extend(starter_gate.starter_notes)
+    gate_fields["radarAdvisoryWarnings"] = _dedupe_text(advisory_notes)
+    if gate_fields["radarAdvisoryWarnings"] and not bool(gate_fields.get("gateHardBlocked")):
+        gate_fields["radarAdvisoryOnly"] = True
+    selected_entry_block_reasons: list[str] = []
+    if entry_mode == "planned_ladder_buy" and not plan_gate.can_sync_to_portfolio:
+        selected_entry_block_reasons.extend(plan_gate.plan_block_reasons)
+    if entry_mode == "starter_position" and not starter_gate.can_sync_to_portfolio:
+        selected_entry_block_reasons.extend(starter_gate.starter_block_reasons)
+    if selected_entry_block_reasons:
+        gate_fields["radarBlocked"] = True
+        gate_fields["gateHardBlocked"] = True
+        gate_fields["radarAdvisoryOnly"] = False
+        gate_fields["radarBlockReasons"] = [
+            *gate.reasons,
+            *gate.required_actions,
+            *selected_entry_block_reasons,
+        ]
     if (plan_gate.can_sync_to_portfolio or starter_gate.can_sync_to_portfolio) and gate.is_blocked and not observation_only:
         override_notes = plan_gate.plan_notes if plan_gate.can_sync_to_portfolio else starter_gate.starter_notes
         gate_fields.update(
@@ -138,7 +160,13 @@ def submit_portfolio_buy_add(
     }
     saved = TradeJournalStore(path).save_entry(ticker, entry_values)
     sync_result = None
-    can_sync = (gate.can_sync_to_portfolio or plan_gate.can_sync_to_portfolio or starter_gate.can_sync_to_portfolio) and not observation_only
+    can_sync = _can_sync_buy_entry(
+        entry_mode=entry_mode,
+        gate=gate,
+        plan_gate=plan_gate,
+        starter_gate=starter_gate,
+        observation_only=observation_only,
+    )
     if can_sync:
         sync_result = apply_trade_to_portfolio(int(saved.get("id") or 0), path=path)
     return {
@@ -152,6 +180,35 @@ def submit_portfolio_buy_add(
         "actionType": action_type,
         "synced": bool(sync_result and sync_result.get("status") == "success"),
     }
+
+
+def _can_sync_buy_entry(
+    *,
+    entry_mode: str,
+    gate: Any,
+    plan_gate: Any,
+    starter_gate: Any,
+    observation_only: bool,
+) -> bool:
+    if observation_only or gate.gate_hard_blocked:
+        return False
+    if entry_mode == "planned_ladder_buy":
+        return bool(plan_gate.can_sync_to_portfolio)
+    if entry_mode == "starter_position":
+        return bool(starter_gate.can_sync_to_portfolio)
+    return bool(gate.can_sync_to_portfolio)
+
+
+def _dedupe_text(items: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _portfolio_trade_action(symbol: str, path: Path, requested: object = None) -> str:
@@ -235,7 +292,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     data_status = str(_report_value(report, "data_status") or "").strip().lower()
 
     if is_stale or data_status in {"missing", "data_missing", "stale"}:
-        technical_status = "数据缺失 / 过期，禁止真实买入"
+        technical_status = "买区数据缺失 / 过期，需人工判断"
     elif daily_change_pct is not None and daily_change_pct <= -8:
         technical_status = "财报后大跌 / 高波动"
     elif price_position == "IN_CHASE_ZONE" or decision == "BLOCK_CHASE":
@@ -255,15 +312,15 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
         valuation_status = "估值需复核"
 
     if is_stale or data_status in {"missing", "data_missing", "stale"}:
-        discipline_status = "数据不可用，不能同步真实组合"
+        discipline_status = "买区参考不可用，不单独阻止买入"
     elif allowed_add_pct is not None and allowed_add_pct <= 0:
-        discipline_status = "当前允许新增仓位为 0%"
+        discipline_status = "系统参考新增仓位为 0%，仅作风险提示"
     elif price_position == "IN_BUY_ZONE":
         discipline_status = "进入纪律买区"
     elif price_position == "BELOW_BUY_ZONE":
         discipline_status = "低于买区需复核"
     elif price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}:
-        discipline_status = "未进入纪律买区"
+        discipline_status = "未进入参考买区"
     else:
         discipline_status = "纪律区间需复核"
 

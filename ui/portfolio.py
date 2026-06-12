@@ -1298,7 +1298,7 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
     plan_reasons = [] if entry_mode == "starter_position" else _portfolio_buy_plan_reasons(plan_gate)
     starter_reasons = _portfolio_starter_reasons(starter_gate)
     primary_reasons = starter_reasons if entry_mode == "starter_position" and starter_reasons else reasons
-    primary_title = "底仓检查结果" if entry_mode == "starter_position" else "Radar 拦截原因"
+    primary_title = "底仓检查结果" if entry_mode == "starter_position" else "买入执行门禁"
     market_items = _portfolio_buy_market_status_items(market_status, gate)
     actions = _portfolio_buy_gate_actions(plan_reasons, starter_reasons, tier=tier)
     reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>Radar / 买入门禁未通过。</li>"
@@ -1322,9 +1322,6 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
 def _portfolio_buy_gate_reasons(gate: dict) -> list[str]:
     raw_items = [*(gate.get("reasons") or []), *(gate.get("required_actions") or [])]
     reasons = [_portfolio_buy_gate_reason_text(item) for item in raw_items if str(item).strip()]
-    allowed_add_pct = _number(gate.get("allowed_add_pct"))
-    if allowed_add_pct is not None and allowed_add_pct <= 0:
-        reasons.append("当前 Radar 允许新增仓位为 0%，本次买入不能同步到真实组合。")
     return _dedupe_text(reasons)
 
 
@@ -1332,14 +1329,14 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     text = str(value or "").strip()
     lower = text.lower()
     mappings = [
-        ("current price is above the discipline buy zone", "当前价高于纪律买入区。"),
-        ("current price is in or above chase zone", "当前仍未进入纪律买入区。"),
+        ("current price is above the discipline buy zone", "当前价高于 Radar 参考买区，属于买区提示。"),
+        ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩，但不单独阻止买入。"),
         ("valuation score below 40", "估值评分低于 40，禁止高仓位。"),
         ("final score below 70", "综合评分低于 70，禁止核心仓。"),
         ("core position is not allowed", "不允许核心仓。"),
         ("heavy position is not allowed", "不允许高仓位。"),
-        ("data missing", "数据缺失，不能同步真实买入。"),
-        ("stale", "缓存已过期，不能作为真实买入依据。"),
+        ("data missing", "买区数据不足，需人工判断。"),
+        ("stale", "缓存已过期，需人工判断。"),
         ("missing current price", "缺少当前价格。"),
         ("missing valuation", "缺少估值指标。"),
     ]
@@ -1363,8 +1360,8 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
     if not items:
         allowed_add_pct = _number(gate.get("allowed_add_pct"))
         if allowed_add_pct is not None and allowed_add_pct <= 0:
-            items.append("当前允许新增仓位为 0%。")
-        items.append("价格到达或下跌不等于自动可以买。")
+            items.append("系统参考新增仓位为 0%，仅作风险提示。")
+        items.append("Radar 买区是判断辅助，不单独阻止买入。")
     return _dedupe_text(items)
 
 
@@ -1375,7 +1372,7 @@ def _portfolio_buy_gate_actions(
     tier: object = "",
 ) -> list[str]:
     clean_tier = str(tier or "").strip().upper()
-    actions = ["等待回到纪律买入区。"]
+    actions = ["复核 Radar 买区提示；最终买入由你决定。"]
     if clean_tier == "A":
         actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
     elif clean_tier == "B":
@@ -1391,9 +1388,9 @@ def _portfolio_buy_gate_actions(
         actions.append("先选择 A/B/C 持仓等级，再创建对应买入计划。")
     actions.extend(
         [
-            "降低买入数量，直到买入后仓位不超过 Radar 上限。",
+            "降低买入数量，直到买入后仓位不超过明确仓位上限。",
             "改为仅观察记录，不同步真实组合。",
-            "重新复核该股票的 Radar 区间和买入计划。",
+            "重新复核该股票的 Radar 区间、技术回踩区和买入计划。",
         ]
     )
     context_items = [*(plan_reasons or []), *(starter_reasons or [])]

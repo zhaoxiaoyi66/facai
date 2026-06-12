@@ -100,7 +100,7 @@ def test_radar_blocked_buy_cannot_sync_even_if_requested() -> None:
 
         assert preview["status"] == "failed"
         assert result["status"] == "failed"
-        assert "Radar" in result["error"]
+        assert "买入执行门禁" in result["error"]
         assert position is None
         assert counts.get("NVDA", 0) == 0
 
@@ -344,9 +344,9 @@ def test_block_chase_radar_buy_cannot_be_synced_by_starter_snapshot() -> None:
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("AVGO")
 
-        assert result["status"] == "failed"
-        assert result["error"]
-        assert position is None
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 25
 
 
 def test_starter_snapshot_with_block_reasons_cannot_sync() -> None:
@@ -405,7 +405,7 @@ def test_radar_observation_only_buy_cannot_sync_to_portfolio() -> None:
         position = PortfolioPositionStore(path).get_position("MSFT")
 
         assert result["status"] == "failed"
-        assert "Radar" in result["error"]
+        assert "买入执行门禁" in result["error"]
         assert position is None
 
 
@@ -423,7 +423,7 @@ def test_missing_radar_gate_buy_cannot_sync_to_portfolio() -> None:
         assert bool(entry["radar_blocked"]) is True
         assert entry["radar_decision"] == "DATA_MISSING"
         assert result["status"] == "failed"
-        assert "Radar" in result["error"]
+        assert "买入执行门禁" in result["error"]
         assert position is None
 
 
@@ -477,7 +477,7 @@ def test_editing_buy_entry_to_radar_blocked_cannot_bypass_sync_gate() -> None:
 
         assert bool(updated["radar_blocked"]) is True
         assert result["status"] == "failed"
-        assert "Radar" in result["error"]
+        assert "买入执行门禁" in result["error"]
         assert position is None
 
 
@@ -664,8 +664,41 @@ def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     assert missing_gate_policy["canSync"] is False
     assert "Radar" in missing_gate_policy["reason"]
     assert radar_policy["canSync"] is False
-    assert "Radar" in radar_policy["reason"]
+    assert "买入执行门禁" in radar_policy["reason"]
     assert observation_policy["canSync"] is False
+
+
+def test_trade_sync_policy_allows_advisory_radar_zone_warnings() -> None:
+    policy = trade_sync_policy(
+        {
+            "action_type": "buy",
+            "position_class": "A",
+            "radar_decision": "BLOCK_CHASE",
+            "gate_checked_at": "2026-05-30T12:00:00+00:00",
+            "gate_hard_blocked": 0,
+            "radar_advisory_only": 1,
+            "radar_advisory_warnings_json": '["追高风险"]',
+        }
+    )
+
+    assert policy["canSync"] is True
+    assert policy["reason"] == ""
+
+
+def test_trade_sync_policy_still_blocks_hard_buy_gate() -> None:
+    policy = trade_sync_policy(
+        {
+            "action_type": "buy",
+            "position_class": "A",
+            "radar_decision": "ALLOW_BUY",
+            "gate_checked_at": "2026-05-30T12:00:00+00:00",
+            "gate_hard_blocked": 1,
+            "radar_advisory_only": 0,
+        }
+    )
+
+    assert policy["canSync"] is False
+    assert "买入执行门禁" in policy["reason"]
 
 
 def test_trim_cannot_sync_more_than_current_position() -> None:

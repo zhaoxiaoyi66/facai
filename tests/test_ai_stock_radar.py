@@ -1005,7 +1005,7 @@ def test_missing_buy_gate_result_defaults_to_blocked_entry_fields() -> None:
     assert fields["gateCheckedAt"]
 
 
-def test_buy_gate_blocks_block_chase_buy() -> None:
+def test_buy_gate_treats_block_chase_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 125)
@@ -1028,13 +1028,15 @@ def test_buy_gate_blocks_block_chase_buy() -> None:
             buy_reason="plan execution",
         )
 
-        assert gate.status == "blocked"
-        assert gate.can_continue is False
-        assert gate.can_sync_to_portfolio is False
-        assert gate.reasons
+        assert gate.status == "pass"
+        assert gate.can_continue is True
+        assert gate.can_sync_to_portfolio is True
+        assert gate.reasons == []
+        assert gate.advisory_warnings
+        assert gate.radar_advisory_only is True
 
 
-def test_buy_gate_blocks_data_missing_buy() -> None:
+def test_buy_gate_treats_data_missing_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         report = build_ai_stock_radar_report(
             "NVDA",
@@ -1056,11 +1058,48 @@ def test_buy_gate_blocks_data_missing_buy() -> None:
         )
 
         assert report.decision == "DATA_MISSING"
-        assert gate.status == "blocked"
-        assert gate.can_sync_to_portfolio is False
+        assert gate.status == "pass"
+        assert gate.can_sync_to_portfolio is True
+        assert gate.advisory_warnings
+        assert gate.radar_advisory_only is True
 
 
-def test_buy_gate_block_chase_observation_only_still_marks_blocked_without_sync() -> None:
+def test_buy_gate_treats_price_zone_positions_as_advisory() -> None:
+    for decision, price_position in (
+        ("WAIT", "ABOVE_BUY_ZONE"),
+        ("BLOCK_CHASE", "IN_CHASE_ZONE"),
+        ("WAIT", "BELOW_BUY_ZONE"),
+        ("DATA_MISSING", "ZONE_MISSING"),
+    ):
+        gate = evaluate_buy_gate(
+            {
+                "ticker": "NVDA",
+                "decision": decision,
+                "price_position": price_position,
+                "current_price": 125,
+                "buy_zone": [90, 100],
+                "allowed_add_pct": 0,
+                "core_max_pct": 20,
+                "trade_max_pct": 8,
+                "data_status": "DATA_MISSING" if decision == "DATA_MISSING" else "OK",
+                "block_reasons": [f"{price_position} warning"],
+            },
+            action_type="buy",
+            position_bucket="core",
+            planned_after_position_pct=1.0,
+            decision_mood="plan_execution",
+            buy_reason="plan execution",
+        )
+
+        assert gate.status == "pass"
+        assert gate.gate_hard_blocked is False
+        assert gate.can_sync_to_portfolio is True
+        assert gate.price_position == price_position
+        assert gate.advisory_warnings
+        assert gate.radar_advisory_only is True
+
+
+def test_buy_gate_block_chase_observation_only_still_does_not_sync() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 125)
@@ -1084,10 +1123,10 @@ def test_buy_gate_block_chase_observation_only_still_marks_blocked_without_sync(
             buy_reason="watch only",
         )
 
-        assert gate.is_blocked is True
+        assert gate.is_blocked is False
         assert gate.can_sync_to_portfolio is False
         assert gate.is_observation_only is True
-        assert gate.reasons
+        assert gate.advisory_warnings
 
 
 def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
