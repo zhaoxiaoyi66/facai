@@ -1009,7 +1009,7 @@ def _render_macro_refresh_result() -> None:
         if _macro_refresh_indicator_category(item) != "core"
     )
     error = str(result.get("error") or "").strip()
-    error_html = f'<div class="macro-refresh-error">错误摘要：{escape(error)}</div>' if error else ""
+    error_html = _macro_refresh_error_summary_html(indicator_results, error)
     st.markdown(
         (
             f'<section class="macro-refresh-result {escape(tone)}">'
@@ -1095,19 +1095,23 @@ def _macro_refresh_indicator_row_html(item: dict) -> str:
     observation_date = str(item.get("observation_date") or item.get("fetched_at") or "无日期")
     duration = item.get("duration_seconds")
     duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "—"
-    used_cache = bool(item.get("used_cache"))
     error = str(item.get("error") or "").strip()
-    meta = []
-    if used_cache:
-        meta.append("使用缓存")
-    if error:
-        meta.append(f"错误：{error}")
-    meta_text = "｜".join(meta) if meta else "无错误"
+    display_status = _macro_refresh_indicator_display_status(item)
+    note = _macro_refresh_indicator_note(item, display_status)
+    diagnostic = (
+        '<details class="macro-refresh-diagnostics">'
+        '<summary>诊断详情</summary>'
+        f"<code>{escape(error)}</code>"
+        "</details>"
+        if error
+        else ""
+    )
     return (
         "<div>"
         f"<b>{escape(label)}</b>"
-        f"<span>{escape(_macro_refresh_indicator_status_label(status))}｜{escape(value)}｜{escape(source)}｜{escape(observation_date)}｜{escape(duration_text)}</span>"
-        f"<em>{escape(meta_text)}</em>"
+        f"<span>{escape(display_status)}｜{escape(value)}｜来源：{escape(source)}｜更新时间：{escape(observation_date)}｜用时 {escape(duration_text)}</span>"
+        f"<em>{escape(note)}</em>"
+        f"{diagnostic}"
         "</div>"
     )
 
@@ -1130,6 +1134,8 @@ def _macro_indicator_label(indicator: str) -> str:
         "market_trend": "大盘趋势",
         "market_breadth": "市场宽度",
         "dollar_index": "美元指数",
+        "hyg_credit_proxy": "信用风险代理",
+        "sentiment_proxy": "内部情绪代理",
     }.get(str(indicator or ""), str(indicator or "未知指标"))
 
 
@@ -1145,6 +1151,89 @@ def _macro_refresh_indicator_status_label(status: str) -> str:
         "stale": "过期",
         "skipped": "跳过",
     }.get(status, status)
+
+
+def _macro_refresh_indicator_display_status(item: dict) -> str:
+    indicator = str(item.get("indicator") or "")
+    status = str(item.get("status") or "failed")
+    source = str(item.get("source") or "").lower()
+    value = item.get("value")
+    has_value = value not in (None, "")
+    if indicator in {"hyg_credit_proxy", "sentiment_proxy"} and has_value:
+        return "使用代理"
+    if has_value and (bool(item.get("used_cache")) or status == "cached_fallback" or "cache" in source or "缓存" in source):
+        return "过期缓存" if status == "stale" or bool(item.get("is_stale")) else "使用缓存"
+    if has_value and status == "success":
+        return "实时成功"
+    if has_value and status == "stale":
+        return "过期缓存"
+    if not has_value and _macro_refresh_indicator_category(item) != "core":
+        return "暂缺"
+    if not has_value:
+        return "刷新失败"
+    return _macro_refresh_indicator_status_label(status)
+
+
+def _macro_refresh_indicator_note(item: dict, display_status: str) -> str:
+    indicator = str(item.get("indicator") or "")
+    if display_status == "使用代理":
+        return "官方源缺失时的代理参考，不等同于原始指标。"
+    if display_status == "使用缓存":
+        return "本次刷新未拿到新值，沿用最近成功缓存。"
+    if display_status == "过期缓存":
+        return "缓存已过期，仅作参考。"
+    if display_status == "暂缺":
+        if indicator == "hy_oas":
+            return "官方信用利差暂缺；如有信用代理，优先看代理行。"
+        if indicator == "fear_greed":
+            return "CNN 原版暂缺；如有情绪代理，优先看代理行。"
+        if indicator == "dollar_index":
+            return "低优先级辅助指标，缺失不影响核心判断。"
+        return "辅助指标暂缺，不影响核心判断。"
+    if display_status == "刷新失败":
+        return "核心指标刷新失败，需要复核数据源。"
+    return "数据可用。"
+
+
+def _macro_refresh_error_summary_html(indicator_results: list[dict], raw_error: str) -> str:
+    if not raw_error and not any(str(item.get("error") or "").strip() for item in indicator_results):
+        return ""
+    missing_auxiliary = [
+        _macro_indicator_label(str(item.get("indicator") or ""))
+        for item in indicator_results
+        if _macro_refresh_indicator_category(item) != "core"
+        and _macro_refresh_indicator_display_status(item) in {"暂缺", "过期缓存"}
+    ]
+    failed_core = [
+        _macro_indicator_label(str(item.get("indicator") or ""))
+        for item in indicator_results
+        if _macro_refresh_indicator_category(item) == "core"
+        and _macro_refresh_indicator_display_status(item) == "刷新失败"
+    ]
+    lines = []
+    if failed_core:
+        lines.append("核心指标异常：" + " / ".join(failed_core) + "。")
+    if missing_auxiliary:
+        lines.append("辅助指标缺失：" + " / ".join(missing_auxiliary) + "。核心判断仍可用。")
+    if not lines:
+        lines.append("部分指标使用缓存或代理，核心判断仍可用。")
+    diagnostic_items = [
+        f"{_macro_indicator_label(str(item.get('indicator') or ''))}: {str(item.get('error') or '').strip()}"
+        for item in indicator_results
+        if str(item.get("error") or "").strip()
+    ]
+    if raw_error:
+        diagnostic_items.append(raw_error)
+    diagnostics = "<br>".join(escape(item) for item in diagnostic_items)
+    diagnostic_html = (
+        '<details class="macro-refresh-diagnostics macro-refresh-error-details">'
+        '<summary>完整技术诊断</summary>'
+        f"<code>{diagnostics}</code>"
+        "</details>"
+        if diagnostics
+        else ""
+    )
+    return f'<div class="macro-refresh-error">{" ".join(escape(line) for line in lines)}</div>{diagnostic_html}'
 
 
 def _macro_refresh_value_text(item: dict) -> str:
@@ -3340,6 +3429,26 @@ def _render_dashboard_styles() -> None:
         }
         .macro-refresh-error {
             margin-top:0.45rem;
+        }
+        .macro-refresh-diagnostics {
+            margin-top:0.18rem;
+            color:#64748B;
+            font-size:11px;
+        }
+        .macro-refresh-diagnostics summary {
+            cursor:pointer;
+            color:#475569;
+            font-weight:650;
+        }
+        .macro-refresh-diagnostics code {
+            display:block;
+            margin-top:0.18rem;
+            padding:0.32rem 0.4rem;
+            border-radius:6px;
+            background:rgba(15,23,42,0.04);
+            color:#475569;
+            white-space:normal;
+            overflow-wrap:anywhere;
         }
         .dashboard-refresh-result {
             max-width:1440px;

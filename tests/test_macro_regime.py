@@ -1000,7 +1000,7 @@ def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
     )
 
     assert snapshot.regime == REGIME_STRESS
-    assert snapshot.data_status == "部分可用"
+    assert snapshot.data_status == "核心部分可用｜辅助缺失"
     assert snapshot.confidence == "低"
 
 
@@ -1079,7 +1079,7 @@ def test_vix_and_market_breadth_keep_macro_regime_partially_usable() -> None:
     )
 
     assert snapshot.regime != REGIME_DATA_GAP
-    assert snapshot.data_status == "部分可用"
+    assert snapshot.data_status == "核心部分可用｜辅助缺失"
 
 
 def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> None:
@@ -1103,10 +1103,55 @@ def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> N
     )
 
     assert snapshot.regime != REGIME_DATA_GAP
-    assert snapshot.data_status == "完整"
+    assert snapshot.data_status == "核心完整｜辅助缺失"
     assert snapshot.confidence == "高"
     assert "VIX 22.0" in macro_regime_status_text(snapshot)
+    assert "数据：核心完整｜辅助缺失" in macro_regime_status_text(snapshot)
     assert "高收益债利差" not in macro_regime_status_text(snapshot)
+
+
+def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 19.4),
+            _indicator(TEN_YEAR_YIELD, 4.5),
+            _indicator(YIELD_CURVE_10Y2Y, -0.2),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_TREND,
+                value=30,
+                raw_payload='{"QQQ": {"above_50": true, "above_200": true}, "SPY": {"above_50": true, "above_200": true}}',
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+            MacroIndicatorSnapshot(
+                indicator=MARKET_BREADTH,
+                value=41.9,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            ),
+            MacroIndicatorSnapshot(indicator=HY_OAS, value=None, error="FRED timeout"),
+            MacroIndicatorSnapshot(indicator=FEAR_GREED, value=None, error="CNN HTTP 418"),
+            MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=65, source="HYG proxy"),
+            MacroIndicatorSnapshot(indicator=SENTIMENT_PROXY, value=35, source="internal sentiment proxy"),
+        ]
+    )
+
+    text = macro_regime_status_text(snapshot)
+    assert snapshot.regime != REGIME_DATA_GAP
+    assert snapshot.data_status == "核心完整｜辅助缺失"
+    assert "数据：核心完整｜辅助缺失" in text
+    assert "FRED timeout" not in text
+    assert "CNN HTTP 418" not in text
+
+
+def test_macro_indicator_detail_status_uses_cache_semantics_for_error_with_value() -> None:
+    snapshot = MacroIndicatorSnapshot(
+        indicator=TEN_YEAR_YIELD,
+        value=4.5,
+        source="FMP Treasury",
+        error="FMP timeout WinError 10060",
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    assert macro_regime._indicator_cache_status_text(snapshot) == "使用缓存"
 
 
 def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, monkeypatch) -> None:
@@ -1205,6 +1250,7 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
 
     header_source = inspect.getsource(dashboard._render_dashboard_header)
     refresh_result_source = inspect.getsource(dashboard._render_macro_refresh_result)
+    indicator_row_source = inspect.getsource(dashboard._macro_refresh_indicator_row_html)
 
     assert "刷新大盘环境" in header_source
     assert "dashboard_refresh_macro_regime_cache" in header_source
@@ -1214,6 +1260,79 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     assert "大盘环境刷新完成" in refresh_result_source
     assert "核心指标" in refresh_result_source
     assert "辅助指标" in refresh_result_source
+    assert "macro-refresh-diagnostics" in indicator_row_source
+
+
+def test_macro_refresh_display_states_hide_raw_errors_from_main_view() -> None:
+    from ui import dashboard
+
+    cached_html = dashboard._macro_refresh_indicator_row_html(
+        {
+            "indicator": TEN_YEAR_YIELD,
+            "label": "10年美债收益率",
+            "status": "cached_fallback",
+            "value": 4.5,
+            "source": "FMP Treasury 缓存",
+            "observation_date": "2026-06-12",
+            "duration_seconds": 0.2,
+            "used_cache": True,
+            "error": "FMP timeout WinError 10060",
+            "category": "core",
+        }
+    )
+    proxy_html = dashboard._macro_refresh_indicator_row_html(
+        {
+            "indicator": HYG_CREDIT_PROXY,
+            "label": "信用风险代理",
+            "status": "success",
+            "value": 65,
+            "source": "HYG proxy",
+            "observation_date": "2026-06-12",
+            "duration_seconds": 0.1,
+            "category": "auxiliary",
+        }
+    )
+    missing_html = dashboard._macro_refresh_indicator_row_html(
+        {
+            "indicator": HY_OAS,
+            "label": "美高收益债信用利差",
+            "status": "failed",
+            "value": None,
+            "source": "FRED",
+            "duration_seconds": 1.0,
+            "error": "FRED timeout 3.0s",
+            "category": "auxiliary",
+        }
+    )
+    summary_html = dashboard._macro_refresh_error_summary_html(
+        [
+            {
+                "indicator": HY_OAS,
+                "status": "failed",
+                "value": None,
+                "error": "FRED timeout 3.0s",
+                "category": "auxiliary",
+            },
+            {
+                "indicator": FEAR_GREED,
+                "status": "failed",
+                "value": None,
+                "error": "CNN HTTP 418",
+                "category": "auxiliary",
+            },
+        ],
+        "hy_oas: FRED timeout 3.0s; fear_greed: CNN HTTP 418",
+    )
+
+    assert "使用缓存" in cached_html
+    assert "FMP timeout WinError 10060" in cached_html
+    assert cached_html.index("诊断详情") < cached_html.index("FMP timeout WinError 10060")
+    assert "使用代理" in proxy_html
+    assert "暂缺" in missing_html
+    assert "错误：FRED timeout" not in missing_html
+    assert "辅助指标缺失" in summary_html
+    assert "核心判断仍可用" in summary_html
+    assert summary_html.index("完整技术诊断") < summary_html.index("CNN HTTP 418")
 
 
 def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:

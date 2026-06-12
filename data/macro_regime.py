@@ -2068,13 +2068,22 @@ def _is_cached_source(snapshot: MacroIndicatorSnapshot | None) -> bool:
 
 
 def _indicator_cache_status_text(snapshot: MacroIndicatorSnapshot) -> str:
-    if snapshot.value is None:
-        return "缺失" + (f"：{snapshot.error}" if snapshot.error else "")
+    return _indicator_display_status(snapshot)
+
+
+def _indicator_display_status(snapshot: MacroIndicatorSnapshot) -> str:
+    if _usable_value(snapshot) is None:
+        return "暂缺"
+    source = str(snapshot.source or "").lower()
+    if snapshot.indicator in {HYG_CREDIT_PROXY, SENTIMENT_PROXY} or "proxy" in source or "代理" in source:
+        return "使用代理"
     if snapshot.is_stale:
-        return "过期" + (f"：{snapshot.error}" if snapshot.error else "")
+        return "过期缓存"
     if snapshot.error:
-        return f"有效，最近刷新失败：{snapshot.error}"
-    return "有效"
+        return "使用缓存"
+    if "cache" in source or "cached" in source or "缓存" in source:
+        return "使用缓存"
+    return "实时成功"
 
 
 def _change_text(snapshot: MacroIndicatorSnapshot) -> str:
@@ -2190,15 +2199,26 @@ def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:
         for item in items
         if item.indicator in CORE_MACRO_INDICATORS and item.value is not None and item.is_stale
     ]
-    if len(usable_core) >= 4:
-        return "完整", "高"
+    usable_auxiliary = [
+        item
+        for item in items
+        if item.indicator in AUXILIARY_MACRO_INDICATORS and _usable_value(item) is not None
+    ]
+    missing_auxiliary = [
+        item
+        for item in items
+        if item.indicator in {HY_OAS, FEAR_GREED, DOLLAR_INDEX} and _usable_value(item) is None
+    ]
+    auxiliary_status = "辅助缺失" if missing_auxiliary or not usable_auxiliary else "辅助可用"
+    if len(usable_core) >= len(CORE_MACRO_INDICATORS):
+        return f"核心完整｜{auxiliary_status}", "高"
     if len(usable_core) >= 2:
-        return "部分可用", "中"
+        return f"核心部分可用｜{auxiliary_status}", "中"
     if len(usable_core) == 1:
-        return "部分可用", "低"
+        return f"核心部分可用｜{auxiliary_status}", "低"
     if stale_core:
-        return "过期", "低"
-    return "缺失", "低"
+        return f"核心过期｜{auxiliary_status}", "低"
+    return f"核心缺失｜{auxiliary_status}", "低"
 
 
 def _read_url_text(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SECONDS) -> str:
