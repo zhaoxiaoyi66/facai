@@ -38,7 +38,7 @@ STATUS_LABELS = {
 STATUS_HINTS = {
     STRUCTURE_CONFIRMED: "结构较好，可结合仓位计划执行。",
     STRUCTURE_FORMING: "结构尚未完全确认，建议小仓或等待确认。",
-    DIP_ONLY: "价格下跌但缺少买方承接证据。",
+    DIP_ONLY: "价格回落，但结构证据还不完整，需继续复核承接、主线和相对强弱。",
     STRUCTURE_BROKEN: "基本面或技术结构存在风险。",
     DATA_MISSING: "缺少判断数据。",
 }
@@ -144,6 +144,8 @@ def evaluate_structure_entry(
         status = DIP_ONLY
     else:
         status = STRUCTURE_BROKEN
+    if status == STRUCTURE_BROKEN and not warnings:
+        warnings.append("结构分数低于 40，主线、相对强弱或量能证据不足。")
 
     return StructureEntryAdvisor(
         structure_status=status,

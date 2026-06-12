@@ -39,6 +39,7 @@ def test_price_decline_without_buyer_support_is_dip_only() -> None:
     )
 
     assert advisor.structure_status == DIP_ONLY
+    assert "结构证据还不完整" in advisor.action_hint
     assert "价格跌破关键支撑" in " ".join(advisor.structure_warnings)
 
 
@@ -90,3 +91,26 @@ def test_missing_price_or_kline_data_returns_data_missing() -> None:
 
     assert no_price.structure_status == DATA_MISSING
     assert no_technicals.structure_status == DATA_MISSING
+
+
+def test_low_score_structure_broken_gets_explanatory_warning() -> None:
+    advisor = evaluate_structure_entry(
+        ticker="ISRG",
+        technicals=_technicals(
+            price=100,
+            close=100,
+            high=104,
+            low=90,
+            ema20=120,
+            ema50=130,
+            ema200=101,
+            recent_swing_low=95,
+            volume_trend=-0.3,
+        ),
+        decline_reason="unknown",
+        thesis_status="UNKNOWN",
+        relative_strength_status="弱于 SPY/QQQ",
+    )
+
+    assert advisor.structure_status == STRUCTURE_BROKEN
+    assert "结构分数低于 40" in " ".join(advisor.structure_warnings)
