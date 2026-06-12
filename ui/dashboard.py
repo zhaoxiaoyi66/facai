@@ -1110,7 +1110,7 @@ def _macro_indicator_label(indicator: str) -> str:
     return {
         "vix": "VIX 波动率指数",
         "hy_oas": "美高收益债信用利差",
-        "fear_greed": "恐惧与贪婪指数",
+        "fear_greed": "CNN恐惧与贪婪指数",
         "ten_year_yield": "10年美债收益率",
         "yield_curve_10y2y": "美债10Y-2Y利差",
         "market_trend": "大盘趋势",

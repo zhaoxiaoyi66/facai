@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 import pandas as pd
 
 from data.cache_read_model import CacheReadModel
+from data.fear_greed_provider import CNN_FEAR_GREED_GRAPH_URL, fetch_cnn_fear_greed
 from data.market_context import build_market_context
 from data.prices import CACHE_PATH
 from settings import load_watchlist
@@ -45,7 +46,7 @@ FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
 VIX_MARKET_SYMBOLS = ("AVIX", "^VIX", "VIX")
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
-CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+CNN_FEAR_GREED_URL = CNN_FEAR_GREED_GRAPH_URL
 MACRO_REQUEST_TIMEOUT_SECONDS = 4
 FRED_PRIMARY_TIMEOUT_SECONDS = 2
 FRED_FALLBACK_TIMEOUT_SECONDS = 1
@@ -87,6 +88,7 @@ class MacroIndicatorSnapshot:
     percentile_1y: float | None = None
     percentile_5y: float | None = None
     source: str = "cache/manual"
+    rating: str | None = None
     updated_at: str | None = None
     observation_date: str | None = None
     fetched_at: str | None = None
@@ -135,10 +137,10 @@ class MacroRegimeStore:
                 """
                 INSERT INTO macro_indicator_snapshots (
                     indicator, value, change_1d, change_5d, change_20d,
-                    percentile_1y, percentile_5y, source, updated_at, observation_date,
+                    percentile_1y, percentile_5y, source, rating, updated_at, observation_date,
                     fetched_at, is_stale, error, raw_payload, meta_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(indicator) DO UPDATE SET
                     value = excluded.value,
                     change_1d = excluded.change_1d,
@@ -147,6 +149,7 @@ class MacroRegimeStore:
                     percentile_1y = excluded.percentile_1y,
                     percentile_5y = excluded.percentile_5y,
                     source = excluded.source,
+                    rating = excluded.rating,
                     updated_at = excluded.updated_at,
                     observation_date = excluded.observation_date,
                     fetched_at = excluded.fetched_at,
@@ -164,6 +167,7 @@ class MacroRegimeStore:
                     snapshot.percentile_1y,
                     snapshot.percentile_5y,
                     snapshot.source,
+                    snapshot.rating,
                     updated_at,
                     snapshot.observation_date,
                     fetched_at,
@@ -350,7 +354,7 @@ class MacroRegimeStore:
             row = conn.execute(
                 """
                 SELECT indicator, value, change_1d, change_5d, change_20d,
-                       percentile_1y, percentile_5y, source, updated_at, meta_json,
+                       percentile_1y, percentile_5y, source, rating, updated_at, meta_json,
                        observation_date, fetched_at, is_stale, error, raw_payload
                 FROM macro_indicator_snapshots
                 WHERE indicator = ?
@@ -359,8 +363,8 @@ class MacroRegimeStore:
             ).fetchone()
         if not row:
             return None
-        meta = _json_dict(row[9])
-        updated_at = str(row[8] or "") or None
+        meta = _json_dict(row[10])
+        updated_at = str(row[9] or "") or None
         return MacroIndicatorSnapshot(
             indicator=normalized,
             value=_number(row[1]),
@@ -370,12 +374,13 @@ class MacroRegimeStore:
             percentile_1y=_number(row[5]),
             percentile_5y=_number(row[6]),
             source=str(row[7] or "cache/manual"),
+            rating=str(row[8] or "") or None,
             updated_at=updated_at,
-            observation_date=str(row[10] or "") or None,
-            fetched_at=str(row[11] or "") or None,
-            is_stale=bool(row[12]) or _is_stale(str(row[11] or updated_at or "") or None, stale_after_hours, now=now),
-            error=str(row[13] or "") or None,
-            raw_payload=str(row[14] or "") or None,
+            observation_date=str(row[11] or "") or None,
+            fetched_at=str(row[12] or "") or None,
+            is_stale=bool(row[13]) or _is_stale(str(row[12] or updated_at or "") or None, stale_after_hours, now=now),
+            error=str(row[14] or "") or None,
+            raw_payload=str(row[15] or "") or None,
             reasons=list(meta.get("reasons") or []),
             action_hints=list(meta.get("action_hints") or []),
         )
@@ -406,6 +411,7 @@ class MacroRegimeStore:
                 "percentile_1y": "REAL",
                 "percentile_5y": "REAL",
                 "source": "TEXT",
+                "rating": "TEXT",
                 "updated_at": "TEXT",
                 "observation_date": "TEXT",
                 "fetched_at": "TEXT",
@@ -547,7 +553,7 @@ def refresh_macro_indicators(
         lambda: _build_sentiment_proxy_snapshot(indicators, now=current),
         store=store,
         now=current,
-        when=_macro_refresh_result_missing(indicators.get(FEAR_GREED)),
+        when=_should_build_sentiment_proxy(indicators.get(FEAR_GREED)),
     )
 
     core_results = [item for item in indicator_results if item["indicator"] in CORE_MACRO_INDICATORS]
@@ -601,6 +607,7 @@ def _macro_indicator_refresh_result(
         "category": "core" if normalized in CORE_MACRO_INDICATORS else "auxiliary",
         "status": status,
         "value": snapshot.value if snapshot is not None else None,
+        "rating": snapshot.rating if snapshot is not None else None,
         "observation_date": snapshot.observation_date if snapshot is not None else None,
         "fetched_at": snapshot.fetched_at if snapshot is not None else None,
         "source": snapshot.source if snapshot is not None else "refresh error",
@@ -648,6 +655,14 @@ def _macro_refresh_result_missing(result: dict[str, Any] | None) -> bool:
             return True
         return False
     return True
+
+
+def _should_build_sentiment_proxy(result: dict[str, Any] | None) -> bool:
+    if _macro_refresh_result_missing(result):
+        return True
+    status = str((result or {}).get("status") or "")
+    source = str((result or {}).get("source") or "").lower()
+    return status in {"cached_fallback", "stale"} or bool((result or {}).get("used_cache")) or "cache" in source
 
 
 def _append_macro_proxy_result(
@@ -1208,24 +1223,35 @@ def _fetch_cached_or_fear_greed_snapshot(
     fear_greed_fetcher: Any | None,
     now: datetime,
 ) -> MacroIndicatorSnapshot:
-    cached = store.load_indicator(FEAR_GREED, now=now)
-    if cached is not None and _refresh_snapshot_value_usable(cached):
-        return cached
+    cached = store.load_indicator(FEAR_GREED, now=now, stale_after_hours=24 * 5)
+    if cached is not None and _refresh_snapshot_value_usable(cached) and _same_observation_day(cached, now):
+        return _as_cached_fear_greed_snapshot(cached, now=now)
     open_circuit, last_error = store.is_provider_circuit_open(FEAR_GREED_PROVIDER, now=now)
     if open_circuit:
+        if cached is not None and _refresh_snapshot_value_usable(cached):
+            return _as_cached_fear_greed_snapshot(
+                cached,
+                now=now,
+                error=f"CNN Fear & Greed circuit open; last error: {last_error or 'unknown'}",
+            )
         raise RuntimeError(f"CNN Fear & Greed circuit open, using proxy/cache; last error: {last_error or 'unknown'}")
     if fear_greed_fetcher is None:
+        if cached is not None and _refresh_snapshot_value_usable(cached):
+            return _as_cached_fear_greed_snapshot(cached, now=now, error="CNN Fear & Greed front refresh skipped")
         raise RuntimeError("CNN Fear & Greed front refresh skipped; use proxy/cache")
     try:
         snapshot = _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
     except Exception as exc:
+        error = _short_error(exc)
         store.record_provider_failure(
             FEAR_GREED_PROVIDER,
-            _short_error(exc),
+            error,
             now=now,
             failure_threshold=1,
             open_for_hours=FRED_CIRCUIT_OPEN_HOURS,
         )
+        if cached is not None and _refresh_snapshot_value_usable(cached):
+            return _as_cached_fear_greed_snapshot(cached, now=now, error=error)
         raise
     store.record_provider_success(FEAR_GREED_PROVIDER)
     return snapshot
@@ -1283,6 +1309,24 @@ def _fetch_fred_payload(series_id: str, *, fred_fetcher: Any | None) -> Any:
 
 
 def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime) -> MacroIndicatorSnapshot:
+    reading = fetch_cnn_fear_greed(
+        fetcher=fear_greed_fetcher,
+        url=CNN_FEAR_GREED_URL,
+        timeout_seconds=FEAR_GREED_TIMEOUT_SECONDS,
+        now=now,
+    )
+    fetched_at = now.isoformat()
+    return MacroIndicatorSnapshot(
+        indicator=FEAR_GREED,
+        value=reading.value,
+        source=reading.source,
+        rating=reading.rating,
+        updated_at=fetched_at,
+        fetched_at=fetched_at,
+        observation_date=reading.observation_date,
+        is_stale=_observation_date_stale(reading.observation_date, now=now, max_days=2),
+        raw_payload=reading.raw_payload,
+    )
     payload = (
         fear_greed_fetcher(CNN_FEAR_GREED_URL)
         if fear_greed_fetcher
@@ -1302,6 +1346,37 @@ def _fetch_fear_greed_snapshot(*, fear_greed_fetcher: Any | None, now: datetime)
         observation_date=observation_date,
         is_stale=_observation_date_stale(observation_date, now=now, max_days=2),
         raw_payload=_compact_raw_payload(payload),
+    )
+
+def _same_observation_day(snapshot: MacroIndicatorSnapshot, now: datetime) -> bool:
+    date_text = str(snapshot.observation_date or snapshot.fetched_at or snapshot.updated_at or "")[:10]
+    return bool(date_text) and date_text == now.date().isoformat()
+
+
+def _as_cached_fear_greed_snapshot(
+    snapshot: MacroIndicatorSnapshot,
+    *,
+    now: datetime,
+    error: str | None = None,
+) -> MacroIndicatorSnapshot:
+    return MacroIndicatorSnapshot(
+        indicator=FEAR_GREED,
+        value=snapshot.value,
+        change_1d=snapshot.change_1d,
+        change_5d=snapshot.change_5d,
+        change_20d=snapshot.change_20d,
+        percentile_1y=snapshot.percentile_1y,
+        percentile_5y=snapshot.percentile_5y,
+        source="CNN Fear & Greed cache",
+        rating=snapshot.rating,
+        updated_at=snapshot.updated_at,
+        observation_date=snapshot.observation_date,
+        fetched_at=snapshot.fetched_at,
+        is_stale=_is_stale(snapshot.fetched_at or snapshot.updated_at, 24 * 5, now=now),
+        error=error or snapshot.error,
+        raw_payload=snapshot.raw_payload,
+        reasons=snapshot.reasons,
+        action_hints=snapshot.action_hints,
     )
 
 
@@ -1630,6 +1705,7 @@ def _with_indicator_regime(snapshot: MacroIndicatorSnapshot) -> MacroIndicatorSn
         percentile_1y=snapshot.percentile_1y,
         percentile_5y=snapshot.percentile_5y,
         source=snapshot.source,
+        rating=snapshot.rating,
         updated_at=snapshot.updated_at,
         observation_date=snapshot.observation_date,
         fetched_at=snapshot.fetched_at,
@@ -1968,6 +2044,17 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
 def _sentiment_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     fear = snapshot.indicator(FEAR_GREED)
     fear_value = _usable_value(fear)
+    proxy = snapshot.indicator(SENTIMENT_PROXY)
+    proxy_value = _usable_value(proxy)
+    if fear_value is not None:
+        suffix = "（缓存）" if _is_cached_source(fear) else ""
+        base = f"CNN恐惧与贪婪 {fear_value:.0f}{suffix}"
+        if _is_cached_source(fear) and proxy_value is not None:
+            return f"{base}｜情绪代理 {_sentiment_proxy_label(proxy_value)}"
+        return base
+    if proxy_value is None:
+        return "CNN恐惧与贪婪 缺失"
+    return f"CNN恐惧与贪婪 缺失｜情绪代理 {_sentiment_proxy_label(proxy_value)}"
     if fear_value is not None:
         return f"恐惧贪婪 {fear_value:.0f}"
     proxy = snapshot.indicator(SENTIMENT_PROXY)
@@ -1975,6 +2062,9 @@ def _sentiment_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     if proxy_value is None:
         return "情绪缺失"
     return f"情绪代理{_sentiment_proxy_label(proxy_value)}"
+
+def _is_cached_source(snapshot: MacroIndicatorSnapshot | None) -> bool:
+    return bool(snapshot and "cache" in str(snapshot.source or "").lower())
 
 
 def _indicator_cache_status_text(snapshot: MacroIndicatorSnapshot) -> str:

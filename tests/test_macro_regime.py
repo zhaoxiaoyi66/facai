@@ -238,7 +238,7 @@ def test_macro_status_text_is_chinese_and_contains_three_indicators() -> None:
     assert "大盘环境" in text
     assert "VIX 22.4" in text
     assert "高收益债利差" not in text
-    assert "恐惧与贪婪" not in text
+    assert "CNN恐惧与贪婪 28" in text
     assert "纪律提示" in text
 
 
@@ -806,6 +806,80 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
     assert loaded.value == 28
+    assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
+
+
+def test_fear_greed_graphdata_success_writes_cnn_cache_with_rating(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 18.6],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=lambda url: {
+            "fear_and_greed": {"score": 34, "rating": "fear", "timestamp": "2026-06-10T20:00:00+00:00"}
+        },
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    loaded = MacroRegimeStore(path).load_indicator(FEAR_GREED, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["indicators"][FEAR_GREED]["status"] == "success"
+    assert result["indicators"][FEAR_GREED]["value"] == 34
+    assert result["indicators"][FEAR_GREED]["rating"] == "fear"
+    assert loaded is not None
+    assert loaded.source == "CNN Fear & Greed graphdata"
+    assert loaded.rating == "fear"
+
+
+def test_fear_greed_same_day_success_cache_skips_cnn_request(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    MacroRegimeStore(path).save_indicator(
+        MacroIndicatorSnapshot(
+            indicator=FEAR_GREED,
+            value=34,
+            rating="fear",
+            source="CNN Fear & Greed graphdata",
+            observation_date="2026-06-10",
+            updated_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat(),
+        )
+    )
+    cnn_calls: list[str] = []
+
+    def unexpected_cnn(url: str):
+        cnn_calls.append(url)
+        raise AssertionError("same-day CNN cache should skip network")
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=_fred_fetcher(
+            {
+                "VIXCLS": [18.5, 18.6],
+                "BAMLH0A0HYM2": [3.6, 3.7],
+                "DGS10": [4.2, 4.4],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        ),
+        fear_greed_fetcher=unexpected_cnn,
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert cnn_calls == []
+    assert result["indicators"][FEAR_GREED]["status"] == "cached_fallback"
+    assert result["indicators"][FEAR_GREED]["used_cache"] is True
+    assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
 
 
 def test_stale_fear_greed_cache_uses_internal_sentiment_proxy(tmp_path, monkeypatch) -> None:
@@ -818,8 +892,8 @@ def test_stale_fear_greed_cache_uses_internal_sentiment_proxy(tmp_path, monkeypa
             indicator=FEAR_GREED,
             value=28,
             source="CNN cached",
-            updated_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
-            fetched_at=datetime(2026, 6, 8, 19, tzinfo=timezone.utc).isoformat(),
+            updated_at=datetime(2026, 6, 4, 19, tzinfo=timezone.utc).isoformat(),
+            fetched_at=datetime(2026, 6, 4, 19, tzinfo=timezone.utc).isoformat(),
         )
     )
 
