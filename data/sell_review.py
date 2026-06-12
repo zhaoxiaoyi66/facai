@@ -37,11 +37,15 @@ FLAG_LABELS = {
     "sell_in_buy_zone": "卖出时处于买区/低于买区",
     "a_class_short_hold": "A类持仓天数过短",
     "a_class_missing_reentry": "A类卖出缺少具体回补计划",
-    "emotional_sell": "宏观/情绪型卖出",
+    "emotional_sell": "情绪型卖出",
     "full_exit_without_review": "清仓无复盘",
     "non_c_event_review": "非 C 类事件交易需复核",
     "gate_blocked": "卖出门禁曾阻断",
     "core_review": "核心仓卖出需复盘",
+    "fundamental_change_sell": "基本面改写型卖出",
+    "valuation_compression_sell": "估值压缩型卖出",
+    "liquidity_shock_sell": "流动性冲击型卖出",
+    "a_class_liquidity_shock_sell": "A类核心仓在流动性冲击下卖出",
 }
 
 
@@ -111,6 +115,15 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         flag_keys.append("non_c_event_review")
     if gate_blocked:
         flag_keys.append("gate_blocked")
+    if fundamental_change:
+        flag_keys.append("fundamental_change_sell")
+    if valuation_compression:
+        flag_keys.append("valuation_compression_sell")
+    if liquidity_shock:
+        flag_keys.append("liquidity_shock_sell")
+    a_class_liquidity_shock = bool(is_a_class and liquidity_shock)
+    if a_class_liquidity_shock:
+        flag_keys.append("a_class_liquidity_shock_sell")
 
     suspected = bool(
         (is_a_class and (below_target or sell_in_buy_zone or (missing_reentry and not context_too_sparse)))
@@ -134,6 +147,7 @@ def evaluate_sell_review_flags(trade: dict[str, Any]) -> dict[str, Any]:
         "fundamental_change_sell": fundamental_change,
         "valuation_compression_sell": valuation_compression,
         "liquidity_shock_sell": liquidity_shock,
+        "a_class_liquidity_shock_sell": a_class_liquidity_shock,
         "planned_reduction_sell": planned_reduction,
         "full_exit_without_review": full_exit_without_review,
         "suspected_sell_fly": suspected,
@@ -191,6 +205,7 @@ def _empty_review() -> dict[str, Any]:
         "fundamental_change_sell": False,
         "valuation_compression_sell": False,
         "liquidity_shock_sell": False,
+        "a_class_liquidity_shock_sell": False,
         "planned_reduction_sell": False,
         "full_exit_without_review": False,
         "suspected_sell_fly": False,

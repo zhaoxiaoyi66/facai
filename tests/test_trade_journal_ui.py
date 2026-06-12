@@ -102,7 +102,8 @@ def test_sell_form_renders_structured_sell_reason_advisory() -> None:
 
     assert "卖出原因复盘" in source
     assert "sellContextType" not in source
-    assert "这可能是在流动性最差时卖出核心资产" in source
+    assert "这可能是在流动性较差或风险溢价上升时卖出核心资产" in source
+    assert "情绪性卖出容易造成卖飞" in source
     assert "只用于复盘，不改变门禁" in source
 
 
@@ -515,6 +516,44 @@ def test_sell_context_snapshot_values_include_position_and_radar_context() -> No
     assert snapshot["sell_thesis_note"] == "先降风险，等流动性恢复再回补"
 
 
+def test_structured_sell_reason_options_cover_required_categories() -> None:
+    assert trade_journal.SELL_CONTEXT_TYPE_OPTIONS["其他"] == "other"
+    assert trade_journal.FUNDAMENTAL_CHANGE_OPTIONS["财务质量恶化"] == "financial_quality_deterioration"
+    assert trade_journal.FUNDAMENTAL_CHANGE_OPTIONS["指引下修"] == "guidance_cut"
+    assert trade_journal.FUNDAMENTAL_CHANGE_OPTIONS["其他"] == "other"
+
+
+def test_fundamental_change_sell_reason_requires_change_type_and_note() -> None:
+    missing_change = trade_journal._structured_sell_reason_validation_error(
+        "trim",
+        {
+            "sellContextType": "fundamental_change",
+            "fundamentalChangeType": [],
+            "sellThesisNote": "收入路径已经变了",
+        },
+    )
+    missing_note = trade_journal._structured_sell_reason_validation_error(
+        "trim",
+        {
+            "sellContextType": "fundamental_change",
+            "fundamentalChangeType": ["guidance_cut"],
+            "sellThesisNote": "",
+        },
+    )
+    complete = trade_journal._structured_sell_reason_validation_error(
+        "trim",
+        {
+            "sellContextType": "fundamental_change",
+            "fundamentalChangeType": ["guidance_cut"],
+            "sellThesisNote": "管理层下修指引，原 thesis 需要重写",
+        },
+    )
+
+    assert "至少选择一项" in missing_change
+    assert "卖出 thesis" in missing_note
+    assert complete == ""
+
+
 def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
     html = trade_journal._entry_sell_review_html(
         {
@@ -543,3 +582,21 @@ def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
     assert "估值压缩 / 风险溢价上升" in html
     assert "利润率恶化" in html
     assert "估值压缩但主线未破坏" in html
+
+
+def test_trade_performance_detail_displays_sell_context_type() -> None:
+    html = trade_journal._trade_performance_detail_html(
+        {
+            "sell_price": 120,
+            "sell_context_type": "liquidity_shock",
+            "sell_reason_type": "macro",
+            "included_in_performance": True,
+        }
+    )
+
+    assert "卖出原因类型" in html
+    assert "流动性冲击 / 市场恐慌" in html
+
+
+def test_empty_sell_context_type_displays_as_not_recorded() -> None:
+    assert trade_journal._sell_context_type_text("") == "未记录"

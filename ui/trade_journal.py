@@ -98,6 +98,7 @@ SELL_CONTEXT_TYPE_OPTIONS = {
     "仓位超限": "position_risk",
     "计划内减仓": "planned_reduction",
     "情绪性卖出": "emotional_sell",
+    "其他": "other",
 }
 SELL_CONTEXT_TYPE_LABELS = {value: label for label, value in SELL_CONTEXT_TYPE_OPTIONS.items()}
 FUNDAMENTAL_CHANGE_OPTIONS = {
@@ -108,6 +109,9 @@ FUNDAMENTAL_CHANGE_OPTIONS = {
     "监管环境变化": "regulatory_change",
     "竞争格局变化": "competitive_landscape_change",
     "管理层执行问题": "management_execution_issue",
+    "财务质量恶化": "financial_quality_deterioration",
+    "指引下修": "guidance_cut",
+    "其他": "other",
 }
 FUNDAMENTAL_CHANGE_LABELS = {value: label for label, value in FUNDAMENTAL_CHANGE_OPTIONS.items()}
 DECISION_MOOD_OPTIONS = {
@@ -369,6 +373,10 @@ def _render_editor(store: TradeJournalStore) -> None:
             entry_values.update(buy_gate_entry_fields(radar_gate_result if action_type in CLASSIFICATION_ACTIONS else None, action_type=action_type))
             entry_values.update(_trade_discipline_form_values(action_type, key_suffix=str(editing_id or "new")))
             entry_values.update(_buy_classification_form_values(action_type, key_suffix=str(editing_id or "new")))
+            structured_sell_error = _structured_sell_reason_validation_error(action_type, entry_values)
+            if structured_sell_error:
+                st.session_state["trade_journal_notice"] = ("error", structured_sell_error)
+                st.rerun()
             if selected_position and action_type in SELL_DISCIPLINE_ACTIONS:
                 entry_values.update(
                     _sell_context_snapshot_values(
@@ -1078,9 +1086,9 @@ def _render_structured_sell_reason_editor(
         placeholder="这次卖出是理性调整，还是恐慌砍核心仓？请写清判断依据和回补条件。",
     )
     if str(position_class or "").upper() == "A" and context_type in {"valuation_compression", "liquidity_shock"}:
-        st.warning("这可能是在流动性最差时卖出核心资产。请确认是否有回补计划。")
+        st.warning("这可能是在流动性较差或风险溢价上升时卖出核心资产。请确认不是恐慌卖出，并填写回补计划。")
     if context_type == "emotional_sell":
-        st.warning("你已标记为情绪性卖出。Sell Review 会保留该复盘标签，但不会改变本次卖出门禁。")
+        st.warning("情绪性卖出容易造成卖飞，请确认是否有明确回补计划。")
 
 
 def _sell_context_type_label_for_entry(entry: dict | None) -> str:
@@ -1658,6 +1666,29 @@ def _structured_sell_reason_form_values(key_suffix: str = "new") -> dict:
         "positionRiskReason": st.session_state.get(f"trade-position-risk-reason-{key_suffix}") or "",
         "sellThesisNote": st.session_state.get(f"trade-sell-thesis-note-{key_suffix}") or "",
     }
+
+
+def _structured_sell_reason_validation_error(action_type: str, values: dict) -> str:
+    if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
+        return ""
+    context_type = str(values.get("sellContextType") or values.get("sell_context_type") or "").strip()
+    if context_type != "fundamental_change":
+        return ""
+    change_values = values.get("fundamentalChangeType") or values.get("fundamental_change_type") or []
+    if isinstance(change_values, str):
+        try:
+            parsed_changes = json.loads(change_values)
+        except json.JSONDecodeError:
+            parsed_changes = [change_values] if change_values.strip() else []
+    elif isinstance(change_values, (list, tuple, set)):
+        parsed_changes = list(change_values)
+    else:
+        parsed_changes = []
+    if not [str(item).strip() for item in parsed_changes if str(item).strip()]:
+        return "选择“基本面改写”时，请至少选择一项具体改写类型。"
+    if not str(values.get("sellThesisNote") or values.get("sell_thesis_note") or "").strip():
+        return "选择“基本面改写”时，请填写卖出 thesis / 复盘说明。"
+    return ""
 
 
 def _buy_classification_form_values(action_type: str, key_suffix: str = "new") -> dict:
@@ -2267,6 +2298,7 @@ def _trade_performance_detail_html(row: dict) -> str:
         ("买入心情", _mood_text(row.get("buy_mood"))),
         ("卖出心情", _mood_text(row.get("sell_mood"))),
         ("卖出原因", _sell_reason_text(row.get("sell_reason_type"))),
+        ("卖出原因类型", _sell_context_type_text(row.get("sell_context_type"))),
         ("备注", note),
     ]
     right_rows = [
@@ -2941,7 +2973,10 @@ def _structured_sell_context_type(entry: dict, snapshot: dict | None = None) -> 
 
 
 def _sell_context_type_text(value: object) -> str:
-    return SELL_CONTEXT_TYPE_LABELS.get(str(value or "").strip(), "未记录")
+    clean = str(value or "").strip()
+    if not clean:
+        return "未记录"
+    return SELL_CONTEXT_TYPE_LABELS.get(clean, "未记录")
 
 
 def _fundamental_change_text(entry: dict, snapshot: dict | None = None) -> str:

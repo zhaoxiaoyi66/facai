@@ -101,6 +101,30 @@ def test_structured_sell_context_fields_are_exposed_for_review() -> None:
     assert review["sell_context_type"] == "fundamental_change"
     assert review["fundamental_change_sell"] is True
     assert review["valuation_compression_sell"] is False
+    assert "基本面改写型卖出" in review["labels"]
+
+
+def test_structured_sell_context_adds_review_labels_without_changing_gate_logic() -> None:
+    valuation = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "sell_price": 100,
+            "sell_context_type": "valuation_compression",
+        }
+    )
+    liquidity = evaluate_sell_review_flags(
+        {
+            "action_type": "trim",
+            "sell_price": 100,
+            "position_tier": "A",
+            "sell_context_type": "liquidity_shock",
+        }
+    )
+
+    assert "估值压缩型卖出" in valuation["labels"]
+    assert "流动性冲击型卖出" in liquidity["labels"]
+    assert "A类核心仓在流动性冲击下卖出" in liquidity["labels"]
+    assert liquidity["a_class_liquidity_shock_sell"] is True
 
 
 def test_planned_reduction_context_is_not_treated_as_emotional_sell() -> None:
