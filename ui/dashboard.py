@@ -51,6 +51,10 @@ from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_structure_health import (
+    build_portfolio_structure_check,
+    portfolio_structure_check_strip_html,
+)
 from data.refresh_policy import RefreshMode, refresh_symbols_by_mode
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_multiple, format_percent
@@ -268,7 +272,15 @@ def render() -> None:
     portfolio_view = build_portfolio_view_model()
     risk_items = build_dashboard_risk_radar(table, portfolio_view)
     macro_regime = load_macro_regime()
-    _render_dashboard_status_bar(table, data_health_context, risk_items, macro_regime, tickers=tickers)
+    portfolio_structure_check = build_portfolio_structure_check(portfolio_view, macro_regime=macro_regime)
+    _render_dashboard_status_bar(
+        table,
+        data_health_context,
+        risk_items,
+        macro_regime,
+        portfolio_structure_check=portfolio_structure_check,
+        tickers=tickers,
+    )
     _render_price_alert_strip(tickers)
     _render_summary_sections(table)
     _render_decision_table(table)
@@ -675,6 +687,7 @@ def _render_dashboard_status_bar(
     risk_items: list[dict[str, object]],
     macro_regime,
     *,
+    portfolio_structure_check=None,
     tickers: list[str] | None = None,
 ) -> None:
     data_health_view = dict(data_health_context.get("view") or {})
@@ -710,6 +723,7 @@ def _render_dashboard_status_bar(
             "</section>"
             f"{macro_regime_status_html(macro_regime)}"
             f"{freshness_html}"
+            f"{portfolio_structure_check_strip_html(portfolio_structure_check) if portfolio_structure_check is not None else ''}"
         ),
         unsafe_allow_html=True,
     )
@@ -3165,6 +3179,73 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-freshness-refresh {
             margin-top:0.32rem;
+        }
+        .portfolio-structure-strip {
+            max-width:1440px;
+            margin:-0.2rem auto 0.62rem;
+            padding:0.42rem 0.66rem;
+            border:1px solid rgba(148, 163, 184, 0.18);
+            border-radius:9px;
+            background:#FFFFFF;
+            color:#334155;
+            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            font-size:11px;
+            line-height:1.35;
+        }
+        .portfolio-structure-strip.aggressive {
+            border-color:rgba(217,119,6,0.20);
+            background:#FFFBEB;
+        }
+        .portfolio-structure-strip.imbalanced {
+            border-color:rgba(234,88,12,0.20);
+            background:#FFF7ED;
+        }
+        .portfolio-structure-strip.danger {
+            border-color:rgba(185,28,28,0.22);
+            background:#FEF2F2;
+        }
+        .portfolio-structure-main {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.6rem;
+        }
+        .portfolio-structure-main > strong {
+            flex:0 0 auto;
+            color:#334155;
+            font-size:11px;
+            font-weight:760;
+        }
+        .portfolio-structure-items {
+            display:flex;
+            flex-wrap:wrap;
+            justify-content:flex-end;
+            gap:0.34rem;
+            min-width:0;
+        }
+        .portfolio-structure-items span {
+            display:inline-flex;
+            align-items:center;
+            gap:0.18rem;
+            padding:0.12rem 0.36rem;
+            border:1px solid rgba(226,232,240,0.95);
+            border-radius:999px;
+            background:rgba(255,255,255,0.72);
+            color:#334155;
+            font-size:11px;
+            line-height:1.1;
+            font-weight:650;
+        }
+        .portfolio-structure-items b {
+            color:#64748B;
+            font-weight:650;
+        }
+        .portfolio-structure-hint {
+            margin-top:0.24rem;
+            color:#64748B;
+            overflow:hidden;
+            white-space:nowrap;
+            text-overflow:ellipsis;
         }
         .macro-regime-detail {
             border:1px solid rgba(148, 163, 184, 0.18);

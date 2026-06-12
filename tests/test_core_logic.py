@@ -1522,6 +1522,16 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("_render_risk_radar_summary_strip", system_status_source)
         self.assertIn("_dashboard_risk_radar_html", system_status_source)
 
+    def test_dashboard_header_includes_portfolio_structure_check_strip(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        render_source = inspect.getsource(dashboard_module.render)
+        status_source = inspect.getsource(dashboard_module._render_dashboard_status_bar)
+        styles_source = inspect.getsource(dashboard_module._render_dashboard_styles)
+
+        self.assertIn("build_portfolio_structure_check", render_source)
+        self.assertIn("portfolio_structure_check_strip_html", status_source)
+        self.assertIn("portfolio-structure-strip", styles_source)
+
     def test_dashboard_filter_chip_links_drive_table_filters(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
 
