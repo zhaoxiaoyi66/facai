@@ -29,7 +29,6 @@ from data.dashboard_lanes import (
 )
 from data.dashboard_freshness import (
     build_dashboard_data_freshness,
-    dashboard_data_freshness_strip_html,
 )
 from data.dashboard_risk_model import (
     build_dashboard_data_health_view,
@@ -44,7 +43,6 @@ from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
     load_macro_regime,
     macro_regime_detail_html,
-    macro_regime_status_html,
 )
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
@@ -53,7 +51,6 @@ from data.fundamentals import FundamentalCache
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_structure_health import (
     build_portfolio_structure_check,
-    portfolio_structure_check_strip_html,
 )
 from data.refresh_policy import RefreshMode, refresh_symbols_by_mode
 from data.trading_discipline_stats import build_trading_discipline_summary
@@ -282,7 +279,6 @@ def render() -> None:
         tickers=tickers,
     )
     _render_price_alert_strip(tickers)
-    _render_summary_sections(table)
     _render_decision_table(table)
     _render_dashboard_system_status(data_health_context, risk_items, table, macro_regime)
     _render_client_stock_detail_drawers(table)
@@ -690,45 +686,243 @@ def _render_dashboard_status_bar(
     portfolio_structure_check=None,
     tickers: list[str] | None = None,
 ) -> None:
-    data_health_view = dict(data_health_context.get("view") or {})
-    last_updated = _dashboard_last_updated_text(data_health_context.get("lastUpdated"))
-    items = [
-        ("观察", len(table)),
-        ("可行动", len(_actionable_rows(table))),
-        ("接近买区", len(_near_buy_zone_rows(table))),
-        ("风险隔离", len(_blocked_or_risky_rows(table))),
-        ("数据", data_health_view.get("statusLabel") or "注意"),
-        ("最后更新", last_updated),
-        ("数据源", "本地缓存 · FMP Starter"),
-    ]
-    item_html = "".join(
-        f'<span><b>{escape(str(label))}</b>{escape(str(value))}</span>'
-        for label, value in items
-    )
     risk_total = _dashboard_risk_total_count(risk_items, table)
     freshness = build_dashboard_data_freshness(
         _dashboard_refresh_symbols(tickers or []),
         macro_regime=macro_regime,
     )
-    freshness_html = dashboard_data_freshness_strip_html(
+    item_html = "".join(
+        _dashboard_command_status_item_html(label, value, tone)
+        for label, value, tone in _dashboard_command_status_items(table, macro_regime, freshness, portfolio_structure_check)
+    )
+    detail_html = _dashboard_command_detail_html(
         freshness,
         last_refresh_result=st.session_state.get("dashboard_refresh_mode_last_result"),
         last_macro_refresh_result=st.session_state.get("dashboard_macro_last_refresh_result"),
+        portfolio_structure_check=portfolio_structure_check,
     )
     st.markdown(
         (
-            '<section class="dashboard-status-bar">'
-            f'<div class="dashboard-status-items">{item_html}</div>'
-            f'<a class="dashboard-status-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
+            '<section class="dashboard-command-center">'
+            '<div class="dashboard-command-main">'
+            f'<div class="dashboard-command-items">{item_html}</div>'
+            f'<a class="dashboard-command-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
+            "</div>"
+            '<details class="dashboard-command-details">'
+            "<summary>详情 / 最近刷新</summary>"
+            f"{detail_html}"
+            "</details>"
             "</section>"
-            f"{macro_regime_status_html(macro_regime)}"
-            f"{freshness_html}"
-            f"{portfolio_structure_check_strip_html(portfolio_structure_check) if portfolio_structure_check is not None else ''}"
         ),
         unsafe_allow_html=True,
     )
-    _render_dashboard_refresh_mode_result()
-    _render_macro_refresh_result()
+
+
+def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_structure_check) -> list[tuple[str, str, str]]:
+    return [
+        ("", f"{len(table)}只观察", "neutral"),
+        ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
+        ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
+        ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
+        ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
+        ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
+        ("基本面", _freshness_status_text(freshness, "fundamental"), _freshness_tone(freshness, "fundamental")),
+    ]
+
+
+def _dashboard_command_status_item_html(label: str, value: str, tone: str = "neutral") -> str:
+    if label:
+        return (
+            f'<span class="dashboard-command-item {escape(tone)}">'
+            f'<b>{escape(label)}</b>{escape(value)}'
+            "</span>"
+        )
+    return f'<span class="dashboard-command-item {escape(tone)}"><strong>{escape(value)}</strong></span>'
+
+
+def _dashboard_command_detail_html(
+    freshness,
+    *,
+    last_refresh_result: dict | None = None,
+    last_macro_refresh_result: dict | None = None,
+    portfolio_structure_check=None,
+) -> str:
+    return (
+        '<div class="dashboard-command-detail-grid">'
+        f"{_dashboard_freshness_detail_block_html(freshness, last_refresh_result=last_refresh_result, last_macro_refresh_result=last_macro_refresh_result)}"
+        f"{_dashboard_portfolio_structure_detail_block_html(portfolio_structure_check)}"
+        f"{_dashboard_refresh_log_detail_block_html(last_refresh_result, last_macro_refresh_result)}"
+        "</div>"
+    )
+
+
+def _dashboard_freshness_detail_block_html(
+    freshness,
+    *,
+    last_refresh_result: dict | None = None,
+    last_macro_refresh_result: dict | None = None,
+) -> str:
+    pills = "".join(
+        f'<span class="dashboard-freshness-pill {escape(str(item.tone))}" title="{escape(str(item.detail))}">'
+        f'<b>{escape(str(item.label))}</b>{escape(str(item.status_text))}'
+        "</span>"
+        for item in freshness.items
+    )
+    rows = "".join(
+        "<li>"
+        f"<b>{escape(str(item.label))}</b>"
+        f"<span>{escape(str(item.status_text))}｜{escape(str(item.source))}｜{escape(_format_dashboard_time(item.updated_at))}</span>"
+        f"<em>{escape(str(item.detail))}</em>"
+        "</li>"
+        for item in freshness.items
+    )
+    refresh_note = _dashboard_last_refresh_note(last_refresh_result, last_macro_refresh_result)
+    refresh_html = f'<p>{escape(refresh_note)}</p>' if refresh_note else ""
+    return (
+        '<section class="dashboard-command-detail-card">'
+        '<div><strong>数据新鲜度</strong><span>默认折叠，避免压过观察名单</span></div>'
+        f'<div class="dashboard-freshness-items compact">{pills}</div>'
+        f"<ul>{rows}</ul>"
+        f"{refresh_html}"
+        "</section>"
+    )
+
+
+def _dashboard_portfolio_structure_detail_block_html(portfolio_structure_check) -> str:
+    if portfolio_structure_check is None:
+        return (
+            '<section class="dashboard-command-detail-card">'
+            '<div><strong>仓位结构</strong><span>暂无组合结构快照</span></div>'
+            "</section>"
+        )
+    compact_items = [
+        ("现金", _pct_text(getattr(portfolio_structure_check, "cash_pct", None))),
+        ("最大单票", _pct_text(getattr(portfolio_structure_check, "largest_position_pct", None))),
+        ("前三大", _pct_text(getattr(portfolio_structure_check, "top3_position_pct", None))),
+        ("C类", _pct_text((getattr(portfolio_structure_check, "tier_pct", {}) or {}).get("C"))),
+    ]
+    stats_html = "".join(
+        f'<span><b>{escape(label)}</b>{escape(value)}</span>'
+        for label, value in compact_items
+    )
+    reasons = list(getattr(portfolio_structure_check, "reasons", []) or [])
+    hints = list(getattr(portfolio_structure_check, "action_hints", []) or [])
+    reason_html = "".join(f"<li>{escape(str(item))}</li>" for item in [*reasons[:4], *hints[:3]]) or "<li>暂无结构警报。</li>"
+    return (
+        '<section class="dashboard-command-detail-card">'
+        f'<div><strong>仓位结构：{escape(str(getattr(portfolio_structure_check, "status", "") or "未计算"))}</strong><span>现金、集中度和 C 类仓位</span></div>'
+        f'<div class="dashboard-command-mini-stats">{stats_html}</div>'
+        f"<ul>{reason_html}</ul>"
+        "</section>"
+    )
+
+
+def _dashboard_refresh_log_detail_block_html(
+    last_refresh_result: dict | None,
+    last_macro_refresh_result: dict | None,
+) -> str:
+    rows: list[str] = []
+    if isinstance(last_refresh_result, dict):
+        rows.append(_dashboard_refresh_log_row_html(last_refresh_result))
+    if isinstance(last_macro_refresh_result, dict) and last_macro_refresh_result:
+        rows.append(_dashboard_macro_refresh_log_row_html(last_macro_refresh_result))
+    if not rows:
+        rows.append("<li><b>最近刷新</b><span>暂无本次会话刷新记录。</span></li>")
+    return (
+        '<section class="dashboard-command-detail-card">'
+        '<div><strong>最近刷新记录</strong><span>详细日志折叠保存</span></div>'
+        f"<ul>{''.join(rows)}</ul>"
+        "</section>"
+    )
+
+
+def _dashboard_refresh_log_row_html(result: dict) -> str:
+    mode = str(result.get("mode") or "")
+    status = str(result.get("status") or "")
+    duration = result.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "未知"
+    return (
+        "<li>"
+        f"<b>{escape(_refresh_mode_label(mode))}</b>"
+        f"<span>{escape(_refresh_status_label(status))}｜成功 {int(result.get('refreshed_count') or 0)}｜"
+        f"跳过 {int(result.get('skipped_count') or 0)}｜失败 {int(result.get('failed_count') or 0)}｜用时 {escape(duration_text)}</span>"
+        "</li>"
+    )
+
+
+def _dashboard_macro_refresh_log_row_html(result: dict) -> str:
+    status = str(result.get("overall_status") or result.get("status") or "")
+    duration = result.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "未知"
+    return (
+        "<li>"
+        "<b>大盘环境</b>"
+        f"<span>{escape(_macro_refresh_status_label(status))}｜用时 {escape(duration_text)}</span>"
+        "</li>"
+    )
+
+
+def _dashboard_last_refresh_note(last_refresh_result: dict | None, last_macro_refresh_result: dict | None) -> str:
+    if not isinstance(last_refresh_result, dict):
+        return ""
+    mode = str(last_refresh_result.get("mode") or "")
+    duration = last_refresh_result.get("duration_seconds")
+    duration_text = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "未知"
+    note = (
+        f"最近：{_refresh_mode_label(mode)}｜成功 {int(last_refresh_result.get('refreshed_count') or 0)}｜"
+        f"跳过 {int(last_refresh_result.get('skipped_count') or 0)}｜失败 {int(last_refresh_result.get('failed_count') or 0)}｜用时 {duration_text}"
+    )
+    if mode == "MACRO_ONLY" and isinstance(last_macro_refresh_result, dict):
+        macro_status = str(last_macro_refresh_result.get("overall_status") or last_macro_refresh_result.get("status") or "")
+        if macro_status:
+            note = f"{note}｜宏观 {_macro_refresh_status_label(macro_status)}"
+    return note
+
+
+def _compact_macro_data_status(value: str) -> str:
+    text = str(value or "").strip()
+    return text.split("｜", 1)[0] if text else "缺失"
+
+
+def _freshness_status_text(freshness, key: str) -> str:
+    item = freshness.item(key)
+    return str(getattr(item, "status_text", "") or "缺失")
+
+
+def _freshness_tone(freshness, key: str) -> str:
+    item = freshness.item(key)
+    tone = str(getattr(item, "tone", "") or "missing")
+    return {
+        "fresh": "ok",
+        "warn": "warn",
+        "stale": "danger",
+        "missing": "muted",
+    }.get(tone, "neutral")
+
+
+def _portfolio_status_tone(portfolio_structure_check) -> str:
+    status = str(getattr(portfolio_structure_check, "status", "") or "")
+    return {
+        "健康": "ok",
+        "偏激进": "warn",
+        "失衡": "warn",
+        "危险": "danger",
+    }.get(status, "neutral")
+
+
+def _format_dashboard_time(value: object) -> str:
+    if not value:
+        return "无更新时间"
+    return str(value).replace("T", " ")[:16]
+
+
+def _pct_text(value: object) -> str:
+    try:
+        if value is None:
+            return "N/A"
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "N/A"
 
 
 def _render_weekly_discipline_strip() -> None:
@@ -1527,19 +1721,26 @@ def _dashboard_risk_radar_item_html(item: dict[str, object]) -> str:
     )
 
 def _render_summary_sections(table: pd.DataFrame) -> None:
+    st.markdown(_dashboard_filter_strip_html(table), unsafe_allow_html=True)
+
+
+def _dashboard_filter_strip_html(table: pd.DataFrame) -> str:
+    return (
+        '<section class="dashboard-filter-strip">'
+        '<div class="dashboard-filter-title"><strong>决策筛选</strong><span>点击聚焦主表</span></div>'
+        f'<div class="dashboard-filter-chips">{_dashboard_filter_chips_html(table)}</div>'
+        "</section>"
+    )
+
+
+def _dashboard_filter_chips_html(table: pd.DataFrame) -> str:
     summary_groups = _summary_lane_groups(table)
     chips = [_dashboard_filter_chip_html("all", "全部", len(table))]
     chips.extend(
         _dashboard_filter_chip_html(lane_key, title, len(rows), color)
         for lane_key, title, _subtitle, rows, color in summary_groups
     )
-    st.markdown(
-        '<section class="dashboard-filter-strip">'
-        '<div class="dashboard-filter-title"><strong>决策筛选</strong><span>点击聚焦主表</span></div>'
-        f'<div class="dashboard-filter-chips">{"".join(chips)}</div>'
-        "</section>",
-        unsafe_allow_html=True,
-    )
+    return "".join(chips)
 
 
 def _dashboard_filter_chip_html(lane_key: str, label: str, count: int, color: str = "gray") -> str:
@@ -1562,6 +1763,7 @@ def _render_decision_table(table: pd.DataFrame) -> None:
     st.markdown(
         '<section class="watchlist-head">'
         "<div><strong>观察名单</strong><span>决策摘要</span></div>"
+        f'<div class="dashboard-filter-chips watchlist-filter-chips">{_dashboard_filter_chips_html(table)}</div>'
         "</section>",
         unsafe_allow_html=True,
     )
@@ -3086,30 +3288,31 @@ def _render_dashboard_styles() -> None:
             font-weight: 650;
             font-variant-numeric: tabular-nums;
         }
-        .dashboard-status-bar {
+        .dashboard-command-center {
             max-width:1440px;
-            margin:0 auto 0.55rem;
-            min-height:34px;
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:0.65rem;
-            padding:0.38rem 0.58rem;
+            margin:0 auto 0.46rem;
+            padding:0.36rem 0.58rem;
             border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:9px;
             background:#FFFFFF;
             color:#64748B;
             box-shadow:0 10px 26px rgba(15, 23, 42, 0.035);
         }
-        .dashboard-status-items {
+        .dashboard-command-main {
             display:flex;
             align-items:center;
+            justify-content:space-between;
+            gap:0.65rem;
+            min-height:28px;
+        }
+        .dashboard-command-items {
+            display:flex;
+            align-items:center;
+            flex-wrap:wrap;
             gap:0.42rem;
             min-width:0;
-            overflow:hidden;
-            white-space:nowrap;
         }
-        .dashboard-status-items span {
+        .dashboard-command-item {
             display:inline-flex;
             align-items:center;
             gap:0.18rem;
@@ -3118,12 +3321,22 @@ def _render_dashboard_styles() -> None:
             font-size:11px;
             line-height:1;
             font-weight:650;
+            white-space:nowrap;
         }
-        .dashboard-status-items b {
+        .dashboard-command-item strong {
+            color:#0F172A;
+            font-size:11.5px;
+            font-weight:820;
+        }
+        .dashboard-command-item b {
             color:#94A3B8;
             font-weight:650;
         }
-        .dashboard-status-link {
+        .dashboard-command-item.ok { color:#166534; }
+        .dashboard-command-item.warn { color:#92400E; }
+        .dashboard-command-item.danger { color:#991B1B; }
+        .dashboard-command-item.muted { color:#94A3B8; }
+        .dashboard-command-link {
             flex:0 0 auto;
             color:#334155 !important;
             font-size:11px;
@@ -3131,10 +3344,88 @@ def _render_dashboard_styles() -> None:
             text-decoration:none !important;
             white-space:nowrap;
         }
-        .dashboard-status-link:hover,
-        .dashboard-status-link:visited {
+        .dashboard-command-link:hover,
+        .dashboard-command-link:visited {
             color:#0F172A !important;
             text-decoration:none !important;
+        }
+        .dashboard-command-details {
+            margin-top:0.18rem;
+            color:#64748B;
+        }
+        .dashboard-command-details summary {
+            cursor:pointer;
+            display:inline-flex;
+            align-items:center;
+            color:#64748B;
+            font-size:10.5px;
+            font-weight:700;
+        }
+        .dashboard-command-detail-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:0.42rem;
+            margin-top:0.36rem;
+        }
+        .dashboard-command-detail-card {
+            padding:0.46rem 0.52rem;
+            border:1px solid rgba(226,232,240,0.9);
+            border-radius:8px;
+            background:rgba(248,250,252,0.68);
+        }
+        .dashboard-command-detail-card > div:first-child {
+            display:flex;
+            justify-content:space-between;
+            gap:0.5rem;
+            align-items:baseline;
+        }
+        .dashboard-command-detail-card strong {
+            color:#0F172A;
+            font-size:11px;
+            font-weight:780;
+        }
+        .dashboard-command-detail-card span,
+        .dashboard-command-detail-card em,
+        .dashboard-command-detail-card p {
+            color:#64748B;
+            font-style:normal;
+            font-size:10.5px;
+        }
+        .dashboard-command-detail-card ul {
+            margin:0.35rem 0 0;
+            padding:0;
+            list-style:none;
+            display:grid;
+            gap:0.18rem;
+        }
+        .dashboard-command-detail-card li {
+            display:grid;
+            gap:0.05rem;
+            min-width:0;
+            color:#64748B;
+            font-size:10.5px;
+        }
+        .dashboard-command-mini-stats {
+            display:flex !important;
+            align-items:center !important;
+            justify-content:flex-start !important;
+            flex-wrap:wrap;
+            gap:0.28rem;
+            margin-top:0.36rem;
+        }
+        .dashboard-command-mini-stats span {
+            display:inline-flex;
+            gap:0.16rem;
+            padding:0.08rem 0.32rem;
+            border:1px solid rgba(226,232,240,0.95);
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#334155;
+            font-weight:680;
+        }
+        .dashboard-command-mini-stats b {
+            color:#94A3B8;
+            font-weight:650;
         }
         .macro-regime-status {
             max-width:1440px;
@@ -4903,6 +5194,10 @@ def _render_dashboard_styles() -> None:
             gap:0.35rem;
             min-width:0;
             flex-wrap:wrap;
+        }
+        .watchlist-filter-chips {
+            flex:1 1 auto;
+            row-gap:0.24rem;
         }
         .dashboard-filter-chip {
             display:inline-flex;

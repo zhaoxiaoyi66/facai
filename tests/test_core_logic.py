@@ -1500,9 +1500,13 @@ class DashboardLayoutTests(unittest.TestCase):
     def test_summary_sections_render_filter_chips_not_large_lane_cards(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         source = inspect.getsource(dashboard_module._render_summary_sections)
+        helper_source = inspect.getsource(dashboard_module._dashboard_filter_strip_html)
+        table_source = inspect.getsource(dashboard_module._render_decision_table)
 
-        self.assertIn("dashboard-filter-strip", source)
-        self.assertIn("_dashboard_filter_chip_html", source)
+        self.assertIn("dashboard-filter-strip", helper_source)
+        self.assertIn("_dashboard_filter_chips_html", helper_source)
+        self.assertIn("watchlist-filter-chips", table_source)
+        self.assertIn("_dashboard_filter_chips_html(table)", table_source)
         self.assertNotIn("_lane_stack_html", source)
         self.assertNotIn("_summary_panel_head_html", source)
         self.assertNotIn("_dashboard_priority_strip_html", source)
@@ -1513,7 +1517,7 @@ class DashboardLayoutTests(unittest.TestCase):
         system_status_source = inspect.getsource(dashboard_module._render_dashboard_system_status)
 
         self.assertIn("_render_dashboard_status_bar", render_source)
-        self.assertIn("_render_summary_sections(table)", render_source)
+        self.assertNotIn("_render_summary_sections(table)", render_source)
         self.assertIn("_render_decision_table(table)", render_source)
         self.assertIn("_render_dashboard_system_status", render_source)
         self.assertNotIn("_render_dashboard_risk_radar(risk_items)", render_source)
@@ -1526,11 +1530,14 @@ class DashboardLayoutTests(unittest.TestCase):
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         render_source = inspect.getsource(dashboard_module.render)
         status_source = inspect.getsource(dashboard_module._render_dashboard_status_bar)
+        detail_source = inspect.getsource(dashboard_module._dashboard_command_detail_html)
         styles_source = inspect.getsource(dashboard_module._render_dashboard_styles)
 
         self.assertIn("build_portfolio_structure_check", render_source)
-        self.assertIn("portfolio_structure_check_strip_html", status_source)
-        self.assertIn("portfolio-structure-strip", styles_source)
+        self.assertIn("_dashboard_command_detail_html", status_source)
+        self.assertIn("_dashboard_portfolio_structure_detail_block_html", detail_source)
+        self.assertIn("dashboard-command-center", styles_source)
+        self.assertIn("dashboard-command-details", styles_source)
 
     def test_dashboard_filter_chip_links_drive_table_filters(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

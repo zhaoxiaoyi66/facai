@@ -1345,7 +1345,8 @@ def test_dashboard_portfolio_and_sell_pages_only_render_macro_hints() -> None:
     trade_hint = inspect.getsource(trade_journal._render_macro_regime_sell_hint)
 
     assert "load_macro_regime" in dashboard_render
-    assert "macro_regime_status_html" in dashboard_status
+    assert "dashboard-command-center" in dashboard_status
+    assert "macro_regime_status_html" not in dashboard_status
     assert "macro_regime_detail_html" in dashboard_system
     assert "macro_regime_trade_hint_text" in portfolio_hint
     assert "macro_regime_trade_hint_text" in trade_hint
