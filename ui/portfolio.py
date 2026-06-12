@@ -412,7 +412,14 @@ def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
             message = f"{entry.get('symbol')} 已按分批买入计划（{level}）记录并同步持仓。"
         else:
             message = f"{entry.get('symbol')} 买入/加仓已记录，组合持仓已同步。"
-        st.session_state["portfolio_save_notice"] = ("success", message)
+        st.session_state["portfolio_save_notice"] = (
+            "success_trade",
+            {
+                "message": message,
+                "symbol": entry.get("symbol"),
+                "entryId": entry.get("id"),
+            },
+        )
     elif bool(gate.get("is_blocked")) or bool(gate.get("is_observation_only")):
         st.session_state["portfolio_save_notice"] = (
             "buy_gate_blocked",
@@ -580,13 +587,19 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
         plan_type_label = _plan_type_label(plan.get("plan_type") or _default_buy_plan_type_for_tier(POSITION_TIER_FORM_OPTIONS.get(tier_label, "")))
         top = st.columns([1, 1, 1, 1])
         top[0].text_input("股票代码", value=symbol, disabled=True)
-        top[1].text_input(
+        target_alert_input = top[1].text_input(
             "目标提醒价",
             value=_input_value(plan.get("target_alert_price") or _buy_plan_first_level_price(plan)),
             key=f"buy-plan-target-alert:{symbol}",
         )
-        top[2].text_input("计划金额", value=_input_value(plan.get("planned_amount")), key=f"buy-plan-planned-amount:{symbol}")
-        top[3].text_input("计划股数", value=_input_value(plan.get("planned_shares")), key=f"buy-plan-planned-shares:{symbol}")
+        planned_amount_input = top[2].text_input("计划金额", value=_input_value(plan.get("planned_amount")), key=f"buy-plan-planned-amount:{symbol}")
+        calculated_shares = _planned_shares_from_amount(target_alert_input, planned_amount_input)
+        top[3].text_input(
+            "计划股数",
+            value=_input_value(calculated_shares if calculated_shares is not None else plan.get("planned_shares")),
+            disabled=True,
+            help="由计划金额 ÷ 目标提醒价自动计算，保存后会同步到计划。",
+        )
 
         quick = st.columns([1, 1])
         tier_choice = quick[0].selectbox(
@@ -715,7 +728,10 @@ def _save_buy_plan_from_form(store: StockPlanStore, symbol: str, visible_level_c
         "alert_mode": BUY_PLAN_ALERT_MODE_OPTIONS.get(str(st.session_state.get(f"buy-plan-alert-mode:{symbol}") or ""), "price_below"),
         "target_alert_price": st.session_state.get(f"buy-plan-target-alert:{symbol}"),
         "planned_amount": st.session_state.get(f"buy-plan-planned-amount:{symbol}"),
-        "planned_shares": st.session_state.get(f"buy-plan-planned-shares:{symbol}"),
+        "planned_shares": _planned_shares_from_amount(
+            st.session_state.get(f"buy-plan-target-alert:{symbol}"),
+            st.session_state.get(f"buy-plan-planned-amount:{symbol}"),
+        ),
         "near_threshold_pct": 2,
         "max_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
         "target_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
@@ -753,10 +769,11 @@ def _validate_buy_plan_form_values(symbol: str, values: dict) -> None:
     if not str(values.get("thesis") or "").strip():
         raise ValueError("买入理由不能为空。")
     planned_amount = _number(values.get("planned_amount"))
-    planned_shares = _number(values.get("planned_shares"))
     levels = values.get("buy_plan_tranches") or []
-    if not levels and planned_amount is None and planned_shares is None:
-        raise ValueError("计划金额或计划股数至少填写一项。")
+    if not levels and planned_amount is None:
+        raise ValueError("计划金额不能为空，计划股数会自动计算。")
+    if planned_amount is not None and planned_amount <= 0:
+        raise ValueError("计划金额必须大于 0。")
     for index, item in enumerate(levels, start=1):
         price = _number(item.get("price") or item.get("trigger_price"))
         shares = _number(item.get("shares") or item.get("planned_quantity"))
@@ -852,6 +869,15 @@ def _buy_plan_distance_text(current_price: float | None, target_price: float | N
         return BLANK_TEXT
     distance = (current_price - target_price) / target_price * 100
     return f"{distance:+.1f}%"
+
+
+def _planned_shares_from_amount(target_price: object, planned_amount: object) -> float | None:
+    price = _number(target_price)
+    amount = _number(planned_amount)
+    if price is None or price <= 0 or amount is None or amount <= 0:
+        return None
+    shares = amount / price
+    return round(shares, 4)
 
 
 def _buy_plan_alert_for_symbol(symbol: str) -> dict:
@@ -1436,10 +1462,33 @@ def _render_portfolio_notice() -> None:
     if level == "buy_gate_blocked":
         st.markdown(_portfolio_buy_gate_notice_html(message), unsafe_allow_html=True)
         return
+    if level == "success_trade":
+        st.markdown(_portfolio_trade_success_notice_html(message), unsafe_allow_html=True)
+        return
     if level == "error":
         st.error(str(message))
     else:
         st.success(str(message))
+
+
+def _portfolio_trade_success_notice_html(payload: object) -> str:
+    data = dict(payload or {}) if isinstance(payload, dict) else {"message": str(payload or "")}
+    message = str(data.get("message") or "买入/加仓已记录，组合持仓已同步。")
+    symbol = str(data.get("symbol") or "").strip().upper()
+    entry_id = int(data.get("entryId") or 0)
+    href = "?page=trade-journal"
+    if symbol:
+        href += f"&symbol={quote(symbol)}"
+    if entry_id > 0:
+        href += f"&viewTrade={entry_id}#trade-entry-detail"
+    else:
+        href += "#trade-journal-list"
+    return (
+        '<section class="portfolio-trade-success-notice">'
+        f"<strong>{escape(message)}</strong>"
+        f'<a href="{escape(href, quote=True)}" target="_self">查看交易日志记录</a>'
+        "</section>"
+    )
 
 
 def _portfolio_buy_gate_notice_html(payload: object) -> str:
@@ -2281,6 +2330,29 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-gate-notice ul {
             margin: 0;
             padding-left: 1.05rem;
+        }
+        .portfolio-trade-success-notice {
+            margin: 0.35rem 0 0.75rem;
+            padding: 0.68rem 0.82rem;
+            border: 1px solid rgba(79, 157, 120, 0.22);
+            border-left: 3px solid #4F9D78;
+            border-radius: 8px;
+            background: rgba(79, 157, 120, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.8rem;
+        }
+        .portfolio-trade-success-notice strong {
+            color: #246B4A;
+            font-size: 0.86rem;
+        }
+        .portfolio-trade-success-notice a {
+            color: #246B4A;
+            font-size: 0.76rem;
+            font-weight: 760;
+            text-decoration: none;
+            white-space: nowrap;
         }
         .portfolio-reconciliation-strip {
             display: grid;

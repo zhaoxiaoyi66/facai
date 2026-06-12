@@ -309,6 +309,31 @@ def test_buy_plan_form_accepts_quick_plan_without_ladder_levels() -> None:
     )
 
 
+def test_buy_plan_quick_shares_are_derived_from_amount_and_target() -> None:
+    from ui.portfolio import _planned_shares_from_amount
+
+    assert _planned_shares_from_amount(135, 13500) == 100
+    assert _planned_shares_from_amount("220", "3000") == 13.6364
+    assert _planned_shares_from_amount("", "3000") is None
+
+
+def test_portfolio_success_notice_links_to_trade_journal_entry() -> None:
+    from ui.portfolio import _portfolio_trade_success_notice_html
+
+    html = _portfolio_trade_success_notice_html(
+        {
+            "message": "NVDA 买入/加仓已记录，组合持仓已同步。",
+            "symbol": "NVDA",
+            "entryId": 26,
+        }
+    )
+
+    assert "查看交易日志记录" in html
+    assert "page=trade-journal" in html
+    assert "symbol=NVDA" in html
+    assert "viewTrade=26" in html
+
+
 def test_buy_plan_form_rejects_invalid_level_with_clear_error() -> None:
     from ui.portfolio import _validate_buy_plan_form_values
 
