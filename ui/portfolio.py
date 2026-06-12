@@ -16,6 +16,7 @@ from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
+from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_hint_html
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
@@ -75,6 +76,11 @@ BUY_PLAN_TYPE_OPTIONS = {
     "分批买入": "ladder_buy",
     "C类事件交易": "event_trade",
     "仅观察": "watch_only",
+}
+BUY_PLAN_ALERT_MODE_OPTIONS = {
+    "跌到目标价提醒": "price_below",
+    "接近目标价提醒": "price_near",
+    "进入 Radar 回踩区提醒": "radar_pullback",
 }
 BUY_PLAN_INVALIDATION_OPTIONS = [
     "财报证伪",
@@ -490,7 +496,7 @@ def _render_buy_plan_manager(rows: list[dict]) -> None:
         store = StockPlanStore()
         plan = store.get_plan(symbol)
         status = get_buy_plan_status(plan, current_price=row.get("currentPrice"), is_stale=False)
-        _render_buy_plan_status(symbol, plan, status)
+        _render_buy_plan_status(symbol, plan, status, row)
         _render_buy_plan_actions(symbol, plan, status)
         _render_buy_plan_form(store, symbol, plan, row)
 
@@ -506,24 +512,30 @@ def _render_buy_plan_notice() -> None:
         st.success(str(message))
 
 
-def _render_buy_plan_status(symbol: str, plan: dict, status: dict) -> None:
+def _render_buy_plan_status(symbol: str, plan: dict, status: dict, row: dict | None = None) -> None:
+    row = row or {}
     level = status.get("level") or {}
-    trigger = _money_text(level.get("trigger_price"))
+    current_price = _number(row.get("currentPrice"))
+    target_price = _buy_plan_target_alert_price(plan, level)
+    trigger = _money_text(target_price)
     qty = _quantity_text(level.get("remaining_quantity"))
-    cooldown = _buy_plan_cooldown_status(plan)
-    plan_type = _buy_plan_type_display(plan.get("plan_type"))
-    max_pct = _percent_plain(plan.get("max_position_pct") or plan.get("target_position_pct"))
-    next_line = "暂无有效档位"
-    if level:
-        next_line = f"{trigger} 买 {qty}"
+    distance = _buy_plan_distance_text(current_price, target_price)
+    alert = _buy_plan_alert_for_symbol(symbol)
+    alert_status = _buy_plan_alert_status_text(alert)
+    plan_status = _buy_plan_plan_status_text(plan)
+    next_line = "目标提醒价未设置"
+    if target_price is not None:
+        shares_text = qty if qty != BLANK_TEXT else _quantity_text(plan.get("planned_shares"))
+        amount_text = _money_text(plan.get("planned_amount"))
+        size_text = shares_text if shares_text != BLANK_TEXT else amount_text
+        next_line = f"{trigger} / {size_text if size_text != BLANK_TEXT else '未设金额'}"
     st.markdown(
         '<div class="buy-plan-status-strip">'
         f"<b>{escape(symbol)}</b>"
-        f"<span>当前计划：{escape(plan_type)}</span>"
-        f"<small>最大仓位：{escape(max_pct)} / 下一档：{escape(next_line)}</small>"
-        f"<small>当前状态：{escape(str(status.get('label') or '暂无计划'))}</small>"
-        f"<small>计划时间：{escape(cooldown['label'])}</small>"
-        f"<small>可作为计划内依据：{escape('是' if _buy_plan_can_be_gate_evidence(plan, status) else '否')}</small>"
+        f"<span>当前价 {_money_text(current_price)}｜目标提醒 {escape(trigger)}｜距离 {escape(distance)}</span>"
+        f"<small>计划状态：{escape(plan_status)} / {escape(str(status.get('label') or '暂无计划'))}</small>"
+        f"<small>计划规模：{escape(next_line)}</small>"
+        f"<small>提醒状态：{escape(alert_status)}</small>"
         f"<small>{escape(str(status.get('message') or ''))}</small>"
         "</div>",
         unsafe_allow_html=True,
@@ -532,12 +544,17 @@ def _render_buy_plan_status(symbol: str, plan: dict, status: dict) -> None:
 
 def _render_buy_plan_actions(symbol: str, plan: dict, status: dict) -> None:
     level = status.get("level") or {}
-    action_cols = st.columns([1, 1, 3])
-    if action_cols[0].button("执行买入", key=f"buy-plan-execute:{symbol}", disabled=status.get("status") != "triggered"):
+    plan_status = str(plan.get("plan_status") or "active").strip().lower()
+    can_prefill = status.get("status") != "no_plan" and plan_status not in {"paused", "cancelled", "completed", "expired"}
+    action_cols = st.columns([1, 1, 1, 3])
+    if action_cols[0].button("去买入 / 加仓", key=f"buy-plan-execute:{symbol}", disabled=not can_prefill):
         _prefill_buy_form_from_plan(symbol, plan, level)
         st.rerun()
     with action_cols[1]:
-        st.caption("执行买入只会预填表单，仍需提交并通过门禁。")
+        st.caption("只会预填真实买入表单，仍需你确认提交。")
+    if action_cols[2].button("取消计划", key=f"buy-plan-cancel:{symbol}", disabled=status.get("status") == "no_plan"):
+        _cancel_buy_plan(symbol, plan)
+        st.rerun()
     with st.form(f"buy-plan-pause-form:{symbol}"):
         reason = st.selectbox(
             "暂缓 / 不买原因",
@@ -547,7 +564,7 @@ def _render_buy_plan_actions(symbol: str, plan: dict, status: dict) -> None:
         detail = st.text_input("补充说明", key=f"buy-plan-pause-note:{symbol}")
         if st.form_submit_button("记录暂缓 / 不买", width="stretch"):
             _save_buy_plan_pause_note(symbol, plan, reason, detail)
-            st.success("已记录到计划备注；未创建交易日志，未改变持仓。")
+            st.success("已暂停计划并同步暂停提醒；未创建交易日志，未改变持仓。")
             st.rerun()
 
 
@@ -555,85 +572,108 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
     level_count_key = f"buy-plan-level-count:{symbol}"
     existing_levels = plan.get("buy_plan_tranches") or []
     if level_count_key not in st.session_state:
-        st.session_state[level_count_key] = max(1, min(3, len(existing_levels) or 1))
-    add_cols = st.columns([1, 1, 4])
-    if add_cols[0].button("添加第 2 档", key=f"buy-plan-add-level-2:{symbol}", disabled=st.session_state[level_count_key] >= 2):
-        st.session_state[level_count_key] = 2
-        st.rerun()
-    if add_cols[1].button("添加第 3 档", key=f"buy-plan-add-level-3:{symbol}", disabled=st.session_state[level_count_key] >= 3):
-        st.session_state[level_count_key] = 3
-        st.rerun()
+        st.session_state[level_count_key] = min(3, len(existing_levels))
 
     with st.form(f"buy-plan-form:{symbol}"):
-        st.markdown('<div class="portfolio-form-section">创建 / 编辑买入计划</div>', unsafe_allow_html=True)
+        st.markdown('<div class="portfolio-form-section">快捷创建 / 编辑计划</div>', unsafe_allow_html=True)
         tier_label = _position_tier_form_label(plan.get("position_class") or row.get("positionTier"))
         plan_type_label = _plan_type_label(plan.get("plan_type") or _default_buy_plan_type_for_tier(POSITION_TIER_FORM_OPTIONS.get(tier_label, "")))
         top = st.columns([1, 1, 1, 1])
         top[0].text_input("股票代码", value=symbol, disabled=True)
-        tier_choice = top[1].selectbox(
+        top[1].text_input(
+            "目标提醒价",
+            value=_input_value(plan.get("target_alert_price") or _buy_plan_first_level_price(plan)),
+            key=f"buy-plan-target-alert:{symbol}",
+        )
+        top[2].text_input("计划金额", value=_input_value(plan.get("planned_amount")), key=f"buy-plan-planned-amount:{symbol}")
+        top[3].text_input("计划股数", value=_input_value(plan.get("planned_shares")), key=f"buy-plan-planned-shares:{symbol}")
+
+        quick = st.columns([1, 1])
+        tier_choice = quick[0].selectbox(
             "持仓等级",
             list(POSITION_TIER_FORM_OPTIONS),
             index=list(POSITION_TIER_FORM_OPTIONS).index(tier_label),
             key=f"buy-plan-tier:{symbol}",
         )
         selected_tier = POSITION_TIER_FORM_OPTIONS.get(str(tier_choice), "")
-        plan_type_choice = top[2].selectbox(
-            "计划类型",
-            list(BUY_PLAN_TYPE_OPTIONS),
-            index=list(BUY_PLAN_TYPE_OPTIONS).index(plan_type_label),
-            key=f"buy-plan-type:{symbol}",
+        alert_mode_label = _buy_plan_alert_mode_label(plan.get("alert_mode"))
+        quick[1].selectbox(
+            "提醒方式",
+            list(BUY_PLAN_ALERT_MODE_OPTIONS),
+            index=list(BUY_PLAN_ALERT_MODE_OPTIONS).index(alert_mode_label),
+            key=f"buy-plan-alert-mode:{symbol}",
         )
-        default_max_pct = plan.get("max_position_pct") or plan.get("target_position_pct") or _default_buy_plan_max_pct(selected_tier)
-        top[3].text_input("最大仓位 %", value=_input_value(default_max_pct), key=f"buy-plan-max-pct:{symbol}")
+        st.text_area(
+            "买入理由",
+            value=str(plan.get("thesis") or ""),
+            height=56,
+            placeholder="为什么想买？真正买入时仍会走买入/加仓流程。",
+            key=f"buy-plan-thesis:{symbol}",
+        )
 
-        mid = st.columns([1, 1])
-        mid[0].text_input("目标卖出价", value=_input_value(plan.get("target_sell_price") or row.get("plannedSellPrice")), key=f"buy-plan-target-sell:{symbol}")
-        invalidation_text = str(plan.get("invalidation_condition") or "")
-        invalidation_choice = _invalidation_choice(invalidation_text)
-        mid[1].selectbox(
-            "失效条件",
-            BUY_PLAN_INVALIDATION_OPTIONS,
-            index=BUY_PLAN_INVALIDATION_OPTIONS.index(invalidation_choice),
-            key=f"buy-plan-invalidation-choice:{symbol}",
-        )
-        if invalidation_choice == "自定义" or invalidation_text not in BUY_PLAN_INVALIDATION_OPTIONS:
-            st.text_input(
-                "失效条件备注",
+        visible_count = int(st.session_state.get(level_count_key) or 0)
+        with st.expander("高级设置", expanded=False):
+            advanced_top = st.columns([1, 1, 1])
+            plan_type_choice = advanced_top[0].selectbox(
+                "计划类型",
+                list(BUY_PLAN_TYPE_OPTIONS),
+                index=list(BUY_PLAN_TYPE_OPTIONS).index(plan_type_label),
+                key=f"buy-plan-type:{symbol}",
+            )
+            default_max_pct = plan.get("max_position_pct") or plan.get("target_position_pct") or _default_buy_plan_max_pct(selected_tier)
+            advanced_top[1].text_input("最大仓位 %", value=_input_value(default_max_pct), key=f"buy-plan-max-pct:{symbol}")
+            advanced_top[2].text_input("目标卖出价", value=_input_value(plan.get("target_sell_price") or row.get("plannedSellPrice")), key=f"buy-plan-target-sell:{symbol}")
+
+            invalidation_text = str(plan.get("invalidation_condition") or "")
+            invalidation_choice = _invalidation_choice(invalidation_text)
+            invalidation_cols = st.columns([1, 2])
+            invalidation_cols[0].selectbox(
+                "失效条件",
+                BUY_PLAN_INVALIDATION_OPTIONS,
+                index=BUY_PLAN_INVALIDATION_OPTIONS.index(invalidation_choice),
+                key=f"buy-plan-invalidation-choice:{symbol}",
+            )
+            invalidation_cols[1].text_input(
+                "失效备注",
                 value="" if invalidation_text in BUY_PLAN_INVALIDATION_OPTIONS else invalidation_text,
                 placeholder="例如：连续两个季度订单增速失效",
                 key=f"buy-plan-invalidation-note:{symbol}",
             )
-
-        st.text_area(
-            "买入逻辑",
-            value=str(plan.get("thesis") or ""),
-            height=56,
-            placeholder="为什么这个位置值得买？",
-            key=f"buy-plan-thesis:{symbol}",
-        )
-
-        levels = plan.get("buy_plan_tranches") or []
-        visible_count = int(st.session_state.get(level_count_key) or 1)
-        tranche_cols = st.columns(max(1, visible_count))
-        for index in range(visible_count):
-            item = levels[index] if index < len(levels) and isinstance(levels[index], dict) else {}
-            with tranche_cols[index]:
-                st.caption(f"第 {index + 1} 档")
-                st.text_input("触发价", value=_input_value(item.get("price") or item.get("trigger_price")), key=f"buy-plan-level-price:{symbol}:{index}")
-                st.text_input("计划股数", value=_input_value(item.get("shares") or item.get("planned_quantity")), key=f"buy-plan-level-shares:{symbol}:{index}")
-
-        with st.expander("高级设置", expanded=False):
             st.text_input("后续计划", value=str(plan.get("follow_up_plan") or ""), key=f"buy-plan-follow-up:{symbol}")
-            for index in range(visible_count):
-                item = levels[index] if index < len(levels) and isinstance(levels[index], dict) else {}
-                st.text_input(f"第 {index + 1} 档备注", value=str(item.get("note") or ""), key=f"buy-plan-level-note:{symbol}:{index}")
+
+            st.markdown("**分档计划（可选）**")
+            if visible_count <= 0:
+                st.caption("默认不需要分档。需要分批时，先点表单外的“添加分档计划”。")
+            else:
+                levels = plan.get("buy_plan_tranches") or []
+                tranche_cols = st.columns(max(1, visible_count))
+                for index in range(visible_count):
+                    item = levels[index] if index < len(levels) and isinstance(levels[index], dict) else {}
+                    with tranche_cols[index]:
+                        st.caption(f"第 {index + 1} 档")
+                        st.text_input("触发价", value=_input_value(item.get("price") or item.get("trigger_price")), key=f"buy-plan-level-price:{symbol}:{index}")
+                        st.text_input("计划股数", value=_input_value(item.get("shares") or item.get("planned_quantity")), key=f"buy-plan-level-shares:{symbol}:{index}")
+                        st.text_input("计划金额", value=_input_value(item.get("amount") or item.get("planned_amount")), key=f"buy-plan-level-amount:{symbol}:{index}")
+                        st.text_input("备注", value=str(item.get("note") or ""), key=f"buy-plan-level-note:{symbol}:{index}")
+
+            if visible_count < 3:
+                st.caption("保存后如需更多档位，可再次打开计划并添加。")
             if BUY_PLAN_TYPE_OPTIONS.get(str(plan_type_choice), "") == "event_trade":
                 event_cols = st.columns(4)
                 event_cols[0].text_input("事件名称", value=str(plan.get("event_name") or ""), key=f"buy-plan-event-name:{symbol}")
                 event_cols[1].text_input("事件日期", value=str(plan.get("event_date") or ""), key=f"buy-plan-event-date:{symbol}")
                 event_cols[2].text_input("无反应退出", value=str(plan.get("exit_if_no_reaction") or ""), key=f"buy-plan-exit-no-reaction:{symbol}")
                 event_cols[3].text_input("止损价", value=_input_value(plan.get("stop_loss_price")), key=f"buy-plan-stop-loss:{symbol}")
-            st.text_area("备注", value=str(plan.get("notes") or ""), height=70, key=f"buy-plan-notes:{symbol}")
+            st.text_area("高级备注", value=str(plan.get("notes") or ""), height=70, key=f"buy-plan-notes:{symbol}")
+
+        add_cols = st.columns([1, 1, 1, 3])
+        if visible_count <= 0:
+            add_cols[0].form_submit_button("添加分档计划", on_click=_set_buy_plan_level_count, args=(symbol, 1))
+        elif visible_count < 3:
+            add_cols[0].form_submit_button(f"添加第 {visible_count + 1} 档", on_click=_set_buy_plan_level_count, args=(symbol, visible_count + 1))
+        if visible_count > 0:
+            add_cols[1].form_submit_button("删除最后一档", on_click=_set_buy_plan_level_count, args=(symbol, visible_count - 1))
+
         if st.form_submit_button("保存买入计划", width="stretch"):
             try:
                 saved = _save_buy_plan_from_form(store, symbol, visible_count)
@@ -645,30 +685,38 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
                 st.session_state["portfolio_plan_symbol"] = symbol
                 st.session_state["portfolio_buy_plan_notice"] = (
                     "success",
-                    f"已保存 {symbol} 买入计划。created_at: {saved.get('created_at') or '—'} / updated_at: {saved.get('updated_at') or '—'}",
+                    f"已保存 {symbol} 买入计划，并同步价格提醒。created_at: {saved.get('created_at') or '—'} / updated_at: {saved.get('updated_at') or '—'}",
                 )
             st.rerun()
 
 
 def _save_buy_plan_from_form(store: StockPlanStore, symbol: str, visible_level_count: int = 1) -> dict:
     levels = []
-    for index in range(max(1, min(3, int(visible_level_count or 1)))):
+    for index in range(max(0, min(3, int(visible_level_count or 0)))):
         price = st.session_state.get(f"buy-plan-level-price:{symbol}:{index}")
         shares = st.session_state.get(f"buy-plan-level-shares:{symbol}:{index}")
+        amount = st.session_state.get(f"buy-plan-level-amount:{symbol}:{index}")
         note = st.session_state.get(f"buy-plan-level-note:{symbol}:{index}")
-        if _number(price) is None and _number(shares) is None and not str(note or "").strip():
+        if _number(price) is None and _number(shares) is None and _number(amount) is None and not str(note or "").strip():
             continue
         levels.append(
             {
                 "label": f"第 {index + 1} 档",
                 "price": _number(price),
                 "shares": _number(shares),
+                "amount": _number(amount),
                 "note": str(note or "").strip(),
             }
         )
     values = {
         "position_class": POSITION_TIER_FORM_OPTIONS.get(str(st.session_state.get(f"buy-plan-tier:{symbol}") or ""), ""),
         "plan_type": BUY_PLAN_TYPE_OPTIONS.get(str(st.session_state.get(f"buy-plan-type:{symbol}") or ""), ""),
+        "plan_status": "active",
+        "alert_mode": BUY_PLAN_ALERT_MODE_OPTIONS.get(str(st.session_state.get(f"buy-plan-alert-mode:{symbol}") or ""), "price_below"),
+        "target_alert_price": st.session_state.get(f"buy-plan-target-alert:{symbol}"),
+        "planned_amount": st.session_state.get(f"buy-plan-planned-amount:{symbol}"),
+        "planned_shares": st.session_state.get(f"buy-plan-planned-shares:{symbol}"),
+        "near_threshold_pct": 2,
         "max_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
         "target_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
         "target_sell_price": st.session_state.get(f"buy-plan-target-sell:{symbol}"),
@@ -683,7 +731,9 @@ def _save_buy_plan_from_form(store: StockPlanStore, symbol: str, visible_level_c
         "notes": st.session_state.get(f"buy-plan-notes:{symbol}"),
     }
     _validate_buy_plan_form_values(symbol, values)
-    return store.save_plan(symbol, values)
+    saved = store.save_plan(symbol, values)
+    sync_buy_plan_price_alert(store.path, symbol=symbol, plan=saved)
+    return saved
 
 
 def _validate_buy_plan_form_values(symbol: str, values: dict) -> None:
@@ -695,20 +745,30 @@ def _validate_buy_plan_form_values(symbol: str, values: dict) -> None:
     if str(values.get("plan_type") or "").strip() not in {"starter_position", "ladder_buy", "event_trade", "watch_only"}:
         raise ValueError("计划类型无效。")
     max_pct = _number(values.get("max_position_pct"))
-    if max_pct is None or max_pct <= 0:
-        raise ValueError("最大仓位不能为空，且必须大于 0。")
-    if not str(values.get("invalidation_condition") or "").strip():
-        raise ValueError("失效条件不能为空。")
+    if max_pct is not None and max_pct <= 0:
+        raise ValueError("最大仓位必须大于 0。")
+    target_alert_price = _number(values.get("target_alert_price"))
+    if target_alert_price is None or target_alert_price <= 0:
+        raise ValueError("目标提醒价必须大于 0。")
+    if not str(values.get("thesis") or "").strip():
+        raise ValueError("买入理由不能为空。")
+    planned_amount = _number(values.get("planned_amount"))
+    planned_shares = _number(values.get("planned_shares"))
     levels = values.get("buy_plan_tranches") or []
-    if not levels:
-        raise ValueError("至少需要 1 个有效档位。")
+    if not levels and planned_amount is None and planned_shares is None:
+        raise ValueError("计划金额或计划股数至少填写一项。")
     for index, item in enumerate(levels, start=1):
         price = _number(item.get("price") or item.get("trigger_price"))
         shares = _number(item.get("shares") or item.get("planned_quantity"))
+        amount = _number(item.get("amount") or item.get("planned_amount"))
         if price is None or price <= 0:
             raise ValueError(f"第 {index} 档触发价必须大于 0。")
-        if shares is None or shares <= 0:
+        if shares is None and amount is None:
+            raise ValueError(f"第 {index} 档计划股数或金额至少填写一项。")
+        if shares is not None and shares <= 0:
             raise ValueError(f"第 {index} 档计划股数必须大于 0。")
+        if amount is not None and amount <= 0:
+            raise ValueError(f"第 {index} 档计划金额必须大于 0。")
 
 
 def _buy_plan_invalidation_value(symbol: str) -> str:
@@ -723,14 +783,18 @@ def _buy_plan_invalidation_value(symbol: str) -> str:
 
 def _prefill_buy_form_from_plan(symbol: str, plan: dict, level: dict) -> None:
     form_key = _position_form_key(symbol)
+    trigger_price = level.get("trigger_price") or plan.get("target_alert_price")
+    quantity = level.get("remaining_quantity") or level.get("planned_quantity") or plan.get("planned_shares")
     st.session_state["portfolio_position_editor_open"] = True
     st.session_state["portfolio_edit_symbol"] = symbol
-    st.session_state[f"{form_key}:quantity"] = _input_value(level.get("remaining_quantity") or level.get("planned_quantity"))
-    st.session_state[f"{form_key}:price"] = _input_value(level.get("trigger_price"))
+    st.session_state[f"{form_key}:quantity"] = _input_value(quantity)
+    st.session_state[f"{form_key}:price"] = _input_value(trigger_price)
     st.session_state[f"{form_key}:target_sell_price"] = _input_value(plan.get("target_sell_price"))
     st.session_state[f"{form_key}:position_tier"] = _position_tier_form_label(plan.get("position_class"))
     st.session_state[f"{form_key}:decision_mood"] = "计划内执行"
-    st.session_state[f"{form_key}:buy_reason"] = f"执行买入计划：{level.get('label') or '计划档位'}"
+    reason = str(plan.get("thesis") or "").strip()
+    label = level.get("label") or "快捷计划"
+    st.session_state[f"{form_key}:buy_reason"] = f"按计划买入：{label}。{reason}".strip()
 
 
 def _save_buy_plan_pause_note(symbol: str, plan: dict, reason: str, detail: str) -> None:
@@ -739,8 +803,101 @@ def _save_buy_plan_pause_note(symbol: str, plan: dict, reason: str, detail: str)
     if str(detail or "").strip():
         line += f"；{str(detail).strip()}"
     plan["notes"] = "\n".join(item for item in (notes, line) if item)
+    plan["plan_status"] = "paused"
     plan["material_updated_at"] = plan.get("material_updated_at") or plan.get("updated_at") or plan.get("created_at")
-    StockPlanStore().save_plan(symbol, plan)
+    saved = StockPlanStore().save_plan(symbol, plan)
+    sync_buy_plan_price_alert(symbol=symbol, plan=saved, is_active=False)
+
+
+def _cancel_buy_plan(symbol: str, plan: dict) -> None:
+    notes = str(plan.get("notes") or "").strip()
+    plan["notes"] = "\n".join(item for item in (notes, "计划已取消；提醒同步停用。") if item)
+    plan["plan_status"] = "cancelled"
+    plan["material_updated_at"] = plan.get("material_updated_at") or plan.get("updated_at") or plan.get("created_at")
+    saved = StockPlanStore().save_plan(symbol, plan)
+    sync_buy_plan_price_alert(symbol=symbol, plan=saved, is_active=False)
+    st.session_state["portfolio_buy_plan_notice"] = ("success", f"已取消 {symbol} 买入计划，并暂停对应提醒。")
+
+
+def _set_buy_plan_level_count(symbol: str, count: int) -> None:
+    st.session_state[f"buy-plan-level-count:{symbol}"] = max(0, min(3, int(count)))
+
+
+def _buy_plan_target_alert_price(plan: dict, level: dict | None = None) -> float | None:
+    direct = _number(plan.get("target_alert_price"))
+    if direct is not None:
+        return direct
+    if level:
+        fallback = _number(level.get("trigger_price"))
+        if fallback is not None:
+            return fallback
+    return _buy_plan_first_level_price(plan)
+
+
+def _buy_plan_first_level_price(plan: dict) -> float | None:
+    levels = plan.get("buy_plan_tranches") or []
+    if not isinstance(levels, list):
+        return None
+    for item in levels:
+        if not isinstance(item, dict):
+            continue
+        price = _number(item.get("price") or item.get("trigger_price"))
+        if price is not None:
+            return price
+    return None
+
+
+def _buy_plan_distance_text(current_price: float | None, target_price: float | None) -> str:
+    if current_price is None or target_price is None or target_price <= 0:
+        return BLANK_TEXT
+    distance = (current_price - target_price) / target_price * 100
+    return f"{distance:+.1f}%"
+
+
+def _buy_plan_alert_for_symbol(symbol: str) -> dict:
+    try:
+        alert = PriceAlertStore().find_source_alert(
+            symbol=symbol,
+            alertType="BUY_PLAN_TRIGGER",
+            source="buy_plan",
+            sourceId=symbol,
+        )
+    except Exception:
+        return {}
+    return alert or {}
+
+
+def _buy_plan_alert_status_text(alert: dict) -> str:
+    if not alert:
+        return "未创建提醒"
+    status = str(alert.get("status") or "").strip()
+    labels = {
+        "active": "等待提醒",
+        "triggered": "已触发",
+        "disabled": "已暂停",
+        "archived": "已归档",
+        "deleted": "已删除",
+    }
+    trigger = _money_text(alert.get("triggerPrice"))
+    return f"{labels.get(status, status or '未知')}｜{trigger}"
+
+
+def _buy_plan_plan_status_text(plan: dict) -> str:
+    status = str(plan.get("plan_status") or "active").strip().lower()
+    labels = {
+        "active": "等待触发",
+        "triggered": "已触发",
+        "paused": "已暂停",
+        "completed": "已执行",
+        "cancelled": "已取消",
+        "expired": "已失效",
+    }
+    return labels.get(status, "等待触发")
+
+
+def _buy_plan_alert_mode_label(value: object) -> str:
+    clean = str(value or "").strip()
+    return next((label for label, mode in BUY_PLAN_ALERT_MODE_OPTIONS.items() if mode == clean), "跌到目标价提醒")
 
 
 def _position_tier_form_label(tier: object) -> str:

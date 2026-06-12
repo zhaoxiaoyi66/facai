@@ -232,6 +232,31 @@ def test_stock_plan_saves_buy_plan_metadata_and_statuses() -> None:
         assert executed["status"] == "executed"
 
 
+def test_stock_plan_quick_target_status_without_ladder_levels() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        plan = StockPlanStore(path).save_plan(
+            "ADBE",
+            {
+                "plan_type": "starter_position",
+                "position_class": "A",
+                "target_alert_price": 220,
+                "planned_amount": 3000,
+                "alert_mode": "price_near",
+                "thesis": "watch target price",
+            },
+        )
+
+        near = get_buy_plan_status(plan, current_price=224)
+        triggered = get_buy_plan_status(plan, current_price=219)
+
+        assert plan["target_alert_price"] == 220
+        assert plan["planned_amount"] == 3000
+        assert near["status"] == "near_trigger"
+        assert near["level"]["label"] == "目标提醒价"
+        assert triggered["status"] == "triggered"
+
+
 def test_stock_plan_status_requires_thesis_and_invalidation() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
@@ -258,10 +283,28 @@ def test_buy_plan_form_accepts_minimal_ladder_plan_values() -> None:
             "position_class": "B",
             "plan_type": "ladder_buy",
             "max_position_pct": 8,
+            "target_alert_price": 15.5,
+            "planned_shares": 200,
             "target_sell_price": "",
             "thesis": "跌到计划区间分批买",
             "invalidation_condition": "thesis 破裂",
             "buy_plan_tranches": [{"label": "第 1 档", "price": 15.5, "shares": 200}],
+        },
+    )
+
+
+def test_buy_plan_form_accepts_quick_plan_without_ladder_levels() -> None:
+    from ui.portfolio import _validate_buy_plan_form_values
+
+    _validate_buy_plan_form_values(
+        "ADBE",
+        {
+            "position_class": "A",
+            "plan_type": "starter_position",
+            "target_alert_price": 220,
+            "planned_amount": 3000,
+            "thesis": "跌到目标价提醒，真正买入时再走加仓流程",
+            "buy_plan_tranches": [],
         },
     )
 
@@ -276,6 +319,9 @@ def test_buy_plan_form_rejects_invalid_level_with_clear_error() -> None:
                 "position_class": "B",
                 "plan_type": "ladder_buy",
                 "max_position_pct": 8,
+                "target_alert_price": 15.5,
+                "planned_shares": 200,
+                "thesis": "跌到计划区间分批买",
                 "invalidation_condition": "thesis 破裂",
                 "buy_plan_tranches": [{"label": "第 1 档", "price": 0, "shares": 200}],
             },

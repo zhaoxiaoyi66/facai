@@ -27,10 +27,16 @@ NUMERIC_PLAN_FIELDS = [
     "max_position_pct",
     "target_sell_price",
     "stop_loss_price",
+    "target_alert_price",
+    "planned_amount",
+    "planned_shares",
+    "near_threshold_pct",
 ]
 
 TEXT_PLAN_FIELDS = [
     "plan_type",
+    "plan_status",
+    "alert_mode",
     "position_class",
     "classification_note",
     "thesis",
@@ -46,6 +52,8 @@ TEXT_PLAN_FIELDS = [
 ]
 
 VALID_PLAN_TYPES = {"starter_position", "ladder_buy", "event_trade", "watch_only"}
+VALID_PLAN_STATUSES = {"active", "triggered", "paused", "completed", "cancelled", "expired"}
+VALID_ALERT_MODES = {"price_below", "price_near", "radar_pullback"}
 BUY_PLAN_STATUS_LABELS = {
     "no_plan": "暂无计划",
     "waiting": "等待触发",
@@ -55,6 +63,10 @@ BUY_PLAN_STATUS_LABELS = {
     "stale_or_missing_data": "数据需复核",
     "executed": "已执行",
     "needs_review": "需复核",
+    "paused": "已暂停",
+    "completed": "已执行",
+    "cancelled": "已取消",
+    "expired": "已失效",
 }
 
 
@@ -132,6 +144,10 @@ class StockPlanStore:
                 cleaned[field] = _clean_position_class(values.get(field, values.get("positionClass")))
             elif field == "plan_type":
                 cleaned[field] = _clean_plan_type(values.get(field, values.get("planType")))
+            elif field == "plan_status":
+                cleaned[field] = _clean_plan_status(values.get(field, values.get("planStatus")))
+            elif field == "alert_mode":
+                cleaned[field] = _clean_alert_mode(values.get(field, values.get("alertMode")))
             elif field == "buy_plan_tranches_json":
                 cleaned[field] = _clean_json_text(values.get(field, values.get("buy_plan_tranches")))
             else:
@@ -204,15 +220,28 @@ def get_buy_plan_status(
 ) -> dict:
     levels = _plan_levels_with_remaining(plan, prior_level_quantities or {})
     plan_type = _clean_plan_type(plan.get("plan_type") or plan.get("planType"))
-    if not plan_type and not levels:
+    plan_status = _clean_plan_status(plan.get("plan_status") or plan.get("planStatus"))
+    if plan_status in {"paused", "completed", "cancelled", "expired"}:
+        return _plan_status(plan_status, levels[0] if levels else _quick_target_level(plan), None, BUY_PLAN_STATUS_LABELS[plan_status])
+    if not plan_type and not levels and _to_number(plan.get("target_alert_price")) is None:
         return _plan_status("no_plan", None, None, "暂无计划")
     if is_stale:
         return _plan_status("stale_or_missing_data", None, None, "价格数据缺失或过期")
-    if not _clean_text(plan.get("thesis")) or not _clean_text(plan.get("invalidation_condition")):
-        return _plan_status("needs_review", levels[0] if levels else None, None, "计划缺少 thesis 或失效条件")
+    if not _clean_text(plan.get("thesis")):
+        return _plan_status("needs_review", levels[0] if levels else _quick_target_level(plan), None, "计划缺少 thesis / 买入理由")
     if not levels:
-        return _plan_status("needs_review", None, None, "计划缺少买入档位")
-    next_level = next((level for level in levels if (level.get("remaining_quantity") or 0) > 0), None)
+        quick_level = _quick_target_level(plan)
+        if not quick_level:
+            return _plan_status("needs_review", None, None, "计划缺少目标提醒价")
+        levels = [quick_level]
+    next_level = next(
+        (
+            level
+            for level in levels
+            if level.get("remaining_quantity") is None or (level.get("remaining_quantity") or 0) > 0
+        ),
+        None,
+    )
     if next_level is None:
         return _plan_status("executed", levels[-1], 0, "计划档位已执行完")
     price = _to_number(current_price)
@@ -222,6 +251,10 @@ def get_buy_plan_status(
     distance_pct = (price - trigger) / trigger * 100 if trigger else None
     if price <= trigger:
         return _plan_status("triggered", next_level, distance_pct, "当前价已触发计划档位")
+    alert_mode = _clean_alert_mode(plan.get("alert_mode") or plan.get("alertMode"))
+    threshold = _to_number(plan.get("near_threshold_pct")) or 2.0
+    if alert_mode == "price_near" and abs(distance_pct or 0) <= threshold:
+        return _plan_status("near_trigger", next_level, distance_pct, f"距离目标提醒价 {threshold:g}% 以内")
     if distance_pct is not None and distance_pct <= 3:
         return _plan_status("near_trigger", next_level, distance_pct, "距离计划档位 3% 以内")
     return _plan_status("waiting", next_level, distance_pct, "等待触发")
@@ -243,11 +276,27 @@ def _plan_levels_with_remaining(plan: dict, prior: dict[str, float]) -> list[dic
                 "label": label,
                 "trigger_price": trigger,
                 "planned_quantity": qty,
+                "planned_amount": _to_number(item.get("planned_amount", item.get("amount"))),
                 "remaining_quantity": remaining,
                 "note": _clean_text(item.get("note")),
             }
         )
     return levels
+
+
+def _quick_target_level(plan: dict) -> dict | None:
+    trigger = _to_number(plan.get("target_alert_price") or plan.get("targetAlertPrice"))
+    if trigger is None:
+        return None
+    qty = _to_number(plan.get("planned_shares") or plan.get("plannedShares"))
+    return {
+        "label": "目标提醒价",
+        "trigger_price": trigger,
+        "planned_quantity": qty,
+        "planned_amount": _to_number(plan.get("planned_amount") or plan.get("plannedAmount")),
+        "remaining_quantity": qty,
+        "note": "快捷计划",
+    }
 
 
 def _plan_status(status: str, level: dict | None, distance_pct: float | None, message: str) -> dict:
@@ -285,6 +334,16 @@ def _clean_position_class(value) -> str:
 def _clean_plan_type(value) -> str:
     text = _clean_text(value).lower()
     return text if text in VALID_PLAN_TYPES else ""
+
+
+def _clean_plan_status(value) -> str:
+    text = _clean_text(value).lower()
+    return text if text in VALID_PLAN_STATUSES else "active"
+
+
+def _clean_alert_mode(value) -> str:
+    text = _clean_text(value).lower()
+    return text if text in VALID_ALERT_MODES else "price_below"
 
 
 def _camel_case(value: str) -> str:

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from data.price_alerts import PriceAlertStore, evaluate_price_alerts
+from data.price_alerts import PriceAlertStore, evaluate_price_alerts, sync_buy_plan_price_alert
 
 
 NOW = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
@@ -203,3 +203,115 @@ def test_editing_triggered_price_alert_rearms_changed_trigger() -> None:
         assert not_yet["triggeredNow"] is False
         assert triggered_again["status"] == "triggered"
         assert triggered_again["triggeredNow"] is True
+
+
+def test_buy_plan_sync_creates_and_updates_source_alert() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+
+        first = sync_buy_plan_price_alert(
+            path,
+            symbol="ADBE",
+            plan={
+                "target_alert_price": 220,
+                "alert_mode": "price_below",
+                "plan_status": "active",
+            },
+        )
+        updated = sync_buy_plan_price_alert(
+            path,
+            symbol="ADBE",
+            plan={
+                "target_alert_price": 215,
+                "alert_mode": "price_near",
+                "plan_status": "active",
+            },
+        )
+        alerts = PriceAlertStore(path).list_alerts("ADBE")
+
+        assert len(alerts) == 1
+        assert first["id"] == updated["id"]
+        assert updated["alertType"] == "BUY_PLAN_TRIGGER"
+        assert updated["source"] == "buy_plan"
+        assert updated["sourceId"] == "ADBE"
+        assert updated["triggerDirection"] == "near"
+        assert updated["triggerPrice"] == 215
+        assert updated["linkedPlanType"] == "buy_plan"
+
+
+def test_near_buy_plan_alert_triggers_within_threshold() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "ADBE", 224)
+        sync_buy_plan_price_alert(
+            path,
+            symbol="ADBE",
+            plan={
+                "target_alert_price": 220,
+                "alert_mode": "price_near",
+                "near_threshold_pct": 2,
+                "plan_status": "active",
+            },
+        )
+
+        alerts = evaluate_price_alerts(path, now=NOW)
+
+        assert alerts[0]["status"] == "triggered"
+        assert alerts[0]["triggerDirection"] == "near"
+        assert "接近 2% 以内" in alerts[0]["message"] or alerts[0]["triggeredNow"] is True
+
+
+def test_radar_pullback_buy_plan_alert_can_trigger_from_entry_context() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NOK", 13.39)
+        sync_buy_plan_price_alert(
+            path,
+            symbol="NOK",
+            plan={
+                "target_alert_price": 10,
+                "alert_mode": "radar_pullback",
+                "plan_status": "active",
+            },
+        )
+
+        alerts = evaluate_price_alerts(
+            path,
+            now=NOW,
+            entry_contexts={
+                "NOK": {
+                    "current_price": 13.39,
+                    "technical_entry_zone_low": 12.19,
+                    "technical_entry_zone_high": 13.43,
+                }
+            },
+        )
+
+        assert alerts[0]["status"] == "triggered"
+        assert alerts[0]["alertReason"] == "计划买入：进入 Radar 回踩区提醒"
+
+
+def test_paused_buy_plan_sync_disables_alert() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        sync_buy_plan_price_alert(
+            path,
+            symbol="NOK",
+            plan={
+                "target_alert_price": 12,
+                "alert_mode": "price_below",
+                "plan_status": "active",
+            },
+        )
+
+        paused = sync_buy_plan_price_alert(
+            path,
+            symbol="NOK",
+            plan={
+                "target_alert_price": 12,
+                "alert_mode": "price_below",
+                "plan_status": "paused",
+            },
+        )
+
+        assert paused["status"] == "disabled"

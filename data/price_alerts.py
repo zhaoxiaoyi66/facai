@@ -10,8 +10,9 @@ from data.market_context import build_market_context
 from data.prices import CACHE_PATH
 
 
-ALERT_DIRECTIONS = {"below", "above"}
+ALERT_DIRECTIONS = {"below", "above", "near"}
 LINKED_PLAN_TYPES = {"buy_plan", "sell_plan", "risk_review", "manual"}
+DEFAULT_NEAR_THRESHOLD_PCT = 2.0
 
 
 class PriceAlertStore:
@@ -39,7 +40,11 @@ class PriceAlertStore:
                     trigger_direction TEXT NOT NULL,
                     trigger_price REAL NOT NULL,
                     alert_reason TEXT,
+                    alert_type TEXT,
                     linked_plan_type TEXT,
+                    source TEXT,
+                    source_id TEXT,
+                    near_threshold_pct REAL,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     triggered_at TEXT,
                     archived_at TEXT,
@@ -53,6 +58,14 @@ class PriceAlertStore:
             existing = {row[1] for row in conn.execute("PRAGMA table_info(price_alerts)").fetchall()}
             if "deleted_at" not in existing:
                 conn.execute("ALTER TABLE price_alerts ADD COLUMN deleted_at TEXT")
+            if "alert_type" not in existing:
+                conn.execute("ALTER TABLE price_alerts ADD COLUMN alert_type TEXT")
+            if "source" not in existing:
+                conn.execute("ALTER TABLE price_alerts ADD COLUMN source TEXT")
+            if "source_id" not in existing:
+                conn.execute("ALTER TABLE price_alerts ADD COLUMN source_id TEXT")
+            if "near_threshold_pct" not in existing:
+                conn.execute("ALTER TABLE price_alerts ADD COLUMN near_threshold_pct REAL")
 
     def create_alert(
         self,
@@ -61,7 +74,11 @@ class PriceAlertStore:
         triggerDirection: str,
         triggerPrice: float | int | str,
         alertReason: str = "",
+        alertType: str = "PRICE",
         linkedPlanType: str = "manual",
+        source: str = "",
+        sourceId: str = "",
+        nearThresholdPct: float | int | str | None = None,
         isActive: bool = True,
         note: str = "",
     ) -> dict[str, Any]:
@@ -71,7 +88,11 @@ class PriceAlertStore:
             "trigger_direction": _direction(triggerDirection),
             "trigger_price": _required_number(triggerPrice, "triggerPrice"),
             "alert_reason": _clean_text(alertReason),
+            "alert_type": _clean_text(alertType) or "PRICE",
             "linked_plan_type": _linked_plan_type(linkedPlanType),
+            "source": _clean_text(source),
+            "source_id": _clean_text(sourceId),
+            "near_threshold_pct": _near_threshold_pct(nearThresholdPct),
             "is_active": 1 if isActive else 0,
             "note": _clean_text(note),
             "created_at": now,
@@ -85,20 +106,28 @@ class PriceAlertStore:
                     trigger_direction,
                     trigger_price,
                     alert_reason,
+                    alert_type,
                     linked_plan_type,
+                    source,
+                    source_id,
+                    near_threshold_pct,
                     is_active,
                     note,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
                     cleaned["trigger_direction"],
                     cleaned["trigger_price"],
                     cleaned["alert_reason"],
+                    cleaned["alert_type"],
                     cleaned["linked_plan_type"],
+                    cleaned["source"],
+                    cleaned["source_id"],
+                    cleaned["near_threshold_pct"],
                     cleaned["is_active"],
                     cleaned["note"],
                     cleaned["created_at"],
@@ -107,6 +136,83 @@ class PriceAlertStore:
             )
             alert_id = int(cursor.lastrowid)
         return self.get_alert(alert_id) or {}
+
+    def find_source_alert(
+        self,
+        *,
+        symbol: str,
+        alertType: str,
+        source: str,
+        sourceId: str,
+        include_deleted: bool = False,
+    ) -> dict[str, Any] | None:
+        clauses = [
+            "symbol = ?",
+            "alert_type = ?",
+            "source = ?",
+            "source_id = ?",
+        ]
+        params: list[object] = [_symbol(symbol), _clean_text(alertType) or "PRICE", _clean_text(source), _clean_text(sourceId)]
+        if not include_deleted:
+            clauses.append("deleted_at IS NULL")
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT *
+                FROM price_alerts
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            )
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_alert(row, columns) if row else None
+
+    def upsert_source_alert(
+        self,
+        symbol: str,
+        *,
+        alertType: str,
+        source: str,
+        sourceId: str,
+        triggerDirection: str,
+        triggerPrice: float | int | str,
+        alertReason: str = "",
+        linkedPlanType: str = "manual",
+        nearThresholdPct: float | int | str | None = None,
+        isActive: bool = True,
+        note: str = "",
+    ) -> dict[str, Any]:
+        existing = self.find_source_alert(symbol=symbol, alertType=alertType, source=source, sourceId=sourceId)
+        if existing:
+            updated = self.update_alert(
+                int(existing["id"]),
+                triggerPrice=triggerPrice,
+                triggerDirection=triggerDirection,
+                alertReason=alertReason,
+                linkedPlanType=linkedPlanType,
+                nearThresholdPct=nearThresholdPct,
+                alertType=alertType,
+                source=source,
+                sourceId=sourceId,
+                note=note,
+            )
+            return self.set_active(int(updated["id"]), isActive) if updated else {}
+        return self.create_alert(
+            symbol,
+            triggerDirection=triggerDirection,
+            triggerPrice=triggerPrice,
+            alertReason=alertReason,
+            alertType=alertType,
+            linkedPlanType=linkedPlanType,
+            source=source,
+            sourceId=sourceId,
+            nearThresholdPct=nearThresholdPct,
+            isActive=isActive,
+            note=note,
+        )
 
     def get_alert(self, alert_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -167,7 +273,11 @@ class PriceAlertStore:
         triggerPrice: float | int | str | None = None,
         triggerDirection: str | None = None,
         alertReason: str | None = None,
+        alertType: str | None = None,
         linkedPlanType: str | None = None,
+        source: str | None = None,
+        sourceId: str | None = None,
+        nearThresholdPct: float | int | str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
         current = self.get_alert(alert_id)
@@ -177,11 +287,19 @@ class PriceAlertStore:
             "trigger_direction": _direction(triggerDirection) if triggerDirection is not None else current["triggerDirection"],
             "trigger_price": _required_number(triggerPrice, "triggerPrice") if triggerPrice is not None else current["triggerPrice"],
             "alert_reason": _clean_text(alertReason) if alertReason is not None else current["alertReason"],
+            "alert_type": _clean_text(alertType) if alertType is not None else current["alertType"],
             "linked_plan_type": _linked_plan_type(linkedPlanType) if linkedPlanType is not None else current["linkedPlanType"],
+            "source": _clean_text(source) if source is not None else current["source"],
+            "source_id": _clean_text(sourceId) if sourceId is not None else current["sourceId"],
+            "near_threshold_pct": _near_threshold_pct(nearThresholdPct) if nearThresholdPct is not None else current["nearThresholdPct"],
             "note": _clean_text(note) if note is not None else current["note"],
             "updated_at": _now_iso(),
         }
-        changed_trigger = fields["trigger_direction"] != current["triggerDirection"] or fields["trigger_price"] != current["triggerPrice"]
+        changed_trigger = (
+            fields["trigger_direction"] != current["triggerDirection"]
+            or fields["trigger_price"] != current["triggerPrice"]
+            or fields["near_threshold_pct"] != current["nearThresholdPct"]
+        )
         triggered_at = None if current["status"] == "triggered" and changed_trigger else current["triggeredAt"]
         with self.connect() as conn:
             conn.execute(
@@ -190,7 +308,11 @@ class PriceAlertStore:
                 SET trigger_direction = ?,
                     trigger_price = ?,
                     alert_reason = ?,
+                    alert_type = ?,
                     linked_plan_type = ?,
+                    source = ?,
+                    source_id = ?,
+                    near_threshold_pct = ?,
                     note = ?,
                     triggered_at = ?,
                     updated_at = ?
@@ -200,7 +322,11 @@ class PriceAlertStore:
                     fields["trigger_direction"],
                     fields["trigger_price"],
                     fields["alert_reason"],
+                    fields["alert_type"],
                     fields["linked_plan_type"],
+                    fields["source"],
+                    fields["source_id"],
+                    fields["near_threshold_pct"],
                     fields["note"],
                     triggered_at,
                     fields["updated_at"],
@@ -256,6 +382,7 @@ def evaluate_price_alerts(
     *,
     symbol: str | None = None,
     symbols: list[str] | tuple[str, ...] | set[str] | None = None,
+    entry_contexts: dict[str, Any] | None = None,
     now: datetime | None = None,
     quote_max_age_hours: float | None = 24,
 ) -> list[dict[str, Any]]:
@@ -277,7 +404,8 @@ def evaluate_price_alerts(
         current_price = market.get("currentPrice")
         price_stale = bool(market.get("isStale"))
         triggered_now = False
-        if not price_stale and _should_trigger(alert, current_price):
+        entry_context = (entry_contexts or {}).get(alert["symbol"], {}) if isinstance(entry_contexts, dict) else {}
+        if not price_stale and _should_trigger(alert, current_price, entry_context):
             triggered_at = _time_iso(now)
             alert = store.mark_triggered(int(alert["id"]), triggered_at)
             triggered_now = True
@@ -298,9 +426,63 @@ def triggered_price_alerts(
     ]
 
 
-def _should_trigger(alert: dict[str, Any], current_price: float | None) -> bool:
+def sync_buy_plan_price_alert(
+    path: Path = CACHE_PATH,
+    *,
+    symbol: str,
+    plan: dict[str, Any],
+    is_active: bool | None = None,
+) -> dict[str, Any]:
+    trigger_price = _buy_plan_trigger_price(plan)
+    if trigger_price is None:
+        return {}
+    mode = str(plan.get("alert_mode") or plan.get("alertMode") or "price_below").strip().lower()
+    direction = "near" if mode in {"price_near", "radar_pullback"} else "below"
+    plan_status = str(plan.get("plan_status") or plan.get("planStatus") or "active").strip().lower()
+    active = plan_status not in {"paused", "cancelled", "completed", "expired"} if is_active is None else bool(is_active)
+    reason = {
+        "price_near": "计划买入：接近目标价提醒",
+        "radar_pullback": "计划买入：进入 Radar 回踩区提醒",
+    }.get(mode, "计划买入：跌到目标价提醒")
+    note_parts = [
+        f"plan_status={plan_status or 'active'}",
+        f"alert_mode={mode or 'price_below'}",
+    ]
+    if mode == "radar_pullback":
+        note_parts.append("Radar 回踩区触发依赖刷新后的 entry context；价格提醒保留目标价兜底。")
+    return PriceAlertStore(path).upsert_source_alert(
+        symbol,
+        alertType="BUY_PLAN_TRIGGER",
+        source="buy_plan",
+        sourceId=_symbol(symbol),
+        triggerDirection=direction,
+        triggerPrice=trigger_price,
+        alertReason=reason,
+        linkedPlanType="buy_plan",
+        nearThresholdPct=plan.get("near_threshold_pct") or plan.get("nearThresholdPct"),
+        isActive=active,
+        note="；".join(note_parts),
+    )
+
+
+def deactivate_buy_plan_price_alert(path: Path = CACHE_PATH, *, symbol: str) -> dict[str, Any]:
+    store = PriceAlertStore(path)
+    alert = store.find_source_alert(
+        symbol=symbol,
+        alertType="BUY_PLAN_TRIGGER",
+        source="buy_plan",
+        sourceId=_symbol(symbol),
+    )
+    if not alert:
+        return {}
+    return store.set_active(int(alert["id"]), False)
+
+
+def _should_trigger(alert: dict[str, Any], current_price: float | None, entry_context: dict[str, Any] | None = None) -> bool:
     if alert["status"] != "active" or current_price is None:
         return False
+    if _is_radar_pullback_alert(alert) and _entry_context_in_pullback(entry_context or {}):
+        return True
     trigger_price = _number(alert.get("triggerPrice"))
     if trigger_price is None:
         return False
@@ -308,7 +490,59 @@ def _should_trigger(alert: dict[str, Any], current_price: float | None) -> bool:
         return current_price <= trigger_price
     if alert.get("triggerDirection") == "above":
         return current_price >= trigger_price
+    if alert.get("triggerDirection") == "near":
+        threshold = _number(alert.get("nearThresholdPct"))
+        threshold = DEFAULT_NEAR_THRESHOLD_PCT if threshold is None else threshold
+        return abs(current_price - trigger_price) / trigger_price * 100 <= threshold
     return False
+
+
+def _is_radar_pullback_alert(alert: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(alert.get(key) or "")
+        for key in ("alertReason", "note", "triggerDirection")
+    )
+    return "Radar 回踩区" in text or "radar_pullback" in text
+
+
+def _entry_context_in_pullback(entry_context: dict[str, Any]) -> bool:
+    status = str(
+        entry_context.get("entry_context_status")
+        or entry_context.get("entryContextStatus")
+        or entry_context.get("technical_position")
+        or entry_context.get("technicalPosition")
+        or ""
+    ).strip().upper()
+    if status in {"IN_TECHNICAL_PULLBACK_ZONE", "IN_EFFECTIVE_TECHNICAL_ZONE"}:
+        return True
+    current = _number(entry_context.get("current_price") or entry_context.get("currentPrice"))
+    low = _number(
+        entry_context.get("effective_technical_entry_zone_low")
+        or entry_context.get("technical_entry_zone_low")
+        or entry_context.get("technicalEntryZoneLow")
+    )
+    high = _number(
+        entry_context.get("effective_technical_entry_zone_high")
+        or entry_context.get("technical_entry_zone_high")
+        or entry_context.get("technicalEntryZoneHigh")
+    )
+    return current is not None and low is not None and high is not None and low <= current <= high
+
+
+def _buy_plan_trigger_price(plan: dict[str, Any]) -> float | None:
+    direct = _number(plan.get("target_alert_price") or plan.get("targetAlertPrice"))
+    if direct is not None:
+        return direct
+    tranches = plan.get("buy_plan_tranches") or plan.get("buyPlanTranches") or []
+    if not isinstance(tranches, list):
+        return None
+    for item in tranches:
+        if not isinstance(item, dict):
+            continue
+        price = _number(item.get("trigger_price") or item.get("price"))
+        if price is not None:
+            return price
+    return None
 
 
 def _alert_result(
@@ -357,6 +591,9 @@ def _alert_message(alert: dict[str, Any], current_price: float | None, price_sta
     if current_price is None:
         return f"{symbol} 暂无可用价格，提醒未触发。"
     direction = "低于或等于" if alert.get("triggerDirection") == "below" else "高于或等于"
+    if alert.get("triggerDirection") == "near":
+        threshold = _number(alert.get("nearThresholdPct")) or DEFAULT_NEAR_THRESHOLD_PCT
+        direction = f"接近 {threshold:g}% 以内"
     return f"{symbol} 当前价 {_money(current_price)}，等待{direction} {trigger}。"
 
 
@@ -368,7 +605,11 @@ def _row_to_alert(row: tuple[Any, ...], columns: list[str]) -> dict[str, Any]:
         "triggerDirection": raw.get("trigger_direction"),
         "triggerPrice": raw.get("trigger_price"),
         "alertReason": raw.get("alert_reason") or "",
+        "alertType": raw.get("alert_type") or "PRICE",
         "linkedPlanType": raw.get("linked_plan_type") or "manual",
+        "source": raw.get("source") or "",
+        "sourceId": raw.get("source_id") or "",
+        "nearThresholdPct": raw.get("near_threshold_pct"),
         "isActive": bool(raw.get("is_active")),
         "triggeredAt": raw.get("triggered_at"),
         "archivedAt": raw.get("archived_at"),
@@ -399,7 +640,7 @@ def _symbol(value: object) -> str:
 def _direction(value: object) -> str:
     direction = str(value or "").strip().lower()
     if direction not in ALERT_DIRECTIONS:
-        raise ValueError("triggerDirection must be below or above")
+        raise ValueError("triggerDirection must be below, above, or near")
     return direction
 
 
@@ -416,6 +657,13 @@ def _required_number(value: object, field_name: str) -> float:
     number = _number(value)
     if number is None:
         raise ValueError(f"{field_name} must be a number")
+    return number
+
+
+def _near_threshold_pct(value: object) -> float:
+    number = _number(value)
+    if number is None or number <= 0:
+        return DEFAULT_NEAR_THRESHOLD_PCT
     return number
 
 
