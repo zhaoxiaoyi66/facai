@@ -3317,8 +3317,8 @@ class ScoringTests(unittest.TestCase):
         hint_source = inspect.getsource(portfolio._render_structure_entry_buy_hint)
 
         self.assertIn("_render_structure_entry_buy_hint(effective_ticker)", form_source)
-        self.assertIn("build_structure_entry_advisor_for_symbol", hint_source)
-        self.assertIn("structure_entry_hint_html", hint_source)
+        self.assertIn("build_buy_execution_advisory_context", hint_source)
+        self.assertIn("buy_execution_advisory_context_html", hint_source)
         self.assertNotIn("disabled=True", hint_source)
         self.assertNotIn("allowed_add_pct", hint_source)
 

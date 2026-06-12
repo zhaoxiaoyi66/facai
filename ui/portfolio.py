@@ -18,7 +18,7 @@ from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
-from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_hint_html
+from data.buy_execution_context import build_buy_execution_advisory_context, buy_execution_advisory_context_html
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
 from settings import load_watchlist
@@ -201,10 +201,10 @@ def _render_structure_entry_buy_hint(ticker: str) -> None:
     if not symbol:
         return
     try:
-        advisor = build_structure_entry_advisor_for_symbol(symbol)
+        context = build_buy_execution_advisory_context(symbol)
     except Exception:
         return
-    st.markdown(structure_entry_hint_html(advisor), unsafe_allow_html=True)
+    st.markdown(buy_execution_advisory_context_html(context), unsafe_allow_html=True)
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
