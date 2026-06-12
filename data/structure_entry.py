@@ -134,18 +134,36 @@ def evaluate_structure_entry(
     if not steps:
         steps.append("结合仓位计划、目标价和情绪状态复核后再执行。")
 
-    if normalized_thesis == THESIS_BROKEN or (score < 40):
+    data_gaps = _structure_data_gaps(
+        thesis_status=normalized_thesis,
+        support=support,
+        close=close,
+        relative_strength=relative_strength,
+        volume=volume,
+    )
+    hard_broken = _has_clear_breakdown_evidence(
+        decline_reason=normalized_decline,
+        thesis_status=normalized_thesis,
+        support=support,
+        close=close,
+        relative_strength=relative_strength,
+    )
+    if hard_broken:
         status = STRUCTURE_BROKEN
+    elif data_gaps:
+        status = DATA_MISSING
     elif score >= 80:
         status = STRUCTURE_CONFIRMED
     elif score >= 60:
         status = STRUCTURE_FORMING
-    elif score >= 40:
-        status = DIP_ONLY
     else:
-        status = STRUCTURE_BROKEN
-    if status == STRUCTURE_BROKEN and not warnings:
-        warnings.append("结构分数低于 40，主线、相对强弱或量能证据不足。")
+        status = DIP_ONLY
+    if status == DATA_MISSING:
+        warnings.append("结构提示缺少关键数据，不能判定结构破坏。")
+        warnings.extend(data_gaps)
+        steps.append("补齐主线状态、K 线、相对强弱和量能后再复核。")
+    if status == DIP_ONLY and not warnings:
+        warnings.append("结构证据不足，暂按只是下跌处理。")
 
     return StructureEntryAdvisor(
         structure_status=status,
@@ -220,7 +238,8 @@ def structure_entry_snapshot_fields(
 
 
 def structure_entry_summary_text(advisor: StructureEntryAdvisor) -> str:
-    return f"结构买入提示：{advisor.status_label}｜{advisor.structure_score:g}分｜{advisor.action_hint}"
+    score_text = "待补数据" if advisor.structure_status == DATA_MISSING else f"{advisor.structure_score:g}分"
+    return f"结构买入提示：{advisor.status_label}｜{score_text}｜{advisor.action_hint}"
 
 
 def structure_entry_hint_html(advisor: StructureEntryAdvisor) -> str:
@@ -228,10 +247,11 @@ def structure_entry_hint_html(advisor: StructureEntryAdvisor) -> str:
     warnings = "；".join(advisor.structure_warnings[:2])
     steps = "；".join(advisor.next_confirmation_steps[:2])
     warning_html = f"<span>{_escape(warnings)}</span>" if warnings else ""
+    decline = "下跌原因待维护" if advisor.decline_reason == "未知" else advisor.decline_reason
     return (
         '<div class="structure-entry-advisor">'
         f"<strong>{_escape(structure_entry_summary_text(advisor))}</strong>"
-        f"<span>下跌原因：{_escape(advisor.decline_reason)}｜主线：{_escape(_thesis_label(advisor.thesis_status))}</span>"
+        f"<span>下跌原因：{_escape(decline)}｜主线：{_escape(_thesis_label(advisor.thesis_status))}</span>"
         f"<span>承接：{_escape(advisor.support_confirmation)}｜收盘：{_escape(advisor.close_confirmation)}｜相对强弱：{_escape(advisor.relative_strength_status)}</span>"
         f"<small>{_escape(reasons)}</small>"
         f"{warning_html}"
@@ -272,8 +292,16 @@ def _support_confirmation(technicals: dict[str, Any]) -> dict[str, Any]:
     atr = _number(technicals.get("atr14")) or (price * 0.02 if price else 0)
     support = max([value for value in (swing, ema50, ema200) if value is not None], default=None)
     reclaimed = [label for label, value in (("EMA20", ema20), ("EMA50", ema50), ("EMA200", ema200)) if price is not None and value and price >= value]
+    if price is None or (support is None and not reclaimed):
+        return {
+            "label": "数据不足",
+            "score": 0,
+            "reason": "技术承接：缺 K 线、EMA 或 swing 支撑，无法判断承接。",
+            "broken": False,
+            "missing": True,
+        }
     held_support = price is not None and support is not None and price >= support - atr * 0.25
-    lower_wick = _close_position_in_range(technicals) >= 0.55
+    lower_wick = _has_daily_range(technicals) and _close_position_in_range(technicals) >= 0.55
     score = 0
     reasons: list[str] = []
     if held_support:
@@ -286,15 +314,23 @@ def _support_confirmation(technicals: dict[str, Any]) -> dict[str, Any]:
         score += 7
         reasons.append("日线收在区间上半部，有下影线承接")
     if not reasons:
-        return {"label": "承接不足", "score": 0, "reason": "技术承接：尚未守住支撑或站回均线。", "broken": True}
+        return {"label": "承接不足", "score": 0, "reason": "技术承接：尚未守住支撑或站回均线。", "broken": True, "missing": False}
     label = "承接确认" if score >= 24 else "有初步承接"
-    return {"label": label, "score": min(score, 30), "reason": "技术承接：" + "、".join(reasons) + "。", "broken": False}
+    return {"label": label, "score": min(score, 30), "reason": "技术承接：" + "、".join(reasons) + "。", "broken": False, "missing": False}
 
 
 def _close_confirmation(technicals: dict[str, Any], support: dict[str, Any]) -> dict[str, Any]:
     close_pos = _close_position_in_range(technicals)
     price = _first_number(technicals, "price", "close")
     swing = _number(technicals.get("recent_swing_low"))
+    if price is None or (not _has_daily_range(technicals) and swing is None):
+        return {
+            "label": "数据不足",
+            "score": 0,
+            "reason": "收盘确认：缺 K 线区间或 swing 支撑，无法判断收盘承接。",
+            "weak": False,
+            "missing": True,
+        }
     not_new_low = price is not None and (swing is None or price >= swing)
     score = 0
     reasons: list[str] = []
@@ -308,9 +344,9 @@ def _close_confirmation(technicals: dict[str, Any], support: dict[str, Any]) -> 
         score += 7
         reasons.append("收盘守住关键支撑且未继续创新低")
     if not reasons:
-        return {"label": "收盘未确认", "score": 0, "reason": "收盘确认：未站稳关键支撑或日内位置偏弱。", "weak": True}
+        return {"label": "收盘未确认", "score": 0, "reason": "收盘确认：未站稳关键支撑或日内位置偏弱。", "weak": True, "missing": False}
     label = "收盘确认" if score >= 12 else "收盘初步确认"
-    return {"label": label, "score": min(score, 15), "reason": "收盘确认：" + "、".join(reasons) + "。", "weak": False}
+    return {"label": label, "score": min(score, 15), "reason": "收盘确认：" + "、".join(reasons) + "。", "weak": False, "missing": False}
 
 
 def _relative_strength_from_technicals(technicals: dict[str, Any]) -> str:
@@ -337,6 +373,43 @@ def _volume_confirmation(technicals: dict[str, Any]) -> str:
     if trend >= -0.15:
         return "量能正常"
     return "量能不足"
+
+
+def _structure_data_gaps(
+    *,
+    thesis_status: str,
+    support: dict[str, Any],
+    close: dict[str, Any],
+    relative_strength: str,
+    volume: str,
+) -> list[str]:
+    gaps: list[str] = []
+    if thesis_status == THESIS_UNKNOWN:
+        gaps.append("主线状态未维护，结构判断降级为待确认。")
+    if support.get("missing"):
+        gaps.append("缺 K 线，无法判断承接。")
+    if close.get("missing"):
+        gaps.append("缺收盘区间或 swing 数据，无法判断收盘确认。")
+    if relative_strength == "相对强弱缺失":
+        gaps.append("缺 SPY / QQQ 相对强弱。")
+    if volume == "量能缺失":
+        gaps.append("缺成交量或 20 日均量。")
+    return _dedupe(gaps)
+
+
+def _has_clear_breakdown_evidence(
+    *,
+    decline_reason: str,
+    thesis_status: str,
+    support: dict[str, Any],
+    close: dict[str, Any],
+    relative_strength: str,
+) -> bool:
+    if thesis_status == THESIS_BROKEN:
+        return True
+    if decline_reason in BROKEN_DECLINE_REASONS:
+        return True
+    return bool(support.get("broken") and close.get("weak") and relative_strength == "弱于 SPY/QQQ")
 
 
 def _benchmark_relative_strength(
@@ -420,6 +493,12 @@ def _close_position_in_range(technicals: dict[str, Any]) -> float:
     return max(0.0, min(1.0, (close - low) / (high - low)))
 
 
+def _has_daily_range(technicals: dict[str, Any]) -> bool:
+    high = _number(technicals.get("high"))
+    low = _number(technicals.get("low"))
+    return high is not None and low is not None and high > low
+
+
 def _normalize_decline_reason(value: str) -> str:
     text = str(value or "").strip()
     aliases = {
@@ -444,8 +523,8 @@ def _thesis_label(value: str) -> str:
         THESIS_INTACT: "主线仍在",
         THESIS_WEAKENING: "主线转弱",
         THESIS_BROKEN: "主线破坏",
-        THESIS_UNKNOWN: "主线未知",
-    }.get(value, "主线未知")
+        THESIS_UNKNOWN: "主线待维护",
+    }.get(value, "主线待维护")
 
 
 def _missing_advisor(reason: str, *, decline_reason: str, checked_at: datetime | None) -> StructureEntryAdvisor:

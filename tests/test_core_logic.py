@@ -3029,6 +3029,30 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("近端复核区", pullback_html)
         self.assertIn("技术区说明", pullback_html)
 
+        missing_pullback_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "等待回落 $32.60 - $55.00",
+                    "entry_display_reason": "当前高于买区",
+                    "entry_action_hint": "只观察",
+                    "radar_buy_zone": {"lower": 32.6, "upper": 55.0},
+                    "radar_price_position": "ABOVE_BUY_ZONE",
+                    "price": "$120.00",
+                    "technical_entry_zone_low": float("nan"),
+                    "technical_entry_zone_high": float("nan"),
+                    "technical_entry_missing_fields": ["ema20", "atr14", "recent_swing_low"],
+                    "technical_entry_missing_reason": "技术回踩区暂缺：缺 EMA / ATR / swing low",
+                    "technical_entry_source": "missing_technical_data",
+                    "valuation_deep_zone_label": "$32.60 - $55.00",
+                }
+            )
+        )
+        self.assertNotIn("$nan", missing_pullback_html)
+        self.assertIn("技术回踩区", missing_pullback_html)
+        self.assertIn("暂缺", missing_pullback_html)
+        self.assertIn("缺失原因：缺 EMA / ATR / swing low", missing_pullback_html)
+        self.assertIn("暂不提供近端技术参考", missing_pullback_html)
+
         overlap_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
                 {
@@ -3094,6 +3118,31 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("结构买入提示", structure_html)
         self.assertIn("结构形成中", structure_html)
         self.assertIn("只读提示，不改变 ALLOW_BUY", structure_html)
+
+        missing_structure_html = dashboard_drawer._drawer_structure_entry_card_html(
+            pd.Series(
+                {
+                    "structureEntryAdvisor": {
+                        "structure_status": "DATA_MISSING",
+                        "status_label": "数据不足",
+                        "structure_score": 21,
+                        "decline_reason": "未知",
+                        "thesis_status": "UNKNOWN",
+                        "support_confirmation": "数据不足",
+                        "close_confirmation": "数据不足",
+                        "relative_strength_status": "相对强弱缺失",
+                        "volume_confirmation": "量能缺失",
+                        "structure_warnings": ["结构提示缺少关键数据，不能判定结构破坏。"],
+                        "next_confirmation_steps": ["补齐 K 线后再复核"],
+                    }
+                }
+            )
+        )
+        self.assertIn("数据不足｜待补数据", missing_structure_html)
+        self.assertIn("关键缺口", missing_structure_html)
+        self.assertIn("主线状态未维护", missing_structure_html)
+        self.assertNotIn("结构破坏｜21", missing_structure_html)
+        self.assertNotIn("下跌原因：未知", missing_structure_html)
 
     def test_portfolio_buy_form_renders_structure_advisor_without_gate_control(self) -> None:
         from ui import portfolio

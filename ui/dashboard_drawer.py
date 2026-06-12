@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html import escape
 import json
+import math
 
 import pandas as pd
 import streamlit as st
@@ -316,17 +317,23 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
 
 
 def _drawer_radar_entry_card_html(row: pd.Series) -> str:
-    label = str(row.get("entry_display_label") or "").strip() or "暂无 Radar 纪律买区"
-    hint = str(row.get("entry_action_hint") or "").strip()
-    reason = str(row.get("entry_display_reason") or "").strip()
+    label = _drawer_clean_text(row.get("entry_display_label")) or "暂无 Radar 纪律买区"
+    hint = _drawer_clean_text(row.get("entry_action_hint"))
+    reason = _drawer_clean_text(row.get("entry_display_reason"))
     buy_zone = row.get("radar_buy_zone") or row.get("buy_zone") or {}
-    price_position = str(row.get("radar_price_position") or row.get("price_position") or row.get("zone_status") or "").strip()
+    price_position = _drawer_clean_text(row.get("radar_price_position") or row.get("price_position") or row.get("zone_status"))
     missing_fields = _drawer_text_list(row.get("missing_entry_fields"))
     technical_low = row.get("technical_entry_zone_low") or row.get("radar_technical_entry_zone_low")
     technical_high = row.get("technical_entry_zone_high") or row.get("radar_technical_entry_zone_high")
-    technical_reason = str(row.get("technical_entry_reason") or row.get("radar_technical_entry_reason") or "").strip()
-    technical_source = str(row.get("technical_entry_source") or row.get("radar_technical_entry_source") or "").strip()
-    entry_context_status = str(row.get("entry_context_status") or row.get("radar_entry_context_status") or "").strip()
+    technical_reason = _drawer_clean_text(row.get("technical_entry_reason") or row.get("radar_technical_entry_reason"))
+    technical_source = _drawer_clean_text(row.get("technical_entry_source") or row.get("radar_technical_entry_source"))
+    technical_missing_fields = _drawer_text_list(row.get("technical_entry_missing_fields"))
+    if not technical_missing_fields:
+        technical_missing_fields = _drawer_text_list(row.get("radar_technical_entry_missing_fields"))
+    technical_missing_reason = _drawer_clean_text(
+        row.get("technical_entry_missing_reason") or row.get("radar_technical_entry_missing_reason")
+    )
+    entry_context_status = _drawer_clean_text(row.get("entry_context_status") or row.get("radar_entry_context_status"))
     valuation_deep_zone = str(
         row.get("valuation_deep_zone_label")
         or row.get("radar_valuation_deep_zone_label")
@@ -347,9 +354,13 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     lines = []
     if reason:
         lines.append("判断原因：" + reason)
-    if technical_reason:
+    technical_available = _drawer_technical_zone_available(technical_low, technical_high)
+    if technical_reason and technical_available:
         source_suffix = f"（{technical_source}）" if technical_source else ""
         lines.append("技术区说明：" + technical_reason + source_suffix)
+    elif not technical_available:
+        missing_text = technical_missing_reason or technical_reason or _drawer_technical_missing_reason(technical_missing_fields)
+        lines.append("技术回踩区暂缺：" + _strip_missing_prefix(missing_text))
     if overlap:
         lines.append("技术回踩区与追高禁区重叠；超过追高线部分不作为新增参考。")
         lines.append(
@@ -371,6 +382,7 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         entry_context_status=entry_context_status,
         price_position=price_position,
         overlap=overlap,
+        technical_missing_reason=technical_missing_reason or technical_reason or _drawer_technical_missing_reason(technical_missing_fields),
         notes=lines,
     )
     return conclusion + zone_table
@@ -420,18 +432,24 @@ def _drawer_entry_zone_structure_html(
     entry_context_status: str,
     price_position: str,
     overlap: bool,
+    technical_missing_reason: str,
     notes: list[str],
 ) -> str:
     effective_high = _drawer_effective_technical_high(technical_high, chase_above) if overlap else technical_high
-    technical_range = _drawer_zone_range_text(technical_low, technical_high)
-    if overlap:
+    technical_available = _drawer_technical_zone_available(technical_low, technical_high)
+    technical_range = _drawer_zone_range_text(technical_low, technical_high) if technical_available else "暂缺"
+    if overlap and technical_available:
         technical_range = f"原 {technical_range}；有效 {_drawer_zone_range_text(technical_low, effective_high)}"
+    technical_relation = _drawer_zone_relationship(current_price, technical_low, effective_high) if technical_available else (
+        "缺失原因：" + _strip_missing_prefix(technical_missing_reason or "缺 EMA / ATR / swing / K线")
+    )
+    technical_usage = "近端复核区" if technical_available else "当前使用：深度估值区 / 暂不提供近端技术参考"
     rows = [
         (
             "技术回踩区",
             technical_range,
-            _drawer_zone_relationship(current_price, technical_low, effective_high),
-            "近端复核区",
+            technical_relation,
+            technical_usage,
         ),
         (
             "深度估值区",
@@ -525,6 +543,42 @@ def _drawer_zone_overlaps_chase(technical_low: object, technical_high: object, c
     return high is not None and chase is not None and high > chase
 
 
+def _drawer_technical_zone_available(technical_low: object, technical_high: object) -> bool:
+    return _drawer_number(technical_low) is not None and _drawer_number(technical_high) is not None
+
+
+def _drawer_technical_missing_reason(fields: list[str]) -> str:
+    if fields:
+        labels = [_technical_missing_field_label(field) for field in fields]
+        return "缺 " + " / ".join(labels)
+    return "缺 EMA / ATR / swing / K线"
+
+
+def _technical_missing_field_label(field: str) -> str:
+    return {
+        "current_price": "当前价格",
+        "price": "当前价格",
+        "ema20": "EMA20",
+        "ema50": "EMA50",
+        "ema100": "EMA100",
+        "ema200": "EMA200",
+        "atr14": "ATR",
+        "recent_swing_low": "swing low",
+        "recent_swing_high": "swing high",
+        "recent_breakout_level": "breakout level",
+        "nearby_support": "附近支撑",
+        "data_status": "有效技术缓存",
+    }.get(str(field), str(field))
+
+
+def _strip_missing_prefix(text: str) -> str:
+    value = _drawer_clean_text(text)
+    for prefix in ("技术回踩区暂缺：", "技术回踩区暂缺:", "暂缺：", "暂缺:"):
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value or "缺 EMA / ATR / swing / K线"
+
+
 def _drawer_effective_technical_high(technical_high: object, chase_above: object) -> object:
     high = _drawer_number(technical_high)
     chase = _drawer_number(chase_above)
@@ -609,28 +663,46 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
     advisor = row.get("structureEntryAdvisor")
     if not isinstance(advisor, dict):
         advisor = {}
-    status = str(advisor.get("status_label") or _structure_status_label(row.get("structureStatus")) or "数据不足")
+    status_code = str(advisor.get("structure_status") or row.get("structureStatus") or "").strip()
+    status = str(advisor.get("status_label") or _structure_status_label(status_code) or "数据不足")
     score = advisor.get("structure_score", row.get("structureScore"))
-    decline = str(advisor.get("decline_reason") or "未知")
+    decline = _drawer_clean_text(advisor.get("decline_reason"))
     thesis = str(advisor.get("thesis_status") or "UNKNOWN")
-    support = str(advisor.get("support_confirmation") or "数据不足")
-    close = str(advisor.get("close_confirmation") or "数据不足")
-    relative = str(advisor.get("relative_strength_status") or "数据不足")
-    volume = str(advisor.get("volume_confirmation") or "数据不足")
+    support = _drawer_clean_text(advisor.get("support_confirmation"))
+    close = _drawer_clean_text(advisor.get("close_confirmation"))
+    relative = _drawer_clean_text(advisor.get("relative_strength_status"))
+    volume = _drawer_clean_text(advisor.get("volume_confirmation"))
     reasons = _drawer_text_list(advisor.get("structure_reasons") or row.get("structureReasons"))
     warnings = _drawer_text_list(advisor.get("structure_warnings") or row.get("structureWarnings"))
     steps = _drawer_text_list(advisor.get("next_confirmation_steps") or row.get("structureNextSteps"))
     numeric_score = _drawer_number(score)
-    score_text = "N/A" if numeric_score is None else f"{numeric_score:.0f} 分"
+    is_data_missing = status_code == "DATA_MISSING" or status == "数据不足"
+    score_text = "待补数据" if is_data_missing else ("N/A" if numeric_score is None else f"{numeric_score:.0f} 分")
+    gaps: list[str] = []
     lines = [
         "只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
-        f"下跌原因：{decline}",
-        f"主线状态：{_structure_thesis_label(thesis)}",
-        f"技术承接：{support}",
-        f"收盘确认：{close}",
-        f"相对强弱：{relative}",
-        f"量能确认：{volume}",
     ]
+    if _is_unknown_structure_text(decline):
+        gaps.append("下跌原因未维护")
+    else:
+        lines.append(f"下跌原因：{decline}")
+    thesis_label = _structure_thesis_label(thesis)
+    if _is_unknown_structure_text(thesis_label):
+        gaps.append("主线状态未维护")
+    else:
+        lines.append(f"主线状态：{thesis_label}")
+    for label, value, gap in (
+        ("技术承接", support, "缺 K 线或支撑数据"),
+        ("收盘确认", close, "缺收盘确认数据"),
+        ("相对强弱", relative, "缺 SPY/QQQ 相对强弱"),
+        ("量能确认", volume, "缺成交量数据"),
+    ):
+        if _is_structure_missing_value(value):
+            gaps.append(gap)
+        else:
+            lines.append(f"{label}：{value}")
+    if gaps:
+        lines.append("关键缺口：" + "；".join(_dedupe_text(gaps)[:4]))
     if reasons:
         lines.append("依据：" + "；".join(reasons[:2]))
     if warnings:
@@ -655,8 +727,8 @@ def _structure_thesis_label(value: object) -> str:
         "INTACT": "主线仍在",
         "WEAKENING": "主线走弱",
         "BROKEN": "主线破坏",
-        "UNKNOWN": "未知",
-    }.get(str(value or "").upper(), str(value or "未知"))
+        "UNKNOWN": "主线待维护",
+    }.get(str(value or "").upper(), _drawer_clean_text(value) or "主线待维护")
 
 
 def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
@@ -734,12 +806,8 @@ def _drawer_detail_basis_html(
 
 
 def _drawer_money_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "N/A"
-        return f"${float(value):,.2f}"
-    except (TypeError, ValueError):
-        return "N/A"
+    number = _drawer_number(value)
+    return "N/A" if number is None else f"${number:,.2f}"
 
 
 def _drawer_number(value: object) -> float | None:
@@ -748,9 +816,10 @@ def _drawer_number(value: object) -> float | None:
     if isinstance(value, str):
         value = value.replace("$", "").replace(",", "").replace("%", "").strip()
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _drawer_bool(value: object) -> bool:
@@ -762,20 +831,55 @@ def _drawer_bool(value: object) -> bool:
 
 
 def _drawer_pct_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "N/A"
-        return f"{float(value):+.1f}%"
-    except (TypeError, ValueError):
-        return "N/A"
+    number = _drawer_number(value)
+    return "N/A" if number is None else f"{number:+.1f}%"
 
 
 def _drawer_text_list(value: object) -> list[str]:
     if value is None or value == "":
         return []
     if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
+        return [text for item in value if (text := _drawer_clean_text(item))]
+    text = _drawer_clean_text(value)
+    return [text] if text else []
+
+
+def _drawer_clean_text(value: object) -> str:
+    if value is None:
+        return ""
+    if _drawer_number(value) is None and not isinstance(value, str):
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "null", "n/a"}:
+        return ""
+    return text
+
+
+def _is_unknown_structure_text(value: object) -> bool:
+    text = _drawer_clean_text(value)
+    return not text or text.lower() in {"unknown", "未知"} or text in {"主线未知", "主线待维护"}
+
+
+def _is_structure_missing_value(value: object) -> bool:
+    text = _drawer_clean_text(value)
+    if not text:
+        return True
+    return any(token in text for token in ("数据不足", "缺失", "待维护"))
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _drawer_compact_action_text(value: object) -> str:

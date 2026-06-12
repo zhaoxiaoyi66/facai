@@ -88,6 +88,37 @@ def test_entry_display_marks_price_inside_technical_pullback_zone() -> None:
     assert "深度估值区 $30.00 - $50.00" in result["entry_display_reason"]
 
 
+def test_entry_display_treats_nan_technical_zone_as_missing() -> None:
+    result = build_entry_display(
+        current_price=120,
+        buy_zone={"lower": 30, "upper": 50},
+        chase_zone={"lower": 145},
+        technical_entry_zone={
+            "low": float("nan"),
+            "high": float("nan"),
+            "source": "missing_technical_data",
+            "reason": "技术回踩区暂缺：缺 K 线历史 / EMA，不能生成技术回踩区",
+            "missing_fields": ["ema20", "ema50"],
+            "missing_reason": "技术回踩区暂缺：缺 K 线历史 / EMA，不能生成技术回踩区",
+            "confidence": "missing",
+        },
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=78,
+        valuation_score=45,
+        risk_score=70,
+    )
+
+    assert result["technical_entry_zone_low"] is None
+    assert result["technical_entry_zone_high"] is None
+    assert result["entry_display_label"] == "等待回落 $30.00 - $50.00"
+    assert "$nan" not in result["entry_display_label"]
+    assert "$nan" not in result["entry_display_reason"]
+    assert result["technical_entry_missing_fields"] == ["ema20", "ema50"]
+    assert result["technical_entry_missing_reason"].startswith("技术回踩区暂缺")
+
+
 def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_near() -> None:
     result = build_entry_display(
         current_price=372.10,

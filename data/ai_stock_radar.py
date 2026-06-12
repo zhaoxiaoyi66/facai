@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from contextlib import closing
 from dataclasses import asdict, dataclass
@@ -77,6 +78,9 @@ class RadarReport:
     technical_chase_overlap: bool
     technical_entry_source: str
     technical_entry_reason: str
+    technical_entry_missing_fields: list[str]
+    technical_entry_missing_reason: str
+    technical_entry_confidence: str
     technical_position: str
     entry_context_status: str
     nearest_support_price: float | None
@@ -245,6 +249,9 @@ def build_ai_stock_radar_report(
         technical_chase_overlap=bool(entry_display.get("technical_chase_overlap")),
         technical_entry_source=str(entry_display.get("technical_entry_source") or ""),
         technical_entry_reason=str(entry_display.get("technical_entry_reason") or ""),
+        technical_entry_missing_fields=list(entry_display.get("technical_entry_missing_fields") or []),
+        technical_entry_missing_reason=str(entry_display.get("technical_entry_missing_reason") or ""),
+        technical_entry_confidence=str(entry_display.get("technical_entry_confidence") or ""),
         technical_position=str(entry_display.get("technical_position") or ""),
         entry_context_status=str(entry_display.get("entry_context_status") or price_position),
         nearest_support_price=technical_entry.get("nearest_support_price"),
@@ -723,6 +730,8 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "source": "",
         "reason": "",
         "missing_fields": missing,
+        "missing_reason": "",
+        "confidence": "missing" if missing else "unknown",
         "nearest_support_price": None,
         "ema20": ema20,
         "ema50": ema50,
@@ -733,27 +742,57 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "recent_breakout_level": recent_breakout_level,
     }
     if data_status != "OK":
-        return base | {"source": "data_unavailable", "reason": "Radar 数据缺失或 stale，技术回踩区仅作缺口提示"}
+        reason = "技术回踩区暂缺：Radar 数据缺失或 stale，需先更新价格/技术缓存"
+        return base | {
+            "source": "data_unavailable",
+            "reason": reason,
+            "missing_fields": list(dict.fromkeys([*missing, "data_status"])),
+            "missing_reason": reason,
+            "confidence": "missing",
+        }
     if missing:
-        return base | {"source": "missing_technical_data", "reason": "缺 K 线历史 / EMA，不能生成技术回踩区"}
+        reason = "技术回踩区暂缺：缺 K 线历史 / EMA，不能生成技术回踩区"
+        return base | {
+            "source": "missing_technical_data",
+            "reason": reason,
+            "missing_reason": reason,
+            "confidence": "missing",
+        }
     assert price is not None and ema20 is not None and ema50 is not None and ema200 is not None
     if price < ema200 or ema50 < ema200:
+        reason = "价格或 EMA50 低于 EMA200，属于弱趋势/破位结构；不自动生成技术买点"
         return base | {
             "source": "trend_review",
-            "reason": "价格或 EMA50 低于 EMA200，属于弱趋势/破位结构；不自动生成技术买点",
+            "reason": reason,
+            "missing_fields": [],
+            "missing_reason": reason,
+            "confidence": "review",
         }
     slope_confirmed = (ema50_slope is None or ema50_slope >= -0.5) and (ema200_slope is None or ema200_slope >= -0.5)
     if not slope_confirmed:
+        reason = "EMA50 / EMA200 斜率未确认向上，先做破位复核"
         return base | {
             "source": "trend_review",
-            "reason": "EMA50 / EMA200 斜率未确认向上，先做破位复核",
+            "reason": reason,
+            "missing_fields": [],
+            "missing_reason": reason,
+            "confidence": "review",
         }
     supports = [value for value in (ema20, ema50, recent_swing_low, recent_breakout_level) if value is not None and value > 0]
     nearby_supports = [value for value in supports if value <= price * 1.08]
     if not nearby_supports:
+        missing_support = []
+        if recent_swing_low is None:
+            missing_support.append("recent_swing_low")
+        if recent_breakout_level is None:
+            missing_support.append("recent_breakout_level")
+        reason = "技术回踩区暂缺：缺少 EMA / swing 附近支撑，不能生成技术回踩区"
         return base | {
             "source": "missing_nearby_support",
-            "reason": "缺少 EMA / swing 附近支撑，不能生成技术回踩区",
+            "reason": reason,
+            "missing_fields": missing_support or ["nearby_support"],
+            "missing_reason": reason,
+            "confidence": "missing",
         }
     buffer = _technical_zone_buffer(price, atr14)
     low = max(0.01, min(nearby_supports) - buffer)
@@ -765,6 +804,8 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "source": "ema_pullback",
         "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
         "missing_fields": [],
+        "missing_reason": "",
+        "confidence": "high" if atr14 is not None else "medium",
         "nearest_support_price": round(nearest, 2),
     }
 
@@ -1442,9 +1483,10 @@ def _number(value: object) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _value(value: object) -> float:

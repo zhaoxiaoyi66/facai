@@ -460,6 +460,26 @@ def test_technical_entry_zone_needs_trend_confirmation() -> None:
     assert "不自动生成技术买点" in zone["reason"]
 
 
+def test_technical_entry_zone_rejects_nan_inputs_with_missing_reason() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": float("nan"),
+            "ema20": float("nan"),
+            "ema50": 100,
+            "ema200": 90,
+            "atr14": float("nan"),
+        }
+    )
+
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["source"] == "missing_technical_data"
+    assert "current_price" in zone["missing_fields"]
+    assert "ema20" in zone["missing_fields"]
+    assert zone["missing_reason"].startswith("技术回踩区暂缺")
+    assert zone["confidence"] == "missing"
+
+
 def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)

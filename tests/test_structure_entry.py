@@ -93,7 +93,7 @@ def test_missing_price_or_kline_data_returns_data_missing() -> None:
     assert no_technicals.structure_status == DATA_MISSING
 
 
-def test_low_score_structure_broken_gets_explanatory_warning() -> None:
+def test_unknown_thesis_with_weak_technicals_returns_data_missing() -> None:
     advisor = evaluate_structure_entry(
         ticker="ISRG",
         technicals=_technicals(
@@ -112,5 +112,29 @@ def test_low_score_structure_broken_gets_explanatory_warning() -> None:
         relative_strength_status="弱于 SPY/QQQ",
     )
 
+    assert advisor.structure_status == DATA_MISSING
+    assert "主线状态未维护" in " ".join(advisor.structure_warnings)
+    assert "不能判定结构破坏" in " ".join(advisor.structure_warnings)
+
+
+def test_clear_support_breakdown_still_marks_structure_broken() -> None:
+    advisor = evaluate_structure_entry(
+        ticker="ADBE",
+        technicals=_technicals(
+            price=100,
+            close=100,
+            high=120,
+            low=99,
+            ema20=120,
+            ema50=130,
+            ema200=110,
+            recent_swing_low=115,
+            volume_trend=-0.3,
+        ),
+        decline_reason="macro",
+        thesis_status=THESIS_INTACT,
+        relative_strength_status="弱于 SPY/QQQ",
+    )
+
     assert advisor.structure_status == STRUCTURE_BROKEN
-    assert "结构分数低于 40" in " ".join(advisor.structure_warnings)
+    assert "价格跌破关键支撑" in " ".join(advisor.structure_warnings)

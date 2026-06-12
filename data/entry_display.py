@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -57,9 +58,24 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         or _value(technical_zone, "source")
         or ""
     ).strip()
+    technical_missing_fields = _list_value(_value(source, "technical_entry_missing_fields", "technicalEntryMissingFields"))
+    if not technical_missing_fields:
+        technical_missing_fields = _list_value(_value(technical_zone, "missing_fields", "missingFields"))
+    technical_missing_reason = str(
+        _value(source, "technical_entry_missing_reason", "technicalEntryMissingReason")
+        or _value(technical_zone, "missing_reason", "missingReason")
+        or ""
+    ).strip()
+    technical_confidence = str(
+        _value(source, "technical_entry_confidence", "technicalEntryConfidence")
+        or _value(technical_zone, "confidence")
+        or ""
+    ).strip()
     technical_position = _technical_position(current_price, technical_low, technical_high)
     technical_zone_text = _zone_text(technical_low, technical_high)
     effective_technical_zone_text = _zone_text(technical_low, effective_technical_high)
+    if (technical_low is None or technical_high is None) and not technical_missing_reason and technical_reason:
+        technical_missing_reason = technical_reason
     result: dict[str, Any] = {
         "entry_reference_low": reference_low,
         "entry_reference_high": reference_high,
@@ -74,6 +90,9 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "technical_chase_overlap": technical_chase_overlap,
         "technical_entry_source": technical_source,
         "technical_entry_reason": technical_reason,
+        "technical_entry_missing_fields": technical_missing_fields,
+        "technical_entry_missing_reason": technical_missing_reason,
+        "technical_entry_confidence": technical_confidence,
         "technical_position": technical_position,
         "entry_context_status": price_position,
         "valuation_deep_zone_label": format_buy_zone(buy_zone),
@@ -396,6 +415,7 @@ def _number(value: Any) -> float | None:
     try:
         if value in (None, ""):
             return None
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
