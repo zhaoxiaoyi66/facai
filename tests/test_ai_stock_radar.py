@@ -362,6 +362,12 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.buy_zone == {"lower": 32.6, "upper": 55.0, "label": "derived_discipline_buy_zone"}
         assert report.technical_entry_zone_low == 102.0
         assert report.technical_entry_zone_high == 117.5
+        assert report.technical_structure_status == "UPTREND_PULLBACK"
+        assert report.technical_structure_label == "强趋势回踩"
+        assert report.technical_pullback_zone_low == 102.0
+        assert report.technical_pullback_zone_high == 117.5
+        assert report.confirmation_price == 116
+        assert report.invalidation_price == 108
         assert report.entry_display_label == "等待技术回踩 $102.00 - $117.50"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "ABOVE_TECHNICAL_PULLBACK_ZONE"
@@ -458,7 +464,123 @@ def test_technical_entry_zone_needs_trend_confirmation() -> None:
     assert zone["low"] is None
     assert zone["high"] is None
     assert zone["source"] == "trend_review"
+    assert zone["technical_structure_status"] == "WEAK_TREND_REPAIR"
+    assert zone["technical_structure_label"] == "弱趋势修复中"
+    assert zone["technical_repair_zone_low"] == 81.8
+    assert zone["technical_repair_zone_high"] == 100.6
+    assert zone["confirmation_price"] == 83
+    assert zone["invalidation_price"] == 78
+    assert "收盘重新站回 EMA20 / EMA50 / EMA200" in zone["next_technical_steps"][0]
     assert "不自动生成技术买点" in zone["reason"]
+
+
+def test_technical_structure_map_marks_ema50_below_ema200_as_repair() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 105,
+            "ema20": 104,
+            "ema50": 96,
+            "ema200": 112,
+            "atr14": 3,
+            "recent_swing_low": 100,
+            "gain_20d_pct": 2,
+            "volume_trend": 0.2,
+        }
+    )
+
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["technical_structure_status"] == "WEAK_TREND_REPAIR"
+    assert zone["technical_repair_zone_low"] == 94.2
+    assert zone["technical_repair_zone_high"] == 112.9
+    assert zone["support_watch_zone_low"] == 98.92
+    assert zone["support_watch_zone_high"] == 100.54
+    assert "当前不是技术买点" in zone["reason"]
+
+
+def test_technical_structure_map_marks_breakdown_below_swing_low() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 92,
+            "ema20": 98,
+            "ema50": 104,
+            "ema200": 110,
+            "atr14": 4,
+            "recent_swing_low": 95,
+            "gain_20d_pct": -7,
+            "volume_trend": 0.15,
+        }
+    )
+
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["source"] == "breakdown_review"
+    assert zone["technical_structure_status"] == "BREAKDOWN_REVIEW"
+    assert zone["technical_structure_label"] == "破位复核"
+    assert zone["invalidation_price"] == 95
+    assert "当前价跌破 recent swing low" in zone["technical_structure_reason"]
+    assert "不把下跌自动当买点" in zone["next_technical_steps"][0]
+
+
+def test_technical_structure_map_marks_range_base_building() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 100,
+            "ema20": 99,
+            "ema50": 94,
+            "ema200": 105,
+            "atr14": 2,
+            "recent_swing_low": 93,
+            "gain_20d_pct": -1.5,
+            "volume_trend": -0.12,
+        }
+    )
+
+    assert zone["low"] is None
+    assert zone["high"] is None
+    assert zone["technical_structure_status"] == "RANGE_BASE_BUILDING"
+    assert zone["technical_structure_label"] == "区间筑底"
+    assert zone["support_watch_zone_low"] == 92.28
+    assert zone["support_watch_zone_high"] == 93.36
+
+
+def test_pltr_like_weak_trend_gets_structure_map_not_only_missing_zone() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "PLTR", 138)
+
+        report = build_ai_stock_radar_report(
+            "PLTR",
+            path=path,
+            snapshot=_cached_snapshot(company_name="Palantir"),
+            technicals=_cached_technicals(
+                price=138,
+                fifty_two_week_low=120,
+                fifty_two_week_high=190,
+                ema20=142,
+                ema50=135,
+                ema100=145,
+                ema200=150,
+                atr14=6,
+                recent_swing_low=132,
+                recent_swing_high=160,
+                gain_20d_pct=1.5,
+                volume_trend=0.1,
+            ),
+            scores=_scores(final_score=82, valuation_score=72, technical_score=50),
+            now=NOW,
+        )
+
+        assert report.technical_entry_zone_low is None
+        assert report.technical_entry_zone_high is None
+        assert report.technical_structure_status == "WEAK_TREND_REPAIR"
+        assert report.technical_structure_label == "弱趋势修复中"
+        assert report.technical_repair_zone_low == 131.4
+        assert report.technical_repair_zone_high == 151.8
+        assert report.confirmation_price == 142
+        assert report.invalidation_price == 132
+        assert "不自动生成技术买点" in report.technical_structure_reason
+        assert report.decision in {"WAIT", "ALLOW_BUY", "BLOCK_CHASE"}
 
 
 def test_technical_entry_zone_rejects_nan_inputs_with_missing_reason() -> None:
@@ -475,6 +597,8 @@ def test_technical_entry_zone_rejects_nan_inputs_with_missing_reason() -> None:
     assert zone["low"] is None
     assert zone["high"] is None
     assert zone["source"] == "missing_technical_data"
+    assert zone["technical_structure_status"] == "DATA_MISSING"
+    assert zone["technical_structure_label"] == "数据不足"
     assert "current_price" in zone["missing_fields"]
     assert "ema20" in zone["missing_fields"]
     assert zone["missing_reason"].startswith("技术回踩区暂缺")

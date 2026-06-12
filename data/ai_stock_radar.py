@@ -81,6 +81,19 @@ class RadarReport:
     technical_entry_missing_fields: list[str]
     technical_entry_missing_reason: str
     technical_entry_confidence: str
+    technical_structure_status: str
+    technical_structure_label: str
+    technical_pullback_zone_low: float | None
+    technical_pullback_zone_high: float | None
+    technical_repair_zone_low: float | None
+    technical_repair_zone_high: float | None
+    support_watch_zone_low: float | None
+    support_watch_zone_high: float | None
+    confirmation_price: float | None
+    invalidation_price: float | None
+    technical_structure_reason: str
+    technical_missing_fields: list[str]
+    next_technical_steps: list[str]
     technical_position: str
     entry_context_status: str
     nearest_support_price: float | None
@@ -252,6 +265,19 @@ def build_ai_stock_radar_report(
         technical_entry_missing_fields=list(entry_display.get("technical_entry_missing_fields") or []),
         technical_entry_missing_reason=str(entry_display.get("technical_entry_missing_reason") or ""),
         technical_entry_confidence=str(entry_display.get("technical_entry_confidence") or ""),
+        technical_structure_status=str(entry_display.get("technical_structure_status") or ""),
+        technical_structure_label=str(entry_display.get("technical_structure_label") or ""),
+        technical_pullback_zone_low=entry_display.get("technical_pullback_zone_low"),
+        technical_pullback_zone_high=entry_display.get("technical_pullback_zone_high"),
+        technical_repair_zone_low=entry_display.get("technical_repair_zone_low"),
+        technical_repair_zone_high=entry_display.get("technical_repair_zone_high"),
+        support_watch_zone_low=entry_display.get("support_watch_zone_low"),
+        support_watch_zone_high=entry_display.get("support_watch_zone_high"),
+        confirmation_price=entry_display.get("confirmation_price"),
+        invalidation_price=entry_display.get("invalidation_price"),
+        technical_structure_reason=str(entry_display.get("technical_structure_reason") or ""),
+        technical_missing_fields=list(entry_display.get("technical_missing_fields") or []),
+        next_technical_steps=list(entry_display.get("next_technical_steps") or []),
         technical_position=str(entry_display.get("technical_position") or ""),
         entry_context_status=str(entry_display.get("entry_context_status") or price_position),
         nearest_support_price=technical_entry.get("nearest_support_price"),
@@ -711,9 +737,12 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
     ema200 = _first_number(technicals, "ema200", "EMA200")
     atr14 = _first_number(technicals, "atr14", "ATR14")
     recent_swing_low = _first_number(technicals, "recent_swing_low", "recentSwingLow")
+    recent_swing_high = _first_number(technicals, "recent_swing_high", "recentSwingHigh")
     recent_breakout_level = _first_number(technicals, "recent_breakout_level", "recentBreakoutLevel")
     ema50_slope = _first_number(technicals, "ema50_slope_20d_pct", "ema50Slope20dPct")
     ema200_slope = _first_number(technicals, "ema200_slope_20d_pct", "ema200Slope20dPct")
+    gain_20d_pct = _first_number(technicals, "gain_20d_pct", "gain20dPct")
+    volume_trend = _first_number(technicals, "volume_trend", "volumeTrend")
     missing = [
         label
         for label, value in (
@@ -739,7 +768,21 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "ema200": ema200,
         "atr14": atr14,
         "recent_swing_low": recent_swing_low,
+        "recent_swing_high": recent_swing_high,
         "recent_breakout_level": recent_breakout_level,
+        "technical_structure_status": "DATA_MISSING" if missing else "",
+        "technical_structure_label": "数据不足" if missing else "",
+        "technical_pullback_zone_low": None,
+        "technical_pullback_zone_high": None,
+        "technical_repair_zone_low": None,
+        "technical_repair_zone_high": None,
+        "support_watch_zone_low": None,
+        "support_watch_zone_high": None,
+        "confirmation_price": None,
+        "invalidation_price": None,
+        "technical_structure_reason": "",
+        "technical_missing_fields": missing,
+        "next_technical_steps": [],
     }
     if data_status != "OK":
         reason = "技术回踩区暂缺：Radar 数据缺失或 stale，需先更新价格/技术缓存"
@@ -749,6 +792,11 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "missing_fields": list(dict.fromkeys([*missing, "data_status"])),
             "missing_reason": reason,
             "confidence": "missing",
+            "technical_structure_status": "DATA_MISSING",
+            "technical_structure_label": "数据不足",
+            "technical_structure_reason": reason,
+            "technical_missing_fields": list(dict.fromkeys([*missing, "data_status"])),
+            "next_technical_steps": ["先点击更新价格 / 更新技术，补齐有效缓存。"],
         }
     if missing:
         reason = "技术回踩区暂缺：缺 K 线历史 / EMA，不能生成技术回踩区"
@@ -757,26 +805,108 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "reason": reason,
             "missing_reason": reason,
             "confidence": "missing",
+            "technical_structure_status": "DATA_MISSING",
+            "technical_structure_label": "数据不足",
+            "technical_structure_reason": reason,
+            "technical_missing_fields": missing,
+            "next_technical_steps": ["点击更新技术，补齐 K 线、EMA 和 ATR。"],
         }
     assert price is not None and ema20 is not None and ema50 is not None and ema200 is not None
+    buffer = _technical_zone_buffer(price, atr14)
+    repair_zone = _technical_observation_zone((ema20, ema50, ema200), buffer)
+    support_watch_zone = _technical_observation_zone((recent_swing_low,), buffer * 0.6)
+    confirmation_price = _technical_confirmation_price(price, ema20, ema50, ema200, recent_swing_high)
+    invalidation_price = _technical_invalidation_price(price, recent_swing_low, ema200, buffer)
+    breakdown_evidence = _technical_breakdown_evidence(
+        price=price,
+        ema200=ema200,
+        recent_swing_low=recent_swing_low,
+        ema50_slope=ema50_slope,
+        ema200_slope=ema200_slope,
+        gain_20d_pct=gain_20d_pct,
+        volume_trend=volume_trend,
+    )
+    if breakdown_evidence:
+        reason = "技术结构：破位复核；" + "；".join(breakdown_evidence)
+        return base | {
+            "source": "breakdown_review",
+            "reason": reason,
+            "missing_fields": [],
+            "missing_reason": reason,
+            "confidence": "review",
+            "technical_structure_status": "BREAKDOWN_REVIEW",
+            "technical_structure_label": "破位复核",
+            "technical_repair_zone_low": repair_zone[0],
+            "technical_repair_zone_high": repair_zone[1],
+            "support_watch_zone_low": support_watch_zone[0],
+            "support_watch_zone_high": support_watch_zone[1],
+            "confirmation_price": confirmation_price,
+            "invalidation_price": invalidation_price,
+            "technical_structure_reason": reason,
+            "technical_missing_fields": [],
+            "next_technical_steps": [
+                "不把下跌自动当买点。",
+                "等待重新站回关键均线或重新构建支撑。",
+                "复核相对强弱和放量下杀是否缓和。",
+            ],
+        }
     if price < ema200 or ema50 < ema200:
-        reason = "价格或 EMA50 低于 EMA200，属于弱趋势/破位结构；不自动生成技术买点"
+        status = (
+            "RANGE_BASE_BUILDING"
+            if _range_base_building(price, ema20, recent_swing_low, gain_20d_pct, volume_trend)
+            else "WEAK_TREND_REPAIR"
+        )
+        label = "区间筑底" if status == "RANGE_BASE_BUILDING" else "弱趋势修复中"
+        reason = (
+            f"技术结构：{label}；价格或 EMA50 低于 EMA200，不自动生成技术买点，当前不是技术买点；"
+            "等待重新站回关键均线并收盘确认"
+        )
         return base | {
             "source": "trend_review",
             "reason": reason,
             "missing_fields": [],
             "missing_reason": reason,
             "confidence": "review",
+            "technical_structure_status": status,
+            "technical_structure_label": label,
+            "technical_repair_zone_low": repair_zone[0],
+            "technical_repair_zone_high": repair_zone[1],
+            "support_watch_zone_low": support_watch_zone[0],
+            "support_watch_zone_high": support_watch_zone[1],
+            "confirmation_price": confirmation_price,
+            "invalidation_price": invalidation_price,
+            "technical_structure_reason": reason,
+            "technical_missing_fields": [],
+            "next_technical_steps": [
+                "收盘重新站回 EMA20 / EMA50 / EMA200。",
+                "不再创新低，并观察支撑是否被反复守住。",
+                "确认相对强于 QQQ / 同行业后再复核。",
+                "若跌破 recent swing low 或放量下杀，转为破位复核。",
+            ],
         }
     slope_confirmed = (ema50_slope is None or ema50_slope >= -0.5) and (ema200_slope is None or ema200_slope >= -0.5)
     if not slope_confirmed:
-        reason = "EMA50 / EMA200 斜率未确认向上，先做破位复核"
+        reason = "技术结构：弱趋势修复中；EMA50 / EMA200 斜率未确认向上，先等趋势修复"
         return base | {
             "source": "trend_review",
             "reason": reason,
             "missing_fields": [],
             "missing_reason": reason,
             "confidence": "review",
+            "technical_structure_status": "WEAK_TREND_REPAIR",
+            "technical_structure_label": "弱趋势修复中",
+            "technical_repair_zone_low": repair_zone[0],
+            "technical_repair_zone_high": repair_zone[1],
+            "support_watch_zone_low": support_watch_zone[0],
+            "support_watch_zone_high": support_watch_zone[1],
+            "confirmation_price": confirmation_price,
+            "invalidation_price": invalidation_price,
+            "technical_structure_reason": reason,
+            "technical_missing_fields": [],
+            "next_technical_steps": [
+                "等待 EMA50 / EMA200 斜率企稳。",
+                "收盘站回 EMA20 / EMA50 后再复核。",
+            ],
         }
     supports = [value for value in (ema20, ema50, recent_swing_low, recent_breakout_level) if value is not None and value > 0]
     nearby_supports = [value for value in supports if value <= price * 1.08]
@@ -793,20 +923,44 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             "missing_fields": missing_support or ["nearby_support"],
             "missing_reason": reason,
             "confidence": "missing",
+            "technical_structure_status": "DATA_MISSING",
+            "technical_structure_label": "数据不足",
+            "technical_structure_reason": reason,
+            "technical_missing_fields": missing_support or ["nearby_support"],
+            "next_technical_steps": ["补齐 swing low / breakout level，或等待新的支撑位形成。"],
         }
-    buffer = _technical_zone_buffer(price, atr14)
     low = max(0.01, min(nearby_supports) - buffer)
     high = max(nearby_supports) + buffer * 0.5
     nearest = min(nearby_supports, key=lambda value: abs(price - value))
+    pullback_low = round(low, 2)
+    pullback_high = round(high, 2)
+    reason = "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲"
     return base | {
-        "low": round(low, 2),
-        "high": round(high, 2),
+        "low": pullback_low,
+        "high": pullback_high,
         "source": "ema_pullback",
-        "reason": "强趋势结构下，技术回踩区参考 EMA20 / EMA50 / 近期支撑，并用 ATR 做缓冲",
+        "reason": reason,
         "missing_fields": [],
         "missing_reason": "",
         "confidence": "high" if atr14 is not None else "medium",
         "nearest_support_price": round(nearest, 2),
+        "technical_structure_status": "UPTREND_PULLBACK",
+        "technical_structure_label": "强趋势回踩",
+        "technical_pullback_zone_low": pullback_low,
+        "technical_pullback_zone_high": pullback_high,
+        "technical_repair_zone_low": repair_zone[0],
+        "technical_repair_zone_high": repair_zone[1],
+        "support_watch_zone_low": support_watch_zone[0],
+        "support_watch_zone_high": support_watch_zone[1],
+        "confirmation_price": confirmation_price,
+        "invalidation_price": invalidation_price,
+        "technical_structure_reason": reason,
+        "technical_missing_fields": [],
+        "next_technical_steps": [
+            "回踩区内观察止跌和缩量。",
+            "收盘守住 EMA20 / EMA50 或 recent swing low。",
+            "确认相对强弱没有明显恶化。",
+        ],
     }
 
 
@@ -815,6 +969,76 @@ def _technical_zone_buffer(price: float, atr14: float | None) -> float:
     if atr is not None and atr > 0:
         return min(price * 0.06, max(atr * 0.6, price * 0.012))
     return price * 0.018
+
+
+def _technical_observation_zone(values: tuple[float | None, ...], buffer: float) -> tuple[float | None, float | None]:
+    usable = [value for value in values if value is not None and value > 0]
+    if not usable:
+        return None, None
+    return round(max(0.01, min(usable) - buffer), 2), round(max(usable) + buffer * 0.5, 2)
+
+
+def _technical_confirmation_price(
+    price: float,
+    ema20: float | None,
+    ema50: float | None,
+    ema200: float | None,
+    recent_swing_high: float | None,
+) -> float | None:
+    candidates = [value for value in (ema20, ema50, ema200, recent_swing_high) if value is not None and value > price]
+    if candidates:
+        return round(min(candidates), 2)
+    fallback = max([value for value in (ema20, ema50, ema200) if value is not None], default=None)
+    return round(fallback, 2) if fallback is not None else None
+
+
+def _technical_invalidation_price(
+    price: float,
+    recent_swing_low: float | None,
+    ema200: float | None,
+    buffer: float,
+) -> float | None:
+    if recent_swing_low is not None:
+        return round(recent_swing_low, 2)
+    if ema200 is not None and ema200 < price:
+        return round(max(0.01, ema200 - buffer), 2)
+    return None
+
+
+def _technical_breakdown_evidence(
+    *,
+    price: float,
+    ema200: float,
+    recent_swing_low: float | None,
+    ema50_slope: float | None,
+    ema200_slope: float | None,
+    gain_20d_pct: float | None,
+    volume_trend: float | None,
+) -> list[str]:
+    evidence: list[str] = []
+    if recent_swing_low is not None and price < recent_swing_low:
+        evidence.append("当前价跌破 recent swing low")
+    if price < ema200 and (gain_20d_pct is not None and gain_20d_pct < -8) and (
+        volume_trend is not None and volume_trend > 0.35
+    ):
+        evidence.append("跌破 EMA200 且放量下杀")
+    return evidence
+
+
+def _range_base_building(
+    price: float,
+    ema20: float | None,
+    recent_swing_low: float | None,
+    gain_20d_pct: float | None,
+    volume_trend: float | None,
+) -> bool:
+    if recent_swing_low is None or price < recent_swing_low:
+        return False
+    if ema20 is None or price < ema20:
+        return False
+    if gain_20d_pct is None or volume_trend is None:
+        return False
+    return gain_20d_pct >= -5 and volume_trend <= 0.05
 
 
 SCORE_FIELD_USAGE = {

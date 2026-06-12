@@ -3111,6 +3111,43 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("缺失原因：缺 EMA / ATR / swing low", missing_pullback_html)
         self.assertIn("暂不提供近端技术参考", missing_pullback_html)
 
+        weak_trend_html = dashboard_drawer._drawer_radar_entry_card_html(
+            pd.Series(
+                {
+                    "entry_display_label": "买区内 $130.32 - $143.89",
+                    "entry_display_reason": "当前位于纪律买区",
+                    "entry_action_hint": "需复核",
+                    "radar_buy_zone": {"lower": 130.32, "upper": 143.89},
+                    "radar_price_position": "IN_BUY_ZONE",
+                    "price": "$138.00",
+                    "technical_entry_zone_low": None,
+                    "technical_entry_zone_high": None,
+                    "technical_entry_source": "trend_review",
+                    "technical_entry_reason": "技术结构：弱趋势修复中；价格或 EMA50 低于 EMA200，不自动生成技术买点",
+                    "technical_structure_status": "WEAK_TREND_REPAIR",
+                    "technical_structure_label": "弱趋势修复中",
+                    "technical_structure_reason": "当前不是技术买点，等待重新站回关键均线并收盘确认",
+                    "technical_repair_zone_low": 131.4,
+                    "technical_repair_zone_high": 151.8,
+                    "support_watch_zone_low": 129.84,
+                    "support_watch_zone_high": 132.54,
+                    "confirmation_price": 142,
+                    "invalidation_price": 132,
+                    "next_technical_steps": ["收盘重新站回 EMA20 / EMA50 / EMA200。"],
+                    "entry_context_status": "IN_DISCIPLINE_BUY_ZONE",
+                    "valuation_deep_zone_label": "$130.32 - $143.89",
+                }
+            )
+        )
+        self.assertIn("技术结构", weak_trend_html)
+        self.assertIn("弱趋势修复中", weak_trend_html)
+        self.assertIn("修复观察区", weak_trend_html)
+        self.assertIn("$131.40 - $151.80", weak_trend_html)
+        self.assertIn("确认线", weak_trend_html)
+        self.assertIn("$142.00", weak_trend_html)
+        self.assertIn("失效线", weak_trend_html)
+        self.assertIn("$132.00", weak_trend_html)
+
         overlap_html = dashboard_drawer._drawer_radar_entry_card_html(
             pd.Series(
                 {

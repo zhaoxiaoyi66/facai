@@ -119,6 +119,46 @@ def test_entry_display_treats_nan_technical_zone_as_missing() -> None:
     assert result["technical_entry_missing_reason"].startswith("技术回踩区暂缺")
 
 
+def test_entry_display_preserves_technical_structure_map_when_pullback_missing() -> None:
+    result = build_entry_display(
+        current_price=138,
+        buy_zone={"lower": 130, "upper": 144},
+        chase_zone={"lower": 170},
+        technical_entry_zone={
+            "source": "trend_review",
+            "reason": "技术结构：弱趋势修复中；价格或 EMA50 低于 EMA200，不自动生成技术买点",
+            "missing_reason": "技术结构：弱趋势修复中；价格或 EMA50 低于 EMA200，不自动生成技术买点",
+            "technical_structure_status": "WEAK_TREND_REPAIR",
+            "technical_structure_label": "弱趋势修复中",
+            "technical_repair_zone_low": 131.4,
+            "technical_repair_zone_high": 151.8,
+            "support_watch_zone_low": 129.84,
+            "support_watch_zone_high": 132.54,
+            "confirmation_price": 142,
+            "invalidation_price": 132,
+            "technical_structure_reason": "当前不是技术买点，等待重新站回关键均线",
+            "next_technical_steps": ["收盘重新站回 EMA20 / EMA50 / EMA200。"],
+            "confidence": "review",
+        },
+        data_status="OK",
+        price_position="IN_BUY_ZONE",
+        decision="WAIT",
+        final_score=78,
+        valuation_score=65,
+        risk_score=70,
+    )
+
+    assert result["technical_entry_zone_low"] is None
+    assert result["technical_entry_zone_high"] is None
+    assert result["technical_structure_status"] == "WEAK_TREND_REPAIR"
+    assert result["technical_structure_label"] == "弱趋势修复中"
+    assert result["technical_repair_zone_low"] == 131.4
+    assert result["technical_repair_zone_high"] == 151.8
+    assert result["confirmation_price"] == 142
+    assert result["invalidation_price"] == 132
+    assert result["next_technical_steps"] == ["收盘重新站回 EMA20 / EMA50 / EMA200。"]
+
+
 def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_near() -> None:
     result = build_entry_display(
         current_price=372.10,

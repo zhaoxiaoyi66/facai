@@ -333,6 +333,24 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     technical_missing_reason = _drawer_clean_text(
         row.get("technical_entry_missing_reason") or row.get("radar_technical_entry_missing_reason")
     )
+    technical_structure_status = _drawer_clean_text(
+        row.get("technical_structure_status") or row.get("radar_technical_structure_status")
+    )
+    technical_structure_label = _drawer_clean_text(
+        row.get("technical_structure_label") or row.get("radar_technical_structure_label")
+    )
+    technical_structure_reason = _drawer_clean_text(
+        row.get("technical_structure_reason") or row.get("radar_technical_structure_reason")
+    )
+    technical_repair_low = row.get("technical_repair_zone_low") or row.get("radar_technical_repair_zone_low")
+    technical_repair_high = row.get("technical_repair_zone_high") or row.get("radar_technical_repair_zone_high")
+    support_watch_low = row.get("support_watch_zone_low") or row.get("radar_support_watch_zone_low")
+    support_watch_high = row.get("support_watch_zone_high") or row.get("radar_support_watch_zone_high")
+    confirmation_price = row.get("confirmation_price") or row.get("radar_confirmation_price")
+    invalidation_price = row.get("invalidation_price") or row.get("radar_invalidation_price")
+    next_technical_steps = _drawer_text_list(row.get("next_technical_steps"))
+    if not next_technical_steps:
+        next_technical_steps = _drawer_text_list(row.get("radar_next_technical_steps"))
     entry_context_status = _drawer_clean_text(row.get("entry_context_status") or row.get("radar_entry_context_status"))
     valuation_deep_zone = str(
         row.get("valuation_deep_zone_label")
@@ -361,6 +379,14 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     elif not technical_available:
         missing_text = technical_missing_reason or technical_reason or _drawer_technical_missing_reason(technical_missing_fields)
         lines.append("技术回踩区暂缺：" + _strip_missing_prefix(missing_text))
+    if technical_structure_label or technical_structure_reason:
+        lines.append(
+            "技术结构："
+            + (technical_structure_label or _drawer_technical_structure_label(technical_structure_status))
+            + ("；" + technical_structure_reason if technical_structure_reason else "")
+        )
+    if next_technical_steps:
+        lines.append("下一步：" + "；".join(next_technical_steps[:3]))
     if overlap:
         lines.append("技术回踩区与追高禁区重叠；超过追高线部分不作为新增参考。")
         lines.append(
@@ -386,6 +412,16 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         price_position=price_position,
         overlap=overlap,
         technical_missing_reason=technical_missing_reason or technical_reason or _drawer_technical_missing_reason(technical_missing_fields),
+        technical_structure_status=technical_structure_status,
+        technical_structure_label=technical_structure_label,
+        technical_structure_reason=technical_structure_reason,
+        technical_repair_low=technical_repair_low,
+        technical_repair_high=technical_repair_high,
+        support_watch_low=support_watch_low,
+        support_watch_high=support_watch_high,
+        confirmation_price=confirmation_price,
+        invalidation_price=invalidation_price,
+        next_technical_steps=next_technical_steps,
         notes=lines,
     )
     return conclusion + zone_table
@@ -436,6 +472,16 @@ def _drawer_entry_zone_structure_html(
     price_position: str,
     overlap: bool,
     technical_missing_reason: str,
+    technical_structure_status: str,
+    technical_structure_label: str,
+    technical_structure_reason: str,
+    technical_repair_low: object,
+    technical_repair_high: object,
+    support_watch_low: object,
+    support_watch_high: object,
+    confirmation_price: object,
+    invalidation_price: object,
+    next_technical_steps: list[str],
     notes: list[str],
 ) -> str:
     effective_high = _drawer_effective_technical_high(technical_high, chase_above) if overlap else technical_high
@@ -447,12 +493,51 @@ def _drawer_entry_zone_structure_html(
         "缺失原因：" + _strip_missing_prefix(technical_missing_reason or "缺 EMA / ATR / swing / K线")
     )
     technical_usage = "近端复核区" if technical_available else "当前使用：深度估值区 / 暂不提供近端技术参考"
+    structure_label = technical_structure_label or _drawer_technical_structure_label(technical_structure_status)
+    structure_reason = _strip_missing_prefix(technical_structure_reason) if technical_structure_reason else "等待技术结构确认"
+    repair_available = _drawer_technical_zone_available(technical_repair_low, technical_repair_high)
+    support_available = _drawer_technical_zone_available(support_watch_low, support_watch_high)
+    next_step = next_technical_steps[0] if next_technical_steps else "等待收盘确认和相对强弱修复"
     rows = [
+        (
+            "技术结构",
+            structure_label or "待确认",
+            structure_reason,
+            "判断当前是回踩、修复、破位还是筑底",
+        ),
         (
             "技术回踩区",
             technical_range,
             technical_relation,
             technical_usage,
+        ),
+        (
+            "修复观察区",
+            _drawer_zone_range_text(technical_repair_low, technical_repair_high) if repair_available else "暂缺",
+            _drawer_zone_relationship(current_price, technical_repair_low, technical_repair_high)
+            if repair_available
+            else "缺 EMA20 / EMA50 / EMA200",
+            "弱趋势修复观察，不是自动买点",
+        ),
+        (
+            "支撑观察区",
+            _drawer_zone_range_text(support_watch_low, support_watch_high) if support_available else "暂缺",
+            _drawer_zone_relationship(current_price, support_watch_low, support_watch_high)
+            if support_available
+            else "缺 recent swing low",
+            "失效线附近的承接观察",
+        ),
+        (
+            "确认线",
+            _drawer_money_text(confirmation_price),
+            next_step,
+            "收盘站回后再复核",
+        ),
+        (
+            "失效线",
+            _drawer_money_text(invalidation_price),
+            "跌破后转为破位复核" if _drawer_number(invalidation_price) is not None else "暂缺",
+            "不把下跌自动当买点",
         ),
         (
             "深度估值区",
@@ -548,6 +633,16 @@ def _drawer_zone_overlaps_chase(technical_low: object, technical_high: object, c
 
 def _drawer_technical_zone_available(technical_low: object, technical_high: object) -> bool:
     return _drawer_number(technical_low) is not None and _drawer_number(technical_high) is not None
+
+
+def _drawer_technical_structure_label(status: str) -> str:
+    return {
+        "UPTREND_PULLBACK": "强趋势回踩",
+        "WEAK_TREND_REPAIR": "弱趋势修复中",
+        "BREAKDOWN_REVIEW": "破位复核",
+        "RANGE_BASE_BUILDING": "区间筑底",
+        "DATA_MISSING": "数据不足",
+    }.get(str(status or "").strip(), "待确认")
 
 
 def _drawer_technical_missing_reason(fields: list[str]) -> str:

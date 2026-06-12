@@ -73,6 +73,62 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         or _value(technical_zone, "confidence")
         or ""
     ).strip()
+    technical_structure_status = str(
+        _value(source, "technical_structure_status", "technicalStructureStatus")
+        or _value(technical_zone, "technical_structure_status", "technicalStructureStatus")
+        or ""
+    ).strip()
+    technical_structure_label = str(
+        _value(source, "technical_structure_label", "technicalStructureLabel")
+        or _value(technical_zone, "technical_structure_label", "technicalStructureLabel")
+        or ""
+    ).strip()
+    technical_pullback_low = _number(
+        _value(source, "technical_pullback_zone_low", "technicalPullbackZoneLow")
+        or _value(technical_zone, "technical_pullback_zone_low", "technicalPullbackZoneLow")
+    )
+    technical_pullback_high = _number(
+        _value(source, "technical_pullback_zone_high", "technicalPullbackZoneHigh")
+        or _value(technical_zone, "technical_pullback_zone_high", "technicalPullbackZoneHigh")
+    )
+    technical_repair_low = _number(
+        _value(source, "technical_repair_zone_low", "technicalRepairZoneLow")
+        or _value(technical_zone, "technical_repair_zone_low", "technicalRepairZoneLow")
+    )
+    technical_repair_high = _number(
+        _value(source, "technical_repair_zone_high", "technicalRepairZoneHigh")
+        or _value(technical_zone, "technical_repair_zone_high", "technicalRepairZoneHigh")
+    )
+    support_watch_low = _number(
+        _value(source, "support_watch_zone_low", "supportWatchZoneLow")
+        or _value(technical_zone, "support_watch_zone_low", "supportWatchZoneLow")
+    )
+    support_watch_high = _number(
+        _value(source, "support_watch_zone_high", "supportWatchZoneHigh")
+        or _value(technical_zone, "support_watch_zone_high", "supportWatchZoneHigh")
+    )
+    confirmation_price = _number(
+        _value(source, "confirmation_price", "confirmationPrice")
+        or _value(technical_zone, "confirmation_price", "confirmationPrice")
+    )
+    invalidation_price = _number(
+        _value(source, "invalidation_price", "invalidationPrice")
+        or _value(technical_zone, "invalidation_price", "invalidationPrice")
+    )
+    technical_structure_reason = str(
+        _value(source, "technical_structure_reason", "technicalStructureReason")
+        or _value(technical_zone, "technical_structure_reason", "technicalStructureReason")
+        or technical_reason
+        or ""
+    ).strip()
+    technical_structure_missing_fields = _list_value(_value(source, "technical_missing_fields", "technicalMissingFields"))
+    if not technical_structure_missing_fields:
+        technical_structure_missing_fields = _list_value(
+            _value(technical_zone, "technical_missing_fields", "technicalMissingFields")
+        )
+    next_technical_steps = _list_value(_value(source, "next_technical_steps", "nextTechnicalSteps"))
+    if not next_technical_steps:
+        next_technical_steps = _list_value(_value(technical_zone, "next_technical_steps", "nextTechnicalSteps"))
     technical_position = _technical_position(current_price, technical_low, technical_high)
     technical_zone_text = _zone_text(technical_low, technical_high)
     effective_technical_zone_text = _zone_text(technical_low, effective_technical_high)
@@ -95,6 +151,19 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "technical_entry_missing_fields": technical_missing_fields,
         "technical_entry_missing_reason": technical_missing_reason,
         "technical_entry_confidence": technical_confidence,
+        "technical_structure_status": technical_structure_status,
+        "technical_structure_label": technical_structure_label,
+        "technical_pullback_zone_low": technical_pullback_low,
+        "technical_pullback_zone_high": technical_pullback_high,
+        "technical_repair_zone_low": technical_repair_low,
+        "technical_repair_zone_high": technical_repair_high,
+        "support_watch_zone_low": support_watch_low,
+        "support_watch_zone_high": support_watch_high,
+        "confirmation_price": confirmation_price,
+        "invalidation_price": invalidation_price,
+        "technical_structure_reason": technical_structure_reason,
+        "technical_missing_fields": technical_structure_missing_fields,
+        "next_technical_steps": next_technical_steps,
         "technical_position": technical_position,
         "entry_context_status": price_position,
         "valuation_deep_zone_label": format_buy_zone(buy_zone),
