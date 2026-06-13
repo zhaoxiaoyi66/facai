@@ -5,13 +5,13 @@ from math import isfinite
 import sqlite3
 import csv
 import io
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from time import perf_counter
 from typing import Any
 from urllib.parse import quote
@@ -46,7 +46,7 @@ FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
 FRED_TEN_YEAR_SERIES = "DGS10"
 FRED_10Y2Y_SERIES = "T10Y2Y"
 FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
-VIX_MARKET_SYMBOLS = ("AVIX", "^VIX", "VIX")
+VIX_MARKET_SYMBOLS = ("^VIX", "VIX", "AVIX")
 DOLLAR_MARKET_SYMBOLS = ("DXY", "^DXY", "DX-Y.NYB")
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
@@ -57,7 +57,9 @@ FRED_PRIMARY_TIMEOUT_SECONDS = 4
 FRED_FALLBACK_TIMEOUT_SECONDS = 4
 CBOE_VIX_TIMEOUT_SECONDS = 4
 FEAR_GREED_TIMEOUT_SECONDS = 2
+MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS = 5
 MACRO_REFRESH_MAX_WORKERS = 8
+OFFICIAL_BACKGROUND_SEED_INDICATORS = (VIX, HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, DOLLAR_INDEX)
 FRED_CIRCUIT_FAILURE_THRESHOLD = 2
 FRED_CIRCUIT_OPEN_HOURS = 8
 FRED_PROVIDER = "fred"
@@ -475,6 +477,7 @@ def refresh_macro_indicators(
     fred_fetcher: Any | None = None,
     fear_greed_fetcher: Any | None = None,
     now: datetime | None = None,
+    background_seed: bool | None = None,
 ) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     started_at = current.isoformat()
@@ -515,11 +518,29 @@ def refresh_macro_indicators(
     indicator_results: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    with ThreadPoolExecutor(max_workers=min(MACRO_REFRESH_MAX_WORKERS, len(loaders))) as executor:
-        futures = {indicator: executor.submit(_run_macro_loader, indicator, loader) for indicator, loader in loaders.items()}
+    executor = ThreadPoolExecutor(max_workers=min(MACRO_REFRESH_MAX_WORKERS, len(loaders)))
+    futures = {executor.submit(_run_macro_loader, indicator, loader): indicator for indicator, loader in loaders.items()}
+    outcomes: dict[str, tuple[str, MacroIndicatorSnapshot | None, Exception | None, float]] = {}
+    try:
+        done, pending = wait(futures.keys(), timeout=MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS)
+        for future in done:
+            outcome = future.result()
+            outcomes[outcome[0]] = outcome
+        elapsed = perf_counter() - started_timer
+        for future in pending:
+            indicator = futures[future]
+            future.cancel()
+            outcomes[indicator] = (
+                indicator,
+                None,
+                TimeoutError(f"macro refresh timeout after {MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS:.1f}s"),
+                elapsed,
+            )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
-    for indicator, future in futures.items():
-        indicator, snapshot, exc, duration_seconds = future.result()
+    for indicator in loaders:
+        indicator, snapshot, exc, duration_seconds = outcomes[indicator]
         try:
             if exc is not None:
                 raise exc
@@ -605,6 +626,12 @@ def refresh_macro_indicators(
         "indicator_results": indicator_results,
         "error": "; ".join(errors) if errors else None,
     }
+    if _should_schedule_background_seed(background_seed, provider=provider, fred_fetcher=fred_fetcher):
+        result["background_seed_indicators"] = _schedule_official_macro_background_seed(
+            path,
+            indicator_results,
+            now=current,
+        )
     store.record_refresh_log(result)
     return result
 
@@ -652,6 +679,63 @@ def seed_macro_indicator_from_provider(
     )
     store.save_indicator(snapshot)
     return snapshot
+
+
+def _should_schedule_background_seed(
+    background_seed: bool | None,
+    *,
+    provider: Any | None,
+    fred_fetcher: Any | None,
+) -> bool:
+    if background_seed is not None:
+        return bool(background_seed)
+    return provider is None and fred_fetcher is None
+
+
+def _official_background_seed_candidates(indicator_results: list[dict[str, Any]]) -> list[str]:
+    candidates: list[str] = []
+    for item in indicator_results:
+        indicator = _normalize_indicator(item.get("indicator"))
+        if indicator not in OFFICIAL_BACKGROUND_SEED_INDICATORS:
+            continue
+        status = str(item.get("status") or "")
+        if status == "failed" or status == "stale" or bool(item.get("is_stale")):
+            candidates.append(indicator)
+    return list(dict.fromkeys(candidates))
+
+
+def _schedule_official_macro_background_seed(
+    path: Path,
+    indicator_results: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> list[str]:
+    candidates = _official_background_seed_candidates(indicator_results)
+    if not candidates:
+        return []
+    thread = Thread(
+        target=_seed_official_macro_indicators_safely,
+        args=(Path(path), tuple(candidates), now.isoformat()),
+        name="macro-official-seed",
+        daemon=True,
+    )
+    thread.start()
+    return candidates
+
+
+def _seed_official_macro_indicators_safely(path: Path, indicators: tuple[str, ...], now_iso: str) -> None:
+    current = _parse_datetime(now_iso) or datetime.now(timezone.utc)
+    store = MacroRegimeStore(path)
+    for indicator in indicators:
+        try:
+            seed_macro_indicator_from_provider(indicator, path=path, now=current)
+        except Exception as exc:
+            store.record_indicator_error(
+                indicator,
+                _short_error(exc),
+                source="background official seed",
+                now=current,
+            )
 
 
 def _run_macro_loader(
@@ -1220,6 +1304,9 @@ def _fetch_dollar_index_snapshot(
     local_snapshot = _load_dollar_market_snapshot(path, now=now)
     if local_snapshot is not None and not local_snapshot.is_stale:
         return local_snapshot
+    cached = store.load_indicator(DOLLAR_INDEX, now=now, stale_after_hours=24 * 14)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
 
     market_provider = provider
     if market_provider is None:
@@ -1271,9 +1358,6 @@ def _fetch_dollar_index_snapshot(
     except Exception as exc:
         errors.append(f"FRED {FRED_DOLLAR_INDEX_SERIES}: {_short_error(exc)}")
 
-    cached = store.load_indicator(DOLLAR_INDEX, now=now, stale_after_hours=24 * 14)
-    if cached is not None and _refresh_snapshot_value_usable(cached):
-        return cached
     if local_snapshot is not None and _refresh_snapshot_value_usable(local_snapshot):
         return local_snapshot
     raise RuntimeError("; ".join(errors) or "美元指数刷新失败")
@@ -1422,16 +1506,21 @@ def _fetch_fred_snapshot_with_circuit(
     fred_fetcher: Any | None,
     now: datetime,
 ) -> MacroIndicatorSnapshot:
-    open_circuit, last_error = store.is_provider_circuit_open(FRED_PROVIDER, now=now)
+    provider_key = _fred_provider_key(series_id)
+    open_circuit, last_error = store.is_provider_circuit_open(provider_key, now=now)
     if open_circuit:
-        raise RuntimeError(f"FRED circuit open, using cache; last error: {last_error or 'unknown'}")
+        raise RuntimeError(f"FRED {series_id} circuit open, using cache; last error: {last_error or 'unknown'}")
     try:
         snapshot = _fetch_fred_snapshot(indicator, series_id, fred_fetcher=fred_fetcher, now=now)
     except Exception as exc:
-        store.record_provider_failure(FRED_PROVIDER, _short_error(exc), now=now)
+        store.record_provider_failure(provider_key, _short_error(exc), now=now)
         raise
-    store.record_provider_success(FRED_PROVIDER)
+    store.record_provider_success(provider_key)
     return snapshot
+
+
+def _fred_provider_key(series_id: str) -> str:
+    return f"{FRED_PROVIDER}:{str(series_id).upper()}"
 
 
 def _fetch_cached_or_fred_snapshot(
