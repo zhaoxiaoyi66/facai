@@ -43,6 +43,7 @@ from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
     DOLLAR_INDEX,
     DOLLAR_PROXY,
+    FEAR_GREED,
     HYG_CREDIT_PROXY,
     HY_OAS,
     MARKET_BREADTH,
@@ -694,14 +695,17 @@ def _render_dashboard_status_bar(
     portfolio_structure_check=None,
     tickers: list[str] | None = None,
 ) -> None:
-    risk_total = _dashboard_risk_total_count(risk_items, table)
     freshness = build_dashboard_data_freshness(
         _dashboard_refresh_symbols(tickers or []),
         macro_regime=macro_regime,
     )
-    item_html = "".join(
-        _dashboard_command_status_item_html(label, value, tone)
+    macro_pills_html = "".join(
+        _dashboard_macro_pill_html(label, value, tone)
         for label, value, tone in _dashboard_command_status_items(table, macro_regime, freshness, portfolio_structure_check)
+    )
+    summary_html = "".join(
+        _dashboard_command_summary_item_html(label, value, tone)
+        for label, value, tone in _dashboard_command_summary_items(macro_regime, freshness)
     )
     detail_html = _dashboard_command_detail_html(
         freshness,
@@ -713,8 +717,8 @@ def _render_dashboard_status_bar(
         (
             '<section class="dashboard-command-center">'
             '<div class="dashboard-command-main">'
-            f'<div class="dashboard-command-items">{item_html}</div>'
-            f'<a class="dashboard-command-link" href="#dashboard-system-status">系统状态 · 风险雷达 {escape(str(risk_total))}</a>'
+            f'<div class="dashboard-command-primary">{macro_pills_html}</div>'
+            f'<div class="dashboard-command-summary">{summary_html}</div>'
             "</div>"
             '<details class="dashboard-command-details">'
             "<summary>详情 / 最近刷新</summary>"
@@ -728,20 +732,56 @@ def _render_dashboard_status_bar(
 
 def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_structure_check) -> list[tuple[str, str, str]]:
     return [
-        ("", f"{len(table)}只观察", "neutral"),
+        ("CNN 恐惧与贪婪", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
+        ("VIX", _dashboard_vix_pill_text(macro_regime), "vix"),
+    ]
+
+
+def _dashboard_command_summary_items(macro_regime, freshness) -> list[tuple[str, str, str]]:
+    return [
         ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
         ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
-        ("", macro_regime_sentiment_status_text(macro_regime), "neutral"),
-        ("", _dashboard_vix_status_text(macro_regime), "neutral"),
-        ("", _dashboard_hy_oas_status_text(macro_regime), "neutral"),
-        ("", _dashboard_ten_year_status_text(macro_regime), "neutral"),
-        ("", _dashboard_market_breadth_status_text(macro_regime), "neutral"),
-        ("", _dashboard_dollar_status_text(macro_regime), "neutral"),
-        ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
-        ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
-        ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
-        ("基本面", _freshness_status_text(freshness, "fundamental"), _freshness_tone(freshness, "fundamental")),
+        ("最近刷新", _freshness_status_text(freshness, "macro"), _freshness_tone(freshness, "macro")),
     ]
+
+
+def _dashboard_fear_greed_pill_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, FEAR_GREED)
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if value is None:
+        return "待刷新"
+    rating = _dashboard_fear_greed_rating_label(getattr(snapshot, "rating", None), value)
+    return f"{value:.0f}｜{rating}"
+
+
+def _dashboard_fear_greed_rating_label(rating: object, value: float) -> str:
+    text = str(rating or "").strip().lower().replace("_", " ")
+    mapping = {
+        "extreme fear": "极度恐惧",
+        "fear": "恐惧",
+        "neutral": "中性",
+        "greed": "贪婪",
+        "extreme greed": "极度贪婪",
+    }
+    if text in mapping:
+        return mapping[text]
+    if value <= 25:
+        return "极度恐惧"
+    if value <= 45:
+        return "恐惧"
+    if value < 55:
+        return "中性"
+    if value < 75:
+        return "贪婪"
+    return "极度贪婪"
+
+
+def _dashboard_vix_pill_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, VIX)
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if value is None or value < 1:
+        return "待刷新"
+    return f"{value:.1f}"
 
 
 def _dashboard_vix_status_text(macro_regime) -> str:
@@ -850,6 +890,24 @@ def _dashboard_command_status_item_html(label: str, value: str, tone: str = "neu
             "</span>"
         )
     return f'<span class="dashboard-command-item {escape(tone)}"><strong>{escape(value)}</strong></span>'
+
+
+def _dashboard_macro_pill_html(label: str, value: str, tone: str = "neutral") -> str:
+    return (
+        f'<span class="dashboard-macro-pill {escape(tone)}">'
+        f"<b>{escape(label)}</b>"
+        f"<strong>{escape(value)}</strong>"
+        "</span>"
+    )
+
+
+def _dashboard_command_summary_item_html(label: str, value: str, tone: str = "neutral") -> str:
+    return (
+        f'<span class="dashboard-command-summary-item {escape(tone)}">'
+        f"<b>{escape(label)}</b>"
+        f"<strong>{escape(value)}</strong>"
+        "</span>"
+    )
 
 
 def _dashboard_command_detail_html(
@@ -3435,10 +3493,91 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-command-main {
             display:flex;
+            flex-direction:column;
+            align-items:stretch;
+            justify-content:flex-start;
+            gap:0.34rem;
+            min-height:0;
+        }
+        .dashboard-command-primary {
+            display:flex;
             align-items:center;
-            justify-content:space-between;
-            gap:0.72rem;
-            min-height:27px;
+            flex-wrap:wrap;
+            gap:0.48rem;
+        }
+        .dashboard-macro-pill {
+            display:inline-flex;
+            align-items:center;
+            gap:0.44rem;
+            min-height:34px;
+            padding:0.24rem 0.72rem;
+            border-radius:999px;
+            border:1px solid rgba(11, 31, 58, 0.12);
+            background:#F8FAFC;
+            color:var(--dash-text);
+            box-shadow:0 8px 20px rgba(15, 23, 42, 0.05);
+            white-space:nowrap;
+        }
+        .dashboard-macro-pill.sentiment {
+            background:#FFF7ED;
+            border-color:#FED7AA;
+        }
+        .dashboard-macro-pill.vix {
+            background:#EFF6FF;
+            border-color:#BFDBFE;
+        }
+        .dashboard-macro-pill b {
+            color:var(--dash-muted);
+            font-size:11px;
+            font-weight:760;
+        }
+        .dashboard-macro-pill strong {
+            color:var(--dash-text);
+            font-size:15px;
+            font-weight:880;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-command-summary {
+            display:flex;
+            align-items:center;
+            flex-wrap:wrap;
+            gap:0;
+            min-width:0;
+            color:var(--dash-secondary);
+        }
+        .dashboard-command-summary-item {
+            display:inline-flex;
+            align-items:center;
+            gap:0.22rem;
+            color:var(--dash-secondary);
+            font-size:11px;
+            line-height:1;
+            font-weight:650;
+            white-space:nowrap;
+            padding:0 0.52rem;
+            border-right:1px solid var(--dash-border-soft);
+        }
+        .dashboard-command-summary-item:first-child {
+            padding-left:0;
+        }
+        .dashboard-command-summary-item:last-child {
+            border-right:0;
+        }
+        .dashboard-command-summary-item b {
+            color:var(--dash-muted);
+            font-weight:650;
+        }
+        .dashboard-command-summary-item strong {
+            color:var(--dash-secondary);
+            font-weight:760;
+        }
+        .dashboard-command-summary-item.ok strong { color:var(--dash-success); }
+        .dashboard-command-summary-item.warn strong { color:var(--dash-warning); }
+        .dashboard-command-summary-item.danger strong { color:var(--dash-danger); }
+        .dashboard-command-summary-item.muted strong { color:var(--dash-muted); }
+        .dashboard-command-summary-item.neutral strong { color:var(--dash-secondary); }
+        .dashboard-command-primary + .dashboard-command-summary {
+            margin-top:0.02rem;
         }
         .dashboard-command-items {
             display:flex;

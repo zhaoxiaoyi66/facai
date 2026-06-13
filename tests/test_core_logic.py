@@ -1541,7 +1541,7 @@ class DashboardLayoutTests(unittest.TestCase):
 
     def test_dashboard_header_prominently_shows_cnn_fear_greed(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
-        from data.macro_regime import FEAR_GREED, MacroIndicatorSnapshot, evaluate_macro_regime
+        from data.macro_regime import FEAR_GREED, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
 
         class FreshnessStub:
             def item(self, key: str):
@@ -1559,11 +1559,13 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
+        labels = [label for label, _value, _tone in items]
         values = [value for _label, value, _tone in items]
 
-        self.assertIn("CNN恐惧与贪婪：34｜恐惧", values)
+        self.assertEqual(labels, ["CNN 恐惧与贪婪", "VIX"])
+        self.assertIn("34｜恐惧", values)
 
-    def test_dashboard_header_shows_vix_and_official_hy_oas(self) -> None:
+    def test_dashboard_header_only_promotes_fear_greed_and_vix(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         from data.macro_regime import (
             DOLLAR_INDEX,
@@ -1593,16 +1595,17 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
-        values = [value for _label, value, _tone in items]
+        labels = [label for label, _value, _tone in items]
+        joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertIn("VIX 19.4（缓存）", values)
-        self.assertIn("HY OAS 2.78%", values)
-        self.assertIn("10Y 4.5%", values)
-        self.assertIn("观察池强弱：41.9%｜偏弱（缓存）", values)
-        self.assertIn("美元指数 DXY 104.25", values)
-        self.assertNotIn("HY OAS 官方暂缺｜信用代理承压", values)
+        self.assertEqual(labels, ["CNN 恐惧与贪婪", "VIX"])
+        self.assertIn("VIX 19.4", joined)
+        self.assertNotIn("HY OAS", joined)
+        self.assertNotIn("10Y", joined)
+        self.assertNotIn("观察池强弱", joined)
+        self.assertNotIn("美元", joined)
 
-    def test_dashboard_header_does_not_show_zero_vix_and_uses_credit_proxy_fallback(self) -> None:
+    def test_dashboard_header_does_not_show_zero_vix_or_proxy_debug_text(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         from data.macro_regime import DOLLAR_PROXY, HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
 
@@ -1619,12 +1622,30 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
-        values = [value for _label, value, _tone in items]
+        joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertIn("VIX 暂缺", values)
-        self.assertIn("HY OAS 官方暂缺｜信用代理承压", values)
-        self.assertIn("美元 proxy：UUP 走强", values)
-        self.assertNotIn("VIX 0.0", values)
+        self.assertIn("VIX 待刷新", joined)
+        self.assertNotIn("HY OAS", joined)
+        self.assertNotIn("信用代理", joined)
+        self.assertNotIn("美元", joined)
+        self.assertNotIn("VIX 0.0", joined)
+
+    def test_dashboard_header_second_line_is_short_macro_summary(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+
+        class FreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "刚刚", "tone": "fresh"})()
+
+        macro_regime = evaluate_macro_regime(
+            [MacroIndicatorSnapshot(indicator=VIX, value=19.4, source="^VIX")]
+        )
+
+        items = dashboard_module._dashboard_command_summary_items(macro_regime, FreshnessStub())
+        labels = [label for label, _value, _tone in items]
+
+        self.assertEqual(labels, ["大盘", "数据", "最近刷新"])
 
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
@@ -1637,6 +1658,7 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("max-width: 1360px", styles_source)
         self.assertIn("--dash-success-bg", styles_source)
         self.assertIn("--dash-shadow", styles_source)
+        self.assertIn("dashboard-macro-pill", styles_source)
         self.assertIn("font-family:ui-monospace", styles_source)
         self.assertIn("min-height:50px", styles_source)
         self.assertIn("var(--dash-success-bg)", table_source)
