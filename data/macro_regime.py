@@ -36,8 +36,9 @@ DOLLAR_INDEX = "dollar_index"
 DOLLAR_PROXY = "dollar_proxy"
 HYG_CREDIT_PROXY = "hyg_credit_proxy"
 SENTIMENT_PROXY = "sentiment_proxy"
-CORE_MACRO_INDICATORS = {VIX, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, MARKET_TREND, MARKET_BREADTH}
-AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX, DOLLAR_PROXY, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
+CORE_MACRO_INDICATORS = {FEAR_GREED, VIX, HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y}
+AUXILIARY_MACRO_INDICATORS = {DOLLAR_INDEX, MARKET_TREND, MARKET_BREADTH, DOLLAR_PROXY, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
+PROXY_MACRO_INDICATORS = {DOLLAR_PROXY, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
 
 FRED_VIX_SERIES = "VIXCLS"
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
@@ -851,12 +852,8 @@ def evaluate_macro_regime(
         reasons.append(f"美高收益债信用利差当前 {hy_value:.1f}%。")
     if credit_widening:
         reasons.append("信用利差走阔，风险偏好收缩。")
-    if hy_value is None and credit_proxy_value is not None:
-        reasons.append(_credit_proxy_reason_text(credit_proxy))
     if fear_value is not None:
         reasons.append(f"恐惧与贪婪指数当前 {fear_value:.0f}。")
-    elif sentiment_proxy_value is not None:
-        reasons.append(_sentiment_proxy_reason_text(sentiment_proxy))
     if ten_year_value is not None:
         reasons.append(f"10年美债收益率当前 {ten_year_value:.2f}%。")
         if _rate_rising_fast(ten_year):
@@ -946,8 +943,7 @@ def evaluate_macro_regime(
 def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     vix = _indicator_value_text(snapshot.indicator(VIX), empty="缺")
     ten_year = _indicator_value_text(snapshot.indicator(TEN_YEAR_YIELD), empty="缺", suffix="%")
-    trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
-    breadth = _watchlist_strength_summary_text(snapshot.indicator(MARKET_BREADTH))
+    curve = _indicator_value_text(snapshot.indicator(YIELD_CURVE_10Y2Y), empty="缺", suffix="%")
     credit = _credit_summary_text(snapshot)
     dollar = _dollar_summary_text(snapshot)
     sentiment = macro_regime_sentiment_status_text(snapshot)
@@ -955,7 +951,7 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     dollar_segment = f"｜{dollar}" if dollar else ""
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜{breadth}｜{credit}{dollar_segment}｜{sentiment}｜纪律提示：{hint}"
+        f"｜{sentiment}｜VIX {vix}｜{credit}｜10Y {ten_year}｜10Y-2Y {curve}{dollar_segment}｜纪律提示：{hint}"
     )
 
 
@@ -985,15 +981,11 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     )
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in snapshot.reasons) or "<li>暂无宏观判断原因。</li>"
     hints = "".join(f"<li>{escape(hint)}</li>" for hint in snapshot.action_hints) or "<li>按个股纪律执行。</li>"
-    sentiment_html = _macro_regime_sentiment_detail_html(snapshot)
-    breadth_explanation = _market_breadth_detail_html(snapshot.indicator(MARKET_BREADTH))
     return (
         '<section class="macro-regime-detail">'
         f"<div><strong>大盘环境：{escape(snapshot.regime)}</strong><span>置信度：{escape(snapshot.confidence)}，只读提示，不改变买卖门禁。</span></div>"
-        f"{sentiment_html}"
-        '<table><thead><tr><th>指标</th><th>当前值</th><th>近期变化</th><th>来源</th><th>状态</th></tr></thead>'
+        '<table><thead><tr><th>官方核心指标</th><th>当前值</th><th>近期变化</th><th>来源</th><th>状态</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
-        f"{breadth_explanation}"
         f'<div class="macro-regime-detail-grid"><div><b>判断原因</b><ul>{reasons}</ul></div><div><b>纪律提示</b><ul>{hints}</ul></div></div>'
         "</section>"
     )
@@ -1002,54 +994,40 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
 def _macro_detail_indicators(snapshot: MacroRegimeSnapshot) -> list[MacroIndicatorSnapshot]:
     by_name = {item.indicator: item for item in snapshot.indicators}
     ordered_names = [
-        VIX,
         FEAR_GREED,
-        SENTIMENT_PROXY,
+        VIX,
         HY_OAS,
-        HYG_CREDIT_PROXY,
         TEN_YEAR_YIELD,
         YIELD_CURVE_10Y2Y,
-        MARKET_TREND,
-        MARKET_BREADTH,
         DOLLAR_INDEX,
-        DOLLAR_PROXY,
     ]
     rows: list[MacroIndicatorSnapshot] = []
     for name in ordered_names:
         item = by_name.get(name)
-        if item is None and name == HY_OAS:
-            item = MacroIndicatorSnapshot(
-                indicator=HY_OAS,
-                value=None,
-                source=f"FRED {FRED_HY_OAS_SERIES}",
-                error="official HY OAS missing",
-            )
-        elif item is None and name == HYG_CREDIT_PROXY:
-            item = MacroIndicatorSnapshot(
-                indicator=HYG_CREDIT_PROXY,
-                value=None,
-                source="HYG credit proxy",
-                error="credit proxy missing",
-            )
-        elif item is None and name == DOLLAR_INDEX:
-            item = MacroIndicatorSnapshot(
-                indicator=DOLLAR_INDEX,
-                value=None,
-                source=f"DXY / FRED {FRED_DOLLAR_INDEX_SERIES}",
-                error="official dollar index missing",
-            )
-        elif item is None and name == DOLLAR_PROXY:
-            item = MacroIndicatorSnapshot(
-                indicator=DOLLAR_PROXY,
-                value=None,
-                source="UUP dollar proxy",
-                error="dollar proxy missing",
-            )
+        if item is None:
+            item = _missing_official_indicator_placeholder(name)
         if item is not None:
             rows.append(item)
-    seen = {item.indicator for item in rows}
-    rows.extend(item for item in snapshot.indicators if item.indicator not in seen)
     return rows
+
+
+def _missing_official_indicator_placeholder(name: str) -> MacroIndicatorSnapshot | None:
+    sources = {
+        FEAR_GREED: "CNN graphdata",
+        VIX: f"^VIX / FRED {FRED_VIX_SERIES}",
+        HY_OAS: f"FRED {FRED_HY_OAS_SERIES}",
+        TEN_YEAR_YIELD: f"FMP Treasury / FRED {FRED_TEN_YEAR_SERIES}",
+        YIELD_CURVE_10Y2Y: f"FMP Treasury calculated / FRED {FRED_10Y2Y_SERIES}",
+        DOLLAR_INDEX: f"DXY / FRED {FRED_DOLLAR_INDEX_SERIES}",
+    }
+    if name not in sources:
+        return None
+    return MacroIndicatorSnapshot(
+        indicator=name,
+        value=None,
+        source=sources[name],
+        error="official indicator missing",
+    )
 
 
 def macro_regime_trade_hint_text(snapshot: MacroRegimeSnapshot, *, context: str = "buy") -> str:
@@ -2339,16 +2317,14 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     hy = snapshot.indicator(HY_OAS)
     hy_value = _usable_value(hy)
     if hy_value is not None:
-        return f"HY OAS {hy_value:.2f}%"
-    proxy = snapshot.indicator(HYG_CREDIT_PROXY)
-    proxy_value = _usable_value(proxy)
-    if proxy_value is None:
-        return "HY OAS 暂缺"
-    if proxy_value >= 75:
-        return "HY OAS 官方暂缺｜信用代理承压"
-    if proxy_value >= 60:
-        return "HY OAS 官方暂缺｜信用代理转弱"
-    return "HY OAS 官方暂缺｜信用代理稳定"
+        status = _indicator_display_status(hy)
+        suffix = ""
+        if status == "官方缓存":
+            suffix = "（官方缓存）"
+        elif status == "缓存偏旧":
+            suffix = "（缓存偏旧）"
+        return f"HY OAS {hy_value:.2f}%{suffix}"
+    return "HY OAS 官方暂缺"
 
 
 def _watchlist_strength_summary_text(snapshot: MacroIndicatorSnapshot | None) -> str:
@@ -2419,48 +2395,28 @@ def _dollar_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     official_value = _usable_value(official)
     if official_value is not None:
         source = str(official.source or "").upper()
-        suffix = "（缓存）" if _indicator_display_status(official) == "使用缓存" else ""
+        status = _indicator_display_status(official)
+        suffix = "（官方缓存）" if status == "官方缓存" else "（缓存偏旧）" if status == "缓存偏旧" else ""
         if "DTWEXBGS" in source:
             return f"美元广义指数 {official_value:.2f}{suffix}"
         return f"美元指数 DXY {official_value:.2f}{suffix}"
-    proxy = snapshot.indicator(DOLLAR_PROXY)
-    proxy_value = _usable_value(proxy)
-    if proxy_value is not None:
-        rating = proxy.rating or _dollar_proxy_label(proxy_value)
-        return f"美元 proxy：UUP {rating}"
-    return "美元指数暂缺"
+    return ""
 
 
 def _macro_regime_sentiment_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     fear = snapshot.indicator(FEAR_GREED)
-    proxy = snapshot.indicator(SENTIMENT_PROXY)
     cnn_line = _cnn_fear_greed_display_text(fear)
     cnn_status = _indicator_display_status(fear) if fear is not None else "暂缺"
-    proxy_value = _usable_value(proxy)
-    proxy_line = (
-        f"内部情绪代理：{_sentiment_proxy_label(proxy_value)}"
-        if proxy_value is not None
-        else "内部情绪代理：暂缺"
-    )
-    proxy_status = _indicator_display_status(proxy) if proxy is not None else "暂缺"
     return (
         '<div class="macro-regime-sentiment-lines">'
         f"<span>{escape(cnn_line)}｜{escape(cnn_status)}</span>"
-        f"<span>{escape(proxy_line)}｜{escape(proxy_status)}</span>"
         "</div>"
     )
 
 
 def _sentiment_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     fear = snapshot.indicator(FEAR_GREED)
-    proxy = snapshot.indicator(SENTIMENT_PROXY)
-    proxy_value = _usable_value(proxy)
-    cnn_text = _cnn_fear_greed_display_text(fear)
-    if _fear_greed_display_value(fear) is not None and not bool(getattr(fear, "is_stale", False)):
-        return cnn_text
-    if proxy_value is None:
-        return cnn_text
-    return f"{cnn_text}｜情绪代理：{_sentiment_proxy_label(proxy_value)}"
+    return _cnn_fear_greed_display_text(fear)
 
 
 def _cnn_fear_greed_display_text(snapshot: MacroIndicatorSnapshot | None, *, now: datetime | None = None) -> str:
@@ -2551,14 +2507,14 @@ def _indicator_display_status(snapshot: MacroIndicatorSnapshot) -> str:
     if raw_value is None or (snapshot.indicator == VIX and not _valid_vix_value(raw_value)):
         return "暂缺"
     source = str(snapshot.source or "").lower()
-    if snapshot.indicator in {HYG_CREDIT_PROXY, SENTIMENT_PROXY} or "proxy" in source or "代理" in source:
+    if snapshot.indicator in PROXY_MACRO_INDICATORS or "proxy" in source or "代理" in source:
         return "使用代理"
     if snapshot.is_stale:
-        return "过期缓存"
+        return "缓存偏旧"
     if snapshot.error:
-        return "使用缓存"
+        return "官方缓存"
     if "cache" in source or "cached" in source or "缓存" in source:
-        return "使用缓存"
+        return "官方缓存"
     return "实时成功"
 
 
@@ -2683,36 +2639,29 @@ def _indicator_storage_aliases(normalized: str) -> tuple[str, ...]:
 
 
 def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:
+    by_name = {item.indicator: item for item in items}
     usable_core = [
-        item
-        for item in items
-        if item.indicator in CORE_MACRO_INDICATORS and _usable_value(item) is not None
+        indicator
+        for indicator in CORE_MACRO_INDICATORS
+        if _usable_value(by_name.get(indicator)) is not None
     ]
     stale_core = [
-        item
-        for item in items
-        if item.indicator in CORE_MACRO_INDICATORS and item.value is not None and item.is_stale
+        indicator
+        for indicator in CORE_MACRO_INDICATORS
+        if by_name.get(indicator) is not None
+        and by_name[indicator].value is not None
+        and by_name[indicator].is_stale
     ]
-    usable_auxiliary = [
-        item
-        for item in items
-        if item.indicator in AUXILIARY_MACRO_INDICATORS and _usable_value(item) is not None
-    ]
-    missing_auxiliary = [
-        item
-        for item in items
-        if item.indicator in {HY_OAS, FEAR_GREED, DOLLAR_INDEX} and _usable_value(item) is None
-    ]
-    auxiliary_status = "辅助缺失" if missing_auxiliary or not usable_auxiliary else "辅助可用"
     if len(usable_core) >= len(CORE_MACRO_INDICATORS):
-        return f"核心完整｜{auxiliary_status}", "高"
+        return "核心完整", "高"
+    if stale_core and not usable_core:
+        return "核心过期", "低"
+    must_have = {FEAR_GREED, VIX, TEN_YEAR_YIELD}
+    if must_have.issubset(set(usable_core)):
+        return "核心部分可用", "中"
     if len(usable_core) >= 2:
-        return f"核心部分可用｜{auxiliary_status}", "中"
-    if len(usable_core) == 1:
-        return f"核心部分可用｜{auxiliary_status}", "低"
-    if stale_core:
-        return f"核心过期｜{auxiliary_status}", "低"
-    return f"核心缺失｜{auxiliary_status}", "低"
+        return "核心部分可用", "低"
+    return "核心缺失", "低"
 
 
 def _read_url_text(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SECONDS) -> str:

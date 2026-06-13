@@ -42,13 +42,8 @@ from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
     DOLLAR_INDEX,
-    DOLLAR_PROXY,
     FEAR_GREED,
-    HYG_CREDIT_PROXY,
     HY_OAS,
-    MARKET_BREADTH,
-    MARKET_TREND,
-    SENTIMENT_PROXY,
     TEN_YEAR_YIELD,
     VIX,
     YIELD_CURVE_10Y2Y,
@@ -775,6 +770,8 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
     return [
         ("F&G", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
         ("VIX", _dashboard_vix_pill_text(macro_regime), "vix"),
+        ("HY OAS", _dashboard_hy_oas_pill_text(macro_regime), "credit"),
+        ("10Y", _dashboard_ten_year_pill_text(macro_regime), "rate"),
     ]
 
 
@@ -842,40 +839,40 @@ def _dashboard_vix_status_text(macro_regime) -> str:
     return f"VIX {value:.1f}{suffix}"
 
 
+def _dashboard_hy_oas_pill_text(macro_regime) -> str:
+    official = _macro_indicator(macro_regime, HY_OAS)
+    official_value = _dashboard_number(getattr(official, "value", None))
+    if official_value is None:
+        return "官方暂缺"
+    if bool(getattr(official, "is_stale", False)):
+        return f"{official_value:.2f}% 缓存偏旧"
+    suffix = " 官方缓存" if _dashboard_indicator_uses_cache(official) else ""
+    return f"{official_value:.2f}%{suffix}"
+
+
 def _dashboard_hy_oas_status_text(macro_regime) -> str:
     official = _macro_indicator(macro_regime, HY_OAS)
     official_value = _dashboard_number(getattr(official, "value", None))
-    if official_value is not None and not bool(getattr(official, "is_stale", False)):
-        suffix = "（缓存）" if _dashboard_indicator_uses_cache(official) else ""
-        return f"HY OAS {official_value:.2f}%{suffix}"
-    proxy = _macro_indicator(macro_regime, HYG_CREDIT_PROXY)
-    proxy_value = _dashboard_number(getattr(proxy, "value", None))
-    if proxy_value is None or bool(getattr(proxy, "is_stale", False)):
-        return "HY OAS 暂缺"
-    if proxy_value >= 75:
-        return "HY OAS 官方暂缺｜信用代理承压"
-    if proxy_value >= 60:
-        return "HY OAS 官方暂缺｜信用代理转弱"
-    return "HY OAS 官方暂缺｜信用代理稳定"
+    if official_value is None:
+        return "HY OAS 官方暂缺"
+    if bool(getattr(official, "is_stale", False)):
+        return f"HY OAS {official_value:.2f}%（缓存偏旧）"
+    suffix = "（官方缓存）" if _dashboard_indicator_uses_cache(official) else ""
+    return f"HY OAS {official_value:.2f}%{suffix}"
 
 
 def _dashboard_dollar_status_text(macro_regime) -> str:
     official = _macro_indicator(macro_regime, DOLLAR_INDEX)
     official_value = _dashboard_number(getattr(official, "value", None))
-    if official_value is not None and not bool(getattr(official, "is_stale", False)):
-        suffix = "（缓存）" if _dashboard_indicator_uses_cache(official) else ""
-        source = str(getattr(official, "source", "") or "").upper()
-        if "DTWEXBGS" in source:
-            return f"美元广义指数 {official_value:.2f}{suffix}"
-        return f"美元指数 DXY {official_value:.2f}{suffix}"
-    proxy = _macro_indicator(macro_regime, DOLLAR_PROXY)
-    proxy_value = _dashboard_number(getattr(proxy, "value", None))
-    if proxy_value is None or bool(getattr(proxy, "is_stale", False)):
-        return "美元指数暂缺"
-    rating = str(getattr(proxy, "rating", "") or "")
-    if not rating:
-        rating = "走强" if proxy_value >= 62 else "走弱" if proxy_value <= 38 else "稳定"
-    return f"美元 proxy：UUP {rating}"
+    if official_value is None:
+        return "美元指数官方暂缺"
+    if bool(getattr(official, "is_stale", False)):
+        return f"美元指数 {official_value:.2f}（缓存偏旧）"
+    suffix = "（官方缓存）" if _dashboard_indicator_uses_cache(official) else ""
+    source = str(getattr(official, "source", "") or "").upper()
+    if "DTWEXBGS" in source:
+        return f"美元广义指数 {official_value:.2f}{suffix}"
+    return f"美元指数 DXY {official_value:.2f}{suffix}"
 
 
 def _dashboard_ten_year_status_text(macro_regime) -> str:
@@ -887,25 +884,15 @@ def _dashboard_ten_year_status_text(macro_regime) -> str:
     return f"10Y {value:.1f}%{suffix}"
 
 
-def _dashboard_market_breadth_status_text(macro_regime) -> str:
-    snapshot = _macro_indicator(macro_regime, MARKET_BREADTH)
+def _dashboard_ten_year_pill_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, TEN_YEAR_YIELD)
     value = _dashboard_number(getattr(snapshot, "value", None))
-    if value is None or bool(getattr(snapshot, "is_stale", False)):
-        return "观察池强弱：暂缺"
-    suffix = "（缓存）" if _dashboard_indicator_uses_cache(snapshot) else ""
-    return f"观察池强弱：{value:.1f}%｜{_dashboard_watchlist_strength_label(value)}{suffix}"
-
-
-def _dashboard_watchlist_strength_label(value: float) -> str:
-    if value > 70:
-        return "很强"
-    if value >= 50:
-        return "偏强"
-    if value >= 35:
-        return "偏弱"
-    if value >= 20:
-        return "很弱"
-    return "极弱"
+    if value is None:
+        return "暂缺"
+    if bool(getattr(snapshot, "is_stale", False)):
+        return f"{value:.2f}% 缓存偏旧"
+    suffix = " 官方缓存" if _dashboard_indicator_uses_cache(snapshot) else ""
+    return f"{value:.2f}%{suffix}"
 
 
 def _macro_indicator(macro_regime, indicator: str):
@@ -968,8 +955,7 @@ def _dashboard_command_detail_html(
 ) -> str:
     return (
         '<div class="dashboard-command-detail-panel">'
-        f"{_dashboard_macro_indicator_group_html('核心指标', _dashboard_core_macro_detail_rows(macro_regime))}"
-        f"{_dashboard_macro_indicator_group_html('辅助指标', _dashboard_auxiliary_macro_detail_rows(macro_regime))}"
+        f"{_dashboard_macro_indicator_group_html('官方核心指标', _dashboard_core_macro_detail_rows(macro_regime))}"
         f"{_dashboard_refresh_log_detail_block_html(last_refresh_result, last_macro_refresh_result)}"
         f"{_dashboard_macro_diagnostics_html(last_macro_refresh_result)}"
         "</div>"
@@ -980,20 +966,10 @@ def _dashboard_core_macro_detail_rows(macro_regime) -> list[tuple[str, str, str,
     return [
         _dashboard_macro_detail_row("F&G", _macro_indicator(macro_regime, FEAR_GREED)),
         _dashboard_macro_detail_row("VIX", _macro_indicator(macro_regime, VIX)),
+        _dashboard_macro_detail_row("HY OAS", _macro_indicator(macro_regime, HY_OAS)),
         _dashboard_macro_detail_row("10Y", _macro_indicator(macro_regime, TEN_YEAR_YIELD)),
         _dashboard_macro_detail_row("10Y-2Y", _macro_indicator(macro_regime, YIELD_CURVE_10Y2Y)),
-        _dashboard_macro_detail_row("大盘趋势", _macro_indicator(macro_regime, MARKET_TREND)),
-        _dashboard_macro_detail_row("观察池强弱", _macro_indicator(macro_regime, MARKET_BREADTH)),
-    ]
-
-
-def _dashboard_auxiliary_macro_detail_rows(macro_regime) -> list[tuple[str, str, str, str]]:
-    return [
-        _dashboard_macro_detail_row("HY OAS", _macro_indicator(macro_regime, HY_OAS)),
-        _dashboard_macro_detail_row("信用代理", _macro_indicator(macro_regime, HYG_CREDIT_PROXY)),
         _dashboard_macro_detail_row("美元指数", _macro_indicator(macro_regime, DOLLAR_INDEX)),
-        _dashboard_macro_detail_row("美元代理", _macro_indicator(macro_regime, DOLLAR_PROXY)),
-        _dashboard_macro_detail_row("情绪代理", _macro_indicator(macro_regime, SENTIMENT_PROXY)),
     ]
 
 
@@ -1040,16 +1016,6 @@ def _dashboard_macro_detail_value(label: str, snapshot) -> str:
         return f"{value:.1f}"
     if indicator in {HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y}:
         return f"{value:.2f}%"
-    if indicator == MARKET_BREADTH:
-        return f"{value:.1f}%｜{_dashboard_watchlist_strength_label(value)}"
-    if indicator in {HYG_CREDIT_PROXY, DOLLAR_PROXY, SENTIMENT_PROXY}:
-        rating = str(getattr(snapshot, "rating", "") or "").strip()
-        if rating:
-            return f"{rating} {value:.0f}"
-        if indicator == HYG_CREDIT_PROXY:
-            return f"{_dashboard_credit_proxy_label(value)} {value:.0f}"
-        if indicator == SENTIMENT_PROXY:
-            return f"{_dashboard_sentiment_proxy_label(value)} {value:.0f}"
     return f"{value:.2f}" if abs(value) < 10 else f"{value:.1f}"
 
 
@@ -1073,29 +1039,11 @@ def _dashboard_macro_detail_status(snapshot) -> str:
     if value is None:
         return "暂缺"
     if bool(getattr(snapshot, "is_stale", False)):
-        return "过期"
+        return "缓存偏旧"
     source = str(getattr(snapshot, "source", "") or "").lower()
-    if "proxy" in source or "代理" in source or str(getattr(snapshot, "indicator", "") or "") in {HYG_CREDIT_PROXY, DOLLAR_PROXY, SENTIMENT_PROXY}:
-        return "代理"
     if _dashboard_indicator_uses_cache(snapshot):
-        return "缓存"
+        return "官方缓存"
     return "可用"
-
-
-def _dashboard_credit_proxy_label(value: float) -> str:
-    if value >= 75:
-        return "承压"
-    if value >= 60:
-        return "转弱"
-    return "稳定"
-
-
-def _dashboard_sentiment_proxy_label(value: float) -> str:
-    if value <= 35:
-        return "偏恐惧"
-    if value >= 65:
-        return "偏贪婪"
-    return "中性"
 
 
 def _dashboard_freshness_detail_block_html(
@@ -1565,10 +1513,16 @@ def _render_macro_refresh_result() -> None:
         for item in indicator_results
         if _macro_refresh_indicator_category(item) == "core"
     )
-    auxiliary_rows = "".join(
+    optional_rows = "".join(
         _macro_refresh_indicator_row_html(item)
         for item in indicator_results
         if _macro_refresh_indicator_category(item) != "core"
+        and _macro_refresh_indicator_is_official_optional(item)
+    )
+    optional_html = (
+        f'<div class="macro-refresh-group muted"><b>官方可选指标</b><div class="macro-refresh-grid">{optional_rows}</div></div>'
+        if optional_rows
+        else ""
     )
     error = str(result.get("error") or "").strip()
     error_html = _macro_refresh_error_summary_html(indicator_results, error)
@@ -1577,7 +1531,7 @@ def _render_macro_refresh_result() -> None:
             f'<section class="macro-refresh-result {escape(tone)}">'
             f"<strong>{escape(headline)}</strong>"
             f'<div class="macro-refresh-group"><b>核心指标</b><div class="macro-refresh-grid">{core_rows}</div></div>'
-            f'<div class="macro-refresh-group muted"><b>辅助指标</b><div class="macro-refresh-grid">{auxiliary_rows}</div></div>'
+            f"{optional_html}"
             f"{error_html}"
             "</section>"
         ),
@@ -1683,7 +1637,11 @@ def _macro_refresh_indicator_category(item: dict) -> str:
     if category:
         return category
     indicator = str(item.get("indicator") or "")
-    return "core" if indicator in {"vix", "ten_year_yield", "yield_curve_10y2y", "market_trend", "market_breadth"} else "auxiliary"
+    return "core" if indicator in {"fear_greed", "vix", "hy_oas", "ten_year_yield", "yield_curve_10y2y"} else "auxiliary"
+
+
+def _macro_refresh_indicator_is_official_optional(item: dict) -> bool:
+    return str(item.get("indicator") or "") == "dollar_index"
 
 
 def _macro_indicator_label(indicator: str) -> str:
@@ -1746,11 +1704,11 @@ def _macro_refresh_indicator_note(item: dict, display_status: str) -> str:
         return "缓存已过期，仅作参考。"
     if display_status == "暂缺":
         if indicator == "hy_oas":
-            return "官方信用利差暂缺；如有信用代理，优先看代理行。"
+            return "官方信用利差暂缺；不使用代理替代官方值。"
         if indicator == "fear_greed":
-            return "CNN 原版暂缺；如有情绪代理，优先看代理行。"
+            return "CNN 原版暂缺。"
         if indicator == "dollar_index":
-            return "低优先级辅助指标，缺失不影响核心判断。"
+            return "官方美元指数暂缺。"
         return "辅助指标暂缺，不影响核心判断。"
     if display_status == "刷新失败":
         return "核心指标刷新失败，需要复核数据源。"
@@ -1764,6 +1722,7 @@ def _macro_refresh_error_summary_html(indicator_results: list[dict], raw_error: 
         _macro_indicator_label(str(item.get("indicator") or ""))
         for item in indicator_results
         if _macro_refresh_indicator_category(item) != "core"
+        and _macro_refresh_indicator_is_official_optional(item)
         and _macro_refresh_indicator_display_status(item) in {"暂缺", "过期缓存"}
     ]
     failed_core = [
@@ -1778,7 +1737,7 @@ def _macro_refresh_error_summary_html(indicator_results: list[dict], raw_error: 
     if missing_auxiliary:
         lines.append("辅助指标缺失：" + " / ".join(missing_auxiliary) + "。核心判断仍可用。")
     if not lines:
-        lines.append("部分指标使用缓存或代理，核心判断仍可用。")
+        lines.append("部分指标使用官方缓存，核心判断仍可用。")
     diagnostic_items = [
         f"{_macro_indicator_label(str(item.get('indicator') or ''))}: {str(item.get('error') or '').strip()}"
         for item in indicator_results

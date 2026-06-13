@@ -302,7 +302,7 @@ def test_cnn_fear_greed_sentiment_text_shows_cache_age() -> None:
     assert "CNN HTTP 418" not in text
 
 
-def test_cnn_fear_greed_missing_uses_internal_sentiment_proxy_label() -> None:
+def test_cnn_fear_greed_missing_does_not_show_internal_sentiment_proxy_label() -> None:
     snapshot = evaluate_macro_regime(
         [
             MacroIndicatorSnapshot(indicator=FEAR_GREED, value=None, error="CNN HTTP 418"),
@@ -312,7 +312,8 @@ def test_cnn_fear_greed_missing_uses_internal_sentiment_proxy_label() -> None:
 
     text = macro_regime_sentiment_status_text(snapshot)
 
-    assert text == "CNN恐惧与贪婪：暂缺｜情绪代理：偏恐惧"
+    assert text == "CNN恐惧与贪婪：暂缺"
+    assert "情绪代理" not in text
     assert "CNN HTTP 418" not in text
 
 
@@ -719,7 +720,7 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     )
 
     hy_result = result["indicators"][HY_OAS]
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert hy_result["status"] == "stale"
     assert hy_result["value"] == 3.72
     assert hy_result["used_cache"] is True
@@ -727,7 +728,7 @@ def test_fred_timeout_uses_recent_cache_for_credit_spread(tmp_path, monkeypatch)
     assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
 
 
-def test_hy_oas_timeout_uses_hyg_credit_proxy_when_no_cache(tmp_path, monkeypatch) -> None:
+def test_hy_oas_timeout_shows_official_missing_without_proxy_in_status(tmp_path, monkeypatch) -> None:
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
     monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
@@ -752,11 +753,14 @@ def test_hy_oas_timeout_uses_hyg_credit_proxy_when_no_cache(tmp_path, monkeypatc
     )
     snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert result["indicators"][HY_OAS]["status"] == "failed"
     assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
     assert result["indicators"][HYG_CREDIT_PROXY]["category"] == "auxiliary"
-    assert "信用代理" in macro_regime_status_text(snapshot)
+    text = macro_regime_status_text(snapshot)
+    assert "HY OAS 官方暂缺" in text
+    assert "信用代理" not in text
+    assert snapshot.data_status == "核心缺失"
 
 
 def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None:
@@ -788,7 +792,7 @@ def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None
     )
 
     assert result["indicators"][HY_OAS]["status"] == "cached_fallback"
-    assert result["indicators"][HY_OAS]["category"] == "auxiliary"
+    assert result["indicators"][HY_OAS]["category"] == "core"
     assert "BAMLH0A0HYM2" not in fred_calls
 
 
@@ -948,7 +952,7 @@ def test_dxy_failure_uses_uup_proxy_without_impersonating_official_dollar(tmp_pa
 
     assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
     assert result["indicators"][DOLLAR_PROXY]["status"] in {"success", "cached_fallback"}
-    assert "美元 proxy：UUP" in text
+    assert "美元 proxy：UUP" not in text
     assert "美元指数 DXY" not in text
 
 
@@ -984,8 +988,8 @@ def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> 
     )
     loaded = MacroRegimeStore(path).load_indicator(FEAR_GREED, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
-    assert result["status"] == "success"
-    assert result["overall_status"] == "success"
+    assert result["status"] == "partial"
+    assert result["overall_status"] == "partial"
     assert result["indicators"][FEAR_GREED]["status"] == "cached_fallback"
     assert result["indicators"][FEAR_GREED]["used_cache"] is True
     assert loaded is not None
@@ -1163,11 +1167,13 @@ def test_fear_greed_http_418_uses_internal_sentiment_proxy_without_cache(tmp_pat
     )
     snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert result["indicators"][FEAR_GREED]["status"] == "failed"
     assert result["indicators"][SENTIMENT_PROXY]["status"] == "success"
     assert result["indicators"][SENTIMENT_PROXY]["category"] == "auxiliary"
-    assert "情绪代理" in macro_regime_status_text(snapshot)
+    text = macro_regime_status_text(snapshot)
+    assert "CNN恐惧与贪婪：暂缺" in text
+    assert "情绪代理" not in text
 
 
 def test_fear_greed_http_418_opens_circuit_and_skips_next_frontend_request(tmp_path, monkeypatch) -> None:
@@ -1226,7 +1232,7 @@ def test_fear_greed_stale_does_not_invalidate_vix_and_credit_regime() -> None:
     )
 
     assert snapshot.regime == REGIME_STRESS
-    assert snapshot.data_status == "核心部分可用｜辅助缺失"
+    assert snapshot.data_status == "核心部分可用"
     assert snapshot.confidence == "低"
 
 
@@ -1305,7 +1311,7 @@ def test_vix_and_market_breadth_keep_macro_regime_partially_usable() -> None:
     )
 
     assert snapshot.regime != REGIME_DATA_GAP
-    assert snapshot.data_status == "核心部分可用｜辅助缺失"
+    assert snapshot.data_status == "核心缺失"
 
 
 def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> None:
@@ -1329,15 +1335,15 @@ def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> N
     )
 
     assert snapshot.regime != REGIME_DATA_GAP
-    assert snapshot.data_status == "核心完整｜辅助缺失"
-    assert snapshot.confidence == "高"
+    assert snapshot.data_status == "核心部分可用"
+    assert snapshot.confidence == "低"
     assert "VIX 22.0" in macro_regime_status_text(snapshot)
-    assert "数据：核心完整｜辅助缺失" in macro_regime_status_text(snapshot)
-    assert "观察池强弱：38.0%｜偏弱" in macro_regime_status_text(snapshot)
+    assert "数据：核心部分可用" in macro_regime_status_text(snapshot)
+    assert "观察池强弱" not in macro_regime_status_text(snapshot)
     assert "高收益债利差" not in macro_regime_status_text(snapshot)
 
 
-def test_macro_detail_explains_market_breadth_as_watchlist_strength() -> None:
+def test_macro_detail_hides_watchlist_strength_from_official_core_table() -> None:
     snapshot = evaluate_macro_regime(
         [
             MacroIndicatorSnapshot(
@@ -1351,14 +1357,12 @@ def test_macro_detail_explains_market_breadth_as_watchlist_strength() -> None:
     )
 
     html = macro_regime_detail_html(snapshot)
-    assert "观察池强弱" in html
-    assert "31只观察股中，45.2% 高于50日线。" in html
-    assert "观察池内部修复不充分，指数上涨可能由少数大票支撑。" in html
-    assert "不追涨，优先A类回踩，C类少动。" in html
+    assert "观察池强弱" not in html
+    assert "31只观察股中，45.2% 高于50日线。" not in html
     assert "市场宽度" not in html
 
 
-def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -> None:
+def test_macro_data_status_ignores_proxy_when_official_core_is_missing() -> None:
     snapshot = evaluate_macro_regime(
         [
             _indicator(VIX, 19.4),
@@ -1384,12 +1388,12 @@ def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -
 
     text = macro_regime_status_text(snapshot)
     assert snapshot.regime != REGIME_DATA_GAP
-    assert snapshot.data_status == "核心完整｜辅助缺失"
-    assert "数据：核心完整｜辅助缺失" in text
+    assert snapshot.data_status == "核心部分可用"
+    assert "数据：核心部分可用" in text
     assert "FRED timeout" not in text
     assert "CNN HTTP 418" not in text
     assert "HY OAS 官方暂缺" in text
-    assert "信用代理转弱" in text
+    assert "信用代理" not in text
 
 
 def test_macro_status_text_prefers_official_hy_oas_value() -> None:
@@ -1417,7 +1421,7 @@ def test_macro_indicator_detail_status_uses_cache_semantics_for_error_with_value
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    assert macro_regime._indicator_cache_status_text(snapshot) == "使用缓存"
+    assert macro_regime._indicator_cache_status_text(snapshot) == "官方缓存"
     assert (
         macro_regime._indicator_cache_status_text(
             MacroIndicatorSnapshot(
@@ -1427,7 +1431,7 @@ def test_macro_indicator_detail_status_uses_cache_semantics_for_error_with_value
                 is_stale=True,
             )
         )
-        == "过期缓存"
+        == "缓存偏旧"
     )
 
 
@@ -1536,7 +1540,6 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     assert "indicator_results" in refresh_result_source
     assert "大盘环境刷新完成" in refresh_result_source
     assert "核心指标" in refresh_result_source
-    assert "辅助指标" in refresh_result_source
     assert "macro-refresh-diagnostics" in indicator_row_source
 
 
@@ -1566,7 +1569,7 @@ def test_macro_refresh_display_states_hide_raw_errors_from_main_view() -> None:
             "source": "HYG proxy",
             "observation_date": "2026-06-12",
             "duration_seconds": 0.1,
-            "category": "auxiliary",
+            "category": "core",
         }
     )
     missing_html = dashboard._macro_refresh_indicator_row_html(
@@ -1588,14 +1591,14 @@ def test_macro_refresh_display_states_hide_raw_errors_from_main_view() -> None:
                 "status": "failed",
                 "value": None,
                 "error": "FRED timeout 3.0s",
-                "category": "auxiliary",
+                "category": "core",
             },
             {
                 "indicator": FEAR_GREED,
                 "status": "failed",
                 "value": None,
                 "error": "CNN HTTP 418",
-                "category": "auxiliary",
+                "category": "core",
             },
         ],
         "hy_oas: FRED timeout 3.0s; fear_greed: CNN HTTP 418",
@@ -1607,8 +1610,7 @@ def test_macro_refresh_display_states_hide_raw_errors_from_main_view() -> None:
     assert "使用代理" in proxy_html
     assert "暂缺" in missing_html
     assert "错误：FRED timeout" not in missing_html
-    assert "辅助指标缺失" in summary_html
-    assert "核心判断仍可用" in summary_html
+    assert "核心指标异常" in summary_html
     assert summary_html.index("完整技术诊断") < summary_html.index("CNN HTTP 418")
 
 

@@ -1570,10 +1570,10 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         values = [value for _label, value, _tone in items]
 
-        self.assertEqual(labels, ["F&G", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
         self.assertIn("34 恐惧", values)
 
-    def test_dashboard_header_only_promotes_fear_greed_and_vix(self) -> None:
+    def test_dashboard_header_promotes_official_core_macro_indicators_without_proxies(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         from data.macro_regime import (
             DOLLAR_INDEX,
@@ -1606,12 +1606,13 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertEqual(labels, ["F&G", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
         self.assertIn("VIX 19.4", joined)
-        self.assertNotIn("HY OAS", joined)
-        self.assertNotIn("10Y", joined)
+        self.assertIn("HY OAS 2.78%", joined)
+        self.assertIn("10Y 4.55%", joined)
         self.assertNotIn("观察池强弱", joined)
         self.assertNotIn("美元", joined)
+        self.assertNotIn("信用代理", joined)
 
     def test_dashboard_header_does_not_show_zero_vix_or_proxy_debug_text(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
@@ -1633,7 +1634,7 @@ class DashboardLayoutTests(unittest.TestCase):
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
         self.assertIn("VIX 暂缺", joined)
-        self.assertNotIn("HY OAS", joined)
+        self.assertIn("HY OAS 官方暂缺", joined)
         self.assertNotIn("信用代理", joined)
         self.assertNotIn("美元", joined)
         self.assertNotIn("VIX 0.0", joined)
@@ -1693,24 +1694,26 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         self.assertIn("dashboard-command-detail-panel", html)
-        self.assertIn("核心指标", html)
-        self.assertIn("辅助指标", html)
+        self.assertIn("官方核心指标", html)
+        self.assertNotIn("辅助指标", html)
+        self.assertNotIn("信用代理", html)
+        self.assertNotIn("情绪代理", html)
         self.assertIn("最近刷新", html)
         self.assertIn("技术诊断", html)
         self.assertNotIn("仓位结构", html)
 
-    def test_dashboard_macro_detail_values_keep_proxy_separate(self) -> None:
+    def test_dashboard_macro_detail_values_show_official_cache_semantics(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
-        from data.macro_regime import HYG_CREDIT_PROXY, MacroIndicatorSnapshot
+        from data.macro_regime import HY_OAS, MacroIndicatorSnapshot
 
         row = dashboard_module._dashboard_macro_detail_row(
-            "信用代理",
-            MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=78, source="HYG proxy"),
+            "HY OAS",
+            MacroIndicatorSnapshot(indicator=HY_OAS, value=2.78, source="FRED cache BAMLH0A0HYM2"),
         )
 
-        self.assertEqual(row[0], "信用代理")
-        self.assertIn("承压", row[1])
-        self.assertEqual(row[3], "代理")
+        self.assertEqual(row[0], "HY OAS")
+        self.assertEqual(row[1], "2.78%")
+        self.assertEqual(row[3], "官方缓存")
 
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
