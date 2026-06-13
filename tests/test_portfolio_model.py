@@ -438,18 +438,32 @@ class PortfolioModelTests(unittest.TestCase):
             )
             zone = SimpleNamespace(currentZone="tranche_buy")
             plan = SimpleNamespace(currentAddLimitPercent=6, maxPortfolioWeightPercent=20)
+            buy_zone_context = {
+                "current_action": "ALLOW_SMALL_BUY",
+                "action_text": "允许小仓观察",
+                "primary_zone_text": "回踩买区",
+                "setup_score": 66,
+            }
 
             view = build_portfolio_view_model(
                 db_path,
                 {"NOW": 120},
-                {"NOW": {"score": score, "buy_zone": zone, "position_plan": plan}},
+                {
+                    "NOW": {
+                        "score": score,
+                        "buy_zone": zone,
+                        "buy_zone_context": buy_zone_context,
+                        "position_plan": plan,
+                    }
+                },
             )
 
         row = view["rows"][0]
         self.assertEqual(row["systemAction"], sorted(BUY_ACTIONS)[0])
         self.assertEqual(row["systemMaxPosition"], 20)
         self.assertEqual(row["systemCurrentAdd"], 6)
-        self.assertEqual(row["buyZoneStatus"], "tranche_buy")
+        self.assertEqual(row["buyZoneStatus"], "ALLOW_SMALL_BUY")
+        self.assertEqual(row["buyZoneAction"], "ALLOW_SMALL_BUY")
         self.assertEqual(row["decisionLane"], "actionable")
         self.assertEqual(row["blockReasons"], [])
         self.assertEqual(row["reviewReasons"], [])
@@ -501,10 +515,11 @@ class PortfolioModelTests(unittest.TestCase):
             )
 
         row = view["rows"][0]
-        self.assertEqual(row["decisionLane"], "blocked")
+        self.assertEqual(row["decisionLane"], "review")
         self.assertEqual(row["systemCurrentAdd"], 0)
         self.assertEqual(row["finalDecision"]["legacyAction"], sorted(BUY_ACTIONS)[0])
         self.assertEqual(row["finalDecision"]["currentAddLimitPercent"], 0)
+        self.assertEqual(row["buyZoneAction"], "DATA_INSUFFICIENT")
         self.assertIn("buy_zone", row["blockReasons"])
         self.assertIn("system_not_addable", row["deviationWarnings"])
 

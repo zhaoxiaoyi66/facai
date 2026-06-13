@@ -81,8 +81,8 @@ def render() -> None:
     _render_styles()
     # Test anchor for the original system-plan page contract: 系统根据评分、估值、风险和技术位置自动生成买区
     render_page_header(
-        "计划建仓区 / 系统估值买区",
-        "根据评分、估值、风险和技术位置生成系统估值买区，辅助制定分批建仓计划；不等同于 Radar 纪律买区，也不代表 Radar ALLOW_BUY。",
+        "估值参考 / 旧计划参考",
+        "根据评分、估值、风险和技术位置生成估值参考区，辅助制定分批计划；主击球区以 AI Stock Radar 的统一 buy_zone_context 为准。",
     )
 
     tickers = load_watchlist()
@@ -94,8 +94,8 @@ def render() -> None:
     plan_store = StockPlanStore()
     _handle_quick_price_alert_query()
     load_notice = st.empty()
-    load_notice.info(f"正在生成计划建仓区 / 系统估值买区：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
-    with st.spinner("正在读取观察池、评分和计划建仓区..."):
+    load_notice.info(f"正在生成估值参考 / 旧计划参考：{len(tickers)} 只观察池股票。首次加载会读取本地缓存和技术指标，请稍等。")
+    with st.spinner("正在读取观察池、评分和估值参考..."):
         rows = _load_buy_zone_rows(tuple(tickers))
         rows = [_apply_manual_plan(row, plan_store.get_plan(str(row["symbol"]))) for row in rows]
         portfolio_view = _safe_portfolio_view()
@@ -384,7 +384,7 @@ def _render_execution_toolbar(rows: list[dict]) -> str:
             """
             <div class="execution-toolbar-title">
               <strong>计划建仓执行台</strong>
-              <span>只保留计划建仓参考；完整估值买区进入详情。</span>
+              <span>只保留计划建仓参考；完整估值参考进入详情。</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -438,7 +438,7 @@ def _handle_quick_price_alert_query() -> None:
             triggerPrice=price,
             alertReason=reason,
             linkedPlanType=plan_type,
-            note="计划建仓区快速创建；到价后仍需复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律；不等同于 Radar 纪律买区。",
+            note="估值参考快速创建；到价后仍需复核 finalDecision、buyZoneContext、technicalEntry、combinedEntry、数据健康和交易纪律；不等同于 Radar 主击球区。",
         )
         st.session_state["buy_zone_record_signal_notice"] = f"{symbol} 价格提醒已创建。"
     except ValueError:
@@ -629,10 +629,10 @@ def _buy_zone_drawer_html(row: dict) -> str:
     validation_errors = "".join(f"<li>{escape(_humanize_buy_zone_explain_item(error))}</li>" for error in (row.get("validationErrors") or [])[:5])
     return (
         f'<section id="{escape(drawer_id, quote=True)}" class="buy-zone-drawer-shell">'
-        '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭估值买区详情"></a>'
+        '<a class="buy-zone-drawer-backdrop" href="#buy-zone-table" aria-label="关闭估值参考详情"></a>'
         '<aside class="stock-drawer buy-zone-drawer">'
         '<a class="drawer-close-link" href="#buy-zone-table" title="关闭">×</a>'
-        '<div class="drawer-topline">计划建仓区 / 系统估值买区详情</div>'
+        '<div class="drawer-topline">估值参考 / 旧计划参考详情</div>'
         f'<div class="drawer-head"><div><div class="drawer-symbol">{escape(symbol)}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or ""))}</div></div>'
         f'<div class="drawer-price">{escape(_price_text(row.get("currentPrice")))}</div></div>'
@@ -648,9 +648,9 @@ def _buy_zone_drawer_html(row: dict) -> str:
         "</div>"
         '<div class="drawer-section-title">系统估值建议买区</div>'
         f'{_zone_snapshot_html(system_zone)}'
-        '<div class="drawer-section-title">当前使用估值买区</div>'
+        '<div class="drawer-section-title">当前使用估值参考</div>'
         f'{_price_ladder_html(row)}'
-        '<div class="drawer-section-title">系统估值买区解释</div>'
+        '<div class="drawer-section-title">系统估值参考解释</div>'
         f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">系统估值入场参考</div>'
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
@@ -806,7 +806,7 @@ def _fallback_buy_zone_explainability(row: dict) -> dict[str, object]:
         "invalid_manual_override": ("手动买区需复核", "手动覆盖后的区间异常，暂不输出入场买点。"),
         "no_chase": ("当前不追高", "当前价格高于系统买区上沿，不建议新增。"),
     }
-    title, summary = fallback_by_zone.get(zone, ("系统估值买区已生成", f"当前状态为 {_zone_label(zone)}，入场解释来自系统估值买区结果。"))
+    title, summary = fallback_by_zone.get(zone, ("系统估值参考已生成", f"当前状态为 {_zone_label(zone)}，入场解释来自系统估值参考结果。"))
     guardrails = validation_errors or warnings
     if not guardrails and zone in {"no_chase", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model", "invalid_zone", "invalid_manual_override"}:
         guardrails = [summary]

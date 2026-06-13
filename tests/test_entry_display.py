@@ -10,6 +10,25 @@ from ui.dashboard_tables import _dashboard_compact_entry_text, _decision_table_c
 
 BUY_ZONE = {"lower": 90, "upper": 100}
 CHASE_ZONE = {"lower": 120}
+LEGACY_DISPLAY_CONTEXT = {"unit_test_context": True}
+
+
+def test_entry_display_without_buy_zone_context_shows_technical_insufficient() -> None:
+    result = build_entry_display(
+        current_price=110,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="OK",
+        price_position="ABOVE_BUY_ZONE",
+        decision="WAIT",
+        final_score=82,
+        valuation_score=60,
+        risk_score=70,
+    )
+
+    assert result["entry_display_label"] == "技术承接数据不足"
+    assert result["entry_context_status"] == "DATA_INSUFFICIENT"
+    assert result["missing_entry_fields"] == ["buy_zone_context"]
 
 
 def test_entry_display_above_buy_zone_is_consistent() -> None:
@@ -23,6 +42,7 @@ def test_entry_display_above_buy_zone_is_consistent() -> None:
         final_score=82,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "等待回落 $90.00 - $100.00"
@@ -50,6 +70,7 @@ def test_entry_display_prefers_technical_pullback_when_value_zone_is_far() -> No
         final_score=78,
         valuation_score=45,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "等待技术回踩 $108.00 - $116.00"
@@ -78,6 +99,7 @@ def test_entry_display_marks_price_inside_technical_pullback_zone() -> None:
         final_score=78,
         valuation_score=45,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "回踩区内 $108.00 - $116.00"
@@ -108,6 +130,7 @@ def test_entry_display_treats_nan_technical_zone_as_missing() -> None:
         final_score=78,
         valuation_score=45,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["technical_entry_zone_low"] is None
@@ -152,6 +175,7 @@ def test_entry_display_preserves_technical_structure_map_when_pullback_missing()
         final_score=78,
         valuation_score=65,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["technical_entry_zone_low"] is None
@@ -196,6 +220,7 @@ def test_weak_trend_below_near_valuation_reference_shows_review_not_below_refere
         final_score=80,
         valuation_score=70,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "估值可复核 $105.99 - $126.82"
@@ -231,6 +256,7 @@ def test_high_quality_value_review_inside_near_term_repair_zone() -> None:
         quality_score=86,
         valuation_score=78,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "价值复核 $210.00 - $240.00"
@@ -281,6 +307,7 @@ def test_entry_display_prioritizes_technical_pullback_even_when_value_zone_is_ne
         final_score=68,
         valuation_score=35,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "回踩区内 $355.02 - $377.98"
@@ -302,6 +329,7 @@ def test_chase_zone_still_has_priority_over_technical_pullback_status() -> None:
         final_score=78,
         valuation_score=45,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "禁止追高，技术回踩参考 $108.00 - $110.00"
@@ -324,6 +352,7 @@ def test_entry_display_inside_buy_zone_preserves_wait_hint() -> None:
         final_score=65,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "买区内 $90.00 - $100.00"
@@ -341,6 +370,7 @@ def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
         final_score=82,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
     below = build_entry_display(
         current_price=80,
@@ -352,6 +382,7 @@ def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
         final_score=82,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert chase["entry_display_label"].startswith("禁止追高")
@@ -379,6 +410,7 @@ def test_below_deep_valuation_without_technical_break_is_not_broken_structure() 
         final_score=84,
         valuation_score=72,
         risk_score=80,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "低于估值参考 $394.12 - $425.99"
@@ -406,6 +438,7 @@ def test_below_technical_pullback_zone_is_broken_structure() -> None:
         final_score=82,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "跌破结构区 $92.00 - $105.00"
@@ -424,6 +457,7 @@ def test_entry_display_missing_data_shows_specific_reason() -> None:
         final_score=82,
         valuation_score=60,
         risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "暂无参考买区：缺当前价格"
@@ -438,6 +472,7 @@ def test_entry_display_uses_explicit_missing_fields() -> None:
         data_status="MISSING_BUY_ZONE",
         price_position="ZONE_MISSING",
         missing_entry_fields=["暂无专属买区模型", "无法生成纪律买区"],
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
     assert result["entry_display_label"] == "暂无参考买区：暂无专属买区模型、无法生成纪律买区"

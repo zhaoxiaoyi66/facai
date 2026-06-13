@@ -323,12 +323,16 @@ def _buy_zone_context(data: dict[str, Any]) -> dict[str, Any]:
     existing = data.get("buy_zone_context") or data.get("buyZoneContext")
     if isinstance(existing, dict) and existing:
         return dict(existing)
-    if not _has_buy_zone_context_inputs(data):
-        return {}
     try:
         return build_buy_zone_context(data, volume_snapshot=_volume_snapshot_from_report(data)).to_dict()
     except Exception:
-        return {}
+        return {
+            "current_action": "DATA_INSUFFICIENT",
+            "action_text": "技术承接数据不足",
+            "primary_zone_text": "技术承接数据不足",
+            "setup_score": 0,
+            "missing_fields": ["buy_zone_context"],
+        }
 
 
 def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:

@@ -1243,8 +1243,8 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertEqual(row["action"], "可小仓分批")
         self.assertEqual(row["finalAction"], "只观察")
-        self.assertEqual(row["decisionLane"], "wait")
-        self.assertEqual(row["displayCategory"], "等回踩")
+        self.assertEqual(row["decisionLane"], "review")
+        self.assertEqual(row["displayCategory"], "需复核")
         self.assertFalse(row["isActionable"])
         self.assertEqual(row["currentAddLimitPercent"], 0)
         self.assertEqual(row["currentAddLimit"], "不建议新增")
@@ -8610,10 +8610,10 @@ class BuyZonePlanPageTests(unittest.TestCase):
         from ui import buy_zone as buy_zone_page
 
         source = inspect.getsource(buy_zone_page.render)
-        self.assertIn("计划建仓区 / 系统估值买区", source)
-        self.assertIn("根据评分、估值、风险和技术位置生成系统估值买区", source)
-        self.assertIn("不等同于 Radar 纪律买区", source)
-        self.assertIn("不代表 Radar ALLOW_BUY", source)
+        self.assertIn("估值参考 / 旧计划参考", source)
+        self.assertIn("根据评分、估值、风险和技术位置生成估值参考区", source)
+        self.assertIn("主击球区以 AI Stock Radar 的统一 buy_zone_context 为准", source)
+        self.assertNotIn("系统估值买区", source)
         self.assertIn("_load_buy_zone_rows", source)
         self.assertNotIn("买区计算器", source)
 
@@ -8626,7 +8626,7 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertIn("data-buy-zone-drawer-open", source)
         self.assertIn("buy-zone-drawer", source)
         self.assertIn("高级估值沙盒", source)
-        self.assertIn("计划建仓区 / 系统估值买区详情", source)
+        self.assertIn("估值参考 / 旧计划参考详情", source)
         self.assertIn("legacy buy_zone_engine", source)
 
     def test_zero_price_is_not_used_for_valid_buy_zone(self) -> None:
@@ -8696,12 +8696,12 @@ class BuyZonePlanPageTests(unittest.TestCase):
 
         updated = buy_zone_page._apply_manual_plan(row, manual_plan)
 
-        self.assertTrue(row["isActionable"])
+        self.assertFalse(row["isActionable"])
         self.assertEqual(updated["currentZone"], "no_chase")
-        self.assertEqual(updated["decisionLane"], "blocked")
+        self.assertEqual(updated["decisionLane"], "review")
         self.assertFalse(updated["isActionable"])
         self.assertEqual(updated["currentAddLimitPercent"], 0)
-        self.assertNotEqual(updated["finalAction"], row["finalAction"])
+        self.assertEqual(updated["finalAction"], row["finalAction"])
 
     def test_buy_zone_near_trigger_logic_survives_final_decision_wait_lane(self) -> None:
         from ui import buy_zone as buy_zone_page

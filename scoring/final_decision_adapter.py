@@ -44,7 +44,7 @@ def build_final_decision_bundle(
     buy_zone_context: dict | None = None,
 ) -> FinalDecisionBundle:
     effective_buy_zone = _effective_buy_zone(buy_zone, manual_plan_override)
-    decision_buy_zone = buy_zone_context or effective_buy_zone
+    decision_buy_zone = buy_zone_context or _missing_buy_zone_context()
     effective_position_plan = _effective_position_plan(
         score,
         effective_buy_zone,
@@ -119,6 +119,16 @@ def _effective_position_plan(
 def _buy_zone_status(buy_zone: Any) -> str | None:
     value = _value(buy_zone, "currentZone", "current_zone", "primary_zone", "primaryZone", "current_action", "currentAction", default=None)
     return str(value) if value not in {None, ""} else None
+
+
+def _missing_buy_zone_context() -> dict[str, Any]:
+    return {
+        "current_action": "DATA_INSUFFICIENT",
+        "action_text": "技术承接数据不足",
+        "primary_zone_text": "技术承接数据不足",
+        "setup_score": 0,
+        "missing_fields": ["buy_zone_context"],
+    }
 
 
 def _number(source: Any, *names: str) -> float | None:

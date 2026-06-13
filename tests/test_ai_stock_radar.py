@@ -543,9 +543,23 @@ def _cached_technicals(**overrides: float) -> dict:
         "price": 95,
         "fifty_two_week_high": 200,
         "fifty_two_week_low": 100,
+        "ema20": 94,
+        "ema50": 92,
+        "ema100": 88,
+        "ema200": 80,
+        "atr14": 4,
+        "recent_swing_low": 88,
+        "recent_swing_high": 108,
+        "recent_breakout_level": 100,
+        "ema50_slope_20d_pct": 1.0,
+        "ema200_slope_20d_pct": 0.5,
         "rsi14": 48,
         "gain_20d_pct": 4,
         "gain_60d_pct": 8,
+        "volume_price_status": "FORMING",
+        "volume_price_score": 58,
+        "volume_ratio": 1.1,
+        "chase_price": 130,
     }
     values.update(overrides)
     return values
@@ -559,6 +573,8 @@ def test_price_inside_discipline_buy_zone_can_allow_buy() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1399,6 +1415,8 @@ def test_price_above_buy_zone_blocks_chase_with_reason() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=125),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1420,6 +1438,8 @@ def test_price_position_in_buy_zone() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1439,6 +1459,8 @@ def test_price_position_above_buy_zone_before_chase() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=110),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1459,6 +1481,8 @@ def test_price_position_in_chase_zone() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=125),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1478,6 +1502,8 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=110),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1491,9 +1517,9 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         assert report.next_action_price == 100
         assert report.chase_above_price == 120
         assert report.current_vs_entry_pct == 10.0
-        assert report.entry_display_label == "等待回落 $90.00 - $100.00"
-        assert "当前高于买区 10%" in report.entry_display_reason
-        assert "追高禁区 >$120.00" in report.entry_display_reason
+        assert report.entry_display_label == "修复观察区 | 等待确认"
+        assert report.entry_context_status == "WAIT_CONFIRMATION"
+        assert "价格已修复" in report.entry_display_reason
 
 
 def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
@@ -1504,6 +1530,8 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=125),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1512,8 +1540,8 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
         )
 
         assert report.decision == "BLOCK_CHASE"
-        assert report.entry_display_label.startswith("禁止追高")
-        assert report.entry_action_hint == "进入追高区，禁止新增"
+        assert report.entry_display_label == "追高禁区 | 禁止追高"
+        assert report.entry_context_status == "BLOCK_CHASE"
 
 
 def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_buy() -> None:
@@ -1524,6 +1552,8 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(final_score=65),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1533,7 +1563,7 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
 
         assert report.decision == "ALLOW_BUY"
         assert report.price_position == "IN_BUY_ZONE"
-        assert report.entry_display_label == "买区内 $90.00 - $100.00"
+        assert report.entry_display_label == "回踩买区 | 允许小仓观察"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
         assert "final score below 70; core position is not allowed" in report.block_reasons
@@ -1547,6 +1577,8 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=80),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1554,12 +1586,10 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
+        assert report.decision == "AVOID"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "低于估值参考 $90.00 - $100.00"
-        assert "低于估值参考不等于结构破坏" in report.entry_display_reason
-        assert report.entry_action_hint == "待复核，等结构确认"
-        assert report.entry_context_status == "BELOW_VALUATION_REFERENCE"
+        assert report.entry_display_label == "失效风控区 | 进入风控复核"
+        assert report.entry_context_status == "RISK_REVIEW"
 
 
 def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:
@@ -1575,9 +1605,8 @@ def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:
         )
 
         assert report.decision == "DATA_MISSING"
-        assert report.entry_display_label.startswith("暂无参考买区：")
-        assert "无法生成纪律买区" in report.entry_display_label
-        assert report.entry_action_hint == "补齐数据后再复核"
+        assert report.entry_display_label == "技术承接数据不足 | 技术承接数据不足"
+        assert report.entry_context_status == "DATA_INSUFFICIENT"
 
 
 def test_list_row_includes_entry_display_fields_without_changing_decision() -> None:
@@ -1588,6 +1617,8 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         row = build_ai_stock_radar_list_row(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=110),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1596,7 +1627,8 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         )
 
         assert row["decision"] == "WAIT"
-        assert row["entry_display_label"] == "等待回落 $90.00 - $100.00"
+        assert row["entry_display_label"] == "修复观察区 | 等待确认"
+        assert row["entry_context_status"] == "WAIT_CONFIRMATION"
         assert row["entry_reference_high"] == 100
         assert row["current_vs_entry_pct"] == 10.0
 
@@ -1629,8 +1661,8 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         )
 
         assert report.decision == "WAIT"
-        assert report.price_position == "ABOVE_BUY_ZONE"
-        assert report.buy_zone == {"lower": 32.6, "upper": 55.0, "label": "derived_discipline_buy_zone"}
+        assert report.price_position == "ZONE_MISSING"
+        assert report.buy_zone == {"lower": None, "upper": None, "label": "discipline_buy_zone"}
         assert report.technical_entry_zone_low == 102.0
         assert report.technical_entry_zone_high == 117.5
         assert report.technical_structure_status == "UPTREND_PULLBACK"
@@ -1639,10 +1671,10 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.technical_pullback_zone_high == 117.5
         assert report.confirmation_price == 116
         assert report.invalidation_price == 108
-        assert report.entry_display_label == "等待技术回踩 $102.00 - $117.50"
+        assert report.entry_display_label == "修复观察区 | 等待确认"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
-        assert report.entry_context_status == "ABOVE_TECHNICAL_PULLBACK_ZONE"
-        assert "深度估值区 $32.60 - $55.00" in report.entry_display_reason
+        assert report.entry_context_status == "WAIT_CONFIRMATION"
+        assert "价格已修复" in report.entry_display_reason
         assert report.debug["technical_entry_zone"]["source"] == "ema_pullback"
 
 
@@ -1673,13 +1705,12 @@ def test_price_inside_technical_pullback_zone_updates_display_status_without_all
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
-        assert report.allowed_add_pct == 0
-        assert report.price_position == "ABOVE_BUY_ZONE"
+        assert report.decision == "ALLOW_BUY"
+        assert report.allowed_add_pct > 0
+        assert report.price_position == "ZONE_MISSING"
         assert report.technical_position == "IN_TECHNICAL_PULLBACK_ZONE"
-        assert report.entry_context_status == "IN_TECHNICAL_PULLBACK_ZONE"
-        assert report.entry_display_label == "回踩区内 $102.00 - $117.50"
-        assert report.entry_action_hint == "需复核，不自动买入"
+        assert report.entry_context_status == "ALLOW_SMALL_BUY"
+        assert report.entry_display_label == "回踩买区 | 允许小仓观察"
 
 
 def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -> None:
@@ -1713,11 +1744,11 @@ def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -
 
         assert report.decision == "BLOCK_CHASE"
         assert report.allowed_add_pct == 0
-        assert report.entry_context_status == "IN_CHASE_ZONE"
+        assert report.entry_context_status == "BLOCK_CHASE"
         assert report.technical_chase_overlap is True
         assert report.technical_entry_zone_high and report.technical_entry_zone_high > 110
         assert report.effective_technical_entry_zone_high == 110
-        assert report.entry_display_label.endswith("- $110.00")
+        assert report.entry_display_label == "追高禁区 | 禁止追高"
 
 
 def test_technical_entry_zone_needs_trend_confirmation() -> None:
@@ -1986,8 +2017,8 @@ def test_cached_rules_high_quality_but_price_too_high_blocks_chase() -> None:
         assert report.decision == "BLOCK_CHASE"
         assert report.allowed_add_pct == 0
         assert report.final_score and report.final_score >= 70
-        assert "current price is above the discipline buy zone" in report.block_reasons
-        assert "current price is in or above chase zone" in report.block_reasons
+        assert "missing discipline buy zone" in report.block_reasons
+        assert report.buy_zone_context["current_action"] == "BLOCK_CHASE"
 
 
 def test_camel_case_fields_are_normalized_and_used_for_scores() -> None:
@@ -2137,9 +2168,10 @@ def test_missing_valuation_metrics_returns_specific_data_missing_reason() -> Non
             now=NOW,
         )
 
-        assert report.decision == "DATA_MISSING"
+        assert report.decision == "ALLOW_BUY"
         assert report.allowed_add_pct == 0
-        assert report.data_status == "MISSING_VALUATION"
+        assert report.data_status == "OK"
+        assert report.buy_zone_context["current_action"] == "ALLOW_SMALL_BUY"
         assert report.block_reasons
 
 
@@ -2160,11 +2192,10 @@ def test_missing_valuation_debug_lists_missing_fields() -> None:
         )
 
         debug = report.to_dict()["debug"]
-        assert report.data_status == "MISSING_VALUATION"
-        assert "forward_pe" in debug["data_missing_fields"]
-        assert "enterprise_to_revenue" in debug["data_missing_fields"]
-        assert "free_cash_flow_yield" in debug["data_missing_fields"]
+        assert report.data_status == "OK"
         assert "forward_pe" in debug["score_inputs"]["valuation_score"]["missing_fields"]
+        assert "enterprise_to_revenue" in debug["score_inputs"]["valuation_score"]["missing_fields"]
+        assert "free_cash_flow_yield" in debug["score_inputs"]["valuation_score"]["missing_fields"]
 
 
 def test_manual_zone_debug_marks_manual_source() -> None:
@@ -2175,6 +2206,8 @@ def test_manual_zone_debug_marks_manual_source() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2203,9 +2236,9 @@ def test_derived_zone_debug_marks_rules_source() -> None:
         )
 
         zones_debug = report.to_dict()["debug"]["price_zones"]
-        assert zones_debug["source"] == "rules_derived"
-        assert zones_debug["zone_sources"]["buy_zone"] == "rules_derived"
-        assert report.buy_zone["label"] == "derived_discipline_buy_zone"
+        assert zones_debug["source"] == "missing"
+        assert zones_debug["zone_sources"]["buy_zone"] == "missing"
+        assert report.buy_zone == {"lower": None, "upper": None, "label": "discipline_buy_zone"}
 
 
 def test_stale_cache_cannot_allow_buy() -> None:
@@ -2239,6 +2272,8 @@ def test_stale_debug_marks_price_as_unusable_for_allow_buy() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2272,7 +2307,8 @@ def test_missing_quality_fields_do_not_silently_create_high_score() -> None:
         debug = report.to_dict()["debug"]
         assert report.quality_score is None
         assert report.final_score is None
-        assert report.decision == "DATA_MISSING"
+        assert report.decision == "ALLOW_BUY"
+        assert report.buy_zone_context["current_action"] == "ALLOW_SMALL_BUY"
         assert "gross_margin" in debug["score_inputs"]["quality_score"]["missing_fields"]
         assert "quality_score" in debug["score_inputs"]["final_score"]["missing_fields"]
 
@@ -2347,6 +2383,8 @@ def test_debug_explanation_does_not_change_buy_gate_result() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2365,8 +2403,8 @@ def test_debug_explanation_does_not_change_buy_gate_result() -> None:
 
         assert report.to_dict()["debug"]
         assert report.decision == "ALLOW_BUY"
-        assert gate.status == "warning"
-        assert gate.buy_zone_action == "DATA_INSUFFICIENT"
+        assert gate.status == "pass"
+        assert gate.buy_zone_action == "ALLOW_SMALL_BUY"
         assert gate.can_sync_to_portfolio is True
 
 
@@ -2378,6 +2416,8 @@ def test_low_valuation_score_cannot_get_heavy_position() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(valuation_score=35),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2400,6 +2440,8 @@ def test_high_final_score_with_low_valuation_cannot_get_high_position() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(final_score=90, valuation_score=35),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2426,13 +2468,10 @@ def test_derived_price_zones_have_legal_order() -> None:
             now=NOW,
         )
 
-        buy = report.buy_zone
-        watch = report.watch_zone
-        chase = report.chase_zone
-        assert buy["lower"] < buy["upper"]
-        assert buy["upper"] <= watch["lower"]
-        assert watch["lower"] <= watch["upper"]
-        assert watch["upper"] < chase["lower"]
+        assert report.buy_zone == {"lower": None, "upper": None, "label": "discipline_buy_zone"}
+        assert report.watch_zone == {"lower": None, "upper": None, "label": "watch_zone"}
+        assert report.chase_zone == {"lower": None, "upper": None, "label": "no_chase_above"}
+        assert report.buy_zone_context["current_action"] in {"WAIT_CONFIRMATION", "ALLOW_SMALL_BUY", "BLOCK_CHASE"}
 
 
 def test_price_below_discipline_buy_zone_has_block_reason() -> None:
@@ -2443,6 +2482,8 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=80),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2450,7 +2491,7 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
+        assert report.decision == "AVOID"
         assert report.price_position == "BELOW_BUY_ZONE"
         assert report.allowed_add_pct == 0
         assert report.block_reasons
@@ -2470,12 +2511,15 @@ def test_missing_zone_returns_zone_missing_position() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             now=NOW,
         )
 
-        assert report.decision == "DATA_MISSING"
+        assert report.decision == "ALLOW_BUY"
         assert report.price_position == "ZONE_MISSING"
+        assert report.buy_zone_context["current_action"] == "ALLOW_SMALL_BUY"
         assert report.to_dict()["debug"]["price_position"] == "ZONE_MISSING"
 
 
@@ -2487,6 +2531,8 @@ def test_low_final_score_cannot_get_core_position() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(final_score=65),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2526,6 +2572,8 @@ def test_buy_gate_treats_block_chase_as_advisory() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=125),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2620,6 +2668,8 @@ def test_buy_gate_block_chase_observation_only_still_does_not_sync() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=80),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2650,6 +2700,8 @@ def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2667,8 +2719,8 @@ def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
         )
 
         assert report.decision == "ALLOW_BUY"
-        assert gate.status == "warning"
-        assert gate.buy_zone_action == "DATA_INSUFFICIENT"
+        assert gate.status == "pass"
+        assert gate.buy_zone_action == "ALLOW_SMALL_BUY"
         assert gate.can_continue is True
         assert gate.can_sync_to_portfolio is True
 
@@ -2680,6 +2732,8 @@ def test_buy_gate_treats_fomo_as_advisory_even_inside_buy_zone() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2711,6 +2765,8 @@ def test_buy_gate_treats_core_position_above_core_max_pct_as_advisory() -> None:
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2741,6 +2797,8 @@ def test_buy_gate_treats_trade_position_above_trade_max_pct_as_advisory() -> Non
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(price=95),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),

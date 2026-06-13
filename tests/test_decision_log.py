@@ -68,7 +68,7 @@ class DecisionLogTests(unittest.TestCase):
         self.assertEqual(snapshot["price"], 520)
         self.assertEqual(snapshot["final_action"], bundle.finalAction)
         self.assertEqual(snapshot["decision_lane"], bundle.decisionLane)
-        self.assertEqual(snapshot["current_add_pct"], 5)
+        self.assertEqual(snapshot["current_add_pct"], 0)
         self.assertEqual(snapshot["max_position_pct"], 15)
         self.assertEqual(snapshot["data_confidence"], "high")
         self.assertEqual(snapshot["buy_zone_status"], bundle.displayCategory)
@@ -91,7 +91,7 @@ class DecisionLogTests(unittest.TestCase):
         snapshot = build_decision_snapshot_from_bundle("crm", 260, bundle, "buy_zone")
 
         self.assertEqual(snapshot["symbol"], "CRM")
-        self.assertEqual(snapshot["current_add_pct"], 6)
+        self.assertEqual(snapshot["current_add_pct"], 0)
         self.assertEqual(snapshot["max_position_pct"], 20)
         self.assertEqual(snapshot["buy_zone_status"], bundle.displayCategory)
         self.assertEqual(snapshot["source_page"], "buy_zone")

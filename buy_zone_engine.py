@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Legacy valuation reference helpers.
+
+Canonical trading buy-zone decisions live in ``data.buy_zone_engine``.
+This module is retained for valuation/plan reference pages and historical
+tests; callers must not use ``BuyZoneEstimate`` as the source of current
+buy/add/chase decisions.
+"""
+
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from statistics import median
@@ -2375,7 +2383,7 @@ def _combined_entry_reasons(
     else:
         reasons.append("估值买点当前不可用，综合入场不输出入场触发价。")
     if technical_pullback is not None:
-        reasons.append(f"技术回踩点：{technical_pullback:.2f}，仅作辅助，不覆盖估值买区。")
+        reasons.append(f"技术回踩点：{technical_pullback:.2f}，仅作辅助，不覆盖估值参考。")
     if light_probe is not None:
         reasons.append(f"轻仓试探点：{light_probe:.2f}，仅用于高质量半导体龙头的战术观察，需 finalDecision 放行才可执行。")
     if combined_trigger is not None:

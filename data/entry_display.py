@@ -250,6 +250,18 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "entry_action_hint": "",
     }
 
+    if not buy_zone_context:
+        result.update(
+            {
+                "entry_display_label": "技术承接数据不足",
+                "entry_display_reason": "缺少统一买区上下文，不能用估值或旧计划区间替代主击球区。",
+                "entry_action_hint": "补齐历史K线、成交量、均线、ATR和支撑压力后再判断",
+                "entry_context_status": "DATA_INSUFFICIENT",
+                "missing_entry_fields": ["buy_zone_context"],
+            }
+        )
+        return result
+
     if missing_fields:
         reason = _missing_reason_text(missing_fields)
         result.update(

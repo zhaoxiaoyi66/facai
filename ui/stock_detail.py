@@ -1028,7 +1028,7 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
         '<section class="research-card technical-entry-card">'
         '<div class="technical-entry-head">'
         f"<div><strong>{escape(title)}</strong><span>{escape(summary)}</span></div>"
-        '<em>辅助层，不覆盖估值买区</em>'
+        '<em>辅助层，不覆盖估值参考</em>'
         "</div>"
         f'<div class="technical-entry-grid">{metric_html}</div>'
         f'<ul class="technical-entry-reasons">{reason_html}</ul>'

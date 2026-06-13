@@ -24,10 +24,11 @@ class FinalDecisionTests(unittest.TestCase):
 
         decision = derive_final_decision(score, buy_zone_estimate, position_plan)
 
-        self.assertEqual(decision.finalAction, "只观察")
+        self.assertEqual(decision.finalAction, "待复核，暂不新增")
         self.assertFalse(decision.isActionable)
         self.assertEqual(decision.currentAddLimitPercent, 0)
-        self.assertIn("valuation_status", decision.blockReasons)
+        self.assertIn("buy_zone", decision.blockReasons)
+        self.assertEqual(decision.buyZoneAction, "DATA_INSUFFICIENT")
 
     def test_unified_buy_zone_setup_overrides_legacy_valuation_buy_zone_block(self) -> None:
         score = SimpleNamespace(
@@ -170,10 +171,12 @@ class FinalDecisionTests(unittest.TestCase):
 
         bundle = build_final_decision_bundle(score)
 
-        self.assertEqual(bundle.finalAction, buy_action)
-        self.assertTrue(bundle.isActionable)
-        self.assertEqual(bundle.currentAddLimitPercent, 5)
+        self.assertEqual(bundle.finalAction, "待复核，暂不新增")
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
         self.assertEqual(bundle.maxPortfolioWeightPercent, 15)
+        self.assertIn("buy_zone", bundle.blockReasons)
+        self.assertEqual(bundle.buyZoneAction, "DATA_INSUFFICIENT")
 
     def test_final_decision_adapter_builds_bundle_from_score_zone_and_plan(self) -> None:
         score = SimpleNamespace(
@@ -190,9 +193,12 @@ class FinalDecisionTests(unittest.TestCase):
 
         bundle = build_final_decision_bundle(score, zone, plan)
 
-        self.assertTrue(bundle.isActionable)
-        self.assertEqual(bundle.currentAddLimitPercent, 6)
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
         self.assertEqual(bundle.maxPortfolioWeightPercent, 20)
+        self.assertEqual(bundle.positionPlanCurrentAddLimitPercent, 6)
+        self.assertIn("buy_zone", bundle.blockReasons)
+        self.assertEqual(bundle.buyZoneAction, "DATA_INSUFFICIENT")
 
     def test_final_decision_adapter_blocks_no_chase_add(self) -> None:
         score = SimpleNamespace(
@@ -270,9 +276,11 @@ class FinalDecisionTests(unittest.TestCase):
 
         bundle = build_final_decision_bundle(score, zone, manual_plan_override=manual_plan)
 
-        self.assertTrue(bundle.isActionable)
-        self.assertGreater(bundle.currentAddLimitPercent, 0)
-        self.assertNotIn("buy_zone", bundle.blockReasons)
+        self.assertFalse(bundle.isActionable)
+        self.assertEqual(bundle.currentAddLimitPercent, 0)
+        self.assertGreater(bundle.positionPlanCurrentAddLimitPercent or 0, 0)
+        self.assertIn("buy_zone", bundle.blockReasons)
+        self.assertEqual(bundle.buyZoneAction, "DATA_INSUFFICIENT")
 
     def test_final_decision_adapter_output_fields_are_stable(self) -> None:
         score = SimpleNamespace(

@@ -213,7 +213,6 @@ def build_ai_stock_radar_report(
         block_reasons=block_reasons,
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
-    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
     technical_entry = build_technical_entry_zone(technicals or {}, data_status=data_status)
     entry_display = calculate_entry_display(
         current_price=current_price,
@@ -234,7 +233,32 @@ def build_ai_stock_radar_report(
         scores=score_input,
         metrics=metrics,
         technicals=technicals or {},
+        technical_entry=technical_entry,
         entry_display=entry_display,
+    )
+    decision = calculate_decision(
+        current_price=current_price,
+        scores=score_input,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        data_status=data_status,
+        block_reasons=block_reasons,
+        buy_zone_context=buy_zone_context,
+    )
+    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    entry_display = calculate_entry_display(
+        current_price=current_price,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        technical_entry_zone=technical_entry,
+        data_status=data_status,
+        price_position=price_position,
+        decision=decision,
+        final_score=score_input.final_score,
+        quality_score=score_input.quality_score,
+        valuation_score=score_input.valuation_score,
+        risk_score=score_input.risk_score,
+        buy_zone_context=buy_zone_context,
     )
     debug = build_radar_debug(
         symbol,
@@ -443,7 +467,6 @@ def build_ai_stock_radar_list_row(
         block_reasons=block_reasons,
     )
     risk_incomplete = _risk_fields_incomplete(metrics)
-    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
     technical_entry = build_technical_entry_zone(technicals or {}, data_status=data_status)
     entry_display = calculate_entry_display(
         current_price=current_price,
@@ -464,7 +487,32 @@ def build_ai_stock_radar_list_row(
         scores=score_input,
         metrics=metrics,
         technicals=technicals or {},
+        technical_entry=technical_entry,
         entry_display=entry_display,
+    )
+    decision = calculate_decision(
+        current_price=current_price,
+        scores=score_input,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        data_status=data_status,
+        block_reasons=block_reasons,
+        buy_zone_context=buy_zone_context,
+    )
+    position_plan = calculate_position_plan(score_input, decision, risk_incomplete=risk_incomplete)
+    entry_display = calculate_entry_display(
+        current_price=current_price,
+        buy_zone=zones["buy_zone"],
+        chase_zone=zones["chase_zone"],
+        technical_entry_zone=technical_entry,
+        data_status=data_status,
+        price_position=price_position,
+        decision=decision,
+        final_score=score_input.final_score,
+        quality_score=score_input.quality_score,
+        valuation_score=score_input.valuation_score,
+        risk_score=score_input.risk_score,
+        buy_zone_context=buy_zone_context,
     )
     return {
         "ticker": symbol,
@@ -503,11 +551,13 @@ def _build_buy_zone_context(
     scores: RadarScores,
     metrics: dict[str, Any],
     technicals: dict[str, Any],
+    technical_entry: dict[str, Any],
     entry_display: dict[str, Any],
 ) -> dict[str, Any]:
     source = {
         **(metrics or {}),
         **(technicals or {}),
+        **_buy_zone_context_technical_fields(technical_entry or {}),
         **(entry_display or {}),
         "ticker": symbol,
         "current_price": current_price,
@@ -523,6 +573,31 @@ def _build_buy_zone_context(
         return build_buy_zone_context(source, volume_snapshot=volume_snapshot).to_dict()
     except Exception:
         return {}
+
+
+def _buy_zone_context_technical_fields(technical_entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "technical_entry_zone_low": technical_entry.get("low"),
+        "technical_entry_zone_high": technical_entry.get("high"),
+        "effective_technical_entry_zone_low": technical_entry.get("low"),
+        "effective_technical_entry_zone_high": technical_entry.get("high"),
+        "technical_pullback_zone_low": technical_entry.get("technical_pullback_zone_low"),
+        "technical_pullback_zone_high": technical_entry.get("technical_pullback_zone_high"),
+        "near_term_repair_zone_low": technical_entry.get("near_term_repair_zone_low"),
+        "near_term_repair_zone_high": technical_entry.get("near_term_repair_zone_high"),
+        "deep_support_zone_low": technical_entry.get("deep_support_zone_low"),
+        "deep_support_zone_high": technical_entry.get("deep_support_zone_high"),
+        "support_watch_zone_low": technical_entry.get("support_watch_zone_low"),
+        "support_watch_zone_high": technical_entry.get("support_watch_zone_high"),
+        "confirmation_price": technical_entry.get("confirmation_price"),
+        "invalidation_price": technical_entry.get("invalidation_price"),
+        "ma20": technical_entry.get("ema20"),
+        "ma50": technical_entry.get("ema50"),
+        "ma200": technical_entry.get("ema200"),
+        "atr_14": technical_entry.get("atr14"),
+        "recent_swing_high": technical_entry.get("recent_swing_high"),
+        "recent_swing_low": technical_entry.get("recent_swing_low"),
+    }
 
 
 def calculate_quality_score(metrics: dict[str, Any]) -> float | None:
@@ -679,13 +754,10 @@ def calculate_price_zones(
         "watch_zone": explicit["watch_zone"] or _plan_watch_zone(plan),
         "chase_zone": explicit["chase_zone"] or _plan_chase_zone(plan),
     }
-    if _zones_have_buy_upper(zones):
-        return zones
-    derived = _derive_price_zones(market or {}, scores or RadarScores(), metrics or {})
-    return derived if _zones_have_buy_upper(derived) else zones
+    return zones
 
 
-def _derive_price_zones(
+def calculate_valuation_reference_zones(
     market: dict[str, Any],
     scores: RadarScores,
     metrics: dict[str, Any],
@@ -714,17 +786,17 @@ def _derive_price_zones(
         "buy_zone": RadarZone(
             lower=round(low + span * buy_lower_ratio, 2),
             upper=round(low + span * buy_upper_ratio, 2),
-            label="derived_discipline_buy_zone",
+            label="valuation_reference_zone",
         ),
         "watch_zone": RadarZone(
             lower=round(low + span * buy_upper_ratio, 2),
             upper=round(low + span * watch_upper_ratio, 2),
-            label="derived_watch_zone",
+            label="valuation_watch_reference_zone",
         ),
         "chase_zone": RadarZone(
             lower=round(low + span * chase_lower_ratio, 2),
             upper=None,
-            label="derived_chase_zone",
+            label="valuation_chase_reference_zone",
         ),
     }
 
@@ -780,22 +852,34 @@ def calculate_decision(
     chase_zone: RadarZone,
     data_status: str,
     block_reasons: list[str],
+    buy_zone_context: dict[str, Any] | None = None,
 ) -> str:
-    if data_status != "OK":
+    if data_status in {"STALE", "MISSING_PRICE"}:
         return "DATA_MISSING"
     if current_price is None:
         return "DATA_MISSING"
     if _value(scores.risk_score) < 35:
         return "AVOID"
-    if chase_zone.lower is not None and current_price >= chase_zone.lower:
+    context_action = str((buy_zone_context or {}).get("current_action") or "").strip().upper()
+    if not context_action or context_action == "DATA_INSUFFICIENT":
+        return "DATA_MISSING"
+    if context_action == "BLOCK_CHASE":
         return "BLOCK_CHASE"
-    if buy_zone.upper is not None and current_price > buy_zone.upper:
+    if context_action in {"RISK_REVIEW", "AVOID"}:
+        return "AVOID"
+    if context_action in {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}:
         return "WAIT"
+    if context_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "WAIT" if _decision_blocking_reasons(block_reasons) else "ALLOW_BUY"
     return "WAIT" if _decision_blocking_reasons(block_reasons) else "ALLOW_BUY"
 
 
 def _decision_blocking_reasons(block_reasons: list[str]) -> list[str]:
     sizing_only_markers = (
+        "missing discipline buy zone",
+        "current price is below the discipline buy zone",
+        "current price is above the discipline buy zone",
+        "current price is in or above chase zone",
         "final score below 70",
         "core position is not allowed",
         "valuation score below 40",
@@ -1363,7 +1447,7 @@ SCORE_FIELD_USAGE = {
     "technical_score": ["current_price", "fifty_two_week_high", "fifty_two_week_low", "rsi14", "gain_20d_pct"],
     "risk_score": ["net_debt_to_ebitda", "current_ratio", "debt", "cash", "is_stale"],
     "final_score": ["quality_score", "growth_score", "valuation_score", "technical_score", "risk_score"],
-    "price_zones": ["manual_zone", "stock_action_plan", "current_price", "fifty_two_week_high", "fifty_two_week_low", "valuation_score"],
+    "price_zones": ["manual_zone", "stock_action_plan"],
     "position_plan": ["decision", "final_score", "valuation_score", "risk_score"],
 }
 
@@ -1903,12 +1987,6 @@ def _data_status(market: dict[str, Any], scores: RadarScores, buy_zone: RadarZon
         return "STALE"
     if _number(market.get("currentPrice")) is None:
         return "MISSING_PRICE"
-    if _number(scores.valuation_score) is None:
-        return "MISSING_VALUATION"
-    if not _scores_complete(scores):
-        return "MISSING_SCORE"
-    if buy_zone.upper is None:
-        return "MISSING_BUY_ZONE"
     return "OK"
 
 

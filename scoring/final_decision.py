@@ -46,10 +46,13 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
     if max_portfolio is None:
         max_portfolio = _first_number(score, "max_portfolio_weight_percent", "maxPortfolioWeightPercent", default=0.0)
     zone = str(_first_value(buy_zone, "currentZone", "current_zone", default="") or "")
-    unified_action = _unified_buy_zone_action(buy_zone)
-    setup_score = _first_number(buy_zone, "setup_score", "setupScore", default=None) if unified_action else None
-    unified_action_text = str(_first_value(buy_zone, "action_text", "actionText", "buyZoneActionText", default="") or "")
-    unified_primary_zone = _unified_buy_zone_primary_zone(buy_zone)
+    unified_action = _unified_buy_zone_action(buy_zone) or "DATA_INSUFFICIENT"
+    setup_score = _first_number(buy_zone, "setup_score", "setupScore", default=None)
+    unified_action_text = str(
+        _first_value(buy_zone, "action_text", "actionText", "buyZoneActionText", default="")
+        or "技术承接数据不足"
+    )
+    unified_primary_zone = _unified_buy_zone_primary_zone(buy_zone) or "技术承接数据不足"
 
     final_action = action
     block_reasons: list[str] = []
