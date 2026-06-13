@@ -1570,7 +1570,7 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         values = [value for _label, value, _tone in items]
 
-        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
+        self.assertEqual(labels, ["F&G", "VIX"])
         self.assertIn("34 恐惧", values)
 
     def test_dashboard_header_promotes_official_core_macro_indicators_without_proxies(self) -> None:
@@ -1606,10 +1606,10 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
+        self.assertEqual(labels, ["F&G", "VIX"])
         self.assertIn("VIX 19.4", joined)
-        self.assertIn("HY OAS 2.78%", joined)
-        self.assertIn("10Y 4.55%", joined)
+        self.assertNotIn("HY OAS", joined)
+        self.assertNotIn("10Y", joined)
         self.assertNotIn("观察池强弱", joined)
         self.assertNotIn("美元", joined)
         self.assertNotIn("信用代理", joined)
@@ -1634,7 +1634,7 @@ class DashboardLayoutTests(unittest.TestCase):
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
         self.assertIn("VIX 暂缺", joined)
-        self.assertIn("HY OAS 官方暂缺", joined)
+        self.assertNotIn("HY OAS", joined)
         self.assertNotIn("信用代理", joined)
         self.assertNotIn("美元", joined)
         self.assertNotIn("VIX 0.0", joined)
@@ -1654,7 +1654,8 @@ class DashboardLayoutTests(unittest.TestCase):
         items = dashboard_module._dashboard_command_summary_items(macro_regime, FreshnessStub())
         labels = [label for label, _value, _tone in items]
 
-        self.assertEqual(labels, ["大盘", "数据"])
+        self.assertEqual(labels, ["大盘"])
+        self.assertIn("核心", dashboard_module._dashboard_command_data_status_html(macro_regime.data_status))
         self.assertEqual(dashboard_module._dashboard_macro_updated_text(FreshnessStub()), "刚刚更新")
 
         class StaleFreshnessStub:
@@ -1694,7 +1695,8 @@ class DashboardLayoutTests(unittest.TestCase):
         )
 
         self.assertIn("dashboard-command-detail-panel", html)
-        self.assertIn("官方核心指标", html)
+        self.assertIn("核心指标", html)
+        self.assertIn("官方暂缺", html)
         self.assertNotIn("辅助指标", html)
         self.assertNotIn("信用代理", html)
         self.assertNotIn("情绪代理", html)
@@ -1725,7 +1727,7 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertIn("--dash-shell-width: 1680px", styles_source)
         self.assertIn("max-width: var(--dash-shell-width)", styles_source)
-        self.assertIn("calc(100vw - var(--dash-sidebar-width) - 32px)", styles_source)
+        self.assertIn("calc(100vw - 32px)", styles_source)
         self.assertIn("--dash-success-bg", styles_source)
         self.assertIn("--dash-shadow", styles_source)
         self.assertIn("dashboard-command-line", styles_source)

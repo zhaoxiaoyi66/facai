@@ -319,7 +319,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             """,
             unsafe_allow_html=True,
         )
-    command_cols = st.columns([0.86, 0.86, 0.68, 3.1], vertical_alignment="center")
+    command_cols = st.columns([0.9, 0.9, 4.8, 0.86], vertical_alignment="center")
     with command_cols[0]:
         if st.button("更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
@@ -330,7 +330,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
             _clear_dashboard_table_cache()
             st.rerun()
-    with command_cols[2]:
+    with command_cols[3]:
         with st.popover("更多 ▾", use_container_width=True):
             st.markdown("**视图设置**")
             st.selectbox(
@@ -706,6 +706,9 @@ def _render_dashboard_status_bar(
         _dashboard_command_summary_item_html(label, value, tone)
         for label, value, tone in _dashboard_command_summary_items(macro_regime, freshness)
     )
+    data_status_html = _dashboard_command_data_status_html(
+        _dashboard_top_data_status(str(getattr(macro_regime, "data_status", "") or ""))
+    )
     detail_html = _dashboard_command_detail_html(
         macro_regime,
         freshness,
@@ -720,6 +723,7 @@ def _render_dashboard_status_bar(
             '<summary class="dashboard-command-line">'
             f'<span class="dashboard-command-summary">{summary_html}</span>'
             f'<span class="dashboard-command-primary">{macro_pills_html}</span>'
+            f"{data_status_html}"
             f'<span class="dashboard-command-updated">{escape(updated_text)}</span>'
             '<b class="dashboard-command-trigger">详情</b>'
             "</summary>"
@@ -770,16 +774,28 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
     return [
         ("F&G", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
         ("VIX", _dashboard_vix_pill_text(macro_regime), "vix"),
-        ("HY OAS", _dashboard_hy_oas_pill_text(macro_regime), "credit"),
-        ("10Y", _dashboard_ten_year_pill_text(macro_regime), "rate"),
     ]
 
 
 def _dashboard_command_summary_items(macro_regime, freshness) -> list[tuple[str, str, str]]:
     return [
         ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
-        ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
     ]
+
+
+def _dashboard_command_data_status_html(value: str) -> str:
+    return f'<span class="dashboard-command-data-status">数据 {escape(value or "数据待补")}</span>'
+
+
+def _dashboard_top_data_status(value: str) -> str:
+    text = _compact_macro_data_status(value)
+    if text in {"核心完整", "完整", "数据完整"}:
+        return "核心数据可用"
+    if text in {"核心部分可用", "部分可用"}:
+        return "核心部分可用"
+    if text in {"核心缺失", "缺失", "数据不足"}:
+        return "核心数据不足"
+    return text or "数据待补"
 
 
 def _dashboard_macro_updated_text(freshness) -> str:
@@ -929,12 +945,28 @@ def _dashboard_command_status_item_html(label: str, value: str, tone: str = "neu
 
 
 def _dashboard_macro_pill_html(label: str, value: str, tone: str = "neutral") -> str:
+    value_text = str(value or "").strip() or "暂缺"
+    number_part, status_part = _dashboard_macro_pill_value_parts(value_text)
+    value_html = (
+        f"<strong>{escape(number_part)}</strong>"
+        + (f"<em>{escape(status_part)}</em>" if status_part else "")
+    )
     return (
         f'<span class="dashboard-macro-pill {escape(tone)}">'
         f"<b>{escape(label)}</b>"
-        f"<strong>{escape(value)}</strong>"
+        f"{value_html}"
         "</span>"
     )
+
+
+def _dashboard_macro_pill_value_parts(value: str) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "暂缺", ""
+    parts = text.split(" ", 1)
+    if len(parts) == 2 and any(ch.isdigit() for ch in parts[0]):
+        return parts[0], parts[1]
+    return text, ""
 
 
 def _dashboard_command_summary_item_html(label: str, value: str, tone: str = "neutral") -> str:
@@ -955,7 +987,8 @@ def _dashboard_command_detail_html(
 ) -> str:
     return (
         '<div class="dashboard-command-detail-panel">'
-        f"{_dashboard_macro_indicator_group_html('官方核心指标', _dashboard_core_macro_detail_rows(macro_regime))}"
+        f"{_dashboard_macro_indicator_group_html('核心指标', _dashboard_core_macro_detail_rows(macro_regime))}"
+        f"{_dashboard_macro_indicator_group_html('官方暂缺', _dashboard_official_missing_macro_detail_rows(macro_regime))}"
         f"{_dashboard_refresh_log_detail_block_html(last_refresh_result, last_macro_refresh_result)}"
         f"{_dashboard_macro_diagnostics_html(last_macro_refresh_result)}"
         "</div>"
@@ -966,9 +999,14 @@ def _dashboard_core_macro_detail_rows(macro_regime) -> list[tuple[str, str, str,
     return [
         _dashboard_macro_detail_row("F&G", _macro_indicator(macro_regime, FEAR_GREED)),
         _dashboard_macro_detail_row("VIX", _macro_indicator(macro_regime, VIX)),
-        _dashboard_macro_detail_row("HY OAS", _macro_indicator(macro_regime, HY_OAS)),
         _dashboard_macro_detail_row("10Y", _macro_indicator(macro_regime, TEN_YEAR_YIELD)),
         _dashboard_macro_detail_row("10Y-2Y", _macro_indicator(macro_regime, YIELD_CURVE_10Y2Y)),
+    ]
+
+
+def _dashboard_official_missing_macro_detail_rows(macro_regime) -> list[tuple[str, str, str, str]]:
+    return [
+        _dashboard_macro_detail_row("HY OAS", _macro_indicator(macro_regime, HY_OAS)),
         _dashboard_macro_detail_row("美元指数", _macro_indicator(macro_regime, DOLLAR_INDEX)),
     ]
 
@@ -5347,12 +5385,12 @@ def _render_dashboard_styles() -> None:
             background:var(--dash-bg);
         }
         div.block-container {
-            max-width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px));
-            width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px));
-            margin-left: calc(var(--dash-sidebar-width) + 12px) !important;
-            margin-right: 20px !important;
-            padding-left: 0.85rem;
-            padding-right: 0.85rem;
+            max-width: min(var(--dash-shell-width), calc(100vw - 32px));
+            width: min(var(--dash-shell-width), calc(100vw - 32px));
+            margin-left: 0 !important;
+            margin-right: auto !important;
+            padding-left: 1rem;
+            padding-right: 1rem;
         }
         @media (max-width: 980px) {
             div.block-container {
@@ -6978,6 +7016,334 @@ def _render_dashboard_styles() -> None:
             .dashboard-view-action {
                 font-size:11px;
             }
+        }
+        /* Dashboard terminal layout v2: presentation-only overrides. */
+        .terminal-title-group {
+            margin:0 0 0.2rem;
+            padding:0.16rem 0 0.18rem;
+        }
+        .terminal-kicker {
+            color:#1E40AF;
+            font-size:11px;
+            font-weight:820;
+            letter-spacing:0.04em;
+            text-transform:uppercase;
+        }
+        .terminal-title {
+            margin-top:2px;
+            font-size:24px;
+            line-height:1.06;
+            font-weight:840;
+        }
+        .terminal-subtitle {
+            margin-top:4px;
+            color:#64748B;
+            font-size:13px;
+            line-height:1.2;
+        }
+        .terminal-meta {
+            align-items:center;
+            justify-content:flex-end;
+            gap:0;
+            margin-bottom:0.18rem;
+            color:#64748B;
+            font-size:12px;
+            font-weight:620;
+            white-space:nowrap;
+        }
+        .terminal-meta span {
+            height:auto;
+            padding:0 0.48rem;
+            border:0;
+            border-right:1px solid var(--dash-border);
+            border-radius:0;
+            background:transparent;
+            color:#64748B;
+            font-size:12px;
+            font-weight:650;
+            box-shadow:none;
+        }
+        .terminal-meta span:first-child { padding-left:0; }
+        .terminal-meta span:last-child {
+            border-right:0;
+            padding-right:0;
+        }
+        .terminal-divider {
+            margin:0.26rem 0 0.34rem;
+            background:var(--dash-border-soft);
+        }
+        .st-key-dashboard_refresh_price_only button,
+        .st-key-dashboard_refresh_daily_technical button {
+            min-height:34px !important;
+            height:34px !important;
+            border-radius:7px !important;
+            border-color:var(--dash-border) !important;
+            background:#FFFFFF !important;
+            color:#0F172A !important;
+            box-shadow:none !important;
+            font-size:12px !important;
+            font-weight:760 !important;
+        }
+        .st-key-dashboard_refresh_price_only button:hover,
+        .st-key-dashboard_refresh_daily_technical button:hover {
+            border-color:#CBD5E1 !important;
+            background:#F8FAFC !important;
+        }
+        .dashboard-command-center {
+            height:auto;
+            min-height:42px;
+            margin:0 0 0.36rem;
+            padding:0 0.62rem;
+            border-color:var(--dash-border);
+            border-radius:9px;
+            background:#FFFFFF;
+        }
+        .dashboard-command-line {
+            min-height:42px;
+            gap:0.42rem;
+            overflow:visible;
+        }
+        .dashboard-command-summary-item {
+            padding:0;
+            border-right:0;
+            gap:0.28rem;
+            font-size:13px;
+        }
+        .dashboard-command-summary-item b {
+            color:#475569;
+            font-size:13px;
+            font-weight:760;
+        }
+        .dashboard-command-summary-item strong {
+            color:#0F172A;
+            font-size:13.5px;
+            font-weight:800;
+        }
+        .dashboard-command-primary {
+            gap:0.36rem;
+        }
+        .dashboard-macro-pill {
+            min-height:26px;
+            padding:0 0.48rem;
+            gap:0.26rem;
+            border-radius:999px;
+            background:#F8FAFC;
+            border-color:#E2E8F0;
+        }
+        .dashboard-macro-pill.sentiment {
+            background:#FFF7ED;
+            border-color:#FED7AA;
+        }
+        .dashboard-macro-pill.vix {
+            background:#EFF6FF;
+            border-color:#BFDBFE;
+        }
+        .dashboard-macro-pill b {
+            color:#64748B;
+            font-size:12.5px;
+            font-weight:760;
+        }
+        .dashboard-macro-pill strong {
+            color:#0F172A;
+            font-size:15.5px;
+            line-height:1;
+            font-weight:860;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-macro-pill em {
+            color:#64748B;
+            font-size:12.5px;
+            line-height:1;
+            font-style:normal;
+            font-weight:700;
+        }
+        .dashboard-command-data-status {
+            color:#52657F;
+            font-size:13px;
+            font-weight:720;
+            white-space:nowrap;
+        }
+        .dashboard-command-updated {
+            margin-left:auto;
+            color:#94A3B8;
+            font-size:12px;
+            font-weight:650;
+        }
+        .dashboard-command-trigger {
+            min-height:26px;
+            padding:0 0.52rem;
+            color:#1E40AF;
+            font-size:12.5px;
+            font-weight:800;
+        }
+        .dashboard-command-detail-panel {
+            width:min(680px, calc(100vw - 48px));
+            gap:0.56rem;
+            padding:0.68rem;
+            border-radius:10px;
+            box-shadow:0 18px 44px rgba(15, 23, 42, 0.14);
+        }
+        .dashboard-command-detail-section h4 {
+            font-size:12.5px;
+        }
+        .dashboard-command-detail-section table {
+            font-size:11.5px;
+        }
+        .portfolio-structure-strip {
+            min-height:40px;
+            margin:0 0 0.5rem;
+            padding:0 0.62rem;
+            border-radius:9px;
+            border-color:var(--dash-border);
+            background:#FFFFFF;
+            box-shadow:none;
+        }
+        .portfolio-structure-strip.danger {
+            border-color:#FECACA;
+            background:#FFF7F7;
+            box-shadow:inset 3px 0 0 #DC2626;
+        }
+        .portfolio-structure-main {
+            min-height:40px;
+        }
+        .portfolio-structure-main > strong {
+            gap:0.28rem;
+            font-size:13px;
+        }
+        .portfolio-structure-main > strong::before {
+            content:"";
+            width:7px;
+            height:7px;
+            border-radius:999px;
+            background:#CBD5E1;
+        }
+        .portfolio-structure-strip.danger .portfolio-structure-main > strong::before {
+            background:#DC2626;
+        }
+        .portfolio-structure-items span {
+            min-height:22px;
+            padding:0 0.42rem;
+            background:transparent;
+            border-color:transparent;
+        }
+        .portfolio-structure-link {
+            margin-left:auto;
+            font-size:12px;
+            font-weight:800;
+        }
+        .watchlist-head {
+            min-height:38px;
+            margin:0.1rem 0 0.06rem;
+            padding:0;
+        }
+        .watchlist-head strong {
+            font-size:16px;
+            font-weight:840;
+        }
+        .watchlist-head span {
+            font-size:11.5px;
+            color:#64748B;
+        }
+        .watchlist-filter-chips {
+            justify-content:flex-end;
+            gap:0.34rem;
+        }
+        .dashboard-filter-chip {
+            min-height:26px;
+            padding:0 0.58rem;
+            border-radius:999px;
+            font-size:11.5px;
+            font-weight:720;
+            background:#FFFFFF;
+            border-color:#E2E8F0;
+        }
+        .dashboard-filter-chip strong {
+            font-size:12px;
+        }
+        .decision-table {
+            width:100%;
+            max-width:var(--dash-shell-width);
+            border-radius:9px;
+            border-color:var(--dash-border);
+            box-shadow:none;
+        }
+        .decision-grid {
+            grid-template-columns:
+                minmax(118px, 0.74fr)
+                minmax(190px, 1.2fr)
+                minmax(86px, 0.44fr)
+                minmax(190px, 1.05fr)
+                minmax(92px, 0.46fr)
+                minmax(150px, 0.76fr)
+                minmax(88px, 0.42fr)
+                minmax(92px, 0.42fr);
+            gap:0.7rem;
+            min-width:1120px;
+            padding:0 18px;
+        }
+        .decision-grid-head {
+            min-height:31px;
+            background:#F8FAFC;
+        }
+        .decision-header {
+            color:#94A3B8;
+            font-size:10.8px;
+            font-weight:760;
+            text-transform:none;
+        }
+        .decision-row:hover {
+            background:#F9FBFD;
+        }
+        .stock-cell strong {
+            color:#0F172A;
+            font-size:14px;
+            font-weight:860;
+        }
+        .price-market-cell strong {
+            color:#0F172A;
+            font-size:13px;
+            font-weight:820;
+        }
+        .price-market-cell span {
+            color:#94A3B8;
+            font-size:10.8px;
+        }
+        .decision-badge {
+            height:21px;
+            min-height:21px;
+            padding:0 8px;
+            font-size:11px;
+            line-height:21px;
+            font-weight:760;
+        }
+        .action-view-cell {
+            justify-content:flex-start;
+            justify-self:start;
+            width:auto;
+            max-width:100%;
+        }
+        .dashboard-row-actions {
+            max-width:100%;
+            justify-content:flex-start;
+            gap:8px;
+        }
+        .dashboard-view-action {
+            height:22px;
+            padding:0 0.1rem;
+            color:#0F172A;
+            border:0;
+            background:transparent;
+            font-size:11.5px;
+            font-weight:780;
+        }
+        .dashboard-record-action {
+            color:#94A3B8;
+            font-weight:680;
+        }
+        .dashboard-view-action:hover {
+            border:0;
+            background:transparent;
+            color:#1E40AF;
         }
         .drawer-raw {
             margin-top: 0.8rem;
