@@ -32,6 +32,8 @@ def render_global_styles() -> None:
             --zhx-table-head: #F8FAFC;
             --zhx-table-hover: #FBFCFE;
             --zhx-subtle-line: rgba(15, 23, 42, 0.055);
+            --zhx-shell-width: 1360px;
+            --zhx-sidebar-width: 224px;
         }
 
         .stApp {
@@ -41,8 +43,10 @@ def render_global_styles() -> None:
         }
 
         [data-testid="stMainBlockContainer"] {
-            max-width: 1440px;
-            padding: 2rem 2rem 2.5rem;
+            max-width: var(--zhx-shell-width);
+            padding: 1.35rem 1.35rem 2.25rem;
+            margin-left: clamp(0.75rem, 1.8vw, 1.5rem);
+            margin-right: auto;
         }
 
         [data-testid="stHeader"] {
@@ -106,15 +110,15 @@ def render_global_styles() -> None:
         }
 
         [data-testid="stSidebar"] {
-            width: 240px !important;
-            min-width: 240px !important;
+            width: var(--zhx-sidebar-width) !important;
+            min-width: var(--zhx-sidebar-width) !important;
             background: #0B1220;
             border-right: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         [data-testid="stSidebarContent"] {
-            width: 240px !important;
-            padding: 1.5rem 1rem;
+            width: var(--zhx-sidebar-width) !important;
+            padding: 1.15rem 0.82rem;
         }
 
         [data-testid="stSidebar"] * {
@@ -181,11 +185,11 @@ def render_global_styles() -> None:
             font-size: 1.18rem;
             font-weight: 800;
             letter-spacing: 0;
-            margin: 0 0 0.65rem;
+            margin: 0 0 0.45rem;
         }
 
         .sidebar-brand-block {
-            margin: 0 0 1.35rem;
+            margin: 0 0 1rem;
         }
 
         .sidebar-brand-title {
@@ -206,7 +210,7 @@ def render_global_styles() -> None:
         }
 
         .sidebar-section-label {
-            margin: 1.05rem 0 0.42rem;
+            margin: 0.82rem 0 0.34rem;
             color: #64748B;
             font-size: 0.68rem;
             font-weight: 800;
@@ -219,23 +223,23 @@ def render_global_styles() -> None:
         }
 
         .sidebar-data-card {
-            padding: 0.55rem 0.65rem;
+            padding: 0.42rem 0.54rem;
             border: 1px solid rgba(148, 163, 184, 0.12);
-            border-radius: 10px;
+            border-radius: 8px;
             background: rgba(15, 23, 42, 0.48);
-            line-height: 1.35;
+            line-height: 1.26;
         }
 
         .sidebar-data-card div {
             color: #CBD5E1;
-            font-size: 0.78rem;
+            font-size: 0.74rem;
             font-weight: 680;
         }
 
         .sidebar-data-card span {
             display: block;
             color: #64748B;
-            font-size: 0.72rem;
+            font-size: 0.68rem;
         }
 
         [data-testid="stSidebar"] div[style*="border-top"] {

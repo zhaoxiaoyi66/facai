@@ -323,7 +323,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             """,
             unsafe_allow_html=True,
         )
-    command_cols = st.columns([0.72, 0.86, 2.95, 0.52], vertical_alignment="center")
+    command_cols = st.columns([0.86, 0.86, 0.68, 3.1], vertical_alignment="center")
     with command_cols[0]:
         if st.button("更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
@@ -334,7 +334,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
             _clear_dashboard_table_cache()
             st.rerun()
-    with command_cols[3]:
+    with command_cols[2]:
         with st.popover("更多 ▾", use_container_width=True):
             st.markdown("**视图设置**")
             st.selectbox(
@@ -3575,13 +3575,19 @@ def _render_dashboard_styles() -> None:
             --dash-neutral-bg: #F8FAFC;
             --dash-neutral-border: #E2E8F0;
             --dash-radius: 8px;
-            --dash-shadow: 0 18px 45px rgba(15, 23, 42, 0.055);
+            --dash-radius-sm: 7px;
+            --dash-radius-md: 10px;
+            --dash-shell-width: 1360px;
+            --dash-sidebar-width: 224px;
+            --dash-table-row-height: 48px;
+            --dash-badge-height: 20px;
+            --dash-shadow: 0 10px 24px rgba(15, 23, 42, 0.035);
         }
         .terminal-header,
         .terminal-title-group {
-            max-width: 1440px;
-            margin: 0 auto 0.55rem;
-            padding: 0.65rem 0 0.6rem;
+            max-width: var(--dash-shell-width);
+            margin: 0 0 0.42rem;
+            padding: 0.46rem 0 0.42rem;
         }
         .terminal-header {
             display: flex;
@@ -3596,7 +3602,7 @@ def _render_dashboard_styles() -> None:
         }
         .terminal-divider {
             height: 1px;
-            margin: 0.35rem 0 0.65rem;
+            margin: 0.28rem 0 0.46rem;
             background: var(--dash-border);
         }
         .terminal-kicker {
@@ -3609,7 +3615,7 @@ def _render_dashboard_styles() -> None:
         .terminal-title {
             margin-top: 0.1rem;
             color: var(--dash-text);
-            font-size: 1.58rem;
+            font-size: 1.46rem;
             line-height: 1.1;
             font-weight: 780;
         }
@@ -3644,14 +3650,14 @@ def _render_dashboard_styles() -> None:
             font-variant-numeric: tabular-nums;
         }
         .dashboard-command-center {
-            max-width:1360px;
-            margin:0 auto 0.42rem;
-            padding:0.34rem 0.62rem;
+            max-width:var(--dash-shell-width);
+            margin:0 0 0.36rem;
+            padding:0.28rem 0.52rem;
             border:1px solid var(--dash-border);
-            border-radius:10px;
+            border-radius:var(--dash-radius-md);
             background:rgba(255,255,255,0.94);
             color:var(--dash-secondary);
-            box-shadow:0 8px 18px rgba(15, 23, 42, 0.025);
+            box-shadow:none;
             position:relative;
             z-index:8;
         }
@@ -3996,14 +4002,14 @@ def _render_dashboard_styles() -> None:
             }
         }
         .macro-regime-status {
-            max-width:1440px;
-            margin:-0.2rem auto 0.55rem;
+            max-width:var(--dash-shell-width);
+            margin:-0.1rem 0 0.42rem;
             padding:0.44rem 0.66rem;
             border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:9px;
             background:#FFFFFF;
             color:#334155;
-            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            box-shadow:none;
             font-size:12px;
             line-height:1.35;
         }
@@ -4022,14 +4028,14 @@ def _render_dashboard_styles() -> None:
             color:#7F1D1D;
         }
         .dashboard-freshness-strip {
-            max-width:1440px;
-            margin:-0.2rem auto 0.6rem;
+            max-width:var(--dash-shell-width);
+            margin:-0.1rem 0 0.44rem;
             padding:0.38rem 0.62rem;
             border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:9px;
             background:#FFFFFF;
             color:#334155;
-            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            box-shadow:none;
             font-size:11px;
             line-height:1.35;
         }
@@ -4129,14 +4135,14 @@ def _render_dashboard_styles() -> None:
             margin-top:0.32rem;
         }
         .portfolio-structure-strip {
-            max-width:1440px;
-            margin:-0.2rem auto 0.62rem;
+            max-width:var(--dash-shell-width);
+            margin:-0.1rem 0 0.44rem;
             padding:0.42rem 0.66rem;
             border:1px solid rgba(148, 163, 184, 0.18);
             border-radius:9px;
             background:#FFFFFF;
             color:#334155;
-            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            box-shadow:none;
             font-size:11px;
             line-height:1.35;
         }
@@ -4250,8 +4256,8 @@ def _render_dashboard_styles() -> None:
             padding-left:1.05rem;
         }
         .macro-refresh-result {
-            max-width:1440px;
-            margin:-0.15rem auto 0.6rem;
+            max-width:var(--dash-shell-width);
+            margin:-0.08rem 0 0.5rem;
             padding:0.58rem 0.72rem;
             border:1px solid rgba(148, 163, 184, 0.2);
             border-radius:10px;
@@ -4323,15 +4329,15 @@ def _render_dashboard_styles() -> None:
             overflow-wrap:anywhere;
         }
         .dashboard-refresh-result {
-            max-width:1440px;
-            margin:-0.15rem auto 0.6rem;
+            max-width:var(--dash-shell-width);
+            margin:-0.08rem 0 0.5rem;
             padding:0.54rem 0.72rem;
             border:1px solid rgba(148, 163, 184, 0.2);
             border-radius:10px;
             background:#FFFFFF;
             color:#334155;
             font-size:12px;
-            box-shadow:0 10px 22px rgba(15,23,42,0.035);
+            box-shadow:none;
         }
         .dashboard-refresh-result.warning {
             border-color:rgba(217,119,6,0.25);
@@ -4406,12 +4412,12 @@ def _render_dashboard_styles() -> None:
         .terminal-notice,
         .terminal-refresh-card,
         .terminal-loading-shell {
-            max-width: 1440px;
-            margin: 0.65rem auto 0.85rem;
+            max-width: var(--dash-shell-width);
+            margin: 0.55rem 0 0.72rem;
             border: 1px solid var(--dash-border);
             border-radius: 0.7rem;
             background: rgba(255,255,255,0.84);
-            box-shadow: 0 14px 36px rgba(15, 23, 42, 0.05);
+            box-shadow: none;
         }
         .terminal-notice {
             display: flex;
@@ -5318,12 +5324,12 @@ def _render_dashboard_styles() -> None:
             background:var(--dash-bg);
         }
         div.block-container {
-            max-width: calc(100vw - 300px);
-            width: calc(100vw - 300px);
-            margin-left: 252px !important;
-            margin-right: 24px !important;
-            padding-left: 1.25rem;
-            padding-right: 1.25rem;
+            max-width: min(var(--dash-shell-width), calc(100vw - 276px));
+            width: min(var(--dash-shell-width), calc(100vw - 276px));
+            margin-left: 236px !important;
+            margin-right: auto !important;
+            padding-left: 1rem;
+            padding-right: 1rem;
         }
         @media (max-width: 980px) {
             div.block-container {
@@ -5348,14 +5354,14 @@ def _render_dashboard_styles() -> None:
         .watchlist-head,
         .decision-table,
         .table-filter-chip {
-            max-width: 1360px;
-            margin-left: auto;
-            margin-right: auto;
+            max-width: var(--dash-shell-width);
+            margin-left: 0;
+            margin-right: 0;
             box-sizing: border-box;
         }
         .terminal-header,
         .terminal-title-group {
-            max-width: 1360px;
+            max-width: var(--dash-shell-width);
         }
         .terminal-header {
             margin-bottom: 0.28rem;
@@ -5656,8 +5662,8 @@ def _render_dashboard_styles() -> None:
             margin-right:0.4rem;
         }
         .data-health-refresh-result {
-            max-width:1360px;
-            margin:0 auto 0.42rem;
+            max-width:var(--dash-shell-width);
+            margin:0 0 0.42rem;
             display:flex;
             align-items:center;
             justify-content:space-between;
@@ -5762,15 +5768,15 @@ def _render_dashboard_styles() -> None:
             font-variant-numeric:tabular-nums;
         }
         .dashboard-filter-strip {
-            max-width:1440px;
-            margin:0 auto 0.52rem;
+            max-width:var(--dash-shell-width);
+            margin:0 0 0.42rem;
             display:flex;
             align-items:center;
             justify-content:space-between;
             gap:0.75rem;
-            padding:0.42rem 0.52rem;
+            padding:0.36rem 0.48rem;
             border:1px solid rgba(148, 163, 184, 0.16);
-            border-radius:9px;
+            border-radius:var(--dash-radius-md);
             background:#FFFFFF;
         }
         .dashboard-filter-title {
@@ -5806,13 +5812,13 @@ def _render_dashboard_styles() -> None:
             display:inline-flex;
             align-items:center;
             gap:0.22rem;
-            height:24px;
+            height:23px;
             padding:0 0.52rem;
             border:1px solid var(--dash-border);
             border-radius:999px;
             background:#FFFFFF;
             color:var(--dash-neutral) !important;
-            font-size:11px;
+            font-size:10.8px;
             font-weight:700;
             text-decoration:none !important;
             white-space:nowrap;
@@ -6096,13 +6102,13 @@ def _render_dashboard_styles() -> None:
             justify-content:space-between;
             align-items:flex-end;
             gap:0.8rem;
-            margin-top:0.18rem;
-            margin-bottom:0;
+            margin-top:0.08rem;
+            margin-bottom:0.12rem;
         }
         .decision-terminal-head {
-            max-width:1360px;
-            margin-left:auto;
-            margin-right:auto;
+            max-width:var(--dash-shell-width);
+            margin-left:0;
+            margin-right:0;
         }
         .decision-terminal-head strong,
         .watchlist-head strong {
@@ -6125,8 +6131,8 @@ def _render_dashboard_styles() -> None:
             grid-template-columns:82px minmax(0, 1fr);
             align-items:stretch;
             min-height:42px;
-            max-width:1360px;
-            margin:0.18rem auto 0;
+            max-width:var(--dash-shell-width);
+            margin:0.18rem 0 0;
             border:1px solid rgba(148, 163, 184, 0.16);
             border-bottom:0;
             border-radius:6px 6px 0 0;
@@ -6314,8 +6320,8 @@ def _render_dashboard_styles() -> None:
             padding:0 0.48rem 0.4rem;
         }
         div[data-testid="stVerticalBlock"] > div:has(.decision-lanes-marker) + div [data-testid="stHorizontalBlock"] {
-            max-width:1360px;
-            margin:0 auto 0.3rem;
+            max-width:var(--dash-shell-width);
+            margin:0 0 0.3rem;
             padding:0.34rem 0.4rem 0.4rem;
             border:1px solid rgba(148, 163, 184, 0.16);
             border-top:0;
@@ -6514,7 +6520,7 @@ def _render_dashboard_styles() -> None:
             display:inline-flex;
             align-items:center;
             width:max-content;
-            max-width:1360px;
+            max-width:var(--dash-shell-width);
             min-height:28px;
             height:28px;
             margin-top:0.34rem;
@@ -6576,9 +6582,9 @@ def _render_dashboard_styles() -> None:
             overflow-x:auto;
             overflow-y:hidden;
             background:#FFFFFF;
-            margin-top:0.24rem;
+            margin-top:0;
             margin-bottom:0.72rem;
-            box-shadow:var(--dash-shadow);
+            box-shadow:none;
             box-sizing:border-box;
         }
         .decision-grid {
@@ -6593,11 +6599,11 @@ def _render_dashboard_styles() -> None:
                 minmax(76px, 0.42fr)
                 96px;
             align-items:center;
-            gap:0.66rem;
-            min-height:50px;
+            gap:0.62rem;
+            min-height:var(--dash-table-row-height);
             min-width:980px;
             width:100%;
-            padding:0 14px;
+            padding:0 13px;
             box-sizing:border-box;
             font-size:12px;
             overflow:hidden;
@@ -6615,7 +6621,7 @@ def _render_dashboard_styles() -> None:
             padding-left:2px;
         }
         .decision-grid-head {
-            min-height:32px;
+            min-height:30px;
             background:rgba(248, 250, 252, 0.92);
             border-bottom:1px solid var(--dash-border-soft);
         }
@@ -6653,7 +6659,7 @@ def _render_dashboard_styles() -> None:
         .decision-cell {
             display:flex;
             align-items:center;
-            min-height:50px;
+            min-height:var(--dash-table-row-height);
             padding:0;
             border-bottom:0;
             color:var(--dash-text);
@@ -6666,7 +6672,7 @@ def _render_dashboard_styles() -> None:
             box-sizing:border-box;
         }
         .decision-table.compact .decision-cell {
-            min-height:48px;
+            min-height:var(--dash-table-row-height);
             font-size:12px;
         }
         .decision-cell > * {
@@ -6744,14 +6750,14 @@ def _render_dashboard_styles() -> None:
         .decision-badge {
             display:inline-flex;
             align-items:center;
-            height:20px;
-            min-height:20px;
+            height:var(--dash-badge-height);
+            min-height:var(--dash-badge-height);
             max-width:100%;
             padding:0 8px;
             border-radius:999px;
             font-size:11px;
             font-weight:700;
-            line-height:20px;
+            line-height:var(--dash-badge-height);
             white-space:nowrap;
             overflow:hidden;
             text-overflow:ellipsis;
@@ -6832,7 +6838,7 @@ def _render_dashboard_styles() -> None:
             display:inline-flex;
             align-items:center;
             justify-content:center;
-            gap:8px;
+            gap:7px;
             width:max-content;
             max-width:96px;
             white-space:nowrap;
@@ -6854,15 +6860,15 @@ def _render_dashboard_styles() -> None:
             align-items:center;
             justify-content:center;
             gap:0.12rem;
-            min-width:34px;
-            height:24px;
-            padding:0 0.42rem;
+            min-width:0;
+            height:22px;
+            padding:0 0.18rem;
             border:1px solid transparent;
             border-radius:4px;
             background:transparent;
             color:var(--dash-text);
-            font-size:12px;
-            font-weight:760;
+            font-size:11.5px;
+            font-weight:740;
             text-decoration:none !important;
             white-space:nowrap;
             overflow:hidden;
