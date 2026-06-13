@@ -38,9 +38,17 @@ def test_missing_portfolio_target_uses_conservative_default(tmp_path: Path) -> N
 def test_now_default_target_is_ai_software_core() -> None:
     target = get_portfolio_target("NOW")
 
-    assert target.target_weight == 10.0
-    assert target.max_weight == 15.0
+    assert target.target_weight == 12.0
+    assert target.max_weight == 16.0
     assert target.role == "ai_software_core"
+
+
+def test_nvda_default_target_is_ai_core() -> None:
+    target = get_portfolio_target("NVDA")
+
+    assert target.target_weight == 45.0
+    assert target.max_weight == 52.0
+    assert target.role == "ai_core"
 
 
 def test_apply_portfolio_target_uses_config_targets_over_existing_limits(tmp_path: Path) -> None:

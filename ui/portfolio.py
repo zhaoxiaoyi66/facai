@@ -293,7 +293,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
         '<div class="buy-execution-plan-summary">'
         "<strong>计划摘要</strong>"
         f"{html}"
-        "<small>计划只提供执行依据；Radar / 计划 / 结构提示会保存为复盘快照，不单独阻止买入。</small>"
+        "<small>计划只提供执行依据；Radar / 计划 / 结构提示会保存为复盘快照，偏离建议会记录为人工 override。</small>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1150,7 +1150,7 @@ def _system_action_text(row: dict) -> str:
     if lane == "review":
         return "待复核"
     if lane == "blocked":
-        return "禁止追高"
+        return "追高风险"
     if lane == "actionable":
         return "可加仓"
     if lane == "wait":
@@ -1384,7 +1384,7 @@ def _decision_lane_text(value: object) -> str:
     return {
         "actionable": "可执行",
         "review": "需复核",
-        "blocked": "阻断",
+        "blocked": "风险复核",
         "wait": "等待",
     }.get(str(value), "未生成")
 
@@ -1395,7 +1395,7 @@ def _buy_zone_status_text(value: object) -> str:
         "tranche_buy": "估值分批区",
         "heavy_buy": "估值重仓区",
         "below_heavy_buy": "低于重仓区",
-        "no_chase": "禁止追高",
+        "no_chase": "追高风险",
         "data_insufficient": "数据不足",
         "invalid_zone": "估值参考异常",
         "low_confidence_zone": "低置信估值参考",
@@ -1524,14 +1524,14 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
     primary_title = "底仓提示" if entry_mode == "starter_position" else "买入风险提示"
     market_items = _portfolio_buy_market_status_items(market_status, gate)
     actions = _portfolio_buy_gate_actions(plan_reasons, starter_reasons, tier=tier)
-    reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>当前买入偏离系统建议，请人工确认。</li>"
+    reason_html = "".join(f"<li>{escape(item)}</li>" for item in primary_reasons) or "<li>当前买入偏离系统建议，请人工确认；可手动继续。</li>"
     market_html = "".join(f"<li>{escape(item)}</li>" for item in market_items) or "<li>当前市场状态需复核。</li>"
     action_html = "".join(f"<li>{escape(item)}</li>" for item in actions)
     return (
         '<section class="portfolio-gate-notice">'
         '<div class="portfolio-gate-notice-head">'
         f"<strong>{escape(symbol)} 买入风险提示</strong>"
-        "<span>系统不阻止买入；确认成交后会入账，并记录这些提示用于复盘。</span>"
+        "<span>系统只提供风险提醒；可手动继续，继续操作会记录为人工 override。</span>"
         "</div>"
         '<div class="portfolio-gate-notice-grid">'
         f"<div><b>{escape(primary_title)}</b><ul>{reason_html}</ul></div>"
@@ -1543,7 +1543,12 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
 
 
 def _portfolio_buy_gate_reasons(gate: dict) -> list[str]:
-    raw_items = [*(gate.get("reasons") or []), *(gate.get("required_actions") or [])]
+    raw_items = [
+        *(gate.get("advisory_warnings") or []),
+        *(gate.get("radarAdvisoryWarnings") or []),
+        *(gate.get("reasons") or []),
+        *(gate.get("required_actions") or []),
+    ]
     reasons = [_portfolio_buy_gate_reason_text(item) for item in raw_items if str(item).strip()]
     return _dedupe_text(reasons)
 
@@ -1553,13 +1558,13 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     lower = text.lower()
     mappings = [
         ("current price is above the discipline buy zone", "当前价高于 Radar 参考买区，属于买区提示。"),
-        ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩，但不单独阻止买入。"),
+        ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩；如仍继续，将记录为人工 override。"),
         ("valuation score below 40", "估值评分低于 40，系统建议降低仓位。"),
         ("final score below 70", "综合评分低于 70，系统建议不要作为核心仓。"),
         ("core position is not allowed", "系统不建议作为核心仓。"),
         ("heavy position is not allowed", "系统不建议高仓位。"),
-        ("data missing", "买区数据不足，需人工判断。"),
-        ("stale", "缓存已过期，需人工判断。"),
+        ("data missing", "买区数据不足，需人工判断；可手动继续。"),
+        ("stale", "缓存已过期，需人工判断；可手动继续。"),
         ("missing current price", "缺少当前价格。"),
         ("missing valuation", "缺少估值指标。"),
     ]
@@ -1567,8 +1572,22 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
         if needle in lower:
             return label
     if "Radar" in text or "买入后仓位" in text or "情绪交易风险" in text:
-        return text
-    return text or "当前买入偏离系统建议，请人工确认。"
+        return _soften_buy_advisory_text(text)
+    return _soften_buy_advisory_text(text) or "当前买入偏离系统建议，请人工确认；可手动继续。"
+
+
+def _soften_buy_advisory_text(text: str) -> str:
+    replacements = {
+        "系统不" + "阻止买入，会记录用于复盘": "可手动继续，系统会记录为人工 override",
+        "不作为买入" + "硬" + "拦截": "可手动继续，系统会记录为人工 override",
+        "不单独" + "阻止买入": "可手动继续，系统会记录为人工 override",
+        "不再" + "硬" + "拦截": "可手动继续",
+        "硬" + "拦截": "风险提示",
+    }
+    cleaned = text
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+    return cleaned
 
 
 def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[str]:
@@ -1584,7 +1603,7 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
         allowed_add_pct = _number(gate.get("allowed_add_pct"))
         if allowed_add_pct is not None and allowed_add_pct <= 0:
             items.append("系统参考新增仓位为 0%，仅作风险提示。")
-        items.append("Radar 买区是判断辅助，不单独阻止买入。")
+        items.append("Radar 买区是判断辅助；可手动继续，偏离建议会记录为人工 override。")
     return _dedupe_text(items)
 
 
@@ -1595,7 +1614,7 @@ def _portfolio_buy_gate_actions(
     tier: object = "",
 ) -> list[str]:
     clean_tier = str(tier or "").strip().upper()
-    actions = ["复核 Radar 买区提示；最终买入由你决定。"]
+    actions = ["复核 Radar 买区提示；最终买入由你决定，偏离建议会记录为人工 override。"]
     if clean_tier == "A":
         actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
     elif clean_tier == "B":
@@ -1635,10 +1654,10 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "price_missing": "缺少当前价格，无法匹配计划。",
         "quantity_missing": "买入数量无效，无法匹配计划档位。",
         "level_filled": "该计划档位已没有剩余可买数量。",
-        "plan_created_too_late": "计划创建时间较近；现在仅作为复盘标记，不再硬拦截。",
-        "plan_modified_too_late": "计划修改时间较近；现在仅作为复盘标记，不再硬拦截。",
-        "plan_timestamp_missing": "计划时间戳缺失；仅影响复盘标记，不作为硬拦截。",
-        "plan_cooldown_not_met": "计划刚创建或刚修改；现在仅作为复盘标记，不再硬拦截。",
+        "plan_created_too_late": "计划创建时间较近；现在仅作为复盘标记，可手动继续。",
+        "plan_modified_too_late": "计划修改时间较近；现在仅作为复盘标记，可手动继续。",
+        "plan_timestamp_missing": "计划时间戳缺失；仅影响复盘标记，可手动继续。",
+        "plan_cooldown_not_met": "计划刚创建或刚修改；现在仅作为复盘标记，可手动继续。",
         "missing_position_limit": "计划缺少买后仓位上限。",
         "missing_exit_condition": "计划缺少失效条件 / 退出条件。",
         "valuation_review_required": "估值评分低于 40，计划缺少复核说明。",

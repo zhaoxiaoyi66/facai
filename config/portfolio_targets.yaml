@@ -1,25 +1,25 @@
 NVDA:
-  role: core
+  role: ai_core
   target_weight: 0.45
-  max_weight: 0.50
+  max_weight: 0.52
 
 AVGO:
-  role: ai_hardware
+  role: ai_hardware_core
   target_weight: 0.08
   max_weight: 0.12
 
 MSFT:
-  role: ai_platform
+  role: ai_platform_core
   target_weight: 0.08
   max_weight: 0.12
 
 NOW:
   role: ai_software_core
-  target_weight: 0.10
-  max_weight: 0.15
+  target_weight: 0.12
+  max_weight: 0.16
 
 ADBE:
-  role: repair
+  role: ai_software_repair
   target_weight: 0.03
   max_weight: 0.06
 
@@ -39,7 +39,7 @@ MRVL:
   max_weight: 0.06
 
 MU:
-  role: cyclical_ai_memory
+  role: ai_memory_cycle
   target_weight: 0.03
   max_weight: 0.06
 

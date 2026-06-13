@@ -14,6 +14,7 @@ from data.action_fusion import (
     LEFT_ADD_ALLOWED,
     LEFT_NOT_ALLOWED,
     LEFT_PROBE_ALLOWED,
+    LEFT_WAIT_BETTER_PRICE,
     POSITION_LIMITED,
     WAIT_CONFIRMATION,
     action_fusion_card_html,
@@ -76,7 +77,7 @@ def test_mrvl_detached_from_observation_zone_blocks_chase() -> None:
     )
 
     assert result.action_code == BLOCK_CHASE
-    assert result.action_cn == "不建议追高"
+    assert result.action_cn == "追高风险提示"
     assert "禁止追高" not in result.action_cn
     assert "不建议追高" in result.buy_plan_cn
     assert "脱离回踩观察区" in " ".join(result.advisory_warnings_cn)
@@ -119,8 +120,8 @@ def test_nvda_near_target_waits_confirmation_without_adding() -> None:
             "current_shares": 360,
             "portfolio_weight": 42.2,
             "target_weight": 45.0,
-            "max_weight": 50.0,
-            "role": "core",
+            "max_weight": 52.0,
+            "role": "ai_core",
         },
     )
 
@@ -134,7 +135,7 @@ def test_nvda_at_max_weight_holds_no_add() -> None:
     result = evaluate_action_fusion(
         ticker="NVDA",
         context=_base(volume_price_status="ACCEPTANCE_CONFIRMED", volume_price_score=86),
-        portfolio_context={"portfolio_weight": 50.0, "target_weight": 45.0, "max_weight": 50.0},
+        portfolio_context={"portfolio_weight": 52.0, "target_weight": 45.0, "max_weight": 52.0},
     )
 
     assert result.action_code == HOLD_NO_ADD
@@ -146,7 +147,7 @@ def test_repair_role_adds_low_ceiling_advisory() -> None:
     result = evaluate_action_fusion(
         ticker="ADBE",
         context=_base(volume_price_status="ACCEPTANCE_CONFIRMED", volume_price_score=88),
-        portfolio_context={"portfolio_weight": 1.0, "target_weight": 3.0, "max_weight": 6.0, "role": "repair"},
+        portfolio_context={"portfolio_weight": 1.0, "target_weight": 3.0, "max_weight": 6.0, "role": "ai_software_repair"},
     )
 
     assert result.action_code == ALLOW_SMALL_BUY
@@ -231,7 +232,7 @@ def test_left_side_observation_forming_low_weight_allows_probe() -> None:
     result = evaluate_action_fusion(
         ticker="MSFT",
         context=_base(current_price=100, volume_price_status="FORMING", volume_price_score=52),
-        portfolio_context={"portfolio_weight": 0.0, "target_weight": 8.0, "max_weight": 12.0, "role": "ai_platform"},
+        portfolio_context={"portfolio_weight": 0.0, "target_weight": 8.0, "max_weight": 12.0, "role": "ai_platform_core"},
     )
 
     assert result.action_code == WAIT_CONFIRMATION
@@ -244,19 +245,20 @@ def test_left_side_existing_position_below_target_allows_small_add() -> None:
     result = evaluate_action_fusion(
         ticker="NOW",
         context=_base(volume_price_status="FORMING", volume_price_score=52),
-        portfolio_context={"current_shares": 10, "portfolio_weight": 4.0, "target_weight": 8.0, "max_weight": 12.0},
+        portfolio_context={"current_shares": 10, "portfolio_weight": 5.8, "target_weight": 12.0, "max_weight": 16.0, "role": "ai_software_core"},
     )
 
     assert result.left_side_plan["action_code"] == LEFT_ADD_ALLOWED
     assert result.left_side_allowed is True
     assert "不能一次打满" in result.left_side_warning_cn
+    assert result.left_side_plan["left_cap_ratio"] == 0.75
 
 
 def test_left_side_near_limit_is_position_limited() -> None:
     result = evaluate_action_fusion(
         ticker="NVDA",
         context=_base(volume_price_status="FORMING", volume_price_score=52),
-        portfolio_context={"current_shares": 360, "portfolio_weight": 42.2, "target_weight": 45.0, "max_weight": 50.0},
+        portfolio_context={"current_shares": 360, "portfolio_weight": 42.2, "target_weight": 45.0, "max_weight": 52.0, "role": "ai_core"},
     )
 
     assert result.left_side_plan["action_code"] == POSITION_LIMITED
@@ -268,12 +270,12 @@ def test_left_side_existing_position_above_left_cap_waits_confirmation() -> None
     result = evaluate_action_fusion(
         ticker="NOW",
         context=_base(volume_price_status="FORMING", volume_price_score=52),
-        portfolio_context={"current_shares": 10, "portfolio_weight": 5.0, "target_weight": 8.0, "max_weight": 12.0},
+        portfolio_context={"current_shares": 10, "portfolio_weight": 9.1, "target_weight": 12.0, "max_weight": 16.0, "role": "ai_software_core"},
     )
 
-    assert result.left_side_plan["action_code"] == POSITION_LIMITED
+    assert result.left_side_plan["action_code"] == LEFT_WAIT_BETTER_PRICE
     assert result.left_side_allowed is False
-    assert "60%" in result.left_side_warning_cn
+    assert "75%" in result.left_side_warning_cn
 
 
 def test_left_side_gap_down_event_review_only() -> None:
@@ -341,7 +343,7 @@ def test_action_fusion_card_displays_position_constraint() -> None:
     result = evaluate_action_fusion(
         ticker="NVDA",
         context=_base(volume_price_status="FORMING", volume_price_score=48),
-        portfolio_context={"portfolio_weight": 42.2, "target_weight": 45.0, "max_weight": 50.0, "role": "core"},
+        portfolio_context={"portfolio_weight": 42.2, "target_weight": 45.0, "max_weight": 52.0, "role": "ai_core"},
     )
 
     html = action_fusion_card_html(result)
@@ -349,7 +351,7 @@ def test_action_fusion_card_displays_position_constraint() -> None:
     assert "仓位约束" in html
     assert "当前 42.2%" in html
     assert "目标 45.0%" in html
-    assert "上限 50.0%" in html
+    assert "上限 52.0%" in html
 
 
 def test_dashboard_drawer_missing_action_fusion_shows_safe_fallback() -> None:

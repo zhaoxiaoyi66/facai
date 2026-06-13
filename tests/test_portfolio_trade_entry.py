@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import inspect
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import data.portfolio_trade_entry as portfolio_trade_entry
+import ui.portfolio as portfolio_ui
 from data.decision_log import TradeJournalStore
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.portfolio import PortfolioPositionStore
@@ -147,7 +149,8 @@ def test_missing_buy_gate_fields_use_ledger_language() -> None:
     assert fields["radarBlocked"] is False
     assert fields["gateHardBlocked"] is False
     assert fields["radarBlockReasons"] == []
-    assert fields["radarAdvisoryWarnings"] == ["Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"]
+    assert fields["radarAdvisoryWarnings"] == ["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"]
+    assert fields["warningLevel"] == "warning"
 
 
 def test_stock_plan_old_schema_adds_created_at_column_without_crashing() -> None:
@@ -605,9 +608,69 @@ def test_radar_chase_warning_saves_journal_and_syncs_position() -> None:
         assert not entry["radar_blocked"]
         assert entry["radar_advisory_only"]
         assert json.loads(entry["radar_advisory_warnings_json"])
+        assert entry["user_override"] is True
+        assert entry["risk_warning_cn"]
+        assert result["gate"]["can_continue"] is True
+        assert result["gate"]["is_blocked"] is False
+        assert result["gate"]["warning_level"] == "danger"
         assert result["synced"] is True
         assert position is not None
         assert position["quantity"] == 2
+
+
+@pytest.mark.parametrize(
+    ("decision", "data_status"),
+    [
+        ("WAIT", "OK"),
+        ("DATA_MISSING", "DATA_MISSING"),
+    ],
+)
+def test_advisory_decisions_allow_manual_continue_and_record_override(decision: str, data_status: str) -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        report = _report(decision)
+        report["data_status"] = data_status
+
+        result = submit_portfolio_buy_add("MSFT", _base_values(), path=path, radar_report=report)
+
+        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("MSFT")
+        assert entry is not None
+        assert result["gate"]["can_continue"] is True
+        assert result["gate"]["is_blocked"] is False
+        assert result["synced"] is True
+        assert entry["user_override"] is True
+        assert entry["risk_warning_cn"]
+        assert position is not None
+        assert position["quantity"] == 2
+
+
+@pytest.mark.parametrize(
+    ("symbol", "values", "match"),
+    [
+        ("", _base_values(), "symbol is required"),
+        ("MSFT", _base_values(quantity=0), "quantity must be positive"),
+        ("MSFT", _base_values(price=0), "price must be positive"),
+    ],
+)
+def test_trade_gate_keeps_technical_validation_hard_errors(symbol: str, values: dict, match: str) -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+
+        if symbol:
+            _assert_rejected_trade_leaves_no_journal(symbol, values, path=path, radar_report=_report(), match=match)
+            return
+        with pytest.raises(ValueError, match=match):
+            submit_portfolio_buy_add(symbol, values, path=path, radar_report=_report())
+        assert TradeJournalStore(path).list_entries("NVDA") == []
+
+
+def test_portfolio_buy_add_button_is_not_disabled_by_advisory_state() -> None:
+    source = inspect.getsource(portfolio_ui._render_portfolio_buy_add_form)
+
+    submit_line = next(line for line in source.splitlines() if "确认买入 / 加仓并入账" in line)
+    assert "form_submit_button" in submit_line
+    assert "disabled=" not in submit_line
 
 
 def test_planned_ladder_buy_can_sync_when_radar_blocks_chase_but_plan_matches() -> None:
@@ -1381,7 +1444,8 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
                     "current price is in or above chase zone",
                     "valuation score below 40; heavy position is not allowed",
                     "final score below 70; core position is not allowed",
-                    "当前买入偏离系统建议：买入后仓位 5.6% 高于 Radar 交易仓参考上限 0.0%；系统不阻止买入，会记录用于复盘。",
+                    "当前买入偏离系统建议：买入后仓位 5.6% 高于 Radar 交易仓参考上限 0.0%；"
+                    "系统不" + "阻止买入，会记录用于复盘。",
                 ],
             },
             "planGate": {
@@ -1397,11 +1461,12 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
     )
 
     assert "NOK 买入风险提示" in html
-    assert "系统不阻止买入" in html
+    assert "系统只提供风险提醒" in html
     assert "买入风险提示" in html
     assert "当前市场状态" in html
     assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e Radar \u53c2\u8003\u4e70\u533a" in html
-    assert "\u4e0d\u5355\u72ec\u963b\u6b62\u4e70\u5165" in html
+    assert "可手动继续" in html
+    assert "人工 override" in html
     assert "估值评分低于 40" in html
     assert "综合评分低于 70" in html
     assert "0%" in html

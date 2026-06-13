@@ -7,7 +7,7 @@ from typing import Any
 
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
-MISSING_BUY_GATE_REASON = "Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"
+MISSING_BUY_GATE_REASON = "Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class BuyGateResult:
     is_blocked: bool
     can_sync_portfolio: bool
     severity: str
+    warning_level: str
     reasons: list[str]
     advisory_warnings: list[str]
     allowed_add_pct: float
@@ -93,6 +94,7 @@ def evaluate_buy_gate(
             is_blocked=False,
             can_sync_portfolio=True,
             severity="not_applicable",
+            warning_level="info",
             reasons=[],
             advisory_warnings=[],
             allowed_add_pct=_number(data.get("allowed_add_pct")) or 0.0,
@@ -131,6 +133,7 @@ def evaluate_buy_gate(
     if observation_only:
         advisory_warnings.append("仅观察不是一笔真实买入；请用计划买入或价格提醒记录观察，不写入真实账本。")
 
+    warning_level = _warning_level(data, decision, advisory_warnings)
     severity = "warning" if advisory_warnings else "pass"
     return BuyGateResult(
         ticker=ticker,
@@ -139,6 +142,7 @@ def evaluate_buy_gate(
         is_blocked=is_blocked,
         can_sync_portfolio=can_sync,
         severity=severity,
+        warning_level=warning_level,
         reasons=_dedupe(reasons),
         advisory_warnings=_dedupe(advisory_warnings),
         allowed_add_pct=_number(data.get("allowed_add_pct")) or 0.0,
@@ -180,7 +184,7 @@ def evaluate_position_limit(data: dict[str, Any], position_bucket: str, planned_
     if limit is None or limit <= 0:
         return []
     if after_pct > limit:
-        return [f"当前买入偏离系统建议：买入后仓位 {after_pct:.1f}% 高于 Radar {label}参考上限 {limit:.1f}%；系统不阻止买入，会记录用于复盘。"]
+        return [f"当前买入偏离系统建议：买入后仓位 {after_pct:.1f}% 高于 Radar {label}参考上限 {limit:.1f}%；可手动继续，系统会记录为人工 override。"]
     return []
 
 
@@ -200,14 +204,14 @@ def evaluate_position_advisory(data: dict[str, Any], position_bucket: str, plann
     if limit is None:
         return [f"缺少 Radar {label}参考上限，需人工判断仓位。"]
     if limit <= 0:
-        return [f"Radar {label}参考上限为 0%，这是风险提示，不单独阻止买入。"]
+        return [f"Radar {label}参考上限为 0%，这是风险提示；可手动继续，系统会记录为人工 override。"]
     return []
 
 
 def evaluate_mood_gate(mood: str) -> list[str]:
     text = str(mood or "").strip().lower()
     if text in BUY_MOOD_BLOCKERS:
-        return ["买入风险提示：当前存在 FOMO / 焦虑 / 抄底冲动 / 复仇交易倾向。系统不阻止买入，但建议确认这不是情绪交易。"]
+        return ["买入风险提示：当前存在 FOMO / 焦虑 / 抄底冲动 / 复仇交易倾向。可手动继续，系统会记录为人工 override。"]
     return []
 
 
@@ -221,6 +225,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
                 "gateHardBlocked": False,
                 "radarAdvisoryOnly": True,
                 "radarAdvisoryWarnings": [MISSING_BUY_GATE_REASON],
+                "warningLevel": "warning",
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
                 "radarObservationOnly": False,
@@ -233,6 +238,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "gateHardBlocked": False,
             "radarAdvisoryOnly": False,
             "radarAdvisoryWarnings": [],
+            "warningLevel": "info",
             "moodGateBlocked": False,
             "positionGateBlocked": False,
             "radarObservationOnly": False,
@@ -245,6 +251,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "gateHardBlocked": False,
         "radarAdvisoryOnly": result.radar_advisory_only,
         "radarAdvisoryWarnings": result.advisory_warnings,
+        "warningLevel": result.warning_level,
         "pricePosition": result.price_position,
         "entryDisplayLabel": result.entry_display_label,
         "entryActionHint": result.entry_action_hint,
@@ -263,19 +270,29 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
 def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation_only: bool) -> list[str]:
     block_reasons = [str(item) for item in (data.get("block_reasons") or []) if str(item).strip()]
     if decision == "DATA_MISSING":
-        return block_reasons or ["Radar / 买区数据不足，需人工判断；不作为买入硬拦截。"]
+        return block_reasons or ["Radar / 买区数据不足，需人工判断；可手动继续，系统会记录为人工 override。"]
     if decision == "BLOCK_CHASE":
-        return block_reasons or ["当前处于追高风险区，系统建议等待回踩；不作为买入硬拦截。"]
+        return block_reasons or ["当前处于追高风险区，系统不建议追高；如仍继续，将记录为人工 override。"]
     if decision == "AVOID":
-        return block_reasons or ["Radar 结论为 AVOID，请人工复核风险；不作为买入硬拦截。"]
+        return block_reasons or ["Radar 结论为 AVOID，风险较高，需人工复核；如仍继续，将记录为人工 override。"]
     if decision == "WAIT":
-        reason = "Radar 结论为 WAIT，系统建议等待或复核；不作为买入硬拦截。"
+        reason = "Radar 结论为 WAIT，系统建议等待或复核；如仍继续，将记录为人工 override。"
         if observation_only:
             reason = "Radar 结论为 WAIT；仅观察不是一笔真实买入，请用计划买入或价格提醒记录。"
         return [reason]
     if decision == "ALLOW_BUY":
         return []
-    return [f"Radar 结论未知：{decision or 'missing'}，需人工判断；不作为买入硬拦截。"]
+    return [f"Radar 结论未知：{decision or 'missing'}，需人工判断；如仍继续，将记录为人工 override。"]
+
+
+def _warning_level(data: dict[str, Any], decision: str, advisory_warnings: list[str]) -> str:
+    if not advisory_warnings:
+        return "info"
+    price_position = _price_position(data)
+    text = " ".join([decision, price_position, *[str(item) for item in advisory_warnings]]).upper()
+    if any(token in text for token in ("BLOCK_CHASE", "IN_CHASE_ZONE", "AVOID", "FAILED", "EVENT", "追高", "冲击", "仓位")):
+        return "danger"
+    return "warning"
 
 
 def _price_position(data: dict[str, Any]) -> str:

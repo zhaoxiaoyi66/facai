@@ -300,7 +300,38 @@ class DecisionLogTests(unittest.TestCase):
             )
 
             self.assertEqual(saved["radar_block_reasons"], [])
-            self.assertEqual(saved["radar_advisory_warnings"], ["Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"])
+            self.assertEqual(saved["radar_advisory_warnings"], ["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"])
+
+    def test_trade_journal_store_saves_advisory_override_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "add",
+                    "quantity": 1,
+                    "price": 210,
+                    "radarDecision": "WAIT",
+                    "radarAdvisoryWarnings": ["等待确认；可手动继续。"],
+                    "advisoryAction": "等待确认",
+                    "riskWarningCn": "等待确认；可手动继续。",
+                    "userOverride": True,
+                    "overrideReason": "用户按左侧计划小仓执行",
+                    "actionFusionAction": "WAIT_CONFIRMATION",
+                    "leftSideActionCn": "等待更好左侧价",
+                    "positionStatus": "接近目标",
+                },
+            )
+
+            self.assertTrue(saved["user_override"])
+            self.assertEqual(saved["advisory_action"], "等待确认")
+            self.assertEqual(saved["risk_warning_cn"], "等待确认；可手动继续。")
+            self.assertEqual(saved["override_reason"], "用户按左侧计划小仓执行")
+            self.assertEqual(saved["action_fusion_action"], "WAIT_CONFIRMATION")
+            self.assertEqual(saved["left_side_action_cn"], "等待更好左侧价")
+            self.assertEqual(saved["position_status"], "接近目标")
 
     def test_trade_journal_store_saves_fresh_buy_plan_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:

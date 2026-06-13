@@ -38,12 +38,12 @@ ACTION_LABELS = {
     WAIT_CONFIRMATION: "等待确认",
     ADD_ON_PULLBACK: "回踩到位再加",
     ADD_ON_BREAKOUT: "放量确认后加",
-    HOLD_NO_ADD: "持有，不加",
+    HOLD_NO_ADD: "仓位偏高，暂不建议加",
     REDUCE_RISK: "降低风险",
-    BLOCK_CHASE: "不建议追高",
+    BLOCK_CHASE: "追高风险提示",
     BREAKDOWN_REVIEW: "破位复核",
-    EVENT_REVIEW: "事件冲击复核",
-    DATA_INSUFFICIENT: "数据不足",
+    EVENT_REVIEW: "事件冲击复核，谨慎处理",
+    DATA_INSUFFICIENT: "数据不足，需人工判断",
 }
 
 VOLUME_STATUS_LABELS = {
@@ -59,11 +59,27 @@ LEFT_SIDE_ACTION_LABELS = {
     LEFT_PROBE_ALLOWED: "允许左侧试探",
     LEFT_ADD_ALLOWED: "允许左侧小幅加仓",
     LEFT_WAIT_BETTER_PRICE: "等待更低左侧价",
-    LEFT_NOT_ALLOWED: "不允许左侧买入",
+    LEFT_NOT_ALLOWED: "左侧不建议买入",
     EVENT_REVIEW_ONLY: "事件复核，不做左侧摊低",
-    CHASE_BLOCKED: "脱离观察区，禁止追高",
-    POSITION_LIMITED: "仓位限制，不再加仓",
+    CHASE_BLOCKED: "脱离观察区，追高风险提示",
+    POSITION_LIMITED: "仓位接近上限，建议控制节奏",
 }
+
+ROLE_LEFT_SIDE_CAP_RATIOS = {
+    "ai_core": 0.80,
+    "ai_hardware_core": 0.70,
+    "ai_platform_core": 0.75,
+    "ai_software_core": 0.75,
+    "ai_software_repair": 0.45,
+    "ai_infra_satellite": 0.50,
+    "ai_network_satellite": 0.50,
+    "ai_hardware_satellite": 0.50,
+    "ai_memory_cycle": 0.50,
+    "event_trade": 0.35,
+    "watch_only": 0.25,
+}
+
+LEFT_SIDE_QUALITY_EXEMPT_ROLES = {"ai_core", "ai_platform_core", "ai_software_core"}
 
 
 @dataclass(frozen=True)
@@ -512,6 +528,9 @@ def _build_left_side_plan(
     max_weight: float | None,
     role: str,
 ) -> dict[str, Any]:
+    normalized_role = _normalized_role(role)
+    cap_ratio = _left_side_cap_ratio(normalized_role)
+    left_cap_weight = target_weight * cap_ratio if target_weight is not None else None
     left_context = _left_side_context(
         price=price,
         observation_low=observation_low,
@@ -525,6 +544,8 @@ def _build_left_side_plan(
         "right_confirm_trigger_cn": _right_confirm_trigger(confirm_line),
         "invalidation_cn": _left_invalidation(invalid_line, observation_low),
         "add_levels_cn": _left_add_levels(left_context, invalid_line),
+        "left_cap_ratio": cap_ratio,
+        "left_cap_weight": left_cap_weight,
     }
     event_shock = bool(
         (volume_ratio is not None and volume_ratio >= 2.0 and gap_down)
@@ -536,7 +557,14 @@ def _build_left_side_plan(
         return _left_plan(
             LEFT_NOT_ALLOWED,
             False,
-            "数据不足，不允许左侧买入；先补齐价格、K线和核心区间。",
+            "数据不足，左侧不建议买入；先补齐价格、K线和核心区间。",
+            **common,
+        )
+    if normalized_role == "event_trade" and volume_status != "ACCEPTANCE_CONFIRMED":
+        return _left_plan(
+            LEFT_NOT_ALLOWED,
+            False,
+            "事件仓信号未确认，左侧不建议买入；先补足数据和事件复核。",
             **common,
         )
     if event_shock:
@@ -563,7 +591,8 @@ def _build_left_side_plan(
             "量价承接失败，左侧暂停；等待重新站回支撑或确认线。",
             **common,
         )
-    if quality_score is None or quality_score < 70:
+    quality_allows_left = (quality_score is not None and quality_score >= 70) or normalized_role in LEFT_SIDE_QUALITY_EXEMPT_ROLES
+    if not quality_allows_left:
         return _left_plan(
             LEFT_NOT_ALLOWED,
             False,
@@ -577,11 +606,11 @@ def _build_left_side_plan(
             "价格已进入观察范围，但左侧赔率不够，等待更低支撑位。",
             **common,
         )
-    if shares > 0 and weight is not None and target_weight is not None and weight >= target_weight * 0.6:
+    if weight is not None and left_cap_weight is not None and weight >= left_cap_weight:
         return _left_plan(
-            POSITION_LIMITED,
+            LEFT_WAIT_BETTER_PRICE,
             False,
-            "左侧累计仓位已达到目标仓位 60% 参考上限，等待右侧确认，不主动左侧加。",
+            f"左侧累计仓位已达到目标仓位 {cap_ratio * 100:.0f}% 参考上限，等待更低价或右侧确认，不主动左侧加。",
             **common,
         )
     if shares > 0 and (target_weight is None or weight is None or weight < target_weight):
@@ -589,14 +618,14 @@ def _build_left_side_plan(
             LEFT_ADD_ALLOWED,
             True,
             "允许左侧小幅加仓，但未过确认线，不能一次打满。",
-            probe_size_cn=_left_add_size(weight, target_weight),
+            probe_size_cn=_left_add_size(weight, target_weight, cap_ratio),
             **common,
         )
     return _left_plan(
         LEFT_PROBE_ALLOWED,
         True,
         "允许左侧小仓试探，但尚未确认；先用目标仓位的 20%-30%，等待量价继续确认。",
-        probe_size_cn=_left_probe_size(target_weight),
+        probe_size_cn=_left_probe_size(target_weight, cap_ratio),
         **common,
     )
 
@@ -610,6 +639,8 @@ def _left_plan(
     add_levels_cn: str = "",
     right_confirm_trigger_cn: str = "",
     invalidation_cn: str = "",
+    left_cap_ratio: float | None = None,
+    left_cap_weight: float | None = None,
 ) -> dict[str, Any]:
     return {
         "action_code": action_code,
@@ -620,6 +651,8 @@ def _left_plan(
         "right_confirm_trigger_cn": right_confirm_trigger_cn,
         "invalidation_cn": invalidation_cn,
         "warning_cn": warning_cn,
+        "left_cap_ratio": left_cap_ratio,
+        "left_cap_weight": left_cap_weight,
     }
 
 
@@ -647,21 +680,21 @@ def _left_side_context(
     }
 
 
-def _left_probe_size(target_weight: float | None) -> str:
+def _left_probe_size(target_weight: float | None, cap_ratio: float) -> str:
     if target_weight is None:
         return "试探仓：目标仓位的 20%-30%，等待量价继续确认。"
-    return f"试探仓：目标仓位的 20%-30%（约 {target_weight * 0.2:.1f}%-{target_weight * 0.3:.1f}% 组合）。"
+    left_cap = target_weight * cap_ratio
+    return f"试探仓：目标仓位的 20%-30%（约 {target_weight * 0.2:.1f}%-{target_weight * 0.3:.1f}% 组合）；未确认前左侧累计上限约 {left_cap:.1f}%。"
 
 
-def _left_add_size(weight: float | None, target_weight: float | None) -> str:
+def _left_add_size(weight: float | None, target_weight: float | None, cap_ratio: float) -> str:
     if target_weight is None:
         return "小幅加仓：未确认前不能一次打满。"
-    cap_low = target_weight * 0.5
-    cap_high = target_weight * 0.6
+    left_cap = target_weight * cap_ratio
     if weight is not None:
-        room = max(0.0, cap_high - weight)
-        return f"小幅加仓：左侧累计参考 {cap_low:.1f}%-{cap_high:.1f}% 组合，当前约 {weight:.1f}%，剩余额度约 {room:.1f}%。"
-    return f"小幅加仓：左侧累计参考 {cap_low:.1f}%-{cap_high:.1f}% 组合，未过确认线不能一次打满。"
+        room = max(0.0, left_cap - weight)
+        return f"小幅加仓：左侧累计上限为目标仓位的 {cap_ratio * 100:.0f}%（约 {left_cap:.1f}% 组合），当前约 {weight:.1f}%，剩余额度约 {room:.1f}%。"
+    return f"小幅加仓：左侧累计上限为目标仓位的 {cap_ratio * 100:.0f}%（约 {left_cap:.1f}% 组合），未过确认线不能一次打满。"
 
 
 def _left_add_levels(context: dict[str, Any], invalid_line: float | None) -> str:
@@ -709,14 +742,24 @@ def _position_state(
 
 
 def _role_warning(role: str) -> str:
-    normalized = str(role or "").strip().lower()
+    normalized = _normalized_role(role)
     if normalized == "event_trade":
         return "事件仓仅限小仓，不转为核心仓。"
-    if normalized == "repair":
+    if normalized in {"repair", "ai_software_repair"} or normalized.endswith("_repair"):
         return "修复仓以估值修复为主，仓位上限较低。"
     if normalized.endswith("_satellite") or normalized in {"satellite", "watch_only"}:
         return "卫星/观察仓按较低上限管理，不作为核心仓加仓。"
+    if normalized == "ai_memory_cycle":
+        return "周期型 AI 存储仓按低上限管理，等待低吸结构而不追高。"
     return ""
+
+
+def _normalized_role(role: str) -> str:
+    return str(role or "").strip().lower()
+
+
+def _left_side_cap_ratio(role: str) -> float:
+    return ROLE_LEFT_SIDE_CAP_RATIOS.get(role, ROLE_LEFT_SIDE_CAP_RATIOS["watch_only"])
 
 
 def _pct_text(value: float | None) -> str:

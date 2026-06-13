@@ -149,6 +149,13 @@ TRADE_DISCIPLINE_COLUMNS = {
     "advisory_checked_at": "TEXT",
     "macro_regime": "TEXT",
     "portfolio_structure_status": "TEXT",
+    "advisory_action": "TEXT",
+    "risk_warning_cn": "TEXT",
+    "user_override": "INTEGER",
+    "override_reason": "TEXT",
+    "action_fusion_action": "TEXT",
+    "left_side_action_cn": "TEXT",
+    "position_status": "TEXT",
 }
 
 
@@ -1023,6 +1030,13 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
             "advisory_checked_at",
             "macro_regime",
             "portfolio_structure_status",
+            "advisory_action",
+            "risk_warning_cn",
+            "user_override",
+            "override_reason",
+            "action_fusion_action",
+            "left_side_action_cn",
+            "position_status",
         )
     ):
         return
@@ -1034,7 +1048,14 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
             buy_advisory_acknowledged = ?,
             advisory_checked_at = ?,
             macro_regime = ?,
-            portfolio_structure_status = ?
+            portfolio_structure_status = ?,
+            advisory_action = ?,
+            risk_warning_cn = ?,
+            user_override = ?,
+            override_reason = ?,
+            action_fusion_action = ?,
+            left_side_action_cn = ?,
+            position_status = ?
         WHERE id = ?
         """,
         (
@@ -1043,6 +1064,13 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
             cleaned["advisory_checked_at"],
             cleaned["macro_regime"],
             cleaned["portfolio_structure_status"],
+            cleaned["advisory_action"],
+            cleaned["risk_warning_cn"],
+            cleaned["user_override"],
+            cleaned["override_reason"],
+            cleaned["action_fusion_action"],
+            cleaned["left_side_action_cn"],
+            cleaned["position_status"],
             entry_id,
         ),
     )
@@ -1560,7 +1588,7 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "radar_block_reasons_json": "[]",
             "gate_hard_blocked": False,
             "radar_advisory_only": True,
-            "radar_advisory_warnings_json": _reasons_json(["Radar 买入提示缺失，需人工判断；不作为买入硬拦截。"]),
+            "radar_advisory_warnings_json": _reasons_json(["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"]),
             "price_position": None,
             "entry_display_label": None,
             "entry_action_hint": None,
@@ -1609,9 +1637,9 @@ def _buy_advisory_warnings_from_values(values: dict) -> list[str]:
     ):
         warnings.extend(_reasons_list(_value(values, *key_group)))
     if _clean_bool(_value(values, "radarBlocked", "radar_blocked")) and not warnings:
-        warnings.append("Radar 买区提示需人工复核；不作为买入硬拦截。")
+        warnings.append("Radar 买区提示需人工复核；可手动继续，系统会记录为人工 override。")
     if _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked")) and not warnings:
-        warnings.append("旧买入门禁标记已按提示保存；不作为买入硬拦截。")
+        warnings.append("旧买入门禁标记已按提示保存；可手动继续，系统会记录为人工 override。")
     if _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")):
         warnings.append("买入情绪提示：请确认这不是 FOMO / 焦虑 / 复仇交易。")
     if _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")):
@@ -1841,10 +1869,19 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
             "advisory_checked_at": None,
             "macro_regime": None,
             "portfolio_structure_status": None,
+            "advisory_action": None,
+            "risk_warning_cn": None,
+            "user_override": False,
+            "override_reason": None,
+            "action_fusion_action": None,
+            "left_side_action_cn": None,
+            "position_status": None,
         }
     warnings = _reasons_list(_value(values, "buyAdvisoryWarnings", "buy_advisory_warnings", "buy_advisory_warnings_json"))
     if not warnings:
         warnings = _buy_advisory_warnings_from_values(values)
+    explicit_override = _value(values, "userOverride", "user_override")
+    user_override = _clean_bool(explicit_override) if explicit_override is not None else bool(warnings)
     return {
         "buy_advisory_warnings_json": _reasons_json(_dedupe_text(warnings)),
         "buy_advisory_acknowledged": _clean_bool(_value(values, "buyAdvisoryAcknowledged", "buy_advisory_acknowledged")),
@@ -1853,6 +1890,16 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
         "portfolio_structure_status": _clean_optional_text(
             _value(values, "portfolioStructureStatus", "portfolio_structure_status")
         ),
+        "advisory_action": _clean_optional_text(_value(values, "advisoryAction", "advisory_action")),
+        "risk_warning_cn": _clean_optional_text(
+            _value(values, "riskWarningCn", "risk_warning_cn")
+            or "；".join(_dedupe_text(warnings))
+        ),
+        "user_override": user_override,
+        "override_reason": _clean_optional_text(_value(values, "overrideReason", "override_reason")),
+        "action_fusion_action": _clean_optional_text(_value(values, "actionFusionAction", "action_fusion_action")),
+        "left_side_action_cn": _clean_optional_text(_value(values, "leftSideActionCn", "left_side_action_cn")),
+        "position_status": _clean_optional_text(_value(values, "positionStatus", "position_status")),
     }
 
 
@@ -2454,6 +2501,18 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         }
     if "buy_advisory_warnings_json" in item:
         item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
+    for key in (
+        "user_override",
+        "buy_advisory_acknowledged",
+        "radar_blocked",
+        "gate_hard_blocked",
+        "radar_advisory_only",
+        "mood_gate_blocked",
+        "position_gate_blocked",
+        "radar_observation_only",
+    ):
+        if key in item and item[key] is not None:
+            item[key] = bool(item[key])
     return item
 
 

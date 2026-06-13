@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.decision_log import TradeJournalStore
 from data.macro_regime import load_macro_regime
 from data.market_context import build_market_history
 from data.planned_ladder_buy import evaluate_planned_ladder_buy
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfolio_sync_status, preview_trade_values_portfolio_effect
 from data.portfolio_view_model import build_portfolio_view_model
@@ -75,6 +77,12 @@ def submit_portfolio_buy_add(
         technicals=_report_dict(report),
         checked_at=submitted_at,
     )
+    action_fusion = _safe_action_fusion(
+        ticker=ticker,
+        report=report,
+        volume_price_acceptance=volume_price_acceptance,
+        path=path,
+    )
     plan = StockPlanStore(path).get_plan(ticker)
     prior_level_quantities = _planned_ladder_prior_quantities(ticker, path)
     plan_gate = evaluate_planned_ladder_buy(
@@ -116,6 +124,7 @@ def submit_portfolio_buy_add(
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
+    advisory_notes.extend(_action_fusion_advisory_notes(action_fusion))
     if entry_mode == "planned_ladder_buy":
         advisory_notes.extend(plan_gate.plan_notes)
         advisory_notes.extend(plan_gate.plan_block_reasons)
@@ -129,10 +138,19 @@ def submit_portfolio_buy_add(
     gate_fields["moodGateBlocked"] = False
     gate_fields["positionGateBlocked"] = False
     gate_fields["radarBlockReasons"] = []
+    gate_fields["warningLevel"] = _merged_warning_level(
+        gate_fields.get("warningLevel"),
+        gate_fields["radarAdvisoryWarnings"],
+    )
     advisory_context_fields = _buy_advisory_context_fields(
         path=path,
         checked_at=submitted_at.isoformat(),
         warnings=gate_fields["radarAdvisoryWarnings"],
+    )
+    action_fusion_fields = _action_fusion_entry_fields(
+        action_fusion,
+        warnings=gate_fields["radarAdvisoryWarnings"],
+        override_reason=str(values.get("override_reason") or values.get("overrideReason") or "").strip(),
     )
     core_pct, trading_pct = _tier_ratio_defaults(tier)
     entry_values = {
@@ -158,6 +176,7 @@ def submit_portfolio_buy_add(
         **pullback_acceptance_snapshot_fields(pullback_acceptance, checked_at=submitted_at.isoformat()),
         **volume_price_acceptance_snapshot_fields(volume_price_acceptance, checked_at=submitted_at.isoformat()),
         **advisory_context_fields,
+        **action_fusion_fields,
         "gateCheckedAt": submitted_at.isoformat(),
     }
     can_sync = _can_sync_buy_entry(
@@ -182,14 +201,22 @@ def submit_portfolio_buy_add(
         plan_gate=plan_gate,
         path=path,
     )
+    gate_snapshot = gate.to_dict()
+    gate_snapshot["warning_level"] = gate_fields.get("warningLevel")
+    gate_snapshot["advisory_warnings"] = gate_fields["radarAdvisoryWarnings"]
+    gate_snapshot["radar_advisory_only"] = bool(gate_fields["radarAdvisoryWarnings"])
+    gate_snapshot["is_blocked"] = False
+    gate_snapshot["can_continue"] = True
+    gate_snapshot["can_sync_to_portfolio"] = not bool(observation_only)
     return {
         "entry": saved,
-        "gate": gate.to_dict(),
+        "gate": gate_snapshot,
         "planGate": plan_gate.to_dict(),
         "starterGate": starter_gate.to_dict(),
         "structureEntry": structure_advisor.to_dict(),
         "pullbackAcceptance": pullback_acceptance.to_dict(),
         "volumePriceAcceptance": volume_price_acceptance.to_dict(),
+        "actionFusion": action_fusion.to_dict() if action_fusion is not None else {},
         "marketStatus": _buy_market_status(report, gate),
         "completedPlan": completed_plan,
         "sync": sync_result,
@@ -254,6 +281,106 @@ def _buy_advisory_context_fields(*, path: Path, checked_at: str, warnings: list[
         "macroRegime": macro_regime_text,
         "portfolioStructureStatus": portfolio_structure_status,
     }
+
+
+def _safe_action_fusion(*, ticker: str, report: object, volume_price_acceptance: Any, path: Path):
+    try:
+        report_data = _report_dict(report)
+        if not _has_action_fusion_levels(report_data):
+            return None
+        volume_snapshot = volume_price_acceptance.to_dict() if hasattr(volume_price_acceptance, "to_dict") else {}
+        return evaluate_action_fusion(
+            ticker=ticker,
+            context={
+                **report_data,
+                "volume_price_status": volume_snapshot.get("volume_price_status"),
+                "volume_price_score": volume_snapshot.get("volume_price_score"),
+                "volume_ratio": volume_snapshot.get("volume_ratio"),
+                "volume_regime_cn": volume_snapshot.get("volume_regime_cn"),
+                "volume_price_reason_cn": volume_snapshot.get("acceptance_reason_cn") or volume_snapshot.get("reason_cn"),
+            },
+            portfolio_context=build_action_fusion_portfolio_context(ticker, path=path),
+        )
+    except Exception:
+        return None
+
+
+def _has_action_fusion_levels(data: dict[str, Any]) -> bool:
+    keys = (
+        "observation_low",
+        "observationLow",
+        "near_term_repair_zone_low",
+        "technical_pullback_zone_low",
+        "effective_technical_entry_zone_low",
+    )
+    return any(data.get(key) not in (None, "") for key in keys)
+
+
+def _action_fusion_advisory_notes(action_fusion: Any) -> list[str]:
+    if action_fusion is None:
+        return []
+    notes: list[str] = []
+    notes.extend(str(item) for item in getattr(action_fusion, "advisory_warnings_cn", []) if str(item).strip())
+    notes.extend(str(item) for item in getattr(action_fusion, "risk_bullets_cn", []) if str(item).strip())
+    left_warning = str(getattr(action_fusion, "left_side_warning_cn", "") or "").strip()
+    if left_warning:
+        notes.append(left_warning)
+    action_code = str(getattr(action_fusion, "action_code", "") or "").strip().upper()
+    action_cn = str(getattr(action_fusion, "action_cn", "") or "").strip()
+    if action_code in {"BLOCK_CHASE", "EVENT_REVIEW", "DATA_INSUFFICIENT", "WAIT_CONFIRMATION", "HOLD_NO_ADD", "BREAKDOWN_REVIEW"} and action_cn:
+        notes.append(f"Action Fusion：{action_cn}；可手动继续，系统会记录为人工 override。")
+    return _dedupe_text(notes)
+
+
+def _action_fusion_entry_fields(action_fusion: Any, *, warnings: list[str], override_reason: str = "") -> dict[str, Any]:
+    warning_text = "；".join(_dedupe_text([str(item) for item in warnings if str(item).strip()]))
+    if action_fusion is None:
+        return {
+            "advisoryAction": "",
+            "riskWarningCn": warning_text,
+            "userOverride": bool(warning_text),
+            "overrideReason": override_reason,
+            "actionFusionAction": "",
+            "leftSideActionCn": "",
+            "positionStatus": "",
+        }
+    advisory_action = str(getattr(action_fusion, "left_side_action_cn", "") or getattr(action_fusion, "action_cn", "") or "").strip()
+    action_code = str(getattr(action_fusion, "action_code", "") or "").strip()
+    position_status = str(getattr(action_fusion, "position_status_cn", "") or "").strip()
+    return {
+        "advisoryAction": advisory_action,
+        "riskWarningCn": warning_text,
+        "userOverride": bool(warning_text),
+        "overrideReason": override_reason,
+        "actionFusionAction": action_code,
+        "leftSideActionCn": str(getattr(action_fusion, "left_side_action_cn", "") or "").strip(),
+        "positionStatus": position_status,
+    }
+
+
+def _merged_warning_level(current: object, warnings: list[str]) -> str:
+    level = str(current or "info").strip().lower()
+    if level == "danger":
+        return "danger"
+    if not warnings:
+        return level if level in {"info", "warning"} else "info"
+    text = " ".join(str(item) for item in warnings).upper()
+    danger_tokens = (
+        "BLOCK_CHASE",
+        "EVENT_REVIEW",
+        "DATA_INSUFFICIENT",
+        "HOLD_NO_ADD",
+        "POSITION_LIMITED",
+        "FAILED",
+        "追高",
+        "冲击",
+        "数据不足",
+        "仓位",
+        "不建议",
+    )
+    if any(token in text for token in danger_tokens):
+        return "danger"
+    return "warning"
 
 
 def _complete_buy_plan_after_success(
@@ -404,7 +531,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
         valuation_status = "估值需复核"
 
     if is_stale or data_status in {"missing", "data_missing", "stale"}:
-        discipline_status = "买区参考不可用，不单独阻止买入"
+        discipline_status = "买区参考不可用，需人工判断；可手动继续"
     elif allowed_add_pct is not None and allowed_add_pct <= 0:
         discipline_status = "系统参考新增仓位为 0%，仅作风险提示"
     elif price_position == "IN_BUY_ZONE":
@@ -422,7 +549,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     if valuation_score is not None and valuation_score < 40:
         notes.append("估值分低，不能因为回撤自动放行。")
     if final_score is not None and final_score < 70:
-        notes.append("综合评分低于 70，仍不允许核心仓。")
+        notes.append("综合评分低于 70，系统不建议作为核心仓。")
 
     return {
         "technical_status": technical_status,

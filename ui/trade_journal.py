@@ -169,18 +169,18 @@ FINAL_ACTION_LABELS = {
     "buy": "买入",
     "wait": "等待",
     "review": "复核",
-    "blocked": "禁止",
+    "blocked": "风险复核",
     "可小仓分批": "可小仓分批",
     "可正常分批": "可正常分批",
     "只观察": "只观察",
     "等回踩": "等回踩",
-    "禁止追高": "禁止追高",
+    "禁止追高": "追高风险",
     "待复核，暂不新增": "待复核",
     "unknown": "未标记",
 }
 LANE_LABELS = {
     "actionable": "可执行",
-    "blocked": "禁止追高",
+    "blocked": "追高风险",
     "review": "需复核",
     "wait": "等待观察",
     "unknown": "未标记",
@@ -442,14 +442,27 @@ def _render_radar_buy_gate(
 
 def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str) -> None:
     decision = str(report.get("decision") or "DATA_MISSING")
-    tone = "ok" if bool(result.get("can_continue")) else "blocked"
-    status = "提示可复核" if bool(result.get("can_continue")) else "提示需谨慎"
-    reasons = [str(item) for item in (result.get("reasons") or report.get("block_reasons") or []) if str(item).strip()]
+    warning_level = str(result.get("warning_level") or result.get("warningLevel") or "").strip().lower()
+    if warning_level not in {"info", "warning", "danger"}:
+        warning_level = "info" if not result.get("advisory_warnings") else "warning"
+    tone = warning_level
+    status = {"info": "正常提醒", "warning": "建议复核", "danger": "高风险提醒"}.get(warning_level, "建议复核")
+    reasons = [
+        str(item)
+        for item in (
+            result.get("advisory_warnings")
+            or result.get("radarAdvisoryWarnings")
+            or result.get("reasons")
+            or report.get("block_reasons")
+            or []
+        )
+        if str(item).strip()
+    ]
     required = [str(item) for item in (result.get("required_actions") or []) if str(item).strip()]
-    reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons) or "<li>暂无阻止原因</li>"
+    reason_html = "".join(f"<li>{escape(item)}</li>" for item in reasons) or "<li>暂无额外风险提示</li>"
     required_html = "".join(f"<li>{escape(item)}</li>" for item in required)
     if required_html:
-        required_html = f"<div class=\"trade-radar-requirements\"><b>需补充</b><ul>{required_html}</ul></div>"
+        required_html = f"<div class=\"trade-radar-requirements\"><b>可选补充</b><ul>{required_html}</ul></div>"
     stale_text = "价格数据可能过期" if bool(report.get("is_stale")) else "价格数据正常"
     rows = [
         ("当前结论", decision),
@@ -474,7 +487,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         <section class="trade-radar-gate {escape(tone)}">
           <div class="trade-radar-gate-head">
             <b>Radar 提示：{escape(status)}</b>
-            <span>价格提醒不是买入信号；真实成交入账仍需由用户确认。</span>
+            <span>价格提醒不是买入信号；你可以手动继续，偏离建议会记录为人工 override。</span>
           </div>
           <div class="trade-radar-gate-grid">{metrics_html}</div>
           <div class="trade-radar-reasons"><b>提示原因</b><ul>{reason_html}</ul></div>
@@ -881,7 +894,7 @@ def _render_portfolio_sync_preview(preview: dict, *, checked: bool, discipline_b
     tone = "warning" if preview.get("status") == "failed" or discipline_blocked else "ok"
     title = "成交入账预览"
     if discipline_blocked:
-        title = "纪律门禁阻止入账"
+        title = "纪律提示需修正"
     rows = [
         ("当前持股", _quantity_text(preview.get("currentQuantity"))),
         ("当前均价", _money_text(preview.get("currentAverageCost"))),
@@ -1230,7 +1243,7 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
             <span>{escape(_discipline_gate_summary(conclusion))}</span>
           </div>
           <div class="trade-gate-body">
-            <div><b>阻止原因</b><ul>{reason_html}</ul></div>
+            <div><b>需修正原因</b><ul>{reason_html}</ul></div>
             <div><b>可修正动作</b><ul>{action_html}</ul></div>
           </div>
           <div class="trade-gate-subtitle">卖出比例核对</div>
@@ -1385,7 +1398,7 @@ def _discipline_gate_actions(result, context: dict, max_allowed_qty: int) -> lis
         planned_is_blocked = context["plannedBreachesCore"] or (
             max_allowed_qty > 0 and context["plannedSellQty"] > max_allowed_qty
         )
-        suffix = f"；但 {_pct_point_text(context['plannedSellPct'])} 计划会被纪律门禁阻止。" if planned_is_blocked else "。"
+        suffix = f"；但 {_pct_point_text(context['plannedSellPct'])} 计划会触发纪律复核。" if planned_is_blocked else "。"
         actions.append(
             f"请将计划卖出比例改为 {_pct_point_text(context['actualSellPct'])}，或将数量改为与 {_pct_point_text(context['plannedSellPct'])} 一致（约 {planned_qty} 股）{suffix}"
         )
@@ -3071,20 +3084,28 @@ def _entry_has_concrete_reentry_plan(entry: dict) -> bool:
 def _entry_radar_gate_snapshot_html(entry: dict) -> str:
     decision = str(entry.get("radar_decision") or "").strip()
     if not decision:
-        return '<div class="trade-entry-discipline-empty">这条买入 / 加仓记录未保存 Radar 门禁快照。</div>'
-    reasons = [str(item) for item in (entry.get("radar_block_reasons") or []) if str(item).strip()]
+        return '<div class="trade-entry-discipline-empty">这条买入 / 加仓记录未保存 Radar 提示快照。</div>'
+    reasons = [
+        str(item)
+        for item in (
+            entry.get("radar_advisory_warnings")
+            or entry.get("radar_block_reasons")
+            or []
+        )
+        if str(item).strip()
+    ]
     rows = [
         ("Radar 结论", decision),
-        ("Radar 已拦截", _yes_no(entry.get("radar_blocked"))),
-        ("情绪门禁", _yes_no(entry.get("mood_gate_blocked"))),
-        ("仓位门禁", _yes_no(entry.get("position_gate_blocked"))),
+        ("Radar 提示", _yes_no(entry.get("radar_advisory_only"))),
+        ("情绪提示", _yes_no(entry.get("mood_gate_blocked"))),
+        ("仓位提示", _yes_no(entry.get("position_gate_blocked"))),
         ("仅观察记录", _yes_no(entry.get("radar_observation_only"))),
         ("检查时间", _text(entry.get("gate_checked_at"))),
     ]
-    reason_html = _discipline_detail_messages_html("Radar 阻止原因", reasons, is_blocker=True) if reasons else ""
+    reason_html = _discipline_detail_messages_html("Radar 风险提示", reasons, is_blocker=False) if reasons else ""
     sync_note = ""
     if entry.get("radar_blocked"):
-        sync_note = '<div class="trade-entry-reminder">Radar 旧门禁曾拦截：这条旧记录不是默认真实成交。</div>'
+        sync_note = '<div class="trade-entry-reminder">Radar 旧字段曾标记高风险：请按当时人工决策复盘。</div>'
     return f"{_detail_grid_html(rows)}{reason_html}{sync_note}"
 
 
