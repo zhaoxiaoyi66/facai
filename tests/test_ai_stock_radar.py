@@ -213,18 +213,19 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     html = radar_ui._report_html(report, {}, _cached_snapshot(), _cached_technicals(), {}, pd.DataFrame())
 
     assert "AI 股票雷达研究" in html
-    assert "核心摘要" in html
+    assert "执行摘要" in html
     assert "目标价区间与估值/技术区间图" in html
     assert "评分卡" in html
     assert "看多逻辑" in html
+    assert "核心风险" in html
+    assert "关键监控点" in html
     assert "关键指标（今日）" in html
     assert "核心财务摘要" in html
     assert "市场表现" in html
     assert "数据完整度" in html
     assert "后续催化 / 待跟踪事项" in html
-    assert "暂无本地新闻缓存" in html
-    assert "当前读数" in html
-    assert "为什么重要" in html
+    assert "附录" in html
+    assert html.count("执行摘要") == 1
     assert "触发条件" in html
     assert "交易含义" in html
     assert "AI Stock Radar Research" not in html
@@ -252,6 +253,7 @@ def test_ai_radar_report_uses_news_title_only_with_news_cache() -> None:
     assert "后续催化 / 待跟踪事项" in no_news_html
     assert "近期新闻 / 催化" not in no_news_html
     assert "Segment strength" not in no_news_html
+    assert "暂无本地新闻缓存；以下为系统根据财务、估值、技术和量价结构生成的待跟踪事项" not in no_news_html
 
     with_news_html = radar_ui._report_html(
         report,
@@ -358,8 +360,7 @@ def test_ai_radar_report_shows_volume_price_acceptance_card() -> None:
     assert "量价承接" in html
     assert "初步承接，尚未确认" in html
     assert "未放量站上确认线，不构成买入确认" in html
-    assert "0.60x" in html
-    assert "radar" in html
+    assert "zone_source" not in html
     assert report["decision"] == "WAIT"
 
 

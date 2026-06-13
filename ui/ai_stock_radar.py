@@ -275,25 +275,25 @@ def _report_html(
     decision = str(report.get("decision") or "")
     core_status = _core_status(report)
     confidence = _data_confidence(report)
-    summary_lines = _research_summary_lines(report, snapshot, market)
+    action_result = _action_fusion_result(report, technicals, row, history)
     return (
         f'<article class="ai-radar-research-report {_decision_tone(decision)}">'
         f"{_research_header_html(report, market, snapshot, technicals, core_status, history)}"
-        f"{_action_fusion_card_html(report, technicals, row, history)}"
-        '<section class="ai-radar-research-section ai-radar-summary-section">'
-        '<div class="ai-radar-section-title"><span>核心摘要</span><b>结论先行</b></div>'
-        f"{_summary_lines_html(summary_lines)}"
-        "</section>"
-        '<section class="ai-radar-research-grid first-screen">'
+        f"{_executive_summary_card_html(report, snapshot, market, row, action_result)}"
+        '<section class="ai-radar-visual-grid">'
         f"{_range_chart_html(report)}"
         f"{_score_card_html(report)}"
+        "</section>"
+        '<section class="ai-radar-opinion-grid two-col">'
+        f'{_text_card_html("看多逻辑", report.get("bull_points") or [], limit=4)}'
+        f'{_text_card_html("核心风险", report.get("risk_points") or [], limit=4)}'
+        "</section>"
+        '<section class="ai-radar-evidence-grid">'
+        f"{_watch_points_table_html(report, row)}"
         f"{_volume_price_acceptance_card_html(report, technicals, row, history)}"
         "</section>"
-        '<section class="ai-radar-opinion-grid">'
-        f'{_text_card_html("看多逻辑", report.get("bull_points") or [])}'
-        f'{_text_card_html("风险提示", report.get("risk_points") or [])}'
-        f'{_text_card_html("关键监控点", _research_watch_points(report, row), subtitle="当前读数 / 触发条件 / 交易含义")}'
-        "</section>"
+        '<section class="ai-radar-appendix">'
+        '<div class="ai-radar-appendix-title">附录</div>'
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
         f'{_metric_table_card_html("核心财务摘要", _financial_metric_rows(snapshot))}'
@@ -303,6 +303,7 @@ def _report_html(
         f"{_catalyst_card_html(row, snapshot, report)}"
         "</section>"
         f"{_data_completeness_html(report, confidence, _volume_snapshot(market, snapshot, technicals, history))}"
+        "</section>"
         '<footer class="ai-radar-report-foot">'
         f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
         f'<span>数据完整度：{escape(confidence)}</span>'
@@ -377,15 +378,14 @@ def _research_header_html(
     ticker = str(report.get("ticker") or "")
     company = str(report.get("company_name") or ticker)
     current_zone = _current_zone_label(report)
-    meta = "｜".join(
-        item
-        for item in (
-            _clean_text(_first_present(snapshot, "business_model", "businessModel", "model", "industry")),
-            _clean_text(_first_present(snapshot, "sector", "industry_group", "industryGroup")),
-            _clean_text(_first_present(snapshot, "country", "exchange")),
-        )
-        if item
-    ) or "本地缓存研究视图"
+    track = get_ticker_research_track(
+        ticker,
+        _first_present(snapshot, "sector") or _first_present(report, "sector"),
+        _first_present(snapshot, "industry") or _first_present(report, "industry"),
+        {**snapshot, **report},
+    )
+    market_label = _clean_text(_first_present(snapshot, "country", "exchange")) or "本地缓存"
+    meta = "｜".join(item for item in (track, market_label) if item) or "本地缓存研究视图"
     volume = _volume_snapshot(market, snapshot, technicals, history)
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
@@ -395,8 +395,8 @@ def _research_header_html(
         ("52周区间", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", volume_text),
-        ("更新时间", _short_time(report.get("data_updated_at") or market.get("fetchedAt"))),
         ("当前区间", current_zone),
+        ("总分", _number_text(report.get("final_score"))),
     ]
     stat_html = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in stats
@@ -409,7 +409,11 @@ def _research_header_html(
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
         "</div>"
-        f'<div class="ai-radar-zone-badge">{escape(core_status)}</div>'
+        '<div class="ai-radar-header-badges">'
+        f'<span>{escape(core_status)}</span>'
+        f'<span>数据 {escape(_data_confidence(report))}</span>'
+        f'<span>质量 {escape(_quality_grade(report))}</span>'
+        "</div>"
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
         "</header>"
     )
@@ -417,6 +421,72 @@ def _research_header_html(
 
 def _summary_lines_html(lines: list[str]) -> str:
     return '<div class="ai-radar-summary-lines">' + "".join(f"<p>{escape(line)}</p>" for line in lines[:5]) + "</div>"
+
+
+def _quality_grade(report: dict[str, Any]) -> str:
+    explicit = _clean_text(_first_present(report, "quality_rating", "qualityRating"))
+    if explicit:
+        return explicit
+    score = _number(_first_present(report, "quality_score", "qualityScore"))
+    if score is None:
+        return "暂无"
+    if score >= 85:
+        return "A+"
+    if score >= 75:
+        return "A"
+    if score >= 65:
+        return "B+"
+    if score >= 55:
+        return "B"
+    return "C"
+
+
+def _executive_summary_card_html(
+    report: dict[str, Any],
+    snapshot: dict[str, Any],
+    market: dict[str, Any],
+    row: dict[str, Any],
+    action_result: Any,
+) -> str:
+    summary = _localized_report_summary(report) or _research_summary_lines(report, snapshot, market)[0]
+    holding_context = _holding_context_text(row)
+    observations = _dedupe_text(
+        [
+            *list(getattr(action_result, "evidence_bullets_cn", []) or [])[:2],
+            *list(getattr(action_result, "advisory_warnings_cn", []) or [])[:2],
+            _next_step_sentence(report),
+        ]
+    )[:3]
+    observation_html = "".join(f"<li>{escape(item)}</li>" for item in observations if item)
+    return (
+        '<section class="ai-radar-executive-card">'
+        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 触发 / 失效</b></div>'
+        f'<p class="ai-radar-thesis">{escape(summary)}</p>'
+        '<div class="ai-radar-exec-grid">'
+        f'<div><span>当前建议</span><strong>{escape(getattr(action_result, "action_cn", "等待确认"))}</strong></div>'
+        f'<div><span>下一触发条件</span><strong>{escape(getattr(action_result, "next_trigger_cn", _next_step_sentence(report)))}</strong></div>'
+        f'<div><span>失效条件</span><strong>{escape(getattr(action_result, "invalidation_cn", _invalidation_sentence(report)))}</strong></div>'
+        f'<div><span>持仓语境</span><strong>{escape(holding_context)}</strong></div>'
+        "</div>"
+        f'<ul class="ai-radar-observation-list">{observation_html}</ul>'
+        "</section>"
+    )
+
+
+def _holding_context_text(row: dict[str, Any]) -> str:
+    shares = _first_number(row, "current_shares", "currentShares", "quantity", "shares")
+    weight = _first_number(row, "portfolio_weight", "portfolioWeight", "positionPct")
+    if shares is not None and shares > 0:
+        suffix = f"｜仓位 {_ratio_pct(weight)}" if weight is not None else ""
+        return f"已有持仓{suffix}"
+    return "未持仓 / 仅研究观察"
+
+
+def _invalidation_sentence(report: dict[str, Any]) -> str:
+    invalid = _first_number(report, "invalidation_price", "radar_invalidation_price")
+    if invalid is not None:
+        return f"跌破失效线 {_money(invalid)} 后转入破位复核。"
+    return "失效线暂缺，先以支撑破位和量价承接失败复核。"
 
 
 def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], market: dict[str, Any]) -> list[str]:
@@ -548,30 +618,19 @@ def _volume_price_acceptance_card_html(
     status = str(snapshot.get("volume_price_status") or snapshot.get("volumePriceStatus") or "DATA_MISSING")
     score = _number(snapshot.get("volume_price_score", snapshot.get("volumePriceScore")))
     volume_ratio = _number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
-    volume_ma20 = _number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
-    distribution_count = snapshot.get("distribution_count_10d", snapshot.get("distributionCount10d"))
     volume_regime_cn = _display_value(snapshot.get("volume_regime_cn") or snapshot.get("volumeRegimeCn"))
-    volume_interpretation = _display_value(
-        snapshot.get("volume_interpretation_cn") or snapshot.get("volumeInterpretationCn")
-    )
     reason = _volume_price_reason_text(status, score, snapshot.get("acceptance_reason_cn") or snapshot.get("reason_cn") or snapshot.get("volumePriceReasonCn"))
     rows = [
-        ("量价状态", _volume_price_status_label(status, score)),
+        ("承接状态", _volume_price_status_label(status, score)),
         ("分数", "待补数据" if status == "DATA_MISSING" else _number_text(score)),
         ("量能标签", volume_regime_cn),
-        ("量比", _volume_ratio_display(volume_ratio)),
-        ("20日均量", _compact_number(volume_ma20)),
-        ("量能解释", volume_interpretation),
-        ("K线信号", _display_value(snapshot.get("candle_signal_cn") or snapshot.get("candleSignalCn"))),
         ("支撑信号", _display_value(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn"))),
         ("确认信号", _display_value(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn"))),
-        ("10日派发次数", str(distribution_count if distribution_count not in (None, "") else "暂无")),
-        ("zone_source", _display_value(snapshot.get("zone_source") or snapshot.get("zoneSource") or snapshot.get("volumePriceZoneSource"))),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
     return (
         '<section class="ai-radar-card ai-radar-volume-price-card">'
-        '<div class="ai-radar-section-title"><span>量价承接</span><b>只读提示，不参与买入放行</b></div>'
+        '<div class="ai-radar-section-title"><span>量价承接</span><b>承接质量</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
         f'<p class="ai-radar-empty-note">{escape(reason)}</p>'
         "</section>"
@@ -584,8 +643,18 @@ def _action_fusion_card_html(
     row: dict[str, Any],
     history: pd.DataFrame | None,
 ) -> str:
+    result = _action_fusion_result(report, technicals, row, history)
+    return action_fusion_card_html(result)
+
+
+def _action_fusion_result(
+    report: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    history: pd.DataFrame | None,
+) -> Any:
     volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row, history)
-    result = evaluate_action_fusion(
+    return evaluate_action_fusion(
         ticker=str(report.get("ticker") or row.get("ticker") or ""),
         context={
             **report,
@@ -600,7 +669,6 @@ def _action_fusion_card_html(
             or volume_snapshot.get("reason_cn"),
         },
     )
-    return action_fusion_card_html(result)
 
 
 def _volume_price_acceptance_snapshot(
@@ -697,7 +765,7 @@ def _volume_price_reason_text(status: str, score: float | None, reason: Any) -> 
     if normalized == "FAILED":
         return "放量跌破支撑/失效线，暂停加仓。"
     text = _display_value(reason)
-    return text if text != "暂无" else "量价承接只作为复核提示，不参与买入放行。"
+    return text if text != "暂无" else "量价承接用于复核当前结构，不能单独作为买入依据。"
 
 
 def _zones_card_html(report: dict[str, Any]) -> str:
@@ -883,9 +951,8 @@ def _volume_source_label(value: Any) -> str:
 def _catalyst_card_html(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> str:
     items, has_news_cache = _catalyst_items(row, snapshot, report)
     if has_news_cache:
-        return _text_card_html("近期新闻 / 催化", items, subtitle="日期 / 来源 / 事件 / 交易含义")
-    intro = "暂无本地新闻缓存；以下为系统根据财务、估值、技术和量价结构生成的待跟踪事项。"
-    return _text_card_html("后续催化 / 待跟踪事项", [intro, *items], subtitle="不是新闻缓存")
+        return _text_card_html("近期新闻 / 催化", items, subtitle="本地新闻缓存", limit=5)
+    return _text_card_html("后续催化 / 待跟踪事项", items, subtitle="待跟踪事项", limit=5)
 
 
 def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> tuple[list[str], bool]:
@@ -917,10 +984,46 @@ def _fallback_catalyst_items(report: dict[str, Any], row: dict[str, Any]) -> lis
     invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
     next_earnings = _display_value(_first_present(row, "next_earnings_date", "nextEarningsDate") or _first_present(report, "next_earnings_date", "nextEarningsDate"))
     return [
-        f"财报 / 指引：当前读数：下一财报 {next_earnings}。触发条件：收入、利润率或现金流指引明显上修 / 下修。交易含义：上修可提高复核优先级，下修进入事件冲击复核。",
-        f"量价确认：当前读数：确认线 {confirm}。触发条件：放量站上确认线且收盘强。交易含义：确认信号出现前不把回踩当成买入确认。",
-        f"风险失效：当前读数：失效线 {invalid}。触发条件：放量跌破支撑或失效线。交易含义：暂停加仓，进入破位复核。",
+        f"财报 / 指引：下一财报 {next_earnings}，重点看收入、利润率和现金流指引。",
+        f"量价确认：观察是否放量站上确认线 {confirm}。",
+        f"风险失效：若放量跌破失效线 {invalid}，转入破位复核。",
     ]
+
+
+def _watch_points_table_html(report: dict[str, Any], row: dict[str, Any]) -> str:
+    volume = _dict_value(row, "volumePriceAcceptance") or _dict_value(report, "volumePriceAcceptance") or {}
+    volume_status = _volume_price_status_label(
+        str(volume.get("volume_price_status") or volume.get("volumePriceStatus") or "DATA_MISSING"),
+        _number(volume.get("volume_price_score") or volume.get("volumePriceScore")),
+    )
+    volume_ratio = _volume_ratio_display(_first_number(volume, "volume_ratio", "volumeRatio"))
+    zone = _current_zone_label(report)
+    confirm = _money(_first_number(report, row, "confirmation_price", "radar_confirmation_price"))
+    invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
+    forward_pe = _multiple(_first_number(report, row, "forward_pe", "forwardPE"))
+    rows = [
+        ("量价承接", f"{volume_status}｜量比 {volume_ratio}", f"放量站上确认线 {confirm}", "确认前不把回踩当买点"),
+        ("趋势修复", zone, f"收盘重新站回关键均线 / 确认线 {confirm}", "确认修复后再提高复核优先级"),
+        ("估值位置", f"远期市盈率 {forward_pe}", "进入估值参考区但未追高", "估值只代表可研究，不代表自动买入"),
+        ("风险控制", f"失效线 {invalid}", "放量跌破支撑或失效线", "暂停加仓，进入破位复核"),
+    ]
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(item)}</td>"
+        f"<td>{escape(current)}</td>"
+        f"<td>{escape(trigger)}</td>"
+        f"<td>{escape(meaning)}</td>"
+        "</tr>"
+        for item, current, trigger, meaning in rows
+    )
+    return (
+        '<section class="ai-radar-card ai-radar-monitor-card">'
+        '<div class="ai-radar-section-title"><span>关键监控点</span><b>当前状态 / 触发 / 含义</b></div>'
+        '<table class="ai-radar-monitor-table">'
+        '<thead><tr><th>监控项</th><th>当前状态</th><th>触发条件</th><th>交易含义</th></tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+        "</section>"
+    )
 
 
 def _research_watch_points(report: dict[str, Any], row: dict[str, Any]) -> list[str]:
@@ -967,11 +1070,11 @@ def _data_completeness_html(report: dict[str, Any], confidence: str, volume: dic
     )
 
 
-def _text_card_html(title: str, items: list[Any], *, subtitle: str = "研究依据") -> str:
+def _text_card_html(title: str, items: list[Any], *, subtitle: str = "研究依据", limit: int = 6) -> str:
     cleaned = [_localize_report_text(str(item).strip()) for item in items if str(item).strip()]
     if not cleaned:
         cleaned = ["暂无明确内容，先保持复查。"]
-    body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:6])
+    body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:limit])
     return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>{escape(subtitle)}</b></div><ul>{body}</ul></section>'
 
 
@@ -2200,23 +2303,103 @@ def _render_styles() -> None:
         .ai-radar-research-section,
         .ai-radar-research-grid,
         .ai-radar-opinion-grid,
+        .ai-radar-visual-grid,
+        .ai-radar-evidence-grid,
         .ai-radar-data-quality,
+        .ai-radar-executive-card,
+        .ai-radar-appendix,
         .ai-radar-report-foot {
             margin:14px 18px;
         }
         .ai-radar-research-grid,
-        .ai-radar-opinion-grid {
+        .ai-radar-opinion-grid,
+        .ai-radar-visual-grid,
+        .ai-radar-evidence-grid {
             display:grid;
             gap:12px;
         }
         .ai-radar-research-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
         .ai-radar-opinion-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+        .ai-radar-opinion-grid.two-col { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+        .ai-radar-visual-grid { grid-template-columns:minmax(0, 1.6fr) minmax(280px, .8fr); }
+        .ai-radar-evidence-grid { grid-template-columns:minmax(0, 1.35fr) minmax(280px, .75fr); }
         .ai-radar-card,
-        .ai-radar-summary-section {
+        .ai-radar-summary-section,
+        .ai-radar-executive-card {
             border:1px solid #E2E8F0;
             background:#FFFFFF;
             border-radius:10px;
             padding:14px;
+        }
+        .ai-radar-executive-card {
+            padding:18px;
+            border-color:#D6E0EC;
+            box-shadow:0 10px 26px rgba(15, 23, 42, 0.06);
+        }
+        .ai-radar-thesis {
+            margin:0 0 14px;
+            color:#0B1F3A;
+            font-size:16px;
+            line-height:1.65;
+            font-weight:700;
+        }
+        .ai-radar-exec-grid {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:10px;
+            margin-bottom:12px;
+        }
+        .ai-radar-exec-grid div {
+            background:#F8FAFC;
+            border:1px solid #E8EEF5;
+            border-radius:8px;
+            padding:10px;
+        }
+        .ai-radar-exec-grid span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-bottom:4px;
+        }
+        .ai-radar-exec-grid strong {
+            color:#0B1F3A;
+            font-size:13px;
+            line-height:1.45;
+        }
+        .ai-radar-observation-list {
+            margin:0;
+            padding-left:18px;
+            color:#334155;
+            font-size:13px;
+            line-height:1.7;
+        }
+        .ai-radar-header-badges {
+            display:flex;
+            gap:8px;
+            justify-content:flex-end;
+            flex-wrap:wrap;
+        }
+        .ai-radar-header-badges span {
+            display:inline-flex;
+            align-items:center;
+            border:1px solid #D8E0EA;
+            background:#F8FAFC;
+            border-radius:999px;
+            padding:5px 10px;
+            color:#0B1F3A;
+            font-size:12px;
+            font-weight:800;
+        }
+        .ai-radar-appendix {
+            border-top:1px solid #E8EEF5;
+            padding-top:12px;
+        }
+        .ai-radar-appendix-title {
+            color:#64748B;
+            font-size:12px;
+            font-weight:850;
+            letter-spacing:.04em;
+            margin:0 0 4px;
         }
         .ai-radar-section-title {
             display:flex;
@@ -2334,6 +2517,30 @@ def _render_styles() -> None:
             border-collapse:collapse;
             font-size:12px;
         }
+        .ai-radar-monitor-table {
+            width:100%;
+            border-collapse:collapse;
+            font-size:12px;
+        }
+        .ai-radar-monitor-table th {
+            color:#64748B;
+            background:#F8FAFC;
+            padding:8px 7px;
+            text-align:left;
+            border-top:1px solid #EEF2F7;
+            border-bottom:1px solid #EEF2F7;
+        }
+        .ai-radar-monitor-table td {
+            color:#24364D;
+            padding:9px 7px;
+            border-bottom:1px solid #EEF2F7;
+            vertical-align:top;
+            line-height:1.45;
+        }
+        .ai-radar-monitor-table td:first-child {
+            color:#0B1F3A;
+            font-weight:800;
+        }
         .ai-radar-metric-table td {
             padding:8px 6px;
             border-top:1px solid #EEF2F7;
@@ -2355,6 +2562,9 @@ def _render_styles() -> None:
             .ai-radar-header-stats,
             .ai-radar-research-grid,
             .ai-radar-opinion-grid,
+            .ai-radar-visual-grid,
+            .ai-radar-evidence-grid,
+            .ai-radar-exec-grid,
             .ai-radar-score-grid,
             .ai-radar-data-quality-grid { grid-template-columns:1fr; }
             .ai-radar-range-row { grid-template-columns:1fr; }
