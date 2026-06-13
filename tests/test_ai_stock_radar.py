@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from data.action_fusion import evaluate_action_fusion
+from data import ai_stock_radar as radar_data
 from data.ai_stock_radar import (
     RadarScores,
     RadarZone,
@@ -70,6 +71,26 @@ def _buy_zone() -> RadarZone:
 
 def _watch_zone() -> RadarZone:
     return RadarZone(lower=100, upper=115, label="watch zone")
+
+
+def test_radar_summary_localizes_backend_reasons() -> None:
+    summary = radar_data._summary(
+        "MSFT",
+        "WAIT",
+        0,
+        ["current price is below the discipline buy zone lower bound; review fundamentals"],
+    )
+
+    assert "当前价格低于主击球区下沿" in summary
+    assert "current price" not in summary
+    assert "review fundamentals" not in summary
+
+
+def test_radar_summary_allow_buy_is_chinese() -> None:
+    summary = radar_data._summary("NVDA", "ALLOW_BUY", 3, [])
+
+    assert "主击球区" in summary
+    assert "price is inside" not in summary
 
 
 def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status() -> None:

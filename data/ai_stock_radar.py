@@ -2026,15 +2026,35 @@ def _block_reasons(
 
 def _summary(symbol: str, decision: str, allowed_add_pct: float, block_reasons: list[str]) -> str:
     if decision == "ALLOW_BUY":
-        return f"{symbol}: price is inside the discipline buy zone; max new add {allowed_add_pct:g}%."
+        return f"{symbol}：当前价位于主击球区内；本次最多新增 {allowed_add_pct:g}%。"
     if decision == "DATA_MISSING":
-        return f"{symbol}: data is missing or stale; do not treat this as a buy signal."
+        return f"{symbol}：数据缺失或过期，不要当作买入信号。"
     if decision == "BLOCK_CHASE":
-        return f"{symbol}: chase blocked; wait for plan review."
+        return f"{symbol}：追高风险提示，等待回踩或重新评估。"
     if decision == "AVOID":
-        return f"{symbol}: risk is too high for this radar pass."
-    first = block_reasons[0] if block_reasons else "not inside the discipline buy zone"
-    return f"{symbol}: wait. {first}."
+        return f"{symbol}：风险较高，本轮先不参与。"
+    first = _summary_reason_text(block_reasons[0]) if block_reasons else "当前不在高质量主击球区。"
+    return f"{symbol}：等待。{first}"
+
+
+def _summary_reason_text(reason: str) -> str:
+    text = str(reason or "").strip()
+    lower = text.lower()
+    if "current price is below the discipline buy zone lower bound" in lower:
+        return "当前价格低于主击球区下沿，先复核基本面、财报冲击或趋势破位。"
+    if "current price is above the discipline buy zone" in lower:
+        return "当前价格高于主击球区，等待回踩或量价重新确认。"
+    if "current price is in or above chase zone" in lower:
+        return "当前价格处于追高风险区，等待回到观察区。"
+    if "missing discipline buy zone" in lower:
+        return "主击球区缺失，先补齐技术承接数据。"
+    if "valuation score below 40" in lower:
+        return "估值评分偏低，不支持重仓。"
+    if "final score below 70" in lower or "core position is not allowed" in lower:
+        return "综合评分低于70，不支持核心仓买入。"
+    if "missing current price" in lower:
+        return "当前价格缺失，需人工判断。"
+    return text
 
 
 def _data_block_reason(data_status: str, market: dict[str, Any]) -> str:
