@@ -2,6 +2,7 @@
 
 Use targeted tests by default. Full regression is reserved for release checkpoints,
 major refactors, and changes that cross trading, Radar, macro, and UI boundaries.
+Docs-only and read-only workflow tasks usually need no tests.
 
 ## Slow-Test Baseline
 
@@ -32,7 +33,8 @@ Command: none.
 
 Use when the change is confined to one UI file, CSS, display copy, or a formatting
 helper. Run the tests selected by `scripts/select_tests.py`; do not default to the
-full core suite.
+full core suite. If the change is pure copy/CSS and the selector recommends a
+broad regression, prefer the narrow UI/helper test or a no-test note.
 
 Example:
 
@@ -46,6 +48,8 @@ Then run the printed commands.
 
 Use when a data/helper module changes but the trading ledger is not touched. Run
 the module test plus directly related regressions selected by `scripts/select_tests.py`.
+Advisory display modules should not force trading workflow tests unless entry,
+sync, or journal code changed too.
 
 Example:
 
@@ -81,26 +85,29 @@ Current high-value mappings:
 
 | Changed file | Targeted tests |
 | --- | --- |
-| `ui/dashboard.py` | `tests/test_dashboard_freshness.py`, `tests/test_macro_regime.py`, `tests/test_core_logic.py -k dashboard` |
+| `ui/dashboard.py` | `tests/test_dashboard_freshness.py`, `tests/test_core_logic.py -k dashboard` |
 | `ui/ai_stock_radar.py` | `tests/test_ai_stock_radar.py`, `tests/test_entry_display.py` |
 | `data/ai_stock_radar.py` | `tests/test_ai_stock_radar.py`, `tests/test_entry_display.py`, `tests/test_core_logic.py -k Scoring` |
 | `data/macro_regime.py` | `tests/test_macro_regime.py`, `tests/test_core_logic.py -k macro` |
-| `data/structure_entry.py` | `tests/test_structure_entry.py`, `tests/test_portfolio_trade_entry.py` |
-| `data/pullback_acceptance.py` | `tests/test_pullback_acceptance.py`, `tests/test_portfolio_trade_entry.py` |
+| `data/structure_entry.py` | `tests/test_structure_entry.py` |
+| `data/pullback_acceptance.py` | `tests/test_pullback_acceptance.py` |
+| `data/buy_execution_context.py` | `tests/test_buy_execution_context.py` |
 | `data/portfolio_trade_entry.py` | `tests/test_portfolio_trade_entry.py`, `tests/test_decision_log.py` |
 | `data/portfolio_trade_sync.py` | `tests/test_portfolio_trade_sync.py`, `tests/test_trade_performance.py` |
-| `ui/trade_journal.py` | `tests/test_trade_journal_ui.py`, `tests/test_sell_review.py`, `tests/test_trade_performance.py` |
-| `ui/portfolio.py` | `tests/test_portfolio_trade_entry.py`, `tests/test_portfolio_model.py`, `tests/test_core_logic.py -k portfolio` |
+| `ui/trade_journal.py` | `tests/test_trade_journal_ui.py` |
+| `ui/portfolio.py` | `tests/test_portfolio_trade_entry.py`, `tests/test_portfolio_model.py` |
+| `data/buy_plan.py` | `tests/test_buy_plan.py`, `tests/test_price_alerts.py` |
 
 ## Codex Workflow Rules
 
 1. Small UI, copy, CSS, and display-only tasks should use level 1, not full regression.
 2. Single UI-file changes should start with `scripts/select_tests.py`.
-3. Buy/sell/ledger changes must use level 3 trading workflow tests.
+3. Buy/sell/ledger logic changes must use level 3 trading workflow tests.
 4. Radar scoring or buy-zone changes must run Radar, entry display, and core scoring tests.
 5. Macro changes should run macro plus dashboard-related tests.
 6. Release candidates, phase freezes, and major refactors should use level 4.
-7. Final responses must state the chosen test profile, why it was chosen, what was skipped, and whether a later full regression is recommended.
+7. Final responses should state the chosen test profile compactly. Mention skipped
+   suites only when the omission matters.
 
 ## Optional Markers
 

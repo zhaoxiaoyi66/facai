@@ -418,6 +418,39 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["structure_warnings"], ["收盘确认不足"])
             self.assertEqual(saved["structure_checked_at"], "2026-06-12T10:30:00+08:00")
 
+    def test_trade_journal_store_saves_volume_price_acceptance_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-06-12",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 390,
+                    "volumePriceStatus": "FORMING",
+                    "volumePriceScore": 62,
+                    "volumeRatio": 0.82,
+                    "volumeMa20": 18_500_000,
+                    "closePosition": 0.68,
+                    "candleSignalCn": "下影线承接",
+                    "volumeSignalCn": "缩量回踩 0.82x",
+                    "supportSignalCn": "守住支撑 382.50",
+                    "confirmationSignalCn": "未站上确认线 413.20",
+                    "distributionCount10d": 1,
+                    "volumePriceReasonCn": "支撑暂时守住，回踩量能收缩，但尚未放量站上确认线。",
+                    "volumePriceCheckedAt": "2026-06-12T10:30:00+08:00",
+                },
+            )
+
+            self.assertEqual(saved["volume_price_status"], "FORMING")
+            self.assertEqual(saved["volume_price_score"], 62)
+            self.assertEqual(saved["volume_ratio"], 0.82)
+            self.assertEqual(saved["volume_ma20"], 18_500_000)
+            self.assertEqual(saved["volume_price_acceptance"]["candle_signal_cn"], "下影线承接")
+            self.assertIn("支撑暂时守住", saved["volume_price_reason_cn"])
+
     def test_trade_journal_store_backfills_radar_gate_columns_on_legacy_schema(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "decision_log.sqlite"

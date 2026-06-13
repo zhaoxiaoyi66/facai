@@ -130,6 +130,18 @@ TRADE_DISCIPLINE_COLUMNS = {
     "acceptance_reasons_json": "TEXT",
     "acceptance_warnings_json": "TEXT",
     "acceptance_checked_at": "TEXT",
+    "volume_price_status": "TEXT",
+    "volume_price_score": "REAL",
+    "volume_ratio": "REAL",
+    "volume_ma20": "REAL",
+    "close_position": "REAL",
+    "candle_signal_cn": "TEXT",
+    "volume_signal_cn": "TEXT",
+    "support_signal_cn": "TEXT",
+    "confirmation_signal_cn": "TEXT",
+    "distribution_count_10d": "INTEGER",
+    "volume_price_reason_cn": "TEXT",
+    "volume_price_checked_at": "TEXT",
     "buy_advisory_warnings_json": "TEXT",
     "buy_advisory_acknowledged": "INTEGER",
     "advisory_checked_at": "TEXT",
@@ -492,6 +504,7 @@ class TradeJournalStore:
             _write_sell_context_snapshot(conn, int(entry_id), cleaned)
             _write_structure_entry_snapshot(conn, int(entry_id), cleaned)
             _write_pullback_acceptance_snapshot(conn, int(entry_id), cleaned)
+            _write_volume_price_acceptance_snapshot(conn, int(entry_id), cleaned)
             _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
@@ -610,6 +623,7 @@ class TradeJournalStore:
                 _write_sell_context_snapshot(conn, clean_id, cleaned)
                 _write_structure_entry_snapshot(conn, clean_id, cleaned)
                 _write_pullback_acceptance_snapshot(conn, clean_id, cleaned)
+                _write_volume_price_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_buy_advisory_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
@@ -932,6 +946,61 @@ def _write_pullback_acceptance_snapshot(conn: sqlite3.Connection, entry_id: int,
             cleaned["acceptance_reasons_json"],
             cleaned["acceptance_warnings_json"],
             cleaned["acceptance_checked_at"],
+            entry_id,
+        ),
+    )
+
+
+def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, "", "[]"}
+        for field in (
+            "volume_price_status",
+            "volume_price_score",
+            "volume_ratio",
+            "volume_ma20",
+            "close_position",
+            "candle_signal_cn",
+            "volume_signal_cn",
+            "support_signal_cn",
+            "confirmation_signal_cn",
+            "distribution_count_10d",
+            "volume_price_reason_cn",
+            "volume_price_checked_at",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            volume_price_status = ?,
+            volume_price_score = ?,
+            volume_ratio = ?,
+            volume_ma20 = ?,
+            close_position = ?,
+            candle_signal_cn = ?,
+            volume_signal_cn = ?,
+            support_signal_cn = ?,
+            confirmation_signal_cn = ?,
+            distribution_count_10d = ?,
+            volume_price_reason_cn = ?,
+            volume_price_checked_at = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["volume_price_status"],
+            cleaned["volume_price_score"],
+            cleaned["volume_ratio"],
+            cleaned["volume_ma20"],
+            cleaned["close_position"],
+            cleaned["candle_signal_cn"],
+            cleaned["volume_signal_cn"],
+            cleaned["support_signal_cn"],
+            cleaned["confirmation_signal_cn"],
+            cleaned["distribution_count_10d"],
+            cleaned["volume_price_reason_cn"],
+            cleaned["volume_price_checked_at"],
             entry_id,
         ),
     )
@@ -1374,6 +1443,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_sell_context_snapshot(action_type, values))
     cleaned.update(_clean_structure_entry_snapshot(action_type, values))
     cleaned.update(_clean_pullback_acceptance_snapshot(action_type, values))
+    cleaned.update(_clean_volume_price_acceptance_snapshot(action_type, values))
     cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
     return cleaned
 
@@ -1704,6 +1774,46 @@ def _clean_pullback_acceptance_snapshot(action_type: str, values: dict) -> dict:
             _value(values, "acceptanceWarnings", "acceptance_warnings", "acceptance_warnings_json")
         ),
         "acceptance_checked_at": _clean_optional_text(_value(values, "acceptanceCheckedAt", "acceptance_checked_at")),
+    }
+
+
+def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"buy", "add"}:
+        return {
+            "volume_price_status": None,
+            "volume_price_score": None,
+            "volume_ratio": None,
+            "volume_ma20": None,
+            "close_position": None,
+            "candle_signal_cn": None,
+            "volume_signal_cn": None,
+            "support_signal_cn": None,
+            "confirmation_signal_cn": None,
+            "distribution_count_10d": None,
+            "volume_price_reason_cn": None,
+            "volume_price_checked_at": None,
+        }
+    return {
+        "volume_price_status": _clean_optional_text(_value(values, "volumePriceStatus", "volume_price_status")),
+        "volume_price_score": _optional_non_negative_number(
+            _value(values, "volumePriceScore", "volume_price_score"),
+            "volume_price_score",
+        ),
+        "volume_ratio": _optional_non_negative_number(_value(values, "volumeRatio", "volume_ratio"), "volume_ratio"),
+        "volume_ma20": _optional_non_negative_number(_value(values, "volumeMa20", "volume_ma20"), "volume_ma20"),
+        "close_position": _optional_non_negative_number(_value(values, "closePosition", "close_position"), "close_position"),
+        "candle_signal_cn": _clean_optional_text(_value(values, "candleSignalCn", "candle_signal_cn")),
+        "volume_signal_cn": _clean_optional_text(_value(values, "volumeSignalCn", "volume_signal_cn")),
+        "support_signal_cn": _clean_optional_text(_value(values, "supportSignalCn", "support_signal_cn")),
+        "confirmation_signal_cn": _clean_optional_text(_value(values, "confirmationSignalCn", "confirmation_signal_cn")),
+        "distribution_count_10d": _optional_int(
+            _value(values, "distributionCount10d", "distribution_count_10d"),
+            "distribution_count_10d",
+        ),
+        "volume_price_reason_cn": _clean_optional_text(_value(values, "volumePriceReasonCn", "volume_price_reason_cn")),
+        "volume_price_checked_at": _clean_optional_text(
+            _value(values, "volumePriceCheckedAt", "volume_price_checked_at")
+        ),
     }
 
 
@@ -2310,6 +2420,21 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["acceptance_reasons"] = _load_json_list(item["acceptance_reasons_json"])
     if "acceptance_warnings_json" in item:
         item["acceptance_warnings"] = _load_json_list(item["acceptance_warnings_json"])
+    if "volume_price_status" in item:
+        item["volume_price_acceptance"] = {
+            "volume_price_status": item.get("volume_price_status"),
+            "volume_price_score": item.get("volume_price_score"),
+            "volume_ratio": item.get("volume_ratio"),
+            "volume_ma20": item.get("volume_ma20"),
+            "close_position": item.get("close_position"),
+            "candle_signal_cn": item.get("candle_signal_cn"),
+            "volume_signal_cn": item.get("volume_signal_cn"),
+            "support_signal_cn": item.get("support_signal_cn"),
+            "confirmation_signal_cn": item.get("confirmation_signal_cn"),
+            "distribution_count_10d": item.get("distribution_count_10d"),
+            "acceptance_reason_cn": item.get("volume_price_reason_cn"),
+            "volume_price_checked_at": item.get("volume_price_checked_at"),
+        }
     if "buy_advisory_warnings_json" in item:
         item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
     return item

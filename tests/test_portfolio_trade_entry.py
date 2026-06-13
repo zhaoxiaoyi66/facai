@@ -549,11 +549,16 @@ def test_portfolio_buy_add_saves_pullback_acceptance_snapshot() -> None:
         assert result["synced"] is True
         assert position is not None
         assert result["pullbackAcceptance"]["acceptance_status"] == "ACCEPTANCE_CONFIRMED"
+        assert result["volumePriceAcceptance"]["volume_price_status"] == "ACCEPTANCE_CONFIRMED"
         assert entry is not None
         assert entry["acceptance_status"] == "ACCEPTANCE_CONFIRMED"
         assert entry["acceptance_score"] >= 80
         assert entry["acceptance_reasons"]
         assert entry["acceptance_checked_at"]
+        assert entry["volume_price_status"] == "ACCEPTANCE_CONFIRMED"
+        assert entry["volume_ratio"] >= 1.2
+        assert entry["volume_price_reason_cn"]
+        assert entry["volume_price_checked_at"]
 
 
 def test_portfolio_buy_add_records_hkt_trade_time(monkeypatch: pytest.MonkeyPatch) -> None:

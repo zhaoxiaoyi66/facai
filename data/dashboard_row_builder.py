@@ -5,10 +5,12 @@ from typing import Any
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.entry_display import build_entry_display
+from data.market_context import build_market_history
 from data.pullback_acceptance import evaluate_pullback_acceptance
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
 from data.structure_entry import evaluate_structure_entry
+from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from formatting import format_currency, format_multiple, format_percent
 from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.metric_sources import fcf_margin_metric, fcf_margin_source_note
@@ -86,6 +88,11 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     )
     pullback_acceptance = evaluate_pullback_acceptance(
         ticker=ticker,
+        technicals={**technicals, **snapshot, **radar_entry_display},
+    )
+    volume_price_acceptance = evaluate_volume_price_acceptance(
+        ticker=ticker,
+        daily_bars=_safe_market_history(ticker),
         technicals={**technicals, **snapshot, **radar_entry_display},
     )
 
@@ -197,6 +204,10 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "acceptanceReasons": pullback_acceptance.acceptance_reasons,
         "acceptanceWarnings": pullback_acceptance.acceptance_warnings,
         "acceptanceNextSteps": pullback_acceptance.next_acceptance_steps,
+        "volumePriceAcceptance": volume_price_acceptance.to_dict(),
+        "volumePriceStatus": volume_price_acceptance.volume_price_status,
+        "volumePriceScore": volume_price_acceptance.volume_price_score,
+        "volumePriceReasonCn": volume_price_acceptance.acceptance_reason_cn,
         **radar_entry_display,
     }
 
@@ -339,6 +350,13 @@ def _radar_entry_display_fields(ticker: str, snapshot: dict, technicals: dict) -
         for key in RADAR_ENTRY_DISPLAY_KEYS
         if key.startswith("entry_") or key in public_entry_keys
     }
+
+
+def _safe_market_history(ticker: str):
+    try:
+        return build_market_history(ticker)
+    except Exception:
+        return None
 
 
 def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score, *, buy_zone: Any = None):

@@ -8,7 +8,7 @@ from typing import Any
 
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.macro_regime import load_macro_regime
-from data.market_context import build_market_context
+from data.market_context import build_market_context, build_market_history
 from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
@@ -22,6 +22,11 @@ from data.structure_entry import (
     DATA_MISSING,
     StructureEntryAdvisor,
     build_structure_entry_advisor_for_symbol,
+)
+from data.volume_price_acceptance import (
+    VolumePriceAcceptanceSnapshot,
+    evaluate_volume_price_acceptance,
+    volume_price_acceptance_hint_html,
 )
 
 
@@ -73,6 +78,7 @@ class BuyExecutionAdvisoryContext:
     structure_hint: BuyExecutionStructureHint
     structure_advisor: StructureEntryAdvisor | None
     pullback_acceptance: PullbackAcceptanceSnapshot
+    volume_price_acceptance: VolumePriceAcceptanceSnapshot
     macro_regime: str | None
     portfolio_structure_status: str | None
     data_source_text: str
@@ -114,6 +120,12 @@ def build_buy_execution_advisory_context(
         technicals={**report, **market},
         checked_at=current_time,
     )
+    volume_price_acceptance = evaluate_volume_price_acceptance(
+        ticker=symbol,
+        daily_bars=_safe_market_history(symbol, path=path, now=current_time),
+        technicals={**report, **market},
+        checked_at=current_time,
+    )
     macro_regime, macro_freshness = _macro_context(path=path, now=current_time)
     portfolio_structure_status = _portfolio_structure_status(path=path, macro_regime=None)
     technical_freshness = _technical_freshness(report, market, current_time)
@@ -126,6 +138,7 @@ def build_buy_execution_advisory_context(
         structure_hint=structure_hint,
         structure_advisor=structure_advisor,
         pullback_acceptance=pullback_acceptance,
+        volume_price_acceptance=volume_price_acceptance,
         macro_regime=macro_regime,
         portfolio_structure_status=portfolio_structure_status,
         data_source_text=data_source_text,
@@ -150,7 +163,11 @@ def buy_execution_advisory_context_html(context: BuyExecutionAdvisoryContext) ->
     )
     acceptance_context = {**context.radar_report, "current_price": context.current_price}
     context_lines = pullback_acceptance_context_lines(context.pullback_acceptance, acceptance_context)
-    return structure_html + pullback_acceptance_hint_html(context.pullback_acceptance, context_lines=context_lines)
+    return (
+        structure_html
+        + pullback_acceptance_hint_html(context.pullback_acceptance, context_lines=context_lines)
+        + volume_price_acceptance_hint_html(context.volume_price_acceptance)
+    )
 
 
 def _build_structure_hint(
@@ -318,6 +335,15 @@ def _safe_market_context(symbol: str, *, path: Path, now: datetime) -> dict[str,
         return build_market_context(symbol, path=path, now=now)
     except Exception:
         return {}
+
+
+def _safe_market_history(symbol: str, *, path: Path, now: datetime):
+    if not symbol:
+        return None
+    try:
+        return build_market_history(symbol, path=path, now=now)
+    except Exception:
+        return None
 
 
 def _macro_context(*, path: Path, now: datetime) -> tuple[str | None, str]:

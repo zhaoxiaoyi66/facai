@@ -30,7 +30,6 @@ TARGETED_MAPPING: tuple[tuple[str, tuple[PytestTarget, ...]], ...] = (
         "ui/dashboard.py",
         (
             target("tests/test_dashboard_freshness.py"),
-            target("tests/test_macro_regime.py"),
             target("tests/test_core_logic.py", "dashboard"),
         ),
     ),
@@ -95,24 +94,15 @@ TARGETED_MAPPING: tuple[tuple[str, tuple[PytestTarget, ...]], ...] = (
     ),
     (
         "data/structure_entry.py",
-        (
-            target("tests/test_structure_entry.py"),
-            target("tests/test_portfolio_trade_entry.py"),
-        ),
+        (target("tests/test_structure_entry.py"),),
     ),
     (
         "data/pullback_acceptance.py",
-        (
-            target("tests/test_pullback_acceptance.py"),
-            target("tests/test_portfolio_trade_entry.py"),
-        ),
+        (target("tests/test_pullback_acceptance.py"),),
     ),
     (
         "data/buy_execution_context.py",
-        (
-            target("tests/test_buy_execution_context.py"),
-            target("tests/test_portfolio_trade_entry.py"),
-        ),
+        (target("tests/test_buy_execution_context.py"),),
     ),
     (
         "data/portfolio_trade_entry.py",
@@ -130,18 +120,13 @@ TARGETED_MAPPING: tuple[tuple[str, tuple[PytestTarget, ...]], ...] = (
     ),
     (
         "ui/trade_journal.py",
-        (
-            target("tests/test_trade_journal_ui.py"),
-            target("tests/test_sell_review.py"),
-            target("tests/test_trade_performance.py"),
-        ),
+        (target("tests/test_trade_journal_ui.py"),),
     ),
     (
         "ui/portfolio.py",
         (
             target("tests/test_portfolio_trade_entry.py"),
             target("tests/test_portfolio_model.py"),
-            target("tests/test_core_logic.py", "portfolio"),
         ),
     ),
     (
@@ -156,7 +141,6 @@ TARGETED_MAPPING: tuple[tuple[str, tuple[PytestTarget, ...]], ...] = (
         (
             target("tests/test_buy_plan.py"),
             target("tests/test_price_alerts.py"),
-            target("tests/test_portfolio_trade_entry.py"),
         ),
     ),
     (

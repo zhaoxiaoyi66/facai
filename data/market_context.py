@@ -29,6 +29,7 @@ def build_market_context(
     )
     quote = cache.get_quote_snapshot(normalized)
     quote_price = _quote_price(quote)
+    quote_volume = _quote_volume(quote)
     history = _latest_history_snapshot(path, normalized)
     latest_close = _number(history.get("close")) if history else None
     price_status = cache.get_price_status(normalized)
@@ -61,6 +62,7 @@ def build_market_context(
         "priceSource": price_source,
         "priceStatus": price_status,
         "quotePrice": quote_price,
+        "quoteVolume": quote_volume,
         "latestClose": latest_close,
         "fetchedAt": fetched_at,
         "isStale": is_stale,
@@ -179,6 +181,19 @@ def _quote_price(quote: dict[str, Any] | None) -> float | None:
         payload.get("price"),
         payload.get("regularMarketPrice"),
     )
+
+
+def _quote_volume(quote: dict[str, Any] | None) -> float | None:
+    if not quote:
+        return None
+    payload = quote.get("payload") or {}
+    volume = _first_number(
+        payload.get("volume"),
+        payload.get("regularMarketVolume"),
+        payload.get("latest_volume"),
+        payload.get("latestVolume"),
+    )
+    return volume if volume is not None and volume > 0 else None
 
 
 def _warning(

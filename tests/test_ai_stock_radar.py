@@ -212,7 +212,7 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
 
     html = radar_ui._report_html(report, {}, _cached_snapshot(), _cached_technicals(), {}, pd.DataFrame())
 
-    assert "AI Stock Radar Research" in html
+    assert "AI 股票雷达研究" in html
     assert "核心摘要" in html
     assert "目标价区间与估值/技术区间图" in html
     assert "评分卡" in html
@@ -221,9 +221,152 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "核心财务摘要" in html
     assert "市场表现" in html
     assert "数据完整度" in html
+    assert "AI Stock Radar Research" not in html
+    assert "Research notes" not in html
+    assert "N/A" not in html
     assert "是否允许新增" not in html
     assert "阻止原因" not in html
     assert "DATA_MISSING" not in html
+
+
+def test_ai_radar_report_msft_near_repair_below_valuation_is_not_broken_buy_zone() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "current_price": 390.74,
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+        "summary": "wait. current price is below the discipline buy zone lower bound; review fundamentals",
+        "entry_display_label": "低于估值参考",
+        "entry_action_hint": "等待结构确认",
+        "near_term_repair_zone_low": 377.84,
+        "near_term_repair_zone_high": 415.02,
+        "valuation_reference_zone_low": 394.12,
+        "valuation_reference_zone_high": 425.99,
+        "trend_reclaim_zone_low": 415.02,
+        "trend_reclaim_zone_high": 425.99,
+        "confirmation_price": 415.02,
+        "invalidation_price": 377.84,
+        "technical_structure_status": "WEAK_TREND_REPAIR",
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "近端修复观察区" in html
+    assert "价格低于估值参考区下沿，但仍处于近端修复观察区" in html
+    assert "跌破纪律买区" not in html
+    assert "current price is below" not in html
+    assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_only_marks_breakdown_when_price_breaks_invalidation() -> None:
+    report = {
+        "ticker": "ADBE",
+        "company_name": "Adobe Inc.",
+        "current_price": 190.0,
+        "decision": "WAIT",
+        "final_score": 78,
+        "data_status": "OK",
+        "summary": "wait. current price is below the discipline buy zone lower bound; review fundamentals",
+        "near_term_repair_zone_low": 192.85,
+        "near_term_repair_zone_high": 203.29,
+        "valuation_reference_zone_low": 210.0,
+        "valuation_reference_zone_high": 240.0,
+        "invalidation_price": 196.9,
+        "confirmation_price": 241.15,
+        "technical_structure_status": "WEAK_TREND_REPAIR",
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "破位复核区" in html
+    assert "价格跌破支撑/失效线" in html
+    assert "current price is below" not in html
+    assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_optional_gaps_do_not_override_main_conclusion() -> None:
+    report = {
+        "ticker": "NOW",
+        "company_name": "ServiceNow",
+        "sector": "企业SaaS｜工作流自动化",
+        "current_price": 103.0,
+        "decision": "WAIT",
+        "final_score": 80,
+        "data_status": "OK",
+        "near_term_repair_zone_low": 100.0,
+        "near_term_repair_zone_high": 108.0,
+        "debug": {"data_missing_fields": ["vwap", "relative_strength_vs_QQQ"]},
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "近端修复观察区" in html
+    assert "资料缺口" not in html
+    assert "待补数据" not in html
+    assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_volume_prefers_quote_over_daily_cache() -> None:
+    history = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-05-01", periods=20),
+            "close": [100 + index for index in range(20)],
+            "volume": [18_500_000] * 19 + [8_000_000],
+        }
+    )
+
+    rows = radar_ui._key_metric_rows(
+        {"current_price": 390},
+        {"quoteVolume": 13_200_000},
+        {},
+        {},
+        history,
+    )
+
+    values = dict(rows)
+    assert values["成交量"] == "13.2M"
+    assert values["20日均量"] == "18.0M"
+    assert values["量比"] == "0.73x"
+    assert values["成交量来源"] == "quote 缓存"
+
+
+def test_ai_radar_report_volume_falls_back_to_latest_daily_bar() -> None:
+    history = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-05-01", periods=20),
+            "close": [100 + index for index in range(20)],
+            "volume": [10] * 19 + [30],
+        }
+    )
+
+    rows = radar_ui._key_metric_rows({"current_price": 390}, {}, {}, {}, history)
+
+    values = dict(rows)
+    assert values["成交量"] == "30"
+    assert values["20日均量"] == "11"
+    assert values["量比"] == "2.73x"
+    assert values["成交量来源"] == "日线缓存"
+
+
+def test_ai_radar_report_volume_missing_is_specific_data_gap() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "sector": "云平台｜AI软件",
+        "current_price": 390,
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "暂无成交量数据" in html
+    assert "成交量缺失" in html
+    assert "volume、daily_bar.volume" in html
+    assert report["decision"] == "WAIT"
 
 
 def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:

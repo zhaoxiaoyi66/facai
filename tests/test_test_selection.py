@@ -5,8 +5,8 @@ def test_dashboard_change_selects_dashboard_macro_and_core_dashboard_tests() -> 
     targets = select_test_targets(["ui/dashboard.py"])
 
     assert PytestTarget("tests/test_dashboard_freshness.py") in targets
-    assert PytestTarget("tests/test_macro_regime.py") in targets
     assert PytestTarget("tests/test_core_logic.py", "dashboard") in targets
+    assert PytestTarget("tests/test_macro_regime.py") not in targets
 
 
 def test_macro_change_selects_macro_and_core_macro_tests() -> None:
@@ -23,7 +23,16 @@ def test_portfolio_ui_change_selects_entry_model_and_core_portfolio_tests() -> N
 
     assert PytestTarget("tests/test_portfolio_trade_entry.py") in targets
     assert PytestTarget("tests/test_portfolio_model.py") in targets
-    assert PytestTarget("tests/test_core_logic.py", "portfolio") in targets
+    assert PytestTarget("tests/test_core_logic.py", "portfolio") not in targets
+
+
+def test_structure_and_acceptance_changes_do_not_force_trading_workflow_tests() -> None:
+    assert select_test_targets(["data/structure_entry.py"]) == [
+        PytestTarget("tests/test_structure_entry.py")
+    ]
+    assert select_test_targets(["data/pullback_acceptance.py"]) == [
+        PytestTarget("tests/test_pullback_acceptance.py")
+    ]
 
 
 def test_changed_test_file_selects_itself() -> None:

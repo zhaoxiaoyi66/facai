@@ -291,16 +291,16 @@ def _report_html(
         f'{_text_card_html("关键监控点", _research_watch_points(report, row))}'
         "</section>"
         '<section class="ai-radar-research-grid">'
-        f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals))}'
+        f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
         f'{_metric_table_card_html("核心财务摘要", _financial_metric_rows(snapshot))}'
         "</section>"
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("市场表现", _performance_rows(history))}'
         f'{_text_card_html("近期新闻 / 催化", _catalyst_items(row, snapshot, report))}'
         "</section>"
-        f"{_data_completeness_html(report, confidence)}"
+        f"{_data_completeness_html(report, confidence, _volume_snapshot(market, snapshot, technicals, history))}"
         '<footer class="ai-radar-report-foot">'
-        f'<span>更新时间：{escape(str(market.get("fetchedAt") or report.get("data_updated_at") or "N/A"))}</span>'
+        f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
         f'<span>数据完整度：{escape(confidence)}</span>'
         f'<span>报告版本：{escape(RADAR_REPORT_VERSION)}</span>'
         "</footer>"
@@ -339,8 +339,8 @@ def _debug_html(debug: dict[str, Any]) -> str:
     return (
         '<section class="ai-radar-debug">'
         '<div class="ai-radar-debug-summary">'
-        f'<div><span>数据状态</span><strong>{escape(str(debug.get("data_status") or "N/A"))}</strong></div>'
-        f'<div><span>Zone status</span><strong>{escape(_price_position_label(debug.get("price_position")))}</strong></div>'
+        f'<div><span>数据状态</span><strong>{escape(_display_value(debug.get("data_status")))}</strong></div>'
+        f'<div><span>区间状态</span><strong>{escape(_price_position_label(debug.get("price_position")))}</strong></div>'
         f'<div><span>距买区</span><strong>{escape(_signed_pct(debug.get("distance_to_buy_zone_pct")))}</strong></div>'
         f'<div><span>缺失字段</span><strong>{escape(_inline_list(debug.get("data_missing_fields")))}</strong></div>'
         f'<div><span>区间来源</span><strong>{escape(str(zones.get("source") or "missing"))}</strong></div>'
@@ -370,6 +370,7 @@ def _research_header_html(
 ) -> str:
     ticker = str(report.get("ticker") or "")
     company = str(report.get("company_name") or ticker)
+    current_zone = _current_zone_label(report)
     meta = "｜".join(
         item
         for item in (
@@ -385,7 +386,7 @@ def _research_header_html(
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", _compact_number(_first_number(snapshot, technicals, "volume"))),
         ("更新时间", _short_time(report.get("data_updated_at") or market.get("fetchedAt"))),
-        ("当前区间", core_status),
+        ("当前区间", current_zone),
     ]
     stat_html = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in stats
@@ -393,7 +394,7 @@ def _research_header_html(
     return (
         '<header class="ai-radar-research-header">'
         '<div class="ai-radar-title-block">'
-        f"<span>AI Stock Radar Research</span>"
+        f"<span>AI 股票雷达研究</span>"
         f"<h1>{escape(ticker)}</h1>"
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
@@ -409,6 +410,21 @@ def _summary_lines_html(lines: list[str]) -> str:
 
 
 def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], market: dict[str, Any]) -> list[str]:
+    ticker = str(report.get("ticker") or "该股票")
+    company = str(report.get("company_name") or ticker)
+    status = _core_status(report)
+    score = _number_text(report.get("final_score"))
+    data_confidence = _data_confidence(report)
+    summary = _localized_report_summary(report)
+    return [
+        summary
+        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和确认条件。",
+        f"价格位置：{_entry_sentence(report)}",
+        f"核心判断：{_decision_to_sentence(report)}",
+        f"下一步重点：{_next_step_sentence(report)}",
+        f"数据完整度：{data_confidence}；缺失字段放在报告末尾，不让辅助数据主导结论。",
+    ]
+
     ticker = str(report.get("ticker") or "该股票")
     company = str(report.get("company_name") or ticker)
     status = _core_status(report)
@@ -519,18 +535,28 @@ def _metric_table_card_html(title: str, rows: list[tuple[str, str]]) -> str:
     )
 
 
-def _key_metric_rows(report: dict[str, Any], market: dict[str, Any], snapshot: dict[str, Any], technicals: dict[str, Any]) -> list[tuple[str, str]]:
+def _key_metric_rows(
+    report: dict[str, Any],
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    technicals: dict[str, Any],
+    history: pd.DataFrame | None = None,
+) -> list[tuple[str, str]]:
+    volume = _volume_snapshot(market, snapshot, technicals, history)
     return [
         ("最新价", _money(report.get("current_price"))),
         ("日内涨跌幅", _signed_pct(_first_number(snapshot, technicals, market, "change_pct", "changePercent", "day_change_pct"))),
-        ("成交量", _compact_number(_first_number(snapshot, technicals, "volume"))),
+        ("成交量", _volume_display(volume)),
+        ("20日均量", _compact_number(volume.get("volume_ma20"))),
+        ("量比", _volume_ratio_display(volume.get("volume_ratio"))),
+        ("成交量来源", _volume_source_label(volume.get("volume_source"))),
         ("52周高低", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
-        ("PE / Forward PE", f"{_multiple(_first_number(snapshot, 'pe', 'trailing_pe', 'price_to_earnings'))} / {_multiple(_first_number(snapshot, 'forward_pe', 'forwardPE'))}"),
-        ("EV/Sales", _multiple(_first_number(snapshot, "enterprise_to_revenue", "enterpriseToRevenue", "ev_to_sales"))),
-        ("FCF yield", _ratio_pct(_first_number(snapshot, "free_cash_flow_yield", "fcf_yield"))),
+        ("市盈率 / 远期市盈率", f"{_multiple(_first_number(snapshot, 'pe', 'trailing_pe', 'price_to_earnings'))} / {_multiple(_first_number(snapshot, 'forward_pe', 'forwardPE'))}"),
+        ("企业价值 / 销售额", _multiple(_first_number(snapshot, "enterprise_to_revenue", "enterpriseToRevenue", "ev_to_sales"))),
+        ("自由现金流收益率", _ratio_pct(_first_number(snapshot, "free_cash_flow_yield", "fcf_yield"))),
         ("毛利率", _ratio_pct(_first_number(snapshot, "gross_margin", "grossMargin"))),
         ("净利率", _ratio_pct(_first_number(snapshot, "net_margin", "profit_margin", "netMargin"))),
-        ("ROE", _ratio_pct(_first_number(snapshot, "roe", "returnOnEquity"))),
+        ("净资产收益率", _ratio_pct(_first_number(snapshot, "roe", "returnOnEquity"))),
     ]
 
 
@@ -558,6 +584,75 @@ def _performance_rows(history: pd.DataFrame) -> list[tuple[str, str]]:
     ]
 
 
+def _volume_snapshot(
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    technicals: dict[str, Any],
+    history: pd.DataFrame | None,
+) -> dict[str, Any]:
+    quote_volume = _first_number(market, snapshot, technicals, "quoteVolume", "quote_volume", "latest_volume", "regularMarketVolume")
+    daily_volume = _latest_daily_volume(history)
+    volume_ma20 = _daily_volume_ma20(history) or _first_number(snapshot, technicals, "volume_ma20", "avg_volume", "averageVolume")
+
+    if quote_volume is not None and quote_volume > 0:
+        volume = quote_volume
+        source = "quote"
+    elif daily_volume is not None and daily_volume > 0:
+        volume = daily_volume
+        source = "daily_cache"
+    else:
+        volume = None
+        source = "unavailable"
+
+    ratio = volume / volume_ma20 if volume is not None and volume_ma20 else None
+    return {
+        "latest_volume": volume,
+        "volume_ma20": volume_ma20,
+        "volume_ratio": ratio,
+        "volume_source": source,
+    }
+
+
+def _latest_daily_volume(history: pd.DataFrame | None) -> float | None:
+    if history is None or history.empty or "volume" not in history:
+        return None
+    volumes = pd.to_numeric(history["volume"], errors="coerce").dropna()
+    volumes = volumes[volumes > 0]
+    if volumes.empty:
+        return None
+    return float(volumes.iloc[-1])
+
+
+def _daily_volume_ma20(history: pd.DataFrame | None) -> float | None:
+    if history is None or history.empty or "volume" not in history:
+        return None
+    volumes = pd.to_numeric(history["volume"], errors="coerce").dropna()
+    volumes = volumes[volumes > 0]
+    if volumes.empty:
+        return None
+    window = volumes.tail(20)
+    return float(window.mean()) if not window.empty else None
+
+
+def _volume_display(volume: dict[str, Any]) -> str:
+    if volume.get("latest_volume") is None:
+        return "暂无成交量数据"
+    return _compact_number(volume.get("latest_volume"))
+
+
+def _volume_ratio_display(value: Any) -> str:
+    number = _number(value)
+    return "暂无" if number is None else f"{number:.2f}x"
+
+
+def _volume_source_label(value: Any) -> str:
+    return {
+        "quote": "quote 缓存",
+        "daily_cache": "日线缓存",
+        "unavailable": "暂无",
+    }.get(str(value or ""), "暂无")
+
+
 def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
     for source in (row, snapshot, report):
@@ -580,10 +675,13 @@ def _research_watch_points(report: dict[str, Any], row: dict[str, Any]) -> list[
     return _dedupe_text(points)[:6]
 
 
-def _data_completeness_html(report: dict[str, Any], confidence: str) -> str:
-    missing = _missing_group_text(report) or "暂无关键缺口"
+def _data_completeness_html(report: dict[str, Any], confidence: str, volume: dict[str, Any] | None = None) -> str:
+    missing = _missing_group_text(report)
+    if volume and volume.get("volume_source") == "unavailable":
+        missing = "、".join(_dedupe_text([*(missing.split("、") if missing else []), "成交量缺失"]))
+    missing = missing or "暂无关键缺口"
     impact = _data_impact_sentence(report, confidence)
-    detail = _inline_list((report.get("debug") or {}).get("data_missing_fields"))
+    detail = _data_missing_detail_text(report, volume)
     return (
         '<section class="ai-radar-card ai-radar-data-quality">'
         '<div class="ai-radar-section-title"><span>数据完整度</span><b>缺数据不压倒主结论</b></div>'
@@ -598,11 +696,11 @@ def _data_completeness_html(report: dict[str, Any], confidence: str) -> str:
 
 
 def _text_card_html(title: str, items: list[Any]) -> str:
-    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    cleaned = [_localize_report_text(str(item).strip()) for item in items if str(item).strip()]
     if not cleaned:
         cleaned = ["暂无明确内容，先保持复查。"]
     body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:6])
-    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>Research notes</b></div><ul>{body}</ul></section>'
+    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>研究依据</b></div><ul>{body}</ul></section>'
 
 
 def _inline_list(value: Any) -> str:
@@ -822,6 +920,19 @@ def _data_impact_sentence(report: dict[str, Any], confidence: str) -> str:
 
 
 def _entry_sentence(report: dict[str, Any]) -> str:
+    if _price_below_valuation_inside_near_repair(report):
+        return "价格低于估值参考区下沿，但仍处于近端修复观察区；当前未过趋势确认线，等待量价承接或重新站回关键均线。"
+    if _current_zone_label(report) == "破位复核区":
+        return "价格跌破支撑/失效线，需复核基本面、财报冲击或趋势破坏。"
+    current_zone = _current_zone_label(report)
+    label = _localize_report_text(str(report.get("entry_display_label") or "").strip())
+    hint = _localize_report_text(str(report.get("entry_action_hint") or report.get("entry_display_reason") or "").strip())
+    if label and hint:
+        return f"{current_zone}：{label}；{hint}"
+    if label or hint:
+        return f"{current_zone}：{label or hint}"
+    return f"{current_zone}：缺少明确买区提示，先按观察处理。"
+
     label = str(report.get("entry_display_label") or "").strip()
     hint = str(report.get("entry_action_hint") or report.get("entry_display_reason") or "").strip()
     if label and hint:
@@ -830,6 +941,14 @@ def _entry_sentence(report: dict[str, Any]) -> str:
 
 
 def _decision_to_sentence(report: dict[str, Any]) -> str:
+    current_zone = _current_zone_label(report)
+    if current_zone == "近端修复观察区":
+        return "当前不是追高，也不是确认买点；重点看支撑是否守住、收盘能否站回确认线，以及相对强弱是否修复。"
+    if current_zone == "破位复核区":
+        return "当前进入破位复核语境；只有确认基本面未恶化且重新站回关键位后，区间判断才重新有效。"
+    if current_zone == "追高风险区":
+        return "当前处于追高语境；系统建议等待回踩或新的确认线，不把上涨本身当作买点。"
+
     status = _core_status(report)
     decision = str(report.get("decision") or "")
     if status in {"价值复核", "近端复核"}:
@@ -846,12 +965,143 @@ def _decision_to_sentence(report: dict[str, Any]) -> str:
 def _next_step_sentence(report: dict[str, Any]) -> str:
     steps = report.get("next_technical_steps") or []
     if steps:
+        return _localize_report_text(str(steps[0]))
+    if report.get("confirmation_price"):
+        return f"观察能否重新站上确认线 {_money(report.get('confirmation_price'))}。"
+    if report.get("invalidation_price"):
+        return f"观察是否守住失效线 {_money(report.get('invalidation_price'))}。"
+    return "等待价格、技术和基本面缓存进一步补齐。"
+
+    steps = report.get("next_technical_steps") or []
+    if steps:
         return str(steps[0])
     if report.get("confirmation_price"):
         return f"观察能否重新站上确认线 {_money(report.get('confirmation_price'))}。"
     if report.get("invalidation_price"):
         return f"观察是否守住失效线 {_money(report.get('invalidation_price'))}。"
     return "等待价格、技术和基本面缓存进一步补齐。"
+
+
+def _current_zone_label(report: dict[str, Any]) -> str:
+    price = _number(report.get("current_price"))
+    if price is None:
+        return "区间待补"
+
+    invalidation = _first_number(report, "invalidation_price")
+    structure = str(report.get("technical_structure_status") or "").strip().upper()
+    if invalidation is not None and price < invalidation:
+        return "破位复核区"
+    if structure == "BREAKDOWN_REVIEW":
+        return "破位复核区"
+
+    chase = _first_number(report, "chase_above_price")
+    if chase is not None and price >= chase:
+        return "追高风险区"
+
+    if _price_in_range(price, _first_number(report, "near_term_repair_zone_low"), _first_number(report, "near_term_repair_zone_high")):
+        return "近端修复观察区"
+    if _price_in_range(price, _first_number(report, "valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high")):
+        return "估值参考区"
+    if _price_in_range(price, _first_number(report, "deep_support_zone_low"), _first_number(report, "deep_support_zone_high")):
+        return "深度支撑区"
+    if _price_in_range(price, _first_number(report, "trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "confirmation_price")):
+        return "趋势确认区"
+
+    price_position = str(report.get("price_position") or "").strip().upper()
+    if price_position == "IN_CHASE_ZONE":
+        return "追高风险区"
+    if price_position == "IN_BUY_ZONE":
+        return "纪律参考区"
+    return _core_status(report)
+
+
+def _price_in_range(price: float, low: float | None, high: float | None) -> bool:
+    if low is None or high is None:
+        return False
+    lower, upper = sorted((low, high))
+    return lower <= price <= upper
+
+
+def _price_below_valuation_inside_near_repair(report: dict[str, Any]) -> bool:
+    price = _number(report.get("current_price"))
+    valuation_low = _first_number(report, "valuation_reference_zone_low")
+    if price is None or valuation_low is None or price >= valuation_low:
+        return False
+    return _current_zone_label(report) == "近端修复观察区"
+
+
+def _localized_report_summary(report: dict[str, Any]) -> str:
+    if _price_below_valuation_inside_near_repair(report):
+        return "价格低于估值参考区下沿，但仍处于近端修复观察区；当前未过趋势确认线，等待量价承接或重新站回关键均线。"
+    if _current_zone_label(report) == "破位复核区":
+        return "价格跌破支撑/失效线，需复核基本面、财报冲击或趋势破坏。"
+
+    raw_summary = str(report.get("summary") or "").strip()
+    if not raw_summary:
+        return ""
+    lower = raw_summary.lower()
+    internal_markers = (
+        "discipline buy zone",
+        "current price is below",
+        "current price is above",
+        "block_chase",
+        "data_missing",
+    )
+    if any(marker in lower for marker in internal_markers):
+        return ""
+    return _localize_report_text(raw_summary)
+
+
+def _localize_report_text(text: str) -> str:
+    replacements = {
+        "AI Stock Radar Research": "AI 股票雷达研究",
+        "Research notes": "研究依据",
+        "wait": "等待",
+        "current price is below the discipline buy zone lower bound": "当前价格低于纪律买区下沿",
+        "current price is above the discipline buy zone": "当前价格高于纪律买区",
+        "current price is in or above chase zone": "当前价格处于追高语境",
+        "review fundamentals": "复核基本面",
+        "Revenue Growth": "收入增长",
+        "Operating Margin": "经营利润率",
+        "FCF Margin": "自由现金流率",
+        "ROIC": "投入资本回报率",
+        "Forward PE": "远期市盈率",
+        "normalized PE": "标准化市盈率",
+        "Drawdown": "回撤",
+        "technical setup": "技术结构",
+        "Net Cash": "净现金",
+        "Balance Sheet": "资产负债表",
+        "Segment strength": "业务片段强度",
+        "Buyback discipline": "回购纪律",
+        "Historical valuation percentile": "历史估值分位",
+        "Capex concern discount": "资本开支折价",
+        "AI capex overbuild risk": "AI 资本开支过热风险",
+        "Regulatory risk": "监管风险",
+        "N/A": "暂无",
+    }
+    result = str(text or "")
+    for source, target in replacements.items():
+        result = result.replace(source, target)
+    return result
+
+
+def _display_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return _localize_report_text(text) if text else "暂无"
+
+
+def _data_missing_detail_text(report: dict[str, Any], volume: dict[str, Any] | None = None) -> str:
+    fields = [str(item).strip() for item in ((report.get("debug") or {}).get("data_missing_fields") or []) if str(item).strip()]
+    if volume and volume.get("volume_source") == "unavailable":
+        fields.append("volume")
+        fields.append("daily_bar.volume")
+    groups = _missing_groups(report)
+    if any("资料缺口" in group for group in groups):
+        if not report.get("company_name"):
+            fields.append("company_name")
+        if not (report.get("sector") or report.get("industry") or report.get("business_model") or report.get("model")):
+            fields.append("sector / industry")
+    return _inline_list(_dedupe_text(fields))
 
 
 def _average_score(*values: Any) -> float | None:
@@ -1072,13 +1322,13 @@ def _empty_card_html(title: str, message: str) -> str:
 
 def _money(value: Any) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"${number:,.2f}"
+    return "暂无" if number is None else f"${number:,.2f}"
 
 
 def _compact_money(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "暂无"
     abs_value = abs(number)
     if abs_value >= 1_000_000_000_000:
         return f"${number / 1_000_000_000_000:.2f}T"
@@ -1092,7 +1342,7 @@ def _compact_money(value: Any) -> str:
 def _compact_number(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "暂无"
     abs_value = abs(number)
     if abs_value >= 1_000_000_000:
         return f"{number / 1_000_000_000:.2f}B"
@@ -1105,28 +1355,28 @@ def _compact_number(value: Any) -> str:
 
 def _pct(value: Any) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"{number:.1f}%"
+    return "暂无" if number is None else f"{number:.1f}%"
 
 
 def _signed_pct(value: Any) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"{number:+.1f}%"
+    return "暂无" if number is None else f"{number:+.1f}%"
 
 
 def _number_text(value: Any) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"{number:.1f}"
+    return "暂无" if number is None else f"{number:.1f}"
 
 
 def _multiple(value: Any) -> str:
     number = _number(value)
-    return "N/A" if number is None else f"{number:.1f}x"
+    return "暂无" if number is None else f"{number:.1f}x"
 
 
 def _ratio_pct(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "暂无"
     if abs(number) <= 1:
         number *= 100
     return f"{number:.1f}%"
@@ -1136,7 +1386,7 @@ def _range_text(low: Any, high: Any) -> str:
     low_number = _number(low)
     high_number = _number(high)
     if low_number is None and high_number is None:
-        return "N/A"
+        return "暂无"
     if low_number is None:
         return f"≤ {_money(high_number)}"
     if high_number is None:
@@ -1147,7 +1397,7 @@ def _range_text(low: Any, high: Any) -> str:
 def _short_time(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return "N/A"
+        return "暂无"
     return text.replace("T", " ")[:16]
 
 

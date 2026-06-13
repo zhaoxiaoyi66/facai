@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.decision_log import TradeJournalStore
 from data.macro_regime import load_macro_regime
+from data.market_context import build_market_history
 from data.planned_ladder_buy import evaluate_planned_ladder_buy
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_structure_health import build_portfolio_structure_check
@@ -20,6 +21,7 @@ from data.stock_plan import StockPlanStore, is_active_buy_plan
 from data.starter_position import evaluate_starter_position
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_snapshot_fields
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
+from data.volume_price_acceptance import evaluate_volume_price_acceptance, volume_price_acceptance_snapshot_fields
 
 
 VALID_POSITION_TIERS = {"A", "B", "C"}
@@ -64,6 +66,12 @@ def submit_portfolio_buy_add(
     structure_advisor = build_structure_entry_advisor_for_symbol(ticker, path=path, now=submitted_at)
     pullback_acceptance = evaluate_pullback_acceptance(
         ticker=ticker,
+        technicals=_report_dict(report),
+        checked_at=submitted_at,
+    )
+    volume_price_acceptance = evaluate_volume_price_acceptance(
+        ticker=ticker,
+        daily_bars=_safe_market_history(ticker, path=path, now=submitted_at),
         technicals=_report_dict(report),
         checked_at=submitted_at,
     )
@@ -148,6 +156,7 @@ def submit_portfolio_buy_add(
         **starter_fields,
         **structure_entry_snapshot_fields(structure_advisor, checked_at=submitted_at.isoformat()),
         **pullback_acceptance_snapshot_fields(pullback_acceptance, checked_at=submitted_at.isoformat()),
+        **volume_price_acceptance_snapshot_fields(volume_price_acceptance, checked_at=submitted_at.isoformat()),
         **advisory_context_fields,
         "gateCheckedAt": submitted_at.isoformat(),
     }
@@ -180,6 +189,7 @@ def submit_portfolio_buy_add(
         "starterGate": starter_gate.to_dict(),
         "structureEntry": structure_advisor.to_dict(),
         "pullbackAcceptance": pullback_acceptance.to_dict(),
+        "volumePriceAcceptance": volume_price_acceptance.to_dict(),
         "marketStatus": _buy_market_status(report, gate),
         "completedPlan": completed_plan,
         "sync": sync_result,
@@ -489,6 +499,13 @@ def _report_dict(report: object) -> dict[str, Any]:
         if isinstance(data, dict):
             return dict(data)
     return {}
+
+
+def _safe_market_history(symbol: str, *, path: Path, now: datetime):
+    try:
+        return build_market_history(symbol, path=path, now=now)
+    except Exception:
+        return None
 
 
 def _first_report_value(report: object, *keys: str) -> Any:

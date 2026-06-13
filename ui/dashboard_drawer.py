@@ -283,6 +283,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'{_drawer_decision_summary_html(row, drawer_deps)}'
         f'{_drawer_radar_entry_card_html(row)}'
         f'{_drawer_pullback_acceptance_card_html(row)}'
+        f'{_drawer_volume_price_acceptance_card_html(row)}'
         f'{_drawer_structure_entry_card_html(row)}'
         f'{_drawer_next_action_html(row, drawer_deps)}'
         f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
@@ -1126,6 +1127,64 @@ def _drawer_pullback_acceptance_context(row: pd.Series) -> dict[str, object]:
     return context
 
 
+def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
+    snapshot = row.get("volumePriceAcceptance")
+    if not isinstance(snapshot, dict):
+        snapshot = {
+            "volume_price_status": row.get("volumePriceStatus"),
+            "volume_price_score": row.get("volumePriceScore"),
+            "acceptance_reason_cn": row.get("volumePriceReasonCn"),
+        }
+    status_code = str(snapshot.get("volume_price_status") or snapshot.get("volumePriceStatus") or "").strip()
+    status = str(snapshot.get("status_label") or _volume_price_status_label(status_code) or "数据不足")
+    score = _drawer_number(snapshot.get("volume_price_score", snapshot.get("volumePriceScore")))
+    score_text = "待补数据" if status_code == "DATA_MISSING" else ("N/A" if score is None else f"{score:.0f} 分")
+    volume_ratio = _drawer_number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
+    volume_ma20 = _drawer_number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
+    close_position = _drawer_number(snapshot.get("close_position", snapshot.get("closePosition")))
+    candle = _drawer_clean_text(snapshot.get("candle_signal_cn") or snapshot.get("candleSignalCn")) or "K线待确认"
+    volume = _drawer_clean_text(snapshot.get("volume_signal_cn") or snapshot.get("volumeSignalCn")) or "量能待确认"
+    support = _drawer_clean_text(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn")) or "支撑待确认"
+    confirmation = _drawer_clean_text(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn")) or "确认待补"
+    reason = _drawer_clean_text(snapshot.get("acceptance_reason_cn") or snapshot.get("volumePriceReasonCn"))
+    distribution_count = _drawer_number(snapshot.get("distribution_count_10d", snapshot.get("distributionCount10d")))
+    deductions = _drawer_text_list(snapshot.get("risk_deductions") or snapshot.get("riskDeductions"))
+    lines = [
+        "只读提示：不改变 ALLOW_BUY / Radar decision / portfolio sync。",
+        f"量比：{'缺失' if volume_ratio is None else f'{volume_ratio:.2f}x'}",
+        f"20日均量：{_drawer_volume_text(volume_ma20)}",
+        f"收盘位置：{'缺失' if close_position is None else f'{close_position:.0%}'}",
+        f"K线：{candle}",
+        f"量能：{volume}",
+        f"支撑：{support}",
+        f"确认：{confirmation}",
+        f"10日派发日：{0 if distribution_count is None else int(distribution_count)}",
+    ]
+    if deductions:
+        lines.append("风险扣分：" + "；".join(deductions[:3]))
+    if reason:
+        lines.append("结论：" + reason)
+    items = "".join(f"<li>{escape(str(line))}</li>" for line in lines if line)
+    return (
+        '<div class="drawer-card">'
+        '<div class="drawer-card-title">量价承接</div>'
+        f'<div class="drawer-card-headline">{escape(status)}｜{escape(score_text)}</div>'
+        f"<ul>{items}</ul>"
+        "</div>"
+    )
+
+
+def _volume_price_status_label(value: object) -> str:
+    return {
+        "ACCEPTANCE_CONFIRMED": "已确认",
+        "FORMING": "形成中",
+        "UNCONFIRMED": "未确认",
+        "FAILED": "失效",
+        "OVEREXTENDED_SUPPORT_READ": "脱离观察区",
+        "DATA_MISSING": "数据不足",
+    }.get(str(value or ""), "")
+
+
 def _acceptance_status_label(value: object) -> str:
     return {
         "ACCEPTANCE_CONFIRMED": "承接确认",
@@ -1247,6 +1306,17 @@ def _drawer_detail_basis_html(
 def _drawer_money_text(value: object) -> str:
     number = _drawer_number(value)
     return "N/A" if number is None else f"${number:,.2f}"
+
+
+def _drawer_volume_text(value: object) -> str:
+    number = _drawer_number(value)
+    if number is None:
+        return "缺失"
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return f"{number:.0f}"
 
 
 def _drawer_number(value: object) -> float | None:
