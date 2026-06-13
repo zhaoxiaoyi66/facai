@@ -26,6 +26,12 @@ def _base_source(**overrides):
         "confirmation_price": 118,
         "invalidation_price": 96,
         "chase_above_price": 125,
+        "ma20": 108,
+        "ma50": 103,
+        "ma200": 92,
+        "atr_14": 4.2,
+        "recent_swing_high": 119,
+        "resistance_zone_high": 119,
     }
     data.update(overrides)
     return data
@@ -100,6 +106,38 @@ def test_missing_technical_or_volume_data_is_data_insufficient() -> None:
     assert context.current_action == DATA_INSUFFICIENT
     assert context.primary_zone_text == "技术承接数据不足"
     assert "volume_acceptance" in context.missing_fields
+    assert context.support_zone_low is None
+    assert context.pullback_zone_low is None
+
+
+def test_missing_key_technical_acceptance_fields_do_not_generate_buy_zone() -> None:
+    for key, expected_missing in (
+        ("ma20", "ma20"),
+        ("ma50", "ma50"),
+        ("ma200", "ma200"),
+        ("atr_14", "atr_14"),
+    ):
+        source = _base_source()
+        source.pop(key)
+
+        context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+        assert context.current_action == DATA_INSUFFICIENT
+        assert expected_missing in context.missing_fields
+        assert context.support_zone_low is None
+        assert context.pullback_zone_low is None
+
+
+def test_missing_resistance_zone_does_not_generate_buy_zone() -> None:
+    source = _base_source()
+    source.pop("resistance_zone_high")
+    source.pop("recent_swing_high")
+    source.pop("confirmation_price")
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.current_action == DATA_INSUFFICIENT
+    assert "resistance_zone" in context.missing_fields
     assert context.support_zone_low is None
     assert context.pullback_zone_low is None
 

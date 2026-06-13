@@ -109,9 +109,10 @@ def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status(
         action_result,
     )
 
-    assert "持仓语境" in html
+    assert "我的持仓" in html
     assert "已有持仓" in html
-    assert "仓位 5.8%" in html
+    assert "组合仓位" in html
+    assert "5.8%" in html
     assert "未持仓 / 仅研究观察" not in html
     assert action_result.portfolio_updated_at == "2026-06-12T17:09:22+00:00"
 
@@ -152,9 +153,12 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     assert "禁止追高" in html
     assert "不主动追买" in html
     assert "追高禁区" in html
-    assert "重新评估线：放量站上 $52.00 后重新评估" in html
-    assert "买入前提" in html
-    assert "跌破 $44.00" in html
+    assert "主击球区" in html
+    assert "当前位置" in html
+    assert "入场条件" in html
+    assert "放量站上 $52.00 后重新判断" in html
+    assert "跌破 $44.00 暂停买入" in html
+    assert "≥ $50.00 禁止追买" in html
     assert "BLOCK_CHASE" not in html
     assert "OVEREXTENDED_SUPPORT_READ" not in html
 
@@ -206,11 +210,13 @@ def test_report_summary_is_conclusion_first_and_shows_position_actions() -> None
         action_result,
     )
 
-    assert "本页结论：MSFT 当前处于修复观察区" in html
+    assert "击球区" in html
+    assert "本页结论：MSFT 当前价 $390.00，在主击球区内" in html
     assert "我的持仓：12 股｜成本 $320.00｜浮盈亏 +$840.00 / +21.9%" in html
     assert "已有持仓动作" in html
     assert "无持仓动作" not in html
     assert "已有持仓，持有观察，未到加仓确认位。" in html
+    assert html.count("<li>") == 3
     assert "若无持仓" not in html
 
 
@@ -299,6 +305,97 @@ def test_report_data_health_filters_gaps_already_resolved_on_page() -> None:
     assert data_health["portfolio_updated_at"] == "2026-06-12T17:09:22+00:00"
 
 
+def test_report_data_health_classifies_critical_optional_and_not_applicable_fields() -> None:
+    report = {
+        "ticker": "MSFT",
+        "current_price": 412,
+        "final_score": 76,
+        "daily_ohlcv": {"close": 412, "volume": 20_000_000},
+        "ma20": 405,
+        "ma50": 398,
+        "ma200": 360,
+        "avg_volume_20d": 18_000_000,
+        "volume_ratio": 1.11,
+        "atr_14": 7.5,
+        "rsi_14": 58,
+        "swing_high": 430,
+        "swing_low": 390,
+        "support_zone_low": 390,
+        "support_zone_high": 400,
+        "resistance_zone_low": 428,
+        "distance_to_invalidation": 4.2,
+        "distance_to_resistance": 3.8,
+        "reward_risk_ratio": 1.4,
+        "debug": {
+            "data_missing_fields": [
+                "daily_bars",
+                "analyst_targets",
+                "shares",
+                "avg_cost",
+                "portfolio_updated_at",
+            ]
+        },
+    }
+
+    data_health = radar_ui._data_health_context(
+        report,
+        {"currentPrice": 412, "volume": 20_000_000},
+        {},
+        {},
+        {"has_position": False},
+    )
+    html = radar_ui._data_health_card_html(data_health)
+
+    assert data_health["health_level"] == "低"
+    assert "daily_bars" in data_health["critical_missing_fields"]
+    assert "analyst_targets" in data_health["optional_missing_fields"]
+    assert "shares" in data_health["not_applicable_fields"]
+    assert "avg_cost" not in data_health["missing_fields"]
+    assert "portfolio_updated_at" not in data_health["missing_fields"]
+    assert "数据健康等级" in html
+    assert "关键缺口" in html
+    assert "可选缺口" in html
+    assert "查看字段明细" in html
+
+
+def test_report_technical_context_derives_buy_zone_inputs_from_cached_rows() -> None:
+    technicals = radar_ui._enrich_technical_context(
+        "MSFT",
+        {
+            "current_price": 104,
+            "previous_close": 100,
+            "volume": 2_000_000,
+            "avg_volume_20d": 1_000_000,
+            "ma20": 108,
+            "ma50": 102,
+            "ma200": 90,
+            "atr_14": 4,
+            "rsi_14": 56,
+            "recent_swing_low": 96,
+            "recent_swing_high": 116,
+            "confirmation_price": 116,
+            "invalidation_price": 94,
+        },
+        {},
+        {},
+        {},
+    )
+
+    assert technicals["daily_ohlcv"]["close"] == 104
+    assert technicals["daily_ohlcv"]["volume"] == 2_000_000
+    assert round(technicals["day_change_pct"], 1) == 4.0
+    assert technicals["volume_ratio"] == 2.0
+    assert technicals["support_zone_low"] == 90
+    assert technicals["support_zone_high"] == 102
+    assert technicals["resistance_zone_high"] == 116
+    assert round(technicals["distance_to_invalidation"], 1) == 10.6
+    assert round(technicals["reward_risk_ratio"], 1) == 1.2
+
+
+def test_report_roe_falls_back_to_net_income_over_equity() -> None:
+    assert radar_ui._roe_value({"net_income": 25_000_000, "total_equity": 100_000_000}) == 0.25
+
+
 def test_report_localizes_backend_english_copy() -> None:
     html = radar_ui._text_card_html(
         "核心风险",
@@ -360,7 +457,9 @@ def test_report_range_chart_explains_primary_and_reference_zones() -> None:
     html = radar_ui._range_chart_html(report, conclusion)
 
     assert conclusion["primary_zone_text"] == "近端修复观察区"
-    assert "当前价同时落入多个参考区间" in html
+    assert "买区与承接结构图" in html
+    assert "主击球区" in html
+    assert "重新评估线用于重新判断，不等于直接买入" in html
     assert "参考区间：近端修复观察区、估值参考区" in html
 
 
@@ -624,8 +723,9 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
 
     assert "AI 股票雷达研究" in html
     assert "执行摘要" in html
-    assert "目标价区间与估值/技术区间图" in html
-    assert "评分卡" in html
+    assert "击球区" in html
+    assert "买区与承接结构图" in html
+    assert "Setup 评分卡" in html
     assert "看多逻辑" in html
     assert "核心风险" in html
     assert "关键监控点" in html
@@ -647,6 +747,7 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "是否允许新增" not in html
     assert "阻止原因" not in html
     assert "DATA_MISSING" not in html
+    assert "目标价区间与估值/技术区间图" not in html
 
 
 def test_ai_radar_report_uses_news_title_only_with_news_cache() -> None:
@@ -705,7 +806,9 @@ def test_ai_radar_report_msft_near_repair_below_valuation_is_not_broken_buy_zone
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
     assert "近端修复观察区" in html
-    assert "价格低于估值参考区下沿，但仍处于近端修复观察区" in html
+    assert "主击球区" in html
+    assert "技术承接数据不足" in html
+    assert "$377.84 - $415.02" in html
     assert "跌破纪律买区" not in html
     assert "current price is below" not in html
     assert report["decision"] == "WAIT"
@@ -737,7 +840,9 @@ def test_ai_radar_report_uses_dashboard_row_price_and_radar_zone_aliases() -> No
     assert "最新价" in html
     assert "$390.74" in html
     assert "近端修复观察区" in html
-    assert "价格低于估值参考区下沿，但仍处于近端修复观察区" in html
+    assert "主击球区" in html
+    assert "技术承接数据不足" in html
+    assert "$377.84 - $415.02" in html
     assert "区间待补" not in html
     assert "跌破纪律买区" not in html
     assert report["decision"] == "WAIT"
@@ -853,7 +958,8 @@ def test_ai_radar_report_only_marks_breakdown_when_price_breaks_invalidation() -
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
     assert "破位复核区" in html
-    assert "价格跌破支撑/失效线" in html
+    assert "跌破 $196.90 暂停买入" in html
+    assert "技术承接数据不足" in html
     assert "current price is below" not in html
     assert report["decision"] == "WAIT"
 

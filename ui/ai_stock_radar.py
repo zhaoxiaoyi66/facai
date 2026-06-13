@@ -212,8 +212,9 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     snapshot = _dict_value(row, "rawSnapshot") or {}
     technicals = _dict_value(row, "rawTechnicals") or {}
     perf.add("financials / fundamentals 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存")
-    perf.add("technical_data 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存")
     market = _cached_market_context(symbol, perf)
+    technicals = _enrich_technical_context(symbol, row or {}, snapshot, technicals, market)
+    perf.add("technical_data 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存 / 轻量派生")
     stage_start = time.perf_counter()
     report_obj = build_ai_stock_radar_report(
         symbol,
@@ -227,6 +228,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
         market=market,
     )
     report = report_obj.to_dict()
+    report.update(_report_technical_overlay(technicals))
     perf.add("估值区间计算", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False, note="复用已读取 quote")
     history = _cached_market_history(symbol, perf) if load_history else _empty_history_frame()
     if not load_history:
@@ -244,7 +246,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     portfolio_context = _portfolio_context(report, row or {}, action_result, buy_zone_context)
     perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用 Action Fusion snapshot")
     stage_start = time.perf_counter()
-    data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context)
+    data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context, buy_zone_context)
     perf.add("data_health 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     return StockReportContext(
         symbol=symbol,
@@ -338,6 +340,150 @@ def _cached_portfolio_context(symbol: str, perf: PerfProbe) -> dict[str, Any]:
     )
 
 
+def _enrich_technical_context(
+    symbol: str,
+    row: dict[str, Any],
+    snapshot: dict[str, Any],
+    technicals: dict[str, Any],
+    market: dict[str, Any],
+) -> dict[str, Any]:
+    ctx = dict(technicals or {})
+    ctx.setdefault("ticker", symbol)
+    current_price = _first_number(ctx, row, snapshot, market, "current_price", "currentPrice", "price", "close")
+    previous_close = _first_number(ctx, row, snapshot, market, "previous_close", "previousClose", "prev_close", "prevClose", "latestClose")
+    latest_volume = _first_number(ctx, row, snapshot, market, "volume", "latest_volume", "latestVolume", "quoteVolume")
+    avg_volume_20d = _first_number(ctx, row, snapshot, market, "avg_volume_20d", "avgVolume20d", "volume_ma20", "volumeMa20", "avg_volume", "avgVolume")
+    ma20 = _first_number(ctx, row, snapshot, "ma20", "MA20", "ema20")
+    ma50 = _first_number(ctx, row, snapshot, "ma50", "MA50", "ema50")
+    ma200 = _first_number(ctx, row, snapshot, "ma200", "MA200", "ema200")
+    atr14 = _first_number(ctx, row, snapshot, "atr_14", "atr14", "ATR14")
+    rsi14 = _first_number(ctx, row, snapshot, "rsi_14", "rsi14", "RSI14")
+    swing_low = _first_number(ctx, row, snapshot, "swing_low", "recent_swing_low", "recentSwingLow")
+    swing_high = _first_number(ctx, row, snapshot, "swing_high", "recent_swing_high", "recentSwingHigh", "recent_breakout_level")
+    support_low = _first_number(ctx, row, snapshot, "support_zone_low", "supportWatchZoneLow", "deep_support_zone_low", "support_watch_zone_low")
+    support_high = _first_number(ctx, row, snapshot, "support_zone_high", "supportWatchZoneHigh", "deep_support_zone_high", "support_watch_zone_high")
+    resistance_low = _first_number(ctx, row, snapshot, "resistance_zone_low", "resistanceZoneLow", "trend_reclaim_zone_low", "confirmation_price")
+    resistance_high = _first_number(ctx, row, snapshot, "resistance_zone_high", "resistanceZoneHigh", "recent_swing_high", "recent_breakout_level", "chase_above_price")
+    invalidation = _first_number(ctx, row, snapshot, "invalidation_price", "radar_invalidation_price", "invalid_line")
+
+    if current_price is not None:
+        ctx.setdefault("current_price", current_price)
+        ctx.setdefault("price", current_price)
+    if previous_close is not None:
+        ctx.setdefault("previous_close", previous_close)
+    if current_price is not None and previous_close not in (None, 0):
+        ctx.setdefault("day_change_pct", (current_price / previous_close - 1.0) * 100.0)
+        ctx.setdefault("daily_return_pct", (current_price / previous_close - 1.0) * 100.0)
+    if latest_volume is not None:
+        ctx.setdefault("volume", latest_volume)
+        ctx.setdefault("latest_volume", latest_volume)
+    if avg_volume_20d is not None:
+        ctx.setdefault("avg_volume_20d", avg_volume_20d)
+        ctx.setdefault("volume_ma20", avg_volume_20d)
+    if latest_volume is not None and avg_volume_20d not in (None, 0):
+        ctx.setdefault("volume_ratio", latest_volume / avg_volume_20d)
+    for alias, value in (("ma20", ma20), ("ema20", ma20), ("ma50", ma50), ("ema50", ma50), ("ma200", ma200), ("ema200", ma200)):
+        if value is not None:
+            ctx.setdefault(alias, value)
+    if atr14 is not None:
+        ctx.setdefault("atr_14", atr14)
+        ctx.setdefault("atr14", atr14)
+        if current_price not in (None, 0):
+            ctx.setdefault("atr_pct", atr14 / current_price * 100.0)
+    if rsi14 is not None:
+        ctx.setdefault("rsi_14", rsi14)
+        ctx.setdefault("rsi14", rsi14)
+    if swing_low is not None:
+        ctx.setdefault("swing_low", swing_low)
+        ctx.setdefault("recent_swing_low", swing_low)
+    if swing_high is not None:
+        ctx.setdefault("swing_high", swing_high)
+        ctx.setdefault("recent_swing_high", swing_high)
+    support_candidates = [value for value in (support_low, swing_low, ma50, ma200) if value is not None]
+    if support_candidates:
+        resolved_support_low = support_low if support_low is not None else min(support_candidates)
+        resolved_support_high = support_high if support_high is not None else max(support_candidates)
+        if atr14 is not None and support_low is None:
+            resolved_support_low = min(resolved_support_low, max(0.0, resolved_support_high - atr14))
+        ctx.setdefault("support_zone_low", resolved_support_low)
+        ctx.setdefault("support_zone_high", resolved_support_high)
+        ctx.setdefault("support_zone", {"low": resolved_support_low, "high": resolved_support_high})
+    resistance_candidates = [value for value in (resistance_low, resistance_high, swing_high) if value is not None]
+    if resistance_candidates:
+        resolved_resistance_low = resistance_low if resistance_low is not None else min(resistance_candidates)
+        resolved_resistance_high = resistance_high if resistance_high is not None else max(resistance_candidates)
+        ctx.setdefault("resistance_zone_low", resolved_resistance_low)
+        ctx.setdefault("resistance_zone_high", resolved_resistance_high)
+        ctx.setdefault("resistance_zone", {"low": resolved_resistance_low, "high": resolved_resistance_high})
+    if current_price is not None and invalidation is not None:
+        ctx.setdefault("distance_to_invalidation", (current_price / invalidation - 1.0) * 100.0 if invalidation else None)
+    resistance_ref = resistance_low or resistance_high or _first_number(ctx, row, snapshot, "confirmation_price", "chase_above_price")
+    if current_price is not None and resistance_ref is not None:
+        ctx.setdefault("distance_to_resistance", (resistance_ref / current_price - 1.0) * 100.0 if current_price else None)
+    if current_price is not None and invalidation is not None and resistance_ref is not None:
+        downside = max(current_price - invalidation, 0.01)
+        upside = max(resistance_ref - current_price, 0.0)
+        ctx.setdefault("reward_risk_ratio", upside / downside)
+    rs20 = _first_number(ctx, row, snapshot, "relative_strength_vs_qqq_20d", "relativeStrengthVsQqq20d", "relative_strength_vs_QQQ", "relative_strength_20d")
+    rs60 = _first_number(ctx, row, snapshot, "relative_strength_vs_qqq_60d", "relativeStrengthVsQqq60d", "relative_strength_60d")
+    if rs20 is not None:
+        ctx.setdefault("relative_strength_vs_qqq_20d", rs20)
+    if rs60 is not None:
+        ctx.setdefault("relative_strength_vs_qqq_60d", rs60)
+    ctx.setdefault("daily_ohlcv", _daily_ohlcv_snapshot(ctx, row, snapshot, market))
+    return ctx
+
+
+def _daily_ohlcv_snapshot(*sources: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "open": _first_number(*sources, "open"),
+        "high": _first_number(*sources, "high"),
+        "low": _first_number(*sources, "low"),
+        "close": _first_number(*sources, "close", "current_price", "currentPrice", "price"),
+        "volume": _first_number(*sources, "volume", "latest_volume", "quoteVolume"),
+    }
+
+
+def _report_technical_overlay(technicals: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "daily_ohlcv",
+        "ma20",
+        "ma50",
+        "ma200",
+        "ema20",
+        "ema50",
+        "ema200",
+        "avg_volume_20d",
+        "volume_ma20",
+        "volume_ratio",
+        "atr_14",
+        "atr14",
+        "atr_pct",
+        "rsi_14",
+        "rsi14",
+        "swing_high",
+        "swing_low",
+        "recent_swing_high",
+        "recent_swing_low",
+        "support_zone",
+        "support_zone_low",
+        "support_zone_high",
+        "resistance_zone",
+        "resistance_zone_low",
+        "resistance_zone_high",
+        "distance_to_invalidation",
+        "distance_to_resistance",
+        "reward_risk_ratio",
+        "relative_strength_vs_qqq_20d",
+        "relative_strength_vs_qqq_60d",
+        "day_change_pct",
+        "daily_return_pct",
+        "previous_close",
+        "latest_volume",
+    )
+    return {key: technicals.get(key) for key in keys if key in technicals and technicals.get(key) not in (None, "")}
+
+
 def _runtime_cached(
     key: tuple[Any, ...],
     ttl_seconds: int,
@@ -422,11 +568,12 @@ def _report_loading_shell_html(symbol: str) -> str:
         "<strong>加载中</strong>"
         '<div class="ai-radar-header-decision-grid">'
         "<div><span>当前动作</span><b>等待刷新</b></div>"
-        "<div><span>当前区间</span><b>暂缺</b></div>"
+        "<div><span>主击球区</span><b>暂缺</b></div>"
+        "<div><span>当前位置</span><b>加载中</b></div>"
+        "<div><span>入场条件</span><b>加载中</b></div>"
         "<div><span>重新评估线</span><b>加载中</b></div>"
-        "<div><span>风险线</span><b>加载中</b></div>"
-        "<div><span>买入前提</span><b>加载中</b></div>"
-        "<div><span>结论可信度</span><b>读取中</b></div>"
+        "<div><span>失效线</span><b>加载中</b></div>"
+        "<div><span>追高线</span><b>加载中</b></div>"
         "</div>"
         "</aside>"
         '<div class="ai-radar-header-stats">'
@@ -664,7 +811,7 @@ def _report_html(
     buy_zone_context = buy_zone_context or build_buy_zone_context(report, technicals=technicals, volume_snapshot=_volume_price_acceptance_snapshot(report, technicals, row, history)).to_dict()
     conclusion = conclusion or _trade_conclusion(report, action_result, buy_zone_context)
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result, buy_zone_context)
-    data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context)
+    data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context, buy_zone_context)
     stage_start = time.perf_counter()
     range_html = _range_chart_html(report, conclusion, buy_zone_context)
     if perf is not None:
@@ -677,7 +824,7 @@ def _report_html(
     return (
         f'<article class="ai-radar-research-report {_decision_tone(decision)}">'
         f"{_research_header_html(report, market, snapshot, technicals, core_status, history, action_result, conclusion)}"
-        f"{_executive_summary_card_html(report, snapshot, market, row, action_result, portfolio_context, conclusion)}"
+        f"{_executive_summary_card_html(report, snapshot, market, row, action_result, portfolio_context, conclusion, buy_zone_context)}"
         '<section class="ai-radar-visual-grid">'
         f"{range_html}"
         f"{_score_card_html(report, buy_zone_context)}"
@@ -817,6 +964,7 @@ def _research_header_html(
     market_label = _clean_text(_first_present(snapshot, "country", "exchange")) or "本地缓存"
     meta = "｜".join(item for item in (track, market_label) if item) or "本地缓存研究视图"
     conclusion = conclusion or _trade_conclusion(report, action_result)
+    batting = _batting_zone_context(report, conclusion)
     volume = _volume_snapshot(market, snapshot, technicals, history)
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
@@ -845,11 +993,12 @@ def _research_header_html(
         f'<strong>{escape(str(conclusion.get("rating_text") or core_status))}</strong>'
         '<div class="ai-radar-header-decision-grid">'
         f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
-        f'<div><span>当前区间</span><b>{escape(str(conclusion.get("zone_text") or current_zone))}</b></div>'
-        f'<div><span>重新评估线</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
-        f'<div><span>风险线</span><b>{escape(str(conclusion.get("risk_line_text") or "暂缺"))}</b></div>'
-        f'<div><span>买入前提</span><b>{escape(str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除"))}</b></div>'
-        f'<div><span>结论可信度</span><b>{escape(str(conclusion.get("confidence_level") or _data_confidence(report)))}</b></div>'
+        f'<div><span>主击球区</span><b>{escape(str(batting.get("zone_range") or "暂缺"))}</b></div>'
+        f'<div><span>当前位置</span><b>{escape(str(batting.get("relative_text") or "暂缺"))}</b></div>'
+        f'<div><span>入场条件</span><b>{escape(str(batting.get("entry_condition") or "等待承接确认"))}</b></div>'
+        f'<div><span>重新评估线</span><b>{escape(str(batting.get("reevaluation_line") or "暂缺"))}</b></div>'
+        f'<div><span>失效线</span><b>{escape(str(batting.get("invalidation_line") or "暂缺"))}</b></div>'
+        f'<div><span>追高线</span><b>{escape(str(batting.get("chase_line") or "暂缺"))}</b></div>'
         "</div>"
         "</aside>"
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
@@ -887,24 +1036,27 @@ def _executive_summary_card_html(
     action_result: Any,
     portfolio_context: dict[str, Any] | None = None,
     conclusion: dict[str, Any] | None = None,
+    buy_zone_context: dict[str, Any] | None = None,
 ) -> str:
     conclusion = conclusion or _trade_conclusion(report, action_result)
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
-    summary = _conclusion_first_sentence(report, conclusion)
-    judgments = _executive_judgments(report, action_result, portfolio_context, conclusion)
+    buy_zone_context = buy_zone_context or {}
+    batting_html = _batting_zone_card_html(report, conclusion, buy_zone_context)
+    summary = _conclusion_first_sentence(report, conclusion, buy_zone_context)
+    judgments = _executive_judgments(report, action_result, portfolio_context, conclusion, buy_zone_context)
     judgment_html = "".join(f"<li>{escape(item)}</li>" for item in judgments if item)
     position_html = _position_context_panel_html(portfolio_context)
+    batting = _batting_zone_context(report, conclusion, buy_zone_context)
     return (
         '<section class="ai-radar-executive-card">'
-        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 触发 / 失效</b></div>'
+        f"{batting_html}"
+        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 等待 / 失效</b></div>'
         f'<p class="ai-radar-thesis">{escape(summary)}</p>'
         f"{position_html}"
         '<div class="ai-radar-exec-grid">'
-        f'<div><span>当前建议</span><strong>{escape(getattr(action_result, "action_cn", "等待确认"))}</strong></div>'
-        f'<div><span>重新评估线</span><strong>{escape(str(conclusion.get("next_review_trigger") or getattr(action_result, "next_trigger_cn", _next_step_sentence(report))))}</strong></div>'
-        f'<div><span>失效条件</span><strong>{escape(getattr(action_result, "invalidation_cn", _invalidation_sentence(report)))}</strong></div>'
-        f'<div><span>持仓语境</span><strong>{escape(str(portfolio_context.get("position_status_text") or _holding_context_text(row, action_result)))}</strong></div>'
-        f'<div><span>买入前提</span><strong>{escape(str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除"))}</strong></div>'
+        f'<div><span>当前操作</span><strong>{escape(str(batting.get("operation") or getattr(action_result, "action_cn", "等待确认")))}</strong></div>'
+        f'<div><span>等什么</span><strong>{escape(str(batting.get("entry_condition") or "等待承接确认"))}</strong></div>'
+        f'<div><span>失效条件</span><strong>{escape(str(batting.get("invalidation_line") or _invalidation_sentence(report)))}</strong></div>'
         "</div>"
         f'<ol class="ai-radar-conclusion-list">{judgment_html}</ol>'
         "</section>"
@@ -919,6 +1071,8 @@ def _trade_conclusion(
     buy_zone_context = buy_zone_context or {}
     confirm_price = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
     invalidation_price = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    chase_price = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price", "chase_price")
+    batting_low, batting_high = _batting_zone_bounds(report, buy_zone_context)
     zone_selection = _zone_selection(report, buy_zone_context)
     zone_text = str(buy_zone_context.get("primary_zone_text") or _trade_zone_text(report))
     rating_text = _rating_text(report, action_result, buy_zone_context)
@@ -931,6 +1085,7 @@ def _trade_conclusion(
     return {
         "rating_text": rating_text,
         "action_text": action_text,
+        "current_action": str(buy_zone_context.get("current_action") or ""),
         "zone_text": zone_text,
         "primary_zone_text": zone_selection["primary_zone_text"],
         "reference_zone_texts": zone_selection["reference_zone_texts"],
@@ -938,6 +1093,9 @@ def _trade_conclusion(
         "confirm_price": confirm_price,
         "confirm_text": confirm_text,
         "invalidation_price": invalidation_price,
+        "chase_price": chase_price,
+        "batting_zone_low": batting_low,
+        "batting_zone_high": batting_high,
         "risk_line_text": risk_line_text,
         "next_review_trigger": next_review_trigger,
         "buy_premise_text": buy_premise_text,
@@ -960,6 +1118,143 @@ def _buy_premise_text(report: dict[str, Any], buy_zone_context: dict[str, Any] |
             parts.append("setup score 达到可小仓阈值")
         parts.extend(["量价继续确认", "风险门禁解除"])
     return " + ".join(parts)
+
+
+def _batting_zone_bounds(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> tuple[float | None, float | None]:
+    buy_zone_context = buy_zone_context or {}
+    low = _first_number(buy_zone_context, "pullback_zone_low") or _first_number(
+        report,
+        "effective_technical_entry_zone_low",
+        "radar_effective_technical_entry_zone_low",
+        "technical_pullback_zone_low",
+        "radar_technical_pullback_zone_low",
+        "technical_entry_zone_low",
+        "radar_technical_entry_zone_low",
+    )
+    high = _first_number(buy_zone_context, "pullback_zone_high") or _first_number(
+        report,
+        "effective_technical_entry_zone_high",
+        "radar_effective_technical_entry_zone_high",
+        "technical_pullback_zone_high",
+        "radar_technical_pullback_zone_high",
+        "technical_entry_zone_high",
+        "radar_technical_entry_zone_high",
+    )
+    if low is None or high is None:
+        low = low or _first_number(buy_zone_context, "support_zone_low") or _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "support_zone_low")
+        high = high or _first_number(buy_zone_context, "support_zone_high") or _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_zone_high")
+    if low is None or high is None:
+        low = low or _first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low")
+        high = high or _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")
+    return low, high
+
+
+def _batting_zone_context(
+    report: dict[str, Any],
+    conclusion: dict[str, Any] | None = None,
+    buy_zone_context: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    conclusion = conclusion or {}
+    buy_zone_context = buy_zone_context or {}
+    current = _report_current_price(report)
+    low = _first_number(conclusion, "batting_zone_low") or _first_number(buy_zone_context, "pullback_zone_low")
+    high = _first_number(conclusion, "batting_zone_high") or _first_number(buy_zone_context, "pullback_zone_high")
+    if low is None or high is None:
+        low, high = _batting_zone_bounds(report, buy_zone_context)
+    confirm = _first_number(conclusion, "confirm_price") or _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price")
+    invalidation = _first_number(conclusion, "invalidation_price") or _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
+    chase = _first_number(conclusion, "chase_price") or _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
+    action_code = str(buy_zone_context.get("current_action") or conclusion.get("current_action") or "").upper()
+    if action_code == "DATA_INSUFFICIENT" or (low is None and high is None):
+        status = "数据不足"
+    elif current is None:
+        status = "价格暂缺"
+    elif chase is not None and current >= chase:
+        status = "追高区"
+    elif low is not None and high is not None and low <= current <= high:
+        status = "区内"
+    elif high is not None and current > high:
+        status = "高于击球区"
+    elif low is not None and current < low:
+        status = "低于击球区"
+    else:
+        status = "等待确认"
+    entry_condition = _batting_entry_condition(status, action_code)
+    operation = _batting_operation(status, str(conclusion.get("action_text") or ""), action_code)
+    relative_text = _batting_relative_text(current, low, high, status)
+    return {
+        "zone_range": _range_text(low, high),
+        "current_price": _money(current),
+        "distance_to_upper": _distance_to_level_text(current, high),
+        "distance_to_lower": _distance_to_level_text(current, low),
+        "status": status,
+        "relative_text": relative_text,
+        "entry_condition": entry_condition,
+        "operation": operation,
+        "reevaluation_line": f"放量站上 {_money(confirm)} 后重新判断" if confirm is not None else "暂缺",
+        "invalidation_line": f"跌破 {_money(invalidation)} 暂停买入" if invalidation is not None else "暂缺",
+        "chase_line": f"≥ {_money(chase)} 禁止追买" if chase is not None else "暂缺",
+        "volume_state": _batting_volume_state(report, buy_zone_context),
+    }
+
+
+def _batting_relative_text(current: float | None, low: float | None, high: float | None, status: str) -> str:
+    if current is None:
+        return "当前价暂缺"
+    price = _money(current)
+    if status == "区内":
+        return f"当前价 {price}，在主击球区内"
+    if status == "追高区":
+        return f"当前价 {price}，已进入追高区"
+    if status == "高于击球区":
+        return f"当前价 {price}，高于理想击球区"
+    if status == "低于击球区":
+        return f"当前价 {price}，低于主击球区"
+    return f"当前价 {price}，击球区数据不足"
+
+
+def _distance_to_level_text(current: float | None, level: float | None) -> str:
+    if current is None or level in (None, 0):
+        return "暂缺"
+    return _signed_pct((current / level - 1.0) * 100.0)
+
+
+def _batting_entry_condition(status: str, action_code: str) -> str:
+    if status == "数据不足":
+        return "先补齐技术承接数据"
+    if status == "追高区":
+        return "等待回到击球区或重新形成低吸结构"
+    if status == "高于击球区":
+        return "跌回击球区后缩量企稳 / 出现承接K线"
+    if status == "低于击球区":
+        return "先确认未跌破失效线并出现承接"
+    if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "区内缩量企稳 / 出现承接K线后小仓观察"
+    return "区内缩量企稳 / 出现承接K线"
+
+
+def _batting_operation(status: str, action_text: str, action_code: str) -> str:
+    if status == "数据不足":
+        return "先补数据，不给明确买区"
+    if status == "追高区":
+        return "不追，等待回到击球区"
+    if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "可小仓观察，不能一次打满"
+    if status == "高于击球区":
+        return "不追，等回踩到击球区后观察承接"
+    if status == "低于击球区":
+        return "暂停，先复核失效线"
+    return action_text or "等待承接确认"
+
+
+def _batting_volume_state(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
+    status = str(_first_present(report, "volume_price_status", "volumePriceStatus") or "").upper()
+    score = _first_number(report, "volume_price_score", "volumePriceScore") or _first_number(buy_zone_context, "volume_acceptance_score")
+    if status:
+        return _volume_price_status_label(status, score)
+    if score is not None:
+        return f"承接分 {_number_text(score)}"
+    return "普通量，尚未形成强确认"
 
 
 def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_context: dict[str, Any] | None = None) -> str:
@@ -1162,12 +1457,36 @@ def _position_context_panel_html(context: dict[str, Any]) -> str:
     )
 
 
-def _conclusion_first_sentence(report: dict[str, Any], conclusion: dict[str, Any]) -> str:
+def _batting_zone_card_html(
+    report: dict[str, Any],
+    conclusion: dict[str, Any],
+    buy_zone_context: dict[str, Any] | None = None,
+) -> str:
+    batting = _batting_zone_context(report, conclusion, buy_zone_context)
+    rows = [
+        ("主击球区", str(batting.get("zone_range") or "暂缺")),
+        ("当前价", str(batting.get("current_price") or "暂缺")),
+        ("距上沿", str(batting.get("distance_to_upper") or "暂缺")),
+        ("距下沿", str(batting.get("distance_to_lower") or "暂缺")),
+        ("状态", str(batting.get("status") or "暂缺")),
+        ("量能", str(batting.get("volume_state") or "暂缺")),
+        ("承接条件", str(batting.get("entry_condition") or "等待承接确认")),
+        ("当前操作", str(batting.get("operation") or "等待确认")),
+    ]
+    body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
+    return (
+        '<aside class="ai-radar-batting-card">'
+        '<div class="ai-radar-section-title"><span>击球区</span><b>主区间 / 位置 / 操作</b></div>'
+        f'<p>{escape(str(batting.get("relative_text") or "击球区数据不足"))}</p>'
+        f'<div class="ai-radar-batting-grid">{body}</div>'
+        "</aside>"
+    )
+
+
+def _conclusion_first_sentence(report: dict[str, Any], conclusion: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> str:
     ticker = str(report.get("ticker") or "该股票")
-    zone = str(conclusion.get("zone_text") or _trade_zone_text(report))
-    rating = str(conclusion.get("rating_text") or "等待确认")
-    action = str(conclusion.get("action_text") or "不主动追买")
-    return f"本页结论：{ticker} 当前处于{zone}，结论为【{rating}】，当前动作是【{action}】。"
+    batting = _batting_zone_context(report, conclusion, buy_zone_context)
+    return f"本页结论：{ticker} {batting.get('relative_text')}，{batting.get('operation')}。"
 
 
 def _executive_judgments(
@@ -1175,28 +1494,18 @@ def _executive_judgments(
     action_result: Any,
     portfolio_context: dict[str, Any],
     conclusion: dict[str, Any],
+    buy_zone_context: dict[str, Any] | None = None,
 ) -> list[str]:
-    zone = str(conclusion.get("zone_text") or _trade_zone_text(report))
-    rating = str(conclusion.get("rating_text") or "等待确认")
-    confirm = str(conclusion.get("confirm_text") or _next_step_sentence(report))
-    risk_line = str(conclusion.get("risk_line_text") or "暂缺")
-    buy_premise = str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除")
-    zone_reason = str(conclusion.get("zone_selection_reason") or "")
-    quality = _quality_quality_sentence(report)
-    entry_reason = _entry_sentence(report)
+    batting = _batting_zone_context(report, conclusion, buy_zone_context)
     position_action = (
         f"已有持仓，{portfolio_context.get('action_for_existing_position')}。"
         if portfolio_context.get("has_position")
         else f"未持仓，{portfolio_context.get('action_for_no_position')}。"
     )
     return [
-        f"当前价格位于【{zone}】：{entry_reason} 因此结论为【{rating}】。",
-        zone_reason,
-        f"{confirm}；这只是重新评估条件，不等于直接买入。",
-        f"买入前提：{buy_premise}。",
-        f"若{risk_line}，暂停买入判断并转入风险复核。",
-        quality,
-        position_action,
+        f"主击球区在 {batting.get('zone_range')}，{batting.get('relative_text')}，距上沿 {batting.get('distance_to_upper')}。",
+        f"入场条件：{batting.get('entry_condition')}；重新评估线：{batting.get('reevaluation_line')}。",
+        f"{batting.get('invalidation_line')}；{position_action}",
     ]
 
 
@@ -1279,7 +1588,7 @@ def _range_chart_html(
     if current is not None:
         values.append(current)
     if not values:
-        return _empty_card_html("目标价区间与估值/技术区间图", "缺少价格和区间数据，暂时无法绘制。")
+        return _empty_card_html("买区与承接结构图", "缺少价格和区间数据，暂时无法绘制。")
     low = min(values)
     high = max(values)
     padding = max((high - low) * 0.08, 1.0)
@@ -1309,16 +1618,16 @@ def _range_chart_html(
             f'<em>{escape(_range_action_text(item["label"]))}</em>'
             "</div>"
         )
-    reference_text = "、".join(conclusion.get("reference_zone_texts") or []) or "暂无"
+    batting = _batting_zone_context(report, conclusion, buy_zone_context)
+    reference_text = "、".join(label for label in (conclusion.get("reference_zone_texts") or []) if label != "主击球区 / 回踩击球区") or "暂无"
     explanation = (
-        f"{conclusion.get('zone_selection_reason') or _zone_selection(report, buy_zone_context).get('zone_selection_reason')} "
-        f"参考区间：{reference_text}。"
-        f"页面结论按主区间【{primary_zone}】解读，当前结论为【{conclusion.get('rating_text') or '等待确认'}】；"
-        f"{conclusion.get('next_review_trigger') or _next_step_sentence(report)}。"
+        f"主击球区：{batting.get('zone_range')}；{batting.get('relative_text')}。"
+        f"观察区只观察，不主动买；重新评估线用于重新判断，不等于直接买入。"
+        f"参考区间：{reference_text}。失效线：{batting.get('invalidation_line')}。"
     )
     return (
         '<section class="ai-radar-card ai-radar-range-card">'
-        '<div class="ai-radar-section-title"><span>目标价区间与估值/技术区间图</span><b>当前价相对区间</b></div>'
+        '<div class="ai-radar-section-title"><span>买区与承接结构图</span><b>主击球区优先</b></div>'
         f'<div class="ai-radar-range-axis"><span>{escape(_money(low))}</span><span>{escape(_money(high))}</span></div>'
         f'{"".join(rows)}'
         f'<p class="ai-radar-range-explain">{escape(explanation)}</p>'
@@ -1336,9 +1645,9 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
     invalidation = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
     chase = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     return [
-        {"label": "回踩买区", "range": (pullback_low, pullback_high), "tone": "blue"},
+        {"label": "主击球区 / 回踩击球区", "range": (pullback_low, pullback_high), "tone": "blue"},
         {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")), "tone": "slate"},
-        {"label": "确认突破线", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high") or confirmation), "tone": "green"},
+        {"label": "重新评估线", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high") or confirmation), "tone": "green"},
         {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
         {"label": "深度承接区", "range": (support_low or invalidation, support_high), "tone": "orange"},
         {"label": "追高禁区", "range": (chase, None), "tone": "red"},
@@ -1352,6 +1661,8 @@ def _range_action_text(label: str) -> str:
         return "仅作仓位参考"
     if "回踩" in label:
         return "允许小仓观察"
+    if "重新评估" in label:
+        return "站上后重新判断"
     if "修复" in label or "确认" in label:
         return "等待确认"
     if "追高" in label:
@@ -1389,26 +1700,21 @@ def _range_position(value: float | None, low: float, high: float) -> float:
 
 def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> str:
     buy_zone_context = buy_zone_context or {}
-    fundamental = _average_score(report.get("quality_score"), report.get("growth_score"), report.get("valuation_score"), report.get("risk_score"))
     items = [
-        ("总分", report.get("final_score")),
         ("Setup", buy_zone_context.get("setup_score")),
-        ("基本面", fundamental),
-        ("技术", report.get("technical_score")),
-        ("质量", report.get("quality_score")),
-        ("风险", report.get("risk_score")),
+        ("技术结构", buy_zone_context.get("technical_structure_score")),
+        ("量能承接", buy_zone_context.get("volume_acceptance_score")),
+        ("风险收益", buy_zone_context.get("risk_reward_score")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
-    explanation = _score_explanation(report)
-    risk_gate = _risk_gate_notice(report)
+    core_note = _core_position_notice(report, buy_zone_context)
     setup_note = _setup_score_note(buy_zone_context)
     return (
         '<section class="ai-radar-card score">'
-        '<div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div>'
+        '<div class="ai-radar-section-title"><span>Setup 评分卡</span><b>结构 / 量能 / 盈亏比</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
         f'<p class="ai-radar-setup-explain">{escape(setup_note)}</p>'
-        f'<p class="ai-radar-risk-gate">{escape(risk_gate)}</p>'
-        f'<p class="ai-radar-score-explain">{escape(explanation)}</p>'
+        f'<p class="ai-radar-risk-gate">{escape(core_note)}</p>'
         "</section>"
     )
 
@@ -1429,12 +1735,19 @@ def _score_explanation(report: dict[str, Any]) -> str:
 def _setup_score_note(buy_zone_context: dict[str, Any]) -> str:
     if not buy_zone_context:
         return "Setup 分暂缺；买区应由技术结构、量价承接和风险收益比共同决定。"
-    return (
-        f"买区主依据：Setup {_number_text(buy_zone_context.get('setup_score'))}，"
-        f"技术结构 {_number_text(buy_zone_context.get('technical_structure_score'))}，"
-        f"量价承接 {_number_text(buy_zone_context.get('volume_acceptance_score'))}，"
-        f"风险收益比 {_number_text(buy_zone_context.get('risk_reward_score'))}。"
-    )
+    action = str(buy_zone_context.get("action_text") or "等待确认")
+    zone = str(buy_zone_context.get("primary_zone_text") or "技术结构待确认")
+    return f"Setup {_number_text(buy_zone_context.get('setup_score'))}：{zone}，当前动作【{action}】。"
+
+
+def _core_position_notice(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
+    if buy_zone_context and buy_zone_context.get("core_position_allowed") is False:
+        reason = str(buy_zone_context.get("core_position_reason") or "综合评分低于70，暂不支持核心仓买入。")
+        return f"核心仓资格：{_localize_report_text(reason)}"
+    final_score = _number(report.get("final_score"))
+    if final_score is not None and final_score < 70:
+        return "核心仓资格：综合评分低于70，暂不支持核心仓买入；小仓仍看技术承接。"
+    return "核心仓资格：基本面用于仓位上限，买点仍以击球区、量能承接和风险收益比为准。"
 
 
 def _score_support_and_drag(report: dict[str, Any]) -> tuple[str, str]:
@@ -1698,7 +2011,7 @@ def _key_metric_rows(
         ("自由现金流收益率", _ratio_pct(_first_number(snapshot, "free_cash_flow_yield", "fcf_yield"))),
         ("毛利率", _ratio_pct(_first_number(snapshot, "gross_margin", "grossMargin"))),
         ("净利率", _ratio_pct(_first_number(snapshot, "net_margin", "profit_margin", "netMargin"))),
-        ("净资产收益率", _ratio_pct(_first_number(snapshot, "roe", "returnOnEquity"))),
+        ("净资产收益率", _ratio_pct(_roe_value(snapshot))),
     ]
 
 
@@ -1712,7 +2025,19 @@ def _financial_metric_rows(snapshot: dict[str, Any]) -> list[tuple[str, str]]:
         ("自由现金流", _compact_money(_first_number(snapshot, "free_cash_flow", "freeCashFlow"))),
         ("现金及短投", _compact_money(_first_number(snapshot, "total_cash", "cash", "cashAndShortTermInvestments", "cashAndEquivalents"))),
         ("总债务", _compact_money(_first_number(snapshot, "total_debt", "debt", "totalDebt"))),
+        ("净资产收益率", _ratio_pct(_roe_value(snapshot))),
     ]
+
+
+def _roe_value(snapshot: dict[str, Any]) -> float | None:
+    explicit = _first_number(snapshot, "roe", "return_on_equity", "returnOnEquity", "returnOnEquityTTM", "roe_ttm")
+    if explicit is not None:
+        return explicit
+    net_income = _first_number(snapshot, "net_income", "netIncome", "net_income_ttm", "netIncomeTTM")
+    equity = _first_number(snapshot, "total_equity", "shareholders_equity", "totalStockholdersEquity", "stockholdersEquity")
+    if net_income is None or equity in (None, 0):
+        return None
+    return net_income / equity
 
 
 def _ai_cloud_infra_card_html(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> str:
@@ -1966,8 +2291,8 @@ def _financial_source_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str
 
 def _financial_period_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str:
     return _display_value(
-        _first_present(snapshot, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter")
-        or _first_present(row, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter")
+        _first_present(snapshot, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter", "period", "date", "filing_date", "fillingDate")
+        or _first_present(row, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter", "period", "date", "filing_date", "fillingDate")
     )
 
 
@@ -2437,16 +2762,34 @@ def _data_health_context(
     snapshot: dict[str, Any],
     row: dict[str, Any],
     portfolio_context: dict[str, Any],
+    buy_zone_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    missing_fields = _dedupe_text([*_actionable_missing_fields(report), *_actionable_missing_fields(row)])
-    missing_fields = _dedupe_text([*missing_fields, *_ai_cloud_infra_missing_fields(row, snapshot, report)])
-    missing_fields = _filter_resolved_health_missing_fields(missing_fields, report, market, row, portfolio_context)
+    buy_zone_context = buy_zone_context or {}
+    raw_missing_fields = _dedupe_text(
+        [
+            *_all_missing_fields(report),
+            *_all_missing_fields(row),
+            *_buy_zone_context_missing_fields(buy_zone_context),
+            *_technical_health_missing_fields(report, row, buy_zone_context),
+            *_ai_cloud_infra_missing_fields(row, snapshot, report),
+        ]
+    )
+    not_applicable_fields = _not_applicable_health_fields(raw_missing_fields, portfolio_context)
+    missing_fields = _filter_resolved_health_missing_fields(raw_missing_fields, report, market, row, portfolio_context)
+    critical_missing_fields = _dedupe_text([field for field in missing_fields if _is_critical_health_field(field)])
+    optional_missing_fields = _dedupe_text([field for field in missing_fields if field not in critical_missing_fields])
     stale_fields: list[str] = []
     if _price_data_state(report) == "stale" or bool(report.get("is_stale")):
         stale_fields.append("当前价格")
     if str(report.get("data_status") or "").upper() == "STALE":
         stale_fields.append("评分 / 区间")
+    health_level = "高"
+    if critical_missing_fields:
+        health_level = "低"
+    elif optional_missing_fields or stale_fields:
+        health_level = "中"
     return {
+        "health_level": health_level,
         "quote_updated_at": _first_present(market, "fetchedAt", "updated_at", "updatedAt")
         or _first_present(snapshot, "quote_updated_at", "price_updated_at", "fetched_at", "updated_at"),
         "quote_source": _quote_source_text(market, snapshot, report),
@@ -2459,8 +2802,18 @@ def _data_health_context(
         "financials_updated_at": _first_present(snapshot, "financials_updated_at", "financial_statement_updated_at", "fundamental_updated_at", "updated_at", "fetched_at"),
         "score_updated_at": _first_present(report, "score_updated_at", "data_updated_at", "updated_at"),
         "portfolio_updated_at": portfolio_context.get("portfolio_updated_at"),
+        "critical_missing_fields": critical_missing_fields,
+        "optional_missing_fields": optional_missing_fields,
+        "not_applicable_fields": not_applicable_fields,
         "missing_fields": missing_fields,
         "stale_fields": _dedupe_text(stale_fields),
+        "primary_sources": _dedupe_text(
+            [
+                _quote_source_text(market, snapshot, report),
+                _market_cap_source_text(snapshot, report),
+                _financial_source_text(snapshot, report),
+            ]
+        ),
     }
 
 
@@ -2477,7 +2830,6 @@ def _filter_resolved_health_missing_fields(
         or _first_number(market, "currentPrice", "current_price", "price") is not None
     )
     score_resolved = _number(_first_present(report, "final_score", "finalScore", "total_score", "totalScore")) is not None
-    position_resolved = bool(portfolio_context.get("has_position"))
     filtered: list[str] = []
     for field in fields:
         text = str(field or "").strip().lower()
@@ -2491,7 +2843,7 @@ def _filter_resolved_health_missing_fields(
             continue
         if score_resolved and (text in {"score", "final_score", "total_score", "radar_score"} or "评分" in label):
             continue
-        if position_resolved and any(
+        if any(
             token in text
             for token in (
                 "portfolio",
@@ -2509,8 +2861,98 @@ def _filter_resolved_health_missing_fields(
     return _dedupe_text(filtered)
 
 
+def _buy_zone_context_missing_fields(buy_zone_context: dict[str, Any]) -> list[str]:
+    fields = [str(item) for item in (buy_zone_context.get("missing_fields") or []) if str(item).strip()]
+    if str(buy_zone_context.get("current_action") or "").upper() == "DATA_INSUFFICIENT" and not fields:
+        fields.append("technical_acceptance")
+    return fields
+
+
+def _technical_health_missing_fields(
+    report: dict[str, Any],
+    row: dict[str, Any],
+    buy_zone_context: dict[str, Any],
+) -> list[str]:
+    sources = (buy_zone_context, report, row)
+    checks = {
+        "daily_ohlcv": _has_daily_ohlcv(report) or _has_daily_ohlcv(row),
+        "ma20": _first_number(*sources, "ma20", "ema20") is not None,
+        "ma50": _first_number(*sources, "ma50", "ema50") is not None,
+        "ma200": _first_number(*sources, "ma200", "ema200") is not None,
+        "avg_volume_20d": _first_number(*sources, "avg_volume_20d", "volume_ma20") is not None,
+        "volume_ratio": _first_number(*sources, "volume_ratio", "volumeRatio") is not None,
+        "atr_14": _first_number(*sources, "atr_14", "atr14") is not None,
+        "rsi_14": _first_number(*sources, "rsi_14", "rsi14") is not None,
+        "swing_high": _first_number(*sources, "swing_high", "recent_swing_high", "recent_breakout_level") is not None,
+        "swing_low": _first_number(*sources, "swing_low", "recent_swing_low") is not None,
+        "support_zone": _first_number(*sources, "support_zone_low", "deep_support_zone_low", "support_watch_zone_low") is not None,
+        "resistance_zone": _first_number(*sources, "resistance_zone_low", "resistance_zone_high", "recent_swing_high", "recent_breakout_level", "confirmation_price") is not None,
+        "distance_to_invalidation": _first_number(*sources, "distance_to_invalidation") is not None
+        or (_report_current_price(report) is not None and _first_number(report, row, "invalidation_price") is not None),
+        "distance_to_resistance": _first_number(*sources, "distance_to_resistance") is not None,
+        "reward_risk_ratio": _first_number(*sources, "reward_risk_ratio") is not None,
+    }
+    return [field for field, available in checks.items() if not available]
+
+
+def _has_daily_ohlcv(row: dict[str, Any]) -> bool:
+    daily = row.get("daily_ohlcv")
+    if isinstance(daily, dict):
+        return _first_number(daily, "close") is not None and _first_number(daily, "volume") is not None
+    return _first_number(row, "close", "current_price", "currentPrice", "price") is not None and _first_number(row, "volume", "latest_volume") is not None
+
+
+def _not_applicable_health_fields(fields: list[str], portfolio_context: dict[str, Any]) -> list[str]:
+    if bool(portfolio_context.get("has_position")):
+        return []
+    result: list[str] = []
+    for field in fields:
+        text = str(field or "").strip().lower()
+        if any(token in text for token in ("portfolio", "position", "shares", "quantity", "avg_cost", "average_cost", "market_value", "unrealized")):
+            result.append(field)
+    result.extend(["shares", "avg_cost", "portfolio_updated_at"])
+    return _dedupe_text(result)
+
+
+def _is_critical_health_field(field: str) -> bool:
+    text = str(field or "").strip().lower()
+    label = _field_display_label(field)
+    critical_tokens = (
+        "daily_bars",
+        "daily_ohlcv",
+        "price_history",
+        "history",
+        "volume",
+        "avg_volume",
+        "volume_ratio",
+        "ma20",
+        "ma50",
+        "ma200",
+        "ema20",
+        "ema50",
+        "ema200",
+        "atr",
+        "rsi",
+        "swing",
+        "support",
+        "resistance",
+        "invalidation",
+        "reward_risk",
+        "technical_acceptance",
+    )
+    return any(token in text for token in critical_tokens) or label in {"历史K线", "成交量", "技术数据", "EMA20", "EMA50", "EMA200", "ATR14"}
+
+
 def _data_health_card_html(data_health: dict[str, Any]) -> str:
-    rows = [
+    summary_rows = [
+        ("数据健康等级", _display_value(data_health.get("health_level") or "高")),
+        ("关键缺口", _field_list_display(data_health.get("critical_missing_fields"))),
+        ("可选缺口", _field_list_display(data_health.get("optional_missing_fields"))),
+        ("过期字段", _field_list_display(data_health.get("stale_fields"))),
+        ("主要数据来源", "、".join(str(item) for item in data_health.get("primary_sources") or []) or "暂缺"),
+        ("更新时间", _health_time(data_health.get("quote_updated_at") or data_health.get("score_updated_at"))),
+    ]
+    detail_rows = [
         ("quote_source", "报价来源", _display_value(data_health.get("quote_source"))),
         ("quote_updated_at", "报价更新时间", _health_time(data_health.get("quote_updated_at"))),
         ("price_is_close_or_intraday", "价格口径", _display_value(data_health.get("price_is_close_or_intraday"))),
@@ -2522,14 +2964,22 @@ def _data_health_card_html(data_health: dict[str, Any]) -> str:
         ("financials_updated_at", "财务更新时间", _health_time(data_health.get("financials_updated_at"))),
         ("score_updated_at", "评分更新时间", _health_time(data_health.get("score_updated_at"))),
         ("portfolio_updated_at", "持仓更新时间", _health_time(data_health.get("portfolio_updated_at"))),
-        ("missing_fields", "暂缺字段", _field_list_display(data_health.get("missing_fields"))),
+        ("critical_missing_fields", "关键缺口", _field_list_display(data_health.get("critical_missing_fields"))),
+        ("optional_missing_fields", "可选缺口", _field_list_display(data_health.get("optional_missing_fields"))),
+        ("not_applicable_fields", "不适用字段", _field_list_display(data_health.get("not_applicable_fields"))),
+        ("missing_fields", "全部暂缺字段", _field_list_display(data_health.get("missing_fields"))),
         ("stale_fields", "过期字段", _field_list_display(data_health.get("stale_fields"))),
     ]
-    body = "".join(f"<tr><td>{escape(label)}</td><td>{escape(value)}</td></tr>" for _key, label, value in rows)
+    summary = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in summary_rows)
+    detail_body = "".join(f"<tr><td>{escape(label)}</td><td>{escape(value)}</td></tr>" for _key, label, value in detail_rows)
     return (
         '<section class="ai-radar-card ai-radar-metric-card ai-radar-data-health-card">'
-        '<div class="ai-radar-section-title"><span>数据健康</span><b>更新时间 / 缺口</b></div>'
-        f'<table class="ai-radar-metric-table"><tbody>{body}</tbody></table>'
+        '<div class="ai-radar-section-title"><span>数据健康</span><b>摘要 / 详情</b></div>'
+        f'<div class="ai-radar-data-health-summary">{summary}</div>'
+        '<details class="ai-radar-data-health-details">'
+        '<summary>查看字段明细</summary>'
+        f'<table class="ai-radar-metric-table"><tbody>{detail_body}</tbody></table>'
+        '</details>'
         "</section>"
     )
 
@@ -2704,6 +3154,7 @@ FIELD_DISPLAY_LABELS = {
     "roe": "净资产收益率",
     "return_on_equity": "净资产收益率",
     "daily_bars": "历史K线",
+    "daily_ohlcv": "日线 OHLCV",
     "dailybars": "历史K线",
     "price_history": "历史K线",
     "technicals": "技术数据",
@@ -2727,6 +3178,26 @@ FIELD_DISPLAY_LABELS = {
     "ema50": "EMA50",
     "ema200": "EMA200",
     "atr14": "ATR14",
+    "atr_14": "ATR14",
+    "atr_pct": "ATR 占比",
+    "rsi14": "RSI14",
+    "rsi_14": "RSI14",
+    "avg_volume_20d": "20日均量",
+    "volume_ratio": "量比",
+    "ma20": "MA20",
+    "ma50": "MA50",
+    "ma200": "MA200",
+    "swing_high": "阶段高点",
+    "swing_low": "阶段低点",
+    "support_zone": "支撑区",
+    "support_zone_low": "支撑区下沿",
+    "support_zone_high": "支撑区上沿",
+    "resistance_zone": "压力区",
+    "resistance_zone_low": "压力区下沿",
+    "resistance_zone_high": "压力区上沿",
+    "distance_to_invalidation": "距失效线",
+    "distance_to_resistance": "距压力位",
+    "reward_risk_ratio": "风险收益比",
     "vwap": "VWAP（日线替代）",
     "relative_strength": "相对强弱",
     "relative_strength_vs_qqq": "相对强弱（QQQ）",
@@ -2782,7 +3253,15 @@ def _field_display_label(field: Any) -> str:
         return "净资产收益率"
     if "daily" in text or "history" in text:
         return "历史K线"
-    if "technical" in text or "ema" in text or "atr" in text or "swing" in text:
+    if "support" in text:
+        return "支撑区"
+    if "resistance" in text:
+        return "压力区"
+    if "invalidation" in text:
+        return "失效线"
+    if "reward_risk" in text:
+        return "风险收益比"
+    if "technical" in text or "ema" in text or "atr" in text or "swing" in text or "ma20" in text or "ma50" in text or "ma200" in text:
         return "技术数据"
     if "fundamental" in text:
         return "基本面数据"
@@ -3642,6 +4121,43 @@ def _render_styles() -> None:
             line-height:1.65;
             font-weight:700;
         }
+        .ai-radar-batting-card {
+            margin:0 0 14px;
+            padding:14px;
+            border:1px solid #CBD5E1;
+            border-left:4px solid #0F766E;
+            border-radius:9px;
+            background:#F8FBFF;
+        }
+        .ai-radar-batting-card p {
+            margin:0 0 10px;
+            color:#0B1F3A;
+            font-size:15px;
+            line-height:1.45;
+            font-weight:850;
+        }
+        .ai-radar-batting-grid {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:8px;
+        }
+        .ai-radar-batting-grid div {
+            border-top:1px solid #E2E8F0;
+            padding-top:8px;
+        }
+        .ai-radar-batting-grid span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-bottom:3px;
+        }
+        .ai-radar-batting-grid strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:12px;
+            line-height:1.35;
+            font-weight:840;
+        }
         .ai-radar-position-context {
             margin:0 0 14px;
             padding:13px 14px;
@@ -3943,7 +4459,11 @@ def _render_styles() -> None:
             background:#F8FBFF;
             border-color:#DDE8F6;
         }
-        .ai-radar-score-grid,
+        .ai-radar-score-grid {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:9px;
+        }
         .ai-radar-data-quality-grid {
             display:grid;
             grid-template-columns:repeat(3, minmax(0, 1fr));
@@ -3967,6 +4487,39 @@ def _render_styles() -> None:
         .ai-radar-data-quality-grid strong {
             color:#0B1F3A;
             font-size:16px;
+        }
+        .ai-radar-data-health-summary {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:9px;
+            margin-bottom:10px;
+        }
+        .ai-radar-data-health-summary div {
+            background:#F8FAFC;
+            border:1px solid #E8EEF5;
+            border-radius:8px;
+            padding:9px 10px;
+        }
+        .ai-radar-data-health-summary span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            font-weight:760;
+            margin-bottom:4px;
+        }
+        .ai-radar-data-health-summary strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:13px;
+            line-height:1.35;
+            font-weight:850;
+        }
+        .ai-radar-data-health-details summary {
+            cursor:pointer;
+            color:#334155;
+            font-size:12px;
+            font-weight:820;
+            margin:6px 0 8px;
         }
         .ai-radar-volume-summary {
             display:grid;
@@ -4072,8 +4625,10 @@ def _render_styles() -> None:
             .ai-radar-visual-grid,
             .ai-radar-evidence-grid,
             .ai-radar-exec-grid,
+            .ai-radar-batting-grid,
             .ai-radar-position-context-grid,
             .ai-radar-score-grid,
+            .ai-radar-data-health-summary,
             .ai-radar-volume-summary,
             .ai-radar-data-quality-grid { grid-template-columns:1fr; }
             .ai-radar-research-header { padding:24px 18px; }

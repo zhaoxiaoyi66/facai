@@ -97,6 +97,11 @@ def build_buy_zone_context(
     confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line")
     invalidation = _first_number(data, "invalidation_price", "radar_invalidation_price", "invalid_line")
     chase = _first_number(data, "chase_above_price", "radar_chase_above_price", "chase_price")
+    ma20 = _first_number(data, "ma20", "ema20")
+    ma50 = _first_number(data, "ma50", "ema50")
+    ma200 = _first_number(data, "ma200", "ema200")
+    atr = _first_number(data, "atr_14", "atr14")
+    resistance = _first_number(data, "resistance_zone_high", "resistance_zone_low", "recent_swing_high", "recent_breakout_level", "confirmation_price")
     final_score = _first_number(data, "final_score", "finalScore")
     risk_score = _first_number(data, "risk_score", "riskScore")
     volume_status = str(_value(volume, "volume_price_status", "volumePriceStatus") or _value(data, "volume_price_status", "volumePriceStatus") or "").upper()
@@ -111,6 +116,11 @@ def build_buy_zone_context(
         confirmation=confirmation,
         invalidation=invalidation,
         chase=chase,
+        ma20=ma20,
+        ma50=ma50,
+        ma200=ma200,
+        atr=atr,
+        resistance=resistance,
         volume_status=volume_status,
         volume_ratio=volume_ratio,
     )
@@ -194,6 +204,11 @@ def _missing_fields(**values: Any) -> list[str]:
         "confirmation",
         "invalidation",
         "chase",
+        "ma20",
+        "ma50",
+        "ma200",
+        "atr",
+        "resistance",
     ):
         if values.get(key) is None:
             fields.append(_missing_label(key))
@@ -361,6 +376,11 @@ def _missing_label(key: str) -> str:
         "confirmation": "confirmation_price",
         "invalidation": "invalidation_price",
         "chase": "chase_price",
+        "ma20": "ma20",
+        "ma50": "ma50",
+        "ma200": "ma200",
+        "atr": "atr_14",
+        "resistance": "resistance_zone",
     }.get(key, key)
 
 
