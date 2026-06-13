@@ -1557,13 +1557,13 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     text = str(value or "").strip()
     lower = text.lower()
     mappings = [
-        ("current price is above the discipline buy zone", "当前价高于 Radar 参考买区，属于买区提示。"),
+        ("current price is above the discipline buy zone", "当前价高于主击球区，系统建议等待回踩；如仍继续，将记录为人工 override。"),
         ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩；如仍继续，将记录为人工 override。"),
         ("valuation score below 40", "估值评分低于 40，系统建议降低仓位。"),
-        ("final score below 70", "综合评分低于 70，系统建议不要作为核心仓。"),
+        ("final score below 70", "综合评分低于 70，系统不建议作为核心仓。"),
         ("core position is not allowed", "系统不建议作为核心仓。"),
         ("heavy position is not allowed", "系统不建议高仓位。"),
-        ("data missing", "买区数据不足，需人工判断；可手动继续。"),
+        ("data missing", "技术承接数据不足，需人工判断；可手动继续。"),
         ("stale", "缓存已过期，需人工判断；可手动继续。"),
         ("missing current price", "缺少当前价格。"),
         ("missing valuation", "缺少估值指标。"),

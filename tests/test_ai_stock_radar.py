@@ -440,7 +440,8 @@ def test_report_localizes_backend_english_copy() -> None:
     assert "自由现金流为负" in html
     assert "杠杆偏高" in html
     assert "自由现金流路径不确定" in html
-    assert "综合评分低于70，禁止核心仓买入" in html
+    assert "综合评分低于70，不建议作为核心仓" in html
+    assert "禁止核心仓买入" not in html
     assert "Revenue growth" not in html
     assert "final score below 70" not in html
 

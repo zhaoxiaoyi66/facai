@@ -1523,7 +1523,7 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
     assert "系统只提供风险提醒" in html
     assert "买入风险提示" in html
     assert "当前市场状态" in html
-    assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e Radar \u53c2\u8003\u4e70\u533a" in html
+    assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e\u4e3b\u51fb\u7403\u533a" in html
     assert "可手动继续" in html
     assert "人工 override" in html
     assert "估值评分低于 40" in html
