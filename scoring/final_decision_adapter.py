@@ -26,6 +26,10 @@ class FinalDecisionBundle:
     scoreMaxPortfolioWeightPercent: float | None
     positionPlanCurrentAddLimitPercent: float | None
     positionPlanMaxPortfolioWeightPercent: float | None
+    setupScore: float | None = None
+    buyZoneAction: str = ""
+    buyZoneActionText: str = ""
+    buyZonePrimaryZone: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -37,8 +41,10 @@ def build_final_decision_bundle(
     position_plan: Any = None,
     manual_plan_override: dict | None = None,
     symbol: str | None = None,
+    buy_zone_context: dict | None = None,
 ) -> FinalDecisionBundle:
     effective_buy_zone = _effective_buy_zone(buy_zone, manual_plan_override)
+    decision_buy_zone = buy_zone_context or effective_buy_zone
     effective_position_plan = _effective_position_plan(
         score,
         effective_buy_zone,
@@ -46,7 +52,7 @@ def build_final_decision_bundle(
         manual_plan_override,
         symbol,
     )
-    decision = derive_final_decision(score, effective_buy_zone, effective_position_plan)
+    decision = derive_final_decision(score, decision_buy_zone, effective_position_plan)
     return FinalDecisionBundle(
         executionSource="finalDecisionBundle",
         finalAction=decision.finalAction,
@@ -58,7 +64,7 @@ def build_final_decision_bundle(
         blockReasons=decision.blockReasons,
         reviewReasons=decision.reviewReasons,
         dataConfidence=decision.dataConfidence,
-        buyZoneStatus=_buy_zone_status(effective_buy_zone),
+        buyZoneStatus=_buy_zone_status(decision_buy_zone) or _buy_zone_status(effective_buy_zone),
         legacyAction=str(_value(score, "action", default="") or ""),
         scoreCurrentAddLimitPercent=_number(
             score,
@@ -82,6 +88,10 @@ def build_final_decision_bundle(
             "maxPortfolioWeightPercent",
             "max_portfolio_weight_percent",
         ),
+        setupScore=decision.setupScore,
+        buyZoneAction=decision.buyZoneAction,
+        buyZoneActionText=decision.buyZoneActionText,
+        buyZonePrimaryZone=decision.buyZonePrimaryZone,
     )
 
 
@@ -107,7 +117,7 @@ def _effective_position_plan(
 
 
 def _buy_zone_status(buy_zone: Any) -> str | None:
-    value = _value(buy_zone, "currentZone", "current_zone", default=None)
+    value = _value(buy_zone, "currentZone", "current_zone", "primary_zone", "primaryZone", "current_action", "currentAction", default=None)
     return str(value) if value not in {None, ""} else None
 
 

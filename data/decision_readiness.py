@@ -20,6 +20,8 @@ BUY_ZONE_PRECISION_BLOCKERS = {
     "low_confidence_zone",
     "unsupported_buy_zone_model",
 }
+UNIFIED_PRECISE_ACTIONS = {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}
+UNIFIED_PRECISION_BLOCKERS = {"BLOCK_CHASE", "RISK_REVIEW", "DATA_INSUFFICIENT", "WAIT_CONFIRMATION", "WAIT_PULLBACK", "AVOID"}
 
 
 def build_decision_readiness(
@@ -93,12 +95,16 @@ def _final_decision_reasons(final_decision: Any) -> tuple[list[dict[str, Any]], 
 def _buy_zone_reasons(buy_zone: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if buy_zone is None:
         return [_reason("buy_zone_missing", "", "缺少买区结果，不能展示精确买点。")], []
+    unified_action = _unified_action(buy_zone)
     zone = str(_value(buy_zone, "currentZone", "current_zone", default="") or "")
     confidence = str(_value(buy_zone, "confidence", default="") or "").lower()
     validation_errors = _list_value(buy_zone, "validationErrors", "validation_errors")
     blockers: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
-    if zone in BUY_ZONE_PRECISION_BLOCKERS or zone not in PRECISE_BUY_ZONE_STATES:
+    if unified_action:
+        if unified_action not in UNIFIED_PRECISE_ACTIONS:
+            blockers.append(_reason("buy_zone_precision_blocked", "", _unified_buy_zone_message(unified_action, buy_zone)))
+    elif zone in BUY_ZONE_PRECISION_BLOCKERS or zone not in PRECISE_BUY_ZONE_STATES:
         blockers.append(_reason("buy_zone_precision_blocked", "", _buy_zone_message(zone)))
     if confidence == "low":
         reviews.append(_reason("buy_zone_low_confidence", "", "买区置信度偏低，需要复核后再使用精确价格。"))
@@ -121,6 +127,39 @@ def _buy_zone_message(zone: str) -> str:
         "unsupported_buy_zone_model": "暂无可用买区模型，不能展示精确买点。",
     }
     return labels.get(zone, "当前买区不属于可执行精确买点区。")
+
+
+def _unified_action(buy_zone: Any) -> str:
+    return str(
+        _value(
+            buy_zone,
+            "current_action",
+            "currentAction",
+            "buy_zone_action",
+            "buyZoneAction",
+            default="",
+        )
+        or ""
+    ).strip().upper()
+
+
+def _unified_buy_zone_message(action: str, buy_zone: Any) -> str:
+    zone_text = str(_value(buy_zone, "primary_zone_text", "primaryZoneText", default="") or "").strip()
+    if action == "BLOCK_CHASE":
+        return "统一买区显示追高风险，不展示精确买点。"
+    if action == "RISK_REVIEW":
+        return "统一买区进入失效风控复核，不展示精确买点。"
+    if action == "DATA_INSUFFICIENT":
+        missing = _list_value(buy_zone, "missing_fields", "missingFields")
+        suffix = f"暂缺：{'、'.join(str(item) for item in missing[:4])}。" if missing else ""
+        return f"技术承接数据不足，不能用基本面或估值替代买区。{suffix}"
+    if action == "WAIT_CONFIRMATION":
+        return f"统一买区为{zone_text or '修复观察区'}，等待量价确认，不展示精确买点。"
+    if action == "WAIT_PULLBACK":
+        return "价格尚未回到高质量承接区，等待回踩，不展示精确买点。"
+    if action == "AVOID":
+        return "统一买区显示暂不参与，不展示精确买点。"
+    return "当前统一买区不属于可执行精确买点区。"
 
 
 def _buy_zone_validation_message(reason: str) -> str:

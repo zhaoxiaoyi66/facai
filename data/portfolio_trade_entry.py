@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
+from data.buy_zone_engine import build_buy_zone_context
 from data.decision_log import TradeJournalStore
 from data.macro_regime import load_macro_regime
 from data.market_context import build_market_history
@@ -77,9 +78,12 @@ def submit_portfolio_buy_add(
         technicals=_report_dict(report),
         checked_at=submitted_at,
     )
+    report_data = _report_dict(report)
+    buy_zone_context = _safe_buy_zone_context(report_data, volume_price_acceptance)
+    report_for_gate = {**report_data, "buy_zone_context": buy_zone_context} if buy_zone_context else report
     action_fusion = _safe_action_fusion(
         ticker=ticker,
-        report=report,
+        report=report_for_gate,
         volume_price_acceptance=volume_price_acceptance,
         path=path,
     )
@@ -88,7 +92,7 @@ def submit_portfolio_buy_add(
     plan_gate = evaluate_planned_ladder_buy(
         ticker=ticker,
         plan=plan if entry_mode == "planned_ladder_buy" else None,
-        radar_report=report,
+        radar_report=report_for_gate,
         quantity=quantity,
         trade_price=price,
         planned_after_position_pct=portfolio_preview.get("afterPositionPct"),
@@ -100,7 +104,7 @@ def submit_portfolio_buy_add(
         ticker=ticker,
         entry_mode=entry_mode,
         position_tier=tier,
-        radar_report=report,
+        radar_report=report_for_gate,
         before_position_pct=_before_position_pct(portfolio_preview),
         after_position_pct=portfolio_preview.get("afterPositionPct"),
         decision_mood=decision_mood,
@@ -112,7 +116,7 @@ def submit_portfolio_buy_add(
         starter_max_pct=values.get("starter_max_pct") or values.get("starterMaxPct") or 7,
     )
     gate = evaluate_buy_gate(
-        report,
+        report_for_gate,
         action_type=action_type,
         position_bucket=_position_bucket_for_tier(tier),
         planned_after_position_pct=portfolio_preview.get("afterPositionPct"),
@@ -124,6 +128,7 @@ def submit_portfolio_buy_add(
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
+    advisory_notes.extend(_buy_zone_context_advisory_notes(buy_zone_context))
     advisory_notes.extend(_action_fusion_advisory_notes(action_fusion))
     if entry_mode == "planned_ladder_buy":
         advisory_notes.extend(plan_gate.plan_notes)
@@ -167,8 +172,8 @@ def submit_portfolio_buy_add(
         "tradingPositionMaxPct": trading_pct,
         "classificationNote": values.get("classification_note") or values.get("classificationNote") or "",
         "createdAt": submitted_at.isoformat(),
-        "radarDataStatus": _report_value(report, "data_status"),
-        "radarIsStale": bool(_report_value(report, "is_stale")),
+        "radarDataStatus": _report_value(report_for_gate, "data_status"),
+        "radarIsStale": bool(_report_value(report_for_gate, "is_stale")),
         **gate_fields,
         **plan_fields,
         **starter_fields,
@@ -217,7 +222,7 @@ def submit_portfolio_buy_add(
         "pullbackAcceptance": pullback_acceptance.to_dict(),
         "volumePriceAcceptance": volume_price_acceptance.to_dict(),
         "actionFusion": action_fusion.to_dict() if action_fusion is not None else {},
-        "marketStatus": _buy_market_status(report, gate),
+        "marketStatus": _buy_market_status(report_for_gate, gate),
         "completedPlan": completed_plan,
         "sync": sync_result,
         "actionType": action_type,
@@ -303,6 +308,49 @@ def _safe_action_fusion(*, ticker: str, report: object, volume_price_acceptance:
         )
     except Exception:
         return None
+
+
+def _safe_buy_zone_context(report_data: dict[str, Any], volume_price_acceptance: Any) -> dict[str, Any]:
+    if not _has_buy_zone_context_inputs(report_data):
+        return {}
+    try:
+        volume_snapshot = volume_price_acceptance.to_dict() if hasattr(volume_price_acceptance, "to_dict") else {}
+        return build_buy_zone_context(report_data, volume_snapshot=volume_snapshot).to_dict()
+    except Exception:
+        return {}
+
+
+def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
+    has_levels = any(
+        data.get(key) not in (None, "")
+        for key in (
+            "deep_support_zone_low",
+            "support_watch_zone_low",
+            "effective_technical_entry_zone_low",
+            "technical_pullback_zone_low",
+            "near_term_repair_zone_low",
+            "confirmation_price",
+            "invalidation_price",
+            "chase_above_price",
+        )
+    )
+    return has_levels
+
+
+def _buy_zone_context_advisory_notes(context: dict[str, Any]) -> list[str]:
+    if not context:
+        return []
+    action = str(context.get("current_action") or "").strip().upper()
+    action_text = str(context.get("action_text") or "").strip()
+    zone = str(context.get("primary_zone_text") or "").strip()
+    reason = str(context.get("zone_selection_reason") or "").strip()
+    notes: list[str] = []
+    if action in {"BLOCK_CHASE", "RISK_REVIEW", "DATA_INSUFFICIENT", "WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        notes.append(f"统一买区：{zone or action_text}，{action_text}；{reason}")
+    core_reason = str(context.get("core_position_reason") or "").strip()
+    if core_reason:
+        notes.append(core_reason)
+    return _dedupe_text(notes)
 
 
 def _has_action_fusion_levels(data: dict[str, Any]) -> bool:
@@ -501,6 +549,10 @@ def _starter_entry_fields(entry_mode: str, starter_gate) -> dict[str, Any]:
 
 
 def _buy_market_status(report: object, gate) -> dict[str, Any]:
+    buy_zone_context = _report_value(report, "buy_zone_context") or getattr(gate, "buy_zone_context", {}) or {}
+    buy_zone_action = str(buy_zone_context.get("current_action") or getattr(gate, "buy_zone_action", "") or "").strip().upper()
+    setup_score = _number(buy_zone_context.get("setup_score") or getattr(gate, "setup_score", None))
+    primary_zone_text = str(buy_zone_context.get("primary_zone_text") or getattr(gate, "primary_zone_text", "") or "").strip()
     daily_change_pct = _daily_change_pct(report)
     price_position = str(_first_report_value(report, "price_position", "zone_status") or "").strip().upper()
     decision = str(_report_value(report, "decision") or getattr(gate, "decision", "") or "").strip().upper()
@@ -510,7 +562,17 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     is_stale = _boolish(_report_value(report, "is_stale"))
     data_status = str(_report_value(report, "data_status") or "").strip().lower()
 
-    if is_stale or data_status in {"missing", "data_missing", "stale"}:
+    if buy_zone_action == "DATA_INSUFFICIENT":
+        technical_status = "技术承接数据不足"
+    elif buy_zone_action == "RISK_REVIEW":
+        technical_status = "跌破失效线 / 风控复核"
+    elif buy_zone_action == "BLOCK_CHASE":
+        technical_status = "技术偏热 / 追高风险"
+    elif buy_zone_action == "ALLOW_SMALL_BUY":
+        technical_status = "回踩买区 / 可小仓观察"
+    elif buy_zone_action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        technical_status = "等待确认 / 等待回踩"
+    elif is_stale or data_status in {"missing", "data_missing", "stale"}:
         technical_status = "买区数据缺失 / 过期，需人工判断"
     elif daily_change_pct is not None and daily_change_pct <= -8:
         technical_status = "财报后大跌 / 高波动"
@@ -530,7 +592,17 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     else:
         valuation_status = "估值需复核"
 
-    if is_stale or data_status in {"missing", "data_missing", "stale"}:
+    if buy_zone_action == "DATA_INSUFFICIENT":
+        discipline_status = "技术承接数据不足，不给明确买入区；可手动继续"
+    elif buy_zone_action == "RISK_REVIEW":
+        discipline_status = "统一买区进入风控复核，暂停新增买入建议"
+    elif buy_zone_action == "BLOCK_CHASE":
+        discipline_status = "统一买区提示追高风险，不建议追买"
+    elif buy_zone_action == "ALLOW_SMALL_BUY":
+        discipline_status = "统一买区允许小仓观察"
+    elif buy_zone_action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        discipline_status = "统一买区建议等待确认或回踩"
+    elif is_stale or data_status in {"missing", "data_missing", "stale"}:
         discipline_status = "买区参考不可用，需人工判断；可手动继续"
     elif allowed_add_pct is not None and allowed_add_pct <= 0:
         discipline_status = "系统参考新增仓位为 0%，仅作风险提示"
@@ -549,7 +621,9 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     if valuation_score is not None and valuation_score < 40:
         notes.append("估值分低，不能因为回撤自动放行。")
     if final_score is not None and final_score < 70:
-        notes.append("综合评分低于 70，系统不建议作为核心仓。")
+        notes.append("综合评分低于 70，系统不建议作为核心仓；是否小仓取决于 setup 与量价承接。")
+    if setup_score is not None:
+        notes.append(f"Setup 分 {setup_score:.1f}；买区由技术结构、量价承接和风险收益比决定。")
 
     return {
         "technical_status": technical_status,
@@ -560,6 +634,9 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
         "valuation_score": valuation_score,
         "final_score": final_score,
         "allowed_add_pct": allowed_add_pct,
+        "setup_score": setup_score,
+        "buy_zone_action": buy_zone_action,
+        "primary_zone_text": primary_zone_text,
         "notes": notes,
     }
 

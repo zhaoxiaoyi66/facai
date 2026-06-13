@@ -64,6 +64,40 @@ def test_decision_readiness_blocks_fake_precision_for_no_chase_or_data_insuffici
     assert any(item["category"] == "ai_cloud_infra_missing_core_inputs" for item in result["reviewRequiredReasons"])
 
 
+def test_decision_readiness_supports_unified_buy_zone_context_precision() -> None:
+    result = build_decision_readiness(
+        "MSFT",
+        data_health={"topIssues": []},
+        final_decision={"finalAction": "可小仓分批", "blockReasons": [], "reviewReasons": []},
+        buy_zone={
+            "current_action": "ALLOW_SMALL_BUY",
+            "primary_zone_text": "回踩买区",
+            "setup_score": 66,
+        },
+    )
+
+    assert result["status"] == "ready"
+    assert result["canShowPreciseBuyZone"]
+
+
+def test_decision_readiness_blocks_unified_data_insufficient_precision() -> None:
+    result = build_decision_readiness(
+        "CRCL",
+        data_health={"topIssues": []},
+        final_decision={"finalAction": "待复核，暂不新增", "blockReasons": ["buy_zone"], "reviewReasons": []},
+        buy_zone={
+            "current_action": "DATA_INSUFFICIENT",
+            "primary_zone_text": "技术承接数据不足",
+            "missing_fields": ["current_price", "daily_bars"],
+        },
+    )
+
+    assert result["canDecide"]
+    assert not result["canShowPreciseBuyZone"]
+    assert result["precisionBlockedReasons"][0]["category"] == "buy_zone_precision_blocked"
+    assert "技术承接数据不足" in result["precisionBlockedReasons"][0]["message"]
+
+
 def test_decision_readiness_includes_trade_sync_policy_without_recomputing_it() -> None:
     result = build_decision_readiness(
         "NVDA",

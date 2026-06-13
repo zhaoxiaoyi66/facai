@@ -285,6 +285,38 @@ class DecisionLogTests(unittest.TestCase):
             self.assertIn("当前价进入追高禁止区", saved["radar_advisory_warnings"])
             self.assertIn("情绪交易风险", saved["radar_advisory_warnings"])
 
+    def test_trade_journal_store_saves_unified_buy_zone_gate_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 210,
+                    "decision_mood": "plan_execution",
+                    "radarDecision": "WAIT",
+                    "buyZoneContext": {
+                        "current_action": "ALLOW_SMALL_BUY",
+                        "setup_score": 66,
+                        "primary_zone_text": "回踩买区",
+                    },
+                    "setupScore": 66,
+                    "buyZoneAction": "ALLOW_SMALL_BUY",
+                    "buyZoneActionText": "允许小仓观察",
+                    "primaryZoneText": "回踩买区",
+                    "gateCheckedAt": "2026-05-26T12:00:00+00:00",
+                },
+            )
+
+            self.assertEqual(saved["setup_score"], 66)
+            self.assertEqual(saved["buy_zone_action"], "ALLOW_SMALL_BUY")
+            self.assertEqual(saved["buy_zone_action_text"], "允许小仓观察")
+            self.assertEqual(saved["primary_zone_text"], "回踩买区")
+            self.assertEqual(saved["buy_zone_context"]["current_action"], "ALLOW_SMALL_BUY")
+
     def test_missing_radar_snapshot_uses_ledger_language(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")

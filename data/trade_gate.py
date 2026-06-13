@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from data.buy_zone_engine import build_buy_zone_context
+
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
 MISSING_BUY_GATE_REASON = "Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"
@@ -36,6 +38,11 @@ class BuyGateResult:
     entry_action_hint: str
     entry_display_reason: str
     buy_zone_snapshot: Any
+    buy_zone_context: dict[str, Any]
+    setup_score: float | None
+    buy_zone_action: str
+    buy_zone_action_text: str
+    primary_zone_text: str
     technical_entry_zone: Any
     deep_valuation_zone: Any
     chase_above_price: float | None
@@ -81,6 +88,7 @@ def evaluate_buy_gate(
     data = _report_dict(report)
     ticker = str(data.get("ticker") or data.get("symbol") or "").strip().upper()
     decision = str(data.get("decision") or "DATA_MISSING").strip().upper()
+    buy_zone_context = _buy_zone_context(data)
     mood = str(decision_mood or "").strip().lower()
     bucket = _position_bucket(position_bucket)
     reasons: list[str] = []
@@ -112,6 +120,11 @@ def evaluate_buy_gate(
             entry_action_hint=str(data.get("entry_action_hint") or ""),
             entry_display_reason=str(data.get("entry_display_reason") or ""),
             buy_zone_snapshot=data.get("buy_zone"),
+            buy_zone_context=buy_zone_context,
+            setup_score=_context_number(buy_zone_context, "setup_score"),
+            buy_zone_action=str(buy_zone_context.get("current_action") or ""),
+            buy_zone_action_text=str(buy_zone_context.get("action_text") or ""),
+            primary_zone_text=str(buy_zone_context.get("primary_zone_text") or ""),
             technical_entry_zone=_technical_entry_zone(data),
             deep_valuation_zone=data.get("deep_valuation_zone") or data.get("buy_zone"),
             chase_above_price=_number(data.get("chase_above_price")),
@@ -120,6 +133,7 @@ def evaluate_buy_gate(
         )
 
     advisory_warnings = _decision_advisory_warnings(data, decision, bool(observation_only))
+    advisory_warnings.extend(_buy_zone_context_warnings(buy_zone_context))
     mood_reasons = evaluate_mood_gate(mood)
     advisory_warnings.extend(mood_reasons)
     position_reasons = evaluate_position_limit(data, bucket, planned_after_position_pct)
@@ -159,7 +173,12 @@ def evaluate_buy_gate(
         entry_display_label=str(data.get("entry_display_label") or ""),
         entry_action_hint=str(data.get("entry_action_hint") or ""),
         entry_display_reason=str(data.get("entry_display_reason") or ""),
-        buy_zone_snapshot=data.get("buy_zone"),
+        buy_zone_snapshot=buy_zone_context or data.get("buy_zone"),
+        buy_zone_context=buy_zone_context,
+        setup_score=_context_number(buy_zone_context, "setup_score"),
+        buy_zone_action=str(buy_zone_context.get("current_action") or ""),
+        buy_zone_action_text=str(buy_zone_context.get("action_text") or ""),
+        primary_zone_text=str(buy_zone_context.get("primary_zone_text") or ""),
         technical_entry_zone=_technical_entry_zone(data),
         deep_valuation_zone=data.get("deep_valuation_zone") or data.get("buy_zone"),
         chase_above_price=_number(data.get("chase_above_price")),
@@ -229,6 +248,11 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
                 "radarObservationOnly": False,
+                "buyZoneContext": {},
+                "setupScore": None,
+                "buyZoneAction": "",
+                "buyZoneActionText": "",
+                "primaryZoneText": "",
                 "gateCheckedAt": _checked_at(None),
             }
         return {
@@ -242,6 +266,11 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "moodGateBlocked": False,
             "positionGateBlocked": False,
             "radarObservationOnly": False,
+            "buyZoneContext": {},
+            "setupScore": None,
+            "buyZoneAction": "",
+            "buyZoneActionText": "",
+            "primaryZoneText": "",
             "gateCheckedAt": "",
         }
     return {
@@ -257,6 +286,11 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "entryActionHint": result.entry_action_hint,
         "entryDisplayReason": result.entry_display_reason,
         "buyZoneSnapshot": result.buy_zone_snapshot,
+        "buyZoneContext": result.buy_zone_context,
+        "setupScore": result.setup_score,
+        "buyZoneAction": result.buy_zone_action,
+        "buyZoneActionText": result.buy_zone_action_text,
+        "primaryZoneText": result.primary_zone_text,
         "technicalEntryZone": result.technical_entry_zone,
         "deepValuationZone": result.deep_valuation_zone,
         "chaseAbovePrice": result.chase_above_price,
@@ -285,6 +319,72 @@ def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation
     return [f"Radar 结论未知：{decision or 'missing'}，需人工判断；如仍继续，将记录为人工 override。"]
 
 
+def _buy_zone_context(data: dict[str, Any]) -> dict[str, Any]:
+    existing = data.get("buy_zone_context") or data.get("buyZoneContext")
+    if isinstance(existing, dict) and existing:
+        return dict(existing)
+    if not _has_buy_zone_context_inputs(data):
+        return {}
+    try:
+        return build_buy_zone_context(data, volume_snapshot=_volume_snapshot_from_report(data)).to_dict()
+    except Exception:
+        return {}
+
+
+def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
+    required_any = (
+        "deep_support_zone_low",
+        "support_watch_zone_low",
+        "effective_technical_entry_zone_low",
+        "technical_pullback_zone_low",
+        "near_term_repair_zone_low",
+        "confirmation_price",
+        "invalidation_price",
+        "chase_above_price",
+    )
+    has_levels = any(data.get(key) not in (None, "") for key in required_any)
+    has_volume = any(
+        data.get(key) not in (None, "")
+        for key in ("volume_price_status", "volumePriceStatus", "volume_ratio", "volumeRatio", "volume_price_score", "volumePriceScore")
+    )
+    return has_levels and has_volume
+
+
+def _volume_snapshot_from_report(data: dict[str, Any]) -> dict[str, Any]:
+    snapshot = data.get("volume_price_acceptance") or data.get("volumePriceAcceptance")
+    if isinstance(snapshot, dict):
+        return snapshot
+    return {
+        "volume_price_status": data.get("volume_price_status") or data.get("volumePriceStatus"),
+        "volume_price_score": data.get("volume_price_score") or data.get("volumePriceScore"),
+        "volume_ratio": data.get("volume_ratio") or data.get("volumeRatio"),
+    }
+
+
+def _buy_zone_context_warnings(context: dict[str, Any]) -> list[str]:
+    if not context:
+        return []
+    action = str(context.get("current_action") or "").strip().upper()
+    action_text = str(context.get("action_text") or "").strip()
+    zone_text = str(context.get("primary_zone_text") or "").strip()
+    reason = str(context.get("zone_selection_reason") or "").strip()
+    if action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        warning = str(context.get("core_position_reason") or "").strip()
+        return [warning] if warning else []
+    if action == "BLOCK_CHASE":
+        return [f"统一买区：{zone_text or '追高禁区'}，{action_text or '禁止追高'}；如仍继续，将记录为人工 override。"]
+    if action == "RISK_REVIEW":
+        return [f"统一买区：{zone_text or '失效风控区'}，{action_text or '进入风控复核'}；{reason or '跌破失效线，暂停新增买入。'}"]
+    if action == "DATA_INSUFFICIENT":
+        missing = context.get("missing_fields") or []
+        missing_text = "、".join(str(item) for item in missing[:4]) if isinstance(missing, list) else ""
+        suffix = f"暂缺：{missing_text}" if missing_text else "技术承接数据不足"
+        return [f"统一买区：技术承接数据不足，不给明确买入区；{suffix}。"]
+    if action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        return [f"统一买区：{zone_text or action_text}，{action_text or '等待确认'}；可手动继续，系统会记录为人工 override。"]
+    return []
+
+
 def _warning_level(data: dict[str, Any], decision: str, advisory_warnings: list[str]) -> str:
     if not advisory_warnings:
         return "info"
@@ -292,7 +392,15 @@ def _warning_level(data: dict[str, Any], decision: str, advisory_warnings: list[
     text = " ".join([decision, price_position, *[str(item) for item in advisory_warnings]]).upper()
     if any(token in text for token in ("BLOCK_CHASE", "IN_CHASE_ZONE", "AVOID", "FAILED", "EVENT", "追高", "冲击", "仓位")):
         return "danger"
+    if any(token in text for token in ("风控复核", "数据不足", "禁止追高", "失效")):
+        return "danger"
     return "warning"
+
+
+def _context_number(context: dict[str, Any], key: str) -> float | None:
+    if not context:
+        return None
+    return _number(context.get(key))
 
 
 def _price_position(data: dict[str, Any]) -> str:

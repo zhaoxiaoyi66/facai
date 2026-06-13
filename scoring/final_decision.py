@@ -8,6 +8,9 @@ BUY_ACTIONS = {"可小仓分批", "可正常分批"}
 NON_BUY_VALUATION_STATUSES = {"只观察", "偏贵", "极贵"}
 BLOCKING_ZONES = {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}
 REVIEW_ACTION = "待复核，暂不新增"
+UNIFIED_SMALL_BUY_ACTIONS = {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}
+UNIFIED_BLOCKING_ACTIONS = {"BLOCK_CHASE", "RISK_REVIEW", "DATA_INSUFFICIENT", "AVOID"}
+UNIFIED_WAIT_ACTIONS = {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,10 @@ class FinalDecision:
     blockReasons: list[str]
     reviewReasons: list[str]
     dataConfidence: str
+    setupScore: float | None = None
+    buyZoneAction: str = ""
+    buyZoneActionText: str = ""
+    buyZonePrimaryZone: str | None = None
 
 
 def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any = None) -> FinalDecision:
@@ -39,12 +46,22 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
     if max_portfolio is None:
         max_portfolio = _first_number(score, "max_portfolio_weight_percent", "maxPortfolioWeightPercent", default=0.0)
     zone = str(_first_value(buy_zone, "currentZone", "current_zone", default="") or "")
+    unified_action = _unified_buy_zone_action(buy_zone)
+    setup_score = _first_number(buy_zone, "setup_score", "setupScore", default=None) if unified_action else None
+    unified_action_text = str(_first_value(buy_zone, "action_text", "actionText", "buyZoneActionText", default="") or "")
+    unified_primary_zone = _unified_buy_zone_primary_zone(buy_zone)
 
     final_action = action
     block_reasons: list[str] = []
     review_reasons: list[str] = []
 
-    if zone in BLOCKING_ZONES:
+    if unified_action:
+        final_action = _final_action_from_unified_buy_zone(unified_action, final_action)
+        if unified_action in UNIFIED_BLOCKING_ACTIONS:
+            block_reasons.append("buy_zone")
+        elif unified_action in UNIFIED_WAIT_ACTIONS:
+            review_reasons.append("buy_zone")
+    elif zone in BLOCKING_ZONES:
         block_reasons.append("buy_zone")
         final_action = "禁止追高" if zone == "no_chase" else REVIEW_ACTION
 
@@ -52,7 +69,7 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
         block_reasons.append("data_confidence")
         final_action = REVIEW_ACTION
 
-    if valuation_status in NON_BUY_VALUATION_STATUSES:
+    if not unified_action and valuation_status in NON_BUY_VALUATION_STATUSES:
         block_reasons.append("valuation_status")
         final_action = "只观察" if valuation_status == "只观察" else "等回踩"
 
@@ -82,6 +99,10 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
         blockReasons=block_reasons,
         reviewReasons=review_reasons,
         dataConfidence=data_confidence,
+        setupScore=setup_score,
+        buyZoneAction=unified_action,
+        buyZoneActionText=unified_action_text,
+        buyZonePrimaryZone=unified_primary_zone,
     )
 
 
@@ -128,6 +149,43 @@ def _first_number(source: Any, *names: str, default: float | None = 0.0) -> floa
         return default
 
 
+def _unified_buy_zone_action(buy_zone: Any) -> str:
+    return str(
+        _first_value(
+            buy_zone,
+            "current_action",
+            "currentAction",
+            "buy_zone_action",
+            "buyZoneAction",
+            default="",
+        )
+        or ""
+    ).strip().upper()
+
+
+def _unified_buy_zone_primary_zone(buy_zone: Any) -> str | None:
+    value = _first_value(buy_zone, "primary_zone_text", "primaryZoneText", "primary_zone", "primaryZone", default=None)
+    return str(value) if value not in {None, ""} else None
+
+
+def _final_action_from_unified_buy_zone(unified_action: str, fallback_action: str) -> str:
+    if unified_action in UNIFIED_SMALL_BUY_ACTIONS:
+        return "可小仓分批"
+    if unified_action == "BLOCK_CHASE":
+        return "禁止追高"
+    if unified_action == "RISK_REVIEW":
+        return REVIEW_ACTION
+    if unified_action == "DATA_INSUFFICIENT":
+        return REVIEW_ACTION
+    if unified_action == "WAIT_PULLBACK":
+        return "等回踩"
+    if unified_action == "WAIT_CONFIRMATION":
+        return "待确认，暂不新增"
+    if unified_action == "AVOID":
+        return "只观察"
+    return fallback_action or "只观察"
+
+
 def _is_c_or_d_entry(entry_rating: str) -> bool:
     grade = entry_rating.strip().upper()
     return grade.startswith("C") or grade.startswith("D")
@@ -150,6 +208,8 @@ def _classify(
         return "review", "需复核"
     if final_action == "禁止追高" or zone == "no_chase":
         return "blocked", "禁止追高"
+    if final_action == REVIEW_ACTION or "buy_zone" in block_reasons:
+        return "review", "需复核"
     if review_reasons:
         return "review", "需复核"
     if final_action == "等回踩" or "valuation_status" in block_reasons:

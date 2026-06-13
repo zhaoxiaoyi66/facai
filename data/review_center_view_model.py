@@ -234,7 +234,7 @@ def _affects(row: dict) -> set[str]:
 def _impact_level(affects: set[str]) -> str:
     if affects & SCORING_AFFECTS:
         return "high"
-    if affects & {"Action", "Position", "maxPosition"}:
+    if affects & {"Action", "Position", "maxPosition", "Entry", "BuyZone", "buy_zone_context", "technicalEntry"}:
         return "medium"
     return "low"
 
@@ -441,6 +441,8 @@ def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, ca
             return _truncate(text, 180)
     if risk_observation:
         return "Qualitative risk label is tracked as observation, not a data confirmation task."
+    if _affects(row) & {"Entry", "BuyZone", "buy_zone_context", "technicalEntry"}:
+        return "影响统一买区 / 交易动作判断，需要人工复核后再用于精确买点。"
     if affects_scoring and missing_evidence:
         return "Scoring-impact item is missing verifiable evidence."
     if affects_scoring:

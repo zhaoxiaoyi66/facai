@@ -86,6 +86,11 @@ TRADE_DISCIPLINE_COLUMNS = {
     "entry_action_hint": "TEXT",
     "entry_display_reason": "TEXT",
     "buy_zone_snapshot_json": "TEXT",
+    "buy_zone_context_json": "TEXT",
+    "setup_score": "REAL",
+    "buy_zone_action": "TEXT",
+    "buy_zone_action_text": "TEXT",
+    "primary_zone_text": "TEXT",
     "technical_entry_zone_json": "TEXT",
     "deep_valuation_zone_json": "TEXT",
     "chase_above_price": "REAL",
@@ -739,6 +744,11 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             entry_action_hint = ?,
             entry_display_reason = ?,
             buy_zone_snapshot_json = ?,
+            buy_zone_context_json = ?,
+            setup_score = ?,
+            buy_zone_action = ?,
+            buy_zone_action_text = ?,
+            primary_zone_text = ?,
             technical_entry_zone_json = ?,
             deep_valuation_zone_json = ?,
             chase_above_price = ?,
@@ -762,6 +772,11 @@ def _write_radar_gate_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned:
             cleaned["entry_action_hint"],
             cleaned["entry_display_reason"],
             cleaned["buy_zone_snapshot_json"],
+            cleaned["buy_zone_context_json"],
+            cleaned["setup_score"],
+            cleaned["buy_zone_action"],
+            cleaned["buy_zone_action_text"],
+            cleaned["primary_zone_text"],
             cleaned["technical_entry_zone_json"],
             cleaned["deep_valuation_zone_json"],
             cleaned["chase_above_price"],
@@ -1560,6 +1575,11 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "entry_action_hint": None,
             "entry_display_reason": None,
             "buy_zone_snapshot_json": None,
+            "buy_zone_context_json": None,
+            "setup_score": None,
+            "buy_zone_action": None,
+            "buy_zone_action_text": None,
+            "primary_zone_text": None,
             "technical_entry_zone_json": None,
             "deep_valuation_zone_json": None,
             "chase_above_price": None,
@@ -1594,6 +1614,11 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "entry_action_hint": None,
             "entry_display_reason": None,
             "buy_zone_snapshot_json": None,
+            "buy_zone_context_json": None,
+            "setup_score": None,
+            "buy_zone_action": None,
+            "buy_zone_action_text": None,
+            "primary_zone_text": None,
             "technical_entry_zone_json": None,
             "deep_valuation_zone_json": None,
             "chase_above_price": None,
@@ -1617,6 +1642,11 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
         "entry_action_hint": _clean_optional_text(_value(values, "entryActionHint", "entry_action_hint")),
         "entry_display_reason": _clean_optional_text(_value(values, "entryDisplayReason", "entry_display_reason")),
         "buy_zone_snapshot_json": _dict_json(_value(values, "buyZoneSnapshot", "buy_zone_snapshot", "buy_zone_snapshot_json")),
+        "buy_zone_context_json": _dict_json(_value(values, "buyZoneContext", "buy_zone_context", "buy_zone_context_json")),
+        "setup_score": _optional_non_negative_number(_value(values, "setupScore", "setup_score"), "setup_score"),
+        "buy_zone_action": _clean_optional_text(_value(values, "buyZoneAction", "buy_zone_action")),
+        "buy_zone_action_text": _clean_optional_text(_value(values, "buyZoneActionText", "buy_zone_action_text")),
+        "primary_zone_text": _clean_optional_text(_value(values, "primaryZoneText", "primary_zone_text")),
         "technical_entry_zone_json": _dict_json(
             _value(values, "technicalEntryZone", "technical_entry_zone", "technical_entry_zone_json")
         ),
@@ -2467,6 +2497,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["radar_advisory_warnings"] = _load_json_list(item["radar_advisory_warnings_json"])
     if "buy_zone_snapshot_json" in item:
         item["buy_zone_snapshot"] = _load_json_dict(item["buy_zone_snapshot_json"])
+    if "buy_zone_context_json" in item:
+        item["buy_zone_context"] = _load_json_dict(item["buy_zone_context_json"])
     if "technical_entry_zone_json" in item:
         item["technical_entry_zone"] = _load_json_dict(item["technical_entry_zone_json"])
     if "deep_valuation_zone_json" in item:

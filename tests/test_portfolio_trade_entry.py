@@ -19,7 +19,7 @@ from data.portfolio import PortfolioPositionStore
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
-from data.trade_gate import buy_gate_entry_fields
+from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 
 
 def _report(decision: str = "ALLOW_BUY") -> dict:
@@ -151,6 +151,35 @@ def test_missing_buy_gate_fields_use_ledger_language() -> None:
     assert fields["radarBlockReasons"] == []
     assert fields["radarAdvisoryWarnings"] == ["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"]
     assert fields["warningLevel"] == "warning"
+
+
+def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
+    gate = evaluate_buy_gate(
+        {
+            **_report("ALLOW_BUY"),
+            "buy_zone_context": {
+                "current_action": "BLOCK_CHASE",
+                "action_text": "禁止追高",
+                "primary_zone_text": "追高禁区",
+                "setup_score": 22,
+                "zone_selection_reason": "价格远离承接区。",
+            },
+        },
+        action_type="buy",
+        position_bucket="trade",
+        planned_after_position_pct=1,
+        decision_mood="plan_execution",
+        buy_reason="手动复核后记录",
+    )
+    fields = buy_gate_entry_fields(gate, action_type="buy")
+
+    assert gate.is_blocked is False
+    assert gate.can_continue is True
+    assert fields["gateHardBlocked"] is False
+    assert fields["setupScore"] == 22
+    assert fields["buyZoneAction"] == "BLOCK_CHASE"
+    assert fields["warningLevel"] == "danger"
+    assert any("追高" in item for item in fields["radarAdvisoryWarnings"])
 
 
 def test_stock_plan_old_schema_adds_created_at_column_without_crashing() -> None:

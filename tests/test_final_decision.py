@@ -29,6 +29,56 @@ class FinalDecisionTests(unittest.TestCase):
         self.assertEqual(decision.currentAddLimitPercent, 0)
         self.assertIn("valuation_status", decision.blockReasons)
 
+    def test_unified_buy_zone_setup_overrides_legacy_valuation_buy_zone_block(self) -> None:
+        score = SimpleNamespace(
+            action="只观察",
+            valuationStatus="只观察",
+            entryRating="A",
+            riskRating="低",
+            dataConfidence="high",
+            currentAddLimitPercent=3,
+            maxPortfolioWeightPercent=6,
+        )
+        buy_zone_context = {
+            "current_action": "ALLOW_SMALL_BUY",
+            "action_text": "允许小仓观察",
+            "primary_zone_text": "回踩买区",
+            "setup_score": 67.5,
+        }
+
+        decision = derive_final_decision(score, buy_zone_context)
+
+        self.assertEqual(decision.finalAction, "可小仓分批")
+        self.assertTrue(decision.isActionable)
+        self.assertEqual(decision.currentAddLimitPercent, 3)
+        self.assertEqual(decision.setupScore, 67.5)
+        self.assertNotIn("valuation_status", decision.blockReasons)
+
+    def test_unified_buy_zone_missing_technical_data_blocks_clear_buy_zone(self) -> None:
+        score = SimpleNamespace(
+            action="可小仓分批",
+            valuationStatus="fair",
+            entryRating="A",
+            riskRating="低",
+            dataConfidence="high",
+            currentAddLimitPercent=3,
+            maxPortfolioWeightPercent=6,
+        )
+        buy_zone_context = {
+            "current_action": "DATA_INSUFFICIENT",
+            "action_text": "技术承接数据不足",
+            "primary_zone_text": "技术承接数据不足",
+            "setup_score": 0,
+            "missing_fields": ["volume_acceptance"],
+        }
+
+        decision = derive_final_decision(score, buy_zone_context)
+
+        self.assertFalse(decision.isActionable)
+        self.assertEqual(decision.currentAddLimitPercent, 0)
+        self.assertIn("buy_zone", decision.blockReasons)
+        self.assertEqual(decision.buyZoneAction, "DATA_INSUFFICIENT")
+
     def test_final_decision_blocks_c_or_d_entry_from_actionable(self) -> None:
         for entry_rating in ["C - 只观察", "D - 剔除"]:
             with self.subTest(entry_rating=entry_rating):
@@ -256,8 +306,38 @@ class FinalDecisionTests(unittest.TestCase):
                 "scoreMaxPortfolioWeightPercent",
                 "positionPlanCurrentAddLimitPercent",
                 "positionPlanMaxPortfolioWeightPercent",
+                "setupScore",
+                "buyZoneAction",
+                "buyZoneActionText",
+                "buyZonePrimaryZone",
             },
         )
+
+    def test_final_decision_adapter_accepts_unified_buy_zone_context(self) -> None:
+        score = SimpleNamespace(
+            action="只观察",
+            valuationStatus="只观察",
+            entryRating="A",
+            riskRating="low",
+            dataConfidence="high",
+            currentAddLimitPercent=2,
+            maxPortfolioWeightPercent=5,
+        )
+
+        bundle = build_final_decision_bundle(
+            score,
+            buy_zone_context={
+                "current_action": "ALLOW_SMALL_BUY",
+                "action_text": "允许小仓观察",
+                "primary_zone_text": "回踩买区",
+                "setup_score": 66,
+            },
+        )
+
+        self.assertTrue(bundle.isActionable)
+        self.assertEqual(bundle.finalAction, "可小仓分批")
+        self.assertEqual(bundle.buyZoneAction, "ALLOW_SMALL_BUY")
+        self.assertEqual(bundle.setupScore, 66)
 
     def test_final_decision_adapter_keeps_legacy_values_debug_only(self) -> None:
         buy_action = sorted(BUY_ACTIONS)[0]

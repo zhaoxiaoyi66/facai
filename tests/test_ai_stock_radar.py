@@ -152,7 +152,7 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     assert "禁止追高" in html
     assert "不主动追买" in html
     assert "追高禁区" in html
-    assert "复核触发：放量站上 $52.00 后重新评估" in html
+    assert "重新评估线：放量站上 $52.00 后重新评估" in html
     assert "买入前提" in html
     assert "跌破 $44.00" in html
     assert "BLOCK_CHASE" not in html
@@ -339,8 +339,8 @@ def test_report_confirmation_is_review_trigger_not_buy_signal() -> None:
         }
     )
 
-    assert conclusion["confirm_text"] == "复核触发：放量站上 $104.93 后重新评估"
-    assert conclusion["buy_premise_text"] == "复核触发 + 综合评分回到70以上 + 风险门禁解除"
+    assert conclusion["confirm_text"] == "重新评估线：放量站上 $104.93 后重新评估"
+    assert conclusion["buy_premise_text"] == "重新评估线 + 综合评分回到70以上 + 风险门禁解除"
 
 
 def test_report_range_chart_explains_primary_and_reference_zones() -> None:
@@ -362,6 +362,12 @@ def test_report_range_chart_explains_primary_and_reference_zones() -> None:
     assert conclusion["primary_zone_text"] == "近端修复观察区"
     assert "当前价同时落入多个参考区间" in html
     assert "参考区间：近端修复观察区、估值参考区" in html
+
+
+def test_list_core_status_prefers_unified_buy_zone_context() -> None:
+    assert radar_ui._core_status({"decision": "ALLOW_BUY", "buy_zone_context": {"current_action": "BLOCK_CHASE"}}) == "追高风险"
+    assert radar_ui._core_status({"decision": "BLOCK_CHASE", "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY"}}) == "买区内"
+    assert radar_ui._core_status({"buy_zone_context": {"current_action": "DATA_INSUFFICIENT"}}) == "技术承接数据不足"
 
 
 def test_crwv_report_uses_ai_cloud_infra_display_framework() -> None:

@@ -10,6 +10,7 @@ import streamlit as st
 
 from data.action_fusion import action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
+from data.buy_zone_engine import build_buy_zone_context
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_targets import build_action_fusion_portfolio_context
@@ -107,6 +108,7 @@ class StockReportContext:
     report: dict[str, Any]
     market: dict[str, Any]
     history: pd.DataFrame
+    buy_zone_context: dict[str, Any]
     action_result: Any
     conclusion: dict[str, Any]
     portfolio_context: dict[str, Any]
@@ -189,6 +191,7 @@ def _render_report(symbol: str, perf: PerfProbe | None = None) -> None:
             action_result=context.action_result,
             conclusion=context.conclusion,
             portfolio_context=context.portfolio_context,
+            buy_zone_context=context.buy_zone_context,
             data_health=context.data_health,
             include_appendix=False,
             perf=context.performance,
@@ -229,13 +232,16 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     if not load_history:
         perf.add("历史 K 线读取", 0.0, cache_hit=None, external_api=False, note="延后到附录按需加载")
     volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row or {}, history)
+    stage_start = time.perf_counter()
+    buy_zone_context = build_buy_zone_context(report, technicals=technicals, volume_snapshot=volume_snapshot).to_dict()
+    perf.add("统一买区上下文生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     portfolio_snapshot = _cached_portfolio_context(symbol, perf)
     stage_start = time.perf_counter()
     action_result = _action_fusion_result_from_snapshots(report, technicals, row or {}, volume_snapshot, portfolio_snapshot)
-    conclusion = _trade_conclusion(report, action_result)
+    conclusion = _trade_conclusion(report, action_result, buy_zone_context)
     perf.add("action_fusion / trade_conclusion 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     stage_start = time.perf_counter()
-    portfolio_context = _portfolio_context(report, row or {}, action_result)
+    portfolio_context = _portfolio_context(report, row or {}, action_result, buy_zone_context)
     perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用 Action Fusion snapshot")
     stage_start = time.perf_counter()
     data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context)
@@ -248,6 +254,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
         report=report,
         market=market,
         history=history,
+        buy_zone_context=buy_zone_context,
         action_result=action_result,
         conclusion=conclusion,
         portfolio_context=portfolio_context,
@@ -416,7 +423,7 @@ def _report_loading_shell_html(symbol: str) -> str:
         '<div class="ai-radar-header-decision-grid">'
         "<div><span>当前动作</span><b>等待刷新</b></div>"
         "<div><span>当前区间</span><b>暂缺</b></div>"
-        "<div><span>复核触发</span><b>加载中</b></div>"
+        "<div><span>重新评估线</span><b>加载中</b></div>"
         "<div><span>风险线</span><b>加载中</b></div>"
         "<div><span>买入前提</span><b>加载中</b></div>"
         "<div><span>结论可信度</span><b>读取中</b></div>"
@@ -479,7 +486,27 @@ def _list_row(ticker: str) -> dict[str, Any]:
         technicals=technicals,
     )
     list_row["sector"] = _sector_track_from_sources(row, snapshot or {}, ticker)
+    buy_zone_context = _list_buy_zone_context(list_row, row or {}, snapshot or {}, technicals or {})
+    if buy_zone_context:
+        list_row["buy_zone_context"] = buy_zone_context
     return list_row
+
+
+def _list_buy_zone_context(
+    list_row: dict[str, Any],
+    row: dict[str, Any],
+    snapshot: dict[str, Any],
+    technicals: dict[str, Any],
+) -> dict[str, Any]:
+    for source in (list_row, row, snapshot, technicals):
+        existing = _dict_value(source, "buy_zone_context") or _dict_value(source, "buyZoneContext")
+        if existing:
+            return dict(existing)
+    try:
+        volume_snapshot = _volume_price_acceptance_snapshot(list_row, technicals, row, _empty_history_frame())
+        return build_buy_zone_context(list_row, technicals=technicals, volume_snapshot=volume_snapshot).to_dict()
+    except Exception:
+        return {}
 
 
 def _company_name_from_sources(ticker: str, row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
@@ -510,6 +537,7 @@ def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "买区内": 1,
         "技术待确认": 2,
         "观察": 3,
+        "技术承接数据不足": 4,
         "破位复核": 4,
         "追高风险": 5,
         "风险区": 5,
@@ -568,7 +596,7 @@ def _row_matches_filter(row: dict[str, Any], filter_key: str) -> bool:
     if filter_key == "chase":
         return status in {"风险区", "追高风险", "破位复核"}
     if filter_key == "data":
-        return _data_confidence(row) != "高"
+        return status == "技术承接数据不足" or _data_confidence(row) != "高"
     return False
 
 
@@ -624,6 +652,7 @@ def _report_html(
     action_result: Any | None = None,
     conclusion: dict[str, Any] | None = None,
     portfolio_context: dict[str, Any] | None = None,
+    buy_zone_context: dict[str, Any] | None = None,
     data_health: dict[str, Any] | None = None,
     include_appendix: bool = True,
     perf: PerfProbe | None = None,
@@ -632,11 +661,12 @@ def _report_html(
     core_status = _core_status(report)
     confidence = _data_confidence(report)
     action_result = action_result or _action_fusion_result(report, technicals, row, history)
-    conclusion = conclusion or _trade_conclusion(report, action_result)
-    portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
+    buy_zone_context = buy_zone_context or build_buy_zone_context(report, technicals=technicals, volume_snapshot=_volume_price_acceptance_snapshot(report, technicals, row, history)).to_dict()
+    conclusion = conclusion or _trade_conclusion(report, action_result, buy_zone_context)
+    portfolio_context = portfolio_context or _portfolio_context(report, row, action_result, buy_zone_context)
     data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context)
     stage_start = time.perf_counter()
-    range_html = _range_chart_html(report, conclusion)
+    range_html = _range_chart_html(report, conclusion, buy_zone_context)
     if perf is not None:
         perf.add("图表渲染", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     appendix_html = (
@@ -650,7 +680,7 @@ def _report_html(
         f"{_executive_summary_card_html(report, snapshot, market, row, action_result, portfolio_context, conclusion)}"
         '<section class="ai-radar-visual-grid">'
         f"{range_html}"
-        f"{_score_card_html(report)}"
+        f"{_score_card_html(report, buy_zone_context)}"
         "</section>"
         f"{_ai_cloud_infra_card_html(row, snapshot, report)}"
         '<section class="ai-radar-opinion-grid two-col">'
@@ -816,9 +846,9 @@ def _research_header_html(
         '<div class="ai-radar-header-decision-grid">'
         f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
         f'<div><span>当前区间</span><b>{escape(str(conclusion.get("zone_text") or current_zone))}</b></div>'
-        f'<div><span>复核触发</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
+        f'<div><span>重新评估线</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
         f'<div><span>风险线</span><b>{escape(str(conclusion.get("risk_line_text") or "暂缺"))}</b></div>'
-        f'<div><span>买入前提</span><b>{escape(str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除"))}</b></div>'
+        f'<div><span>买入前提</span><b>{escape(str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除"))}</b></div>'
         f'<div><span>结论可信度</span><b>{escape(str(conclusion.get("confidence_level") or _data_confidence(report)))}</b></div>'
         "</div>"
         "</aside>"
@@ -871,28 +901,33 @@ def _executive_summary_card_html(
         f"{position_html}"
         '<div class="ai-radar-exec-grid">'
         f'<div><span>当前建议</span><strong>{escape(getattr(action_result, "action_cn", "等待确认"))}</strong></div>'
-        f'<div><span>复核触发</span><strong>{escape(str(conclusion.get("next_review_trigger") or getattr(action_result, "next_trigger_cn", _next_step_sentence(report))))}</strong></div>'
+        f'<div><span>重新评估线</span><strong>{escape(str(conclusion.get("next_review_trigger") or getattr(action_result, "next_trigger_cn", _next_step_sentence(report))))}</strong></div>'
         f'<div><span>失效条件</span><strong>{escape(getattr(action_result, "invalidation_cn", _invalidation_sentence(report)))}</strong></div>'
         f'<div><span>持仓语境</span><strong>{escape(str(portfolio_context.get("position_status_text") or _holding_context_text(row, action_result)))}</strong></div>'
-        f'<div><span>买入前提</span><strong>{escape(str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除"))}</strong></div>'
+        f'<div><span>买入前提</span><strong>{escape(str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除"))}</strong></div>'
         "</div>"
         f'<ol class="ai-radar-conclusion-list">{judgment_html}</ol>'
         "</section>"
     )
 
 
-def _trade_conclusion(report: dict[str, Any], action_result: Any | None = None) -> dict[str, Any]:
-    confirm_price = _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
-    invalidation_price = _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
-    zone_selection = _zone_selection(report)
-    zone_text = _trade_zone_text(report)
-    rating_text = _rating_text(report, action_result)
-    action_text = _current_action_text(report, action_result)
-    confirm_text = f"复核触发：放量站上 {_money(confirm_price)} 后重新评估" if confirm_price is not None else _next_step_sentence(report)
+def _trade_conclusion(
+    report: dict[str, Any],
+    action_result: Any | None = None,
+    buy_zone_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    buy_zone_context = buy_zone_context or {}
+    confirm_price = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
+    invalidation_price = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    zone_selection = _zone_selection(report, buy_zone_context)
+    zone_text = str(buy_zone_context.get("primary_zone_text") or _trade_zone_text(report))
+    rating_text = _rating_text(report, action_result, buy_zone_context)
+    action_text = str(buy_zone_context.get("action_text") or _current_action_text(report, action_result))
+    confirm_text = f"重新评估线：放量站上 {_money(confirm_price)} 后重新评估" if confirm_price is not None else _next_step_sentence(report)
     risk_line_text = f"跌破 {_money(invalidation_price)}" if invalidation_price is not None else "暂缺"
     next_review_trigger = confirm_text if confirm_price is not None else _next_step_sentence(report)
     confidence = str(getattr(action_result, "confidence_level", "") or _data_confidence(report) or "中")
-    buy_premise_text = _buy_premise_text(report)
+    buy_premise_text = _buy_premise_text(report, buy_zone_context)
     return {
         "rating_text": rating_text,
         "action_text": action_text,
@@ -910,20 +945,37 @@ def _trade_conclusion(report: dict[str, Any], action_result: Any | None = None) 
     }
 
 
-def _buy_premise_text(report: dict[str, Any]) -> str:
+def _buy_premise_text(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> str:
+    buy_zone_context = buy_zone_context or {}
     final_score = _number(report.get("final_score"))
     risk_score = _number(report.get("risk_score"))
-    parts = ["复核触发"]
+    parts = ["重新评估线"]
     if final_score is None or final_score < 70:
         parts.append("综合评分回到70以上")
     if risk_score is None or risk_score < 55:
         parts.append("风险门禁解除")
     if len(parts) == 1:
+        setup_score = _number(buy_zone_context.get("setup_score"))
+        if setup_score is None or setup_score < 62:
+            parts.append("setup score 达到可小仓阈值")
         parts.extend(["量价继续确认", "风险门禁解除"])
     return " + ".join(parts)
 
 
-def _rating_text(report: dict[str, Any], action_result: Any | None) -> str:
+def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_context: dict[str, Any] | None = None) -> str:
+    context_action = str((buy_zone_context or {}).get("current_action") or "").upper()
+    context_map = {
+        "ALLOW_SMALL_BUY": "允许小仓",
+        "ALLOW_ADD_ON_PULLBACK": "允许小仓",
+        "WAIT_PULLBACK": "等待回踩",
+        "WAIT_CONFIRMATION": "等待确认",
+        "BLOCK_CHASE": "禁止追高",
+        "RISK_REVIEW": "暂不参与",
+        "DATA_INSUFFICIENT": "数据不足",
+        "AVOID": "暂不参与",
+    }
+    if context_action in context_map:
+        return context_map[context_action]
     action_code = str(getattr(action_result, "action_code", "") or "").upper()
     action_map = {
         "ALLOW_SMALL_BUY": "允许小仓",
@@ -977,12 +1029,13 @@ def _trade_zone_text(report: dict[str, Any]) -> str:
     }.get(zone, zone or "数据不足")
 
 
-def _zone_selection(report: dict[str, Any]) -> dict[str, Any]:
-    primary = _current_zone_label(report)
+def _zone_selection(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    buy_zone_context = buy_zone_context or {}
+    primary = str(buy_zone_context.get("primary_zone_text") or _current_zone_label(report))
     current = _report_current_price(report)
     references: list[str] = []
     if current is not None:
-        for item in _range_chart_items(report):
+        for item in _range_chart_items(report, buy_zone_context):
             label = str(item.get("label") or "").strip()
             low, high = item.get("range") or (None, None)
             if label == "追高禁区":
@@ -1002,7 +1055,9 @@ def _zone_selection(report: dict[str, Any]) -> dict[str, Any]:
     elif references:
         reason = f"当前价落入【{references[0]}】，系统选择【{primary}】作为主区间。"
     else:
-        reason = f"当前价未落入完整参考区间，系统按价格位置选择【{primary}】作为主区间。"
+        reason = str(buy_zone_context.get("zone_selection_reason") or f"当前价未落入完整参考区间，系统按价格位置选择【{primary}】作为主区间。")
+    if buy_zone_context.get("zone_selection_reason"):
+        reason = str(buy_zone_context.get("zone_selection_reason"))
     return {
         "primary_zone_text": primary,
         "reference_zone_texts": references,
@@ -1010,7 +1065,12 @@ def _zone_selection(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _portfolio_context(report: dict[str, Any], row: dict[str, Any], action_result: Any | None) -> dict[str, Any]:
+def _portfolio_context(
+    report: dict[str, Any],
+    row: dict[str, Any],
+    action_result: Any | None,
+    buy_zone_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     shares = _first_number(row, "current_shares", "currentShares", "quantity", "shares")
     avg_cost = _first_number(row, "avg_cost", "avgCost", "averageCost", "average_cost")
     market_value = _first_number(row, "market_value", "marketValue")
@@ -1027,7 +1087,7 @@ def _portfolio_context(report: dict[str, Any], row: dict[str, Any], action_resul
         weight = weight if weight is not None else _number(getattr(action_result, "current_weight", None))
         updated_at = updated_at or getattr(action_result, "portfolio_updated_at", None)
     has_position = bool((shares is not None and shares > 0) or (shares is None and weight is not None and weight > 0))
-    conclusion = _trade_conclusion(report, action_result)
+    conclusion = _trade_conclusion(report, action_result, buy_zone_context)
     return {
         "shares": shares,
         "avg_cost": avg_cost,
@@ -1038,8 +1098,8 @@ def _portfolio_context(report: dict[str, Any], row: dict[str, Any], action_resul
         "portfolio_updated_at": updated_at,
         "has_position": has_position,
         "position_status_text": _position_status_text(shares, weight),
-        "action_for_existing_position": _action_for_existing_position(conclusion, action_result),
-        "action_for_no_position": _action_for_no_position(conclusion, action_result),
+        "action_for_existing_position": str((buy_zone_context or {}).get("existing_position_action_text") or _action_for_existing_position(conclusion, action_result)),
+        "action_for_no_position": str((buy_zone_context or {}).get("no_position_action_text") or _action_for_no_position(conclusion, action_result)),
     }
 
 
@@ -1120,7 +1180,7 @@ def _executive_judgments(
     rating = str(conclusion.get("rating_text") or "等待确认")
     confirm = str(conclusion.get("confirm_text") or _next_step_sentence(report))
     risk_line = str(conclusion.get("risk_line_text") or "暂缺")
-    buy_premise = str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除")
+    buy_premise = str(conclusion.get("buy_premise_text") or "重新评估线 + 风险门禁解除")
     zone_reason = str(conclusion.get("zone_selection_reason") or "")
     quality = _quality_quality_sentence(report)
     entry_reason = _entry_sentence(report)
@@ -1175,7 +1235,7 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
     summary = _localized_report_summary(report)
     return [
         summary
-        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和复核触发。",
+        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和重新评估线。",
         f"价格位置：{_entry_sentence(report)}",
         f"核心判断：{_decision_to_sentence(report)}",
         f"下一步重点：{_next_step_sentence(report)}",
@@ -1198,9 +1258,14 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
     return [line for line in lines if line]
 
 
-def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None = None) -> str:
-    conclusion = conclusion or _trade_conclusion(report)
-    ranges = _range_chart_items(report)
+def _range_chart_html(
+    report: dict[str, Any],
+    conclusion: dict[str, Any] | None = None,
+    buy_zone_context: dict[str, Any] | None = None,
+) -> str:
+    buy_zone_context = buy_zone_context or {}
+    conclusion = conclusion or _trade_conclusion(report, buy_zone_context=buy_zone_context)
+    ranges = _range_chart_items(report, buy_zone_context)
     adaptive_low = _first_number(report, "adaptive_pullback_zone_low", "radar_adaptive_pullback_zone_low")
     adaptive_high = _first_number(report, "adaptive_pullback_zone_high", "radar_adaptive_pullback_zone_high")
     if ranges and ranges[0]["range"] == (None, None) and (adaptive_low is not None or adaptive_high is not None):
@@ -1246,7 +1311,7 @@ def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None 
         )
     reference_text = "、".join(conclusion.get("reference_zone_texts") or []) or "暂无"
     explanation = (
-        f"{conclusion.get('zone_selection_reason') or _zone_selection(report).get('zone_selection_reason')} "
+        f"{conclusion.get('zone_selection_reason') or _zone_selection(report, buy_zone_context).get('zone_selection_reason')} "
         f"参考区间：{reference_text}。"
         f"页面结论按主区间【{primary_zone}】解读，当前结论为【{conclusion.get('rating_text') or '等待确认'}】；"
         f"{conclusion.get('next_review_trigger') or _next_step_sentence(report)}。"
@@ -1261,23 +1326,33 @@ def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None 
     )
 
 
-def _range_chart_items(report: dict[str, Any]) -> list[dict[str, Any]]:
+def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    buy_zone_context = buy_zone_context or {}
+    pullback_low = _first_number(buy_zone_context, "pullback_zone_low") or _first_number(report, "effective_technical_entry_zone_low", "radar_effective_technical_entry_zone_low", "technical_pullback_zone_low", "radar_technical_pullback_zone_low", "technical_entry_zone_low", "radar_technical_entry_zone_low")
+    pullback_high = _first_number(buy_zone_context, "pullback_zone_high") or _first_number(report, "effective_technical_entry_zone_high", "radar_effective_technical_entry_zone_high", "technical_pullback_zone_high", "radar_technical_pullback_zone_high", "technical_entry_zone_high", "radar_technical_entry_zone_high")
+    support_low = _first_number(buy_zone_context, "support_zone_low") or _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price")
+    support_high = _first_number(buy_zone_context, "support_zone_high") or _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")
+    confirmation = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price")
+    invalidation = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
+    chase = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     return [
-        {"label": "技术回踩区", "range": (_first_number(report, "effective_technical_entry_zone_low", "radar_effective_technical_entry_zone_low", "technical_pullback_zone_low", "radar_technical_pullback_zone_low", "technical_entry_zone_low", "radar_technical_entry_zone_low"), _first_number(report, "effective_technical_entry_zone_high", "radar_effective_technical_entry_zone_high", "technical_pullback_zone_high", "radar_technical_pullback_zone_high", "technical_entry_zone_high", "radar_technical_entry_zone_high")), "tone": "blue"},
+        {"label": "回踩买区", "range": (pullback_low, pullback_high), "tone": "blue"},
         {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")), "tone": "slate"},
-        {"label": "趋势确认区", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high", "confirmation_price", "radar_confirmation_price")), "tone": "green"},
+        {"label": "确认突破线", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high") or confirmation), "tone": "green"},
         {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
-        {"label": "深度支撑区", "range": (_first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price"), _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")), "tone": "orange"},
-        {"label": "追高禁区", "range": (_first_number(report, "chase_above_price", "radar_chase_above_price"), None), "tone": "red"},
+        {"label": "深度承接区", "range": (support_low or invalidation, support_high), "tone": "orange"},
+        {"label": "追高禁区", "range": (chase, None), "tone": "red"},
     ]
 
 
 def _range_action_text(label: str) -> str:
-    if "深度" in label:
+    if "深度" in label or "承接" in label:
         return "允许分批建仓"
     if "估值" in label:
+        return "仅作仓位参考"
+    if "回踩" in label:
         return "允许小仓观察"
-    if "修复" in label or "回踩" in label or "趋势确认" in label:
+    if "修复" in label or "确认" in label:
         return "等待确认"
     if "追高" in label:
         return "禁止追买"
@@ -1289,10 +1364,12 @@ def _range_item_is_current(label: str, zone_text: str) -> bool:
         return False
     pairs = (
         ("深度", "深度"),
+        ("承接", "承接"),
         ("估值", "合理"),
         ("修复", "修复"),
-        ("回踩", "修复"),
+        ("回踩", "回踩"),
         ("趋势", "趋势"),
+        ("确认", "确认"),
         ("追高", "追高"),
         ("失效", "风险"),
     )
@@ -1310,23 +1387,26 @@ def _range_position(value: float | None, low: float, high: float) -> float:
     return max(0.0, min(100.0, (value - low) / (high - low) * 100))
 
 
-def _score_card_html(report: dict[str, Any]) -> str:
+def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> str:
+    buy_zone_context = buy_zone_context or {}
     fundamental = _average_score(report.get("quality_score"), report.get("growth_score"), report.get("valuation_score"), report.get("risk_score"))
     items = [
         ("总分", report.get("final_score")),
+        ("Setup", buy_zone_context.get("setup_score")),
         ("基本面", fundamental),
         ("技术", report.get("technical_score")),
         ("质量", report.get("quality_score")),
-        ("估值", report.get("valuation_score")),
         ("风险", report.get("risk_score")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
     explanation = _score_explanation(report)
     risk_gate = _risk_gate_notice(report)
+    setup_note = _setup_score_note(buy_zone_context)
     return (
         '<section class="ai-radar-card score">'
         '<div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<p class="ai-radar-setup-explain">{escape(setup_note)}</p>'
         f'<p class="ai-radar-risk-gate">{escape(risk_gate)}</p>'
         f'<p class="ai-radar-score-explain">{escape(explanation)}</p>'
         "</section>"
@@ -1343,7 +1423,18 @@ def _score_explanation(report: dict[str, Any]) -> str:
     support, drag = _score_support_and_drag(report)
     gate = _gate_reason_text(report)
     score_text = _number_text(final_score)
-    return f"综合评分 {score_text}，属于{level}。主要支撑来自{support}，主要限制来自{drag}。{gate}"
+    return f"综合评分 {score_text}，用于核心仓资格、仓位上限和风险提示，不直接生成买区。主要支撑来自{support}，主要限制来自{drag}。{gate}"
+
+
+def _setup_score_note(buy_zone_context: dict[str, Any]) -> str:
+    if not buy_zone_context:
+        return "Setup 分暂缺；买区应由技术结构、量价承接和风险收益比共同决定。"
+    return (
+        f"买区主依据：Setup {_number_text(buy_zone_context.get('setup_score'))}，"
+        f"技术结构 {_number_text(buy_zone_context.get('technical_structure_score'))}，"
+        f"量价承接 {_number_text(buy_zone_context.get('volume_acceptance_score'))}，"
+        f"风险收益比 {_number_text(buy_zone_context.get('risk_reward_score'))}。"
+    )
 
 
 def _score_support_and_drag(report: dict[str, Any]) -> tuple[str, str]:
@@ -1987,7 +2078,7 @@ def _fallback_catalyst_items(report: dict[str, Any], row: dict[str, Any]) -> lis
     next_earnings = _display_value(_first_present(row, "next_earnings_date", "nextEarningsDate") or _first_present(report, "next_earnings_date", "nextEarningsDate"))
     return [
         f"财报 / 指引：下一财报 {next_earnings}，重点看收入、利润率和现金流指引。",
-        f"复核触发：观察是否放量站上确认线 {confirm}，触发后重新评估，不等于直接买入。",
+        f"重新评估线：观察是否放量站上确认线 {confirm}，触发后重新评估，不等于直接买入。",
         f"风险失效：若放量跌破失效线 {invalid}，转入破位复核。",
     ]
 
@@ -2004,8 +2095,8 @@ def _watch_points_table_html(report: dict[str, Any], row: dict[str, Any]) -> str
     invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
     forward_pe = _multiple(_first_number(report, row, "forward_pe", "forwardPE"))
     rows = [
-        ("量价承接", f"{volume_status}｜量比 {volume_ratio}", f"复核触发：放量站上确认线 {confirm}", "触发后重新评估，不等于直接买入"),
-        ("趋势修复", zone, f"复核触发：收盘重新站回关键均线 / 确认线 {confirm}", "确认修复后再提高复核优先级"),
+        ("量价承接", f"{volume_status}｜量比 {volume_ratio}", f"重新评估线：放量站上确认线 {confirm}", "触发后重新评估，不等于直接买入"),
+        ("趋势修复", zone, f"重新评估线：收盘重新站回关键均线 / 确认线 {confirm}", "确认修复后再提高复核优先级"),
         ("估值位置", f"远期市盈率 {forward_pe}", "进入估值参考区但未追高", "估值只代表可研究，不代表自动买入"),
         ("风险控制", f"失效线 {invalid}", "放量跌破支撑或失效线", "暂停加仓，进入破位复核"),
     ]
@@ -2091,6 +2182,9 @@ def _inline_list(value: Any) -> str:
 
 
 def _core_status(row: dict[str, Any]) -> str:
+    context_status = _buy_zone_context_core_status(_dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext"))
+    if context_status:
+        return context_status
     entry_label = str(row.get("entry_display_label") or "").strip()
     interpretation = str(row.get("primary_entry_interpretation") or row.get("zone_semantic_label") or "").strip()
     price_position = str(row.get("price_position") or "")
@@ -2114,6 +2208,27 @@ def _core_status(row: dict[str, Any]) -> str:
     if decision == "AVOID":
         return "风险区"
     return "观察"
+
+
+def _buy_zone_context_core_status(context: dict[str, Any] | None) -> str:
+    if not context:
+        return ""
+    action = str(context.get("current_action") or context.get("currentAction") or "").strip().upper()
+    if action == "DATA_INSUFFICIENT":
+        return "技术承接数据不足"
+    if action == "BLOCK_CHASE":
+        return "追高风险"
+    if action == "RISK_REVIEW":
+        return "破位复核"
+    if action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "买区内"
+    if action == "WAIT_CONFIRMATION":
+        return "技术待确认"
+    if action == "WAIT_PULLBACK":
+        return "观察"
+    if action == "AVOID":
+        return "风险区"
+    return ""
 
 
 def _company_track_html(row: dict[str, Any]) -> str:
@@ -3803,6 +3918,7 @@ def _render_styles() -> None:
             white-space:nowrap;
         }
         .ai-radar-range-explain,
+        .ai-radar-setup-explain,
         .ai-radar-score-explain {
             margin:12px 0 0;
             color:#334155;
