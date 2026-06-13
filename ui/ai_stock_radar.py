@@ -25,6 +25,40 @@ HISTORY_TTL_SECONDS = 600
 PORTFOLIO_TTL_SECONDS = 30
 _FALLBACK_REPORT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
+AI_INFRA_BUSINESS_TYPE_BY_TICKER = {
+    "CRWV": "AI_INFRA_CLOUD",
+    "NBIS": "GPU_CLOUD",
+}
+AI_INFRA_MODEL_ALIASES = {
+    "AI_CLOUD_INFRA": "AI_INFRA_CLOUD",
+    "AI_INFRA_HIGH_RISK": "GPU_CLOUD",
+    "AI_INFRA_CLOUD": "AI_INFRA_CLOUD",
+    "GPU_CLOUD": "GPU_CLOUD",
+    "NEOCLOUD": "NEOCLOUD",
+}
+AI_INFRA_DISPLAY = {
+    "AI_INFRA_CLOUD": "AI云基础设施",
+    "GPU_CLOUD": "GPU云 / Neocloud",
+    "NEOCLOUD": "Neocloud 云算力",
+}
+AI_INFRA_FIELD_SPECS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    ("revenue_growth", "收入高增长", ("revenue_growth", "revenueGrowth", "revenue_growth_yoy", "revenueGrowthYoy"), "ratio"),
+    ("revenue_backlog", "收入积压 / RPO", ("revenue_backlog", "revenueBacklog", "contracted_backlog", "contractedBacklog", "aiCloudContractedBacklog"), "money"),
+    ("backlog_to_ev", "收入积压 / EV", ("backlog_to_ev", "backlogToEv", "backlog_ev_ratio", "backlogEvRatio"), "multiple"),
+    ("active_power_gw", "已投运电力容量", ("active_power_gw", "activePowerGw", "active_power", "activePower"), "gw"),
+    ("contracted_power_gw", "已签约电力容量", ("contracted_power_gw", "contractedPowerGw", "contracted_power", "contractedPower"), "gw"),
+    ("capex", "资本开支", ("capex", "capital_expenditures", "capitalExpenditures", "capex_commitments", "capexCommitments", "aiCloudCapexCommitments"), "money"),
+    ("operating_cash_flow", "经营现金流", ("operating_cash_flow", "operatingCashFlow"), "money"),
+    ("free_cash_flow_after_capex", "扣资本开支后自由现金流", ("free_cash_flow_after_capex", "freeCashFlowAfterCapex", "free_cash_flow", "freeCashFlow"), "money"),
+    ("net_debt", "净债务", ("net_debt", "netDebt", "aiCloudNetDebt"), "money"),
+    ("interest_expense_to_revenue", "利息费用 / 收入", ("interest_expense_to_revenue", "interestExpenseToRevenue", "interest_burden", "interestBurden", "aiCloudInterestBurden"), "ratio"),
+    ("adjusted_ebitda_margin", "调整后 EBITDA 利润率", ("adjusted_ebitda_margin", "adjustedEbitdaMargin"), "ratio"),
+    ("customer_concentration", "客户集中度", ("customer_concentration", "customerConcentration", "aiCloudCustomerConcentration"), "ratio"),
+    ("financing_risk", "融资风险", ("financing_risk", "financingRisk", "debt_maturity", "debtMaturity", "aiCloudDebtMaturity"), "text"),
+    ("data_center_delivery_risk", "数据中心交付风险", ("data_center_delivery_risk", "dataCenterDeliveryRisk"), "text"),
+    ("gpu_supplier_dependency", "GPU 供应商依赖", ("gpu_supplier_dependency", "gpuSupplierDependency", "nvidia_supply_exposure", "nvidiaSupplyExposure", "aiCloudNvidiaSupplyExposure"), "text"),
+)
+
 
 @dataclass
 class PerfStage:
@@ -382,10 +416,10 @@ def _report_loading_shell_html(symbol: str) -> str:
         '<div class="ai-radar-header-decision-grid">'
         "<div><span>当前动作</span><b>等待刷新</b></div>"
         "<div><span>当前区间</span><b>暂缺</b></div>"
-        "<div><span>确认条件</span><b>加载中</b></div>"
+        "<div><span>复核触发</span><b>加载中</b></div>"
         "<div><span>风险线</span><b>加载中</b></div>"
+        "<div><span>买入前提</span><b>加载中</b></div>"
         "<div><span>结论可信度</span><b>读取中</b></div>"
-        "<div><span>质量等级</span><b>暂缺</b></div>"
         "</div>"
         "</aside>"
         '<div class="ai-radar-header-stats">'
@@ -618,6 +652,7 @@ def _report_html(
         f"{range_html}"
         f"{_score_card_html(report)}"
         "</section>"
+        f"{_ai_cloud_infra_card_html(row, snapshot, report)}"
         '<section class="ai-radar-opinion-grid two-col">'
         f'{_text_card_html("看多逻辑", report.get("bull_points") or [], subtitle="", limit=4)}'
         f'{_text_card_html("核心风险", report.get("risk_points") or [], subtitle="", limit=4)}'
@@ -761,7 +796,7 @@ def _research_header_html(
         ("52周区间", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", volume_text),
-        ("当前区间", current_zone),
+        ("当前区间", str(conclusion.get("zone_text") or current_zone)),
         ("总分", _number_text(report.get("final_score"))),
     ]
     stat_html = "".join(
@@ -781,10 +816,10 @@ def _research_header_html(
         '<div class="ai-radar-header-decision-grid">'
         f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
         f'<div><span>当前区间</span><b>{escape(str(conclusion.get("zone_text") or current_zone))}</b></div>'
-        f'<div><span>确认条件</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
+        f'<div><span>复核触发</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
         f'<div><span>风险线</span><b>{escape(str(conclusion.get("risk_line_text") or "暂缺"))}</b></div>'
+        f'<div><span>买入前提</span><b>{escape(str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除"))}</b></div>'
         f'<div><span>结论可信度</span><b>{escape(str(conclusion.get("confidence_level") or _data_confidence(report)))}</b></div>'
-        f'<div><span>质量等级</span><b>{escape(_quality_grade(report))}</b></div>'
         "</div>"
         "</aside>"
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
@@ -836,9 +871,10 @@ def _executive_summary_card_html(
         f"{position_html}"
         '<div class="ai-radar-exec-grid">'
         f'<div><span>当前建议</span><strong>{escape(getattr(action_result, "action_cn", "等待确认"))}</strong></div>'
-        f'<div><span>下一触发条件</span><strong>{escape(getattr(action_result, "next_trigger_cn", _next_step_sentence(report)))}</strong></div>'
+        f'<div><span>复核触发</span><strong>{escape(str(conclusion.get("next_review_trigger") or getattr(action_result, "next_trigger_cn", _next_step_sentence(report))))}</strong></div>'
         f'<div><span>失效条件</span><strong>{escape(getattr(action_result, "invalidation_cn", _invalidation_sentence(report)))}</strong></div>'
         f'<div><span>持仓语境</span><strong>{escape(str(portfolio_context.get("position_status_text") or _holding_context_text(row, action_result)))}</strong></div>'
+        f'<div><span>买入前提</span><strong>{escape(str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除"))}</strong></div>'
         "</div>"
         f'<ol class="ai-radar-conclusion-list">{judgment_html}</ol>'
         "</section>"
@@ -848,24 +884,43 @@ def _executive_summary_card_html(
 def _trade_conclusion(report: dict[str, Any], action_result: Any | None = None) -> dict[str, Any]:
     confirm_price = _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
     invalidation_price = _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    zone_selection = _zone_selection(report)
     zone_text = _trade_zone_text(report)
     rating_text = _rating_text(report, action_result)
     action_text = _current_action_text(report, action_result)
-    confirm_text = f"放量站上 {_money(confirm_price)}" if confirm_price is not None else _next_step_sentence(report)
+    confirm_text = f"复核触发：放量站上 {_money(confirm_price)} 后重新评估" if confirm_price is not None else _next_step_sentence(report)
     risk_line_text = f"跌破 {_money(invalidation_price)}" if invalidation_price is not None else "暂缺"
     next_review_trigger = confirm_text if confirm_price is not None else _next_step_sentence(report)
     confidence = str(getattr(action_result, "confidence_level", "") or _data_confidence(report) or "中")
+    buy_premise_text = _buy_premise_text(report)
     return {
         "rating_text": rating_text,
         "action_text": action_text,
         "zone_text": zone_text,
+        "primary_zone_text": zone_selection["primary_zone_text"],
+        "reference_zone_texts": zone_selection["reference_zone_texts"],
+        "zone_selection_reason": zone_selection["zone_selection_reason"],
         "confirm_price": confirm_price,
         "confirm_text": confirm_text,
         "invalidation_price": invalidation_price,
         "risk_line_text": risk_line_text,
         "next_review_trigger": next_review_trigger,
+        "buy_premise_text": buy_premise_text,
         "confidence_level": confidence,
     }
+
+
+def _buy_premise_text(report: dict[str, Any]) -> str:
+    final_score = _number(report.get("final_score"))
+    risk_score = _number(report.get("risk_score"))
+    parts = ["复核触发"]
+    if final_score is None or final_score < 70:
+        parts.append("综合评分回到70以上")
+    if risk_score is None or risk_score < 55:
+        parts.append("风险门禁解除")
+    if len(parts) == 1:
+        parts.extend(["量价继续确认", "风险门禁解除"])
+    return " + ".join(parts)
 
 
 def _rating_text(report: dict[str, Any], action_result: Any | None) -> str:
@@ -920,6 +975,39 @@ def _trade_zone_text(report: dict[str, Any]) -> str:
         "破位复核区": "风险失效区",
         "区间待补": "数据不足",
     }.get(zone, zone or "数据不足")
+
+
+def _zone_selection(report: dict[str, Any]) -> dict[str, Any]:
+    primary = _current_zone_label(report)
+    current = _report_current_price(report)
+    references: list[str] = []
+    if current is not None:
+        for item in _range_chart_items(report):
+            label = str(item.get("label") or "").strip()
+            low, high = item.get("range") or (None, None)
+            if label == "追高禁区":
+                if low is not None and current >= low:
+                    references.append(label)
+                continue
+            if _price_in_range(current, low, high):
+                references.append(label)
+    references = _dedupe_text(references)
+    if primary and primary not in references and primary not in {"区间待补", "观察", "追高风险"}:
+        references.insert(0, primary)
+    if len(references) > 1:
+        reason = (
+            f"当前价同时落入多个参考区间，系统按交易动作优先级选择【{primary}】作为主区间。"
+            f"参考区间：{'、'.join(references)}。"
+        )
+    elif references:
+        reason = f"当前价落入【{references[0]}】，系统选择【{primary}】作为主区间。"
+    else:
+        reason = f"当前价未落入完整参考区间，系统按价格位置选择【{primary}】作为主区间。"
+    return {
+        "primary_zone_text": primary,
+        "reference_zone_texts": references,
+        "zone_selection_reason": reason,
+    }
 
 
 def _portfolio_context(report: dict[str, Any], row: dict[str, Any], action_result: Any | None) -> dict[str, Any]:
@@ -1032,6 +1120,8 @@ def _executive_judgments(
     rating = str(conclusion.get("rating_text") or "等待确认")
     confirm = str(conclusion.get("confirm_text") or _next_step_sentence(report))
     risk_line = str(conclusion.get("risk_line_text") or "暂缺")
+    buy_premise = str(conclusion.get("buy_premise_text") or "复核触发 + 风险门禁解除")
+    zone_reason = str(conclusion.get("zone_selection_reason") or "")
     quality = _quality_quality_sentence(report)
     entry_reason = _entry_sentence(report)
     position_action = (
@@ -1041,7 +1131,9 @@ def _executive_judgments(
     )
     return [
         f"当前价格位于【{zone}】：{entry_reason} 因此结论为【{rating}】。",
-        f"若{confirm}，可重新进入确认观察。",
+        zone_reason,
+        f"{confirm}；这只是重新评估条件，不等于直接买入。",
+        f"买入前提：{buy_premise}。",
         f"若{risk_line}，暂停买入判断并转入风险复核。",
         quality,
         position_action,
@@ -1083,7 +1175,7 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
     summary = _localized_report_summary(report)
     return [
         summary
-        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和确认条件。",
+        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和复核触发。",
         f"价格位置：{_entry_sentence(report)}",
         f"核心判断：{_decision_to_sentence(report)}",
         f"下一步重点：{_next_step_sentence(report)}",
@@ -1135,11 +1227,12 @@ def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None 
         else ""
     )
     rows = []
+    primary_zone = str(conclusion.get("primary_zone_text") or _current_zone_label(report))
     for item in ranges:
         item_low, item_high = item["range"]
         if item_low is None and item_high is None:
             continue
-        current_class = " current" if _range_item_is_current(item["label"], str(conclusion.get("zone_text") or "")) else ""
+        current_class = " current" if _range_item_is_current(item["label"], primary_zone) else ""
         start = _range_position(item_low if item_low is not None else low, low, high)
         end = _range_position(item_high if item_high is not None else high, low, high)
         width = max(end - start, 1.2)
@@ -1151,10 +1244,12 @@ def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None 
             f'<em>{escape(_range_action_text(item["label"]))}</em>'
             "</div>"
         )
+    reference_text = "、".join(conclusion.get("reference_zone_texts") or []) or "暂无"
     explanation = (
-        f"当前价格位于【{conclusion.get('zone_text') or _trade_zone_text(report)}】，"
-        f"结论为【{conclusion.get('rating_text') or '等待确认'}】；"
-        f"下一步看 {conclusion.get('next_review_trigger') or _next_step_sentence(report)}。"
+        f"{conclusion.get('zone_selection_reason') or _zone_selection(report).get('zone_selection_reason')} "
+        f"参考区间：{reference_text}。"
+        f"页面结论按主区间【{primary_zone}】解读，当前结论为【{conclusion.get('rating_text') or '等待确认'}】；"
+        f"{conclusion.get('next_review_trigger') or _next_step_sentence(report)}。"
     )
     return (
         '<section class="ai-radar-card ai-radar-range-card">'
@@ -1197,6 +1292,7 @@ def _range_item_is_current(label: str, zone_text: str) -> bool:
         ("估值", "合理"),
         ("修复", "修复"),
         ("回踩", "修复"),
+        ("趋势", "趋势"),
         ("追高", "追高"),
         ("失效", "风险"),
     )
@@ -1226,10 +1322,12 @@ def _score_card_html(report: dict[str, Any]) -> str:
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
     explanation = _score_explanation(report)
+    risk_gate = _risk_gate_notice(report)
     return (
         '<section class="ai-radar-card score">'
         '<div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<p class="ai-radar-risk-gate">{escape(risk_gate)}</p>'
         f'<p class="ai-radar-score-explain">{escape(explanation)}</p>'
         "</section>"
     )
@@ -1280,6 +1378,16 @@ def _gate_reason_text(report: dict[str, Any]) -> str:
     if reasons:
         return f"门禁/复核限制：{reasons[0]}。"
     return "门禁/复核限制：未触发强买确认。"
+
+
+def _risk_gate_notice(report: dict[str, Any]) -> str:
+    final_score = _number(report.get("final_score"))
+    risk_score = _number(report.get("risk_score"))
+    if final_score is not None and final_score < 70:
+        return "风险门禁：综合评分低于70，禁止核心仓买入。"
+    if risk_score is not None and risk_score < 55:
+        return "风险门禁：风险评分偏低，风险门禁未解除。"
+    return "风险门禁：未解除强买条件，仍需量价与风险复核。"
 
 
 def _volume_price_acceptance_card_html(
@@ -1484,12 +1592,16 @@ def _key_metric_rows(
     volume = _volume_snapshot(market, snapshot, technicals, history)
     return [
         ("最新价", _money(_report_current_price(report))),
+        ("报价来源", _quote_source_text(market, snapshot, report)),
         ("日内涨跌幅", _signed_pct(_first_number(snapshot, technicals, market, "change_pct", "changePercent", "day_change_pct"))),
         ("成交量", _volume_display(volume)),
         ("20日均量", _compact_number(volume.get("volume_ma20"))),
         ("量比", _volume_ratio_display(volume.get("volume_ratio"))),
+        ("量比口径", "成交量 / 20日均量"),
         ("成交量来源", _volume_source_label(volume.get("volume_source"))),
+        ("成交量时间", _display_value(volume.get("volume_date"))),
         ("52周高低", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
+        ("市值来源", _market_cap_source_text(snapshot, report)),
         ("市盈率 / 远期市盈率", f"{_multiple(_first_number(snapshot, 'pe', 'trailing_pe', 'price_to_earnings'))} / {_multiple(_first_number(snapshot, 'forward_pe', 'forwardPE'))}"),
         ("企业价值 / 销售额", _multiple(_first_number(snapshot, "enterprise_to_revenue", "enterpriseToRevenue", "ev_to_sales"))),
         ("自由现金流收益率", _ratio_pct(_first_number(snapshot, "free_cash_flow_yield", "fcf_yield"))),
@@ -1510,6 +1622,98 @@ def _financial_metric_rows(snapshot: dict[str, Any]) -> list[tuple[str, str]]:
         ("现金及短投", _compact_money(_first_number(snapshot, "total_cash", "cash", "cashAndShortTermInvestments", "cashAndEquivalents"))),
         ("总债务", _compact_money(_first_number(snapshot, "total_debt", "debt", "totalDebt"))),
     ]
+
+
+def _ai_cloud_infra_card_html(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> str:
+    model_type = _business_model_type(report, row, snapshot)
+    if model_type not in AI_INFRA_DISPLAY:
+        return ""
+    rows = [("业务模型", _business_model_display(model_type))]
+    rows.extend(_ai_cloud_infra_metric_rows(row, snapshot, report))
+    body = "".join(f"<tr><td>{escape(label)}</td><td>{escape(value)}</td></tr>" for label, value in rows)
+    return (
+        '<section class="ai-radar-card ai-radar-ai-infra-card">'
+        '<div class="ai-radar-section-title"><span>AI 云基础设施专项框架</span><b>只读展示，不纳入本轮评分</b></div>'
+        f'<table class="ai-radar-metric-table"><tbody>{body}</tbody></table>'
+        "</section>"
+    )
+
+
+def _ai_cloud_infra_metric_rows(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    sources = (snapshot, report, row)
+    for canonical, label, aliases, value_type in AI_INFRA_FIELD_SPECS:
+        value = _first_metric_value(sources, aliases)
+        rows.append((label, _display_ai_infra_value(value, value_type)))
+    return rows
+
+
+def _ai_cloud_infra_missing_fields(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> list[str]:
+    if _business_model_type(report, row, snapshot) not in AI_INFRA_DISPLAY:
+        return []
+    sources = (snapshot, report, row)
+    return [
+        canonical
+        for canonical, _label, aliases, _value_type in AI_INFRA_FIELD_SPECS
+        if _first_metric_value(sources, aliases) is None
+    ]
+
+
+def _first_metric_value(sources: tuple[dict[str, Any], ...], aliases: tuple[str, ...]) -> Any:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in aliases:
+            if key in source and source.get(key) not in (None, ""):
+                return source.get(key)
+    return None
+
+
+def _display_ai_infra_value(value: Any, value_type: str) -> str:
+    if value in (None, ""):
+        return "暂缺"
+    if value_type == "money":
+        return _compact_money(value)
+    if value_type == "ratio":
+        return _ratio_pct(value)
+    if value_type == "multiple":
+        return _multiple(value)
+    if value_type == "gw":
+        number = _number(value)
+        return "暂缺" if number is None else f"{number:.2f} GW"
+    return _display_value(value)
+
+
+def _business_model_type(*sources: dict[str, Any]) -> str:
+    candidates: list[Any] = []
+    ticker = ""
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        ticker = ticker or str(source.get("ticker") or source.get("symbol") or "").strip().upper()
+        candidates.extend(
+            [
+                _first_present(source, "business_model_type", "businessModelType", "modelType", "scoring_model", "scoringModel"),
+                _first_present(source, "business_model", "businessModel", "model"),
+            ]
+        )
+    for value in candidates:
+        normalized = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        if not normalized:
+            continue
+        if normalized in AI_INFRA_MODEL_ALIASES:
+            return AI_INFRA_MODEL_ALIASES[normalized]
+        if "NEOCLOUD" in normalized or "NEO_CLOUD" in normalized:
+            return "NEOCLOUD"
+        if "GPU" in normalized and "CLOUD" in normalized:
+            return "GPU_CLOUD"
+        if "AI" in normalized and ("CLOUD" in normalized or "INFRA" in normalized):
+            return "AI_INFRA_CLOUD"
+    return AI_INFRA_BUSINESS_TYPE_BY_TICKER.get(ticker, "")
+
+
+def _business_model_display(model_type: str) -> str:
+    return AI_INFRA_DISPLAY.get(str(model_type or "").upper(), "暂缺")
 
 
 def _performance_rows(history: pd.DataFrame) -> list[tuple[str, str]]:
@@ -1627,18 +1831,99 @@ def _volume_ratio_display(value: Any) -> str:
 
 def _volume_source_label(value: Any) -> str:
     return {
-        "quote": "quote 缓存",
+        "quote": "报价缓存",
         "daily_cache": "日线缓存",
         "volume_price_acceptance": "量价模块",
         "unavailable": "暂无",
     }.get(str(value or ""), "暂无")
 
 
+def _quote_source_text(market: dict[str, Any], snapshot: dict[str, Any], row: dict[str, Any]) -> str:
+    raw = (
+        _first_present(market, "quote_source", "quoteSource", "priceSource", "source")
+        or _first_present(snapshot, "quote_source", "quoteSource", "priceSource", "source")
+        or _first_present(row, "quote_source", "quoteSource", "priceSource")
+    )
+    if raw:
+        return _source_label(raw)
+    if _report_current_price(row) is not None or _first_number(market, "currentPrice", "current_price", "price") is not None:
+        return "本地报价缓存"
+    return "暂缺"
+
+
+def _market_cap_source_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str:
+    raw = _first_present(snapshot, "market_cap_source", "marketCapSource", "source") or _first_present(row, "market_cap_source", "marketCapSource")
+    if raw:
+        return _source_label(raw)
+    if _first_number(snapshot, "market_cap", "marketCap") is not None or _first_number(row, "market_cap", "marketCap") is not None:
+        return "基本面缓存"
+    return "暂缺"
+
+
+def _financial_source_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str:
+    raw = (
+        _first_present(snapshot, "financial_source", "financialSource", "fundamental_source", "fundamentalSource")
+        or _first_present(row, "financial_source", "financialSource", "fundamental_source", "fundamentalSource")
+    )
+    if raw:
+        return _source_label(raw)
+    financial_keys = ("total_revenue", "revenue", "gross_margin", "operating_cash_flow", "free_cash_flow", "net_debt")
+    if any(_first_present(snapshot, key) is not None for key in financial_keys):
+        return "基本面缓存"
+    return "暂缺"
+
+
+def _financial_period_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str:
+    return _display_value(
+        _first_present(snapshot, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter")
+        or _first_present(row, "financial_period", "financialPeriod", "fiscal_period", "fiscalPeriod", "latest_quarter", "latestQuarter")
+    )
+
+
+def _price_type_text(market: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    raw = str(
+        _first_present(market, "price_is_close_or_intraday", "priceIsCloseOrIntraday", "price_type", "priceType")
+        or _first_present(snapshot, "price_is_close_or_intraday", "priceIsCloseOrIntraday", "price_type", "priceType")
+        or ""
+    ).strip().lower()
+    if raw:
+        if "intraday" in raw or "盘中" in raw:
+            return "盘中 / 报价快照"
+        if "close" in raw or "收盘" in raw:
+            return "收盘价 / 日线缓存"
+        return _localize_report_text(raw)
+    source = str(_first_present(market, "priceSource", "source") or "").lower()
+    if "history" in source or "daily" in source or "close" in source:
+        return "收盘价 / 日线缓存"
+    if _first_number(market, "currentPrice", "current_price", "price") is not None:
+        return "盘中 / 报价快照"
+    return "暂缺"
+
+
+def _source_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "暂缺"
+    normalized = text.lower()
+    mapping = {
+        "quote": "报价缓存",
+        "quote_snapshot": "报价缓存",
+        "daily_cache": "日线缓存",
+        "price_history": "日线缓存",
+        "fmp": "FMP",
+        "fmp_cache": "FMP 缓存",
+        "fundamental_cache": "基本面缓存",
+        "snapshot": "本地快照",
+        "manual": "人工录入",
+    }
+    return mapping.get(normalized, _localize_report_text(text))
+
+
 def _catalyst_card_html(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> str:
     items, has_news_cache = _catalyst_items(row, snapshot, report)
     if has_news_cache:
-        return _text_card_html("近期新闻 / 催化", items, subtitle="本地新闻缓存", limit=5)
-    return _text_card_html("后续催化 / 待跟踪事项", items, subtitle="待跟踪事项", limit=5)
+        return _text_card_html("近期新闻 / 催化", items, subtitle="本地新闻缓存", limit=6)
+    return _text_card_html("后续催化 / 风险事项", items, subtitle="待跟踪事项", limit=6)
 
 
 def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> tuple[list[str], bool]:
@@ -1648,9 +1933,40 @@ def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[
             candidates.extend(_list_value(source, key))
     cleaned = [_format_news_or_event_item(item) for item in candidates]
     cleaned = [item for item in _dedupe_text(cleaned) if item and item.lower() not in {"n/a", "none"}]
+    event_items = _recent_event_items(row, snapshot, report)
     if cleaned:
-        return cleaned[:5], True
-    return _fallback_catalyst_items(report, row), False
+        return _dedupe_text([*event_items, *cleaned])[:6], True
+    return _dedupe_text([*event_items, *_fallback_catalyst_items(report, row)])[:6], False
+
+
+def _recent_event_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> list[str]:
+    items: list[str] = []
+    for source in (row, snapshot, report):
+        items.extend(_list_value(source, "index_events"))
+        items.extend(_list_value(source, "indexEvents"))
+        items.extend(_list_value(source, "financing_events"))
+        items.extend(_list_value(source, "financingEvents"))
+        items.extend(_list_value(source, "major_customer_contracts"))
+        items.extend(_list_value(source, "majorCustomerContracts"))
+    next_earnings = _display_value(
+        _first_present(row, "next_earnings_date", "nextEarningsDate")
+        or _first_present(snapshot, "next_earnings_date", "nextEarningsDate")
+        or _first_present(report, "next_earnings_date", "nextEarningsDate")
+    )
+    if next_earnings != "暂无":
+        items.append(f"财报事件：下次财报日期 {next_earnings}。")
+    ticker = str(report.get("ticker") or row.get("ticker") or snapshot.get("ticker") or "").strip().upper()
+    if ticker == "CRWV":
+        items.extend(
+            [
+                "指数事件：纳入 Nasdaq-100 可带来短期量能和被动资金催化，但不代表基本面自动改善。",
+                "融资事件：Senior Notes 融资补充资金，但提高利息负担和杠杆压力。",
+                "大客户合同：重点跟踪 Meta / OpenAI / Anthropic / Microsoft 等合同的收入确认、交付和集中度风险。",
+            ]
+        )
+        if next_earnings == "暂无":
+            items.append("财报事件：下次财报日期暂缺。")
+    return [_localize_report_text(str(item).strip()) for item in _dedupe_text(items) if str(item).strip()]
 
 
 def _format_news_or_event_item(item: Any) -> str:
@@ -1671,7 +1987,7 @@ def _fallback_catalyst_items(report: dict[str, Any], row: dict[str, Any]) -> lis
     next_earnings = _display_value(_first_present(row, "next_earnings_date", "nextEarningsDate") or _first_present(report, "next_earnings_date", "nextEarningsDate"))
     return [
         f"财报 / 指引：下一财报 {next_earnings}，重点看收入、利润率和现金流指引。",
-        f"量价确认：观察是否放量站上确认线 {confirm}。",
+        f"复核触发：观察是否放量站上确认线 {confirm}，触发后重新评估，不等于直接买入。",
         f"风险失效：若放量跌破失效线 {invalid}，转入破位复核。",
     ]
 
@@ -1688,8 +2004,8 @@ def _watch_points_table_html(report: dict[str, Any], row: dict[str, Any]) -> str
     invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
     forward_pe = _multiple(_first_number(report, row, "forward_pe", "forwardPE"))
     rows = [
-        ("量价承接", f"{volume_status}｜量比 {volume_ratio}", f"放量站上确认线 {confirm}", "确认前不把回踩当买点"),
-        ("趋势修复", zone, f"收盘重新站回关键均线 / 确认线 {confirm}", "确认修复后再提高复核优先级"),
+        ("量价承接", f"{volume_status}｜量比 {volume_ratio}", f"复核触发：放量站上确认线 {confirm}", "触发后重新评估，不等于直接买入"),
+        ("趋势修复", zone, f"复核触发：收盘重新站回关键均线 / 确认线 {confirm}", "确认修复后再提高复核优先级"),
         ("估值位置", f"远期市盈率 {forward_pe}", "进入估值参考区但未追高", "估值只代表可研究，不代表自动买入"),
         ("风险控制", f"失效线 {invalid}", "放量跌破支撑或失效线", "暂停加仓，进入破位复核"),
     ]
@@ -1769,9 +2085,9 @@ def _inline_list(value: Any) -> str:
     if not value:
         return "无"
     if isinstance(value, (list, tuple, set)):
-        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        cleaned = [_localize_report_text(str(item).strip()) for item in value if str(item).strip()]
         return "、".join(cleaned[:8]) if cleaned else "无"
-    return str(value)
+    return _localize_report_text(str(value))
 
 
 def _core_status(row: dict[str, Any]) -> str:
@@ -2008,6 +2324,7 @@ def _data_health_context(
     portfolio_context: dict[str, Any],
 ) -> dict[str, Any]:
     missing_fields = _dedupe_text([*_actionable_missing_fields(report), *_actionable_missing_fields(row)])
+    missing_fields = _dedupe_text([*missing_fields, *_ai_cloud_infra_missing_fields(row, snapshot, report)])
     missing_fields = _filter_resolved_health_missing_fields(missing_fields, report, market, row, portfolio_context)
     stale_fields: list[str] = []
     if _price_data_state(report) == "stale" or bool(report.get("is_stale")):
@@ -2017,6 +2334,13 @@ def _data_health_context(
     return {
         "quote_updated_at": _first_present(market, "fetchedAt", "updated_at", "updatedAt")
         or _first_present(snapshot, "quote_updated_at", "price_updated_at", "fetched_at", "updated_at"),
+        "quote_source": _quote_source_text(market, snapshot, report),
+        "price_is_close_or_intraday": _price_type_text(market, snapshot),
+        "market_cap_source": _market_cap_source_text(snapshot, report),
+        "volume_avg_period": "20日均量",
+        "volume_ratio_formula": "成交量 / 20日均量",
+        "financial_period": _financial_period_text(snapshot, report),
+        "financial_source": _financial_source_text(snapshot, report),
         "financials_updated_at": _first_present(snapshot, "financials_updated_at", "financial_statement_updated_at", "fundamental_updated_at", "updated_at", "fetched_at"),
         "score_updated_at": _first_present(report, "score_updated_at", "data_updated_at", "updated_at"),
         "portfolio_updated_at": portfolio_context.get("portfolio_updated_at"),
@@ -2072,7 +2396,14 @@ def _filter_resolved_health_missing_fields(
 
 def _data_health_card_html(data_health: dict[str, Any]) -> str:
     rows = [
+        ("quote_source", "报价来源", _display_value(data_health.get("quote_source"))),
         ("quote_updated_at", "报价更新时间", _health_time(data_health.get("quote_updated_at"))),
+        ("price_is_close_or_intraday", "价格口径", _display_value(data_health.get("price_is_close_or_intraday"))),
+        ("market_cap_source", "市值来源", _display_value(data_health.get("market_cap_source"))),
+        ("volume_avg_period", "均量周期", _display_value(data_health.get("volume_avg_period"))),
+        ("volume_ratio_formula", "量比公式", _display_value(data_health.get("volume_ratio_formula"))),
+        ("financial_source", "财务来源", _display_value(data_health.get("financial_source"))),
+        ("financial_period", "财务周期", _display_value(data_health.get("financial_period"))),
         ("financials_updated_at", "财务更新时间", _health_time(data_health.get("financials_updated_at"))),
         ("score_updated_at", "评分更新时间", _health_time(data_health.get("score_updated_at"))),
         ("portfolio_updated_at", "持仓更新时间", _health_time(data_health.get("portfolio_updated_at"))),
@@ -2285,6 +2616,28 @@ FIELD_DISPLAY_LABELS = {
     "relative_strength": "相对强弱",
     "relative_strength_vs_qqq": "相对强弱（QQQ）",
     "relative_strength_vs_spy": "相对强弱（SPY）",
+    "revenue_growth": "收入高增长",
+    "revenue_backlog": "收入积压 / RPO",
+    "backlog_to_ev": "收入积压 / EV",
+    "active_power_gw": "已投运电力容量",
+    "contracted_power_gw": "已签约电力容量",
+    "capex": "资本开支",
+    "operating_cash_flow": "经营现金流",
+    "free_cash_flow_after_capex": "扣资本开支后自由现金流",
+    "net_debt": "净债务",
+    "interest_expense_to_revenue": "利息费用 / 收入",
+    "adjusted_ebitda_margin": "调整后 EBITDA 利润率",
+    "customer_concentration": "客户集中度",
+    "financing_risk": "融资风险",
+    "data_center_delivery_risk": "数据中心交付风险",
+    "gpu_supplier_dependency": "GPU 供应商依赖",
+    "quote_source": "报价来源",
+    "market_cap_source": "市值来源",
+    "volume_avg_period": "均量周期",
+    "volume_ratio_formula": "量比公式",
+    "financial_period": "财务周期",
+    "financial_source": "财务来源",
+    "price_is_close_or_intraday": "价格口径",
 }
 
 
@@ -2354,11 +2707,39 @@ def _localize_report_text(text: str) -> str:
         "AI Stock Radar Research": "AI 股票雷达研究",
         "Research notes": "研究依据",
         "wait": "等待",
+        "WAIT_CONFIRMATION": "等待确认",
+        "BLOCK_CHASE": "追高风险提示",
+        "DATA_INSUFFICIENT": "数据不足",
+        "DATA_MISSING": "数据不足",
+        "ALLOW_BUY": "允许小仓",
+        "AVOID": "暂不参与",
+        "HOLD_NO_ADD": "仓位偏高，不建议继续加",
+        "POSITION_LIMITED": "仓位接近上限，建议控制节奏",
         "current price is below the discipline buy zone lower bound": "当前价格低于纪律买区下沿",
         "current price is above the discipline buy zone": "当前价格高于纪律买区",
         "current price is in or above chase zone": "当前价格处于追高语境",
         "review fundamentals": "复核基本面",
-        "Revenue Growth": "收入增长",
+        "Revenue growth": "收入高增长",
+        "Revenue Growth": "收入高增长",
+        "revenue growth": "收入高增长",
+        "Gross Margin / unit economics": "毛利率 / 单位经济性",
+        "Gross margin / unit economics": "毛利率 / 单位经济性",
+        "gross margin / unit economics": "毛利率 / 单位经济性",
+        "Gross Margin": "毛利率",
+        "gross margin": "毛利率",
+        "unit economics": "单位经济性",
+        "EV/Sales growth": "EV/Sales 估值扩张",
+        "ev/sales growth": "EV/Sales 估值扩张",
+        "Price vs 52-week high": "距离52周高点回撤",
+        "price vs 52-week high": "距离52周高点回撤",
+        "Negative FCF": "自由现金流为负",
+        "negative FCF": "自由现金流为负",
+        "High leverage": "杠杆偏高",
+        "high leverage": "杠杆偏高",
+        "FCF trajectory": "自由现金流路径不确定",
+        "fcf trajectory": "自由现金流路径不确定",
+        "final score below 70; core position is not allowed.": "综合评分低于70，禁止核心仓买入",
+        "final score below 70; core position is not allowed": "综合评分低于70，禁止核心仓买入",
         "Operating Margin": "经营利润率",
         "FCF Margin": "自由现金流率",
         "ROIC": "投入资本回报率",
@@ -3192,7 +3573,7 @@ def _render_styles() -> None:
         }
         .ai-radar-exec-grid {
             display:grid;
-            grid-template-columns:repeat(4, minmax(0, 1fr));
+            grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));
             gap:10px;
             margin-bottom:12px;
         }
@@ -3254,7 +3635,7 @@ def _render_styles() -> None:
         }
         .ai-radar-header-decision-grid {
             display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
+            grid-template-columns:repeat(2, minmax(0, 1fr));
             gap:10px;
             padding-top:12px;
             border-top:1px solid rgba(216,224,234,0.18);
@@ -3429,6 +3810,22 @@ def _render_styles() -> None:
             line-height:1.65;
             border-top:1px solid #EEF2F7;
             padding-top:10px;
+        }
+        .ai-radar-risk-gate {
+            margin:11px 0 0;
+            color:#7F1D1D;
+            background:#FEF2F2;
+            border:1px solid #FECACA;
+            border-radius:8px;
+            padding:8px 10px;
+            font-size:13px;
+            line-height:1.5;
+            font-weight:820;
+        }
+        .ai-radar-ai-infra-card {
+            margin:0 18px 16px;
+            background:#F8FBFF;
+            border-color:#DDE8F6;
         }
         .ai-radar-score-grid,
         .ai-radar-data-quality-grid {

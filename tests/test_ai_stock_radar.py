@@ -152,7 +152,8 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     assert "禁止追高" in html
     assert "不主动追买" in html
     assert "追高禁区" in html
-    assert "放量站上 $52.00" in html
+    assert "复核触发：放量站上 $52.00 后重新评估" in html
+    assert "买入前提" in html
     assert "跌破 $44.00" in html
     assert "BLOCK_CHASE" not in html
     assert "OVEREXTENDED_SUPPORT_READ" not in html
@@ -296,6 +297,117 @@ def test_report_data_health_filters_gaps_already_resolved_on_page() -> None:
     assert "portfolio_position" not in data_health["missing_fields"]
     assert "daily_bars" in data_health["missing_fields"]
     assert data_health["portfolio_updated_at"] == "2026-06-12T17:09:22+00:00"
+
+
+def test_report_localizes_backend_english_copy() -> None:
+    html = radar_ui._text_card_html(
+        "核心风险",
+        [
+            "Revenue growth",
+            "Gross Margin / unit economics",
+            "EV/Sales growth",
+            "Price vs 52-week high",
+            "Negative FCF",
+            "High leverage",
+            "FCF trajectory",
+            "final score below 70; core position is not allowed.",
+        ],
+        limit=10,
+    )
+
+    assert "收入高增长" in html
+    assert "毛利率 / 单位经济性" in html
+    assert "EV/Sales 估值扩张" in html
+    assert "距离52周高点回撤" in html
+    assert "自由现金流为负" in html
+    assert "杠杆偏高" in html
+    assert "自由现金流路径不确定" in html
+    assert "综合评分低于70，禁止核心仓买入" in html
+    assert "Revenue growth" not in html
+    assert "final score below 70" not in html
+
+
+def test_report_confirmation_is_review_trigger_not_buy_signal() -> None:
+    conclusion = radar_ui._trade_conclusion(
+        {
+            "ticker": "CRWV",
+            "current_price": 101,
+            "confirmation_price": 104.93,
+            "invalidation_price": 92,
+            "final_score": 64,
+            "risk_score": 40,
+        }
+    )
+
+    assert conclusion["confirm_text"] == "复核触发：放量站上 $104.93 后重新评估"
+    assert conclusion["buy_premise_text"] == "复核触发 + 综合评分回到70以上 + 风险门禁解除"
+
+
+def test_report_range_chart_explains_primary_and_reference_zones() -> None:
+    report = {
+        "ticker": "MSFT",
+        "current_price": 98,
+        "near_term_repair_zone_low": 90,
+        "near_term_repair_zone_high": 105,
+        "valuation_reference_zone_low": 95,
+        "valuation_reference_zone_high": 110,
+        "confirmation_price": 112,
+        "invalidation_price": 85,
+        "final_score": 72,
+        "risk_score": 68,
+    }
+    conclusion = radar_ui._trade_conclusion(report)
+    html = radar_ui._range_chart_html(report, conclusion)
+
+    assert conclusion["primary_zone_text"] == "近端修复观察区"
+    assert "当前价同时落入多个参考区间" in html
+    assert "参考区间：近端修复观察区、估值参考区" in html
+
+
+def test_crwv_report_uses_ai_cloud_infra_display_framework() -> None:
+    report = {
+        "ticker": "CRWV",
+        "current_price": 101,
+        "business_model_type": "AI_CLOUD_INFRA",
+        "revenue_growth": 0.62,
+    }
+    html = radar_ui._ai_cloud_infra_card_html({"ticker": "CRWV"}, {}, report)
+
+    assert "AI 云基础设施专项框架" in html
+    assert "AI云基础设施" in html
+    assert "收入高增长" in html
+    assert "62.0%" in html
+    assert "收入积压 / RPO" in html
+    assert "暂缺" in html
+    assert "AI_CLOUD_INFRA" not in html
+
+
+def test_crwv_data_health_tracks_ai_cloud_missing_fields_and_sources() -> None:
+    data_health = radar_ui._data_health_context(
+        {"ticker": "CRWV", "current_price": 101, "business_model_type": "AI_CLOUD_INFRA", "final_score": 63},
+        {"currentPrice": 101, "priceSource": "quote_snapshot", "fetchedAt": "2026-06-13T10:00:00+00:00"},
+        {"market_cap": 2_000_000_000, "financial_source": "fundamental_cache"},
+        {"ticker": "CRWV"},
+        {"has_position": False},
+    )
+    html = radar_ui._data_health_card_html(data_health)
+
+    assert data_health["quote_source"] == "报价缓存"
+    assert data_health["market_cap_source"] == "基本面缓存"
+    assert data_health["volume_ratio_formula"] == "成交量 / 20日均量"
+    assert "revenue_backlog" in data_health["missing_fields"]
+    assert "收入积压 / RPO" in html
+    assert "报价缓存" in html
+    assert "量比公式" in html
+
+
+def test_crwv_catalysts_include_index_and_financing_events() -> None:
+    html = radar_ui._catalyst_card_html({"ticker": "CRWV"}, {}, {"ticker": "CRWV"})
+
+    assert "后续催化 / 风险事项" in html
+    assert "纳入 Nasdaq-100" in html
+    assert "不代表基本面自动改善" in html
+    assert "Senior Notes 融资" in html
 
 
 def _chase_zone() -> RadarZone:
@@ -515,7 +627,7 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "核心财务摘要" in html
     assert "市场表现" in html
     assert "数据完整度" in html
-    assert "后续催化 / 待跟踪事项" in html
+    assert "后续催化 / 风险事项" in html
     assert "附录" in html
     assert html.count("执行摘要") == 1
     assert "触发条件" in html
@@ -542,7 +654,7 @@ def test_ai_radar_report_uses_news_title_only_with_news_cache() -> None:
     }
     no_news_html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
-    assert "后续催化 / 待跟踪事项" in no_news_html
+    assert "后续催化 / 风险事项" in no_news_html
     assert "近期新闻 / 催化" not in no_news_html
     assert "Segment strength" not in no_news_html
     assert "暂无本地新闻缓存；以下为系统根据财务、估值、技术和量价结构生成的待跟踪事项" not in no_news_html
@@ -783,7 +895,7 @@ def test_ai_radar_report_volume_prefers_quote_over_daily_cache() -> None:
     assert values["成交量"] == "13.2M"
     assert values["20日均量"] == "18.0M"
     assert values["量比"] == "0.73x"
-    assert values["成交量来源"] == "quote 缓存"
+    assert values["成交量来源"] == "报价缓存"
 
 
 def test_ai_radar_report_volume_falls_back_to_latest_daily_bar() -> None:
