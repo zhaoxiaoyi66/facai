@@ -303,7 +303,7 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
         f"价格位置：{_entry_sentence(report)}",
         f"核心判断：{_decision_to_sentence(report)}",
         f"下一步重点：{_next_step_sentence(report)}",
-        f"数据完整度：{data_confidence}；缺失项放在报告末尾，不让 DATA_MISSING 主导结论。",
+        f"数据完整度：{data_confidence}；缺失项放在报告末尾，不让内部缺数据状态主导结论。",
     ]
     return [line for line in lines if line]
 

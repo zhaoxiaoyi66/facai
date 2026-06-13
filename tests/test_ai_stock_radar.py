@@ -168,6 +168,7 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "数据完整度" in html
     assert "是否允许新增" not in html
     assert "阻止原因" not in html
+    assert "DATA_MISSING" not in html
 
 
 def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
