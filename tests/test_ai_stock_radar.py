@@ -567,8 +567,64 @@ def test_ai_radar_report_volume_missing_is_specific_data_gap() -> None:
 
     assert "暂无成交量数据" in html
     assert "成交量缺失" in html
-    assert "volume、daily_bar.volume" in html
+    assert "成交量" in html
+    assert "daily_bar.volume" not in html
+    assert "volume、daily_bar.volume" not in html
     assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_completeness_localizes_raw_missing_fields() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "sector": "云平台｜AI软件",
+        "current_price": 390,
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+        "debug": {
+            "data_missing_fields": [
+                "forward_pe",
+                "roe",
+                "sector / industry",
+                "news_cache",
+            ]
+        },
+    }
+
+    html = radar_ui._data_completeness_html(
+        report,
+        "高",
+        {"volume_source": "daily_cache", "latest_volume": 12_000_000},
+    )
+
+    assert "远期市盈率" in html
+    assert "净资产收益率" in html
+    assert "新闻缓存" in html
+    assert "行业 / 赛道信息" not in html
+    assert "forward_pe" not in html
+    assert "roe" not in html
+    assert "sector / industry" not in html
+    assert "news_cache" not in html
+
+
+def test_ai_radar_report_daily_volume_prevents_volume_gap() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "sector": "云平台｜AI软件",
+        "current_price": 390,
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+        "debug": {"data_missing_fields": ["volume"]},
+    }
+    volume = {"volume_source": "daily_cache", "latest_volume": 12_000_000}
+
+    html = radar_ui._data_completeness_html(report, "高", volume)
+
+    assert "成交量缺失" not in html
+    assert "volume" not in html
 
 
 def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
@@ -654,6 +710,9 @@ def test_sector_localization_supports_provider_and_ticker_research_tracks() -> N
     assert localize_sector("Technology", "Software - Application") == "科技｜应用软件"
     assert localize_sector("Healthcare", "Biotechnology") == "医疗健康｜生物科技"
     assert localize_sector("Financial Services", "Capital Markets") == "金融服务｜资本市场"
+    assert localize_sector("Communication Services", "Internet Content & Information") == "通信服务｜互联网内容与信息"
+    assert localize_sector("Utilities", "Independent Power Producers") == "公用事业｜独立电力生产商"
+    assert localize_sector("Utilities", "Renewable Utilities") == "公用事业｜可再生公用事业"
     assert get_ticker_research_track("MSFT", "Technology", "Software - Infrastructure") == "云平台｜AI软件"
     assert get_ticker_research_track("NOW", "Technology", "Software - Application") == "企业SaaS｜工作流自动化"
     assert get_ticker_research_track("NVO", "Healthcare", "Biotechnology") == "GLP-1｜生物医药"
@@ -707,6 +766,20 @@ def test_profile_missing_is_actionable_medium_gap() -> None:
     html = radar_ui._data_confidence_html(row)
 
     assert "中｜资料缺口" in html
+
+
+def test_ticker_research_track_prevents_profile_gap_when_provider_sector_missing() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "current_price": 390,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._data_confidence_html(row)
+
+    assert "资料缺口" not in html
+    assert "高" in html
 
 
 def test_list_row_uses_cached_report_fallback_when_dashboard_table_missing() -> None:

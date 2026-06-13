@@ -330,10 +330,10 @@ def _debug_html(debug: dict[str, Any]) -> str:
         rows.append(
             "<tr>"
             f"<td>{escape(label)}</td>"
-            f"<td>{escape(_inline_list(item.get('used_fields')))}</td>"
-            f"<td>{escape(_inline_list(item.get('missing_fields')))}</td>"
-            f"<td>{escape(_inline_list(item.get('positive_fields')))}</td>"
-            f"<td>{escape(_inline_list(item.get('negative_fields')))}</td>"
+            f"<td>{escape(_field_list_display(item.get('used_fields'), report))}</td>"
+            f"<td>{escape(_field_list_display(item.get('missing_fields'), report))}</td>"
+            f"<td>{escape(_field_list_display(item.get('positive_fields'), report))}</td>"
+            f"<td>{escape(_field_list_display(item.get('negative_fields'), report))}</td>"
             "</tr>"
         )
     zones = _dict_value(debug, "price_zones") or {}
@@ -346,7 +346,7 @@ def _debug_html(debug: dict[str, Any]) -> str:
         f'<div><span>数据状态</span><strong>{escape(_display_value(debug.get("data_status")))}</strong></div>'
         f'<div><span>区间状态</span><strong>{escape(_price_position_label(debug.get("price_position")))}</strong></div>'
         f'<div><span>距买区</span><strong>{escape(_signed_pct(debug.get("distance_to_buy_zone_pct")))}</strong></div>'
-        f'<div><span>缺失字段</span><strong>{escape(_inline_list(debug.get("data_missing_fields")))}</strong></div>'
+        f'<div><span>缺失字段</span><strong>{escape(_field_list_display(debug.get("data_missing_fields"), report))}</strong></div>'
         f'<div><span>区间来源</span><strong>{escape(str(zones.get("source") or "missing"))}</strong></div>'
         f'<div><span>字段别名风险</span><strong>{escape(_inline_list(debug.get("field_alias_notes")))}</strong></div>'
         '</div>'
@@ -1148,15 +1148,39 @@ def _is_optional_gap_field(field: str) -> bool:
             "spy_relative",
             "qqq_relative",
             "benchmark",
+            "news_cache",
+            "news cache",
+            "recent_news",
         )
     )
 
 
 def _profile_missing(row: dict[str, Any]) -> bool:
-    ticker = str(row.get("ticker") or "").strip().upper()
-    company = str(row.get("company_name") or row.get("companyName") or row.get("name") or "").strip()
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+    company = str(
+        row.get("company_name")
+        or row.get("companyName")
+        or row.get("name")
+        or row.get("company")
+        or ""
+    ).strip()
     company_missing = not company or company.upper() == ticker
-    sector = _clean_text(row.get("sector") or row.get("industry") or row.get("model"))
+    sector = _clean_text(
+        row.get("sector")
+        or row.get("industry")
+        or row.get("industry_group")
+        or row.get("industryGroup")
+        or row.get("business_model")
+        or row.get("businessModel")
+        or row.get("model")
+    )
+    if not sector or sector == "赛道待补":
+        sector = get_ticker_research_track(
+            ticker,
+            row.get("sector"),
+            row.get("industry"),
+            row,
+        )
     return bool(company_missing or not sector or sector == "赛道待补")
 
 
@@ -1343,6 +1367,120 @@ def _localized_report_summary(report: dict[str, Any]) -> str:
     return _localize_report_text(raw_summary)
 
 
+FIELD_DISPLAY_LABELS = {
+    "sector": "行业 / 赛道信息",
+    "industry": "行业 / 赛道信息",
+    "sector / industry": "行业 / 赛道信息",
+    "industry_group": "行业 / 赛道信息",
+    "industrygroup": "行业 / 赛道信息",
+    "business_model": "行业 / 赛道信息",
+    "businessmodel": "行业 / 赛道信息",
+    "model": "行业 / 赛道信息",
+    "company": "公司名称",
+    "company_name": "公司名称",
+    "companyname": "公司名称",
+    "name": "公司名称",
+    "market_cap": "市值",
+    "marketcap": "市值",
+    "mktcap": "市值",
+    "company_market_cap": "市值",
+    "volume": "成交量",
+    "daily_bar.volume": "成交量",
+    "latest_volume": "成交量",
+    "forward_pe": "远期市盈率",
+    "forwardpe": "远期市盈率",
+    "normalized_pe": "标准化市盈率",
+    "normalizedpe": "标准化市盈率",
+    "roe": "净资产收益率",
+    "return_on_equity": "净资产收益率",
+    "daily_bars": "日线数据",
+    "dailybars": "日线数据",
+    "price_history": "日线数据",
+    "technicals": "技术数据",
+    "technical": "技术数据",
+    "fundamentals": "基本面数据",
+    "fundamental": "基本面数据",
+    "valuation": "估值数据",
+    "news_cache": "新闻缓存",
+    "newscache": "新闻缓存",
+    "recent_news": "新闻缓存",
+    "enterprise_to_revenue": "EV/Sales",
+    "enterprisetorevenue": "EV/Sales",
+    "free_cash_flow_yield": "自由现金流收益率",
+    "fcf_margin": "自由现金流率",
+    "gross_margin": "毛利率",
+    "net_margin": "净利率",
+    "current_price": "最新价",
+    "current_price_stale": "价格过期",
+    "price_stale": "价格过期",
+    "ema20": "EMA20",
+    "ema50": "EMA50",
+    "ema200": "EMA200",
+    "atr14": "ATR14",
+    "vwap": "VWAP（日线替代）",
+    "relative_strength": "相对强弱",
+    "relative_strength_vs_qqq": "相对强弱（QQQ）",
+    "relative_strength_vs_spy": "相对强弱（SPY）",
+}
+
+
+def _field_display_label(field: Any) -> str:
+    raw = str(field or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("-", "_").replace(" ", "_")
+    lookup_keys = [raw, raw.lower(), normalized, normalized.lower()]
+    for key in lookup_keys:
+        if key in FIELD_DISPLAY_LABELS:
+            return FIELD_DISPLAY_LABELS[key]
+    text = normalized.lower()
+    if "sector" in text or "industry" in text or "business_model" in text:
+        return "行业 / 赛道信息"
+    if "company" in text:
+        return "公司名称"
+    if "market" in text and "cap" in text:
+        return "市值"
+    if "volume" in text:
+        return "成交量"
+    if "forward" in text and "pe" in text:
+        return "远期市盈率"
+    if text == "pe" or "price_to_earnings" in text:
+        return "市盈率"
+    if "roe" in text or "return_on_equity" in text:
+        return "净资产收益率"
+    if "daily" in text or "history" in text:
+        return "日线数据"
+    if "technical" in text or "ema" in text or "atr" in text or "swing" in text:
+        return "技术数据"
+    if "fundamental" in text:
+        return "基本面数据"
+    if "valuation" in text:
+        return "估值数据"
+    if "news" in text:
+        return "新闻缓存"
+    localized = _localize_report_text(raw)
+    if localized != raw:
+        return localized
+    if raw.isascii():
+        return "数据字段"
+    return raw
+
+
+def _field_list_display(value: Any, row: dict[str, Any] | None = None) -> str:
+    if not value:
+        return "无"
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    labels = [_field_display_label(item) for item in values if str(item).strip()]
+    if row is not None and not _profile_missing(row):
+        labels = [
+            label
+            for label in labels
+            if label not in {"行业 / 赛道信息", "公司名称"}
+        ]
+    labels = _dedupe_text([label for label in labels if label])
+    return "、".join(labels[:8]) if labels else "无"
+
+
 def _localize_report_text(text: str) -> str:
     replacements = {
         "AI Stock Radar Research": "AI 股票雷达研究",
@@ -1362,12 +1500,23 @@ def _localize_report_text(text: str) -> str:
         "technical setup": "技术结构",
         "Net Cash": "净现金",
         "Balance Sheet": "资产负债表",
-        "Segment strength": "业务片段强度",
+        "Segment strength": "业务增长质量",
         "Buyback discipline": "回购纪律",
         "Historical valuation percentile": "历史估值分位",
         "Capex concern discount": "资本开支折价",
         "AI capex overbuild risk": "AI 资本开支过热风险",
         "Regulatory risk": "监管风险",
+        "sector / industry": "行业 / 赛道信息",
+        "market_cap": "市值",
+        "marketCap": "市值",
+        "volume": "成交量",
+        "forward_pe": "远期市盈率",
+        "roe": "净资产收益率",
+        "daily_bars": "日线数据",
+        "technicals": "技术数据",
+        "fundamentals": "基本面数据",
+        "valuation": "估值数据",
+        "news_cache": "新闻缓存",
         "N/A": "暂无",
     }
     result = str(text or "")
@@ -1382,17 +1531,27 @@ def _display_value(value: Any) -> str:
 
 
 def _data_missing_detail_text(report: dict[str, Any], volume: dict[str, Any] | None = None) -> str:
-    fields = [str(item).strip() for item in ((report.get("debug") or {}).get("data_missing_fields") or []) if str(item).strip()]
+    fields = [str(item).strip() for item in _actionable_missing_fields(report) if str(item).strip()]
+    fields.extend(str(item).strip() for item in _all_missing_fields(report) if _is_optional_gap_field(str(item)))
+    if volume and volume.get("volume_source") != "unavailable":
+        fields = [field for field in fields if _field_display_label(field) != "成交量"]
     if volume and volume.get("volume_source") == "unavailable":
         fields.append("volume")
-        fields.append("daily_bar.volume")
     groups = _missing_groups(report)
     if any("资料缺口" in group for group in groups):
-        if not report.get("company_name"):
+        if not (report.get("company_name") or report.get("companyName") or report.get("name") or report.get("company")):
             fields.append("company_name")
-        if not (report.get("sector") or report.get("industry") or report.get("business_model") or report.get("model")):
+        if not (
+            report.get("sector")
+            or report.get("industry")
+            or report.get("industry_group")
+            or report.get("industryGroup")
+            or report.get("business_model")
+            or report.get("businessModel")
+            or report.get("model")
+        ):
             fields.append("sector / industry")
-    return _inline_list(_dedupe_text(fields))
+    return _field_list_display(_dedupe_text(fields), report)
 
 
 def _average_score(*values: Any) -> float | None:
