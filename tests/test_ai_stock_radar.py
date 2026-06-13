@@ -376,9 +376,74 @@ def test_ai_radar_render_uses_dedicated_report_view_not_list_append() -> None:
 
     assert '_selected_radar_view()' in source
     assert 'if view == "report":' in source
-    assert "_render_report_view(selected, tickers)" in source
+    assert "_render_report_view(selected, tickers, perf)" in source
     assert '_render_list(tickers, "", source)' in source
     assert "_render_report(selected)" not in source
+
+
+def test_ai_radar_report_html_can_skip_appendix_for_fast_first_paint() -> None:
+    report = {
+        "ticker": "NOW",
+        "company_name": "ServiceNow",
+        "current_price": 102.15,
+        "decision": "WAIT",
+        "final_score": 64.1,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame(), include_appendix=False)
+
+    assert "投资结论" in html
+    assert "执行摘要" in html
+    assert "附录数据" not in html
+    assert "核心财务摘要" not in html
+
+
+def test_ai_radar_appendix_html_is_separate_from_core_report() -> None:
+    report = {
+        "ticker": "NOW",
+        "company_name": "ServiceNow",
+        "current_price": 102.15,
+        "decision": "WAIT",
+        "final_score": 64.1,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._report_appendix_html(
+        report,
+        {},
+        {"forward_pe": 30},
+        {},
+        {},
+        pd.DataFrame(),
+        {"missing_fields": [], "stale_fields": []},
+    )
+
+    assert "附录数据" in html
+    assert "核心财务摘要" in html
+    assert "数据健康" in html
+
+
+def test_ai_radar_runtime_cache_reports_hit_and_reuses_loader() -> None:
+    radar_ui._clear_report_runtime_cache()
+    calls = {"count": 0}
+
+    def loader() -> dict:
+        calls["count"] += 1
+        return {"value": calls["count"]}
+
+    first_perf = radar_ui.PerfProbe()
+    second_perf = radar_ui.PerfProbe()
+
+    first = radar_ui._runtime_cached(("unit", "NOW"), 60, loader, first_perf, "unit stage")
+    second = radar_ui._runtime_cached(("unit", "NOW"), 60, loader, second_perf, "unit stage")
+
+    assert first == {"value": 1}
+    assert second == {"value": 1}
+    assert calls["count"] == 1
+    assert first_perf.stages[-1].cache_hit is False
+    assert second_perf.stages[-1].cache_hit is True
+    radar_ui._clear_report_runtime_cache()
 
 
 def test_ai_radar_list_links_open_report_view() -> None:

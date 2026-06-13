@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from html import escape
+import time
 from typing import Any
 
 import pandas as pd
@@ -17,10 +19,77 @@ from settings import load_watchlist
 from ui.theme import render_page_header
 
 
+REPORT_ROW_TTL_SECONDS = 120
+QUOTE_TTL_SECONDS = 120
+HISTORY_TTL_SECONDS = 600
+PORTFOLIO_TTL_SECONDS = 30
+_FALLBACK_REPORT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
+@dataclass
+class PerfStage:
+    name: str
+    elapsed_ms: float
+    cache_hit: bool | None = None
+    external_api: bool = False
+    note: str = ""
+
+
+@dataclass
+class PerfProbe:
+    started_at: float = field(default_factory=time.perf_counter)
+    stages: list[PerfStage] = field(default_factory=list)
+
+    def add(
+        self,
+        name: str,
+        elapsed_ms: float,
+        *,
+        cache_hit: bool | None = None,
+        external_api: bool = False,
+        note: str = "",
+    ) -> None:
+        self.stages.append(
+            PerfStage(
+                name=name,
+                elapsed_ms=elapsed_ms,
+                cache_hit=cache_hit,
+                external_api=external_api,
+                note=note,
+            )
+        )
+
+    @property
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self.started_at) * 1000
+
+
+@dataclass
+class StockReportContext:
+    symbol: str
+    row: dict[str, Any]
+    snapshot: dict[str, Any]
+    technicals: dict[str, Any]
+    report: dict[str, Any]
+    market: dict[str, Any]
+    history: pd.DataFrame
+    action_result: Any
+    conclusion: dict[str, Any]
+    portfolio_context: dict[str, Any]
+    data_health: dict[str, Any]
+    performance: PerfProbe
+    history_loaded: bool = False
+
+
 def render() -> None:
+    perf = PerfProbe()
+    stage_start = time.perf_counter()
     _render_styles()
     render_page_header("AI Stock Radar", "只读本地缓存，生成单票纪律雷达；价格到达和评分通过都不是自动交易信号。")
+    perf.add("页面基础渲染", (time.perf_counter() - stage_start) * 1000, cache_hit=None, external_api=False)
+    stage_start = time.perf_counter()
     tickers, source = select_radar_symbols(load_watchlist())
+    perf.add("radar ticker / selected ticker 读取", (time.perf_counter() - stage_start) * 1000, cache_hit=None, external_api=False)
     if not tickers:
         st.info("观察池为空。")
         return
@@ -28,7 +97,7 @@ def render() -> None:
     view = _selected_radar_view()
     selected = _selected_symbol(tickers)
     if view == "report":
-        _render_report_view(selected, tickers)
+        _render_report_view(selected, tickers, perf)
         return
     _render_list(tickers, "", source)
 
@@ -59,24 +128,57 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
     )
 
 
-def _render_report_view(symbol: str, tickers: list[str]) -> None:
+def _render_report_view(symbol: str, tickers: list[str], perf: PerfProbe | None = None) -> None:
     known = {ticker.upper() for ticker in tickers}
     if not symbol or symbol not in known:
         st.markdown(_report_not_found_html(symbol), unsafe_allow_html=True)
         return
-    row = _single_report_row(symbol)
-    snapshot = _dict_value(row, "rawSnapshot")
-    company = _company_name_from_sources(symbol, row, snapshot or {})
-    updated = _short_time(_row_value(row, "dataUpdatedAt", "data_updated_at") or _first_present(snapshot or {}, "updated_at", "fetched_at"))
-    st.markdown(_report_view_toolbar_html(symbol, company, updated), unsafe_allow_html=True)
-    _render_report(symbol)
+    st.markdown(_report_view_toolbar_html(symbol, "加载中", "等待缓存读取"), unsafe_allow_html=True)
+    _render_report(symbol, perf or PerfProbe())
 
 
-def _render_report(symbol: str) -> None:
-    row = _single_report_row(symbol)
-    snapshot = _dict_value(row, "rawSnapshot")
-    technicals = _dict_value(row, "rawTechnicals")
-    report = build_ai_stock_radar_report(
+def _render_report(symbol: str, perf: PerfProbe | None = None) -> None:
+    perf = perf or PerfProbe()
+    st.markdown('<div id="radar-report"></div>', unsafe_allow_html=True)
+    shell = st.empty()
+    shell.markdown(_report_loading_shell_html(symbol), unsafe_allow_html=True)
+    _render_report_refresh_control(symbol)
+    context = build_stock_report_context(symbol, perf=perf, load_history=False)
+    shell.markdown(
+        _report_html(
+            context.report,
+            context.market,
+            context.snapshot,
+            context.technicals,
+            context.row,
+            context.history,
+            action_result=context.action_result,
+            conclusion=context.conclusion,
+            portfolio_context=context.portfolio_context,
+            data_health=context.data_health,
+            include_appendix=False,
+            perf=context.performance,
+        ),
+        unsafe_allow_html=True,
+    )
+    _render_report_appendix_section(context)
+    with st.expander("评分依据 / 数据诊断", expanded=False):
+        st.markdown(_debug_html(context.report.get("debug") or {}, context.report), unsafe_allow_html=True)
+    with st.expander("性能诊断", expanded=False):
+        st.markdown(_performance_diagnostics_html(context.performance), unsafe_allow_html=True)
+
+
+def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, load_history: bool = False) -> StockReportContext:
+    perf = perf or PerfProbe()
+    symbol = str(symbol or "").strip().upper()
+    row = _cached_report_row(symbol, perf)
+    snapshot = _dict_value(row, "rawSnapshot") or {}
+    technicals = _dict_value(row, "rawTechnicals") or {}
+    perf.add("financials / fundamentals 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存")
+    perf.add("technical_data 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存")
+    market = _cached_market_context(symbol, perf)
+    stage_start = time.perf_counter()
+    report_obj = build_ai_stock_radar_report(
         symbol,
         company_name=str(_row_value(row, "companyName") or symbol),
         scores=None if snapshot and technicals else _scores_from_row(row),
@@ -85,14 +187,159 @@ def _render_report(symbol: str) -> None:
         bull_points=_list_value(row, "keyPositiveDrivers"),
         risk_points=_list_value(row, "keyNegativeDrivers"),
         watch_points=_watch_points(row),
+        market=market,
     )
-    market = build_market_context(symbol)
-    history = build_market_history(symbol)
-    st.markdown('<div id="radar-report"></div>', unsafe_allow_html=True)
-    report_dict = report.to_dict()
-    st.markdown(_report_html(report_dict, market, snapshot or {}, technicals or {}, row or {}, history), unsafe_allow_html=True)
-    with st.expander("评分依据 / 数据诊断", expanded=False):
-        st.markdown(_debug_html(report_dict.get("debug") or {}, report_dict), unsafe_allow_html=True)
+    report = report_obj.to_dict()
+    perf.add("估值区间计算", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False, note="复用已读取 quote")
+    history = _cached_market_history(symbol, perf) if load_history else _empty_history_frame()
+    if not load_history:
+        perf.add("历史 K 线读取", 0.0, cache_hit=None, external_api=False, note="延后到附录按需加载")
+    volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row or {}, history)
+    portfolio_snapshot = _cached_portfolio_context(symbol, perf)
+    stage_start = time.perf_counter()
+    action_result = _action_fusion_result_from_snapshots(report, technicals, row or {}, volume_snapshot, portfolio_snapshot)
+    conclusion = _trade_conclusion(report, action_result)
+    perf.add("action_fusion / trade_conclusion 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
+    stage_start = time.perf_counter()
+    portfolio_context = _portfolio_context(report, row or {}, action_result)
+    perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用 Action Fusion snapshot")
+    stage_start = time.perf_counter()
+    data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context)
+    perf.add("data_health 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
+    return StockReportContext(
+        symbol=symbol,
+        row=row or {},
+        snapshot=snapshot,
+        technicals=technicals,
+        report=report,
+        market=market,
+        history=history,
+        action_result=action_result,
+        conclusion=conclusion,
+        portfolio_context=portfolio_context,
+        data_health=data_health,
+        performance=perf,
+        history_loaded=load_history,
+    )
+
+
+def _render_report_refresh_control(symbol: str) -> None:
+    columns = st.columns([1, 6])
+    with columns[0]:
+        if st.button("刷新研报缓存", key=f"ai-radar-refresh-{symbol}", help="清理本页运行期缓存，重新读取本地缓存。"):
+            _clear_report_runtime_cache(symbol)
+            st.rerun()
+
+
+def _render_report_appendix_section(context: StockReportContext) -> None:
+    load_appendix = st.toggle(
+        "加载附录数据",
+        value=False,
+        key=f"ai-radar-load-appendix-{context.symbol}",
+        help="附录包含行情明细、财务摘要、市场表现和数据完整度，默认不阻塞首屏。",
+    )
+    if not load_appendix:
+        st.markdown(_appendix_lazy_placeholder_html(), unsafe_allow_html=True)
+        context.performance.add("附录数据生成", 0.0, cache_hit=None, external_api=False, note="未加载")
+        return
+    history = _cached_market_history(context.symbol, context.performance)
+    stage_start = time.perf_counter()
+    appendix_html = _report_appendix_html(
+        context.report,
+        context.market,
+        context.snapshot,
+        context.technicals,
+        context.row,
+        history,
+        context.data_health,
+    )
+    context.performance.add("附录数据生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False, note="用户手动加载")
+    st.markdown(appendix_html, unsafe_allow_html=True)
+
+
+def _cached_report_row(symbol: str, perf: PerfProbe) -> dict[str, Any] | None:
+    return _runtime_cached(
+        ("report_row", symbol),
+        REPORT_ROW_TTL_SECONDS,
+        lambda: _single_report_row(symbol),
+        perf,
+        "Radar 行 / profile 读取",
+    )
+
+
+def _cached_market_context(symbol: str, perf: PerfProbe) -> dict[str, Any]:
+    return _runtime_cached(
+        ("market_context", symbol),
+        QUOTE_TTL_SECONDS,
+        lambda: build_market_context(symbol),
+        perf,
+        "quote 读取",
+    )
+
+
+def _cached_market_history(symbol: str, perf: PerfProbe) -> pd.DataFrame:
+    return _runtime_cached(
+        ("market_history", symbol),
+        HISTORY_TTL_SECONDS,
+        lambda: build_market_history(symbol),
+        perf,
+        "历史 K 线读取",
+    )
+
+
+def _cached_portfolio_context(symbol: str, perf: PerfProbe) -> dict[str, Any]:
+    return _runtime_cached(
+        ("portfolio_context", symbol),
+        PORTFOLIO_TTL_SECONDS,
+        lambda: build_action_fusion_portfolio_context(symbol),
+        perf,
+        "portfolio_context 读取",
+    )
+
+
+def _runtime_cached(
+    key: tuple[Any, ...],
+    ttl_seconds: int,
+    loader: Any,
+    perf: PerfProbe,
+    stage_name: str,
+) -> Any:
+    cache = _report_runtime_cache()
+    now = time.time()
+    item = cache.get(key)
+    if item and now - float(item.get("stored_at", 0.0)) <= ttl_seconds:
+        perf.add(stage_name, 0.0, cache_hit=True, external_api=False)
+        return item.get("value")
+    stage_start = time.perf_counter()
+    value = loader()
+    perf.add(stage_name, (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False, note="本地缓存读取")
+    cache[key] = {"stored_at": now, "value": value}
+    return value
+
+
+def _report_runtime_cache() -> dict[tuple[Any, ...], dict[str, Any]]:
+    try:
+        cache = st.session_state.setdefault("ai_radar_report_runtime_cache", {})
+        if isinstance(cache, dict):
+            return cache
+    except Exception:
+        pass
+    return _FALLBACK_REPORT_CACHE
+
+
+def _clear_report_runtime_cache(symbol: str | None = None) -> None:
+    cache = _report_runtime_cache()
+    if not symbol:
+        cache.clear()
+        return
+    normalized = str(symbol or "").strip().upper()
+    for key in list(cache.keys()):
+        if len(key) > 1 and str(key[1]).upper() == normalized:
+            cache.pop(key, None)
+
+
+def _empty_history_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
 
 def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
@@ -114,6 +361,73 @@ def _report_not_found_html(symbol: str) -> str:
         f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回 Radar 列表</a>'
         f"<strong>未找到 {escape(text)} 的股票研报</strong>"
         "<span>请返回列表选择观察池中的股票。</span>"
+        "</section>"
+    )
+
+
+def _report_loading_shell_html(symbol: str) -> str:
+    ticker = escape(str(symbol or ""))
+    return (
+        '<article class="ai-radar-research-report loading">'
+        '<header class="ai-radar-research-header skeleton">'
+        '<div class="ai-radar-title-block">'
+        '<span>AI 股票雷达研究</span>'
+        f"<h1>{ticker}</h1>"
+        "<p>正在读取本地缓存</p>"
+        "<em>先展示研报框架，重数据稍后加载。</em>"
+        "</div>"
+        '<aside class="ai-radar-header-decision">'
+        '<span class="ai-radar-header-kicker">投资结论</span>'
+        "<strong>加载中</strong>"
+        '<div class="ai-radar-header-decision-grid">'
+        "<div><span>当前动作</span><b>等待刷新</b></div>"
+        "<div><span>当前区间</span><b>暂缺</b></div>"
+        "<div><span>确认条件</span><b>加载中</b></div>"
+        "<div><span>风险线</span><b>加载中</b></div>"
+        "<div><span>结论可信度</span><b>读取中</b></div>"
+        "<div><span>质量等级</span><b>暂缺</b></div>"
+        "</div>"
+        "</aside>"
+        '<div class="ai-radar-header-stats">'
+        "<div><span>最新价</span><strong>加载中</strong></div>"
+        "<div><span>当前区间</span><strong>加载中</strong></div>"
+        "<div><span>总分</span><strong>加载中</strong></div>"
+        "</div>"
+        "</header>"
+        '<section class="ai-radar-executive-card">'
+        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 触发 / 失效</b></div>'
+        '<p class="ai-radar-thesis">本页结论：正在读取本地缓存，先展示研报框架。</p>'
+        '<aside class="ai-radar-position-context">'
+        "<strong>我的持仓：加载中</strong>"
+        "<span>动作建议：等待持仓缓存读取</span>"
+        "</aside>"
+        "</section>"
+        "</article>"
+    )
+
+
+def _performance_diagnostics_html(perf: PerfProbe) -> str:
+    rows = []
+    for stage in perf.stages:
+        cache = "命中" if stage.cache_hit is True else "未命中" if stage.cache_hit is False else "不适用"
+        external = "是" if stage.external_api else "否"
+        note = stage.note or "无"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(stage.name)}</td>"
+            f"<td>{stage.elapsed_ms:.2f} ms</td>"
+            f"<td>{escape(cache)}</td>"
+            f"<td>{escape(external)}</td>"
+            f"<td>{escape(note)}</td>"
+            "</tr>"
+        )
+    return (
+        '<section class="ai-radar-debug ai-radar-perf-debug">'
+        f'<div class="ai-radar-debug-note">总耗时：{perf.total_ms:.2f} ms｜外部 API 请求：否（本页优先读取本地 cache.sqlite）</div>'
+        '<table class="ai-radar-debug-table">'
+        "<thead><tr><th>阶段</th><th>耗时</th><th>缓存</th><th>外部 API</th><th>说明</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
         "</section>"
     )
 
@@ -271,21 +585,37 @@ def _report_html(
     snapshot: dict[str, Any],
     technicals: dict[str, Any],
     row: dict[str, Any],
-    history: pd.DataFrame,
+    history: pd.DataFrame | None,
+    *,
+    action_result: Any | None = None,
+    conclusion: dict[str, Any] | None = None,
+    portfolio_context: dict[str, Any] | None = None,
+    data_health: dict[str, Any] | None = None,
+    include_appendix: bool = True,
+    perf: PerfProbe | None = None,
 ) -> str:
     decision = str(report.get("decision") or "")
     core_status = _core_status(report)
     confidence = _data_confidence(report)
-    action_result = _action_fusion_result(report, technicals, row, history)
-    conclusion = _trade_conclusion(report, action_result)
-    portfolio_context = _portfolio_context(report, row, action_result)
-    data_health = _data_health_context(report, market, snapshot, row, portfolio_context)
+    action_result = action_result or _action_fusion_result(report, technicals, row, history)
+    conclusion = conclusion or _trade_conclusion(report, action_result)
+    portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
+    data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context)
+    stage_start = time.perf_counter()
+    range_html = _range_chart_html(report, conclusion)
+    if perf is not None:
+        perf.add("图表渲染", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
+    appendix_html = (
+        _report_appendix_html(report, market, snapshot, technicals, row, history, data_health)
+        if include_appendix
+        else ""
+    )
     return (
         f'<article class="ai-radar-research-report {_decision_tone(decision)}">'
         f"{_research_header_html(report, market, snapshot, technicals, core_status, history, action_result, conclusion)}"
         f"{_executive_summary_card_html(report, snapshot, market, row, action_result, portfolio_context, conclusion)}"
         '<section class="ai-radar-visual-grid">'
-        f"{_range_chart_html(report, conclusion)}"
+        f"{range_html}"
         f"{_score_card_html(report)}"
         "</section>"
         '<section class="ai-radar-opinion-grid two-col">'
@@ -296,8 +626,29 @@ def _report_html(
         f"{_watch_points_table_html(report, row)}"
         f"{_volume_price_acceptance_card_html(report, technicals, row, history)}"
         "</section>"
+        f"{appendix_html}"
+        '<footer class="ai-radar-report-foot">'
+        f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
+        f'<span>数据完整度：{escape(confidence)}</span>'
+        f'<span>报告版本：{escape(RADAR_REPORT_VERSION)}</span>'
+        "</footer>"
+        "</article>"
+    )
+
+
+def _report_appendix_html(
+    report: dict[str, Any],
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    history: pd.DataFrame | None,
+    data_health: dict[str, Any],
+) -> str:
+    confidence = _data_confidence(report)
+    return (
         '<section class="ai-radar-appendix">'
-        '<details class="ai-radar-appendix-details">'
+        '<details class="ai-radar-appendix-details" open>'
         '<summary>附录数据</summary>'
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
@@ -311,12 +662,17 @@ def _report_html(
         f"{_data_completeness_html(report, confidence, _volume_snapshot(market, snapshot, technicals, history))}"
         "</details>"
         "</section>"
-        '<footer class="ai-radar-report-foot">'
-        f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
-        f'<span>数据完整度：{escape(confidence)}</span>'
-        f'<span>报告版本：{escape(RADAR_REPORT_VERSION)}</span>'
-        "</footer>"
-        "</article>"
+    )
+
+
+def _appendix_lazy_placeholder_html() -> str:
+    return (
+        '<section class="ai-radar-appendix lazy">'
+        '<div class="ai-radar-appendix-placeholder">'
+        '<strong>附录数据未加载</strong>'
+        '<span>今日行情明细、财务摘要、市场表现和数据完整度详情已延后，点击上方“加载附录数据”后再读取。</span>'
+        "</div>"
+        "</section>"
     )
 
 
@@ -972,6 +1328,17 @@ def _action_fusion_result(
     history: pd.DataFrame | None,
 ) -> Any:
     volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row, history)
+    portfolio_snapshot = build_action_fusion_portfolio_context(str(report.get("ticker") or row.get("ticker") or ""))
+    return _action_fusion_result_from_snapshots(report, technicals, row, volume_snapshot, portfolio_snapshot)
+
+
+def _action_fusion_result_from_snapshots(
+    report: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    volume_snapshot: dict[str, Any],
+    portfolio_snapshot: dict[str, Any],
+) -> Any:
     return evaluate_action_fusion(
         ticker=str(report.get("ticker") or row.get("ticker") or ""),
         context={
@@ -986,7 +1353,7 @@ def _action_fusion_result(
             or volume_snapshot.get("volumePriceReasonCn")
             or volume_snapshot.get("reason_cn"),
         },
-        portfolio_context=build_action_fusion_portfolio_context(str(report.get("ticker") or row.get("ticker") or "")),
+        portfolio_context=portfolio_snapshot,
     )
 
 
@@ -2108,8 +2475,11 @@ def _selected_radar_view() -> str:
 def _selected_symbol(tickers: list[str]) -> str:
     query_symbol = _query_symbol()
     if query_symbol:
+        if st.session_state.get("ai_radar_selected_ticker") != query_symbol:
+            st.session_state["ai_radar_selected_ticker"] = query_symbol
         return query_symbol
-    return ""
+    stored = str(st.session_state.get("ai_radar_selected_ticker") or "").strip().upper()
+    return stored if stored in {ticker.upper() for ticker in tickers} else ""
 
 
 def _query_symbol() -> str:
@@ -2657,6 +3027,9 @@ def _render_styles() -> None:
             overflow:hidden;
             box-shadow:0 18px 46px rgba(15, 23, 42, 0.08);
         }
+        .ai-radar-research-report.loading {
+            box-shadow:0 14px 34px rgba(15, 23, 42, 0.06);
+        }
         .ai-radar-research-header {
             position:relative;
             display:grid;
@@ -2666,6 +3039,9 @@ def _render_styles() -> None:
             background:
                 linear-gradient(135deg, rgba(11,31,58,0.98) 0%, rgba(17,45,78,0.98) 58%, rgba(21,68,101,0.96) 100%);
             color:#FFFFFF;
+        }
+        .ai-radar-research-header.skeleton {
+            min-height:260px;
         }
         .ai-radar-title-block span,
         .ai-radar-title-block em {
@@ -2900,6 +3276,30 @@ def _render_styles() -> None:
         .ai-radar-appendix {
             border-top:1px solid #E8EEF5;
             padding-top:12px;
+        }
+        .ai-radar-appendix.lazy {
+            border-top:0;
+            padding-top:0;
+            max-width:1280px;
+            margin:14px auto;
+        }
+        .ai-radar-appendix-placeholder {
+            border:1px dashed #CBD5E1;
+            border-radius:8px;
+            background:#F8FAFC;
+            padding:12px 14px;
+            color:#475569;
+            font-size:12px;
+            line-height:1.55;
+        }
+        .ai-radar-appendix-placeholder strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:13px;
+            margin-bottom:3px;
+        }
+        .ai-radar-appendix-placeholder span {
+            display:block;
         }
         .ai-radar-appendix-details {
             color:#334155;

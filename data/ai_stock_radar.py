@@ -174,9 +174,10 @@ def build_ai_stock_radar_report(
     watch_points: list[str] | None = None,
     now: datetime | None = None,
     quote_max_age_hours: float | None = 24,
+    market: dict[str, Any] | None = None,
 ) -> RadarReport:
     symbol = _symbol(ticker)
-    market = build_market_context(symbol, path=path, now=now, quote_max_age_hours=quote_max_age_hours)
+    market = dict(market or build_market_context(symbol, path=path, now=now, quote_max_age_hours=quote_max_age_hours))
     current_price = _number(market.get("currentPrice"))
     metrics = _radar_metrics(snapshot, technicals, market) if snapshot is not None and technicals is not None else {}
     score_input = _score_input(scores, snapshot=snapshot, technicals=technicals, market=market)
