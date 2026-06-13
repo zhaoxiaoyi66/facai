@@ -371,8 +371,8 @@ def test_macro_only_refresh_calls_macro_refresher_without_stock_provider(tmp_pat
     assert provider.fundamental_calls == 0
 
 
-def test_macro_only_refresh_uses_fast_macro_status_by_default(monkeypatch, tmp_path) -> None:
-    from data.macro_regime import MACRO_FAST_STATUS
+def test_macro_only_refresh_uses_unified_official_refresh_by_default(monkeypatch, tmp_path) -> None:
+    from data.macro_regime import MACRO_FORCE_OFFICIAL_REFRESH
     import data.refresh_policy as refresh_policy
 
     calls: list[str] = []
@@ -390,7 +390,7 @@ def test_macro_only_refresh_uses_fast_macro_status_by_default(monkeypatch, tmp_p
     )
 
     assert result["status"] == "partial"
-    assert calls == [MACRO_FAST_STATUS]
+    assert calls == [MACRO_FORCE_OFFICIAL_REFRESH]
 
 
 def test_summarize_refresh_result_uses_mode_specific_label() -> None:

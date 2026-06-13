@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from data.fundamentals import FundamentalCache
-from data.macro_regime import MACRO_FAST_STATUS, refresh_macro_indicators
+from data.macro_regime import MACRO_FORCE_OFFICIAL_REFRESH, refresh_macro_indicators
 from data.prices import CACHE_PATH
 
 
@@ -115,7 +115,7 @@ def refresh_symbols_by_mode(
         macro_result = (
             macro_refresher()
             if macro_refresher is not None
-            else refresh_macro_indicators(mode=MACRO_FAST_STATUS)
+            else refresh_macro_indicators(mode=MACRO_FORCE_OFFICIAL_REFRESH)
         )
         status = str(macro_result.get("status") or macro_result.get("overall_status") or "failed")
         result = RefreshResult(

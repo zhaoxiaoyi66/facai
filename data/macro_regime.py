@@ -478,11 +478,11 @@ def _snapshot_is_official(snapshot: MacroIndicatorSnapshot) -> bool:
 
 def _normalize_macro_refresh_mode(value: object) -> str:
     text = str(value or "").strip().upper()
-    if text in {MACRO_FAST_STATUS, "FAST", "FRONTEND", "MACRO_ONLY"}:
+    if text in {MACRO_FAST_STATUS, "FAST", "FRONTEND"}:
         return MACRO_FAST_STATUS
     if text in {MACRO_OFFICIAL_BACKFILL, "BACKFILL", "OFFICIAL_BACKFILL"}:
         return MACRO_OFFICIAL_BACKFILL
-    if text in {MACRO_FORCE_OFFICIAL_REFRESH, "FORCE", "FULL", "FORCE_OFFICIAL"}:
+    if text in {MACRO_FORCE_OFFICIAL_REFRESH, "FORCE", "FULL", "FORCE_OFFICIAL", "MACRO_ONLY"}:
         return MACRO_FORCE_OFFICIAL_REFRESH
     return MACRO_FORCE_OFFICIAL_REFRESH
 

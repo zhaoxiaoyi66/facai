@@ -1773,6 +1773,7 @@ def test_ten_year_fast_rise_adds_growth_valuation_pressure_hint() -> None:
 
 def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     from ui import dashboard
+    from data import macro_regime
 
     header_source = inspect.getsource(dashboard._render_dashboard_header)
     refresh_result_source = inspect.getsource(dashboard._render_macro_refresh_result)
@@ -1781,7 +1782,11 @@ def test_dashboard_refresh_buttons_call_macro_refresh() -> None:
     assert "刷新大盘环境" in header_source
     assert "dashboard_refresh_macro_regime_cache" in header_source
     assert "RefreshMode.MACRO_ONLY" in header_source
+    assert "MACRO_FAST_STATUS" not in header_source
+    assert "MACRO_OFFICIAL_BACKFILL" not in header_source
+    assert "MACRO_FORCE_OFFICIAL_REFRESH" not in header_source
     assert "RefreshMode.MACRO_ONLY" in inspect.getsource(dashboard._refresh_macro_cache_for_dashboard)
+    assert macro_regime._normalize_macro_refresh_mode("MACRO_ONLY") == macro_regime.MACRO_FORCE_OFFICIAL_REFRESH
     assert "indicator_results" in refresh_result_source
     assert "大盘环境刷新完成" in refresh_result_source
     assert "核心指标" in refresh_result_source
