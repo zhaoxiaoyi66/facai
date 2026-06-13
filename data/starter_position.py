@@ -64,7 +64,7 @@ def evaluate_starter_position(
     elif after_pct > max_pct + 1e-9:
         reasons.append(f"买后仓位 {after_pct:.1f}% 超过底仓上限 {max_pct:.1f}%。")
     if mood in BLOCKED_STARTER_MOODS:
-        reasons.append("当前交易心理属于情绪交易风险，不能用底仓建仓绕过门禁。")
+        reasons.append("当前交易心理属于情绪交易风险，不能用底仓建仓绕过提示。")
     if not str(buy_reason or "").strip():
         reasons.append("缺少买入理由。")
     if _number(target_sell_price) is None:
@@ -76,9 +76,9 @@ def evaluate_starter_position(
     if not str(invalidation_condition or "").strip():
         reasons.append("缺少失效条件。")
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING":
-        notes.append("Radar buy-zone data is missing; this is an advisory warning and does not block starter sync.")
+        notes.append("Radar 买区数据缺失；这是提示，不会阻止底仓同步。")
     if is_stale:
-        notes.append("Radar / price data is stale; this is an advisory warning and does not block starter sync.")
+        notes.append("Radar / 价格数据过期；这是提示，不会阻止底仓同步。")
 
     if reasons:
         return _blocked("starter_blocked", reasons, max_pct, before_pct, after_pct)

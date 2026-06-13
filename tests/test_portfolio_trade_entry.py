@@ -1154,7 +1154,12 @@ def test_planned_ladder_buy_treats_radar_data_missing_or_stale_as_advisory() -> 
         assert entry["radar_advisory_only"]
         assert entry["planned_ladder_buy"]
         assert entry["plan_match_status"] == "allow_planned_add"
-        assert json.loads(entry["radar_advisory_warnings_json"])
+        warnings = json.loads(entry["radar_advisory_warnings_json"])
+        assert warnings
+        warning_text = " ".join(warnings)
+        assert "Radar 买区数据缺失或过期" in warning_text
+        assert "advisory warning" not in warning_text
+        assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
         assert result["synced"] is True
         assert position is not None
         assert position["quantity"] == 50
@@ -1380,7 +1385,13 @@ def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeyp
         assert not entry["radar_blocked"]
         assert entry["radar_advisory_only"]
         assert entry["starter_match_status"] == "allow_starter_position"
-        assert json.loads(entry["radar_advisory_warnings_json"])
+        warnings = json.loads(entry["radar_advisory_warnings_json"])
+        assert warnings
+        warning_text = " ".join(warnings)
+        assert "Radar 买区数据缺失" in warning_text
+        assert "价格数据过期" in warning_text
+        assert "starter sync" not in warning_text
+        assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
         assert result["synced"] is True
         assert position is not None
 

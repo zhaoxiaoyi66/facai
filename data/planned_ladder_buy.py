@@ -68,7 +68,7 @@ def evaluate_planned_ladder_buy(
     if current_price is None:
         return _blocked(symbol, "price_missing", ["缺少当前价格，不能匹配分批买入计划。"], max_position_pct=max_position_pct, timing=timing)
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING" or is_stale:
-        notes.append("Radar buy-zone data is missing or stale; this is an advisory warning and does not block a matched plan buy.")
+        notes.append("Radar 买区数据缺失或过期；这是提示，不会阻止已匹配的计划买入。")
     if qty is None or qty <= 0:
         return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct, timing=timing)
     if mood in BLOCKED_BUY_MOODS:
@@ -118,10 +118,12 @@ def evaluate_planned_ladder_buy(
             timing=timing,
         )
 
-    notes.extend([
-        f"已匹配 {level['label']}：当前价不高于触发价 {level['trigger_price']:g}。",
-        f"本次数量 {qty:g} 股不超过剩余计划数量 {remaining:g} 股。",
-    ])
+    notes.extend(
+        [
+            f"已匹配 {level['label']}：当前价不高于触发价 {level['trigger_price']:g}。",
+            f"本次数量 {qty:g} 股不超过剩余计划数量 {remaining:g} 股。",
+        ]
+    )
     if timing["fresh_plan_execution"]:
         notes.append("该计划刚创建或刚修改，本次执行会被标记为临时计划执行，供复盘参考。")
 
