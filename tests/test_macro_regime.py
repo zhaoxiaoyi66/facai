@@ -374,7 +374,7 @@ def test_refresh_official_hy_oas_cache_seeds_fred_value(tmp_path) -> None:
     loaded = MacroRegimeStore(path).load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
 
     assert snapshot.value == 2.78
-    assert snapshot.source == "FRED BAMLH0A0HYM2"
+    assert snapshot.source == "FRED CSV BAMLH0A0HYM2"
     assert loaded is not None
     assert loaded.value == 2.78
 
@@ -410,7 +410,7 @@ def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, mo
     assert result["status"] == "success"
     assert vix is not None
     assert vix.value == 22.9
-    assert vix.source == "FRED VIXCLS"
+    assert vix.source == "FRED CSV VIXCLS"
     assert hy is not None
     assert hy.value == 4.1
     assert ten_year is not None
@@ -419,7 +419,7 @@ def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, mo
     assert curve.value == -0.2
     assert dollar is not None
     assert dollar.value == 120.7
-    assert dollar.source == "FRED DTWEXBGS"
+    assert dollar.source == "FRED CSV DTWEXBGS"
     assert result["indicators"][DOLLAR_INDEX]["status"] == "success"
 
 
@@ -796,10 +796,12 @@ def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None
     assert "BAMLH0A0HYM2" not in fred_calls
 
 
-def test_default_fred_fetch_uses_short_foreground_timeouts(monkeypatch) -> None:
+def test_default_fred_fetch_uses_public_csv_download_endpoints(monkeypatch) -> None:
+    urls: list[str] = []
     timeouts: list[int] = []
 
     def fake_read_url_text(url: str, *, timeout_seconds: int):
+        urls.append(url)
         timeouts.append(timeout_seconds)
         raise RuntimeError("timeout")
 
@@ -810,7 +812,62 @@ def test_default_fred_fetch_uses_short_foreground_timeouts(monkeypatch) -> None:
     except RuntimeError:
         pass
 
-    assert timeouts == [2, 1]
+    assert timeouts == [4, 4]
+    assert urls
+    assert all("fredgraph.csv" in url for url in urls)
+    assert not any("html" in url.lower() for url in urls)
+
+
+def test_fred_csv_skips_empty_dot_and_nan_values() -> None:
+    payload = "\n".join(
+        [
+            "observation_date,DGS10",
+            "2026-06-08,.",
+            "2026-06-09,NaN",
+            "2026-06-10,4.55",
+            "2026-06-11,",
+        ]
+    )
+    snapshot = macro_regime._fetch_fred_snapshot(
+        TEN_YEAR_YIELD,
+        "DGS10",
+        fred_fetcher=lambda series_id: payload,
+        now=datetime(2026, 6, 11, 12, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.value == 4.55
+    assert snapshot.observation_date == "2026-06-10"
+    assert snapshot.source == "FRED CSV DGS10"
+
+
+def test_zero_vix_market_quote_falls_back_to_cboe_csv(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    store = MacroRegimeStore(path)
+
+    def fake_read_url_text(url: str, *, timeout_seconds: int):
+        assert url == macro_regime.CBOE_VIX_CSV_URL
+        assert timeout_seconds == 4
+        return "\n".join(
+            [
+                "DATE,OPEN,HIGH,LOW,CLOSE",
+                "06/09/2026,18.0,19.0,17.5,18.5",
+                "06/10/2026,19.0,20.0,18.7,19.4",
+            ]
+        )
+
+    monkeypatch.setattr("data.macro_regime._read_url_text", fake_read_url_text)
+
+    snapshot = macro_regime._fetch_vix_snapshot(
+        path,
+        provider=ZeroVixProvider(),
+        fred_fetcher=None,
+        store=store,
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.value == 19.4
+    assert snapshot.observation_date == "2026-06-10"
+    assert snapshot.source == "Cboe VIX CSV"
 
 
 def test_fred_circuit_breaker_skips_frontend_fred_refresh_after_repeated_timeouts(tmp_path, monkeypatch) -> None:
@@ -1464,7 +1521,7 @@ def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, mo
     assert result["indicator_results"]
     vix_result = result["indicators"][VIX]
     assert vix_result["status"] == "success"
-    assert vix_result["source"] == "FRED VIXCLS"
+    assert vix_result["source"] == "FRED CSV VIXCLS"
     assert "duration_seconds" in vix_result
     assert "observation_date" in vix_result
 

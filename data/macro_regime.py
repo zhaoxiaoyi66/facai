@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 import sqlite3
 import csv
 import io
@@ -49,10 +50,12 @@ VIX_MARKET_SYMBOLS = ("AVIX", "^VIX", "VIX")
 DOLLAR_MARKET_SYMBOLS = ("DXY", "^DXY", "DX-Y.NYB")
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
+CBOE_VIX_CSV_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
 CNN_FEAR_GREED_URL = CNN_FEAR_GREED_GRAPH_URL
 MACRO_REQUEST_TIMEOUT_SECONDS = 4
-FRED_PRIMARY_TIMEOUT_SECONDS = 2
-FRED_FALLBACK_TIMEOUT_SECONDS = 1
+FRED_PRIMARY_TIMEOUT_SECONDS = 4
+FRED_FALLBACK_TIMEOUT_SECONDS = 4
+CBOE_VIX_TIMEOUT_SECONDS = 4
 FEAR_GREED_TIMEOUT_SECONDS = 2
 MACRO_REFRESH_MAX_WORKERS = 8
 FRED_CIRCUIT_FAILURE_THRESHOLD = 2
@@ -182,6 +185,7 @@ class MacroRegimeStore:
                         {
                             "reasons": snapshot.reasons,
                             "action_hints": snapshot.action_hints,
+                            "is_official": _snapshot_is_official(snapshot),
                         },
                         ensure_ascii=False,
                     ),
@@ -457,6 +461,11 @@ class MacroRegimeStore:
                 """
             )
             conn.commit()
+
+
+def _snapshot_is_official(snapshot: MacroIndicatorSnapshot) -> bool:
+    source = str(snapshot.source or "").lower()
+    return _normalize_indicator(snapshot.indicator) not in PROXY_MACRO_INDICATORS and "proxy" not in source and "代理" not in source
 
 
 def refresh_macro_indicators(
@@ -1133,11 +1142,34 @@ def _fetch_vix_snapshot(
             except Exception as exc:
                 errors.append(f"{symbol}: {_short_error(exc)}")
 
+    if fred_fetcher is None:
+        try:
+            return _fetch_cboe_vix_snapshot(now=now)
+        except Exception as exc:
+            errors.append(f"Cboe VIX CSV: {_short_error(exc)}")
+
     try:
         return _fetch_fred_snapshot_with_circuit(VIX, FRED_VIX_SERIES, store=store, fred_fetcher=fred_fetcher, now=now)
     except Exception as exc:
         errors.append(f"FRED {FRED_VIX_SERIES}: {_short_error(exc)}")
     raise RuntimeError("; ".join(errors) or "VIX 刷新失败")
+
+
+def _fetch_cboe_vix_snapshot(*, now: datetime) -> MacroIndicatorSnapshot:
+    payload = _read_url_text(CBOE_VIX_CSV_URL, timeout_seconds=CBOE_VIX_TIMEOUT_SECONDS)
+    rows = _series_rows_from_payload(payload, value_key="CLOSE")
+    if not rows:
+        raise RuntimeError("Cboe VIX CSV 没有可用观测值")
+    latest_date, latest_value = rows[-1]
+    if not _valid_vix_value(latest_value):
+        raise RuntimeError("Cboe VIX CSV returned invalid VIX value")
+    return _series_snapshot_from_rows(
+        VIX,
+        rows,
+        source="Cboe VIX CSV",
+        now=now,
+        raw_payload=payload,
+    )
 
 
 def _load_dollar_market_snapshot(path: Path, *, now: datetime | None = None) -> MacroIndicatorSnapshot | None:
@@ -1489,7 +1521,7 @@ def _fetch_fred_snapshot(
         change_20d=_series_change(values, 20),
         percentile_1y=_series_percentile(values[-252:], latest_value),
         percentile_5y=_series_percentile(values[-1260:], latest_value),
-        source=f"FRED {series_id}",
+        source=f"FRED CSV {series_id}",
         updated_at=fetched_at,
         fetched_at=fetched_at,
         observation_date=latest_date,
@@ -2580,10 +2612,13 @@ def _json_dict(value: object) -> dict[str, Any]:
 def _number(value: object) -> float | None:
     if value is None or value == "":
         return None
+    if isinstance(value, str) and value.strip().lower() in {"", ".", "nan", "na", "n/a", "null"}:
+        return None
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
+    return numeric if isfinite(numeric) else None
 
 
 def _valid_vix_value(value: object) -> bool:
@@ -2681,7 +2716,7 @@ def _series_rows_from_payload(payload: Any, *, value_key: str) -> list[tuple[str
     if isinstance(payload, str):
         reader = csv.DictReader(io.StringIO(payload))
         for row in reader:
-            date = str(row.get("observation_date") or row.get("DATE") or row.get("date") or "").strip()
+            date = _normalize_series_date(row.get("observation_date") or row.get("DATE") or row.get("date"))
             value = _number(row.get(value_key) or row.get("value") or row.get("VALUE"))
             if date and value is not None:
                 rows.append((date, value))
@@ -2696,11 +2731,27 @@ def _series_rows_from_payload(payload: Any, *, value_key: str) -> list[tuple[str
         for row in records:
             if not isinstance(row, dict):
                 continue
-            date = str(row.get("date") or row.get("observation_date") or row.get("x") or "").strip()
+            date = _normalize_series_date(row.get("date") or row.get("observation_date") or row.get("x"))
             value = _number(row.get("value") or row.get("y") or row.get(value_key))
             if date and value is not None:
-                rows.append((date[:10], value))
+                rows.append((date, value))
     return rows
+
+
+def _normalize_series_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return text[:10] if len(text) >= 10 else text
 
 
 def _series_change(values: list[float], days: int) -> float | None:
