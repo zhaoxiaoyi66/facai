@@ -1530,15 +1530,22 @@ class DashboardLayoutTests(unittest.TestCase):
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         render_source = inspect.getsource(dashboard_module.render)
         status_source = inspect.getsource(dashboard_module._render_dashboard_status_bar)
+        portfolio_strip_source = inspect.getsource(dashboard_module._portfolio_structure_terminal_strip_html)
         detail_source = inspect.getsource(dashboard_module._dashboard_command_detail_html)
         styles_source = inspect.getsource(dashboard_module._render_dashboard_styles)
 
         self.assertIn("build_portfolio_structure_check", render_source)
+        self.assertIn("_render_portfolio_structure_terminal_strip(portfolio_structure_check)", render_source)
+        self.assertLess(render_source.index("_render_dashboard_status_bar"), render_source.index("_render_portfolio_structure_terminal_strip"))
+        self.assertLess(render_source.index("_render_portfolio_structure_terminal_strip"), render_source.index("_render_decision_table(table)"))
         self.assertIn("_dashboard_command_detail_html", status_source)
         self.assertIn("_dashboard_macro_indicator_group_html", detail_source)
         self.assertNotIn("_dashboard_portfolio_structure_detail_block_html", detail_source)
+        self.assertIn("portfolio-structure-link", portfolio_strip_source)
         self.assertIn("dashboard-command-center", styles_source)
         self.assertIn("dashboard-command-details", styles_source)
+        self.assertIn("portfolio-structure-strip", styles_source)
+        self.assertIn("min-height:38px", styles_source)
 
     def test_dashboard_header_prominently_shows_cnn_fear_greed(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

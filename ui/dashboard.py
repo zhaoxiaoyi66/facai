@@ -290,6 +290,7 @@ def render() -> None:
         portfolio_structure_check=portfolio_structure_check,
         tickers=tickers,
     )
+    _render_portfolio_structure_terminal_strip(portfolio_structure_check)
     _render_price_alert_strip(tickers)
     _render_decision_table(table)
     _render_dashboard_system_status(data_health_context, risk_items, table, macro_regime)
@@ -732,6 +733,41 @@ def _render_dashboard_status_bar(
             "</section>"
         ),
         unsafe_allow_html=True,
+    )
+
+
+def _render_portfolio_structure_terminal_strip(portfolio_structure_check) -> None:
+    html = _portfolio_structure_terminal_strip_html(portfolio_structure_check)
+    if html:
+        st.markdown(html, unsafe_allow_html=True)
+
+
+def _portfolio_structure_terminal_strip_html(portfolio_structure_check) -> str:
+    if portfolio_structure_check is None:
+        return ""
+    status = str(getattr(portfolio_structure_check, "status", "") or "未计算")
+    tone = _portfolio_status_tone(portfolio_structure_check)
+    items = [
+        ("现金", _pct_text(getattr(portfolio_structure_check, "cash_pct", None))),
+        ("最大单票", _pct_text(getattr(portfolio_structure_check, "largest_position_pct", None))),
+        ("前三大", _pct_text(getattr(portfolio_structure_check, "top3_position_pct", None))),
+    ]
+    item_html = "".join(
+        f'<span><b>{escape(label)}</b><strong>{escape(value)}</strong></span>'
+        for label, value in items
+    )
+    reasons = [str(item) for item in list(getattr(portfolio_structure_check, "reasons", []) or []) if item]
+    hints = [str(item) for item in list(getattr(portfolio_structure_check, "action_hints", []) or []) if item]
+    detail = "；".join([*reasons[:2], *hints[:1]])
+    title = f"仓位结构：{status}" + (f"｜{detail}" if detail else "")
+    return (
+        f'<section class="portfolio-structure-strip {escape(tone)}" title="{escape(title)}">'
+        '<div class="portfolio-structure-main">'
+        f'<strong><b>仓位</b>{escape(status)}</strong>'
+        f'<div class="portfolio-structure-items">{item_html}</div>'
+        '<a class="portfolio-structure-link" href="#dashboard-system-status">查看原因</a>'
+        "</div>"
+        "</section>"
     )
 
 
@@ -4136,70 +4172,98 @@ def _render_dashboard_styles() -> None:
         }
         .portfolio-structure-strip {
             max-width:var(--dash-shell-width);
-            margin:-0.1rem 0 0.44rem;
-            padding:0.42rem 0.66rem;
-            border:1px solid rgba(148, 163, 184, 0.18);
-            border-radius:9px;
+            margin:0 0 0.34rem;
+            padding:0 0.56rem;
+            min-height:38px;
+            border:1px solid var(--dash-border);
+            border-radius:var(--dash-radius-sm);
             background:#FFFFFF;
-            color:#334155;
+            color:var(--dash-secondary);
             box-shadow:none;
-            font-size:11px;
-            line-height:1.35;
+            font-size:12px;
+            line-height:1.2;
+            overflow:hidden;
         }
-        .portfolio-structure-strip.aggressive {
-            border-color:rgba(217,119,6,0.20);
-            background:#FFFBEB;
+        .portfolio-structure-strip.ok {
+            border-left:2px solid var(--dash-success);
         }
-        .portfolio-structure-strip.imbalanced {
-            border-color:rgba(234,88,12,0.20);
-            background:#FFF7ED;
+        .portfolio-structure-strip.warn {
+            border-left:2px solid var(--dash-warning);
         }
         .portfolio-structure-strip.danger {
-            border-color:rgba(185,28,28,0.22);
-            background:#FEF2F2;
+            border-left:2px solid var(--dash-danger);
+        }
+        .portfolio-structure-strip.neutral {
+            border-left:2px solid var(--dash-muted);
         }
         .portfolio-structure-main {
             display:flex;
             align-items:center;
             justify-content:space-between;
-            gap:0.6rem;
+            gap:0.68rem;
+            min-height:38px;
         }
         .portfolio-structure-main > strong {
             flex:0 0 auto;
-            color:#334155;
-            font-size:11px;
-            font-weight:760;
+            display:inline-flex;
+            align-items:center;
+            gap:0.24rem;
+            color:var(--dash-text);
+            font-size:12.5px;
+            font-weight:800;
+            white-space:nowrap;
+        }
+        .portfolio-structure-main > strong b {
+            color:var(--dash-muted);
+            font-size:12px;
+            font-weight:680;
         }
         .portfolio-structure-items {
             display:flex;
-            flex-wrap:wrap;
-            justify-content:flex-end;
-            gap:0.34rem;
+            flex-wrap:nowrap;
+            justify-content:flex-start;
+            gap:0;
             min-width:0;
+            flex:1 1 auto;
         }
         .portfolio-structure-items span {
             display:inline-flex;
             align-items:center;
-            gap:0.18rem;
-            padding:0.12rem 0.36rem;
-            border:1px solid rgba(226,232,240,0.95);
-            border-radius:999px;
-            background:rgba(255,255,255,0.72);
-            color:#334155;
-            font-size:11px;
-            line-height:1.1;
+            gap:0.22rem;
+            padding:0 0.5rem;
+            border-right:1px solid var(--dash-border-soft);
+            color:var(--dash-secondary);
+            font-size:12px;
+            line-height:1;
             font-weight:650;
+            white-space:nowrap;
+        }
+        .portfolio-structure-items span:first-child {
+            padding-left:0;
+        }
+        .portfolio-structure-items span:last-child {
+            border-right:0;
         }
         .portfolio-structure-items b {
-            color:#64748B;
-            font-weight:650;
+            color:var(--dash-muted);
+            font-weight:680;
         }
-        .portfolio-structure-hint {
-            margin-top:0.24rem;
-            color:#64748B;
-            overflow:hidden;
+        .portfolio-structure-items strong {
+            color:var(--dash-text);
+            font-weight:760;
+            font-variant-numeric:tabular-nums;
+        }
+        .portfolio-structure-link,
+        .portfolio-structure-link:visited {
+            flex:0 0 auto;
+            color:var(--dash-neutral) !important;
+            font-size:12px;
+            font-weight:760;
+            text-decoration:none !important;
             white-space:nowrap;
-            text-overflow:ellipsis;
+        }
+        .portfolio-structure-link:hover {
+            color:var(--dash-text) !important;
         }
         .macro-regime-detail {
             border:1px solid rgba(148, 163, 184, 0.18);
@@ -5351,6 +5415,7 @@ def _render_dashboard_styles() -> None:
         .dashboard-risk-radar,
         .decision-terminal-head,
         .dashboard-priority-strip,
+        .portfolio-structure-strip,
         .watchlist-head,
         .decision-table,
         .table-filter-chip {
@@ -6100,10 +6165,12 @@ def _render_dashboard_styles() -> None:
         .watchlist-head {
             display:flex;
             justify-content:space-between;
-            align-items:flex-end;
-            gap:0.8rem;
-            margin-top:0.08rem;
-            margin-bottom:0.12rem;
+            align-items:center;
+            gap:0.9rem;
+            min-height:40px;
+            margin-top:0.04rem;
+            margin-bottom:0.08rem;
+            padding:0.12rem 0;
         }
         .decision-terminal-head {
             max-width:var(--dash-shell-width);
@@ -6121,7 +6188,7 @@ def _render_dashboard_styles() -> None:
         .decision-terminal-head span,
         .watchlist-head span {
             display:block;
-            margin-top:0.12rem;
+            margin-top:0.08rem;
             color:var(--dash-secondary);
             font-size:11.5px;
             font-weight:520;
@@ -6590,20 +6657,20 @@ def _render_dashboard_styles() -> None:
         .decision-grid {
             display:grid;
             grid-template-columns:
-                minmax(112px, 0.72fr)
-                minmax(172px, 0.98fr)
-                minmax(88px, 0.45fr)
-                minmax(172px, 0.86fr)
-                minmax(90px, 0.44fr)
-                minmax(148px, 0.72fr)
-                minmax(92px, 0.42fr)
-                92px;
+                minmax(124px, 0.82fr)
+                minmax(188px, 1.12fr)
+                minmax(88px, 0.46fr)
+                minmax(184px, 0.94fr)
+                minmax(92px, 0.46fr)
+                minmax(156px, 0.78fr)
+                minmax(92px, 0.44fr)
+                88px;
             align-items:center;
-            gap:0.62rem;
+            gap:0.72rem;
             min-height:var(--dash-table-row-height);
-            min-width:980px;
+            min-width:1080px;
             width:100%;
-            padding:0 13px;
+            padding:0 16px;
             box-sizing:border-box;
             font-size:12px;
             overflow:hidden;
