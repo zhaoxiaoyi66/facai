@@ -143,6 +143,25 @@ def test_empty_daily_ohlcv_snapshot_does_not_count_as_history() -> None:
     assert context.setup_score == 0
 
 
+def test_short_daily_ohlcv_does_not_fake_long_window_indicators() -> None:
+    context = build_buy_zone_context(
+        {
+            "ticker": "SHORT",
+            "daily_ohlcv": _daily_bars(count=10),
+            "final_score": 85,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action == DATA_INSUFFICIENT
+    assert "ma20" in context.missing_fields
+    assert "ma50" in context.missing_fields
+    assert "ma200" in context.missing_fields
+    assert "atr_14" in context.missing_fields
+    assert "volume_ratio" in context.missing_fields
+    assert context.setup_score == 0
+
+
 def test_daily_ohlcv_volume_fallback_prevents_false_data_insufficient() -> None:
     bars = _daily_bars()
     context = build_buy_zone_context(

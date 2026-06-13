@@ -473,14 +473,14 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
     lows = [value for value in lows if value is not None]
     volumes = [value for value in volumes if value is not None and value > 0]
 
-    ma20 = _tail_mean(closes, 20)
-    ma50 = _tail_mean(closes, 50)
-    ma200 = _tail_mean(closes, 200)
+    ma20 = _tail_mean(closes, 20, require_full=True)
+    ma50 = _tail_mean(closes, 50, require_full=True)
+    ma200 = _tail_mean(closes, 200, require_full=True)
     for key, value in (("ma20", ma20), ("ema20", ma20), ("ma50", ma50), ("ema50", ma50), ("ma200", ma200), ("ema200", ma200)):
         if value is not None:
             enriched.setdefault(key, value)
 
-    avg_volume_20d = _tail_mean(volumes, 20)
+    avg_volume_20d = _tail_mean(volumes, 20, require_full=True)
     if avg_volume_20d is not None:
         enriched.setdefault("avg_volume_20d", avg_volume_20d)
         enriched.setdefault("volume_ma20", avg_volume_20d)
@@ -607,9 +607,11 @@ def _normalize_bar(item: Any) -> dict[str, Any]:
     return bar if any(value is not None for value in bar.values()) else {}
 
 
-def _tail_mean(values: list[float], window: int) -> float | None:
+def _tail_mean(values: list[float], window: int, *, require_full: bool = False) -> float | None:
     usable = [value for value in values if value is not None]
     if not usable:
+        return None
+    if require_full and len(usable) < window:
         return None
     tail = usable[-window:]
     return sum(tail) / len(tail) if tail else None
@@ -632,6 +634,8 @@ def _atr(bars: list[dict[str, Any]], window: int = 14) -> float | None:
         previous_close = close if close is not None else previous_close
     if not ranges:
         return None
+    if len(ranges) < window:
+        return None
     tail = ranges[-window:]
     return sum(tail) / len(tail) if tail else None
 
@@ -640,6 +644,8 @@ def _rsi(closes: list[float], window: int = 14) -> float | None:
     if len(closes) < 2:
         return None
     deltas = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+    if len(deltas) < window:
+        return None
     tail = deltas[-window:]
     if not tail:
         return None
