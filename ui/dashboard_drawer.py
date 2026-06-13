@@ -296,12 +296,29 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
 def _drawer_action_fusion_card_html(row: pd.Series) -> str:
     payload = row.get("actionFusion")
     if not isinstance(payload, dict) or not payload:
-        return ""
+        return _drawer_action_fusion_fallback_html()
+    payload = dict(payload)
+    if "advisory_warnings_cn" not in payload and "blocker_bullets_cn" in payload:
+        payload["advisory_warnings_cn"] = payload.pop("blocker_bullets_cn")
     try:
         result = ActionFusionResult(**payload)
     except TypeError:
-        return ""
+        return _drawer_action_fusion_fallback_html()
     return action_fusion_card_html(result)
+
+
+def _drawer_action_fusion_fallback_html() -> str:
+    return (
+        '<section class="action-fusion-card">'
+        '<div class="action-fusion-kicker">系统建议</div>'
+        '<div class="action-fusion-headline">数据待补 · 低</div>'
+        '<p>暂无系统建议；原因：本地缓存缺失。</p>'
+        '<div class="action-fusion-grid">'
+        '<div><b>待确认事项</b><ul><li>补齐本地 Radar / 技术 / 量价缓存后再复核。</li></ul></div>'
+        '</div>'
+        '<small>Action Fusion 仅作系统建议展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>'
+        '</section>'
+    )
 
 
 def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:

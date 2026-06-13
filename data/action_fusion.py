@@ -32,7 +32,7 @@ ACTION_LABELS = {
     ADD_ON_BREAKOUT: "放量确认后加",
     HOLD_NO_ADD: "持有，不加",
     REDUCE_RISK: "降低风险",
-    BLOCK_CHASE: "禁止追高",
+    BLOCK_CHASE: "不建议追高",
     BREAKDOWN_REVIEW: "破位复核",
     EVENT_REVIEW: "事件冲击复核",
     DATA_INSUFFICIENT: "数据不足",
@@ -61,12 +61,16 @@ class ActionFusionResult:
     invalidation_cn: str
     next_trigger_cn: str
     evidence_bullets_cn: list[str] = field(default_factory=list)
-    blocker_bullets_cn: list[str] = field(default_factory=list)
+    advisory_warnings_cn: list[str] = field(default_factory=list)
     risk_bullets_cn: list[str] = field(default_factory=list)
     watch_levels: dict[str, float | None] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def blocker_bullets_cn(self) -> list[str]:
+        return self.advisory_warnings_cn
 
 
 def evaluate_action_fusion(
@@ -108,7 +112,7 @@ def evaluate_action_fusion(
     cash = _first_number(portfolio, "available_cash", "availableCash", "cashBalance")
 
     evidence = _evidence(symbol, price, observation_low, observation_high, volume_status, volume_score, volume_regime, quality_score, valuation_score)
-    blockers: list[str] = []
+    advisory_warnings: list[str] = []
     risks: list[str] = []
     watch_levels = {
         "observation_low": observation_low,
@@ -125,28 +129,28 @@ def evaluate_action_fusion(
     overweight = max_weight is not None and weight is not None and weight >= max_weight
 
     if critical_missing:
-        blockers.append("缺少价格或核心区间，不能形成可靠交易建议。")
-        return _result(DATA_INSUFFICIENT, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("缺少价格或核心区间，暂无可靠交易建议。")
+        return _result(DATA_INSUFFICIENT, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if overweight:
-        blockers.append("当前仓位已接近或超过系统参考上限。")
-        return _result(HOLD_NO_ADD, PORTFOLIO_OVERWEIGHT, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("当前仓位已接近或超过系统参考上限。")
+        return _result(HOLD_NO_ADD, PORTFOLIO_OVERWEIGHT, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if chase_context and overextended:
-        blockers.append("好公司但价格已脱离回踩观察区，不构成低吸。")
-        return _result(BLOCK_CHASE, OVEREXTENDED_CHASE, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("好公司但价格已脱离回踩观察区，不构成低吸。")
+        return _result(BLOCK_CHASE, OVEREXTENDED_CHASE, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if volume_status == "FAILED":
-        blockers.append("量价承接失败，暂停加仓。")
-        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("量价承接失败，暂停加仓。")
+        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if invalid_line is not None and price is not None and price < invalid_line:
-        blockers.append(f"价格跌破失效线 {_money(invalid_line)}，先做破位复核。")
-        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append(f"价格跌破失效线 {_money(invalid_line)}，先做破位复核。")
+        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if (volume_ratio is not None and volume_ratio >= 2.0 and gap_down) or "爆量跳空下跌" in volume_reason or "高量跳空下跌" in volume_reason:
-        blockers.append("高量跳空下跌，需复核财报/消息冲击，不做无确认摊低。")
-        return _result(EVENT_REVIEW, EVENT_GAP_REVIEW, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("高量跳空下跌，需复核财报/消息冲击，不做无确认摊低。")
+        return _result(EVENT_REVIEW, EVENT_GAP_REVIEW, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if technical_status == "BREAKDOWN_REVIEW":
         risks.append("技术结构仍处于破位复核，不能只因估值便宜加仓。")
@@ -158,33 +162,33 @@ def evaluate_action_fusion(
     under_target = target_weight is None or weight is None or weight < target_weight
 
     if volume_status == "ACCEPTANCE_CONFIRMED" and quality_ok and valuation_ok and under_target:
-        return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if in_observation and volume_status == "FORMING":
         if volume_score is not None and volume_score < 55:
-            blockers.append("初步承接，尚未确认；等待放量站上确认线。")
-            return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+            advisory_warnings.append("初步承接，尚未确认；等待放量站上确认线。")
+            return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
         if under_target and quality_ok and valuation_ok:
             risks.append("承接形成中但未完全确认，适合小仓或等待确认。")
-            return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+            return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if in_observation:
-        blockers.append("价格在观察区，但量价承接尚未确认。")
-        return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else TREND_CONFIRMATION, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("价格在观察区，但量价承接尚未确认。")
+        return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else TREND_CONFIRMATION, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
     if shares > 0:
-        blockers.append("暂无新的低吸或确认加仓信号。")
-        return _result(HOLD_NO_ADD, LOW_CONFIDENCE, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+        advisory_warnings.append("暂无新的低吸或确认加仓信号。")
+        return _result(HOLD_NO_ADD, LOW_CONFIDENCE, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
-    blockers.append("缺少可执行确认条件，先放入观察。")
-    return _result(WAIT_CONFIRMATION, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, blockers, risks, evidence, watch_levels)
+    advisory_warnings.append("缺少可执行确认条件，先放入观察。")
+    return _result(WAIT_CONFIRMATION, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
 
 
 def action_fusion_card_html(result: ActionFusionResult) -> str:
     evidence = "".join(f"<li>{escape(item)}</li>" for item in result.evidence_bullets_cn[:4])
-    blockers = "".join(f"<li>{escape(item)}</li>" for item in result.blocker_bullets_cn[:4])
+    advisory_warnings = "".join(f"<li>{escape(item)}</li>" for item in result.advisory_warnings_cn[:4])
     risks = "".join(f"<li>{escape(item)}</li>" for item in result.risk_bullets_cn[:3])
-    blockers_html = f"<div><b>阻碍</b><ul>{blockers}</ul></div>" if blockers else ""
+    warnings_html = f"<div><b>待确认事项</b><ul>{advisory_warnings}</ul></div>" if advisory_warnings else ""
     risks_html = f"<div><b>风险</b><ul>{risks}</ul></div>" if risks else ""
     return (
         '<section class="action-fusion-card">'
@@ -193,7 +197,7 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
         f'<p>{escape(result.buy_plan_cn)}</p>'
         '<div class="action-fusion-grid">'
         f'<div><b>证据</b><ul>{evidence}</ul></div>'
-        f"{blockers_html}"
+        f"{warnings_html}"
         f"{risks_html}"
         f'<div><b>下一触发位</b><span>{escape(result.next_trigger_cn)}</span></div>'
         f'<div><b>失效条件</b><span>{escape(result.invalidation_cn)}</span></div>'
@@ -216,7 +220,7 @@ def _result(
     target_weight: float | None,
     max_weight: float | None,
     cash: float | None,
-    blockers: list[str],
+    advisory_warnings: list[str],
     risks: list[str],
     evidence: list[str],
     watch_levels: dict[str, float | None],
@@ -238,7 +242,7 @@ def _result(
         invalidation_cn=invalidation,
         next_trigger_cn=next_trigger,
         evidence_bullets_cn=evidence,
-        blocker_bullets_cn=blockers,
+        advisory_warnings_cn=advisory_warnings,
         risk_bullets_cn=risks,
         watch_levels=watch_levels,
     )
@@ -248,7 +252,7 @@ def _buy_plan(action_code: str, symbol: str, next_trigger: str) -> str:
     if action_code == ALLOW_SMALL_BUY:
         return f"{symbol} 可小仓试探，但仍需人工确认；{next_trigger}"
     if action_code == BLOCK_CHASE:
-        return "禁止追高，等待回踩观察区或新的确认结构。"
+        return "不建议追高，等待回踩观察区或新的确认结构。"
     if action_code == EVENT_REVIEW:
         return "便宜也先复核事件冲击，不做无确认摊低。"
     if action_code == BREAKDOWN_REVIEW:

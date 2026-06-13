@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from data.action_fusion import (
     ALLOW_SMALL_BUY,
     BLOCK_CHASE,
@@ -8,6 +10,7 @@ from data.action_fusion import (
     EVENT_REVIEW,
     HOLD_NO_ADD,
     WAIT_CONFIRMATION,
+    action_fusion_card_html,
     evaluate_action_fusion,
 )
 
@@ -67,7 +70,10 @@ def test_mrvl_detached_from_observation_zone_blocks_chase() -> None:
     )
 
     assert result.action_code == BLOCK_CHASE
-    assert "脱离回踩观察区" in " ".join(result.blocker_bullets_cn)
+    assert result.action_cn == "不建议追高"
+    assert "禁止追高" not in result.action_cn
+    assert "不建议追高" in result.buy_plan_cn
+    assert "脱离回踩观察区" in " ".join(result.advisory_warnings_cn)
 
 
 def test_msft_near_repair_low_forming_waits_confirmation() -> None:
@@ -85,7 +91,7 @@ def test_msft_near_repair_low_forming_waits_confirmation() -> None:
     )
 
     assert result.action_code == WAIT_CONFIRMATION
-    assert "等待放量站上确认线" in " ".join(result.blocker_bullets_cn)
+    assert "等待放量站上确认线" in " ".join(result.advisory_warnings_cn)
 
 
 def test_nvda_overweight_holds_no_add_even_when_acceptance_is_good() -> None:
@@ -106,7 +112,7 @@ def test_failed_volume_price_acceptance_triggers_breakdown_review() -> None:
     )
 
     assert result.action_code == BREAKDOWN_REVIEW
-    assert "量价承接失败" in " ".join(result.blocker_bullets_cn)
+    assert "量价承接失败" in " ".join(result.advisory_warnings_cn)
 
 
 def test_confirmed_acceptance_with_low_weight_allows_small_buy() -> None:
@@ -126,3 +132,54 @@ def test_critical_data_missing_is_data_insufficient() -> None:
     )
 
     assert result.action_code == DATA_INSUFFICIENT
+
+
+def test_action_fusion_warnings_are_advisory_not_hard_blocks() -> None:
+    source = _base(
+        current_price=118,
+        observation_high=110,
+        decision="ALLOW_BUY",
+        allowed_add_pct=12.5,
+        volume_price_status="OVEREXTENDED_SUPPORT_READ",
+    )
+
+    result = evaluate_action_fusion(ticker="ADV", context=source)
+    payload = result.to_dict()
+
+    assert result.action_code == BLOCK_CHASE
+    assert source["decision"] == "ALLOW_BUY"
+    assert source["allowed_add_pct"] == 12.5
+    assert "advisory_warnings_cn" in payload
+    assert "blocker_bullets_cn" not in payload
+    assert "hard_blocked" not in payload
+
+
+def test_action_fusion_card_uses_advisory_wording() -> None:
+    result = evaluate_action_fusion(
+        ticker="MRVL",
+        context=_base(
+            current_price=118,
+            observation_high=110,
+            decision="BLOCK_CHASE",
+            price_position="IN_CHASE_ZONE",
+            volume_price_status="OVEREXTENDED_SUPPORT_READ",
+        ),
+    )
+
+    html = action_fusion_card_html(result)
+
+    assert "待确认事项" in html
+    assert "阻碍" not in html
+    assert "blocker" not in html.lower()
+    assert "禁止追高" not in html
+
+
+def test_dashboard_drawer_missing_action_fusion_shows_safe_fallback() -> None:
+    from ui.dashboard_drawer import _drawer_action_fusion_card_html
+
+    html = _drawer_action_fusion_card_html(pd.Series({"symbol": "GLW"}))
+
+    assert "数据待补" in html
+    assert "暂无系统建议" in html
+    assert "本地缓存缺失" in html
+    assert "blocker" not in html.lower()
