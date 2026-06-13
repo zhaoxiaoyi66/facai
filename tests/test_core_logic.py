@@ -1535,7 +1535,8 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertIn("build_portfolio_structure_check", render_source)
         self.assertIn("_dashboard_command_detail_html", status_source)
-        self.assertIn("_dashboard_portfolio_structure_detail_block_html", detail_source)
+        self.assertIn("_dashboard_macro_indicator_group_html", detail_source)
+        self.assertNotIn("_dashboard_portfolio_structure_detail_block_html", detail_source)
         self.assertIn("dashboard-command-center", styles_source)
         self.assertIn("dashboard-command-details", styles_source)
 
@@ -1562,7 +1563,7 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         values = [value for _label, value, _tone in items]
 
-        self.assertEqual(labels, ["CNN 恐惧与贪婪", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX"])
         self.assertIn("34 恐惧", values)
 
     def test_dashboard_header_only_promotes_fear_greed_and_vix(self) -> None:
@@ -1598,7 +1599,7 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertEqual(labels, ["CNN 恐惧与贪婪", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX"])
         self.assertIn("VIX 19.4", joined)
         self.assertNotIn("HY OAS", joined)
         self.assertNotIn("10Y", joined)
@@ -1654,6 +1655,56 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertEqual(dashboard_module._dashboard_macro_updated_text(StaleFreshnessStub()), "过期")
 
+    def test_dashboard_macro_detail_panel_is_compact_and_grouped(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import FEAR_GREED, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+
+        class FreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "刚刚", "tone": "fresh"})()
+
+        macro_regime = evaluate_macro_regime(
+            [
+                MacroIndicatorSnapshot(indicator=FEAR_GREED, value=34, rating="fear", source="CNN graphdata"),
+                MacroIndicatorSnapshot(indicator=VIX, value=19.4, source="^VIX local market cache"),
+            ]
+        )
+
+        html = dashboard_module._dashboard_command_detail_html(
+            macro_regime,
+            FreshnessStub(),
+            last_macro_refresh_result={
+                "overall_status": "partial",
+                "duration_seconds": 2.8,
+                "indicator_results": [
+                    {
+                        "indicator": "fear_greed",
+                        "error": "CNN HTTP 418 with a very long provider diagnostic",
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("dashboard-command-detail-panel", html)
+        self.assertIn("核心指标", html)
+        self.assertIn("辅助指标", html)
+        self.assertIn("最近刷新", html)
+        self.assertIn("技术诊断", html)
+        self.assertNotIn("仓位结构", html)
+
+    def test_dashboard_macro_detail_values_keep_proxy_separate(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import HYG_CREDIT_PROXY, MacroIndicatorSnapshot
+
+        row = dashboard_module._dashboard_macro_detail_row(
+            "信用代理",
+            MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=78, source="HYG proxy"),
+        )
+
+        self.assertEqual(row[0], "信用代理")
+        self.assertIn("承压", row[1])
+        self.assertEqual(row[3], "代理")
+
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         tables_module = __import__("ui.dashboard_tables", fromlist=[""])
@@ -1667,9 +1718,10 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("--dash-shadow", styles_source)
         self.assertIn("dashboard-command-line", styles_source)
         self.assertIn("dashboard-macro-pill", styles_source)
+        self.assertIn("dashboard-command-detail-panel", styles_source)
         self.assertIn("dashboard-command-updated", styles_source)
         self.assertIn("font-family:ui-monospace", styles_source)
-        self.assertIn("min-height:50px", styles_source)
+        self.assertIn("min-height:40px", styles_source)
         self.assertIn("var(--dash-success-bg)", table_source)
         self.assertIn("width: 224px", theme_source)
 

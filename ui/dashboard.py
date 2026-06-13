@@ -47,8 +47,11 @@ from data.macro_regime import (
     HYG_CREDIT_PROXY,
     HY_OAS,
     MARKET_BREADTH,
+    MARKET_TREND,
+    SENTIMENT_PROXY,
     TEN_YEAR_YIELD,
     VIX,
+    YIELD_CURVE_10Y2Y,
     load_macro_regime,
     macro_regime_detail_html,
     macro_regime_sentiment_status_text,
@@ -708,23 +711,24 @@ def _render_dashboard_status_bar(
         for label, value, tone in _dashboard_command_summary_items(macro_regime, freshness)
     )
     detail_html = _dashboard_command_detail_html(
+        macro_regime,
         freshness,
         last_refresh_result=st.session_state.get("dashboard_refresh_mode_last_result"),
         last_macro_refresh_result=st.session_state.get("dashboard_macro_last_refresh_result"),
-        portfolio_structure_check=portfolio_structure_check,
     )
     updated_text = _dashboard_macro_updated_text(freshness)
     st.markdown(
         (
             '<section class="dashboard-command-center">'
-            '<div class="dashboard-command-line">'
-            f'<div class="dashboard-command-primary">{macro_pills_html}</div>'
-            f'<div class="dashboard-command-summary">{summary_html}</div>'
             '<details class="dashboard-command-details">'
-            f'<summary><span class="dashboard-command-updated">{escape(updated_text)}</span><b>查看详情</b></summary>'
+            '<summary class="dashboard-command-line">'
+            f'<span class="dashboard-command-summary">{summary_html}</span>'
+            f'<span class="dashboard-command-primary">{macro_pills_html}</span>'
+            f'<span class="dashboard-command-updated">{escape(updated_text)}</span>'
+            '<b class="dashboard-command-trigger">详情</b>'
+            "</summary>"
             f"{detail_html}"
             "</details>"
-            "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
@@ -733,7 +737,7 @@ def _render_dashboard_status_bar(
 
 def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_structure_check) -> list[tuple[str, str, str]]:
     return [
-        ("CNN 恐惧与贪婪", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
+        ("F&G", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
         ("VIX", _dashboard_vix_pill_text(macro_regime), "vix"),
     ]
 
@@ -920,19 +924,142 @@ def _dashboard_command_summary_item_html(label: str, value: str, tone: str = "ne
 
 
 def _dashboard_command_detail_html(
+    macro_regime,
     freshness,
     *,
     last_refresh_result: dict | None = None,
     last_macro_refresh_result: dict | None = None,
-    portfolio_structure_check=None,
 ) -> str:
     return (
-        '<div class="dashboard-command-detail-grid">'
-        f"{_dashboard_freshness_detail_block_html(freshness, last_refresh_result=last_refresh_result, last_macro_refresh_result=last_macro_refresh_result)}"
-        f"{_dashboard_portfolio_structure_detail_block_html(portfolio_structure_check)}"
+        '<div class="dashboard-command-detail-panel">'
+        f"{_dashboard_macro_indicator_group_html('核心指标', _dashboard_core_macro_detail_rows(macro_regime))}"
+        f"{_dashboard_macro_indicator_group_html('辅助指标', _dashboard_auxiliary_macro_detail_rows(macro_regime))}"
         f"{_dashboard_refresh_log_detail_block_html(last_refresh_result, last_macro_refresh_result)}"
+        f"{_dashboard_macro_diagnostics_html(last_macro_refresh_result)}"
         "</div>"
     )
+
+
+def _dashboard_core_macro_detail_rows(macro_regime) -> list[tuple[str, str, str, str]]:
+    return [
+        _dashboard_macro_detail_row("F&G", _macro_indicator(macro_regime, FEAR_GREED)),
+        _dashboard_macro_detail_row("VIX", _macro_indicator(macro_regime, VIX)),
+        _dashboard_macro_detail_row("10Y", _macro_indicator(macro_regime, TEN_YEAR_YIELD)),
+        _dashboard_macro_detail_row("10Y-2Y", _macro_indicator(macro_regime, YIELD_CURVE_10Y2Y)),
+        _dashboard_macro_detail_row("大盘趋势", _macro_indicator(macro_regime, MARKET_TREND)),
+        _dashboard_macro_detail_row("观察池强弱", _macro_indicator(macro_regime, MARKET_BREADTH)),
+    ]
+
+
+def _dashboard_auxiliary_macro_detail_rows(macro_regime) -> list[tuple[str, str, str, str]]:
+    return [
+        _dashboard_macro_detail_row("HY OAS", _macro_indicator(macro_regime, HY_OAS)),
+        _dashboard_macro_detail_row("信用代理", _macro_indicator(macro_regime, HYG_CREDIT_PROXY)),
+        _dashboard_macro_detail_row("美元指数", _macro_indicator(macro_regime, DOLLAR_INDEX)),
+        _dashboard_macro_detail_row("美元代理", _macro_indicator(macro_regime, DOLLAR_PROXY)),
+        _dashboard_macro_detail_row("情绪代理", _macro_indicator(macro_regime, SENTIMENT_PROXY)),
+    ]
+
+
+def _dashboard_macro_indicator_group_html(title: str, rows: list[tuple[str, str, str, str]]) -> str:
+    row_html = "".join(
+        "<tr>"
+        f"<td>{escape(label)}</td>"
+        f"<td>{escape(value)}</td>"
+        f"<td>{escape(source)}</td>"
+        f"<td>{escape(status)}</td>"
+        "</tr>"
+        for label, value, source, status in rows
+    )
+    return (
+        '<section class="dashboard-command-detail-section">'
+        f"<h4>{escape(title)}</h4>"
+        '<table><thead><tr><th>指标</th><th>当前值</th><th>来源</th><th>状态</th></tr></thead>'
+        f"<tbody>{row_html}</tbody></table>"
+        "</section>"
+    )
+
+
+def _dashboard_macro_detail_row(label: str, snapshot) -> tuple[str, str, str, str]:
+    return (
+        label,
+        _dashboard_macro_detail_value(label, snapshot),
+        _dashboard_macro_detail_source(snapshot),
+        _dashboard_macro_detail_status(snapshot),
+    )
+
+
+def _dashboard_macro_detail_value(label: str, snapshot) -> str:
+    if snapshot is None:
+        return "暂缺"
+    indicator = str(getattr(snapshot, "indicator", "") or "")
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if indicator == VIX and (value is None or value < 1):
+        return "暂缺"
+    if value is None:
+        return "暂缺"
+    if indicator == FEAR_GREED:
+        return f"{value:.0f} {_dashboard_fear_greed_rating_label(getattr(snapshot, 'rating', None), value)}"
+    if indicator == VIX:
+        return f"{value:.1f}"
+    if indicator in {HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y}:
+        return f"{value:.2f}%"
+    if indicator == MARKET_BREADTH:
+        return f"{value:.1f}%｜{_dashboard_watchlist_strength_label(value)}"
+    if indicator in {HYG_CREDIT_PROXY, DOLLAR_PROXY, SENTIMENT_PROXY}:
+        rating = str(getattr(snapshot, "rating", "") or "").strip()
+        if rating:
+            return f"{rating} {value:.0f}"
+        if indicator == HYG_CREDIT_PROXY:
+            return f"{_dashboard_credit_proxy_label(value)} {value:.0f}"
+        if indicator == SENTIMENT_PROXY:
+            return f"{_dashboard_sentiment_proxy_label(value)} {value:.0f}"
+    return f"{value:.2f}" if abs(value) < 10 else f"{value:.1f}"
+
+
+def _dashboard_macro_detail_source(snapshot) -> str:
+    if snapshot is None:
+        return "—"
+    source = str(getattr(snapshot, "source", "") or "").strip()
+    if not source:
+        return "本地缓存"
+    if len(source) > 34:
+        return f"{source[:31]}..."
+    return source
+
+
+def _dashboard_macro_detail_status(snapshot) -> str:
+    if snapshot is None:
+        return "暂缺"
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if str(getattr(snapshot, "indicator", "") or "") == VIX and (value is None or value < 1):
+        return "暂缺"
+    if value is None:
+        return "暂缺"
+    if bool(getattr(snapshot, "is_stale", False)):
+        return "过期"
+    source = str(getattr(snapshot, "source", "") or "").lower()
+    if "proxy" in source or "代理" in source or str(getattr(snapshot, "indicator", "") or "") in {HYG_CREDIT_PROXY, DOLLAR_PROXY, SENTIMENT_PROXY}:
+        return "代理"
+    if _dashboard_indicator_uses_cache(snapshot):
+        return "缓存"
+    return "可用"
+
+
+def _dashboard_credit_proxy_label(value: float) -> str:
+    if value >= 75:
+        return "承压"
+    if value >= 60:
+        return "转弱"
+    return "稳定"
+
+
+def _dashboard_sentiment_proxy_label(value: float) -> str:
+    if value <= 35:
+        return "偏恐惧"
+    if value >= 65:
+        return "偏贪婪"
+    return "中性"
 
 
 def _dashboard_freshness_detail_block_html(
@@ -1008,10 +1135,36 @@ def _dashboard_refresh_log_detail_block_html(
     if not rows:
         rows.append("<li><b>最近刷新</b><span>暂无本次会话刷新记录。</span></li>")
     return (
-        '<section class="dashboard-command-detail-card">'
-        '<div><strong>最近刷新记录</strong><span>详细日志折叠保存</span></div>'
+        '<section class="dashboard-command-detail-section dashboard-command-refresh-section">'
+        "<h4>最近刷新</h4>"
         f"<ul>{''.join(rows)}</ul>"
         "</section>"
+    )
+
+
+def _dashboard_macro_diagnostics_html(last_macro_refresh_result: dict | None) -> str:
+    if not isinstance(last_macro_refresh_result, dict):
+        return ""
+    errors: list[str] = []
+    raw_error = str(last_macro_refresh_result.get("error") or "").strip()
+    if raw_error:
+        errors.append(raw_error)
+    for item in list(last_macro_refresh_result.get("indicator_results") or []):
+        if not isinstance(item, dict):
+            continue
+        error = str(item.get("error") or "").strip()
+        if not error:
+            continue
+        label = _macro_indicator_label(str(item.get("indicator") or ""))
+        errors.append(f"{label}: {error}")
+    if not errors:
+        return ""
+    error_html = "".join(f"<li>{escape(error)}</li>" for error in errors[:8])
+    return (
+        '<details class="dashboard-command-diagnostics">'
+        "<summary>技术诊断</summary>"
+        f"<ul>{error_html}</ul>"
+        "</details>"
     )
 
 
@@ -3493,19 +3646,25 @@ def _render_dashboard_styles() -> None:
         .dashboard-command-center {
             max-width:1360px;
             margin:0 auto 0.42rem;
-            padding:0.46rem 0.72rem;
+            padding:0.34rem 0.62rem;
             border:1px solid var(--dash-border);
-            border-radius:var(--dash-radius);
+            border-radius:10px;
             background:rgba(255,255,255,0.94);
             color:var(--dash-secondary);
-            box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+            box-shadow:0 8px 18px rgba(15, 23, 42, 0.025);
+            position:relative;
+            z-index:8;
         }
         .dashboard-command-line {
             display:flex;
             align-items:center;
-            justify-content:space-between;
-            gap:0.78rem;
-            min-height:50px;
+            justify-content:flex-start;
+            gap:0.46rem;
+            min-height:40px;
+            width:100%;
+            white-space:nowrap;
+            list-style:none;
+            cursor:pointer;
         }
         .dashboard-command-main {
             display:flex;
@@ -3519,49 +3678,49 @@ def _render_dashboard_styles() -> None:
             display:flex;
             align-items:center;
             flex-wrap:nowrap;
-            gap:0.48rem;
+            gap:0.42rem;
             flex:0 0 auto;
         }
         .dashboard-macro-pill {
             display:inline-flex;
             align-items:center;
-            gap:0.58rem;
-            min-height:44px;
-            padding:0.34rem 0.9rem;
-            border-radius:16px;
-            border:1px solid rgba(11, 31, 58, 0.12);
-            background:#F8FAFC;
+            gap:0.24rem;
+            min-height:24px;
+            padding:0.08rem 0.42rem;
+            border-radius:999px;
+            border:1px solid rgba(148, 163, 184, 0.20);
+            background:#FFFFFF;
             color:var(--dash-text);
-            box-shadow:0 8px 20px rgba(15, 23, 42, 0.05);
+            box-shadow:none;
             white-space:nowrap;
         }
         .dashboard-macro-pill.sentiment {
-            background:#FFF7ED;
-            border-color:#FED7AA;
+            background:#FFFBF4;
+            border-color:rgba(251, 146, 60, 0.24);
         }
         .dashboard-macro-pill.vix {
-            background:#EFF6FF;
-            border-color:#BFDBFE;
+            background:#F8FAFC;
+            border-color:rgba(96, 165, 250, 0.20);
         }
         .dashboard-macro-pill b {
             color:var(--dash-muted);
-            font-size:13px;
-            font-weight:780;
+            font-size:12px;
+            font-weight:720;
         }
         .dashboard-macro-pill strong {
             color:var(--dash-text);
-            font-size:22px;
-            line-height:1;
-            font-weight:880;
+            font-size:14.5px;
+            line-height:1.15;
+            font-weight:820;
             font-variant-numeric:tabular-nums;
         }
         .dashboard-command-summary {
-            display:flex;
+            display:inline-flex;
             align-items:center;
-            flex-wrap:wrap;
-            gap:0.3rem;
+            flex-wrap:nowrap;
+            gap:0;
             min-width:0;
-            flex:1 1 auto;
+            flex:0 0 auto;
             color:var(--dash-secondary);
         }
         .dashboard-command-summary-item {
@@ -3573,7 +3732,7 @@ def _render_dashboard_styles() -> None:
             line-height:1;
             font-weight:650;
             white-space:nowrap;
-            padding:0 0.28rem;
+            padding:0 0.42rem;
             border-right:1px solid var(--dash-border-soft);
         }
         .dashboard-command-summary-item:first-child {
@@ -3588,6 +3747,7 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-command-summary-item strong {
             color:var(--dash-secondary);
+            font-size:13.5px;
             font-weight:780;
         }
         .dashboard-command-summary-item.ok strong { color:var(--dash-success); }
@@ -3596,6 +3756,16 @@ def _render_dashboard_styles() -> None:
         .dashboard-command-summary-item.muted strong { color:var(--dash-muted); }
         .dashboard-command-summary-item.neutral strong { color:var(--dash-secondary); }
         .dashboard-command-primary + .dashboard-command-summary { margin-top:0; }
+        .dashboard-command-line > * + *::before {
+            content:"·";
+            color:#CBD5E1;
+            margin-right:0.46rem;
+            font-weight:700;
+        }
+        .dashboard-command-line > .dashboard-command-summary::before {
+            content:"";
+            margin-right:0;
+        }
         .dashboard-command-items {
             display:flex;
             align-items:center;
@@ -3650,15 +3820,14 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-command-details {
             margin-top:0;
-            margin-left:auto;
-            flex:0 0 auto;
+            width:100%;
             color:var(--dash-secondary);
+            position:relative;
         }
         .dashboard-command-details summary {
             cursor:pointer;
-            display:inline-flex;
+            display:flex;
             align-items:center;
-            gap:0.48rem;
             color:var(--dash-secondary);
             font-size:12px;
             font-weight:740;
@@ -3673,72 +3842,113 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-command-updated {
             color:var(--dash-muted);
+            margin-left:auto;
             font-variant-numeric:tabular-nums;
         }
-        .dashboard-command-details summary b {
+        .dashboard-command-trigger {
             display:inline-flex;
             align-items:center;
-            min-height:30px;
-            padding:0 0.72rem;
-            border:1px solid var(--dash-border);
+            min-height:24px;
+            padding:0 0.48rem;
+            border:1px solid transparent;
             border-radius:999px;
+            background:transparent;
+            color:var(--dash-neutral);
+            font-size:12px;
+            font-weight:760;
+        }
+        .dashboard-command-trigger:hover {
+            border-color:var(--dash-border);
             background:#F8FAFC;
             color:var(--dash-text);
-            font-size:12px;
-            font-weight:780;
         }
-        .dashboard-command-details[open] {
-            flex:1 1 100%;
-            order:5;
-            width:100%;
-            margin-left:0;
-        }
-        .dashboard-command-details[open] summary {
-            justify-content:flex-end;
-        }
-        .dashboard-command-detail-grid {
+        .dashboard-command-detail-panel {
+            position:absolute;
+            right:0;
+            top:calc(100% + 0.46rem);
+            width:min(720px, calc(100vw - 48px));
             display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:0.42rem;
-            margin-top:0.36rem;
-        }
-        .dashboard-command-detail-card {
-            padding:0.46rem 0.52rem;
-            border:1px solid var(--dash-border);
-            border-radius:var(--dash-radius);
-            background:var(--dash-surface-muted);
-        }
-        .dashboard-command-detail-card > div:first-child {
-            display:flex;
-            justify-content:space-between;
             gap:0.5rem;
-            align-items:baseline;
+            padding:0.62rem;
+            border:1px solid var(--dash-border);
+            border-radius:12px;
+            background:#FFFFFF;
+            box-shadow:0 18px 42px rgba(15, 23, 42, 0.12);
+            z-index:40;
         }
-        .dashboard-command-detail-card strong {
+        .dashboard-command-detail-section {
+            display:grid;
+            gap:0.26rem;
+        }
+        .dashboard-command-detail-section h4 {
+            margin:0;
             color:var(--dash-text);
-            font-size:11px;
-            font-weight:780;
+            font-size:12px;
+            font-weight:820;
         }
-        .dashboard-command-detail-card span,
-        .dashboard-command-detail-card em,
-        .dashboard-command-detail-card p {
+        .dashboard-command-detail-section table {
+            width:100%;
+            border-collapse:collapse;
+            table-layout:fixed;
+            font-size:11.2px;
+        }
+        .dashboard-command-detail-section th,
+        .dashboard-command-detail-section td {
+            padding:0.26rem 0.34rem;
+            border-bottom:1px solid var(--dash-border-soft);
             color:var(--dash-secondary);
-            font-style:normal;
-            font-size:10.5px;
+            text-align:left;
+            vertical-align:top;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
         }
-        .dashboard-command-detail-card ul {
-            margin:0.35rem 0 0;
+        .dashboard-command-detail-section th {
+            color:var(--dash-muted);
+            font-size:10.5px;
+            font-weight:720;
+        }
+        .dashboard-command-detail-section td:nth-child(1),
+        .dashboard-command-detail-section td:nth-child(2) {
+            color:var(--dash-text);
+            font-weight:720;
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-command-refresh-section ul,
+        .dashboard-command-diagnostics ul {
+            margin:0;
             padding:0;
             list-style:none;
             display:grid;
             gap:0.18rem;
         }
-        .dashboard-command-detail-card li {
+        .dashboard-command-refresh-section li,
+        .dashboard-command-diagnostics li {
             display:grid;
-            gap:0.05rem;
+            gap:0.04rem;
             min-width:0;
             color:var(--dash-secondary);
-            font-size:10.5px;
+            font-size:11px;
+        }
+        .dashboard-command-refresh-section li b {
+            color:var(--dash-text);
+            font-size:11px;
+        }
+        .dashboard-command-refresh-section li span {
+            color:var(--dash-secondary);
+        }
+        .dashboard-command-diagnostics {
+            border-top:1px solid var(--dash-border-soft);
+            padding-top:0.28rem;
+        }
+        .dashboard-command-diagnostics summary {
+            width:auto;
+            display:inline-flex;
+            color:var(--dash-muted);
+            font-size:11px;
+            font-weight:720;
+            min-height:0;
+            cursor:pointer;
         }
         .dashboard-command-mini-stats {
             display:flex !important;
@@ -3767,29 +3977,22 @@ def _render_dashboard_styles() -> None:
                 flex-wrap:wrap;
                 align-items:flex-start;
             }
-            .dashboard-command-summary {
-                order:3;
-                flex-basis:100%;
-            }
-            .dashboard-command-details {
-                margin-left:auto;
+            .dashboard-command-updated {
+                margin-left:0;
             }
         }
         @media (max-width: 760px) {
             .dashboard-command-primary {
                 flex-wrap:wrap;
-                width:100%;
-            }
-            .dashboard-macro-pill {
-                flex:1 1 220px;
-                justify-content:space-between;
             }
             .dashboard-command-details {
-                margin-left:0;
                 width:100%;
             }
-            .dashboard-command-details summary {
-                justify-content:space-between;
+            .dashboard-command-detail-panel {
+                position:static;
+                width:100%;
+                margin-top:0.42rem;
+                box-shadow:0 10px 24px rgba(15, 23, 42, 0.08);
             }
         }
         .macro-regime-status {
