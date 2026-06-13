@@ -41,6 +41,8 @@ from data.data_health import build_data_health_summary
 from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
+    DOLLAR_INDEX,
+    DOLLAR_PROXY,
     HYG_CREDIT_PROXY,
     HY_OAS,
     MARKET_BREADTH,
@@ -734,6 +736,7 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
         ("", _dashboard_hy_oas_status_text(macro_regime), "neutral"),
         ("", _dashboard_ten_year_status_text(macro_regime), "neutral"),
         ("", _dashboard_market_breadth_status_text(macro_regime), "neutral"),
+        ("", _dashboard_dollar_status_text(macro_regime), "neutral"),
         ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
         ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
         ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
@@ -761,10 +764,29 @@ def _dashboard_hy_oas_status_text(macro_regime) -> str:
     if proxy_value is None or bool(getattr(proxy, "is_stale", False)):
         return "HY OAS 暂缺"
     if proxy_value >= 75:
-        return "HY OAS 暂缺｜信用代理承压"
+        return "HY OAS 官方暂缺｜信用代理承压"
     if proxy_value >= 60:
-        return "HY OAS 暂缺｜信用代理转弱"
-    return "HY OAS 暂缺｜信用代理稳定"
+        return "HY OAS 官方暂缺｜信用代理转弱"
+    return "HY OAS 官方暂缺｜信用代理稳定"
+
+
+def _dashboard_dollar_status_text(macro_regime) -> str:
+    official = _macro_indicator(macro_regime, DOLLAR_INDEX)
+    official_value = _dashboard_number(getattr(official, "value", None))
+    if official_value is not None and not bool(getattr(official, "is_stale", False)):
+        suffix = "（缓存）" if _dashboard_indicator_uses_cache(official) else ""
+        source = str(getattr(official, "source", "") or "").upper()
+        if "DTWEXBGS" in source:
+            return f"美元广义指数 {official_value:.2f}{suffix}"
+        return f"美元指数 DXY {official_value:.2f}{suffix}"
+    proxy = _macro_indicator(macro_regime, DOLLAR_PROXY)
+    proxy_value = _dashboard_number(getattr(proxy, "value", None))
+    if proxy_value is None or bool(getattr(proxy, "is_stale", False)):
+        return "美元指数暂缺"
+    rating = str(getattr(proxy, "rating", "") or "")
+    if not rating:
+        rating = "走强" if proxy_value >= 62 else "走弱" if proxy_value <= 38 else "稳定"
+    return f"美元 proxy：UUP {rating}"
 
 
 def _dashboard_ten_year_status_text(macro_regime) -> str:

@@ -11,6 +11,7 @@ import pandas as pd
 import data.macro_regime as macro_regime
 from data.macro_regime import (
     DOLLAR_INDEX,
+    DOLLAR_PROXY,
     FEAR_GREED,
     HYG_CREDIT_PROXY,
     HY_OAS,
@@ -97,6 +98,23 @@ class VixQuoteProvider(FailingProvider):
         raise RuntimeError("only vix is supported")
 
 
+class DollarQuoteProvider(VixQuoteProvider):
+    def get_quote(self, ticker: str, force_refresh: bool = False):
+        if ticker.upper() in {"DXY", "^DXY", "DX-Y.NYB"}:
+            return {"symbol": ticker.upper(), "price": 104.25, "date": "2026-06-10"}
+        return super().get_quote(ticker, force_refresh=force_refresh)
+
+    def get_price_history(self, ticker: str, force_refresh: bool = False):
+        if ticker.upper() in {"DXY", "^DXY", "DX-Y.NYB"}:
+            return pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-06-01", periods=10, freq="D"),
+                    "close": [101.0, 101.2, 101.5, 102.0, 102.5, 103.0, 103.2, 103.8, 104.0, 104.25],
+                }
+            )
+        return super().get_price_history(ticker, force_refresh=force_refresh)
+
+
 class TreasuryAndVixProvider(VixQuoteProvider):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict, int, int, bool]] = []
@@ -178,6 +196,7 @@ def _seed_macro_market_cache(path, *, spy_below_200: bool = False, qqq_below_50:
     _seed_history(path, "HYG", [100.0] * 220)
     _seed_history(path, "LQD", [100.0] * 220)
     _seed_history(path, "IEF", [100.0] * 220)
+    _seed_history(path, "UUP", [100.0] * 200 + [101.0] * 20)
 
 
 def test_high_vix_marks_risk_off() -> None:
@@ -397,8 +416,9 @@ def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, mo
     assert curve is not None
     assert curve.value == -0.2
     assert dollar is not None
-    assert dollar.value is None
-    assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
+    assert dollar.value == 120.7
+    assert dollar.source == "FRED DTWEXBGS"
+    assert result["indicators"][DOLLAR_INDEX]["status"] == "success"
 
 
 def test_vix_quote_success_skips_fred_vixcls(tmp_path, monkeypatch) -> None:
@@ -449,7 +469,9 @@ def test_zero_vix_quote_is_invalid_and_falls_back_to_next_symbol(tmp_path, monke
     assert result["indicators"][VIX]["status"] == "success"
     assert result["indicators"][VIX]["value"] == 22.2
     assert result["indicators"][VIX]["source"].startswith("^VIX")
-    assert provider.quote_calls[:2] == ["AVIX", "^VIX"]
+    assert "AVIX" in provider.quote_calls
+    assert "^VIX" in provider.quote_calls
+    assert provider.quote_calls.index("AVIX") < provider.quote_calls.index("^VIX")
     assert "VIXCLS" not in fred_calls
 
 
@@ -859,6 +881,74 @@ def test_dollar_index_failure_does_not_change_overall_success(tmp_path, monkeypa
 
     assert result["status"] == "success"
     assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
+    assert result["indicators"][DOLLAR_PROXY]["status"] in {"success", "cached_fallback"}
+
+
+def test_dxy_quote_success_writes_official_dollar_index(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    fred_calls: list[str] = []
+
+    def fred_fetcher(series_id: str) -> str:
+        fred_calls.append(series_id)
+        return _fred_fetcher(
+            {
+                "BAMLH0A0HYM2": [3.8, 3.9],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=DollarQuoteProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+
+    store = MacroRegimeStore(path)
+    dollar = store.load_indicator(DOLLAR_INDEX, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert result["indicators"][DOLLAR_INDEX]["status"] == "success"
+    assert dollar is not None
+    assert dollar.value == 104.25
+    assert dollar.source == "DXY 行情源"
+    assert "DTWEXBGS" not in fred_calls
+
+
+def test_dxy_failure_uses_uup_proxy_without_impersonating_official_dollar(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+
+    def fred_fetcher(series_id: str) -> str:
+        if series_id == "DTWEXBGS":
+            raise RuntimeError("dollar index timeout")
+        return _fred_fetcher(
+            {
+                "VIXCLS": [18.0, 19.0],
+                "BAMLH0A0HYM2": [3.8, 3.9],
+                "DGS10": [4.2, 4.3],
+                "T10Y2Y": [-0.3, -0.2],
+            }
+        )(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    snapshot = load_macro_regime(path, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+    text = macro_regime_status_text(snapshot)
+
+    assert result["indicators"][DOLLAR_INDEX]["status"] == "failed"
+    assert result["indicators"][DOLLAR_PROXY]["status"] in {"success", "cached_fallback"}
+    assert "美元 proxy：UUP" in text
+    assert "美元指数 DXY" not in text
 
 
 def test_fear_greed_refresh_failure_uses_recent_cache(tmp_path, monkeypatch) -> None:
@@ -1275,7 +1365,7 @@ def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -
     assert "数据：核心完整｜辅助缺失" in text
     assert "FRED timeout" not in text
     assert "CNN HTTP 418" not in text
-    assert "HY OAS 暂缺" in text
+    assert "HY OAS 官方暂缺" in text
     assert "信用代理转弱" in text
 
 
@@ -1343,7 +1433,7 @@ def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, mo
     assert result["overall_status"] == "success"
     assert result["duration_seconds"] >= 0
     assert result["refreshed_count"] >= 7
-    assert result["failed_count"] == 1
+    assert result["failed_count"] == 0
     assert result["indicator_results"]
     vix_result = result["indicators"][VIX]
     assert vix_result["status"] == "success"
@@ -1358,7 +1448,7 @@ def test_refresh_macro_indicators_returns_observable_result_and_log(tmp_path, mo
     assert row is not None
     assert row[0] == "success"
     assert row[1] >= 7
-    assert row[2] == 1
+    assert row[2] == 0
     assert json.loads(row[3])["overall_status"] == "success"
 
 

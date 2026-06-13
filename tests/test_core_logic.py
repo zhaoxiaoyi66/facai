@@ -1566,6 +1566,8 @@ class DashboardLayoutTests(unittest.TestCase):
     def test_dashboard_header_shows_vix_and_official_hy_oas(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         from data.macro_regime import (
+            DOLLAR_INDEX,
+            DOLLAR_PROXY,
             HY_OAS,
             HYG_CREDIT_PROXY,
             MARKET_BREADTH,
@@ -1586,6 +1588,7 @@ class DashboardLayoutTests(unittest.TestCase):
                 MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=80, source="HYG proxy"),
                 MacroIndicatorSnapshot(indicator=TEN_YEAR_YIELD, value=4.55, source="FMP Treasury"),
                 MacroIndicatorSnapshot(indicator=MARKET_BREADTH, value=41.9, source="本地观察池 K线缓存"),
+                MacroIndicatorSnapshot(indicator=DOLLAR_INDEX, value=104.25, source="DXY 行情源"),
             ]
         )
 
@@ -1596,11 +1599,12 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("HY OAS 2.78%", values)
         self.assertIn("10Y 4.5%", values)
         self.assertIn("市场宽度 41.9%（缓存）", values)
-        self.assertNotIn("HY OAS 暂缺｜信用代理承压", values)
+        self.assertIn("美元指数 DXY 104.25", values)
+        self.assertNotIn("HY OAS 官方暂缺｜信用代理承压", values)
 
     def test_dashboard_header_does_not_show_zero_vix_and_uses_credit_proxy_fallback(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
-        from data.macro_regime import HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+        from data.macro_regime import DOLLAR_PROXY, HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
 
         class FreshnessStub:
             def item(self, key: str):
@@ -1610,6 +1614,7 @@ class DashboardLayoutTests(unittest.TestCase):
             [
                 MacroIndicatorSnapshot(indicator=VIX, value=0.0, source="AVIX local market cache"),
                 MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=82, source="HYG proxy"),
+                MacroIndicatorSnapshot(indicator=DOLLAR_PROXY, value=66, rating="走强", source="UUP 美元 proxy"),
             ]
         )
 
@@ -1617,7 +1622,8 @@ class DashboardLayoutTests(unittest.TestCase):
         values = [value for _label, value, _tone in items]
 
         self.assertIn("VIX 暂缺", values)
-        self.assertIn("HY OAS 暂缺｜信用代理承压", values)
+        self.assertIn("HY OAS 官方暂缺｜信用代理承压", values)
+        self.assertIn("美元 proxy：UUP 走强", values)
         self.assertNotIn("VIX 0.0", values)
 
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:

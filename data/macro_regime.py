@@ -33,10 +33,11 @@ YIELD_CURVE_10Y2Y = "yield_curve_10y2y"
 MARKET_TREND = "market_trend"
 MARKET_BREADTH = "market_breadth"
 DOLLAR_INDEX = "dollar_index"
+DOLLAR_PROXY = "dollar_proxy"
 HYG_CREDIT_PROXY = "hyg_credit_proxy"
 SENTIMENT_PROXY = "sentiment_proxy"
 CORE_MACRO_INDICATORS = {VIX, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, MARKET_TREND, MARKET_BREADTH}
-AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
+AUXILIARY_MACRO_INDICATORS = {HY_OAS, FEAR_GREED, DOLLAR_INDEX, DOLLAR_PROXY, HYG_CREDIT_PROXY, SENTIMENT_PROXY}
 
 FRED_VIX_SERIES = "VIXCLS"
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
@@ -44,6 +45,7 @@ FRED_TEN_YEAR_SERIES = "DGS10"
 FRED_10Y2Y_SERIES = "T10Y2Y"
 FRED_DOLLAR_INDEX_SERIES = "DTWEXBGS"
 VIX_MARKET_SYMBOLS = ("AVIX", "^VIX", "VIX")
+DOLLAR_MARKET_SYMBOLS = ("DXY", "^DXY", "DX-Y.NYB")
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FRED_DOWNLOAD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?cosd=1900-01-01&coed=9999-12-31&id={series_id}"
 CNN_FEAR_GREED_URL = CNN_FEAR_GREED_GRAPH_URL
@@ -73,6 +75,7 @@ INDICATOR_LABELS = {
     MARKET_TREND: "大盘趋势",
     MARKET_BREADTH: "市场宽度",
     DOLLAR_INDEX: "美元指数",
+    DOLLAR_PROXY: "美元代理",
     HYG_CREDIT_PROXY: "信用风险代理",
     SENTIMENT_PROXY: "内部情绪代理",
 }
@@ -491,7 +494,9 @@ def refresh_macro_indicators(
         ),
         MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=current),
         MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=current),
-        DOLLAR_INDEX: lambda: _fetch_optional_cached_indicator(DOLLAR_INDEX, store=store, now=current),
+        DOLLAR_INDEX: lambda: _fetch_dollar_index_snapshot(
+            path, provider=provider, store=store, fred_fetcher=fred_fetcher, now=current
+        ),
         FEAR_GREED: lambda: _fetch_cached_or_fear_greed_snapshot(
             store=store, fear_greed_fetcher=fear_greed_fetcher, now=current
         ),
@@ -548,6 +553,16 @@ def refresh_macro_indicators(
         store=store,
         now=current,
         when=_macro_refresh_result_missing(indicators.get(HY_OAS)),
+    )
+    _append_macro_proxy_result(
+        DOLLAR_PROXY,
+        indicators,
+        indicator_results,
+        errors,
+        lambda: _fetch_uup_dollar_proxy_snapshot(path, provider=provider, now=current),
+        store=store,
+        now=current,
+        when=_macro_refresh_result_missing(indicators.get(DOLLAR_INDEX)),
     )
     _append_macro_proxy_result(
         SENTIMENT_PROXY,
@@ -767,6 +782,7 @@ def load_macro_regime(path: Path = CACHE_PATH, *, now: datetime | None = None) -
         store.load_indicator(MARKET_TREND, now=now),
         store.load_indicator(MARKET_BREADTH, now=now),
         store.load_indicator(DOLLAR_INDEX, now=now),
+        store.load_indicator(DOLLAR_PROXY, now=now),
         store.load_indicator(HYG_CREDIT_PROXY, now=now),
         store.load_indicator(SENTIMENT_PROXY, now=now),
     ]
@@ -933,11 +949,13 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
     breadth = _indicator_value_text(snapshot.indicator(MARKET_BREADTH), empty="缺")
     credit = _credit_summary_text(snapshot)
+    dollar = _dollar_summary_text(snapshot)
     sentiment = macro_regime_sentiment_status_text(snapshot)
     hint = snapshot.action_hints[0] if snapshot.action_hints else "按个股纪律执行。"
+    dollar_segment = f"｜{dollar}" if dollar else ""
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜{credit}｜{sentiment}｜纪律提示：{hint}"
+        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜{credit}{dollar_segment}｜{sentiment}｜纪律提示：{hint}"
     )
 
 
@@ -992,6 +1010,7 @@ def _macro_detail_indicators(snapshot: MacroRegimeSnapshot) -> list[MacroIndicat
         MARKET_TREND,
         MARKET_BREADTH,
         DOLLAR_INDEX,
+        DOLLAR_PROXY,
     ]
     rows: list[MacroIndicatorSnapshot] = []
     for name in ordered_names:
@@ -1009,6 +1028,20 @@ def _macro_detail_indicators(snapshot: MacroRegimeSnapshot) -> list[MacroIndicat
                 value=None,
                 source="HYG credit proxy",
                 error="credit proxy missing",
+            )
+        elif item is None and name == DOLLAR_INDEX:
+            item = MacroIndicatorSnapshot(
+                indicator=DOLLAR_INDEX,
+                value=None,
+                source=f"DXY / FRED {FRED_DOLLAR_INDEX_SERIES}",
+                error="official dollar index missing",
+            )
+        elif item is None and name == DOLLAR_PROXY:
+            item = MacroIndicatorSnapshot(
+                indicator=DOLLAR_PROXY,
+                value=None,
+                source="UUP dollar proxy",
+                error="dollar proxy missing",
             )
         if item is not None:
             rows.append(item)
@@ -1125,6 +1158,113 @@ def _fetch_vix_snapshot(
     except Exception as exc:
         errors.append(f"FRED {FRED_VIX_SERIES}: {_short_error(exc)}")
     raise RuntimeError("; ".join(errors) or "VIX 刷新失败")
+
+
+def _load_dollar_market_snapshot(path: Path, *, now: datetime | None = None) -> MacroIndicatorSnapshot | None:
+    for symbol in DOLLAR_MARKET_SYMBOLS:
+        context = build_market_context(
+            symbol,
+            path=path,
+            now=now,
+            quote_max_age_hours=24,
+            history_max_age_hours=120,
+        )
+        value = _number(context.get("currentPrice"))
+        if value is None or value <= 0:
+            continue
+        history = CacheReadModel(
+            path,
+            now=now,
+            quote_max_age_hours=24,
+            history_max_age_hours=120,
+        ).get_price_history(symbol)
+        changes = _history_changes(history, value)
+        percentiles = _history_percentiles(history, value)
+        return MacroIndicatorSnapshot(
+            indicator=DOLLAR_INDEX,
+            value=value,
+            change_1d=changes.get("change_1d"),
+            change_5d=changes.get("change_5d"),
+            change_20d=changes.get("change_20d"),
+            percentile_1y=percentiles.get("percentile_1y"),
+            percentile_5y=percentiles.get("percentile_5y"),
+            source=f"{symbol} local market cache",
+            updated_at=str(context.get("fetchedAt") or "") or None,
+            is_stale=bool(context.get("isStale")),
+            raw_payload=_compact_raw_payload({"symbol": symbol, "kind": "dxy"}),
+        )
+    return None
+
+
+def _fetch_dollar_index_snapshot(
+    path: Path,
+    *,
+    provider: Any | None,
+    store: MacroRegimeStore,
+    fred_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    errors: list[str] = []
+    local_snapshot = _load_dollar_market_snapshot(path, now=now)
+    if local_snapshot is not None and not local_snapshot.is_stale:
+        return local_snapshot
+
+    market_provider = provider
+    if market_provider is None:
+        try:
+            from data.providers import get_market_data_provider
+
+            market_provider = get_market_data_provider(full_fundamentals=False)
+        except Exception as exc:
+            errors.append(f"美元指数行情源初始化失败：{_short_error(exc)}")
+
+    if market_provider is not None:
+        for symbol in DOLLAR_MARKET_SYMBOLS:
+            try:
+                quote = market_provider.get_quote(symbol, force_refresh=True)
+                value = _number(_value_from_mapping(quote, "current_price", "price", "value"))
+                if value is None or value <= 0:
+                    errors.append(f"{symbol} 无有效报价")
+                    continue
+                history = market_provider.get_price_history(symbol, force_refresh=True)
+                changes = _history_changes(history, value)
+                percentiles = _history_percentiles(history, value)
+                fetched_at = now.isoformat()
+                return MacroIndicatorSnapshot(
+                    indicator=DOLLAR_INDEX,
+                    value=value,
+                    change_1d=changes.get("change_1d"),
+                    change_5d=changes.get("change_5d"),
+                    change_20d=changes.get("change_20d"),
+                    percentile_1y=percentiles.get("percentile_1y"),
+                    percentile_5y=percentiles.get("percentile_5y"),
+                    source=f"{symbol} 行情源",
+                    updated_at=fetched_at,
+                    fetched_at=fetched_at,
+                    observation_date=_quote_observation_date(quote),
+                    is_stale=False,
+                    raw_payload=_compact_raw_payload({"symbol": symbol, "kind": "dxy"}),
+                )
+            except Exception as exc:
+                errors.append(f"{symbol}: {_short_error(exc)}")
+
+    try:
+        return _fetch_fred_snapshot_with_circuit(
+            DOLLAR_INDEX,
+            FRED_DOLLAR_INDEX_SERIES,
+            store=store,
+            fred_fetcher=fred_fetcher,
+            now=now,
+        )
+    except Exception as exc:
+        errors.append(f"FRED {FRED_DOLLAR_INDEX_SERIES}: {_short_error(exc)}")
+
+    cached = store.load_indicator(DOLLAR_INDEX, now=now, stale_after_hours=24 * 14)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
+    if local_snapshot is not None and _refresh_snapshot_value_usable(local_snapshot):
+        return local_snapshot
+    raise RuntimeError("; ".join(errors) or "美元指数刷新失败")
 
 
 class _TreasurySnapshotLoader:
@@ -1628,6 +1768,77 @@ def _fetch_hyg_credit_proxy_snapshot(
     )
 
 
+def _fetch_uup_dollar_proxy_snapshot(
+    path: Path,
+    *,
+    provider: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    errors: list[str] = []
+    uup = _trend_state_for_symbol("UUP", path)
+    market_provider = provider
+    if market_provider is None:
+        try:
+            from data.providers import get_market_data_provider
+
+            market_provider = get_market_data_provider(full_fundamentals=False)
+        except Exception as exc:
+            errors.append(f"UUP 行情源初始化失败：{_short_error(exc)}")
+    if _trend_states_fresh(uup):
+        market_provider = None
+    if market_provider is not None:
+        try:
+            market_provider.get_price_history("UUP", force_refresh=True)
+        except Exception as exc:
+            errors.append(f"UUP 刷新失败：{_short_error(exc)}")
+
+    uup = _trend_state_for_symbol("UUP", path)
+    if uup is None:
+        raise RuntimeError("缺少 UUP K 线缓存，无法生成美元 proxy")
+    change_20d = _history_return_pct("UUP", path, days=20)
+    value = 50.0
+    reasons: list[str] = []
+    hints: list[str] = ["美元 proxy 仅作辅助，不影响大盘环境主判断。"]
+    if uup.get("above_50") is True:
+        value += 8
+        reasons.append("UUP 位于 50 日均线上方。")
+    else:
+        value -= 8
+        reasons.append("UUP 位于 50 日均线下方。")
+    if uup.get("above_200") is True:
+        value += 8
+        reasons.append("UUP 位于 200 日均线上方。")
+    else:
+        value -= 8
+        reasons.append("UUP 位于 200 日均线下方。")
+    if change_20d is not None:
+        if change_20d >= 2:
+            value += 12
+            reasons.append(f"UUP 20 日涨幅 {change_20d:.1f}%，美元 proxy 偏强。")
+        elif change_20d <= -2:
+            value -= 12
+            reasons.append(f"UUP 20 日跌幅 {change_20d:.1f}%，美元 proxy 偏弱。")
+        else:
+            reasons.append(f"UUP 20 日变化 {change_20d:.1f}%，美元 proxy 中性。")
+    value = round(max(0.0, min(100.0, value)), 1)
+    rating = _dollar_proxy_label(value)
+    payload = {"proxy": "UUP", "uup": uup, "change_20d": change_20d, "rating": rating, "errors": errors}
+    return MacroIndicatorSnapshot(
+        indicator=DOLLAR_PROXY,
+        value=value,
+        change_20d=change_20d,
+        source="UUP 美元 proxy",
+        rating=rating,
+        updated_at=now.isoformat(),
+        fetched_at=now.isoformat(),
+        observation_date=str(uup.get("latest_date") or "") or None,
+        is_stale=bool(uup.get("is_stale")),
+        reasons=[*reasons, *errors],
+        action_hints=hints,
+        raw_payload=_compact_raw_payload(payload),
+    )
+
+
 def _build_sentiment_proxy_snapshot(
     indicators: dict[str, dict[str, Any]],
     *,
@@ -1884,6 +2095,8 @@ def _indicator_regime(snapshot: MacroIndicatorSnapshot) -> tuple[str, float, lis
         if snapshot.change_20d is not None and snapshot.change_20d >= 3:
             return REGIME_RISK_OFF, 55, ["美元指数短期走强。"], ["复核美元走强对海外收入和风险资产的压力。"]
         return REGIME_NEUTRAL, 30, ["美元指数未作为核心压力信号。"], ["低优先级参考。"]
+    if snapshot.indicator == DOLLAR_PROXY:
+        return REGIME_NEUTRAL, 30, [f"美元 proxy {_dollar_proxy_label(value)}，仅作辅助指标。"], ["低优先级参考。"]
     return REGIME_DATA_GAP, 50, [], []
 
 
@@ -1998,6 +2211,14 @@ def _sentiment_proxy_label(value: float) -> str:
     if value >= 75:
         return "偏贪婪"
     return "中性"
+
+
+def _dollar_proxy_label(value: float) -> str:
+    if value >= 62:
+        return "走强"
+    if value <= 38:
+        return "走弱"
+    return "稳定"
 
 
 def _rate_rising_fast(snapshot: MacroIndicatorSnapshot | None) -> bool:
@@ -2122,10 +2343,27 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     if proxy_value is None:
         return "HY OAS 暂缺"
     if proxy_value >= 75:
-        return "HY OAS 暂缺｜信用代理承压"
+        return "HY OAS 官方暂缺｜信用代理承压"
     if proxy_value >= 60:
-        return "HY OAS 暂缺｜信用代理转弱"
-    return "HY OAS 暂缺｜信用代理稳定"
+        return "HY OAS 官方暂缺｜信用代理转弱"
+    return "HY OAS 官方暂缺｜信用代理稳定"
+
+
+def _dollar_summary_text(snapshot: MacroRegimeSnapshot) -> str:
+    official = snapshot.indicator(DOLLAR_INDEX)
+    official_value = _usable_value(official)
+    if official_value is not None:
+        source = str(official.source or "").upper()
+        suffix = "（缓存）" if _indicator_display_status(official) == "使用缓存" else ""
+        if "DTWEXBGS" in source:
+            return f"美元广义指数 {official_value:.2f}{suffix}"
+        return f"美元指数 DXY {official_value:.2f}{suffix}"
+    proxy = snapshot.indicator(DOLLAR_PROXY)
+    proxy_value = _usable_value(proxy)
+    if proxy_value is not None:
+        rating = proxy.rating or _dollar_proxy_label(proxy_value)
+        return f"美元 proxy：UUP {rating}"
+    return "美元指数暂缺"
 
 
 def _macro_regime_sentiment_detail_html(snapshot: MacroRegimeSnapshot) -> str:
@@ -2354,6 +2592,12 @@ def _normalize_indicator(value: object) -> str:
         "market_breadth": MARKET_BREADTH,
         "dtwexbgs": DOLLAR_INDEX,
         "dollar_index": DOLLAR_INDEX,
+        "dxy": DOLLAR_INDEX,
+        "^dxy": DOLLAR_INDEX,
+        "dx-y.nyb": DOLLAR_INDEX,
+        "dollar_proxy": DOLLAR_PROXY,
+        "uup": DOLLAR_PROXY,
+        "uup_proxy": DOLLAR_PROXY,
         "hyg_credit_proxy": HYG_CREDIT_PROXY,
         "credit_proxy": HYG_CREDIT_PROXY,
         "sentiment_proxy": SENTIMENT_PROXY,
@@ -2367,6 +2611,8 @@ def _indicator_storage_aliases(normalized: str) -> tuple[str, ...]:
         HY_OAS: ("hy_oas", "high_yield_oas", "bamlh0a0hym2"),
         VIX: ("vix", "^vix", "avix"),
         FEAR_GREED: ("fear_greed", "cnn_fear_greed", "fear & greed"),
+        DOLLAR_INDEX: ("dollar_index", "dtwexbgs", "dxy", "^dxy", "dx-y.nyb"),
+        DOLLAR_PROXY: ("dollar_proxy", "uup_proxy", "uup"),
     }
     return aliases.get(normalized, (normalized,))
 
