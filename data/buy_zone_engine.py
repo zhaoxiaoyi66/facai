@@ -150,6 +150,7 @@ def build_buy_zone_context(
         volume_status=volume_status,
         volume_ratio=volume_ratio,
         daily_ohlcv_present=bool(_daily_bars(data)),
+        daily_ohlcv_count=_first_number(data, "daily_ohlcv_count", "dailyOhlcvCount"),
     )
     core_allowed = final_score is None or final_score >= 70
     core_reason = (
@@ -255,6 +256,19 @@ def _missing_fields(**values: Any) -> list[str]:
     ):
         if values.get(key) is None:
             fields.append(_missing_label(key))
+    daily_ohlcv_count = _number(values.get("daily_ohlcv_count"))
+    technical_window_missing = any(
+        field in fields
+        for field in (
+            "ma20",
+            "ma50",
+            "ma200",
+            "atr_14",
+            "volume_ratio",
+        )
+    )
+    if values.get("daily_ohlcv_present") and daily_ohlcv_count is not None and daily_ohlcv_count < 200 and technical_window_missing:
+        fields.insert(0, "daily_ohlcv_window")
     if not values.get("daily_ohlcv_present") and any(
         field in fields
         for field in (
@@ -450,6 +464,7 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
     bars = _daily_bars(enriched)
     if not bars:
         return enriched
+    enriched["daily_ohlcv_count"] = len(bars)
 
     latest = bars[-1]
     latest_close = _number(latest.get("close"))
@@ -528,7 +543,8 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
         if support_low is not None:
             enriched.setdefault("invalidation_price", support_low)
 
-    enriched.setdefault("technical_data_source", "daily_ohlcv")
+    source = "daily_ohlcv" if len(bars) >= 200 else "daily_ohlcv_partial"
+    enriched.setdefault("technical_data_source", source)
     return enriched
 
 

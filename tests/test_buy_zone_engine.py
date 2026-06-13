@@ -154,11 +154,13 @@ def test_short_daily_ohlcv_does_not_fake_long_window_indicators() -> None:
     )
 
     assert context.current_action == DATA_INSUFFICIENT
+    assert "daily_ohlcv_window" in context.missing_fields
     assert "ma20" in context.missing_fields
     assert "ma50" in context.missing_fields
     assert "ma200" in context.missing_fields
     assert "atr_14" in context.missing_fields
     assert "volume_ratio" in context.missing_fields
+    assert context.technical_data_source == "daily_ohlcv_partial"
     assert context.setup_score == 0
 
 

@@ -460,6 +460,10 @@ def test_report_volume_snapshot_backfills_technicals_and_health_gaps() -> None:
     assert "buy_zone.upper" not in data_health["missing_fields"]
 
 
+def test_report_localizes_short_history_missing_field() -> None:
+    assert radar_ui._field_display_label("daily_ohlcv_window") == "日线样本不足"
+
+
 def test_report_roe_falls_back_to_net_income_over_equity() -> None:
     assert radar_ui._roe_value({"net_income": 25_000_000, "total_equity": 100_000_000}) == 0.25
 

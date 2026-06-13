@@ -3211,6 +3211,7 @@ FIELD_DISPLAY_LABELS = {
     "return_on_equity": "净资产收益率",
     "daily_bars": "历史K线",
     "daily_ohlcv": "日线 OHLCV",
+    "daily_ohlcv_window": "日线样本不足",
     "dailybars": "历史K线",
     "price_history": "历史K线",
     "technicals": "技术数据",
