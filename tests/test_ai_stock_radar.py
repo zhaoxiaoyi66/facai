@@ -260,6 +260,128 @@ def test_ai_radar_report_msft_near_repair_below_valuation_is_not_broken_buy_zone
     assert report["decision"] == "WAIT"
 
 
+def test_ai_radar_report_uses_dashboard_row_price_and_radar_zone_aliases() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "price": "$390.74",
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+        "entry_display_label": "价值复核",
+        "entry_action_hint": "结构待确认",
+        "radar_near_term_repair_zone_low": 377.84,
+        "radar_near_term_repair_zone_high": 415.02,
+        "radar_valuation_reference_zone_low": 394.12,
+        "radar_valuation_reference_zone_high": 425.99,
+        "radar_trend_reclaim_zone_low": 415.02,
+        "radar_trend_reclaim_zone_high": 425.99,
+        "radar_confirmation_price": 415.02,
+        "radar_invalidation_price": 377.84,
+        "technical_structure_status": "WEAK_TREND_REPAIR",
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "最新价" in html
+    assert "$390.74" in html
+    assert "近端修复观察区" in html
+    assert "价格低于估值参考区下沿，但仍处于近端修复观察区" in html
+    assert "区间待补" not in html
+    assert "跌破纪律买区" not in html
+    assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_shows_volume_price_acceptance_card() -> None:
+    report = {
+        "ticker": "NVDA",
+        "company_name": "Nvidia",
+        "current_price": 205.19,
+        "decision": "WAIT",
+        "final_score": 82,
+        "data_status": "OK",
+        "volumePriceAcceptance": {
+            "volume_price_status": "FORMING",
+            "volume_price_score": 48,
+            "volume_ratio": 0.60,
+            "volume_ma20": 175_713_022,
+            "candle_signal_cn": "小阳整理",
+            "support_signal_cn": "守住支撑",
+            "confirmation_signal_cn": "未站上确认线",
+            "distribution_count_10d": 0,
+            "zone_source": "radar",
+            "acceptance_reason_cn": "支撑暂时守住。",
+        },
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "量价承接" in html
+    assert "初步承接，尚未确认" in html
+    assert "未放量站上确认线，不构成买入确认" in html
+    assert "0.60x" in html
+    assert "radar" in html
+    assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_volume_price_overextended_is_not_dip_confirmation() -> None:
+    report = {
+        "ticker": "MRVL",
+        "current_price": 279.7,
+        "decision": "BLOCK_CHASE",
+        "final_score": 76,
+        "data_status": "OK",
+        "volumePriceAcceptance": {
+            "volume_price_status": "OVEREXTENDED_SUPPORT_READ",
+            "volume_price_score": 56,
+            "volume_ratio": 0.74,
+            "volume_ma20": 10_000_000,
+            "candle_signal_cn": "小阳整理",
+            "support_signal_cn": "支撑读数可参考",
+            "confirmation_signal_cn": "未站上确认线",
+            "distribution_count_10d": 0,
+            "zone_source": "radar",
+            "acceptance_reason_cn": "支撑读数不错。",
+        },
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "脱离观察区" in html
+    assert "价格已脱离回踩观察区，承接读数不构成低吸依据" in html
+    assert report["decision"] == "BLOCK_CHASE"
+
+
+def test_ai_radar_report_volume_price_gap_down_is_not_positive_acceptance() -> None:
+    report = {
+        "ticker": "ADBE",
+        "current_price": 204.02,
+        "decision": "WAIT",
+        "final_score": 78,
+        "data_status": "OK",
+        "volumePriceAcceptance": {
+            "volume_price_status": "UNCONFIRMED",
+            "volume_price_score": 27,
+            "volume_ratio": 3.56,
+            "volume_ma20": 4_000_000,
+            "candle_signal_cn": "下影线承接",
+            "support_signal_cn": "支撑仍需复核",
+            "confirmation_signal_cn": "未站上确认线",
+            "distribution_count_10d": 1,
+            "zone_source": "radar",
+            "acceptance_reason_cn": "高量跳空下跌，量价承接仍需复核。",
+        },
+    }
+
+    html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "量价未确认" in html
+    assert "高量跳空下跌，量价承接仍需复核" in html
+    assert "承接确认" not in html
+    assert "承接形成中" not in html
+    assert report["decision"] == "WAIT"
+
+
 def test_ai_radar_report_only_marks_breakdown_when_price_breaks_invalidation() -> None:
     report = {
         "ticker": "ADBE",

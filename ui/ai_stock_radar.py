@@ -10,6 +10,7 @@ from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stoc
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
 from data.sector_localization import format_company_track, get_ticker_research_track
+from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
 from ui.theme import render_page_header
 
@@ -284,6 +285,7 @@ def _report_html(
         '<section class="ai-radar-research-grid first-screen">'
         f"{_range_chart_html(report)}"
         f"{_score_card_html(report)}"
+        f"{_volume_price_acceptance_card_html(report, technicals, row, history)}"
         "</section>"
         '<section class="ai-radar-opinion-grid">'
         f'{_text_card_html("看多逻辑", report.get("bull_points") or [])}'
@@ -381,7 +383,7 @@ def _research_header_html(
         if item
     ) or "本地缓存研究视图"
     stats = [
-        ("最新价", _money(report.get("current_price"))),
+        ("最新价", _money(_report_current_price(report))),
         ("52周区间", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", _compact_number(_first_number(snapshot, technicals, "volume"))),
@@ -443,7 +445,7 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
 
 def _range_chart_html(report: dict[str, Any]) -> str:
     ranges = _range_chart_items(report)
-    current = _number(report.get("current_price"))
+    current = _report_current_price(report)
     values = [value for item in ranges for value in item["range"] if value is not None]
     if current is not None:
         values.append(current)
@@ -486,12 +488,12 @@ def _range_chart_html(report: dict[str, Any]) -> str:
 
 def _range_chart_items(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        {"label": "技术回踩区", "range": (_first_number(report, "effective_technical_entry_zone_low", "technical_pullback_zone_low", "technical_entry_zone_low"), _first_number(report, "effective_technical_entry_zone_high", "technical_pullback_zone_high", "technical_entry_zone_high")), "tone": "blue"},
-        {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "technical_repair_zone_high")), "tone": "slate"},
-        {"label": "趋势确认区", "range": (_first_number(report, "trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "confirmation_price")), "tone": "green"},
-        {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high")), "tone": "amber"},
-        {"label": "深度支撑区", "range": (_first_number(report, "deep_support_zone_low", "invalidation_price"), _first_number(report, "deep_support_zone_high", "support_watch_zone_high")), "tone": "orange"},
-        {"label": "追高禁区", "range": (_first_number(report, "chase_above_price"), None), "tone": "red"},
+        {"label": "技术回踩区", "range": (_first_number(report, "effective_technical_entry_zone_low", "radar_effective_technical_entry_zone_low", "technical_pullback_zone_low", "radar_technical_pullback_zone_low", "technical_entry_zone_low", "radar_technical_entry_zone_low"), _first_number(report, "effective_technical_entry_zone_high", "radar_effective_technical_entry_zone_high", "technical_pullback_zone_high", "radar_technical_pullback_zone_high", "technical_entry_zone_high", "radar_technical_entry_zone_high")), "tone": "blue"},
+        {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")), "tone": "slate"},
+        {"label": "趋势确认区", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high", "confirmation_price", "radar_confirmation_price")), "tone": "green"},
+        {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
+        {"label": "深度支撑区", "range": (_first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price"), _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")), "tone": "orange"},
+        {"label": "追高禁区", "range": (_first_number(report, "chase_above_price", "radar_chase_above_price"), None), "tone": "red"},
     ]
 
 
@@ -513,6 +515,126 @@ def _score_card_html(report: dict[str, Any]) -> str:
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
     return f'<section class="ai-radar-card score"><div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div><div class="ai-radar-score-grid">{body}</div></section>'
+
+
+def _volume_price_acceptance_card_html(
+    report: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    history: pd.DataFrame | None,
+) -> str:
+    snapshot = _volume_price_acceptance_snapshot(report, technicals, row, history)
+    status = str(snapshot.get("volume_price_status") or snapshot.get("volumePriceStatus") or "DATA_MISSING")
+    score = _number(snapshot.get("volume_price_score", snapshot.get("volumePriceScore")))
+    volume_ratio = _number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
+    volume_ma20 = _number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
+    distribution_count = snapshot.get("distribution_count_10d", snapshot.get("distributionCount10d"))
+    reason = _volume_price_reason_text(status, score, snapshot.get("acceptance_reason_cn") or snapshot.get("reason_cn") or snapshot.get("volumePriceReasonCn"))
+    rows = [
+        ("量价状态", _volume_price_status_label(status, score)),
+        ("分数", "待补数据" if status == "DATA_MISSING" else _number_text(score)),
+        ("量比", _volume_ratio_display(volume_ratio)),
+        ("20日均量", _compact_number(volume_ma20)),
+        ("K线信号", _display_value(snapshot.get("candle_signal_cn") or snapshot.get("candleSignalCn"))),
+        ("支撑信号", _display_value(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn"))),
+        ("确认信号", _display_value(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn"))),
+        ("10日派发次数", str(distribution_count if distribution_count not in (None, "") else "暂无")),
+        ("zone_source", _display_value(snapshot.get("zone_source") or snapshot.get("zoneSource") or snapshot.get("volumePriceZoneSource"))),
+    ]
+    body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
+    return (
+        '<section class="ai-radar-card ai-radar-volume-price-card">'
+        '<div class="ai-radar-section-title"><span>量价承接</span><b>只读提示，不参与买入放行</b></div>'
+        f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<p class="ai-radar-empty-note">{escape(reason)}</p>'
+        "</section>"
+    )
+
+
+def _volume_price_acceptance_snapshot(
+    report: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    history: pd.DataFrame | None,
+) -> dict[str, Any]:
+    for source in (report, row, technicals):
+        snapshot = source.get("volumePriceAcceptance") if isinstance(source, dict) else None
+        if isinstance(snapshot, dict) and snapshot:
+            return snapshot
+        snapshot = source.get("volume_price_acceptance") if isinstance(source, dict) else None
+        if isinstance(snapshot, dict) and snapshot:
+            return snapshot
+    entry_context = _volume_price_entry_context(report, row, technicals)
+    snapshot = evaluate_volume_price_acceptance(
+        ticker=str(report.get("ticker") or row.get("ticker") or ""),
+        daily_bars=history,
+        technicals=technicals,
+        entry_context=entry_context,
+    )
+    return snapshot.to_dict()
+
+
+def _volume_price_entry_context(*sources: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in sources:
+        if isinstance(source, dict):
+            merged.update(source)
+    return {
+        **merged,
+        "current_price": _report_current_price(merged),
+        "observation_low": _first_number(
+            merged,
+            "near_term_repair_zone_low",
+            "radar_near_term_repair_zone_low",
+            "effective_technical_entry_zone_low",
+            "radar_effective_technical_entry_zone_low",
+            "technical_pullback_zone_low",
+            "radar_technical_pullback_zone_low",
+        ),
+        "observation_high": _first_number(
+            merged,
+            "near_term_repair_zone_high",
+            "radar_near_term_repair_zone_high",
+            "effective_technical_entry_zone_high",
+            "radar_effective_technical_entry_zone_high",
+            "technical_pullback_zone_high",
+            "radar_technical_pullback_zone_high",
+        ),
+        "support_line": _first_number(merged, "support_watch_zone_low", "radar_support_watch_zone_low", "recent_swing_low", "radar_recent_swing_low"),
+        "invalid_line": _first_number(merged, "invalidation_price", "radar_invalidation_price"),
+        "confirm_line": _first_number(merged, "confirmation_price", "radar_confirmation_price"),
+        "price_position": merged.get("price_position") or merged.get("radar_price_position"),
+        "decision": merged.get("decision") or merged.get("radar_decision"),
+    }
+
+
+def _volume_price_status_label(status: str, score: float | None = None) -> str:
+    normalized = str(status or "").strip().upper()
+    if normalized == "ACCEPTANCE_CONFIRMED":
+        return "承接确认"
+    if normalized == "FORMING":
+        return "初步承接，尚未确认" if score is not None and score < 55 else "承接形成中"
+    if normalized == "UNCONFIRMED":
+        return "量价未确认"
+    if normalized == "FAILED":
+        return "承接失败"
+    if normalized == "OVEREXTENDED_SUPPORT_READ":
+        return "脱离观察区"
+    if normalized == "DATA_MISSING":
+        return "数据不足"
+    return normalized or "数据不足"
+
+
+def _volume_price_reason_text(status: str, score: float | None, reason: Any) -> str:
+    normalized = str(status or "").strip().upper()
+    if normalized == "FORMING" and score is not None and score < 55:
+        return "初步承接，尚未确认；未放量站上确认线，不构成买入确认。"
+    if normalized == "OVEREXTENDED_SUPPORT_READ":
+        return "价格已脱离回踩观察区，承接读数不构成低吸依据。"
+    if normalized == "FAILED":
+        return "放量跌破支撑/失效线，暂停加仓。"
+    text = _display_value(reason)
+    return text if text != "暂无" else "量价承接只作为复核提示，不参与买入放行。"
 
 
 def _zones_card_html(report: dict[str, Any]) -> str:
@@ -544,7 +666,7 @@ def _key_metric_rows(
 ) -> list[tuple[str, str]]:
     volume = _volume_snapshot(market, snapshot, technicals, history)
     return [
-        ("最新价", _money(report.get("current_price"))),
+        ("最新价", _money(_report_current_price(report))),
         ("日内涨跌幅", _signed_pct(_first_number(snapshot, technicals, market, "change_pct", "changePercent", "day_change_pct"))),
         ("成交量", _volume_display(volume)),
         ("20日均量", _compact_number(volume.get("volume_ma20"))),
@@ -983,28 +1105,44 @@ def _next_step_sentence(report: dict[str, Any]) -> str:
 
 
 def _current_zone_label(report: dict[str, Any]) -> str:
-    price = _number(report.get("current_price"))
+    price = _report_current_price(report)
     if price is None:
         return "区间待补"
 
-    invalidation = _first_number(report, "invalidation_price")
+    invalidation = _first_number(report, "invalidation_price", "radar_invalidation_price")
     structure = str(report.get("technical_structure_status") or "").strip().upper()
     if invalidation is not None and price < invalidation:
         return "破位复核区"
     if structure == "BREAKDOWN_REVIEW":
         return "破位复核区"
 
-    chase = _first_number(report, "chase_above_price")
+    chase = _first_number(report, "chase_above_price", "radar_chase_above_price")
     if chase is not None and price >= chase:
         return "追高风险区"
 
-    if _price_in_range(price, _first_number(report, "near_term_repair_zone_low"), _first_number(report, "near_term_repair_zone_high")):
+    if _price_in_range(
+        price,
+        _first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low"),
+        _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high"),
+    ):
         return "近端修复观察区"
-    if _price_in_range(price, _first_number(report, "valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high")):
+    if _price_in_range(
+        price,
+        _first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"),
+        _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high"),
+    ):
         return "估值参考区"
-    if _price_in_range(price, _first_number(report, "deep_support_zone_low"), _first_number(report, "deep_support_zone_high")):
+    if _price_in_range(
+        price,
+        _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low"),
+        _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high"),
+    ):
         return "深度支撑区"
-    if _price_in_range(price, _first_number(report, "trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "confirmation_price")):
+    if _price_in_range(
+        price,
+        _first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"),
+        _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high", "confirmation_price", "radar_confirmation_price"),
+    ):
         return "趋势确认区"
 
     price_position = str(report.get("price_position") or "").strip().upper()
@@ -1023,11 +1161,15 @@ def _price_in_range(price: float, low: float | None, high: float | None) -> bool
 
 
 def _price_below_valuation_inside_near_repair(report: dict[str, Any]) -> bool:
-    price = _number(report.get("current_price"))
-    valuation_low = _first_number(report, "valuation_reference_zone_low")
+    price = _report_current_price(report)
+    valuation_low = _first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low")
     if price is None or valuation_low is None or price >= valuation_low:
         return False
     return _current_zone_label(report) == "近端修复观察区"
+
+
+def _report_current_price(report: dict[str, Any]) -> float | None:
+    return _first_number(report, "current_price", "currentPrice", "price")
 
 
 def _localized_report_summary(report: dict[str, Any]) -> str:
@@ -1404,6 +1546,15 @@ def _short_time(value: Any) -> str:
 def _number(value: Any) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
+    if isinstance(value, str):
+        value = (
+            value.strip()
+            .replace("$", "")
+            .replace(",", "")
+            .replace("%", "")
+            .replace("x", "")
+            .replace("X", "")
+        )
     try:
         number = float(value)
     except (TypeError, ValueError):
