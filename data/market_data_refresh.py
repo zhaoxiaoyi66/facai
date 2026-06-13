@@ -19,6 +19,7 @@ def refresh_symbol_market_data(symbol: str, *, provider: Any | None = None, now:
         result["error"] = "symbol is required"
         return result
 
+    result["before"] = _cache_summary(normalized)
     market_data_provider = provider or _market_data_provider()
     errors: list[str] = []
 
@@ -44,6 +45,7 @@ def refresh_symbol_market_data(symbol: str, *, provider: Any | None = None, now:
     else:
         result["status"] = "failed"
     result["error"] = "; ".join(errors) if errors else None
+    result["after"] = _cache_summary(normalized)
     return result
 
 
@@ -61,3 +63,45 @@ def _has_history_rows(history: Any) -> bool:
         return len(history) > 0
     except TypeError:
         return False
+
+
+def _cache_summary(symbol: str) -> dict[str, Any]:
+    try:
+        from data.fundamentals import FundamentalCache
+        from data.market_context import build_market_history
+
+        snapshot = FundamentalCache().get_snapshot(symbol, max_age_hours=24 * 3650) or {}
+        history = build_market_history(symbol)
+    except Exception as exc:
+        return {"symbol": symbol, "error": str(exc)}
+
+    if history is None or getattr(history, "empty", True):
+        latest_date = None
+        latest_volume = None
+        bars_count = 0
+    else:
+        latest = history.iloc[-1]
+        latest_date = str(latest.get("date"))
+        latest_volume = latest.get("volume")
+        bars_count = len(history)
+
+    return {
+        "symbol": symbol,
+        "profile_exists": bool(snapshot),
+        "company_name": _first_value(snapshot, "company_name", "companyName", "name", "company"),
+        "sector": _first_value(snapshot, "sector"),
+        "industry": _first_value(snapshot, "industry", "industry_group", "business_model", "model"),
+        "quote_price": _first_value(snapshot, "current_price", "currentPrice", "price"),
+        "market_cap": _first_value(snapshot, "market_cap", "marketCap", "mktCap", "company_market_cap"),
+        "daily_bars_count": bars_count,
+        "latest_daily_bar_date": latest_date,
+        "latest_daily_bar_volume": latest_volume,
+    }
+
+
+def _first_value(source: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None

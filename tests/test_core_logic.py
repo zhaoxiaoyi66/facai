@@ -1173,6 +1173,48 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(now_row["humanReadableSummary"], {"entry": "只观察"})
         self.assertEqual(msft_row["overheatReasons"], ["保持"])
 
+    def test_dashboard_refresh_symbol_query_entry_is_available(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        action_html = dashboard_module._dashboard_view_action_html("GLW")
+
+        self.assertIn("refreshTicker=GLW", action_html)
+        self.assertIn("刷新", action_html)
+        self.assertIn("_handle_refresh_ticker_query", inspect.getsource(dashboard_module.render))
+
+    def test_dashboard_data_health_refresh_updates_symbol_session_row(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        state = {
+            "dashboard_table_cache": pd.DataFrame(
+                [
+                    {"symbol": "GLW", "price": "CURRENT_MISSING", "marketCap": "MARKET_CAP_MISSING", "dataStatus": "DATA_MISSING"},
+                    {"symbol": "MSFT", "price": "$390.00", "marketCap": "2,900.0B", "dataStatus": "medium"},
+                ]
+            )
+        }
+
+        invalidated = dashboard_module._sync_refreshed_symbol_to_dashboard_session(
+            "GLW",
+            session_state=state,
+            row_loader=lambda symbol: {
+                "symbol": symbol,
+                "price": "$179.20",
+                "marketCap": "154.2B",
+                "companyName": "Corning Incorporated",
+                "dataStatus": "medium",
+            },
+        )
+
+        updated = state["dashboard_table_cache"]
+        glw = updated.loc[updated["symbol"] == "GLW"].iloc[0]
+        msft = updated.loc[updated["symbol"] == "MSFT"].iloc[0]
+        self.assertEqual(glw["price"], "$179.20")
+        self.assertEqual(glw["marketCap"], "154.2B")
+        self.assertEqual(glw["companyName"], "Corning Incorporated")
+        self.assertEqual(msft["price"], "$390.00")
+        self.assertIn("dashboard_table_cache", invalidated)
+        self.assertIn("radar_research_list_row", invalidated)
+        self.assertIn("single_report_row", invalidated)
+
     def test_dashboard_row_expands_final_decision_fields_without_dropping_legacy_action(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         row = dashboard_module._build_dashboard_row(

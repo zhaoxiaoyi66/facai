@@ -260,6 +260,23 @@ def test_price_only_accepts_wrapped_batch_quote_payload(tmp_path) -> None:
     assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["price_change_pct"] == -1.3
 
 
+def test_price_only_accepts_market_cap_aliases(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    now = datetime(2026, 6, 11, 12, tzinfo=timezone.utc)
+
+    for alias in ("marketCap", "market_cap", "mktCap", "company_market_cap"):
+        cache.set_snapshot("GLW", {"ticker": "GLW", "current_price": 10})
+        quote = {"symbol": "GLW", "price": 11.0, alias: 123_000_000}
+        merged = __import__("data.refresh_policy", fromlist=[""])._merge_quote_snapshot(
+            "GLW",
+            cache.get_snapshot("GLW", max_age_hours=24 * 3650) or {},
+            quote,
+            previous_fetched_at=None,
+            now=now,
+        )
+        assert merged["market_cap"] == 123_000_000
+
+
 def test_price_only_single_ticker_failure_does_not_block_others(tmp_path) -> None:
     cache = FundamentalCache(tmp_path / "refresh.sqlite")
     provider = FakeFmpQuoteOnlyProvider(fail_quote={"MSFT"})

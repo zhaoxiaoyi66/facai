@@ -269,6 +269,7 @@ def render() -> None:
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
     _handle_lane_filter_query()
+    _handle_refresh_ticker_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
 
@@ -1520,12 +1521,21 @@ def _render_data_health_refresh_result() -> None:
     status = str(result.get("status") or "failed")
     tone = {"success": "ok", "partial": "warning"}.get(status, "error")
     error = str(result.get("error") or "无")
+    refreshed_bits = [
+        f"价格 {result.get('price') or '待补'}",
+        f"市值 {result.get('marketCap') or '待补'}",
+        f"公司 {result.get('company') or '待补'}",
+        f"赛道 {result.get('sector') or '待补'}",
+        f"日线 {result.get('dailyBarsCount') or 0} 条",
+    ]
+    cache_text = str(result.get("cacheKeysInvalidated") or "无")
     st.markdown(
         (
             f'<div class="data-health-refresh-result {escape(tone)}">'
             f'<strong>{escape(str(result.get("symbol") or ""))} 刷新{escape(_refresh_status_label(status))}</strong>'
             f'<span>quoteStatus: {escape(str(result.get("quoteStatus") or "N/A"))} · '
-            f'historyStatus: {escape(str(result.get("historyStatus") or "N/A"))} · error: {escape(error)}</span>'
+            f'historyStatus: {escape(str(result.get("historyStatus") or "N/A"))} · '
+            f'{escape(" · ".join(refreshed_bits))} · cache: {escape(cache_text)} · error: {escape(error)}</span>'
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -1878,13 +1888,64 @@ def _refresh_data_health_symbol(symbol: str) -> dict[str, str]:
             "historyStatus": "unknown",
             "error": "刷新服务返回异常",
         }
+    cache_keys_invalidated = _sync_refreshed_symbol_to_dashboard_session(normalized_symbol)
+    after = result.get("after") if isinstance(result.get("after"), dict) else {}
     return {
         "symbol": str(result.get("symbol") or normalized_symbol),
         "status": str(result.get("status") or "failed"),
         "quoteStatus": str(result.get("quoteStatus") or "N/A"),
         "historyStatus": str(result.get("historyStatus") or "N/A"),
         "error": str(result.get("error") or "无"),
+        "company": str(after.get("company_name") or "待补"),
+        "sector": str(after.get("sector") or after.get("industry") or "待补"),
+        "price": str(after.get("quote_price") or "待补"),
+        "marketCap": str(after.get("market_cap") or "待补"),
+        "dailyBarsCount": str(after.get("daily_bars_count") or 0),
+        "cacheKeysInvalidated": ", ".join(cache_keys_invalidated),
     }
+
+
+def _sync_refreshed_symbol_to_dashboard_session(
+    symbol: str,
+    *,
+    session_state=None,
+    row_loader=None,
+) -> list[str]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        return []
+    state = st.session_state if session_state is None else session_state
+    load_row = row_loader or (lambda ticker: _load_cached_dashboard_row(FundamentalCache(), ticker))
+    try:
+        refreshed_row = load_row(normalized_symbol)
+    except Exception:
+        refreshed_row = None
+    invalidated: list[str] = []
+    if isinstance(refreshed_row, dict) and refreshed_row:
+        table = state.get("dashboard_table_cache")
+        if isinstance(table, pd.DataFrame):
+            state["dashboard_table_cache"] = _replace_dashboard_row(table, refreshed_row).copy()
+            invalidated.append("dashboard_table_cache")
+        state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+        invalidated.extend(
+            [
+                "radar_research_list_row",
+                "single_report_row",
+                "data_completeness_row",
+                "risk_radar_summary_row",
+            ]
+        )
+    return invalidated
+
+
+def _handle_refresh_ticker_query() -> None:
+    symbol = str(st.query_params.get("refreshTicker", "")).strip().upper()
+    if not symbol:
+        return
+    st.session_state["data_health_last_refresh_result"] = _refresh_data_health_symbol(symbol)
+    if "refreshTicker" in st.query_params:
+        st.query_params.pop("refreshTicker")
+    st.rerun()
 
 
 def _clean_refresh_error(error: object) -> str:
@@ -6910,7 +6971,7 @@ def _render_dashboard_styles() -> None:
             max-width:96px;
             white-space:nowrap;
         }
-        .dashboard-row-actions .dashboard-view-action:first-child::after {
+        .dashboard-row-actions .dashboard-view-action:not(:last-child)::after {
             content:"·";
             position:absolute;
             right:-6px;
@@ -7383,12 +7444,15 @@ def _dashboard_view_action_html(symbol: str) -> str:
         "return false;"
     )
     record_href = f"?page=dashboard&recordSignal={escape(normalized_symbol, quote=True)}#watchlist-table"
+    refresh_href = f"?page=dashboard&refreshTicker={escape(normalized_symbol, quote=True)}#watchlist-table"
     return (
         '<span class="dashboard-row-actions">'
         f'<a class="dashboard-view-action" href="#" data-dashboard-drawer-open="{safe_symbol}" '
         f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板"><span>查看</span></a>'
         f'<a class="dashboard-view-action dashboard-record-action" href="{record_href}" target="_self" '
         f'onclick="event.stopPropagation();" title="记录 {safe_symbol} 当前系统信号"><span>记录</span></a>'
+        f'<a class="dashboard-view-action dashboard-refresh-action" href="{refresh_href}" target="_self" '
+        f'onclick="event.stopPropagation();" title="刷新 {safe_symbol} 本地数据并重建本行"><span>刷新</span></a>'
         "</span>"
     )
 

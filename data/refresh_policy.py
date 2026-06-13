@@ -481,7 +481,7 @@ def _merge_quote_snapshot(
         "price_change": ("change", "price_change"),
         "price_change_pct": ("changesPercentage", "changePercentage", "change_pct", "price_change_pct"),
         "volume": ("volume",),
-        "market_cap": ("marketCap", "market_cap"),
+        "market_cap": ("marketCap", "market_cap", "mktCap", "company_market_cap"),
         "fifty_two_week_high": ("yearHigh", "fifty_two_week_high"),
         "fifty_two_week_low": ("yearLow", "fifty_two_week_low"),
         "shares_outstanding": ("sharesOutstanding", "shares_outstanding"),
