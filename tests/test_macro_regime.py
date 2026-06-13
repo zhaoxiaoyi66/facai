@@ -29,6 +29,7 @@ from data.macro_regime import (
     MacroRegimeStore,
     evaluate_macro_regime,
     load_macro_regime,
+    macro_regime_detail_html,
     macro_regime_sentiment_status_text,
     macro_regime_status_text,
     macro_regime_trade_hint_text,
@@ -1332,7 +1333,29 @@ def test_core_macro_indicators_available_do_not_need_auxiliary_indicators() -> N
     assert snapshot.confidence == "高"
     assert "VIX 22.0" in macro_regime_status_text(snapshot)
     assert "数据：核心完整｜辅助缺失" in macro_regime_status_text(snapshot)
+    assert "观察池强弱：38.0%｜偏弱" in macro_regime_status_text(snapshot)
     assert "高收益债利差" not in macro_regime_status_text(snapshot)
+
+
+def test_macro_detail_explains_market_breadth_as_watchlist_strength() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            MacroIndicatorSnapshot(
+                indicator=MARKET_BREADTH,
+                value=45.2,
+                raw_payload='{"tickerCount": 31, "availableCount": 31, "pctAbove50": 45.2, "pctAbove200": 40.0}',
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                source="本地观察池 K线缓存",
+            )
+        ]
+    )
+
+    html = macro_regime_detail_html(snapshot)
+    assert "观察池强弱" in html
+    assert "31只观察股中，45.2% 高于50日线。" in html
+    assert "观察池内部修复不充分，指数上涨可能由少数大票支撑。" in html
+    assert "不追涨，优先A类回踩，C类少动。" in html
+    assert "市场宽度" not in html
 
 
 def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -> None:

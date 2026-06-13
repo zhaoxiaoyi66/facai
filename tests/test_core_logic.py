@@ -1598,7 +1598,7 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("VIX 19.4（缓存）", values)
         self.assertIn("HY OAS 2.78%", values)
         self.assertIn("10Y 4.5%", values)
-        self.assertIn("市场宽度 41.9%（缓存）", values)
+        self.assertIn("观察池强弱：41.9%｜偏弱（缓存）", values)
         self.assertIn("美元指数 DXY 104.25", values)
         self.assertNotIn("HY OAS 官方暂缺｜信用代理承压", values)
 

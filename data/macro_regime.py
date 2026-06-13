@@ -73,7 +73,7 @@ INDICATOR_LABELS = {
     TEN_YEAR_YIELD: "10年美债收益率",
     YIELD_CURVE_10Y2Y: "美债10Y-2Y利差",
     MARKET_TREND: "大盘趋势",
-    MARKET_BREADTH: "市场宽度",
+    MARKET_BREADTH: "观察池强弱",
     DOLLAR_INDEX: "美元指数",
     DOLLAR_PROXY: "美元代理",
     HYG_CREDIT_PROXY: "信用风险代理",
@@ -868,7 +868,7 @@ def evaluate_macro_regime(
     if spy_below_200:
         reasons.append("SPY 跌破 200 日均线，只允许 A 类计划内买入提示。")
     if breadth_weak:
-        reasons.append("观察池市场宽度恶化，C 类暂停新增提示。")
+        reasons.append("观察池强弱偏弱，C 类暂停新增提示。")
 
     if (
         vix_value is not None
@@ -927,7 +927,7 @@ def evaluate_macro_regime(
             *(["成长股估值压力上升，AI/软件只等回踩，不追涨。"] if _rate_rising_fast(ten_year) else []),
             *(["QQQ 跌破 50 日均线，AI/软件不追涨。"] if qqq_below_50 else []),
             *(["SPY 跌破 200 日均线，只允许 A 类计划内买入提示。"] if spy_below_200 else []),
-            *(["观察池宽度恶化，C 类暂停新增提示。"] if breadth_weak else []),
+            *(["观察池强弱偏弱，C 类暂停新增提示。"] if breadth_weak else []),
         ]
     )
     return MacroRegimeSnapshot(
@@ -947,7 +947,7 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     vix = _indicator_value_text(snapshot.indicator(VIX), empty="缺")
     ten_year = _indicator_value_text(snapshot.indicator(TEN_YEAR_YIELD), empty="缺", suffix="%")
     trend_hint = _trend_summary_text(snapshot.indicator(MARKET_TREND))
-    breadth = _indicator_value_text(snapshot.indicator(MARKET_BREADTH), empty="缺")
+    breadth = _watchlist_strength_summary_text(snapshot.indicator(MARKET_BREADTH))
     credit = _credit_summary_text(snapshot)
     dollar = _dollar_summary_text(snapshot)
     sentiment = macro_regime_sentiment_status_text(snapshot)
@@ -955,7 +955,7 @@ def macro_regime_status_text(snapshot: MacroRegimeSnapshot) -> str:
     dollar_segment = f"｜{dollar}" if dollar else ""
     return (
         f"大盘环境：{snapshot.regime}｜置信度：{snapshot.confidence}｜数据：{snapshot.data_status}"
-        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜市场宽度 {breadth}｜{credit}{dollar_segment}｜{sentiment}｜纪律提示：{hint}"
+        f"｜VIX {vix}｜10Y {ten_year}｜{trend_hint}｜{breadth}｜{credit}{dollar_segment}｜{sentiment}｜纪律提示：{hint}"
     )
 
 
@@ -986,12 +986,14 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in snapshot.reasons) or "<li>暂无宏观判断原因。</li>"
     hints = "".join(f"<li>{escape(hint)}</li>" for hint in snapshot.action_hints) or "<li>按个股纪律执行。</li>"
     sentiment_html = _macro_regime_sentiment_detail_html(snapshot)
+    breadth_explanation = _market_breadth_detail_html(snapshot.indicator(MARKET_BREADTH))
     return (
         '<section class="macro-regime-detail">'
         f"<div><strong>大盘环境：{escape(snapshot.regime)}</strong><span>置信度：{escape(snapshot.confidence)}，只读提示，不改变买卖门禁。</span></div>"
         f"{sentiment_html}"
         '<table><thead><tr><th>指标</th><th>当前值</th><th>近期变化</th><th>来源</th><th>状态</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
+        f"{breadth_explanation}"
         f'<div class="macro-regime-detail-grid"><div><b>判断原因</b><ul>{reasons}</ul></div><div><b>纪律提示</b><ul>{hints}</ul></div></div>'
         "</section>"
     )
@@ -1664,17 +1666,17 @@ def _fetch_market_breadth_snapshot(path: Path, *, now: datetime) -> MacroIndicat
     states = [_trend_state_for_symbol(ticker, path) for ticker in tickers]
     available = [state for state in states if state is not None]
     if not available:
-        raise RuntimeError("观察池缺少 K 线缓存，无法计算市场宽度")
+        raise RuntimeError("观察池缺少 K 线缓存，无法计算观察池强弱")
     above_50 = sum(1 for state in available if state["above_50"])
     above_200 = sum(1 for state in available if state["above_200"])
     pct_above_50 = round(above_50 / len(available) * 100, 1)
     pct_above_200 = round(above_200 / len(available) * 100, 1)
     reasons = [
         f"观察池 {len(available)}/{len(tickers)} 只有可用 K 线。",
-        f"高于50日均线比例 {pct_above_50:.1f}%。",
+        f"观察池强弱 {pct_above_50:.1f}% 高于50日线。",
         f"高于200日均线比例 {pct_above_200:.1f}%。",
     ]
-    hints = ["观察池宽度恶化，C 类暂停新增提示。"] if pct_above_50 < 40 else []
+    hints = ["观察池强弱偏弱，C 类暂停新增提示。"] if pct_above_50 < 40 else []
     return MacroIndicatorSnapshot(
         indicator=MARKET_BREADTH,
         value=pct_above_50,
@@ -1873,13 +1875,13 @@ def _build_sentiment_proxy_snapshot(
     if breadth is not None:
         if breadth < 25:
             score -= 18
-            reasons.append("市场宽度显著恶化。")
+            reasons.append("观察池强弱显著恶化。")
         elif breadth < 40:
             score -= 10
-            reasons.append("市场宽度偏弱。")
+            reasons.append("观察池强弱偏弱。")
         elif breadth >= 60:
             score += 8
-            reasons.append("市场宽度较健康。")
+            reasons.append("观察池强弱较健康。")
     if credit is not None:
         if credit >= 75:
             score -= 15
@@ -2087,10 +2089,10 @@ def _indicator_regime(snapshot: MacroIndicatorSnapshot) -> tuple[str, float, lis
         return REGIME_NEUTRAL, 30, ["SPY/QQQ 趋势未显示系统性破位。"], ["按个股纪律执行。"]
     if snapshot.indicator == MARKET_BREADTH:
         if value < 25:
-            return REGIME_STRESS, 76, ["观察池市场宽度显著恶化。"], ["C类暂停新增，先复核风险。"]
+            return REGIME_STRESS, 76, ["观察池强弱显著恶化。"], ["C类暂停新增，先复核风险。"]
         if value < 40:
-            return REGIME_RISK_OFF, 62, ["观察池市场宽度恶化。"], ["C类暂停新增提示。"]
-        return REGIME_NEUTRAL, 35, ["观察池市场宽度尚可。"], ["按计划执行。"]
+            return REGIME_RISK_OFF, 62, ["观察池强弱偏弱。"], ["C类暂停新增提示。"]
+        return REGIME_NEUTRAL, 35, ["观察池强弱尚可。"], ["按计划执行。"]
     if snapshot.indicator == DOLLAR_INDEX:
         if snapshot.change_20d is not None and snapshot.change_20d >= 3:
             return REGIME_RISK_OFF, 55, ["美元指数短期走强。"], ["复核美元走强对海外收入和风险资产的压力。"]
@@ -2347,6 +2349,69 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     if proxy_value >= 60:
         return "HY OAS 官方暂缺｜信用代理转弱"
     return "HY OAS 官方暂缺｜信用代理稳定"
+
+
+def _watchlist_strength_summary_text(snapshot: MacroIndicatorSnapshot | None) -> str:
+    value = _usable_value(snapshot)
+    if value is None:
+        return "观察池强弱：暂缺"
+    return f"观察池强弱：{value:.1f}%｜{_watchlist_strength_label(value)}"
+
+
+def _watchlist_strength_label(value: float) -> str:
+    if value > 70:
+        return "很强"
+    if value >= 50:
+        return "偏强"
+    if value >= 35:
+        return "偏弱"
+    if value >= 20:
+        return "很弱"
+    return "极弱"
+
+
+def _watchlist_strength_meaning(value: float) -> str:
+    if value > 70:
+        return "观察池多数股票站上50日线，修复扩散较好。"
+    if value >= 50:
+        return "观察池半数以上股票站上50日线，内部修复偏健康。"
+    if value >= 35:
+        return "观察池内部修复不充分，指数上涨可能由少数大票支撑。"
+    if value >= 20:
+        return "观察池多数股票仍在50日线下方，内部修复较弱。"
+    return "观察池极弱，系统性压力仍高。"
+
+
+def _watchlist_strength_discipline_hint(value: float) -> str:
+    if value > 70:
+        return "按计划执行，仍避免情绪化追涨。"
+    if value >= 50:
+        return "可按个股计划复核，C类仍控制节奏。"
+    if value >= 35:
+        return "不追涨，优先A类回踩，C类少动。"
+    if value >= 20:
+        return "降低新增节奏，先复核A类核心和现金。"
+    return "保持防守，只做计划内核心仓复核。"
+
+
+def _market_breadth_detail_html(snapshot: MacroIndicatorSnapshot | None) -> str:
+    value = _usable_value(snapshot)
+    if value is None:
+        return ""
+    payload = _json_dict(snapshot.raw_payload)
+    ticker_count = _number(payload.get("tickerCount")) or _number(payload.get("availableCount"))
+    count_text = f"{int(ticker_count)}只观察股中" if ticker_count is not None else "观察池中"
+    label = _watchlist_strength_label(value)
+    meaning = _watchlist_strength_meaning(value)
+    hint = _watchlist_strength_discipline_hint(value)
+    return (
+        '<div class="macro-regime-breadth-note">'
+        f"<b>观察池强弱：{escape(label)}</b>"
+        f"<span>{escape(count_text)}，{value:.1f}% 高于50日线。</span>"
+        f"<span>含义：{escape(meaning)}</span>"
+        f"<span>纪律提示：{escape(hint)}</span>"
+        "</div>"
+    )
 
 
 def _dollar_summary_text(snapshot: MacroRegimeSnapshot) -> str:

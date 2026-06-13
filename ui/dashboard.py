@@ -343,7 +343,7 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.divider()
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
-            if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、趋势宽度等宏观缓存，不刷新个股。"):
+            if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、观察池强弱等宏观缓存，不刷新个股。"):
                 _refresh_dashboard_cache_for_mode(tickers, RefreshMode.MACRO_ONLY)
                 st.rerun()
             if st.button("财报后刷新基本面", width="stretch", key="dashboard_refresh_fundamentals_if_event", help="只刷新有财报/披露事件的股票；其他股票跳过。"):
@@ -802,9 +802,21 @@ def _dashboard_market_breadth_status_text(macro_regime) -> str:
     snapshot = _macro_indicator(macro_regime, MARKET_BREADTH)
     value = _dashboard_number(getattr(snapshot, "value", None))
     if value is None or bool(getattr(snapshot, "is_stale", False)):
-        return "市场宽度 暂缺"
+        return "观察池强弱：暂缺"
     suffix = "（缓存）" if _dashboard_indicator_uses_cache(snapshot) else ""
-    return f"市场宽度 {value:.1f}%{suffix}"
+    return f"观察池强弱：{value:.1f}%｜{_dashboard_watchlist_strength_label(value)}{suffix}"
+
+
+def _dashboard_watchlist_strength_label(value: float) -> str:
+    if value > 70:
+        return "很强"
+    if value >= 50:
+        return "偏强"
+    if value >= 35:
+        return "偏弱"
+    if value >= 20:
+        return "很弱"
+    return "极弱"
 
 
 def _macro_indicator(macro_regime, indicator: str):
@@ -1426,7 +1438,7 @@ def _macro_indicator_label(indicator: str) -> str:
         "ten_year_yield": "10年美债收益率",
         "yield_curve_10y2y": "美债10Y-2Y利差",
         "market_trend": "大盘趋势",
-        "market_breadth": "市场宽度",
+        "market_breadth": "观察池强弱",
         "dollar_index": "美元指数",
         "hyg_credit_proxy": "信用风险代理",
         "sentiment_proxy": "内部情绪代理",
