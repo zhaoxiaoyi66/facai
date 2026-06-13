@@ -440,7 +440,9 @@ class DecisionLogTests(unittest.TestCase):
                     "confirmationSignalCn": "未站上确认线 413.20",
                     "distributionCount10d": 1,
                     "volumePriceReasonCn": "支撑暂时守住，回踩量能收缩，但尚未放量站上确认线。",
+                    "volumePriceZoneSource": "upstream",
                     "volumePriceCheckedAt": "2026-06-12T10:30:00+08:00",
+                    "dailyBars": [{"close": 390, "volume": 1_000_000}],
                 },
             )
 
@@ -448,6 +450,9 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["volume_price_score"], 62)
             self.assertEqual(saved["volume_ratio"], 0.82)
             self.assertEqual(saved["volume_ma20"], 18_500_000)
+            self.assertEqual(saved["volume_price_acceptance"]["zone_source"], "upstream")
+            self.assertNotIn("dailyBars", saved["volume_price_acceptance"])
+            self.assertNotIn("daily_bars", saved["volume_price_acceptance"])
             self.assertEqual(saved["volume_price_acceptance"]["candle_signal_cn"], "下影线承接")
             self.assertIn("支撑暂时守住", saved["volume_price_reason_cn"])
 

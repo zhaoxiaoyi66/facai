@@ -38,11 +38,14 @@ class VolumePriceAcceptanceSnapshot:
     confirmation_signal_cn: str
     distribution_count_10d: int
     acceptance_reason_cn: str
+    zone_source: str = "upstream"
     risk_deductions: list[str] = field(default_factory=list)
     volume_price_checked_at: str | None = None
 
     @property
     def status_label(self) -> str:
+        if self.volume_price_status == FORMING and self.volume_price_score < 55:
+            return "初步承接，尚未确认"
         return STATUS_LABELS.get(self.volume_price_status, self.volume_price_status)
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +104,7 @@ def evaluate_volume_price_acceptance(
             "supportWatchZoneHigh",
         )
     )
+    zone_source = _zone_source(source, observation_low=observation_low, observation_high=observation_high)
     support_line = _first_number(
         _value(source, "support_line", "supportLine", "support_watch_zone_low", "supportWatchZoneLow", "recent_swing_low", "recentSwingLow"),
         observation_low,
@@ -130,6 +134,7 @@ def evaluate_volume_price_acceptance(
             "确认线待补",
             0,
             "；".join(missing) or "缺少核心日线数据，暂时无法判断量价承接。",
+            zone_source=zone_source,
             checked_at=checked_at,
         )
 
@@ -270,6 +275,7 @@ def evaluate_volume_price_acceptance(
         confirmation_signal,
         distribution_count_10d,
         reason,
+        zone_source=zone_source,
         risk_deductions=risk_deductions,
         checked_at=checked_at,
     )
@@ -293,6 +299,7 @@ def volume_price_acceptance_snapshot_fields(
         "confirmationSignalCn": snapshot.confirmation_signal_cn,
         "distributionCount10d": snapshot.distribution_count_10d,
         "volumePriceReasonCn": snapshot.acceptance_reason_cn,
+        "volumePriceZoneSource": snapshot.zone_source,
         "volumePriceCheckedAt": checked_text or snapshot.volume_price_checked_at,
     }
 
@@ -326,6 +333,7 @@ def _snapshot(
     distribution_count_10d: int,
     reason: str,
     *,
+    zone_source: str = "upstream",
     risk_deductions: list[str] | None = None,
     checked_at: datetime | None = None,
 ) -> VolumePriceAcceptanceSnapshot:
@@ -341,6 +349,7 @@ def _snapshot(
         confirmation_signal_cn=confirmation_signal,
         distribution_count_10d=int(distribution_count_10d or 0),
         acceptance_reason_cn=reason,
+        zone_source=zone_source,
         risk_deductions=_dedupe(risk_deductions or []),
         volume_price_checked_at=_checked_at(checked_at),
     )
@@ -493,6 +502,35 @@ def _is_overextended(price: float | None, observation_high: float | None, source
     return decision == "BLOCK_CHASE" or position == "IN_CHASE_ZONE" or "追高" in label
 
 
+def _zone_source(source: dict[str, Any], *, observation_low: float | None, observation_high: float | None) -> str:
+    explicit_keys = ("observation_low", "observationLow", "observation_high", "observationHigh")
+    if any(_number(_value(source, key)) is not None for key in explicit_keys):
+        return "upstream"
+    radar_keys = (
+        "near_term_repair_zone_low",
+        "nearTermRepairZoneLow",
+        "near_term_repair_zone_high",
+        "nearTermRepairZoneHigh",
+        "technical_pullback_zone_low",
+        "technicalPullbackZoneLow",
+        "technical_pullback_zone_high",
+        "technicalPullbackZoneHigh",
+        "effective_technical_entry_zone_low",
+        "effectiveTechnicalEntryZoneLow",
+        "effective_technical_entry_zone_high",
+        "effectiveTechnicalEntryZoneHigh",
+        "support_watch_zone_low",
+        "supportWatchZoneLow",
+        "support_watch_zone_high",
+        "supportWatchZoneHigh",
+    )
+    if any(_number(_value(source, key)) is not None for key in radar_keys):
+        return "radar"
+    if observation_low is not None or observation_high is not None:
+        return "fallback"
+    return "missing"
+
+
 def _candle_signal_cn(
     *,
     reversal_candle: bool,
@@ -591,8 +629,8 @@ def _reason_cn(
         return "放量站上确认线，回踩承接确认。"
     if status == FORMING:
         if "缩量" in volume_signal or "收缩" in volume_signal:
-            return "支撑暂时守住，回踩量能收缩，但尚未放量站上确认线。"
-        return f"支撑暂时守住，{candle_signal}，{volume_signal}，但尚未站上确认线。"
+            return "支撑暂时守住，回踩量能收缩，但未放量站上确认线，不构成买入确认。"
+        return f"支撑暂时守住，{candle_signal}，{volume_signal}，但未放量站上确认线，不构成买入确认。"
     if status == OVEREXTENDED_SUPPORT_READ:
         return "价格已脱离回踩观察区，承接读数不构成低吸依据。"
     if risk_deductions:

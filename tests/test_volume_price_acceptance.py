@@ -61,8 +61,21 @@ def test_shrink_pullback_holding_support_is_forming() -> None:
     )
 
     assert snapshot.volume_price_status == FORMING
+    assert "不构成买入确认" in snapshot.acceptance_reason_cn
     assert "缩量" in snapshot.volume_signal_cn
     assert "守住" in snapshot.support_signal_cn or "收回" in snapshot.support_signal_cn
+
+
+def test_forming_low_score_uses_cautious_label() -> None:
+    snapshot = evaluate_volume_price_acceptance(
+        daily_bars=_bars(close=100.5, open_=100.8, high=102, low=99, volume=900_000),
+        technicals=_context(current_price=100.5, ema20=None, ema50=None),
+    )
+
+    assert snapshot.volume_price_status == FORMING
+    assert snapshot.volume_price_score < 55
+    assert snapshot.status_label == "初步承接，尚未确认"
+    assert "不构成买入确认" in snapshot.acceptance_reason_cn
 
 
 def test_volume_breakout_above_confirm_line_is_confirmed() -> None:
@@ -104,6 +117,38 @@ def test_price_above_observation_zone_is_overextended_support_read() -> None:
 
     assert snapshot.volume_price_status == OVEREXTENDED_SUPPORT_READ
     assert "脱离回踩观察区" in snapshot.acceptance_reason_cn
+
+
+def test_volume_price_acceptance_prefers_upstream_observation_zone() -> None:
+    snapshot = evaluate_volume_price_acceptance(
+        daily_bars=_bars(close=103, open_=104, high=105, low=99, volume=700_000),
+        technicals=_context(
+            observation_low=95,
+            observation_high=110,
+            near_term_repair_zone_low=80,
+            near_term_repair_zone_high=90,
+        ),
+    )
+
+    assert snapshot.volume_price_status == FORMING
+    assert snapshot.zone_source == "upstream"
+
+
+def test_volume_price_acceptance_marks_radar_zone_source_when_no_explicit_zone() -> None:
+    snapshot = evaluate_volume_price_acceptance(
+        daily_bars=_bars(close=103, open_=104, high=105, low=99, volume=700_000),
+        technicals={
+            "current_price": 103,
+            "near_term_repair_zone_low": 95,
+            "near_term_repair_zone_high": 110,
+            "support_line": 100,
+            "invalid_line": 95,
+            "confirm_line": 120,
+        },
+    )
+
+    assert snapshot.volume_price_status == FORMING
+    assert snapshot.zone_source == "radar"
 
 
 def test_volume_missing_does_not_confirm_acceptance() -> None:

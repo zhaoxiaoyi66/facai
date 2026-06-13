@@ -141,6 +141,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "confirmation_signal_cn": "TEXT",
     "distribution_count_10d": "INTEGER",
     "volume_price_reason_cn": "TEXT",
+    "volume_price_zone_source": "TEXT",
     "volume_price_checked_at": "TEXT",
     "buy_advisory_warnings_json": "TEXT",
     "buy_advisory_acknowledged": "INTEGER",
@@ -966,6 +967,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             "confirmation_signal_cn",
             "distribution_count_10d",
             "volume_price_reason_cn",
+            "volume_price_zone_source",
             "volume_price_checked_at",
         )
     ):
@@ -985,6 +987,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             confirmation_signal_cn = ?,
             distribution_count_10d = ?,
             volume_price_reason_cn = ?,
+            volume_price_zone_source = ?,
             volume_price_checked_at = ?
         WHERE id = ?
         """,
@@ -1000,6 +1003,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             cleaned["confirmation_signal_cn"],
             cleaned["distribution_count_10d"],
             cleaned["volume_price_reason_cn"],
+            cleaned["volume_price_zone_source"],
             cleaned["volume_price_checked_at"],
             entry_id,
         ),
@@ -1791,6 +1795,7 @@ def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> d
             "confirmation_signal_cn": None,
             "distribution_count_10d": None,
             "volume_price_reason_cn": None,
+            "volume_price_zone_source": None,
             "volume_price_checked_at": None,
         }
     return {
@@ -1811,6 +1816,9 @@ def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> d
             "distribution_count_10d",
         ),
         "volume_price_reason_cn": _clean_optional_text(_value(values, "volumePriceReasonCn", "volume_price_reason_cn")),
+        "volume_price_zone_source": _clean_optional_text(
+            _value(values, "volumePriceZoneSource", "volume_price_zone_source", "zoneSource", "zone_source")
+        ),
         "volume_price_checked_at": _clean_optional_text(
             _value(values, "volumePriceCheckedAt", "volume_price_checked_at")
         ),
@@ -2433,6 +2441,7 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
             "confirmation_signal_cn": item.get("confirmation_signal_cn"),
             "distribution_count_10d": item.get("distribution_count_10d"),
             "acceptance_reason_cn": item.get("volume_price_reason_cn"),
+            "zone_source": item.get("volume_price_zone_source"),
             "volume_price_checked_at": item.get("volume_price_checked_at"),
         }
     if "buy_advisory_warnings_json" in item:

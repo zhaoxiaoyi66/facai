@@ -1135,9 +1135,9 @@ def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
             "volume_price_score": row.get("volumePriceScore"),
             "acceptance_reason_cn": row.get("volumePriceReasonCn"),
         }
-    status_code = str(snapshot.get("volume_price_status") or snapshot.get("volumePriceStatus") or "").strip()
-    status = str(snapshot.get("status_label") or _volume_price_status_label(status_code) or "数据不足")
     score = _drawer_number(snapshot.get("volume_price_score", snapshot.get("volumePriceScore")))
+    status_code = str(snapshot.get("volume_price_status") or snapshot.get("volumePriceStatus") or "").strip()
+    status = str(snapshot.get("status_label") or _volume_price_status_label(status_code, score=score) or "数据不足")
     score_text = "待补数据" if status_code == "DATA_MISSING" else ("N/A" if score is None else f"{score:.0f} 分")
     volume_ratio = _drawer_number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
     volume_ma20 = _drawer_number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
@@ -1174,7 +1174,9 @@ def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
     )
 
 
-def _volume_price_status_label(value: object) -> str:
+def _volume_price_status_label(value: object, *, score: float | None = None) -> str:
+    if str(value or "") == "FORMING" and score is not None and score < 55:
+        return "初步承接，尚未确认"
     return {
         "ACCEPTANCE_CONFIRMED": "已确认",
         "FORMING": "形成中",
