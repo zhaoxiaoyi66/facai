@@ -11,3 +11,7 @@ Use the default mattpocock/skills triage vocabulary. See `docs/agents/triage-lab
 ### Domain docs
 
 This repo uses a single-context domain docs layout under `docs/`. See `docs/agents/domain.md`.
+
+### Testing policy
+
+Use targeted tests by default instead of full regression for every task. See `docs/testing_policy.md` and `scripts/select_tests.py`.
