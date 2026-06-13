@@ -5387,19 +5387,20 @@ def _render_dashboard_styles() -> None:
             background:var(--dash-bg);
         }
         div.block-container {
-            max-width: min(var(--dash-shell-width), calc(100vw - 32px));
-            width: min(var(--dash-shell-width), calc(100vw - 32px));
-            margin-left: 0 !important;
+            max-width: var(--dash-shell-width);
+            width: 100%;
+            margin-left: auto !important;
             margin-right: auto !important;
-            padding-left: 1rem;
-            padding-right: 1rem;
+            padding-left: clamp(1rem, 1.6vw, 1.5rem);
+            padding-right: clamp(1rem, 1.6vw, 1.5rem);
+            box-sizing: border-box;
         }
         @media (max-width: 980px) {
             div.block-container {
                 width: 100%;
                 max-width: 100%;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
             }
         }
         .terminal-header,
