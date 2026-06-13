@@ -9,6 +9,7 @@ import streamlit as st
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
+from data.sector_localization import format_company_track, get_ticker_research_track
 from settings import load_watchlist
 from ui.theme import render_page_header
 
@@ -88,7 +89,7 @@ def _list_row(ticker: str) -> dict[str, Any]:
         snapshot=snapshot,
         technicals=technicals,
     )
-    list_row["sector"] = _sector_track_from_sources(row, snapshot or {})
+    list_row["sector"] = _sector_track_from_sources(row, snapshot or {}, ticker)
     return list_row
 
 
@@ -101,7 +102,7 @@ def _company_name_from_sources(ticker: str, row: dict[str, Any] | None, snapshot
     return str(value or ticker).strip() or ticker
 
 
-def _sector_track_from_sources(row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
+def _sector_track_from_sources(row: dict[str, Any] | None, snapshot: dict[str, Any], ticker: str = "") -> str:
     sector = _clean_text(
         _first_present(snapshot, "sector", "sectorName")
         or _row_value(row, "sector", "sectorName")
@@ -110,9 +111,7 @@ def _sector_track_from_sources(row: dict[str, Any] | None, snapshot: dict[str, A
         _first_present(snapshot, "industry", "industry_group", "industryGroup", "business_model", "businessModel", "model")
         or _row_value(row, "industry", "industry_group", "industryGroup", "business_model", "businessModel", "model")
     )
-    if sector and industry and industry.lower() != sector.lower():
-        return f"{sector} / {industry}"
-    return sector or industry
+    return get_ticker_research_track(ticker, sector, industry)
 
 
 def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -608,13 +607,13 @@ def _company_track_html(row: dict[str, Any]) -> str:
     if company.upper() == ticker:
         company = ""
     track = _clean_text(row.get("sector"))
-    if company and track:
-        return f'<div class="ai-radar-company-cell"><strong>{escape(company)}</strong><span>{escape(track)}</span></div>'
-    if company:
-        return f'<div class="ai-radar-company-cell"><strong>{escape(company)}</strong></div>'
-    if track:
-        return f'<div class="ai-radar-company-cell"><span>{escape(track)}</span></div>'
-    return '<span class="ai-radar-muted">—</span>'
+    company_display, track_display = format_company_track(company, track, None, ticker)
+    return (
+        '<div class="ai-radar-company-cell">'
+        f"<strong>{escape(company_display)}</strong>"
+        f"<span>{escape(track_display)}</span>"
+        "</div>"
+    )
 
 
 def _report_status_text(row: dict[str, Any]) -> str:
@@ -750,7 +749,7 @@ def _profile_missing(row: dict[str, Any]) -> bool:
     company = str(row.get("company_name") or row.get("companyName") or row.get("name") or "").strip()
     company_missing = not company or company.upper() == ticker
     sector = _clean_text(row.get("sector") or row.get("industry") or row.get("model"))
-    return bool(company_missing or not sector)
+    return bool(company_missing or not sector or sector == "赛道待补")
 
 
 def _price_data_state(row: dict[str, Any], field_text: str | None = None) -> str:

@@ -19,6 +19,7 @@ from data.ai_stock_radar import (
     build_technical_entry_zone,
     normalize_radar_inputs,
 )
+from data.sector_localization import get_ticker_research_track, localize_sector
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui import ai_stock_radar as radar_ui
 from ui.ai_stock_radar import select_radar_symbols
@@ -249,9 +250,37 @@ def test_list_company_aliases_render_company_name() -> None:
 
 
 def test_list_sector_aliases_render_track() -> None:
-    assert radar_ui._sector_track_from_sources(None, {"sector": "Technology", "industry": "Software"}) == "Technology / Software"
-    assert radar_ui._sector_track_from_sources(None, {"industry": "Software"}) == "Software"
-    assert radar_ui._sector_track_from_sources({"model": "SaaS"}, {}) == "SaaS"
+    assert radar_ui._sector_track_from_sources(None, {"sector": "Technology", "industry": "Software - Application"}) == "科技｜应用软件"
+    assert radar_ui._sector_track_from_sources(None, {"industry": "Software - Infrastructure"}) == "软件基础设施"
+    assert radar_ui._sector_track_from_sources({"model": "SaaS"}, {}) == "赛道待补"
+
+
+def test_sector_localization_supports_provider_and_ticker_research_tracks() -> None:
+    assert localize_sector("Technology", "Software - Application") == "科技｜应用软件"
+    assert localize_sector("Healthcare", "Biotechnology") == "医疗健康｜生物科技"
+    assert localize_sector("Financial Services", "Capital Markets") == "金融服务｜资本市场"
+    assert get_ticker_research_track("MSFT", "Technology", "Software - Infrastructure") == "云平台｜AI软件"
+    assert get_ticker_research_track("NOW", "Technology", "Software - Application") == "企业SaaS｜工作流自动化"
+    assert get_ticker_research_track("NVO", "Healthcare", "Biotechnology") == "GLP-1｜生物医药"
+    assert get_ticker_research_track("COIN", "Financial Services", "Capital Markets") == "加密交易平台"
+    assert get_ticker_research_track("UNKNOWN", "Consumer Cyclical", "Internet Retail") == "可选消费｜互联网零售"
+
+
+def test_list_company_track_uses_chinese_research_track_and_ticker_fallback() -> None:
+    html = radar_ui._company_track_html(
+        {
+            "ticker": "MSFT",
+            "company_name": "Microsoft Corporation",
+            "sector": "云平台｜AI软件",
+        }
+    )
+    assert "Microsoft Corporation" in html
+    assert "云平台｜AI软件" in html
+    assert "Technology / Software - Application" not in html
+
+    fallback_html = radar_ui._company_track_html({"ticker": "XYZ", "company_name": "XYZ", "sector": "赛道待补"})
+    assert "XYZ" in fallback_html
+    assert "赛道待补" in fallback_html
 
 
 def test_optional_vwap_and_relative_strength_gaps_do_not_make_medium_gap() -> None:
@@ -326,7 +355,7 @@ def test_list_row_uses_cached_report_fallback_when_dashboard_table_missing() -> 
         row = radar_ui._list_row("MSFT")
 
     assert row["company_name"] == "Microsoft Corporation"
-    assert row["sector"] == "Technology / Software - Infrastructure"
+    assert row["sector"] == "云平台｜AI软件"
     assert build_row.call_args.kwargs["snapshot"] == cached_row["rawSnapshot"]
     assert build_row.call_args.kwargs["technicals"] == cached_row["rawTechnicals"]
 
