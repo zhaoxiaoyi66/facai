@@ -77,21 +77,42 @@ def _render_report(symbol: str) -> None:
 
 
 def _list_row(ticker: str) -> dict[str, Any]:
-    row = _dashboard_row(ticker)
+    row = _dashboard_row(ticker) or _single_report_row(ticker)
     snapshot = _dict_value(row, "rawSnapshot")
     technicals = _dict_value(row, "rawTechnicals")
+    company_name = _company_name_from_sources(ticker, row, snapshot or {})
     list_row = build_ai_stock_radar_list_row(
         ticker,
-        company_name=str(_row_value(row, "companyName") or ticker),
+        company_name=company_name,
         scores=None if snapshot and technicals else _scores_from_row(row),
         snapshot=snapshot,
         technicals=technicals,
     )
-    list_row["sector"] = _clean_text(
-        _first_present(snapshot or {}, "sector", "industry", "industry_group", "industryGroup", "business_model", "businessModel")
-        or _row_value(row, "sector", "industry", "model")
-    )
+    list_row["sector"] = _sector_track_from_sources(row, snapshot or {})
     return list_row
+
+
+def _company_name_from_sources(ticker: str, row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
+    value = (
+        _first_present(snapshot, "companyName", "company_name", "name", "company")
+        or _row_value(row, "companyName", "company_name", "name", "company")
+        or ticker
+    )
+    return str(value or ticker).strip() or ticker
+
+
+def _sector_track_from_sources(row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
+    sector = _clean_text(
+        _first_present(snapshot, "sector", "sectorName")
+        or _row_value(row, "sector", "sectorName")
+    )
+    industry = _clean_text(
+        _first_present(snapshot, "industry", "industry_group", "industryGroup", "business_model", "businessModel", "model")
+        or _row_value(row, "industry", "industry_group", "industryGroup", "business_model", "businessModel", "model")
+    )
+    if sector and industry and industry.lower() != sector.lower():
+        return f"{sector} / {industry}"
+    return sector or industry
 
 
 def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -610,8 +631,10 @@ def _report_status_text(row: dict[str, Any]) -> str:
 def _data_confidence_html(row: dict[str, Any]) -> str:
     confidence = _data_confidence(row)
     groups = _missing_groups(row)
-    summary = _missing_group_summary(groups)
-    detail = "、".join(groups) if groups else "关键数据完整"
+    optional_groups = _optional_missing_groups(row)
+    summary = _missing_group_summary(groups) or _optional_group_summary(optional_groups)
+    detail_items = [*groups, *optional_groups]
+    detail = "、".join(detail_items) if detail_items else "关键数据完整"
     text = confidence if not summary else f"{confidence}｜{summary}"
     return (
         f'<span class="ai-radar-data-confidence {escape(confidence)}" title="{escape(detail, quote=True)}">'
@@ -643,12 +666,7 @@ def _data_confidence(row: dict[str, Any]) -> str:
 
 
 def _missing_groups(row: dict[str, Any]) -> list[str]:
-    debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
-    fields = []
-    fields.extend(debug.get("data_missing_fields") or [])
-    fields.extend(row.get("data_missing_fields") or [])
-    fields.extend(row.get("missing_entry_fields") or [])
-    fields.extend(row.get("technical_entry_missing_fields") or [])
+    fields = _actionable_missing_fields(row)
     status = str(row.get("data_status") or "")
     if status and status != "OK":
         fields.append(status)
@@ -661,6 +679,8 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
         groups.append("技术缺口")
     if any(token in text for token in ("disclosure", "filing", "kpi", "sec")):
         groups.append("披露缺口")
+    if _profile_missing(row):
+        groups.append("资料缺口")
     if price_state == "stale":
         groups.append("价格过期")
     elif price_state == "missing":
@@ -668,6 +688,69 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
     if any(token in text for token in ("score", "quality", "growth", "risk")):
         groups.append("评分缺口")
     return _dedupe_text(groups)
+
+
+def _actionable_missing_fields(row: dict[str, Any]) -> list[str]:
+    return [
+        str(field)
+        for field in _all_missing_fields(row)
+        if not _is_optional_gap_field(str(field))
+    ]
+
+
+def _all_missing_fields(row: dict[str, Any]) -> list[str]:
+    debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+    fields = []
+    fields.extend(debug.get("data_missing_fields") or [])
+    fields.extend(row.get("data_missing_fields") or [])
+    fields.extend(row.get("missing_entry_fields") or [])
+    fields.extend(row.get("technical_entry_missing_fields") or [])
+    fields.extend(row.get("technical_missing_fields") or [])
+    return [str(field) for field in fields if str(field).strip()]
+
+
+def _optional_missing_groups(row: dict[str, Any]) -> list[str]:
+    fields = [field for field in _all_missing_fields(row) if _is_optional_gap_field(field)]
+    groups: list[str] = []
+    text = " ".join(field.lower() for field in fields)
+    if "vwap" in text:
+        groups.append("可选：已用日线替代 VWAP")
+    if any(token in text for token in ("relative_strength", "relative strength", "rs_vs", "spy", "qqq", "benchmark")):
+        groups.append("可选：相对强弱缺失")
+    return _dedupe_text(groups)
+
+
+def _optional_group_summary(groups: list[str]) -> str:
+    if not groups:
+        return ""
+    return "可选项缺失"
+
+
+def _is_optional_gap_field(field: str) -> bool:
+    text = str(field or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "vwap",
+            "relative_strength",
+            "relative strength",
+            "rs_vs",
+            "rs_",
+            "spy_relative",
+            "qqq_relative",
+            "benchmark",
+        )
+    )
+
+
+def _profile_missing(row: dict[str, Any]) -> bool:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    company = str(row.get("company_name") or row.get("companyName") or row.get("name") or "").strip()
+    company_missing = not company or company.upper() == ticker
+    sector = _clean_text(row.get("sector") or row.get("industry") or row.get("model"))
+    return bool(company_missing or not sector)
 
 
 def _price_data_state(row: dict[str, Any], field_text: str | None = None) -> str:

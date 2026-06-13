@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -178,6 +179,7 @@ def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
     row = {
         "ticker": "MSFT",
         "company_name": "Microsoft",
+        "sector": "Technology / Software",
         "current_price": 390,
         "decision": "DATA_MISSING",
         "data_status": "MISSING_SCORE",
@@ -195,6 +197,7 @@ def test_list_data_confidence_does_not_show_price_gap_when_current_price_exists(
     row = {
         "ticker": "MSFT",
         "company_name": "Microsoft",
+        "sector": "Technology / Software",
         "current_price": 390,
         "data_status": "MISSING_SCORE",
         "debug": {"data_missing_fields": ["current_price", "forward_pe", "ema50"]},
@@ -211,6 +214,7 @@ def test_list_data_confidence_shows_price_gap_only_when_price_missing() -> None:
     row = {
         "ticker": "MSFT",
         "company_name": "Microsoft",
+        "sector": "Technology / Software",
         "current_price": None,
         "data_status": "MISSING_PRICE",
         "debug": {"data_missing_fields": ["current_price"]},
@@ -225,6 +229,7 @@ def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:
     row = {
         "ticker": "MSFT",
         "company_name": "Microsoft",
+        "sector": "Technology / Software",
         "current_price": 390,
         "data_status": "STALE",
         "is_stale": True,
@@ -235,6 +240,95 @@ def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:
 
     assert "价格过期" in html
     assert "价格缺口" not in html
+
+
+def test_list_company_aliases_render_company_name() -> None:
+    assert radar_ui._company_name_from_sources("MSFT", None, {"companyName": "Microsoft Corp."}) == "Microsoft Corp."
+    assert radar_ui._company_name_from_sources("MSFT", None, {"company_name": "Microsoft Corporation"}) == "Microsoft Corporation"
+    assert radar_ui._company_name_from_sources("MSFT", None, {"name": "Microsoft"}) == "Microsoft"
+
+
+def test_list_sector_aliases_render_track() -> None:
+    assert radar_ui._sector_track_from_sources(None, {"sector": "Technology", "industry": "Software"}) == "Technology / Software"
+    assert radar_ui._sector_track_from_sources(None, {"industry": "Software"}) == "Software"
+    assert radar_ui._sector_track_from_sources({"model": "SaaS"}, {}) == "SaaS"
+
+
+def test_optional_vwap_and_relative_strength_gaps_do_not_make_medium_gap() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft",
+        "sector": "Technology / Software",
+        "current_price": 390,
+        "data_status": "OK",
+        "technical_entry_missing_fields": ["vwap", "relative_strength_vs_QQQ"],
+    }
+
+    html = radar_ui._data_confidence_html(row)
+
+    assert "高｜可选项缺失" in html
+    assert "中" not in html
+    assert "可选：已用日线替代 VWAP" in html
+    assert "可选：相对强弱缺失" in html
+
+
+def test_profile_missing_is_actionable_medium_gap() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "MSFT",
+        "current_price": 390,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._data_confidence_html(row)
+
+    assert "中｜资料缺口" in html
+
+
+def test_list_row_uses_cached_report_fallback_when_dashboard_table_missing() -> None:
+    cached_row = {
+        "companyName": "Microsoft Corporation",
+        "rawSnapshot": {
+            "company_name": "Microsoft Corporation",
+            "sector": "Technology",
+            "industry": "Software - Infrastructure",
+            "forward_pe": 25,
+            "enterprise_to_revenue": 8,
+            "free_cash_flow_yield": 0.04,
+            "fcf_margin": 0.25,
+            "gross_margin": 0.7,
+            "net_margin": 0.3,
+            "roe": 0.35,
+            "revenue_growth": 0.12,
+        },
+        "rawTechnicals": {
+            "price": 390,
+            "ema20": 380,
+            "ema50": 370,
+            "ema200": 340,
+            "atr14": 8,
+            "recent_swing_low": 360,
+            "fifty_two_week_high": 430,
+            "fifty_two_week_low": 300,
+        },
+    }
+
+    with patch.object(radar_ui, "_dashboard_row", return_value=None), patch.object(
+        radar_ui, "_single_report_row", return_value=cached_row
+    ), patch.object(radar_ui, "build_ai_stock_radar_list_row") as build_row:
+        build_row.return_value = {
+            "ticker": "MSFT",
+            "company_name": "Microsoft Corporation",
+            "current_price": 390,
+            "data_status": "OK",
+        }
+
+        row = radar_ui._list_row("MSFT")
+
+    assert row["company_name"] == "Microsoft Corporation"
+    assert row["sector"] == "Technology / Software - Infrastructure"
+    assert build_row.call_args.kwargs["snapshot"] == cached_row["rawSnapshot"]
+    assert build_row.call_args.kwargs["technicals"] == cached_row["rawTechnicals"]
 
 
 def test_price_above_buy_zone_blocks_chase_with_reason() -> None:
