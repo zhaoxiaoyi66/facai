@@ -131,16 +131,66 @@ def test_price_inside_discipline_buy_zone_can_allow_buy() -> None:
 def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
     source = inspect.getsource(radar_ui._render_list)
     row_source = inspect.getsource(radar_ui._list_row_html)
+    href_source = inspect.getsource(radar_ui._report_view_href)
 
     assert "Radar 研究入口" in source
     assert "核心状态" in source
     assert "研报状态" in source
     assert "数据完整度" in source
     assert ">查看</a>" in row_source
-    assert "#radar-report" in row_source
+    assert "#radar-report" in href_source
     assert "Block reasons" not in source
     assert "allowed_add_pct" not in source
     assert "<th>总分</th>" not in source
+
+
+def test_ai_radar_render_uses_dedicated_report_view_not_list_append() -> None:
+    source = inspect.getsource(radar_ui.render)
+
+    assert '_selected_radar_view()' in source
+    assert 'if view == "report":' in source
+    assert "_render_report_view(selected, tickers)" in source
+    assert '_render_list(tickers, "", source)' in source
+    assert "_render_report(selected)" not in source
+
+
+def test_ai_radar_list_links_open_report_view() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "sector": "云平台｜AI软件",
+        "current_price": 390,
+        "data_status": "OK",
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "view=report" in html
+    assert "ticker=MSFT" in html
+    assert "#radar-report" in html
+
+
+def test_ai_radar_report_view_has_return_link_and_missing_state() -> None:
+    toolbar = radar_ui._report_view_toolbar_html("MSFT", "Microsoft Corporation", "刚刚")
+    missing = radar_ui._report_not_found_html("ZZZZ")
+
+    assert "返回 Radar 列表" in toolbar
+    assert "view=list" in toolbar
+    assert "MSFT" in toolbar
+    assert "Microsoft Corporation" in toolbar
+    assert "未找到 ZZZZ 的股票研报" in missing
+    assert "返回 Radar 列表" in missing
+
+
+def test_ai_radar_query_params_support_deep_link_and_list_return() -> None:
+    with patch.object(radar_ui.st, "query_params", {"ticker": "MSFT", "radarFilter": "value"}):
+        assert radar_ui._selected_radar_view() == "report"
+        assert radar_ui._selected_symbol(["MSFT"]) == "MSFT"
+        assert "view=list" in radar_ui._list_view_href()
+        assert "radarFilter=value" in radar_ui._list_view_href()
+
+    with patch.object(radar_ui.st, "query_params", {"view": "list", "ticker": "MSFT"}):
+        assert radar_ui._selected_radar_view() == "list"
 
 
 def test_ai_radar_report_html_uses_research_report_sections() -> None:

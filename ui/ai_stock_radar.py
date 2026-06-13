@@ -22,10 +22,12 @@ def render() -> None:
         st.info("观察池为空。")
         return
 
+    view = _selected_radar_view()
     selected = _selected_symbol(tickers)
-    _render_list(tickers, selected, source)
-    if selected:
-        _render_report(selected)
+    if view == "report":
+        _render_report_view(selected, tickers)
+        return
+    _render_list(tickers, "", source)
 
 
 def _render_list(tickers: list[str], selected: str, source: str) -> None:
@@ -54,6 +56,19 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
     )
 
 
+def _render_report_view(symbol: str, tickers: list[str]) -> None:
+    known = {ticker.upper() for ticker in tickers}
+    if not symbol or symbol not in known:
+        st.markdown(_report_not_found_html(symbol), unsafe_allow_html=True)
+        return
+    row = _single_report_row(symbol)
+    snapshot = _dict_value(row, "rawSnapshot")
+    company = _company_name_from_sources(symbol, row, snapshot or {})
+    updated = _short_time(_row_value(row, "dataUpdatedAt", "data_updated_at") or _first_present(snapshot or {}, "updated_at", "fetched_at"))
+    st.markdown(_report_view_toolbar_html(symbol, company, updated), unsafe_allow_html=True)
+    _render_report(symbol)
+
+
 def _render_report(symbol: str) -> None:
     row = _single_report_row(symbol)
     snapshot = _dict_value(row, "rawSnapshot")
@@ -75,6 +90,29 @@ def _render_report(symbol: str) -> None:
     st.markdown(_report_html(report_dict, market, snapshot or {}, technicals or {}, row or {}, history), unsafe_allow_html=True)
     with st.expander("评分依据 / 数据诊断", expanded=False):
         st.markdown(_debug_html(report_dict.get("debug") or {}), unsafe_allow_html=True)
+
+
+def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
+    return (
+        '<section class="ai-radar-report-toolbar">'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回 Radar 列表</a>'
+        '<div>'
+        f'<strong>{escape(symbol)}</strong>'
+        f'<span>{escape(company)}｜更新时间 {escape(updated)}</span>'
+        "</div>"
+        "</section>"
+    )
+
+
+def _report_not_found_html(symbol: str) -> str:
+    text = symbol or "UNKNOWN"
+    return (
+        '<section class="ai-radar-report-missing">'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回 Radar 列表</a>'
+        f"<strong>未找到 {escape(text)} 的股票研报</strong>"
+        "<span>请返回列表选择观察池中的股票。</span>"
+        "</section>"
+    )
 
 
 def _list_row(ticker: str) -> dict[str, Any]:
@@ -193,7 +231,7 @@ def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
         ("data", "数据缺口"),
     ]
     chips = "".join(
-        '<a class="ai-radar-filter-chip {active}" href="?page=ai-radar&amp;radarFilter={key}">'
+        '<a class="ai-radar-filter-chip {active}" href="?page=ai-radar&amp;view=list&amp;radarFilter={key}">'
         "<span>{label}</span><b>{count}</b></a>".format(
             active="active" if key == active_key else "",
             key=escape(key, quote=True),
@@ -209,16 +247,17 @@ def _list_row_html(row: dict[str, Any], selected: str) -> str:
     ticker = str(row.get("ticker") or "")
     decision = str(row.get("decision") or "")
     active = " active" if ticker == selected else ""
+    report_href = _report_view_href(ticker)
     return (
         f'<tr class="{escape(_decision_tone(decision))}{active}">'
-        f'<td><a class="ai-radar-ticker" href="?page=ai-radar&symbol={escape(ticker, quote=True)}#radar-report" target="_self">{escape(ticker)}</a></td>'
+        f'<td><a class="ai-radar-ticker" href="{escape(report_href, quote=True)}" target="_self">{escape(ticker)}</a></td>'
         f"<td>{_company_track_html(row)}</td>"
         f'<td>{escape(_money(row.get("current_price")))}</td>'
         f'<td><span class="ai-radar-status-pill">{escape(_core_status(row))}</span></td>'
         f'<td><span class="ai-radar-report-status">{escape(_report_status_text(row))}</span></td>'
         f"<td>{_data_confidence_html(row)}</td>"
         f'<td>{escape(_short_time(row.get("data_updated_at")))}</td>'
-        f'<td><a class="ai-radar-report-link" href="?page=ai-radar&symbol={escape(ticker, quote=True)}#radar-report" target="_self">查看</a></td>'
+        f'<td><a class="ai-radar-report-link" href="{escape(report_href, quote=True)}" target="_self">查看</a></td>'
         "</tr>"
     )
 
@@ -856,11 +895,34 @@ def _history_ytd_return(history: pd.DataFrame) -> float | None:
     return (current - base) / base * 100
 
 
+def _selected_radar_view() -> str:
+    view = str(st.query_params.get("view", "") or "").strip().lower()
+    if view == "list":
+        return "list"
+    if view == "report" or _query_symbol():
+        return "report"
+    return "list"
+
+
 def _selected_symbol(tickers: list[str]) -> str:
-    query_symbol = str(st.query_params.get("symbol", "")).strip().upper()
+    query_symbol = _query_symbol()
     if query_symbol:
         return query_symbol
     return ""
+
+
+def _query_symbol() -> str:
+    return str(st.query_params.get("ticker") or st.query_params.get("symbol") or "").strip().upper()
+
+
+def _report_view_href(ticker: str) -> str:
+    filter_key = _selected_radar_filter_key()
+    return f"?page=ai-radar&view=report&ticker={escape(ticker, quote=True)}&radarFilter={escape(filter_key, quote=True)}#radar-report"
+
+
+def _list_view_href() -> str:
+    filter_key = _selected_radar_filter_key()
+    return f"?page=ai-radar&view=list&radarFilter={escape(filter_key, quote=True)}"
 
 
 def select_radar_symbols(watchlist: list[str], sample_symbols: list[str] | None = None) -> tuple[list[str], str]:
@@ -1230,6 +1292,55 @@ def _render_styles() -> None:
             color:#64748B;
             font-size:12px;
             background:#FFFFFF;
+        }
+        .ai-radar-report-toolbar,
+        .ai-radar-report-missing {
+            display:flex;
+            align-items:center;
+            gap:14px;
+            max-width:1280px;
+            margin:8px auto 12px;
+            padding:11px 14px;
+            border:1px solid #D8E0EA;
+            border-radius:10px;
+            background:#FFFFFF;
+            box-shadow:0 8px 22px rgba(15, 23, 42, 0.045);
+        }
+        .ai-radar-report-toolbar > a,
+        .ai-radar-report-missing > a {
+            display:inline-flex;
+            align-items:center;
+            min-height:28px;
+            padding:0 10px;
+            border:1px solid #D8E0EA;
+            border-radius:999px;
+            color:#0B1F3A !important;
+            text-decoration:none !important;
+            font-size:12px;
+            font-weight:760;
+            background:#F8FAFC;
+        }
+        .ai-radar-report-toolbar > div {
+            display:flex;
+            flex-direction:column;
+            min-width:0;
+            gap:2px;
+        }
+        .ai-radar-report-toolbar strong,
+        .ai-radar-report-missing strong {
+            color:#0B1F3A;
+            font-size:16px;
+            line-height:1.1;
+            font-weight:820;
+        }
+        .ai-radar-report-toolbar span,
+        .ai-radar-report-missing span {
+            color:#64748B;
+            font-size:12px;
+        }
+        .ai-radar-report-missing {
+            flex-direction:column;
+            align-items:flex-start;
         }
         .ai-radar-table-wrap { overflow-x:auto; }
         .ai-radar-table {
