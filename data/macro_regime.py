@@ -348,18 +348,22 @@ class MacroRegimeStore:
         stale_after_hours: float = 36,
     ) -> MacroIndicatorSnapshot | None:
         normalized = _normalize_indicator(indicator)
+        aliases = _indicator_storage_aliases(normalized)
+        placeholders = ", ".join("?" for _ in aliases)
         with closing(sqlite3.connect(self.path)) as conn:
             if not _table_exists(conn, "macro_indicator_snapshots"):
                 return None
             row = conn.execute(
-                """
+                f"""
                 SELECT indicator, value, change_1d, change_5d, change_20d,
                        percentile_1y, percentile_5y, source, rating, updated_at, meta_json,
                        observation_date, fetched_at, is_stale, error, raw_payload
                 FROM macro_indicator_snapshots
-                WHERE indicator = ?
+                WHERE lower(indicator) IN ({placeholders})
+                ORDER BY CASE WHEN lower(indicator) = ? THEN 0 ELSE 1 END
+                LIMIT 1
                 """,
-                (normalized,),
+                (*aliases, normalized),
             ).fetchone()
         if not row:
             return None
@@ -578,6 +582,51 @@ def refresh_macro_indicators(
     }
     store.record_refresh_log(result)
     return result
+
+
+def refresh_official_hy_oas_cache(
+    path: Path = CACHE_PATH,
+    *,
+    fred_fetcher: Any | None = None,
+    now: datetime | None = None,
+) -> MacroIndicatorSnapshot:
+    return seed_macro_indicator_from_provider(
+        "high_yield_oas",
+        path=path,
+        fred_fetcher=fred_fetcher,
+        now=now,
+    )
+
+
+def seed_macro_indicator_from_provider(
+    indicator: str,
+    path: Path = CACHE_PATH,
+    *,
+    fred_fetcher: Any | None = None,
+    now: datetime | None = None,
+) -> MacroIndicatorSnapshot:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    normalized = _normalize_indicator(indicator)
+    series_map = {
+        HY_OAS: FRED_HY_OAS_SERIES,
+        VIX: FRED_VIX_SERIES,
+        TEN_YEAR_YIELD: FRED_TEN_YEAR_SERIES,
+        YIELD_CURVE_10Y2Y: FRED_10Y2Y_SERIES,
+        DOLLAR_INDEX: FRED_DOLLAR_INDEX_SERIES,
+    }
+    series_id = series_map.get(normalized)
+    if not series_id:
+        raise ValueError(f"Unsupported provider seed indicator: {indicator}")
+    store = MacroRegimeStore(path)
+    snapshot = _fetch_fred_snapshot_with_circuit(
+        normalized,
+        series_id,
+        store=store,
+        fred_fetcher=fred_fetcher,
+        now=current,
+    )
+    store.save_indicator(snapshot)
+    return snapshot
 
 
 def _run_macro_loader(
@@ -914,7 +963,7 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
         f"<td>{escape(item.source or 'cache/manual')}</td>"
         f"<td>{escape(_indicator_cache_status_text(item))}</td>"
         "</tr>"
-        for item in snapshot.indicators
+        for item in _macro_detail_indicators(snapshot)
     )
     reasons = "".join(f"<li>{escape(reason)}</li>" for reason in snapshot.reasons) or "<li>暂无宏观判断原因。</li>"
     hints = "".join(f"<li>{escape(hint)}</li>" for hint in snapshot.action_hints) or "<li>按个股纪律执行。</li>"
@@ -928,6 +977,44 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
         f'<div class="macro-regime-detail-grid"><div><b>判断原因</b><ul>{reasons}</ul></div><div><b>纪律提示</b><ul>{hints}</ul></div></div>'
         "</section>"
     )
+
+
+def _macro_detail_indicators(snapshot: MacroRegimeSnapshot) -> list[MacroIndicatorSnapshot]:
+    by_name = {item.indicator: item for item in snapshot.indicators}
+    ordered_names = [
+        VIX,
+        FEAR_GREED,
+        SENTIMENT_PROXY,
+        HY_OAS,
+        HYG_CREDIT_PROXY,
+        TEN_YEAR_YIELD,
+        YIELD_CURVE_10Y2Y,
+        MARKET_TREND,
+        MARKET_BREADTH,
+        DOLLAR_INDEX,
+    ]
+    rows: list[MacroIndicatorSnapshot] = []
+    for name in ordered_names:
+        item = by_name.get(name)
+        if item is None and name == HY_OAS:
+            item = MacroIndicatorSnapshot(
+                indicator=HY_OAS,
+                value=None,
+                source=f"FRED {FRED_HY_OAS_SERIES}",
+                error="official HY OAS missing",
+            )
+        elif item is None and name == HYG_CREDIT_PROXY:
+            item = MacroIndicatorSnapshot(
+                indicator=HYG_CREDIT_PROXY,
+                value=None,
+                source="HYG credit proxy",
+                error="credit proxy missing",
+            )
+        if item is not None:
+            rows.append(item)
+    seen = {item.indicator for item in rows}
+    rows.extend(item for item in snapshot.indicators if item.indicator not in seen)
+    return rows
 
 
 def macro_regime_trade_hint_text(snapshot: MacroRegimeSnapshot, *, context: str = "buy") -> str:
@@ -1206,8 +1293,6 @@ def _fetch_cached_or_fred_snapshot(
     cached = store.load_indicator(indicator, now=now)
     if cached is not None and _refresh_snapshot_value_usable(cached):
         return cached
-    if fred_fetcher is None:
-        raise RuntimeError(f"FRED {series_id} front refresh skipped; use cache/proxy")
     return _fetch_fred_snapshot_with_circuit(indicator, series_id, store=store, fred_fetcher=fred_fetcher, now=now)
 
 
@@ -2031,16 +2116,16 @@ def _credit_summary_text(snapshot: MacroRegimeSnapshot) -> str:
     hy = snapshot.indicator(HY_OAS)
     hy_value = _usable_value(hy)
     if hy_value is not None:
-        return f"信用利差 {hy_value:.1f}%"
+        return f"HY OAS {hy_value:.2f}%"
     proxy = snapshot.indicator(HYG_CREDIT_PROXY)
     proxy_value = _usable_value(proxy)
     if proxy_value is None:
-        return "信用缺失"
+        return "HY OAS 暂缺"
     if proxy_value >= 75:
-        return "信用proxy承压"
+        return "HY OAS 暂缺｜信用代理承压"
     if proxy_value >= 60:
-        return "信用proxy转弱"
-    return "信用proxy稳定"
+        return "HY OAS 暂缺｜信用代理转弱"
+    return "HY OAS 暂缺｜信用代理稳定"
 
 
 def _macro_regime_sentiment_detail_html(snapshot: MacroRegimeSnapshot) -> str:
@@ -2257,6 +2342,7 @@ def _normalize_indicator(value: object) -> str:
         "^vix": VIX,
         "avix": VIX,
         "hy_oas": HY_OAS,
+        "high_yield_oas": HY_OAS,
         "bamlh0a0hym2": HY_OAS,
         "hy spread": HY_OAS,
         "dgs10": TEN_YEAR_YIELD,
@@ -2274,6 +2360,15 @@ def _normalize_indicator(value: object) -> str:
         "internal_sentiment_proxy": SENTIMENT_PROXY,
     }
     return aliases.get(text, text)
+
+
+def _indicator_storage_aliases(normalized: str) -> tuple[str, ...]:
+    aliases = {
+        HY_OAS: ("hy_oas", "high_yield_oas", "bamlh0a0hym2"),
+        VIX: ("vix", "^vix", "avix"),
+        FEAR_GREED: ("fear_greed", "cnn_fear_greed", "fear & greed"),
+    }
+    return aliases.get(normalized, (normalized,))
 
 
 def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:

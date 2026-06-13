@@ -1563,6 +1563,51 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertIn("CNN恐惧与贪婪：34｜恐惧", values)
 
+    def test_dashboard_header_shows_vix_and_official_hy_oas(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import HY_OAS, HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+
+        class FreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "刚刚", "tone": "fresh"})()
+
+        macro_regime = evaluate_macro_regime(
+            [
+                MacroIndicatorSnapshot(indicator=VIX, value=19.4, source="^VIX local market cache"),
+                MacroIndicatorSnapshot(indicator=HY_OAS, value=2.78, source="FRED BAMLH0A0HYM2"),
+                MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=80, source="HYG proxy"),
+            ]
+        )
+
+        items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
+        values = [value for _label, value, _tone in items]
+
+        self.assertIn("VIX 19.4（缓存）", values)
+        self.assertIn("HY OAS 2.78%", values)
+        self.assertNotIn("HY OAS 暂缺｜信用代理承压", values)
+
+    def test_dashboard_header_does_not_show_zero_vix_and_uses_credit_proxy_fallback(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        from data.macro_regime import HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+
+        class FreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "刚刚", "tone": "fresh"})()
+
+        macro_regime = evaluate_macro_regime(
+            [
+                MacroIndicatorSnapshot(indicator=VIX, value=0.0, source="AVIX local market cache"),
+                MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=82, source="HYG proxy"),
+            ]
+        )
+
+        items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
+        values = [value for _label, value, _tone in items]
+
+        self.assertIn("VIX 暂缺", values)
+        self.assertIn("HY OAS 暂缺｜信用代理承压", values)
+        self.assertNotIn("VIX 0.0", values)
+
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         tables_module = __import__("ui.dashboard_tables", fromlist=[""])

@@ -41,6 +41,9 @@ from data.data_health import build_data_health_summary
 from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
+    HYG_CREDIT_PROXY,
+    HY_OAS,
+    VIX,
     load_macro_regime,
     macro_regime_detail_html,
     macro_regime_sentiment_status_text,
@@ -725,11 +728,62 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
         ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
         ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
         ("", macro_regime_sentiment_status_text(macro_regime), "neutral"),
+        ("", _dashboard_vix_status_text(macro_regime), "neutral"),
+        ("", _dashboard_hy_oas_status_text(macro_regime), "neutral"),
         ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
         ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
         ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
         ("基本面", _freshness_status_text(freshness, "fundamental"), _freshness_tone(freshness, "fundamental")),
     ]
+
+
+def _dashboard_vix_status_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, VIX)
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if value is None or value < 1:
+        return "VIX 暂缺"
+    suffix = "（缓存）" if _dashboard_indicator_uses_cache(snapshot) else ""
+    return f"VIX {value:.1f}{suffix}"
+
+
+def _dashboard_hy_oas_status_text(macro_regime) -> str:
+    official = _macro_indicator(macro_regime, HY_OAS)
+    official_value = _dashboard_number(getattr(official, "value", None))
+    if official_value is not None and not bool(getattr(official, "is_stale", False)):
+        suffix = "（缓存）" if _dashboard_indicator_uses_cache(official) else ""
+        return f"HY OAS {official_value:.2f}%{suffix}"
+    proxy = _macro_indicator(macro_regime, HYG_CREDIT_PROXY)
+    proxy_value = _dashboard_number(getattr(proxy, "value", None))
+    if proxy_value is None or bool(getattr(proxy, "is_stale", False)):
+        return "HY OAS 暂缺"
+    if proxy_value >= 75:
+        return "HY OAS 暂缺｜信用代理承压"
+    if proxy_value >= 60:
+        return "HY OAS 暂缺｜信用代理转弱"
+    return "HY OAS 暂缺｜信用代理稳定"
+
+
+def _macro_indicator(macro_regime, indicator: str):
+    if macro_regime is None or not hasattr(macro_regime, "indicator"):
+        return None
+    try:
+        return macro_regime.indicator(indicator)
+    except Exception:
+        return None
+
+
+def _dashboard_number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dashboard_indicator_uses_cache(snapshot) -> bool:
+    source = str(getattr(snapshot, "source", "") or "").lower()
+    return bool(getattr(snapshot, "error", None)) or "cache" in source or "cached" in source
 
 
 def _dashboard_command_status_item_html(label: str, value: str, tone: str = "neutral") -> str:

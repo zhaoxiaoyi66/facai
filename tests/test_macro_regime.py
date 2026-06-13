@@ -31,6 +31,7 @@ from data.macro_regime import (
     macro_regime_sentiment_status_text,
     macro_regime_status_text,
     macro_regime_trade_hint_text,
+    refresh_official_hy_oas_cache,
     refresh_macro_indicators,
 )
 from data.prices import PriceCache
@@ -316,6 +317,45 @@ def test_macro_store_supports_manual_cache_values(tmp_path) -> None:
     assert loaded.value == 4.1
     assert loaded.change_5d == 0.2
     assert loaded.source == "manual FRED BAMLH0A0HYM2"
+
+
+def test_macro_store_reads_legacy_high_yield_oas_cache_alias(tmp_path) -> None:
+    path = tmp_path / "macro.sqlite"
+    store = MacroRegimeStore(path)
+    updated_at = datetime(2026, 6, 10, 19, tzinfo=timezone.utc).isoformat()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO macro_indicator_snapshots (
+                indicator, value, source, updated_at, fetched_at, is_stale
+            )
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            ("high_yield_oas", 2.78, "FRED BAMLH0A0HYM2 legacy cache", updated_at, updated_at),
+        )
+
+    loaded = store.load_indicator(HY_OAS, now=datetime(2026, 6, 10, 20, tzinfo=timezone.utc))
+
+    assert loaded is not None
+    assert loaded.indicator == HY_OAS
+    assert loaded.value == 2.78
+    assert loaded.source == "FRED BAMLH0A0HYM2 legacy cache"
+
+
+def test_refresh_official_hy_oas_cache_seeds_fred_value(tmp_path) -> None:
+    path = tmp_path / "macro.sqlite"
+
+    snapshot = refresh_official_hy_oas_cache(
+        path,
+        fred_fetcher=_fred_fetcher({"BAMLH0A0HYM2": [2.65, 2.78]}),
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+    )
+    loaded = MacroRegimeStore(path).load_indicator(HY_OAS, now=datetime(2026, 6, 10, 22, tzinfo=timezone.utc))
+
+    assert snapshot.value == 2.78
+    assert snapshot.source == "FRED BAMLH0A0HYM2"
+    assert loaded is not None
+    assert loaded.value == 2.78
 
 
 def test_refresh_macro_indicators_uses_fred_when_vix_provider_fails(tmp_path, monkeypatch) -> None:
@@ -693,7 +733,7 @@ def test_hy_oas_timeout_uses_hyg_credit_proxy_when_no_cache(tmp_path, monkeypatc
     assert result["indicators"][HY_OAS]["status"] == "failed"
     assert result["indicators"][HYG_CREDIT_PROXY]["status"] == "success"
     assert result["indicators"][HYG_CREDIT_PROXY]["category"] == "auxiliary"
-    assert "信用proxy" in macro_regime_status_text(snapshot)
+    assert "信用代理" in macro_regime_status_text(snapshot)
 
 
 def test_fresh_hy_oas_cache_skips_foreground_fred(tmp_path, monkeypatch) -> None:
@@ -1235,6 +1275,24 @@ def test_macro_data_status_keeps_core_complete_when_auxiliary_has_proxy_only() -
     assert "数据：核心完整｜辅助缺失" in text
     assert "FRED timeout" not in text
     assert "CNN HTTP 418" not in text
+    assert "HY OAS 暂缺" in text
+    assert "信用代理转弱" in text
+
+
+def test_macro_status_text_prefers_official_hy_oas_value() -> None:
+    snapshot = evaluate_macro_regime(
+        [
+            _indicator(VIX, 19.4),
+            _indicator(HY_OAS, 2.78),
+            MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=80, source="HYG proxy"),
+        ]
+    )
+
+    text = macro_regime_status_text(snapshot)
+
+    assert "VIX 19.4" in text
+    assert "HY OAS 2.78%" in text
+    assert "信用代理" not in text
 
 
 def test_macro_indicator_detail_status_uses_cache_semantics_for_error_with_value() -> None:
