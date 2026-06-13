@@ -1713,8 +1713,9 @@ class DashboardLayoutTests(unittest.TestCase):
         table_source = inspect.getsource(tables_module)
         theme_source = inspect.getsource(theme_module.render_global_styles)
 
-        self.assertIn("--dash-shell-width: 1360px", styles_source)
+        self.assertIn("--dash-shell-width: 1680px", styles_source)
         self.assertIn("max-width: var(--dash-shell-width)", styles_source)
+        self.assertIn("calc(100vw - var(--dash-sidebar-width) - 32px)", styles_source)
         self.assertIn("--dash-success-bg", styles_source)
         self.assertIn("--dash-shadow", styles_source)
         self.assertIn("dashboard-command-line", styles_source)

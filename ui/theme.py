@@ -32,7 +32,7 @@ def render_global_styles() -> None:
             --zhx-table-head: #F8FAFC;
             --zhx-table-hover: #FBFCFE;
             --zhx-subtle-line: rgba(15, 23, 42, 0.055);
-            --zhx-shell-width: 1360px;
+            --zhx-shell-width: 1680px;
             --zhx-sidebar-width: 224px;
         }
 
@@ -559,9 +559,10 @@ def render_global_styles() -> None:
         }
 
         [data-testid="stMainBlockContainer"] {
-            margin-left: 252px !important;
-            margin-right: 1.25rem !important;
-            max-width: 1480px;
+            margin-left: calc(var(--zhx-sidebar-width) + 12px) !important;
+            margin-right: 20px !important;
+            width: min(var(--zhx-shell-width), calc(100vw - var(--zhx-sidebar-width) - 32px));
+            max-width: min(var(--zhx-shell-width), calc(100vw - var(--zhx-sidebar-width) - 32px));
         }
 
         .zhx-fixed-sidebar {

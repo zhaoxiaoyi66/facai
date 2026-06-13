@@ -3577,7 +3577,7 @@ def _render_dashboard_styles() -> None:
             --dash-radius: 8px;
             --dash-radius-sm: 7px;
             --dash-radius-md: 10px;
-            --dash-shell-width: 1360px;
+            --dash-shell-width: 1680px;
             --dash-sidebar-width: 224px;
             --dash-table-row-height: 48px;
             --dash-badge-height: 20px;
@@ -5324,12 +5324,12 @@ def _render_dashboard_styles() -> None:
             background:var(--dash-bg);
         }
         div.block-container {
-            max-width: min(var(--dash-shell-width), calc(100vw - 276px));
-            width: min(var(--dash-shell-width), calc(100vw - 276px));
-            margin-left: 236px !important;
-            margin-right: auto !important;
-            padding-left: 1rem;
-            padding-right: 1rem;
+            max-width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px));
+            width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px));
+            margin-left: calc(var(--dash-sidebar-width) + 12px) !important;
+            margin-right: 20px !important;
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
         }
         @media (max-width: 980px) {
             div.block-container {
@@ -6590,14 +6590,14 @@ def _render_dashboard_styles() -> None:
         .decision-grid {
             display:grid;
             grid-template-columns:
-                minmax(104px, 0.70fr)
-                minmax(150px, 0.96fr)
-                minmax(82px, 0.48fr)
-                minmax(138px, 0.78fr)
-                minmax(78px, 0.44fr)
-                minmax(116px, 0.62fr)
-                minmax(76px, 0.42fr)
-                96px;
+                minmax(112px, 0.72fr)
+                minmax(172px, 0.98fr)
+                minmax(88px, 0.45fr)
+                minmax(172px, 0.86fr)
+                minmax(90px, 0.44fr)
+                minmax(148px, 0.72fr)
+                minmax(92px, 0.42fr)
+                92px;
             align-items:center;
             gap:0.62rem;
             min-height:var(--dash-table-row-height);
@@ -6721,11 +6721,11 @@ def _render_dashboard_styles() -> None:
         }
         .action-cell {
             width:100%;
-            max-width:116px;
+            max-width:146px;
             justify-content:flex-start;
         }
         .action-cell .decision-badge {
-            max-width:108px;
+            max-width:138px;
         }
         .decision-cell-stack span,
         .action-cell span {
@@ -6915,7 +6915,7 @@ def _render_dashboard_styles() -> None:
                 border-radius:7px;
             }
             .decision-grid {
-                grid-template-columns:104px 150px 82px 138px 78px 150px 76px 96px;
+                grid-template-columns:112px 172px 88px 172px 90px 148px 92px 92px;
                 min-width:948px;
                 gap:8px;
                 min-height:48px;
