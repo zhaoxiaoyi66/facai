@@ -127,6 +127,22 @@ def test_missing_technical_or_volume_data_is_data_insufficient() -> None:
     assert context.pullback_zone_low is None
 
 
+def test_empty_daily_ohlcv_snapshot_does_not_count_as_history() -> None:
+    context = build_buy_zone_context(
+        {
+            "ticker": "CRCL",
+            "daily_ohlcv": {"open": None, "high": None, "low": None, "close": None, "volume": None},
+            "final_score": 40,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action == DATA_INSUFFICIENT
+    assert "daily_ohlcv" in context.missing_fields
+    assert context.technical_data_source == ""
+    assert context.setup_score == 0
+
+
 def test_daily_ohlcv_volume_fallback_prevents_false_data_insufficient() -> None:
     bars = _daily_bars()
     context = build_buy_zone_context(

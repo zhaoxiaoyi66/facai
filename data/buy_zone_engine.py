@@ -587,7 +587,8 @@ def _daily_bars(data: dict[str, Any]) -> list[dict[str, Any]]:
                 if row:
                     rows.append(_normalize_bar(row))
             return [row for row in rows if row]
-        return [_normalize_bar(raw)]
+        bar = _normalize_bar(raw)
+        return [bar] if bar else []
     if isinstance(raw, (list, tuple)):
         return [bar for item in raw if (bar := _normalize_bar(item))]
     return []
@@ -596,13 +597,14 @@ def _daily_bars(data: dict[str, Any]) -> list[dict[str, Any]]:
 def _normalize_bar(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         return {}
-    return {
+    bar = {
         "open": _first_number(item, "open", "o"),
         "high": _first_number(item, "high", "h"),
         "low": _first_number(item, "low", "l"),
         "close": _first_number(item, "close", "c", "adjClose", "adj_close"),
         "volume": _first_number(item, "volume", "v"),
     }
+    return bar if any(value is not None for value in bar.values()) else {}
 
 
 def _tail_mean(values: list[float], window: int) -> float | None:
