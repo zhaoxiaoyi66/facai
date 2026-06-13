@@ -1563,7 +1563,7 @@ class DashboardLayoutTests(unittest.TestCase):
         values = [value for _label, value, _tone in items]
 
         self.assertEqual(labels, ["CNN 恐惧与贪婪", "VIX"])
-        self.assertIn("34｜恐惧", values)
+        self.assertIn("34 恐惧", values)
 
     def test_dashboard_header_only_promotes_fear_greed_and_vix(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
@@ -1624,7 +1624,7 @@ class DashboardLayoutTests(unittest.TestCase):
         items = dashboard_module._dashboard_command_status_items([], macro_regime, FreshnessStub(), None)
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertIn("VIX 待刷新", joined)
+        self.assertIn("VIX 暂缺", joined)
         self.assertNotIn("HY OAS", joined)
         self.assertNotIn("信用代理", joined)
         self.assertNotIn("美元", joined)
@@ -1645,7 +1645,14 @@ class DashboardLayoutTests(unittest.TestCase):
         items = dashboard_module._dashboard_command_summary_items(macro_regime, FreshnessStub())
         labels = [label for label, _value, _tone in items]
 
-        self.assertEqual(labels, ["大盘", "数据", "最近刷新"])
+        self.assertEqual(labels, ["大盘", "数据"])
+        self.assertEqual(dashboard_module._dashboard_macro_updated_text(FreshnessStub()), "刚刚更新")
+
+        class StaleFreshnessStub:
+            def item(self, key: str):
+                return type("FreshnessItem", (), {"status_text": "过期", "tone": "stale"})()
+
+        self.assertEqual(dashboard_module._dashboard_macro_updated_text(StaleFreshnessStub()), "过期")
 
     def test_dashboard_visual_system_uses_wide_command_layout_and_tokens(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
@@ -1658,7 +1665,9 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("max-width: 1360px", styles_source)
         self.assertIn("--dash-success-bg", styles_source)
         self.assertIn("--dash-shadow", styles_source)
+        self.assertIn("dashboard-command-line", styles_source)
         self.assertIn("dashboard-macro-pill", styles_source)
+        self.assertIn("dashboard-command-updated", styles_source)
         self.assertIn("font-family:ui-monospace", styles_source)
         self.assertIn("min-height:50px", styles_source)
         self.assertIn("var(--dash-success-bg)", table_source)

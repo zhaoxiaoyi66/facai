@@ -713,17 +713,18 @@ def _render_dashboard_status_bar(
         last_macro_refresh_result=st.session_state.get("dashboard_macro_last_refresh_result"),
         portfolio_structure_check=portfolio_structure_check,
     )
+    updated_text = _dashboard_macro_updated_text(freshness)
     st.markdown(
         (
             '<section class="dashboard-command-center">'
-            '<div class="dashboard-command-main">'
+            '<div class="dashboard-command-line">'
             f'<div class="dashboard-command-primary">{macro_pills_html}</div>'
             f'<div class="dashboard-command-summary">{summary_html}</div>'
-            "</div>"
             '<details class="dashboard-command-details">'
-            "<summary>详情 / 最近刷新</summary>"
+            f'<summary><span class="dashboard-command-updated">{escape(updated_text)}</span><b>查看详情</b></summary>'
             f"{detail_html}"
             "</details>"
+            "</div>"
             "</section>"
         ),
         unsafe_allow_html=True,
@@ -741,17 +742,25 @@ def _dashboard_command_summary_items(macro_regime, freshness) -> list[tuple[str,
     return [
         ("大盘", str(getattr(macro_regime, "regime", "") or "数据不足"), "neutral"),
         ("数据", _compact_macro_data_status(str(getattr(macro_regime, "data_status", "") or "")), "neutral"),
-        ("最近刷新", _freshness_status_text(freshness, "macro"), _freshness_tone(freshness, "macro")),
     ]
+
+
+def _dashboard_macro_updated_text(freshness) -> str:
+    text = str(_freshness_status_text(freshness, "macro") or "").strip()
+    if not text:
+        return "暂缺"
+    if text in {"过期", "暂缺", "缺失", "无数据"}:
+        return text
+    return f"{text}更新"
 
 
 def _dashboard_fear_greed_pill_text(macro_regime) -> str:
     snapshot = _macro_indicator(macro_regime, FEAR_GREED)
     value = _dashboard_number(getattr(snapshot, "value", None))
     if value is None:
-        return "待刷新"
+        return "暂缺"
     rating = _dashboard_fear_greed_rating_label(getattr(snapshot, "rating", None), value)
-    return f"{value:.0f}｜{rating}"
+    return f"{value:.0f} {rating}"
 
 
 def _dashboard_fear_greed_rating_label(rating: object, value: float) -> str:
@@ -780,7 +789,7 @@ def _dashboard_vix_pill_text(macro_regime) -> str:
     snapshot = _macro_indicator(macro_regime, VIX)
     value = _dashboard_number(getattr(snapshot, "value", None))
     if value is None or value < 1:
-        return "待刷新"
+        return "暂缺"
     return f"{value:.1f}"
 
 
@@ -3484,12 +3493,19 @@ def _render_dashboard_styles() -> None:
         .dashboard-command-center {
             max-width:1360px;
             margin:0 auto 0.42rem;
-            padding:0.32rem 0.58rem;
+            padding:0.46rem 0.72rem;
             border:1px solid var(--dash-border);
             border-radius:var(--dash-radius);
             background:rgba(255,255,255,0.94);
             color:var(--dash-secondary);
             box-shadow:0 10px 24px rgba(15, 23, 42, 0.03);
+        }
+        .dashboard-command-line {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:0.78rem;
+            min-height:50px;
         }
         .dashboard-command-main {
             display:flex;
@@ -3502,16 +3518,17 @@ def _render_dashboard_styles() -> None:
         .dashboard-command-primary {
             display:flex;
             align-items:center;
-            flex-wrap:wrap;
+            flex-wrap:nowrap;
             gap:0.48rem;
+            flex:0 0 auto;
         }
         .dashboard-macro-pill {
             display:inline-flex;
             align-items:center;
-            gap:0.44rem;
-            min-height:34px;
-            padding:0.24rem 0.72rem;
-            border-radius:999px;
+            gap:0.58rem;
+            min-height:44px;
+            padding:0.34rem 0.9rem;
+            border-radius:16px;
             border:1px solid rgba(11, 31, 58, 0.12);
             background:#F8FAFC;
             color:var(--dash-text);
@@ -3528,12 +3545,13 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-macro-pill b {
             color:var(--dash-muted);
-            font-size:11px;
-            font-weight:760;
+            font-size:13px;
+            font-weight:780;
         }
         .dashboard-macro-pill strong {
             color:var(--dash-text);
-            font-size:15px;
+            font-size:22px;
+            line-height:1;
             font-weight:880;
             font-variant-numeric:tabular-nums;
         }
@@ -3541,20 +3559,21 @@ def _render_dashboard_styles() -> None:
             display:flex;
             align-items:center;
             flex-wrap:wrap;
-            gap:0;
+            gap:0.3rem;
             min-width:0;
+            flex:1 1 auto;
             color:var(--dash-secondary);
         }
         .dashboard-command-summary-item {
             display:inline-flex;
             align-items:center;
-            gap:0.22rem;
+            gap:0.24rem;
             color:var(--dash-secondary);
-            font-size:11px;
+            font-size:12.5px;
             line-height:1;
             font-weight:650;
             white-space:nowrap;
-            padding:0 0.52rem;
+            padding:0 0.28rem;
             border-right:1px solid var(--dash-border-soft);
         }
         .dashboard-command-summary-item:first-child {
@@ -3569,16 +3588,14 @@ def _render_dashboard_styles() -> None:
         }
         .dashboard-command-summary-item strong {
             color:var(--dash-secondary);
-            font-weight:760;
+            font-weight:780;
         }
         .dashboard-command-summary-item.ok strong { color:var(--dash-success); }
         .dashboard-command-summary-item.warn strong { color:var(--dash-warning); }
         .dashboard-command-summary-item.danger strong { color:var(--dash-danger); }
         .dashboard-command-summary-item.muted strong { color:var(--dash-muted); }
         .dashboard-command-summary-item.neutral strong { color:var(--dash-secondary); }
-        .dashboard-command-primary + .dashboard-command-summary {
-            margin-top:0.02rem;
-        }
+        .dashboard-command-primary + .dashboard-command-summary { margin-top:0; }
         .dashboard-command-items {
             display:flex;
             align-items:center;
@@ -3632,16 +3649,52 @@ def _render_dashboard_styles() -> None:
             text-decoration:none !important;
         }
         .dashboard-command-details {
-            margin-top:0.14rem;
+            margin-top:0;
+            margin-left:auto;
+            flex:0 0 auto;
             color:var(--dash-secondary);
         }
         .dashboard-command-details summary {
             cursor:pointer;
             display:inline-flex;
             align-items:center;
+            gap:0.48rem;
             color:var(--dash-secondary);
-            font-size:10.5px;
-            font-weight:700;
+            font-size:12px;
+            font-weight:740;
+            white-space:nowrap;
+            list-style:none;
+        }
+        .dashboard-command-details summary::-webkit-details-marker {
+            display:none;
+        }
+        .dashboard-command-details summary::marker {
+            content:"";
+        }
+        .dashboard-command-updated {
+            color:var(--dash-muted);
+            font-variant-numeric:tabular-nums;
+        }
+        .dashboard-command-details summary b {
+            display:inline-flex;
+            align-items:center;
+            min-height:30px;
+            padding:0 0.72rem;
+            border:1px solid var(--dash-border);
+            border-radius:999px;
+            background:#F8FAFC;
+            color:var(--dash-text);
+            font-size:12px;
+            font-weight:780;
+        }
+        .dashboard-command-details[open] {
+            flex:1 1 100%;
+            order:5;
+            width:100%;
+            margin-left:0;
+        }
+        .dashboard-command-details[open] summary {
+            justify-content:flex-end;
         }
         .dashboard-command-detail-grid {
             display:grid;
@@ -3708,6 +3761,36 @@ def _render_dashboard_styles() -> None:
         .dashboard-command-mini-stats b {
             color:var(--dash-muted);
             font-weight:650;
+        }
+        @media (max-width: 1180px) {
+            .dashboard-command-line {
+                flex-wrap:wrap;
+                align-items:flex-start;
+            }
+            .dashboard-command-summary {
+                order:3;
+                flex-basis:100%;
+            }
+            .dashboard-command-details {
+                margin-left:auto;
+            }
+        }
+        @media (max-width: 760px) {
+            .dashboard-command-primary {
+                flex-wrap:wrap;
+                width:100%;
+            }
+            .dashboard-macro-pill {
+                flex:1 1 220px;
+                justify-content:space-between;
+            }
+            .dashboard-command-details {
+                margin-left:0;
+                width:100%;
+            }
+            .dashboard-command-details summary {
+                justify-content:space-between;
+            }
         }
         .macro-regime-status {
             max-width:1440px;
@@ -5032,9 +5115,20 @@ def _render_dashboard_styles() -> None:
             background:var(--dash-bg);
         }
         div.block-container {
-            max-width: 1360px;
+            max-width: calc(100vw - 300px);
+            width: calc(100vw - 300px);
+            margin-left: 252px !important;
+            margin-right: 24px !important;
             padding-left: 1.25rem;
             padding-right: 1.25rem;
+        }
+        @media (max-width: 980px) {
+            div.block-container {
+                width: 100%;
+                max-width: 100%;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+            }
         }
         .terminal-header,
         .terminal-title-group,
