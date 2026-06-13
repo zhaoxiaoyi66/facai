@@ -2,10 +2,13 @@
 
 import json
 import sqlite3
+import inspect
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+import pandas as pd
 
 from data.ai_stock_radar import (
     RadarScores,
@@ -16,6 +19,7 @@ from data.ai_stock_radar import (
     normalize_radar_inputs,
 )
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
+from ui import ai_stock_radar as radar_ui
 from ui.ai_stock_radar import select_radar_symbols
 
 
@@ -120,6 +124,66 @@ def test_price_inside_discipline_buy_zone_can_allow_buy() -> None:
         assert report.allowed_add_pct > 0
         assert report.block_reasons == []
         assert report.to_dict()["ticker"] == "NVDA"
+
+
+def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
+    source = inspect.getsource(radar_ui._render_list)
+    row_source = inspect.getsource(radar_ui._list_row_html)
+
+    assert "Radar 研究入口" in source
+    assert "核心状态" in source
+    assert "数据完整度" in source
+    assert "查看研报" in row_source
+    assert "Block reasons" not in source
+    assert "allowed_add_pct" not in source
+
+
+def test_ai_radar_report_html_uses_research_report_sections() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_quote(path, "NVDA", 95)
+        report = build_ai_stock_radar_report(
+            "NVDA",
+            path=path,
+            company_name="Nvidia",
+            scores=_scores(),
+            snapshot=_cached_snapshot(),
+            technicals=_cached_technicals(),
+            buy_zone=_buy_zone(),
+            watch_zone=_watch_zone(),
+            chase_zone=_chase_zone(),
+            now=NOW,
+        ).to_dict()
+
+    html = radar_ui._report_html(report, {}, _cached_snapshot(), _cached_technicals(), {}, pd.DataFrame())
+
+    assert "AI Stock Radar Research" in html
+    assert "核心摘要" in html
+    assert "目标价区间与估值/技术区间图" in html
+    assert "评分卡" in html
+    assert "看多逻辑" in html
+    assert "关键指标（今日）" in html
+    assert "核心财务摘要" in html
+    assert "市场表现" in html
+    assert "数据完整度" in html
+    assert "是否允许新增" not in html
+    assert "阻止原因" not in html
+
+
+def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft",
+        "current_price": 390,
+        "decision": "DATA_MISSING",
+        "data_status": "MISSING_SCORE",
+        "debug": {"data_missing_fields": ["forward_pe", "enterprise_to_revenue", "ema50"]},
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "DATA_MISSING" not in html
+    assert "低｜估值缺口、技术缺口、评分缺口" in html
 
 
 def test_price_above_buy_zone_blocks_chase_with_reason() -> None:
