@@ -10,6 +10,7 @@ from data.action_fusion import action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
+from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.sector_localization import format_company_track, get_ticker_research_track
 from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
@@ -680,6 +681,7 @@ def _action_fusion_result(
             or volume_snapshot.get("volumePriceReasonCn")
             or volume_snapshot.get("reason_cn"),
         },
+        portfolio_context=build_action_fusion_portfolio_context(str(report.get("ticker") or row.get("ticker") or "")),
     )
 
 

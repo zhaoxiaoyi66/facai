@@ -16,6 +16,14 @@ BREAKDOWN_REVIEW = "BREAKDOWN_REVIEW"
 EVENT_REVIEW = "EVENT_REVIEW"
 DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
 
+LEFT_PROBE_ALLOWED = "LEFT_PROBE_ALLOWED"
+LEFT_ADD_ALLOWED = "LEFT_ADD_ALLOWED"
+LEFT_WAIT_BETTER_PRICE = "LEFT_WAIT_BETTER_PRICE"
+LEFT_NOT_ALLOWED = "LEFT_NOT_ALLOWED"
+EVENT_REVIEW_ONLY = "EVENT_REVIEW_ONLY"
+CHASE_BLOCKED = "CHASE_BLOCKED"
+POSITION_LIMITED = "POSITION_LIMITED"
+
 HIGH_QUALITY_PULLBACK = "HIGH_QUALITY_PULLBACK"
 VALUE_REPAIR = "VALUE_REPAIR"
 TREND_CONFIRMATION = "TREND_CONFIRMATION"
@@ -47,6 +55,16 @@ VOLUME_STATUS_LABELS = {
     "DATA_MISSING": "数据不足",
 }
 
+LEFT_SIDE_ACTION_LABELS = {
+    LEFT_PROBE_ALLOWED: "允许左侧试探",
+    LEFT_ADD_ALLOWED: "允许左侧小幅加仓",
+    LEFT_WAIT_BETTER_PRICE: "等待更低左侧价",
+    LEFT_NOT_ALLOWED: "不允许左侧买入",
+    EVENT_REVIEW_ONLY: "事件复核，不做左侧摊低",
+    CHASE_BLOCKED: "脱离观察区，禁止追高",
+    POSITION_LIMITED: "仓位限制，不再加仓",
+}
+
 
 @dataclass(frozen=True)
 class ActionFusionResult:
@@ -64,6 +82,19 @@ class ActionFusionResult:
     advisory_warnings_cn: list[str] = field(default_factory=list)
     risk_bullets_cn: list[str] = field(default_factory=list)
     watch_levels: dict[str, float | None] = field(default_factory=dict)
+    portfolio_role: str = ""
+    current_weight: float | None = None
+    target_weight: float | None = None
+    max_weight: float | None = None
+    position_status_cn: str = ""
+    position_action_cn: str = ""
+    left_side_allowed: bool = False
+    left_side_action_cn: str = ""
+    left_probe_size_cn: str = ""
+    left_add_levels_cn: str = ""
+    right_confirm_trigger_cn: str = ""
+    left_side_warning_cn: str = ""
+    left_side_plan: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +140,7 @@ def evaluate_action_fusion(
     weight = _first_number(portfolio, "portfolio_weight", "portfolioWeight", "positionPct")
     target_weight = _first_number(portfolio, "target_weight", "targetWeight", "targetPositionPct")
     max_weight = _first_number(portfolio, "max_weight", "maxWeight", "maxAcceptablePositionPct", "maxPortfolioWeightPercent")
+    role = str(_value(portfolio, "role", "portfolio_role", "portfolioRole") or "").strip()
     cash = _first_number(portfolio, "available_cash", "availableCash", "cashBalance")
 
     evidence = _evidence(symbol, price, observation_low, observation_high, volume_status, volume_score, volume_regime, quality_score, valuation_score)
@@ -126,31 +158,83 @@ def evaluate_action_fusion(
     critical_missing = bool(_value(source, "critical_data_missing", "criticalDataMissing")) or price is None
     overextended = (price is not None and observation_high is not None and price > observation_high) or volume_status == "OVEREXTENDED_SUPPORT_READ"
     chase_context = radar_decision == "BLOCK_CHASE" or zone_status == "IN_CHASE_ZONE" or overextended
-    overweight = max_weight is not None and weight is not None and weight >= max_weight
+    position_state = _position_state(weight=weight, target_weight=target_weight, max_weight=max_weight)
+    role_warning = _role_warning(role)
+    if role_warning:
+        advisory_warnings.append(role_warning)
+
+    def finish(action_code: str, setup_type: str, confidence: str) -> ActionFusionResult:
+        left_side_plan = _build_left_side_plan(
+            action_code=action_code,
+            price=price,
+            quality_score=quality_score,
+            observation_low=observation_low,
+            observation_high=observation_high,
+            valuation_low=valuation_low,
+            valuation_high=valuation_high,
+            deep_support_low=deep_support_low,
+            deep_support_high=deep_support_high,
+            confirm_line=confirm_line,
+            invalid_line=invalid_line,
+            volume_status=volume_status,
+            volume_score=volume_score,
+            volume_ratio=volume_ratio,
+            gap_down=gap_down,
+            volume_reason=volume_reason,
+            critical_missing=critical_missing,
+            chase_context=chase_context,
+            overextended=overextended,
+            position_state=position_state,
+            shares=shares,
+            weight=weight,
+            target_weight=target_weight,
+            max_weight=max_weight,
+            role=role,
+        )
+        return _result(
+            action_code,
+            setup_type,
+            confidence,
+            symbol,
+            price,
+            shares,
+            avg_cost,
+            weight,
+            target_weight,
+            max_weight,
+            role,
+            position_state,
+            cash,
+            advisory_warnings,
+            risks,
+            evidence,
+            watch_levels,
+            left_side_plan,
+        )
 
     if critical_missing:
         advisory_warnings.append("缺少价格或核心区间，暂无可靠交易建议。")
-        return _result(DATA_INSUFFICIENT, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(DATA_INSUFFICIENT, LOW_CONFIDENCE, "低")
 
-    if overweight:
-        advisory_warnings.append("当前仓位已接近或超过系统参考上限。")
-        return _result(HOLD_NO_ADD, PORTFOLIO_OVERWEIGHT, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+    if position_state["code"] in {"AT_MAX", "OVER_MAX"}:
+        advisory_warnings.append("当前仓位已达到/超过上限，即使技术承接也不继续加仓。")
+        return finish(HOLD_NO_ADD, PORTFOLIO_OVERWEIGHT, "中")
 
     if chase_context and overextended:
         advisory_warnings.append("好公司但价格已脱离回踩观察区，不构成低吸。")
-        return _result(BLOCK_CHASE, OVEREXTENDED_CHASE, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(BLOCK_CHASE, OVEREXTENDED_CHASE, "高")
 
     if volume_status == "FAILED":
         advisory_warnings.append("量价承接失败，暂停加仓。")
-        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高")
 
     if invalid_line is not None and price is not None and price < invalid_line:
         advisory_warnings.append(f"价格跌破失效线 {_money(invalid_line)}，先做破位复核。")
-        return _result(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高")
 
     if (volume_ratio is not None and volume_ratio >= 2.0 and gap_down) or "爆量跳空下跌" in volume_reason or "高量跳空下跌" in volume_reason:
         advisory_warnings.append("高量跳空下跌，需复核财报/消息冲击，不做无确认摊低。")
-        return _result(EVENT_REVIEW, EVENT_GAP_REVIEW, "高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(EVENT_REVIEW, EVENT_GAP_REVIEW, "高")
 
     if technical_status == "BREAKDOWN_REVIEW":
         risks.append("技术结构仍处于破位复核，不能只因估值便宜加仓。")
@@ -160,28 +244,39 @@ def evaluate_action_fusion(
     quality_ok = quality_score is None or quality_score >= 60
     valuation_ok = valuation_score is None or valuation_score >= 55 or in_value_area
     under_target = target_weight is None or weight is None or weight < target_weight
+    near_or_above_target = position_state["code"] == "NEAR_TARGET"
 
     if volume_status == "ACCEPTANCE_CONFIRMED" and quality_ok and valuation_ok and under_target:
-        return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中高", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        if near_or_above_target:
+            advisory_warnings.append("仓位已接近目标仓，新增买入需等待更强确认或更低价格。")
+            return finish(HOLD_NO_ADD if shares > 0 else WAIT_CONFIRMATION, PORTFOLIO_OVERWEIGHT, "中")
+        return finish(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中高")
 
     if in_observation and volume_status == "FORMING":
         if volume_score is not None and volume_score < 55:
             advisory_warnings.append("初步承接，尚未确认；等待放量站上确认线。")
-            return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+            if near_or_above_target:
+                advisory_warnings.append("仓位已接近目标仓，等待确认，不追不加。")
+            return finish(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else HIGH_QUALITY_PULLBACK, "中")
         if under_target and quality_ok and valuation_ok:
+            if near_or_above_target:
+                advisory_warnings.append("仓位已接近目标仓，新增买入需等待更强确认或更低价格。")
+                return finish(HOLD_NO_ADD if shares > 0 else WAIT_CONFIRMATION, PORTFOLIO_OVERWEIGHT, "中")
             risks.append("承接形成中但未完全确认，适合小仓或等待确认。")
-            return _result(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+            return finish(ALLOW_SMALL_BUY, HIGH_QUALITY_PULLBACK, "中")
 
     if in_observation:
         advisory_warnings.append("价格在观察区，但量价承接尚未确认。")
-        return _result(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else TREND_CONFIRMATION, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        if near_or_above_target:
+            advisory_warnings.append("仓位已接近目标仓，新增买入需等待更强确认或更低价格。")
+        return finish(WAIT_CONFIRMATION, VALUE_REPAIR if in_value_area else TREND_CONFIRMATION, "中")
 
     if shares > 0:
         advisory_warnings.append("暂无新的低吸或确认加仓信号。")
-        return _result(HOLD_NO_ADD, LOW_CONFIDENCE, "中", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+        return finish(HOLD_NO_ADD, LOW_CONFIDENCE, "中")
 
     advisory_warnings.append("缺少可执行确认条件，先放入观察。")
-    return _result(WAIT_CONFIRMATION, LOW_CONFIDENCE, "低", symbol, price, shares, avg_cost, weight, target_weight, max_weight, cash, advisory_warnings, risks, evidence, watch_levels)
+    return finish(WAIT_CONFIRMATION, LOW_CONFIDENCE, "低")
 
 
 def action_fusion_card_html(result: ActionFusionResult) -> str:
@@ -190,6 +285,8 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
     risks = "".join(f"<li>{escape(item)}</li>" for item in result.risk_bullets_cn[:3])
     warnings_html = f"<div><b>待确认事项</b><ul>{advisory_warnings}</ul></div>" if advisory_warnings else ""
     risks_html = f"<div><b>风险</b><ul>{risks}</ul></div>" if risks else ""
+    position_html = _position_constraint_html(result)
+    left_side_html = _left_side_plan_html(result)
     return (
         '<section class="action-fusion-card">'
         '<div class="action-fusion-kicker">系统建议</div>'
@@ -202,6 +299,8 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
         f'<div><b>下一触发位</b><span>{escape(result.next_trigger_cn)}</span></div>'
         f'<div><b>失效条件</b><span>{escape(result.invalidation_cn)}</span></div>'
         f'<div><b>仓位建议</b><span>{escape(result.position_advice_cn)}</span></div>'
+        f"{position_html}"
+        f"{left_side_html}"
         '</div>'
         '<small>Action Fusion 仅作交易建议融合展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>'
         '</section>'
@@ -219,11 +318,14 @@ def _result(
     weight: float | None,
     target_weight: float | None,
     max_weight: float | None,
+    role: str,
+    position_state: dict[str, str],
     cash: float | None,
     advisory_warnings: list[str],
     risks: list[str],
     evidence: list[str],
     watch_levels: dict[str, float | None],
+    left_side_plan: dict[str, Any],
 ) -> ActionFusionResult:
     action_cn = ACTION_LABELS[action_code]
     next_trigger = _next_trigger(action_code, watch_levels)
@@ -245,6 +347,19 @@ def _result(
         advisory_warnings_cn=advisory_warnings,
         risk_bullets_cn=risks,
         watch_levels=watch_levels,
+        portfolio_role=role,
+        current_weight=weight,
+        target_weight=target_weight,
+        max_weight=max_weight,
+        position_status_cn=position_state["label"],
+        position_action_cn=position_state["action"],
+        left_side_allowed=bool(left_side_plan.get("allowed")),
+        left_side_action_cn=str(left_side_plan.get("action_cn") or ""),
+        left_probe_size_cn=str(left_side_plan.get("probe_size_cn") or ""),
+        left_add_levels_cn=str(left_side_plan.get("add_levels_cn") or ""),
+        right_confirm_trigger_cn=str(left_side_plan.get("right_confirm_trigger_cn") or ""),
+        left_side_warning_cn=str(left_side_plan.get("warning_cn") or ""),
+        left_side_plan=dict(left_side_plan),
     )
 
 
@@ -324,6 +439,290 @@ def _position_advice(
     if cash is not None:
         parts.append(f"可用现金 {_money(cash)}")
     return "；".join(parts) + "。"
+
+
+def _position_constraint_html(result: ActionFusionResult) -> str:
+    if not any(
+        value not in (None, "")
+        for value in (
+            result.current_weight,
+            result.target_weight,
+            result.max_weight,
+            result.portfolio_role,
+        )
+    ):
+        return ""
+    detail = "；".join(
+        item
+        for item in (
+            f"当前 {_pct_text(result.current_weight)}",
+            f"目标 {_pct_text(result.target_weight)}",
+            f"上限 {_pct_text(result.max_weight)}",
+            f"状态 {result.position_status_cn or '待确认'}",
+            f"动作 {result.position_action_cn or '等待确认'}",
+            f"角色 {result.portfolio_role}" if result.portfolio_role else "",
+        )
+        if item
+    )
+    return f"<div><b>仓位约束</b><span>{escape(detail)}</span></div>"
+
+
+def _left_side_plan_html(result: ActionFusionResult) -> str:
+    if not result.left_side_action_cn and not result.left_side_plan:
+        return ""
+    detail = "；".join(
+        item
+        for item in (
+            result.left_side_action_cn,
+            result.left_probe_size_cn,
+            result.left_add_levels_cn,
+            result.right_confirm_trigger_cn,
+            result.left_side_warning_cn,
+        )
+        if item
+    )
+    return f"<div><b>左侧计划</b><span>{escape(detail)}</span></div>"
+
+
+def _build_left_side_plan(
+    *,
+    action_code: str,
+    price: float | None,
+    quality_score: float | None,
+    observation_low: float | None,
+    observation_high: float | None,
+    valuation_low: float | None,
+    valuation_high: float | None,
+    deep_support_low: float | None,
+    deep_support_high: float | None,
+    confirm_line: float | None,
+    invalid_line: float | None,
+    volume_status: str,
+    volume_score: float | None,
+    volume_ratio: float | None,
+    gap_down: bool,
+    volume_reason: str,
+    critical_missing: bool,
+    chase_context: bool,
+    overextended: bool,
+    position_state: dict[str, str],
+    shares: float,
+    weight: float | None,
+    target_weight: float | None,
+    max_weight: float | None,
+    role: str,
+) -> dict[str, Any]:
+    left_context = _left_side_context(
+        price=price,
+        observation_low=observation_low,
+        observation_high=observation_high,
+        valuation_low=valuation_low,
+        valuation_high=valuation_high,
+        deep_support_low=deep_support_low,
+        deep_support_high=deep_support_high,
+    )
+    common = {
+        "right_confirm_trigger_cn": _right_confirm_trigger(confirm_line),
+        "invalidation_cn": _left_invalidation(invalid_line, observation_low),
+        "add_levels_cn": _left_add_levels(left_context, invalid_line),
+    }
+    event_shock = bool(
+        (volume_ratio is not None and volume_ratio >= 2.0 and gap_down)
+        or "爆量跳空下跌" in volume_reason
+        or "高量跳空下跌" in volume_reason
+        or action_code == EVENT_REVIEW
+    )
+    if critical_missing or action_code == DATA_INSUFFICIENT or volume_status == "DATA_MISSING":
+        return _left_plan(
+            LEFT_NOT_ALLOWED,
+            False,
+            "数据不足，不允许左侧买入；先补齐价格、K线和核心区间。",
+            **common,
+        )
+    if event_shock:
+        return _left_plan(
+            EVENT_REVIEW_ONLY,
+            False,
+            "估值便宜但存在事件/爆量冲击，不做无确认摊低。",
+            **common,
+        )
+    if chase_context or overextended or volume_status == "OVEREXTENDED_SUPPORT_READ" or action_code == BLOCK_CHASE:
+        return _left_plan(
+            CHASE_BLOCKED,
+            False,
+            "价格已脱离回踩观察区，左侧也不追。",
+            **common,
+        )
+    if position_state["code"] in {"AT_MAX", "OVER_MAX", "NEAR_TARGET"}:
+        warning = "仓位已接近或达到上限，即使技术承接也不继续加仓。"
+        return _left_plan(POSITION_LIMITED, False, warning, **common)
+    if volume_status == "FAILED":
+        return _left_plan(
+            LEFT_NOT_ALLOWED,
+            False,
+            "量价承接失败，左侧暂停；等待重新站回支撑或确认线。",
+            **common,
+        )
+    if quality_score is None or quality_score < 70:
+        return _left_plan(
+            LEFT_NOT_ALLOWED,
+            False,
+            "基本面质量未达左侧试探要求，先等待更强确认。",
+            **common,
+        )
+    if not left_context["in_left_zone"]:
+        return _left_plan(
+            LEFT_WAIT_BETTER_PRICE,
+            False,
+            "价格已进入观察范围，但左侧赔率不够，等待更低支撑位。",
+            **common,
+        )
+    if shares > 0 and weight is not None and target_weight is not None and weight >= target_weight * 0.6:
+        return _left_plan(
+            POSITION_LIMITED,
+            False,
+            "左侧累计仓位已达到目标仓位 60% 参考上限，等待右侧确认，不主动左侧加。",
+            **common,
+        )
+    if shares > 0 and (target_weight is None or weight is None or weight < target_weight):
+        return _left_plan(
+            LEFT_ADD_ALLOWED,
+            True,
+            "允许左侧小幅加仓，但未过确认线，不能一次打满。",
+            probe_size_cn=_left_add_size(weight, target_weight),
+            **common,
+        )
+    return _left_plan(
+        LEFT_PROBE_ALLOWED,
+        True,
+        "允许左侧小仓试探，但尚未确认；先用目标仓位的 20%-30%，等待量价继续确认。",
+        probe_size_cn=_left_probe_size(target_weight),
+        **common,
+    )
+
+
+def _left_plan(
+    action_code: str,
+    allowed: bool,
+    warning_cn: str,
+    *,
+    probe_size_cn: str = "",
+    add_levels_cn: str = "",
+    right_confirm_trigger_cn: str = "",
+    invalidation_cn: str = "",
+) -> dict[str, Any]:
+    return {
+        "action_code": action_code,
+        "allowed": allowed,
+        "action_cn": LEFT_SIDE_ACTION_LABELS.get(action_code, action_code),
+        "probe_size_cn": probe_size_cn,
+        "add_levels_cn": add_levels_cn,
+        "right_confirm_trigger_cn": right_confirm_trigger_cn,
+        "invalidation_cn": invalidation_cn,
+        "warning_cn": warning_cn,
+    }
+
+
+def _left_side_context(
+    *,
+    price: float | None,
+    observation_low: float | None,
+    observation_high: float | None,
+    valuation_low: float | None,
+    valuation_high: float | None,
+    deep_support_low: float | None,
+    deep_support_high: float | None,
+) -> dict[str, Any]:
+    in_observation = _in_range(price, observation_low, observation_high)
+    in_valuation = _in_range(price, valuation_low, valuation_high)
+    in_deep_support = _in_range(price, deep_support_low, deep_support_high)
+    return {
+        "in_left_zone": in_observation or in_valuation or in_deep_support,
+        "observation_low": observation_low,
+        "observation_high": observation_high,
+        "valuation_low": valuation_low,
+        "valuation_high": valuation_high,
+        "deep_support_low": deep_support_low,
+        "deep_support_high": deep_support_high,
+    }
+
+
+def _left_probe_size(target_weight: float | None) -> str:
+    if target_weight is None:
+        return "试探仓：目标仓位的 20%-30%，等待量价继续确认。"
+    return f"试探仓：目标仓位的 20%-30%（约 {target_weight * 0.2:.1f}%-{target_weight * 0.3:.1f}% 组合）。"
+
+
+def _left_add_size(weight: float | None, target_weight: float | None) -> str:
+    if target_weight is None:
+        return "小幅加仓：未确认前不能一次打满。"
+    cap_low = target_weight * 0.5
+    cap_high = target_weight * 0.6
+    if weight is not None:
+        room = max(0.0, cap_high - weight)
+        return f"小幅加仓：左侧累计参考 {cap_low:.1f}%-{cap_high:.1f}% 组合，当前约 {weight:.1f}%，剩余额度约 {room:.1f}%。"
+    return f"小幅加仓：左侧累计参考 {cap_low:.1f}%-{cap_high:.1f}% 组合，未过确认线不能一次打满。"
+
+
+def _left_add_levels(context: dict[str, Any], invalid_line: float | None) -> str:
+    levels = []
+    if context.get("observation_low") is not None:
+        levels.append(f"观察区下沿 {_money(context['observation_low'])}")
+    if context.get("deep_support_low") is not None:
+        levels.append(f"深度支撑 {_money(context['deep_support_low'])}")
+    if context.get("valuation_low") is not None:
+        levels.append(f"估值下沿 {_money(context['valuation_low'])}")
+    if invalid_line is not None:
+        levels.append(f"失效线 {_money(invalid_line)}")
+    return "下一档低吸价：" + "；".join(levels[:4]) if levels else "下一档低吸价：等待观察区或支撑位补齐。"
+
+
+def _right_confirm_trigger(confirm_line: float | None) -> str:
+    if confirm_line is None:
+        return "右侧确认：等待放量站上确认线或关键均线。"
+    return f"右侧确认：放量站上确认线 {_money(confirm_line)} 后再考虑确认加仓。"
+
+
+def _left_invalidation(invalid_line: float | None, observation_low: float | None) -> str:
+    if invalid_line is not None:
+        return f"左侧失效：跌破失效线 {_money(invalid_line)} 暂停。"
+    if observation_low is not None:
+        return f"左侧失效：跌破观察区下沿 {_money(observation_low)} 暂停。"
+    return "左侧失效：缺少失效线，需人工补充。"
+
+
+def _position_state(
+    *,
+    weight: float | None,
+    target_weight: float | None,
+    max_weight: float | None,
+) -> dict[str, str]:
+    if weight is not None and max_weight is not None:
+        if weight > max_weight:
+            return {"code": "OVER_MAX", "label": "超过上限", "action": "需降低风险"}
+        if weight >= max_weight:
+            return {"code": "AT_MAX", "label": "已达上限", "action": "不再加仓"}
+    if weight is not None and target_weight is not None:
+        if weight >= target_weight or weight >= target_weight * 0.9:
+            return {"code": "NEAR_TARGET", "label": "接近目标", "action": "只能等待"}
+    return {"code": "BELOW_TARGET", "label": "低于目标", "action": "可建仓"}
+
+
+def _role_warning(role: str) -> str:
+    normalized = str(role or "").strip().lower()
+    if normalized == "event_trade":
+        return "事件仓仅限小仓，不转为核心仓。"
+    if normalized == "repair":
+        return "修复仓以估值修复为主，仓位上限较低。"
+    if normalized.endswith("_satellite") or normalized in {"satellite", "watch_only"}:
+        return "卫星/观察仓按较低上限管理，不作为核心仓加仓。"
+    return ""
+
+
+def _pct_text(value: float | None) -> str:
+    if value is None:
+        return "未配置"
+    return f"{value:.1f}%"
 
 
 def _evidence(

@@ -1,0 +1,49 @@
+NVDA:
+  role: core
+  target_weight: 0.45
+  max_weight: 0.50
+
+AVGO:
+  role: ai_hardware
+  target_weight: 0.08
+  max_weight: 0.12
+
+MSFT:
+  role: ai_platform
+  target_weight: 0.08
+  max_weight: 0.12
+
+NOW:
+  role: ai_software_core
+  target_weight: 0.10
+  max_weight: 0.15
+
+ADBE:
+  role: repair
+  target_weight: 0.03
+  max_weight: 0.06
+
+GLW:
+  role: ai_infra_satellite
+  target_weight: 0.03
+  max_weight: 0.05
+
+NOK:
+  role: ai_network_satellite
+  target_weight: 0.03
+  max_weight: 0.05
+
+MRVL:
+  role: ai_hardware_satellite
+  target_weight: 0.03
+  max_weight: 0.06
+
+MU:
+  role: cyclical_ai_memory
+  target_weight: 0.03
+  max_weight: 0.06
+
+CRCL:
+  role: event_trade
+  target_weight: 0.02
+  max_weight: 0.04

@@ -7,6 +7,7 @@ from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.entry_display import build_entry_display
 from data.market_context import build_market_history
+from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.pullback_acceptance import evaluate_pullback_acceptance
 from data.review_queue_builder import ReviewQueueStore
 from data.stock_plan import StockPlanStore
@@ -110,10 +111,7 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
             "volume_regime_cn": volume_price_acceptance.volume_regime_cn,
             "volume_price_reason_cn": volume_price_acceptance.acceptance_reason_cn,
         },
-        portfolio_context={
-            "max_weight": max_portfolio_weight,
-            "target_weight": current_add_limit,
-        },
+        portfolio_context=build_action_fusion_portfolio_context(ticker),
     )
 
     return {

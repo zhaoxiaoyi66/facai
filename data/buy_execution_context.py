@@ -11,6 +11,7 @@ from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.macro_regime import load_macro_regime
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_structure_health import build_portfolio_structure_check
+from data.portfolio_targets import apply_portfolio_target
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
 from data.pullback_acceptance import (
@@ -396,16 +397,19 @@ def _portfolio_context_for_symbol(symbol: str, *, path: Path) -> dict[str, Any]:
     for row in view.get("rows") or []:
         if str(row.get("symbol") or "").upper() != symbol:
             continue
-        return {
-            "current_shares": row.get("quantity"),
-            "avg_cost": row.get("averageCost"),
-            "market_value": row.get("marketValue"),
-            "portfolio_weight": row.get("positionPct"),
-            "target_weight": row.get("targetPositionPct"),
-            "max_weight": row.get("maxAcceptablePositionPct"),
-            "available_cash": summary.get("cashBalance"),
-        }
-    return {"available_cash": summary.get("cashBalance")}
+        return apply_portfolio_target(
+            symbol,
+            {
+                "current_shares": row.get("quantity"),
+                "avg_cost": row.get("averageCost"),
+                "market_value": row.get("marketValue"),
+                "portfolio_weight": row.get("positionPct"),
+                "target_weight": row.get("targetPositionPct"),
+                "max_weight": row.get("maxAcceptablePositionPct"),
+                "available_cash": summary.get("cashBalance"),
+            },
+        )
+    return apply_portfolio_target(symbol, {"available_cash": summary.get("cashBalance")})
 
 
 def _has_technical_structure_map(report: dict[str, Any]) -> bool:
