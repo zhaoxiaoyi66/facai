@@ -1565,7 +1565,15 @@ class DashboardLayoutTests(unittest.TestCase):
 
     def test_dashboard_header_shows_vix_and_official_hy_oas(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
-        from data.macro_regime import HY_OAS, HYG_CREDIT_PROXY, MacroIndicatorSnapshot, VIX, evaluate_macro_regime
+        from data.macro_regime import (
+            HY_OAS,
+            HYG_CREDIT_PROXY,
+            MARKET_BREADTH,
+            TEN_YEAR_YIELD,
+            MacroIndicatorSnapshot,
+            VIX,
+            evaluate_macro_regime,
+        )
 
         class FreshnessStub:
             def item(self, key: str):
@@ -1576,6 +1584,8 @@ class DashboardLayoutTests(unittest.TestCase):
                 MacroIndicatorSnapshot(indicator=VIX, value=19.4, source="^VIX local market cache"),
                 MacroIndicatorSnapshot(indicator=HY_OAS, value=2.78, source="FRED BAMLH0A0HYM2"),
                 MacroIndicatorSnapshot(indicator=HYG_CREDIT_PROXY, value=80, source="HYG proxy"),
+                MacroIndicatorSnapshot(indicator=TEN_YEAR_YIELD, value=4.55, source="FMP Treasury"),
+                MacroIndicatorSnapshot(indicator=MARKET_BREADTH, value=41.9, source="本地观察池 K线缓存"),
             ]
         )
 
@@ -1584,6 +1594,8 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertIn("VIX 19.4（缓存）", values)
         self.assertIn("HY OAS 2.78%", values)
+        self.assertIn("10Y 4.5%", values)
+        self.assertIn("市场宽度 41.9%（缓存）", values)
         self.assertNotIn("HY OAS 暂缺｜信用代理承压", values)
 
     def test_dashboard_header_does_not_show_zero_vix_and_uses_credit_proxy_fallback(self) -> None:

@@ -43,6 +43,8 @@ from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
     HYG_CREDIT_PROXY,
     HY_OAS,
+    MARKET_BREADTH,
+    TEN_YEAR_YIELD,
     VIX,
     load_macro_regime,
     macro_regime_detail_html,
@@ -730,6 +732,8 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
         ("", macro_regime_sentiment_status_text(macro_regime), "neutral"),
         ("", _dashboard_vix_status_text(macro_regime), "neutral"),
         ("", _dashboard_hy_oas_status_text(macro_regime), "neutral"),
+        ("", _dashboard_ten_year_status_text(macro_regime), "neutral"),
+        ("", _dashboard_market_breadth_status_text(macro_regime), "neutral"),
         ("仓位", str(getattr(portfolio_structure_check, "status", "") or "未计算"), _portfolio_status_tone(portfolio_structure_check)),
         ("价格", _freshness_status_text(freshness, "price"), _freshness_tone(freshness, "price")),
         ("技术", _freshness_status_text(freshness, "technical"), _freshness_tone(freshness, "technical")),
@@ -763,6 +767,24 @@ def _dashboard_hy_oas_status_text(macro_regime) -> str:
     return "HY OAS 暂缺｜信用代理稳定"
 
 
+def _dashboard_ten_year_status_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, TEN_YEAR_YIELD)
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if value is None or bool(getattr(snapshot, "is_stale", False)):
+        return "10Y 暂缺"
+    suffix = "（缓存）" if _dashboard_indicator_uses_cache(snapshot) else ""
+    return f"10Y {value:.1f}%{suffix}"
+
+
+def _dashboard_market_breadth_status_text(macro_regime) -> str:
+    snapshot = _macro_indicator(macro_regime, MARKET_BREADTH)
+    value = _dashboard_number(getattr(snapshot, "value", None))
+    if value is None or bool(getattr(snapshot, "is_stale", False)):
+        return "市场宽度 暂缺"
+    suffix = "（缓存）" if _dashboard_indicator_uses_cache(snapshot) else ""
+    return f"市场宽度 {value:.1f}%{suffix}"
+
+
 def _macro_indicator(macro_regime, indicator: str):
     if macro_regime is None or not hasattr(macro_regime, "indicator"):
         return None
@@ -783,7 +805,7 @@ def _dashboard_number(value: object) -> float | None:
 
 def _dashboard_indicator_uses_cache(snapshot) -> bool:
     source = str(getattr(snapshot, "source", "") or "").lower()
-    return bool(getattr(snapshot, "error", None)) or "cache" in source or "cached" in source
+    return bool(getattr(snapshot, "error", None)) or "cache" in source or "cached" in source or "缓存" in source
 
 
 def _dashboard_command_status_item_html(label: str, value: str, tone: str = "neutral") -> str:
