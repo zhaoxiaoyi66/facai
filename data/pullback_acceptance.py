@@ -197,23 +197,99 @@ def pullback_acceptance_snapshot_fields(
     }
 
 
-def pullback_acceptance_hint_html(snapshot: PullbackAcceptanceSnapshot) -> str:
+def pullback_acceptance_hint_html(
+    snapshot: PullbackAcceptanceSnapshot,
+    *,
+    context_lines: list[str] | None = None,
+) -> str:
     score_text = "待补数据" if snapshot.acceptance_status == DATA_MISSING else f"{snapshot.acceptance_score:g}分"
     detail = "；".join(snapshot.acceptance_reasons[:2])
     warnings = "；".join(snapshot.acceptance_warnings[:2])
     steps = "；".join(snapshot.next_acceptance_steps[:2])
     warning_html = f"<span>{escape(warnings)}</span>" if warnings else ""
+    context_html = "".join(f"<span>{escape(line)}</span>" for line in context_lines or [] if line)
     return (
         '<div class="structure-entry-advisor pullback-acceptance-advisor">'
         f"<strong>回踩承接确认：{escape(snapshot.status_label)}｜{escape(score_text)}</strong>"
         f"<span>支撑：{escape(snapshot.support_hold_status)}｜收盘：{escape(snapshot.close_confirmation_status)}｜量能：{escape(snapshot.volume_confirmation_status)}</span>"
         f"<span>相对强弱：{escape(snapshot.relative_strength_confirmation_status)}｜VWAP：{escape(snapshot.vwap_confirmation_status)}</span>"
         f"<small>{escape(detail)}</small>"
+        f"{context_html}"
         f"{warning_html}"
         f"<small>下一步：{escape(steps)}</small>"
         "<small>仅作承接提示，不改变买入权限。</small>"
         "</div>"
     )
+
+
+def pullback_acceptance_context_lines(
+    snapshot: PullbackAcceptanceSnapshot | dict[str, Any],
+    context: dict[str, Any] | None = None,
+) -> list[str]:
+    source = context or {}
+    status = _snapshot_value(snapshot, "acceptance_status", "acceptanceStatus")
+    lines: list[str] = []
+    if status in {ACCEPTANCE_FORMING, ACCEPTANCE_UNCONFIRMED}:
+        price = _first_number(source, "current_price", "currentPrice", "price", "close")
+        observation_high = _first_number(
+            source,
+            "technical_pullback_zone_high",
+            "technicalPullbackZoneHigh",
+            "near_term_repair_zone_high",
+            "nearTermRepairZoneHigh",
+            "effective_technical_entry_zone_high",
+            "effectiveTechnicalEntryZoneHigh",
+            "technical_entry_zone_high",
+            "technicalEntryZoneHigh",
+            "support_watch_zone_high",
+            "supportWatchZoneHigh",
+        )
+        if price is not None and observation_high is not None and price > observation_high:
+            lines.append("支撑承接存在，但价格已脱离回踩观察区，不构成低吸确认。")
+        if _is_chase_context(source):
+            lines.append("Radar 仍为追高语境，承接读数仅代表支撑状态，不解除追高限制。")
+    if status == ACCEPTANCE_FORMING and _technical_structure_status(source) == "BREAKDOWN_REVIEW":
+        lines.append("破位复核结构：支撑暂未失效，不代表趋势修复；需重新站上确认线。")
+    return _dedupe(lines)
+
+
+def _snapshot_value(snapshot: PullbackAcceptanceSnapshot | dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if isinstance(snapshot, dict):
+            value = snapshot.get(key)
+        else:
+            value = getattr(snapshot, key, None)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _is_chase_context(source: dict[str, Any]) -> bool:
+    decision = _first_text(source, "decision", "radarDecision").upper()
+    price_position = _first_text(source, "price_position", "pricePosition", "zone_status", "zoneStatus").upper()
+    if decision == "BLOCK_CHASE" or price_position == "IN_CHASE_ZONE":
+        return True
+    text = " ".join(
+        _first_text(
+            source,
+            key,
+        )
+        for key in (
+            "entry_display_label",
+            "entryDisplayLabel",
+            "entry_action_hint",
+            "entryActionHint",
+            "entry_display_reason",
+            "entryDisplayReason",
+            "radar_status",
+            "radarStatus",
+        )
+    )
+    return "追高" in text or "BLOCK_CHASE" in text
+
+
+def _technical_structure_status(source: dict[str, Any]) -> str:
+    return _first_text(source, "technical_structure_status", "technicalStructureStatus").upper()
 
 
 def _support_confirmation(
@@ -408,6 +484,20 @@ def _first_number(mapping: dict[str, Any], *keys: str) -> float | None:
             if number is not None:
                 return number
     return None
+
+
+def _first_text(mapping: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return str(value)
+    debug = mapping.get("debug")
+    if isinstance(debug, dict):
+        for key in keys:
+            value = debug.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
 
 
 def _number(value: Any) -> float | None:

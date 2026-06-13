@@ -8,7 +8,10 @@ from data.pullback_acceptance import (
     ACCEPTANCE_FORMING,
     ACCEPTANCE_UNCONFIRMED,
     DATA_MISSING,
+    PullbackAcceptanceSnapshot,
     evaluate_pullback_acceptance,
+    pullback_acceptance_context_lines,
+    pullback_acceptance_hint_html,
 )
 
 
@@ -161,3 +164,75 @@ def test_dashboard_drawer_renders_pullback_acceptance_card() -> None:
     assert "承接未确认" in html
     assert "支撑守住" in html
     assert "只读提示" in html
+
+
+def test_acceptance_context_warns_when_price_leaves_observation_zone_or_chase_context() -> None:
+    snapshot = evaluate_pullback_acceptance(
+        technicals={
+            "close": 125,
+            "open": 124,
+            "low": 123,
+            "high": 126,
+            "near_term_repair_zone_low": 100,
+            "near_term_repair_zone_high": 120,
+            "confirmation_price": 130,
+            "invalidation_price": 98,
+        }
+    )
+
+    lines = pullback_acceptance_context_lines(
+        snapshot,
+        {
+            "current_price": 125,
+            "near_term_repair_zone_high": 120,
+            "decision": "BLOCK_CHASE",
+        },
+    )
+    html = pullback_acceptance_hint_html(snapshot, context_lines=lines)
+
+    assert snapshot.acceptance_status in {ACCEPTANCE_FORMING, ACCEPTANCE_UNCONFIRMED}
+    assert "价格已脱离回踩观察区" in html
+    assert "Radar 仍为追高语境" in html
+
+
+def test_acceptance_context_marks_breakdown_review_forming_as_not_trend_repair() -> None:
+    snapshot = PullbackAcceptanceSnapshot(
+        acceptance_status=ACCEPTANCE_FORMING,
+        acceptance_score=67,
+        support_hold_status="支撑守住",
+        close_confirmation_status="收盘改善",
+        volume_confirmation_status="量能中性",
+        relative_strength_confirmation_status="相对强弱缺失",
+        vwap_confirmation_status="缺 VWAP，日线位置替代",
+    )
+
+    lines = pullback_acceptance_context_lines(snapshot, {"technical_structure_status": "BREAKDOWN_REVIEW"})
+
+    assert "破位复核结构" in "；".join(lines)
+
+
+def test_dashboard_drawer_adds_acceptance_context_for_chase_price_above_zone() -> None:
+    from ui import dashboard_drawer
+
+    html = dashboard_drawer._drawer_pullback_acceptance_card_html(
+        pd.Series(
+            {
+                "pullbackAcceptance": {
+                    "acceptance_status": "ACCEPTANCE_FORMING",
+                    "status_label": "承接形成中",
+                    "acceptance_score": 72,
+                    "support_hold_status": "支撑守住",
+                    "close_confirmation_status": "收盘改善",
+                    "volume_confirmation_status": "缩量守支撑",
+                    "relative_strength_confirmation_status": "相对强弱缺失",
+                    "vwap_confirmation_status": "VWAP 缺失",
+                },
+                "decision": "BLOCK_CHASE",
+                "rawTechnicals": {"price": 125},
+                "technical_pullback_zone_high": 120,
+            }
+        )
+    )
+
+    assert "价格已脱离回踩观察区" in html
+    assert "Radar 仍为追高语境" in html

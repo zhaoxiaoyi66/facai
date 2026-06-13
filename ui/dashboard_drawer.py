@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from data.entry_display import format_buy_zone, format_zone_status
+from data.pullback_acceptance import pullback_acceptance_context_lines
 from ui.dashboard_tables import _buy_point_label_tone, _entry_rating_chip_text, _entry_rating_display_parts
 from ui.metric_labels import model_type_label, resolution_status_label
 
@@ -1097,6 +1098,8 @@ def _drawer_pullback_acceptance_card_html(row: pd.Series) -> str:
     ]
     if warnings:
         lines.append("风险：" + "；".join(warnings[:2]))
+    context_lines = pullback_acceptance_context_lines(snapshot, _drawer_pullback_acceptance_context(row))
+    lines.extend(context_lines)
     if steps:
         lines.append("下一步：" + "；".join(steps[:2]))
     detail_html = ""
@@ -1112,6 +1115,15 @@ def _drawer_pullback_acceptance_card_html(row: pd.Series) -> str:
         f"{detail_html}"
         "</div>"
     )
+
+
+def _drawer_pullback_acceptance_context(row: pd.Series) -> dict[str, object]:
+    context = row.to_dict()
+    for key in ("rawSnapshot", "rawTechnicals"):
+        raw = row.get(key)
+        if isinstance(raw, dict):
+            context.update(raw)
+    return context
 
 
 def _acceptance_status_label(value: object) -> str:

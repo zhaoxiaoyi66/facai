@@ -107,3 +107,24 @@ def test_buy_execution_context_only_marks_missing_when_core_context_is_absent() 
 
     assert context.structure_hint.status == STRUCTURE_MISSING
     assert {"price", "K-line", "EMA", "swing"}.issubset(set(context.structure_hint.missing_fields))
+
+
+def test_buy_execution_context_acceptance_warns_when_chase_context_leaves_observation_zone() -> None:
+    report = _radar_with_technical_map(
+        current_price=210.0,
+        near_term_repair_zone_high=203.29,
+        decision="BLOCK_CHASE",
+        price_position="IN_CHASE_ZONE",
+    )
+    with TemporaryDirectory() as tmpdir:
+        context = build_buy_execution_advisory_context(
+            "ADBE",
+            path=Path(tmpdir) / "cache.sqlite",
+            radar_report=report,
+            now=_now(),
+        )
+
+    html = buy_execution_advisory_context_html(context)
+
+    assert "价格已脱离回踩观察区" in html
+    assert "Radar 仍为追高语境" in html

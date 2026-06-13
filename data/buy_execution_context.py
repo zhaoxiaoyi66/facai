@@ -12,7 +12,12 @@ from data.market_context import build_market_context
 from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_view_model import build_portfolio_view_model
 from data.prices import CACHE_PATH
-from data.pullback_acceptance import PullbackAcceptanceSnapshot, evaluate_pullback_acceptance, pullback_acceptance_hint_html
+from data.pullback_acceptance import (
+    PullbackAcceptanceSnapshot,
+    evaluate_pullback_acceptance,
+    pullback_acceptance_context_lines,
+    pullback_acceptance_hint_html,
+)
 from data.structure_entry import (
     DATA_MISSING,
     StructureEntryAdvisor,
@@ -143,7 +148,9 @@ def buy_execution_advisory_context_html(context: BuyExecutionAdvisoryContext) ->
         "<small>仅作买入提示，不阻止真实买入 / 加仓入账。</small>"
         "</div>"
     )
-    return structure_html + pullback_acceptance_hint_html(context.pullback_acceptance)
+    acceptance_context = {**context.radar_report, "current_price": context.current_price}
+    context_lines = pullback_acceptance_context_lines(context.pullback_acceptance, acceptance_context)
+    return structure_html + pullback_acceptance_hint_html(context.pullback_acceptance, context_lines=context_lines)
 
 
 def _build_structure_hint(
