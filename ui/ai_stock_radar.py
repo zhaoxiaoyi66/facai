@@ -285,8 +285,8 @@ def _report_html(
         f"{_score_card_html(report)}"
         "</section>"
         '<section class="ai-radar-opinion-grid two-col">'
-        f'{_text_card_html("看多逻辑", report.get("bull_points") or [], limit=4)}'
-        f'{_text_card_html("核心风险", report.get("risk_points") or [], limit=4)}'
+        f'{_text_card_html("看多逻辑", report.get("bull_points") or [], subtitle="", limit=4)}'
+        f'{_text_card_html("核心风险", report.get("risk_points") or [], subtitle="", limit=4)}'
         "</section>"
         '<section class="ai-radar-evidence-grid">'
         f"{_watch_points_table_html(report, row)}"
@@ -386,6 +386,14 @@ def _research_header_html(
     )
     market_label = _clean_text(_first_present(snapshot, "country", "exchange")) or "本地缓存"
     meta = "｜".join(item for item in (track, market_label) if item) or "本地缓存研究视图"
+    decision = str(report.get("decision") or "")
+    action_text = {
+        "ALLOW_BUY": "可分批复核",
+        "WAIT": "等待确认",
+        "BLOCK_CHASE": "不建议追高",
+        "AVOID": "回避",
+        "DATA_MISSING": "数据不足",
+    }.get(decision, decision or "待确认")
     volume = _volume_snapshot(market, snapshot, technicals, history)
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
@@ -409,11 +417,15 @@ def _research_header_html(
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
         "</div>"
-        '<div class="ai-radar-header-badges">'
-        f'<span>{escape(core_status)}</span>'
-        f'<span>数据 {escape(_data_confidence(report))}</span>'
-        f'<span>质量 {escape(_quality_grade(report))}</span>'
+        '<aside class="ai-radar-header-decision">'
+        '<span class="ai-radar-header-kicker">投资结论</span>'
+        f'<strong>{escape(core_status)}</strong>'
+        '<div class="ai-radar-header-decision-grid">'
+        f'<div><span>当前动作</span><b>{escape(action_text)}</b></div>'
+        f'<div><span>数据完整度</span><b>{escape(_data_confidence(report))}</b></div>'
+        f'<div><span>质量等级</span><b>{escape(_quality_grade(report))}</b></div>'
         "</div>"
+        "</aside>"
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
         "</header>"
     )
@@ -620,18 +632,18 @@ def _volume_price_acceptance_card_html(
     volume_ratio = _number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
     volume_regime_cn = _display_value(snapshot.get("volume_regime_cn") or snapshot.get("volumeRegimeCn"))
     reason = _volume_price_reason_text(status, score, snapshot.get("acceptance_reason_cn") or snapshot.get("reason_cn") or snapshot.get("volumePriceReasonCn"))
+    support_signal = _display_value(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn"))
+    confirmation_signal = _display_value(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn"))
     rows = [
         ("承接状态", _volume_price_status_label(status, score)),
-        ("分数", "待补数据" if status == "DATA_MISSING" else _number_text(score)),
-        ("量能标签", volume_regime_cn),
-        ("支撑信号", _display_value(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn"))),
-        ("确认信号", _display_value(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn"))),
+        ("量能", f"{volume_regime_cn}｜{_volume_ratio_display(volume_ratio)}"),
+        ("确认 / 支撑", f"{confirmation_signal}｜{support_signal}"),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
     return (
         '<section class="ai-radar-card ai-radar-volume-price-card">'
         '<div class="ai-radar-section-title"><span>量价承接</span><b>承接质量</b></div>'
-        f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<div class="ai-radar-volume-summary">{body}</div>'
         f'<p class="ai-radar-empty-note">{escape(reason)}</p>'
         "</section>"
     )
@@ -1075,7 +1087,8 @@ def _text_card_html(title: str, items: list[Any], *, subtitle: str = "研究依�
     if not cleaned:
         cleaned = ["暂无明确内容，先保持复查。"]
     body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:limit])
-    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>{escape(subtitle)}</b></div><ul>{body}</ul></section>'
+    subtitle_html = f"<b>{escape(subtitle)}</b>" if subtitle else ""
+    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span>{subtitle_html}</div><ul>{body}</ul></section>'
 
 
 def _inline_list(value: Any) -> str:
@@ -2246,10 +2259,11 @@ def _render_styles() -> None:
         .ai-radar-research-header {
             position:relative;
             display:grid;
-            grid-template-columns:minmax(260px, 1fr) auto;
-            gap:16px;
-            padding:22px 24px;
-            background:linear-gradient(135deg, #0B1F3A 0%, #17375F 100%);
+            grid-template-columns:minmax(320px, 1fr) minmax(340px, 430px);
+            gap:22px 28px;
+            padding:30px 32px 26px;
+            background:
+                linear-gradient(135deg, rgba(11,31,58,0.98) 0%, rgba(17,45,78,0.98) 58%, rgba(21,68,101,0.96) 100%);
             color:#FFFFFF;
         }
         .ai-radar-title-block span,
@@ -2259,16 +2273,29 @@ def _render_styles() -> None:
             font-size:12px;
             font-style:normal;
         }
+        .ai-radar-title-block span {
+            font-weight:850;
+            letter-spacing:.12em;
+            text-transform:uppercase;
+        }
         .ai-radar-title-block h1 {
-            margin:4px 0 0;
-            font-size:38px;
+            margin:8px 0 0;
+            font-size:56px;
             line-height:1;
             letter-spacing:0;
         }
         .ai-radar-title-block p {
-            margin:6px 0;
+            margin:9px 0 6px;
             color:#F8FAFC;
-            font-size:15px;
+            font-size:18px;
+            font-weight:750;
+            line-height:1.3;
+        }
+        .ai-radar-title-block em {
+            max-width:720px;
+            color:#C7D7EA;
+            font-size:13px;
+            line-height:1.5;
         }
         .ai-radar-zone-badge {
             align-self:start;
@@ -2282,23 +2309,30 @@ def _render_styles() -> None:
             grid-column:1 / -1;
             display:grid;
             grid-template-columns:repeat(6, minmax(0, 1fr));
-            gap:10px;
+            gap:12px;
         }
         .ai-radar-header-stats div {
-            background:rgba(255,255,255,0.10);
-            border:1px solid rgba(255,255,255,0.16);
-            border-radius:8px;
-            padding:9px 10px;
+            min-height:72px;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+            background:rgba(255,255,255,0.085);
+            border:1px solid rgba(216,224,234,0.18);
+            border-radius:12px;
+            padding:12px 14px;
         }
         .ai-radar-header-stats span {
             display:block;
-            color:#BED3EA;
+            color:#AFC4DC;
             font-size:11px;
-            margin-bottom:3px;
+            font-weight:780;
+            margin-bottom:6px;
         }
         .ai-radar-header-stats strong {
             color:#FFFFFF;
-            font-size:14px;
+            font-size:16px;
+            line-height:1.25;
+            font-weight:850;
         }
         .ai-radar-research-section,
         .ai-radar-research-grid,
@@ -2373,22 +2407,51 @@ def _render_styles() -> None:
             font-size:13px;
             line-height:1.7;
         }
-        .ai-radar-header-badges {
-            display:flex;
-            gap:8px;
-            justify-content:flex-end;
-            flex-wrap:wrap;
+        .ai-radar-header-decision {
+            align-self:start;
+            background:rgba(248,250,252,0.10);
+            border:1px solid rgba(216,224,234,0.22);
+            border-radius:14px;
+            padding:16px;
+            box-shadow:0 18px 36px rgba(0,0,0,0.12);
         }
-        .ai-radar-header-badges span {
-            display:inline-flex;
-            align-items:center;
-            border:1px solid #D8E0EA;
-            background:#F8FAFC;
-            border-radius:999px;
-            padding:5px 10px;
-            color:#0B1F3A;
-            font-size:12px;
-            font-weight:800;
+        .ai-radar-header-kicker {
+            display:block;
+            color:#AFC4DC;
+            font-size:11px;
+            font-weight:850;
+            letter-spacing:.12em;
+            text-transform:uppercase;
+            margin-bottom:8px;
+        }
+        .ai-radar-header-decision > strong {
+            display:block;
+            color:#FFFFFF;
+            font-size:24px;
+            line-height:1.18;
+            font-weight:900;
+            margin-bottom:14px;
+        }
+        .ai-radar-header-decision-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:10px;
+            padding-top:12px;
+            border-top:1px solid rgba(216,224,234,0.18);
+        }
+        .ai-radar-header-decision-grid span {
+            display:block;
+            color:#AFC4DC;
+            font-size:10px;
+            font-weight:760;
+            margin-bottom:5px;
+        }
+        .ai-radar-header-decision-grid b {
+            display:block;
+            color:#F8FAFC;
+            font-size:13px;
+            line-height:1.25;
+            font-weight:850;
         }
         .ai-radar-appendix {
             border-top:1px solid #E8EEF5;
@@ -2505,6 +2568,41 @@ def _render_styles() -> None:
             color:#0B1F3A;
             font-size:16px;
         }
+        .ai-radar-volume-summary {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:9px;
+            margin-bottom:10px;
+        }
+        .ai-radar-volume-summary div {
+            background:#F8FAFC;
+            border:1px solid #E8EEF5;
+            border-radius:8px;
+            padding:10px 11px;
+        }
+        .ai-radar-volume-summary span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            font-weight:760;
+            margin-bottom:5px;
+        }
+        .ai-radar-volume-summary strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:13px;
+            line-height:1.35;
+            font-weight:850;
+        }
+        .ai-radar-opinion-grid.two-col .ai-radar-card {
+            padding:13px 14px;
+        }
+        .ai-radar-opinion-grid.two-col .ai-radar-section-title {
+            margin-bottom:7px;
+        }
+        .ai-radar-opinion-grid.two-col .ai-radar-card ul {
+            line-height:1.58;
+        }
         .ai-radar-card ul {
             margin:0;
             padding-left:18px;
@@ -2514,7 +2612,8 @@ def _render_styles() -> None:
         }
         .ai-radar-metric-table {
             width:100%;
-            border-collapse:collapse;
+            border-collapse:separate;
+            border-spacing:0;
             font-size:12px;
         }
         .ai-radar-monitor-table {
@@ -2542,11 +2641,18 @@ def _render_styles() -> None:
             font-weight:800;
         }
         .ai-radar-metric-table td {
-            padding:8px 6px;
+            padding:9px 8px;
             border-top:1px solid #EEF2F7;
+            line-height:1.35;
         }
-        .ai-radar-metric-table td:first-child { color:#64748B; font-weight:700; }
-        .ai-radar-metric-table td:last-child { color:#0F172A; text-align:right; font-weight:750; }
+        .ai-radar-metric-table tr:first-child td { border-top:1px solid #E2E8F0; }
+        .ai-radar-metric-table td:first-child { color:#64748B; font-weight:760; width:52%; }
+        .ai-radar-metric-table td:last-child {
+            color:#0F172A;
+            text-align:right;
+            font-weight:820;
+            font-variant-numeric:tabular-nums;
+        }
         .ai-radar-empty-note { color:#64748B; font-size:13px; margin:0; }
         .ai-radar-report-foot {
             display:flex;
@@ -2560,13 +2666,17 @@ def _render_styles() -> None:
         @media (max-width: 980px) {
             .ai-radar-research-header,
             .ai-radar-header-stats,
+            .ai-radar-header-decision-grid,
             .ai-radar-research-grid,
             .ai-radar-opinion-grid,
             .ai-radar-visual-grid,
             .ai-radar-evidence-grid,
             .ai-radar-exec-grid,
             .ai-radar-score-grid,
+            .ai-radar-volume-summary,
             .ai-radar-data-quality-grid { grid-template-columns:1fr; }
+            .ai-radar-research-header { padding:24px 18px; }
+            .ai-radar-title-block h1 { font-size:42px; }
             .ai-radar-range-row { grid-template-columns:1fr; }
             .ai-radar-range-row b { text-align:left; }
         }
