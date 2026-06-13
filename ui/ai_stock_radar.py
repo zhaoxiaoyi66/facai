@@ -234,6 +234,8 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     if not load_history:
         perf.add("历史 K 线读取", 0.0, cache_hit=None, external_api=False, note="延后到附录按需加载")
     volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row or {}, history)
+    technicals = _apply_volume_snapshot_to_technicals(technicals, volume_snapshot)
+    report.update(_report_technical_overlay(technicals))
     stage_start = time.perf_counter()
     buy_zone_context = build_buy_zone_context(report, technicals=technicals, volume_snapshot=volume_snapshot).to_dict()
     perf.add("统一买区上下文生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
@@ -377,6 +379,7 @@ def _enrich_technical_context(
     if latest_volume is not None:
         ctx.setdefault("volume", latest_volume)
         ctx.setdefault("latest_volume", latest_volume)
+        ctx.setdefault("volume_source", "quote")
     if avg_volume_20d is not None:
         ctx.setdefault("avg_volume_20d", avg_volume_20d)
         ctx.setdefault("volume_ma20", avg_volume_20d)
@@ -431,6 +434,43 @@ def _enrich_technical_context(
     if rs60 is not None:
         ctx.setdefault("relative_strength_vs_qqq_60d", rs60)
     ctx.setdefault("daily_ohlcv", _daily_ohlcv_snapshot(ctx, row, snapshot, market))
+    if any(
+        ctx.get(key) not in (None, "")
+        for key in (
+            "ma20",
+            "ma50",
+            "ma200",
+            "atr_14",
+            "rsi_14",
+            "support_zone_low",
+            "resistance_zone_high",
+        )
+    ):
+        ctx.setdefault("technical_data_source", "radar_cache")
+    return ctx
+
+
+def _apply_volume_snapshot_to_technicals(technicals: dict[str, Any], volume_snapshot: dict[str, Any]) -> dict[str, Any]:
+    ctx = dict(technicals or {})
+    volume = dict(volume_snapshot or {})
+    latest_volume = _first_number(volume, "latest_volume", "latestVolume")
+    volume_ma20 = _first_number(volume, "volume_ma20", "volumeMa20", "avg_volume_20d", "avgVolume20d")
+    volume_ratio = _first_number(volume, "volume_ratio", "volumeRatio")
+    if latest_volume is not None:
+        ctx["latest_volume"] = latest_volume
+        ctx.setdefault("volume", latest_volume)
+        daily = dict(ctx.get("daily_ohlcv") or {})
+        if _first_number(daily, "volume") is None:
+            daily["volume"] = latest_volume
+            ctx["daily_ohlcv"] = daily
+    if volume_ma20 is not None:
+        ctx["volume_ma20"] = volume_ma20
+        ctx["avg_volume_20d"] = volume_ma20
+    if volume_ratio is not None:
+        ctx["volume_ratio"] = volume_ratio
+    if volume.get("volume_source"):
+        ctx["volume_source"] = volume.get("volume_source")
+        ctx["volume_data_source"] = volume.get("volume_source")
     return ctx
 
 
@@ -480,6 +520,8 @@ def _report_technical_overlay(technicals: dict[str, Any]) -> dict[str, Any]:
         "daily_return_pct",
         "previous_close",
         "latest_volume",
+        "volume_source",
+        "volume_data_source",
     )
     return {key: technicals.get(key) for key in keys if key in technicals and technicals.get(key) not in (None, "")}
 
@@ -2775,7 +2817,7 @@ def _data_health_context(
         ]
     )
     not_applicable_fields = _not_applicable_health_fields(raw_missing_fields, portfolio_context)
-    missing_fields = _filter_resolved_health_missing_fields(raw_missing_fields, report, market, row, portfolio_context)
+    missing_fields = _filter_resolved_health_missing_fields(raw_missing_fields, report, market, row, portfolio_context, buy_zone_context)
     critical_missing_fields = _dedupe_text([field for field in missing_fields if _is_critical_health_field(field)])
     optional_missing_fields = _dedupe_text([field for field in missing_fields if field not in critical_missing_fields])
     stale_fields: list[str] = []
@@ -2823,13 +2865,23 @@ def _filter_resolved_health_missing_fields(
     market: dict[str, Any],
     row: dict[str, Any],
     portfolio_context: dict[str, Any],
+    buy_zone_context: dict[str, Any] | None = None,
 ) -> list[str]:
+    buy_zone_context = buy_zone_context or {}
     price_resolved = (
         _report_current_price(report) is not None
         or _report_current_price(row) is not None
         or _first_number(market, "currentPrice", "current_price", "price") is not None
     )
     score_resolved = _number(_first_present(report, "final_score", "finalScore", "total_score", "totalScore")) is not None
+    volume_resolved = (
+        _first_number(buy_zone_context, report, row, "volume_ratio", "volumeRatio") is not None
+        or _first_number(buy_zone_context, report, row, "latest_volume", "volume") is not None
+    )
+    buy_zone_resolved = (
+        _first_number(buy_zone_context, report, row, "pullback_zone_low", "effective_technical_entry_zone_low", "support_zone_low", "deep_support_zone_low") is not None
+        and _first_number(buy_zone_context, report, row, "pullback_zone_high", "effective_technical_entry_zone_high", "support_zone_high", "deep_support_zone_high") is not None
+    )
     filtered: list[str] = []
     for field in fields:
         text = str(field or "").strip().lower()
@@ -2842,6 +2894,10 @@ def _filter_resolved_health_missing_fields(
         ):
             continue
         if score_resolved and (text in {"score", "final_score", "total_score", "radar_score"} or "评分" in label):
+            continue
+        if volume_resolved and text in {"volume_ratio", "volumeratio", "volume_acceptance", "volume_price_acceptance"}:
+            continue
+        if buy_zone_resolved and ("buy_zone" in text or "buyzone" in text):
             continue
         if any(
             token in text

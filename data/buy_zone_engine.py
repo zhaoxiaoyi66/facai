@@ -58,6 +58,12 @@ class BuyZoneContext:
     missing_fields: list[str] = field(default_factory=list)
     core_position_allowed: bool = True
     core_position_reason: str = ""
+    current_price: float | None = None
+    latest_volume: float | None = None
+    avg_volume_20d: float | None = None
+    volume_ratio: float | None = None
+    volume_source: str = ""
+    technical_data_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -69,17 +75,19 @@ def build_buy_zone_context(
     technicals: dict[str, Any] | None = None,
     volume_snapshot: dict[str, Any] | None = None,
 ) -> BuyZoneContext:
-    data = {**(source or {}), **(technicals or {})}
-    volume = dict(volume_snapshot or {})
+    data = _enrich_daily_technical_inputs({**(source or {}), **(technicals or {})})
+    volume = _enrich_daily_volume_inputs(dict(volume_snapshot or {}), data)
     price = _first_number(data, "current_price", "currentPrice", "price", "close")
-    support_low = _first_number(data, "deep_support_zone_low", "support_watch_zone_low", "recent_swing_low")
-    support_high = _first_number(data, "deep_support_zone_high", "support_watch_zone_high", "recent_swing_low")
+    support_low = _first_number(data, "support_zone_low", "deep_support_zone_low", "support_watch_zone_low", "recent_swing_low")
+    support_high = _first_number(data, "support_zone_high", "deep_support_zone_high", "support_watch_zone_high", "recent_swing_low")
     pullback_low = _first_number(
         data,
         "effective_technical_entry_zone_low",
         "technical_pullback_zone_low",
         "technical_entry_zone_low",
         "near_term_repair_zone_low",
+        "ma50",
+        "ma20",
         "ema50",
         "ema20",
     )
@@ -89,12 +97,14 @@ def build_buy_zone_context(
         "technical_pullback_zone_high",
         "technical_entry_zone_high",
         "near_term_repair_zone_high",
+        "ma20",
+        "ma50",
         "ema20",
         "ema50",
     )
     repair_low = _first_number(data, "near_term_repair_zone_low", "technical_repair_zone_low")
     repair_high = _first_number(data, "near_term_repair_zone_high", "technical_repair_zone_high")
-    confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line")
+    confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line", "resistance_zone_low")
     invalidation = _first_number(data, "invalidation_price", "radar_invalidation_price", "invalid_line")
     chase = _first_number(data, "chase_above_price", "radar_chase_above_price", "chase_price")
     ma20 = _first_number(data, "ma20", "ema20")
@@ -109,6 +119,10 @@ def build_buy_zone_context(
         "recent_breakout_level",
         "confirmation_price",
     )
+    if chase is None:
+        chase = resistance
+    if invalidation is None and support_low is not None:
+        invalidation = support_low
     final_score = _first_number(data, "final_score", "finalScore")
     volume_status = str(
         _value(volume, "volume_price_status", "volumePriceStatus")
@@ -135,6 +149,7 @@ def build_buy_zone_context(
         resistance=resistance,
         volume_status=volume_status,
         volume_ratio=volume_ratio,
+        daily_ohlcv_present=bool(_daily_bars(data)),
     )
     core_allowed = final_score is None or final_score >= 70
     core_reason = (
@@ -165,6 +180,12 @@ def build_buy_zone_context(
             missing_fields=missing,
             core_position_allowed=core_allowed,
             core_position_reason=core_reason,
+            current_price=price,
+            latest_volume=_first_number(volume, "latest_volume", "latestVolume") or _first_number(data, "latest_volume", "volume"),
+            avg_volume_20d=_first_number(volume, "volume_ma20", "avg_volume_20d", "avgVolume20d") or _first_number(data, "volume_ma20", "avg_volume_20d"),
+            volume_ratio=volume_ratio,
+            volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
+            technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
         )
 
     primary_zone = _primary_zone(
@@ -206,6 +227,12 @@ def build_buy_zone_context(
         missing_fields=[],
         core_position_allowed=core_allowed,
         core_position_reason=core_reason,
+        current_price=price,
+        latest_volume=_first_number(volume, "latest_volume", "latestVolume") or _first_number(data, "latest_volume", "volume"),
+        avg_volume_20d=_first_number(volume, "volume_ma20", "avg_volume_20d", "avgVolume20d") or _first_number(data, "volume_ma20", "avg_volume_20d"),
+        volume_ratio=volume_ratio,
+        volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
+        technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
     )
 
 
@@ -228,6 +255,21 @@ def _missing_fields(**values: Any) -> list[str]:
     ):
         if values.get(key) is None:
             fields.append(_missing_label(key))
+    if not values.get("daily_ohlcv_present") and any(
+        field in fields
+        for field in (
+            "support_zone_low",
+            "support_zone_high",
+            "pullback_zone_low",
+            "pullback_zone_high",
+            "ma20",
+            "ma50",
+            "ma200",
+            "atr_14",
+            "resistance_zone",
+        )
+    ):
+        fields.insert(0, "daily_ohlcv")
     if not values.get("volume_status") or values.get("volume_status") == "DATA_MISSING":
         fields.append("volume_acceptance")
     if values.get("volume_ratio") is None:
@@ -398,6 +440,215 @@ def _missing_label(key: str) -> str:
         "atr": "atr_14",
         "resistance": "resistance_zone",
     }.get(key, key)
+
+
+def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(data or {})
+    _flatten_zone(enriched, "support_zone", "support_zone_low", "support_zone_high")
+    _flatten_zone(enriched, "resistance_zone", "resistance_zone_low", "resistance_zone_high")
+
+    bars = _daily_bars(enriched)
+    if not bars:
+        return enriched
+
+    latest = bars[-1]
+    latest_close = _number(latest.get("close"))
+    latest_volume = _number(latest.get("volume"))
+    if latest_close is not None:
+        enriched.setdefault("latest_close", latest_close)
+        enriched.setdefault("close", latest_close)
+        enriched.setdefault("current_price", latest_close)
+        enriched.setdefault("price", latest_close)
+    if latest_volume is not None and latest_volume > 0:
+        enriched.setdefault("latest_volume", latest_volume)
+        enriched.setdefault("volume", latest_volume)
+        enriched.setdefault("volume_source", "daily_ohlcv")
+
+    closes = [_number(bar.get("close")) for bar in bars]
+    highs = [_number(bar.get("high")) for bar in bars]
+    lows = [_number(bar.get("low")) for bar in bars]
+    volumes = [_number(bar.get("volume")) for bar in bars]
+    closes = [value for value in closes if value is not None]
+    highs = [value for value in highs if value is not None]
+    lows = [value for value in lows if value is not None]
+    volumes = [value for value in volumes if value is not None and value > 0]
+
+    ma20 = _tail_mean(closes, 20)
+    ma50 = _tail_mean(closes, 50)
+    ma200 = _tail_mean(closes, 200)
+    for key, value in (("ma20", ma20), ("ema20", ma20), ("ma50", ma50), ("ema50", ma50), ("ma200", ma200), ("ema200", ma200)):
+        if value is not None:
+            enriched.setdefault(key, value)
+
+    avg_volume_20d = _tail_mean(volumes, 20)
+    if avg_volume_20d is not None:
+        enriched.setdefault("avg_volume_20d", avg_volume_20d)
+        enriched.setdefault("volume_ma20", avg_volume_20d)
+    if latest_volume is not None and latest_volume > 0 and avg_volume_20d not in (None, 0):
+        enriched.setdefault("volume_ratio", latest_volume / avg_volume_20d)
+
+    atr14 = _atr(bars, 14)
+    if atr14 is not None:
+        enriched.setdefault("atr_14", atr14)
+        enriched.setdefault("atr14", atr14)
+        if latest_close not in (None, 0):
+            enriched.setdefault("atr_pct", atr14 / latest_close * 100.0)
+
+    rsi14 = _rsi(closes, 14)
+    if rsi14 is not None:
+        enriched.setdefault("rsi_14", rsi14)
+        enriched.setdefault("rsi14", rsi14)
+
+    swing_high = max(highs[-20:]) if highs else None
+    swing_low = min(lows[-20:]) if lows else None
+    if swing_high is not None:
+        enriched.setdefault("swing_high", swing_high)
+        enriched.setdefault("recent_swing_high", swing_high)
+    if swing_low is not None:
+        enriched.setdefault("swing_low", swing_low)
+        enriched.setdefault("recent_swing_low", swing_low)
+
+    if swing_low is not None and atr14 is not None:
+        support_low = max(0.0, swing_low - atr14 * 0.25)
+        support_high = swing_low + atr14 * 0.25
+        enriched.setdefault("support_zone_low", support_low)
+        enriched.setdefault("support_zone_high", support_high)
+        enriched.setdefault("deep_support_zone_low", support_low)
+        enriched.setdefault("deep_support_zone_high", support_high)
+        enriched.setdefault("support_zone", {"low": support_low, "high": support_high})
+    if swing_high is not None and atr14 is not None:
+        resistance_low = max(0.0, swing_high - atr14 * 0.25)
+        enriched.setdefault("resistance_zone_low", resistance_low)
+        enriched.setdefault("resistance_zone_high", swing_high)
+        enriched.setdefault("resistance_zone", {"low": resistance_low, "high": swing_high})
+        enriched.setdefault("confirmation_price", resistance_low)
+        enriched.setdefault("chase_above_price", swing_high)
+    if _first_number(enriched, "invalidation_price", "invalid_line") is None:
+        support_low = _first_number(enriched, "support_zone_low", "deep_support_zone_low", "recent_swing_low")
+        if support_low is not None:
+            enriched.setdefault("invalidation_price", support_low)
+
+    enriched.setdefault("technical_data_source", "daily_ohlcv")
+    return enriched
+
+
+def _enrich_daily_volume_inputs(volume: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(volume or {})
+    latest_volume = _first_number(enriched, "latest_volume", "latestVolume") or _first_number(data, "latest_volume", "volume")
+    avg_volume = (
+        _first_number(enriched, "volume_ma20", "avg_volume_20d", "avgVolume20d", "avgVolume")
+        or _first_number(data, "volume_ma20", "avg_volume_20d", "avgVolume20d", "avgVolume")
+    )
+    if latest_volume is not None and latest_volume > 0:
+        enriched.setdefault("latest_volume", latest_volume)
+        enriched.setdefault("volume_source", _value(data, "volume_source", "volumeSource") or "daily_ohlcv")
+    if avg_volume is not None and avg_volume > 0:
+        enriched.setdefault("volume_ma20", avg_volume)
+        enriched.setdefault("avg_volume_20d", avg_volume)
+    if _first_number(enriched, "volume_ratio", "volumeRatio") is None and latest_volume is not None and avg_volume not in (None, 0):
+        enriched["volume_ratio"] = latest_volume / avg_volume
+    ratio = _first_number(enriched, "volume_ratio", "volumeRatio")
+    if not str(_value(enriched, "volume_price_status", "volumePriceStatus") or "").strip() and ratio is not None:
+        enriched["volume_price_status"] = "FORMING" if ratio <= 1.0 else "UNCONFIRMED"
+    return enriched
+
+
+def _flatten_zone(data: dict[str, Any], zone_key: str, low_key: str, high_key: str) -> None:
+    zone = data.get(zone_key)
+    if not isinstance(zone, dict):
+        return
+    low = _first_number(zone, "low", "lower", "min")
+    high = _first_number(zone, "high", "upper", "max")
+    if low is not None:
+        data.setdefault(low_key, low)
+    if high is not None:
+        data.setdefault(high_key, high)
+
+
+def _daily_bars(data: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = _value(data, "daily_ohlcv", "daily_bars", "dailyBars", "historical_prices", "history")
+    if raw is None:
+        return []
+    if hasattr(raw, "to_dict") and not isinstance(raw, dict):
+        try:
+            raw = raw.to_dict("records")
+        except TypeError:
+            raw = raw.to_dict()
+    if isinstance(raw, dict):
+        nested = _value(raw, "bars", "rows", "data", "prices", "history")
+        if nested is not None:
+            return _daily_bars({"daily_ohlcv": nested})
+        if any(isinstance(value, (list, tuple)) for value in raw.values()):
+            keys = list(raw.keys())
+            length = max((len(value) for value in raw.values() if isinstance(value, (list, tuple))), default=0)
+            rows: list[dict[str, Any]] = []
+            for index in range(length):
+                row = {key: raw[key][index] for key in keys if isinstance(raw.get(key), (list, tuple)) and len(raw[key]) > index}
+                if row:
+                    rows.append(_normalize_bar(row))
+            return [row for row in rows if row]
+        return [_normalize_bar(raw)]
+    if isinstance(raw, (list, tuple)):
+        return [bar for item in raw if (bar := _normalize_bar(item))]
+    return []
+
+
+def _normalize_bar(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "open": _first_number(item, "open", "o"),
+        "high": _first_number(item, "high", "h"),
+        "low": _first_number(item, "low", "l"),
+        "close": _first_number(item, "close", "c", "adjClose", "adj_close"),
+        "volume": _first_number(item, "volume", "v"),
+    }
+
+
+def _tail_mean(values: list[float], window: int) -> float | None:
+    usable = [value for value in values if value is not None]
+    if not usable:
+        return None
+    tail = usable[-window:]
+    return sum(tail) / len(tail) if tail else None
+
+
+def _atr(bars: list[dict[str, Any]], window: int = 14) -> float | None:
+    ranges: list[float] = []
+    previous_close: float | None = None
+    for bar in bars:
+        high = _number(bar.get("high"))
+        low = _number(bar.get("low"))
+        close = _number(bar.get("close"))
+        if high is None or low is None:
+            previous_close = close if close is not None else previous_close
+            continue
+        true_range = high - low
+        if previous_close is not None:
+            true_range = max(true_range, abs(high - previous_close), abs(low - previous_close))
+        ranges.append(true_range)
+        previous_close = close if close is not None else previous_close
+    if not ranges:
+        return None
+    tail = ranges[-window:]
+    return sum(tail) / len(tail) if tail else None
+
+
+def _rsi(closes: list[float], window: int = 14) -> float | None:
+    if len(closes) < 2:
+        return None
+    deltas = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+    tail = deltas[-window:]
+    if not tail:
+        return None
+    gains = [delta for delta in tail if delta > 0]
+    losses = [-delta for delta in tail if delta < 0]
+    avg_gain = sum(gains) / len(tail)
+    avg_loss = sum(losses) / len(tail)
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
 
 def _in_range(price: float, low: float, high: float) -> bool:

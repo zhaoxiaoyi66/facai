@@ -47,6 +47,22 @@ def _volume(**overrides):
     return data
 
 
+def _daily_bars(count: int = 220, *, latest_volume: int = 2_400_000) -> list[dict[str, float]]:
+    bars = []
+    for index in range(count):
+        close = 82.0 + index * 0.1
+        bars.append(
+            {
+                "open": close - 0.25,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": latest_volume if index == count - 1 else 1_800_000 + (index % 7) * 25_000,
+            }
+        )
+    return bars
+
+
 def test_good_company_in_chase_zone_blocks_chase() -> None:
     context = build_buy_zone_context(
         _base_source(current_price=130, final_score=92),
@@ -105,9 +121,85 @@ def test_missing_technical_or_volume_data_is_data_insufficient() -> None:
 
     assert context.current_action == DATA_INSUFFICIENT
     assert context.primary_zone_text == "技术承接数据不足"
+    assert "daily_ohlcv" in context.missing_fields
     assert "volume_acceptance" in context.missing_fields
     assert context.support_zone_low is None
     assert context.pullback_zone_low is None
+
+
+def test_daily_ohlcv_volume_fallback_prevents_false_data_insufficient() -> None:
+    bars = _daily_bars()
+    context = build_buy_zone_context(
+        {
+            "ticker": "NVDA",
+            "daily_ohlcv": bars,
+            "current_price": bars[-1]["close"],
+            "final_score": 88,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action != DATA_INSUFFICIENT
+    assert context.setup_score > 0
+    assert context.latest_volume == bars[-1]["volume"]
+    assert context.avg_volume_20d is not None
+    assert context.volume_ratio is not None
+    assert context.volume_source == "daily_ohlcv"
+    assert "volume_acceptance" not in context.missing_fields
+
+
+def test_daily_ohlcv_derives_uncomputed_ma_atr_rsi_and_zones() -> None:
+    context = build_buy_zone_context(
+        {
+            "ticker": "MSFT",
+            "daily_ohlcv": _daily_bars(),
+            "final_score": 86,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action != DATA_INSUFFICIENT
+    assert context.technical_structure_score > 0
+    assert context.volume_acceptance_score > 0
+    assert context.risk_reward_score > 0
+    assert context.support_zone_low is not None
+    assert context.support_zone_high is not None
+    assert context.confirmation_price is not None
+    assert context.chase_price is not None
+
+
+def test_nvda_like_missing_quote_volume_uses_daily_ohlcv_volume() -> None:
+    bars = _daily_bars(latest_volume=105_422_923)
+    context = build_buy_zone_context(
+        {
+            "ticker": "NVDA",
+            "current_price": 205.19,
+            "final_score": 91,
+            "deep_support_zone_low": 196.34,
+            "deep_support_zone_high": 200.84,
+            "effective_technical_entry_zone_low": 194.34,
+            "effective_technical_entry_zone_high": 211.82,
+            "confirmation_price": 206.59,
+            "invalidation_price": 199.34,
+            "ma20": 211.15,
+            "ma50": 206.59,
+            "ma200": 187.24,
+            "atr_14": 8.33,
+            "rsi_14": 45.2,
+            "recent_swing_high": 232.28,
+            "resistance_zone_high": 232.28,
+            "daily_ohlcv": bars,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action != DATA_INSUFFICIENT
+    assert context.setup_score > 0
+    assert context.technical_structure_score > 0
+    assert context.volume_acceptance_score > 0
+    assert context.risk_reward_score > 0
+    assert context.latest_volume == 105_422_923
+    assert context.volume_source == "daily_ohlcv"
 
 
 def test_missing_key_technical_acceptance_fields_do_not_generate_buy_zone() -> None:

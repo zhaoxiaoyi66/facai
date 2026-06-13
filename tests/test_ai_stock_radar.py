@@ -413,6 +413,53 @@ def test_report_technical_context_derives_buy_zone_inputs_from_cached_rows() -> 
     assert round(technicals["reward_risk_ratio"], 1) == 1.2
 
 
+def test_report_volume_snapshot_backfills_technicals_and_health_gaps() -> None:
+    technicals = radar_ui._apply_volume_snapshot_to_technicals(
+        {"daily_ohlcv": {"close": 205.19}},
+        {
+            "latest_volume": 105_422_923,
+            "volume_ma20": 175_713_022.4,
+            "volume_ratio": 0.6,
+            "volume_source": "daily_cache",
+        },
+    )
+    report = {
+        "ticker": "NVDA",
+        "current_price": 205.19,
+        "final_score": 91,
+        "daily_ohlcv": technicals["daily_ohlcv"],
+        "latest_volume": technicals["latest_volume"],
+        "avg_volume_20d": technicals["avg_volume_20d"],
+        "volume_ratio": technicals["volume_ratio"],
+        "effective_technical_entry_zone_low": 194.34,
+        "effective_technical_entry_zone_high": 211.82,
+        "debug": {"data_missing_fields": ["buy_zone.upper", "volume_acceptance", "volume_ratio"]},
+    }
+    buy_zone_context = {
+        "current_action": "WAIT_PULLBACK",
+        "missing_fields": [],
+        "pullback_zone_low": 194.34,
+        "pullback_zone_high": 211.82,
+        "latest_volume": 105_422_923,
+        "volume_ratio": 0.6,
+    }
+
+    data_health = radar_ui._data_health_context(
+        report,
+        {},
+        {},
+        {},
+        {"has_position": False},
+        buy_zone_context,
+    )
+
+    assert technicals["daily_ohlcv"]["volume"] == 105_422_923
+    assert technicals["volume_source"] == "daily_cache"
+    assert "volume_acceptance" not in data_health["missing_fields"]
+    assert "volume_ratio" not in data_health["missing_fields"]
+    assert "buy_zone.upper" not in data_health["missing_fields"]
+
+
 def test_report_roe_falls_back_to_net_income_over_equity() -> None:
     assert radar_ui._roe_value({"net_income": 25_000_000, "total_equity": 100_000_000}) == 0.25
 
