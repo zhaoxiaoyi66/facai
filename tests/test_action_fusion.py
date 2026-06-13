@@ -363,3 +363,50 @@ def test_dashboard_drawer_missing_action_fusion_shows_safe_fallback() -> None:
     assert "暂无系统建议" in html
     assert "本地缓存缺失" in html
     assert "blocker" not in html.lower()
+
+
+def test_action_fusion_visible_text_has_no_mojibake() -> None:
+    result = evaluate_action_fusion(
+        ticker="MSFT",
+        context=_base(volume_price_status="FORMING", volume_price_score=52),
+        portfolio_context={"portfolio_weight": 0.0, "target_weight": 8.0, "max_weight": 12.0, "role": "ai_platform_core"},
+    )
+    html = action_fusion_card_html(result)
+    visible_text = " ".join(
+        [
+            result.action_cn,
+            result.buy_plan_cn,
+            result.position_advice_cn,
+            result.left_side_warning_cn,
+            html,
+        ]
+    )
+
+    assert "系统建议" in visible_text
+    assert "左侧计划" in visible_text
+    assert not any(token in visible_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+
+
+def test_action_fusion_prefers_nested_buy_zone_context() -> None:
+    result = evaluate_action_fusion(
+        ticker="MRVL",
+        context=_base(
+            current_price=118,
+            decision="ALLOW_BUY",
+            price_position="IN_BUY_ZONE",
+            observation_low=90,
+            observation_high=130,
+            volume_price_status="FORMING",
+            buy_zone_context={
+                "current_action": "BLOCK_CHASE",
+                "pullback_zone_low": 95,
+                "pullback_zone_high": 105,
+                "confirmation_price": 110,
+                "invalidation_price": 92,
+            },
+        ),
+    )
+
+    assert result.action_code == BLOCK_CHASE
+    assert result.watch_levels["observation_high"] == 105
+    assert "不建议追高" in result.buy_plan_cn

@@ -158,3 +158,20 @@ def test_report_page_does_not_expose_buy_zone_raw_enum() -> None:
     assert "允许小仓观察" in html
     assert "ALLOW_SMALL_BUY" not in html
     assert "PULLBACK_BUY" not in html
+
+
+def test_buy_zone_context_visible_text_has_no_mojibake() -> None:
+    context = build_buy_zone_context(_base_source(), volume_snapshot=_volume())
+    visible_text = " ".join(
+        [
+            context.action_text,
+            context.primary_zone_text,
+            context.existing_position_action_text,
+            context.no_position_action_text,
+            context.zone_selection_reason,
+        ]
+    )
+
+    assert "允许小仓观察" in visible_text
+    assert "买区由技术结构" in visible_text
+    assert not any(token in visible_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))

@@ -132,19 +132,48 @@ def evaluate_action_fusion(
     context: dict[str, Any] | None = None,
     portfolio_context: dict[str, Any] | None = None,
 ) -> ActionFusionResult:
-    source = dict(context or {})
+    source = _source_with_buy_zone_context(context or {})
     portfolio = dict(portfolio_context or {})
     symbol = str(ticker or source.get("ticker") or source.get("symbol") or "").upper()
     price = _first_number(source, "current_price", "currentPrice", "price")
-    observation_low = _first_number(source, "observation_low", "observationLow", "near_term_repair_zone_low", "technical_pullback_zone_low", "effective_technical_entry_zone_low")
-    observation_high = _first_number(source, "observation_high", "observationHigh", "near_term_repair_zone_high", "technical_pullback_zone_high", "effective_technical_entry_zone_high")
+    observation_low = _first_number(
+        source,
+        "observation_low",
+        "observationLow",
+        "near_term_repair_zone_low",
+        "technical_pullback_zone_low",
+        "effective_technical_entry_zone_low",
+    )
+    observation_high = _first_number(
+        source,
+        "observation_high",
+        "observationHigh",
+        "near_term_repair_zone_high",
+        "technical_pullback_zone_high",
+        "effective_technical_entry_zone_high",
+    )
     invalid_line = _first_number(source, "invalid_line", "invalidLine", "invalidation_price", "invalidationPrice")
     confirm_line = _first_number(source, "confirm_line", "confirmLine", "confirmation_price", "confirmationPrice")
-    valuation_low = _first_number(source, "valuation_zone_low", "valuationReferenceZoneLow", "valuation_reference_zone_low", "deep_valuation_zone_low", "entry_reference_low")
-    valuation_high = _first_number(source, "valuation_zone_high", "valuationReferenceZoneHigh", "valuation_reference_zone_high", "deep_valuation_zone_high", "entry_reference_high")
+    valuation_low = _first_number(
+        source,
+        "valuation_zone_low",
+        "valuationReferenceZoneLow",
+        "valuation_reference_zone_low",
+        "deep_valuation_zone_low",
+        "entry_reference_low",
+    )
+    valuation_high = _first_number(
+        source,
+        "valuation_zone_high",
+        "valuationReferenceZoneHigh",
+        "valuation_reference_zone_high",
+        "deep_valuation_zone_high",
+        "entry_reference_high",
+    )
     deep_support_low = _first_number(source, "deep_support_zone_low", "deepSupportZoneLow")
     deep_support_high = _first_number(source, "deep_support_zone_high", "deepSupportZoneHigh")
 
+    buy_zone_action = str(_value(source, "buy_zone_action", "buyZoneAction") or "").upper()
     radar_decision = str(_value(source, "radar_decision", "decision", "finalDecision") or "").upper()
     zone_status = str(_value(source, "zone_status", "price_position", "pricePosition", "current_zone", "currentZone") or "").upper()
     technical_status = str(_value(source, "technical_structure_status", "technicalStructureStatus") or "").upper()
@@ -181,9 +210,9 @@ def evaluate_action_fusion(
         "valuation_high": valuation_high,
     }
 
-    critical_missing = bool(_value(source, "critical_data_missing", "criticalDataMissing")) or price is None
+    critical_missing = bool(_value(source, "critical_data_missing", "criticalDataMissing")) or price is None or buy_zone_action == DATA_INSUFFICIENT
     overextended = (price is not None and observation_high is not None and price > observation_high) or volume_status == "OVEREXTENDED_SUPPORT_READ"
-    chase_context = radar_decision == "BLOCK_CHASE" or zone_status == "IN_CHASE_ZONE" or overextended
+    chase_context = buy_zone_action == BLOCK_CHASE or radar_decision == "BLOCK_CHASE" or zone_status == "IN_CHASE_ZONE" or overextended
     position_state = _position_state(weight=weight, target_weight=target_weight, max_weight=max_weight)
     role_warning = _role_warning(role)
     if role_warning:
@@ -249,6 +278,10 @@ def evaluate_action_fusion(
     if position_state["code"] in {"AT_MAX", "OVER_MAX"}:
         advisory_warnings.append("当前仓位已达到/超过上限，即使技术承接也不继续加仓。")
         return finish(HOLD_NO_ADD, PORTFOLIO_OVERWEIGHT, "中")
+
+    if buy_zone_action in {"RISK_REVIEW", "AVOID"}:
+        advisory_warnings.append("统一买区已进入风控复核，暂停新增买入并人工复核。")
+        return finish(BREAKDOWN_REVIEW, BREAKDOWN_REPAIR, "高")
 
     if chase_context and overextended:
         advisory_warnings.append("好公司但价格已脱离回踩观察区，不构成低吸。")
@@ -331,9 +364,9 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
         f'<div><b>仓位建议</b><span>{escape(result.position_advice_cn)}</span></div>'
         f"{position_html}"
         f"{left_side_html}"
-        '</div>'
-        '<small>Action Fusion 仅作交易建议融合展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>'
-        '</section>'
+        "</div>"
+        "<small>Action Fusion 仅作交易建议融合展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>"
+        "</section>"
     )
 
 
@@ -403,6 +436,25 @@ def _result(
     )
 
 
+def _source_with_buy_zone_context(context: dict[str, Any]) -> dict[str, Any]:
+    source = dict(context or {})
+    zone_context = source.get("buy_zone_context") or source.get("buyZoneContext")
+    if not isinstance(zone_context, dict):
+        return source
+    mapped = {
+        "buy_zone_action": zone_context.get("current_action"),
+        "observation_low": zone_context.get("pullback_zone_low") or zone_context.get("support_zone_low"),
+        "observation_high": zone_context.get("pullback_zone_high") or zone_context.get("support_zone_high"),
+        "deep_support_zone_low": zone_context.get("support_zone_low"),
+        "deep_support_zone_high": zone_context.get("support_zone_high"),
+        "confirmation_price": zone_context.get("confirmation_price"),
+        "invalidation_price": zone_context.get("invalidation_price"),
+        "chase_price": zone_context.get("chase_price"),
+        "current_zone": zone_context.get("primary_zone"),
+    }
+    return {**source, **{key: value for key, value in mapped.items() if value not in (None, "")}}
+
+
 def _buy_plan(action_code: str, symbol: str, next_trigger: str) -> str:
     if action_code == ALLOW_SMALL_BUY:
         return f"{symbol} 可小仓试探，但仍需人工确认；{next_trigger}"
@@ -438,7 +490,7 @@ def _next_trigger(action_code: str, levels: dict[str, float | None]) -> str:
     if action_code == BLOCK_CHASE and obs_high is not None:
         return f"等待回到观察区上沿 {_money(obs_high)} 以下。"
     if confirm is not None:
-        return f"放量站上确认线 {_money(confirm)}。"
+        return f"放量站上确认线 {_money(confirm)} 后重新评估。"
     if obs_low is not None and obs_high is not None:
         return f"回到观察区 {_money(obs_low)} - {_money(obs_high)} 后复核。"
     return "等待下一根K线和量价确认。"

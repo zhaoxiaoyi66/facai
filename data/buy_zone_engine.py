@@ -101,11 +101,23 @@ def build_buy_zone_context(
     ma50 = _first_number(data, "ma50", "ema50")
     ma200 = _first_number(data, "ma200", "ema200")
     atr = _first_number(data, "atr_14", "atr14")
-    resistance = _first_number(data, "resistance_zone_high", "resistance_zone_low", "recent_swing_high", "recent_breakout_level", "confirmation_price")
+    resistance = _first_number(
+        data,
+        "resistance_zone_high",
+        "resistance_zone_low",
+        "recent_swing_high",
+        "recent_breakout_level",
+        "confirmation_price",
+    )
     final_score = _first_number(data, "final_score", "finalScore")
-    risk_score = _first_number(data, "risk_score", "riskScore")
-    volume_status = str(_value(volume, "volume_price_status", "volumePriceStatus") or _value(data, "volume_price_status", "volumePriceStatus") or "").upper()
-    volume_score_input = _first_number(volume, "volume_price_score", "volumePriceScore") or _first_number(data, "volume_price_score", "volumePriceScore")
+    volume_status = str(
+        _value(volume, "volume_price_status", "volumePriceStatus")
+        or _value(data, "volume_price_status", "volumePriceStatus")
+        or ""
+    ).upper()
+    volume_score_input = _first_number(volume, "volume_price_score", "volumePriceScore") or _first_number(
+        data, "volume_price_score", "volumePriceScore"
+    )
     volume_ratio = _first_number(volume, "volume_ratio", "volumeRatio") or _first_number(data, "volume_ratio", "volumeRatio")
     missing = _missing_fields(
         price=price,
@@ -125,7 +137,11 @@ def build_buy_zone_context(
         volume_ratio=volume_ratio,
     )
     core_allowed = final_score is None or final_score >= 70
-    core_reason = "" if core_allowed else "综合评分低于70，禁止核心仓买入；小仓观察仍以技术承接和量价确认为准。"
+    core_reason = (
+        ""
+        if core_allowed
+        else "综合评分低于70，禁止核心仓买入；小仓观察仍以技术承接和量价确认为准。"
+    )
     if missing:
         return BuyZoneContext(
             primary_zone="DATA_INSUFFICIENT",
