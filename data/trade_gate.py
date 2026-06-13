@@ -308,15 +308,15 @@ def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation
     if decision == "BLOCK_CHASE":
         return block_reasons or ["当前处于追高风险区，系统不建议追高；如仍继续，将记录为人工 override。"]
     if decision == "AVOID":
-        return block_reasons or ["Radar 结论为 AVOID，风险较高，需人工复核；如仍继续，将记录为人工 override。"]
+        return block_reasons or ["Radar 风险提示较高，需人工复核；如仍继续，将记录为人工 override。"]
     if decision == "WAIT":
-        reason = "Radar 结论为 WAIT，系统建议等待或复核；如仍继续，将记录为人工 override。"
+        reason = "Radar 建议等待或复核；如仍继续，将记录为人工 override。"
         if observation_only:
-            reason = "Radar 结论为 WAIT；仅观察不是一笔真实买入，请用计划买入或价格提醒记录。"
+            reason = "当前仅为观察记录，不是一笔真实买入；请用计划买入或价格提醒记录。"
         return [reason]
     if decision == "ALLOW_BUY":
         return []
-    return [f"Radar 结论未知：{decision or 'missing'}，需人工判断；如仍继续，将记录为人工 override。"]
+    return ["Radar 提示状态未知，需人工判断；如仍继续，将记录为人工 override。"]
 
 
 def _buy_zone_context(data: dict[str, Any]) -> dict[str, Any]:

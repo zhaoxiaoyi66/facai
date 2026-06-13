@@ -153,6 +153,24 @@ def test_missing_buy_gate_fields_use_ledger_language() -> None:
     assert fields["warningLevel"] == "warning"
 
 
+@pytest.mark.parametrize("decision", ["WAIT", "AVOID"])
+def test_buy_gate_advisory_warnings_do_not_show_raw_decision_codes(decision: str) -> None:
+    gate = evaluate_buy_gate(
+        _report(decision),
+        action_type="buy",
+        position_bucket="trade",
+        planned_after_position_pct=1,
+        decision_mood="plan_execution",
+        buy_reason="manual review",
+    )
+    fields = buy_gate_entry_fields(gate, action_type="buy")
+    text = " ".join(fields["radarAdvisoryWarnings"])
+
+    assert "人工 override" in text
+    assert f"结论为 {decision}" not in text
+    assert not any(token in text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
+
+
 def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
     gate = evaluate_buy_gate(
         {
