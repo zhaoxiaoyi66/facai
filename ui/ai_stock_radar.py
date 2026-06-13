@@ -292,7 +292,7 @@ def _report_html(
         '<section class="ai-radar-opinion-grid">'
         f'{_text_card_html("看多逻辑", report.get("bull_points") or [])}'
         f'{_text_card_html("风险提示", report.get("risk_points") or [])}'
-        f'{_text_card_html("关键监控点", _research_watch_points(report, row))}'
+        f'{_text_card_html("关键监控点", _research_watch_points(report, row), subtitle="当前读数 / 触发条件 / 交易含义")}'
         "</section>"
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
@@ -300,7 +300,7 @@ def _report_html(
         "</section>"
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("市场表现", _performance_rows(history))}'
-        f'{_text_card_html("近期新闻 / 催化", _catalyst_items(row, snapshot, report))}'
+        f"{_catalyst_card_html(row, snapshot, report)}"
         "</section>"
         f"{_data_completeness_html(report, confidence, _volume_snapshot(market, snapshot, technicals, history))}"
         '<footer class="ai-radar-report-foot">'
@@ -866,26 +866,71 @@ def _volume_source_label(value: Any) -> str:
     }.get(str(value or ""), "暂无")
 
 
-def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> list[str]:
-    candidates: list[str] = []
+def _catalyst_card_html(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> str:
+    items, has_news_cache = _catalyst_items(row, snapshot, report)
+    if has_news_cache:
+        return _text_card_html("近期新闻 / 催化", items, subtitle="日期 / 来源 / 事件 / 交易含义")
+    intro = "暂无本地新闻缓存；以下为系统根据财务、估值、技术和量价结构生成的待跟踪事项。"
+    return _text_card_html("后续催化 / 待跟踪事项", [intro, *items], subtitle="不是新闻缓存")
+
+
+def _catalyst_items(row: dict[str, Any], snapshot: dict[str, Any], report: dict[str, Any]) -> tuple[list[str], bool]:
+    candidates: list[Any] = []
     for source in (row, snapshot, report):
-        for key in ("recent_news", "recentNews", "news", "catalysts", "keyCatalysts", "events", "watch_points"):
+        for key in ("recent_news", "recentNews", "news", "catalysts", "keyCatalysts", "events"):
             candidates.extend(_list_value(source, key))
-    cleaned = [item for item in _dedupe_text(candidates) if item and item.lower() not in {"n/a", "none"}]
-    return cleaned[:5] or ["暂无高相关事件缓存；先关注财报、指引、产品/监管事件和价格确认线。"]
+    cleaned = [_format_news_or_event_item(item) for item in candidates]
+    cleaned = [item for item in _dedupe_text(cleaned) if item and item.lower() not in {"n/a", "none"}]
+    if cleaned:
+        return cleaned[:5], True
+    return _fallback_catalyst_items(report, row), False
+
+
+def _format_news_or_event_item(item: Any) -> str:
+    if isinstance(item, dict):
+        date = _display_value(item.get("date") or item.get("published_at") or item.get("publishedAt"))
+        source = _display_value(item.get("source") or item.get("publisher"))
+        event = _display_value(item.get("title") or item.get("event") or item.get("headline") or item.get("summary"))
+        impact = _display_value(item.get("impact_direction") or item.get("impactDirection") or item.get("impact") or "待判断")
+        meaning = _display_value(item.get("trading_meaning") or item.get("tradingMeaning") or item.get("note") or "先观察是否改变收入、利润率或关键技术位。")
+        return f"{date}｜{source}｜事件：{event}｜影响方向：{impact}｜交易含义：{meaning}"
+    text = _localize_report_text(str(item or "").strip())
+    return f"日期：暂无｜来源：本地缓存｜事件：{text}｜影响方向：待判断｜交易含义：先观察是否改变收入、利润率或关键技术位。" if text else ""
+
+
+def _fallback_catalyst_items(report: dict[str, Any], row: dict[str, Any]) -> list[str]:
+    confirm = _money(_first_number(report, row, "confirmation_price", "radar_confirmation_price"))
+    invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
+    next_earnings = _display_value(_first_present(row, "next_earnings_date", "nextEarningsDate") or _first_present(report, "next_earnings_date", "nextEarningsDate"))
+    return [
+        f"财报 / 指引：当前读数：下一财报 {next_earnings}。触发条件：收入、利润率或现金流指引明显上修 / 下修。交易含义：上修可提高复核优先级，下修进入事件冲击复核。",
+        f"量价确认：当前读数：确认线 {confirm}。触发条件：放量站上确认线且收盘强。交易含义：确认信号出现前不把回踩当成买入确认。",
+        f"风险失效：当前读数：失效线 {invalid}。触发条件：放量跌破支撑或失效线。交易含义：暂停加仓，进入破位复核。",
+    ]
 
 
 def _research_watch_points(report: dict[str, Any], row: dict[str, Any]) -> list[str]:
-    points = list(report.get("watch_points") or [])
-    for value in (
-        report.get("entry_action_hint"),
-        report.get("technical_structure_reason"),
-        report.get("technical_entry_missing_reason"),
-    ):
-        if value:
-            points.append(str(value))
-    points.extend(_watch_points(row))
-    return _dedupe_text(points)[:6]
+    volume = _dict_value(row, "volumePriceAcceptance") or _dict_value(report, "volumePriceAcceptance") or {}
+    revenue_growth = _ratio_pct(_first_number(report, row, "revenue_growth", "revenueGrowth"))
+    gross_margin = _ratio_pct(_first_number(report, row, "gross_margin", "grossMargin"))
+    net_margin = _ratio_pct(_first_number(report, row, "net_margin", "profit_margin", "netMargin"))
+    forward_pe = _multiple(_first_number(report, row, "forward_pe", "forwardPE"))
+    ev_sales = _multiple(_first_number(report, row, "enterprise_to_revenue", "enterpriseToRevenue", "ev_to_sales"))
+    zone = _current_zone_label(report)
+    volume_ratio = _volume_ratio_display(_first_number(volume, "volume_ratio", "volumeRatio"))
+    volume_status = _volume_price_status_label(
+        str(volume.get("volume_price_status") or volume.get("volumePriceStatus") or "DATA_MISSING"),
+        _number(volume.get("volume_price_score") or volume.get("volumePriceScore")),
+    )
+    confirm = _money(_first_number(report, row, "confirmation_price", "radar_confirmation_price"))
+    invalid = _money(_first_number(report, row, "invalidation_price", "radar_invalidation_price"))
+    return [
+        f"增长质量：当前读数：收入同比 {revenue_growth}。为什么重要：收入增速决定成长股估值支撑。触发条件：若连续两个季度低于系统阈值或指引下修，降低成长复核优先级。交易含义：增长未坏前，回调更多看作估值或技术修复。",
+        f"利润率稳定性：当前读数：毛利率 {gross_margin}，净利率 {net_margin}。为什么重要：利润率决定现金流质量。触发条件：若利润率连续下滑或低于同业，复核盈利质量。交易含义：利润率稳定时优先等待价格和量价确认，不因短线波动直接否定。",
+        f"估值压力：当前读数：远期市盈率 {forward_pe}，EV/Sales {ev_sales}。为什么重要：估值决定安全垫。触发条件：若进入追高区或历史高估区，不追价。交易含义：估值进入参考区也只代表可复核，不等于自动买入。",
+        f"技术承接：当前读数：位于 {zone}，量比 {volume_ratio}，量价状态 {volume_status}。为什么重要：技术承接决定回踩是否成立。触发条件：未放量站上确认线 {confirm} 前，不构成买入确认。交易含义：先看量价读数，再考虑分批。",
+        f"失效条件：当前读数：失效线 {invalid}。为什么重要：失效线用于区分修复和破位。触发条件：若放量跌破支撑或失效线，暂停加仓，进入破位复核。交易含义：失效后不做无确认摊低。",
+    ]
 
 
 def _data_completeness_html(report: dict[str, Any], confidence: str, volume: dict[str, Any] | None = None) -> str:
@@ -908,12 +953,12 @@ def _data_completeness_html(report: dict[str, Any], confidence: str, volume: dic
     )
 
 
-def _text_card_html(title: str, items: list[Any]) -> str:
+def _text_card_html(title: str, items: list[Any], *, subtitle: str = "研究依据") -> str:
     cleaned = [_localize_report_text(str(item).strip()) for item in items if str(item).strip()]
     if not cleaned:
         cleaned = ["暂无明确内容，先保持复查。"]
     body = "".join(f"<li>{escape(item)}</li>" for item in cleaned[:6])
-    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>研究依据</b></div><ul>{body}</ul></section>'
+    return f'<section class="ai-radar-card"><div class="ai-radar-section-title"><span>{escape(title)}</span><b>{escape(subtitle)}</b></div><ul>{body}</ul></section>'
 
 
 def _inline_list(value: Any) -> str:

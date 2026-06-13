@@ -221,12 +221,51 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "核心财务摘要" in html
     assert "市场表现" in html
     assert "数据完整度" in html
+    assert "后续催化 / 待跟踪事项" in html
+    assert "暂无本地新闻缓存" in html
+    assert "当前读数" in html
+    assert "为什么重要" in html
+    assert "触发条件" in html
+    assert "交易含义" in html
     assert "AI Stock Radar Research" not in html
     assert "Research notes" not in html
+    assert "Segment strength" not in html
+    assert "Buyback discipline" not in html
+    assert "这是评分因子，不是原始字段" not in html
     assert "N/A" not in html
     assert "是否允许新增" not in html
     assert "阻止原因" not in html
     assert "DATA_MISSING" not in html
+
+
+def test_ai_radar_report_uses_news_title_only_with_news_cache() -> None:
+    report = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "current_price": 390.74,
+        "decision": "WAIT",
+        "data_status": "OK",
+        "watch_points": ["Segment strength: internal factor"],
+    }
+    no_news_html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
+
+    assert "后续催化 / 待跟踪事项" in no_news_html
+    assert "近期新闻 / 催化" not in no_news_html
+    assert "Segment strength" not in no_news_html
+
+    with_news_html = radar_ui._report_html(
+        report,
+        {},
+        {"recent_news": [{"date": "2026-06-12", "source": "Cache", "title": "Guidance update", "impact": "正面"}]},
+        {},
+        {},
+        pd.DataFrame(),
+    )
+
+    assert "近期新闻 / 催化" in with_news_html
+    assert "2026-06-12" in with_news_html
+    assert "事件：" in with_news_html
+    assert "交易含义：" in with_news_html
 
 
 def test_ai_radar_report_msft_near_repair_below_valuation_is_not_broken_buy_zone() -> None:
