@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import (
     RadarScores,
     RadarZone,
@@ -69,6 +70,48 @@ def _buy_zone() -> RadarZone:
 
 def _watch_zone() -> RadarZone:
     return RadarZone(lower=100, upper=115, label="watch zone")
+
+
+def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status() -> None:
+    action_result = evaluate_action_fusion(
+        ticker="NOW",
+        context={
+            "ticker": "NOW",
+            "current_price": 103,
+            "observation_low": 98,
+            "observation_high": 108,
+            "quality_score": 82,
+            "valuation_score": 65,
+            "volume_price_status": "FORMING",
+            "volume_price_score": 58,
+        },
+        portfolio_context={
+            "current_shares": 100,
+            "portfolio_weight": 5.8,
+            "target_weight": 12.0,
+            "max_weight": 16.0,
+            "role": "ai_software_core",
+        },
+    )
+
+    html = radar_ui._executive_summary_card_html(
+        {
+            "ticker": "NOW",
+            "company_name": "ServiceNow",
+            "decision": "WAIT",
+            "final_score": 82,
+            "data_confidence": "高",
+        },
+        {},
+        {},
+        {"ticker": "NOW"},
+        action_result,
+    )
+
+    assert "持仓语境" in html
+    assert "已有持仓" in html
+    assert "仓位 5.8%" in html
+    assert "未持仓 / 仅研究观察" not in html
 
 
 def _chase_zone() -> RadarZone:

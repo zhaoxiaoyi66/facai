@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from data.portfolio_targets import apply_portfolio_target, get_portfolio_target, load_portfolio_targets
+from data.portfolio import PortfolioPositionStore
+from data.portfolio_targets import (
+    apply_portfolio_target,
+    build_action_fusion_portfolio_context,
+    get_portfolio_target,
+    load_portfolio_targets,
+)
 
 
 def test_load_portfolio_targets_converts_fraction_weights_to_percent(tmp_path: Path) -> None:
@@ -73,3 +79,23 @@ NVDA:
     assert context["target_weight"] == 45.0
     assert context["max_weight"] == 50.0
     assert context["role"] == "core"
+
+
+def test_action_fusion_portfolio_context_recognizes_existing_position_case_insensitively(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.sqlite"
+    PortfolioPositionStore(db_path).save_position(
+        "now",
+        {
+            "quantity": 100,
+            "average_cost": 106,
+            "position_tier": "A",
+        },
+    )
+
+    context = build_action_fusion_portfolio_context("NOW", path=db_path)
+
+    assert context["current_shares"] == 100
+    assert context["avg_cost"] == 106
+    assert context["target_weight"] == 12.0
+    assert context["max_weight"] == 16.0
+    assert context["role"] == "ai_software_core"

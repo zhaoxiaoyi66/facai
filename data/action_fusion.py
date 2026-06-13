@@ -99,6 +99,7 @@ class ActionFusionResult:
     risk_bullets_cn: list[str] = field(default_factory=list)
     watch_levels: dict[str, float | None] = field(default_factory=dict)
     portfolio_role: str = ""
+    current_shares: float = 0.0
     current_weight: float | None = None
     target_weight: float | None = None
     max_weight: float | None = None
@@ -364,6 +365,7 @@ def _result(
         risk_bullets_cn=risks,
         watch_levels=watch_levels,
         portfolio_role=role,
+        current_shares=shares,
         current_weight=weight,
         target_weight=target_weight,
         max_weight=max_weight,

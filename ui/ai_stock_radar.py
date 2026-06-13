@@ -462,7 +462,7 @@ def _executive_summary_card_html(
     action_result: Any,
 ) -> str:
     summary = _localized_report_summary(report) or _research_summary_lines(report, snapshot, market)[0]
-    holding_context = _holding_context_text(row)
+    holding_context = _holding_context_text(row, action_result)
     observations = _dedupe_text(
         [
             *list(getattr(action_result, "evidence_bullets_cn", []) or [])[:2],
@@ -486,10 +486,15 @@ def _executive_summary_card_html(
     )
 
 
-def _holding_context_text(row: dict[str, Any]) -> str:
+def _holding_context_text(row: dict[str, Any], action_result: Any | None = None) -> str:
     shares = _first_number(row, "current_shares", "currentShares", "quantity", "shares")
     weight = _first_number(row, "portfolio_weight", "portfolioWeight", "positionPct")
-    if shares is not None and shares > 0:
+    if action_result is not None:
+        if shares is None:
+            shares = _number(getattr(action_result, "current_shares", None))
+        if weight is None:
+            weight = _number(getattr(action_result, "current_weight", None))
+    if (shares is not None and shares > 0) or (shares is None and weight is not None and weight > 0):
         suffix = f"｜仓位 {_ratio_pct(weight)}" if weight is not None else ""
         return f"已有持仓{suffix}"
     return "未持仓 / 仅研究观察"
