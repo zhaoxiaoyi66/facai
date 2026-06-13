@@ -44,6 +44,8 @@ class VolumePriceAcceptanceSnapshot:
     zone_source: str = "upstream"
     risk_deductions: list[str] = field(default_factory=list)
     volume_price_checked_at: str | None = None
+    latest_volume: float | None = None
+    volume_source: str | None = None
 
     @property
     def status_label(self) -> str:
@@ -116,6 +118,13 @@ def evaluate_volume_price_acceptance(
     confirm_line = _first_number(_value(source, "confirm_line", "confirmLine", "confirmation_price", "confirmationPrice"))
     ema20 = _first_number(_value(source, "ema20"))
     ema50 = _first_number(_value(source, "ema50"))
+    latest_bar_volume = _positive_number(latest.get("volume") if latest else None)
+    context_volume = _first_number(_value(source, "volume", "latest_volume", "latestVolume", "quoteVolume"))
+    latest_volume = latest_bar_volume or context_volume
+    latest_volume_source = "daily_cache" if latest_bar_volume is not None else ("context" if context_volume is not None else "unavailable")
+    volume_ma20 = _volume_ma20(bars) or _first_number(_value(source, "volume_ma20", "volumeMa20", "avg_volume", "avgVolume"))
+    volume_ratio = _safe_ratio(latest_volume, volume_ma20)
+    volume_regime, volume_regime_cn = _volume_regime(volume_ratio)
 
     if close is None or low is None or high is None or support_line is None:
         missing = []
@@ -128,8 +137,8 @@ def evaluate_volume_price_acceptance(
         return _snapshot(
             DATA_MISSING,
             0,
-            None,
-            None,
+            volume_ratio,
+            volume_ma20,
             None,
             "K线数据不足",
             "量能待补",
@@ -137,16 +146,14 @@ def evaluate_volume_price_acceptance(
             "确认线待补",
             0,
             "；".join(missing) or "缺少核心日线数据，暂时无法判断量价承接。",
+            volume_regime=volume_regime,
+            volume_regime_cn=volume_regime_cn,
             zone_source=zone_source,
             checked_at=checked_at,
+            latest_volume=latest_volume,
+            volume_source=latest_volume_source,
         )
 
-    latest_volume = _positive_number(latest.get("volume") if latest else None) or _first_number(
-        _value(source, "volume", "latest_volume", "latestVolume", "quoteVolume")
-    )
-    volume_ma20 = _volume_ma20(bars) or _first_number(_value(source, "volume_ma20", "volumeMa20", "avg_volume", "avgVolume"))
-    volume_ratio = _safe_ratio(latest_volume, volume_ma20)
-    volume_regime, volume_regime_cn = _volume_regime(volume_ratio)
     close_position = _range_position(low=low, high=high, close=close)
     body_ratio, lower_shadow_ratio, upper_shadow_ratio = _candle_ratios(open_price, high, low, close)
     is_up_day = close >= open_price
@@ -299,6 +306,8 @@ def evaluate_volume_price_acceptance(
         zone_source=zone_source,
         risk_deductions=risk_deductions,
         checked_at=checked_at,
+        latest_volume=latest_volume,
+        volume_source=latest_volume_source,
     )
 
 
@@ -364,6 +373,8 @@ def _snapshot(
     zone_source: str = "upstream",
     risk_deductions: list[str] | None = None,
     checked_at: datetime | None = None,
+    latest_volume: float | None = None,
+    volume_source: str | None = None,
 ) -> VolumePriceAcceptanceSnapshot:
     normalized_regime, normalized_regime_cn = _volume_regime(volume_ratio)
     return VolumePriceAcceptanceSnapshot(
@@ -384,6 +395,8 @@ def _snapshot(
         zone_source=zone_source,
         risk_deductions=_dedupe(risk_deductions or []),
         volume_price_checked_at=_checked_at(checked_at),
+        latest_volume=None if latest_volume is None else round(latest_volume, 2),
+        volume_source=volume_source,
     )
 
 

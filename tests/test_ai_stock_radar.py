@@ -472,6 +472,47 @@ def test_ai_radar_report_volume_falls_back_to_latest_daily_bar() -> None:
     assert values["成交量来源"] == "日线缓存"
 
 
+def test_ai_radar_report_header_uses_daily_volume_when_quote_missing() -> None:
+    history = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-05-01", periods=20),
+            "close": [100 + index for index in range(20)],
+            "volume": [10] * 19 + [6_611_028],
+        }
+    )
+    report = {"ticker": "WDAY", "company_name": "Workday", "current_price": 210}
+
+    html = radar_ui._research_header_html(report, {}, {}, {}, "等待确认", history)
+
+    assert "成交量" in html
+    assert "<span>成交量</span><strong>6.6M" in html
+
+
+def test_ai_radar_report_volume_can_fallback_to_volume_price_acceptance_snapshot() -> None:
+    volume = radar_ui.resolve_volume_snapshot(
+        "TEST",
+        {},
+        pd.DataFrame(),
+        {
+            "latest_volume": 2_400_000,
+            "volume_ma20": 3_000_000,
+            "volume_regime_cn": "缩量",
+        },
+    )
+
+    assert volume["latest_volume"] == 2_400_000
+    assert volume["volume_ratio"] == 0.8
+    assert volume["volume_source"] == "volume_price_acceptance"
+    assert radar_ui._volume_source_label(volume["volume_source"]) == "量价模块"
+
+
+def test_ai_radar_report_volume_snapshot_marks_missing_only_when_all_sources_missing() -> None:
+    volume = radar_ui.resolve_volume_snapshot("MISS", {}, pd.DataFrame(), {})
+
+    assert volume["latest_volume"] is None
+    assert volume["volume_source"] == "unavailable"
+
+
 def test_ai_radar_report_volume_missing_is_specific_data_gap() -> None:
     report = {
         "ticker": "MSFT",

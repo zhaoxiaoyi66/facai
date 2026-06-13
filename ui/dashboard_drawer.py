@@ -9,6 +9,7 @@ import math
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from data.action_fusion import ActionFusionResult, action_fusion_card_html
 from data.entry_display import format_buy_zone, format_zone_status
 from data.pullback_acceptance import pullback_acceptance_context_lines
 from ui.dashboard_tables import _buy_point_label_tone, _entry_rating_chip_text, _entry_rating_display_parts
@@ -280,6 +281,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         '</div>'
         f'<div class="drawer-badges">{"".join(badges)}</div>'
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
+        f'{_drawer_action_fusion_card_html(row)}'
         f'{_drawer_decision_summary_html(row, drawer_deps)}'
         f'{_drawer_radar_entry_card_html(row)}'
         f'{_drawer_pullback_acceptance_card_html(row)}'
@@ -289,6 +291,17 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
         '</aside>'
     )
+
+
+def _drawer_action_fusion_card_html(row: pd.Series) -> str:
+    payload = row.get("actionFusion")
+    if not isinstance(payload, dict) or not payload:
+        return ""
+    try:
+        result = ActionFusionResult(**payload)
+    except TypeError:
+        return ""
+    return action_fusion_card_html(result)
 
 
 def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:

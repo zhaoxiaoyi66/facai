@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from data.action_fusion import action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
@@ -277,7 +278,8 @@ def _report_html(
     summary_lines = _research_summary_lines(report, snapshot, market)
     return (
         f'<article class="ai-radar-research-report {_decision_tone(decision)}">'
-        f"{_research_header_html(report, market, snapshot, technicals, core_status)}"
+        f"{_research_header_html(report, market, snapshot, technicals, core_status, history)}"
+        f"{_action_fusion_card_html(report, technicals, row, history)}"
         '<section class="ai-radar-research-section ai-radar-summary-section">'
         '<div class="ai-radar-section-title"><span>核心摘要</span><b>结论先行</b></div>'
         f"{_summary_lines_html(summary_lines)}"
@@ -369,6 +371,7 @@ def _research_header_html(
     snapshot: dict[str, Any],
     technicals: dict[str, Any],
     core_status: str,
+    history: pd.DataFrame | None = None,
 ) -> str:
     ticker = str(report.get("ticker") or "")
     company = str(report.get("company_name") or ticker)
@@ -382,11 +385,15 @@ def _research_header_html(
         )
         if item
     ) or "本地缓存研究视图"
+    volume = _volume_snapshot(market, snapshot, technicals, history)
+    volume_text = _volume_display(volume)
+    if volume.get("volume_ratio") is not None:
+        volume_text = f"{volume_text}｜量比 {_volume_ratio_display(volume.get('volume_ratio'))}"
     stats = [
         ("最新价", _money(_report_current_price(report))),
         ("52周区间", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
-        ("成交量", _compact_number(_first_number(snapshot, technicals, "volume"))),
+        ("成交量", volume_text),
         ("更新时间", _short_time(report.get("data_updated_at") or market.get("fetchedAt"))),
         ("当前区间", current_zone),
     ]
@@ -557,6 +564,31 @@ def _volume_price_acceptance_card_html(
     )
 
 
+def _action_fusion_card_html(
+    report: dict[str, Any],
+    technicals: dict[str, Any],
+    row: dict[str, Any],
+    history: pd.DataFrame | None,
+) -> str:
+    volume_snapshot = _volume_price_acceptance_snapshot(report, technicals, row, history)
+    result = evaluate_action_fusion(
+        ticker=str(report.get("ticker") or row.get("ticker") or ""),
+        context={
+            **report,
+            **technicals,
+            **row,
+            "volume_price_status": volume_snapshot.get("volume_price_status") or volume_snapshot.get("volumePriceStatus"),
+            "volume_price_score": volume_snapshot.get("volume_price_score") or volume_snapshot.get("volumePriceScore"),
+            "volume_ratio": volume_snapshot.get("volume_ratio") or volume_snapshot.get("volumeRatio"),
+            "volume_regime_cn": volume_snapshot.get("volume_regime_cn") or volume_snapshot.get("volumeRegimeCn"),
+            "volume_price_reason_cn": volume_snapshot.get("acceptance_reason_cn")
+            or volume_snapshot.get("volumePriceReasonCn")
+            or volume_snapshot.get("reason_cn"),
+        },
+    )
+    return action_fusion_card_html(result)
+
+
 def _volume_price_acceptance_snapshot(
     report: dict[str, Any],
     technicals: dict[str, Any],
@@ -566,10 +598,10 @@ def _volume_price_acceptance_snapshot(
     for source in (report, row, technicals):
         snapshot = source.get("volumePriceAcceptance") if isinstance(source, dict) else None
         if isinstance(snapshot, dict) and snapshot:
-            return snapshot
+            return _enrich_volume_price_snapshot(snapshot, history)
         snapshot = source.get("volume_price_acceptance") if isinstance(source, dict) else None
         if isinstance(snapshot, dict) and snapshot:
-            return snapshot
+            return _enrich_volume_price_snapshot(snapshot, history)
     entry_context = _volume_price_entry_context(report, row, technicals)
     snapshot = evaluate_volume_price_acceptance(
         ticker=str(report.get("ticker") or row.get("ticker") or ""),
@@ -578,6 +610,17 @@ def _volume_price_acceptance_snapshot(
         entry_context=entry_context,
     )
     return snapshot.to_dict()
+
+
+def _enrich_volume_price_snapshot(snapshot: dict[str, Any], history: pd.DataFrame | None) -> dict[str, Any]:
+    enriched = dict(snapshot)
+    if _first_number(enriched, "latest_volume", "latestVolume") is not None:
+        return enriched
+    volume = resolve_volume_snapshot("", {}, history, enriched)
+    if volume.get("latest_volume") is not None:
+        enriched["latest_volume"] = volume.get("latest_volume")
+        enriched["volume_source"] = volume.get("volume_source")
+    return enriched
 
 
 def _volume_price_entry_context(*sources: dict[str, Any]) -> dict[str, Any]:
@@ -718,37 +761,78 @@ def _volume_snapshot(
     technicals: dict[str, Any],
     history: pd.DataFrame | None,
 ) -> dict[str, Any]:
-    quote_volume = _first_number(market, snapshot, technicals, "quoteVolume", "quote_volume", "latest_volume", "regularMarketVolume")
-    daily_volume = _latest_daily_volume(history)
-    volume_ma20 = _daily_volume_ma20(history) or _first_number(snapshot, technicals, "volume_ma20", "avg_volume", "averageVolume")
+    quote = {**(technicals or {}), **(snapshot or {}), **(market or {})}
+    volume_price_result = (
+        quote.get("volumePriceAcceptance")
+        or quote.get("volume_price_acceptance")
+        or quote.get("volume_price_result")
+        or {}
+    )
+    return resolve_volume_snapshot("", quote, history, volume_price_result)
+
+
+def resolve_volume_snapshot(
+    ticker: str,
+    quote: dict[str, Any] | None,
+    daily_bars: pd.DataFrame | None,
+    volume_price_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(quote or {})
+    volume_payload = dict(volume_price_result or {})
+    quote_volume = _first_number(payload, "quoteVolume", "quote_volume", "volume", "latest_volume", "latestVolume", "regularMarketVolume")
+    daily_volume, daily_date = _latest_daily_volume_info(daily_bars)
+    vpa_volume = _first_number(volume_payload, "latest_volume", "latestVolume")
+    volume_ma20 = (
+        _daily_volume_ma20(daily_bars)
+        or _first_number(volume_payload, "volume_ma20", "volumeMa20")
+        or _first_number(payload, "volume_ma20", "volumeMa20", "avg_volume", "avgVolume", "averageVolume")
+    )
 
     if quote_volume is not None and quote_volume > 0:
         volume = quote_volume
         source = "quote"
+        volume_date = _display_value(payload.get("fetchedAt") or payload.get("updated_at") or payload.get("updatedAt"))
     elif daily_volume is not None and daily_volume > 0:
         volume = daily_volume
         source = "daily_cache"
+        volume_date = _display_value(daily_date)
+    elif vpa_volume is not None and vpa_volume > 0:
+        volume = vpa_volume
+        source = "volume_price_acceptance"
+        volume_date = _display_value(volume_payload.get("volume_price_checked_at") or volume_payload.get("volumePriceCheckedAt"))
     else:
         volume = None
         source = "unavailable"
+        volume_date = "暂无"
 
     ratio = volume / volume_ma20 if volume is not None and volume_ma20 else None
     return {
+        "ticker": ticker,
         "latest_volume": volume,
         "volume_ma20": volume_ma20,
         "volume_ratio": ratio,
         "volume_source": source,
+        "volume_date": volume_date,
+        "volume_regime_cn": _display_value(volume_payload.get("volume_regime_cn") or volume_payload.get("volumeRegimeCn")),
     }
 
 
 def _latest_daily_volume(history: pd.DataFrame | None) -> float | None:
+    volume, _date = _latest_daily_volume_info(history)
+    return volume
+
+
+def _latest_daily_volume_info(history: pd.DataFrame | None) -> tuple[float | None, Any]:
     if history is None or history.empty or "volume" not in history:
-        return None
-    volumes = pd.to_numeric(history["volume"], errors="coerce").dropna()
-    volumes = volumes[volumes > 0]
-    if volumes.empty:
-        return None
-    return float(volumes.iloc[-1])
+        return None, None
+    frame = history.copy()
+    frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
+    frame = frame.dropna(subset=["volume"])
+    frame = frame[frame["volume"] > 0]
+    if frame.empty:
+        return None, None
+    row = frame.iloc[-1]
+    return float(row["volume"]), row.get("date")
 
 
 def _daily_volume_ma20(history: pd.DataFrame | None) -> float | None:
@@ -777,6 +861,7 @@ def _volume_source_label(value: Any) -> str:
     return {
         "quote": "quote 缓存",
         "daily_cache": "日线缓存",
+        "volume_price_acceptance": "量价模块",
         "unavailable": "暂无",
     }.get(str(value or ""), "暂无")
 

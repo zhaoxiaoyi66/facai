@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from data.action_fusion import ActionFusionResult, action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
 from data.macro_regime import load_macro_regime
 from data.market_context import build_market_context, build_market_history
@@ -79,6 +80,7 @@ class BuyExecutionAdvisoryContext:
     structure_advisor: StructureEntryAdvisor | None
     pullback_acceptance: PullbackAcceptanceSnapshot
     volume_price_acceptance: VolumePriceAcceptanceSnapshot
+    action_fusion: ActionFusionResult
     macro_regime: str | None
     portfolio_structure_status: str | None
     data_source_text: str
@@ -126,6 +128,22 @@ def build_buy_execution_advisory_context(
         technicals={**report, **market},
         checked_at=current_time,
     )
+    portfolio_context = _portfolio_context_for_symbol(symbol, path=path)
+    action_fusion = evaluate_action_fusion(
+        ticker=symbol,
+        context={
+            **report,
+            **market,
+            "volume_price_status": volume_price_acceptance.volume_price_status,
+            "volume_price_score": volume_price_acceptance.volume_price_score,
+            "volume_ratio": volume_price_acceptance.volume_ratio,
+            "volume_regime_cn": volume_price_acceptance.volume_regime_cn,
+            "volume_price_reason_cn": volume_price_acceptance.acceptance_reason_cn,
+            "pullback_acceptance_status": pullback_acceptance.acceptance_status,
+            "pullback_acceptance_score": pullback_acceptance.acceptance_score,
+        },
+        portfolio_context=portfolio_context,
+    )
     macro_regime, macro_freshness = _macro_context(path=path, now=current_time)
     portfolio_structure_status = _portfolio_structure_status(path=path, macro_regime=None)
     technical_freshness = _technical_freshness(report, market, current_time)
@@ -139,6 +157,7 @@ def build_buy_execution_advisory_context(
         structure_advisor=structure_advisor,
         pullback_acceptance=pullback_acceptance,
         volume_price_acceptance=volume_price_acceptance,
+        action_fusion=action_fusion,
         macro_regime=macro_regime,
         portfolio_structure_status=portfolio_structure_status,
         data_source_text=data_source_text,
@@ -164,7 +183,8 @@ def buy_execution_advisory_context_html(context: BuyExecutionAdvisoryContext) ->
     acceptance_context = {**context.radar_report, "current_price": context.current_price}
     context_lines = pullback_acceptance_context_lines(context.pullback_acceptance, acceptance_context)
     return (
-        structure_html
+        action_fusion_card_html(context.action_fusion)
+        + structure_html
         + pullback_acceptance_hint_html(context.pullback_acceptance, context_lines=context_lines)
         + volume_price_acceptance_hint_html(context.volume_price_acceptance)
     )
@@ -363,6 +383,29 @@ def _portfolio_structure_status(*, path: Path, macro_regime: object | None) -> s
     except Exception:
         return None
     return str(getattr(check, "status", "") or "") or None
+
+
+def _portfolio_context_for_symbol(symbol: str, *, path: Path) -> dict[str, Any]:
+    if not symbol:
+        return {}
+    try:
+        view = build_portfolio_view_model(path)
+    except Exception:
+        return {}
+    summary = dict(view.get("summary") or {})
+    for row in view.get("rows") or []:
+        if str(row.get("symbol") or "").upper() != symbol:
+            continue
+        return {
+            "current_shares": row.get("quantity"),
+            "avg_cost": row.get("averageCost"),
+            "market_value": row.get("marketValue"),
+            "portfolio_weight": row.get("positionPct"),
+            "target_weight": row.get("targetPositionPct"),
+            "max_weight": row.get("maxAcceptablePositionPct"),
+            "available_cash": summary.get("cashBalance"),
+        }
+    return {"available_cash": summary.get("cashBalance")}
 
 
 def _has_technical_structure_map(report: dict[str, Any]) -> bool:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
+from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.entry_display import build_entry_display
 from data.market_context import build_market_history
@@ -94,6 +95,25 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         ticker=ticker,
         daily_bars=_safe_market_history(ticker),
         technicals={**technicals, **snapshot, **radar_entry_display},
+    )
+    action_fusion = evaluate_action_fusion(
+        ticker=ticker,
+        context={
+            **technicals,
+            **snapshot,
+            **radar_entry_display,
+            "quality_score": score.total_score,
+            "valuation_score": getattr(score, "valuation_score", None),
+            "volume_price_status": volume_price_acceptance.volume_price_status,
+            "volume_price_score": volume_price_acceptance.volume_price_score,
+            "volume_ratio": volume_price_acceptance.volume_ratio,
+            "volume_regime_cn": volume_price_acceptance.volume_regime_cn,
+            "volume_price_reason_cn": volume_price_acceptance.acceptance_reason_cn,
+        },
+        portfolio_context={
+            "max_weight": max_portfolio_weight,
+            "target_weight": current_add_limit,
+        },
     )
 
     return {
@@ -208,6 +228,11 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "volumePriceStatus": volume_price_acceptance.volume_price_status,
         "volumePriceScore": volume_price_acceptance.volume_price_score,
         "volumePriceReasonCn": volume_price_acceptance.acceptance_reason_cn,
+        "actionFusion": action_fusion.to_dict(),
+        "actionFusionCode": action_fusion.action_code,
+        "actionFusionCn": action_fusion.action_cn,
+        "actionFusionSetupType": action_fusion.setup_type,
+        "actionFusionConfidence": action_fusion.confidence_level,
         **radar_entry_display,
     }
 
