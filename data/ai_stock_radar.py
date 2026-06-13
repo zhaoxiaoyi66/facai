@@ -85,6 +85,13 @@ class RadarReport:
     technical_structure_label: str
     technical_pullback_zone_low: float | None
     technical_pullback_zone_high: float | None
+    adaptive_pullback_zone_low: float | None
+    adaptive_pullback_zone_high: float | None
+    adaptive_pullback_label: str
+    adaptive_pullback_type: str
+    adaptive_pullback_confidence: str
+    adaptive_pullback_reason: str
+    adaptive_pullback_is_entry_signal: bool
     technical_repair_zone_low: float | None
     technical_repair_zone_high: float | None
     near_term_repair_zone_low: float | None
@@ -280,6 +287,13 @@ def build_ai_stock_radar_report(
         technical_structure_label=str(entry_display.get("technical_structure_label") or ""),
         technical_pullback_zone_low=entry_display.get("technical_pullback_zone_low"),
         technical_pullback_zone_high=entry_display.get("technical_pullback_zone_high"),
+        adaptive_pullback_zone_low=entry_display.get("adaptive_pullback_zone_low"),
+        adaptive_pullback_zone_high=entry_display.get("adaptive_pullback_zone_high"),
+        adaptive_pullback_label=str(entry_display.get("adaptive_pullback_label") or ""),
+        adaptive_pullback_type=str(entry_display.get("adaptive_pullback_type") or ""),
+        adaptive_pullback_confidence=str(entry_display.get("adaptive_pullback_confidence") or ""),
+        adaptive_pullback_reason=str(entry_display.get("adaptive_pullback_reason") or ""),
+        adaptive_pullback_is_entry_signal=bool(entry_display.get("adaptive_pullback_is_entry_signal")),
         technical_repair_zone_low=entry_display.get("technical_repair_zone_low"),
         technical_repair_zone_high=entry_display.get("technical_repair_zone_high"),
         near_term_repair_zone_low=entry_display.get("near_term_repair_zone_low"),
@@ -796,6 +810,13 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "technical_structure_label": "数据不足" if missing else "",
         "technical_pullback_zone_low": None,
         "technical_pullback_zone_high": None,
+        "adaptive_pullback_zone_low": None,
+        "adaptive_pullback_zone_high": None,
+        "adaptive_pullback_label": "",
+        "adaptive_pullback_type": "",
+        "adaptive_pullback_confidence": "missing" if missing else "",
+        "adaptive_pullback_reason": "",
+        "adaptive_pullback_is_entry_signal": False,
         "technical_repair_zone_low": None,
         "technical_repair_zone_high": None,
         "near_term_repair_zone_low": None,
@@ -848,6 +869,15 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
     deep_support_zone = support_watch_zone
     confirmation_price = _technical_confirmation_price(price, ema20, ema50, ema200, recent_swing_high)
     invalidation_price = _technical_invalidation_price(price, recent_swing_low, ema200, buffer)
+    adaptive_common = {
+        "adaptive_pullback_zone_low": None,
+        "adaptive_pullback_zone_high": None,
+        "adaptive_pullback_label": "",
+        "adaptive_pullback_type": "",
+        "adaptive_pullback_confidence": "",
+        "adaptive_pullback_reason": "",
+        "adaptive_pullback_is_entry_signal": False,
+    }
     breakdown_evidence = _technical_breakdown_evidence(
         price=price,
         ema200=ema200,
@@ -859,7 +889,21 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
     )
     if breakdown_evidence:
         reason = "技术结构：破位复核；" + "；".join(breakdown_evidence)
+        adaptive = _adaptive_pullback_zone(
+            status="BREAKDOWN_REVIEW",
+            price=price,
+            atr14=atr14,
+            ema20=ema20,
+            ema50=ema50,
+            recent_swing_low=recent_swing_low,
+            recent_swing_high=recent_swing_high,
+            near_term_repair_zone=near_term_repair_zone,
+            support_watch_zone=support_watch_zone,
+            confirmation_price=confirmation_price,
+            invalidation_price=invalidation_price,
+        )
         return base | {
+            **adaptive,
             "source": "breakdown_review",
             "reason": reason,
             "missing_fields": [],
@@ -898,7 +942,21 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
             f"技术结构：{label}；价格或 EMA50 低于 EMA200，不自动生成技术买点，当前不是技术买点；"
             "等待重新站回关键均线并收盘确认"
         )
+        adaptive = _adaptive_pullback_zone(
+            status=status,
+            price=price,
+            atr14=atr14,
+            ema20=ema20,
+            ema50=ema50,
+            recent_swing_low=recent_swing_low,
+            recent_swing_high=recent_swing_high,
+            near_term_repair_zone=near_term_repair_zone,
+            support_watch_zone=support_watch_zone,
+            confirmation_price=confirmation_price,
+            invalidation_price=invalidation_price,
+        )
         return base | {
+            **adaptive,
             "source": "trend_review",
             "reason": reason,
             "missing_fields": [],
@@ -930,7 +988,21 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
     slope_confirmed = (ema50_slope is None or ema50_slope >= -0.5) and (ema200_slope is None or ema200_slope >= -0.5)
     if not slope_confirmed:
         reason = "技术结构：弱趋势修复中；EMA50 / EMA200 斜率未确认向上，先等趋势修复"
+        adaptive = _adaptive_pullback_zone(
+            status="WEAK_TREND_REPAIR",
+            price=price,
+            atr14=atr14,
+            ema20=ema20,
+            ema50=ema50,
+            recent_swing_low=recent_swing_low,
+            recent_swing_high=recent_swing_high,
+            near_term_repair_zone=near_term_repair_zone,
+            support_watch_zone=support_watch_zone,
+            confirmation_price=confirmation_price,
+            invalidation_price=invalidation_price,
+        )
         return base | {
+            **adaptive,
             "source": "trend_review",
             "reason": reason,
             "missing_fields": [],
@@ -997,6 +1069,13 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "technical_structure_label": "强趋势回踩",
         "technical_pullback_zone_low": pullback_low,
         "technical_pullback_zone_high": pullback_high,
+        "adaptive_pullback_zone_low": pullback_low,
+        "adaptive_pullback_zone_high": pullback_high,
+        "adaptive_pullback_label": "技术回踩区",
+        "adaptive_pullback_type": "UPTREND_PULLBACK",
+        "adaptive_pullback_confidence": "high" if atr14 is not None else "medium",
+        "adaptive_pullback_reason": "强趋势近端回踩复核区",
+        "adaptive_pullback_is_entry_signal": True,
         "technical_repair_zone_low": repair_zone[0],
         "technical_repair_zone_high": repair_zone[1],
         "near_term_repair_zone_low": near_term_repair_zone[0],
@@ -1031,6 +1110,80 @@ def _technical_observation_zone(values: tuple[float | None, ...], buffer: float)
     if not usable:
         return None, None
     return round(max(0.01, min(usable) - buffer), 2), round(max(usable) + buffer * 0.5, 2)
+
+
+def _adaptive_pullback_zone(
+    *,
+    status: str,
+    price: float,
+    atr14: float | None,
+    ema20: float | None,
+    ema50: float | None,
+    recent_swing_low: float | None,
+    recent_swing_high: float | None,
+    near_term_repair_zone: tuple[float | None, float | None],
+    support_watch_zone: tuple[float | None, float | None],
+    confirmation_price: float | None,
+    invalidation_price: float | None,
+) -> dict[str, Any]:
+    status = str(status or "").upper()
+    label_by_status = {
+        "WEAK_TREND_REPAIR": ("WEAK_TREND_REVIEW", "弱趋势复核区", "弱趋势下观察承接，不是自动买点"),
+        "BREAKDOWN_REVIEW": ("BREAKDOWN_RETEST", "破位反抽复核区", "不是买点，只有重新站回后才复核"),
+        "RANGE_BASE_BUILDING": ("RANGE_SUPPORT", "箱体支撑观察区", "观察缩量回踩和放量突破"),
+    }
+    adaptive_type, label, reason = label_by_status.get(
+        status, ("TECHNICAL_REFERENCE", "技术回踩参考区", "技术结构参考区，不是自动买点")
+    )
+    atr = _number(atr14)
+    buffer = atr * 0.5 if atr is not None and atr > 0 else max(price * 0.018, 0.01)
+    base_zone = near_term_repair_zone
+    if status == "RANGE_BASE_BUILDING" and _zone_complete(support_watch_zone):
+        base_zone = support_watch_zone
+    if status == "BREAKDOWN_REVIEW":
+        base_zone = _technical_observation_zone((ema20, ema50, recent_swing_low), buffer)
+    low, high = base_zone
+    if not _zone_complete((low, high)):
+        low, high = support_watch_zone
+    if not _zone_complete((low, high)):
+        low, high = _technical_observation_zone((price, ema20, ema50, recent_swing_low, recent_swing_high), buffer)
+    low = _number(low)
+    high = _number(high)
+    if low is None or high is None:
+        return {
+            "adaptive_pullback_zone_low": None,
+            "adaptive_pullback_zone_high": None,
+            "adaptive_pullback_label": "",
+            "adaptive_pullback_type": "",
+            "adaptive_pullback_confidence": "missing",
+            "adaptive_pullback_reason": "缺少价格、均线或支撑位，暂时无法生成技术回踩参考区",
+            "adaptive_pullback_is_entry_signal": False,
+        }
+    if low > high:
+        low, high = high, low
+    max_distance = buffer * 5 if atr is not None and atr > 0 else price * 0.12
+    low = max(low, price - max_distance)
+    high = min(high, price + max_distance)
+    if confirmation_price is not None:
+        high = min(high, confirmation_price + buffer)
+    if invalidation_price is not None and low < invalidation_price - buffer:
+        low = max(invalidation_price, low)
+    if low > high:
+        low, high = high, low
+    return {
+        "adaptive_pullback_zone_low": round(max(0.01, low), 2),
+        "adaptive_pullback_zone_high": round(max(0.01, high), 2),
+        "adaptive_pullback_label": label,
+        "adaptive_pullback_type": adaptive_type,
+        "adaptive_pullback_confidence": "review",
+        "adaptive_pullback_reason": reason,
+        "adaptive_pullback_is_entry_signal": False,
+    }
+
+
+def _zone_complete(zone: tuple[float | None, float | None]) -> bool:
+    low, high = zone
+    return _number(low) is not None and _number(high) is not None
 
 
 def _near_term_repair_zone(

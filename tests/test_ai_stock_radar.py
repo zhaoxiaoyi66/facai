@@ -1259,6 +1259,55 @@ def test_now_like_weak_trend_splits_repair_and_trend_reclaim_zones() -> None:
     assert zone["deep_support_zone_high"] == 86.97
     assert zone["confirmation_price"] == 105.28
     assert zone["invalidation_price"] == 85.44
+    assert zone["adaptive_pullback_zone_low"] == 100.19
+    assert zone["adaptive_pullback_zone_high"] == 108.92
+    assert zone["adaptive_pullback_label"] == "弱趋势复核区"
+    assert zone["adaptive_pullback_type"] == "WEAK_TREND_REVIEW"
+    assert zone["adaptive_pullback_is_entry_signal"] is False
+
+
+def test_breakdown_review_generates_adaptive_retest_zone() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 88,
+            "ema20": 94,
+            "ema50": 100,
+            "ema200": 96,
+            "atr14": 4,
+            "recent_swing_low": 90,
+            "gain_20d_pct": -10,
+            "volume_trend": 0.5,
+        }
+    )
+
+    assert zone["technical_structure_status"] == "BREAKDOWN_REVIEW"
+    assert zone["adaptive_pullback_zone_low"] == 88
+    assert zone["adaptive_pullback_zone_high"] == 96
+    assert zone["adaptive_pullback_label"] == "破位反抽复核区"
+    assert zone["adaptive_pullback_type"] == "BREAKDOWN_RETEST"
+    assert zone["adaptive_pullback_is_entry_signal"] is False
+
+
+def test_range_base_generates_adaptive_support_watch_zone() -> None:
+    zone = build_technical_entry_zone(
+        {
+            "price": 96,
+            "ema20": 95,
+            "ema50": 90,
+            "ema200": 100,
+            "atr14": 6,
+            "recent_swing_low": 94,
+            "gain_20d_pct": -1,
+            "volume_trend": 0.0,
+        }
+    )
+
+    assert zone["technical_structure_status"] == "RANGE_BASE_BUILDING"
+    assert zone["adaptive_pullback_zone_low"] == 91.84
+    assert zone["adaptive_pullback_zone_high"] == 95.08
+    assert zone["adaptive_pullback_label"] == "箱体支撑观察区"
+    assert zone["adaptive_pullback_type"] == "RANGE_SUPPORT"
+    assert zone["adaptive_pullback_is_entry_signal"] is False
 
 
 def test_technical_entry_zone_rejects_nan_inputs_with_missing_reason() -> None:

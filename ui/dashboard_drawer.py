@@ -375,6 +375,14 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     technical_structure_reason = _drawer_clean_text(
         row.get("technical_structure_reason") or row.get("radar_technical_structure_reason")
     )
+    adaptive_pullback_low = row.get("adaptive_pullback_zone_low") or row.get("radar_adaptive_pullback_zone_low")
+    adaptive_pullback_high = row.get("adaptive_pullback_zone_high") or row.get("radar_adaptive_pullback_zone_high")
+    adaptive_pullback_label = _drawer_clean_text(
+        row.get("adaptive_pullback_label") or row.get("radar_adaptive_pullback_label")
+    )
+    adaptive_pullback_reason = _drawer_clean_text(
+        row.get("adaptive_pullback_reason") or row.get("radar_adaptive_pullback_reason")
+    )
     technical_repair_low = row.get("technical_repair_zone_low") or row.get("radar_technical_repair_zone_low")
     technical_repair_high = row.get("technical_repair_zone_high") or row.get("radar_technical_repair_zone_high")
     near_term_repair_low = row.get("near_term_repair_zone_low") or row.get("radar_near_term_repair_zone_low")
@@ -474,6 +482,10 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
         technical_structure_status=technical_structure_status,
         technical_structure_label=technical_structure_label,
         technical_structure_reason=technical_structure_reason,
+        adaptive_pullback_low=adaptive_pullback_low,
+        adaptive_pullback_high=adaptive_pullback_high,
+        adaptive_pullback_label=adaptive_pullback_label,
+        adaptive_pullback_reason=adaptive_pullback_reason,
         technical_repair_low=technical_repair_low,
         technical_repair_high=technical_repair_high,
         support_watch_low=support_watch_low,
@@ -540,6 +552,10 @@ def _drawer_entry_zone_structure_html(
     technical_structure_status: str,
     technical_structure_label: str,
     technical_structure_reason: str,
+    adaptive_pullback_low: object,
+    adaptive_pullback_high: object,
+    adaptive_pullback_label: str,
+    adaptive_pullback_reason: str,
     technical_repair_low: object,
     technical_repair_high: object,
     support_watch_low: object,
@@ -559,13 +575,23 @@ def _drawer_entry_zone_structure_html(
 ) -> str:
     effective_high = _drawer_effective_technical_high(technical_high, chase_above) if overlap else technical_high
     technical_available = _drawer_technical_zone_available(technical_low, technical_high)
+    technical_row_label = "技术回踩区"
+    adaptive_available = _drawer_technical_zone_available(adaptive_pullback_low, adaptive_pullback_high)
+    adaptive_used = False
+    if not technical_available and adaptive_available:
+        technical_low = adaptive_pullback_low
+        technical_high = adaptive_pullback_high
+        effective_high = adaptive_pullback_high
+        technical_available = True
+        adaptive_used = True
+        technical_row_label = adaptive_pullback_label or "技术回踩参考区"
     technical_range = _drawer_zone_range_text(technical_low, technical_high) if technical_available else "暂缺"
     if overlap and technical_available:
         technical_range = f"原 {technical_range}；有效 {_drawer_zone_range_text(technical_low, effective_high)}"
     technical_relation = _drawer_zone_relationship(current_price, technical_low, effective_high) if technical_available else (
         "缺失原因：" + _strip_missing_prefix(technical_missing_reason or "缺 EMA / ATR / swing / K线")
     )
-    technical_usage = "近端复核区" if technical_available else "当前使用：估值参考 / 暂不提供近端技术买点"
+    technical_usage = (adaptive_pullback_reason or "弱趋势下观察承接，不是自动买点") if adaptive_used else ("近端复核区" if technical_available else "当前使用：估值参考 / 暂不提供近端技术买点")
     structure_label = technical_structure_label or _drawer_technical_structure_label(technical_structure_status)
     structure_reason = _strip_missing_prefix(technical_structure_reason) if technical_structure_reason else "等待技术结构确认"
     near_term_repair_low = near_term_repair_low if _drawer_number(near_term_repair_low) is not None else technical_repair_low
@@ -585,7 +611,7 @@ def _drawer_entry_zone_structure_html(
             "判断当前是回踩、修复、破位还是筑底",
         ),
         (
-            "技术回踩区",
+            technical_row_label,
             technical_range,
             technical_relation,
             technical_usage,

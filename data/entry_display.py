@@ -95,6 +95,38 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         _value(source, "technical_pullback_zone_high", "technicalPullbackZoneHigh")
         or _value(technical_zone, "technical_pullback_zone_high", "technicalPullbackZoneHigh")
     )
+    adaptive_pullback_low = _number(
+        _value(source, "adaptive_pullback_zone_low", "adaptivePullbackZoneLow")
+        or _value(technical_zone, "adaptive_pullback_zone_low", "adaptivePullbackZoneLow")
+    )
+    adaptive_pullback_high = _number(
+        _value(source, "adaptive_pullback_zone_high", "adaptivePullbackZoneHigh")
+        or _value(technical_zone, "adaptive_pullback_zone_high", "adaptivePullbackZoneHigh")
+    )
+    adaptive_pullback_label = str(
+        _value(source, "adaptive_pullback_label", "adaptivePullbackLabel")
+        or _value(technical_zone, "adaptive_pullback_label", "adaptivePullbackLabel")
+        or ""
+    ).strip()
+    adaptive_pullback_type = str(
+        _value(source, "adaptive_pullback_type", "adaptivePullbackType")
+        or _value(technical_zone, "adaptive_pullback_type", "adaptivePullbackType")
+        or ""
+    ).strip()
+    adaptive_pullback_confidence = str(
+        _value(source, "adaptive_pullback_confidence", "adaptivePullbackConfidence")
+        or _value(technical_zone, "adaptive_pullback_confidence", "adaptivePullbackConfidence")
+        or ""
+    ).strip()
+    adaptive_pullback_reason = str(
+        _value(source, "adaptive_pullback_reason", "adaptivePullbackReason")
+        or _value(technical_zone, "adaptive_pullback_reason", "adaptivePullbackReason")
+        or ""
+    ).strip()
+    adaptive_pullback_is_entry_signal = bool(
+        _value(source, "adaptive_pullback_is_entry_signal", "adaptivePullbackIsEntrySignal")
+        or _value(technical_zone, "adaptive_pullback_is_entry_signal", "adaptivePullbackIsEntrySignal")
+    )
     technical_repair_low = _number(
         _value(source, "technical_repair_zone_low", "technicalRepairZoneLow")
         or _value(technical_zone, "technical_repair_zone_low", "technicalRepairZoneLow")
@@ -183,6 +215,13 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         "technical_structure_label": technical_structure_label,
         "technical_pullback_zone_low": technical_pullback_low,
         "technical_pullback_zone_high": technical_pullback_high,
+        "adaptive_pullback_zone_low": adaptive_pullback_low,
+        "adaptive_pullback_zone_high": adaptive_pullback_high,
+        "adaptive_pullback_label": adaptive_pullback_label,
+        "adaptive_pullback_type": adaptive_pullback_type,
+        "adaptive_pullback_confidence": adaptive_pullback_confidence,
+        "adaptive_pullback_reason": adaptive_pullback_reason,
+        "adaptive_pullback_is_entry_signal": adaptive_pullback_is_entry_signal,
         "technical_repair_zone_low": technical_repair_low,
         "technical_repair_zone_high": technical_repair_high,
         "near_term_repair_zone_low": near_term_repair_low,

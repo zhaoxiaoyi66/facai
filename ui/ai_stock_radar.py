@@ -452,6 +452,14 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
 
 def _range_chart_html(report: dict[str, Any]) -> str:
     ranges = _range_chart_items(report)
+    adaptive_low = _first_number(report, "adaptive_pullback_zone_low", "radar_adaptive_pullback_zone_low")
+    adaptive_high = _first_number(report, "adaptive_pullback_zone_high", "radar_adaptive_pullback_zone_high")
+    if ranges and ranges[0]["range"] == (None, None) and (adaptive_low is not None or adaptive_high is not None):
+        ranges[0] = {
+            "label": _adaptive_pullback_label(report),
+            "range": (adaptive_low, adaptive_high),
+            "tone": "blue",
+        }
     current = _report_current_price(report)
     values = [value for item in ranges for value in item["range"] if value is not None]
     if current is not None:
@@ -502,6 +510,11 @@ def _range_chart_items(report: dict[str, Any]) -> list[dict[str, Any]]:
         {"label": "深度支撑区", "range": (_first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price"), _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")), "tone": "orange"},
         {"label": "追高禁区", "range": (_first_number(report, "chase_above_price", "radar_chase_above_price"), None), "tone": "red"},
     ]
+
+
+def _adaptive_pullback_label(report: dict[str, Any]) -> str:
+    label = str(report.get("adaptive_pullback_label") or report.get("radar_adaptive_pullback_label") or "").strip()
+    return label or "技术回踩参考区"
 
 
 def _range_position(value: float | None, low: float, high: float) -> float:
