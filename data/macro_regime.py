@@ -55,11 +55,17 @@ CNN_FEAR_GREED_URL = CNN_FEAR_GREED_GRAPH_URL
 MACRO_REQUEST_TIMEOUT_SECONDS = 4
 FRED_PRIMARY_TIMEOUT_SECONDS = 4
 FRED_FALLBACK_TIMEOUT_SECONDS = 4
+FRED_CONNECT_TIMEOUT_SECONDS = 1.5
 CBOE_VIX_TIMEOUT_SECONDS = 4
 FEAR_GREED_TIMEOUT_SECONDS = 2
+MACRO_FAST_STATUS = "MACRO_FAST_STATUS"
+MACRO_OFFICIAL_BACKFILL = "MACRO_OFFICIAL_BACKFILL"
+MACRO_FORCE_OFFICIAL_REFRESH = "MACRO_FORCE_OFFICIAL_REFRESH"
 MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS = 5
+MACRO_REFRESH_FAST_TIMEOUT_SECONDS = 3
+MACRO_REFRESH_BACKFILL_TIMEOUT_SECONDS = 18
 MACRO_REFRESH_MAX_WORKERS = 8
-OFFICIAL_BACKGROUND_SEED_INDICATORS = (VIX, HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, DOLLAR_INDEX)
+OFFICIAL_BACKGROUND_SEED_INDICATORS = (FEAR_GREED, VIX, HY_OAS, TEN_YEAR_YIELD, YIELD_CURVE_10Y2Y, DOLLAR_INDEX)
 FRED_CIRCUIT_FAILURE_THRESHOLD = 2
 FRED_CIRCUIT_OPEN_HOURS = 8
 FRED_PROVIDER = "fred"
@@ -470,6 +476,85 @@ def _snapshot_is_official(snapshot: MacroIndicatorSnapshot) -> bool:
     return _normalize_indicator(snapshot.indicator) not in PROXY_MACRO_INDICATORS and "proxy" not in source and "代理" not in source
 
 
+def _normalize_macro_refresh_mode(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {MACRO_FAST_STATUS, "FAST", "FRONTEND", "MACRO_ONLY"}:
+        return MACRO_FAST_STATUS
+    if text in {MACRO_OFFICIAL_BACKFILL, "BACKFILL", "OFFICIAL_BACKFILL"}:
+        return MACRO_OFFICIAL_BACKFILL
+    if text in {MACRO_FORCE_OFFICIAL_REFRESH, "FORCE", "FULL", "FORCE_OFFICIAL"}:
+        return MACRO_FORCE_OFFICIAL_REFRESH
+    return MACRO_FORCE_OFFICIAL_REFRESH
+
+
+def _macro_refresh_deadline_seconds(mode: str) -> float:
+    if mode == MACRO_FAST_STATUS:
+        return MACRO_REFRESH_FAST_TIMEOUT_SECONDS
+    if mode == MACRO_OFFICIAL_BACKFILL:
+        return MACRO_REFRESH_BACKFILL_TIMEOUT_SECONDS
+    return MACRO_REFRESH_BACKFILL_TIMEOUT_SECONDS
+
+
+def _macro_refresh_loaders(
+    mode: str,
+    *,
+    path: Path,
+    provider: Any | None,
+    fred_fetcher: Any | None,
+    fear_greed_fetcher: Any | None,
+    store: MacroRegimeStore,
+    treasury_loader: "_TreasurySnapshotLoader",
+    now: datetime,
+) -> dict[str, Any]:
+    if mode == MACRO_FAST_STATUS:
+        return {
+            FEAR_GREED: lambda: _fetch_fear_greed_fast_snapshot(
+                store=store, fear_greed_fetcher=fear_greed_fetcher, now=now
+            ),
+            VIX: lambda: _fetch_vix_fast_snapshot(path, provider=provider, store=store, now=now),
+            HY_OAS: lambda: _fetch_optional_cached_indicator(HY_OAS, store=store, now=now),
+            TEN_YEAR_YIELD: lambda: _fetch_treasury_fast_snapshot(
+                TEN_YEAR_YIELD, treasury_loader=treasury_loader, store=store, now=now
+            ),
+            YIELD_CURVE_10Y2Y: lambda: _fetch_treasury_fast_snapshot(
+                YIELD_CURVE_10Y2Y, treasury_loader=treasury_loader, store=store, now=now
+            ),
+            MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=now),
+            MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=now),
+            DOLLAR_INDEX: lambda: _fetch_dollar_index_fast_snapshot(path, provider=provider, store=store, now=now),
+        }
+    return {
+        VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, store=store, now=now),
+        HY_OAS: lambda: _fetch_cached_or_fred_snapshot(
+            HY_OAS, FRED_HY_OAS_SERIES, store=store, fred_fetcher=fred_fetcher, now=now
+        ),
+        TEN_YEAR_YIELD: lambda: _fetch_treasury_or_fred_snapshot(
+            TEN_YEAR_YIELD,
+            FRED_TEN_YEAR_SERIES,
+            treasury_loader=treasury_loader,
+            store=store,
+            fred_fetcher=fred_fetcher,
+            now=now,
+        ),
+        YIELD_CURVE_10Y2Y: lambda: _fetch_treasury_or_fred_snapshot(
+            YIELD_CURVE_10Y2Y,
+            FRED_10Y2Y_SERIES,
+            treasury_loader=treasury_loader,
+            store=store,
+            fred_fetcher=fred_fetcher,
+            now=now,
+        ),
+        MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=now),
+        MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=now),
+        DOLLAR_INDEX: lambda: _fetch_dollar_index_snapshot(
+            path, provider=provider, store=store, fred_fetcher=fred_fetcher, now=now
+        ),
+        FEAR_GREED: lambda: _fetch_cached_or_fear_greed_snapshot(
+            store=store, fear_greed_fetcher=fear_greed_fetcher, now=now
+        ),
+    }
+
+
 def refresh_macro_indicators(
     path: Path = CACHE_PATH,
     *,
@@ -478,42 +563,24 @@ def refresh_macro_indicators(
     fear_greed_fetcher: Any | None = None,
     now: datetime | None = None,
     background_seed: bool | None = None,
+    mode: str = MACRO_FORCE_OFFICIAL_REFRESH,
 ) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    refresh_mode = _normalize_macro_refresh_mode(mode)
     started_at = current.isoformat()
     started_timer = perf_counter()
     store = MacroRegimeStore(path)
     treasury_loader = _TreasurySnapshotLoader(provider=provider, now=current)
-    loaders = {
-        VIX: lambda: _fetch_vix_snapshot(path, provider=provider, fred_fetcher=fred_fetcher, store=store, now=current),
-        HY_OAS: lambda: _fetch_cached_or_fred_snapshot(
-            HY_OAS, FRED_HY_OAS_SERIES, store=store, fred_fetcher=fred_fetcher, now=current
-        ),
-        TEN_YEAR_YIELD: lambda: _fetch_treasury_or_fred_snapshot(
-            TEN_YEAR_YIELD,
-            FRED_TEN_YEAR_SERIES,
-            treasury_loader=treasury_loader,
-            store=store,
-            fred_fetcher=fred_fetcher,
-            now=current,
-        ),
-        YIELD_CURVE_10Y2Y: lambda: _fetch_treasury_or_fred_snapshot(
-            YIELD_CURVE_10Y2Y,
-            FRED_10Y2Y_SERIES,
-            treasury_loader=treasury_loader,
-            store=store,
-            fred_fetcher=fred_fetcher,
-            now=current,
-        ),
-        MARKET_TREND: lambda: _fetch_market_trend_snapshot(path, provider=provider, now=current),
-        MARKET_BREADTH: lambda: _fetch_market_breadth_snapshot(path, now=current),
-        DOLLAR_INDEX: lambda: _fetch_dollar_index_snapshot(
-            path, provider=provider, store=store, fred_fetcher=fred_fetcher, now=current
-        ),
-        FEAR_GREED: lambda: _fetch_cached_or_fear_greed_snapshot(
-            store=store, fear_greed_fetcher=fear_greed_fetcher, now=current
-        ),
-    }
+    loaders = _macro_refresh_loaders(
+        refresh_mode,
+        path=path,
+        provider=provider,
+        fred_fetcher=fred_fetcher,
+        fear_greed_fetcher=fear_greed_fetcher,
+        store=store,
+        treasury_loader=treasury_loader,
+        now=current,
+    )
     indicators: dict[str, dict[str, Any]] = {}
     indicator_results: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -522,7 +589,8 @@ def refresh_macro_indicators(
     futures = {executor.submit(_run_macro_loader, indicator, loader): indicator for indicator, loader in loaders.items()}
     outcomes: dict[str, tuple[str, MacroIndicatorSnapshot | None, Exception | None, float]] = {}
     try:
-        done, pending = wait(futures.keys(), timeout=MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS)
+        deadline_seconds = _macro_refresh_deadline_seconds(refresh_mode)
+        done, pending = wait(futures.keys(), timeout=deadline_seconds)
         for future in done:
             outcome = future.result()
             outcomes[outcome[0]] = outcome
@@ -533,7 +601,7 @@ def refresh_macro_indicators(
             outcomes[indicator] = (
                 indicator,
                 None,
-                TimeoutError(f"macro refresh timeout after {MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS:.1f}s"),
+                TimeoutError(f"macro refresh timeout after {deadline_seconds:.1f}s"),
                 elapsed,
             )
     finally:
@@ -575,36 +643,37 @@ def refresh_macro_indicators(
         indicators[indicator] = result
         indicator_results.append(result)
 
-    _append_macro_proxy_result(
-        HYG_CREDIT_PROXY,
-        indicators,
-        indicator_results,
-        errors,
-        lambda: _fetch_hyg_credit_proxy_snapshot(path, provider=provider, now=current),
-        store=store,
-        now=current,
-        when=_macro_refresh_result_missing(indicators.get(HY_OAS)),
-    )
-    _append_macro_proxy_result(
-        DOLLAR_PROXY,
-        indicators,
-        indicator_results,
-        errors,
-        lambda: _fetch_uup_dollar_proxy_snapshot(path, provider=provider, now=current),
-        store=store,
-        now=current,
-        when=_macro_refresh_result_missing(indicators.get(DOLLAR_INDEX)),
-    )
-    _append_macro_proxy_result(
-        SENTIMENT_PROXY,
-        indicators,
-        indicator_results,
-        errors,
-        lambda: _build_sentiment_proxy_snapshot(indicators, now=current),
-        store=store,
-        now=current,
-        when=_should_build_sentiment_proxy(indicators.get(FEAR_GREED)),
-    )
+    if refresh_mode == MACRO_FORCE_OFFICIAL_REFRESH:
+        _append_macro_proxy_result(
+            HYG_CREDIT_PROXY,
+            indicators,
+            indicator_results,
+            errors,
+            lambda: _fetch_hyg_credit_proxy_snapshot(path, provider=provider, now=current),
+            store=store,
+            now=current,
+            when=_macro_refresh_result_missing(indicators.get(HY_OAS)),
+        )
+        _append_macro_proxy_result(
+            DOLLAR_PROXY,
+            indicators,
+            indicator_results,
+            errors,
+            lambda: _fetch_uup_dollar_proxy_snapshot(path, provider=provider, now=current),
+            store=store,
+            now=current,
+            when=_macro_refresh_result_missing(indicators.get(DOLLAR_INDEX)),
+        )
+        _append_macro_proxy_result(
+            SENTIMENT_PROXY,
+            indicators,
+            indicator_results,
+            errors,
+            lambda: _build_sentiment_proxy_snapshot(indicators, now=current),
+            store=store,
+            now=current,
+            when=_should_build_sentiment_proxy(indicators.get(FEAR_GREED)),
+        )
 
     core_results = [item for item in indicator_results if item["indicator"] in CORE_MACRO_INDICATORS]
     status = _macro_refresh_overall_status(core_results)
@@ -615,6 +684,7 @@ def refresh_macro_indicators(
     result = {
         "status": status,
         "overall_status": status,
+        "mode": refresh_mode,
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_seconds": round(perf_counter() - started_timer, 3),
@@ -659,6 +729,11 @@ def seed_macro_indicator_from_provider(
 ) -> MacroIndicatorSnapshot:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     normalized = _normalize_indicator(indicator)
+    store = MacroRegimeStore(path)
+    if normalized == FEAR_GREED:
+        snapshot = _fetch_cached_or_fear_greed_snapshot(store=store, fear_greed_fetcher=None, now=current)
+        store.save_indicator(snapshot)
+        return snapshot
     series_map = {
         HY_OAS: FRED_HY_OAS_SERIES,
         VIX: FRED_VIX_SERIES,
@@ -669,7 +744,6 @@ def seed_macro_indicator_from_provider(
     series_id = series_map.get(normalized)
     if not series_id:
         raise ValueError(f"Unsupported provider seed indicator: {indicator}")
-    store = MacroRegimeStore(path)
     snapshot = _fetch_fred_snapshot_with_circuit(
         normalized,
         series_id,
@@ -1239,6 +1313,33 @@ def _fetch_vix_snapshot(
     raise RuntimeError("; ".join(errors) or "VIX 刷新失败")
 
 
+def _fetch_vix_fast_snapshot(
+    path: Path,
+    *,
+    provider: Any | None,
+    store: MacroRegimeStore,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    local_snapshot = _load_vix_snapshot(path, now=now)
+    if local_snapshot is not None:
+        return local_snapshot
+    cached = store.load_indicator(VIX, now=now)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
+    if provider is not None:
+        try:
+            return _fetch_vix_snapshot(
+                path,
+                provider=provider,
+                fred_fetcher=lambda series_id: (_ for _ in ()).throw(RuntimeError("fast mode skipped FRED")),
+                store=store,
+                now=now,
+            )
+        except Exception:
+            pass
+    raise RuntimeError("VIX official value unavailable in fast mode")
+
+
 def _fetch_cboe_vix_snapshot(*, now: datetime) -> MacroIndicatorSnapshot:
     payload = _read_url_text(CBOE_VIX_CSV_URL, timeout_seconds=CBOE_VIX_TIMEOUT_SECONDS)
     rows = _series_rows_from_payload(payload, value_key="CLOSE")
@@ -1363,6 +1464,33 @@ def _fetch_dollar_index_snapshot(
     raise RuntimeError("; ".join(errors) or "美元指数刷新失败")
 
 
+def _fetch_dollar_index_fast_snapshot(
+    path: Path,
+    *,
+    provider: Any | None,
+    store: MacroRegimeStore,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    local_snapshot = _load_dollar_market_snapshot(path, now=now)
+    if local_snapshot is not None and _refresh_snapshot_value_usable(local_snapshot):
+        return local_snapshot
+    cached = store.load_indicator(DOLLAR_INDEX, now=now, stale_after_hours=24 * 14)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
+    if provider is not None:
+        try:
+            return _fetch_dollar_index_snapshot(
+                path,
+                provider=provider,
+                store=store,
+                fred_fetcher=lambda series_id: (_ for _ in ()).throw(RuntimeError("fast mode skipped FRED")),
+                now=now,
+            )
+        except Exception:
+            pass
+    raise RuntimeError("Dollar index official value unavailable in fast mode")
+
+
 class _TreasurySnapshotLoader:
     def __init__(self, *, provider: Any | None, now: datetime) -> None:
         self.provider = provider
@@ -1413,6 +1541,19 @@ def _fetch_treasury_or_fred_snapshot(
             )
         except Exception as fred_error:
             raise RuntimeError(f"FMP Treasury: {_short_error(treasury_error)}; FRED {series_id}: {_short_error(fred_error)}") from fred_error
+
+
+def _fetch_treasury_fast_snapshot(
+    indicator: str,
+    *,
+    treasury_loader: _TreasurySnapshotLoader,
+    store: MacroRegimeStore,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(indicator, now=now)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        return cached
+    return treasury_loader.get(indicator)
 
 
 def _fetch_fmp_treasury_snapshots(*, provider: Any | None, now: datetime) -> dict[str, MacroIndicatorSnapshot]:
@@ -1583,6 +1724,26 @@ def _fetch_cached_or_fear_greed_snapshot(
         raise
     store.record_provider_success(FEAR_GREED_PROVIDER)
     return snapshot
+
+
+def _fetch_fear_greed_fast_snapshot(
+    *,
+    store: MacroRegimeStore,
+    fear_greed_fetcher: Any | None,
+    now: datetime,
+) -> MacroIndicatorSnapshot:
+    cached = store.load_indicator(FEAR_GREED, now=now, stale_after_hours=24 * 5)
+    if cached is not None and _refresh_snapshot_value_usable(cached):
+        if _same_observation_day(cached, now):
+            return _as_cached_fear_greed_snapshot(cached, now=now)
+        return _as_cached_fear_greed_snapshot(cached, now=now, error="using recent CNN cache in fast mode")
+    if fear_greed_fetcher is not None:
+        return _fetch_cached_or_fear_greed_snapshot(
+            store=store,
+            fear_greed_fetcher=fear_greed_fetcher,
+            now=now,
+        )
+    raise RuntimeError("CNN Fear & Greed official value unavailable in fast mode")
 
 
 def _fetch_fred_snapshot(
@@ -2788,8 +2949,26 @@ def _macro_data_status(items: list[MacroIndicatorSnapshot]) -> tuple[str, str]:
     return "核心缺失", "低"
 
 
-def _read_url_text(url: str, *, timeout_seconds: int = MACRO_REQUEST_TIMEOUT_SECONDS) -> str:
-    request = Request(url, headers={"User-Agent": "ZHX-Research/1.0"})
+def _read_url_text(url: str, *, timeout_seconds: int | float = MACRO_REQUEST_TIMEOUT_SECONDS) -> str:
+    headers = {
+        "User-Agent": "ZHX-Research/1.0",
+        "Accept": "text/csv,application/json,text/plain,*/*",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    try:
+        import requests
+
+        with requests.Session() as session:
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=(FRED_CONNECT_TIMEOUT_SECONDS, float(timeout_seconds)),
+            )
+            response.raise_for_status()
+            return response.text
+    except ImportError:
+        pass
+    request = Request(url, headers=headers)
     with urlopen(request, timeout=timeout_seconds) as response:
         return response.read().decode("utf-8")
 

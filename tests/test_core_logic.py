@@ -1570,7 +1570,7 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         values = [value for _label, value, _tone in items]
 
-        self.assertEqual(labels, ["F&G", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
         self.assertIn("34 恐惧", values)
 
     def test_dashboard_header_promotes_official_core_macro_indicators_without_proxies(self) -> None:
@@ -1606,10 +1606,10 @@ class DashboardLayoutTests(unittest.TestCase):
         labels = [label for label, _value, _tone in items]
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
-        self.assertEqual(labels, ["F&G", "VIX"])
+        self.assertEqual(labels, ["F&G", "VIX", "HY OAS", "10Y"])
         self.assertIn("VIX 19.4", joined)
-        self.assertNotIn("HY OAS", joined)
-        self.assertNotIn("10Y", joined)
+        self.assertIn("HY OAS 2.78%", joined)
+        self.assertIn("10Y 4.55%", joined)
         self.assertNotIn("观察池强弱", joined)
         self.assertNotIn("美元", joined)
         self.assertNotIn("信用代理", joined)
@@ -1634,7 +1634,7 @@ class DashboardLayoutTests(unittest.TestCase):
         joined = "｜".join(f"{label} {value}" for label, value, _tone in items)
 
         self.assertIn("VIX 暂缺", joined)
-        self.assertNotIn("HY OAS", joined)
+        self.assertIn("HY OAS 官方暂缺", joined)
         self.assertNotIn("信用代理", joined)
         self.assertNotIn("美元", joined)
         self.assertNotIn("VIX 0.0", joined)

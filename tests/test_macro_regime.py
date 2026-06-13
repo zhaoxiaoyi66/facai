@@ -984,7 +984,7 @@ def test_macro_refresh_frontend_deadline_returns_cache_or_missing_for_slow_sourc
     path = tmp_path / "macro.sqlite"
     _seed_macro_market_cache(path)
     monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
-    monkeypatch.setattr(macro_regime, "MACRO_REFRESH_FRONTEND_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(macro_regime, "MACRO_REFRESH_FAST_TIMEOUT_SECONDS", 0.05)
 
     def slow_fred(series_id: str) -> str:
         time.sleep(0.2)
@@ -1005,13 +1005,50 @@ def test_macro_refresh_frontend_deadline_returns_cache_or_missing_for_slow_sourc
         fred_fetcher=slow_fred,
         fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
         now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+        mode=macro_regime.MACRO_FAST_STATUS,
     )
     elapsed = time.perf_counter() - started
 
     assert elapsed < 0.35
     assert result["duration_seconds"] < 0.35
     assert result["indicators"][HY_OAS]["status"] == "failed"
-    assert "timeout" in str(result["indicators"][HY_OAS]["error"]).lower()
+    error = str(result["indicators"][HY_OAS]["error"]).lower()
+    assert "front refresh skipped" in error
+    assert "no usable cache" in error
+
+
+def test_macro_fast_status_skips_slow_fred_and_schedules_official_backfill(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "macro.sqlite"
+    _seed_macro_market_cache(path)
+    monkeypatch.setattr("data.macro_regime.load_watchlist", lambda: ["AAA", "BBB"])
+    scheduled: list[str] = []
+
+    def fake_schedule(path_arg, indicator_results, *, now):
+        scheduled.extend(macro_regime._official_background_seed_candidates(indicator_results))
+        return list(scheduled)
+
+    monkeypatch.setattr(macro_regime, "_schedule_official_macro_background_seed", fake_schedule)
+    fred_calls: list[str] = []
+
+    def slow_fred(series_id: str) -> str:
+        fred_calls.append(series_id)
+        time.sleep(0.2)
+        return _fred_fetcher({"BAMLH0A0HYM2": [3.9]})(series_id)
+
+    result = refresh_macro_indicators(
+        path,
+        provider=FailingProvider(),
+        fred_fetcher=slow_fred,
+        fear_greed_fetcher=lambda url: {"fear_and_greed": {"score": 45, "timestamp": "2026-06-10T20:00:00+00:00"}},
+        now=datetime(2026, 6, 10, 21, tzinfo=timezone.utc),
+        mode=macro_regime.MACRO_FAST_STATUS,
+        background_seed=True,
+    )
+
+    assert result["mode"] == macro_regime.MACRO_FAST_STATUS
+    assert fred_calls == []
+    assert HY_OAS in result["background_seed_indicators"]
+    assert TEN_YEAR_YIELD in result["background_seed_indicators"]
 
 
 def test_background_seed_candidates_only_include_failed_or_stale_official_indicators() -> None:

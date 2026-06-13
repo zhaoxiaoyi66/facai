@@ -371,6 +371,28 @@ def test_macro_only_refresh_calls_macro_refresher_without_stock_provider(tmp_pat
     assert provider.fundamental_calls == 0
 
 
+def test_macro_only_refresh_uses_fast_macro_status_by_default(monkeypatch, tmp_path) -> None:
+    from data.macro_regime import MACRO_FAST_STATUS
+    import data.refresh_policy as refresh_policy
+
+    calls: list[str] = []
+
+    def fake_refresh_macro_indicators(*, mode: str):
+        calls.append(mode)
+        return {"status": "partial", "duration_seconds": 0.1, "indicators": {"hy_oas": {"status": "failed"}}}
+
+    monkeypatch.setattr(refresh_policy, "refresh_macro_indicators", fake_refresh_macro_indicators)
+
+    result = refresh_symbols_by_mode(
+        [],
+        RefreshMode.MACRO_ONLY,
+        cache=FundamentalCache(tmp_path / "refresh.sqlite"),
+    )
+
+    assert result["status"] == "partial"
+    assert calls == [MACRO_FAST_STATUS]
+
+
 def test_summarize_refresh_result_uses_mode_specific_label() -> None:
     assert summarize_refresh_result(
         RefreshMode.PRICE_ONLY,

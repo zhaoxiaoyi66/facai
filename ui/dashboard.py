@@ -774,6 +774,8 @@ def _dashboard_command_status_items(table, macro_regime, freshness, portfolio_st
     return [
         ("F&G", _dashboard_fear_greed_pill_text(macro_regime), "sentiment"),
         ("VIX", _dashboard_vix_pill_text(macro_regime), "vix"),
+        ("HY OAS", _dashboard_hy_oas_pill_text(macro_regime), "credit"),
+        ("10Y", _dashboard_ten_year_pill_text(macro_regime), "rate"),
     ]
 
 
