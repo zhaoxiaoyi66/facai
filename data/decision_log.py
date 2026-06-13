@@ -134,6 +134,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "volume_price_score": "REAL",
     "volume_ratio": "REAL",
     "volume_ma20": "REAL",
+    "volume_regime_cn": "TEXT",
     "close_position": "REAL",
     "candle_signal_cn": "TEXT",
     "volume_signal_cn": "TEXT",
@@ -960,6 +961,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             "volume_price_score",
             "volume_ratio",
             "volume_ma20",
+            "volume_regime_cn",
             "close_position",
             "candle_signal_cn",
             "volume_signal_cn",
@@ -980,6 +982,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             volume_price_score = ?,
             volume_ratio = ?,
             volume_ma20 = ?,
+            volume_regime_cn = ?,
             close_position = ?,
             candle_signal_cn = ?,
             volume_signal_cn = ?,
@@ -996,6 +999,7 @@ def _write_volume_price_acceptance_snapshot(conn: sqlite3.Connection, entry_id: 
             cleaned["volume_price_score"],
             cleaned["volume_ratio"],
             cleaned["volume_ma20"],
+            cleaned["volume_regime_cn"],
             cleaned["close_position"],
             cleaned["candle_signal_cn"],
             cleaned["volume_signal_cn"],
@@ -1788,6 +1792,7 @@ def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> d
             "volume_price_score": None,
             "volume_ratio": None,
             "volume_ma20": None,
+            "volume_regime_cn": None,
             "close_position": None,
             "candle_signal_cn": None,
             "volume_signal_cn": None,
@@ -1806,6 +1811,7 @@ def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> d
         ),
         "volume_ratio": _optional_non_negative_number(_value(values, "volumeRatio", "volume_ratio"), "volume_ratio"),
         "volume_ma20": _optional_non_negative_number(_value(values, "volumeMa20", "volume_ma20"), "volume_ma20"),
+        "volume_regime_cn": _clean_optional_text(_value(values, "volumeRegimeCn", "volume_regime_cn")),
         "close_position": _optional_non_negative_number(_value(values, "closePosition", "close_position"), "close_position"),
         "candle_signal_cn": _clean_optional_text(_value(values, "candleSignalCn", "candle_signal_cn")),
         "volume_signal_cn": _clean_optional_text(_value(values, "volumeSignalCn", "volume_signal_cn")),
@@ -1815,7 +1821,9 @@ def _clean_volume_price_acceptance_snapshot(action_type: str, values: dict) -> d
             _value(values, "distributionCount10d", "distribution_count_10d"),
             "distribution_count_10d",
         ),
-        "volume_price_reason_cn": _clean_optional_text(_value(values, "volumePriceReasonCn", "volume_price_reason_cn")),
+        "volume_price_reason_cn": _clean_optional_text(
+            _value(values, "volumePriceReasonCn", "volume_price_reason_cn", "reasonCn", "reason_cn")
+        ),
         "volume_price_zone_source": _clean_optional_text(
             _value(values, "volumePriceZoneSource", "volume_price_zone_source", "zoneSource", "zone_source")
         ),

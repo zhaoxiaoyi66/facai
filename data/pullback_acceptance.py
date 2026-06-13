@@ -36,6 +36,10 @@ class PullbackAcceptanceSnapshot:
     acceptance_warnings: list[str] = field(default_factory=list)
     next_acceptance_steps: list[str] = field(default_factory=list)
     acceptance_checked_at: str | None = None
+    zone_source: str = "fallback"
+    support_source: str = "missing"
+    confirm_line_source: str = "missing"
+    invalid_line_source: str = "missing"
 
     @property
     def status_label(self) -> str:
@@ -62,16 +66,35 @@ def evaluate_pullback_acceptance(
     if high is None:
         high = close
 
-    support = _support_level(source)
+    support_info = _support_level_info(source)
+    support = support_info["value"]
     if close is None or support is None:
         missing = []
         if close is None:
             missing.append("缺少收盘价 / 当前价")
         if support is None:
             missing.append("缺少失效线 / swing low / 支撑观察区")
-        return _missing_snapshot(missing, checked_at=checked_at)
+        return _missing_snapshot(
+            missing,
+            checked_at=checked_at,
+            zone_source=str(support_info["zone_source"]),
+            support_source=str(support_info["support_source"]),
+        )
 
-    confirmation_price = _first_number(source, "confirmation_price", "confirmationPrice")
+    confirmation_price, confirm_line_source = _first_number_with_source(
+        source,
+        "confirmation_price",
+        "confirmationPrice",
+        "confirm_line",
+        "confirmLine",
+    )
+    invalidation, invalid_line_source = _first_number_with_source(
+        source,
+        "invalidation_price",
+        "invalidationPrice",
+        "invalid_line",
+        "invalidLine",
+    )
     ema20 = _first_number(source, "ema20")
     ema50 = _first_number(source, "ema50")
     volume = _first_number(source, "volume")
@@ -95,7 +118,7 @@ def evaluate_pullback_acceptance(
         close=close,
         low=low,
         support=support,
-        invalidation=_first_number(source, "invalidation_price", "invalidationPrice"),
+        invalidation=invalidation,
         swing=_first_number(source, "recent_swing_low", "recentSwingLow"),
     )
     score += support_score
@@ -179,6 +202,10 @@ def evaluate_pullback_acceptance(
         acceptance_warnings=_dedupe(warnings),
         next_acceptance_steps=_dedupe(steps),
         acceptance_checked_at=_checked_at(checked_at),
+        zone_source=str(support_info["zone_source"]),
+        support_source=str(support_info["support_source"]),
+        confirm_line_source=confirm_line_source,
+        invalid_line_source=invalid_line_source,
     )
 
 
@@ -194,6 +221,10 @@ def pullback_acceptance_snapshot_fields(
         "acceptanceReasons": list(snapshot.acceptance_reasons),
         "acceptanceWarnings": list(snapshot.acceptance_warnings),
         "acceptanceCheckedAt": checked_text or snapshot.acceptance_checked_at,
+        "pullbackZoneSource": snapshot.zone_source,
+        "pullbackSupportSource": snapshot.support_source,
+        "pullbackConfirmLineSource": snapshot.confirm_line_source,
+        "pullbackInvalidLineSource": snapshot.invalid_line_source,
     }
 
 
@@ -423,16 +454,27 @@ def _vwap_confirmation(*, close: float, vwap: float | None, close_position: floa
 
 
 def _support_level(source: dict[str, Any]) -> float | None:
-    candidates = [
-        _first_number(source, "invalidation_price", "invalidationPrice"),
-        _first_number(source, "recent_swing_low", "recentSwingLow"),
-        _first_number(source, "near_term_repair_zone_low", "nearTermRepairZoneLow"),
-        _first_number(source, "support_watch_zone_low", "supportWatchZoneLow"),
-        _first_number(source, "technical_pullback_zone_low", "technicalPullbackZoneLow"),
-        _first_number(source, "technical_entry_zone_low", "technicalEntryZoneLow"),
-    ]
-    valid = [value for value in candidates if value is not None and value > 0]
-    return max(valid) if valid else None
+    value = _support_level_info(source)["value"]
+    return float(value) if value is not None else None
+
+
+def _support_level_info(source: dict[str, Any]) -> dict[str, Any]:
+    candidates: list[tuple[float, str, str]] = []
+    for keys, zone_source in (
+        (("invalidation_price", "invalidationPrice", "invalid_line", "invalidLine"), "radar"),
+        (("recent_swing_low", "recentSwingLow"), "fallback"),
+        (("near_term_repair_zone_low", "nearTermRepairZoneLow"), "radar"),
+        (("support_watch_zone_low", "supportWatchZoneLow"), "radar"),
+        (("technical_pullback_zone_low", "technicalPullbackZoneLow"), "radar"),
+        (("technical_entry_zone_low", "technicalEntryZoneLow"), "radar"),
+    ):
+        value, source_key = _first_number_with_source(source, *keys)
+        if value is not None and value > 0:
+            candidates.append((value, source_key, zone_source))
+    if not candidates:
+        return {"value": None, "support_source": "missing", "zone_source": "fallback"}
+    value, support_source, zone_source = max(candidates, key=lambda item: item[0])
+    return {"value": value, "support_source": support_source, "zone_source": zone_source}
 
 
 def _relative_strength(source: dict[str, Any]) -> float | str | None:
@@ -456,7 +498,13 @@ def _close_position(*, low: float | None, high: float | None, close: float | Non
     return max(0.0, min(1.0, (close - low) / (high - low)))
 
 
-def _missing_snapshot(reasons: list[str], *, checked_at: datetime | None) -> PullbackAcceptanceSnapshot:
+def _missing_snapshot(
+    reasons: list[str],
+    *,
+    checked_at: datetime | None,
+    zone_source: str = "fallback",
+    support_source: str = "missing",
+) -> PullbackAcceptanceSnapshot:
     return PullbackAcceptanceSnapshot(
         acceptance_status=DATA_MISSING,
         acceptance_score=0.0,
@@ -469,6 +517,8 @@ def _missing_snapshot(reasons: list[str], *, checked_at: datetime | None) -> Pul
         acceptance_warnings=["缺少核心价格 / K线 / 支撑字段，无法判断承接。"],
         next_acceptance_steps=["点击“更新技术”，补齐 K线、均线、swing、确认线和失效线。"],
         acceptance_checked_at=_checked_at(checked_at),
+        zone_source=zone_source,
+        support_source=support_source,
     )
 
 
@@ -484,6 +534,20 @@ def _first_number(mapping: dict[str, Any], *keys: str) -> float | None:
             if number is not None:
                 return number
     return None
+
+
+def _first_number_with_source(mapping: dict[str, Any], *keys: str) -> tuple[float | None, str]:
+    for key in keys:
+        number = _number(mapping.get(key))
+        if number is not None:
+            return number, key
+    debug = mapping.get("debug")
+    if isinstance(debug, dict):
+        for key in keys:
+            number = _number(debug.get(key))
+            if number is not None:
+                return number, f"debug.{key}"
+    return None, "missing"
 
 
 def _first_text(mapping: dict[str, Any], *keys: str) -> str:

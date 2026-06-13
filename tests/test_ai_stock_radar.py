@@ -794,6 +794,41 @@ def test_ticker_research_track_prevents_profile_gap_when_provider_sector_missing
     assert "高" in html
 
 
+def test_glw_ticker_track_prevents_sector_gap_when_provider_sector_missing() -> None:
+    row = {
+        "ticker": "GLW",
+        "company_name": "Corning Incorporated",
+        "current_price": 179.2,
+        "data_status": "OK",
+        "debug": {"data_missing_fields": ["sector / industry"]},
+    }
+
+    completeness = radar_ui._data_completeness_html(
+        row,
+        "高",
+        {"volume_source": "daily_cache", "latest_volume": 8_891_877},
+    )
+    confidence = radar_ui._data_confidence_html(row)
+
+    assert "科技" in radar_ui._company_track_html(row)
+    assert "行业 / 赛道信息" not in completeness
+    assert "sector / industry" not in completeness
+    assert "资料缺口" not in confidence
+
+
+def test_crcl_without_price_or_history_stays_data_insufficient() -> None:
+    with TemporaryDirectory() as tmpdir:
+        report = build_ai_stock_radar_report("CRCL", path=_db(tmpdir), now=NOW)
+        data = report.to_dict()
+
+    missing = set(data["debug"]["data_missing_fields"])
+
+    assert data["decision"] == "DATA_MISSING"
+    assert data["current_price"] is None
+    assert data["price_position"] == "ZONE_MISSING"
+    assert {"current_price", "daily_bars"}.issubset(missing)
+
+
 def test_list_row_uses_cached_report_fallback_when_dashboard_table_missing() -> None:
     cached_row = {
         "companyName": "Microsoft Corporation",

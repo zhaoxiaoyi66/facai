@@ -332,6 +332,8 @@ def volume_price_acceptance_snapshot_fields(
         "confirmationSignalCn": snapshot.confirmation_signal_cn,
         "distributionCount10d": snapshot.distribution_count_10d,
         "volumePriceReasonCn": snapshot.acceptance_reason_cn,
+        "reasonCn": snapshot.acceptance_reason_cn,
+        "reason_cn": snapshot.acceptance_reason_cn,
         "volumePriceZoneSource": snapshot.zone_source,
         "volumePriceCheckedAt": checked_text or snapshot.volume_price_checked_at,
     }

@@ -34,6 +34,8 @@ def test_price_in_repair_zone_without_confirmation_is_unconfirmed() -> None:
     assert snapshot.acceptance_status == ACCEPTANCE_UNCONFIRMED
     assert snapshot.support_hold_status == "支撑守住"
     assert snapshot.close_confirmation_status != "收盘确认"
+    assert snapshot.zone_source == "radar"
+    assert snapshot.support_source == "near_term_repair_zone_low"
 
 
 def test_support_held_close_confirmed_and_relative_strength_is_confirmed() -> None:
@@ -97,6 +99,42 @@ def test_close_below_invalidation_price_is_failed() -> None:
 
     assert snapshot.acceptance_status == ACCEPTANCE_FAILED
     assert "跌破" in snapshot.support_hold_status
+    assert snapshot.zone_source == "radar"
+    assert snapshot.support_source == "invalidation_price"
+    assert snapshot.invalid_line_source == "invalidation_price"
+
+
+def test_pullback_acceptance_reports_radar_zone_source_for_upstream_entry_display() -> None:
+    snapshot = evaluate_pullback_acceptance(
+        technicals={
+            "close": 103,
+            "low": 101,
+            "high": 106,
+            "near_term_repair_zone_low": 100,
+            "near_term_repair_zone_high": 110,
+            "confirm_line": 108,
+            "invalid_line": 96,
+        }
+    )
+
+    assert snapshot.zone_source == "radar"
+    assert snapshot.support_source == "near_term_repair_zone_low"
+    assert snapshot.confirm_line_source == "confirm_line"
+    assert snapshot.invalid_line_source == "invalid_line"
+
+
+def test_pullback_acceptance_reports_fallback_source_for_local_support() -> None:
+    snapshot = evaluate_pullback_acceptance(
+        technicals={
+            "close": 103,
+            "low": 101,
+            "high": 106,
+            "recent_swing_low": 100,
+        }
+    )
+
+    assert snapshot.zone_source == "fallback"
+    assert snapshot.support_source == "recent_swing_low"
 
 
 def test_high_volume_break_below_swing_low_is_failed() -> None:

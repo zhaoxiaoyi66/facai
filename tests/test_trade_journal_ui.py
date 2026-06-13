@@ -160,6 +160,44 @@ def test_trade_entry_detail_shows_concrete_reentry_plan() -> None:
     assert "回踩买回" in html
 
 
+def test_buy_entry_detail_handles_legacy_missing_volume_price_snapshot() -> None:
+    html = trade_journal._entry_discipline_snapshot_html(
+        {
+            "action_type": "buy",
+            "position_class": "A",
+            "radar_decision": "WAIT",
+            "volume_price_status": None,
+        }
+    )
+
+    assert "历史日志未记录量价快照" in html
+
+
+def test_buy_entry_detail_displays_volume_price_snapshot() -> None:
+    html = trade_journal._entry_discipline_snapshot_html(
+        {
+            "action_type": "buy",
+            "position_class": "A",
+            "radar_decision": "WAIT",
+            "volume_price_status": "FORMING",
+            "volume_price_score": 48,
+            "volume_ratio": 0.6,
+            "volume_regime_cn": "缩量",
+            "volume_price_zone_source": "radar",
+            "candle_signal_cn": "收盘改善",
+            "volume_signal_cn": "缩量",
+            "support_signal_cn": "支撑守住",
+            "confirmation_signal_cn": "尚未确认",
+            "distribution_count_10d": 1,
+            "volume_price_reason_cn": "初步承接，尚未确认",
+        }
+    )
+
+    assert "量价承接快照" in html
+    assert "雷达区间" in html
+    assert "历史日志未记录量价快照" not in html
+
+
 def test_b_class_gate_copy_does_not_use_a_class_core_language() -> None:
     result = SimpleNamespace(
         sellLevel="L3",

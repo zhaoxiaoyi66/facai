@@ -1273,32 +1273,27 @@ def _is_optional_gap_field(field: str) -> bool:
 
 
 def _profile_missing(row: dict[str, Any]) -> bool:
+    profile = _resolved_profile(row)
+    return bool(not profile["company"] or not profile["track"])
+
+
+def _resolved_profile(row: dict[str, Any]) -> dict[str, str]:
     ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+    snapshot = _dict_value(row, "rawSnapshot") or {}
     company = str(
-        row.get("company_name")
+        _first_present(snapshot, "companyName", "company_name", "name", "company")
+        or row.get("company_name")
         or row.get("companyName")
         or row.get("name")
         or row.get("company")
         or ""
     ).strip()
-    company_missing = not company or company.upper() == ticker
-    sector = _clean_text(
-        row.get("sector")
-        or row.get("industry")
-        or row.get("industry_group")
-        or row.get("industryGroup")
-        or row.get("business_model")
-        or row.get("businessModel")
-        or row.get("model")
-    )
-    if not sector or sector == "赛道待补":
-        sector = get_ticker_research_track(
-            ticker,
-            row.get("sector"),
-            row.get("industry"),
-            row,
-        )
-    return bool(company_missing or not sector or sector == "赛道待补")
+    if company.upper() == ticker:
+        company = ""
+    track = _sector_track_from_sources(row, snapshot, ticker)
+    if track == "赛道待补":
+        track = ""
+    return {"company": company, "track": track}
 
 
 def _price_data_state(row: dict[str, Any], field_text: str | None = None) -> str:
@@ -1588,11 +1583,15 @@ def _field_list_display(value: Any, row: dict[str, Any] | None = None) -> str:
         return "无"
     values = value if isinstance(value, (list, tuple, set)) else [value]
     labels = [_field_display_label(item) for item in values if str(item).strip()]
-    if row is not None and not _profile_missing(row):
+    if row is not None:
+        profile = _resolved_profile(row)
         labels = [
             label
             for label in labels
-            if label not in {"行业 / 赛道信息", "公司名称"}
+            if not (
+                (label == "行业 / 赛道信息" and profile["track"])
+                or (label == "公司名称" and profile["company"])
+            )
         ]
     labels = _dedupe_text([label for label in labels if label])
     return "、".join(labels[:8]) if labels else "无"

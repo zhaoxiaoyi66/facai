@@ -557,7 +557,9 @@ def test_portfolio_buy_add_saves_pullback_acceptance_snapshot() -> None:
         assert entry["acceptance_checked_at"]
         assert entry["volume_price_status"] == "ACCEPTANCE_CONFIRMED"
         assert entry["volume_ratio"] >= 1.2
+        assert entry["volume_regime_cn"]
         assert entry["volume_price_reason_cn"]
+        assert entry["volume_price_zone_source"] == "radar"
         assert entry["volume_price_checked_at"]
 
 

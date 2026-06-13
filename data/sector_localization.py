@@ -72,6 +72,7 @@ TICKER_RESEARCH_TRACKS = {
     "HOOD": "金融科技｜券商",
     "VST": "电力｜AI电力",
     "CEG": "核电｜电力",
+    "GLW": "科技",
     "ETN": "电气设备｜电网",
     "CRWV": "AI云｜算力租赁",
     "NBIS": "AI云｜算力基础设施",

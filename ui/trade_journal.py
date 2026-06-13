@@ -2891,7 +2891,11 @@ def _entry_detail_html(entry: dict) -> str:
 def _entry_discipline_snapshot_html(entry: dict) -> str:
     action = str(entry.get("action_type") or "")
     if action in CLASSIFICATION_ACTIONS:
-        return f"{_classification_snapshot_html(entry)}{_entry_radar_gate_snapshot_html(entry)}"
+        return (
+            f"{_classification_snapshot_html(entry)}"
+            f"{_entry_radar_gate_snapshot_html(entry)}"
+            f"{_entry_volume_price_snapshot_html(entry)}"
+        )
     if action not in SELL_DISCIPLINE_ACTIONS:
         return '<div class="trade-entry-discipline-empty">无卖出纪律检查。</div>'
     if not entry.get("discipline_status"):
@@ -3082,6 +3086,42 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
     if entry.get("radar_blocked"):
         sync_note = '<div class="trade-entry-reminder">Radar 旧门禁曾拦截：这条旧记录不是默认真实成交。</div>'
     return f"{_detail_grid_html(rows)}{reason_html}{sync_note}"
+
+
+def _entry_volume_price_snapshot_html(entry: dict) -> str:
+    if str(entry.get("action_type") or "") not in CLASSIFICATION_ACTIONS:
+        return ""
+    status = str(entry.get("volume_price_status") or "").strip()
+    if not status:
+        return '<div class="trade-entry-discipline-empty">历史日志未记录量价快照</div>'
+    rows = [
+        ("量价状态", status),
+        ("分数", _number_text(entry.get("volume_price_score"))),
+        ("量比", _ratio_text(entry.get("volume_ratio"))),
+        ("量能标签", _text(entry.get("volume_regime_cn"))),
+        ("区间来源", _volume_price_zone_source_text(entry.get("volume_price_zone_source"))),
+        ("K线", _text(entry.get("candle_signal_cn"))),
+        ("量能", _text(entry.get("volume_signal_cn"))),
+        ("支撑", _text(entry.get("support_signal_cn"))),
+        ("确认", _text(entry.get("confirmation_signal_cn"))),
+        ("派发日", _int_text(entry.get("distribution_count_10d"))),
+        ("原因", _text(entry.get("volume_price_reason_cn"))),
+    ]
+    return (
+        '<div class="trade-entry-reentry-plan">'
+        '<b>量价承接快照</b>'
+        f"{_detail_grid_html(rows)}"
+        "</div>"
+    )
+
+
+def _volume_price_zone_source_text(value: object) -> str:
+    return {
+        "radar": "雷达区间",
+        "upstream": "雷达区间",
+        "fallback": "本地回退区间",
+        "missing": "缺失",
+    }.get(str(value or "").strip(), _text(value))
 
 
 def _entry_text_value(value: object) -> str:
@@ -4075,6 +4115,20 @@ def _quantity_text(value: object) -> str:
     if number is None:
         return BLANK_TEXT
     return f"{number:,.4g}"
+
+
+def _number_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return f"{number:g}"
+
+
+def _ratio_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return BLANK_TEXT
+    return f"{number:.2f}x"
 
 
 def _money_text(value: object) -> str:

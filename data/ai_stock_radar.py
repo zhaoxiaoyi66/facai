@@ -1611,7 +1611,11 @@ def _data_missing_fields(data_status: str, market: dict[str, Any], scores: Radar
     if data_status == "STALE":
         return ["current_price_stale"]
     if data_status == "MISSING_PRICE":
-        return ["current_price"]
+        fields = ["current_price"]
+        history_status = str(market.get("historyStatus") or market.get("history_status") or "").lower()
+        if history_status in {"", "missing"} and _number(market.get("latestClose")) is None:
+            fields.append("daily_bars")
+        return fields
     if data_status == "MISSING_VALUATION":
         return _missing_valuation_fields()
     if data_status == "MISSING_SCORE":
