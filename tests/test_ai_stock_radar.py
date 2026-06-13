@@ -132,10 +132,13 @@ def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
 
     assert "Radar 研究入口" in source
     assert "核心状态" in source
+    assert "研报状态" in source
     assert "数据完整度" in source
-    assert "查看研报" in row_source
+    assert ">查看</a>" in row_source
+    assert "#radar-report" in row_source
     assert "Block reasons" not in source
     assert "allowed_add_pct" not in source
+    assert "<th>总分</th>" not in source
 
 
 def test_ai_radar_report_html_uses_research_report_sections() -> None:
@@ -184,7 +187,54 @@ def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
     html = radar_ui._list_row_html(row, "")
 
     assert "DATA_MISSING" not in html
-    assert "低｜估值缺口、技术缺口、评分缺口" in html
+    assert "低｜3项缺口" in html
+    assert "title=\"估值缺口、技术缺口、评分缺口\"" in html
+
+
+def test_list_data_confidence_does_not_show_price_gap_when_current_price_exists() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft",
+        "current_price": 390,
+        "data_status": "MISSING_SCORE",
+        "debug": {"data_missing_fields": ["current_price", "forward_pe", "ema50"]},
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "价格缺口" not in html
+    assert "估值缺口" in html
+    assert "技术缺口" in html
+
+
+def test_list_data_confidence_shows_price_gap_only_when_price_missing() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft",
+        "current_price": None,
+        "data_status": "MISSING_PRICE",
+        "debug": {"data_missing_fields": ["current_price"]},
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "不足｜价格缺失" in html
+
+
+def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft",
+        "current_price": 390,
+        "data_status": "STALE",
+        "is_stale": True,
+        "debug": {"data_missing_fields": ["current_price_stale"]},
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "价格过期" in html
+    assert "价格缺口" not in html
 
 
 def test_price_above_buy_zone_blocks_chase_with_reason() -> None:

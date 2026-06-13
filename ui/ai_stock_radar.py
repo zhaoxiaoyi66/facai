@@ -29,23 +29,20 @@ def render() -> None:
 
 def _render_list(tickers: list[str], selected: str, source: str) -> None:
     rows = _sort_rows([_list_row(ticker) for ticker in tickers])
-    filter_choice = st.radio(
-        "Radar 筛选",
-        ["全部", "买区/复核", "观察", "风险区", "数据低"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="ai_radar_list_filter",
-    )
-    rows = _filter_rows(rows, filter_choice)
+    filter_key = _selected_radar_filter_key()
+    filter_counts = _filter_counts(rows)
+    st.markdown(_filter_chips_html(filter_key, filter_counts), unsafe_allow_html=True)
+    rows = _filter_rows(rows, filter_key)
     body = "".join(_list_row_html(row, selected) for row in rows)
     st.markdown(
         (
             '<section class="ai-radar-list-card">'
             f'<div class="ai-radar-section-head"><strong>Radar 研究入口</strong><span>{len(rows)}/{len(tickers)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
+            '<p class="ai-radar-list-note">列表只做研究入口；完整评分、区间判断和风险依据请进入单股研报页。</p>'
             '<div class="ai-radar-table-wrap">'
             '<table class="ai-radar-table">'
             "<thead><tr>"
-            "<th>股票</th><th>公司</th><th>当前价</th><th>核心状态</th><th>总分</th><th>数据完整度</th><th>更新时间</th><th>操作</th>"
+            "<th>股票</th><th>公司 / 赛道</th><th>当前价</th><th>核心状态</th><th>研报状态</th><th>数据完整度</th><th>更新时间</th><th>操作</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -83,64 +80,125 @@ def _list_row(ticker: str) -> dict[str, Any]:
     row = _dashboard_row(ticker)
     snapshot = _dict_value(row, "rawSnapshot")
     technicals = _dict_value(row, "rawTechnicals")
-    return build_ai_stock_radar_list_row(
+    list_row = build_ai_stock_radar_list_row(
         ticker,
         company_name=str(_row_value(row, "companyName") or ticker),
         scores=None if snapshot and technicals else _scores_from_row(row),
         snapshot=snapshot,
         technicals=technicals,
     )
+    list_row["sector"] = _clean_text(
+        _first_present(snapshot or {}, "sector", "industry", "industry_group", "industryGroup", "business_model", "businessModel")
+        or _row_value(row, "sector", "industry", "model")
+    )
+    return list_row
 
 
 def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rank = {
-        "BLOCK_CHASE": 0,
-        "DATA_MISSING": 1,
-        "AVOID": 2,
-        "WAIT": 3,
-        "ALLOW_BUY": 4,
+    status_rank = {
+        "价值复核": 0,
+        "近端复核": 0,
+        "买区内": 1,
+        "技术待确认": 2,
+        "观察": 3,
+        "破位复核": 4,
+        "追高风险": 5,
+        "风险区": 5,
     }
+    confidence_rank = {"高": 0, "中": 1, "低": 2, "不足": 3}
     return sorted(
         rows,
         key=lambda row: (
-            rank.get(str(row.get("decision") or ""), 9),
-            -(_number(row.get("final_score")) or -1),
+            status_rank.get(_core_status(row), 9),
+            confidence_rank.get(_data_confidence(row), 9),
+            _updated_sort_key(row),
             str(row.get("ticker") or ""),
         ),
     )
 
 
-def _filter_rows(rows: list[dict[str, Any]], filter_choice: str) -> list[dict[str, Any]]:
-    if filter_choice == "全部":
+def _updated_sort_key(row: dict[str, Any]) -> float:
+    updated = pd.to_datetime(row.get("data_updated_at"), errors="coerce")
+    if pd.isna(updated):
+        return float("inf")
+    try:
+        return -float(updated.timestamp())
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return float("inf")
+
+
+def _selected_radar_filter_key() -> str:
+    key = str(st.query_params.get("radarFilter", "all") or "all").strip()
+    valid = {"all", "value", "pullback", "watch", "chase", "data"}
+    return key if key in valid else "all"
+
+
+def _filter_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        key: sum(1 for row in rows if _row_matches_filter(row, key))
+        for key in ("all", "value", "pullback", "watch", "chase", "data")
+    }
+
+
+def _filter_rows(rows: list[dict[str, Any]], filter_key: str) -> list[dict[str, Any]]:
+    if filter_key == "all":
         return rows
-    if filter_choice == "买区/复核":
-        return [row for row in rows if _core_status(row) in {"买区内", "价值复核", "近端复核"}]
-    if filter_choice == "观察":
-        return [row for row in rows if _core_status(row) in {"观察", "技术待确认"}]
-    if filter_choice == "风险区":
-        return [row for row in rows if _core_status(row) in {"风险区", "追高风险", "破位复核"}]
-    if filter_choice == "数据低":
-        return [row for row in rows if _data_confidence(row) == "低"]
-    return rows
+    return [row for row in rows if _row_matches_filter(row, filter_key)]
+
+
+def _row_matches_filter(row: dict[str, Any], filter_key: str) -> bool:
+    status = _core_status(row)
+    if filter_key == "all":
+        return True
+    if filter_key == "value":
+        return status in {"价值复核", "近端复核"}
+    if filter_key == "pullback":
+        return status == "买区内"
+    if filter_key == "watch":
+        return status in {"观察", "技术待确认"}
+    if filter_key == "chase":
+        return status in {"风险区", "追高风险", "破位复核"}
+    if filter_key == "data":
+        return _data_confidence(row) != "高"
+    return False
+
+
+def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
+    labels = [
+        ("all", "全部"),
+        ("value", "价值复核"),
+        ("pullback", "回踩区"),
+        ("watch", "观察"),
+        ("chase", "追高区"),
+        ("data", "数据缺口"),
+    ]
+    chips = "".join(
+        '<a class="ai-radar-filter-chip {active}" href="?page=ai-radar&amp;radarFilter={key}">'
+        "<span>{label}</span><b>{count}</b></a>".format(
+            active="active" if key == active_key else "",
+            key=escape(key, quote=True),
+            label=escape(label),
+            count=escape(str(counts.get(key, 0))),
+        )
+        for key, label in labels
+    )
+    return f'<nav class="ai-radar-filter-chips">{chips}</nav>'
 
 
 def _list_row_html(row: dict[str, Any], selected: str) -> str:
     ticker = str(row.get("ticker") or "")
     decision = str(row.get("decision") or "")
     active = " active" if ticker == selected else ""
-    confidence = _data_confidence(row)
-    missing = _missing_group_text(row)
-    data_text = confidence if not missing else f"{confidence}｜{missing}"
     return (
         f'<tr class="{escape(_decision_tone(decision))}{active}">'
         f'<td><a class="ai-radar-ticker" href="?page=ai-radar&symbol={escape(ticker, quote=True)}#radar-report" target="_self">{escape(ticker)}</a></td>'
-        f'<td>{escape(str(row.get("company_name") or "-"))}</td>'
+        f"<td>{_company_track_html(row)}</td>"
         f'<td>{escape(_money(row.get("current_price")))}</td>'
         f'<td><span class="ai-radar-status-pill">{escape(_core_status(row))}</span></td>'
-        f'<td>{escape(_number_text(row.get("final_score")))}</td>'
-        f'<td><span class="ai-radar-data-confidence {escape(confidence)}">{escape(data_text)}</span></td>'
+        f'<td><span class="ai-radar-report-status">{escape(_report_status_text(row))}</span></td>'
+        f"<td>{_data_confidence_html(row)}</td>"
         f'<td>{escape(_short_time(row.get("data_updated_at")))}</td>'
-        f'<td><a class="ai-radar-report-link" href="?page=ai-radar&symbol={escape(ticker, quote=True)}#radar-report" target="_self">查看研报</a></td>'
+        f'<td><a class="ai-radar-report-link" href="?page=ai-radar&symbol={escape(ticker, quote=True)}#radar-report" target="_self">查看</a></td>'
         "</tr>"
     )
 
@@ -523,12 +581,63 @@ def _core_status(row: dict[str, Any]) -> str:
     return "观察"
 
 
+def _company_track_html(row: dict[str, Any]) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    company = str(row.get("company_name") or "").strip()
+    if company.upper() == ticker:
+        company = ""
+    track = _clean_text(row.get("sector"))
+    if company and track:
+        return f'<div class="ai-radar-company-cell"><strong>{escape(company)}</strong><span>{escape(track)}</span></div>'
+    if company:
+        return f'<div class="ai-radar-company-cell"><strong>{escape(company)}</strong></div>'
+    if track:
+        return f'<div class="ai-radar-company-cell"><span>{escape(track)}</span></div>'
+    return '<span class="ai-radar-muted">—</span>'
+
+
+def _report_status_text(row: dict[str, Any]) -> str:
+    price_state = _price_data_state(row)
+    if price_state == "missing":
+        return "需补数据"
+    if price_state == "stale" or bool(row.get("is_stale")):
+        return "研报过期"
+    if _data_confidence(row) in {"高", "中"}:
+        return "已生成"
+    return "需补数据"
+
+
+def _data_confidence_html(row: dict[str, Any]) -> str:
+    confidence = _data_confidence(row)
+    groups = _missing_groups(row)
+    summary = _missing_group_summary(groups)
+    detail = "、".join(groups) if groups else "关键数据完整"
+    text = confidence if not summary else f"{confidence}｜{summary}"
+    return (
+        f'<span class="ai-radar-data-confidence {escape(confidence)}" title="{escape(detail, quote=True)}">'
+        f"{escape(text)}</span>"
+    )
+
+
+def _missing_group_summary(groups: list[str]) -> str:
+    if not groups:
+        return ""
+    if len(groups) == 1:
+        return groups[0]
+    return f"{len(groups)}项缺口"
+
+
 def _data_confidence(row: dict[str, Any]) -> str:
     missing = _missing_groups(row)
     data_status = str(row.get("data_status") or "")
+    price_state = _price_data_state(row)
+    if price_state == "missing":
+        return "不足"
     if data_status == "OK" and not bool(row.get("is_stale")) and not missing:
         return "高"
-    if data_status in {"MISSING_PRICE", "MISSING_SCORE"} or len(missing) >= 3:
+    if price_state == "stale" or data_status == "STALE":
+        return "低"
+    if data_status == "MISSING_SCORE" or len(missing) >= 3:
         return "低"
     return "中"
 
@@ -544,6 +653,7 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
     if status and status != "OK":
         fields.append(status)
     text = " ".join(str(item).lower() for item in fields)
+    price_state = _price_data_state(row, text)
     groups: list[str] = []
     if any(token in text for token in ("valuation", "forward_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf")):
         groups.append("估值缺口")
@@ -551,11 +661,30 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
         groups.append("技术缺口")
     if any(token in text for token in ("disclosure", "filing", "kpi", "sec")):
         groups.append("披露缺口")
-    if any(token in text for token in ("price", "quote")):
-        groups.append("价格缺口")
+    if price_state == "stale":
+        groups.append("价格过期")
+    elif price_state == "missing":
+        groups.append("价格缺失")
     if any(token in text for token in ("score", "quality", "growth", "risk")):
         groups.append("评分缺口")
     return _dedupe_text(groups)
+
+
+def _price_data_state(row: dict[str, Any], field_text: str | None = None) -> str:
+    status = str(row.get("data_status") or "").upper()
+    text = field_text
+    if text is None:
+        debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+        fields = []
+        fields.extend(debug.get("data_missing_fields") or [])
+        fields.extend(row.get("data_missing_fields") or [])
+        text = " ".join(str(item).lower() for item in fields)
+    price = _number(row.get("current_price"))
+    if bool(row.get("is_stale")) or status == "STALE" or "current_price_stale" in text or "price_stale" in text:
+        return "stale"
+    if price is None and (status == "MISSING_PRICE" or "current_price" in text or "price" in text or "quote" in text):
+        return "missing"
+    return "ok"
 
 
 def _missing_group_text(row: dict[str, Any]) -> str:
@@ -882,9 +1011,12 @@ def _number(value: Any) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
 
 
 def _first_number(*sources: Any) -> float | None:
@@ -933,6 +1065,64 @@ def _render_styles() -> None:
     st.markdown(
         """
         <style>
+        [data-testid="stMainBlockContainer"],
+        div.block-container {
+            margin-left:252px !important;
+            margin-right:24px !important;
+            width:calc(100vw - 300px) !important;
+            max-width:calc(100vw - 300px) !important;
+        }
+        @media (max-width: 980px) {
+            [data-testid="stMainBlockContainer"],
+            div.block-container {
+                margin-left:0 !important;
+                margin-right:0 !important;
+                width:100% !important;
+                max-width:100% !important;
+            }
+        }
+        .ai-radar-filter-chips {
+            display:flex;
+            align-items:center;
+            flex-wrap:wrap;
+            gap:8px;
+            margin:6px 0 12px;
+        }
+        .ai-radar-filter-chip {
+            display:inline-flex;
+            align-items:center;
+            gap:6px;
+            min-height:30px;
+            padding:0 12px;
+            border:1px solid #D8E0EA;
+            border-radius:999px;
+            background:#FFFFFF;
+            color:#334155 !important;
+            text-decoration:none !important;
+            font-size:12px;
+            font-weight:760;
+        }
+        .ai-radar-filter-chip b {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:20px;
+            height:20px;
+            padding:0 5px;
+            border-radius:999px;
+            background:#EEF2F7;
+            color:#0B1F3A;
+            font-size:11px;
+        }
+        .ai-radar-filter-chip.active {
+            background:#0B1F3A;
+            border-color:#0B1F3A;
+            color:#FFFFFF !important;
+        }
+        .ai-radar-filter-chip.active b {
+            background:rgba(255,255,255,0.16);
+            color:#FFFFFF;
+        }
         .ai-radar-list-card {
             border:1px solid #D8E0EA;
             background:#FFFFFF;
@@ -951,6 +1141,14 @@ def _render_styles() -> None:
         }
         .ai-radar-section-head strong { font-size:15px; color:#0B1F3A; letter-spacing:0; }
         .ai-radar-section-head span { font-size:12px; color:#64748B; }
+        .ai-radar-list-note {
+            margin:0;
+            padding:10px 16px;
+            border-bottom:1px solid #EEF2F7;
+            color:#64748B;
+            font-size:12px;
+            background:#FFFFFF;
+        }
         .ai-radar-table-wrap { overflow-x:auto; }
         .ai-radar-table {
             width:100%;
@@ -982,6 +1180,7 @@ def _render_styles() -> None:
         }
         .ai-radar-status-pill,
         .ai-radar-data-confidence,
+        .ai-radar-report-status,
         .ai-radar-report-link {
             display:inline-flex;
             align-items:center;
@@ -998,7 +1197,36 @@ def _render_styles() -> None:
         .ai-radar-data-confidence.高 { background:#ECFDF3; color:#166534; border-color:#BBE5C6; }
         .ai-radar-data-confidence.中 { background:#EFF6FF; color:#1D4E89; border-color:#BFDBFE; }
         .ai-radar-data-confidence.低 { background:#FFFBEB; color:#92400E; border-color:#FDE68A; }
-        .ai-radar-report-link { background:#0B1F3A; color:#FFFFFF !important; border-color:#0B1F3A; }
+        .ai-radar-data-confidence.不足 { background:#FFF1F2; color:#9F1239; border-color:#F4C7CE; }
+        .ai-radar-company-cell {
+            display:flex;
+            flex-direction:column;
+            gap:2px;
+            min-width:0;
+        }
+        .ai-radar-company-cell strong {
+            color:#0B1F3A;
+            font-size:12px;
+            font-weight:780;
+        }
+        .ai-radar-company-cell span,
+        .ai-radar-muted {
+            color:#64748B;
+            font-size:11px;
+        }
+        .ai-radar-report-status {
+            background:#F8FAFC;
+            color:#334155;
+            border-color:#E2E8F0;
+        }
+        .ai-radar-report-link {
+            background:transparent;
+            color:#0B1F3A !important;
+            border-color:transparent;
+            padding:0;
+            min-height:auto;
+        }
+        .ai-radar-report-link:hover { text-decoration:underline !important; }
         .ai-radar-research-report {
             max-width:1280px;
             margin:18px auto 0;
