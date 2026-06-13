@@ -277,12 +277,15 @@ def _report_html(
     core_status = _core_status(report)
     confidence = _data_confidence(report)
     action_result = _action_fusion_result(report, technicals, row, history)
+    conclusion = _trade_conclusion(report, action_result)
+    portfolio_context = _portfolio_context(report, row, action_result)
+    data_health = _data_health_context(report, market, snapshot, row, portfolio_context)
     return (
         f'<article class="ai-radar-research-report {_decision_tone(decision)}">'
-        f"{_research_header_html(report, market, snapshot, technicals, core_status, history)}"
-        f"{_executive_summary_card_html(report, snapshot, market, row, action_result)}"
+        f"{_research_header_html(report, market, snapshot, technicals, core_status, history, action_result, conclusion)}"
+        f"{_executive_summary_card_html(report, snapshot, market, row, action_result, portfolio_context, conclusion)}"
         '<section class="ai-radar-visual-grid">'
-        f"{_range_chart_html(report)}"
+        f"{_range_chart_html(report, conclusion)}"
         f"{_score_card_html(report)}"
         "</section>"
         '<section class="ai-radar-opinion-grid two-col">'
@@ -294,7 +297,8 @@ def _report_html(
         f"{_volume_price_acceptance_card_html(report, technicals, row, history)}"
         "</section>"
         '<section class="ai-radar-appendix">'
-        '<div class="ai-radar-appendix-title">附录</div>'
+        '<details class="ai-radar-appendix-details">'
+        '<summary>附录数据</summary>'
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
         f'{_metric_table_card_html("核心财务摘要", _financial_metric_rows(snapshot))}'
@@ -303,7 +307,9 @@ def _report_html(
         f'{_metric_table_card_html("市场表现", _performance_rows(history))}'
         f"{_catalyst_card_html(row, snapshot, report)}"
         "</section>"
+        f"{_data_health_card_html(data_health)}"
         f"{_data_completeness_html(report, confidence, _volume_snapshot(market, snapshot, technicals, history))}"
+        "</details>"
         "</section>"
         '<footer class="ai-radar-report-foot">'
         f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
@@ -375,6 +381,8 @@ def _research_header_html(
     technicals: dict[str, Any],
     core_status: str,
     history: pd.DataFrame | None = None,
+    action_result: Any | None = None,
+    conclusion: dict[str, Any] | None = None,
 ) -> str:
     ticker = str(report.get("ticker") or "")
     company = str(report.get("company_name") or ticker)
@@ -387,14 +395,7 @@ def _research_header_html(
     )
     market_label = _clean_text(_first_present(snapshot, "country", "exchange")) or "本地缓存"
     meta = "｜".join(item for item in (track, market_label) if item) or "本地缓存研究视图"
-    decision = str(report.get("decision") or "")
-    action_text = {
-        "ALLOW_BUY": "可分批复核",
-        "WAIT": "等待确认",
-        "BLOCK_CHASE": "不建议追高",
-        "AVOID": "回避",
-        "DATA_MISSING": "数据不足",
-    }.get(decision, decision or "待确认")
+    conclusion = conclusion or _trade_conclusion(report, action_result)
     volume = _volume_snapshot(market, snapshot, technicals, history)
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
@@ -420,10 +421,13 @@ def _research_header_html(
         "</div>"
         '<aside class="ai-radar-header-decision">'
         '<span class="ai-radar-header-kicker">投资结论</span>'
-        f'<strong>{escape(core_status)}</strong>'
+        f'<strong>{escape(str(conclusion.get("rating_text") or core_status))}</strong>'
         '<div class="ai-radar-header-decision-grid">'
-        f'<div><span>当前动作</span><b>{escape(action_text)}</b></div>'
-        f'<div><span>数据完整度</span><b>{escape(_data_confidence(report))}</b></div>'
+        f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
+        f'<div><span>当前区间</span><b>{escape(str(conclusion.get("zone_text") or current_zone))}</b></div>'
+        f'<div><span>确认条件</span><b>{escape(str(conclusion.get("confirm_text") or "暂缺"))}</b></div>'
+        f'<div><span>风险线</span><b>{escape(str(conclusion.get("risk_line_text") or "暂缺"))}</b></div>'
+        f'<div><span>结论可信度</span><b>{escape(str(conclusion.get("confidence_level") or _data_confidence(report)))}</b></div>'
         f'<div><span>质量等级</span><b>{escape(_quality_grade(report))}</b></div>'
         "</div>"
         "</aside>"
@@ -460,30 +464,237 @@ def _executive_summary_card_html(
     market: dict[str, Any],
     row: dict[str, Any],
     action_result: Any,
+    portfolio_context: dict[str, Any] | None = None,
+    conclusion: dict[str, Any] | None = None,
 ) -> str:
-    summary = _localized_report_summary(report) or _research_summary_lines(report, snapshot, market)[0]
-    holding_context = _holding_context_text(row, action_result)
-    observations = _dedupe_text(
-        [
-            *list(getattr(action_result, "evidence_bullets_cn", []) or [])[:2],
-            *list(getattr(action_result, "advisory_warnings_cn", []) or [])[:2],
-            _next_step_sentence(report),
-        ]
-    )[:3]
-    observation_html = "".join(f"<li>{escape(item)}</li>" for item in observations if item)
+    conclusion = conclusion or _trade_conclusion(report, action_result)
+    portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
+    summary = _conclusion_first_sentence(report, conclusion)
+    judgments = _executive_judgments(report, action_result, portfolio_context, conclusion)
+    judgment_html = "".join(f"<li>{escape(item)}</li>" for item in judgments if item)
+    position_html = _position_context_panel_html(portfolio_context)
     return (
         '<section class="ai-radar-executive-card">'
         '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 触发 / 失效</b></div>'
         f'<p class="ai-radar-thesis">{escape(summary)}</p>'
+        f"{position_html}"
         '<div class="ai-radar-exec-grid">'
         f'<div><span>当前建议</span><strong>{escape(getattr(action_result, "action_cn", "等待确认"))}</strong></div>'
         f'<div><span>下一触发条件</span><strong>{escape(getattr(action_result, "next_trigger_cn", _next_step_sentence(report)))}</strong></div>'
         f'<div><span>失效条件</span><strong>{escape(getattr(action_result, "invalidation_cn", _invalidation_sentence(report)))}</strong></div>'
-        f'<div><span>持仓语境</span><strong>{escape(holding_context)}</strong></div>'
+        f'<div><span>持仓语境</span><strong>{escape(str(portfolio_context.get("position_status_text") or _holding_context_text(row, action_result)))}</strong></div>'
         "</div>"
-        f'<ul class="ai-radar-observation-list">{observation_html}</ul>'
+        f'<ol class="ai-radar-conclusion-list">{judgment_html}</ol>'
         "</section>"
     )
+
+
+def _trade_conclusion(report: dict[str, Any], action_result: Any | None = None) -> dict[str, Any]:
+    confirm_price = _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
+    invalidation_price = _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    zone_text = _trade_zone_text(report)
+    rating_text = _rating_text(report, action_result)
+    action_text = _current_action_text(report, action_result)
+    confirm_text = f"放量站上 {_money(confirm_price)}" if confirm_price is not None else _next_step_sentence(report)
+    risk_line_text = f"跌破 {_money(invalidation_price)}" if invalidation_price is not None else "暂缺"
+    next_review_trigger = confirm_text if confirm_price is not None else _next_step_sentence(report)
+    confidence = str(getattr(action_result, "confidence_level", "") or _data_confidence(report) or "中")
+    return {
+        "rating_text": rating_text,
+        "action_text": action_text,
+        "zone_text": zone_text,
+        "confirm_price": confirm_price,
+        "confirm_text": confirm_text,
+        "invalidation_price": invalidation_price,
+        "risk_line_text": risk_line_text,
+        "next_review_trigger": next_review_trigger,
+        "confidence_level": confidence,
+    }
+
+
+def _rating_text(report: dict[str, Any], action_result: Any | None) -> str:
+    action_code = str(getattr(action_result, "action_code", "") or "").upper()
+    action_map = {
+        "ALLOW_SMALL_BUY": "允许小仓",
+        "ADD_ON_PULLBACK": "允许小仓",
+        "ADD_ON_BREAKOUT": "等待确认",
+        "WAIT_CONFIRMATION": "等待确认",
+        "HOLD_NO_ADD": "等待确认",
+        "BLOCK_CHASE": "禁止追高",
+        "BREAKDOWN_REVIEW": "暂不参与",
+        "EVENT_REVIEW": "暂不参与",
+        "DATA_INSUFFICIENT": "数据不足",
+        "REDUCE_RISK": "暂不参与",
+    }
+    if action_code in action_map:
+        return action_map[action_code]
+    decision = str(report.get("decision") or "").upper()
+    return {
+        "ALLOW_BUY": "允许小仓",
+        "WAIT": "等待确认",
+        "BLOCK_CHASE": "禁止追高",
+        "DATA_MISSING": "数据不足",
+        "AVOID": "暂不参与",
+    }.get(decision, "等待确认")
+
+
+def _current_action_text(report: dict[str, Any], action_result: Any | None) -> str:
+    action_code = str(getattr(action_result, "action_code", "") or "").upper()
+    if action_code in {"BLOCK_CHASE"} or _trade_zone_text(report) == "追高禁区":
+        return "不主动追买"
+    if action_code in {"DATA_INSUFFICIENT"}:
+        return "需人工判断"
+    if action_code in {"BREAKDOWN_REVIEW", "EVENT_REVIEW", "REDUCE_RISK"}:
+        return "暂停买入"
+    if action_code in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK"}:
+        return "小仓观察"
+    if action_code in {"HOLD_NO_ADD"}:
+        return "持有观察"
+    return "不主动追买"
+
+
+def _trade_zone_text(report: dict[str, Any]) -> str:
+    zone = _current_zone_label(report)
+    return {
+        "深度支撑区": "深度买区",
+        "估值参考区": "合理买区",
+        "买区内": "合理买区",
+        "近端修复观察区": "修复观察区",
+        "追高风险区": "追高禁区",
+        "破位复核区": "风险失效区",
+        "区间待补": "数据不足",
+    }.get(zone, zone or "数据不足")
+
+
+def _portfolio_context(report: dict[str, Any], row: dict[str, Any], action_result: Any | None) -> dict[str, Any]:
+    shares = _first_number(row, "current_shares", "currentShares", "quantity", "shares")
+    avg_cost = _first_number(row, "avg_cost", "avgCost", "averageCost", "average_cost")
+    market_value = _first_number(row, "market_value", "marketValue")
+    unrealized_pnl = _first_number(row, "unrealized_pnl", "unrealizedPnl")
+    unrealized_pnl_pct = _first_number(row, "unrealized_pnl_pct", "unrealizedPnlPct")
+    weight = _first_number(row, "portfolio_weight", "portfolioWeight", "positionPct")
+    updated_at = _row_value(row, "portfolio_updated_at", "portfolioUpdatedAt", "updatedAt", "updated_at")
+    if action_result is not None:
+        shares = shares if shares is not None else _number(getattr(action_result, "current_shares", None))
+        avg_cost = avg_cost if avg_cost is not None else _number(getattr(action_result, "avg_cost", None))
+        market_value = market_value if market_value is not None else _number(getattr(action_result, "market_value", None))
+        unrealized_pnl = unrealized_pnl if unrealized_pnl is not None else _number(getattr(action_result, "unrealized_pnl", None))
+        unrealized_pnl_pct = unrealized_pnl_pct if unrealized_pnl_pct is not None else _number(getattr(action_result, "unrealized_pnl_pct", None))
+        weight = weight if weight is not None else _number(getattr(action_result, "current_weight", None))
+        updated_at = updated_at or getattr(action_result, "portfolio_updated_at", None)
+    has_position = bool((shares is not None and shares > 0) or (shares is None and weight is not None and weight > 0))
+    conclusion = _trade_conclusion(report, action_result)
+    return {
+        "shares": shares,
+        "avg_cost": avg_cost,
+        "market_value": market_value,
+        "unrealized_pnl": unrealized_pnl,
+        "unrealized_pnl_pct": unrealized_pnl_pct,
+        "portfolio_weight": weight,
+        "portfolio_updated_at": updated_at,
+        "has_position": has_position,
+        "position_status_text": _position_status_text(shares, weight),
+        "action_for_existing_position": _action_for_existing_position(conclusion, action_result),
+        "action_for_no_position": _action_for_no_position(conclusion, action_result),
+    }
+
+
+def _position_status_text(shares: float | None, weight: float | None) -> str:
+    if (shares is not None and shares > 0) or (shares is None and weight is not None and weight > 0):
+        suffix = f"｜仓位 {_ratio_pct(weight)}" if weight is not None else ""
+        return f"已有持仓{suffix}"
+    return "未持仓"
+
+
+def _action_for_existing_position(conclusion: dict[str, Any], action_result: Any | None) -> str:
+    rating = str(conclusion.get("rating_text") or "")
+    action_code = str(getattr(action_result, "action_code", "") or "").upper()
+    if rating in {"禁止追高", "暂不参与", "数据不足"}:
+        return "持有观察，暂停加仓"
+    if action_code in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK"}:
+        return "可小幅复核加仓，不能一次打满"
+    return "持有观察，未到加仓确认位"
+
+
+def _action_for_no_position(conclusion: dict[str, Any], action_result: Any | None) -> str:
+    rating = str(conclusion.get("rating_text") or "")
+    if rating == "允许小仓":
+        return "允许小仓观察，等待量价继续确认"
+    if rating == "禁止追高":
+        return "不追买，等待回到观察区"
+    if rating in {"暂不参与", "数据不足"}:
+        return "暂不参与，先补数据或等事件复核"
+    return "不追买，等待确认价或更低买区"
+
+
+def _position_context_panel_html(context: dict[str, Any]) -> str:
+    if context.get("has_position"):
+        headline = (
+            f"我的持仓：{_quantity_text(context.get('shares'))} 股"
+            f"｜成本 {_money(context.get('avg_cost'))}"
+            f"｜浮盈亏 {_signed_money(context.get('unrealized_pnl'))} / {_signed_pct(context.get('unrealized_pnl_pct'))}"
+        )
+    else:
+        headline = "我的持仓：未持仓"
+    if context.get("has_position"):
+        rows = [
+            ("市值", _compact_money(context.get("market_value"))),
+            ("组合仓位", _ratio_pct(context.get("portfolio_weight"))),
+            ("已有持仓动作", str(context.get("action_for_existing_position") or "持有观察")),
+        ]
+    else:
+        rows = [
+            ("市值", _compact_money(context.get("market_value"))),
+            ("组合仓位", _ratio_pct(context.get("portfolio_weight"))),
+            ("无持仓动作", str(context.get("action_for_no_position") or "等待确认")),
+        ]
+    row_html = "".join(f"<div><span>{escape(label)}</span><b>{escape(value)}</b></div>" for label, value in rows)
+    return (
+        '<aside class="ai-radar-position-context">'
+        f"<strong>{escape(headline)}</strong>"
+        f'<span>动作建议：{escape(str(context.get("action_for_existing_position") if context.get("has_position") else context.get("action_for_no_position")))}</span>'
+        f'<div class="ai-radar-position-context-grid">{row_html}</div>'
+        "</aside>"
+    )
+
+
+def _conclusion_first_sentence(report: dict[str, Any], conclusion: dict[str, Any]) -> str:
+    ticker = str(report.get("ticker") or "该股票")
+    zone = str(conclusion.get("zone_text") or _trade_zone_text(report))
+    rating = str(conclusion.get("rating_text") or "等待确认")
+    action = str(conclusion.get("action_text") or "不主动追买")
+    return f"本页结论：{ticker} 当前处于{zone}，结论为【{rating}】，当前动作是【{action}】。"
+
+
+def _executive_judgments(
+    report: dict[str, Any],
+    action_result: Any,
+    portfolio_context: dict[str, Any],
+    conclusion: dict[str, Any],
+) -> list[str]:
+    zone = str(conclusion.get("zone_text") or _trade_zone_text(report))
+    rating = str(conclusion.get("rating_text") or "等待确认")
+    confirm = str(conclusion.get("confirm_text") or _next_step_sentence(report))
+    risk_line = str(conclusion.get("risk_line_text") or "暂缺")
+    quality = _quality_quality_sentence(report)
+    entry_reason = _entry_sentence(report)
+    position_action = (
+        f"已有持仓，{portfolio_context.get('action_for_existing_position')}。"
+        if portfolio_context.get("has_position")
+        else f"未持仓，{portfolio_context.get('action_for_no_position')}。"
+    )
+    return [
+        f"当前价格位于【{zone}】：{entry_reason} 因此结论为【{rating}】。",
+        f"若{confirm}，可重新进入确认观察。",
+        f"若{risk_line}，暂停买入判断并转入风险复核。",
+        quality,
+        position_action,
+    ]
+
+
+def _quality_quality_sentence(report: dict[str, Any]) -> str:
+    support, drag = _score_support_and_drag(report)
+    return f"主要支撑来自{support}，主要限制来自{drag}。"
 
 
 def _holding_context_text(row: dict[str, Any], action_result: Any | None = None) -> str:
@@ -539,7 +750,8 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
     return [line for line in lines if line]
 
 
-def _range_chart_html(report: dict[str, Any]) -> str:
+def _range_chart_html(report: dict[str, Any], conclusion: dict[str, Any] | None = None) -> str:
+    conclusion = conclusion or _trade_conclusion(report)
     ranges = _range_chart_items(report)
     adaptive_low = _first_number(report, "adaptive_pullback_zone_low", "radar_adaptive_pullback_zone_low")
     adaptive_high = _first_number(report, "adaptive_pullback_zone_high", "radar_adaptive_pullback_zone_high")
@@ -571,21 +783,29 @@ def _range_chart_html(report: dict[str, Any]) -> str:
         item_low, item_high = item["range"]
         if item_low is None and item_high is None:
             continue
+        current_class = " current" if _range_item_is_current(item["label"], str(conclusion.get("zone_text") or "")) else ""
         start = _range_position(item_low if item_low is not None else low, low, high)
         end = _range_position(item_high if item_high is not None else high, low, high)
         width = max(end - start, 1.2)
         rows.append(
-            '<div class="ai-radar-range-row">'
+            f'<div class="ai-radar-range-row{current_class}">'
             f'<span>{escape(item["label"])}</span>'
             f'<div class="ai-radar-range-track"><i class="{escape(item["tone"])}" style="left:{start:.2f}%;width:{width:.2f}%"></i>{marker}</div>'
             f'<b>{escape(_range_text(item_low, item_high))}</b>'
+            f'<em>{escape(_range_action_text(item["label"]))}</em>'
             "</div>"
         )
+    explanation = (
+        f"当前价格位于【{conclusion.get('zone_text') or _trade_zone_text(report)}】，"
+        f"结论为【{conclusion.get('rating_text') or '等待确认'}】；"
+        f"下一步看 {conclusion.get('next_review_trigger') or _next_step_sentence(report)}。"
+    )
     return (
         '<section class="ai-radar-card ai-radar-range-card">'
         '<div class="ai-radar-section-title"><span>目标价区间与估值/技术区间图</span><b>当前价相对区间</b></div>'
         f'<div class="ai-radar-range-axis"><span>{escape(_money(low))}</span><span>{escape(_money(high))}</span></div>'
         f'{"".join(rows)}'
+        f'<p class="ai-radar-range-explain">{escape(explanation)}</p>'
         "</section>"
     )
 
@@ -599,6 +819,32 @@ def _range_chart_items(report: dict[str, Any]) -> list[dict[str, Any]]:
         {"label": "深度支撑区", "range": (_first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price"), _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")), "tone": "orange"},
         {"label": "追高禁区", "range": (_first_number(report, "chase_above_price", "radar_chase_above_price"), None), "tone": "red"},
     ]
+
+
+def _range_action_text(label: str) -> str:
+    if "深度" in label:
+        return "允许分批建仓"
+    if "估值" in label:
+        return "允许小仓观察"
+    if "修复" in label or "回踩" in label or "趋势确认" in label:
+        return "等待确认"
+    if "追高" in label:
+        return "禁止追买"
+    return "暂停买入" if "失效" in label else "等待确认"
+
+
+def _range_item_is_current(label: str, zone_text: str) -> bool:
+    if not zone_text:
+        return False
+    pairs = (
+        ("深度", "深度"),
+        ("估值", "合理"),
+        ("修复", "修复"),
+        ("回踩", "修复"),
+        ("追高", "追高"),
+        ("失效", "风险"),
+    )
+    return any(label_key in label and zone_key in zone_text for label_key, zone_key in pairs)
 
 
 def _adaptive_pullback_label(report: dict[str, Any]) -> str:
@@ -623,7 +869,61 @@ def _score_card_html(report: dict[str, Any]) -> str:
         ("风险", report.get("risk_score")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
-    return f'<section class="ai-radar-card score"><div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div><div class="ai-radar-score-grid">{body}</div></section>'
+    explanation = _score_explanation(report)
+    return (
+        '<section class="ai-radar-card score">'
+        '<div class="ai-radar-section-title"><span>评分卡</span><b>综合 / 基本面 / 技术</b></div>'
+        f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<p class="ai-radar-score-explain">{escape(explanation)}</p>'
+        "</section>"
+    )
+
+
+def _score_explanation(report: dict[str, Any]) -> str:
+    final_score = _number(report.get("final_score"))
+    level = "可观察但非强买区"
+    if final_score is not None and final_score >= 85:
+        level = "质量较强，仍需价格与量价确认"
+    elif final_score is not None and final_score < 65:
+        level = "仅适合复核，不构成主动买入"
+    support, drag = _score_support_and_drag(report)
+    gate = _gate_reason_text(report)
+    score_text = _number_text(final_score)
+    return f"综合评分 {score_text}，属于{level}。主要支撑来自{support}，主要限制来自{drag}。{gate}"
+
+
+def _score_support_and_drag(report: dict[str, Any]) -> tuple[str, str]:
+    score_items = [
+        ("质量", _number(report.get("quality_score"))),
+        ("成长", _number(report.get("growth_score"))),
+        ("估值安全边际", _number(report.get("valuation_score"))),
+        ("技术确认", _number(report.get("technical_score"))),
+        ("风险控制", _number(report.get("risk_score"))),
+    ]
+    present = [(label, value) for label, value in score_items if value is not None]
+    if not present:
+        return "暂无明确加分项", "数据不足"
+    support = max(present, key=lambda item: item[1])[0]
+    drag = min(present, key=lambda item: item[1])[0]
+    return support, drag
+
+
+def _gate_reason_text(report: dict[str, Any]) -> str:
+    reasons = _dedupe_text(
+        [
+            _localize_report_text(str(item))
+            for item in [
+                *(report.get("block_reasons") or []),
+                *(report.get("decisionBlockReasons") or []),
+                *(report.get("decisionReviewReasons") or []),
+                *(report.get("review_reasons") or []),
+            ]
+            if str(item).strip()
+        ]
+    )
+    if reasons:
+        return f"门禁/复核限制：{reasons[0]}。"
+    return "门禁/复核限制：未触发强买确认。"
 
 
 def _volume_price_acceptance_card_html(
@@ -1333,6 +1633,99 @@ def _data_impact_sentence(report: dict[str, Any], confidence: str) -> str:
     return "只做方向性研究入口，需先补价格、评分或技术缓存。"
 
 
+def _data_health_context(
+    report: dict[str, Any],
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    row: dict[str, Any],
+    portfolio_context: dict[str, Any],
+) -> dict[str, Any]:
+    missing_fields = _dedupe_text([*_actionable_missing_fields(report), *_actionable_missing_fields(row)])
+    missing_fields = _filter_resolved_health_missing_fields(missing_fields, report, market, row, portfolio_context)
+    stale_fields: list[str] = []
+    if _price_data_state(report) == "stale" or bool(report.get("is_stale")):
+        stale_fields.append("当前价格")
+    if str(report.get("data_status") or "").upper() == "STALE":
+        stale_fields.append("评分 / 区间")
+    return {
+        "quote_updated_at": _first_present(market, "fetchedAt", "updated_at", "updatedAt")
+        or _first_present(snapshot, "quote_updated_at", "price_updated_at", "fetched_at", "updated_at"),
+        "financials_updated_at": _first_present(snapshot, "financials_updated_at", "financial_statement_updated_at", "fundamental_updated_at", "updated_at", "fetched_at"),
+        "score_updated_at": _first_present(report, "score_updated_at", "data_updated_at", "updated_at"),
+        "portfolio_updated_at": portfolio_context.get("portfolio_updated_at"),
+        "missing_fields": missing_fields,
+        "stale_fields": _dedupe_text(stale_fields),
+    }
+
+
+def _filter_resolved_health_missing_fields(
+    fields: list[str],
+    report: dict[str, Any],
+    market: dict[str, Any],
+    row: dict[str, Any],
+    portfolio_context: dict[str, Any],
+) -> list[str]:
+    price_resolved = (
+        _report_current_price(report) is not None
+        or _report_current_price(row) is not None
+        or _first_number(market, "currentPrice", "current_price", "price") is not None
+    )
+    score_resolved = _number(_first_present(report, "final_score", "finalScore", "total_score", "totalScore")) is not None
+    position_resolved = bool(portfolio_context.get("has_position"))
+    filtered: list[str] = []
+    for field in fields:
+        text = str(field or "").strip().lower()
+        label = _field_display_label(field)
+        if price_resolved and (
+            "current_price" in text
+            or "price_missing" in text
+            or "缺当前价格" in str(field)
+            or label in {"当前价格", "最新价"}
+        ):
+            continue
+        if score_resolved and (text in {"score", "final_score", "total_score", "radar_score"} or "评分" in label):
+            continue
+        if position_resolved and any(
+            token in text
+            for token in (
+                "portfolio",
+                "position",
+                "shares",
+                "quantity",
+                "avg_cost",
+                "average_cost",
+                "market_value",
+                "unrealized",
+            )
+        ):
+            continue
+        filtered.append(str(field))
+    return _dedupe_text(filtered)
+
+
+def _data_health_card_html(data_health: dict[str, Any]) -> str:
+    rows = [
+        ("quote_updated_at", "报价更新时间", _health_time(data_health.get("quote_updated_at"))),
+        ("financials_updated_at", "财务更新时间", _health_time(data_health.get("financials_updated_at"))),
+        ("score_updated_at", "评分更新时间", _health_time(data_health.get("score_updated_at"))),
+        ("portfolio_updated_at", "持仓更新时间", _health_time(data_health.get("portfolio_updated_at"))),
+        ("missing_fields", "暂缺字段", _field_list_display(data_health.get("missing_fields"))),
+        ("stale_fields", "过期字段", _field_list_display(data_health.get("stale_fields"))),
+    ]
+    body = "".join(f"<tr><td>{escape(label)}</td><td>{escape(value)}</td></tr>" for _key, label, value in rows)
+    return (
+        '<section class="ai-radar-card ai-radar-metric-card ai-radar-data-health-card">'
+        '<div class="ai-radar-section-title"><span>数据健康</span><b>更新时间 / 缺口</b></div>'
+        f'<table class="ai-radar-metric-table"><tbody>{body}</tbody></table>'
+        "</section>"
+    )
+
+
+def _health_time(value: Any) -> str:
+    text = _short_time(value)
+    return "暂缺" if text == "暂无" else text
+
+
 def _entry_sentence(report: dict[str, Any]) -> str:
     if _price_below_valuation_inside_near_repair(report):
         return "价格低于估值参考区下沿，但仍处于近端修复观察区；当前未过趋势确认线，等待量价承接或重新站回关键均线。"
@@ -1346,12 +1739,6 @@ def _entry_sentence(report: dict[str, Any]) -> str:
     if label or hint:
         return f"{current_zone}：{label or hint}"
     return f"{current_zone}：缺少明确买区提示，先按观察处理。"
-
-    label = str(report.get("entry_display_label") or "").strip()
-    hint = str(report.get("entry_action_hint") or report.get("entry_display_reason") or "").strip()
-    if label and hint:
-        return f"{label}；{hint}"
-    return label or hint or "缺少明确买区提示，先按观察处理。"
 
 
 def _decision_to_sentence(report: dict[str, Any]) -> str:
@@ -1380,15 +1767,6 @@ def _next_step_sentence(report: dict[str, Any]) -> str:
     steps = report.get("next_technical_steps") or []
     if steps:
         return _localize_report_text(str(steps[0]))
-    if report.get("confirmation_price"):
-        return f"观察能否重新站上确认线 {_money(report.get('confirmation_price'))}。"
-    if report.get("invalidation_price"):
-        return f"观察是否守住失效线 {_money(report.get('invalidation_price'))}。"
-    return "等待价格、技术和基本面缓存进一步补齐。"
-
-    steps = report.get("next_technical_steps") or []
-    if steps:
-        return str(steps[0])
     if report.get("confirmation_price"):
         return f"观察能否重新站上确认线 {_money(report.get('confirmation_price'))}。"
     if report.get("invalidation_price"):
@@ -1512,9 +1890,9 @@ FIELD_DISPLAY_LABELS = {
     "normalizedpe": "标准化市盈率",
     "roe": "净资产收益率",
     "return_on_equity": "净资产收益率",
-    "daily_bars": "日线数据",
-    "dailybars": "日线数据",
-    "price_history": "日线数据",
+    "daily_bars": "历史K线",
+    "dailybars": "历史K线",
+    "price_history": "历史K线",
     "technicals": "技术数据",
     "technical": "技术数据",
     "fundamentals": "基本面数据",
@@ -1529,7 +1907,7 @@ FIELD_DISPLAY_LABELS = {
     "fcf_margin": "自由现金流率",
     "gross_margin": "毛利率",
     "net_margin": "净利率",
-    "current_price": "最新价",
+    "current_price": "当前价格",
     "current_price_stale": "价格过期",
     "price_stale": "价格过期",
     "ema20": "EMA20",
@@ -1568,7 +1946,7 @@ def _field_display_label(field: Any) -> str:
     if "roe" in text or "return_on_equity" in text:
         return "净资产收益率"
     if "daily" in text or "history" in text:
-        return "日线数据"
+        return "历史K线"
     if "technical" in text or "ema" in text or "atr" in text or "swing" in text:
         return "技术数据"
     if "fundamental" in text:
@@ -1635,7 +2013,7 @@ def _localize_report_text(text: str) -> str:
         "volume": "成交量",
         "forward_pe": "远期市盈率",
         "roe": "净资产收益率",
-        "daily_bars": "日线数据",
+        "daily_bars": "历史K线",
         "technicals": "技术数据",
         "fundamentals": "基本面数据",
         "valuation": "估值数据",
@@ -1896,6 +2274,23 @@ def _empty_card_html(title: str, message: str) -> str:
 def _money(value: Any) -> str:
     number = _number(value)
     return "暂无" if number is None else f"${number:,.2f}"
+
+
+def _signed_money(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂无"
+    prefix = "+" if number >= 0 else "-"
+    return f"{prefix}${abs(number):,.2f}"
+
+
+def _quantity_text(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    if abs(number - round(number)) < 0.0001:
+        return f"{number:,.0f}"
+    return f"{number:,.2f}"
 
 
 def _compact_money(value: Any) -> str:
@@ -2303,14 +2698,6 @@ def _render_styles() -> None:
             font-size:13px;
             line-height:1.5;
         }
-        .ai-radar-zone-badge {
-            align-self:start;
-            padding:6px 12px;
-            border-radius:999px;
-            background:rgba(255,255,255,0.14);
-            border:1px solid rgba(255,255,255,0.22);
-            font-weight:800;
-        }
         .ai-radar-header-stats {
             grid-column:1 / -1;
             display:grid;
@@ -2383,6 +2770,50 @@ def _render_styles() -> None:
             line-height:1.65;
             font-weight:700;
         }
+        .ai-radar-position-context {
+            margin:0 0 14px;
+            padding:13px 14px;
+            border:1px solid #D6E0EC;
+            border-left:4px solid #1D4ED8;
+            border-radius:8px;
+            background:#F8FBFF;
+        }
+        .ai-radar-position-context > strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:14px;
+            line-height:1.45;
+            margin-bottom:5px;
+        }
+        .ai-radar-position-context > span {
+            display:block;
+            color:#334155;
+            font-size:13px;
+            line-height:1.55;
+            margin-bottom:10px;
+        }
+        .ai-radar-position-context-grid {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:8px;
+        }
+        .ai-radar-position-context-grid div {
+            border-top:1px solid #E2E8F0;
+            padding-top:8px;
+        }
+        .ai-radar-position-context-grid span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-bottom:3px;
+        }
+        .ai-radar-position-context-grid b {
+            display:block;
+            color:#0B1F3A;
+            font-size:12px;
+            line-height:1.35;
+            font-weight:820;
+        }
         .ai-radar-exec-grid {
             display:grid;
             grid-template-columns:repeat(4, minmax(0, 1fr));
@@ -2412,6 +2843,13 @@ def _render_styles() -> None:
             color:#334155;
             font-size:13px;
             line-height:1.7;
+        }
+        .ai-radar-conclusion-list {
+            margin:0;
+            padding-left:20px;
+            color:#26364D;
+            font-size:13px;
+            line-height:1.72;
         }
         .ai-radar-header-decision {
             align-self:start;
@@ -2463,6 +2901,27 @@ def _render_styles() -> None:
             border-top:1px solid #E8EEF5;
             padding-top:12px;
         }
+        .ai-radar-appendix-details {
+            color:#334155;
+        }
+        .ai-radar-appendix-details summary {
+            cursor:pointer;
+            color:#475569;
+            font-size:12px;
+            font-weight:850;
+            letter-spacing:.04em;
+            list-style:none;
+            padding:4px 0 8px;
+        }
+        .ai-radar-appendix-details summary::-webkit-details-marker { display:none; }
+        .ai-radar-appendix-details summary::before {
+            content:"＋";
+            display:inline-block;
+            width:18px;
+            color:#64748B;
+            font-weight:800;
+        }
+        .ai-radar-appendix-details[open] summary::before { content:"－"; }
         .ai-radar-appendix-title {
             color:#64748B;
             font-size:12px;
@@ -2502,15 +2961,28 @@ def _render_styles() -> None:
         }
         .ai-radar-range-row {
             display:grid;
-            grid-template-columns:112px minmax(160px, 1fr) 142px;
+            grid-template-columns:112px minmax(160px, 1fr) 142px 112px;
             gap:10px;
             align-items:center;
             padding:7px 0;
             border-top:1px solid #EEF2F7;
             font-size:12px;
         }
+        .ai-radar-range-row.current {
+            margin:0 -8px;
+            padding:8px;
+            border-radius:8px;
+            background:#F8FBFF;
+            border-top:1px solid #D6E0EC;
+        }
         .ai-radar-range-row span { color:#334155; font-weight:700; }
         .ai-radar-range-row b { color:#0F172A; font-weight:750; text-align:right; }
+        .ai-radar-range-row em {
+            color:#475569;
+            font-style:normal;
+            font-weight:760;
+            text-align:right;
+        }
         .ai-radar-range-track {
             position:relative;
             height:10px;
@@ -2548,6 +3020,15 @@ def _render_styles() -> None:
             padding:1px 5px;
             font-size:10px;
             white-space:nowrap;
+        }
+        .ai-radar-range-explain,
+        .ai-radar-score-explain {
+            margin:12px 0 0;
+            color:#334155;
+            font-size:13px;
+            line-height:1.65;
+            border-top:1px solid #EEF2F7;
+            padding-top:10px;
         }
         .ai-radar-score-grid,
         .ai-radar-data-quality-grid {
@@ -2678,13 +3159,15 @@ def _render_styles() -> None:
             .ai-radar-visual-grid,
             .ai-radar-evidence-grid,
             .ai-radar-exec-grid,
+            .ai-radar-position-context-grid,
             .ai-radar-score-grid,
             .ai-radar-volume-summary,
             .ai-radar-data-quality-grid { grid-template-columns:1fr; }
             .ai-radar-research-header { padding:24px 18px; }
             .ai-radar-title-block h1 { font-size:42px; }
             .ai-radar-range-row { grid-template-columns:1fr; }
-            .ai-radar-range-row b { text-align:left; }
+            .ai-radar-range-row b,
+            .ai-radar-range-row em { text-align:left; }
         }
         /*
            Legacy selectors below are kept for old tests and debug blocks; the

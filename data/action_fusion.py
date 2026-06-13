@@ -100,9 +100,14 @@ class ActionFusionResult:
     watch_levels: dict[str, float | None] = field(default_factory=dict)
     portfolio_role: str = ""
     current_shares: float = 0.0
+    avg_cost: float | None = None
+    market_value: float | None = None
+    unrealized_pnl: float | None = None
+    unrealized_pnl_pct: float | None = None
     current_weight: float | None = None
     target_weight: float | None = None
     max_weight: float | None = None
+    portfolio_updated_at: str | None = None
     position_status_cn: str = ""
     position_action_cn: str = ""
     left_side_allowed: bool = False
@@ -154,9 +159,13 @@ def evaluate_action_fusion(
 
     shares = _first_number(portfolio, "current_shares", "currentShares", "quantity") or 0.0
     avg_cost = _first_number(portfolio, "avg_cost", "averageCost")
+    market_value = _first_number(portfolio, "market_value", "marketValue")
+    unrealized_pnl = _first_number(portfolio, "unrealized_pnl", "unrealizedPnl")
+    unrealized_pnl_pct = _first_number(portfolio, "unrealized_pnl_pct", "unrealizedPnlPct")
     weight = _first_number(portfolio, "portfolio_weight", "portfolioWeight", "positionPct")
     target_weight = _first_number(portfolio, "target_weight", "targetWeight", "targetPositionPct")
     max_weight = _first_number(portfolio, "max_weight", "maxWeight", "maxAcceptablePositionPct", "maxPortfolioWeightPercent")
+    portfolio_updated_at = _value(portfolio, "portfolio_updated_at", "portfolioUpdatedAt", "updatedAt", "updated_at")
     role = str(_value(portfolio, "role", "portfolio_role", "portfolioRole") or "").strip()
     cash = _first_number(portfolio, "available_cash", "availableCash", "cashBalance")
 
@@ -216,9 +225,13 @@ def evaluate_action_fusion(
             price,
             shares,
             avg_cost,
+            market_value,
+            unrealized_pnl,
+            unrealized_pnl_pct,
             weight,
             target_weight,
             max_weight,
+            str(portfolio_updated_at) if portfolio_updated_at not in (None, "") else None,
             role,
             position_state,
             cash,
@@ -332,9 +345,13 @@ def _result(
     price: float | None,
     shares: float,
     avg_cost: float | None,
+    market_value: float | None,
+    unrealized_pnl: float | None,
+    unrealized_pnl_pct: float | None,
     weight: float | None,
     target_weight: float | None,
     max_weight: float | None,
+    portfolio_updated_at: str | None,
     role: str,
     position_state: dict[str, str],
     cash: float | None,
@@ -366,9 +383,14 @@ def _result(
         watch_levels=watch_levels,
         portfolio_role=role,
         current_shares=shares,
+        avg_cost=avg_cost,
+        market_value=market_value,
+        unrealized_pnl=unrealized_pnl,
+        unrealized_pnl_pct=unrealized_pnl_pct,
         current_weight=weight,
         target_weight=target_weight,
         max_weight=max_weight,
+        portfolio_updated_at=portfolio_updated_at,
         position_status_cn=position_state["label"],
         position_action_cn=position_state["action"],
         left_side_allowed=bool(left_side_plan.get("allowed")),

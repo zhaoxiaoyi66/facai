@@ -91,9 +91,12 @@ def build_action_fusion_portfolio_context(
                     "current_shares": row.get("quantity"),
                     "avg_cost": row.get("averageCost"),
                     "market_value": row.get("marketValue"),
+                    "unrealized_pnl": row.get("unrealizedPnl"),
+                    "unrealized_pnl_pct": row.get("unrealizedPnlPct"),
                     "portfolio_weight": row.get("positionPct"),
                     "target_weight": row.get("targetPositionPct"),
                     "max_weight": row.get("maxAcceptablePositionPct"),
+                    "portfolio_updated_at": row.get("updatedAt"),
                 }
             )
             break

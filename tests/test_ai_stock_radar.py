@@ -90,6 +90,7 @@ def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status(
             "portfolio_weight": 5.8,
             "target_weight": 12.0,
             "max_weight": 16.0,
+            "portfolio_updated_at": "2026-06-12T17:09:22+00:00",
             "role": "ai_software_core",
         },
     )
@@ -112,6 +113,189 @@ def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status(
     assert "已有持仓" in html
     assert "仓位 5.8%" in html
     assert "未持仓 / 仅研究观察" not in html
+    assert action_result.portfolio_updated_at == "2026-06-12T17:09:22+00:00"
+
+
+def test_report_header_uses_localized_investment_conclusion() -> None:
+    action_result = evaluate_action_fusion(
+        ticker="GLW",
+        context={
+            "ticker": "GLW",
+            "current_price": 55,
+            "observation_low": 45,
+            "observation_high": 50,
+            "volume_price_status": "OVEREXTENDED_SUPPORT_READ",
+            "quality_score": 76,
+        },
+        portfolio_context={},
+    )
+
+    html = radar_ui._research_header_html(
+        {
+            "ticker": "GLW",
+            "company_name": "Corning",
+            "current_price": 55,
+            "decision": "BLOCK_CHASE",
+            "chase_above_price": 50,
+            "confirmation_price": 52,
+            "invalidation_price": 44,
+        },
+        {},
+        {},
+        {},
+        "追高风险",
+        pd.DataFrame(),
+        action_result,
+    )
+
+    assert "投资结论" in html
+    assert "禁止追高" in html
+    assert "不主动追买" in html
+    assert "追高禁区" in html
+    assert "放量站上 $52.00" in html
+    assert "跌破 $44.00" in html
+    assert "BLOCK_CHASE" not in html
+    assert "OVEREXTENDED_SUPPORT_READ" not in html
+
+
+def test_report_summary_is_conclusion_first_and_shows_position_actions() -> None:
+    action_result = evaluate_action_fusion(
+        ticker="MSFT",
+        context={
+            "ticker": "MSFT",
+            "current_price": 390,
+            "observation_low": 380,
+            "observation_high": 410,
+            "confirmation_price": 415,
+            "invalidation_price": 370,
+            "quality_score": 88,
+            "volume_price_status": "FORMING",
+            "volume_price_score": 52,
+        },
+        portfolio_context={
+            "current_shares": 12,
+            "avg_cost": 320,
+            "market_value": 4680,
+            "unrealized_pnl": 840,
+            "unrealized_pnl_pct": 21.9,
+            "portfolio_weight": 0.058,
+            "target_weight": 0.08,
+            "max_weight": 0.12,
+        },
+    )
+
+    html = radar_ui._executive_summary_card_html(
+        {
+            "ticker": "MSFT",
+            "company_name": "Microsoft",
+            "current_price": 390,
+            "decision": "WAIT",
+            "confirmation_price": 415,
+            "invalidation_price": 370,
+            "near_term_repair_zone_low": 380,
+            "near_term_repair_zone_high": 410,
+            "quality_score": 88,
+            "valuation_score": 60,
+            "technical_score": 65,
+            "risk_score": 70,
+        },
+        {},
+        {},
+        {"ticker": "MSFT"},
+        action_result,
+    )
+
+    assert "本页结论：MSFT 当前处于修复观察区" in html
+    assert "我的持仓：12 股｜成本 $320.00｜浮盈亏 +$840.00 / +21.9%" in html
+    assert "已有持仓动作" in html
+    assert "无持仓动作" not in html
+    assert "已有持仓，持有观察，未到加仓确认位。" in html
+    assert "若无持仓" not in html
+
+
+def test_report_position_panel_for_no_position_only_shows_no_position_action() -> None:
+    action_result = evaluate_action_fusion(
+        ticker="GLW",
+        context={
+            "ticker": "GLW",
+            "current_price": 55,
+            "observation_low": 45,
+            "observation_high": 50,
+            "volume_price_status": "OVEREXTENDED_SUPPORT_READ",
+            "quality_score": 76,
+        },
+        portfolio_context={},
+    )
+
+    html = radar_ui._executive_summary_card_html(
+        {
+            "ticker": "GLW",
+            "company_name": "Corning",
+            "current_price": 55,
+            "decision": "BLOCK_CHASE",
+            "chase_above_price": 50,
+            "quality_score": 76,
+        },
+        {},
+        {},
+        {"ticker": "GLW"},
+        action_result,
+    )
+
+    assert "我的持仓：未持仓" in html
+    assert "无持仓动作" in html
+    assert "已有持仓动作" not in html
+    assert "未持仓，不追买，等待回到观察区。" in html
+
+
+def test_report_data_health_marks_missing_sources_as_temporarily_missing() -> None:
+    html = radar_ui._data_health_card_html(
+        {
+            "quote_updated_at": None,
+            "financials_updated_at": "2026-05-30T11:00:00+00:00",
+            "score_updated_at": None,
+            "portfolio_updated_at": None,
+            "missing_fields": ["current_price", "daily_bars"],
+            "stale_fields": [],
+        }
+    )
+
+    assert "暂缺" in html
+    assert "当前价格" in html
+    assert "历史K线" in html
+    assert "current_price" not in html
+    assert "daily_bars" not in html
+
+
+def test_report_data_health_filters_gaps_already_resolved_on_page() -> None:
+    data_health = radar_ui._data_health_context(
+        {
+            "ticker": "NOW",
+            "current_price": 102.15,
+            "final_score": 64.1,
+            "debug": {
+                "data_missing_fields": [
+                    "current_price",
+                    "final_score",
+                    "portfolio_position",
+                    "daily_bars",
+                ]
+            },
+        },
+        {"currentPrice": 102.15},
+        {},
+        {},
+        {
+            "has_position": True,
+            "portfolio_updated_at": "2026-06-12T17:09:22+00:00",
+        },
+    )
+
+    assert "current_price" not in data_health["missing_fields"]
+    assert "final_score" not in data_health["missing_fields"]
+    assert "portfolio_position" not in data_health["missing_fields"]
+    assert "daily_bars" in data_health["missing_fields"]
+    assert data_health["portfolio_updated_at"] == "2026-06-12T17:09:22+00:00"
 
 
 def _chase_zone() -> RadarZone:
