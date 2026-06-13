@@ -1141,6 +1141,10 @@ def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
     score_text = "待补数据" if status_code == "DATA_MISSING" else ("N/A" if score is None else f"{score:.0f} 分")
     volume_ratio = _drawer_number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
     volume_ma20 = _drawer_number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
+    volume_regime_cn = _drawer_clean_text(snapshot.get("volume_regime_cn") or snapshot.get("volumeRegimeCn")) or "量能待确认"
+    volume_interpretation = _drawer_clean_text(
+        snapshot.get("volume_interpretation_cn") or snapshot.get("volumeInterpretationCn")
+    )
     close_position = _drawer_number(snapshot.get("close_position", snapshot.get("closePosition")))
     candle = _drawer_clean_text(snapshot.get("candle_signal_cn") or snapshot.get("candleSignalCn")) or "K线待确认"
     volume = _drawer_clean_text(snapshot.get("volume_signal_cn") or snapshot.get("volumeSignalCn")) or "量能待确认"
@@ -1151,8 +1155,10 @@ def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
     deductions = _drawer_text_list(snapshot.get("risk_deductions") or snapshot.get("riskDeductions"))
     lines = [
         "只读提示：不改变 ALLOW_BUY / Radar decision / portfolio sync。",
+        f"量能标签：{volume_regime_cn}",
         f"量比：{'缺失' if volume_ratio is None else f'{volume_ratio:.2f}x'}",
         f"20日均量：{_drawer_volume_text(volume_ma20)}",
+        f"量能解释：{volume_interpretation}" if volume_interpretation else "",
         f"收盘位置：{'缺失' if close_position is None else f'{close_position:.0%}'}",
         f"K线：{candle}",
         f"量能：{volume}",

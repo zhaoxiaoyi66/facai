@@ -529,12 +529,18 @@ def _volume_price_acceptance_card_html(
     volume_ratio = _number(snapshot.get("volume_ratio", snapshot.get("volumeRatio")))
     volume_ma20 = _number(snapshot.get("volume_ma20", snapshot.get("volumeMa20")))
     distribution_count = snapshot.get("distribution_count_10d", snapshot.get("distributionCount10d"))
+    volume_regime_cn = _display_value(snapshot.get("volume_regime_cn") or snapshot.get("volumeRegimeCn"))
+    volume_interpretation = _display_value(
+        snapshot.get("volume_interpretation_cn") or snapshot.get("volumeInterpretationCn")
+    )
     reason = _volume_price_reason_text(status, score, snapshot.get("acceptance_reason_cn") or snapshot.get("reason_cn") or snapshot.get("volumePriceReasonCn"))
     rows = [
         ("量价状态", _volume_price_status_label(status, score)),
         ("分数", "待补数据" if status == "DATA_MISSING" else _number_text(score)),
+        ("量能标签", volume_regime_cn),
         ("量比", _volume_ratio_display(volume_ratio)),
         ("20日均量", _compact_number(volume_ma20)),
+        ("量能解释", volume_interpretation),
         ("K线信号", _display_value(snapshot.get("candle_signal_cn") or snapshot.get("candleSignalCn"))),
         ("支撑信号", _display_value(snapshot.get("support_signal_cn") or snapshot.get("supportSignalCn"))),
         ("确认信号", _display_value(snapshot.get("confirmation_signal_cn") or snapshot.get("confirmationSignalCn"))),

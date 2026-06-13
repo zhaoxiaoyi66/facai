@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from data.volume_price_acceptance import (
     ACCEPTANCE_CONFIRMED,
@@ -54,6 +55,38 @@ def _context(**overrides) -> dict:
     return context
 
 
+def _latest_volume_for_ratio(target_ratio: float, baseline: float = 1_000_000) -> float:
+    return (19 * target_ratio * baseline) / (20 - target_ratio)
+
+
+@pytest.mark.parametrize(
+    ("target_ratio", "expected"),
+    [
+        (0.60, "明显缩量"),
+        (0.73, "缩量"),
+        (0.92, "量能普通"),
+        (1.20, "温和放量"),
+        (1.50, "放量"),
+        (2.50, "明显放量"),
+        (3.56, "爆量"),
+    ],
+)
+def test_volume_regime_labels_by_volume_ratio(target_ratio: float, expected: str) -> None:
+    snapshot = evaluate_volume_price_acceptance(
+        daily_bars=_bars(
+            close=103,
+            open_=104,
+            high=105,
+            low=99,
+            volume=_latest_volume_for_ratio(target_ratio),
+        ),
+        technicals=_context(),
+    )
+
+    assert snapshot.volume_ratio == pytest.approx(target_ratio, abs=0.01)
+    assert snapshot.volume_regime_cn == expected
+
+
 def test_shrink_pullback_holding_support_is_forming() -> None:
     snapshot = evaluate_volume_price_acceptance(
         daily_bars=_bars(close=103, open_=104, high=105, low=99, volume=700_000),
@@ -63,6 +96,8 @@ def test_shrink_pullback_holding_support_is_forming() -> None:
     assert snapshot.volume_price_status == FORMING
     assert "不构成买入确认" in snapshot.acceptance_reason_cn
     assert "缩量" in snapshot.volume_signal_cn
+    assert snapshot.volume_regime_cn == "缩量"
+    assert snapshot.volume_interpretation_cn == "缩量回踩，支撑暂时守住。"
     assert "守住" in snapshot.support_signal_cn or "收回" in snapshot.support_signal_cn
 
 
@@ -86,6 +121,7 @@ def test_volume_breakout_above_confirm_line_is_confirmed() -> None:
 
     assert snapshot.volume_price_status == ACCEPTANCE_CONFIRMED
     assert snapshot.volume_ratio and snapshot.volume_ratio >= 1.2
+    assert snapshot.volume_interpretation_cn == "放量站上确认线，承接确认。"
     assert "确认线" in snapshot.confirmation_signal_cn
 
 
@@ -172,6 +208,8 @@ def test_high_volume_gap_down_low_close_is_not_forming() -> None:
 
     assert snapshot.volume_price_status in {FAILED, UNCONFIRMED}
     assert snapshot.volume_price_status != FORMING
+    assert snapshot.volume_regime_cn in {"放量", "明显放量", "爆量"}
+    assert "跳空下跌" in snapshot.volume_interpretation_cn or snapshot.volume_price_status == FAILED
 
 
 def test_distribution_day_inside_zone_is_not_optimistic_forming() -> None:

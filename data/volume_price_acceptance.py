@@ -31,6 +31,9 @@ class VolumePriceAcceptanceSnapshot:
     volume_price_score: float
     volume_ratio: float | None
     volume_ma20: float | None
+    volume_regime: str
+    volume_regime_cn: str
+    volume_interpretation_cn: str
     close_position: float | None
     candle_signal_cn: str
     volume_signal_cn: str
@@ -143,6 +146,7 @@ def evaluate_volume_price_acceptance(
     )
     volume_ma20 = _volume_ma20(bars) or _first_number(_value(source, "volume_ma20", "volumeMa20", "avg_volume", "avgVolume"))
     volume_ratio = _safe_ratio(latest_volume, volume_ma20)
+    volume_regime, volume_regime_cn = _volume_regime(volume_ratio)
     close_position = _range_position(low=low, high=high, close=close)
     body_ratio, lower_shadow_ratio, upper_shadow_ratio = _candle_ratios(open_price, high, low, close)
     is_up_day = close >= open_price
@@ -262,6 +266,20 @@ def evaluate_volume_price_acceptance(
         confirmation_signal=confirmation_signal,
         risk_deductions=risk_deductions,
     )
+    volume_interpretation = _volume_interpretation_cn(
+        volume_regime=volume_regime,
+        support_hold=support_hold,
+        support_reclaim=support_reclaim,
+        breakout_confirmed=breakout_confirmed,
+        close=close,
+        support_line=support_line,
+        confirm_line=confirm_line,
+        is_up_day=is_up_day,
+        is_down_day=is_down_day,
+        gap_down=gap_down,
+        lower_shadow_ratio=lower_shadow_ratio,
+        close_position=close_position,
+    )
 
     return _snapshot(
         status,
@@ -275,6 +293,9 @@ def evaluate_volume_price_acceptance(
         confirmation_signal,
         distribution_count_10d,
         reason,
+        volume_regime=volume_regime,
+        volume_regime_cn=volume_regime_cn,
+        volume_interpretation_cn=volume_interpretation,
         zone_source=zone_source,
         risk_deductions=risk_deductions,
         checked_at=checked_at,
@@ -292,6 +313,9 @@ def volume_price_acceptance_snapshot_fields(
         "volumePriceScore": snapshot.volume_price_score,
         "volumeRatio": snapshot.volume_ratio,
         "volumeMa20": snapshot.volume_ma20,
+        "volumeRegime": snapshot.volume_regime,
+        "volumeRegimeCn": snapshot.volume_regime_cn,
+        "volumeInterpretationCn": snapshot.volume_interpretation_cn,
         "closePosition": snapshot.close_position,
         "candleSignalCn": snapshot.candle_signal_cn,
         "volumeSignalCn": snapshot.volume_signal_cn,
@@ -311,7 +335,8 @@ def volume_price_acceptance_hint_html(snapshot: VolumePriceAcceptanceSnapshot) -
     return (
         '<div class="structure-entry-advisor volume-price-acceptance-advisor">'
         f"<strong>量价承接：{escape(snapshot.status_label)}｜{escape(score_text)}</strong>"
-        f"<span>量比：{escape(ratio_text)}｜20日均量：{escape(ma_text)}</span>"
+        f"<span>量能标签：{escape(snapshot.volume_regime_cn)}｜量比：{escape(ratio_text)}｜20日均量：{escape(ma_text)}</span>"
+        f"<span>量能解释：{escape(snapshot.volume_interpretation_cn)}</span>"
         f"<span>K线：{escape(snapshot.candle_signal_cn)}｜支撑：{escape(snapshot.support_signal_cn)}</span>"
         f"<span>确认：{escape(snapshot.confirmation_signal_cn)}｜派发日：{snapshot.distribution_count_10d}</span>"
         f"<small>{escape(snapshot.acceptance_reason_cn)}</small>"
@@ -333,15 +358,22 @@ def _snapshot(
     distribution_count_10d: int,
     reason: str,
     *,
+    volume_regime: str | None = None,
+    volume_regime_cn: str | None = None,
+    volume_interpretation_cn: str | None = None,
     zone_source: str = "upstream",
     risk_deductions: list[str] | None = None,
     checked_at: datetime | None = None,
 ) -> VolumePriceAcceptanceSnapshot:
+    normalized_regime, normalized_regime_cn = _volume_regime(volume_ratio)
     return VolumePriceAcceptanceSnapshot(
         volume_price_status=status,
         volume_price_score=round(max(0.0, min(100.0, float(score or 0))), 1),
         volume_ratio=None if volume_ratio is None else round(volume_ratio, 2),
         volume_ma20=None if volume_ma20 is None else round(volume_ma20, 2),
+        volume_regime=volume_regime or normalized_regime,
+        volume_regime_cn=volume_regime_cn or normalized_regime_cn,
+        volume_interpretation_cn=volume_interpretation_cn or "量能缺失，暂时无法判断放量/缩量结构。",
         close_position=None if close_position is None else round(close_position, 2),
         candle_signal_cn=candle_signal,
         volume_signal_cn=volume_signal,
@@ -556,6 +588,65 @@ def _candle_signal_cn(
     if is_up_day:
         return "小阳整理"
     return "普通K线"
+
+
+def _volume_regime(volume_ratio: float | None) -> tuple[str, str]:
+    if volume_ratio is None:
+        return "UNAVAILABLE", "量能缺失"
+    if volume_ratio < 0.65:
+        return "VERY_LOW", "明显缩量"
+    if volume_ratio < 0.80:
+        return "LOW", "缩量"
+    if volume_ratio < 1.10:
+        return "NORMAL", "量能普通"
+    if volume_ratio < 1.30:
+        return "MILD_EXPANSION", "温和放量"
+    if volume_ratio < 2.00:
+        return "EXPANSION", "放量"
+    if volume_ratio < 3.00:
+        return "STRONG_EXPANSION", "明显放量"
+    return "EXTREME", "爆量"
+
+
+def _volume_interpretation_cn(
+    *,
+    volume_regime: str,
+    support_hold: bool,
+    support_reclaim: bool,
+    breakout_confirmed: bool,
+    close: float,
+    support_line: float,
+    confirm_line: float | None,
+    is_up_day: bool,
+    is_down_day: bool,
+    gap_down: bool,
+    lower_shadow_ratio: float | None,
+    close_position: float | None,
+) -> str:
+    reclaimed_or_held = support_hold or support_reclaim
+    high_volume = volume_regime in {"MILD_EXPANSION", "EXPANSION", "STRONG_EXPANSION", "EXTREME"}
+    shrink_volume = volume_regime in {"VERY_LOW", "LOW"}
+    strong_close = (close_position or 0) >= 0.6
+    long_lower_shadow = (lower_shadow_ratio or 0) >= 0.35 and (close_position or 0) >= 0.5
+    if volume_regime == "UNAVAILABLE":
+        return "缺少成交量，暂时无法判断放量/缩量结构。"
+    if volume_regime == "EXTREME" and gap_down:
+        if long_lower_shadow and reclaimed_or_held:
+            return "爆量恐慌换手后收回，但仍需下一根K线确认。"
+        return "爆量跳空下跌，需复核财报/消息冲击。"
+    if high_volume and is_down_day and close < support_line:
+        return "放量跌破支撑，承接失败。"
+    if high_volume and breakout_confirmed and confirm_line is not None and close >= confirm_line:
+        return "放量站上确认线，承接确认。"
+    if high_volume and is_up_day and strong_close:
+        return "放量收强，出现主动承接。"
+    if shrink_volume and reclaimed_or_held:
+        return "缩量回踩，支撑暂时守住。"
+    if shrink_volume:
+        return "缩量但承接不足，等待确认。"
+    if volume_regime == "NORMAL":
+        return "量能普通，需继续观察支撑和确认线。"
+    return "量能活跃，但仍需结合观察区和确认线复核。"
 
 
 def _volume_signal_cn(volume_ratio: float | None, *, shrink_pullback: bool, distribution_day: bool) -> str:
