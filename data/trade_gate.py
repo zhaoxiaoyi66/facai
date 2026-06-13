@@ -332,7 +332,10 @@ def _buy_zone_context(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
-    required_any = (
+    level_keys = (
+        "current_price",
+        "currentPrice",
+        "price",
         "deep_support_zone_low",
         "support_watch_zone_low",
         "effective_technical_entry_zone_low",
@@ -341,13 +344,23 @@ def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
         "confirmation_price",
         "invalidation_price",
         "chase_above_price",
+        "ma20",
+        "ema20",
+        "ma50",
+        "ema50",
+        "ma200",
+        "ema200",
+        "atr_14",
+        "atr14",
+        "recent_swing_high",
+        "resistance_zone_high",
     )
-    has_levels = any(data.get(key) not in (None, "") for key in required_any)
+    has_context_seed = any(data.get(key) not in (None, "") for key in level_keys)
     has_volume = any(
         data.get(key) not in (None, "")
         for key in ("volume_price_status", "volumePriceStatus", "volume_ratio", "volumeRatio", "volume_price_score", "volumePriceScore")
     )
-    return has_levels and has_volume
+    return has_context_seed or has_volume
 
 
 def _volume_snapshot_from_report(data: dict[str, Any]) -> dict[str, Any]:

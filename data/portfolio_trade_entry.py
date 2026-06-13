@@ -562,7 +562,9 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     is_stale = _boolish(_report_value(report, "is_stale"))
     data_status = str(_report_value(report, "data_status") or "").strip().lower()
 
-    if buy_zone_action == "DATA_INSUFFICIENT":
+    if daily_change_pct is not None and daily_change_pct <= -8:
+        technical_status = "财报后大跌 / 高波动"
+    elif buy_zone_action == "DATA_INSUFFICIENT":
         technical_status = "技术承接数据不足"
     elif buy_zone_action == "RISK_REVIEW":
         technical_status = "跌破失效线 / 风控复核"
@@ -574,8 +576,6 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
         technical_status = "等待确认 / 等待回踩"
     elif is_stale or data_status in {"missing", "data_missing", "stale"}:
         technical_status = "买区数据缺失 / 过期，需人工判断"
-    elif daily_change_pct is not None and daily_change_pct <= -8:
-        technical_status = "财报后大跌 / 高波动"
     elif price_position == "IN_CHASE_ZONE" or decision == "BLOCK_CHASE":
         technical_status = "技术偏热 / 追高风险"
     elif price_position == "BELOW_BUY_ZONE":

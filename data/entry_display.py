@@ -20,6 +20,7 @@ PRICE_POSITIONS = {
 def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overrides: Any) -> dict[str, Any]:
     source = dict(report_or_summary or {})
     source.update({key: value for key, value in overrides.items() if value is not None})
+    buy_zone_context = _dict_value(_value(source, "buy_zone_context", "buyZoneContext"))
     current_price = _number(_value(source, "current_price", "currentPrice"))
     buy_zone = _value(source, "buy_zone", "buyZone") or {}
     chase_zone = _value(source, "chase_zone", "chaseZone") or {}
@@ -259,7 +260,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_context_status": "ZONE_MISSING",
             }
         )
-        return result
+        return _apply_buy_zone_context_display(result, buy_zone_context)
 
     zone_text = format_buy_zone(buy_zone)
     use_technical_pullback = (
@@ -287,7 +288,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_context_status": "IN_CHASE_ZONE",
             }
         )
-        return result
+        return _apply_buy_zone_context_display(result, buy_zone_context)
     if price_position == "ABOVE_BUY_ZONE":
         label = f"等待回落 {zone_text}"
         reason = _distance_reason(distance_pct, "高于买区", chase_above)
@@ -324,7 +325,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "entry_context_status": context_status,
             }
         )
-        return result
+        return _apply_buy_zone_context_display(result, buy_zone_context)
     if price_position == "IN_BUY_ZONE":
         result.update(
             {
@@ -339,7 +340,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 ),
             }
         )
-        return result
+        return _apply_buy_zone_context_display(result, buy_zone_context)
     if price_position == "BELOW_BUY_ZONE":
         if _is_value_review_near_term_repair(
             current_price=current_price,
@@ -366,7 +367,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                     "primary_entry_interpretation": "价值复核，结构待确认",
                 }
             )
-            return result
+            return _apply_buy_zone_context_display(result, buy_zone_context)
         if technical_low is not None and technical_high is not None:
             if technical_position == "BELOW_TECHNICAL_PULLBACK_ZONE":
                 result.update(
@@ -382,7 +383,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                         "entry_context_status": "BELOW_TECHNICAL_PULLBACK_ZONE",
                     }
                 )
-                return result
+                return _apply_buy_zone_context_display(result, buy_zone_context)
             if technical_position == "IN_TECHNICAL_PULLBACK_ZONE":
                 result.update(
                     {
@@ -399,7 +400,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                         "entry_context_status": "IN_TECHNICAL_PULLBACK_ZONE",
                     }
                 )
-                return result
+                return _apply_buy_zone_context_display(result, buy_zone_context)
         result.update(
             {
                 "entry_display_label": _below_reference_label(
@@ -415,7 +416,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
                 "primary_entry_interpretation": _below_reference_interpretation(technical_structure_status),
             }
         )
-        return result
+        return _apply_buy_zone_context_display(result, buy_zone_context)
 
     result.update(
         {
@@ -425,7 +426,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
             "entry_context_status": price_position,
         }
     )
-    return result
+    return _apply_buy_zone_context_display(result, buy_zone_context)
 
 
 def format_buy_zone(buy_zone: Any) -> str:
@@ -724,6 +725,36 @@ def _missing_reason_text(fields: list[str]) -> str:
     if "缺 52 周高低" in fields:
         return "缺 52 周高低或无法生成纪律买区"
     return "、".join(fields)
+
+
+def _apply_buy_zone_context_display(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    if not context:
+        return result
+    action_text = str(context.get("action_text") or "").strip()
+    zone_text = str(context.get("primary_zone_text") or "").strip()
+    reason = str(context.get("zone_selection_reason") or "").strip()
+    current_action = str(context.get("current_action") or "").strip().upper()
+    updated = dict(result)
+    if zone_text and action_text:
+        updated["entry_display_label"] = f"{zone_text} | {action_text}"
+    elif zone_text:
+        updated["entry_display_label"] = zone_text
+    elif action_text:
+        updated["entry_display_label"] = action_text
+    if reason:
+        updated["entry_display_reason"] = reason
+    if action_text:
+        updated["entry_action_hint"] = action_text
+    if current_action:
+        updated["entry_context_status"] = current_action
+    missing = context.get("missing_fields")
+    if isinstance(missing, list) and current_action == "DATA_INSUFFICIENT":
+        updated["missing_entry_fields"] = [str(item) for item in missing if str(item).strip()]
+    return updated
+
+
+def _dict_value(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _zone_number(zone: Any, key: str) -> float | None:

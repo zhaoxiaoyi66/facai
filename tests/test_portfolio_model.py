@@ -508,6 +508,49 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertIn("buy_zone", row["blockReasons"])
         self.assertIn("system_not_addable", row["deviationWarnings"])
 
+    def test_portfolio_view_model_prefers_unified_buy_zone_context_over_legacy_zone(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position("MSFT", {"quantity": 5, "average_cost": 100})
+            score = SimpleNamespace(
+                action="只观察",
+                valuationStatus="只观察",
+                entryRating="A",
+                riskRating="low",
+                dataConfidence="high",
+                currentAddLimitPercent=2,
+                maxPortfolioWeightPercent=8,
+            )
+            legacy_zone = SimpleNamespace(currentZone="no_chase")
+            plan = SimpleNamespace(currentAddLimitPercent=2, maxPortfolioWeightPercent=8)
+            buy_zone_context = {
+                "current_action": "ALLOW_SMALL_BUY",
+                "action_text": "允许小仓观察",
+                "primary_zone_text": "回踩买区",
+                "setup_score": 66,
+            }
+
+            view = build_portfolio_view_model(
+                db_path,
+                {"MSFT": 120},
+                {
+                    "MSFT": {
+                        "score": score,
+                        "buy_zone": legacy_zone,
+                        "buy_zone_context": buy_zone_context,
+                        "position_plan": plan,
+                    }
+                },
+            )
+
+        row = view["rows"][0]
+        self.assertEqual(row["buyZoneAction"], "ALLOW_SMALL_BUY")
+        self.assertEqual(row["buyZoneStatus"], "ALLOW_SMALL_BUY")
+        self.assertEqual(row["decisionLane"], "actionable")
+        self.assertEqual(row["systemCurrentAdd"], 2)
+        self.assertNotIn("buy_zone", row["blockReasons"])
+
     def test_portfolio_view_model_flags_near_trim_price(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "portfolio.sqlite"

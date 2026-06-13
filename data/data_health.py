@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from buy_zone_engine import generate_buy_zone
+from data.buy_zone_engine import build_buy_zone_context
 from data.cache_read_model import CacheReadModel
 from data.decision_readiness import build_decision_readiness
 from data.market_context import build_market_context, build_market_history
@@ -14,6 +15,7 @@ from data.prices import CACHE_PATH
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.final_decision_adapter import build_final_decision_bundle
 from scoring.total_score import calculate_total_score
+from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
 
 
@@ -196,10 +198,16 @@ def _build_final_decision_inputs(
             stock_data["price"] = price
             stock_data["current_price"] = price
         zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
-        bundle = build_final_decision_bundle(score, zone, symbol=symbol)
+        volume_snapshot = evaluate_volume_price_acceptance(
+            ticker=symbol,
+            daily_bars=history,
+            technicals=stock_data,
+        )
+        buy_zone_context = build_buy_zone_context(stock_data, volume_snapshot=volume_snapshot.to_dict()).to_dict()
+        bundle = build_final_decision_bundle(score, zone, symbol=symbol, buy_zone_context=buy_zone_context)
     except Exception:
         return None, None
-    return bundle, zone
+    return bundle, buy_zone_context
 
 
 def _can_generate_final_decision(path: Path, symbol: str, payload: dict | None, current_price: object) -> bool:

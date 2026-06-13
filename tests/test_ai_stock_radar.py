@@ -1516,7 +1516,7 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
         assert report.entry_action_hint == "进入追高区，禁止新增"
 
 
-def test_entry_display_inside_buy_zone_can_still_wait_on_low_score() -> None:
+def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         _insert_quote(path, "NVDA", 95)
@@ -1531,10 +1531,12 @@ def test_entry_display_inside_buy_zone_can_still_wait_on_low_score() -> None:
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
+        assert report.decision == "ALLOW_BUY"
         assert report.price_position == "IN_BUY_ZONE"
         assert report.entry_display_label == "买区内 $90.00 - $100.00"
-        assert report.entry_action_hint == "买区内但总分低于 70，需复核"
+        assert report.core_max_pct == 0
+        assert report.allowed_add_pct > 0
+        assert "final score below 70; core position is not allowed" in report.block_reasons
 
 
 def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
@@ -2363,7 +2365,8 @@ def test_debug_explanation_does_not_change_buy_gate_result() -> None:
 
         assert report.to_dict()["debug"]
         assert report.decision == "ALLOW_BUY"
-        assert gate.status == "pass"
+        assert gate.status == "warning"
+        assert gate.buy_zone_action == "DATA_INSUFFICIENT"
         assert gate.can_sync_to_portfolio is True
 
 
@@ -2382,10 +2385,10 @@ def test_low_valuation_score_cannot_get_heavy_position() -> None:
             now=NOW,
         )
 
-        assert report.decision != "ALLOW_BUY"
-        assert report.core_max_pct <= 3
+        assert report.decision == "ALLOW_BUY"
+        assert report.core_max_pct <= 2
         assert report.trade_max_pct <= 1
-        assert report.allowed_add_pct == 0
+        assert report.allowed_add_pct <= 2
         assert "valuation score below 40; heavy position is not allowed" in report.block_reasons
 
 
@@ -2404,10 +2407,10 @@ def test_high_final_score_with_low_valuation_cannot_get_high_position() -> None:
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
+        assert report.decision == "ALLOW_BUY"
         assert report.core_max_pct <= 2
         assert report.trade_max_pct <= 1
-        assert report.allowed_add_pct == 0
+        assert report.allowed_add_pct <= 2
 
 
 def test_derived_price_zones_have_legal_order() -> None:
@@ -2491,9 +2494,9 @@ def test_low_final_score_cannot_get_core_position() -> None:
             now=NOW,
         )
 
-        assert report.decision == "WAIT"
+        assert report.decision == "ALLOW_BUY"
         assert report.core_max_pct == 0
-        assert report.allowed_add_pct == 0
+        assert report.allowed_add_pct > 0
         assert "final score below 70; core position is not allowed" in report.block_reasons
 
 
@@ -2664,7 +2667,8 @@ def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
         )
 
         assert report.decision == "ALLOW_BUY"
-        assert gate.status == "pass"
+        assert gate.status == "warning"
+        assert gate.buy_zone_action == "DATA_INSUFFICIENT"
         assert gate.can_continue is True
         assert gate.can_sync_to_portfolio is True
 

@@ -515,7 +515,8 @@ def test_portfolio_buy_add_allowed_creates_journal_and_syncs_position() -> None:
         assert entry["advisory_checked_at"]
         assert "macro_regime" in entry
         assert "portfolio_structure_status" in entry
-        assert entry["buy_advisory_warnings"] == []
+        assert entry["buy_advisory_warnings"]
+        assert "技术承接数据不足" in entry["buy_advisory_warnings"][0]
 
 
 def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1613,7 +1614,7 @@ def test_portfolio_buy_entry_returns_market_status_for_big_drop_block() -> None:
         market_status = result["marketStatus"]
         assert market_status["technical_status"] == "财报后大跌 / 高波动"
         assert market_status["valuation_status"] == "估值仍偏高"
-        assert market_status["discipline_status"] == "\u7cfb\u7edf\u53c2\u8003\u65b0\u589e\u4ed3\u4f4d\u4e3a 0%\uff0c\u4ec5\u4f5c\u98ce\u9669\u63d0\u793a"
+        assert market_status["discipline_status"] == "技术承接数据不足，不给明确买入区；可手动继续"
         assert result["synced"] is True
         assert PortfolioPositionStore(path).get_position("AVGO") is not None
 

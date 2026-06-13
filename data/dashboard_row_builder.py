@@ -5,6 +5,7 @@ from typing import Any
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_ai_stock_radar_list_row
+from data.buy_zone_engine import build_buy_zone_context
 from data.entry_display import build_entry_display
 from data.market_context import build_market_history
 from data.portfolio_targets import build_action_fusion_portfolio_context
@@ -78,9 +79,6 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
     plan = StockPlanStore().get_plan(ticker)
     active_buy_zone = buy_zone_with_manual_override(buy_zone, plan) if buy_zone is not None else None
-    final_decision = derive_dashboard_final_decision(ticker, snapshot, technicals, score, buy_zone=buy_zone)
-    current_add_limit = final_decision.currentAddLimitPercent
-    max_portfolio_weight = final_decision.maxPortfolioWeightPercent
     radar_entry_display = _radar_entry_display_fields(ticker, snapshot, technicals)
     structure_entry = evaluate_structure_entry(
         ticker=ticker,
@@ -97,6 +95,24 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         daily_bars=_safe_market_history(ticker),
         technicals={**technicals, **snapshot, **radar_entry_display},
     )
+    buy_zone_context = _dashboard_buy_zone_context(
+        ticker=ticker,
+        snapshot=snapshot,
+        technicals=technicals,
+        radar_entry_display=radar_entry_display,
+        price=price,
+        volume_price_acceptance=volume_price_acceptance.to_dict(),
+    )
+    final_decision = derive_dashboard_final_decision(
+        ticker,
+        snapshot,
+        technicals,
+        score,
+        buy_zone=buy_zone,
+        buy_zone_context=buy_zone_context,
+    )
+    current_add_limit = final_decision.currentAddLimitPercent
+    max_portfolio_weight = final_decision.maxPortfolioWeightPercent
     action_fusion = evaluate_action_fusion(
         ticker=ticker,
         context={
@@ -131,7 +147,12 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
         "finalAction": final_decision.finalAction,
         "decisionLane": final_decision.decisionLane,
         "displayCategory": final_decision.displayCategory,
-        "buyZoneStatus": getattr(buy_zone, "currentZone", None),
+        "buyZoneContext": buy_zone_context,
+        "buyZoneAction": getattr(final_decision, "buyZoneAction", ""),
+        "buyZoneActionText": getattr(final_decision, "buyZoneActionText", ""),
+        "buyZonePrimaryZone": getattr(final_decision, "buyZonePrimaryZone", None),
+        "setupScore": getattr(final_decision, "setupScore", None),
+        "buyZoneStatus": getattr(final_decision, "buyZoneStatus", None) or getattr(buy_zone, "currentZone", None),
         "systemZone": buy_zone,
         "activeZone": active_buy_zone,
         "combinedEntry": getattr(buy_zone, "combinedEntry", None) or {},
@@ -396,12 +417,45 @@ def _safe_market_history(ticker: str):
         return None
 
 
-def derive_dashboard_final_decision(ticker: str, snapshot: dict, technicals: dict, score, *, buy_zone: Any = None):
+def _dashboard_buy_zone_context(
+    *,
+    ticker: str,
+    snapshot: dict,
+    technicals: dict,
+    radar_entry_display: dict[str, Any],
+    price: float | None,
+    volume_price_acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    source = {**snapshot, **technicals, **radar_entry_display, "ticker": ticker}
+    if price is not None:
+        source["price"] = price
+        source["current_price"] = price
+    try:
+        return build_buy_zone_context(source, volume_snapshot=volume_price_acceptance).to_dict()
+    except Exception:
+        return {}
+
+
+def derive_dashboard_final_decision(
+    ticker: str,
+    snapshot: dict,
+    technicals: dict,
+    score,
+    *,
+    buy_zone: Any = None,
+    buy_zone_context: dict[str, Any] | None = None,
+):
     try:
         if buy_zone is None:
             buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
         plan = StockPlanStore().get_plan(ticker)
-        return build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
+        return build_final_decision_bundle(
+            score,
+            buy_zone,
+            manual_plan_override=plan,
+            symbol=ticker,
+            buy_zone_context=buy_zone_context,
+        )
     except Exception:
         return build_final_decision_bundle(score)
 

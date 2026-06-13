@@ -11,6 +11,7 @@ from typing import Any
 
 from data.market_context import build_market_context
 from data.market_context import build_market_history
+from data.buy_zone_engine import build_buy_zone_context
 from data.prices import CACHE_PATH
 from data.entry_display import build_entry_display as calculate_entry_display
 from data.trade_gate import BuyGateResult as RadarBuyGateResult
@@ -61,6 +62,7 @@ class RadarReport:
     buy_zone: dict[str, Any]
     watch_zone: dict[str, Any]
     chase_zone: dict[str, Any]
+    buy_zone_context: dict[str, Any]
     core_max_pct: float
     trade_max_pct: float
     allowed_add_pct: float
@@ -226,6 +228,14 @@ def build_ai_stock_radar_report(
         valuation_score=score_input.valuation_score,
         risk_score=score_input.risk_score,
     )
+    buy_zone_context = _build_buy_zone_context(
+        symbol=symbol,
+        current_price=current_price,
+        scores=score_input,
+        metrics=metrics,
+        technicals=technicals or {},
+        entry_display=entry_display,
+    )
     debug = build_radar_debug(
         symbol,
         market=market,
@@ -264,6 +274,7 @@ def build_ai_stock_radar_report(
         buy_zone=_zone_dict(zones["buy_zone"]),
         watch_zone=_zone_dict(zones["watch_zone"]),
         chase_zone=_zone_dict(zones["chase_zone"]),
+        buy_zone_context=buy_zone_context,
         core_max_pct=position_plan["core_max_pct"],
         trade_max_pct=position_plan["trade_max_pct"],
         allowed_add_pct=position_plan["allowed_add_pct"],
@@ -447,6 +458,14 @@ def build_ai_stock_radar_list_row(
         valuation_score=score_input.valuation_score,
         risk_score=score_input.risk_score,
     )
+    buy_zone_context = _build_buy_zone_context(
+        symbol=symbol,
+        current_price=current_price,
+        scores=score_input,
+        metrics=metrics,
+        technicals=technicals or {},
+        entry_display=entry_display,
+    )
     return {
         "ticker": symbol,
         "company_name": company_name or symbol,
@@ -457,6 +476,7 @@ def build_ai_stock_radar_list_row(
         "history_status": market.get("historyStatus") or "missing",
         "decision": decision,
         "final_score": score_input.final_score,
+        "buy_zone_context": buy_zone_context,
         "buy_zone": _zone_dict(zones["buy_zone"]),
         "core_max_pct": position_plan["core_max_pct"],
         "trade_max_pct": position_plan["trade_max_pct"],
@@ -474,6 +494,35 @@ def build_ai_stock_radar_list_row(
         "block_reasons": block_reasons,
         "data_status": data_status,
     }
+
+
+def _build_buy_zone_context(
+    *,
+    symbol: str,
+    current_price: float | None,
+    scores: RadarScores,
+    metrics: dict[str, Any],
+    technicals: dict[str, Any],
+    entry_display: dict[str, Any],
+) -> dict[str, Any]:
+    source = {
+        **(metrics or {}),
+        **(technicals or {}),
+        **(entry_display or {}),
+        "ticker": symbol,
+        "current_price": current_price,
+        "final_score": scores.final_score,
+        "risk_score": scores.risk_score,
+    }
+    volume_snapshot = {
+        "volume_price_status": source.get("volume_price_status") or source.get("volumePriceStatus"),
+        "volume_price_score": source.get("volume_price_score") or source.get("volumePriceScore"),
+        "volume_ratio": source.get("volume_ratio") or source.get("volumeRatio"),
+    }
+    try:
+        return build_buy_zone_context(source, volume_snapshot=volume_snapshot).to_dict()
+    except Exception:
+        return {}
 
 
 def calculate_quality_score(metrics: dict[str, Any]) -> float | None:
@@ -742,11 +791,21 @@ def calculate_decision(
         return "BLOCK_CHASE"
     if buy_zone.upper is not None and current_price > buy_zone.upper:
         return "WAIT"
-    if _value(scores.final_score) < 70:
-        return "WAIT"
-    if _value(scores.valuation_score) < 40:
-        return "WAIT"
-    return "WAIT" if block_reasons else "ALLOW_BUY"
+    return "WAIT" if _decision_blocking_reasons(block_reasons) else "ALLOW_BUY"
+
+
+def _decision_blocking_reasons(block_reasons: list[str]) -> list[str]:
+    sizing_only_markers = (
+        "final score below 70",
+        "core position is not allowed",
+        "valuation score below 40",
+        "heavy position is not allowed",
+    )
+    return [
+        reason
+        for reason in block_reasons
+        if not any(marker in str(reason).lower() for marker in sizing_only_markers)
+    ]
 
 
 def calculate_price_position(

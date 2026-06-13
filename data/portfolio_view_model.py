@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
+from data.buy_zone_engine import build_buy_zone_context
 from data.cache_read_model import CacheReadModel
 from data.market_context import build_market_context, build_market_history
 from data.portfolio import (
@@ -13,6 +14,7 @@ from data.portfolio import (
 )
 from data.portfolio_trade_sync import unsynced_trade_counts_by_symbol
 from data.prices import CACHE_PATH
+from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from data.stock_plan import StockPlanStore
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -92,6 +94,10 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any], unsynced
         "systemAction": system_ref.get("systemAction"),
         "systemCurrentAdd": system_ref.get("systemCurrentAdd"),
         "buyZoneStatus": system_ref.get("buyZoneStatus"),
+        "buyZoneAction": system_ref.get("buyZoneAction"),
+        "buyZoneActionText": system_ref.get("buyZoneActionText"),
+        "buyZonePrimaryZone": system_ref.get("buyZonePrimaryZone"),
+        "setupScore": system_ref.get("setupScore"),
         "decisionLane": system_ref.get("decisionLane"),
         "blockReasons": list(system_ref.get("blockReasons") or []),
         "reviewReasons": list(system_ref.get("reviewReasons") or []),
@@ -224,6 +230,7 @@ def _system_refs_from_inputs(system_decision_inputs: dict[str, dict[str, Any]] |
         if not normalized or not inputs.get("score"):
             continue
         buy_zone = inputs.get("buy_zone")
+        buy_zone_context = inputs.get("buy_zone_context") or inputs.get("buyZoneContext")
         manual_plan = inputs.get("manual_plan_override") or inputs.get("manual_plan")
         bundle = build_final_decision_bundle(
             inputs["score"],
@@ -231,8 +238,9 @@ def _system_refs_from_inputs(system_decision_inputs: dict[str, dict[str, Any]] |
             inputs.get("position_plan"),
             manual_plan_override=manual_plan,
             symbol=normalized,
+            buy_zone_context=buy_zone_context,
         )
-        refs[normalized] = _system_ref_from_bundle(bundle, _buy_zone_status(buy_zone))
+        refs[normalized] = _system_ref_from_bundle(bundle, _buy_zone_status(buy_zone_context) or _buy_zone_status(buy_zone))
     return refs
 
 
@@ -256,8 +264,20 @@ def _system_ref_from_local_cache(
         buy_zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
         plan = plan_store.get_plan(symbol)
         effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
-        bundle = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=symbol)
-        return _system_ref_from_bundle(bundle, _buy_zone_status(effective_buy_zone))
+        volume_snapshot = evaluate_volume_price_acceptance(
+            ticker=symbol,
+            daily_bars=history,
+            technicals=stock_data,
+        )
+        buy_zone_context = build_buy_zone_context(stock_data, volume_snapshot=volume_snapshot.to_dict()).to_dict()
+        bundle = build_final_decision_bundle(
+            score,
+            buy_zone,
+            manual_plan_override=plan,
+            symbol=symbol,
+            buy_zone_context=buy_zone_context,
+        )
+        return _system_ref_from_bundle(bundle, _buy_zone_status(buy_zone_context) or _buy_zone_status(effective_buy_zone))
     except Exception:
         return _empty_system_ref()
 
@@ -270,6 +290,10 @@ def _system_ref_from_bundle(bundle, buy_zone_status: str | None) -> dict[str, An
         "systemMaxPosition": bundle.maxPortfolioWeightPercent,
         "systemCurrentAdd": bundle.currentAddLimitPercent,
         "buyZoneStatus": bundle.buyZoneStatus or buy_zone_status,
+        "buyZoneAction": bundle.buyZoneAction,
+        "buyZoneActionText": bundle.buyZoneActionText,
+        "buyZonePrimaryZone": bundle.buyZonePrimaryZone,
+        "setupScore": bundle.setupScore,
         "decisionLane": bundle.decisionLane,
         "blockReasons": list(bundle.blockReasons),
         "reviewReasons": list(bundle.reviewReasons),
@@ -320,8 +344,22 @@ def _buy_zone_status(buy_zone: Any) -> str | None:
     if buy_zone is None:
         return None
     if isinstance(buy_zone, dict):
-        return buy_zone.get("currentZone") or buy_zone.get("current_zone")
-    return getattr(buy_zone, "currentZone", None) or getattr(buy_zone, "current_zone", None)
+        return (
+            buy_zone.get("current_action")
+            or buy_zone.get("currentAction")
+            or buy_zone.get("primary_zone")
+            or buy_zone.get("primaryZone")
+            or buy_zone.get("currentZone")
+            or buy_zone.get("current_zone")
+        )
+    return (
+        getattr(buy_zone, "current_action", None)
+        or getattr(buy_zone, "currentAction", None)
+        or getattr(buy_zone, "primary_zone", None)
+        or getattr(buy_zone, "primaryZone", None)
+        or getattr(buy_zone, "currentZone", None)
+        or getattr(buy_zone, "current_zone", None)
+    )
 
 
 def _number(value: object) -> float | None:
