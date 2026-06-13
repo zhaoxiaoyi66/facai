@@ -608,6 +608,17 @@ def test_ai_radar_report_completeness_localizes_raw_missing_fields() -> None:
     assert "news_cache" not in html
 
 
+def test_ai_radar_debug_html_localizes_fields_without_name_error() -> None:
+    html = radar_ui._debug_html(
+        {"data_missing_fields": ["forward_pe", "sector / industry"]},
+        {"ticker": "MSFT", "company_name": "Microsoft Corporation"},
+    )
+
+    assert "远期市盈率" in html
+    assert "forward_pe" not in html
+    assert "sector / industry" not in html
+
+
 def test_ai_radar_report_daily_volume_prevents_volume_gap() -> None:
     report = {
         "ticker": "MSFT",

@@ -91,7 +91,7 @@ def _render_report(symbol: str) -> None:
     report_dict = report.to_dict()
     st.markdown(_report_html(report_dict, market, snapshot or {}, technicals or {}, row or {}, history), unsafe_allow_html=True)
     with st.expander("评分依据 / 数据诊断", expanded=False):
-        st.markdown(_debug_html(report_dict.get("debug") or {}), unsafe_allow_html=True)
+        st.markdown(_debug_html(report_dict.get("debug") or {}, report_dict), unsafe_allow_html=True)
 
 
 def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
@@ -312,7 +312,8 @@ def _report_html(
     )
 
 
-def _debug_html(debug: dict[str, Any]) -> str:
+def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> str:
+    report = report or {}
     if not debug:
         return '<section class="ai-radar-debug">暂无评分诊断。</section>'
     score_inputs = _dict_value(debug, "score_inputs") or {}
