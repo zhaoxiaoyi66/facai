@@ -313,6 +313,20 @@ def _render_editor(store: TradeJournalStore) -> None:
             _render_sell_reference_card(symbol, selected_position, context=sell_reference_context)
 
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
+        effective_sell_quantity = _effective_sell_available_quantity(
+            action_type,
+            portfolio_preview.get("currentQuantity"),
+            editing_entry=editing_entry,
+            symbol=symbol,
+        )
+        portfolio_preview = _sell_edit_portfolio_preview(
+            portfolio_preview,
+            action_type,
+            quantity,
+            effective_sell_quantity,
+            editing_entry=editing_entry,
+            symbol=symbol,
+        )
         discipline_result = None
         radar_gate_result = None
 
@@ -334,7 +348,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 decision_mood=decision_mood,
                 trade_quantity=quantity,
                 trade_price=price,
-                current_quantity=portfolio_preview.get("currentQuantity"),
+                current_quantity=effective_sell_quantity,
                 editing_entry=editing_entry,
                 stock_plan=stock_plan,
                 sell_reference=sell_reference_context,
@@ -352,7 +366,17 @@ def _render_editor(store: TradeJournalStore) -> None:
 
         button_label = "保存修改" if editing_entry else ("确认卖出并入账" if action_type == "sell" else "确认减仓并入账")
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
-            quantity_error = _sell_quantity_validation_error(action_type, quantity, portfolio_preview.get("currentQuantity"))
+            identity_error = _sell_edit_identity_error(editing_entry, symbol, action_type)
+            if identity_error:
+                st.session_state["trade_journal_notice"] = ("error", identity_error)
+                st.rerun()
+            quantity_error = _sell_quantity_validation_error(
+                action_type,
+                quantity,
+                portfolio_preview.get("currentQuantity"),
+                editing_entry=editing_entry,
+                symbol=symbol,
+            )
             if quantity_error:
                 st.session_state["trade_journal_notice"] = ("error", quantity_error)
                 st.rerun()
@@ -874,7 +898,7 @@ def _discipline_result_blocked(result: object) -> bool:
     return False
 
 
-def _sell_quantity_validation_error(action_type: str, quantity: object, current_quantity: object) -> str:
+def _legacy_sell_quantity_validation_error(action_type: str, quantity: object, current_quantity: object) -> str:
     if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
         return ""
     sell_quantity = _number(quantity)
@@ -884,6 +908,102 @@ def _sell_quantity_validation_error(action_type: str, quantity: object, current_
     if current is None or current <= 0:
         return "只能卖出当前组合持仓里已有的股票。"
     if sell_quantity > current:
+        return f"卖出数量不能超过当前持仓：当前 {_quantity_text(current)}，本次 {_quantity_text(sell_quantity)}。"
+    return ""
+
+
+def _sell_edit_identity_error(editing_entry: dict | None, symbol: str, action_type: str) -> str:
+    if not editing_entry:
+        return ""
+    original_action = str(editing_entry.get("action_type") or "").strip().lower()
+    if original_action not in SELL_DISCIPLINE_ACTIONS:
+        return ""
+    original_symbol = str(editing_entry.get("symbol") or "").strip().upper()
+    next_symbol = str(symbol or "").strip().upper()
+    next_action = str(action_type or "").strip().lower()
+    if original_symbol and next_symbol and original_symbol != next_symbol:
+        return "历史交易不支持直接修改 ticker/account，请删除后重建。"
+    if next_action and original_action != next_action:
+        return "历史交易不支持直接修改交易方向，请删除后重建。"
+    return ""
+
+
+def _is_same_sell_edit(editing_entry: dict | None, symbol: str | None, action_type: str) -> bool:
+    if not editing_entry:
+        return False
+    original_action = str(editing_entry.get("action_type") or "").strip().lower()
+    if original_action not in SELL_DISCIPLINE_ACTIONS:
+        return False
+    next_action = str(action_type or "").strip().lower()
+    if original_action != next_action:
+        return False
+    original_symbol = str(editing_entry.get("symbol") or "").strip().upper()
+    next_symbol = str(symbol or "").strip().upper()
+    return bool(original_symbol and next_symbol and original_symbol == next_symbol)
+
+
+def _effective_sell_available_quantity(
+    action_type: str,
+    current_quantity: object,
+    *,
+    editing_entry: dict | None = None,
+    symbol: str | None = None,
+) -> float | None:
+    current = _number(current_quantity)
+    if _is_same_sell_edit(editing_entry, symbol, action_type):
+        original_quantity = _number((editing_entry or {}).get("quantity")) or 0.0
+        return float(current or 0.0) + original_quantity
+    return current
+
+
+def _sell_edit_portfolio_preview(
+    preview: dict,
+    action_type: str,
+    quantity: object,
+    effective_sell_quantity: object,
+    *,
+    editing_entry: dict | None = None,
+    symbol: str | None = None,
+) -> dict:
+    if not _is_same_sell_edit(editing_entry, symbol, action_type):
+        return preview
+    restored_quantity = _number(effective_sell_quantity)
+    if restored_quantity is None:
+        return preview
+    result = dict(preview or {})
+    result["currentQuantity"] = restored_quantity
+    trade_quantity = _number(quantity)
+    if trade_quantity is not None:
+        result["afterQuantity"] = restored_quantity - trade_quantity
+    result["status"] = "edit_preview"
+    result["error"] = ""
+    return result
+
+
+def _sell_quantity_validation_error(
+    action_type: str,
+    quantity: object,
+    current_quantity: object,
+    *,
+    editing_entry: dict | None = None,
+    symbol: str | None = None,
+) -> str:
+    if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
+        return ""
+    sell_quantity = _number(quantity)
+    current = _effective_sell_available_quantity(
+        action_type,
+        current_quantity,
+        editing_entry=editing_entry,
+        symbol=symbol,
+    )
+    if sell_quantity is None or sell_quantity <= 0:
+        return "卖出/减仓数量必须大于 0。"
+    if current is None or current <= 0:
+        return "只能卖出当前组合持仓里已有的股票。"
+    if sell_quantity > current:
+        if _is_same_sell_edit(editing_entry, symbol, action_type):
+            return "修改后的卖出数量超过还原后可用持仓，请检查数量。"
         return f"卖出数量不能超过当前持仓：当前 {_quantity_text(current)}，本次 {_quantity_text(sell_quantity)}。"
     return ""
 

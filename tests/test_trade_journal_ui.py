@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import inspect
 from datetime import date, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from data.decision_log import TradeJournalStore
+from data.trade_performance import summarize_trade_performance
 from ui import trade_journal
 
 
@@ -120,6 +124,75 @@ def test_sell_quantity_cannot_exceed_current_position() -> None:
     assert trade_journal._sell_quantity_validation_error("trim", 11, 10)
     assert trade_journal._sell_quantity_validation_error("sell", 10, 10) == ""
     assert trade_journal._sell_quantity_validation_error("buy", 11, 10) == ""
+
+
+def test_edit_closed_sell_uses_original_quantity_as_available_position() -> None:
+    original_sell = {"symbol": "ADBE", "action_type": "sell", "quantity": 10}
+
+    assert (
+        trade_journal._sell_quantity_validation_error(
+            "sell",
+            10,
+            0,
+            editing_entry=original_sell,
+            symbol="ADBE",
+        )
+        == ""
+    )
+    assert (
+        trade_journal._sell_quantity_validation_error(
+            "sell",
+            11,
+            0,
+            editing_entry=original_sell,
+            symbol="ADBE",
+        )
+        == "修改后的卖出数量超过还原后可用持仓，请检查数量。"
+    )
+
+
+def test_new_sell_without_current_position_is_still_rejected() -> None:
+    assert "已有" in trade_journal._sell_quantity_validation_error("sell", 1, 0)
+
+
+def test_edit_sell_rejects_symbol_or_action_change() -> None:
+    original_sell = {"symbol": "ADBE", "action_type": "sell", "quantity": 10}
+
+    assert (
+        trade_journal._sell_edit_identity_error(original_sell, "MSFT", "sell")
+        == "历史交易不支持直接修改 ticker/account，请删除后重建。"
+    )
+    assert (
+        trade_journal._sell_edit_identity_error(original_sell, "ADBE", "buy")
+        == "历史交易不支持直接修改交易方向，请删除后重建。"
+    )
+
+
+def test_edit_closed_sell_price_updates_original_record_and_performance() -> None:
+    with TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "decision_log.sqlite"
+        store = TradeJournalStore(db_path)
+        store.save_entry(
+            "ADBE",
+            {"trade_date": "2026-05-01", "action_type": "buy", "quantity": 10, "price": 100},
+        )
+        sell = store.save_entry(
+            "ADBE",
+            {"trade_date": "2026-05-02", "action_type": "sell", "quantity": 10, "price": 120},
+        )
+
+        updated = store.update_entry(
+            int(sell["id"]),
+            "ADBE",
+            {"trade_date": "2026-05-02", "action_type": "sell", "quantity": 10, "price": 125},
+        )
+
+        sell_entries = [entry for entry in store.list_entries("ADBE") if entry["action_type"] == "sell"]
+        assert len(sell_entries) == 1
+        assert updated["price"] == 125
+        summary = summarize_trade_performance(entries=store.list_entries("ADBE"), filters={})
+        [trade] = summary["realized_trades"]
+        assert trade["realized_pnl"] == 250
 
 
 def test_reentry_plan_suggestion_uses_market_context_helpers() -> None:
