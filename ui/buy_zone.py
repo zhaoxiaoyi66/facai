@@ -18,6 +18,7 @@ from buy_zone_engine import (
     has_buy_zone_override,
 )
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.buy_zone_engine import build_buy_zone_context as build_unified_buy_zone_context
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import PriceAlertStore
@@ -136,12 +137,16 @@ def _load_buy_zone_rows(tickers: tuple[str, ...]) -> list[dict]:
                 snapshot["price"] = market_price
                 technicals["price"] = market_price
             score = calculate_total_score(snapshot, technicals)
-            stock_data = {**snapshot, **technicals, "price_history": history}
+            stock_data = {**snapshot, **technicals, "price_history": history, "daily_ohlcv": history, "history": history}
+            final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
+            if final_score_value is not None:
+                stock_data["final_score"] = final_score_value
             if not _valid_price(stock_data.get("price") or stock_data.get("current_price")):
                 stock_data["price"] = _first_number(technicals.get("price"), snapshot.get("current_price"))
+            buy_zone_context = build_unified_buy_zone_context(stock_data).to_dict()
             zone = generate_buy_zone(symbol, stock_data, score, score.scoring_model)
             plan = generate_position_plan(symbol, zone, score)
-            rows.append(_row_from_outputs(symbol, snapshot, technicals, score, zone, plan, "system_generated", False))
+            rows.append(_row_from_outputs(symbol, snapshot, technicals, score, zone, plan, "system_generated", False, buy_zone_context))
         except Exception as exc:
             rows.append(_error_row(symbol, str(exc)))
     return rows
@@ -153,7 +158,14 @@ def _apply_manual_plan(row: dict, plan: dict) -> dict:
     score = row["score"]
     plan_suggestion = generate_position_plan(str(row["symbol"]), active_zone, score)
     source = "manual_override" if has_buy_zone_override(plan) else "system_generated"
-    decision_fields = _final_decision_fields(score, system_zone, manual_plan_override=plan, symbol=str(row["symbol"]))
+    buy_zone_context = row.get("buyZoneContext") or row.get("buy_zone_context")
+    decision_fields = _final_decision_fields(
+        score,
+        system_zone,
+        manual_plan_override=plan,
+        symbol=str(row["symbol"]),
+        buy_zone_context=buy_zone_context,
+    )
     active_zone = attach_combined_entry(active_zone, SimpleNamespace(**decision_fields))
     updated = dict(row)
     updated.update(_zone_plan_fields(active_zone, plan_suggestion, source, has_buy_zone_override(plan)))
@@ -172,6 +184,7 @@ def _row_from_outputs(
     plan: PositionPlanSuggestion,
     source: str,
     manual: bool,
+    buy_zone_context: dict | None = None,
 ) -> dict:
     price = _first_number(zone.currentPrice, technicals.get("price"), snapshot.get("current_price"))
     base = {
@@ -192,8 +205,10 @@ def _row_from_outputs(
         "positionPlan": plan,
         "rawSnapshot": snapshot,
         "rawTechnicals": technicals,
+        "buyZoneContext": buy_zone_context or {},
+        "buy_zone_context": buy_zone_context or {},
     }
-    decision_fields = _final_decision_fields(score, zone, plan)
+    decision_fields = _final_decision_fields(score, zone, plan, buy_zone_context=buy_zone_context)
     zone = attach_combined_entry(zone, SimpleNamespace(**decision_fields))
     base["systemZone"] = zone
     base["activeZone"] = zone
@@ -209,6 +224,7 @@ def _final_decision_fields(
     *,
     manual_plan_override: dict | None = None,
     symbol: str | None = None,
+    buy_zone_context: dict | None = None,
 ) -> dict:
     decision = build_final_decision_bundle(
         score,
@@ -216,6 +232,7 @@ def _final_decision_fields(
         plan,
         manual_plan_override=manual_plan_override,
         symbol=symbol,
+        buy_zone_context=buy_zone_context,
     )
     return {
         "finalAction": decision.finalAction,

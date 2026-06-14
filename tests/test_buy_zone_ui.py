@@ -13,3 +13,12 @@ def test_buy_zone_rows_use_market_context_for_price_history() -> None:
     assert "provider.get_price_history" not in source
     assert 'snapshot["current_price"] = market_price' in source
     assert "setdefault(\"current_price\"" not in source
+
+
+def test_buy_zone_page_final_decision_uses_unified_context() -> None:
+    load_source = inspect.getsource(buy_zone._load_buy_zone_rows)
+    decision_source = inspect.getsource(buy_zone._final_decision_fields)
+
+    assert "build_unified_buy_zone_context" in load_source
+    assert '"daily_ohlcv": history' in load_source
+    assert "buy_zone_context=buy_zone_context" in decision_source
