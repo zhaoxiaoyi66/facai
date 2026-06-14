@@ -17,6 +17,7 @@ from buy_zone_engine import (
     has_buy_zone_override,
 )
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.buy_zone_engine import build_buy_zone_context as build_unified_buy_zone_context
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
 from data.market_context import build_market_context, build_market_history
@@ -73,12 +74,22 @@ def render() -> None:
 
     plan_store = StockPlanStore()
     plan = plan_store.get_plan(ticker)
-    stock_data = {**snapshot, **technicals, "price_history": history}
+    stock_data = {**snapshot, **technicals, "price_history": history, "daily_ohlcv": history, "history": history}
+    final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
+    if final_score_value is not None:
+        stock_data["final_score"] = final_score_value
+    buy_zone_context = build_unified_buy_zone_context(stock_data).to_dict()
     buy_zone = generate_buy_zone(ticker, stock_data, score, score.scoring_model)
     effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
     effective_plan = effective_buy_zone_plan(plan, effective_buy_zone)
     plan_suggestion = generate_position_plan(ticker, effective_buy_zone, score)
-    final_decision = build_final_decision_bundle(score, buy_zone, manual_plan_override=plan, symbol=ticker)
+    final_decision = build_final_decision_bundle(
+        score,
+        buy_zone,
+        manual_plan_override=plan,
+        symbol=ticker,
+        buy_zone_context=buy_zone_context,
+    )
     effective_buy_zone = attach_combined_entry(effective_buy_zone, final_decision)
     portfolio_view = _portfolio_view()
     portfolio_row = _portfolio_row_for_ticker(ticker, portfolio_view)
