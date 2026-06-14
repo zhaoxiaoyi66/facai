@@ -3203,7 +3203,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("数据可信度", source)
         self.assertIn("公司质量解释", source)
         self.assertIn("估值/计划参考解释", source)
-        self.assertIn("不等同于主表 Radar 纪律买区", source)
+        self.assertIn("不等同于主表 Radar 主击球区", source)
         self.assertIn("风险解释", source)
         self.assertIn("数据补全状态", inspect.getsource(_render_metric_resolution_groups))
 
@@ -3227,7 +3227,7 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("<details", detail_source)
         self.assertIn("详细依据", detail_source)
         self.assertIn("估值/计划参考解释", detail_source)
-        self.assertIn("不等同于主表 Radar 纪律买区", detail_source)
+        self.assertIn("不等同于主表 Radar 主击球区", detail_source)
         self.assertIn("legacy 估值参考", combined_source)
         self.assertIn("结构买入提示", structure_source)
         self.assertIn("只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct", structure_source)
@@ -3332,7 +3332,7 @@ class ScoringTests(unittest.TestCase):
             pd.Series(
                 {
                     "entry_display_label": "买区内 $130.32 - $143.89",
-                    "entry_display_reason": "当前位于纪律买区",
+                    "entry_display_reason": "当前位于主击球区",
                     "entry_action_hint": "需复核",
                     "radar_buy_zone": {"lower": 130.32, "upper": 143.89},
                     "radar_price_position": "IN_BUY_ZONE",

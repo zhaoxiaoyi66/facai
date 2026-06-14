@@ -607,7 +607,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     elif allowed_add_pct is not None and allowed_add_pct <= 0:
         discipline_status = "系统参考新增仓位为 0%，仅作风险提示"
     elif price_position == "IN_BUY_ZONE":
-        discipline_status = "进入纪律买区"
+        discipline_status = "进入主击球区"
     elif price_position == "BELOW_BUY_ZONE":
         discipline_status = "低于估值参考需复核"
     elif price_position in {"ABOVE_BUY_ZONE", "IN_CHASE_ZONE"}:

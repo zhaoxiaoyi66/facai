@@ -654,7 +654,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">系统估值入场参考</div>'
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
-        '<div class="drawer-muted">本页来自 legacy buy_zone_engine，用于计划建仓与估值参考；不等同于 Radar 纪律买区，也不直接代表 ALLOW_BUY。</div>'
+        '<div class="drawer-muted">本页来自 legacy buy_zone_engine，用于计划建仓与估值参考；不等同于 Radar 主击球区，也不直接代表 ALLOW_BUY。</div>'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
         '<div class="drawer-section-title">价格提醒</div>'

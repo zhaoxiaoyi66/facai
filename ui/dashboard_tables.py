@@ -227,7 +227,7 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
     return build_entry_display(
         data_status="MISSING_BUY_ZONE",
         price_position="ZONE_MISSING",
-        missing_entry_fields=["Radar 纪律买区缺失"],
+        missing_entry_fields=["Radar 主击球区缺失"],
         decision=str(_row_value(row, "finalDecision") or _row_value(row, "decision") or ""),
         final_score=_number(_row_value(row, "finalScore") or _row_value(row, "totalScore")),
         valuation_score=_number(_row_value(row, "valuationScore")),
@@ -352,25 +352,25 @@ def _dashboard_missing_entry_fields(zone: object, price_position: str) -> list[s
     if price_position != "ZONE_MISSING":
         return []
     if zone is None:
-        return ["无法生成纪律买区"]
+        return ["无法生成主击球区"]
     current_zone = str(_zone_value(zone, "currentZone") or "").strip()
     explain = _zone_value(zone, "explainability")
     missing_inputs: list[str] = []
     if isinstance(explain, dict):
         missing_inputs = [str(item).strip() for item in (explain.get("missingInputs") or []) if str(item).strip()]
     if current_zone == "unsupported_buy_zone_model":
-        return ["暂无专属买区模型", "无法生成纪律买区"]
+        return ["暂无专属买区模型", "无法生成主击球区"]
     if current_zone == "data_insufficient":
         if missing_inputs:
-            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成纪律买区"]
-        return ["缺估值指标", "无法生成纪律买区"]
+            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成主击球区"]
+        return ["缺估值指标", "无法生成主击球区"]
     if current_zone == "low_confidence_zone":
-        return ["数据置信度不足", "无法生成纪律买区"]
+        return ["数据置信度不足", "无法生成主击球区"]
     if current_zone in {"invalid_zone", "invalid_manual_override"}:
         if missing_inputs:
-            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成纪律买区"]
-        return ["买区输入异常", "无法生成纪律买区"]
-    return ["无法生成纪律买区"]
+            return [f"缺关键买区输入：{', '.join(missing_inputs[:3])}", "无法生成主击球区"]
+        return ["买区输入异常", "无法生成主击球区"]
+    return ["无法生成主击球区"]
 
 
 def _zone_value(zone: object, key: str) -> object:

@@ -350,7 +350,7 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
 
 
 def _drawer_radar_entry_card_html(row: pd.Series) -> str:
-    label = _drawer_clean_text(row.get("entry_display_label")) or "暂无 Radar 纪律买区"
+    label = _drawer_clean_text(row.get("entry_display_label")) or "暂无 Radar 主击球区"
     hint = _drawer_clean_text(row.get("entry_action_hint"))
     reason = _drawer_clean_text(row.get("entry_display_reason"))
     buy_zone = row.get("radar_buy_zone") or row.get("buy_zone") or {}
@@ -1034,7 +1034,7 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
     if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
         return "价值复核，结构待确认"
     if status == "IN_DISCIPLINE_BUY_ZONE":
-        return "位于 Radar 纪律买区"
+        return "位于 Radar 主击球区"
     if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:
         return "低于估值参考，等待结构确认"
     if status == "IN_CHASE_ZONE":
@@ -1337,7 +1337,7 @@ def _drawer_detail_basis_html(
             str(summary.get("quality") or ""),
         ]),
         _drawer_card_html("估值/计划参考解释", entry_display or str(row.get("entryRating") or "N/A"), [
-            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 纪律买区。",
+            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 主击球区。",
             _clean_buy_point_summary_text(summary.get("valuation"), row),
             _clean_buy_point_summary_text(summary.get("technical"), row),
             _clean_buy_point_summary_text(summary.get("entry"), row),

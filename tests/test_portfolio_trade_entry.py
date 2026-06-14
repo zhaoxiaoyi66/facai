@@ -1439,7 +1439,7 @@ def test_starter_position_uses_buy_reason_as_thesis_and_allows_small_valuation_w
                 entry_mode="starter_position",
                 buy_reason="核心 AI 仓位，财报后大跌，先买 A 类底仓",
                 starter_thesis="",
-                starter_add_plan="回到纪律买区或下一档计划价再加第二笔",
+                starter_add_plan="回到主击球区或下一档计划价再加第二笔",
                 starter_invalidation_condition="AI 订单或毛利率 thesis 破坏则停止",
                 target_sell_price=500,
             ),
