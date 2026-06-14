@@ -1615,12 +1615,12 @@ def test_weekend_spread_render_declares_workflow_tabs() -> None:
     assert "st.tabs" in source
     assert [
         weekend_spread.TAB_REALTIME,
-        weekend_spread.TAB_WEEKLY,
-        weekend_spread.TAB_MONDAY,
-        weekend_spread.TAB_HISTORY,
         weekend_spread.TAB_BACKTEST,
         weekend_spread.TAB_MAPPING,
-    ] == ["实时观察", "本周记录", "周一验证", "历史规律", "历史回测", "映射管理"]
+    ] == ["实时观察", "历史回测", "映射管理"]
+    assert "TAB_WEEKLY" not in source
+    assert "TAB_MONDAY" not in source
+    assert "TAB_HISTORY" not in source
 
 
 def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
@@ -1647,6 +1647,30 @@ def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
     assert weekend_spread._strongest_signal_warning(strongest) == "映射未确认，不能作为正式套利信号。"
 
 
+def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
+    source = inspect.getsource(weekend_spread)
+
+    assert "查看实时价差详情" not in source
+    assert "行详情" in source
+
+
+def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
+    source = inspect.getsource(weekend_spread._render_backtest_tab)
+
+    assert "包含未确认映射" in source
+    assert "weekend_backtest_include_unconfirmed" in source
+    assert 'mapping_confidence") or "") == "confirmed"' in source
+
+
+def test_market_price_source_status_uses_request_language() -> None:
+    no_rows = build_weekend_spread_rows(["NVDA"], mapping=_explicit_empty_mapping(), provider=FakeProvider(), cache=FakeCache())
+    futures_rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
+
+    assert weekend_spread._market_price_source_status(no_rows, "spot") == "无请求"
+    assert weekend_spread._market_price_source_status(no_rows, "usdm_futures") == "无请求"
+    assert weekend_spread._market_price_source_status(futures_rows, "usdm_futures") == "可用"
+
+
 def test_live_frame_keeps_only_core_realtime_columns() -> None:
     rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
 
@@ -1655,18 +1679,16 @@ def test_live_frame_keeps_only_core_realtime_columns() -> None:
     assert list(frame.columns) == [
         "Ticker",
         "周五收盘",
-        "盘后参考",
-        "盘后变动",
         "Binance 最新",
-        "Binance vs 盘后",
-        "Binance vs 收盘",
+        "实时价差",
         "方向",
         "提醒",
         "映射状态",
+        "流动性",
         "更新时间",
     ]
-    assert frame.loc[0, "盘后参考"] == "缺少盘后参考价"
-    assert frame.loc[0, "Binance vs 盘后"] == "缺少盘后参考价"
+    assert "盘后参考" not in frame.columns
+    assert "Binance vs 盘后" not in frame.columns
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns

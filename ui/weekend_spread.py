@@ -32,9 +32,6 @@ RISK_NOTICE = (
 )
 
 TAB_REALTIME = "实时观察"
-TAB_WEEKLY = "本周记录"
-TAB_MONDAY = "周一验证"
-TAB_HISTORY = "历史规律"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 
@@ -57,18 +54,10 @@ def render() -> None:
     mapping = load_binance_symbol_mapping()
     watchlist = load_watchlist()
 
-    realtime_tab, weekly_tab, monday_tab, history_tab, backtest_tab, mapping_tab = st.tabs(
-        [TAB_REALTIME, TAB_WEEKLY, TAB_MONDAY, TAB_HISTORY, TAB_BACKTEST, TAB_MAPPING]
-    )
+    realtime_tab, backtest_tab, mapping_tab = st.tabs([TAB_REALTIME, TAB_BACKTEST, TAB_MAPPING])
 
     with realtime_tab:
-        rows, log_snapshot, mapping_counts = _render_realtime_tab(watchlist, mapping)
-    with weekly_tab:
-        _render_weekly_tab(rows, log_snapshot)
-    with monday_tab:
-        _render_monday_tab(log_snapshot)
-    with history_tab:
-        _render_history_tab()
+        rows, mapping_counts = _render_realtime_tab(watchlist, mapping)
     with backtest_tab:
         _render_backtest_tab(watchlist, mapping)
     with mapping_tab:
@@ -78,16 +67,15 @@ def render() -> None:
 def _render_realtime_tab(
     watchlist: list[str],
     mapping: dict[str, dict],
-) -> tuple[list[dict], dict, dict[str, int]]:
+) -> tuple[list[dict], dict[str, int]]:
     st.subheader("实时观察")
     force_refresh = _render_realtime_action_bar()
     rows = _build_weekend_spread_rows_with_feedback(watchlist, mapping=mapping, force_refresh=force_refresh)
+    st.session_state["weekend_realtime_rows"] = rows
 
-    _render_record_buttons(rows, key_prefix="realtime")
-    log_snapshot = get_weekly_log_snapshot()
     mapping_counts = _mapping_counts(rows, mapping)
 
-    _render_primary_kpis(rows, mapping_counts, log_snapshot)
+    _render_primary_kpis(rows, mapping_counts)
     _render_data_status_cards(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
     _render_strongest_signal(rows, mapping_counts)
 
@@ -96,12 +84,12 @@ def _render_realtime_tab(
         _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
     elif main_rows:
         st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
+        _render_row_details(main_rows)
     else:
         st.info("当前没有可展示的实时价差。若已有映射，请刷新价格或查看映射状态。")
 
-    _render_details(main_rows)
     _render_no_mapping_expander(rows)
-    return rows, log_snapshot, mapping_counts
+    return rows, mapping_counts
 
 
 def _render_realtime_action_bar() -> bool:
@@ -152,25 +140,21 @@ def _build_weekend_spread_rows_with_feedback(
     return rows
 
 
-def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:
+def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
-    recorded_max = _recorded_max_abs_spread(log_snapshot)
-    cols = st.columns(4)
+    cols = st.columns(3)
     cols[0].metric("当前可拉价", mapping_counts["price_row_count"])
     cols[1].metric("实时异常价差", abnormal_count)
-    cols[2].metric("本周已记录样本", int(log_snapshot.get("sample_count") or 0))
-    cols[3].metric("已记录最大价差", _percent_text(recorded_max))
+    cols[2].metric("Binance 数据状态", _binance_status_text(rows, mapping_counts["universe_mapping_count"]))
 
 
 def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
     afterhours_counts = _afterhours_counts(rows)
     values = [
-        ("本地映射总数", str(mapping_counts["local_mapping_count"])),
         ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
+        ("Spot 价格源", _market_price_source_status(rows, "spot")),
+        ("Futures 价格源", _market_price_source_status(rows, "usdm_futures")),
         ("盘后参考", f"{afterhours_counts['available']} / {afterhours_counts['mapped']}"),
-        ("缺盘后", str(afterhours_counts["missing"])),
-        ("Spot 状态", "已关闭"),
-        ("Futures 状态", _market_data_status(rows, "usdm_futures")),
         ("最后刷新", _latest_updated_at(rows) or "暂缺"),
     ]
     cols = st.columns(len(values))
@@ -313,12 +297,19 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         "这是历史观察回测，不构成套利建议。周末高点未必能成交；spot 映射不等于可直接做空合约收益；"
         "futures 数据不可用时不能计算合约空单收益；mapping 未 confirmed 时结果仅作观察。"
     )
+    include_unconfirmed = st.checkbox(
+        "包含未确认映射",
+        value=False,
+        key="weekend_backtest_include_unconfirmed",
+        help="candidate 映射仅观察，默认不纳入正式胜率。",
+    )
     mapped_tickers = [
         str(ticker or "").upper()
         for ticker in watchlist
         if str(ticker or "").upper() in mapping
         and mapping[str(ticker or "").upper()].get("enabled", True)
         and mapping[str(ticker or "").upper()].get("binance_symbol")
+        and (include_unconfirmed or str(mapping[str(ticker or "").upper()].get("mapping_confidence") or "") == "confirmed")
     ]
     options = ["全部已映射"] + mapped_tickers
     cols = st.columns(5)
@@ -341,20 +332,41 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     results = list(st.session_state.get("weekend_backtest_results") or [])
     if not results:
         st.info("暂无回测结果。先配置映射并点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
+        _render_backtest_advanced_records()
         return
     _render_backtest_kpis(results)
     st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
+    _render_backtest_advanced_records()
 
 
 def _render_backtest_kpis(rows: list[dict]) -> None:
     summary = summarize_backtest_results(rows)
     cols = st.columns(6)
-    cols[0].metric("样本周数", int(summary.get("sample_weeks") or 0))
+    cols[0].metric("近4周样本数", int(summary.get("sample_weeks") or 0))
     cols[1].metric("平均理论收益", _percent_text(summary.get("avg_net_return_pct")))
-    cols[2].metric("最大收益", _percent_text(summary.get("max_return_pct")))
-    cols[3].metric("最大亏损", _percent_text(summary.get("max_loss_pct")))
-    cols[4].metric("正收益周数", int(summary.get("positive_weeks") or 0))
-    cols[5].metric("胜率", _ratio_text(summary.get("win_rate")))
+    cols[2].metric("胜率", _ratio_text(summary.get("win_rate")))
+    cols[3].metric("最大收益", _percent_text(summary.get("max_return_pct")))
+    cols[4].metric("最大亏损", _percent_text(summary.get("max_loss_pct")))
+    cols[5].metric("平均回落幅度", _percent_text(_average_backtest_pullback(rows)))
+
+
+def _render_backtest_advanced_records() -> None:
+    with st.expander("高级 / 前瞻记录", expanded=False):
+        st.caption("这些记录用于前瞻观察和周一验证，不是历史回测主流程。")
+        rows = list(st.session_state.get("weekend_realtime_rows") or [])
+        if rows:
+            _render_record_buttons(rows, key_prefix="advanced")
+        else:
+            st.caption("先到“实时观察”刷新或加载一次价差，再记录当前快照。")
+        snapshot = get_weekly_log_snapshot()
+        _render_weekly_peak_cards(snapshot)
+        summaries = list(snapshot.get("summaries") or [])
+        if summaries:
+            st.dataframe(_summary_frame(summaries), width="stretch", hide_index=True)
+            st.dataframe(_monday_outcome_frame(summaries), width="stretch", hide_index=True)
+        stats = build_history_stats()
+        if stats:
+            st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
 
 
 def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
@@ -561,15 +573,13 @@ def _mapping_editor_error_text(error_code: str) -> str:
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "Ticker"),
-        ("regular_close_price", "周五收盘"),
-        ("afterhours_reference_price", "盘后参考"),
-        ("afterhours_gap_pct", "盘后变动"),
+        ("friday_close", "周五收盘"),
         ("binance_last_price", "Binance 最新"),
-        ("spread_vs_afterhours_pct", "Binance vs 盘后"),
-        ("spread_vs_regular_close_pct", "Binance vs 收盘"),
+        ("spread_pct", "实时价差"),
         ("spread_direction", "方向"),
         ("alert_level_cn", "提醒"),
         ("mapping_status", "映射状态"),
+        ("liquidity_warning", "流动性"),
         ("updated_at", "更新时间"),
     ]
     frame = pd.DataFrame(rows)
@@ -578,12 +588,9 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
-    for money_col in ("周五收盘", "盘后参考", "Binance 最新"):
+    for money_col in ("周五收盘", "Binance 最新"):
         display[money_col] = display[money_col].map(_money_text)
-    display["盘后参考"] = display["盘后参考"].replace("暂缺", "缺少盘后参考价")
-    for percent_col in ("盘后变动", "Binance vs 盘后", "Binance vs 收盘"):
-        display[percent_col] = display[percent_col].map(_percent_text)
-    display["Binance vs 盘后"] = display["Binance vs 盘后"].replace("暂缺", "缺少盘后参考价")
+    display["实时价差"] = display["实时价差"].map(_percent_text)
     display["更新时间"] = display["更新时间"].replace("", "暂缺")
     return display
 
@@ -755,12 +762,11 @@ def _mapping_management_frame(rows: list[dict], mapping: dict[str, dict]) -> pd.
     return display
 
 
-def _render_details(rows: list[dict]) -> None:
-    with st.expander("查看实时价差详情", expanded=False):
-        if not rows:
-            st.caption("暂无可展示数据。")
-            return
-        for row in rows:
+def _render_row_details(rows: list[dict]) -> None:
+    if not rows:
+        return
+    for row in rows:
+        with st.expander(f"{str(row.get('ticker') or '').upper()} 行详情", expanded=False):
             st.markdown(
                 f"""
                 <section class="weekend-spread-detail">
@@ -908,6 +914,19 @@ def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
     return "待刷新"
 
 
+def _market_price_source_status(rows: list[dict], market_type: str) -> str:
+    market_rows = [
+        row
+        for row in rows
+        if row.get("binance_symbol") and str(row.get("binance_market_type") or row.get("market_type") or "") == market_type
+    ]
+    if not market_rows:
+        return "无请求"
+    if any(row.get("status") == "OK" and row.get("binance_last_price") is not None for row in market_rows):
+        return "可用"
+    return "不可用"
+
+
 def _market_data_status(rows: list[dict], market_type: str) -> str:
     market_rows = [
         row
@@ -972,6 +991,14 @@ def _plain_number(value: object) -> str:
     if number is None:
         return "暂缺"
     return f"{number:,.0f}"
+
+
+def _average_backtest_pullback(rows: list[dict]) -> float | None:
+    values = [_number(row.get("short_return_at_open_pct")) for row in rows]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def _number(value: object) -> float | None:
