@@ -163,6 +163,61 @@ def test_risk_reward_without_target_or_resistance_is_capped() -> None:
 
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.risk_reward_score <= 60
+    assert context.target_quality == "CONFIRMATION_LINE"
+    assert context.rr_score_capped is True
+
+
+def test_chase_derived_resistance_target_is_capped_and_auditable() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            confirmation_price=104,
+            chase_above_price=139.2,
+            resistance_zone_high=139.2,
+            recent_swing_high=139.2,
+        ),
+        volume_snapshot=_volume(),
+    )
+
+    assert context.raw_rr is not None
+    assert context.raw_rr >= 2
+    assert context.risk_reward_score == 55
+    assert context.rr_score_capped is True
+    assert context.target_source == "resistance_zone_high"
+    assert context.target_quality == "CHASE_LINE"
+    assert context.rr_cap_reason == "target equals chase line; rr capped"
+
+
+def test_explicit_target_can_score_high_without_chase_cap() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            target_price=140,
+            chase_above_price=125,
+            resistance_zone_high=125,
+            recent_swing_high=125,
+        ),
+        volume_snapshot=_volume(),
+    )
+
+    assert context.risk_reward_score == 88
+    assert context.rr_score_capped is False
+    assert context.target_source == "target_price"
+    assert context.target_quality == "EXPLICIT_TARGET"
+
+
+def test_swing_high_target_is_capped_below_explicit_target_quality() -> None:
+    source = _base_source(current_price=101, recent_swing_high=119, chase_above_price=125)
+    source.pop("resistance_zone_high")
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.raw_rr is not None
+    assert context.raw_rr >= 2
+    assert context.risk_reward_score == 75
+    assert context.rr_score_capped is True
+    assert context.target_source == "recent_swing_high"
+    assert context.target_quality == "SWING_HIGH"
 
 
 def test_now_like_pullback_middle_observes_and_account_no_add() -> None:

@@ -69,9 +69,26 @@ class BuyZoneContext:
     volume_ratio: float | None = None
     volume_source: str = ""
     technical_data_source: str = ""
+    upside_target: float | None = None
+    target_source: str = ""
+    target_quality: str = ""
+    raw_rr: float | None = None
+    rr_score_capped: bool = False
+    rr_cap_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class RiskRewardAssessment:
+    score: float
+    upside_target: float | None
+    target_source: str
+    target_quality: str
+    raw_rr: float | None
+    rr_score_capped: bool
+    rr_cap_reason: str
 
 
 def build_buy_zone_context(
@@ -124,8 +141,6 @@ def build_buy_zone_context(
         "recent_breakout_level",
         "confirmation_price",
     )
-    target_price = _first_number(data, "target_price", "targetPrice", "analyst_target_price", "consensus_target_price")
-    resistance_high = _first_number(data, "resistance_zone_high", "recent_swing_high", "swing_high")
     if chase is None:
         chase = resistance
     if invalidation is None and support_low is not None:
@@ -215,14 +230,15 @@ def build_buy_zone_context(
     )
     technical_score = _technical_structure_score(primary_zone)
     volume_score = _volume_acceptance_score(volume_status, volume_score_input)
-    rr_score = _risk_reward_score(
+    rr = _risk_reward_assessment(
+        data=data,
         price=price,
         confirmation=confirmation,
         invalidation=invalidation,
-        target_price=target_price,
-        resistance_high=resistance_high,
+        chase=chase,
         primary_zone=primary_zone,
     )
+    rr_score = rr.score
     setup_score = round(technical_score * 0.45 + volume_score * 0.35 + rr_score * 0.20, 1)
     action = _current_action(primary_zone, setup_score, volume_status, volume_score, rr_score)
     return BuyZoneContext(
@@ -257,6 +273,12 @@ def build_buy_zone_context(
         volume_ratio=volume_ratio,
         volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
         technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
+        upside_target=rr.upside_target,
+        target_source=rr.target_source,
+        target_quality=rr.target_quality,
+        raw_rr=rr.raw_rr,
+        rr_score_capped=rr.rr_score_capped,
+        rr_cap_reason=rr.rr_cap_reason,
     )
 
 
@@ -384,37 +406,119 @@ def _volume_acceptance_score(status: str, explicit_score: float | None) -> float
     return 0.0
 
 
-def _risk_reward_score(
+def _risk_reward_assessment(
     *,
+    data: dict[str, Any],
     price: float,
     confirmation: float,
     invalidation: float,
-    target_price: float | None,
-    resistance_high: float | None,
+    chase: float | None,
     primary_zone: str,
-) -> float:
+) -> RiskRewardAssessment:
     if primary_zone in {"INVALIDATION", "CHASE_RISK"}:
-        return 5.0 if primary_zone == "INVALIDATION" else 18.0
-    explicit_target = _first_defined_number(target_price, resistance_high)
-    target = explicit_target if explicit_target is not None else confirmation
+        return RiskRewardAssessment(
+            score=5.0 if primary_zone == "INVALIDATION" else 18.0,
+            upside_target=None,
+            target_source="",
+            target_quality="NOT_APPLICABLE",
+            raw_rr=None,
+            rr_score_capped=False,
+            rr_cap_reason="",
+        )
+
+    target, source, quality = _resolve_rr_target(data, confirmation=confirmation, chase=chase)
     downside = price - invalidation
-    upside = target - price
-    if downside <= 0 or upside <= 0:
-        return 28.0
-    ratio = upside / downside
-    if ratio >= 2.0:
+    upside = None if target is None else target - price
+    if target is None or downside <= 0 or upside is None or upside <= 0:
+        return RiskRewardAssessment(
+            score=28.0,
+            upside_target=target,
+            target_source=source,
+            target_quality=quality,
+            raw_rr=None,
+            rr_score_capped=False,
+            rr_cap_reason="upside_or_downside_invalid",
+        )
+
+    raw_rr = upside / downside
+    if raw_rr >= 2.0:
         score = 88.0
-    elif ratio >= 1.4:
+    elif raw_rr >= 1.4:
         score = 75.0
-    elif ratio >= 1.0:
+    elif raw_rr >= 1.0:
         score = 62.0
-    elif ratio >= 0.6:
+    elif raw_rr >= 0.6:
         score = 45.0
     else:
         score = 28.0
-    if explicit_target is None:
-        return min(score, 60.0)
-    return score
+
+    cap = _target_quality_cap(quality)
+    cap_reason = ""
+    capped = False
+    if cap is not None and score > cap:
+        score = cap
+        capped = True
+        cap_reason = _target_quality_cap_reason(quality)
+
+    return RiskRewardAssessment(
+        score=score,
+        upside_target=target,
+        target_source=source,
+        target_quality=quality,
+        raw_rr=raw_rr,
+        rr_score_capped=capped,
+        rr_cap_reason=cap_reason,
+    )
+
+
+def _resolve_rr_target(
+    data: dict[str, Any],
+    *,
+    confirmation: float | None,
+    chase: float | None,
+) -> tuple[float | None, str, str]:
+    explicit = _first_number_with_key(data, "target_price", "targetPrice", "analyst_target_price", "consensus_target_price")
+    if explicit is not None:
+        key, value = explicit
+        return value, key, "EXPLICIT_TARGET"
+
+    resistance = _first_number_with_key(data, "resistance_zone_high", "resistance_zone_upper")
+    if resistance is not None:
+        key, value = resistance
+        if _same_price(value, chase):
+            return value, key, "CHASE_LINE"
+        if _same_price(value, confirmation):
+            return value, key, "CONFIRMATION_LINE"
+        return value, key, "RESISTANCE_HIGH"
+
+    swing = _first_number_with_key(data, "recent_swing_high", "swing_high")
+    if swing is not None:
+        key, value = swing
+        if _same_price(value, chase):
+            return value, key, "SWING_HIGH"
+        return value, key, "SWING_HIGH"
+
+    if confirmation is not None:
+        return confirmation, "confirmation_price", "CONFIRMATION_LINE"
+    return None, "", "MISSING"
+
+
+def _target_quality_cap(quality: str) -> float | None:
+    return {
+        "SWING_HIGH": 75.0,
+        "CONFIRMATION_LINE": 60.0,
+        "CHASE_LINE": 55.0,
+        "MISSING": 45.0,
+    }.get(quality)
+
+
+def _target_quality_cap_reason(quality: str) -> str:
+    return {
+        "SWING_HIGH": "target uses swing high; rr capped",
+        "CONFIRMATION_LINE": "target uses reevaluation line; rr capped",
+        "CHASE_LINE": "target equals chase line; rr capped",
+        "MISSING": "target missing; rr capped",
+    }.get(quality, "")
 
 
 def _current_action(primary_zone: str, setup_score: float, volume_status: str, volume_score: float, rr_score: float) -> str:
@@ -740,11 +844,13 @@ def _first_number(source: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
-def _first_defined_number(*values: Any) -> float | None:
-    for value in values:
-        number = _number(value)
+def _first_number_with_key(source: dict[str, Any], *keys: str) -> tuple[str, float] | None:
+    for key in keys:
+        if key not in source:
+            continue
+        number = _number(source.get(key))
         if number is not None:
-            return number
+            return key, number
     return None
 
 
@@ -760,6 +866,13 @@ def _number(value: Any) -> float | None:
     if number != number:
         return None
     return number
+
+
+def _same_price(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return False
+    tolerance = max(0.01, abs(left) * 0.0001)
+    return abs(left - right) <= tolerance
 
 
 def _value(source: dict[str, Any], *keys: str) -> Any:
