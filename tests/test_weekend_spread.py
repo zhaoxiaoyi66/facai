@@ -14,6 +14,7 @@ from data.weekend_spread import (
     classify_spread,
     discover_binance_symbol_candidates,
     load_binance_symbol_mapping,
+    upsert_local_binance_symbol_mapping,
 )
 from data.weekend_spread_log import (
     build_history_stats,
@@ -920,6 +921,40 @@ def test_mapping_loader_returns_empty_when_example_and_local_are_missing(tmp_pat
     )
 
     assert mapping == {}
+
+
+def test_upsert_local_mapping_saves_symbol_without_realtime_price(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_mapping.local.json"
+
+    mapping = upsert_local_binance_symbol_mapping(
+        "nvda",
+        "nvdabusdt",
+        market_type="spot",
+        mapping_confidence="candidate",
+        risk_note="候选 symbol 不代表真实美股映射关系，需要人工确认。",
+        path=path,
+    )
+    loaded = load_binance_symbol_mapping(path, local_path=None)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert mapping["NVDA"]["binance_symbol"] == "NVDABUSDT"
+    assert loaded["NVDA"]["market_type"] == "spot"
+    assert loaded["NVDA"]["mapping_confidence"] == "candidate"
+    assert "manual_override_price" not in payload["mappings"]["NVDA"]
+    assert "last_price" not in payload["mappings"]["NVDA"]
+
+
+def test_upsert_local_mapping_rejects_missing_symbol(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_mapping.local.json"
+
+    try:
+        upsert_local_binance_symbol_mapping("NVDA", "", path=path)
+    except ValueError as exc:
+        assert str(exc) == "binance_symbol_required"
+    else:
+        raise AssertionError("missing symbol should be rejected")
+
+    assert not path.exists()
 
 
 def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:

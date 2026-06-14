@@ -11,6 +11,7 @@ from data.weekend_spread import (
     build_mapping_diagnostics,
     build_weekend_spread_rows,
     load_binance_symbol_mapping,
+    upsert_local_binance_symbol_mapping,
 )
 from data.weekend_spread_log import (
     build_history_stats,
@@ -51,6 +52,7 @@ def render() -> None:
 
     _render_kpis(rows, mapping_counts, log_snapshot)
     _render_data_status(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
 
     controls = st.columns([1.3, 1, 1, 1])
     scope = controls[0].radio("显示范围", ["重点/有数据", "全部观察池", "暂无 mapping"], index=0, horizontal=True)
@@ -137,6 +139,72 @@ def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_
 
 def _render_empty_mapping_state(mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
     st.info(_empty_mapping_message(mapping_counts, local_mapping_path))
+
+
+def _render_mapping_editor(
+    mapping: dict[str, dict],
+    rows: list[dict],
+    mapping_counts: dict[str, int],
+    local_mapping_path: Path,
+) -> None:
+    expanded = mapping_counts.get("universe_mapping_count", 0) <= 0
+    with st.expander("添加 / 更新 Binance 映射", expanded=expanded):
+        st.caption("这里只保存 ticker -> Binance symbol 映射；实时价格仍由 Binance API 自动读取。")
+        tickers = [str(row.get("ticker") or "").upper() for row in rows if row.get("ticker")]
+        if not tickers:
+            st.caption("观察池为空，暂无可配置 ticker。")
+            return
+        ticker = st.selectbox("观察池 ticker", tickers, index=0)
+        existing = mapping.get(str(ticker or "").upper(), {})
+        symbol_value = str(existing.get("binance_symbol") or "")
+        market_value = str(existing.get("market_type") or "spot")
+        confidence_value = str(existing.get("mapping_confidence") or "candidate")
+        market_options = ["spot", "usdm_futures"]
+        confidence_options = ["candidate", "unverified", "confirmed"]
+        symbol = st.text_input("Binance symbol", value=symbol_value, placeholder="例如 NVDABUSDT")
+        market_type = st.selectbox(
+            "市场类型",
+            market_options,
+            index=market_options.index(market_value) if market_value in market_options else 0,
+        )
+        mapping_confidence = st.selectbox(
+            "映射置信",
+            confidence_options,
+            index=confidence_options.index(confidence_value) if confidence_value in confidence_options else 0,
+        )
+        unit_multiplier = st.number_input(
+            "单位倍率",
+            min_value=0.000001,
+            value=float(existing.get("unit_multiplier") or 1),
+            step=1.0,
+        )
+        risk_note = st.text_input(
+            "风险备注",
+            value=str(existing.get("risk_note") or "候选 symbol 不代表真实美股映射关系，需要人工确认。"),
+        )
+        if st.button("保存到 local mapping", width="stretch"):
+            try:
+                updated = upsert_local_binance_symbol_mapping(
+                    str(ticker or ""),
+                    symbol,
+                    market_type=market_type,
+                    mapping_confidence=mapping_confidence,
+                    unit_multiplier=unit_multiplier,
+                    risk_note=risk_note,
+                    path=local_mapping_path,
+                )
+            except ValueError as exc:
+                st.warning(_mapping_editor_error_text(str(exc)))
+            else:
+                st.success(f"已保存 {str(ticker).upper()} -> {symbol.strip().upper()}；刷新价格后将由 Binance API 自动读取。")
+                st.caption(f"local mapping 当前共 {len(updated)} 条。")
+
+
+def _mapping_editor_error_text(error_code: str) -> str:
+    return {
+        "ticker_required": "请选择观察池 ticker。",
+        "binance_symbol_required": "请填写 Binance symbol，例如 NVDABUSDT。",
+    }.get(error_code, "映射保存失败，请检查输入。")
 
 
 def _render_recording_controls(rows: list[dict]) -> None:

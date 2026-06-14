@@ -55,6 +55,45 @@ def _load_mapping_file(path: Path) -> dict[str, dict[str, Any]]:
     return mapping
 
 
+def upsert_local_binance_symbol_mapping(
+    ticker: str,
+    binance_symbol: str,
+    *,
+    market_type: str = "spot",
+    quote_currency: str = "USDT",
+    unit_multiplier: float = 1,
+    mapping_confidence: str = "candidate",
+    risk_note: str = "",
+    enabled: bool = True,
+    path: Path = DEFAULT_LOCAL_MAPPING_PATH,
+) -> dict[str, dict[str, Any]]:
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_symbol = str(binance_symbol or "").strip().upper()
+    if not normalized_ticker:
+        raise ValueError("ticker_required")
+    if not normalized_symbol:
+        raise ValueError("binance_symbol_required")
+    existing = load_binance_symbol_mapping(path, local_path=None)
+    existing[normalized_ticker] = _normalize_mapping_config(
+        {
+            "enabled": enabled,
+            "binance_symbol": normalized_symbol,
+            "market_type": market_type,
+            "quote_currency": quote_currency,
+            "unit_multiplier": unit_multiplier,
+            "mapping_confidence": mapping_confidence,
+            "risk_note": risk_note,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ) or {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"mappings": {key: _mapping_config_for_file(value) for key, value in existing.items()}}, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return existing
+
+
 def build_weekend_spread_rows(
     tickers: Iterable[str],
     *,
@@ -634,6 +673,26 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
     normalized["manual_override_enabled"] = bool(normalized.get("manual_override_enabled", False))
     normalized["manual_override_price"] = _number(normalized.get("manual_override_price"))
     return normalized
+
+
+def _mapping_config_for_file(config: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "enabled": bool(config.get("enabled", True)),
+        "binance_symbol": str(config.get("binance_symbol") or "").strip().upper(),
+        "market_type": str(config.get("market_type") or "usdm_futures"),
+        "quote_currency": str(config.get("quote_currency") or "USDT").strip().upper(),
+        "unit_multiplier": _number(config.get("unit_multiplier")) or 1,
+        "mapping_confidence": str(config.get("mapping_confidence") or "manual_required").strip().lower(),
+        "risk_note": str(config.get("risk_note") or ""),
+    }
+    for optional_key in ("last_validated_at", "validation_status", "updated_at"):
+        value = str(config.get(optional_key) or "").strip()
+        if value:
+            payload[optional_key] = value
+    if config.get("manual_override_enabled") and _number(config.get("manual_override_price")) is not None:
+        payload["manual_override_enabled"] = True
+        payload["manual_override_price"] = _number(config.get("manual_override_price"))
+    return payload
 
 
 def _manual_override_snapshot(mapping_config: dict[str, Any]) -> dict[str, Any] | None:
