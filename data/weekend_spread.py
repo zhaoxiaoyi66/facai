@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
+from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.cache_read_model import CacheReadModel
 from settings import CONFIG_DIR
 
@@ -213,7 +213,7 @@ def build_mapping_diagnostics(
                 "error_message": "",
             }
             if include_candidates:
-                row["candidates"] = _candidate_dicts(price_provider.find_symbol_candidates(ticker, market_type="usdm_futures"))
+                row["candidates"] = discover_binance_symbol_candidates(ticker, provider=price_provider)
             rows.append(row)
             continue
         market_type = str(config.get("market_type") or "usdm_futures")
@@ -254,8 +254,57 @@ def build_mapping_diagnostics(
                 }
             )
         if include_candidates:
-            row["candidates"] = _candidate_dicts(price_provider.find_symbol_candidates(ticker, market_type=market_type))
+            row["candidates"] = discover_binance_symbol_candidates(
+                ticker,
+                market_type=market_type,
+                provider=price_provider,
+            )
         rows.append(row)
+    return rows
+
+
+def discover_binance_symbol_candidates(
+    ticker: str,
+    *,
+    market_type: str | None = None,
+    provider: BinancePriceProvider | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    query = str(ticker or "").strip().upper()
+    if not query:
+        return []
+    price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    raw_market_type = str(market_type or "").strip().lower()
+    if raw_market_type in {"", "unknown", "all"}:
+        markets = ["spot", "usdm_futures"]
+    else:
+        markets = [normalize_market_type(raw_market_type)]
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for market in markets:
+        try:
+            candidates = price_provider.find_symbol_candidates(query, market_type=market, limit=limit)
+        except Exception:
+            candidates = []
+        for row in _candidate_dicts(candidates):
+            symbol = str(row.get("symbol") or "").strip().upper()
+            candidate_market = str(row.get("market_type") or market).strip() or market
+            if not symbol:
+                continue
+            key = (symbol, candidate_market)
+            if key in seen:
+                continue
+            row["symbol"] = symbol
+            row["market_type"] = candidate_market
+            quote = str(row.get("quote_asset") or row.get("quote_currency") or "").strip().upper()
+            row["quote_asset"] = quote
+            row["quote_currency"] = quote
+            row["status"] = "candidate"
+            rows.append(row)
+            seen.add(key)
+            if len(rows) >= max(1, limit):
+                return rows
     return rows
 
 

@@ -10,8 +10,10 @@ from data.weekend_spread import (
     build_mapping_diagnostics,
     build_weekend_spread_rows,
     classify_spread,
+    discover_binance_symbol_candidates,
     load_binance_symbol_mapping,
 )
+from scripts import smoke_binance_provider
 from ui import weekend_spread
 
 
@@ -89,7 +91,14 @@ class FakeProvider:
 
     def find_symbol_candidates(self, query: str, *, market_type: str = "usdm_futures", limit: int = 10) -> list[dict]:
         self.calls.append(f"candidates:{market_type}:{query}")
-        return [item for item in self.candidates if query.upper() in item["symbol"]][:limit]
+        matches = []
+        for item in self.candidates:
+            if query.upper() not in item["symbol"]:
+                continue
+            row = dict(item)
+            row["market_type"] = market_type
+            matches.append(row)
+        return matches[:limit]
 
 
 def _history(close: float = 100.0) -> pd.DataFrame:
@@ -336,6 +345,73 @@ def test_candidate_discovery_does_not_mark_mapping_confirmed() -> None:
     assert rows[0]["validation_status"] == "暂无映射"
     assert rows[0]["candidates"][0]["symbol"] == "NVDAUSDT"
     assert rows[0]["candidates"][0]["status"] == "candidate"
+
+
+def test_discover_candidates_searches_markets_without_confirming_mapping() -> None:
+    provider = FakeProvider()
+
+    candidates = discover_binance_symbol_candidates("NVDA", provider=provider)
+
+    assert {item["market_type"] for item in candidates} == {"spot", "usdm_futures"}
+    assert all(item["status"] == "candidate" for item in candidates)
+    assert all(item.get("mapping_confidence") != "confirmed" for item in candidates)
+    assert "candidates:spot:NVDA" in provider.calls
+    assert "candidates:usdm_futures:NVDA" in provider.calls
+
+
+def test_smoke_script_requires_local_mapping_without_provider_calls(tmp_path) -> None:
+    provider = FakeProvider()
+
+    result = smoke_binance_provider.run_smoke(tmp_path / "missing.local.json", provider=provider)
+
+    assert result["mapping_missing"] is True
+    assert result["count"] == 0
+    assert "Copy" in result["message"]
+    assert provider.calls == []
+
+
+def test_smoke_script_validates_and_fetches_enabled_local_mapping(tmp_path) -> None:
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+    mapping_path.write_text(
+        json.dumps(
+            {
+                "mappings": {
+                    "NVDA": {
+                        "enabled": True,
+                        "binance_symbol": "NVDAUSDT",
+                        "market_type": "usdm_futures",
+                        "quote_currency": "USDT",
+                        "unit_multiplier": 1,
+                        "mapping_confidence": "confirmed",
+                    },
+                    "MSFT": {
+                        "enabled": False,
+                        "binance_symbol": "MSFTUSDT",
+                        "market_type": "usdm_futures",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = FakeProvider(price=207, bid=206.8, ask=207.2, volume_24h=123_456, funding_rate=0.0002)
+
+    result = smoke_binance_provider.run_smoke(mapping_path, provider=provider)
+
+    assert result["mapping_missing"] is False
+    assert result["count"] == 1
+    row = result["results"][0]
+    assert row["ticker"] == "NVDA"
+    assert row["binance_symbol"] == "NVDAUSDT"
+    assert row["mapping_confidence"] == "confirmed"
+    assert row["exists"] is True
+    assert row["last_price"] == 207
+    assert row["bid"] == 206.8
+    assert row["ask"] == 207.2
+    assert row["volume_24h"] == 123_456
+    assert row["funding_rate"] == 0.0002
+    assert round(row["bid_ask_spread_pct"], 3) == 0.193
+    assert provider.calls == ["validate:usdm_futures:NVDAUSDT", "usdm_futures:NVDAUSDT"]
 
 
 class RecordingHTTPProvider(BinanceHTTPPriceProvider):
