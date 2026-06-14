@@ -318,6 +318,11 @@ class FinalDecisionTests(unittest.TestCase):
                 "buyZoneAction",
                 "buyZoneActionText",
                 "buyZonePrimaryZone",
+                "buyZoneContext",
+                "buyZoneDisplay",
+                "sizingAction",
+                "sizingActionText",
+                "mainActionText",
             },
         )
 

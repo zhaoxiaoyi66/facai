@@ -18,6 +18,7 @@ from buy_zone_engine import (
 )
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.buy_zone_engine import build_buy_zone_context as build_unified_buy_zone_context
+from data.buy_zone_display import build_buy_zone_display
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
 from data.market_context import build_market_context, build_market_history
@@ -94,12 +95,23 @@ def render() -> None:
     portfolio_view = _portfolio_view()
     portfolio_row = _portfolio_row_for_ticker(ticker, portfolio_view)
     portfolio_context = build_plan_portfolio_context(ticker, effective_buy_zone, portfolio_view)
+    buy_zone_display = build_buy_zone_display(
+        buy_zone_context,
+        {
+            **(portfolio_row or {}),
+            **(portfolio_context or {}),
+            "currentAddLimitPercent": final_decision.currentAddLimitPercent,
+            "maxPortfolioWeightPercent": final_decision.maxPortfolioWeightPercent,
+            "finalDecision": final_decision.as_dict(),
+        },
+        mode="stock_detail",
+    )
 
     with record_signal_slot.container():
-        _render_record_signal_button(ticker, snapshot, technicals, final_decision)
-    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision)
+        _render_record_signal_button(ticker, snapshot, technicals, final_decision, buy_zone_context, buy_zone_display)
+    _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision, buy_zone_display)
     _render_current_position_summary(portfolio_row)
-    _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision)
+    _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision, buy_zone_display)
     _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
     _render_technical_entry_reference(effective_buy_zone)
     _render_price_alert_panel(ticker, effective_buy_zone)
@@ -158,14 +170,16 @@ def _render_conclusion_card(
     refreshed_at: str | None,
     buy_zone: BuyZoneEstimate | None = None,
     final_decision=None,
+    buy_zone_display: dict | None = None,
 ) -> None:
     company = snapshot.get("company_name") or ticker
     price = technicals.get("price") or snapshot.get("current_price")
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
-    buy_point_html = _buy_point_status_pill_html(score, buy_zone)
+    display = buy_zone_display or {}
+    buy_point_html = escape(str(display.get("technical_action_text") or _buy_point_status_text(score, buy_zone)))
     values = [
-        ("操作建议", _final_action_text(score, final_decision)),
+        ("操作建议", str(display.get("main_action_text") or _final_action_text(score, final_decision))),
         ("当前新增", _position_limit_text(_final_current_add(score, final_decision))),
         ("组合仓位上限", _position_limit_text(_final_max_position(score, final_decision))),
         ("当前价格", format_currency(price)),
@@ -193,10 +207,24 @@ def _render_conclusion_card(
     )
 
 
-def _render_record_signal_button(ticker: str, snapshot: dict, technicals: dict, final_decision) -> None:
+def _render_record_signal_button(
+    ticker: str,
+    snapshot: dict,
+    technicals: dict,
+    final_decision,
+    buy_zone_context: dict | None = None,
+    buy_zone_display: dict | None = None,
+) -> None:
     if st.button("记录当前信号", key=f"stock-detail-record-signal-{ticker}", width="stretch"):
         price = _first_number(technicals.get("price"), snapshot.get("current_price"), snapshot.get("price"))
-        save_decision_snapshot_from_bundle(ticker, price, final_decision, "stock_detail")
+        save_decision_snapshot_from_bundle(
+            ticker,
+            price,
+            final_decision,
+            "stock_detail",
+            buy_zone_context=buy_zone_context,
+            buy_zone_display=buy_zone_display,
+        )
         st.success("已记录系统信号。")
 
 
@@ -843,10 +871,10 @@ def _buy_zone_source(plan: dict) -> str:
 
 def _buy_zone_section_title(source: str) -> tuple[str, str]:
     if source == "manual":
-        return "手动买区", "当前使用手动买区"
+        return "手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
     if source == "mixed":
-        return "买区计划", "系统买区 + 手动操作计划"
-    return "系统建议买区", "当前使用系统建议"
+        return "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
+    return "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
 
 
 def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str) -> tuple[str, float | None]:
@@ -907,18 +935,29 @@ def _final_max_position(score, final_decision=None, plan_suggestion: PositionPla
     return getattr(score, "max_portfolio_weight_percent", None)
 
 
-def _render_decision_summary(score, buy_zone: BuyZoneEstimate, plan_suggestion: PositionPlanSuggestion, final_decision=None) -> None:
+def _render_decision_summary(
+    score,
+    buy_zone: BuyZoneEstimate,
+    plan_suggestion: PositionPlanSuggestion,
+    final_decision=None,
+    buy_zone_display: dict | None = None,
+) -> None:
     render_section_title("当前结论", "先定动作，再看触发条件")
     wait_items = _decision_wait_items(score, buy_zone)
     trigger = getattr(buy_zone, "nextBuyLabel", "") or _distance_to_zone(buy_zone.currentPrice, buy_zone.to_plan_fields())
+    display = buy_zone_display or {}
+    main_action = str(display.get("main_action_text") or _final_action_text(score, final_decision))
+    summary_text = str(display.get("technical_action_text") or _decision_summary_text(score, buy_zone, final_decision))
+    account_text = str(display.get("account_action_text") or _position_limit_text(_final_current_add(score, final_decision, plan_suggestion)))
+    next_step = str(display.get("next_step_text") or trigger)
     st.markdown(
         '<section class="research-card conclusion-card">'
-        f'<div class="conclusion-main">{escape(_final_action_text(score, final_decision))}</div>'
-        f'<p>{escape(_decision_summary_text(score, buy_zone, final_decision))}</p>'
+        f'<div class="conclusion-main">{escape(main_action)}</div>'
+        f'<p>{escape(summary_text)}</p>'
         '<div class="conclusion-grid">'
-        f'<div><span>当前新增建议</span><strong>{escape(_position_limit_text(_final_current_add(score, final_decision, plan_suggestion)))}</strong></div>'
+        f'<div><span>账户层动作</span><strong>{escape(account_text)}</strong></div>'
         f'<div><span>组合仓位上限</span><strong>{escape(_position_limit_text(_final_max_position(score, final_decision, plan_suggestion)))}</strong></div>'
-        f'<div><span>下一触发条件</span><strong>{escape(trigger)}</strong></div>'
+        f'<div><span>下一步</span><strong>{escape(next_step)}</strong></div>'
         '</div>'
         '<div class="wait-list">'
         + "".join(f'<span>{escape(item)}</span>' for item in wait_items)
@@ -939,7 +978,7 @@ def _render_buy_zone(
     source = _buy_zone_source(plan)
     manual = source == "manual"
     if source == "system":
-        title, title_suffix = "系统建议买区", "当前使用系统建议"
+        title, title_suffix = "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
     else:
         title, title_suffix = _buy_zone_section_title(source)
     render_section_title(title, title_suffix)

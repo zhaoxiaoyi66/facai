@@ -10,13 +10,13 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from data.action_fusion import ActionFusionResult, action_fusion_card_html
+from data.buy_zone_display import build_buy_zone_display
 from data.entry_display import format_buy_zone, format_zone_status
 from data.pullback_acceptance import pullback_acceptance_context_lines
 from ui.dashboard_tables import (
     _buy_point_label_tone,
     _entry_rating_chip_text,
     _entry_rating_display_parts,
-    buy_zone_status_display,
 )
 from ui.metric_labels import model_type_label, resolution_status_label
 
@@ -344,39 +344,26 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
 
 def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     context = _drawer_buy_zone_context(row)
-    action_code = str(context.get("current_action") or "").strip().upper() or "DATA_INSUFFICIENT"
+    display = _drawer_buy_zone_display(row) or build_buy_zone_display(context, row, mode="drawer")
+    action_code = str(display.get("action_code") or context.get("current_action") or "").strip().upper() or "DATA_INSUFFICIENT"
     is_data_insufficient = action_code == "DATA_INSUFFICIENT"
-    status_display = buy_zone_status_display(context, row)
-    has_position, _shares = _drawer_position_state(row)
-    zone_low, zone_high = _drawer_primary_zone_bounds(context)
     missing_labels = _drawer_missing_field_labels(_drawer_text_list(context.get("missing_fields")))
     if not context:
         missing_labels = _dedupe_text(["统一买区上下文", *missing_labels])
-    status_label = status_display.get("label") or _drawer_canonical_action_text(action_code, has_position=has_position)
-    status_hint = status_display.get("hint") or ""
-    if is_data_insufficient:
-        action_text = "数据不足，不给买区"
-    elif action_code == "ALLOW_SMALL_BUY":
-        action_text = "允许小仓观察"
-    elif action_code == "BLOCK_CHASE":
-        action_text = "禁止追高"
-    elif action_code == "RISK_REVIEW":
-        action_text = "风控复核"
-    else:
-        action_text = status_label
-    zone_text = "暂不生成" if is_data_insufficient else _drawer_primary_zone_text(context, zone_low, zone_high)
+    action_text = str(display.get("main_action_text") or display.get("badge_label") or "数据不足，不给买区")
+    zone_text = str(display.get("zone_text") or "暂不生成")
     main_reason = (
         "技术承接数据不足"
         if is_data_insufficient
-        else _drawer_clean_text(context.get("zone_selection_reason"))
-        or _drawer_clean_text(context.get("action_text"))
+        else _drawer_clean_text(display.get("technical_action_text"))
+        or _drawer_clean_text(display.get("explanation"))
         or "以技术结构、量能承接和风险收益为准"
     )
-    position_action = _drawer_position_action_text(action_code, has_position=has_position)
-    next_step = _drawer_next_step_text(action_code, context, missing_labels, has_position=has_position)
+    position_action = str(display.get("account_action_text") or "")
+    next_step = str(display.get("next_step_text") or "")
     conflict_notice = _drawer_conflict_notice(row, action_code)
     missing_fields_text = " / ".join(missing_labels)
-    headline = "｜".join(part for part in (action_text, status_hint, main_reason) if part)
+    headline = "｜".join(part for part in (action_text, display.get("badge_hint"), main_reason) if part)
     badge_zone = "数据不足" if is_data_insufficient else zone_text
     return {
         "action_code": action_code,
@@ -389,6 +376,7 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
         "next_step": next_step,
         "conflict_notice": conflict_notice,
         "missing_fields_text": missing_fields_text,
+        "buy_zone_display": display,
     }
 
 
@@ -398,6 +386,14 @@ def _drawer_quick_decision(row: pd.Series | dict) -> dict[str, object]:
 
 def _drawer_buy_zone_context(row: pd.Series) -> dict[str, object]:
     for key in ("buyZoneContext", "buy_zone_context"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _drawer_buy_zone_display(row: pd.Series | dict) -> dict[str, object]:
+    for key in ("buyZoneDisplay", "buy_zone_display"):
         value = row.get(key)
         if isinstance(value, dict):
             return dict(value)

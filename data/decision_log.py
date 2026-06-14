@@ -169,9 +169,14 @@ def build_decision_snapshot_from_bundle(
     price,
     final_decision_bundle,
     source_page: str,
+    *,
+    buy_zone_context: dict | None = None,
+    buy_zone_display: dict | None = None,
 ) -> dict:
     block_reasons = _bundle_list(final_decision_bundle, "blockReasons", "block_reasons")
     review_reasons = _bundle_list(final_decision_bundle, "reviewReasons", "review_reasons")
+    context_snapshot = buy_zone_context if buy_zone_context is not None else _bundle_value(final_decision_bundle, "buyZoneContext", "buy_zone_context")
+    display_snapshot = buy_zone_display if buy_zone_display is not None else _bundle_value(final_decision_bundle, "buyZoneDisplay", "buy_zone_display")
     return {
         "symbol": _normalize_symbol(symbol),
         "decision_date": date.today().isoformat(),
@@ -193,6 +198,8 @@ def build_decision_snapshot_from_bundle(
         "review_reasons_json": _reasons_json(review_reasons),
         "reason_text": _reason_text(block_reasons, review_reasons, final_decision_bundle),
         "source_page": _clean_text(source_page),
+        "buy_zone_context_json": _dict_json(context_snapshot),
+        "buy_zone_display_json": _dict_json(display_snapshot),
     }
 
 
@@ -202,8 +209,18 @@ def save_decision_snapshot_from_bundle(
     final_decision_bundle,
     source_page: str,
     path: Path = CACHE_PATH,
+    *,
+    buy_zone_context: dict | None = None,
+    buy_zone_display: dict | None = None,
 ) -> dict:
-    snapshot = build_decision_snapshot_from_bundle(symbol, price, final_decision_bundle, source_page)
+    snapshot = build_decision_snapshot_from_bundle(
+        symbol,
+        price,
+        final_decision_bundle,
+        source_page,
+        buy_zone_context=buy_zone_context,
+        buy_zone_display=buy_zone_display,
+    )
     return DecisionLogStore(path).save_snapshot(symbol, snapshot)
 
 
@@ -252,6 +269,14 @@ class DecisionLogStore:
                 ON decision_snapshots(symbol, decision_date, created_at)
                 """
             )
+            _ensure_columns(
+                conn,
+                "decision_snapshots",
+                {
+                    "buy_zone_context_json": "TEXT",
+                    "buy_zone_display_json": "TEXT",
+                },
+            )
 
     def save_snapshot(self, symbol: str, values: dict) -> dict:
         cleaned = _clean_decision_snapshot(symbol, values)
@@ -273,9 +298,11 @@ class DecisionLogStore:
                     review_reasons_json,
                     reason_text,
                     source_page,
+                    buy_zone_context_json,
+                    buy_zone_display_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -292,6 +319,8 @@ class DecisionLogStore:
                     cleaned["review_reasons_json"],
                     cleaned["reason_text"],
                     cleaned["source_page"],
+                    cleaned["buy_zone_context_json"],
+                    cleaned["buy_zone_display_json"],
                     cleaned["created_at"],
                 ),
             )
@@ -1462,6 +1491,8 @@ def _clean_decision_snapshot(symbol: str, values: dict) -> dict:
         "review_reasons_json": _reasons_json(values.get("review_reasons", values.get("review_reasons_json"))),
         "reason_text": _clean_text(values.get("reason_text")),
         "source_page": _clean_text(values.get("source_page")),
+        "buy_zone_context_json": _dict_json(values.get("buy_zone_context", values.get("buy_zone_context_json"))),
+        "buy_zone_display_json": _dict_json(values.get("buy_zone_display", values.get("buy_zone_display_json"))),
         "created_at": _now(),
     }
 
@@ -2499,6 +2530,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["buy_zone_snapshot"] = _load_json_dict(item["buy_zone_snapshot_json"])
     if "buy_zone_context_json" in item:
         item["buy_zone_context"] = _load_json_dict(item["buy_zone_context_json"])
+    if "buy_zone_display_json" in item:
+        item["buy_zone_display"] = _load_json_dict(item["buy_zone_display_json"])
     if "technical_entry_zone_json" in item:
         item["technical_entry_zone"] = _load_json_dict(item["technical_entry_zone_json"])
     if "deep_valuation_zone_json" in item:

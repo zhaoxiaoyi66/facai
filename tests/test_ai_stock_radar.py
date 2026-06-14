@@ -1630,7 +1630,7 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         assert report.next_action_price == 100
         assert report.chase_above_price == 120
         assert report.current_vs_entry_pct == 10.0
-        assert report.entry_display_label == "修复观察区 | 等待确认"
+        assert report.entry_display_label == "等突破再评估"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
         assert "价格已修复" in report.entry_display_reason
 
@@ -1653,7 +1653,7 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
         )
 
         assert report.decision == "BLOCK_CHASE"
-        assert report.entry_display_label == "追高禁区 | 禁止追高"
+        assert report.entry_display_label == "追高禁区"
         assert report.entry_context_status == "BLOCK_CHASE"
 
 
@@ -1676,7 +1676,7 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
 
         assert report.decision == "ALLOW_BUY"
         assert report.price_position == "IN_BUY_ZONE"
-        assert report.entry_display_label == "回踩买区 | 允许小仓观察"
+        assert report.entry_display_label == "击球区内"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
         assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
@@ -1701,7 +1701,7 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
 
         assert report.decision == "AVOID"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "失效风控区 | 进入风控复核"
+        assert report.entry_display_label == "风控复核"
         assert report.entry_context_status == "RISK_REVIEW"
 
 
@@ -1718,7 +1718,7 @@ def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:
         )
 
         assert report.decision == "DATA_MISSING"
-        assert report.entry_display_label == "技术承接数据不足 | 技术承接数据不足"
+        assert report.entry_display_label == "数据不足"
         assert report.entry_context_status == "DATA_INSUFFICIENT"
 
 
@@ -1740,7 +1740,7 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         )
 
         assert row["decision"] == "WAIT"
-        assert row["entry_display_label"] == "修复观察区 | 等待确认"
+        assert row["entry_display_label"] == "等突破再评估"
         assert row["entry_context_status"] == "WAIT_CONFIRMATION"
         assert row["entry_reference_high"] == 100
         assert row["current_vs_entry_pct"] == 10.0
@@ -1784,7 +1784,7 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.technical_pullback_zone_high == 117.5
         assert report.confirmation_price == 116
         assert report.invalidation_price == 108
-        assert report.entry_display_label == "修复观察区 | 等待确认"
+        assert report.entry_display_label == "等突破再评估"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
         assert "价格已修复" in report.entry_display_reason
@@ -1823,7 +1823,7 @@ def test_price_inside_technical_pullback_zone_updates_display_status_without_all
         assert report.price_position == "ZONE_MISSING"
         assert report.technical_position == "IN_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "ALLOW_SMALL_BUY"
-        assert report.entry_display_label == "回踩买区 | 允许小仓观察"
+        assert report.entry_display_label == "击球区内"
 
 
 def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -> None:
@@ -1861,7 +1861,7 @@ def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -
         assert report.technical_chase_overlap is True
         assert report.technical_entry_zone_high and report.technical_entry_zone_high > 110
         assert report.effective_technical_entry_zone_high == 110
-        assert report.entry_display_label == "追高禁区 | 禁止追高"
+        assert report.entry_display_label == "追高禁区"
 
 
 def test_technical_entry_zone_needs_trend_confirmation() -> None:

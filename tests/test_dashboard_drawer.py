@@ -85,7 +85,7 @@ def test_quick_decision_shows_batting_zone_when_context_is_complete() -> None:
 
     assert "等回击球区" in html
     assert "$377.50 - $384.70" in html
-    assert "放量站上 $413.71 后重新判断" in html
+    assert "等待价格回到主击球区" in html
     assert "暂不生成" not in html
     assert "数据不足" not in html
 
@@ -148,7 +148,7 @@ def test_build_drawer_primary_decision_ignores_action_fusion_nested_context_for_
     decision = dashboard_drawer.build_drawer_primary_decision(row)
     html = dashboard_drawer._drawer_quick_decision_html(row, decision)
 
-    assert decision["action_text"] == "数据不足，不给买区"
+    assert decision["action_text"] == "暂停买入 / 等待数据补齐"
     assert decision["zone_text"] == "暂不生成"
     assert "允许小仓观察" not in html
     assert "ALLOW_SMALL_BUY" not in html
@@ -202,6 +202,30 @@ def test_quick_decision_allows_small_buy_copy_without_raw_enum() -> None:
 
     assert "允许小仓观察" in html
     assert "ALLOW_SMALL_BUY" not in html
+
+
+def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NOW",
+            "buyZoneContext": {"current_action": "ALLOW_SMALL_BUY"},
+            "buy_zone_display": {
+                "action_code": "ALLOW_SMALL_BUY",
+                "main_action_text": "持有观察 / 当前不新增",
+                "technical_action_text": "技术回踩带内，可观察",
+                "account_action_text": "已有 100 股，当前新增额度为 0",
+                "next_step_text": "等待新增额度恢复或技术确认进一步增强",
+                "zone_text": "$99.29 - $108.33",
+                "badge_hint": "当前不新增",
+            },
+        }
+    )
+
+    decision = dashboard_drawer.build_drawer_primary_decision(row)
+
+    assert decision["action_text"] == "持有观察 / 当前不新增"
+    assert decision["main_reason"] == "技术回踩带内，可观察"
+    assert decision["position_action"] == "已有 100 股，当前新增额度为 0"
 
 
 def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:

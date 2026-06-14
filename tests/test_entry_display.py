@@ -786,5 +786,5 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
     assert "<strong>数据不足</strong>" in html
-    assert "<em>不给买区</em>" in html
+    assert "<em>当前不新增</em>" in html
     assert "$90.00 - $100.00" not in html

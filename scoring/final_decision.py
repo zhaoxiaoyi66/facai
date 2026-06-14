@@ -28,6 +28,9 @@ class FinalDecision:
     buyZoneAction: str = ""
     buyZoneActionText: str = ""
     buyZonePrimaryZone: str | None = None
+    sizingAction: str = ""
+    sizingActionText: str = ""
+    mainActionText: str = ""
 
 
 def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any = None) -> FinalDecision:
@@ -91,6 +94,9 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
 
     is_actionable = final_action in BUY_ACTIONS and current_add > 0 and not has_blocking_reason
     decision_lane, display_category = _classify(final_action, is_actionable, block_reasons, review_reasons, zone)
+    sizing_action = "CURRENT_NO_ADD" if current_add <= 0 else "CAN_ADD"
+    sizing_text = "当前不新增" if current_add <= 0 else f"当前可新增 {current_add:g}%"
+    main_action_text = sizing_text if current_add <= 0 and final_action in BUY_ACTIONS else final_action
 
     return FinalDecision(
         finalAction=final_action,
@@ -106,6 +112,9 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
         buyZoneAction=unified_action,
         buyZoneActionText=unified_action_text,
         buyZonePrimaryZone=unified_primary_zone,
+        sizingAction=sizing_action,
+        sizingActionText=sizing_text,
+        mainActionText=main_action_text,
     )
 
 

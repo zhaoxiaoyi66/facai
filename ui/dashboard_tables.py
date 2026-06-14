@@ -7,6 +7,7 @@ import pandas as pd
 
 from data.dashboard_lanes import row_current_add_text, row_final_action
 from data.entry_display import build_entry_display
+from data.buy_zone_display import build_buy_zone_display
 
 
 BADGE_STYLES = {
@@ -243,27 +244,22 @@ def _dashboard_buy_zone_context_display(row: pd.Series | dict) -> dict:
     context = _row_value(row, "buyZoneContext") or _row_value(row, "buy_zone_context")
     if not isinstance(context, dict):
         return {}
-    action = str(context.get("current_action") or "").strip().upper()
-    primary_zone = str(context.get("primary_zone_text") or "").strip()
-    action_text = str(context.get("action_text") or "").strip()
-    if not action and not primary_zone and not action_text:
+    display = build_buy_zone_display(context, row, mode="dashboard_table")
+    action = str(display.get("action_code") or "").strip().upper()
+    if not action:
         return {}
-    status = buy_zone_status_display(context, row)
-    label = status["label"]
-    hint = status["hint"]
-    reason = str(context.get("zone_selection_reason") or "").strip()
-    explanation = status["explanation"]
     return {
-        "entry_display_label": label,
-        "entry_display_reason": "；".join(part for part in (reason, explanation) if part),
-        "entry_action_hint": hint,
+        "entry_display_label": display.get("entry_display_label") or display.get("badge_label") or "",
+        "entry_display_reason": display.get("entry_display_reason") or display.get("explanation") or "",
+        "entry_action_hint": display.get("entry_action_hint") or display.get("badge_hint") or "",
         "entry_context_status": action,
         "price_position": action,
         "data_status": "DATA_INSUFFICIENT" if action == "DATA_INSUFFICIENT" else "READY",
-        "missing_entry_fields": context.get("missing_fields") or [],
-        "compact_label": label,
-        "compact_hint": hint,
-        "status_explanation": explanation,
+        "missing_entry_fields": display.get("missing_fields") or [],
+        "compact_label": display.get("compact_label") or display.get("badge_label") or "",
+        "compact_hint": display.get("compact_hint") or display.get("badge_hint") or "",
+        "status_explanation": display.get("status_explanation") or display.get("explanation") or "",
+        "buy_zone_display": display,
     }
 
 
@@ -332,55 +328,17 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
 def buy_zone_status_display(context: object, row: pd.Series | dict | None = None) -> dict[str, str]:
     if not isinstance(context, dict):
         return {}
-    action = str(context.get("current_action") or "").strip().upper()
-    current_price = _number(context.get("current_price"))
-    if current_price is None and row is not None:
-        current_price = _number(_row_value(row, "price"))
-    low = _number(context.get("pullback_zone_low") or context.get("support_zone_low") or context.get("primary_zone_low"))
-    high = _number(context.get("pullback_zone_high") or context.get("support_zone_high") or context.get("primary_zone_high"))
-    in_zone = current_price is not None and low is not None and high is not None and low <= current_price <= high
-    near_recheck = _number(
-        context.get("confirmation_price")
-        or context.get("confirm_price")
-        or context.get("confirmation_line")
-        or context.get("confirm_line")
-    ) is not None
-    if action == "WAIT_PULLBACK":
-        return {
-            "action": action,
-            "label": "等回击球区",
-            "hint": "不追",
-            "explanation": "等回击球区：价格偏高，等回到主击球区。",
-        }
-    if action == "WAIT_CONFIRMATION":
-        if in_zone:
-            return {
-                "action": action,
-                "label": "区内看承接",
-                "hint": "等量价",
-                "explanation": "区内看承接：价格到了，但还要看量价和K线承接。",
-            }
-        return {
-            "action": action,
-            "label": "等突破再评估" if near_recheck else "区内看承接",
-            "hint": "不追" if near_recheck else "等量价",
-            "explanation": "等突破再评估：站上重新评估线后再判断，不等于直接买入。"
-            if near_recheck
-            else "区内看承接：价格到了，但还要看量价和K线承接。",
-        }
-    if action == "ALLOW_SMALL_BUY":
-        return {"action": action, "label": "击球区内", "hint": "可小仓", "explanation": "价格位于主击球区，仍按小仓和风控执行。"}
-    if action == "ALLOW_ADD_ON_PULLBACK":
-        return {"action": action, "label": "击球区内", "hint": "可加仓", "explanation": "回踩结构可复核加仓，仍需控制仓位。"}
-    if action == "BLOCK_CHASE":
-        return {"action": action, "label": "追高禁区", "hint": "禁止追", "explanation": "价格已脱离击球区，不追高。"}
-    if action == "DATA_INSUFFICIENT":
-        return {"action": action, "label": "数据不足", "hint": "不给买区", "explanation": "技术承接数据不足，不生成明确主击球区。"}
-    if action == "RISK_REVIEW":
-        return {"action": action, "label": "风控复核", "hint": "暂停加仓", "explanation": "先复核失效线和风险，再决定是否处理。"}
-    if action == "AVOID":
-        return {"action": action, "label": "暂不参与", "hint": "观望", "explanation": "当前不参与，等待结构改善。"}
-    return {"action": action, "label": _short_badge_text(str(context.get("primary_zone_text") or action or "待复核")), "hint": "", "explanation": ""}
+    display = build_buy_zone_display(context, row, mode="dashboard_table")
+    return {
+        "action": str(display.get("action_code") or ""),
+        "label": str(display.get("badge_label") or display.get("entry_display_label") or ""),
+        "hint": str(display.get("badge_hint") or display.get("entry_action_hint") or ""),
+        "explanation": str(display.get("explanation") or ""),
+        "main_action_text": str(display.get("main_action_text") or ""),
+        "technical_action_text": str(display.get("technical_action_text") or ""),
+        "account_action_text": str(display.get("account_action_text") or ""),
+        "zone_text": str(display.get("zone_text") or ""),
+    }
 
 
 def _short_entry_status(label: str) -> str:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from data.buy_zone_display import build_buy_zone_display
+
 
 PRICE_POSITIONS = {
     "IN_BUY_ZONE": "买区内",
@@ -742,17 +744,16 @@ def _missing_reason_text(fields: list[str]) -> str:
 def _apply_buy_zone_context_display(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not context:
         return result
-    action_text = str(context.get("action_text") or "").strip()
-    zone_text = str(context.get("primary_zone_text") or "").strip()
-    reason = str(context.get("zone_selection_reason") or "").strip()
-    current_action = str(context.get("current_action") or "").strip().upper()
+    if not any(key in context for key in ("current_action", "currentAction", "primary_zone_text", "primaryZoneText")):
+        return result
+    display = build_buy_zone_display(context)
+    action_text = str(display.get("entry_action_hint") or "").strip()
+    label = str(display.get("entry_display_label") or "").strip()
+    reason = str(display.get("entry_display_reason") or "").strip()
+    current_action = str(display.get("entry_context_status") or context.get("current_action") or "").strip().upper()
     updated = dict(result)
-    if zone_text and action_text:
-        updated["entry_display_label"] = f"{zone_text} | {action_text}"
-    elif zone_text:
-        updated["entry_display_label"] = zone_text
-    elif action_text:
-        updated["entry_display_label"] = action_text
+    if label:
+        updated["entry_display_label"] = label
     if reason:
         updated["entry_display_reason"] = reason
     if action_text:

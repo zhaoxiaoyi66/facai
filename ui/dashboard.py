@@ -2514,6 +2514,8 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
             _signal_price_from_dashboard_row(row),
             _decision_bundle_from_row(row),
             "dashboard",
+            buy_zone_context=row.get("buyZoneContext") if isinstance(row.get("buyZoneContext"), dict) else {},
+            buy_zone_display=row.get("buyZoneDisplay") if isinstance(row.get("buyZoneDisplay"), dict) else {},
         )
         st.session_state["dashboard_record_signal_notice"] = "已记录系统信号。"
     else:

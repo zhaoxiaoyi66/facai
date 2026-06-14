@@ -5,6 +5,7 @@ from typing import Any
 from buy_zone_engine import buy_zone_with_manual_override, generate_buy_zone
 from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_ai_stock_radar_list_row
+from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
 from data.entry_display import build_entry_display
 from data.market_context import build_market_history
@@ -87,7 +88,7 @@ def build_dashboard_row(
     buy_zone = derive_dashboard_buy_zone(ticker, snapshot, technicals, score)
     plan = StockPlanStore().get_plan(ticker)
     active_buy_zone = buy_zone_with_manual_override(buy_zone, plan) if buy_zone is not None else None
-    radar_entry_display = _radar_entry_display_fields(ticker, snapshot, technicals)
+    technical_entry_seed = _radar_entry_display_fields(ticker, snapshot, technicals)
     structure_entry = evaluate_structure_entry(
         ticker=ticker,
         technicals=technicals,
@@ -96,18 +97,18 @@ def build_dashboard_row(
     )
     pullback_acceptance = evaluate_pullback_acceptance(
         ticker=ticker,
-        technicals={**technicals, **snapshot, **radar_entry_display},
+        technicals={**technicals, **snapshot, **technical_entry_seed},
     )
     volume_price_acceptance = evaluate_volume_price_acceptance(
         ticker=ticker,
         daily_bars=_safe_market_history(ticker),
-        technicals={**technicals, **snapshot, **radar_entry_display},
+        technicals={**technicals, **snapshot, **technical_entry_seed},
     )
     buy_zone_context = _dashboard_buy_zone_context(
         ticker=ticker,
         snapshot=snapshot,
         technicals=technicals,
-        radar_entry_display=radar_entry_display,
+        radar_entry_display=technical_entry_seed,
         price=price,
         volume_price_acceptance=volume_price_acceptance.to_dict(),
     )
@@ -124,12 +125,26 @@ def build_dashboard_row(
     portfolio_context = action_fusion_portfolio_context
     if portfolio_context is None:
         portfolio_context = build_action_fusion_portfolio_context(ticker)
+    buy_zone_display = build_buy_zone_display(
+        buy_zone_context,
+        {
+            **(portfolio_context or {}),
+            "currentAddLimitPercent": current_add_limit,
+            "maxPortfolioWeightPercent": max_portfolio_weight,
+            "finalDecision": getattr(final_decision, "as_dict", lambda: {})(),
+        },
+        mode="dashboard_row",
+    )
+    radar_entry_display = {
+        **technical_entry_seed,
+        **_entry_display_fields_from_buy_zone_display(buy_zone_context, buy_zone_display),
+    }
     action_fusion = evaluate_action_fusion(
         ticker=ticker,
         context={
             **technicals,
             **snapshot,
-            **radar_entry_display,
+            **technical_entry_seed,
             "quality_score": score.total_score,
             "valuation_score": getattr(score, "valuation_score", None),
             "volume_price_status": volume_price_acceptance.volume_price_status,
@@ -159,9 +174,13 @@ def build_dashboard_row(
         "decisionLane": final_decision.decisionLane,
         "displayCategory": final_decision.displayCategory,
         "buyZoneContext": buy_zone_context,
+        "buyZoneDisplay": buy_zone_display,
         "buyZoneAction": getattr(final_decision, "buyZoneAction", ""),
         "buyZoneActionText": getattr(final_decision, "buyZoneActionText", ""),
         "buyZonePrimaryZone": getattr(final_decision, "buyZonePrimaryZone", None),
+        "buyZoneMainActionText": buy_zone_display.get("main_action_text"),
+        "sizingAction": buy_zone_display.get("sizing_action"),
+        "sizingActionText": buy_zone_display.get("sizing_action_text"),
         "setupScore": getattr(final_decision, "setupScore", None),
         "buyZoneStatus": getattr(final_decision, "buyZoneStatus", None) or getattr(buy_zone, "currentZone", None),
         "systemZone": buy_zone,
@@ -419,6 +438,43 @@ def _radar_entry_display_fields(ticker: str, snapshot: dict, technicals: dict) -
         for key in RADAR_ENTRY_DISPLAY_KEYS
         if key.startswith("entry_") or key in public_entry_keys
     }
+
+
+def _entry_display_fields_from_buy_zone_display(
+    buy_zone_context: dict[str, Any],
+    buy_zone_display: dict[str, Any],
+) -> dict[str, Any]:
+    low = _first_present(
+        buy_zone_context.get("pullback_zone_low"),
+        buy_zone_context.get("support_zone_low"),
+    )
+    high = _first_present(
+        buy_zone_context.get("pullback_zone_high"),
+        buy_zone_context.get("support_zone_high"),
+    )
+    label = str(buy_zone_display.get("entry_display_label") or buy_zone_display.get("badge_label") or "").strip()
+    hint = str(buy_zone_display.get("entry_action_hint") or buy_zone_display.get("badge_hint") or "").strip()
+    reason = str(buy_zone_display.get("entry_display_reason") or buy_zone_display.get("explanation") or "").strip()
+    action = str(buy_zone_display.get("action_code") or "").strip().upper()
+    result = {
+        "entry_display_label": label,
+        "entry_display_reason": reason,
+        "entry_action_hint": hint,
+        "entry_context_status": action,
+        "price_position": action,
+        "missing_entry_fields": list(buy_zone_display.get("missing_fields") or []),
+        "compact_label": buy_zone_display.get("compact_label") or label,
+        "compact_hint": buy_zone_display.get("compact_hint") or hint,
+        "buy_zone_display": buy_zone_display,
+    }
+    if low is not None:
+        result["entry_reference_low"] = low
+    if high is not None:
+        result["entry_reference_high"] = high
+        result["next_action_price"] = high
+    if buy_zone_context.get("chase_price") is not None:
+        result["chase_above_price"] = buy_zone_context.get("chase_price")
+    return result
 
 
 def _safe_market_history(ticker: str):

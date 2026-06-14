@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from buy_zone_engine import BuyZoneEstimate, buy_zone_with_manual_override, has_buy_zone_override
+from data.buy_zone_display import build_buy_zone_display
 from position_plan_engine import generate_position_plan
 from scoring.final_decision import derive_final_decision
 
@@ -30,6 +31,11 @@ class FinalDecisionBundle:
     buyZoneAction: str = ""
     buyZoneActionText: str = ""
     buyZonePrimaryZone: str | None = None
+    buyZoneContext: dict[str, Any] = field(default_factory=dict)
+    buyZoneDisplay: dict[str, Any] = field(default_factory=dict)
+    sizingAction: str = ""
+    sizingActionText: str = ""
+    mainActionText: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -53,6 +59,14 @@ def build_final_decision_bundle(
         symbol,
     )
     decision = derive_final_decision(score, decision_buy_zone, effective_position_plan)
+    buy_zone_display = build_buy_zone_display(
+        decision_buy_zone,
+        {
+            "currentAddLimitPercent": decision.currentAddLimitPercent,
+            "maxPortfolioWeightPercent": decision.maxPortfolioWeightPercent,
+        },
+        mode="final_decision",
+    )
     return FinalDecisionBundle(
         executionSource="finalDecisionBundle",
         finalAction=decision.finalAction,
@@ -92,6 +106,11 @@ def build_final_decision_bundle(
         buyZoneAction=decision.buyZoneAction,
         buyZoneActionText=decision.buyZoneActionText,
         buyZonePrimaryZone=decision.buyZonePrimaryZone,
+        buyZoneContext=dict(decision_buy_zone or {}),
+        buyZoneDisplay=buy_zone_display,
+        sizingAction=str(buy_zone_display.get("sizing_action") or ""),
+        sizingActionText=str(buy_zone_display.get("sizing_action_text") or ""),
+        mainActionText=str(buy_zone_display.get("main_action_text") or decision.finalAction),
     )
 
 

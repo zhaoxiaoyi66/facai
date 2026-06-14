@@ -3700,11 +3700,13 @@ def _render_signal_snapshot_drawer(
 
 
 def _signal_snapshot_summary_html(snapshot: dict) -> str:
+    display = snapshot.get("buy_zone_display") if isinstance(snapshot.get("buy_zone_display"), dict) else {}
     items = [
         ("当时价格", _money_text(snapshot.get("price"))),
-        ("系统动作", _final_action_label(snapshot.get("final_action"))),
+        ("主动作", _text(display.get("main_action_text")) if display else _final_action_label(snapshot.get("final_action"))),
+        ("股票层", _text(display.get("technical_action_text")) if display else _text(snapshot.get("buy_zone_status"))),
+        ("账户层", _text(display.get("account_action_text")) if display else _percent_or_dash(snapshot.get("current_add_pct"))),
         ("决策通道", _lane_label(snapshot.get("decision_lane"))),
-        ("当前可加", _percent_or_dash(snapshot.get("current_add_pct"))),
         ("系统仓位上限", _percent_or_dash(snapshot.get("max_position_pct"))),
     ]
     rows = "".join(

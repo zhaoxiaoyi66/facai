@@ -431,7 +431,14 @@ def _handle_record_signal_query(rows: list[dict], page_key: str) -> None:
         return
     row = next((item for item in rows if str(item.get("symbol") or "").upper() == symbol), None)
     if row:
-        save_decision_snapshot_from_bundle(symbol, row.get("currentPrice"), _decision_bundle_from_row(row), page_key)
+        save_decision_snapshot_from_bundle(
+            symbol,
+            row.get("currentPrice"),
+            _decision_bundle_from_row(row),
+            page_key,
+            buy_zone_context=row.get("buyZoneContext") if isinstance(row.get("buyZoneContext"), dict) else {},
+            buy_zone_display=row.get("buyZoneDisplay") if isinstance(row.get("buyZoneDisplay"), dict) else {},
+        )
         st.session_state["buy_zone_record_signal_notice"] = "已记录系统信号。"
     else:
         st.session_state["buy_zone_record_signal_notice"] = "未找到要记录的系统信号。"

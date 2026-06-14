@@ -10,6 +10,7 @@ import streamlit as st
 
 from data.action_fusion import action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
+from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
@@ -109,6 +110,7 @@ class StockReportContext:
     market: dict[str, Any]
     history: pd.DataFrame
     buy_zone_context: dict[str, Any]
+    buy_zone_display: dict[str, Any]
     action_result: Any
     conclusion: dict[str, Any]
     portfolio_context: dict[str, Any]
@@ -192,6 +194,7 @@ def _render_report(symbol: str, perf: PerfProbe | None = None) -> None:
             conclusion=context.conclusion,
             portfolio_context=context.portfolio_context,
             buy_zone_context=context.buy_zone_context,
+            buy_zone_display=context.buy_zone_display,
             data_health=context.data_health,
             include_appendix=False,
             perf=context.performance,
@@ -242,11 +245,20 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     portfolio_snapshot = _cached_portfolio_context(symbol, perf)
     stage_start = time.perf_counter()
     action_result = _action_fusion_result_from_snapshots(report, technicals, row or {}, volume_snapshot, portfolio_snapshot)
-    conclusion = _trade_conclusion(report, action_result, buy_zone_context)
     perf.add("action_fusion / trade_conclusion 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     stage_start = time.perf_counter()
     portfolio_context = _portfolio_context(report, row or {}, action_result, buy_zone_context)
     perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用 Action Fusion snapshot")
+    buy_zone_display = build_buy_zone_display(
+        buy_zone_context,
+        {
+            **(row or {}),
+            **(portfolio_context or {}),
+            "actionFusion": action_result.to_dict() if hasattr(action_result, "to_dict") else {},
+        },
+        mode="report",
+    )
+    conclusion = _trade_conclusion(report, action_result, buy_zone_context, buy_zone_display)
     stage_start = time.perf_counter()
     data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context, buy_zone_context)
     perf.add("data_health 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
@@ -259,6 +271,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
         market=market,
         history=history,
         buy_zone_context=buy_zone_context,
+        buy_zone_display=buy_zone_display,
         action_result=action_result,
         conclusion=conclusion,
         portfolio_context=portfolio_context,
@@ -678,6 +691,12 @@ def _list_row(ticker: str) -> dict[str, Any]:
     buy_zone_context = _list_buy_zone_context(list_row, row or {}, snapshot or {}, technicals or {})
     if buy_zone_context:
         list_row["buy_zone_context"] = buy_zone_context
+        buy_zone_display = build_buy_zone_display(buy_zone_context, {**(row or {}), **list_row}, mode="radar_list")
+        list_row["buy_zone_display"] = buy_zone_display
+        list_row["entry_display_label"] = buy_zone_display.get("entry_display_label") or list_row.get("entry_display_label")
+        list_row["entry_action_hint"] = buy_zone_display.get("entry_action_hint") or list_row.get("entry_action_hint")
+        list_row["entry_display_reason"] = buy_zone_display.get("entry_display_reason") or list_row.get("entry_display_reason")
+        list_row["entry_context_status"] = buy_zone_display.get("entry_context_status") or list_row.get("entry_context_status")
     return list_row
 
 
@@ -842,6 +861,7 @@ def _report_html(
     conclusion: dict[str, Any] | None = None,
     portfolio_context: dict[str, Any] | None = None,
     buy_zone_context: dict[str, Any] | None = None,
+    buy_zone_display: dict[str, Any] | None = None,
     data_health: dict[str, Any] | None = None,
     include_appendix: bool = True,
     perf: PerfProbe | None = None,
@@ -851,8 +871,9 @@ def _report_html(
     confidence = _data_confidence(report)
     action_result = action_result or _action_fusion_result(report, technicals, row, history)
     buy_zone_context = buy_zone_context or build_buy_zone_context(report, technicals=technicals, volume_snapshot=_volume_price_acceptance_snapshot(report, technicals, row, history)).to_dict()
-    conclusion = conclusion or _trade_conclusion(report, action_result, buy_zone_context)
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result, buy_zone_context)
+    buy_zone_display = buy_zone_display or build_buy_zone_display(buy_zone_context, {**(row or {}), **(portfolio_context or {})}, mode="report")
+    conclusion = conclusion or _trade_conclusion(report, action_result, buy_zone_context, buy_zone_display)
     data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context, buy_zone_context)
     stage_start = time.perf_counter()
     range_html = _range_chart_html(report, conclusion, buy_zone_context)
@@ -1109,16 +1130,21 @@ def _trade_conclusion(
     report: dict[str, Any],
     action_result: Any | None = None,
     buy_zone_context: dict[str, Any] | None = None,
+    buy_zone_display: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     buy_zone_context = buy_zone_context or {}
+    has_canonical_context = bool(str(buy_zone_context.get("current_action") or "").strip())
+    buy_zone_display = buy_zone_display or (
+        build_buy_zone_display(buy_zone_context, report, mode="report") if has_canonical_context else {}
+    )
     confirm_price = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price", "confirm_line")
     invalidation_price = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price", "invalid_line")
     chase_price = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price", "chase_price")
     batting_low, batting_high = _batting_zone_bounds(report, buy_zone_context)
     zone_selection = _zone_selection(report, buy_zone_context)
-    zone_text = str(buy_zone_context.get("primary_zone_text") or _trade_zone_text(report))
-    rating_text = _rating_text(report, action_result, buy_zone_context)
-    action_text = str(buy_zone_context.get("action_text") or _current_action_text(report, action_result))
+    zone_text = str(buy_zone_display.get("zone_text") or buy_zone_context.get("primary_zone_text") or _trade_zone_text(report))
+    rating_text = str(buy_zone_display.get("badge_label") or _rating_text(report, action_result, buy_zone_context))
+    action_text = str(buy_zone_display.get("main_action_text") or buy_zone_context.get("action_text") or _current_action_text(report, action_result))
     confirm_text = f"重新评估线：放量站上 {_money(confirm_price)} 后重新评估" if confirm_price is not None else _next_step_sentence(report)
     risk_line_text = f"跌破 {_money(invalidation_price)}" if invalidation_price is not None else "暂缺"
     next_review_trigger = confirm_text if confirm_price is not None else _next_step_sentence(report)
@@ -1142,6 +1168,7 @@ def _trade_conclusion(
         "next_review_trigger": next_review_trigger,
         "buy_premise_text": buy_premise_text,
         "confidence_level": confidence,
+        "buy_zone_display": buy_zone_display,
     }
 
 
@@ -1276,6 +1303,8 @@ def _batting_entry_condition(status: str, action_code: str) -> str:
 
 
 def _batting_operation(status: str, action_text: str, action_code: str) -> str:
+    if action_text and any(token in action_text for token in ("当前不新增", "持有观察", "暂停买入", "暂停加仓")):
+        return action_text
     if status == "数据不足":
         return "先补数据，不给明确买区"
     if status == "追高区":
@@ -2549,6 +2578,9 @@ def _inline_list(value: Any) -> str:
 
 
 def _core_status(row: dict[str, Any]) -> str:
+    display = _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay")
+    if display:
+        return str(display.get("badge_label") or display.get("technical_action_text") or "").strip() or "观察"
     context_status = _buy_zone_context_core_status(_dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext"))
     if context_status:
         return context_status

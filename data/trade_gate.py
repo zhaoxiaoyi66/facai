@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
 
 
@@ -39,6 +40,7 @@ class BuyGateResult:
     entry_display_reason: str
     buy_zone_snapshot: Any
     buy_zone_context: dict[str, Any]
+    buy_zone_display: dict[str, Any]
     setup_score: float | None
     buy_zone_action: str
     buy_zone_action_text: str
@@ -89,6 +91,7 @@ def evaluate_buy_gate(
     ticker = str(data.get("ticker") or data.get("symbol") or "").strip().upper()
     decision = str(data.get("decision") or "DATA_MISSING").strip().upper()
     buy_zone_context = _buy_zone_context(data)
+    buy_zone_display = build_buy_zone_display(buy_zone_context, data, mode="trade_gate")
     mood = str(decision_mood or "").strip().lower()
     bucket = _position_bucket(position_bucket)
     reasons: list[str] = []
@@ -121,6 +124,7 @@ def evaluate_buy_gate(
             entry_display_reason=str(data.get("entry_display_reason") or ""),
             buy_zone_snapshot=data.get("buy_zone"),
             buy_zone_context=buy_zone_context,
+            buy_zone_display=buy_zone_display,
             setup_score=_context_number(buy_zone_context, "setup_score"),
             buy_zone_action=str(buy_zone_context.get("current_action") or ""),
             buy_zone_action_text=str(buy_zone_context.get("action_text") or ""),
@@ -175,6 +179,7 @@ def evaluate_buy_gate(
         entry_display_reason=str(data.get("entry_display_reason") or ""),
         buy_zone_snapshot=buy_zone_context or data.get("buy_zone"),
         buy_zone_context=buy_zone_context,
+        buy_zone_display=buy_zone_display,
         setup_score=_context_number(buy_zone_context, "setup_score"),
         buy_zone_action=str(buy_zone_context.get("current_action") or ""),
         buy_zone_action_text=str(buy_zone_context.get("action_text") or ""),
@@ -249,6 +254,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
                 "positionGateBlocked": False,
                 "radarObservationOnly": False,
                 "buyZoneContext": {},
+                "buyZoneDisplay": {},
                 "setupScore": None,
                 "buyZoneAction": "",
                 "buyZoneActionText": "",
@@ -267,6 +273,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "positionGateBlocked": False,
             "radarObservationOnly": False,
             "buyZoneContext": {},
+            "buyZoneDisplay": {},
             "setupScore": None,
             "buyZoneAction": "",
             "buyZoneActionText": "",
@@ -287,6 +294,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "entryDisplayReason": result.entry_display_reason,
         "buyZoneSnapshot": result.buy_zone_snapshot,
         "buyZoneContext": result.buy_zone_context,
+        "buyZoneDisplay": result.buy_zone_display,
         "setupScore": result.setup_score,
         "buyZoneAction": result.buy_zone_action,
         "buyZoneActionText": result.buy_zone_action_text,
