@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_BINANCE_CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "binance_price_cache.json"
+DEFAULT_BINANCE_EXCHANGE_INFO_CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "binance_exchange_info_cache.json"
 DEFAULT_SPOT_BASE_URLS = [
     "https://data-api.binance.vision",
     "https://api.binance.com",
@@ -195,11 +196,15 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         spot_base_url: str | None = None,
         futures_base_url: str | None = None,
         timeout_seconds: float = 5.0,
+        exchange_info_cache_path: Path | None = DEFAULT_BINANCE_EXCHANGE_INFO_CACHE_PATH,
+        exchange_info_ttl_seconds: int = 86_400,
     ) -> None:
         self.spot_base_urls = _spot_base_urls(spot_base_url)
         self.spot_base_url = self.spot_base_urls[0]
         self.futures_base_url = (futures_base_url or os.environ.get("BINANCE_USDM_BASE_URL") or DEFAULT_USDM_BASE_URL).rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.exchange_info_cache_path = exchange_info_cache_path
+        self.exchange_info_ttl_seconds = exchange_info_ttl_seconds
 
     def get_last_price(
         self,
@@ -456,7 +461,24 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
 
     def _exchange_info(self, market_type: str, symbol: str | None) -> dict[str, Any]:
         params = {"symbol": symbol} if symbol else {}
-        return self._get_market_json(market_type, "exchange_info", params)
+        cache_key = self._exchange_info_cache_key(market_type, symbol)
+        cached = self._read_exchange_info_cache(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            payload = self._get_market_json(market_type, "exchange_info", params)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            stale = self._read_exchange_info_cache(cache_key, allow_expired=True)
+            if stale is not None:
+                return stale
+            raise
+        self._write_exchange_info_cache(cache_key, payload)
+        return payload
+
+    def _exchange_info_cache_key(self, market_type: str, symbol: str | None) -> str:
+        normalized_market = normalize_market_type(market_type)
+        normalized_symbol = str(symbol or "ALL").strip().upper()
+        return f"{normalized_market}:{normalized_symbol}"
 
     def _endpoint(self, market_type: str, kind: str) -> tuple[str, str]:
         return self._endpoint_candidates(market_type, kind)[0]
@@ -499,6 +521,41 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         with urlopen(request, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
         return payload if isinstance(payload, dict) else {}
+
+    def _read_exchange_info_cache(self, cache_key: str, *, allow_expired: bool = False) -> dict[str, Any] | None:
+        if self.exchange_info_cache_path is None:
+            return None
+        payload = _read_json(self.exchange_info_cache_path)
+        raw = payload.get(cache_key) if isinstance(payload, dict) else None
+        if not isinstance(raw, dict):
+            return None
+        updated_at = _parse_datetime(raw.get("updated_at"))
+        if updated_at is None:
+            return None
+        if not allow_expired and datetime.now(timezone.utc) - updated_at > timedelta(seconds=self.exchange_info_ttl_seconds):
+            return None
+        data = raw.get("payload")
+        return data if isinstance(data, dict) else None
+
+    def _write_exchange_info_cache(self, cache_key: str, payload: dict[str, Any]) -> None:
+        if self.exchange_info_cache_path is None:
+            return
+        try:
+            cache = _read_json(self.exchange_info_cache_path)
+            if not isinstance(cache, dict):
+                cache = {}
+            symbols = payload.get("symbols") if isinstance(payload, dict) else None
+            cache[cache_key] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "market_type": cache_key.split(":", 1)[0],
+                "base_url": self.futures_base_url if cache_key.startswith("usdm_futures:") else self.spot_base_url,
+                "symbol_count": len(symbols) if isinstance(symbols, list) else None,
+                "payload": payload,
+            }
+            self.exchange_info_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.exchange_info_cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            return
 
 
 def normalize_market_type(market_type: str) -> str:

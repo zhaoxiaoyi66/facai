@@ -566,6 +566,8 @@ def _candidate_scan_message(scan: dict[str, Any]) -> str:
         if scan.get("candidates"):
             return "候选待确认"
         return "未发现候选 symbol"
+    market_results = scan.get("market_results") if isinstance(scan.get("market_results"), list) else []
+    markets = {str(item.get("market_type") or "") for item in market_results if isinstance(item, dict)}
     if status == "BLOCKED":
         return "Binance API 可能被网络或地区限制拦截"
     if status == "EMPTY":
@@ -574,6 +576,10 @@ def _candidate_scan_message(scan: dict[str, Any]) -> str:
         return "Binance exchangeInfo 返回结构异常"
     if status == "PARSE_ERROR":
         return "Binance exchangeInfo 解析失败"
+    if markets == {"spot"}:
+        return "Spot 候选扫描未完成"
+    if markets == {"usdm_futures"}:
+        return "Futures 数据源不可用"
     return "Binance exchangeInfo 不可用，候选扫描未完成"
 
 

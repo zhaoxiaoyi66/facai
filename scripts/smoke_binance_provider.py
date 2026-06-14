@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import asdict, is_dataclass
 import json
 import sys
@@ -96,8 +97,82 @@ def run_smoke(
     }
 
 
+def run_symbol_smoke(
+    *,
+    ticker: str,
+    symbol: str,
+    market_type: str,
+    mapping_confidence: str = "unverified",
+    provider: BinancePriceProvider | None = None,
+) -> dict[str, Any]:
+    price_provider = provider or BinanceHTTPPriceProvider()
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_market = str(market_type or "spot").strip()
+    row: dict[str, Any] = {
+        "ticker": normalized_ticker,
+        "binance_symbol": normalized_symbol,
+        "market_type": normalized_market,
+        "mapping_confidence": mapping_confidence,
+        "exists": False,
+        "last_price": None,
+        "bid": None,
+        "ask": None,
+        "bid_ask_spread_pct": None,
+        "volume_24h": None,
+        "funding_rate": None,
+        "updated_at": "",
+        "error_message": "",
+    }
+    if not normalized_symbol:
+        row["error_message"] = "missing_symbol"
+        return row
+    try:
+        validation = _to_dict(price_provider.validate_symbol(normalized_symbol, market_type=normalized_market))
+        row.update(
+            {
+                "exists": bool(validation.get("exists")),
+                "validation_status": validation.get("status") or "",
+                "quote_currency": validation.get("quote_currency") or "",
+                "base_asset": validation.get("base_asset") or "",
+                "price_available": bool(validation.get("price_available")),
+                "book_available": bool(validation.get("book_available")),
+                "volume_available": bool(validation.get("volume_available")),
+                "funding_available": bool(validation.get("funding_available")),
+                "updated_at": validation.get("updated_at") or "",
+                "error_message": validation.get("error_message") or "",
+            }
+        )
+        if row["exists"]:
+            snapshot = _to_dict(price_provider.get_last_price(normalized_symbol, market_type=normalized_market, force_refresh=True))
+            row.update(
+                {
+                    "last_price": _number(snapshot.get("last_price")),
+                    "bid": _number(snapshot.get("bid")),
+                    "ask": _number(snapshot.get("ask")),
+                    "volume_24h": _number(snapshot.get("volume_24h")),
+                    "funding_rate": _number(snapshot.get("funding_rate")),
+                    "updated_at": snapshot.get("updated_at") or row["updated_at"],
+                    "error_message": snapshot.get("error") or row["error_message"],
+                }
+            )
+            row["bid_ask_spread_pct"] = _bid_ask_spread_pct(row["bid"], row["ask"])
+    except Exception as exc:
+        row["error_message"] = f"{type(exc).__name__}: {exc}"
+    return row
+
+
 def main() -> int:
-    print(json.dumps(run_smoke(), ensure_ascii=False, indent=2))
+    parser = argparse.ArgumentParser(description="Validate Binance mapping and fetch live market data.")
+    parser.add_argument("--ticker", default="", help="Ticker label for one-off symbol validation.")
+    parser.add_argument("--symbol", default="", help="Binance symbol to validate without writing config.")
+    parser.add_argument("--market-type", default="spot", choices=["spot", "usdm_futures"], help="Binance market type.")
+    args = parser.parse_args()
+    if args.symbol:
+        result = run_symbol_smoke(ticker=args.ticker or args.symbol, symbol=args.symbol, market_type=args.market_type)
+    else:
+        result = run_smoke()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

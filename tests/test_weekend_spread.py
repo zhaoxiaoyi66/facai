@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import inspect
 import json
 from urllib.error import HTTPError
@@ -121,6 +122,37 @@ class CandidateStatusProvider:
             "btcusdt_found": self.status not in {"EMPTY", "UNAVAILABLE"},
             "provider_diagnostic_failed": self.status in {"EMPTY", "UNAVAILABLE"},
         }
+
+
+class SpotSymbolSpecificProvider(BinanceHTTPPriceProvider):
+    def __init__(self) -> None:
+        super().__init__(spot_base_url="https://spot.test", exchange_info_cache_path=None)
+        self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+        self.calls.append((base_url, path, dict(params)))
+        if path.endswith("exchangeInfo") and not params.get("symbol"):
+            raise TimeoutError("full exchangeInfo timeout")
+        if path.endswith("exchangeInfo"):
+            symbol = params.get("symbol") or ""
+            return {"symbols": [{"symbol": symbol, "baseAsset": symbol.removesuffix("USDT"), "quoteAsset": "USDT"}]}
+        if path.endswith("ticker/price"):
+            return {"price": "207"}
+        if path.endswith("bookTicker"):
+            return {"bidPrice": "206.8", "askPrice": "207.2"}
+        if path.endswith("ticker/24hr"):
+            return {"lastPrice": "207", "volume": "123456"}
+        return {}
+
+
+class ExchangeInfoCacheProvider(BinanceHTTPPriceProvider):
+    def __init__(self, cache_path) -> None:
+        super().__init__(spot_base_url="https://spot.test", exchange_info_cache_path=cache_path)
+        self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+        self.calls.append((base_url, path, dict(params)))
+        return {"symbols": [{"symbol": params.get("symbol") or "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
 
 
 def _history(close: float = 100.0) -> pd.DataFrame:
@@ -318,6 +350,25 @@ def test_spot_mapping_requests_spot_price_from_provider() -> None:
     assert provider.calls == ["spot:NVDAUSDT"]
 
 
+def test_valid_spot_mapping_fetches_price_when_full_candidate_scan_times_out() -> None:
+    provider = SpotSymbolSpecificProvider()
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(market_type="spot"),
+        provider=provider,
+        cache=FakeCache(),
+    )
+
+    row = rows[0]
+    assert row["status"] == "OK"
+    assert row["binance_last_price"] == 207
+    assert row["binance_bid"] == 206.8
+    assert row["binance_ask"] == 207.2
+    assert row["binance_volume_24h"] == 123456
+    assert not any(path.endswith("exchangeInfo") and not params.get("symbol") for _, path, params in provider.calls)
+
+
 def test_friday_holiday_uses_previous_trading_day_close() -> None:
     provider = FakeProvider(price=101.5)
     cache = FakeCache(pd.DataFrame([{"date": "2026-06-11", "close": 98.0}]))
@@ -444,6 +495,15 @@ def test_mapping_diagnostics_does_not_render_provider_unavailable_as_no_candidat
     assert rows[0]["candidate_scan_message"] == "Binance API 可能被网络或地区限制拦截"
 
 
+def test_mapping_diagnostics_shows_futures_source_unavailable() -> None:
+    provider = CandidateStatusProvider(status="UNAVAILABLE", candidates=[], message="timeout")
+
+    rows = build_mapping_diagnostics(["NVDA"], mapping=_mapping(market_type="usdm_futures"), provider=provider, include_candidates=True)
+
+    assert rows[0]["candidate_scan_status"] == "UNAVAILABLE"
+    assert rows[0]["candidate_scan_message"] == "Futures 数据源不可用"
+
+
 def test_smoke_script_requires_local_mapping_without_provider_calls(tmp_path) -> None:
     provider = FakeProvider()
 
@@ -499,9 +559,24 @@ def test_smoke_script_validates_and_fetches_enabled_local_mapping(tmp_path) -> N
     assert provider.calls == ["validate:usdm_futures:NVDAUSDT", "usdm_futures:NVDAUSDT"]
 
 
+def test_smoke_script_supports_one_off_symbol_validation() -> None:
+    provider = FakeProvider(price=207, bid=206.8, ask=207.2, volume_24h=123_456, funding_rate=None)
+
+    row = smoke_binance_provider.run_symbol_smoke(ticker="ADBE", symbol="ADBEUSDT", market_type="spot", provider=provider)
+
+    assert row["ticker"] == "ADBE"
+    assert row["binance_symbol"] == "ADBEUSDT"
+    assert row["exists"] is True
+    assert row["last_price"] == 207
+    assert row["bid"] == 206.8
+    assert row["ask"] == 207.2
+    assert row["volume_24h"] == 123_456
+    assert provider.calls == ["validate:spot:ADBEUSDT", "spot:ADBEUSDT"]
+
+
 class RecordingHTTPProvider(BinanceHTTPPriceProvider):
     def __init__(self) -> None:
-        super().__init__(spot_base_url="https://spot.test", futures_base_url="https://futures.test")
+        super().__init__(spot_base_url="https://spot.test", futures_base_url="https://futures.test", exchange_info_cache_path=None)
         self.calls: list[tuple[str, str, dict[str, str]]] = []
 
     def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
@@ -542,7 +617,7 @@ class FallbackSpotProvider(RecordingHTTPProvider):
 
 class DefaultSpotProvider(BinanceHTTPPriceProvider):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(exchange_info_cache_path=None)
         self.calls: list[tuple[str, str, dict[str, str]]] = []
 
     def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
@@ -607,6 +682,48 @@ def test_http_provider_spot_falls_back_when_data_api_fails() -> None:
     assert snapshot.last_price == 101.5
     assert ("https://data-api.test", "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}) in provider.calls
     assert ("https://api.test", "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}) in provider.calls
+
+
+def test_exchange_info_cache_is_written_and_reused(tmp_path) -> None:
+    cache_path = tmp_path / "exchange_info_cache.json"
+    provider = ExchangeInfoCacheProvider(cache_path)
+
+    first = provider._exchange_info("spot", "BTCUSDT")
+    second = provider._exchange_info("spot", "BTCUSDT")
+
+    assert first == second
+    assert len(provider.calls) == 1
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["spot:BTCUSDT"]["market_type"] == "spot"
+    assert payload["spot:BTCUSDT"]["symbol_count"] == 1
+
+
+def test_exchange_info_cache_falls_back_to_expired_payload_when_network_fails(tmp_path) -> None:
+    cache_path = tmp_path / "exchange_info_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "spot:BTCUSDT": {
+                    "updated_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+                    "market_type": "spot",
+                    "base_url": "https://spot.test",
+                    "symbol_count": 1,
+                    "payload": {"symbols": [{"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT"}]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FailingProvider(ExchangeInfoCacheProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            raise TimeoutError("network down")
+
+    provider = FailingProvider(cache_path)
+
+    payload = provider._exchange_info("spot", "BTCUSDT")
+
+    assert payload["symbols"][0]["symbol"] == "BTCUSDT"
 
 
 def test_http_provider_marks_unknown_symbol_invalid() -> None:
