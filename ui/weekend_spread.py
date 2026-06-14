@@ -29,6 +29,12 @@ RISK_NOTICE = (
     "价差可能来自流动性、点差、资金费率、映射误差或币种单位差异。"
 )
 
+TAB_REALTIME = "实时观察"
+TAB_WEEKLY = "本周记录"
+TAB_MONDAY = "周一验证"
+TAB_HISTORY = "历史规律"
+TAB_MAPPING = "映射管理"
+
 
 def render() -> None:
     st.markdown(
@@ -37,7 +43,7 @@ def render() -> None:
           <div>
             <span class="zhx-eyebrow">ZHX RESEARCH</span>
             <h1>周末价差观察台</h1>
-            <p>对照周五美股收盘价与 Binance 映射价格，记录周末峰值，并在周一做信号验证。</p>
+            <p>实时观察周末映射价差，记录峰值，并在周一做信号验证。</p>
           </div>
         </section>
         """,
@@ -46,100 +52,324 @@ def render() -> None:
     st.warning(RISK_NOTICE)
 
     mapping = load_binance_symbol_mapping()
-    force_refresh = st.button("刷新 Binance 价格", width="stretch")
-    rows = build_weekend_spread_rows(load_watchlist(), mapping=mapping, force_refresh=force_refresh)
+    watchlist = load_watchlist()
+
+    realtime_tab, weekly_tab, monday_tab, history_tab, mapping_tab = st.tabs(
+        [TAB_REALTIME, TAB_WEEKLY, TAB_MONDAY, TAB_HISTORY, TAB_MAPPING]
+    )
+
+    with realtime_tab:
+        rows, log_snapshot, mapping_counts = _render_realtime_tab(watchlist, mapping)
+    with weekly_tab:
+        _render_weekly_tab(rows, log_snapshot)
+    with monday_tab:
+        _render_monday_tab(log_snapshot)
+    with history_tab:
+        _render_history_tab()
+    with mapping_tab:
+        _render_mapping_tab(rows, mapping, mapping_counts)
+
+
+def _render_realtime_tab(
+    watchlist: list[str],
+    mapping: dict[str, dict],
+) -> tuple[list[dict], dict, dict[str, int]]:
+    st.subheader("实时观察")
+    force_refresh = _render_realtime_action_bar()
+    rows = build_weekend_spread_rows(watchlist, mapping=mapping, force_refresh=force_refresh)
+
+    _render_record_buttons(rows, key_prefix="realtime")
     log_snapshot = get_weekly_log_snapshot()
     mapping_counts = _mapping_counts(rows, mapping)
 
-    _render_kpis(rows, mapping_counts, log_snapshot)
-    _render_data_status(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
-    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_primary_kpis(rows, mapping_counts, log_snapshot)
+    _render_data_status_cards(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_strongest_signal(rows, mapping_counts)
 
-    controls = st.columns([1.3, 1, 1, 1])
-    scope = controls[0].radio("显示范围", ["重点/有数据", "全部观察池", "暂无 mapping"], index=0, horizontal=True)
-    confirmed_only = controls[1].checkbox("仅 confirmed", value=False)
-    focus_only = controls[2].checkbox("仅重点/异常", value=False)
-    abnormal_only = controls[3].checkbox("仅异常价差", value=False)
-
-    filtered_rows = _filter_rows(
-        rows,
-        scope=scope,
-        confirmed_only=confirmed_only,
-        focus_only=focus_only,
-        abnormal_only=abnormal_only,
-    )
-    st.caption(
-        f"观察池 {mapping_counts['universe_total']} 只；"
-        f"观察池映射 {mapping_counts['universe_mapping_count']} 只；"
-        f"本地配置映射 {mapping_counts['local_mapping_count']} 只；"
-        f"主表行数 {len(filtered_rows)}。"
-    )
-    if _should_show_empty_mapping_state(mapping_counts, scope):
+    main_rows = _default_live_rows(rows)
+    if _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
         _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    elif main_rows:
+        st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
     else:
-        st.dataframe(_display_frame(filtered_rows), width="stretch", hide_index=True)
+        st.info("当前没有可展示的实时价差。若已有映射，请刷新价格或查看映射状态。")
 
-    no_mapping_rows = [row for row in rows if not row.get("binance_symbol")]
-    if no_mapping_rows and scope != "暂无 mapping":
-        with st.expander(f"暂无 mapping 股票（{len(no_mapping_rows)}）", expanded=False):
-            st.dataframe(_display_frame(no_mapping_rows), width="stretch", hide_index=True)
-
-    _render_recording_controls(rows)
-    _render_weekly_outcomes(log_snapshot)
-    _render_history_stats()
-    _render_details(filtered_rows)
-    _render_mapping_diagnostics(mapping)
-    with st.expander("映射与风险说明", expanded=False):
-        st.markdown(
-            "\n".join(
-                [
-                    "- 未配置映射的股票显示“暂无映射”，不会请求或伪造 Binance 价格。",
-                    "- 映射未确认时会显示“需人工确认映射”，价差只作观察，不是套利判断。",
-                    "- 美股映射只使用 Binance USDT-M 合约，现货映射已关闭。",
-                    "- quote_currency 不是 USD/USDT 或 unit_multiplier 不明确时，不计算正式价差。",
-                    "- 周一验证结果只叫“信号验证结果”，不是确定套利成功。",
-                    "- V1 不输出套利建议、买入、卖出或对冲指令。",
-                    f"- 当前映射：{escape(_mapping_summary(mapping))}",
-                ]
-            )
-        )
+    _render_details(main_rows)
+    _render_no_mapping_expander(rows)
+    return rows, log_snapshot, mapping_counts
 
 
-def _render_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:
+def _render_realtime_action_bar() -> bool:
+    col_refresh, col_note = st.columns([1, 3])
+    force_refresh = col_refresh.button("刷新 Binance 价格", width="stretch", key="weekend_spread_refresh")
+    col_note.caption("价格由 Binance API 自动读取；本页只做价差观察，不输出套利或交易指令。")
+    return force_refresh
+
+
+def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:
     abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
-    status = _binance_status_text(rows, mapping_counts["universe_mapping_count"])
-    cols = st.columns(8)
-    cols[0].metric("本周已记录样本", int(log_snapshot.get("sample_count") or 0))
-    cols[1].metric("本地映射", mapping_counts["local_mapping_count"])
-    cols[2].metric("观察池映射", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}")
-    cols[3].metric("当前可拉价", mapping_counts["price_row_count"])
-    cols[4].metric("本周最大溢价", _percent_text(log_snapshot.get("max_premium_pct")))
-    cols[5].metric("本周最大折价", _percent_text(log_snapshot.get("max_discount_pct")))
-    cols[6].metric("异常价差", abnormal_count)
-    cols[7].metric("Binance 数据", status)
+    recorded_max = _recorded_max_abs_spread(log_snapshot)
+    cols = st.columns(4)
+    cols[0].metric("当前可拉价", mapping_counts["price_row_count"])
+    cols[1].metric("实时异常价差", abnormal_count)
+    cols[2].metric("本周已记录样本", int(log_snapshot.get("sample_count") or 0))
+    cols[3].metric("已记录最大价差", _percent_text(recorded_max))
 
 
-def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
-    latest = _latest_updated_at(rows)
-    futures_status = _market_data_status(rows, "usdm_futures")
-    local_text = "local mapping 已加载" if local_mapping_path.exists() else "未发现 local mapping"
-    st.info(
-        " | ".join(
-            [
-                "现货映射：已关闭",
-                "合约候选扫描：按需诊断",
-                f"合约价格源：{futures_status}",
-                f"本地配置映射总数：{mapping_counts['local_mapping_count']}",
-                _off_universe_mapping_note(mapping_counts),
-                local_text,
-                f"最后刷新：{latest or '暂缺'}",
-            ]
-        )
+def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
+    values = [
+        ("本地映射总数", str(mapping_counts["local_mapping_count"])),
+        ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
+        ("Spot 状态", "已关闭"),
+        ("Futures 状态", _market_data_status(rows, "usdm_futures")),
+        ("最后刷新", _latest_updated_at(rows) or "暂缺"),
+    ]
+    cols = st.columns(len(values))
+    for col, (label, value) in zip(cols, values):
+        col.caption(label)
+        col.write(value)
+    off_universe_note = _off_universe_mapping_note(mapping_counts)
+    if local_mapping_path.exists() or mapping_counts["local_mapping_count"] > 0:
+        st.caption(f"{off_universe_note}；local 配置：{local_mapping_path.as_posix()}")
+    else:
+        st.caption(f"{off_universe_note}；local 配置尚未创建。")
+
+
+def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+    row = _strongest_signal_row(rows)
+    if row is None:
+        if mapping_counts.get("universe_mapping_count", 0) <= 0:
+            st.info("当前没有可拉取 Binance 价格的映射。先配置 ticker -> binance_symbol 后，系统会自动读取价格。")
+        else:
+            st.info("暂无实时价差信号。若映射存在但没有价格，请查看映射状态或刷新 Binance 价格。")
+        return
+
+    spread = _percent_text(row.get("spread_pct"))
+    risk = _primary_risk_text(row)
+    st.markdown(
+        f"""
+        <section class="zhx-card">
+          <span class="zhx-eyebrow">当前最强信号</span>
+          <h3>{escape(str(row.get("ticker") or ""))} · {escape(spread)}</h3>
+          <p>{escape(str(row.get("spread_direction") or ""))}｜{escape(str(row.get("alert_level_cn") or ""))}｜映射：{escape(str(row.get("mapping_confidence") or "unknown"))}</p>
+          <p>{escape(risk)}</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
     )
+    warning = _strongest_signal_warning(row)
+    if warning:
+        st.warning(warning)
+
+
+def _render_weekly_tab(rows: list[dict], log_snapshot: dict) -> None:
+    st.subheader("本周记录")
+    _render_record_buttons(rows, key_prefix="weekly")
+    log_snapshot = get_weekly_log_snapshot()
+    _render_weekly_peak_cards(log_snapshot)
+    summaries = list(log_snapshot.get("summaries") or [])
+    if summaries:
+        st.dataframe(_summary_frame(summaries), width="stretch", hide_index=True)
+    else:
+        st.info("本周还没有已生成的 summary。先记录当前快照，再生成本周总结。")
+
+
+def _render_record_buttons(rows: list[dict], *, key_prefix: str) -> None:
+    cols = st.columns(2)
+    if cols[0].button("记录当前快照", width="stretch", key=f"weekend_record_{key_prefix}"):
+        samples = record_spread_samples(rows)
+        st.success(f"已记录 {len(samples)} 条有映射快照。")
+    if cols[1].button("生成本周总结", width="stretch", key=f"weekend_summary_{key_prefix}"):
+        summaries = generate_weekly_summary()
+        st.success(f"已生成 {len(summaries)} 条本周总结。")
+
+
+def _render_weekly_peak_cards(log_snapshot: dict) -> None:
+    summaries = list(log_snapshot.get("summaries") or [])
+    max_abs = _recorded_max_abs_spread(log_snapshot)
+    sample_count = int(log_snapshot.get("sample_count") or 0)
+    cols = st.columns(4)
+    cols[0].metric("已记录最大溢价", _percent_text(log_snapshot.get("max_premium_pct")))
+    cols[1].metric("已记录最大折价", _percent_text(log_snapshot.get("max_discount_pct")))
+    cols[2].metric("最大绝对价差", _percent_text(max_abs))
+    cols[3].metric("sample_count", sample_count)
+    if not summaries:
+        st.caption("已记录最大溢价/折价来自样本快照；summary 表需要点击“生成本周总结”。")
+
+
+def _render_monday_tab(log_snapshot: dict) -> None:
+    st.subheader("周一验证")
+    summaries = list(log_snapshot.get("summaries") or [])
+    if not summaries:
+        st.info("暂无可验证的本周总结。先在“本周记录”里生成 summary。")
+        return
+
+    st.caption("这里记录的是信号验证结果，不是套利成功或交易建议。")
+    labels = [f"{item.get('ticker')} | {item.get('week_id')}" for item in summaries]
+    selected = st.selectbox("选择验证标的", labels, key="weekend_monday_target")
+    selected_summary = summaries[labels.index(selected)]
+    cols = st.columns(4)
+    reference_type = cols[0].selectbox(
+        "monday_reference_type",
+        ["MONDAY_PREMARKET_OPEN", "MONDAY_RTH_OPEN", "MONDAY_OVERNIGHT_OPEN", "MANUAL"],
+        key="weekend_monday_reference_type",
+    )
+    monday_price = cols[1].number_input(
+        "周一验证价（非 Binance 实时价）",
+        min_value=0.0,
+        value=0.0,
+        step=0.01,
+        key="weekend_monday_price",
+    )
+    estimated_cost_pct = cols[2].number_input(
+        "估算成本（%）",
+        min_value=0.0,
+        value=0.0,
+        step=0.05,
+        key="weekend_monday_cost",
+    )
+    notes = cols[3].text_input("验证备注", value="", key="weekend_monday_notes")
+    if st.button("保存/计算验证结果", width="stretch", key="weekend_save_monday_outcome"):
+        if monday_price <= 0:
+            st.warning("请输入有效的周一验证价。")
+        else:
+            updated = update_monday_outcome(
+                str(selected_summary.get("ticker") or ""),
+                week_id=str(selected_summary.get("week_id") or ""),
+                monday_reference_price=monday_price,
+                reference_type=reference_type,
+                estimated_cost_pct=estimated_cost_pct,
+                notes=notes,
+            )
+            if updated:
+                st.success(f"已保存信号验证结果：{updated.get('outcome_status')}")
+            else:
+                st.warning("未找到可更新的本周总结。")
+
+    st.dataframe(_monday_outcome_frame(summaries), width="stretch", hide_index=True)
+
+
+def _render_history_tab() -> None:
+    st.subheader("历史规律")
+    stats = build_history_stats()
+    if not stats:
+        st.info("暂无历史验证记录。记录周末样本并完成周一验证后，这里会显示命中率和平均捕捉比例。")
+        return
+    st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
+
+
+def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
+    st.subheader("映射管理")
+    status_counts = _mapping_management_counts(rows, mapping)
+    cols = st.columns(5)
+    cols[0].metric("本地 mapping 总数", status_counts["local_mapping_count"])
+    cols[1].metric("观察池 mapping 数", status_counts["universe_mapping_count"])
+    cols[2].metric("confirmed", status_counts["confirmed_count"])
+    cols[3].metric("candidate", status_counts["candidate_count"])
+    cols[4].metric("无 mapping", status_counts["no_mapping_count"])
+    st.info(
+        "价格由 Binance API 自动读取；用户只维护 ticker -> binance_symbol mapping。"
+        f"local 配置路径：{DEFAULT_LOCAL_MAPPING_PATH.as_posix()}，local 不提交 git，candidate 不等于 confirmed。"
+    )
+    st.dataframe(_mapping_management_frame(rows, mapping), width="stretch", hide_index=True)
+    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_mapping_diagnostics(mapping)
+
+
+def _filter_rows(
+    rows: list[dict],
+    *,
+    scope: str,
+    confirmed_only: bool,
+    focus_only: bool,
+    abnormal_only: bool,
+) -> list[dict]:
+    if scope == "暂无 mapping":
+        result = [row for row in rows if not row.get("binance_symbol")]
+    elif scope == "全部观察池":
+        result = list(rows)
+    else:
+        result = _default_live_rows(rows)
+    if confirmed_only:
+        result = [row for row in result if row.get("mapping_confidence") == "confirmed"]
+    if abnormal_only:
+        result = [row for row in result if row.get("alert_level") == "ABNORMAL"]
+    elif focus_only:
+        result = [row for row in result if row.get("alert_level") in {"FOCUS", "ABNORMAL"}]
+    return result
+
+
+def _default_live_rows(rows: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in rows
+        if row.get("binance_symbol") or row.get("spread_pct") is not None or row.get("alert_level") in {"FOCUS", "ABNORMAL"}
+    ]
+
+
+def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
+    local_mapping_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
+    universe_mapping_count = sum(1 for row in rows if row.get("binance_symbol"))
+    price_row_count = sum(
+        1
+        for row in rows
+        if row.get("binance_symbol") and row.get("status") == "OK" and row.get("spread_pct") is not None
+    )
+    return {
+        "local_mapping_count": local_mapping_count,
+        "universe_mapping_count": universe_mapping_count,
+        "price_row_count": price_row_count,
+        "universe_total": len(rows),
+    }
+
+
+def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
+    counts = _mapping_counts(rows, mapping)
+    local_items = [item for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol")]
+    counts.update(
+        {
+            "confirmed_count": sum(1 for item in local_items if item.get("mapping_confidence") == "confirmed"),
+            "candidate_count": sum(1 for item in local_items if item.get("mapping_confidence") == "candidate"),
+            "no_mapping_count": sum(1 for row in rows if not row.get("binance_symbol")),
+        }
+    )
+    return counts
+
+
+def _should_show_empty_mapping_state(mapping_counts: dict[str, int], scope: str) -> bool:
+    return mapping_counts.get("universe_mapping_count", 0) <= 0 and scope != "暂无 mapping"
+
+
+def _empty_mapping_message(mapping_counts: dict[str, int], local_mapping_path: Path) -> str:
+    lines = [
+        "当前观察池暂无 Binance 映射。",
+        "Binance 价格可通过 API 自动读取，但需要先配置 ticker -> binance_symbol。",
+        f"本地配置文件：{local_mapping_path.as_posix()}",
+        "示例：NVDA -> NVDAUSDT / usdm_futures / candidate",
+    ]
+    if mapping_counts.get("local_mapping_count", 0) > 0:
+        lines.append("本地配置有 mapping，但不属于当前观察池。")
+    return "\n\n".join(lines)
+
+
+def _off_universe_mapping_note(mapping_counts: dict[str, int]) -> str:
+    if mapping_counts.get("local_mapping_count", 0) <= 0:
+        return "本地未配置映射"
+    if mapping_counts.get("local_mapping_count", 0) > 0 and mapping_counts.get("universe_mapping_count", 0) == 0:
+        return "本地配置有 mapping，但不属于当前观察池"
+    return "本地 mapping 与观察池匹配正常"
 
 
 def _render_empty_mapping_state(mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
     st.info(_empty_mapping_message(mapping_counts, local_mapping_path))
+
+
+def _render_no_mapping_expander(rows: list[dict]) -> None:
+    no_mapping_rows = [row for row in rows if not row.get("binance_symbol")]
+    if not no_mapping_rows:
+        return
+    with st.expander(f"查看暂无 mapping 股票（{len(no_mapping_rows)}）", expanded=False):
+        st.dataframe(_no_mapping_frame(no_mapping_rows), width="stretch", hide_index=True)
 
 
 def _render_mapping_editor(
@@ -155,42 +385,46 @@ def _render_mapping_editor(
         if not tickers:
             st.caption("观察池为空，暂无可配置 ticker。")
             return
-        if st.button("一键生成观察池合约候选映射", width="stretch"):
+        if st.button("一键生成观察池合约候选映射", width="stretch", key="weekend_default_mapping"):
             result = upsert_default_usdm_futures_mappings(tickers, path=local_mapping_path)
             st.success(
                 f"已新增 {result['created']} 条候选映射，跳过已有 {result['skipped']} 条；"
                 "默认格式为 TICKERUSDT，价格仍由 Binance API 自动读取。"
             )
             st.caption("如 Binance 未上线个别合约，后续会显示 symbol 无效，可单独修改。")
-        ticker = st.selectbox("观察池 ticker", tickers, index=0)
+        ticker = st.selectbox("观察池 ticker", tickers, index=0, key="weekend_mapping_ticker")
         existing = mapping.get(str(ticker or "").upper(), {})
         symbol_value = str(existing.get("binance_symbol") or "")
         market_value = str(existing.get("market_type") or "usdm_futures")
         confidence_value = str(existing.get("mapping_confidence") or "candidate")
         market_options = ["usdm_futures"]
         confidence_options = ["candidate", "unverified", "confirmed"]
-        symbol = st.text_input("Binance symbol", value=symbol_value, placeholder="例如 NVDABUSDT")
+        symbol = st.text_input("Binance symbol", value=symbol_value, placeholder="例如 NVDAUSDT", key="weekend_mapping_symbol")
         market_type = st.selectbox(
             "市场类型",
             market_options,
             index=market_options.index(market_value) if market_value in market_options else 0,
+            key="weekend_mapping_market",
         )
         mapping_confidence = st.selectbox(
             "映射置信",
             confidence_options,
             index=confidence_options.index(confidence_value) if confidence_value in confidence_options else 0,
+            key="weekend_mapping_confidence",
         )
         unit_multiplier = st.number_input(
             "单位倍率",
             min_value=0.000001,
             value=float(existing.get("unit_multiplier") or 1),
             step=1.0,
+            key="weekend_mapping_multiplier",
         )
         risk_note = st.text_input(
             "风险备注",
             value=str(existing.get("risk_note") or "候选 symbol 不代表真实美股映射关系，需要人工确认。"),
+            key="weekend_mapping_risk_note",
         )
-        if st.button("保存到 local mapping", width="stretch"):
+        if st.button("保存到 local mapping", width="stretch", key="weekend_mapping_save"):
             try:
                 updated = upsert_local_binance_symbol_mapping(
                     str(ticker or ""),
@@ -211,138 +445,14 @@ def _render_mapping_editor(
 def _mapping_editor_error_text(error_code: str) -> str:
     return {
         "ticker_required": "请选择观察池 ticker。",
-        "binance_symbol_required": "请填写 Binance symbol，例如 NVDABUSDT。",
+        "binance_symbol_required": "请填写 Binance symbol，例如 NVDAUSDT。",
     }.get(error_code, "映射保存失败，请检查输入。")
 
 
-def _render_recording_controls(rows: list[dict]) -> None:
-    st.subheader("本周记录")
-    cols = st.columns(2)
-    if cols[0].button("记录当前快照", width="stretch"):
-        samples = record_spread_samples(rows)
-        st.success(f"已记录 {len(samples)} 条有映射快照。")
-    if cols[1].button("生成本周总结", width="stretch"):
-        summaries = generate_weekly_summary()
-        st.success(f"已生成 {len(summaries)} 条本周总结。")
-
-
-def _render_weekly_outcomes(log_snapshot: dict) -> None:
-    summaries = list(log_snapshot.get("summaries") or [])
-    with st.expander("周一验证", expanded=bool(summaries)):
-        if not summaries:
-            st.caption("本周还没有总结。先记录快照并生成本周总结。")
-            return
-        st.dataframe(_summary_frame(summaries), width="stretch", hide_index=True)
-        labels = [f"{item.get('ticker')} | {item.get('week_id')}" for item in summaries]
-        selected = st.selectbox("选择验证标的", labels)
-        selected_summary = summaries[labels.index(selected)]
-        reference_type = st.selectbox(
-            "验证价格类型",
-            ["MONDAY_PREMARKET_OPEN", "MONDAY_RTH_OPEN", "MONDAY_OVERNIGHT_OPEN", "MANUAL"],
-        )
-        monday_price = st.number_input("周一验证价（非 Binance 实时价）", min_value=0.0, value=0.0, step=0.01)
-        estimated_cost_pct = st.number_input("估算成本（%）", min_value=0.0, value=0.0, step=0.05)
-        notes = st.text_input("验证备注", value="")
-        if st.button("保存周一验证", width="stretch"):
-            if monday_price <= 0:
-                st.warning("请输入有效的周一验证价。")
-            else:
-                updated = update_monday_outcome(
-                    str(selected_summary.get("ticker") or ""),
-                    week_id=str(selected_summary.get("week_id") or ""),
-                    monday_reference_price=monday_price,
-                    reference_type=reference_type,
-                    estimated_cost_pct=estimated_cost_pct,
-                    notes=notes,
-                )
-                if updated:
-                    st.success(f"已保存信号验证结果：{updated.get('outcome_status')}")
-                else:
-                    st.warning("未找到可更新的本周总结。")
-
-
-def _render_history_stats() -> None:
-    with st.expander("历史规律", expanded=False):
-        stats = build_history_stats()
-        if not stats:
-            st.caption("暂无历史验证记录。")
-            return
-        st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
-
-
-def _filter_rows(
-    rows: list[dict],
-    *,
-    scope: str,
-    confirmed_only: bool,
-    focus_only: bool,
-    abnormal_only: bool,
-) -> list[dict]:
-    if scope == "暂无 mapping":
-        result = [row for row in rows if not row.get("binance_symbol")]
-    elif scope == "全部观察池":
-        result = list(rows)
-    else:
-        result = [
-            row
-            for row in rows
-            if row.get("binance_symbol") or row.get("spread_pct") is not None or row.get("alert_level") in {"FOCUS", "ABNORMAL"}
-        ]
-    if confirmed_only:
-        result = [row for row in result if row.get("mapping_confidence") == "confirmed"]
-    if abnormal_only:
-        result = [row for row in result if row.get("alert_level") == "ABNORMAL"]
-    elif focus_only:
-        result = [row for row in result if row.get("alert_level") in {"FOCUS", "ABNORMAL"}]
-    return result
-
-
-def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
-    local_mapping_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
-    universe_mapping_count = sum(1 for row in rows if row.get("binance_symbol"))
-    price_row_count = sum(
-        1
-        for row in rows
-        if row.get("binance_symbol") and row.get("status") == "OK" and row.get("spread_pct") is not None
-    )
-    return {
-        "local_mapping_count": local_mapping_count,
-        "universe_mapping_count": universe_mapping_count,
-        "price_row_count": price_row_count,
-        "universe_total": len(rows),
-    }
-
-
-def _should_show_empty_mapping_state(mapping_counts: dict[str, int], scope: str) -> bool:
-    return mapping_counts.get("universe_mapping_count", 0) <= 0 and scope != "暂无 mapping"
-
-
-def _empty_mapping_message(mapping_counts: dict[str, int], local_mapping_path: Path) -> str:
-    lines = [
-        "当前观察池暂无 Binance 映射。",
-        "Binance 价格可通过 API 自动读取，但需要先配置 ticker -> binance_symbol。",
-        f"本地配置文件：{local_mapping_path.as_posix()}",
-        "示例：NVDA -> NVDABUSDT / usdm_futures / candidate",
-    ]
-    if mapping_counts.get("local_mapping_count", 0) > 0:
-        lines.append("本地配置有 mapping，但不属于当前观察池。")
-    return "\n\n".join(lines)
-
-
-def _off_universe_mapping_note(mapping_counts: dict[str, int]) -> str:
-    if mapping_counts.get("local_mapping_count", 0) <= 0:
-        return "本地未配置映射"
-    if mapping_counts.get("local_mapping_count", 0) > 0 and mapping_counts.get("universe_mapping_count", 0) == 0:
-        return "本地配置有 mapping，但不属于当前观察池"
-    return "本地 mapping 与观察池匹配正常"
-
-
-def _display_frame(rows: list[dict]) -> pd.DataFrame:
+def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "Ticker"),
         ("friday_close", "周五收盘"),
-        ("friday_close_date", "收盘日期"),
-        ("binance_symbol", "Binance 映射"),
         ("binance_last_price", "Binance 最新"),
         ("spread_pct", "价差"),
         ("spread_direction", "方向"),
@@ -359,25 +469,40 @@ def _display_frame(rows: list[dict]) -> pd.DataFrame:
     for money_col in ("周五收盘", "Binance 最新"):
         display[money_col] = display[money_col].map(_money_text)
     display["价差"] = display["价差"].map(_percent_text)
-    display["Binance 映射"] = display["Binance 映射"].replace("", "暂无映射")
     display["更新时间"] = display["更新时间"].replace("", "暂缺")
+    return display
+
+
+def _display_frame(rows: list[dict]) -> pd.DataFrame:
+    return _live_frame(rows)
+
+
+def _no_mapping_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "Ticker"),
+        ("friday_close", "周五收盘"),
+        ("friday_close_date", "收盘日期"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    display["周五收盘"] = display["周五收盘"].map(_money_text)
+    display["收盘日期"] = display["收盘日期"].replace("", "暂缺")
     return display
 
 
 def _summary_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "Ticker"),
-        ("week_id", "周"),
-        ("sample_count", "样本数"),
-        ("max_premium_pct", "最大溢价"),
-        ("max_discount_pct", "最大折价"),
+        ("max_premium_pct", "已记录最大溢价"),
+        ("max_discount_pct", "已记录最大折价"),
         ("max_abs_spread_pct", "最大绝对价差"),
-        ("max_abs_spread_direction", "峰值方向"),
-        ("monday_gap_pct", "周一跳空"),
-        ("capture_ratio", "捕捉比例"),
-        ("net_edge_pct", "净边际"),
-        ("outcome_status", "信号验证结果"),
-        ("data_quality", "数据质量"),
+        ("max_abs_spread_direction", "最大绝对方向"),
+        ("sample_count", "sample_count"),
+        ("data_quality", "data_quality"),
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -385,24 +510,45 @@ def _summary_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
-    for col in ("最大溢价", "最大折价", "最大绝对价差", "周一跳空", "净边际"):
+    for col in ("已记录最大溢价", "已记录最大折价", "最大绝对价差"):
         display[col] = display[col].map(_percent_text)
-    display["捕捉比例"] = display["捕捉比例"].map(_ratio_text)
+    return display
+
+
+def _monday_outcome_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "Ticker"),
+        ("max_abs_spread_pct", "max_abs_spread_pct"),
+        ("monday_gap_pct", "monday_gap_pct"),
+        ("direction_hit", "direction_hit"),
+        ("capture_ratio", "capture_ratio"),
+        ("net_edge_pct", "net_edge_pct"),
+        ("outcome_status", "outcome_status"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    for col in ("max_abs_spread_pct", "monday_gap_pct", "net_edge_pct"):
+        display[col] = display[col].map(_percent_text)
+    display["capture_ratio"] = display["capture_ratio"].map(_ratio_text)
     return display
 
 
 def _history_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "Ticker"),
-        ("sample_weeks", "样本周数"),
-        ("hit_count", "HIT"),
-        ("partial_count", "PARTIAL"),
-        ("miss_count", "MISS"),
-        ("hit_rate", "命中率"),
-        ("avg_max_abs_spread_pct", "平均最大价差"),
-        ("avg_capture_ratio", "平均捕捉比例"),
-        ("avg_net_edge_pct", "平均净边际"),
-        ("common_failure_reason", "常见失败原因"),
+        ("sample_weeks", "sample_weeks"),
+        ("hit_count", "hit_count"),
+        ("partial_count", "partial_count"),
+        ("miss_count", "miss_count"),
+        ("hit_rate", "hit_rate"),
+        ("avg_max_abs_spread_pct", "avg_peak_spread"),
+        ("avg_capture_ratio", "avg_capture_ratio"),
+        ("avg_net_edge_pct", "avg_net_edge"),
+        ("common_failure_reason", "common_failure_reason"),
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -410,15 +556,65 @@ def _history_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
-    display["命中率"] = display["命中率"].map(_ratio_text)
-    display["平均最大价差"] = display["平均最大价差"].map(_percent_text)
-    display["平均捕捉比例"] = display["平均捕捉比例"].map(_ratio_text)
-    display["平均净边际"] = display["平均净边际"].map(_percent_text)
+    display["hit_rate"] = display["hit_rate"].map(_ratio_text)
+    display["avg_peak_spread"] = display["avg_peak_spread"].map(_percent_text)
+    display["avg_capture_ratio"] = display["avg_capture_ratio"].map(_ratio_text)
+    display["avg_net_edge"] = display["avg_net_edge"].map(_percent_text)
+    return display
+
+
+def _mapping_management_frame(rows: list[dict], mapping: dict[str, dict]) -> pd.DataFrame:
+    universe_tickers = {str(row.get("ticker") or "").upper() for row in rows if row.get("ticker")}
+    table_rows: list[dict] = []
+    for row in rows:
+        table_rows.append(
+            {
+                "ticker": str(row.get("ticker") or "").upper(),
+                "binance_symbol": str(row.get("binance_symbol") or ""),
+                "market_type": str(row.get("binance_market_type") or row.get("market_type") or ""),
+                "mapping_confidence": str(row.get("mapping_confidence") or ""),
+                "validation_status": str(row.get("mapping_status") or ""),
+                "last_price_status": _last_price_status(row),
+                "risk_note": str(row.get("mapping_risk") or row.get("risk_note") or ""),
+            }
+        )
+    for ticker, config in sorted(mapping.items()):
+        normalized = str(ticker or "").upper()
+        if normalized in universe_tickers:
+            continue
+        table_rows.append(
+            {
+                "ticker": normalized,
+                "binance_symbol": str(config.get("binance_symbol") or ""),
+                "market_type": str(config.get("market_type") or ""),
+                "mapping_confidence": str(config.get("mapping_confidence") or ""),
+                "validation_status": "不在观察池",
+                "last_price_status": "未请求",
+                "risk_note": str(config.get("risk_note") or ""),
+            }
+        )
+    columns = [
+        ("ticker", "ticker"),
+        ("binance_symbol", "binance_symbol"),
+        ("market_type", "market_type"),
+        ("mapping_confidence", "mapping_confidence"),
+        ("validation_status", "validation_status"),
+        ("last_price_status", "last_price_status"),
+        ("risk_note", "risk_note"),
+    ]
+    frame = pd.DataFrame(table_rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    display["binance_symbol"] = display["binance_symbol"].replace("", "暂无映射")
+    display["mapping_confidence"] = display["mapping_confidence"].replace("", "no_mapping")
     return display
 
 
 def _render_details(rows: list[dict]) -> None:
-    with st.expander("查看价差详情", expanded=False):
+    with st.expander("查看实时价差详情", expanded=False):
         if not rows:
             st.caption("暂无可展示数据。")
             return
@@ -432,6 +628,7 @@ def _render_details(rows: list[dict]) -> None:
                   <span>24h volume {escape(_plain_number(row.get("binance_volume_24h")))}</span>
                   <span>funding {_funding_text(row.get("funding_rate"))}</span>
                   <span>{escape(str(row.get("fx_note") or ""))}</span>
+                  <small>{escape(str(row.get("liquidity_warning") or ""))}</small>
                   <small>{escape(str(row.get("mapping_risk") or ""))}</small>
                   <small>{escape(str(row.get("error") or ""))}</small>
                 </section>
@@ -442,7 +639,7 @@ def _render_details(rows: list[dict]) -> None:
 
 def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
     with st.expander("映射诊断", expanded=False):
-        validate = st.button("校验 symbol 映射", width="stretch")
+        validate = st.button("校验 symbol 映射", width="stretch", key="weekend_validate_mapping")
         diagnostics = build_mapping_diagnostics(
             load_watchlist(),
             mapping=mapping,
@@ -500,85 +697,138 @@ def _candidate_text(value: object) -> str:
     return ", ".join(labels)
 
 
+def _strongest_signal_row(rows: list[dict]) -> dict | None:
+    priced = [row for row in rows if row.get("spread_pct") is not None]
+    if not priced:
+        return None
+    return max(priced, key=lambda row: abs(float(row.get("spread_pct") or 0)))
+
+
+def _strongest_signal_warning(row: dict) -> str:
+    if str(row.get("mapping_confidence") or "") != "confirmed":
+        return "映射未确认，不能作为正式套利信号。"
+    risk = _primary_risk_text(row)
+    if risk:
+        return risk
+    return ""
+
+
+def _primary_risk_text(row: dict) -> str:
+    for key in ("mapping_risk", "liquidity_warning", "error"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    if str(row.get("mapping_confidence") or "") != "confirmed":
+        return "映射未确认，需要人工确认后再作为正式观察样本。"
+    return "仅用于观察，不构成套利建议。"
+
+
+def _last_price_status(row: dict) -> str:
+    if not row.get("binance_symbol"):
+        return "暂无映射"
+    if row.get("status") == "OK" and row.get("binance_last_price") is not None:
+        return "价格可用"
+    if row.get("status") == "INVALID_SYMBOL":
+        return "symbol 无效"
+    if row.get("status") == "SPOT_DISABLED":
+        return "现货已关闭"
+    return str(row.get("mapping_status") or row.get("status") or "数据不可用")
+
+
 def _mapping_summary(mapping: dict[str, dict]) -> str:
-    items = []
-    for ticker, config in sorted(mapping.items()):
-        symbol = str(config.get("binance_symbol") or "").strip().upper()
-        if not symbol:
-            continue
-        confidence = str(config.get("mapping_confidence") or "manual_required")
-        items.append(f"{ticker}->{symbol}({confidence})")
-    return ", ".join(items) or "暂无"
+    total = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
+    confirmed = sum(
+        1
+        for item in mapping.values()
+        if item.get("enabled", True)
+        and item.get("binance_symbol")
+        and str(item.get("mapping_confidence") or "") == "confirmed"
+    )
+    return f"{total} 条本地映射，{confirmed} 条 confirmed"
 
 
 def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
     if universe_mapping_count <= 0:
-        return "观察池暂无映射"
+        return "等待 mapping"
     if any(row.get("status") == "OK" for row in rows):
         return "可用"
-    if any(row.get("status") == "BINANCE_UNAVAILABLE" for row in rows):
+    if any(row.get("status") in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"} for row in rows):
         return "数据不可用"
-    return "待确认"
+    if any(row.get("status") == "INVALID_SYMBOL" for row in rows):
+        return "symbol 异常"
+    return "待刷新"
 
 
 def _market_data_status(rows: list[dict], market_type: str) -> str:
-    market_rows = [row for row in rows if row.get("binance_market_type") == market_type and row.get("binance_symbol")]
+    market_rows = [
+        row
+        for row in rows
+        if row.get("binance_symbol") and str(row.get("binance_market_type") or row.get("market_type") or "") == market_type
+    ]
     if not market_rows:
-        return "暂无映射"
+        return "等待 mapping"
     if any(row.get("status") == "OK" for row in market_rows):
         return "可用"
-    if any(row.get("status") == "BINANCE_UNAVAILABLE" for row in market_rows):
-        return "数据不可用"
     if any(row.get("status") == "INVALID_SYMBOL" for row in market_rows):
         return "symbol 无效"
-    return "待确认"
+    if any(row.get("status") == "SPOT_DISABLED" for row in market_rows):
+        return "已关闭"
+    return "数据不可用"
 
 
 def _latest_updated_at(rows: list[dict]) -> str:
     values = [str(row.get("updated_at") or "") for row in rows if row.get("updated_at")]
-    return max(values) if values else ""
+    return values[-1] if values else ""
+
+
+def _recorded_max_abs_spread(log_snapshot: dict) -> float | None:
+    values = [log_snapshot.get("max_premium_pct"), log_snapshot.get("max_discount_pct")]
+    numeric = [_number(value) for value in values]
+    numeric = [value for value in numeric if value is not None]
+    if not numeric:
+        return None
+    return max(numeric, key=lambda value: abs(float(value)))
 
 
 def _money_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "暂缺"
-        return f"${float(value):,.2f}"
-    except (TypeError, ValueError):
+    number = _number(value)
+    if number is None:
         return "暂缺"
+    return f"${number:,.2f}"
 
 
 def _percent_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "暂缺"
-        return f"{float(value):+.2f}%"
-    except (TypeError, ValueError):
+    number = _number(value)
+    if number is None:
         return "暂缺"
+    return f"{number:+.2f}%"
 
 
 def _ratio_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "暂缺"
-        return f"{float(value) * 100:.1f}%"
-    except (TypeError, ValueError):
+    number = _number(value)
+    if number is None:
         return "暂缺"
+    return f"{number:.2f}"
 
 
 def _funding_text(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "暂缺"
-        return f"{float(value) * 100:+.4f}%"
-    except (TypeError, ValueError):
+    number = _number(value)
+    if number is None:
         return "暂缺"
+    return f"{number:.4%}"
 
 
 def _plain_number(value: object) -> str:
-    try:
-        if value in (None, ""):
-            return "暂缺"
-        return f"{float(value):,.0f}"
-    except (TypeError, ValueError):
+    number = _number(value)
+    if number is None:
         return "暂缺"
+    return f"{number:,.0f}"
+
+
+def _number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

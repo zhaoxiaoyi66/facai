@@ -189,6 +189,10 @@ def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
     }
 
 
+def _explicit_empty_mapping() -> dict:
+    return {"__NO_MAPPING__": {"enabled": False, "binance_symbol": ""}}
+
+
 def test_spread_pct_and_alert_level_are_calculated_from_friday_close() -> None:
     provider = FakeProvider(price=101.5)
     rows = build_weekend_spread_rows(
@@ -260,7 +264,7 @@ def test_alert_level_thresholds() -> None:
 
 def test_missing_symbol_mapping_does_not_call_provider() -> None:
     provider = FakeProvider(price=101.5)
-    rows = build_weekend_spread_rows(["MSFT"], mapping={}, provider=provider, cache=FakeCache())
+    rows = build_weekend_spread_rows(["MSFT"], mapping=_explicit_empty_mapping(), provider=provider, cache=FakeCache())
 
     assert rows[0]["status"] == "NO_MAPPING"
     assert rows[0]["alert_level_cn"] == "暂无映射"
@@ -271,7 +275,7 @@ def test_missing_symbol_mapping_does_not_call_provider() -> None:
 def test_mapping_diagnostics_reports_missing_mapping_without_price_request() -> None:
     provider = FakeProvider()
 
-    rows = build_mapping_diagnostics(["MSFT"], mapping={}, provider=provider, validate=True, include_candidates=False)
+    rows = build_mapping_diagnostics(["MSFT"], mapping=_explicit_empty_mapping(), provider=provider, validate=True, include_candidates=False)
 
     assert rows[0]["validation_status"] == "暂无映射"
     assert rows[0]["configured_symbol"] == ""
@@ -421,7 +425,7 @@ def test_manual_override_is_explicitly_marked_non_realtime() -> None:
 def test_candidate_discovery_does_not_mark_mapping_confirmed() -> None:
     provider = FakeProvider()
 
-    rows = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=False, include_candidates=True)
+    rows = build_mapping_diagnostics(["NVDA"], mapping=_explicit_empty_mapping(), provider=provider, validate=False, include_candidates=True)
 
     assert rows[0]["validation_status"] == "暂无映射"
     assert rows[0]["candidates"][0]["symbol"] == "NVDAUSDT"
@@ -496,7 +500,7 @@ def test_discover_candidates_marks_provider_diagnostic_failed_when_btcusdt_probe
 def test_mapping_diagnostics_does_not_render_provider_unavailable_as_no_candidates() -> None:
     provider = CandidateStatusProvider(status="BLOCKED", candidates=[], message="HTTP 451")
 
-    rows = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=False, include_candidates=True)
+    rows = build_mapping_diagnostics(["NVDA"], mapping=_explicit_empty_mapping(), provider=provider, validate=False, include_candidates=True)
 
     assert rows[0]["candidate_scan_status"] == "BLOCKED"
     assert rows[0]["candidates"] == []
@@ -1063,7 +1067,7 @@ def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping
     assert "Binance 价格可通过 API 自动读取" in message
     assert "ticker -> binance_symbol" in message
     assert "binance_symbol_mapping.local.json" in message
-    assert "NVDA -> NVDABUSDT / usdm_futures / candidate" in message
+    assert "NVDA -> NVDAUSDT / usdm_futures / candidate" in message
     assert "不属于当前观察池" not in message
     assert weekend_spread._off_universe_mapping_note(counts) == "本地未配置映射"
 
@@ -1124,7 +1128,7 @@ def test_record_current_snapshot_writes_mapped_samples_only(tmp_path) -> None:
 
 def test_no_mapping_rows_do_not_pollute_weekly_summary(tmp_path) -> None:
     path = tmp_path / "weekend_spread_log.json"
-    rows = build_weekend_spread_rows(["MSFT"], mapping={}, provider=FakeProvider(), cache=FakeCache())
+    rows = build_weekend_spread_rows(["MSFT"], mapping=_explicit_empty_mapping(), provider=FakeProvider(), cache=FakeCache())
 
     samples = record_spread_samples(rows, path=path, week_id="2026-W24")
     summaries = generate_weekly_summary(path=path, week_id="2026-W24")
@@ -1233,6 +1237,129 @@ def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
     assert snapshot["summaries"] == []
     assert weekend_spread._summary_frame([]).empty
     assert weekend_spread._history_frame([]).empty
+
+
+def test_weekend_spread_render_declares_five_workflow_tabs() -> None:
+    source = inspect.getsource(weekend_spread.render)
+
+    assert "st.tabs" in source
+    assert [
+        weekend_spread.TAB_REALTIME,
+        weekend_spread.TAB_WEEKLY,
+        weekend_spread.TAB_MONDAY,
+        weekend_spread.TAB_HISTORY,
+        weekend_spread.TAB_MAPPING,
+    ] == ["实时观察", "本周记录", "周一验证", "历史规律", "映射管理"]
+
+
+def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA", "MSFT"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        provider=FakeProvider(price=103),
+        cache=FakeCache(),
+    )
+
+    strongest = weekend_spread._strongest_signal_row(rows)
+
+    assert strongest is not None
+    assert strongest["ticker"] == "NVDA"
+    assert weekend_spread._strongest_signal_warning(strongest) == "映射未确认，不能作为正式套利信号。"
+
+
+def test_live_frame_keeps_only_core_realtime_columns() -> None:
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
+
+    frame = weekend_spread._live_frame(rows)
+
+    assert list(frame.columns) == ["Ticker", "周五收盘", "Binance 最新", "价差", "方向", "提醒", "映射状态", "更新时间"]
+    assert "bid" not in frame.columns
+    assert "ask" not in frame.columns
+    assert "funding_rate" not in frame.columns
+    assert "risk_note" not in frame.columns
+
+
+def test_no_mapping_frame_only_shows_minimal_columns() -> None:
+    rows = build_weekend_spread_rows(["MSFT"], mapping=_explicit_empty_mapping(), provider=FakeProvider(), cache=FakeCache())
+
+    frame = weekend_spread._no_mapping_frame(rows)
+
+    assert list(frame.columns) == ["Ticker", "周五收盘", "收盘日期"]
+    assert "Binance 最新" not in frame.columns
+    assert "暂缺" not in frame.columns
+
+
+def test_summary_frame_uses_recorded_peak_labels_not_realtime_labels() -> None:
+    summaries = [
+        {
+            "ticker": "NVDA",
+            "max_premium_pct": 1.5,
+            "max_discount_pct": -0.8,
+            "max_abs_spread_pct": 1.5,
+            "max_abs_spread_direction": "Binance 溢价",
+            "sample_count": 2,
+            "data_quality": "OK",
+        }
+    ]
+
+    frame = weekend_spread._summary_frame(summaries)
+
+    assert "已记录最大溢价" in frame.columns
+    assert "已记录最大折价" in frame.columns
+    assert "本周最大溢价" not in frame.columns
+    assert "本周最大折价" not in frame.columns
+
+
+def test_monday_outcome_frame_uses_signal_validation_columns() -> None:
+    summaries = [
+        {
+            "ticker": "NVDA",
+            "max_abs_spread_pct": 1.5,
+            "monday_gap_pct": 0.8,
+            "direction_hit": True,
+            "capture_ratio": 0.53,
+            "net_edge_pct": 0.7,
+            "outcome_status": "HIT",
+        }
+    ]
+
+    frame = weekend_spread._monday_outcome_frame(summaries)
+
+    assert list(frame.columns) == [
+        "Ticker",
+        "max_abs_spread_pct",
+        "monday_gap_pct",
+        "direction_hit",
+        "capture_ratio",
+        "net_edge_pct",
+        "outcome_status",
+    ]
+
+
+def test_mapping_management_tab_counts_local_universe_confirmed_and_candidate() -> None:
+    mapping = {
+        "NVDA": _mapping()["NVDA"],
+        "ADBE": {
+            "enabled": True,
+            "binance_symbol": "ADBEUSDT",
+            "market_type": "usdm_futures",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "candidate",
+            "risk_note": "candidate only",
+        },
+    }
+    rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
+
+    counts = weekend_spread._mapping_management_counts(rows, mapping)
+    frame = weekend_spread._mapping_management_frame(rows, mapping)
+
+    assert counts["local_mapping_count"] == 2
+    assert counts["universe_mapping_count"] == 1
+    assert counts["confirmed_count"] == 1
+    assert counts["candidate_count"] == 1
+    assert counts["no_mapping_count"] == 1
+    assert "不在观察池" in set(frame["validation_status"])
 
 
 def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
