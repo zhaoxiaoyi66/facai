@@ -1655,7 +1655,7 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
         assert report.entry_display_label == "回踩买区 | 允许小仓观察"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
-        assert "final score below 70; core position is not allowed" in report.block_reasons
+        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
 
 
 def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
@@ -2220,7 +2220,8 @@ def test_cached_rules_cheap_but_mediocre_company_does_not_allow_buy() -> None:
 
         assert report.decision in {"WAIT", "AVOID"}
         assert report.allowed_add_pct == 0
-        assert "final score below 70; core position is not allowed" in report.block_reasons
+        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
+        assert not any("final score below 70" in reason for reason in report.block_reasons)
 
 
 def test_missing_data_returns_data_missing_not_buy_signal() -> None:
@@ -2632,7 +2633,7 @@ def test_low_final_score_cannot_get_core_position() -> None:
         assert report.decision == "ALLOW_BUY"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
-        assert "final score below 70; core position is not allowed" in report.block_reasons
+        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
 
 
 def test_watchlist_empty_and_sample_fallback_do_not_override_real_symbols() -> None:

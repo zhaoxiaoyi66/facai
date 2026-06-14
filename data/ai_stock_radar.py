@@ -882,6 +882,8 @@ def _decision_blocking_reasons(block_reasons: list[str]) -> list[str]:
         "current price is in or above chase zone",
         "final score below 70",
         "core position is not allowed",
+        "综合评分低于70",
+        "系统不建议作为核心仓",
         "valuation score below 40",
         "heavy position is not allowed",
     )
@@ -2020,7 +2022,7 @@ def _block_reasons(
     if _value(scores.valuation_score) < 40:
         reasons.append("valuation score below 40; heavy position is not allowed")
     if _value(scores.final_score) < 70:
-        reasons.append("final score below 70; core position is not allowed")
+        reasons.append("综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。")
     return reasons
 
 
@@ -2050,8 +2052,8 @@ def _summary_reason_text(reason: str) -> str:
         return "主击球区缺失，先补齐技术承接数据。"
     if "valuation score below 40" in lower:
         return "估值评分偏低，不支持重仓。"
-    if "final score below 70" in lower or "core position is not allowed" in lower:
-        return "综合评分低于70，不支持核心仓买入。"
+    if "final score below 70" in lower or "core position is not allowed" in lower or "综合评分低于70" in text:
+        return "综合评分低于70，系统不建议作为核心仓；小仓观察仍以技术承接和量价确认为准。"
     if "missing current price" in lower:
         return "当前价格缺失，需人工判断。"
     return text
