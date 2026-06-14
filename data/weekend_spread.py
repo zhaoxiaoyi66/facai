@@ -13,7 +13,7 @@ from data.cache_read_model import CacheReadModel
 from settings import CONFIG_DIR
 
 
-DEFAULT_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.json"
+DEFAULT_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.example.json"
 DEFAULT_LOCAL_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.local.json"
 RISK_TEXT = "Binance 映射价格不等于真实美股可成交价格；V1 仅用于观察，不构成套利建议。"
 NO_MAPPING_TEXT = "暂无映射"
@@ -27,10 +27,9 @@ def load_binance_symbol_mapping(
     *,
     local_path: Path | None = DEFAULT_LOCAL_MAPPING_PATH,
 ) -> dict[str, dict[str, Any]]:
-    mapping = _load_mapping_file(path)
-    if local_path is not None:
-        mapping.update(_load_mapping_file(local_path))
-    return mapping
+    if local_path is not None and local_path.exists():
+        return _load_mapping_file(local_path)
+    return _load_mapping_file(path)
 
 
 def _load_mapping_file(path: Path) -> dict[str, dict[str, Any]]:

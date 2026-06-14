@@ -441,7 +441,7 @@ def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    mapping = load_binance_symbol_mapping(path)
+    mapping = load_binance_symbol_mapping(path, local_path=None)
 
     assert mapping["NVDA"]["binance_symbol"] == "NVDAUSDT"
     assert mapping["NVDA"]["mapping_confidence"] == "confirmed"
@@ -449,10 +449,20 @@ def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
     assert mapping["ADBE"]["mapping_confidence"] == "manual_required"
 
 
-def test_mapping_loader_merges_local_mapping_over_base(tmp_path) -> None:
+def test_mapping_loader_prefers_local_mapping_without_merging_example(tmp_path) -> None:
     base = tmp_path / "mapping.json"
     local = tmp_path / "mapping.local.json"
-    base.write_text(json.dumps({"mappings": {"NVDA": {"enabled": True, "binance_symbol": "OLDUSDT"}}}), encoding="utf-8")
+    base.write_text(
+        json.dumps(
+            {
+                "mappings": {
+                    "NVDA": {"enabled": True, "binance_symbol": "OLDUSDT"},
+                    "ADBE": {"enabled": True, "binance_symbol": "ADBEUSDT"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     local.write_text(
         json.dumps(
             {
@@ -477,6 +487,16 @@ def test_mapping_loader_merges_local_mapping_over_base(tmp_path) -> None:
 
     assert mapping["NVDA"]["binance_symbol"] == "NVDAUSDT"
     assert mapping["NVDA"]["validation_status"] == "confirmed"
+    assert "ADBE" not in mapping
+
+
+def test_mapping_loader_returns_empty_when_example_and_local_are_missing(tmp_path) -> None:
+    mapping = load_binance_symbol_mapping(
+        tmp_path / "missing.example.json",
+        local_path=tmp_path / "missing.local.json",
+    )
+
+    assert mapping == {}
 
 
 def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
