@@ -205,6 +205,10 @@ def _entry_rating_chip_text(label: object, grade: object) -> str:
 
 
 def _dashboard_entry_display(row: pd.Series | dict) -> dict:
+    context_display = _dashboard_buy_zone_context_display(row)
+    if context_display:
+        return context_display
+
     radar_label = str(_row_value(row, "entry_display_label") or "").strip()
     radar_reason = str(_row_value(row, "entry_display_reason") or "").strip()
     radar_hint = str(_row_value(row, "entry_action_hint") or "").strip()
@@ -235,12 +239,49 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
     )
 
 
+def _dashboard_buy_zone_context_display(row: pd.Series | dict) -> dict:
+    context = _row_value(row, "buyZoneContext") or _row_value(row, "buy_zone_context")
+    if not isinstance(context, dict):
+        return {}
+    action = str(context.get("current_action") or "").strip().upper()
+    primary_zone = str(context.get("primary_zone_text") or "").strip()
+    action_text = str(context.get("action_text") or "").strip()
+    if not action and not primary_zone and not action_text:
+        return {}
+    label = " | ".join(part for part in (primary_zone, action_text) if part)
+    return {
+        "entry_display_label": label,
+        "entry_display_reason": str(context.get("zone_selection_reason") or "").strip(),
+        "entry_action_hint": action_text,
+        "entry_context_status": action,
+        "price_position": action,
+        "data_status": "DATA_INSUFFICIENT" if action == "DATA_INSUFFICIENT" else "READY",
+        "missing_entry_fields": context.get("missing_fields") or [],
+    }
+
+
 def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple[str, str]:
     missing_fields = _text_list(display.get("missing_entry_fields"))
     label = str(display.get("entry_display_label") or "").strip()
     hint = str(display.get("entry_action_hint") or "").strip()
     price_position = str(display.get("price_position") or _row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
     context_status = str(display.get("entry_context_status") or _row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
+    if context_status == "DATA_INSUFFICIENT":
+        return "数据不足", "补数据"
+    if context_status == "ALLOW_SMALL_BUY":
+        return "主击球区", "可小仓"
+    if context_status == "ALLOW_ADD_ON_PULLBACK":
+        return "回踩加仓", "需复核"
+    if context_status == "WAIT_PULLBACK":
+        return "等待回踩", "不追买"
+    if context_status == "WAIT_CONFIRMATION":
+        return "等待确认", "看量价"
+    if context_status == "BLOCK_CHASE":
+        return "追高区", "禁止追买"
+    if context_status == "RISK_REVIEW":
+        return "风控复核", "暂停买入"
+    if context_status == "AVOID":
+        return "暂不参与", "观望"
     if missing_fields or "暂无参考买区" in label or "缺" in label:
         return "数据不足", "补数据"
     if context_status == "IN_TECHNICAL_PULLBACK_ZONE" or label.startswith("回踩区内"):

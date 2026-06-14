@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from data.entry_display import build_entry_display, format_buy_zone, format_zone_status
-from ui.dashboard_tables import _dashboard_compact_entry_text, _decision_table_cell_html, _entry_rating_cell_html
+from ui.dashboard_tables import _dashboard_compact_entry_text, _dashboard_entry_display, _decision_table_cell_html, _entry_rating_cell_html
 
 
 BUY_ZONE = {"lower": 90, "upper": 100}
@@ -615,6 +615,35 @@ def test_dashboard_watchlist_entry_cell_prefers_radar_status_over_legacy_zone() 
     assert "$241.88 - $300.37" not in html
 
 
+def test_dashboard_watchlist_entry_cell_prefers_unified_buy_zone_context_over_stale_entry_display() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NOW",
+            "entryRating": "B+ - 击球区附近",
+            "entry_display_label": "技术承接数据不足 | 技术承接数据不足",
+            "entry_action_hint": "技术承接数据不足",
+            "entry_context_status": "DATA_INSUFFICIENT",
+            "missing_entry_fields": ["volume_acceptance", "volume_ratio"],
+            "buyZoneContext": {
+                "current_action": "ALLOW_SMALL_BUY",
+                "primary_zone_text": "回踩买区",
+                "action_text": "允许小仓观察",
+                "zone_selection_reason": "量价承接已恢复。",
+                "missing_fields": [],
+            },
+        }
+    )
+
+    display = _dashboard_entry_display(row)
+    html = _entry_rating_cell_html(row)
+
+    assert display["entry_context_status"] == "ALLOW_SMALL_BUY"
+    assert display["missing_entry_fields"] == []
+    assert "<strong>主击球区</strong>" in html
+    assert "<em>可小仓</em>" in html
+    assert "补数据" not in html
+
+
 def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -> None:
     import data.dashboard_row_builder as builder
 
@@ -708,6 +737,6 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     assert row["radar_buy_zone"] == {"lower": 190, "upper": 210}
     assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
-    assert "<strong>买区外</strong>" in html
-    assert "等待回落 $190.00 - $210.00" in html
+    assert "<strong>数据不足</strong>" in html
+    assert "<em>补数据</em>" in html
     assert "$90.00 - $100.00" not in html
