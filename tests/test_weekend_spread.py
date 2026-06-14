@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 
 import pandas as pd
 
+from data.binance_provider import BinanceHTTPPriceProvider
 from data.weekend_spread import build_weekend_spread_rows, classify_spread, load_binance_symbol_mapping
+from ui import weekend_spread
 
 
 class FakeCache:
@@ -37,8 +40,8 @@ class FakeProvider:
         self.error = error
         self.calls: list[str] = []
 
-    def get_last_price(self, symbol: str, *, force_refresh: bool = False) -> dict:
-        self.calls.append(symbol)
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        self.calls.append(f"{market_type}:{symbol}")
         return {
             "symbol": symbol,
             "last_price": self.price,
@@ -67,7 +70,7 @@ def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
         "NVDA": {
             "enabled": True,
             "binance_symbol": symbol,
-            "market_type": "futures",
+            "market_type": "usdm_futures",
             "quote_currency": "USDT",
             "unit_multiplier": 1,
             "mapping_confidence": "confirmed",
@@ -95,7 +98,7 @@ def test_spread_pct_and_alert_level_are_calculated_from_friday_close() -> None:
     assert row["alert_level"] == "FOCUS"
     assert row["spread_direction"] == "Binance 溢价"
     assert row["mapping_status"] == "映射已确认"
-    assert provider.calls == ["NVDAUSDT"]
+    assert provider.calls == ["usdm_futures:NVDAUSDT"]
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
@@ -106,7 +109,7 @@ def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
             "ADBE": {
                 "enabled": True,
                 "binance_symbol": "ADBEUSDT",
-                "market_type": "futures",
+                "market_type": "usdm_futures",
                 "quote_currency": "USDT",
                 "unit_multiplier": 1,
                 "mapping_confidence": "manual_required",
@@ -187,6 +190,31 @@ def test_binance_data_failure_is_unavailable_not_fake_price() -> None:
     assert rows[0]["alert_level_cn"] == "Binance 数据不可用"
 
 
+def test_invalid_binance_symbol_is_mapping_review_not_generic_api_failure() -> None:
+    provider = FakeProvider(price=None, error="invalid_symbol")
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=provider, cache=FakeCache())
+
+    row = rows[0]
+    assert row["status"] == "INVALID_SYMBOL"
+    assert row["mapping_status"] == "symbol 无效 / 映射待确认"
+    assert row["alert_level_cn"] == "symbol 无效 / 映射待确认"
+    assert row["spread_pct"] is None
+
+
+def test_spot_mapping_requests_spot_price_from_provider() -> None:
+    provider = FakeProvider(price=101.5, funding_rate=None)
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(market_type="spot"),
+        provider=provider,
+        cache=FakeCache(),
+    )
+
+    assert rows[0]["status"] == "OK"
+    assert rows[0]["funding_rate"] is None
+    assert provider.calls == ["spot:NVDAUSDT"]
+
+
 def test_friday_holiday_uses_previous_trading_day_close() -> None:
     provider = FakeProvider(price=101.5)
     cache = FakeCache(pd.DataFrame([{"date": "2026-06-11", "close": 98.0}]))
@@ -196,7 +224,7 @@ def test_friday_holiday_uses_previous_trading_day_close() -> None:
     assert rows[0]["friday_close"] == 98.0
     assert rows[0]["friday_close_date"] == "2026-06-11"
     assert rows[0]["close_source"] == "previous_trading_day_before_friday"
-    assert provider.calls == ["NVDAUSDT"]
+    assert provider.calls == ["usdm_futures:NVDAUSDT"]
 
 
 def test_bid_ask_spread_and_funding_warnings_are_exposed() -> None:
@@ -211,6 +239,93 @@ def test_bid_ask_spread_and_funding_warnings_are_exposed() -> None:
     assert "资金费率" in row["liquidity_warning"]
 
 
+def test_manual_override_is_explicitly_marked_non_realtime() -> None:
+    provider = FakeProvider(price=999)
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(manual_override_enabled=True, manual_override_price=102),
+        provider=provider,
+        cache=FakeCache(),
+    )
+
+    row = rows[0]
+    assert row["binance_last_price"] == 102
+    assert row["source"] == "manual_override_non_realtime"
+    assert row["manual_override"] is True
+    assert "手动覆盖 / 非实时 Binance 数据" in row["mapping_risk"]
+    assert provider.calls == []
+
+
+class RecordingHTTPProvider(BinanceHTTPPriceProvider):
+    def __init__(self) -> None:
+        super().__init__(spot_base_url="https://spot.test", futures_base_url="https://futures.test")
+        self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+        self.calls.append((base_url, path, dict(params)))
+        if path.endswith("exchangeInfo"):
+            return {"symbols": [{"symbol": params["symbol"]}]}
+        if path.endswith("ticker/price"):
+            return {"price": "101.5"}
+        if path.endswith("bookTicker"):
+            return {"bidPrice": "101.4", "askPrice": "101.6"}
+        if path.endswith("ticker/24hr"):
+            return {"lastPrice": "101.5", "volume": "100000"}
+        if path.endswith("premiumIndex"):
+            return {"lastFundingRate": "0.0001"}
+        return {}
+
+
+def test_http_provider_uses_usdm_futures_endpoints_and_validates_symbol() -> None:
+    provider = RecordingHTTPProvider()
+
+    snapshot = provider.get_last_price("NVDAUSDT", market_type="usdm_futures")
+
+    assert snapshot.last_price == 101.5
+    assert snapshot.funding_rate == 0.0001
+    assert snapshot.source == "binance_usdm_futures"
+    assert [path for _, path, _ in provider.calls] == [
+        "/fapi/v1/exchangeInfo",
+        "/fapi/v2/ticker/price",
+        "/fapi/v1/ticker/bookTicker",
+        "/fapi/v1/ticker/24hr",
+        "/fapi/v1/premiumIndex",
+    ]
+
+
+def test_http_provider_uses_spot_endpoints_without_funding_rate() -> None:
+    provider = RecordingHTTPProvider()
+
+    snapshot = provider.get_last_price("NVDAUSDT", market_type="spot")
+
+    assert snapshot.last_price == 101.5
+    assert snapshot.funding_rate is None
+    assert snapshot.source == "binance_spot"
+    assert [path for _, path, _ in provider.calls] == [
+        "/api/v3/exchangeInfo",
+        "/api/v3/ticker/price",
+        "/api/v3/ticker/bookTicker",
+        "/api/v3/ticker/24hr",
+    ]
+
+
+def test_http_provider_marks_unknown_symbol_invalid() -> None:
+    class InvalidSymbolProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            self.calls.append((base_url, path, dict(params)))
+            if path.endswith("exchangeInfo"):
+                return {"symbols": []}
+            return {}
+
+    provider = InvalidSymbolProvider()
+
+    snapshot = provider.get_last_price("BADUSDT", market_type="spot")
+
+    assert snapshot.error == "invalid_symbol"
+    assert snapshot.last_price is None
+    assert [path for _, path, _ in provider.calls] == ["/api/v3/exchangeInfo"]
+
+
 def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
     path = tmp_path / "mapping.json"
     path.write_text(
@@ -221,7 +336,7 @@ def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
                     "adbe": {
                         "enabled": True,
                         "binance_symbol": "adbeusdt",
-                        "market_type": "futures",
+                        "market_type": "usdm_futures",
                         "quote_currency": "USDT",
                         "unit_multiplier": 1,
                         "mapping_confidence": "manual_required",
@@ -239,3 +354,10 @@ def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
     assert mapping["NVDA"]["mapping_confidence"] == "confirmed"
     assert mapping["ADBE"]["binance_symbol"] == "ADBEUSDT"
     assert mapping["ADBE"]["mapping_confidence"] == "manual_required"
+
+
+def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
+    source = inspect.getsource(weekend_spread.render)
+
+    assert "text_input" not in source
+    assert "number_input" not in source

@@ -104,9 +104,17 @@ def build_weekend_spread_rows(
             row["error"] = unit_error
             rows.append(row)
             continue
-        snapshot = _snapshot_to_dict(price_provider.get_last_price(binance_symbol, force_refresh=force_refresh))
+        manual_snapshot = _manual_override_snapshot(mapping_config)
+        snapshot = manual_snapshot or _snapshot_to_dict(
+            price_provider.get_last_price(
+                binance_symbol,
+                market_type=str(mapping_config.get("market_type") or "usdm_futures"),
+                force_refresh=force_refresh,
+            )
+        )
         last_price = _number(snapshot.get("last_price"))
         if last_price is None:
+            status = "INVALID_SYMBOL" if str(snapshot.get("error") or "") == "invalid_symbol" else "BINANCE_UNAVAILABLE"
             row = _base_row(
                 ticker,
                 stock_name,
@@ -114,7 +122,7 @@ def build_weekend_spread_rows(
                 friday_date,
                 close_source,
                 mapping_config,
-                status="BINANCE_UNAVAILABLE",
+                status=status,
             )
             row["updated_at"] = snapshot.get("updated_at") or ""
             row["error"] = snapshot.get("error") or "binance_price_missing"
@@ -155,6 +163,7 @@ def build_weekend_spread_rows(
                 "liquidity_warning": liquidity_warning,
                 "updated_at": snapshot.get("updated_at") or "",
                 "source": snapshot.get("source") or "binance_futures",
+                "manual_override": bool(snapshot.get("manual_override")),
             }
         )
     return rows
@@ -214,6 +223,7 @@ def _base_row(
         "updated_at": "",
         "status": status,
         "source": "",
+        "manual_override": False,
         "error": "",
     }
 
@@ -282,7 +292,7 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
         return {
             "enabled": True,
             "binance_symbol": symbol,
-            "market_type": "futures",
+            "market_type": "usdm_futures",
             "quote_currency": "USDT",
             "unit_multiplier": 1,
             "mapping_confidence": "confirmed",
@@ -293,12 +303,34 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
     normalized = dict(config)
     normalized["enabled"] = bool(normalized.get("enabled", True))
     normalized["binance_symbol"] = str(normalized.get("binance_symbol") or "").strip().upper()
-    normalized["market_type"] = str(normalized.get("market_type") or "unknown")
+    normalized["market_type"] = str(normalized.get("market_type") or "usdm_futures")
     normalized["quote_currency"] = str(normalized.get("quote_currency") or "USDT").strip().upper()
     normalized["unit_multiplier"] = _number(normalized.get("unit_multiplier")) or 1
     normalized["mapping_confidence"] = str(normalized.get("mapping_confidence") or "manual_required").strip().lower()
     normalized["risk_note"] = str(normalized.get("risk_note") or "")
+    normalized["manual_override_enabled"] = bool(normalized.get("manual_override_enabled", False))
+    normalized["manual_override_price"] = _number(normalized.get("manual_override_price"))
     return normalized
+
+
+def _manual_override_snapshot(mapping_config: dict[str, Any]) -> dict[str, Any] | None:
+    if not mapping_config.get("manual_override_enabled"):
+        return None
+    price = _number(mapping_config.get("manual_override_price"))
+    if price is None or price <= 0:
+        return None
+    return {
+        "symbol": str(mapping_config.get("binance_symbol") or "").strip().upper(),
+        "last_price": price,
+        "bid": None,
+        "ask": None,
+        "volume_24h": None,
+        "funding_rate": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "manual_override_non_realtime",
+        "manual_override": True,
+        "error": "",
+    }
 
 
 def _unit_mapping_error(mapping_config: dict[str, Any]) -> str:
@@ -344,6 +376,8 @@ def _mapping_status(status: str, mapping_confidence: str) -> str:
         return NO_MAPPING_TEXT
     if status == "UNIT_UNCONFIRMED":
         return UNIT_REVIEW_TEXT
+    if status == "INVALID_SYMBOL":
+        return "symbol 无效 / 映射待确认"
     if mapping_confidence == "confirmed":
         return MAPPING_CONFIRMED_TEXT
     return MAPPING_REVIEW_TEXT
@@ -353,6 +387,8 @@ def _mapping_risk(mapping_config: dict[str, Any], status: str) -> str:
     if status == "NO_MAPPING":
         return NO_MAPPING_TEXT
     notes = [RISK_TEXT]
+    if mapping_config.get("manual_override_enabled"):
+        notes.append("手动覆盖 / 非实时 Binance 数据")
     confidence = str(mapping_config.get("mapping_confidence") or "").strip().lower()
     if confidence != "confirmed":
         notes.append(MAPPING_REVIEW_TEXT)
@@ -376,6 +412,7 @@ def _status_label(status: str) -> str:
         "MISSING_FRIDAY_CLOSE": "缺少周五收盘价",
         "BINANCE_UNAVAILABLE": "Binance 数据不可用",
         "UNIT_UNCONFIRMED": UNIT_REVIEW_TEXT,
+        "INVALID_SYMBOL": "symbol 无效 / 映射待确认",
     }.get(status, "数据不足")
 
 
@@ -384,6 +421,8 @@ def _status_direction(status: str) -> str:
         return "暂无映射"
     if status == "UNIT_UNCONFIRMED":
         return "映射待确认"
+    if status == "INVALID_SYMBOL":
+        return "symbol 无效"
     return "数据不足"
 
 

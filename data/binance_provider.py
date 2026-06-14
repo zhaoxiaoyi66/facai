@@ -22,12 +22,19 @@ class BinancePriceSnapshot:
     ask: float | None = None
     volume_24h: float | None = None
     funding_rate: float | None = None
-    source: str = "binance_futures"
+    market_type: str = "usdm_futures"
+    source: str = "binance_usdm_futures"
     error: str = ""
 
 
 class BinancePriceProvider:
-    def get_last_price(self, symbol: str, *, force_refresh: bool = False) -> BinancePriceSnapshot:
+    def get_last_price(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> BinancePriceSnapshot:
         raise NotImplementedError
 
 
@@ -43,22 +50,30 @@ class CachedBinancePriceProvider(BinancePriceProvider):
         self.cache_path = cache_path
         self.ttl_seconds = ttl_seconds
 
-    def get_last_price(self, symbol: str, *, force_refresh: bool = False) -> BinancePriceSnapshot:
+    def get_last_price(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> BinancePriceSnapshot:
         normalized = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
         if not normalized:
-            return _error_snapshot(normalized, "missing_symbol")
+            return _error_snapshot(normalized, "missing_symbol", market_type=normalized_market)
+        cache_key = f"{normalized_market}:{normalized}"
         if not force_refresh:
-            cached = self._read_cached(normalized)
+            cached = self._read_cached(cache_key)
             if cached is not None:
                 return cached
-        snapshot = self.provider.get_last_price(normalized, force_refresh=force_refresh)
+        snapshot = self.provider.get_last_price(normalized, market_type=normalized_market, force_refresh=force_refresh)
         if not snapshot.error:
-            self._write_cached(snapshot)
+            self._write_cached(cache_key, snapshot)
         return snapshot
 
-    def _read_cached(self, symbol: str) -> BinancePriceSnapshot | None:
+    def _read_cached(self, cache_key: str) -> BinancePriceSnapshot | None:
         payload = _read_json(self.cache_path)
-        raw = payload.get(symbol) if isinstance(payload, dict) else None
+        raw = payload.get(cache_key) if isinstance(payload, dict) else None
         if not isinstance(raw, dict):
             return None
         updated_at = _parse_datetime(raw.get("updated_at"))
@@ -69,64 +84,130 @@ class CachedBinancePriceProvider(BinancePriceProvider):
             return None
         return _snapshot_from_dict(raw)
 
-    def _write_cached(self, snapshot: BinancePriceSnapshot) -> None:
+    def _write_cached(self, cache_key: str, snapshot: BinancePriceSnapshot) -> None:
         payload = _read_json(self.cache_path)
         if not isinstance(payload, dict):
             payload = {}
-        payload[snapshot.symbol] = asdict(snapshot)
+        payload[cache_key] = asdict(snapshot)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class BinanceHTTPPriceProvider(BinancePriceProvider):
-    def __init__(self, base_url: str = "https://fapi.binance.com", timeout_seconds: float = 5.0) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        *,
+        spot_base_url: str = "https://api.binance.com",
+        futures_base_url: str = "https://fapi.binance.com",
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        self.spot_base_url = spot_base_url.rstrip("/")
+        self.futures_base_url = futures_base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    def get_last_price(self, symbol: str, *, force_refresh: bool = False) -> BinancePriceSnapshot:
+    def get_last_price(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> BinancePriceSnapshot:
         normalized = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
         if not normalized:
-            return _error_snapshot(normalized, "missing_symbol")
+            return _error_snapshot(normalized, "missing_symbol", market_type=normalized_market)
         try:
-            ticker = self._get_json("/fapi/v1/ticker/24hr", {"symbol": normalized})
-            book = self._get_json("/fapi/v1/ticker/bookTicker", {"symbol": normalized})
-            funding = self._get_json("/fapi/v1/premiumIndex", {"symbol": normalized})
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-            return _error_snapshot(normalized, f"{type(exc).__name__}: {exc}")
+            if normalized_market == "spot":
+                return self._get_spot_snapshot(normalized)
+            return self._get_usdm_futures_snapshot(normalized)
+        except HTTPError as exc:
+            if exc.code in {400, 404}:
+                return _error_snapshot(normalized, "invalid_symbol", market_type=normalized_market)
+            return _error_snapshot(normalized, f"HTTPError: {exc}", market_type=normalized_market)
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            return _error_snapshot(normalized, f"{type(exc).__name__}: {exc}", market_type=normalized_market)
 
-        last_price = _number(ticker.get("lastPrice") if isinstance(ticker, dict) else None)
+    def _get_spot_snapshot(self, symbol: str) -> BinancePriceSnapshot:
+        if not self._symbol_exists(self.spot_base_url, "/api/v3/exchangeInfo", symbol):
+            return _error_snapshot(symbol, "invalid_symbol", market_type="spot")
+        price_payload = self._get_json(self.spot_base_url, "/api/v3/ticker/price", {"symbol": symbol})
+        book = self._get_json(self.spot_base_url, "/api/v3/ticker/bookTicker", {"symbol": symbol})
+        ticker = self._get_json(self.spot_base_url, "/api/v3/ticker/24hr", {"symbol": symbol})
+        last_price = _number(price_payload.get("price")) or _number(ticker.get("lastPrice"))
         if last_price is None:
-            last_price = _number(ticker.get("price") if isinstance(ticker, dict) else None)
-        if last_price is None:
-            return _error_snapshot(normalized, "price_missing")
+            return _error_snapshot(symbol, "price_missing", market_type="spot")
         return BinancePriceSnapshot(
-            symbol=normalized,
+            symbol=symbol,
             last_price=last_price,
-            bid=_number(book.get("bidPrice") if isinstance(book, dict) else None),
-            ask=_number(book.get("askPrice") if isinstance(book, dict) else None),
-            volume_24h=_number(ticker.get("volume") if isinstance(ticker, dict) else None),
-            funding_rate=_number(funding.get("lastFundingRate") if isinstance(funding, dict) else None),
+            bid=_number(book.get("bidPrice")),
+            ask=_number(book.get("askPrice")),
+            volume_24h=_number(ticker.get("volume")),
+            funding_rate=None,
+            market_type="spot",
+            source="binance_spot",
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    def _get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        url = f"{self.base_url}{path}?{urlencode(params)}"
-        request = Request(url, headers={"User-Agent": "facai-weekend-spread/1.1"})
+    def _get_usdm_futures_snapshot(self, symbol: str) -> BinancePriceSnapshot:
+        if not self._symbol_exists(self.futures_base_url, "/fapi/v1/exchangeInfo", symbol):
+            return _error_snapshot(symbol, "invalid_symbol", market_type="usdm_futures")
+        price_payload = self._get_json(self.futures_base_url, "/fapi/v2/ticker/price", {"symbol": symbol})
+        book = self._get_json(self.futures_base_url, "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
+        ticker = self._get_json(self.futures_base_url, "/fapi/v1/ticker/24hr", {"symbol": symbol})
+        funding = self._get_json(self.futures_base_url, "/fapi/v1/premiumIndex", {"symbol": symbol})
+        last_price = _number(price_payload.get("price")) or _number(ticker.get("lastPrice"))
+        if last_price is None:
+            return _error_snapshot(symbol, "price_missing", market_type="usdm_futures")
+        return BinancePriceSnapshot(
+            symbol=symbol,
+            last_price=last_price,
+            bid=_number(book.get("bidPrice")),
+            ask=_number(book.get("askPrice")),
+            volume_24h=_number(ticker.get("volume")),
+            funding_rate=_number(funding.get("lastFundingRate")),
+            market_type="usdm_futures",
+            source="binance_usdm_futures",
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _symbol_exists(self, base_url: str, path: str, symbol: str) -> bool:
+        payload = self._get_json(base_url, path, {"symbol": symbol})
+        symbols = payload.get("symbols") if isinstance(payload, dict) else None
+        if isinstance(symbols, list):
+            return any(str(item.get("symbol") or "").upper() == symbol for item in symbols if isinstance(item, dict))
+        return str(payload.get("symbol") or "").upper() == symbol
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict[str, Any]:
+        url = f"{base_url.rstrip('/')}{path}?{urlencode(params)}"
+        request = Request(url, headers={"User-Agent": "facai-weekend-spread/1.2"})
         with urlopen(request, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
         return payload if isinstance(payload, dict) else {}
 
 
-def _error_snapshot(symbol: str, error: str) -> BinancePriceSnapshot:
+def normalize_market_type(market_type: str) -> str:
+    value = str(market_type or "").strip().lower().replace("-", "_")
+    if value in {"spot", "binance_spot"}:
+        return "spot"
+    if value in {"futures", "future", "usdt_m_futures", "usdm", "usdm_futures", "binance_futures"}:
+        return "usdm_futures"
+    return "usdm_futures"
+
+
+def _error_snapshot(symbol: str, error: str, *, market_type: str = "usdm_futures") -> BinancePriceSnapshot:
+    normalized_market = normalize_market_type(market_type)
     return BinancePriceSnapshot(
         symbol=symbol,
         last_price=None,
         updated_at=datetime.now(timezone.utc).isoformat(),
+        market_type=normalized_market,
+        source="binance_spot" if normalized_market == "spot" else "binance_usdm_futures",
         error=error,
     )
 
 
 def _snapshot_from_dict(raw: dict[str, Any]) -> BinancePriceSnapshot:
+    market_type = normalize_market_type(str(raw.get("market_type") or "usdm_futures"))
     return BinancePriceSnapshot(
         symbol=str(raw.get("symbol") or "").strip().upper(),
         last_price=_number(raw.get("last_price")),
@@ -135,7 +216,8 @@ def _snapshot_from_dict(raw: dict[str, Any]) -> BinancePriceSnapshot:
         volume_24h=_number(raw.get("volume_24h")),
         funding_rate=_number(raw.get("funding_rate")),
         updated_at=str(raw.get("updated_at") or ""),
-        source=str(raw.get("source") or "binance_futures"),
+        market_type=market_type,
+        source=str(raw.get("source") or ("binance_spot" if market_type == "spot" else "binance_usdm_futures")),
         error=str(raw.get("error") or ""),
     )
 
