@@ -258,6 +258,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
         },
         mode="report",
     )
+    portfolio_context = _portfolio_context_with_buy_zone_display(portfolio_context, buy_zone_display)
     conclusion = _trade_conclusion(report, action_result, buy_zone_context, buy_zone_display)
     stage_start = time.perf_counter()
     data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context, buy_zone_context)
@@ -873,6 +874,7 @@ def _report_html(
     buy_zone_context = buy_zone_context or build_buy_zone_context(report, technicals=technicals, volume_snapshot=_volume_price_acceptance_snapshot(report, technicals, row, history)).to_dict()
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result, buy_zone_context)
     buy_zone_display = buy_zone_display or build_buy_zone_display(buy_zone_context, {**(row or {}), **(portfolio_context or {})}, mode="report")
+    portfolio_context = _portfolio_context_with_buy_zone_display(portfolio_context, buy_zone_display)
     conclusion = conclusion or _trade_conclusion(report, action_result, buy_zone_context, buy_zone_display)
     data_health = data_health or _data_health_context(report, market, snapshot, row, portfolio_context, buy_zone_context)
     stage_start = time.perf_counter()
@@ -1467,6 +1469,34 @@ def _portfolio_context(
         "action_for_existing_position": str((buy_zone_context or {}).get("existing_position_action_text") or _action_for_existing_position(conclusion, action_result)),
         "action_for_no_position": str((buy_zone_context or {}).get("no_position_action_text") or _action_for_no_position(conclusion, action_result)),
     }
+
+
+def _portfolio_context_with_buy_zone_display(
+    portfolio_context: dict[str, Any] | None,
+    buy_zone_display: dict[str, Any] | None,
+) -> dict[str, Any]:
+    updated = dict(portfolio_context or {})
+    if not buy_zone_display:
+        return updated
+    account_action = str(
+        buy_zone_display.get("account_action_text")
+        or buy_zone_display.get("position_action_text")
+        or ""
+    ).strip()
+    main_action = str(
+        buy_zone_display.get("main_action_text")
+        or buy_zone_display.get("display_action_text")
+        or buy_zone_display.get("action_text")
+        or ""
+    ).strip()
+    display_action = account_action or main_action
+    if not display_action:
+        return updated
+    if updated.get("has_position"):
+        updated["action_for_existing_position"] = display_action
+    else:
+        updated["action_for_no_position"] = display_action
+    return updated
 
 
 def _position_status_text(shares: float | None, weight: float | None) -> str:

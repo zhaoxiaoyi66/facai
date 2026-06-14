@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -1217,6 +1218,58 @@ def test_ai_radar_report_volume_missing_is_specific_data_gap() -> None:
     assert "daily_bar.volume" not in html
     assert "volume、daily_bar.volume" not in html
     assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_report_position_action_uses_buy_zone_display() -> None:
+    report = {
+        "ticker": "NOW",
+        "company_name": "Workday, Inc.",
+        "current_price": 102.15,
+        "decision": "ALLOW_BUY",
+        "final_score": 68,
+        "data_status": "OK",
+    }
+    buy_zone_context = {
+        "current_action": "ALLOW_SMALL_BUY",
+        "primary_zone_text": "回踩买区",
+        "pullback_zone_low": 99.29,
+        "pullback_zone_high": 108.33,
+        "existing_position_action_text": "已有持仓：允许回踩复核加仓，但不能一次打满。",
+    }
+    buy_zone_display = {
+        "main_action_text": "持有观察 / 当前不新增",
+        "account_action_text": "已有 100 股，当前新增额度为 0",
+        "badge_label": "击球区内",
+        "zone_text": "$99.29 - $108.33",
+    }
+    portfolio_context = {
+        "has_position": True,
+        "shares": 100,
+        "avg_cost": 106,
+        "market_value": 10_215,
+        "unrealized_pnl": -385,
+        "unrealized_pnl_pct": -3.6,
+        "portfolio_weight": 0.058,
+        "action_for_existing_position": "已有持仓：允许回踩复核加仓，但不能一次打满。",
+    }
+    action_result = SimpleNamespace(action_code="ALLOW_SMALL_BUY", action_cn="允许小仓观察")
+
+    html = radar_ui._report_html(
+        report,
+        {},
+        {},
+        {},
+        {},
+        pd.DataFrame(),
+        action_result=action_result,
+        portfolio_context=portfolio_context,
+        buy_zone_context=buy_zone_context,
+        buy_zone_display=buy_zone_display,
+        include_appendix=False,
+    )
+
+    assert "已有 100 股，当前新增额度为 0" in html
+    assert "允许回踩复核加仓" not in html
 
 
 def test_ai_radar_report_completeness_localizes_raw_missing_fields() -> None:
