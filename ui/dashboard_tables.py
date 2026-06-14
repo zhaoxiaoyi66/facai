@@ -248,15 +248,22 @@ def _dashboard_buy_zone_context_display(row: pd.Series | dict) -> dict:
     action_text = str(context.get("action_text") or "").strip()
     if not action and not primary_zone and not action_text:
         return {}
-    label = " | ".join(part for part in (primary_zone, action_text) if part)
+    status = buy_zone_status_display(context, row)
+    label = status["label"]
+    hint = status["hint"]
+    reason = str(context.get("zone_selection_reason") or "").strip()
+    explanation = status["explanation"]
     return {
         "entry_display_label": label,
-        "entry_display_reason": str(context.get("zone_selection_reason") or "").strip(),
-        "entry_action_hint": action_text,
+        "entry_display_reason": "；".join(part for part in (reason, explanation) if part),
+        "entry_action_hint": hint,
         "entry_context_status": action,
         "price_position": action,
         "data_status": "DATA_INSUFFICIENT" if action == "DATA_INSUFFICIENT" else "READY",
         "missing_entry_fields": context.get("missing_fields") or [],
+        "compact_label": label,
+        "compact_hint": hint,
+        "status_explanation": explanation,
     }
 
 
@@ -266,20 +273,27 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
     hint = str(display.get("entry_action_hint") or "").strip()
     price_position = str(display.get("price_position") or _row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
     context_status = str(display.get("entry_context_status") or _row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
+    compact_label = str(display.get("compact_label") or "").strip()
+    compact_hint = str(display.get("compact_hint") or "").strip()
+    if compact_label:
+        return compact_label, compact_hint
+    context_display = buy_zone_status_display(_row_value(row, "buyZoneContext") or _row_value(row, "buy_zone_context"), row)
+    if context_display and context_status == context_display["action"]:
+        return context_display["label"], context_display["hint"]
     if context_status == "DATA_INSUFFICIENT":
-        return "数据不足", "补数据"
+        return "数据不足", "不给买区"
     if context_status == "ALLOW_SMALL_BUY":
-        return "主击球区", "可小仓"
+        return "击球区内", "可小仓"
     if context_status == "ALLOW_ADD_ON_PULLBACK":
-        return "回踩加仓", "需复核"
+        return "击球区内", "可加仓"
     if context_status == "WAIT_PULLBACK":
-        return "等待回踩", "不追买"
+        return "等回击球区", "不追"
     if context_status == "WAIT_CONFIRMATION":
-        return "等待确认", "看量价"
+        return "区内看承接", "等量价"
     if context_status == "BLOCK_CHASE":
-        return "追高区", "禁止追买"
+        return "追高禁区", "禁止追"
     if context_status == "RISK_REVIEW":
-        return "风控复核", "暂停买入"
+        return "风控复核", "暂停加仓"
     if context_status == "AVOID":
         return "暂不参与", "观望"
     if missing_fields or "暂无参考买区" in label or "缺" in label:
@@ -313,6 +327,60 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
     if label:
         return _short_entry_status(label), _short_entry_hint(hint, "看详情")
     return "", ""
+
+
+def buy_zone_status_display(context: object, row: pd.Series | dict | None = None) -> dict[str, str]:
+    if not isinstance(context, dict):
+        return {}
+    action = str(context.get("current_action") or "").strip().upper()
+    current_price = _number(context.get("current_price"))
+    if current_price is None and row is not None:
+        current_price = _number(_row_value(row, "price"))
+    low = _number(context.get("pullback_zone_low") or context.get("support_zone_low") or context.get("primary_zone_low"))
+    high = _number(context.get("pullback_zone_high") or context.get("support_zone_high") or context.get("primary_zone_high"))
+    in_zone = current_price is not None and low is not None and high is not None and low <= current_price <= high
+    near_recheck = _number(
+        context.get("confirmation_price")
+        or context.get("confirm_price")
+        or context.get("confirmation_line")
+        or context.get("confirm_line")
+    ) is not None
+    if action == "WAIT_PULLBACK":
+        return {
+            "action": action,
+            "label": "等回击球区",
+            "hint": "不追",
+            "explanation": "等回击球区：价格偏高，等回到主击球区。",
+        }
+    if action == "WAIT_CONFIRMATION":
+        if in_zone:
+            return {
+                "action": action,
+                "label": "区内看承接",
+                "hint": "等量价",
+                "explanation": "区内看承接：价格到了，但还要看量价和K线承接。",
+            }
+        return {
+            "action": action,
+            "label": "等突破再评估" if near_recheck else "区内看承接",
+            "hint": "不追" if near_recheck else "等量价",
+            "explanation": "等突破再评估：站上重新评估线后再判断，不等于直接买入。"
+            if near_recheck
+            else "区内看承接：价格到了，但还要看量价和K线承接。",
+        }
+    if action == "ALLOW_SMALL_BUY":
+        return {"action": action, "label": "击球区内", "hint": "可小仓", "explanation": "价格位于主击球区，仍按小仓和风控执行。"}
+    if action == "ALLOW_ADD_ON_PULLBACK":
+        return {"action": action, "label": "击球区内", "hint": "可加仓", "explanation": "回踩结构可复核加仓，仍需控制仓位。"}
+    if action == "BLOCK_CHASE":
+        return {"action": action, "label": "追高禁区", "hint": "禁止追", "explanation": "价格已脱离击球区，不追高。"}
+    if action == "DATA_INSUFFICIENT":
+        return {"action": action, "label": "数据不足", "hint": "不给买区", "explanation": "技术承接数据不足，不生成明确主击球区。"}
+    if action == "RISK_REVIEW":
+        return {"action": action, "label": "风控复核", "hint": "暂停加仓", "explanation": "先复核失效线和风险，再决定是否处理。"}
+    if action == "AVOID":
+        return {"action": action, "label": "暂不参与", "hint": "观望", "explanation": "当前不参与，等待结构改善。"}
+    return {"action": action, "label": _short_badge_text(str(context.get("primary_zone_text") or action or "待复核")), "hint": "", "explanation": ""}
 
 
 def _short_entry_status(label: str) -> str:
@@ -424,6 +492,8 @@ def _number(value: object) -> float | None:
     try:
         if value in (None, ""):
             return None
+        if isinstance(value, str):
+            value = value.replace("$", "").replace(",", "").replace("%", "").strip()
         return float(value)
     except (TypeError, ValueError):
         return None
@@ -431,7 +501,7 @@ def _number(value: object) -> float | None:
 
 def _buy_point_label_tone(label: object) -> str:
     text = str(label or "").strip()
-    if "追高区" in text or "禁止追高" in text:
+    if "追高区" in text or "追高禁区" in text or "禁止追高" in text:
         return "red"
     if "无买区" in text or "暂无参考买区" in text or "数据" in text:
         return "gray"
@@ -439,9 +509,11 @@ def _buy_point_label_tone(label: object) -> str:
         return "yellow"
     if "价值复核" in text:
         return "yellow"
-    if "买区内" in text:
+    if "买区内" in text or "击球区内" in text:
         return "green"
-    if "买区外" in text or "等待回落" in text:
+    if "区内看承接" in text:
+        return "yellow"
+    if "买区外" in text or "等待回落" in text or "等回击球区" in text or "等突破再评估" in text:
         return "blue"
     if "极贵" in text:
         return "deepred"

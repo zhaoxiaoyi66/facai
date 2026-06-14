@@ -639,9 +639,57 @@ def test_dashboard_watchlist_entry_cell_prefers_unified_buy_zone_context_over_st
 
     assert display["entry_context_status"] == "ALLOW_SMALL_BUY"
     assert display["missing_entry_fields"] == []
-    assert "<strong>主击球区</strong>" in html
+    assert "<strong>击球区内</strong>" in html
     assert "<em>可小仓</em>" in html
     assert "补数据" not in html
+
+
+def test_dashboard_watchlist_entry_cell_uses_specific_buy_zone_status_language() -> None:
+    cases = [
+        (
+            "WAIT_PULLBACK",
+            {"current_price": 390, "pullback_zone_low": 377, "pullback_zone_high": 384},
+            "等回击球区",
+            "不追",
+        ),
+        (
+            "WAIT_CONFIRMATION",
+            {"current_price": 380, "pullback_zone_low": 377, "pullback_zone_high": 384},
+            "区内看承接",
+            "等量价",
+        ),
+        (
+            "WAIT_CONFIRMATION",
+            {"current_price": 405, "pullback_zone_low": 377, "pullback_zone_high": 384, "confirmation_price": 413.71},
+            "等突破再评估",
+            "不追",
+        ),
+        ("ALLOW_SMALL_BUY", {"current_price": 380, "pullback_zone_low": 377, "pullback_zone_high": 384}, "击球区内", "可小仓"),
+        ("BLOCK_CHASE", {"current_price": 500, "pullback_zone_low": 377, "pullback_zone_high": 384}, "追高禁区", "禁止追"),
+        ("DATA_INSUFFICIENT", {"missing_fields": ["daily_ohlcv"]}, "数据不足", "不给买区"),
+        ("RISK_REVIEW", {"current_price": 370, "pullback_zone_low": 377, "pullback_zone_high": 384}, "风控复核", "暂停加仓"),
+    ]
+
+    for action, context, label, hint in cases:
+        row = pd.Series(
+            {
+                "symbol": "TEST",
+                "price": context.get("current_price", 100),
+                "buyZoneContext": {
+                    "current_action": action,
+                    "primary_zone_text": "回踩买区",
+                    "action_text": "等待确认",
+                    **context,
+                },
+            }
+        )
+
+        html = _entry_rating_cell_html(row)
+
+        assert f"<strong>{label}</strong>" in html
+        assert f"<em>{hint}</em>" in html
+        assert "<strong>等待确认</strong>" not in html
+        assert "<strong>只观察</strong>" not in html
 
 
 def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -> None:
@@ -738,5 +786,5 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
     assert "<strong>数据不足</strong>" in html
-    assert "<em>补数据</em>" in html
+    assert "<em>不给买区</em>" in html
     assert "$90.00 - $100.00" not in html
