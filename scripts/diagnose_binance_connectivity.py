@@ -13,27 +13,37 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from data.binance_provider import DEFAULT_SPOT_BASE_URLS, DEFAULT_USDM_BASE_URL
 
-SPOT_BASE_URL = os.environ.get("BINANCE_SPOT_BASE_URL") or "https://api.binance.com"
-USDM_BASE_URL = os.environ.get("BINANCE_USDM_BASE_URL") or "https://fapi.binance.com"
-TIMEOUT_SECONDS = 8.0
+
+USDM_BASE_URL = os.environ.get("BINANCE_USDM_BASE_URL") or DEFAULT_USDM_BASE_URL
+TIMEOUT_SECONDS = float(os.environ.get("BINANCE_DIAG_TIMEOUT_SECONDS") or 4.0)
 
 
 def run_diagnostics() -> dict[str, Any]:
-    checks = [
-        _check("spot_exchange_info", SPOT_BASE_URL, "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}, expects_symbols=True),
-        _check("usdm_exchange_info", USDM_BASE_URL, "/fapi/v1/exchangeInfo", {"symbol": "BTCUSDT"}, expects_symbols=True),
-        _check("spot_ticker_price", SPOT_BASE_URL, "/api/v3/ticker/price", {"symbol": "BTCUSDT"}),
-        _check("usdm_ticker_price", USDM_BASE_URL, "/fapi/v2/ticker/price", {"symbol": "BTCUSDT"}),
-        _check("spot_book_ticker", SPOT_BASE_URL, "/api/v3/ticker/bookTicker", {"symbol": "BTCUSDT"}),
-        _check("usdm_book_ticker", USDM_BASE_URL, "/fapi/v1/ticker/bookTicker", {"symbol": "BTCUSDT"}),
-        _check("spot_24hr_ticker", SPOT_BASE_URL, "/api/v3/ticker/24hr", {"symbol": "BTCUSDT"}),
-        _check("usdm_24hr_ticker", USDM_BASE_URL, "/fapi/v1/ticker/24hr", {"symbol": "BTCUSDT"}),
-        _check("usdm_premium_index", USDM_BASE_URL, "/fapi/v1/premiumIndex", {"symbol": "BTCUSDT"}),
-    ]
+    checks: list[dict[str, Any]] = []
+    for base_url in _spot_base_urls():
+        checks.extend(
+            [
+                _check("spot", base_url, "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}, expects_symbols=True),
+                _check("spot", base_url, "/api/v3/ticker/price", {"symbol": "BTCUSDT"}),
+                _check("spot", base_url, "/api/v3/ticker/bookTicker", {"symbol": "BTCUSDT"}),
+                _check("spot", base_url, "/api/v3/ticker/24hr", {"symbol": "BTCUSDT"}),
+            ]
+        )
+    checks.extend(
+        [
+            _check("usdm_futures", USDM_BASE_URL, "/fapi/v1/exchangeInfo", {}, expects_symbols=True),
+            _check("usdm_futures", USDM_BASE_URL, "/fapi/v2/ticker/price", {"symbol": "BTCUSDT"}),
+            _check("usdm_futures", USDM_BASE_URL, "/fapi/v1/ticker/bookTicker", {"symbol": "BTCUSDT"}),
+            _check("usdm_futures", USDM_BASE_URL, "/fapi/v1/ticker/24hr", {"symbol": "BTCUSDT"}),
+            _check("usdm_futures", USDM_BASE_URL, "/fapi/v1/premiumIndex", {"symbol": "BTCUSDT"}),
+        ]
+    )
     return {
-        "spot_base_url": SPOT_BASE_URL,
+        "spot_base_urls": _spot_base_urls(),
         "usdm_base_url": USDM_BASE_URL,
+        "timeout_seconds": TIMEOUT_SECONDS,
         "checks": checks,
     }
 
@@ -44,7 +54,7 @@ def main() -> int:
 
 
 def _check(
-    name: str,
+    market_type: str,
     base_url: str,
     path: str,
     params: dict[str, str],
@@ -53,21 +63,29 @@ def _check(
 ) -> dict[str, Any]:
     url = _url(base_url, path, params)
     row = {
-        "endpoint": name,
+        "market_type": market_type,
+        "base_url": base_url.rstrip("/"),
+        "endpoint": path,
         "url": url,
         "http_status": None,
         "content_type": "",
         "response_size": 0,
+        "json_parse_ok": False,
         "has_symbols": False,
         "symbol_count": None,
         "btcusdt_found": False,
         "sample_symbols": [],
-        "error_type": "",
+        "price_value": None,
+        "bid": None,
+        "ask": None,
+        "volume": None,
+        "funding_rate": None,
+        "error_type": "OK",
         "error_message": "",
         "raw_response_preview": "",
     }
     try:
-        request = Request(url, headers={"User-Agent": "facai-binance-diagnostics/1.0"})
+        request = Request(url, headers={"User-Agent": "facai-binance-diagnostics/1.1"})
         with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             raw = response.read()
             text = raw.decode("utf-8", errors="replace")
@@ -97,7 +115,7 @@ def _check(
         row.update({"error_type": "TIMEOUT", "error_message": str(exc)})
     except URLError as exc:
         reason = getattr(exc, "reason", exc)
-        row.update({"error_type": "NETWORK_ERROR", "error_message": str(reason)})
+        row.update({"error_type": _url_error_type(reason), "error_message": str(reason)})
     except json.JSONDecodeError as exc:
         row.update({"error_type": "JSON_PARSE_ERROR", "error_message": str(exc)})
     except Exception as exc:
@@ -109,10 +127,23 @@ def _parse_payload(row: dict[str, Any], text: str, *, expects_symbols: bool) -> 
     try:
         payload = json.loads(text or "{}")
     except json.JSONDecodeError as exc:
-        row.update({"error_type": "JSON_PARSE_ERROR", "error_message": str(exc)})
+        row.update({"json_parse_ok": False, "error_type": "JSON_PARSE_ERROR", "error_message": str(exc)})
         return
-    if not expects_symbols:
+    row["json_parse_ok"] = True
+    if expects_symbols:
+        _parse_symbols_payload(row, payload)
         return
+    if not isinstance(payload, dict):
+        row.update({"error_type": "SCHEMA_MISMATCH", "error_message": "response is not an object"})
+        return
+    row["price_value"] = _number(payload.get("price") or payload.get("lastPrice"))
+    row["bid"] = _number(payload.get("bidPrice"))
+    row["ask"] = _number(payload.get("askPrice"))
+    row["volume"] = _number(payload.get("volume"))
+    row["funding_rate"] = _number(payload.get("lastFundingRate"))
+
+
+def _parse_symbols_payload(row: dict[str, Any], payload: Any) -> None:
     if not isinstance(payload, dict) or "symbols" not in payload:
         row.update({"error_type": "SCHEMA_MISMATCH", "error_message": "response missing symbols"})
         return
@@ -127,7 +158,23 @@ def _parse_payload(row: dict[str, Any], text: str, *, expects_symbols: bool) -> 
     if not symbols:
         row.update({"error_type": "EMPTY_SYMBOLS", "error_message": "symbols list is empty"})
     elif not row["btcusdt_found"]:
-        row.update({"error_type": "SCHEMA_MISMATCH", "error_message": "BTCUSDT not found in symbols"})
+        row.update({"error_type": "SYMBOL_NOT_FOUND", "error_message": "BTCUSDT not found in symbols"})
+
+
+def _spot_base_urls() -> list[str]:
+    urls: list[str] = []
+    for name in ("BINANCE_SPOT_DATA_BASE_URL", "BINANCE_SPOT_BASE_URL"):
+        raw = os.environ.get(name)
+        if raw:
+            urls.extend(part.strip().rstrip("/") for part in raw.split(",") if part.strip())
+    urls.extend(DEFAULT_SPOT_BASE_URLS)
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        if item and item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
 
 
 def _http_error_type(status_code: int) -> str:
@@ -140,9 +187,25 @@ def _http_error_type(status_code: int) -> str:
     return "NETWORK_ERROR"
 
 
+def _url_error_type(reason: object) -> str:
+    text = str(reason).lower()
+    if isinstance(reason, TimeoutError) or "timed out" in text or "timeout" in text:
+        return "TIMEOUT"
+    return "NETWORK_ERROR"
+
+
 def _url(base_url: str, path: str, params: dict[str, str]) -> str:
     query = f"?{urlencode(params)}" if params else ""
     return f"{base_url.rstrip('/')}{path}{query}"
+
+
+def _number(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

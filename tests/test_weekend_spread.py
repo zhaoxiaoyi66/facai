@@ -527,6 +527,37 @@ class RecordingHTTPProvider(BinanceHTTPPriceProvider):
         return {}
 
 
+class FallbackSpotProvider(RecordingHTTPProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.spot_base_urls = ["https://data-api.test", "https://api.test"]
+        self.spot_base_url = self.spot_base_urls[0]
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+        self.calls.append((base_url, path, dict(params)))
+        if base_url == "https://data-api.test":
+            raise TimeoutError("data-api timeout")
+        return super()._get_json(base_url, path, params)
+
+
+class DefaultSpotProvider(BinanceHTTPPriceProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+        self.calls.append((base_url, path, dict(params)))
+        if path.endswith("exchangeInfo"):
+            return {"symbols": [{"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
+        if path.endswith("ticker/price"):
+            return {"price": "101.5"}
+        if path.endswith("bookTicker"):
+            return {"bidPrice": "101.4", "askPrice": "101.6"}
+        if path.endswith("ticker/24hr"):
+            return {"lastPrice": "101.5", "volume": "100000"}
+        return {}
+
+
 def test_http_provider_uses_usdm_futures_endpoints_and_validates_symbol() -> None:
     provider = RecordingHTTPProvider()
 
@@ -558,6 +589,24 @@ def test_http_provider_uses_spot_endpoints_without_funding_rate() -> None:
         "/api/v3/ticker/bookTicker",
         "/api/v3/ticker/24hr",
     ]
+
+
+def test_http_provider_spot_uses_data_api_base_url_first() -> None:
+    provider = DefaultSpotProvider()
+
+    provider.get_last_price("BTCUSDT", market_type="spot")
+
+    assert provider.calls[0][0] == "https://data-api.binance.vision"
+
+
+def test_http_provider_spot_falls_back_when_data_api_fails() -> None:
+    provider = FallbackSpotProvider()
+
+    snapshot = provider.get_last_price("BTCUSDT", market_type="spot")
+
+    assert snapshot.last_price == 101.5
+    assert ("https://data-api.test", "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}) in provider.calls
+    assert ("https://api.test", "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}) in provider.calls
 
 
 def test_http_provider_marks_unknown_symbol_invalid() -> None:
@@ -601,6 +650,34 @@ def test_http_provider_candidate_search_reports_region_block() -> None:
     assert "HTTPError 451" in result.error_message
 
 
+def test_http_provider_candidate_search_reports_forbidden_block() -> None:
+    class ForbiddenProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            raise HTTPError(f"{base_url}{path}", 403, "Forbidden", hdrs=None, fp=None)
+
+    provider = ForbiddenProvider()
+
+    result = provider.find_symbol_candidates_with_status("NVDA", market_type="usdm_futures")
+
+    assert result.data_source_status == "BLOCKED"
+    assert result.candidates == []
+    assert "HTTPError 403" in result.error_message
+
+
+def test_http_provider_candidate_search_reports_json_parse_error() -> None:
+    class JsonParseProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            raise json.JSONDecodeError("bad json", "not-json", 0)
+
+    provider = JsonParseProvider()
+
+    result = provider.find_symbol_candidates_with_status("NVDA", market_type="spot")
+
+    assert result.data_source_status == "PARSE_ERROR"
+    assert result.candidates == []
+    assert "JSONDecodeError" in result.error_message
+
+
 def test_http_provider_candidate_search_reports_schema_mismatch() -> None:
     class SchemaMismatchProvider(RecordingHTTPProvider):
         def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
@@ -631,11 +708,13 @@ def test_http_provider_candidate_search_reports_btcusdt_probe_failure() -> None:
 
 def test_http_provider_uses_env_base_url_override(monkeypatch) -> None:
     monkeypatch.setenv("BINANCE_SPOT_BASE_URL", "https://spot.env.test")
+    monkeypatch.setenv("BINANCE_SPOT_DATA_BASE_URL", "https://data.env.test")
     monkeypatch.setenv("BINANCE_USDM_BASE_URL", "https://usdm.env.test")
 
     provider = BinanceHTTPPriceProvider()
 
-    assert provider.spot_base_url == "https://spot.env.test"
+    assert provider.spot_base_urls[:2] == ["https://data.env.test", "https://spot.env.test"]
+    assert provider.spot_base_url == "https://data.env.test"
     assert provider.futures_base_url == "https://usdm.env.test"
 
 

@@ -12,6 +12,16 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_BINANCE_CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "binance_price_cache.json"
+DEFAULT_SPOT_BASE_URLS = [
+    "https://data-api.binance.vision",
+    "https://api.binance.com",
+    "https://api-gcp.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+]
+DEFAULT_USDM_BASE_URL = "https://fapi.binance.com"
 
 
 @dataclass(frozen=True)
@@ -186,8 +196,9 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         futures_base_url: str | None = None,
         timeout_seconds: float = 5.0,
     ) -> None:
-        self.spot_base_url = (spot_base_url or os.environ.get("BINANCE_SPOT_BASE_URL") or "https://api.binance.com").rstrip("/")
-        self.futures_base_url = (futures_base_url or os.environ.get("BINANCE_USDM_BASE_URL") or "https://fapi.binance.com").rstrip("/")
+        self.spot_base_urls = _spot_base_urls(spot_base_url)
+        self.spot_base_url = self.spot_base_urls[0]
+        self.futures_base_url = (futures_base_url or os.environ.get("BINANCE_USDM_BASE_URL") or DEFAULT_USDM_BASE_URL).rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def get_last_price(
@@ -215,9 +226,9 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
     def _get_spot_snapshot(self, symbol: str) -> BinancePriceSnapshot:
         if not self._symbol_record("spot", symbol):
             return _error_snapshot(symbol, "invalid_symbol", market_type="spot")
-        price_payload = self._get_json(self.spot_base_url, "/api/v3/ticker/price", {"symbol": symbol})
-        book = self._get_json(self.spot_base_url, "/api/v3/ticker/bookTicker", {"symbol": symbol})
-        ticker = self._get_json(self.spot_base_url, "/api/v3/ticker/24hr", {"symbol": symbol})
+        price_payload = self._get_market_json("spot", "price", {"symbol": symbol})
+        book = self._get_market_json("spot", "book", {"symbol": symbol})
+        ticker = self._get_market_json("spot", "ticker", {"symbol": symbol})
         last_price = _number(price_payload.get("price")) or _number(ticker.get("lastPrice"))
         if last_price is None:
             return _error_snapshot(symbol, "price_missing", market_type="spot")
@@ -236,10 +247,10 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
     def _get_usdm_futures_snapshot(self, symbol: str) -> BinancePriceSnapshot:
         if not self._symbol_record("usdm_futures", symbol):
             return _error_snapshot(symbol, "invalid_symbol", market_type="usdm_futures")
-        price_payload = self._get_json(self.futures_base_url, "/fapi/v2/ticker/price", {"symbol": symbol})
-        book = self._get_json(self.futures_base_url, "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
-        ticker = self._get_json(self.futures_base_url, "/fapi/v1/ticker/24hr", {"symbol": symbol})
-        funding = self._get_json(self.futures_base_url, "/fapi/v1/premiumIndex", {"symbol": symbol})
+        price_payload = self._get_market_json("usdm_futures", "price", {"symbol": symbol})
+        book = self._get_market_json("usdm_futures", "book", {"symbol": symbol})
+        ticker = self._get_market_json("usdm_futures", "ticker", {"symbol": symbol})
+        funding = self._get_market_json("usdm_futures", "funding", {"symbol": symbol})
         last_price = _number(price_payload.get("price")) or _number(ticker.get("lastPrice"))
         if last_price is None:
             return _error_snapshot(symbol, "price_missing", market_type="usdm_futures")
@@ -279,24 +290,12 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
                     error_message="invalid_symbol",
                     updated_at=now,
                 )
-            price_payload = self._get_json(
-                *self._endpoint(normalized_market, "price"),
-                {"symbol": normalized},
-            )
-            book_payload = self._get_json(
-                *self._endpoint(normalized_market, "book"),
-                {"symbol": normalized},
-            )
-            ticker_payload = self._get_json(
-                *self._endpoint(normalized_market, "ticker"),
-                {"symbol": normalized},
-            )
+            price_payload = self._get_market_json(normalized_market, "price", {"symbol": normalized})
+            book_payload = self._get_market_json(normalized_market, "book", {"symbol": normalized})
+            ticker_payload = self._get_market_json(normalized_market, "ticker", {"symbol": normalized})
             funding_available = False
             if normalized_market == "usdm_futures":
-                funding_payload = self._get_json(
-                    *self._endpoint(normalized_market, "funding"),
-                    {"symbol": normalized},
-                )
+                funding_payload = self._get_market_json(normalized_market, "funding", {"symbol": normalized})
                 funding_available = _number(funding_payload.get("lastFundingRate")) is not None
             price_available = _number(price_payload.get("price")) is not None or _number(ticker_payload.get("lastPrice")) is not None
             return BinanceSymbolValidation(
@@ -456,26 +455,42 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         return None
 
     def _exchange_info(self, market_type: str, symbol: str | None) -> dict[str, Any]:
-        base_url, path = self._endpoint(market_type, "exchange_info")
         params = {"symbol": symbol} if symbol else {}
-        return self._get_json(base_url, path, params)
+        return self._get_market_json(market_type, "exchange_info", params)
 
     def _endpoint(self, market_type: str, kind: str) -> tuple[str, str]:
+        return self._endpoint_candidates(market_type, kind)[0]
+
+    def _endpoint_candidates(self, market_type: str, kind: str) -> list[tuple[str, str]]:
         normalized_market = normalize_market_type(market_type)
         if normalized_market == "spot":
-            return {
-                "exchange_info": (self.spot_base_url, "/api/v3/exchangeInfo"),
-                "price": (self.spot_base_url, "/api/v3/ticker/price"),
-                "book": (self.spot_base_url, "/api/v3/ticker/bookTicker"),
-                "ticker": (self.spot_base_url, "/api/v3/ticker/24hr"),
+            path = {
+                "exchange_info": "/api/v3/exchangeInfo",
+                "price": "/api/v3/ticker/price",
+                "book": "/api/v3/ticker/bookTicker",
+                "ticker": "/api/v3/ticker/24hr",
             }[kind]
-        return {
+            return [(base_url, path) for base_url in self.spot_base_urls]
+        path = {
             "exchange_info": (self.futures_base_url, "/fapi/v1/exchangeInfo"),
             "price": (self.futures_base_url, "/fapi/v2/ticker/price"),
             "book": (self.futures_base_url, "/fapi/v1/ticker/bookTicker"),
             "ticker": (self.futures_base_url, "/fapi/v1/ticker/24hr"),
             "funding": (self.futures_base_url, "/fapi/v1/premiumIndex"),
         }[kind]
+        return [path]
+
+    def _get_market_json(self, market_type: str, kind: str, params: dict[str, str]) -> dict[str, Any]:
+        errors: list[Exception] = []
+        for base_url, path in self._endpoint_candidates(market_type, kind):
+            try:
+                return self._get_json(base_url, path, params)
+            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                errors.append(exc)
+                continue
+        if errors:
+            raise errors[-1]
+        raise RuntimeError("no Binance endpoint configured")
 
     def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict[str, Any]:
         query = f"?{urlencode(params)}" if params else ""
@@ -493,6 +508,31 @@ def normalize_market_type(market_type: str) -> str:
     if value in {"futures", "future", "usdt_m_futures", "usdm", "usdm_futures", "binance_futures"}:
         return "usdm_futures"
     return "usdm_futures"
+
+
+def _spot_base_urls(explicit_base_url: str | None = None) -> list[str]:
+    if explicit_base_url:
+        return [explicit_base_url.rstrip("/")]
+    urls: list[str] = []
+    for name in ("BINANCE_SPOT_DATA_BASE_URL", "BINANCE_SPOT_BASE_URL"):
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        urls.extend(part.strip().rstrip("/") for part in raw.split(",") if part.strip())
+    urls.extend(DEFAULT_SPOT_BASE_URLS)
+    return _dedupe_urls(urls)
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        normalized = str(item or "").strip().rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        result.append(normalized)
+        seen.add(normalized)
+    return result or [DEFAULT_SPOT_BASE_URLS[0]]
 
 
 def _candidate_status_from_http(exc: HTTPError) -> str:
