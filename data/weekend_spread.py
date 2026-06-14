@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
 
-from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider
+from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
 from data.cache_read_model import CacheReadModel
 from settings import CONFIG_DIR
 
 
 DEFAULT_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.json"
 RISK_TEXT = "Binance 映射价格不等于真实美股可成交价格；V1 仅用于观察，不构成套利建议。"
-LIQUIDITY_WARNING = "未接入流动性、点差和资金费率校验。"
+NO_MAPPING_TEXT = "暂无映射"
+MAPPING_REVIEW_TEXT = "需人工确认映射"
+MAPPING_CONFIRMED_TEXT = "映射已确认"
+UNIT_REVIEW_TEXT = "需确认映射单位"
 
 
-def load_binance_symbol_mapping(path: Path = DEFAULT_MAPPING_PATH) -> dict[str, str]:
+def load_binance_symbol_mapping(path: Path = DEFAULT_MAPPING_PATH) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     try:
@@ -30,65 +33,137 @@ def load_binance_symbol_mapping(path: Path = DEFAULT_MAPPING_PATH) -> dict[str, 
         raw = payload
     if not isinstance(raw, dict):
         return {}
-    mapping: dict[str, str] = {}
-    for ticker, symbol in raw.items():
+    mapping: dict[str, dict[str, Any]] = {}
+    for ticker, config in raw.items():
         normalized_ticker = str(ticker or "").strip().upper()
-        normalized_symbol = str(symbol or "").strip().upper()
-        if normalized_ticker and normalized_symbol:
-            mapping[normalized_ticker] = normalized_symbol
+        if not normalized_ticker:
+            continue
+        normalized = _normalize_mapping_config(config)
+        if normalized is not None:
+            mapping[normalized_ticker] = normalized
     return mapping
 
 
 def build_weekend_spread_rows(
     tickers: Iterable[str],
     *,
-    mapping: dict[str, str] | None = None,
+    mapping: dict[str, Any] | None = None,
     provider: BinancePriceProvider | None = None,
     cache: CacheReadModel | None = None,
     force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
     normalized = _normalize_tickers(tickers)
-    effective_mapping = {str(k).upper(): str(v).upper() for k, v in (mapping or load_binance_symbol_mapping()).items()}
-    price_provider = provider or BinanceHTTPPriceProvider()
+    effective_mapping = _normalize_mapping(mapping or load_binance_symbol_mapping())
+    price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     read_model = cache or CacheReadModel()
     rows: list[dict[str, Any]] = []
     for ticker in normalized:
-        friday_close, friday_date = _friday_close(read_model, ticker)
-        binance_symbol = effective_mapping.get(ticker)
+        friday_close, friday_date, close_source = _friday_close(read_model, ticker)
         quote = read_model.get_quote_payload(ticker) or {}
         stock_name = str(quote.get("companyName") or quote.get("company_name") or quote.get("name") or ticker)
-        if not binance_symbol:
-            rows.append(_base_row(ticker, stock_name, friday_close, friday_date, "", status="NO_MAPPING"))
+        mapping_config = effective_mapping.get(ticker)
+        if not mapping_config or not mapping_config.get("enabled", True) or not mapping_config.get("binance_symbol"):
+            rows.append(
+                _base_row(
+                    ticker,
+                    stock_name,
+                    friday_close,
+                    friday_date,
+                    close_source,
+                    mapping_config,
+                    status="NO_MAPPING",
+                )
+            )
             continue
+        binance_symbol = str(mapping_config.get("binance_symbol") or "").strip().upper()
         if friday_close is None:
-            rows.append(_base_row(ticker, stock_name, None, friday_date, binance_symbol, status="MISSING_FRIDAY_CLOSE"))
+            rows.append(
+                _base_row(
+                    ticker,
+                    stock_name,
+                    None,
+                    friday_date,
+                    close_source,
+                    mapping_config,
+                    status="MISSING_FRIDAY_CLOSE",
+                )
+            )
+            continue
+        unit_error = _unit_mapping_error(mapping_config)
+        if unit_error:
+            row = _base_row(
+                ticker,
+                stock_name,
+                friday_close,
+                friday_date,
+                close_source,
+                mapping_config,
+                status="UNIT_UNCONFIRMED",
+            )
+            row["binance_symbol"] = binance_symbol
+            row["error"] = unit_error
+            rows.append(row)
             continue
         snapshot = _snapshot_to_dict(price_provider.get_last_price(binance_symbol, force_refresh=force_refresh))
         last_price = _number(snapshot.get("last_price"))
         if last_price is None:
-            row = _base_row(ticker, stock_name, friday_close, friday_date, binance_symbol, status="BINANCE_UNAVAILABLE")
+            row = _base_row(
+                ticker,
+                stock_name,
+                friday_close,
+                friday_date,
+                close_source,
+                mapping_config,
+                status="BINANCE_UNAVAILABLE",
+            )
             row["updated_at"] = snapshot.get("updated_at") or ""
             row["error"] = snapshot.get("error") or "binance_price_missing"
             rows.append(row)
             continue
-        spread_pct = (last_price / friday_close - 1.0) * 100.0
+        unit_multiplier = float(_number(mapping_config.get("unit_multiplier")) or 1.0)
+        adjusted_price = last_price / unit_multiplier
+        spread_pct = (adjusted_price / friday_close - 1.0) * 100.0
         alert = classify_spread(spread_pct)
+        bid = _number(snapshot.get("bid"))
+        ask = _number(snapshot.get("ask"))
+        bid_ask_spread_pct = _bid_ask_spread_pct(bid, ask)
+        funding_rate = _number(snapshot.get("funding_rate"))
+        volume_24h = _number(snapshot.get("volume_24h"))
+        liquidity_warning = _liquidity_warning(bid_ask_spread_pct, volume_24h, funding_rate)
         rows.append(
             {
-                **_base_row(ticker, stock_name, friday_close, friday_date, binance_symbol, status="OK"),
+                **_base_row(
+                    ticker,
+                    stock_name,
+                    friday_close,
+                    friday_date,
+                    close_source,
+                    mapping_config,
+                    status="OK",
+                ),
                 "binance_last_price": last_price,
+                "adjusted_binance_price": adjusted_price,
+                "binance_bid": bid,
+                "binance_ask": ask,
+                "binance_spread_pct": bid_ask_spread_pct,
+                "binance_volume_24h": volume_24h,
+                "funding_rate": funding_rate,
                 "spread_pct": spread_pct,
                 "spread_direction": _spread_direction(spread_pct),
                 "alert_level": alert["level"],
                 "alert_level_cn": alert["label"],
+                "liquidity_warning": liquidity_warning,
                 "updated_at": snapshot.get("updated_at") or "",
+                "source": snapshot.get("source") or "binance_futures",
             }
         )
     return rows
 
 
 def classify_spread(spread_pct: float | None) -> dict[str, str]:
-    value = abs(float(spread_pct or 0.0))
+    if spread_pct is None:
+        return {"level": "DATA_INSUFFICIENT", "label": "数据不足"}
+    value = abs(float(spread_pct))
     if value < 0.5:
         return {"level": "IGNORE", "label": "忽略"}
     if value < 1.2:
@@ -103,42 +178,72 @@ def _base_row(
     stock_name: str,
     friday_close: float | None,
     friday_date: str,
-    binance_symbol: str,
+    close_source: str,
+    mapping_config: dict[str, Any] | None,
     *,
     status: str,
 ) -> dict[str, Any]:
+    mapping_config = mapping_config or {}
+    unit_multiplier = _number(mapping_config.get("unit_multiplier"))
+    quote_currency = str(mapping_config.get("quote_currency") or "USDT").strip().upper()
+    mapping_confidence = str(mapping_config.get("mapping_confidence") or "").strip().lower()
     return {
         "ticker": ticker,
         "stock_name": stock_name,
         "friday_close": friday_close,
         "friday_close_date": friday_date,
-        "binance_symbol": binance_symbol,
+        "close_source": close_source,
+        "binance_symbol": str(mapping_config.get("binance_symbol") or "").strip().upper(),
+        "binance_market_type": str(mapping_config.get("market_type") or "unknown"),
         "binance_last_price": None,
+        "binance_bid": None,
+        "binance_ask": None,
+        "binance_spread_pct": None,
+        "binance_volume_24h": None,
+        "funding_rate": None,
+        "unit_multiplier": unit_multiplier,
+        "quote_currency": quote_currency,
+        "fx_note": _fx_note(quote_currency),
         "spread_pct": None,
-        "spread_direction": "",
-        "alert_level": "UNAVAILABLE" if status != "NO_MAPPING" else "NO_MAPPING",
+        "spread_direction": _status_direction(status),
+        "alert_level": "NO_MAPPING" if status == "NO_MAPPING" else "DATA_INSUFFICIENT",
         "alert_level_cn": _status_label(status),
-        "liquidity_warning": LIQUIDITY_WARNING,
-        "mapping_risk": "暂无映射" if status == "NO_MAPPING" else RISK_TEXT,
+        "mapping_status": _mapping_status(status, mapping_confidence),
+        "mapping_risk": _mapping_risk(mapping_config, status),
+        "liquidity_warning": _liquidity_warning(None, None, None),
         "updated_at": "",
         "status": status,
+        "source": "",
         "error": "",
     }
 
 
-def _friday_close(cache: CacheReadModel, ticker: str) -> tuple[float | None, str]:
+def _friday_close(cache: CacheReadModel, ticker: str) -> tuple[float | None, str, str]:
     history = cache.get_price_history(ticker)
     if history is None or history.empty or "date" not in history or "close" not in history:
-        return None, ""
+        return None, "", "missing_history"
     frame = history.copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame = frame.dropna(subset=["date", "close"]).sort_values("date")
-    fridays = frame[frame["date"].dt.weekday == 4]
-    if fridays.empty:
-        return None, ""
-    latest = fridays.iloc[-1]
-    return float(latest["close"]), latest["date"].date().isoformat()
+    if frame.empty:
+        return None, "", "missing_history"
+    target_friday = _latest_reference_friday()
+    eligible = frame[frame["date"].dt.date <= target_friday]
+    if eligible.empty:
+        return None, "", "missing_friday_close"
+    fridays = eligible[eligible["date"].dt.weekday == 4]
+    if not fridays.empty:
+        latest = fridays.iloc[-1]
+        return float(latest["close"]), latest["date"].date().isoformat(), "friday_close"
+    latest = eligible.iloc[-1]
+    return float(latest["close"]), latest["date"].date().isoformat(), "previous_trading_day_before_friday"
+
+
+def _latest_reference_friday(today: date | None = None) -> date:
+    current = today or datetime.now(timezone.utc).date()
+    days_since_friday = (current.weekday() - 4) % 7
+    return current - timedelta(days=days_since_friday)
 
 
 def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
@@ -149,24 +254,144 @@ def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
     return {
         "symbol": getattr(snapshot, "symbol", ""),
         "last_price": getattr(snapshot, "last_price", None),
+        "bid": getattr(snapshot, "bid", None),
+        "ask": getattr(snapshot, "ask", None),
+        "volume_24h": getattr(snapshot, "volume_24h", None),
+        "funding_rate": getattr(snapshot, "funding_rate", None),
         "updated_at": getattr(snapshot, "updated_at", ""),
+        "source": getattr(snapshot, "source", ""),
         "error": getattr(snapshot, "error", ""),
     }
 
 
+def _normalize_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for ticker, config in raw.items():
+        normalized_ticker = str(ticker or "").strip().upper()
+        normalized_config = _normalize_mapping_config(config)
+        if normalized_ticker and normalized_config is not None:
+            result[normalized_ticker] = normalized_config
+    return result
+
+
+def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
+    if isinstance(config, str):
+        symbol = config.strip().upper()
+        if not symbol:
+            return None
+        return {
+            "enabled": True,
+            "binance_symbol": symbol,
+            "market_type": "futures",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "confirmed",
+            "risk_note": "旧版映射；请定期复核 symbol 与单位。",
+        }
+    if not isinstance(config, dict):
+        return None
+    normalized = dict(config)
+    normalized["enabled"] = bool(normalized.get("enabled", True))
+    normalized["binance_symbol"] = str(normalized.get("binance_symbol") or "").strip().upper()
+    normalized["market_type"] = str(normalized.get("market_type") or "unknown")
+    normalized["quote_currency"] = str(normalized.get("quote_currency") or "USDT").strip().upper()
+    normalized["unit_multiplier"] = _number(normalized.get("unit_multiplier")) or 1
+    normalized["mapping_confidence"] = str(normalized.get("mapping_confidence") or "manual_required").strip().lower()
+    normalized["risk_note"] = str(normalized.get("risk_note") or "")
+    return normalized
+
+
+def _unit_mapping_error(mapping_config: dict[str, Any]) -> str:
+    quote_currency = str(mapping_config.get("quote_currency") or "").strip().upper()
+    unit_multiplier = _number(mapping_config.get("unit_multiplier"))
+    if quote_currency not in {"USD", "USDT"}:
+        return "quote_currency_not_usd"
+    if unit_multiplier is None or unit_multiplier <= 0:
+        return "unit_multiplier_missing"
+    return ""
+
+
+def _bid_ask_spread_pct(bid: float | None, ask: float | None) -> float | None:
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        return None
+    midpoint = (bid + ask) / 2.0
+    if midpoint <= 0:
+        return None
+    return (ask - bid) / midpoint * 100.0
+
+
+def _liquidity_warning(
+    bid_ask_spread_pct: float | None,
+    volume_24h: float | None,
+    funding_rate: float | None,
+) -> str:
+    warnings: list[str] = []
+    if bid_ask_spread_pct is None:
+        warnings.append("买卖价差暂缺")
+    elif bid_ask_spread_pct > 0.25:
+        warnings.append("流动性不足：买卖价差偏宽")
+    if volume_24h is None:
+        warnings.append("24h 成交量暂缺")
+    elif volume_24h < 10_000:
+        warnings.append("成交量不足")
+    if funding_rate is not None and abs(funding_rate) >= 0.0005:
+        warnings.append("资金费率可能吞噬价差")
+    return "；".join(warnings) if warnings else "流动性字段正常"
+
+
+def _mapping_status(status: str, mapping_confidence: str) -> str:
+    if status == "NO_MAPPING":
+        return NO_MAPPING_TEXT
+    if status == "UNIT_UNCONFIRMED":
+        return UNIT_REVIEW_TEXT
+    if mapping_confidence == "confirmed":
+        return MAPPING_CONFIRMED_TEXT
+    return MAPPING_REVIEW_TEXT
+
+
+def _mapping_risk(mapping_config: dict[str, Any], status: str) -> str:
+    if status == "NO_MAPPING":
+        return NO_MAPPING_TEXT
+    notes = [RISK_TEXT]
+    confidence = str(mapping_config.get("mapping_confidence") or "").strip().lower()
+    if confidence != "confirmed":
+        notes.append(MAPPING_REVIEW_TEXT)
+    risk_note = str(mapping_config.get("risk_note") or "").strip()
+    if risk_note:
+        notes.append(risk_note)
+    return "；".join(notes)
+
+
+def _fx_note(quote_currency: str) -> str:
+    if quote_currency == "USD":
+        return "USD 计价"
+    if quote_currency == "USDT":
+        return "USDT 近似 USD，仍需注意稳定币与资金费率差异"
+    return "非 USD/USDT，需确认币种换算"
+
+
 def _status_label(status: str) -> str:
     return {
-        "NO_MAPPING": "暂无映射",
-        "MISSING_FRIDAY_CLOSE": "周五收盘价缺失",
-        "BINANCE_UNAVAILABLE": "数据不可用",
-    }.get(status, "数据不可用")
+        "NO_MAPPING": NO_MAPPING_TEXT,
+        "MISSING_FRIDAY_CLOSE": "缺少周五收盘价",
+        "BINANCE_UNAVAILABLE": "Binance 数据不可用",
+        "UNIT_UNCONFIRMED": UNIT_REVIEW_TEXT,
+    }.get(status, "数据不足")
+
+
+def _status_direction(status: str) -> str:
+    if status == "NO_MAPPING":
+        return "暂无映射"
+    if status == "UNIT_UNCONFIRMED":
+        return "映射待确认"
+    return "数据不足"
 
 
 def _spread_direction(spread_pct: float) -> str:
     if spread_pct > 0:
-        return "Binance 高于周五收盘"
+        return "Binance 溢价"
     if spread_pct < 0:
-        return "Binance 低于周五收盘"
+        return "Binance 折价"
     return "基本持平"
 
 
