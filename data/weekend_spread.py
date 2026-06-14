@@ -20,6 +20,7 @@ NO_MAPPING_TEXT = "暂无映射"
 MAPPING_REVIEW_TEXT = "需人工确认映射"
 MAPPING_CONFIRMED_TEXT = "映射已确认"
 UNIT_REVIEW_TEXT = "需确认映射单位"
+DEFAULT_USDM_MAPPING_RISK_NOTE = "候选 symbol 按 ticker+USDT 自动生成；如 Binance 未上线该合约，请单独修改或删除。"
 
 
 def load_binance_symbol_mapping(
@@ -94,6 +95,46 @@ def upsert_local_binance_symbol_mapping(
         encoding="utf-8",
     )
     return existing
+
+
+def upsert_default_usdm_futures_mappings(
+    tickers: Iterable[str],
+    *,
+    path: Path = DEFAULT_LOCAL_MAPPING_PATH,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    existing = load_binance_symbol_mapping(path, local_path=None)
+    created = 0
+    skipped = 0
+    for ticker in _normalize_tickers(tickers):
+        current = existing.get(ticker)
+        if current and current.get("binance_symbol") and not overwrite:
+            skipped += 1
+            continue
+        existing[ticker] = _normalize_mapping_config(
+            {
+                "enabled": True,
+                "binance_symbol": f"{ticker}USDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "candidate",
+                "risk_note": DEFAULT_USDM_MAPPING_RISK_NOTE,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ) or {}
+        created += 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"mappings": {key: _mapping_config_for_file(value) for key, value in existing.items()}}, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return {
+        "mapping": existing,
+        "created": created,
+        "skipped": skipped,
+        "total": len(existing),
+    }
 
 
 def build_weekend_spread_rows(

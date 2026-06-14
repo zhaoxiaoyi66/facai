@@ -14,6 +14,7 @@ from data.weekend_spread import (
     classify_spread,
     discover_binance_symbol_candidates,
     load_binance_symbol_mapping,
+    upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
 from data.weekend_spread_log import (
@@ -967,6 +968,36 @@ def test_upsert_local_mapping_rejects_spot_market_type(tmp_path) -> None:
         raise AssertionError("spot stock mapping should be disabled")
 
     assert not path.exists()
+
+
+def test_upsert_default_usdm_futures_mappings_adds_ticker_usdt_candidates(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_mapping.local.json"
+
+    result = upsert_default_usdm_futures_mappings(["nvda", "msft"], path=path)
+    mapping = load_binance_symbol_mapping(path, local_path=None)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert result["created"] == 2
+    assert result["skipped"] == 0
+    assert mapping["NVDA"]["binance_symbol"] == "NVDAUSDT"
+    assert mapping["NVDA"]["market_type"] == "usdm_futures"
+    assert mapping["NVDA"]["mapping_confidence"] == "candidate"
+    assert mapping["MSFT"]["binance_symbol"] == "MSFTUSDT"
+    assert "manual_override_price" not in payload["mappings"]["NVDA"]
+    assert "last_price" not in payload["mappings"]["NVDA"]
+
+
+def test_upsert_default_usdm_futures_mappings_preserves_existing_mapping(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_mapping.local.json"
+    upsert_local_binance_symbol_mapping("NVDA", "CUSTOMUSDT", path=path)
+
+    result = upsert_default_usdm_futures_mappings(["NVDA", "MSFT"], path=path)
+    mapping = load_binance_symbol_mapping(path, local_path=None)
+
+    assert result["created"] == 1
+    assert result["skipped"] == 1
+    assert mapping["NVDA"]["binance_symbol"] == "CUSTOMUSDT"
+    assert mapping["MSFT"]["binance_symbol"] == "MSFTUSDT"
 
 
 def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:

@@ -11,6 +11,7 @@ from data.weekend_spread import (
     build_mapping_diagnostics,
     build_weekend_spread_rows,
     load_binance_symbol_mapping,
+    upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
 from data.weekend_spread_log import (
@@ -154,6 +155,13 @@ def _render_mapping_editor(
         if not tickers:
             st.caption("观察池为空，暂无可配置 ticker。")
             return
+        if st.button("一键生成观察池合约候选映射", width="stretch"):
+            result = upsert_default_usdm_futures_mappings(tickers, path=local_mapping_path)
+            st.success(
+                f"已新增 {result['created']} 条候选映射，跳过已有 {result['skipped']} 条；"
+                "默认格式为 TICKERUSDT，价格仍由 Binance API 自动读取。"
+            )
+            st.caption("如 Binance 未上线个别合约，后续会显示 symbol 无效，可单独修改。")
         ticker = st.selectbox("观察池 ticker", tickers, index=0)
         existing = mapping.get(str(ticker or "").upper(), {})
         symbol_value = str(existing.get("binance_symbol") or "")
