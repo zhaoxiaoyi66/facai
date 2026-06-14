@@ -17,6 +17,7 @@ backups/
 *.sqlite3
 logs/
 cache/
+data/cache/
 data/cache.sqlite
 data/research.sqlite
 data/research.sqlite-*

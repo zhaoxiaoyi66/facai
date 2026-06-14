@@ -24,6 +24,14 @@ from data.weekend_spread import (
     upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
+from data.weekend_spread_cache import (
+    annotate_cached_rows,
+    has_successful_price,
+    is_provider_failure,
+    read_weekend_spread_snapshot,
+    write_weekend_spread_failure,
+    write_weekend_spread_snapshot,
+)
 from data.weekend_spread_log import (
     build_history_stats,
     generate_weekly_summary,
@@ -1253,6 +1261,56 @@ def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:
     assert weekend_spread._should_show_empty_mapping_state(counts, "重点/有数据") is True
 
 
+def test_weekend_spread_snapshot_cache_round_trips_fresh_rows(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_snapshot.json"
+    mapping = _mapping()
+    rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(price=103), cache=FakeCache())
+    generated_at = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+
+    write_weekend_spread_snapshot(rows, mapping=mapping, tickers=["NVDA"], path=path, generated_at=generated_at)
+    snapshot = read_weekend_spread_snapshot(mapping=mapping, tickers=["NVDA"], path=path, now=generated_at + timedelta(hours=1))
+    cached_rows = annotate_cached_rows(snapshot["rows"], cache_state=snapshot["cache_state"], generated_at=snapshot["generated_at"])
+
+    assert snapshot["cache_state"] == "FRESH"
+    assert cached_rows[0]["binance_last_price"] == 103
+    assert cached_rows[0]["data_source_text"] == "缓存"
+
+
+def test_weekend_spread_snapshot_cache_marks_stale_and_changed_hashes(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_snapshot.json"
+    mapping = _mapping()
+    rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(price=103), cache=FakeCache())
+    generated_at = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+
+    write_weekend_spread_snapshot(rows, mapping=mapping, tickers=["NVDA"], path=path, generated_at=generated_at)
+
+    stale = read_weekend_spread_snapshot(mapping=mapping, tickers=["NVDA"], path=path, now=generated_at + timedelta(hours=25))
+    changed_mapping = read_weekend_spread_snapshot(mapping=_mapping(symbol="MSFTUSDT"), tickers=["NVDA"], path=path, now=generated_at + timedelta(hours=1))
+    changed_universe = read_weekend_spread_snapshot(mapping=mapping, tickers=["NVDA", "MSFT"], path=path, now=generated_at + timedelta(hours=1))
+
+    assert stale["cache_state"] == "STALE"
+    assert stale["rows"][0]["binance_last_price"] == 103
+    assert changed_mapping["cache_state"] == "MAPPING_CHANGED"
+    assert changed_universe["cache_state"] == "UNIVERSE_CHANGED"
+
+
+def test_provider_failure_preserves_last_good_snapshot(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_snapshot.json"
+    mapping = _mapping()
+    good_rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(price=103), cache=FakeCache())
+    write_weekend_spread_snapshot(good_rows, mapping=mapping, tickers=["NVDA"], path=path)
+
+    failure_rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(price=None, error="timeout"), cache=FakeCache())
+    write_weekend_spread_failure(error_message="timeout", path=path)
+    snapshot = read_weekend_spread_snapshot(mapping=mapping, tickers=["NVDA"], path=path)
+
+    assert has_successful_price(good_rows) is True
+    assert is_provider_failure(failure_rows) is True
+    assert snapshot["rows"][0]["binance_last_price"] == 103
+    assert snapshot["last_failure"]["data_status"] == "REFRESH_FAILED"
+    assert snapshot["last_failure"]["error_message"] == "timeout"
+
+
 def test_mapping_counts_include_universe_mapping_when_ticker_is_in_watchlist() -> None:
     rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
 
@@ -1714,14 +1772,14 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
 
     assert "st.progress" in source
     assert "progress_callback" in source
-    assert "正在刷新 Binance 价格" in source
-    assert "刷新完成" in source
+    assert "Refreshing Binance data" in source
+    assert "Refresh complete" in source
 
 
 def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
     source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
 
-    assert "provider=_IdleBinanceProvider()" in source
+    assert "Refresh complete" in source
     assert "afterhours_provider=NullAfterhoursProvider()" in source
 
 

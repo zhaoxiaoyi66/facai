@@ -18,6 +18,14 @@ from data.weekend_spread import (
     upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
+from data.weekend_spread_cache import (
+    annotate_cached_rows,
+    has_successful_price,
+    is_provider_failure,
+    read_weekend_spread_snapshot,
+    write_weekend_spread_failure,
+    write_weekend_spread_snapshot,
+)
 from data.weekend_spread_log import (
     build_history_stats,
     generate_weekly_summary,
@@ -72,14 +80,15 @@ def _render_realtime_tab(
     mapping: dict[str, dict],
 ) -> tuple[list[dict], dict[str, int]]:
     st.subheader("实时观察")
-    force_refresh = _render_realtime_action_bar()
-    rows = _build_weekend_spread_rows_with_feedback(watchlist, mapping=mapping, force_refresh=force_refresh)
+    refresh_options = _render_realtime_action_bar()
+    rows, cache_status = _build_weekend_spread_rows_with_feedback(watchlist, mapping=mapping, refresh_options=refresh_options)
     st.session_state["weekend_realtime_rows"] = rows
+    st.session_state["weekend_realtime_cache_status"] = cache_status
 
     mapping_counts = _mapping_counts(rows, mapping)
 
     _render_primary_kpis(rows, mapping_counts)
-    _render_data_status_cards(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_data_status_cards(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH, cache_status)
     _render_strongest_signal(rows, mapping_counts)
 
     main_rows = _default_live_rows(rows)
@@ -95,40 +104,57 @@ def _render_realtime_tab(
     return rows, mapping_counts
 
 
-def _render_realtime_action_bar() -> bool:
-    col_refresh, col_note = st.columns([1, 3])
-    force_refresh = col_refresh.button("刷新 Binance 价格", width="stretch", key="weekend_spread_refresh")
+def _render_realtime_action_bar() -> dict[str, bool]:
+    col_cache, col_refresh, col_force, col_note = st.columns([1, 1, 1, 3])
+    use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
+    refresh = col_refresh.button("刷新 Binance 数据", width="stretch", key="weekend_spread_refresh")
+    force_refresh = col_force.button("强制刷新", width="stretch", key="weekend_spread_force_refresh")
     col_note.caption("价格由 Binance API 自动读取；本页只做价差观察，不输出套利或交易指令。")
-    return force_refresh
+    return {"use_cache": bool(use_cache), "refresh": bool(refresh), "force_refresh": bool(force_refresh)}
 
 
 def _build_weekend_spread_rows_with_feedback(
     watchlist: list[str],
     *,
     mapping: dict[str, dict],
-    force_refresh: bool,
-) -> list[dict]:
+    refresh_options: dict[str, bool] | None = None,
+) -> tuple[list[dict], dict]:
+    options = refresh_options or {}
+    force_refresh = bool(options.get("refresh") or options.get("force_refresh"))
+    cached = read_weekend_spread_snapshot(mapping=mapping, tickers=watchlist)
+    if not force_refresh and cached.get("rows"):
+        return (
+            annotate_cached_rows(
+                list(cached.get("rows") or []),
+                cache_state=str(cached.get("cache_state") or "FRESH"),
+                generated_at=str(cached.get("generated_at") or ""),
+            ),
+            cached,
+        )
     if not force_refresh:
-        return build_weekend_spread_rows(
-            watchlist,
-            mapping=mapping,
-            provider=_IdleBinanceProvider(),
-            afterhours_provider=NullAfterhoursProvider(),
-            force_refresh=False,
+        return (
+            build_weekend_spread_rows(
+                watchlist,
+                mapping=mapping,
+                provider=_IdleBinanceProvider(),
+                afterhours_provider=NullAfterhoursProvider(),
+                force_refresh=False,
+            ),
+            cached,
         )
     total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
     if total <= 0:
-        st.info("观察池为空，暂无可刷新的 Binance 价格。")
-        return []
+        st.info("No watchlist symbols available for Binance refresh.")
+        return [], {"cache_state": "MISSING", "cache_message": "empty watchlist", "rows": []}
 
     progress_bar = st.progress(0.0)
     status_slot = st.empty()
-    status_slot.caption(f"准备刷新 Binance 价格：共 {total} 个观察标的。")
+    status_slot.caption(f"Preparing Binance refresh: {total} symbols.")
 
     def update_progress(completed: int, total_count: int, ticker: str) -> None:
         ratio = completed / max(total_count, 1)
         progress_bar.progress(min(max(ratio, 0.0), 1.0))
-        status_slot.caption(f"正在刷新 Binance 价格：{ticker}（{completed}/{total_count}）")
+        status_slot.caption(f"Refreshing Binance data: {ticker} ({completed}/{total_count})")
 
     rows = build_weekend_spread_rows(
         watchlist,
@@ -139,9 +165,40 @@ def _build_weekend_spread_rows_with_feedback(
     )
     ok_count = sum(1 for row in rows if row.get("status") == "OK")
     mapped_count = sum(1 for row in rows if row.get("binance_symbol"))
+    generated_at = datetime.now(timezone.utc).isoformat()
     progress_bar.progress(1.0)
-    status_slot.success(f"刷新完成：{ok_count}/{mapped_count} 个映射价格可用，观察池共 {len(rows)} 个标的。")
-    return rows
+    if has_successful_price(rows):
+        write_weekend_spread_snapshot(rows, mapping=mapping, tickers=watchlist, generated_at=datetime.now(timezone.utc))
+        live_rows = annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at)
+        status_slot.success(f"Refresh complete: {ok_count}/{mapped_count} mapped prices available, {len(rows)} rows.")
+        return live_rows, {
+            "cache_state": "API_LIVE",
+            "cache_message": "refreshed from Binance API",
+            "rows": live_rows,
+            "generated_at": generated_at,
+            "last_failure": {},
+        }
+    if is_provider_failure(rows) and cached.get("rows"):
+        error_message = _refresh_error_text(rows)
+        write_weekend_spread_failure(error_message=error_message)
+        fallback_rows = annotate_cached_rows(
+            list(cached.get("rows") or []),
+            cache_state="REFRESH_FAILED",
+            generated_at=str(cached.get("generated_at") or ""),
+        )
+        status_slot.warning("Refresh failed; using last successful cache.")
+        cache_status = dict(cached)
+        cache_status["cache_state"] = "REFRESH_FAILED"
+        cache_status["cache_message"] = error_message
+        return fallback_rows, cache_status
+    status_slot.warning(f"Refresh complete: {ok_count}/{mapped_count} mapped prices available.")
+    return annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at), {
+        "cache_state": "API_LIVE",
+        "cache_message": "refreshed without successful price",
+        "rows": rows,
+        "generated_at": generated_at,
+        "last_failure": {},
+    }
 
 
 class _IdleBinanceProvider:
@@ -168,7 +225,7 @@ def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int]) -> No
     cols[2].metric("Binance 数据状态", _binance_status_text(rows, mapping_counts["universe_mapping_count"]))
 
 
-def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
+def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path, cache_status: dict | None = None) -> None:
     afterhours_counts = _afterhours_counts(rows)
     values = [
         ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
@@ -176,6 +233,8 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
         ("Futures 价格源", _market_price_source_status(rows, "usdm_futures")),
         ("盘后参考", f"{afterhours_counts['available']} / {afterhours_counts['mapped']}"),
         ("最后刷新", _latest_updated_at(rows) or "暂缺"),
+        ("缓存时间", _cache_generated_text(cache_status)),
+        ("缓存状态", _cache_state_text(cache_status)),
     ]
     cols = st.columns(len(values))
     for col, (label, value) in zip(cols, values):
@@ -1010,6 +1069,36 @@ def _recorded_max_abs_spread(log_snapshot: dict) -> float | None:
     return max(numeric, key=lambda value: abs(float(value)))
 
 
+def _cache_generated_text(cache_status: dict | None) -> str:
+    if not cache_status:
+        return "\u6682\u7f3a"
+    generated_at = str(cache_status.get("generated_at") or "")
+    return _short_hkt_time(generated_at) if generated_at else "\u6682\u7f3a"
+
+
+def _cache_state_text(cache_status: dict | None) -> str:
+    if not cache_status:
+        return "\u6682\u65e0\u7f13\u5b58"
+    state = str(cache_status.get("cache_state") or "")
+    return {
+        "FRESH": "\u6700\u65b0",
+        "STALE": "\u5df2\u8fc7\u671f",
+        "MAPPING_CHANGED": "\u6620\u5c04\u5df2\u53d8\u5316",
+        "UNIVERSE_CHANGED": "\u89c2\u5bdf\u6c60\u5df2\u53d8\u5316",
+        "REFRESH_FAILED": "\u5237\u65b0\u5931\u8d25\uff0c\u4f7f\u7528\u4e0a\u6b21\u6210\u529f\u7f13\u5b58",
+        "API_LIVE": "API \u5b9e\u65f6",
+        "MISSING": "\u6682\u65e0\u7f13\u5b58",
+    }.get(state, state or "\u6682\u65e0\u7f13\u5b58")
+
+
+def _refresh_error_text(rows: list[dict]) -> str:
+    for row in rows:
+        value = str(row.get("error") or "").strip()
+        if value:
+            return value
+    return "Binance refresh failed"
+
+
 def _money_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -1036,6 +1125,9 @@ def _afterhours_spread_text(value: object) -> str:
 
 def _risk_badge_text(row: dict) -> str:
     risks: list[str] = []
+    data_source = str(row.get("data_source_text") or "").strip()
+    if data_source:
+        risks.append(data_source)
     status = str(row.get("status") or "")
     confidence = str(row.get("mapping_confidence") or "")
     if confidence and confidence != "confirmed":
