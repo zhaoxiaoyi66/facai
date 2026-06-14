@@ -128,10 +128,87 @@ def test_quick_decision_uses_specific_wait_confirmation_copy() -> None:
     assert "等待确认" not in breakout_html
 
 
+def test_build_drawer_primary_decision_ignores_action_fusion_nested_context_for_main_conclusion() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NOW",
+            "price": "$102.15",
+            "actionFusion": {
+                "buyZoneContext": {
+                    "current_action": "ALLOW_SMALL_BUY",
+                    "primary_zone_text": "回踩买区",
+                    "action_text": "允许小仓观察",
+                },
+                "action_code": "ALLOW_SMALL_BUY",
+                "action_cn": "可买",
+            },
+        }
+    )
+
+    decision = dashboard_drawer.build_drawer_primary_decision(row)
+    html = dashboard_drawer._drawer_quick_decision_html(row, decision)
+
+    assert decision["action_text"] == "数据不足，不给买区"
+    assert decision["zone_text"] == "暂不生成"
+    assert "允许小仓观察" not in html
+    assert "ALLOW_SMALL_BUY" not in html
+
+
+def test_quick_decision_blocks_chase_even_when_legacy_says_buy() -> None:
+    row = pd.Series(
+        {
+            "symbol": "MRVL",
+            "price": "$118.00",
+            "entry_display_label": "买区内 $95.00 - $105.00",
+            "entry_action_hint": "允许买入",
+            "action": "可买",
+            "buyZoneContext": {
+                "current_action": "BLOCK_CHASE",
+                "current_price": 118,
+                "pullback_zone_low": 95,
+                "pullback_zone_high": 105,
+                "primary_zone_text": "追高禁区",
+                "zone_selection_reason": "价格已脱离主击球区。",
+            },
+        }
+    )
+
+    decision = dashboard_drawer.build_drawer_primary_decision(row)
+    html = dashboard_drawer._drawer_quick_decision_html(row, decision)
+
+    assert decision["action_text"] == "禁止追高"
+    assert "禁止追高" in html
+    assert "允许买入" not in html
+    assert "可买" not in html
+    assert "BLOCK_CHASE" not in html
+
+
+def test_quick_decision_allows_small_buy_copy_without_raw_enum() -> None:
+    row = pd.Series(
+        {
+            "symbol": "MSFT",
+            "price": "$380.00",
+            "buyZoneContext": {
+                "current_action": "ALLOW_SMALL_BUY",
+                "current_price": 380,
+                "pullback_zone_low": 377.5,
+                "pullback_zone_high": 384.7,
+                "zone_selection_reason": "价格位于主击球区且量价承接改善。",
+            },
+        }
+    )
+
+    html = dashboard_drawer._drawer_quick_decision_html(row)
+
+    assert "允许小仓观察" in html
+    assert "ALLOW_SMALL_BUY" not in html
+
+
 def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:
     drawer_source = inspect.getsource(dashboard_drawer.drawer_html)
     detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)
 
+    assert "build_drawer_primary_decision" in drawer_source
     assert "_drawer_quick_decision_html" in drawer_source
     assert "<summary>查看完整依据</summary>" in drawer_source
     assert "旧估值参考，仅供辅助" in detail_source

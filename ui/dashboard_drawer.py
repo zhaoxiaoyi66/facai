@@ -260,12 +260,12 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     safe_symbol = escape(symbol)
     entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
     entry_display = _entry_rating_chip_text(entry_label, entry_grade)
-    quick_decision = _drawer_quick_decision(row)
+    primary_decision = build_drawer_primary_decision(row)
     badges = [
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
-        drawer_deps.badge_span_html(quick_decision["badge_zone"], _buy_point_label_tone(quick_decision["badge_zone"])),
+        drawer_deps.badge_span_html(primary_decision["badge_zone"], _buy_point_label_tone(primary_decision["badge_zone"])),
         drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
-        drawer_deps.badge_span_html(quick_decision["action_text"], drawer_deps.badge_color_for_cell("action", quick_decision["action_text"], row)),
+        drawer_deps.badge_span_html(primary_decision["action_text"], drawer_deps.badge_color_for_cell("action", primary_decision["action_text"], row)),
     ]
     full_basis = (
         '<details class="drawer-raw drawer-full-basis">'
@@ -295,19 +295,19 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         '<div class="drawer-meta-grid">'
         f'<span>模型：{escape(model_type_label(row.get("modelType")))}</span>'
         f'<span>市值：{escape(str(row.get("marketCap") or "N/A"))}</span>'
-        f'<span>当前新增：{escape(str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A"))}</span>'
+        '<span>结论源：统一买区</span>'
         f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
         '</div>'
         f'<div class="drawer-badges">{"".join(badges)}</div>'
         f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
-        f'{_drawer_quick_decision_html(row, quick_decision)}'
+        f'{_drawer_quick_decision_html(row, primary_decision)}'
         f'{full_basis}'
         '</aside>'
     )
 
 
 def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | None = None) -> str:
-    decision = decision or _drawer_quick_decision(row)
+    decision = decision or build_drawer_primary_decision(row)
     field_items = [
         ("当前动作", decision["action_text"]),
         ("主原因", decision["main_reason"]),
@@ -342,7 +342,7 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
     )
 
 
-def _drawer_quick_decision(row: pd.Series) -> dict[str, object]:
+def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     context = _drawer_buy_zone_context(row)
     action_code = str(context.get("current_action") or "").strip().upper() or "DATA_INSUFFICIENT"
     is_data_insufficient = action_code == "DATA_INSUFFICIENT"
@@ -354,7 +354,16 @@ def _drawer_quick_decision(row: pd.Series) -> dict[str, object]:
         missing_labels = _dedupe_text(["统一买区上下文", *missing_labels])
     status_label = status_display.get("label") or _drawer_canonical_action_text(action_code, has_position=has_position)
     status_hint = status_display.get("hint") or ""
-    action_text = status_label
+    if is_data_insufficient:
+        action_text = "数据不足，不给买区"
+    elif action_code == "ALLOW_SMALL_BUY":
+        action_text = "允许小仓观察"
+    elif action_code == "BLOCK_CHASE":
+        action_text = "禁止追高"
+    elif action_code == "RISK_REVIEW":
+        action_text = "风控复核"
+    else:
+        action_text = status_label
     zone_text = "暂不生成" if is_data_insufficient else _drawer_primary_zone_text(context, zone_low, zone_high)
     main_reason = (
         "技术承接数据不足"
@@ -383,14 +392,13 @@ def _drawer_quick_decision(row: pd.Series) -> dict[str, object]:
     }
 
 
+def _drawer_quick_decision(row: pd.Series | dict) -> dict[str, object]:
+    return build_drawer_primary_decision(row)
+
+
 def _drawer_buy_zone_context(row: pd.Series) -> dict[str, object]:
     for key in ("buyZoneContext", "buy_zone_context"):
         value = row.get(key)
-        if isinstance(value, dict):
-            return dict(value)
-    payload = row.get("actionFusion")
-    if isinstance(payload, dict):
-        value = payload.get("buy_zone_context") or payload.get("buyZoneContext")
         if isinstance(value, dict):
             return dict(value)
     return {}
