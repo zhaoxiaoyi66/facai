@@ -5,7 +5,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from data.weekend_spread import build_weekend_spread_rows, load_binance_symbol_mapping
+from data.weekend_spread import build_mapping_diagnostics, build_weekend_spread_rows, load_binance_symbol_mapping
 from settings import load_watchlist
 
 
@@ -30,18 +30,26 @@ def render() -> None:
     )
     st.warning(RISK_NOTICE)
     mapping = load_binance_symbol_mapping()
-    controls = st.columns([1, 1, 1, 1])
+    controls = st.columns([1, 1, 1, 1, 1])
     mapped_only = controls[0].checkbox("仅显示有 mapping", value=False)
-    focus_only = controls[1].checkbox("仅重点/异常", value=False)
-    abnormal_only = controls[2].checkbox("仅异常价差", value=False)
-    force_refresh = controls[3].button("刷新 Binance 数据", width="stretch")
+    confirmed_only = controls[1].checkbox("仅 confirmed", value=False)
+    focus_only = controls[2].checkbox("仅重点/异常", value=False)
+    abnormal_only = controls[3].checkbox("仅异常价差", value=False)
+    force_refresh = controls[4].button("刷新 Binance 价格", width="stretch")
 
     rows = build_weekend_spread_rows(load_watchlist(), mapping=mapping, force_refresh=force_refresh)
-    filtered_rows = _filter_rows(rows, mapped_only=mapped_only, focus_only=focus_only, abnormal_only=abnormal_only)
+    filtered_rows = _filter_rows(
+        rows,
+        mapped_only=mapped_only,
+        confirmed_only=confirmed_only,
+        focus_only=focus_only,
+        abnormal_only=abnormal_only,
+    )
     configured_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
     st.caption(f"观察池 {len(rows)} 只；已配置 Binance 映射 {configured_count} 只；当前显示 {len(filtered_rows)} 只。")
     st.dataframe(_display_frame(filtered_rows), width="stretch", hide_index=True)
     _render_details(filtered_rows)
+    _render_mapping_diagnostics(mapping)
     with st.expander("映射与风险说明", expanded=False):
         st.markdown(
             "\n".join(
@@ -60,12 +68,15 @@ def _filter_rows(
     rows: list[dict],
     *,
     mapped_only: bool,
+    confirmed_only: bool,
     focus_only: bool,
     abnormal_only: bool,
 ) -> list[dict]:
     result = list(rows)
     if mapped_only:
         result = [row for row in result if row.get("binance_symbol")]
+    if confirmed_only:
+        result = [row for row in result if row.get("mapping_status") == "映射已确认"]
     if abnormal_only:
         result = [row for row in result if row.get("alert_level") == "ABNORMAL"]
     elif focus_only:
@@ -123,6 +134,64 @@ def _render_details(rows: list[dict]) -> None:
                 """,
                 unsafe_allow_html=True,
             )
+
+
+def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
+    with st.expander("映射诊断", expanded=False):
+        validate = st.button("校验 symbol 映射", width="stretch")
+        diagnostics = build_mapping_diagnostics(
+            load_watchlist(),
+            mapping=mapping,
+            validate=validate,
+            include_candidates=validate,
+        )
+        st.dataframe(_diagnostics_frame(diagnostics), width="stretch", hide_index=True)
+        if validate:
+            st.caption("候选 symbol 仅表示 Binance 上存在相似代码，不代表真实映射美股。")
+
+
+def _diagnostics_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "Ticker"),
+        ("configured_symbol", "配置 symbol"),
+        ("market_type", "市场"),
+        ("mapping_confidence", "映射置信"),
+        ("validation_status", "校验状态"),
+        ("last_validated_at", "校验时间"),
+        ("price_available", "价格"),
+        ("book_available", "买卖盘"),
+        ("volume_available", "成交量"),
+        ("funding_available", "资金费率"),
+        ("risk_note", "风险备注"),
+        ("candidates", "候选"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    for col in ("价格", "买卖盘", "成交量", "资金费率"):
+        display[col] = display[col].map(lambda value: "可用" if bool(value) else "暂缺")
+    display["候选"] = display["候选"].map(_candidate_text)
+    display["配置 symbol"] = display["配置 symbol"].replace("", "暂无映射")
+    display["校验时间"] = display["校验时间"].replace("", "未校验")
+    return display
+
+
+def _candidate_text(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    labels = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "")
+        market_type = str(item.get("market_type") or "")
+        quote = str(item.get("quote_currency") or "")
+        if symbol:
+            labels.append(f"{symbol}({market_type}/{quote})")
+    return ", ".join(labels)
 
 
 def _mapping_summary(mapping: dict[str, dict]) -> str:

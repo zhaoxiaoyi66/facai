@@ -27,6 +27,31 @@ class BinancePriceSnapshot:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class BinanceSymbolValidation:
+    symbol: str
+    exists: bool
+    market_type: str
+    quote_currency: str = ""
+    status: str = "unknown"
+    base_asset: str = ""
+    price_available: bool = False
+    book_available: bool = False
+    volume_available: bool = False
+    funding_available: bool = False
+    error_message: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class BinanceSymbolCandidate:
+    symbol: str
+    market_type: str
+    base_asset: str = ""
+    quote_currency: str = ""
+    status: str = "candidate"
+
+
 class BinancePriceProvider:
     def get_last_price(
         self,
@@ -35,6 +60,18 @@ class BinancePriceProvider:
         market_type: str = "usdm_futures",
         force_refresh: bool = False,
     ) -> BinancePriceSnapshot:
+        raise NotImplementedError
+
+    def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> BinanceSymbolValidation:
+        raise NotImplementedError
+
+    def find_symbol_candidates(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> list[BinanceSymbolCandidate]:
         raise NotImplementedError
 
 
@@ -70,6 +107,18 @@ class CachedBinancePriceProvider(BinancePriceProvider):
         if not snapshot.error:
             self._write_cached(cache_key, snapshot)
         return snapshot
+
+    def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> BinanceSymbolValidation:
+        return self.provider.validate_symbol(symbol, market_type=market_type)
+
+    def find_symbol_candidates(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> list[BinanceSymbolCandidate]:
+        return self.provider.find_symbol_candidates(query, market_type=market_type, limit=limit)
 
     def _read_cached(self, cache_key: str) -> BinancePriceSnapshot | None:
         payload = _read_json(self.cache_path)
@@ -128,7 +177,7 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             return _error_snapshot(normalized, f"{type(exc).__name__}: {exc}", market_type=normalized_market)
 
     def _get_spot_snapshot(self, symbol: str) -> BinancePriceSnapshot:
-        if not self._symbol_exists(self.spot_base_url, "/api/v3/exchangeInfo", symbol):
+        if not self._symbol_record("spot", symbol):
             return _error_snapshot(symbol, "invalid_symbol", market_type="spot")
         price_payload = self._get_json(self.spot_base_url, "/api/v3/ticker/price", {"symbol": symbol})
         book = self._get_json(self.spot_base_url, "/api/v3/ticker/bookTicker", {"symbol": symbol})
@@ -149,7 +198,7 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         )
 
     def _get_usdm_futures_snapshot(self, symbol: str) -> BinancePriceSnapshot:
-        if not self._symbol_exists(self.futures_base_url, "/fapi/v1/exchangeInfo", symbol):
+        if not self._symbol_record("usdm_futures", symbol):
             return _error_snapshot(symbol, "invalid_symbol", market_type="usdm_futures")
         price_payload = self._get_json(self.futures_base_url, "/fapi/v2/ticker/price", {"symbol": symbol})
         book = self._get_json(self.futures_base_url, "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
@@ -170,15 +219,158 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    def _symbol_exists(self, base_url: str, path: str, symbol: str) -> bool:
-        payload = self._get_json(base_url, path, {"symbol": symbol})
+    def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> BinanceSymbolValidation:
+        normalized = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
+        now = datetime.now(timezone.utc).isoformat()
+        if not normalized:
+            return BinanceSymbolValidation(
+                symbol=normalized,
+                exists=False,
+                market_type=normalized_market,
+                status="missing_symbol",
+                error_message="missing_symbol",
+                updated_at=now,
+            )
+        try:
+            record = self._symbol_record(normalized_market, normalized)
+            if not record:
+                return BinanceSymbolValidation(
+                    symbol=normalized,
+                    exists=False,
+                    market_type=normalized_market,
+                    status="invalid_symbol",
+                    error_message="invalid_symbol",
+                    updated_at=now,
+                )
+            price_payload = self._get_json(
+                *self._endpoint(normalized_market, "price"),
+                {"symbol": normalized},
+            )
+            book_payload = self._get_json(
+                *self._endpoint(normalized_market, "book"),
+                {"symbol": normalized},
+            )
+            ticker_payload = self._get_json(
+                *self._endpoint(normalized_market, "ticker"),
+                {"symbol": normalized},
+            )
+            funding_available = False
+            if normalized_market == "usdm_futures":
+                funding_payload = self._get_json(
+                    *self._endpoint(normalized_market, "funding"),
+                    {"symbol": normalized},
+                )
+                funding_available = _number(funding_payload.get("lastFundingRate")) is not None
+            price_available = _number(price_payload.get("price")) is not None or _number(ticker_payload.get("lastPrice")) is not None
+            return BinanceSymbolValidation(
+                symbol=normalized,
+                exists=True,
+                market_type=normalized_market,
+                quote_currency=str(record.get("quoteAsset") or record.get("quote_asset") or ""),
+                status="valid" if price_available else "symbol_valid_price_missing",
+                base_asset=str(record.get("baseAsset") or record.get("base_asset") or ""),
+                price_available=price_available,
+                book_available=_number(book_payload.get("bidPrice")) is not None and _number(book_payload.get("askPrice")) is not None,
+                volume_available=_number(ticker_payload.get("volume")) is not None,
+                funding_available=funding_available,
+                updated_at=now,
+            )
+        except HTTPError as exc:
+            status = "invalid_symbol" if exc.code in {400, 404} else "api_error"
+            return BinanceSymbolValidation(
+                symbol=normalized,
+                exists=False,
+                market_type=normalized_market,
+                status=status,
+                error_message=f"HTTPError: {exc}",
+                updated_at=now,
+            )
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            return BinanceSymbolValidation(
+                symbol=normalized,
+                exists=False,
+                market_type=normalized_market,
+                status="api_error",
+                error_message=f"{type(exc).__name__}: {exc}",
+                updated_at=now,
+            )
+
+    def find_symbol_candidates(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> list[BinanceSymbolCandidate]:
+        normalized_query = str(query or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
+        if not normalized_query:
+            return []
+        try:
+            payload = self._exchange_info(normalized_market, None)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return []
+        symbols = payload.get("symbols") if isinstance(payload, dict) else None
+        if not isinstance(symbols, list):
+            symbols = [payload] if isinstance(payload, dict) else []
+        candidates: list[BinanceSymbolCandidate] = []
+        for item in symbols:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if normalized_query not in symbol:
+                continue
+            candidates.append(
+                BinanceSymbolCandidate(
+                    symbol=symbol,
+                    market_type=normalized_market,
+                    base_asset=str(item.get("baseAsset") or ""),
+                    quote_currency=str(item.get("quoteAsset") or ""),
+                    status="candidate",
+                )
+            )
+            if len(candidates) >= max(1, limit):
+                break
+        return candidates
+
+    def _symbol_record(self, market_type: str, symbol: str) -> dict[str, Any] | None:
+        payload = self._exchange_info(market_type, symbol)
         symbols = payload.get("symbols") if isinstance(payload, dict) else None
         if isinstance(symbols, list):
-            return any(str(item.get("symbol") or "").upper() == symbol for item in symbols if isinstance(item, dict))
-        return str(payload.get("symbol") or "").upper() == symbol
+            return next(
+                (item for item in symbols if isinstance(item, dict) and str(item.get("symbol") or "").upper() == symbol),
+                None,
+            )
+        if str(payload.get("symbol") or "").upper() == symbol:
+            return payload
+        return None
+
+    def _exchange_info(self, market_type: str, symbol: str | None) -> dict[str, Any]:
+        base_url, path = self._endpoint(market_type, "exchange_info")
+        params = {"symbol": symbol} if symbol else {}
+        return self._get_json(base_url, path, params)
+
+    def _endpoint(self, market_type: str, kind: str) -> tuple[str, str]:
+        normalized_market = normalize_market_type(market_type)
+        if normalized_market == "spot":
+            return {
+                "exchange_info": (self.spot_base_url, "/api/v3/exchangeInfo"),
+                "price": (self.spot_base_url, "/api/v3/ticker/price"),
+                "book": (self.spot_base_url, "/api/v3/ticker/bookTicker"),
+                "ticker": (self.spot_base_url, "/api/v3/ticker/24hr"),
+            }[kind]
+        return {
+            "exchange_info": (self.futures_base_url, "/fapi/v1/exchangeInfo"),
+            "price": (self.futures_base_url, "/fapi/v2/ticker/price"),
+            "book": (self.futures_base_url, "/fapi/v1/ticker/bookTicker"),
+            "ticker": (self.futures_base_url, "/fapi/v1/ticker/24hr"),
+            "funding": (self.futures_base_url, "/fapi/v1/premiumIndex"),
+        }[kind]
 
     def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict[str, Any]:
-        url = f"{base_url.rstrip('/')}{path}?{urlencode(params)}"
+        query = f"?{urlencode(params)}" if params else ""
+        url = f"{base_url.rstrip('/')}{path}{query}"
         request = Request(url, headers={"User-Agent": "facai-weekend-spread/1.2"})
         with urlopen(request, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")

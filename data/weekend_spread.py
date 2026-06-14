@@ -14,6 +14,7 @@ from settings import CONFIG_DIR
 
 
 DEFAULT_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.json"
+DEFAULT_LOCAL_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.local.json"
 RISK_TEXT = "Binance 映射价格不等于真实美股可成交价格；V1 仅用于观察，不构成套利建议。"
 NO_MAPPING_TEXT = "暂无映射"
 MAPPING_REVIEW_TEXT = "需人工确认映射"
@@ -21,7 +22,18 @@ MAPPING_CONFIRMED_TEXT = "映射已确认"
 UNIT_REVIEW_TEXT = "需确认映射单位"
 
 
-def load_binance_symbol_mapping(path: Path = DEFAULT_MAPPING_PATH) -> dict[str, dict[str, Any]]:
+def load_binance_symbol_mapping(
+    path: Path = DEFAULT_MAPPING_PATH,
+    *,
+    local_path: Path | None = DEFAULT_LOCAL_MAPPING_PATH,
+) -> dict[str, dict[str, Any]]:
+    mapping = _load_mapping_file(path)
+    if local_path is not None:
+        mapping.update(_load_mapping_file(local_path))
+    return mapping
+
+
+def _load_mapping_file(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     try:
@@ -169,6 +181,85 @@ def build_weekend_spread_rows(
     return rows
 
 
+def build_mapping_diagnostics(
+    tickers: Iterable[str],
+    *,
+    mapping: dict[str, Any] | None = None,
+    provider: BinancePriceProvider | None = None,
+    validate: bool = False,
+    include_candidates: bool = False,
+) -> list[dict[str, Any]]:
+    effective_mapping = _normalize_mapping(mapping or load_binance_symbol_mapping())
+    price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    rows: list[dict[str, Any]] = []
+    for ticker in _normalize_tickers(tickers):
+        config = effective_mapping.get(ticker)
+        if not config or not config.get("binance_symbol"):
+            row = {
+                "ticker": ticker,
+                "configured_symbol": "",
+                "market_type": "",
+                "mapping_confidence": "",
+                "validation_status": "暂无映射",
+                "last_validated_at": "",
+                "exists": False,
+                "quote_currency": "",
+                "base_asset": "",
+                "price_available": False,
+                "book_available": False,
+                "volume_available": False,
+                "funding_available": False,
+                "risk_note": "",
+                "candidates": [],
+                "error_message": "",
+            }
+            if include_candidates:
+                row["candidates"] = _candidate_dicts(price_provider.find_symbol_candidates(ticker, market_type="usdm_futures"))
+            rows.append(row)
+            continue
+        market_type = str(config.get("market_type") or "usdm_futures")
+        symbol = str(config.get("binance_symbol") or "").strip().upper()
+        row = {
+            "ticker": ticker,
+            "configured_symbol": symbol,
+            "market_type": market_type,
+            "mapping_confidence": str(config.get("mapping_confidence") or "unverified"),
+            "validation_status": str(config.get("validation_status") or "未校验"),
+            "last_validated_at": str(config.get("last_validated_at") or ""),
+            "exists": False,
+            "quote_currency": str(config.get("quote_currency") or ""),
+            "base_asset": "",
+            "price_available": False,
+            "book_available": False,
+            "volume_available": False,
+            "funding_available": False,
+            "risk_note": str(config.get("risk_note") or ""),
+            "candidates": [],
+            "error_message": "",
+        }
+        if validate:
+            validation = price_provider.validate_symbol(symbol, market_type=market_type)
+            validation_dict = _validation_to_dict(validation)
+            row.update(
+                {
+                    "validation_status": _validation_status_text(validation_dict, row["mapping_confidence"]),
+                    "last_validated_at": validation_dict.get("updated_at") or "",
+                    "exists": bool(validation_dict.get("exists")),
+                    "quote_currency": validation_dict.get("quote_currency") or row["quote_currency"],
+                    "base_asset": validation_dict.get("base_asset") or "",
+                    "price_available": bool(validation_dict.get("price_available")),
+                    "book_available": bool(validation_dict.get("book_available")),
+                    "volume_available": bool(validation_dict.get("volume_available")),
+                    "funding_available": bool(validation_dict.get("funding_available")),
+                    "error_message": validation_dict.get("error_message") or "",
+                }
+            )
+        if include_candidates:
+            row["candidates"] = _candidate_dicts(price_provider.find_symbol_candidates(ticker, market_type=market_type))
+        rows.append(row)
+    return rows
+
+
 def classify_spread(spread_pct: float | None) -> dict[str, str]:
     if spread_pct is None:
         return {"level": "DATA_INSUFFICIENT", "label": "数据不足"}
@@ -270,8 +361,64 @@ def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
         "funding_rate": getattr(snapshot, "funding_rate", None),
         "updated_at": getattr(snapshot, "updated_at", ""),
         "source": getattr(snapshot, "source", ""),
+        "market_type": getattr(snapshot, "market_type", ""),
+        "manual_override": getattr(snapshot, "manual_override", False),
         "error": getattr(snapshot, "error", ""),
     }
+
+
+def _validation_to_dict(validation: Any) -> dict[str, Any]:
+    if isinstance(validation, dict):
+        return dict(validation)
+    if is_dataclass(validation):
+        return asdict(validation)
+    return {
+        "symbol": getattr(validation, "symbol", ""),
+        "exists": getattr(validation, "exists", False),
+        "market_type": getattr(validation, "market_type", ""),
+        "quote_currency": getattr(validation, "quote_currency", ""),
+        "status": getattr(validation, "status", ""),
+        "base_asset": getattr(validation, "base_asset", ""),
+        "price_available": getattr(validation, "price_available", False),
+        "book_available": getattr(validation, "book_available", False),
+        "volume_available": getattr(validation, "volume_available", False),
+        "funding_available": getattr(validation, "funding_available", False),
+        "error_message": getattr(validation, "error_message", ""),
+        "updated_at": getattr(validation, "updated_at", ""),
+    }
+
+
+def _candidate_dicts(candidates: Iterable[Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            row = dict(item)
+            row.setdefault("status", "candidate")
+            result.append(row)
+        elif is_dataclass(item):
+            result.append(asdict(item))
+        else:
+            result.append(
+                {
+                    "symbol": getattr(item, "symbol", ""),
+                    "market_type": getattr(item, "market_type", ""),
+                    "base_asset": getattr(item, "base_asset", ""),
+                    "quote_currency": getattr(item, "quote_currency", ""),
+                    "status": getattr(item, "status", "candidate"),
+                }
+            )
+    return result
+
+
+def _validation_status_text(validation: dict[str, Any], mapping_confidence: str) -> str:
+    if not validation.get("exists"):
+        status = str(validation.get("status") or "")
+        if status == "invalid_symbol":
+            return "symbol 无效"
+        return "Binance 数据不可用"
+    if str(mapping_confidence or "").lower() == "confirmed":
+        return "confirmed"
+    return "symbol 有效但映射未确认"
 
 
 def _normalize_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -308,6 +455,8 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
     normalized["unit_multiplier"] = _number(normalized.get("unit_multiplier")) or 1
     normalized["mapping_confidence"] = str(normalized.get("mapping_confidence") or "manual_required").strip().lower()
     normalized["risk_note"] = str(normalized.get("risk_note") or "")
+    normalized["last_validated_at"] = str(normalized.get("last_validated_at") or "")
+    normalized["validation_status"] = str(normalized.get("validation_status") or "")
     normalized["manual_override_enabled"] = bool(normalized.get("manual_override_enabled", False))
     normalized["manual_override_price"] = _number(normalized.get("manual_override_price"))
     return normalized

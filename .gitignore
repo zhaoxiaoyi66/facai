@@ -1,6 +1,7 @@
 .env
 .env.*
 .streamlit/secrets.toml
+config/binance_symbol_mapping.local.json
 node_modules/
 .venv/
 __pycache__/

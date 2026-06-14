@@ -6,7 +6,12 @@ import json
 import pandas as pd
 
 from data.binance_provider import BinanceHTTPPriceProvider
-from data.weekend_spread import build_weekend_spread_rows, classify_spread, load_binance_symbol_mapping
+from data.weekend_spread import (
+    build_mapping_diagnostics,
+    build_weekend_spread_rows,
+    classify_spread,
+    load_binance_symbol_mapping,
+)
 from ui import weekend_spread
 
 
@@ -39,6 +44,8 @@ class FakeProvider:
         self.funding_rate = funding_rate
         self.error = error
         self.calls: list[str] = []
+        self.validation_exists = error != "invalid_symbol"
+        self.candidates = [{"symbol": "NVDAUSDT", "market_type": "usdm_futures", "quote_currency": "USDT"}]
 
     def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
         self.calls.append(f"{market_type}:{symbol}")
@@ -53,6 +60,36 @@ class FakeProvider:
             "source": "mock_binance",
             "error": self.error,
         }
+
+    def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> dict:
+        self.calls.append(f"validate:{market_type}:{symbol}")
+        if self.error == "invalid_symbol":
+            return {
+                "symbol": symbol,
+                "exists": False,
+                "market_type": market_type,
+                "status": "invalid_symbol",
+                "error_message": "invalid_symbol",
+                "updated_at": "2026-06-14T12:00:00+00:00",
+            }
+        return {
+            "symbol": symbol,
+            "exists": self.validation_exists,
+            "market_type": market_type,
+            "quote_currency": "USDT",
+            "status": "valid",
+            "base_asset": symbol.removesuffix("USDT"),
+            "price_available": self.price is not None,
+            "book_available": self.bid is not None and self.ask is not None,
+            "volume_available": self.volume_24h is not None,
+            "funding_available": market_type == "usdm_futures" and self.funding_rate is not None,
+            "updated_at": "2026-06-14T12:00:00+00:00",
+            "error_message": "",
+        }
+
+    def find_symbol_candidates(self, query: str, *, market_type: str = "usdm_futures", limit: int = 10) -> list[dict]:
+        self.calls.append(f"candidates:{market_type}:{query}")
+        return [item for item in self.candidates if query.upper() in item["symbol"]][:limit]
 
 
 def _history(close: float = 100.0) -> pd.DataFrame:
@@ -159,6 +196,16 @@ def test_missing_symbol_mapping_does_not_call_provider() -> None:
     assert provider.calls == []
 
 
+def test_mapping_diagnostics_reports_missing_mapping_without_price_request() -> None:
+    provider = FakeProvider()
+
+    rows = build_mapping_diagnostics(["MSFT"], mapping={}, provider=provider, validate=True, include_candidates=False)
+
+    assert rows[0]["validation_status"] == "暂无映射"
+    assert rows[0]["configured_symbol"] == ""
+    assert provider.calls == []
+
+
 def test_unconfirmed_unit_or_currency_does_not_calculate_formal_spread() -> None:
     provider = FakeProvider(price=101.5)
     rows = build_weekend_spread_rows(
@@ -199,6 +246,31 @@ def test_invalid_binance_symbol_is_mapping_review_not_generic_api_failure() -> N
     assert row["mapping_status"] == "symbol 无效 / 映射待确认"
     assert row["alert_level_cn"] == "symbol 无效 / 映射待确认"
     assert row["spread_pct"] is None
+
+
+def test_mapping_diagnostics_marks_invalid_symbol() -> None:
+    provider = FakeProvider(price=None, error="invalid_symbol")
+
+    rows = build_mapping_diagnostics(["NVDA"], mapping=_mapping(), provider=provider, validate=True)
+
+    assert rows[0]["validation_status"] == "symbol 无效"
+    assert rows[0]["exists"] is False
+    assert rows[0]["error_message"] == "invalid_symbol"
+
+
+def test_mapping_diagnostics_marks_unverified_valid_symbol() -> None:
+    provider = FakeProvider(price=101.5)
+
+    rows = build_mapping_diagnostics(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="unverified"),
+        provider=provider,
+        validate=True,
+    )
+
+    assert rows[0]["validation_status"] == "symbol 有效但映射未确认"
+    assert rows[0]["exists"] is True
+    assert rows[0]["price_available"] is True
 
 
 def test_spot_mapping_requests_spot_price_from_provider() -> None:
@@ -256,6 +328,16 @@ def test_manual_override_is_explicitly_marked_non_realtime() -> None:
     assert provider.calls == []
 
 
+def test_candidate_discovery_does_not_mark_mapping_confirmed() -> None:
+    provider = FakeProvider()
+
+    rows = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=False, include_candidates=True)
+
+    assert rows[0]["validation_status"] == "暂无映射"
+    assert rows[0]["candidates"][0]["symbol"] == "NVDAUSDT"
+    assert rows[0]["candidates"][0]["status"] == "candidate"
+
+
 class RecordingHTTPProvider(BinanceHTTPPriceProvider):
     def __init__(self) -> None:
         super().__init__(spot_base_url="https://spot.test", futures_base_url="https://futures.test")
@@ -264,7 +346,8 @@ class RecordingHTTPProvider(BinanceHTTPPriceProvider):
     def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
         self.calls.append((base_url, path, dict(params)))
         if path.endswith("exchangeInfo"):
-            return {"symbols": [{"symbol": params["symbol"]}]}
+            symbol = params.get("symbol")
+            return {"symbols": [{"symbol": symbol or "NVDAUSDT", "baseAsset": "NVDA", "quoteAsset": "USDT"}]}
         if path.endswith("ticker/price"):
             return {"price": "101.5"}
         if path.endswith("bookTicker"):
@@ -326,6 +409,16 @@ def test_http_provider_marks_unknown_symbol_invalid() -> None:
     assert [path for _, path, _ in provider.calls] == ["/api/v3/exchangeInfo"]
 
 
+def test_http_provider_discovers_candidates_without_confirming_mapping() -> None:
+    provider = RecordingHTTPProvider()
+
+    candidates = provider.find_symbol_candidates("NVDA", market_type="usdm_futures")
+
+    assert candidates[0].symbol == "NVDAUSDT"
+    assert candidates[0].status == "candidate"
+    assert candidates[0].quote_currency == "USDT"
+
+
 def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
     path = tmp_path / "mapping.json"
     path.write_text(
@@ -354,6 +447,36 @@ def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:
     assert mapping["NVDA"]["mapping_confidence"] == "confirmed"
     assert mapping["ADBE"]["binance_symbol"] == "ADBEUSDT"
     assert mapping["ADBE"]["mapping_confidence"] == "manual_required"
+
+
+def test_mapping_loader_merges_local_mapping_over_base(tmp_path) -> None:
+    base = tmp_path / "mapping.json"
+    local = tmp_path / "mapping.local.json"
+    base.write_text(json.dumps({"mappings": {"NVDA": {"enabled": True, "binance_symbol": "OLDUSDT"}}}), encoding="utf-8")
+    local.write_text(
+        json.dumps(
+            {
+                "mappings": {
+                    "NVDA": {
+                        "enabled": True,
+                        "binance_symbol": "NVDAUSDT",
+                        "market_type": "usdm_futures",
+                        "quote_currency": "USDT",
+                        "unit_multiplier": 1,
+                        "mapping_confidence": "confirmed",
+                        "validation_status": "confirmed",
+                        "last_validated_at": "2026-06-14T12:00:00+00:00",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mapping = load_binance_symbol_mapping(base, local_path=local)
+
+    assert mapping["NVDA"]["binance_symbol"] == "NVDAUSDT"
+    assert mapping["NVDA"]["validation_status"] == "confirmed"
 
 
 def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "mappings": {
+    "EXAMPLE": {
+      "enabled": false,
+      "binance_symbol": "",
+      "market_type": "usdm_futures",
+      "quote_currency": "USDT",
+      "unit_multiplier": 1,
+      "mapping_confidence": "unverified",
+      "risk_note": "人工确认 ticker -> Binance symbol 映射关系后启用",
+      "last_validated_at": "",
+      "validation_status": ""
+    }
+  }
+}
