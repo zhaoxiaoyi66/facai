@@ -9,6 +9,7 @@ import streamlit as st
 
 from buy_zone_engine import generate_buy_zone
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
+from data.buy_zone_engine import build_buy_zone_context
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
@@ -1560,24 +1561,32 @@ def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> d
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
         current_price = _first_number(sell_price, technicals.get("price"), market.get("currentPrice"))
         if current_price is not None:
-            stock_data = {**snapshot, **technicals, "price_history": history, "price": current_price}
             score = calculate_total_score(snapshot, technicals)
-            zone = generate_buy_zone(str(symbol).upper(), stock_data, score, score.scoring_model)
-            combined = getattr(zone, "combinedEntry", None) or {}
-            technical = getattr(zone, "technicalEntry", None) or {}
-            pullback = _first_number(
-                combined.get("technicalPullbackPrice"),
-                combined.get("valuationEntryPrice"),
-                _first_support_level_price(technical.get("supportLevels")),
-                getattr(zone, "nextTriggerPrice", None),
-                getattr(zone, "trancheBuyHigh", None),
-            )
-            breakout = _first_number(
-                sell_price,
-                getattr(zone, "noChaseAbove", None),
-                technical.get("technicalReviewPrice"),
-                current_price,
-            )
+            stock_data = {**snapshot, **technicals, "price_history": history, "daily_ohlcv": history, "history": history, "price": current_price}
+            final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
+            if final_score_value is not None:
+                stock_data["final_score"] = final_score_value
+            buy_zone_context = build_buy_zone_context(stock_data).to_dict()
+            pullback, breakout = _reentry_levels_from_buy_zone_context(buy_zone_context, sell_price=sell_price, current_price=current_price)
+            if pullback is None or breakout is None:
+                zone = generate_buy_zone(str(symbol).upper(), stock_data, score, score.scoring_model)
+                combined = getattr(zone, "combinedEntry", None) or {}
+                technical = getattr(zone, "technicalEntry", None) or {}
+                pullback = _first_number(
+                    pullback,
+                    combined.get("technicalPullbackPrice"),
+                    combined.get("valuationEntryPrice"),
+                    _first_support_level_price(technical.get("supportLevels")),
+                    getattr(zone, "nextTriggerPrice", None),
+                    getattr(zone, "trancheBuyHigh", None),
+                )
+                breakout = _first_number(
+                    breakout,
+                    getattr(zone, "noChaseAbove", None),
+                    technical.get("technicalReviewPrice"),
+                    sell_price,
+                    current_price,
+                )
     except Exception:
         pass
     if pullback is None and sell_price is not None:
@@ -1604,6 +1613,29 @@ def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> d
         "invalidation": "核心投资假设被证伪，或长期逻辑不再成立",
         "plan_text": plan_text,
     }
+
+
+def _reentry_levels_from_buy_zone_context(
+    context: dict | None,
+    *,
+    sell_price: object = None,
+    current_price: object = None,
+) -> tuple[float | None, float | None]:
+    if not isinstance(context, dict):
+        return None, _first_number(sell_price, current_price)
+    pullback = _first_number(
+        context.get("pullback_zone_high"),
+        context.get("support_zone_high"),
+        context.get("pullback_zone_low"),
+        context.get("support_zone_low"),
+    )
+    breakout = _first_number(
+        context.get("confirmation_price"),
+        sell_price,
+        context.get("chase_price"),
+        current_price,
+    )
+    return pullback, breakout
 
 
 def _first_number(*values: object) -> float | None:

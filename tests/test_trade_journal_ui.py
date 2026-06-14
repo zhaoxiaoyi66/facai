@@ -127,7 +127,26 @@ def test_reentry_plan_suggestion_uses_market_context_helpers() -> None:
 
     assert "build_market_context" in source
     assert "build_market_history" in source
+    assert "build_buy_zone_context" in source
+    assert '"daily_ohlcv": history' in source
     assert "CacheReadModel" not in source
+
+
+def test_reentry_plan_suggestion_prefers_unified_buy_zone_context_levels() -> None:
+    pullback, breakout = trade_journal._reentry_levels_from_buy_zone_context(
+        {
+            "pullback_zone_low": 90,
+            "pullback_zone_high": 95,
+            "support_zone_high": 88,
+            "confirmation_price": 112,
+            "chase_price": 130,
+        },
+        sell_price=105,
+        current_price=100,
+    )
+
+    assert pullback == 95
+    assert breakout == 112
 
 
 def test_trade_entry_detail_does_not_treat_invalidation_only_as_reentry_plan() -> None:
