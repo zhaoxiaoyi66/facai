@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from data.afterhours_provider import default_afterhours_provider
+from data.afterhours_provider import NullAfterhoursProvider, default_afterhours_provider
 from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
@@ -109,7 +109,8 @@ def _build_weekend_spread_rows_with_feedback(
         return build_weekend_spread_rows(
             watchlist,
             mapping=mapping,
-            afterhours_provider=default_afterhours_provider(),
+            provider=_IdleBinanceProvider(),
+            afterhours_provider=NullAfterhoursProvider(),
             force_refresh=False,
         )
     total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
@@ -138,6 +139,22 @@ def _build_weekend_spread_rows_with_feedback(
     progress_bar.progress(1.0)
     status_slot.success(f"刷新完成：{ok_count}/{mapped_count} 个映射价格可用，观察池共 {len(rows)} 个标的。")
     return rows
+
+
+class _IdleBinanceProvider:
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        return {
+            "symbol": str(symbol or "").strip().upper(),
+            "last_price": None,
+            "bid": None,
+            "ask": None,
+            "volume_24h": None,
+            "funding_rate": None,
+            "updated_at": "",
+            "source": "not_requested",
+            "market_type": market_type,
+            "error": "price_not_loaded",
+        }
 
 
 def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int]) -> None:
@@ -905,6 +922,8 @@ def _mapping_summary(mapping: dict[str, dict]) -> str:
 def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
     if universe_mapping_count <= 0:
         return "等待 mapping"
+    if all(str(row.get("error") or "") == "price_not_loaded" for row in rows if row.get("binance_symbol")):
+        return "等待刷新"
     if any(row.get("status") == "OK" for row in rows):
         return "可用"
     if any(row.get("status") in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"} for row in rows):
@@ -921,6 +940,8 @@ def _market_price_source_status(rows: list[dict], market_type: str) -> str:
         if row.get("binance_symbol") and str(row.get("binance_market_type") or row.get("market_type") or "") == market_type
     ]
     if not market_rows:
+        return "无请求"
+    if all(str(row.get("error") or "") == "price_not_loaded" for row in market_rows):
         return "无请求"
     if any(row.get("status") == "OK" and row.get("binance_last_price") is not None for row in market_rows):
         return "可用"

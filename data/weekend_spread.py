@@ -243,7 +243,11 @@ def build_weekend_spread_rows(
         )
         last_price = _number(snapshot.get("last_price"))
         if last_price is None:
-            status = "INVALID_SYMBOL" if str(snapshot.get("error") or "") == "invalid_symbol" else "BINANCE_UNAVAILABLE"
+            error_code = str(snapshot.get("error") or "")
+            if error_code == "price_not_loaded":
+                status = "PRICE_NOT_LOADED"
+            else:
+                status = "INVALID_SYMBOL" if error_code == "invalid_symbol" else "BINANCE_UNAVAILABLE"
             row = _base_row(
                 ticker,
                 stock_name,
@@ -943,6 +947,7 @@ def _fx_note(quote_currency: str) -> str:
 def _status_label(status: str) -> str:
     return {
         "NO_MAPPING": NO_MAPPING_TEXT,
+        "PRICE_NOT_LOADED": "等待刷新",
         "MISSING_FRIDAY_CLOSE": "缺少周五收盘价",
         "BINANCE_UNAVAILABLE": "Binance 数据不可用",
         "UNIT_UNCONFIRMED": UNIT_REVIEW_TEXT,
@@ -954,6 +959,8 @@ def _status_label(status: str) -> str:
 def _status_direction(status: str) -> str:
     if status == "NO_MAPPING":
         return "暂无映射"
+    if status == "PRICE_NOT_LOADED":
+        return "等待刷新"
     if status == "UNIT_UNCONFIRMED":
         return "映射待确认"
     if status == "SPOT_DISABLED":

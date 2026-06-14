@@ -1632,6 +1632,29 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
     assert "刷新完成" in source
 
 
+def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
+    source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
+
+    assert "provider=_IdleBinanceProvider()" in source
+    assert "afterhours_provider=NullAfterhoursProvider()" in source
+
+
+def test_idle_provider_marks_rows_as_waiting_refresh() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=weekend_spread._IdleBinanceProvider(),
+        cache=FakeCache(),
+    )
+
+    row = rows[0]
+    assert row["status"] == "PRICE_NOT_LOADED"
+    assert row["error"] == "price_not_loaded"
+    assert row["alert_level_cn"] == "等待刷新"
+    assert weekend_spread._binance_status_text(rows, 1) == "等待刷新"
+    assert weekend_spread._market_price_source_status(rows, "usdm_futures") == "无请求"
+
+
 def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA", "MSFT"],
