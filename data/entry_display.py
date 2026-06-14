@@ -304,7 +304,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     if price_position == "ABOVE_BUY_ZONE":
         label = f"等待回落 {zone_text}"
         reason = _distance_reason(distance_pct, "高于买区", chase_above)
-        hint = "只观察，等待回到纪律买区"
+        hint = "只观察，等待回到主击球区"
         context_status = price_position
         if use_technical_pullback:
             reason = _technical_pullback_reason(
@@ -342,7 +342,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
         result.update(
             {
                 "entry_display_label": f"买区内 {zone_text}",
-                "entry_display_reason": "当前位于纪律买区",
+                "entry_display_reason": "当前位于主击球区",
                 "entry_context_status": "IN_DISCIPLINE_BUY_ZONE",
                 "entry_action_hint": format_entry_action_hint(
                     decision=decision,
@@ -433,7 +433,7 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
     result.update(
         {
             "entry_display_label": f"参考买区 {zone_text}",
-            "entry_display_reason": "可参考纪律买区，但当前价格状态无法精确归类",
+            "entry_display_reason": "可参考主击球区，但当前价格状态无法精确归类",
             "entry_action_hint": "只观察，等待数据复核",
             "entry_context_status": price_position,
         }
@@ -496,7 +496,7 @@ def explain_missing_entry_fields(
     if status == "MISSING_SCORE":
         return ["缺评分输入"]
     if status == "MISSING_BUY_ZONE" or _zone_number(buy_zone, "upper") is None:
-        return ["缺 52 周高低", "无法生成纪律买区"]
+        return ["缺 52 周高低", "无法生成主击球区"]
     return []
 
 
@@ -529,7 +529,7 @@ def _distance_reason(distance_pct: float | None, prefix: str, chase_above_price:
         parts.append(f"当前{prefix} {abs(distance_pct):g}%")
     if chase_above_price is not None:
         parts.append(f"追高禁区 >{_price_text(chase_above_price)}")
-    return "；".join(parts) if parts else "等待价格回到纪律买区"
+    return "；".join(parts) if parts else "等待价格回到主击球区"
 
 
 def _technical_pullback_reason(
@@ -725,7 +725,7 @@ def _effective_technical_high(technical_high: float | None, chase_above: float |
 
 def _missing_reason_text(fields: list[str]) -> str:
     if not fields:
-        return "无法生成纪律买区"
+        return "无法生成主击球区"
     if "数据 stale" in fields:
         return "数据 stale"
     if "缺当前价格" in fields:
@@ -735,7 +735,7 @@ def _missing_reason_text(fields: list[str]) -> str:
     if "缺评分输入" in fields:
         return "缺评分输入"
     if "缺 52 周高低" in fields:
-        return "缺 52 周高低或无法生成纪律买区"
+        return "缺 52 周高低或无法生成主击球区"
     return "、".join(fields)
 
 

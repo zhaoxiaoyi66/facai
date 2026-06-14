@@ -471,12 +471,12 @@ def test_entry_display_uses_explicit_missing_fields() -> None:
         buy_zone={},
         data_status="MISSING_BUY_ZONE",
         price_position="ZONE_MISSING",
-        missing_entry_fields=["暂无专属买区模型", "无法生成纪律买区"],
+        missing_entry_fields=["暂无专属买区模型", "无法生成主击球区"],
         buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
-    assert result["entry_display_label"] == "暂无参考买区：暂无专属买区模型、无法生成纪律买区"
-    assert result["missing_entry_fields"] == ["暂无专属买区模型", "无法生成纪律买区"]
+    assert result["entry_display_label"] == "暂无参考买区：暂无专属买区模型、无法生成主击球区"
+    assert result["missing_entry_fields"] == ["暂无专属买区模型", "无法生成主击球区"]
 
 
 def test_zone_formatters_are_shared() -> None:
@@ -493,7 +493,7 @@ def test_dashboard_watchlist_entry_cell_shows_compact_status_and_keeps_price_in_
             "price": 110,
             "entryRating": "B - 等回踩",
             "entry_display_label": "等待回落 $90.00 - $100.00",
-            "entry_action_hint": "只观察，等待回到纪律买区",
+            "entry_action_hint": "只观察，等待回到主击球区",
             "entry_display_reason": "当前高于买区 10%；追高禁区 >$120.00",
             "activeZone": SimpleNamespace(
                 currentPrice=110,
@@ -576,9 +576,9 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
                     if "回踩区内" in display_label
                     else "只观察，等待技术回踩或基本面复核"
                     if "技术回踩" in display_label
-                    else "只观察，等待回到纪律买区"
+                    else "只观察，等待回到主击球区"
                 ),
-                "entry_display_reason": "当前位于纪律买区",
+                "entry_display_reason": "当前位于主击球区",
                 "radar_price_position": price_position,
             }
         )
@@ -597,7 +597,7 @@ def test_dashboard_watchlist_entry_cell_prefers_radar_status_over_legacy_zone() 
             "entryRating": "B - 等回踩",
             "entry_display_label": "买区内 $394.12 - $425.99",
             "entry_action_hint": "买区内但总分低于 70，需复核",
-            "entry_display_reason": "当前位于纪律买区",
+            "entry_display_reason": "当前位于主击球区",
             "activeZone": SimpleNamespace(
                 currentPrice=397,
                 trancheBuyLow=241.88,
@@ -650,7 +650,7 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
             "missing_entry_fields": [],
             "entry_display_label": "等待回落 $190.00 - $210.00",
             "entry_display_reason": "当前高于买区 4.8%",
-            "entry_action_hint": "只观察，等待回到纪律买区",
+            "entry_action_hint": "只观察，等待回到主击球区",
         },
     )
     monkeypatch.setattr(
