@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 import json
 from time import perf_counter
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request
 
@@ -80,6 +80,7 @@ def refresh_symbols_by_mode(
     cache: FundamentalCache | None = None,
     macro_refresher: Any | None = None,
     now: datetime | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     normalized_mode = RefreshMode(mode)
     started = perf_counter()
@@ -89,35 +90,108 @@ def refresh_symbols_by_mode(
 
     if normalized_mode == RefreshMode.PRICE_ONLY:
         market_provider = provider or _market_data_provider(full_fundamentals=False)
-        ticker_results = _refresh_price_only(tickers, provider=market_provider, cache=fundamental_cache, now=timestamp)
+        _emit_refresh_progress(
+            progress_callback,
+            mode=normalized_mode,
+            symbol="",
+            index=0,
+            total=len(tickers),
+            status="running",
+            message="正在请求报价",
+        )
+        ticker_results = _refresh_price_only(
+            tickers,
+            provider=market_provider,
+            cache=fundamental_cache,
+            now=timestamp,
+            progress_callback=progress_callback,
+            mode=normalized_mode,
+        )
         live_success_count = sum(1 for item in ticker_results if item.source == "live_quote")
         cache_fallback_count = sum(1 for item in ticker_results if item.source == "cache_fallback")
         quote_source = getattr(market_provider, "_last_quote_source", None)
         provider_notes = list(getattr(market_provider, "_last_quote_provider_notes", []) or [])
     elif normalized_mode == RefreshMode.DAILY_TECHNICAL:
         market_provider = provider or _market_data_provider(full_fundamentals=False)
-        ticker_results = [_refresh_daily_technical(symbol, provider=market_provider) for symbol in tickers]
+        ticker_results = []
+        for index, symbol in enumerate(tickers, start=1):
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status="running",
+                message="正在刷新日线与技术指标",
+            )
+            ticker_result = _refresh_daily_technical(symbol, provider=market_provider)
+            ticker_results.append(ticker_result)
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status=ticker_result.status,
+                message=ticker_result.message,
+            )
         live_success_count = None
         cache_fallback_count = None
         quote_source = None
         provider_notes = None
     elif normalized_mode == RefreshMode.FUNDAMENTALS_IF_EVENT:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
-        ticker_results = [
-            _refresh_fundamentals_if_event(symbol, provider=full_provider, cache=fundamental_cache, now=timestamp)
-            for symbol in tickers
-        ]
+        ticker_results = []
+        for index, symbol in enumerate(tickers, start=1):
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status="running",
+                message="正在检查财报与披露事件",
+            )
+            ticker_result = _refresh_fundamentals_if_event(symbol, provider=full_provider, cache=fundamental_cache, now=timestamp)
+            ticker_results.append(ticker_result)
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status=ticker_result.status,
+                message=ticker_result.message,
+            )
         live_success_count = None
         cache_fallback_count = None
         quote_source = None
         provider_notes = None
     elif normalized_mode == RefreshMode.MACRO_ONLY:
+        _emit_refresh_progress(
+            progress_callback,
+            mode=normalized_mode,
+            symbol="大盘环境",
+            index=0,
+            total=1,
+            status="running",
+            message="正在刷新 VIX、利率和信用利差",
+        )
         macro_result = (
             macro_refresher()
             if macro_refresher is not None
             else refresh_macro_indicators(mode=MACRO_FORCE_OFFICIAL_REFRESH)
         )
         status = str(macro_result.get("status") or macro_result.get("overall_status") or "failed")
+        _emit_refresh_progress(
+            progress_callback,
+            mode=normalized_mode,
+            symbol="大盘环境",
+            index=1,
+            total=1,
+            status=status,
+            message="大盘环境刷新完成",
+        )
         result = RefreshResult(
             mode=normalized_mode.value,
             status=status,
@@ -133,7 +207,28 @@ def refresh_symbols_by_mode(
         return result.to_dict()
     else:
         full_provider = provider or _market_data_provider(full_fundamentals=True)
-        ticker_results = [_refresh_full(symbol, provider=full_provider) for symbol in tickers]
+        ticker_results = []
+        for index, symbol in enumerate(tickers, start=1):
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status="running",
+                message="正在强制刷新 quote、日线和基本面",
+            )
+            ticker_result = _refresh_full(symbol, provider=full_provider)
+            ticker_results.append(ticker_result)
+            _emit_refresh_progress(
+                progress_callback,
+                mode=normalized_mode,
+                symbol=symbol,
+                index=index,
+                total=len(tickers),
+                status=ticker_result.status,
+                message=ticker_result.message,
+            )
         live_success_count = None
         cache_fallback_count = None
         quote_source = None
@@ -233,19 +328,55 @@ def summarize_refresh_result(
     return f"{label}完成：{refreshed_count}只成功，{skipped_count}只跳过，{failed_count}只失败，用时 {duration_seconds:.1f}s"
 
 
+def _emit_refresh_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    mode: RefreshMode | str,
+    symbol: str,
+    index: int,
+    total: int,
+    status: str,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    mode_value = mode.value if isinstance(mode, RefreshMode) else str(mode)
+    callback(
+        {
+            "mode": mode_value,
+            "symbol": symbol,
+            "index": max(0, int(index)),
+            "total": max(0, int(total)),
+            "status": str(status or ""),
+            "message": str(message or ""),
+        }
+    )
+
+
 def _refresh_price_only(
     tickers: list[str],
     *,
     provider: Any,
     cache: FundamentalCache,
     now: datetime,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    mode: RefreshMode | str = RefreshMode.PRICE_ONLY,
 ) -> list[RefreshTickerResult]:
     quote_result = _quote_rows(tickers, provider)
     quote_rows = quote_result.rows
     setattr(provider, "_last_quote_source", quote_result.source)
     setattr(provider, "_last_quote_provider_notes", quote_result.provider_notes)
     results: list[RefreshTickerResult] = []
-    for symbol in tickers:
+    for index, symbol in enumerate(tickers, start=1):
+        _emit_refresh_progress(
+            progress_callback,
+            mode=mode,
+            symbol=symbol,
+            index=index,
+            total=len(tickers),
+            status="running",
+            message="正在写入报价缓存",
+        )
         started = perf_counter()
         quote = quote_rows.get(symbol)
         if not quote:

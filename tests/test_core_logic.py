@@ -1087,6 +1087,14 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("terminal-loading-shell", _loading_shell_html("读取本地缓存", "准备评分"))
         self.assertIn("terminal-refresh-card", _refresh_progress_html("更新数据源", "正在更新 NOW", 1, 4, "NOW"))
 
+    def test_dashboard_mode_refresh_uses_visible_progress_callback(self) -> None:
+        dashboard_module = __import__("ui.dashboard", fromlist=[""])
+        source = inspect.getsource(dashboard_module._refresh_dashboard_cache_for_mode)
+
+        self.assertIn("progress_slot", source)
+        self.assertIn("_refresh_progress_html", source)
+        self.assertIn("progress_callback=_render_progress", source)
+
     def test_dashboard_block_container_respects_sidebar_offset(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
         source = inspect.getsource(dashboard_module._render_dashboard_styles)

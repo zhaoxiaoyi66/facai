@@ -169,6 +169,47 @@ def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
     assert updated["fundamental_updated_at"]
 
 
+def test_price_only_emits_refresh_progress_events(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeFmpQuoteOnlyProvider()
+    events: list[dict] = []
+
+    result = refresh_symbols_by_mode(
+        ["NVDA", "MSFT"],
+        RefreshMode.PRICE_ONLY,
+        provider=provider,
+        cache=cache,
+        progress_callback=events.append,
+    )
+
+    running_symbols = [event["symbol"] for event in events if event["status"] == "running" and event["symbol"]]
+    assert result["status"] == "success"
+    assert events[0]["mode"] == "PRICE_ONLY"
+    assert events[0]["index"] == 0
+    assert events[0]["total"] == 2
+    assert running_symbols[-2:] == ["NVDA", "MSFT"]
+
+
+def test_daily_technical_emits_per_ticker_refresh_progress(tmp_path) -> None:
+    provider = FakeRefreshProvider()
+    events: list[dict] = []
+
+    result = refresh_symbols_by_mode(
+        ["NVDA", "MSFT"],
+        RefreshMode.DAILY_TECHNICAL,
+        provider=provider,
+        cache=FundamentalCache(tmp_path / "refresh.sqlite"),
+        progress_callback=events.append,
+    )
+
+    completed = [event for event in events if event["status"] == "success"]
+    assert result["status"] == "success"
+    assert [(event["symbol"], event["index"], event["total"]) for event in completed] == [
+        ("NVDA", 1, 2),
+        ("MSFT", 2, 2),
+    ]
+
+
 def test_price_only_falls_back_to_single_quote_when_batch_returns_empty(tmp_path) -> None:
     cache = FundamentalCache(tmp_path / "refresh.sqlite")
     provider = FakeBatchEmptyQuoteProvider()

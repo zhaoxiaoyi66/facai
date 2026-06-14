@@ -459,8 +459,39 @@ def _refresh_macro_cache_for_dashboard() -> None:
 
 def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> None:
     symbols = [] if mode == RefreshMode.MACRO_ONLY else _dashboard_refresh_symbols(tickers)
+    progress_slot = st.empty()
+    progress_total = 1 if mode == RefreshMode.MACRO_ONLY else len(symbols)
+    progress_title = _refresh_mode_label(mode.value)
+
+    progress_slot.markdown(
+        _refresh_progress_html(
+            title=progress_title,
+            detail="正在准备刷新任务。",
+            current=0,
+            total=max(progress_total, 1),
+            active_symbol="准备刷新",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    def _render_progress(event: dict) -> None:
+        event_total = int(event.get("total") or progress_total or 1)
+        event_index = int(event.get("index") or 0)
+        active_symbol = str(event.get("symbol") or "请求数据")
+        detail = str(event.get("message") or "正在刷新数据。")
+        progress_slot.markdown(
+            _refresh_progress_html(
+                title=progress_title,
+                detail=detail,
+                current=min(max(event_index, 0), max(event_total, 1)),
+                total=max(event_total, 1),
+                active_symbol=active_symbol,
+            ),
+            unsafe_allow_html=True,
+        )
+
     try:
-        result = refresh_symbols_by_mode(symbols, mode)
+        result = refresh_symbols_by_mode(symbols, mode, progress_callback=_render_progress)
         if mode == RefreshMode.MACRO_ONLY:
             st.session_state["dashboard_macro_last_refresh_result"] = result.get("macro_result") or {}
     except Exception as exc:
@@ -475,6 +506,18 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
         }
         if mode == RefreshMode.MACRO_ONLY:
             st.session_state["dashboard_macro_last_refresh_result"] = {"status": "failed", "error": str(exc), "indicators": {}}
+        progress_slot.markdown(
+            _refresh_progress_html(
+                title=progress_title,
+                detail=f"刷新失败：{str(exc)}",
+                current=max(progress_total, 1),
+                total=max(progress_total, 1),
+                active_symbol="刷新失败",
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        progress_slot.markdown(_refresh_done_html(progress_total), unsafe_allow_html=True)
     st.session_state["dashboard_refresh_mode_last_result"] = result
 
 
