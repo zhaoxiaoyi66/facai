@@ -16,6 +16,7 @@ from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.sector_localization import format_company_track, get_ticker_research_track
+from data.stock_plan import StockPlanStore
 from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
 from ui.theme import render_page_header
@@ -232,6 +233,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     )
     report = report_obj.to_dict()
     report.update(_report_technical_overlay(technicals))
+    report.update(_report_manual_target_fields(symbol, report))
     perf.add("估值区间计算", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False, note="复用已读取 quote")
     history = _cached_market_history(symbol, perf) if load_history else _empty_history_frame()
     if not load_history:
@@ -354,6 +356,24 @@ def _cached_portfolio_context(symbol: str, perf: PerfProbe) -> dict[str, Any]:
         perf,
         "portfolio_context 读取",
     )
+
+
+def _report_manual_target_fields(symbol: str, report: dict[str, Any]) -> dict[str, Any]:
+    try:
+        plan = StockPlanStore().get_plan(symbol)
+    except Exception:
+        return {}
+    status = str(plan.get("plan_status") or plan.get("planStatus") or "").strip().lower()
+    if status in {"completed", "cancelled", "expired"}:
+        return {}
+    target = _first_number(plan, "target_sell_price", "targetSellPrice")
+    price = _first_number(report, "current_price", "currentPrice", "price")
+    if target is None or (price is not None and target <= price * 1.0001):
+        return {}
+    return {
+        "manual_target_price": target,
+        "manual_target_source": "stock_plan.target_sell_price",
+    }
 
 
 def _enrich_technical_context(
@@ -525,6 +545,9 @@ def _report_technical_overlay(technicals: dict[str, Any]) -> dict[str, Any]:
         "resistance_zone",
         "resistance_zone_low",
         "resistance_zone_high",
+        "resistanceLevels",
+        "resistance_levels",
+        "technical_entry_model",
         "distance_to_invalidation",
         "distance_to_resistance",
         "reward_risk_ratio",

@@ -14,6 +14,7 @@ import pandas as pd
 
 from data.action_fusion import evaluate_action_fusion
 from data import ai_stock_radar as radar_data
+from data import dashboard_row_builder
 from data.ai_stock_radar import (
     RadarScores,
     RadarZone,
@@ -72,6 +73,39 @@ def _buy_zone() -> RadarZone:
 
 def _watch_zone() -> RadarZone:
     return RadarZone(lower=100, upper=115, label="watch zone")
+
+
+def test_dashboard_active_plan_target_maps_to_manual_rr_target() -> None:
+    result = dashboard_row_builder._manual_target_fields(
+        {"plan_status": "active", "target_sell_price": 130},
+        price=100,
+    )
+
+    assert result == {
+        "manual_target_price": 130.0,
+        "manual_target_source": "stock_plan.target_sell_price",
+    }
+
+
+def test_dashboard_inactive_or_low_plan_target_is_ignored() -> None:
+    assert dashboard_row_builder._manual_target_fields({"plan_status": "cancelled", "target_sell_price": 130}, 100) == {}
+    assert dashboard_row_builder._manual_target_fields({"plan_status": "expired", "target_sell_price": 130}, 100) == {}
+    assert dashboard_row_builder._manual_target_fields({"plan_status": "active", "target_sell_price": 99}, 100) == {}
+
+
+def test_report_active_plan_target_maps_to_manual_rr_target(monkeypatch) -> None:
+    class DummyPlanStore:
+        def get_plan(self, _symbol: str) -> dict:
+            return {"plan_status": "active", "target_sell_price": 130}
+
+    monkeypatch.setattr(radar_ui, "StockPlanStore", DummyPlanStore)
+
+    result = radar_ui._report_manual_target_fields("NOW", {"current_price": 100})
+
+    assert result == {
+        "manual_target_price": 130.0,
+        "manual_target_source": "stock_plan.target_sell_price",
+    }
 
 
 def test_radar_summary_localizes_backend_reasons() -> None:

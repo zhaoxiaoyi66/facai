@@ -111,6 +111,7 @@ def build_dashboard_row(
         radar_entry_display=technical_entry_seed,
         price=price,
         volume_price_acceptance=volume_price_acceptance.to_dict(),
+        plan=plan,
     )
     final_decision = derive_dashboard_final_decision(
         ticker,
@@ -492,8 +493,9 @@ def _dashboard_buy_zone_context(
     radar_entry_display: dict[str, Any],
     price: float | None,
     volume_price_acceptance: dict[str, Any],
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    source = {**snapshot, **technicals, **radar_entry_display, "ticker": ticker}
+    source = {**snapshot, **technicals, **radar_entry_display, **_manual_target_fields(plan, price), "ticker": ticker}
     if price is not None:
         source["price"] = price
         source["current_price"] = price
@@ -501,6 +503,25 @@ def _dashboard_buy_zone_context(
         return build_buy_zone_context(source, volume_snapshot=volume_price_acceptance).to_dict()
     except Exception:
         return {}
+
+
+def _manual_target_fields(plan: dict[str, Any] | None, price: float | None) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        return {}
+    status = str(plan.get("plan_status") or plan.get("planStatus") or "").strip().lower()
+    if status in {"completed", "cancelled", "expired"}:
+        return {}
+    target = _first_present(plan.get("target_sell_price"), plan.get("targetSellPrice"))
+    try:
+        target_value = float(target)
+    except (TypeError, ValueError):
+        return {}
+    if price is not None and target_value <= float(price) * 1.0001:
+        return {}
+    return {
+        "manual_target_price": target_value,
+        "manual_target_source": "stock_plan.target_sell_price",
+    }
 
 
 def derive_dashboard_final_decision(

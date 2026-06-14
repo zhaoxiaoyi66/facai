@@ -222,6 +222,24 @@ def test_explicit_target_can_score_high_without_chase_cap() -> None:
     assert context.target_quality == "EXPLICIT_MANUAL_TARGET"
 
 
+def test_manual_target_price_is_preferred_over_technical_resistance() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            manual_target_price=150,
+            technical_resistance_price=112,
+            recent_swing_high=140,
+            resistance_zone_high=130,
+        ),
+        volume_snapshot=_volume(),
+    )
+
+    assert context.upside_target == 150
+    assert context.target_source == "manual_target_price"
+    assert context.target_quality == "EXPLICIT_MANUAL_TARGET"
+    assert context.risk_reward_score == 88
+
+
 def test_technical_resistance_price_is_preferred_over_swing_high() -> None:
     context = build_buy_zone_context(
         _base_source(
