@@ -339,11 +339,62 @@ def test_daily_technical_refresh_does_not_call_fundamentals(tmp_path) -> None:
         RefreshMode.DAILY_TECHNICAL,
         provider=provider,
         cache=FundamentalCache(tmp_path / "refresh.sqlite"),
+        now=datetime(2026, 6, 11, 12, tzinfo=timezone.utc),
     )
 
     assert result["status"] == "success"
     assert provider.calls == [("history", "NVDA", True)]
     assert provider.fundamental_calls == 0
+
+
+def test_daily_technical_refresh_skips_fresh_technical_cache(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    cache.set_snapshot(
+        "NVDA",
+        {
+            "ticker": "NVDA",
+            "current_price": 100,
+            "technical_updated_at": datetime(2026, 6, 11, 6, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    provider = FakeRefreshProvider()
+
+    result = refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.DAILY_TECHNICAL,
+        provider=provider,
+        cache=cache,
+        now=datetime(2026, 6, 11, 12, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "success"
+    assert result["skipped_count"] == 1
+    assert result["refreshed_count"] == 0
+    assert result["ticker_results"][0]["status"] == "skipped"
+    assert provider.calls == []
+
+
+def test_daily_technical_refresh_marks_snapshot_timestamp_after_success(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    cache.set_snapshot("NVDA", {"ticker": "NVDA", "current_price": 100})
+    provider = FakeRefreshProvider()
+    now = datetime(2026, 6, 11, 12, tzinfo=timezone.utc)
+
+    result = refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.DAILY_TECHNICAL,
+        provider=provider,
+        cache=cache,
+        now=now,
+    )
+
+    updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
+    assert result["status"] == "success"
+    assert updated["current_price"] == 100
+    assert updated["technical_updated_at"] == now.isoformat()
+    assert updated["history_updated_at"] == now.isoformat()
+    assert updated["price_history_updated_at"] == now.isoformat()
+    assert updated["refresh_mode"] == "DAILY_TECHNICAL"
 
 
 def test_should_refresh_technicals_detects_stale_or_missing_timestamp() -> None:

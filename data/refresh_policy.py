@@ -124,7 +124,7 @@ def refresh_symbols_by_mode(
                 status="running",
                 message="正在刷新日线与技术指标",
             )
-            ticker_result = _refresh_daily_technical(symbol, provider=market_provider)
+            ticker_result = _refresh_daily_technical(symbol, provider=market_provider, cache=fundamental_cache, now=timestamp)
             ticker_results.append(ticker_result)
             _emit_refresh_progress(
                 progress_callback,
@@ -395,15 +395,31 @@ def _refresh_price_only(
     return results
 
 
-def _refresh_daily_technical(symbol: str, *, provider: Any) -> RefreshTickerResult:
+def _refresh_daily_technical(symbol: str, *, provider: Any, cache: FundamentalCache, now: datetime) -> RefreshTickerResult:
     started = perf_counter()
+    snapshot = cache.get_snapshot(symbol, max_age_hours=24 * 3650) or {}
+    if snapshot and not should_refresh_technicals(snapshot, now=now):
+        return _ticker_result(symbol, "skipped", "技术缓存仍新鲜，跳过日线刷新", started)
     try:
         history = provider.get_price_history(symbol, force_refresh=True)
         if _has_history_rows(history):
+            _mark_technical_refreshed(symbol, snapshot, cache=cache, now=now)
             return _ticker_result(symbol, "success", "日线和技术指标缓存已更新", started)
         return _ticker_result(symbol, "failed", "日线无有效数据", started)
     except Exception as exc:
         return _ticker_result(symbol, "failed", f"日线刷新失败：{_short_error(exc)}", started)
+
+
+def _mark_technical_refreshed(symbol: str, snapshot: dict, *, cache: FundamentalCache, now: datetime) -> None:
+    merged = dict(snapshot or {})
+    merged.setdefault("ticker", symbol)
+    merged.setdefault("symbol", symbol)
+    refreshed_at = now.isoformat()
+    merged["technical_updated_at"] = refreshed_at
+    merged["history_updated_at"] = refreshed_at
+    merged["price_history_updated_at"] = refreshed_at
+    merged["refresh_mode"] = RefreshMode.DAILY_TECHNICAL.value
+    cache.set_snapshot(symbol, merged)
 
 
 def _refresh_fundamentals_if_event(symbol: str, *, provider: Any, cache: FundamentalCache, now: datetime) -> RefreshTickerResult:
