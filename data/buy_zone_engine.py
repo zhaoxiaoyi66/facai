@@ -27,6 +27,7 @@ ACTION_TEXT = {
 ZONE_TEXT = {
     "DEEP_ACCEPTANCE": "深度承接区",
     "PULLBACK_BUY": "回踩买区",
+    "PULLBACK_WATCH": "技术回踩带内，可观察",
     "REPAIR_WATCH": "修复观察区",
     "CONFIRMATION_REVIEW": "确认复核区",
     "CHASE_RISK": "追高禁区",
@@ -47,6 +48,10 @@ class BuyZoneContext:
     support_zone_high: float | None
     pullback_zone_low: float | None
     pullback_zone_high: float | None
+    left_probe_zone_low: float | None
+    left_probe_zone_high: float | None
+    observe_zone_low: float | None
+    observe_zone_high: float | None
     confirmation_price: float | None
     invalidation_price: float | None
     chase_price: float | None
@@ -119,6 +124,8 @@ def build_buy_zone_context(
         "recent_breakout_level",
         "confirmation_price",
     )
+    target_price = _first_number(data, "target_price", "targetPrice", "analyst_target_price", "consensus_target_price")
+    resistance_high = _first_number(data, "resistance_zone_high", "recent_swing_high", "swing_high")
     if chase is None:
         chase = resistance
     if invalidation is None and support_low is not None:
@@ -170,6 +177,10 @@ def build_buy_zone_context(
             support_zone_high=None,
             pullback_zone_low=None,
             pullback_zone_high=None,
+            left_probe_zone_low=None,
+            left_probe_zone_high=None,
+            observe_zone_low=None,
+            observe_zone_high=None,
             confirmation_price=confirmation,
             invalidation_price=invalidation,
             chase_price=chase,
@@ -189,6 +200,7 @@ def build_buy_zone_context(
             technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
         )
 
+    left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
     primary_zone = _primary_zone(
         price=price,
         support_low=support_low,
@@ -203,7 +215,14 @@ def build_buy_zone_context(
     )
     technical_score = _technical_structure_score(primary_zone)
     volume_score = _volume_acceptance_score(volume_status, volume_score_input)
-    rr_score = _risk_reward_score(price=price, confirmation=confirmation, invalidation=invalidation, chase=chase, primary_zone=primary_zone)
+    rr_score = _risk_reward_score(
+        price=price,
+        confirmation=confirmation,
+        invalidation=invalidation,
+        target_price=target_price,
+        resistance_high=resistance_high,
+        primary_zone=primary_zone,
+    )
     setup_score = round(technical_score * 0.45 + volume_score * 0.35 + rr_score * 0.20, 1)
     action = _current_action(primary_zone, setup_score, volume_status, volume_score, rr_score)
     return BuyZoneContext(
@@ -217,6 +236,10 @@ def build_buy_zone_context(
         support_zone_high=support_high,
         pullback_zone_low=pullback_low,
         pullback_zone_high=pullback_high,
+        left_probe_zone_low=left_probe_low,
+        left_probe_zone_high=left_probe_high,
+        observe_zone_low=observe_low,
+        observe_zone_high=observe_high,
         confirmation_price=confirmation,
         invalidation_price=invalidation,
         chase_price=chase,
@@ -308,23 +331,37 @@ def _primary_zone(
         return "INVALIDATION"
     if price >= chase:
         return "CHASE_RISK"
+    if price >= confirmation:
+        return "CONFIRMATION_REVIEW"
     if _in_range(price, support_low, support_high):
         return "DEEP_ACCEPTANCE"
     if _in_range(price, pullback_low, pullback_high):
-        return "PULLBACK_BUY"
+        _left_low, left_probe_high, _observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
+        if price <= left_probe_high:
+            return "PULLBACK_BUY"
+        if price <= min(observe_high, confirmation):
+            return "PULLBACK_WATCH"
+        return "REPAIR_WATCH"
     if repair_low is not None and repair_high is not None and _in_range(price, repair_low, repair_high):
         return "REPAIR_WATCH"
-    if price >= confirmation:
-        return "CONFIRMATION_REVIEW"
     if price > pullback_high:
         return "REPAIR_WATCH"
     return "WAIT_PULLBACK"
+
+
+def _pullback_layers(pullback_low: float, pullback_high: float) -> tuple[float, float, float, float]:
+    low, high = sorted((pullback_low, pullback_high))
+    width = max(high - low, 0.0)
+    left_probe_high = low + width * 0.30
+    observe_high = low + width * 0.70
+    return low, left_probe_high, left_probe_high, observe_high
 
 
 def _technical_structure_score(primary_zone: str) -> float:
     return {
         "DEEP_ACCEPTANCE": 82.0,
         "PULLBACK_BUY": 78.0,
+        "PULLBACK_WATCH": 63.0,
         "REPAIR_WATCH": 58.0,
         "CONFIRMATION_REVIEW": 62.0,
         "CHASE_RISK": 18.0,
@@ -352,23 +389,32 @@ def _risk_reward_score(
     price: float,
     confirmation: float,
     invalidation: float,
-    chase: float,
+    target_price: float | None,
+    resistance_high: float | None,
     primary_zone: str,
 ) -> float:
     if primary_zone in {"INVALIDATION", "CHASE_RISK"}:
         return 5.0 if primary_zone == "INVALIDATION" else 18.0
-    downside = max(price - invalidation, 0.01)
-    upside = max(confirmation - price, chase - price, 0.0)
+    explicit_target = _first_defined_number(target_price, resistance_high)
+    target = explicit_target if explicit_target is not None else confirmation
+    downside = price - invalidation
+    upside = target - price
+    if downside <= 0 or upside <= 0:
+        return 28.0
     ratio = upside / downside
     if ratio >= 2.0:
-        return 88.0
-    if ratio >= 1.4:
-        return 75.0
-    if ratio >= 1.0:
-        return 62.0
-    if ratio >= 0.6:
-        return 45.0
-    return 28.0
+        score = 88.0
+    elif ratio >= 1.4:
+        score = 75.0
+    elif ratio >= 1.0:
+        score = 62.0
+    elif ratio >= 0.6:
+        score = 45.0
+    else:
+        score = 28.0
+    if explicit_target is None:
+        return min(score, 60.0)
+    return score
 
 
 def _current_action(primary_zone: str, setup_score: float, volume_status: str, volume_score: float, rr_score: float) -> str:
@@ -378,6 +424,8 @@ def _current_action(primary_zone: str, setup_score: float, volume_status: str, v
         return BLOCK_CHASE
     if primary_zone in {"DEEP_ACCEPTANCE", "PULLBACK_BUY"} and setup_score >= 62 and volume_score >= 50 and rr_score >= 55:
         return ALLOW_SMALL_BUY
+    if primary_zone == "PULLBACK_WATCH":
+        return WAIT_CONFIRMATION
     if primary_zone == "REPAIR_WATCH":
         return WAIT_CONFIRMATION
     if primary_zone == "CONFIRMATION_REVIEW":
@@ -387,7 +435,7 @@ def _current_action(primary_zone: str, setup_score: float, volume_status: str, v
 
 def _existing_position_action(action: str) -> str:
     if action == ALLOW_SMALL_BUY:
-        return "已有持仓：允许回踩复核加仓，但不能一次打满。"
+        return "已有持仓：股票层可观察，是否新增取决于账户额度与持仓约束。"
     if action == BLOCK_CHASE:
         return "已有持仓：不追高加仓，等待回到承接区。"
     if action == RISK_REVIEW:
@@ -415,6 +463,7 @@ def _zone_reason(primary_zone: str, volume_status: str, rr_score: float, core_re
     base = {
         "DEEP_ACCEPTANCE": "价格接近强支撑 / 前低 / 承接区，按深度承接区处理。",
         "PULLBACK_BUY": "价格回到技术回踩买区，买区由技术结构和量价承接决定。",
+        "PULLBACK_WATCH": "价格处于技术回踩带观察区，但未进入更靠近下沿的左侧试仓区。",
         "REPAIR_WATCH": "价格已修复但量能或承接尚未给出确认，先观察。",
         "CONFIRMATION_REVIEW": "价格接近确认复核区，确认线只触发重新评估，不等于直接买入。",
         "CHASE_RISK": "价格远离承接区或进入追高阈值，盈亏比恶化。",
@@ -686,6 +735,14 @@ def _first_number(source: dict[str, Any], *keys: str) -> float | None:
             number = _number(source.get(key))
             if number is not None:
                 return number
+    return None
+
+
+def _first_defined_number(*values: Any) -> float | None:
+    for value in values:
+        number = _number(value)
+        if number is not None:
+            return number
     return None
 
 

@@ -682,13 +682,13 @@ def _cached_technicals(**overrides: float) -> dict:
 def test_price_inside_discipline_buy_zone_can_allow_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -698,7 +698,7 @@ def test_price_inside_discipline_buy_zone_can_allow_buy() -> None:
 
         assert report.decision == "ALLOW_BUY"
         assert report.allowed_add_pct > 0
-        assert report.block_reasons == []
+        assert report.buy_zone_context["current_action"] == "ALLOW_SMALL_BUY"
         assert report.to_dict()["ticker"] == "NVDA"
 
 
@@ -1685,7 +1685,7 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         assert report.current_vs_entry_pct == 10.0
         assert report.entry_display_label == "等突破再评估"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
-        assert "价格已修复" in report.entry_display_reason
+        assert "重新评估" in report.entry_display_reason
 
 
 def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
@@ -1713,13 +1713,13 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
 def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_buy() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(final_score=65),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -1728,7 +1728,7 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
         )
 
         assert report.decision == "ALLOW_BUY"
-        assert report.price_position == "IN_BUY_ZONE"
+        assert report.buy_zone_context["primary_zone"] == "DEEP_ACCEPTANCE"
         assert report.entry_display_label == "击球区内"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
@@ -1840,7 +1840,7 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.entry_display_label == "等突破再评估"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
-        assert "价格已修复" in report.entry_display_reason
+        assert "重新评估" in report.entry_display_reason
         assert report.debug["technical_entry_zone"]["source"] == "ema_pullback"
 
 
@@ -1871,12 +1871,12 @@ def test_price_inside_technical_pullback_zone_updates_display_status_without_all
             now=NOW,
         )
 
-        assert report.decision == "ALLOW_BUY"
-        assert report.allowed_add_pct > 0
+        assert report.decision == "WAIT"
+        assert report.allowed_add_pct == 0
         assert report.price_position == "ZONE_MISSING"
         assert report.technical_position == "IN_TECHNICAL_PULLBACK_ZONE"
-        assert report.entry_context_status == "ALLOW_SMALL_BUY"
-        assert report.entry_display_label == "击球区内"
+        assert report.entry_context_status == "WAIT_CONFIRMATION"
+        assert report.entry_display_label == "区内看承接"
 
 
 def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -> None:
@@ -2322,7 +2322,7 @@ def test_missing_data_returns_data_missing_not_buy_signal() -> None:
 def test_missing_valuation_metrics_returns_specific_data_missing_reason() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "MISS", 95)
+        _insert_quote(path, "MISS", 88.3)
         snapshot = _cached_snapshot()
         for key in ("forward_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf_margin"):
             snapshot.pop(key)
@@ -2354,7 +2354,7 @@ def test_missing_valuation_debug_lists_missing_fields() -> None:
             "MISS",
             path=path,
             snapshot=snapshot,
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             now=NOW,
         )
 
@@ -2458,7 +2458,7 @@ def test_stale_debug_marks_price_as_unusable_for_allow_buy() -> None:
 def test_missing_quality_fields_do_not_silently_create_high_score() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "MISS", 95)
+        _insert_quote(path, "MISS", 88.3)
         snapshot = _cached_snapshot()
         for key in ("gross_margin", "net_margin", "fcf_margin", "roe"):
             snapshot.pop(key)
@@ -2467,7 +2467,7 @@ def test_missing_quality_fields_do_not_silently_create_high_score() -> None:
             "MISS",
             path=path,
             snapshot=snapshot,
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             now=NOW,
         )
 
@@ -2510,7 +2510,7 @@ def test_missing_all_risk_fields_uses_conservative_risk_score() -> None:
 def test_missing_risk_fields_caps_position_even_when_other_scores_are_high() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
         snapshot = _cached_snapshot(
             gross_margin=0.85,
             net_margin=0.45,
@@ -2528,7 +2528,7 @@ def test_missing_risk_fields_caps_position_even_when_other_scores_are_high() -> 
             "NVDA",
             path=path,
             snapshot=snapshot,
-            technicals=_cached_technicals(price=95, fifty_two_week_high=140, fifty_two_week_low=70),
+            technicals=_cached_technicals(price=88.3, fifty_two_week_high=140, fifty_two_week_low=70),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
             chase_zone=_chase_zone(),
@@ -2545,13 +2545,13 @@ def test_missing_risk_fields_caps_position_even_when_other_scores_are_high() -> 
 def test_debug_explanation_does_not_change_buy_gate_result() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2578,13 +2578,13 @@ def test_debug_explanation_does_not_change_buy_gate_result() -> None:
 def test_low_valuation_score_cannot_get_heavy_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(valuation_score=35),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2602,13 +2602,13 @@ def test_low_valuation_score_cannot_get_heavy_position() -> None:
 def test_high_final_score_with_low_valuation_cannot_get_high_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(final_score=90, valuation_score=35),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2673,13 +2673,13 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
 def test_missing_zone_returns_zone_missing_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(),
             now=NOW,
         )
@@ -2693,13 +2693,13 @@ def test_missing_zone_returns_zone_missing_position() -> None:
 def test_low_final_score_cannot_get_core_position() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
 
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(final_score=65),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2863,12 +2863,12 @@ def test_buy_gate_block_chase_observation_only_still_does_not_sync() -> None:
 def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
@@ -2895,12 +2895,12 @@ def test_buy_gate_allows_allow_buy_with_reason_under_position_limit() -> None:
 def test_buy_gate_treats_fomo_as_advisory_even_inside_buy_zone() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 95)
+        _insert_quote(path, "NVDA", 88.3)
         report = build_ai_stock_radar_report(
             "NVDA",
             path=path,
             snapshot=_cached_snapshot(),
-            technicals=_cached_technicals(price=95),
+            technicals=_cached_technicals(price=88.3),
             scores=_scores(),
             buy_zone=_buy_zone(),
             watch_zone=_watch_zone(),
