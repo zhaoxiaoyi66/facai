@@ -88,6 +88,18 @@ def test_pullback_zone_with_shrink_volume_and_good_risk_reward_allows_small_buy(
     assert context.no_position_action_text == "未持仓：允许小仓观察，后续加仓必须等确认。"
 
 
+def test_pullback_probe_zone_with_weak_volume_waits_confirmation_not_pullback() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=101),
+        volume_snapshot=_volume(volume_price_score=48, volume_ratio=0.9),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.current_price <= context.left_probe_zone_high
+    assert context.current_action == WAIT_CONFIRMATION
+    assert context.current_action != ALLOW_SMALL_BUY
+
+
 def test_pullback_upper_half_does_not_allow_small_buy() -> None:
     context = build_buy_zone_context(_base_source(current_price=104), volume_snapshot=_volume())
 

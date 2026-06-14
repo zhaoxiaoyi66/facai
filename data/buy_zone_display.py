@@ -28,6 +28,7 @@ def build_buy_zone_display(
     current_price = _number(_value(ctx, "current_price", "currentPrice"))
     if current_price is None:
         current_price = _number(_value(row_data, "current_price", "currentPrice", "price"))
+    primary_zone = str(_value(ctx, "primary_zone", "primaryZone", default="") or "").strip().upper()
     primary_zone_text = str(_value(ctx, "primary_zone_text", "primaryZoneText", default="") or "").strip()
     zone_text = _zone_text(ctx, action)
     in_zone = _is_current_in_primary_zone(ctx, current_price)
@@ -42,7 +43,7 @@ def build_buy_zone_display(
         current_add=current_add,
         row=row_data,
     )
-    main_action = _main_action_text(action, account, technical, has_position, current_add)
+    main_action = _main_action_text(action, account, technical, has_position, current_add, primary_zone)
     missing = _text_list(_value(ctx, "missing_fields", "missingFields", default=[]))
     missing_text = " / ".join(_missing_label(item) for item in missing if str(item).strip())
     explanation = _explanation(ctx, technical["explanation"], account["sizing_action_text"])
@@ -191,9 +192,14 @@ def _main_action_text(
     technical: dict[str, str],
     has_position: bool,
     current_add: float | None,
+    primary_zone: str = "",
 ) -> str:
     if current_add is not None and current_add <= 0:
-        return "持有观察 / 当前不新增" if has_position else "暂停买入 / 当前不新增"
+        if has_position:
+            return "持有观察 / 当前不新增"
+        if action == "WAIT_CONFIRMATION" and primary_zone == "PULLBACK_BUY":
+            return f"{technical['badge_label']} / 当前不新增"
+        return "暂停买入 / 当前不新增"
     if action == "DATA_INSUFFICIENT":
         return "持有观察 / 暂停加仓" if has_position else "暂停买入 / 等待数据补齐"
     if action == "BLOCK_CHASE":
@@ -230,26 +236,39 @@ def _is_current_in_primary_zone(context: dict[str, Any], current_price: float | 
 
 
 def _volume_confirmation_text(context: dict[str, Any], row: dict[str, Any]) -> str:
+    nested = _dict(_value(row, "volumePriceAcceptance", "volume_price_acceptance"))
     status = str(
         _value(context, "volume_price_status", "volumePriceStatus")
         or _value(row, "volumePriceStatus", "volume_price_status")
-        or _value(_dict(_value(row, "volumePriceAcceptance", "volume_price_acceptance")), "volume_price_status")
+        or _value(nested, "volume_price_status", "volumePriceStatus")
         or ""
     ).strip().upper()
     score = _number(
         _value(context, "volume_acceptance_score", "volume_price_score", "volumePriceScore")
         or _value(row, "volumePriceScore", "volume_price_score")
+        or _value(nested, "volume_price_score", "volumePriceScore")
+    )
+    volume_ratio = _number(
+        _value(context, "volume_ratio", "volumeRatio")
+        or _value(row, "volumeRatio", "volume_ratio")
+        or _value(nested, "volume_ratio", "volumeRatio")
     )
     if status == "ACCEPTANCE_CONFIRMED":
         return "量价承接确认"
-    if status == "FORMING" or (score is not None and score < 55 and status not in {"FAILED", "OVEREXTENDED_SUPPORT_READ"}):
-        return "初步承接，尚未确认"
     if status == "FAILED":
         return "承接失败"
     if status == "OVEREXTENDED_SUPPORT_READ":
         return "脱离观察区，不构成低吸依据"
     if status in {"DATA_MISSING", "DATA_INSUFFICIENT"}:
         return "量价数据不足"
+    if status == "UNCONFIRMED":
+        if (volume_ratio is not None and volume_ratio >= 2.0) or (score is not None and score < 35):
+            return "放量未确认，等收盘确认 / 事件复核"
+        return "量价未确认，等收盘确认"
+    if status == "FORMING" or (score is not None and score < 55):
+        if volume_ratio is not None and volume_ratio >= 2.0:
+            return "放量未确认，等收盘确认"
+        return "初步承接，尚未确认"
     return "量价待确认"
 
 

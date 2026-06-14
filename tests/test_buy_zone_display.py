@@ -28,6 +28,55 @@ def test_now_position_sizing_zero_converges_to_single_main_action() -> None:
     assert display["volume_confirmation_text"] == "初步承接，尚未确认"
 
 
+def test_high_volume_unconfirmed_copy_is_more_cautious() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "REPAIR_WATCH",
+            "primary_zone_text": "修复观察区",
+            "current_price": 204.02,
+            "pullback_zone_low": 192.85,
+            "pullback_zone_high": 204.97,
+            "volume_acceptance_score": 27.0,
+            "volume_ratio": 3.58,
+        },
+        {
+            "volumePriceStatus": "UNCONFIRMED",
+            "volumePriceScore": 27.0,
+            "current_shares": 10,
+            "currentAddLimitPercent": 0,
+        },
+        mode="test",
+    )
+
+    assert display["main_action_text"] == "持有观察 / 当前不新增"
+    assert display["volume_confirmation_text"] == "放量未确认，等收盘确认 / 事件复核"
+    assert display["entry_context_status"] == "WAIT_CONFIRMATION"
+
+
+def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_BUY",
+            "primary_zone_text": "回踩买区",
+            "current_price": 148.02,
+            "pullback_zone_low": 145.74,
+            "pullback_zone_high": 153.72,
+            "volume_acceptance_score": 48.0,
+            "volume_ratio": 0.9,
+        },
+        {"currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["main_action_text"] == "区内看承接 / 当前不新增"
+    assert display["entry_display_label"] == "区内看承接"
+    assert display["entry_action_hint"] == "当前不新增"
+    assert display["entry_context_status"] == "WAIT_CONFIRMATION"
+    assert display["action_code"] == "WAIT_CONFIRMATION"
+
+
 def test_data_insufficient_position_pauses_add_without_legacy_buy_copy() -> None:
     display = build_buy_zone_display(
         {

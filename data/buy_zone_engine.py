@@ -424,6 +424,8 @@ def _current_action(primary_zone: str, setup_score: float, volume_status: str, v
         return BLOCK_CHASE
     if primary_zone in {"DEEP_ACCEPTANCE", "PULLBACK_BUY"} and setup_score >= 62 and volume_score >= 50 and rr_score >= 55:
         return ALLOW_SMALL_BUY
+    if primary_zone == "PULLBACK_BUY":
+        return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_WATCH":
         return WAIT_CONFIRMATION
     if primary_zone == "REPAIR_WATCH":
