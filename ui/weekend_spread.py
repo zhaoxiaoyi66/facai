@@ -47,9 +47,10 @@ def render() -> None:
     force_refresh = st.button("刷新 Binance 价格", width="stretch")
     rows = build_weekend_spread_rows(load_watchlist(), mapping=mapping, force_refresh=force_refresh)
     log_snapshot = get_weekly_log_snapshot()
+    mapping_counts = _mapping_counts(rows, mapping)
 
-    _render_kpis(rows, mapping, log_snapshot)
-    _render_data_status(rows, mapping, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_kpis(rows, mapping_counts, log_snapshot)
+    _render_data_status(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
 
     controls = st.columns([1.3, 1, 1, 1])
     scope = controls[0].radio("显示范围", ["重点/有数据", "全部观察池", "暂无 mapping"], index=0, horizontal=True)
@@ -64,8 +65,12 @@ def render() -> None:
         focus_only=focus_only,
         abnormal_only=abnormal_only,
     )
-    configured_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
-    st.caption(f"观察池 {len(rows)} 只；已配置 Binance 映射 {configured_count} 只；当前显示 {len(filtered_rows)} 只。")
+    st.caption(
+        f"观察池 {mapping_counts['universe_total']} 只；"
+        f"观察池映射 {mapping_counts['universe_mapping_count']} 只；"
+        f"本地配置映射 {mapping_counts['local_mapping_count']} 只；"
+        f"主表行数 {len(filtered_rows)}。"
+    )
     st.dataframe(_display_frame(filtered_rows), width="stretch", hide_index=True)
 
     no_mapping_rows = [row for row in rows if not row.get("binance_symbol")]
@@ -93,20 +98,19 @@ def render() -> None:
         )
 
 
-def _render_kpis(rows: list[dict], mapping: dict[str, dict], log_snapshot: dict) -> None:
-    configured_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
+def _render_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:
     abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
-    status = _binance_status_text(rows, configured_count)
+    status = _binance_status_text(rows, mapping_counts["universe_mapping_count"])
     cols = st.columns(6)
     cols[0].metric("本周已记录样本", int(log_snapshot.get("sample_count") or 0))
-    cols[1].metric("有效映射", configured_count)
+    cols[1].metric("观察池映射", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}")
     cols[2].metric("本周最大溢价", _percent_text(log_snapshot.get("max_premium_pct")))
     cols[3].metric("本周最大折价", _percent_text(log_snapshot.get("max_discount_pct")))
     cols[4].metric("异常价差", abnormal_count)
     cols[5].metric("Binance 数据", status)
 
 
-def _render_data_status(rows: list[dict], mapping: dict[str, dict], local_mapping_path: Path) -> None:
+def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
     latest = _latest_updated_at(rows)
     spot_status = _market_data_status(rows, "spot")
     futures_status = _market_data_status(rows, "usdm_futures")
@@ -117,6 +121,7 @@ def _render_data_status(rows: list[dict], mapping: dict[str, dict], local_mappin
                 f"Spot 价格源：{spot_status}",
                 "Spot 候选扫描：按需诊断",
                 f"Futures 数据源：{futures_status}",
+                f"本地配置映射总数：{mapping_counts['local_mapping_count']}",
                 local_text,
                 f"最后刷新：{latest or '暂缺'}",
             ]
@@ -204,6 +209,16 @@ def _filter_rows(
     elif focus_only:
         result = [row for row in result if row.get("alert_level") in {"FOCUS", "ABNORMAL"}]
     return result
+
+
+def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
+    local_mapping_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
+    universe_mapping_count = sum(1 for row in rows if row.get("binance_symbol"))
+    return {
+        "local_mapping_count": local_mapping_count,
+        "universe_mapping_count": universe_mapping_count,
+        "universe_total": len(rows),
+    }
 
 
 def _display_frame(rows: list[dict]) -> pd.DataFrame:
@@ -380,9 +395,9 @@ def _mapping_summary(mapping: dict[str, dict]) -> str:
     return ", ".join(items) or "暂无"
 
 
-def _binance_status_text(rows: list[dict], configured_count: int) -> str:
-    if configured_count <= 0:
-        return "暂无映射"
+def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
+    if universe_mapping_count <= 0:
+        return "观察池暂无映射"
     if any(row.get("status") == "OK" for row in rows):
         return "可用"
     if any(row.get("status") == "BINANCE_UNAVAILABLE" for row in rows):

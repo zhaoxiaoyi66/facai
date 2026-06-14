@@ -922,6 +922,70 @@ def test_mapping_loader_returns_empty_when_example_and_local_are_missing(tmp_pat
     assert mapping == {}
 
 
+def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:
+    mapping = {
+        "BTC": {
+            "enabled": True,
+            "binance_symbol": "BTCUSDT",
+            "market_type": "spot",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "candidate",
+        }
+    }
+    rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
+
+    counts = weekend_spread._mapping_counts(rows, mapping)
+    default_rows = weekend_spread._filter_rows(
+        rows,
+        scope="重点/有数据",
+        confirmed_only=False,
+        focus_only=False,
+        abnormal_only=False,
+    )
+
+    assert counts["local_mapping_count"] == 1
+    assert counts["universe_mapping_count"] == 0
+    assert counts["universe_total"] == 2
+    assert default_rows == []
+
+
+def test_mapping_counts_include_universe_mapping_when_ticker_is_in_watchlist() -> None:
+    rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
+
+    counts = weekend_spread._mapping_counts(rows, _mapping())
+    default_rows = weekend_spread._filter_rows(
+        rows,
+        scope="重点/有数据",
+        confirmed_only=False,
+        focus_only=False,
+        abnormal_only=False,
+    )
+
+    assert counts["local_mapping_count"] == 1
+    assert counts["universe_mapping_count"] == 1
+    assert counts["universe_total"] == 2
+    assert [row["ticker"] for row in default_rows] == ["NVDA"]
+
+
+def test_non_universe_mapping_is_not_recorded_as_sample(tmp_path) -> None:
+    mapping = {
+        "BTC": {
+            "enabled": True,
+            "binance_symbol": "BTCUSDT",
+            "market_type": "spot",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "confirmed",
+        }
+    }
+    rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
+
+    samples = record_spread_samples(rows, path=tmp_path / "weekend_spread_log.json", week_id="2026-W24")
+
+    assert samples == []
+
+
 def test_record_current_snapshot_writes_mapped_samples_only(tmp_path) -> None:
     provider = FakeProvider(price=101.5)
     rows = build_weekend_spread_rows(
