@@ -285,6 +285,10 @@ def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
     }
 
 
+def _anchors(*, afterhours: float | None = 100.0, regular: float | None = 98.0) -> dict:
+    return {"NVDA": {"afterhours_reference_price": afterhours, "regular_close_price": regular}}
+
+
 def _explicit_empty_mapping() -> dict:
     return {"__NO_MAPPING__": {"enabled": False, "binance_symbol": ""}}
 
@@ -1510,20 +1514,23 @@ def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
     assert window.end_shanghai.strftime("%A %H:%M") == "Monday 09:00"
 
 
-def test_weekend_peak_short_backtest_calculates_returns_from_mock_klines() -> None:
+def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [
         _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
         _kline(window.start_et + timedelta(hours=8), 108, 115, 107, 114),
-        _kline(window.end_et, 105, 106, 103, 104, 5000),
+        _kline(window.end_et, 105, 106, 103, 104, 1),
+        _kline(window.end_et + timedelta(minutes=1), 104, 105, 102, 103, 3),
     ]
 
     rows = run_weekend_peak_short_backtest(
         ["NVDA"],
         mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
         provider=FakeKlineProvider(bars),
         weeks=1,
+        open_window_minutes=5,
         fee_pct=0.10,
         slippage_pct=0.10,
         funding_pct=0.00,
@@ -1531,15 +1538,77 @@ def test_weekend_peak_short_backtest_calculates_returns_from_mock_klines() -> No
     )
 
     row = rows[0]
+    assert row["anchor_price"] == 100
+    assert row["anchor_source"] == "AFTERHOURS_REFERENCE"
+    assert row["weekend_peak_binance_price"] == 115
     assert row["weekend_peak_price"] == 115
-    assert row["monday_bar_open"] == 105
-    assert row["monday_bar_close"] == 104
-    assert round(row["short_return_at_open_pct"], 2) == 8.7
-    assert round(row["short_return_at_close_pct"], 2) == 9.57
-    assert round(row["best_case_return_pct"], 2) == 10.43
-    assert round(row["worst_case_return_pct"], 2) == 7.83
-    assert round(row["net_return_at_open_pct"], 2) == 8.5
+    assert row["open_reference_method"] == "VWAP_5M"
+    assert round(row["open_reference_price"], 2) == 103.25
+    assert round(row["weekend_peak_premium_pct"], 2) == 15.0
+    assert round(row["open_remaining_premium_pct"], 2) == 3.25
+    assert round(row["premium_decay_pct"], 2) == 11.75
+    assert round(row["premium_decay_ratio"], 2) == 78.33
+    assert round(row["theoretical_short_return_pct"], 2) == 10.22
+    assert round(row["net_short_return_pct"], 2) == 10.02
+    assert round(row["short_return_at_open_pct"], 2) == 10.22
     assert row["data_quality"] == "OK"
+
+
+def test_weekend_peak_short_backtest_falls_back_to_first_open_without_vwap() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(hours=8), 108, 115, 107, 114),
+        _kline(window.end_et, 105, 106, 103, 104, 0),
+    ]
+
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["open_reference_method"] == "FIRST_OPEN"
+    assert rows[0]["open_reference_price"] == 105
+
+
+def test_weekend_peak_short_backtest_falls_back_to_regular_close_anchor() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(hours=8), 108, 115, 107, 114),
+        _kline(window.end_et, 105, 106, 103, 104, 1),
+    ]
+
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=None, regular=100),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["anchor_price"] == 100
+    assert rows[0]["anchor_source"] == "REGULAR_CLOSE"
+    assert round(rows[0]["weekend_peak_premium_pct"], 2) == 15.0
+
+
+def test_weekend_peak_short_backtest_marks_missing_anchor_invalid() -> None:
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=None, regular=None),
+        provider=FakeKlineProvider([]),
+        weeks=1,
+        now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert rows[0]["data_quality"] == "INVALID"
+    assert rows[0]["error_message"] == "missing anchor price"
 
 
 def test_weekend_peak_short_backtest_marks_spot_as_observation_only() -> None:
@@ -1553,6 +1622,7 @@ def test_weekend_peak_short_backtest_marks_spot_as_observation_only() -> None:
     rows = run_weekend_peak_short_backtest(
         ["NVDA"],
         mapping=_mapping(market_type="spot"),
+        anchors=_anchors(),
         provider=FakeKlineProvider(bars),
         weeks=1,
         now=now,
@@ -1566,6 +1636,7 @@ def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
     rows = run_weekend_peak_short_backtest(
         ["NVDA"],
         mapping=_mapping(),
+        anchors=_anchors(),
         provider=FakeKlineProvider(error=TimeoutError("futures timeout")),
         weeks=1,
         now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc),
@@ -1586,6 +1657,7 @@ def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
     rows = run_weekend_peak_short_backtest(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="candidate"),
+        anchors=_anchors(),
         provider=FakeKlineProvider(bars),
         weeks=1,
         now=now,
@@ -1593,6 +1665,20 @@ def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
 
     assert rows[0]["data_quality"] == "UNCONFIRMED_MAPPING"
     assert "仅作观察" in rows[0]["result_note"]
+
+
+def test_backtest_summary_excludes_unconfirmed_mapping_from_formal_win_rate() -> None:
+    rows = [
+        {"net_short_return_pct": 2.0, "theoretical_short_return_pct": 2.2, "premium_decay_ratio": 80, "premium_decay_pct": 4, "open_remaining_premium_pct": 1, "data_quality": "OK"},
+        {"net_short_return_pct": 9.0, "theoretical_short_return_pct": 9.2, "premium_decay_ratio": 90, "premium_decay_pct": 9, "open_remaining_premium_pct": 1, "data_quality": "UNCONFIRMED_MAPPING"},
+    ]
+
+    summary = summarize_backtest_results(rows)
+
+    assert summary["sample_weeks"] == 1
+    assert summary["positive_weeks"] == 1
+    assert summary["win_rate"] == 1.0
+    assert summary["avg_net_return_pct"] == 2.0
 
 
 def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:

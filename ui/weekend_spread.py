@@ -329,18 +329,21 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         and (include_unconfirmed or str(mapping[str(ticker or "").upper()].get("mapping_confidence") or "") == "confirmed")
     ]
     options = ["全部已映射"] + mapped_tickers
-    cols = st.columns(5)
+    cols = st.columns(6)
     selected = cols[0].selectbox("ticker", options, key="weekend_backtest_ticker")
     weeks = int(cols[1].number_input("weeks", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
-    fee_pct = cols[2].number_input("fee_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
-    slippage_pct = cols[3].number_input("slippage_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
-    funding_pct = cols[4].number_input("funding_pct", value=0.00, step=0.01, key="weekend_backtest_funding")
+    open_window = int(cols[2].selectbox("open_window", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
+    fee_pct = cols[3].number_input("fee_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
+    slippage_pct = cols[4].number_input("slippage_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
+    funding_pct = cols[5].number_input("funding_pct", value=0.00, step=0.01, key="weekend_backtest_funding")
     if st.button("运行近 4 周回测", width="stretch", key="weekend_run_backtest"):
         tickers = mapped_tickers if selected == "全部已映射" else [selected]
         results = run_weekend_peak_short_backtest(
             tickers,
             mapping=mapping,
+            anchors=_backtest_anchor_mapping(),
             weeks=weeks,
+            open_window_minutes=open_window,
             fee_pct=fee_pct,
             slippage_pct=slippage_pct,
             funding_pct=funding_pct,
@@ -358,13 +361,30 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
 
 def _render_backtest_kpis(rows: list[dict]) -> None:
     summary = summarize_backtest_results(rows)
-    cols = st.columns(6)
+    cols = st.columns(8)
     cols[0].metric("近4周样本数", int(summary.get("sample_weeks") or 0))
-    cols[1].metric("平均理论收益", _percent_text(summary.get("avg_net_return_pct")))
-    cols[2].metric("胜率", _ratio_text(summary.get("win_rate")))
-    cols[3].metric("最大收益", _percent_text(summary.get("max_return_pct")))
-    cols[4].metric("最大亏损", _percent_text(summary.get("max_loss_pct")))
-    cols[5].metric("平均回落幅度", _percent_text(_average_backtest_pullback(rows)))
+    cols[1].metric("平均溢价抹平率", _percent_text(summary.get("avg_premium_decay_ratio")))
+    cols[2].metric("平均理论空头收益", _percent_text(summary.get("avg_theoretical_short_return_pct")))
+    cols[3].metric("平均净收益", _percent_text(summary.get("avg_net_return_pct")))
+    cols[4].metric("正收益周数", int(summary.get("positive_weeks") or 0))
+    cols[5].metric("胜率", _ratio_text(summary.get("win_rate")))
+    cols[6].metric("最大溢价抹平", _percent_text(summary.get("max_premium_decay_pct")))
+    cols[7].metric("最大未抹平风险", _percent_text(summary.get("max_unflattened_risk_pct")))
+
+
+def _backtest_anchor_mapping() -> dict[str, dict]:
+    rows = list(st.session_state.get("weekend_realtime_rows") or [])
+    result: dict[str, dict] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        result[ticker] = {
+            "afterhours_reference_price": row.get("afterhours_reference_price"),
+            "regular_close_price": row.get("regular_close_price") or row.get("friday_close"),
+            "friday_close": row.get("friday_close"),
+        }
+    return result
 
 
 def _render_backtest_advanced_records() -> None:
@@ -706,13 +726,13 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("week_id", "week_id"),
         ("ticker", "Ticker"),
-        ("weekend_peak_time", "weekend_peak_time"),
-        ("weekend_peak_price", "weekend_peak_price"),
-        ("monday_bar_open", "美股夜盘开盘参考"),
-        ("monday_bar_close", "monday_close"),
-        ("short_return_at_open_pct", "short_return_at_open_pct"),
-        ("short_return_at_close_pct", "short_return_at_close_pct"),
-        ("net_return_at_open_pct", "net_return_at_open_pct"),
+        ("weekend_peak_time", "周末高点时间"),
+        ("weekend_peak_premium_pct", "周末峰值溢价"),
+        ("open_remaining_premium_pct", "开盘剩余溢价"),
+        ("premium_decay_pct", "溢价抹平幅度"),
+        ("premium_decay_ratio", "溢价抹平率"),
+        ("theoretical_short_return_pct", "高点空到开盘理论收益"),
+        ("net_short_return_pct", "扣费后收益"),
         ("data_quality", "data_quality"),
     ]
     frame = pd.DataFrame(rows)
@@ -721,11 +741,16 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
-    for money_col in ("weekend_peak_price", "美股夜盘开盘参考", "monday_close"):
-        display[money_col] = display[money_col].map(_money_text)
-    for percent_col in ("short_return_at_open_pct", "short_return_at_close_pct", "net_return_at_open_pct"):
+    for percent_col in (
+        "周末峰值溢价",
+        "开盘剩余溢价",
+        "溢价抹平幅度",
+        "溢价抹平率",
+        "高点空到开盘理论收益",
+        "扣费后收益",
+    ):
         display[percent_col] = display[percent_col].map(_percent_text)
-    display["weekend_peak_time"] = display["weekend_peak_time"].replace("", "暂缺")
+    display["周末高点时间"] = display["周末高点时间"].replace("", "暂缺")
     return display
 
 
