@@ -76,7 +76,7 @@ def _render_realtime_tab(
 ) -> tuple[list[dict], dict, dict[str, int]]:
     st.subheader("实时观察")
     force_refresh = _render_realtime_action_bar()
-    rows = build_weekend_spread_rows(watchlist, mapping=mapping, force_refresh=force_refresh)
+    rows = _build_weekend_spread_rows_with_feedback(watchlist, mapping=mapping, force_refresh=force_refresh)
 
     _render_record_buttons(rows, key_prefix="realtime")
     log_snapshot = get_weekly_log_snapshot()
@@ -104,6 +104,41 @@ def _render_realtime_action_bar() -> bool:
     force_refresh = col_refresh.button("刷新 Binance 价格", width="stretch", key="weekend_spread_refresh")
     col_note.caption("价格由 Binance API 自动读取；本页只做价差观察，不输出套利或交易指令。")
     return force_refresh
+
+
+def _build_weekend_spread_rows_with_feedback(
+    watchlist: list[str],
+    *,
+    mapping: dict[str, dict],
+    force_refresh: bool,
+) -> list[dict]:
+    if not force_refresh:
+        return build_weekend_spread_rows(watchlist, mapping=mapping, force_refresh=False)
+    total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
+    if total <= 0:
+        st.info("观察池为空，暂无可刷新的 Binance 价格。")
+        return []
+
+    progress_bar = st.progress(0.0)
+    status_slot = st.empty()
+    status_slot.caption(f"准备刷新 Binance 价格：共 {total} 个观察标的。")
+
+    def update_progress(completed: int, total_count: int, ticker: str) -> None:
+        ratio = completed / max(total_count, 1)
+        progress_bar.progress(min(max(ratio, 0.0), 1.0))
+        status_slot.caption(f"正在刷新 Binance 价格：{ticker}（{completed}/{total_count}）")
+
+    rows = build_weekend_spread_rows(
+        watchlist,
+        mapping=mapping,
+        force_refresh=True,
+        progress_callback=update_progress,
+    )
+    ok_count = sum(1 for row in rows if row.get("status") == "OK")
+    mapped_count = sum(1 for row in rows if row.get("binance_symbol"))
+    progress_bar.progress(1.0)
+    status_slot.success(f"刷新完成：{ok_count}/{mapped_count} 个映射价格可用，观察池共 {len(rows)} 个标的。")
+    return rows
 
 
 def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:

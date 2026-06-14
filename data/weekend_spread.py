@@ -4,7 +4,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 
@@ -144,13 +144,15 @@ def build_weekend_spread_rows(
     provider: BinancePriceProvider | None = None,
     cache: CacheReadModel | None = None,
     force_refresh: bool = False,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[dict[str, Any]]:
     normalized = _normalize_tickers(tickers)
     effective_mapping = _normalize_mapping(mapping or load_binance_symbol_mapping())
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     read_model = cache or CacheReadModel()
     rows: list[dict[str, Any]] = []
-    for ticker in normalized:
+    total = len(normalized)
+    for index, ticker in enumerate(normalized, start=1):
         friday_close, friday_date, close_source = _friday_close(read_model, ticker)
         quote = read_model.get_quote_payload(ticker) or {}
         stock_name = str(quote.get("companyName") or quote.get("company_name") or quote.get("name") or ticker)
@@ -167,6 +169,7 @@ def build_weekend_spread_rows(
                     status="NO_MAPPING",
                 )
             )
+            _notify_progress(progress_callback, index, total, ticker)
             continue
         binance_symbol = str(mapping_config.get("binance_symbol") or "").strip().upper()
         if normalize_market_type(str(mapping_config.get("market_type") or "")) != "usdm_futures":
@@ -182,6 +185,7 @@ def build_weekend_spread_rows(
             row["binance_symbol"] = binance_symbol
             row["error"] = "stock_mapping_requires_usdm_futures"
             rows.append(row)
+            _notify_progress(progress_callback, index, total, ticker)
             continue
         if friday_close is None:
             rows.append(
@@ -195,6 +199,7 @@ def build_weekend_spread_rows(
                     status="MISSING_FRIDAY_CLOSE",
                 )
             )
+            _notify_progress(progress_callback, index, total, ticker)
             continue
         unit_error = _unit_mapping_error(mapping_config)
         if unit_error:
@@ -210,6 +215,7 @@ def build_weekend_spread_rows(
             row["binance_symbol"] = binance_symbol
             row["error"] = unit_error
             rows.append(row)
+            _notify_progress(progress_callback, index, total, ticker)
             continue
         manual_snapshot = _manual_override_snapshot(mapping_config)
         snapshot = manual_snapshot or _snapshot_to_dict(
@@ -234,6 +240,7 @@ def build_weekend_spread_rows(
             row["updated_at"] = snapshot.get("updated_at") or ""
             row["error"] = snapshot.get("error") or "binance_price_missing"
             rows.append(row)
+            _notify_progress(progress_callback, index, total, ticker)
             continue
         unit_multiplier = float(_number(mapping_config.get("unit_multiplier")) or 1.0)
         adjusted_price = last_price / unit_multiplier
@@ -273,6 +280,7 @@ def build_weekend_spread_rows(
                 "manual_override": bool(snapshot.get("manual_override")),
             }
         )
+        _notify_progress(progress_callback, index, total, ticker)
     return rows
 
 
@@ -890,6 +898,17 @@ def _normalize_tickers(tickers: Iterable[str]) -> list[str]:
         result.append(ticker)
         seen.add(ticker)
     return result
+
+
+def _notify_progress(
+    progress_callback: Callable[[int, int, str], None] | None,
+    completed: int,
+    total: int,
+    ticker: str,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(completed, total, ticker)
 
 
 def _number(value: Any) -> float | None:

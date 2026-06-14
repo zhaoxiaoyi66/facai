@@ -272,6 +272,22 @@ def test_missing_symbol_mapping_does_not_call_provider() -> None:
     assert provider.calls == []
 
 
+def test_build_weekend_spread_rows_reports_refresh_progress() -> None:
+    events: list[tuple[int, int, str]] = []
+
+    rows = build_weekend_spread_rows(
+        ["NVDA", "MSFT"],
+        mapping=_mapping(),
+        provider=FakeProvider(),
+        cache=FakeCache(),
+        force_refresh=True,
+        progress_callback=lambda completed, total, ticker: events.append((completed, total, ticker)),
+    )
+
+    assert [row["ticker"] for row in rows] == ["NVDA", "MSFT"]
+    assert events == [(1, 2, "NVDA"), (2, 2, "MSFT")]
+
+
 def test_mapping_diagnostics_reports_missing_mapping_without_price_request() -> None:
     provider = FakeProvider()
 
@@ -1250,6 +1266,15 @@ def test_weekend_spread_render_declares_five_workflow_tabs() -> None:
         weekend_spread.TAB_HISTORY,
         weekend_spread.TAB_MAPPING,
     ] == ["实时观察", "本周记录", "周一验证", "历史规律", "映射管理"]
+
+
+def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
+    source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
+
+    assert "st.progress" in source
+    assert "progress_callback" in source
+    assert "正在刷新 Binance 价格" in source
+    assert "刷新完成" in source
 
 
 def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
