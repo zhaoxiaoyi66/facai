@@ -210,10 +210,15 @@ def build_mapping_diagnostics(
                 "funding_available": False,
                 "risk_note": "",
                 "candidates": [],
+                "candidate_scan_status": "",
+                "candidate_scan_message": "",
                 "error_message": "",
             }
             if include_candidates:
-                row["candidates"] = discover_binance_symbol_candidates(ticker, provider=price_provider)
+                scan = discover_binance_symbol_candidates(ticker, provider=price_provider)
+                row["candidates"] = scan["candidates"]
+                row["candidate_scan_status"] = scan["data_source_status"]
+                row["candidate_scan_message"] = _candidate_scan_message(scan)
             rows.append(row)
             continue
         market_type = str(config.get("market_type") or "usdm_futures")
@@ -234,6 +239,8 @@ def build_mapping_diagnostics(
             "funding_available": False,
             "risk_note": str(config.get("risk_note") or ""),
             "candidates": [],
+            "candidate_scan_status": "",
+            "candidate_scan_message": "",
             "error_message": "",
         }
         if validate:
@@ -254,11 +261,14 @@ def build_mapping_diagnostics(
                 }
             )
         if include_candidates:
-            row["candidates"] = discover_binance_symbol_candidates(
+            scan = discover_binance_symbol_candidates(
                 ticker,
                 market_type=market_type,
                 provider=price_provider,
             )
+            row["candidates"] = scan["candidates"]
+            row["candidate_scan_status"] = scan["data_source_status"]
+            row["candidate_scan_message"] = _candidate_scan_message(scan)
         rows.append(row)
     return rows
 
@@ -269,10 +279,19 @@ def discover_binance_symbol_candidates(
     market_type: str | None = None,
     provider: BinancePriceProvider | None = None,
     limit: int = 10,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     query = str(ticker or "").strip().upper()
+    updated_at = datetime.now(timezone.utc).isoformat()
     if not query:
-        return []
+        return {
+            "candidates": [],
+            "data_source_status": "OK",
+            "error_message": "",
+            "checked_market_types": [],
+            "updated_at": updated_at,
+            "provider_diagnostic_failed": False,
+            "market_results": [],
+        }
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     raw_market_type = str(market_type or "").strip().lower()
     if raw_market_type in {"", "unknown", "all"}:
@@ -282,11 +301,33 @@ def discover_binance_symbol_candidates(
 
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    market_results: list[dict[str, Any]] = []
     for market in markets:
         try:
-            candidates = price_provider.find_symbol_candidates(query, market_type=market, limit=limit)
+            if hasattr(price_provider, "find_symbol_candidates_with_status"):
+                search_result = price_provider.find_symbol_candidates_with_status(query, market_type=market, limit=limit)
+                result_dict = _search_result_to_dict(search_result, market)
+                candidates = result_dict.get("candidates") or []
+            else:
+                candidates = price_provider.find_symbol_candidates(query, market_type=market, limit=limit)
+                result_dict = {
+                    "market_type": market,
+                    "data_source_status": "OK",
+                    "error_message": "",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "provider_diagnostic_failed": False,
+                }
         except Exception:
             candidates = []
+            result_dict = {
+                "market_type": market,
+                "data_source_status": "UNAVAILABLE",
+                "error_message": "candidate provider failed",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "provider_diagnostic_failed": True,
+            }
+        result_dict["candidates"] = _candidate_dicts(candidates)
+        market_results.append(result_dict)
         for row in _candidate_dicts(candidates):
             symbol = str(row.get("symbol") or "").strip().upper()
             candidate_market = str(row.get("market_type") or market).strip() or market
@@ -304,8 +345,24 @@ def discover_binance_symbol_candidates(
             rows.append(row)
             seen.add(key)
             if len(rows) >= max(1, limit):
-                return rows
-    return rows
+                return {
+                    "candidates": rows,
+                    "data_source_status": _aggregate_candidate_status(market_results),
+                    "error_message": _aggregate_candidate_error(market_results),
+                    "checked_market_types": markets,
+                    "updated_at": _latest_candidate_updated_at(market_results, updated_at),
+                    "provider_diagnostic_failed": any(bool(item.get("provider_diagnostic_failed")) for item in market_results),
+                    "market_results": market_results,
+                }
+    return {
+        "candidates": rows,
+        "data_source_status": _aggregate_candidate_status(market_results),
+        "error_message": _aggregate_candidate_error(market_results),
+        "checked_market_types": markets,
+        "updated_at": _latest_candidate_updated_at(market_results, updated_at),
+        "provider_diagnostic_failed": any(bool(item.get("provider_diagnostic_failed")) for item in market_results),
+        "market_results": market_results,
+    }
 
 
 def classify_spread(spread_pct: float | None) -> dict[str, str]:
@@ -456,6 +513,68 @@ def _candidate_dicts(candidates: Iterable[Any]) -> list[dict[str, Any]]:
                 }
             )
     return result
+
+
+def _search_result_to_dict(result: Any, market_type: str) -> dict[str, Any]:
+    if isinstance(result, dict):
+        payload = dict(result)
+    elif is_dataclass(result):
+        payload = asdict(result)
+    else:
+        payload = {
+            "market_type": getattr(result, "market_type", market_type),
+            "candidates": getattr(result, "candidates", []),
+            "data_source_status": getattr(result, "data_source_status", "OK"),
+            "error_message": getattr(result, "error_message", ""),
+            "updated_at": getattr(result, "updated_at", ""),
+            "provider_diagnostic_failed": getattr(result, "provider_diagnostic_failed", False),
+        }
+    payload["market_type"] = str(payload.get("market_type") or market_type)
+    payload["data_source_status"] = str(payload.get("data_source_status") or "OK")
+    payload["error_message"] = str(payload.get("error_message") or "")
+    payload["updated_at"] = str(payload.get("updated_at") or "")
+    payload["provider_diagnostic_failed"] = bool(payload.get("provider_diagnostic_failed"))
+    payload["candidates"] = _candidate_dicts(payload.get("candidates") or [])
+    return payload
+
+
+def _aggregate_candidate_status(market_results: list[dict[str, Any]]) -> str:
+    if not market_results:
+        return "UNAVAILABLE"
+    statuses = [str(item.get("data_source_status") or "UNAVAILABLE") for item in market_results]
+    if any(status == "OK" for status in statuses):
+        return "OK"
+    for status in ("BLOCKED", "PARSE_ERROR", "SCHEMA_MISMATCH", "EMPTY", "UNAVAILABLE"):
+        if status in statuses:
+            return status
+    return statuses[0]
+
+
+def _aggregate_candidate_error(market_results: list[dict[str, Any]]) -> str:
+    messages = [str(item.get("error_message") or "").strip() for item in market_results]
+    return "；".join(message for message in messages if message)
+
+
+def _latest_candidate_updated_at(market_results: list[dict[str, Any]], fallback: str) -> str:
+    values = [str(item.get("updated_at") or "") for item in market_results if item.get("updated_at")]
+    return values[-1] if values else fallback
+
+
+def _candidate_scan_message(scan: dict[str, Any]) -> str:
+    status = str(scan.get("data_source_status") or "")
+    if status == "OK":
+        if scan.get("candidates"):
+            return "候选待确认"
+        return "未发现候选 symbol"
+    if status == "BLOCKED":
+        return "Binance API 可能被网络或地区限制拦截"
+    if status == "EMPTY":
+        return "Binance exchangeInfo 返回空 symbols"
+    if status == "SCHEMA_MISMATCH":
+        return "Binance exchangeInfo 返回结构异常"
+    if status == "PARSE_ERROR":
+        return "Binance exchangeInfo 解析失败"
+    return "Binance exchangeInfo 不可用，候选扫描未完成"
 
 
 def _validation_status_text(validation: dict[str, Any], mapping_confidence: str) -> str:

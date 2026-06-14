@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from urllib.error import HTTPError
 
 import pandas as pd
 
@@ -99,6 +100,27 @@ class FakeProvider:
             row["market_type"] = market_type
             matches.append(row)
         return matches[:limit]
+
+
+class CandidateStatusProvider:
+    def __init__(self, *, status: str = "OK", candidates: list[dict] | None = None, message: str = "") -> None:
+        self.status = status
+        self.candidates = candidates or []
+        self.message = message
+        self.calls: list[str] = []
+
+    def find_symbol_candidates_with_status(self, query: str, *, market_type: str = "usdm_futures", limit: int = 10) -> dict:
+        self.calls.append(f"status_candidates:{market_type}:{query}")
+        return {
+            "market_type": market_type,
+            "candidates": self.candidates[:limit],
+            "data_source_status": self.status,
+            "error_message": self.message,
+            "updated_at": "2026-06-14T12:00:00+00:00",
+            "symbol_count": 0 if self.status == "EMPTY" else 1200,
+            "btcusdt_found": self.status not in {"EMPTY", "UNAVAILABLE"},
+            "provider_diagnostic_failed": self.status in {"EMPTY", "UNAVAILABLE"},
+        }
 
 
 def _history(close: float = 100.0) -> pd.DataFrame:
@@ -350,13 +372,76 @@ def test_candidate_discovery_does_not_mark_mapping_confirmed() -> None:
 def test_discover_candidates_searches_markets_without_confirming_mapping() -> None:
     provider = FakeProvider()
 
-    candidates = discover_binance_symbol_candidates("NVDA", provider=provider)
+    result = discover_binance_symbol_candidates("NVDA", provider=provider)
+    candidates = result["candidates"]
 
+    assert result["data_source_status"] == "OK"
     assert {item["market_type"] for item in candidates} == {"spot", "usdm_futures"}
     assert all(item["status"] == "candidate" for item in candidates)
     assert all(item.get("mapping_confidence") != "confirmed" for item in candidates)
     assert "candidates:spot:NVDA" in provider.calls
     assert "candidates:usdm_futures:NVDA" in provider.calls
+
+
+def test_discover_candidates_distinguishes_normal_empty_from_unavailable_source() -> None:
+    provider = CandidateStatusProvider(status="OK", candidates=[])
+
+    result = discover_binance_symbol_candidates("ZZZZ", provider=provider)
+
+    assert result["data_source_status"] == "OK"
+    assert result["candidates"] == []
+    assert result["provider_diagnostic_failed"] is False
+
+
+def test_discover_candidates_reports_empty_exchange_info() -> None:
+    provider = CandidateStatusProvider(status="EMPTY", candidates=[], message="symbols list is empty")
+
+    result = discover_binance_symbol_candidates("NVDA", market_type="usdm_futures", provider=provider)
+
+    assert result["data_source_status"] == "EMPTY"
+    assert result["candidates"] == []
+    assert result["provider_diagnostic_failed"] is True
+    assert "symbols list is empty" in result["error_message"]
+
+
+def test_discover_candidates_reports_blocked_exchange_info() -> None:
+    provider = CandidateStatusProvider(status="BLOCKED", candidates=[], message="HTTP 451")
+
+    result = discover_binance_symbol_candidates("NVDA", market_type="spot", provider=provider)
+
+    assert result["data_source_status"] == "BLOCKED"
+    assert result["candidates"] == []
+    assert "HTTP 451" in result["error_message"]
+
+
+def test_discover_candidates_reports_schema_mismatch() -> None:
+    provider = CandidateStatusProvider(status="SCHEMA_MISMATCH", candidates=[], message="missing symbols")
+
+    result = discover_binance_symbol_candidates("NVDA", market_type="spot", provider=provider)
+
+    assert result["data_source_status"] == "SCHEMA_MISMATCH"
+    assert result["candidates"] == []
+    assert "missing symbols" in result["error_message"]
+
+
+def test_discover_candidates_marks_provider_diagnostic_failed_when_btcusdt_probe_fails() -> None:
+    provider = CandidateStatusProvider(status="UNAVAILABLE", candidates=[], message="provider diagnostic failed: BTCUSDT not found")
+
+    result = discover_binance_symbol_candidates("NVDA", market_type="spot", provider=provider)
+
+    assert result["data_source_status"] == "UNAVAILABLE"
+    assert result["provider_diagnostic_failed"] is True
+    assert "BTCUSDT" in result["error_message"]
+
+
+def test_mapping_diagnostics_does_not_render_provider_unavailable_as_no_candidates() -> None:
+    provider = CandidateStatusProvider(status="BLOCKED", candidates=[], message="HTTP 451")
+
+    rows = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=False, include_candidates=True)
+
+    assert rows[0]["candidate_scan_status"] == "BLOCKED"
+    assert rows[0]["candidates"] == []
+    assert rows[0]["candidate_scan_message"] == "Binance API 可能被网络或地区限制拦截"
 
 
 def test_smoke_script_requires_local_mapping_without_provider_calls(tmp_path) -> None:
@@ -423,7 +508,14 @@ class RecordingHTTPProvider(BinanceHTTPPriceProvider):
         self.calls.append((base_url, path, dict(params)))
         if path.endswith("exchangeInfo"):
             symbol = params.get("symbol")
-            return {"symbols": [{"symbol": symbol or "NVDAUSDT", "baseAsset": "NVDA", "quoteAsset": "USDT"}]}
+            if symbol:
+                return {"symbols": [{"symbol": symbol, "baseAsset": symbol.removesuffix("USDT"), "quoteAsset": "USDT"}]}
+            return {
+                "symbols": [
+                    {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT"},
+                    {"symbol": "NVDAUSDT", "baseAsset": "NVDA", "quoteAsset": "USDT"},
+                ]
+            }
         if path.endswith("ticker/price"):
             return {"price": "101.5"}
         if path.endswith("bookTicker"):
@@ -493,6 +585,58 @@ def test_http_provider_discovers_candidates_without_confirming_mapping() -> None
     assert candidates[0].symbol == "NVDAUSDT"
     assert candidates[0].status == "candidate"
     assert candidates[0].quote_currency == "USDT"
+
+
+def test_http_provider_candidate_search_reports_region_block() -> None:
+    class BlockedProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            raise HTTPError(f"{base_url}{path}", 451, "Unavailable For Legal Reasons", hdrs=None, fp=None)
+
+    provider = BlockedProvider()
+
+    result = provider.find_symbol_candidates_with_status("NVDA", market_type="usdm_futures")
+
+    assert result.data_source_status == "BLOCKED"
+    assert result.candidates == []
+    assert "HTTPError 451" in result.error_message
+
+
+def test_http_provider_candidate_search_reports_schema_mismatch() -> None:
+    class SchemaMismatchProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            return {"unexpected": []}
+
+    provider = SchemaMismatchProvider()
+
+    result = provider.find_symbol_candidates_with_status("NVDA", market_type="spot")
+
+    assert result.data_source_status == "SCHEMA_MISMATCH"
+    assert result.candidates == []
+    assert "missing symbols" in result.error_message
+
+
+def test_http_provider_candidate_search_reports_btcusdt_probe_failure() -> None:
+    class MissingBtcProvider(RecordingHTTPProvider):
+        def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict:
+            return {"symbols": [{"symbol": "NVDAUSDT", "baseAsset": "NVDA", "quoteAsset": "USDT"}]}
+
+    provider = MissingBtcProvider()
+
+    result = provider.find_symbol_candidates_with_status("NVDA", market_type="spot")
+
+    assert result.data_source_status == "UNAVAILABLE"
+    assert result.provider_diagnostic_failed is True
+    assert "BTCUSDT" in result.error_message
+
+
+def test_http_provider_uses_env_base_url_override(monkeypatch) -> None:
+    monkeypatch.setenv("BINANCE_SPOT_BASE_URL", "https://spot.env.test")
+    monkeypatch.setenv("BINANCE_USDM_BASE_URL", "https://usdm.env.test")
+
+    provider = BinanceHTTPPriceProvider()
+
+    assert provider.spot_base_url == "https://spot.env.test"
+    assert provider.futures_base_url == "https://usdm.env.test"
 
 
 def test_mapping_config_loads_structured_and_legacy_symbols(tmp_path) -> None:

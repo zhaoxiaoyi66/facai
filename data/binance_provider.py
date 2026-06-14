@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -52,6 +53,18 @@ class BinanceSymbolCandidate:
     status: str = "candidate"
 
 
+@dataclass(frozen=True)
+class BinanceCandidateSearchResult:
+    market_type: str
+    candidates: list[BinanceSymbolCandidate]
+    data_source_status: str = "OK"
+    error_message: str = ""
+    updated_at: str = ""
+    symbol_count: int | None = None
+    btcusdt_found: bool | None = None
+    provider_diagnostic_failed: bool = False
+
+
 class BinancePriceProvider:
     def get_last_price(
         self,
@@ -73,6 +86,20 @@ class BinancePriceProvider:
         limit: int = 10,
     ) -> list[BinanceSymbolCandidate]:
         raise NotImplementedError
+
+    def find_symbol_candidates_with_status(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> BinanceCandidateSearchResult:
+        candidates = self.find_symbol_candidates(query, market_type=market_type, limit=limit)
+        return BinanceCandidateSearchResult(
+            market_type=normalize_market_type(market_type),
+            candidates=candidates,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
 
 
 class CachedBinancePriceProvider(BinancePriceProvider):
@@ -120,6 +147,15 @@ class CachedBinancePriceProvider(BinancePriceProvider):
     ) -> list[BinanceSymbolCandidate]:
         return self.provider.find_symbol_candidates(query, market_type=market_type, limit=limit)
 
+    def find_symbol_candidates_with_status(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> BinanceCandidateSearchResult:
+        return self.provider.find_symbol_candidates_with_status(query, market_type=market_type, limit=limit)
+
     def _read_cached(self, cache_key: str) -> BinancePriceSnapshot | None:
         payload = _read_json(self.cache_path)
         raw = payload.get(cache_key) if isinstance(payload, dict) else None
@@ -146,12 +182,12 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
     def __init__(
         self,
         *,
-        spot_base_url: str = "https://api.binance.com",
-        futures_base_url: str = "https://fapi.binance.com",
+        spot_base_url: str | None = None,
+        futures_base_url: str | None = None,
         timeout_seconds: float = 5.0,
     ) -> None:
-        self.spot_base_url = spot_base_url.rstrip("/")
-        self.futures_base_url = futures_base_url.rstrip("/")
+        self.spot_base_url = (spot_base_url or os.environ.get("BINANCE_SPOT_BASE_URL") or "https://api.binance.com").rstrip("/")
+        self.futures_base_url = (futures_base_url or os.environ.get("BINANCE_USDM_BASE_URL") or "https://fapi.binance.com").rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def get_last_price(
@@ -303,17 +339,83 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
         market_type: str = "usdm_futures",
         limit: int = 10,
     ) -> list[BinanceSymbolCandidate]:
+        return self.find_symbol_candidates_with_status(query, market_type=market_type, limit=limit).candidates
+
+    def find_symbol_candidates_with_status(
+        self,
+        query: str,
+        *,
+        market_type: str = "usdm_futures",
+        limit: int = 10,
+    ) -> BinanceCandidateSearchResult:
         normalized_query = str(query or "").strip().upper()
         normalized_market = normalize_market_type(market_type)
+        now = datetime.now(timezone.utc).isoformat()
         if not normalized_query:
-            return []
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="OK",
+                updated_at=now,
+            )
         try:
             payload = self._exchange_info(normalized_market, None)
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
-            return []
+        except HTTPError as exc:
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status=_candidate_status_from_http(exc),
+                error_message=f"HTTPError {exc.code}: {exc.reason}",
+                updated_at=now,
+            )
+        except json.JSONDecodeError as exc:
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="PARSE_ERROR",
+                error_message=f"JSONDecodeError: {exc}",
+                updated_at=now,
+            )
+        except (URLError, TimeoutError, OSError) as exc:
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="UNAVAILABLE",
+                error_message=f"{type(exc).__name__}: {exc}",
+                updated_at=now,
+            )
         symbols = payload.get("symbols") if isinstance(payload, dict) else None
         if not isinstance(symbols, list):
-            symbols = [payload] if isinstance(payload, dict) else []
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="SCHEMA_MISMATCH",
+                error_message="exchangeInfo response missing symbols list",
+                updated_at=now,
+            )
+        if not symbols:
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="EMPTY",
+                error_message="exchangeInfo symbols list is empty",
+                updated_at=now,
+                symbol_count=0,
+                btcusdt_found=False,
+                provider_diagnostic_failed=True,
+            )
+        btcusdt_found = any(isinstance(item, dict) and str(item.get("symbol") or "").upper() == "BTCUSDT" for item in symbols)
+        if not btcusdt_found:
+            return BinanceCandidateSearchResult(
+                market_type=normalized_market,
+                candidates=[],
+                data_source_status="UNAVAILABLE",
+                error_message="provider diagnostic failed: BTCUSDT not found in exchangeInfo",
+                updated_at=now,
+                symbol_count=len(symbols),
+                btcusdt_found=False,
+                provider_diagnostic_failed=True,
+            )
         candidates: list[BinanceSymbolCandidate] = []
         for item in symbols:
             if not isinstance(item, dict):
@@ -332,7 +434,14 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             )
             if len(candidates) >= max(1, limit):
                 break
-        return candidates
+        return BinanceCandidateSearchResult(
+            market_type=normalized_market,
+            candidates=candidates,
+            data_source_status="OK",
+            updated_at=now,
+            symbol_count=len(symbols),
+            btcusdt_found=True,
+        )
 
     def _symbol_record(self, market_type: str, symbol: str) -> dict[str, Any] | None:
         payload = self._exchange_info(market_type, symbol)
@@ -384,6 +493,14 @@ def normalize_market_type(market_type: str) -> str:
     if value in {"futures", "future", "usdt_m_futures", "usdm", "usdm_futures", "binance_futures"}:
         return "usdm_futures"
     return "usdm_futures"
+
+
+def _candidate_status_from_http(exc: HTTPError) -> str:
+    if exc.code in {403, 451}:
+        return "BLOCKED"
+    if exc.code == 429:
+        return "UNAVAILABLE"
+    return "UNAVAILABLE"
 
 
 def _error_snapshot(symbol: str, error: str, *, market_type: str = "usdm_futures") -> BinancePriceSnapshot:

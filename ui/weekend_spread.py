@@ -162,6 +162,8 @@ def _diagnostics_frame(rows: list[dict]) -> pd.DataFrame:
         ("book_available", "买卖盘"),
         ("volume_available", "成交量"),
         ("funding_available", "资金费率"),
+        ("candidate_scan_status", "候选扫描"),
+        ("candidate_scan_message", "候选说明"),
         ("risk_note", "风险备注"),
         ("candidates", "候选"),
     ]
