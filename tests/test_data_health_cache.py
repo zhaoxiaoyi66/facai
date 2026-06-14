@@ -180,6 +180,8 @@ class DataHealthCacheTests(unittest.TestCase):
 
         self.assertIn("current_price,", source)
         self.assertIn('payload["current_price"] = cached_price', source)
+        self.assertIn('"daily_ohlcv": history', source)
+        self.assertIn("build_buy_zone_context(stock_data", source)
         self.assertNotIn('setdefault("current_price"', source)
 
     def test_data_health_summary_counts_watchlist_price_history_and_decision_errors(self) -> None:

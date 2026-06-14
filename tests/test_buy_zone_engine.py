@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from data.buy_zone_engine import (
     ALLOW_SMALL_BUY,
     BLOCK_CHASE,
@@ -204,6 +206,20 @@ def test_daily_ohlcv_derives_uncomputed_ma_atr_rsi_and_zones() -> None:
     assert context.support_zone_high is not None
     assert context.confirmation_price is not None
     assert context.chase_price is not None
+
+
+def test_daily_ohlcv_dataframe_is_accepted_without_truth_value_error() -> None:
+    context = build_buy_zone_context(
+        {
+            "ticker": "MSFT",
+            "daily_ohlcv": pd.DataFrame(_daily_bars()),
+            "final_score": 86,
+        },
+        volume_snapshot={},
+    )
+
+    assert context.current_action != DATA_INSUFFICIENT
+    assert context.technical_data_source == "daily_ohlcv"
 
 
 def test_nvda_like_missing_quote_volume_uses_daily_ohlcv_volume() -> None:

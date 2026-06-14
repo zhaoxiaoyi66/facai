@@ -705,6 +705,12 @@ def _number(value: Any) -> float | None:
 
 def _value(source: dict[str, Any], *keys: str) -> Any:
     for key in keys:
-        if key in source and source.get(key) not in (None, ""):
-            return source.get(key)
+        if key not in source:
+            continue
+        value = source.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
     return None

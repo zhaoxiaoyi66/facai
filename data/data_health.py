@@ -192,18 +192,23 @@ def _build_final_decision_inputs(
         history = build_market_history(symbol, path=path)
         technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
         score = calculate_total_score(payload, technicals)
-        stock_data = {**payload, **technicals}
+        stock_data = {**payload, **technicals, "price_history": history, "daily_ohlcv": history, "history": history}
+        final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
+        if final_score_value is not None:
+            stock_data["final_score"] = final_score_value
         price = _first_number(stock_data.get("price"), stock_data.get("current_price"), stock_data.get("currentPrice"), cached_price)
         if price is not None:
             stock_data["price"] = price
             stock_data["current_price"] = price
         zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
-        volume_snapshot = evaluate_volume_price_acceptance(
-            ticker=symbol,
-            daily_bars=history,
-            technicals=stock_data,
-        )
-        buy_zone_context = build_buy_zone_context(stock_data, volume_snapshot=volume_snapshot.to_dict()).to_dict()
+        volume_snapshot = {}
+        if not history.empty:
+            volume_snapshot = evaluate_volume_price_acceptance(
+                ticker=symbol,
+                daily_bars=history,
+                technicals=stock_data,
+            ).to_dict()
+        buy_zone_context = build_buy_zone_context(stock_data, volume_snapshot=volume_snapshot).to_dict()
         bundle = build_final_decision_bundle(score, zone, symbol=symbol, buy_zone_context=buy_zone_context)
     except Exception:
         return None, None
