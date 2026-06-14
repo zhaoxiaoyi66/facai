@@ -326,12 +326,10 @@ def _render_dashboard_header(tickers: list[str]) -> None:
     with command_cols[0]:
         if st.button("更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
-            _clear_dashboard_table_cache()
             st.rerun()
     with command_cols[1]:
         if st.button("更新技术", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
             _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
-            _clear_dashboard_table_cache()
             st.rerun()
     with command_cols[3]:
         with st.popover("更多 ▾", use_container_width=True):
@@ -520,7 +518,26 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
         )
     else:
         progress_slot.markdown(_refresh_done_html(progress_total), unsafe_allow_html=True)
+        if mode in {RefreshMode.PRICE_ONLY, RefreshMode.DAILY_TECHNICAL}:
+            refreshed_symbols = _successful_refresh_symbols(result)
+            if refreshed_symbols:
+                synced = _sync_refreshed_symbols_to_dashboard_session(refreshed_symbols, tickers=tickers)
+                result["dashboard_cache_synced"] = "dashboard_table_cache" in synced
+                result["dashboard_cache_sync_symbols"] = refreshed_symbols
     st.session_state["dashboard_refresh_mode_last_result"] = result
+
+
+def _successful_refresh_symbols(result: dict[str, Any]) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for item in result.get("ticker_results") or []:
+        if str(item.get("status") or "").strip().lower() != "success":
+            continue
+        symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
 
 
 def _dashboard_refresh_symbols(tickers: list[str]) -> list[str]:
@@ -574,12 +591,26 @@ def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_k
 
 
 def _replace_dashboard_row(table: pd.DataFrame, row: dict) -> pd.DataFrame:
+    return _replace_dashboard_rows(table, [row])
+
+
+def _replace_dashboard_rows(table: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
+    rows = [row for row in rows if isinstance(row, dict) and row]
+    if not rows:
+        return table.copy()
     updated = table.copy()
-    symbol = str(row.get("symbol") or "").upper()
-    if "symbol" not in updated or not symbol:
-        return pd.DataFrame([row])
-    mask = updated["symbol"].astype(str).str.upper() == symbol
-    if mask.any():
+    if "symbol" not in updated:
+        return pd.DataFrame(rows)
+    append_rows: list[dict] = []
+    upper_symbols = updated["symbol"].astype(str).str.upper()
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        mask = upper_symbols == symbol
+        if not mask.any():
+            append_rows.append(row)
+            continue
         for key, value in row.items():
             if key not in updated.columns:
                 updated[key] = pd.Series([None] * len(updated), index=updated.index, dtype=object)
@@ -588,8 +619,9 @@ def _replace_dashboard_row(table: pd.DataFrame, row: dict) -> pd.DataFrame:
             # expand the list as an ndarray. Write per cell so the object stays intact.
             for index in updated.index[mask]:
                 updated.at[index, key] = value
-        return updated
-    return pd.concat([updated, pd.DataFrame([row])], ignore_index=True)
+    if append_rows:
+        return pd.concat([updated, pd.DataFrame(append_rows)], ignore_index=True)
+    return updated
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
@@ -2014,28 +2046,88 @@ def _sync_refreshed_symbol_to_dashboard_session(
     normalized_symbol = str(symbol or "").strip().upper()
     if not normalized_symbol:
         return []
+    return _sync_refreshed_symbols_to_dashboard_session(
+        [normalized_symbol],
+        session_state=session_state,
+        row_loader=row_loader,
+    )
+
+
+def _sync_refreshed_symbols_to_dashboard_session(
+    symbols: list[str],
+    *,
+    tickers: list[str] | tuple[str, ...] | None = None,
+    session_state=None,
+    row_loader=None,
+) -> list[str]:
+    normalized_symbols = _unique_symbols(symbols)
+    if not normalized_symbols:
+        return []
     state = st.session_state if session_state is None else session_state
-    load_row = row_loader or (lambda ticker: _load_cached_dashboard_row(FundamentalCache(), ticker))
-    try:
-        refreshed_row = load_row(normalized_symbol)
-    except Exception:
-        refreshed_row = None
+    if tickers is not None:
+        expected_key = (tuple(tickers), DASHBOARD_SCORE_SCHEMA_VERSION)
+        if state.get("dashboard_table_cache_key") != expected_key:
+            return []
     invalidated: list[str] = []
-    if isinstance(refreshed_row, dict) and refreshed_row:
-        table = state.get("dashboard_table_cache")
-        if isinstance(table, pd.DataFrame):
-            state["dashboard_table_cache"] = _replace_dashboard_row(table, refreshed_row).copy()
-            invalidated.append("dashboard_table_cache")
-        state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
-        invalidated.extend(
-            [
-                "radar_research_list_row",
-                "single_report_row",
-                "data_completeness_row",
-                "risk_radar_summary_row",
-            ]
-        )
+    table = state.get("dashboard_table_cache")
+    if not isinstance(table, pd.DataFrame):
+        return invalidated
+    table_symbols = _table_symbols(table)
+    allowed_symbols = table_symbols | set(_unique_symbols(tickers or []))
+    symbols_to_sync = [symbol for symbol in normalized_symbols if not allowed_symbols or symbol in allowed_symbols]
+    if not symbols_to_sync:
+        return invalidated
+    load_row = row_loader
+    fundamental_cache = FundamentalCache()
+    portfolio_contexts = {} if load_row is not None else build_action_fusion_portfolio_contexts(symbols_to_sync)
+    refreshed_rows: list[dict] = []
+    for symbol in symbols_to_sync:
+        try:
+            refreshed_row = (
+                load_row(symbol)
+                if load_row is not None
+                else _load_cached_dashboard_row(
+                    fundamental_cache,
+                    symbol,
+                    action_fusion_portfolio_context=portfolio_contexts.get(symbol),
+                )
+            )
+        except Exception:
+            refreshed_row = None
+        if isinstance(refreshed_row, dict) and refreshed_row:
+            refreshed_rows.append(refreshed_row)
+    if not refreshed_rows:
+        return invalidated
+    updated = _replace_dashboard_rows(table, refreshed_rows)
+    state["dashboard_table_cache"] = updated.copy()
+    state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+    invalidated.extend(
+        [
+            "dashboard_table_cache",
+            "radar_research_list_row",
+            "single_report_row",
+            "data_completeness_row",
+            "risk_radar_summary_row",
+        ]
+    )
     return invalidated
+
+
+def _unique_symbols(symbols: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for symbol in symbols:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _table_symbols(table: pd.DataFrame) -> set[str]:
+    if "symbol" not in table:
+        return set()
+    return {str(value or "").strip().upper() for value in table["symbol"].tolist() if str(value or "").strip()}
 
 
 def _handle_refresh_ticker_query() -> None:
