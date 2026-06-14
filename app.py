@@ -7,7 +7,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from data.fmp_queue import get_fmp_request_queue
-from ui import ai_stock_radar, buy_zone, dashboard, manual_review, portfolio, stock_detail, trade_journal, watchlist
+from ui import ai_stock_radar, buy_zone, dashboard, manual_review, portfolio, stock_detail, trade_journal, watchlist, weekend_spread
 from ui.theme import render_global_styles
 
 
@@ -19,6 +19,8 @@ PAGE_TRADE_JOURNAL = "交易日志"
 PAGE_WATCHLIST = "观察池"
 PAGE_MANUAL_REVIEW = "数据复核"
 
+PAGE_WEEKEND_SPREAD = "周末价差"
+
 PAGE_QUERY_VALUES = {
     "dashboard": PAGE_DASHBOARD,
     "detail": PAGE_STOCK_DETAIL,
@@ -27,6 +29,7 @@ PAGE_QUERY_VALUES = {
     "trade-journal": PAGE_TRADE_JOURNAL,
     "watchlist": PAGE_WATCHLIST,
     "manual-review": PAGE_MANUAL_REVIEW,
+    "weekend-spread": PAGE_WEEKEND_SPREAD,
 }
 PAGE_TO_QUERY_VALUE = {value: key for key, value in PAGE_QUERY_VALUES.items()}
 PAGE_AI_RADAR = "AI Stock Radar"
@@ -60,6 +63,7 @@ PAGES = {
     PAGE_WATCHLIST: watchlist.render,
     PAGE_MANUAL_REVIEW: manual_review.render,
     PAGE_AI_RADAR: ai_stock_radar.render,
+    PAGE_WEEKEND_SPREAD: weekend_spread.render,
 }
 
 
