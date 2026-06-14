@@ -566,6 +566,13 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(row["systemCurrentAdd"], 2)
         self.assertNotIn("buy_zone", row["blockReasons"])
 
+    def test_portfolio_view_model_local_cache_passes_daily_history_to_unified_context(self) -> None:
+        source = inspect.getsource(portfolio_view_model_module._system_ref_from_local_cache)
+
+        self.assertIn('"daily_ohlcv": history', source)
+        self.assertIn("build_buy_zone_context(stock_data", source)
+        self.assertIn("buy_zone_context=buy_zone_context", source)
+
     def test_portfolio_view_model_flags_near_trim_price(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "portfolio.sqlite"

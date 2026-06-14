@@ -260,7 +260,10 @@ def _system_ref_from_local_cache(
             snapshot["price"] = current_price
             technicals["price"] = current_price
         score = calculate_total_score(snapshot, technicals)
-        stock_data = {**snapshot, **technicals}
+        stock_data = {**snapshot, **technicals, "price_history": history, "daily_ohlcv": history, "history": history}
+        final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
+        if final_score_value is not None:
+            stock_data["final_score"] = final_score_value
         buy_zone = generate_buy_zone(symbol, stock_data, score, getattr(score, "scoring_model", None))
         plan = plan_store.get_plan(symbol)
         effective_buy_zone = buy_zone_with_manual_override(buy_zone, plan)
