@@ -344,7 +344,7 @@ def test_mapping_diagnostics_marks_unverified_valid_symbol() -> None:
     assert rows[0]["price_available"] is True
 
 
-def test_spot_mapping_requests_spot_price_from_provider() -> None:
+def test_spot_stock_mapping_is_disabled_before_price_fetch() -> None:
     provider = FakeProvider(price=101.5, funding_rate=None)
     rows = build_weekend_spread_rows(
         ["NVDA"],
@@ -353,12 +353,14 @@ def test_spot_mapping_requests_spot_price_from_provider() -> None:
         cache=FakeCache(),
     )
 
-    assert rows[0]["status"] == "OK"
-    assert rows[0]["funding_rate"] is None
-    assert provider.calls == ["spot:NVDAUSDT"]
+    assert rows[0]["status"] == "SPOT_DISABLED"
+    assert rows[0]["binance_last_price"] is None
+    assert rows[0]["spread_pct"] is None
+    assert rows[0]["error"] == "stock_mapping_requires_usdm_futures"
+    assert provider.calls == []
 
 
-def test_valid_spot_mapping_fetches_price_when_full_candidate_scan_times_out() -> None:
+def test_spot_stock_mapping_does_not_use_symbol_specific_spot_validate() -> None:
     provider = SpotSymbolSpecificProvider()
 
     rows = build_weekend_spread_rows(
@@ -369,12 +371,9 @@ def test_valid_spot_mapping_fetches_price_when_full_candidate_scan_times_out() -
     )
 
     row = rows[0]
-    assert row["status"] == "OK"
-    assert row["binance_last_price"] == 207
-    assert row["binance_bid"] == 206.8
-    assert row["binance_ask"] == 207.2
-    assert row["binance_volume_24h"] == 123456
-    assert not any(path.endswith("exchangeInfo") and not params.get("symbol") for _, path, params in provider.calls)
+    assert row["status"] == "SPOT_DISABLED"
+    assert row["binance_last_price"] is None
+    assert provider.calls == []
 
 
 def test_friday_holiday_uses_previous_trading_day_close() -> None:
@@ -435,10 +434,10 @@ def test_discover_candidates_searches_markets_without_confirming_mapping() -> No
     candidates = result["candidates"]
 
     assert result["data_source_status"] == "OK"
-    assert {item["market_type"] for item in candidates} == {"spot", "usdm_futures"}
+    assert {item["market_type"] for item in candidates} == {"usdm_futures"}
     assert all(item["status"] == "candidate" for item in candidates)
     assert all(item.get("mapping_confidence") != "confirmed" for item in candidates)
-    assert "candidates:spot:NVDA" in provider.calls
+    assert "candidates:spot:NVDA" not in provider.calls
     assert "candidates:usdm_futures:NVDA" in provider.calls
 
 
@@ -929,7 +928,7 @@ def test_upsert_local_mapping_saves_symbol_without_realtime_price(tmp_path) -> N
     mapping = upsert_local_binance_symbol_mapping(
         "nvda",
         "nvdabusdt",
-        market_type="spot",
+        market_type="usdm_futures",
         mapping_confidence="candidate",
         risk_note="候选 symbol 不代表真实美股映射关系，需要人工确认。",
         path=path,
@@ -938,7 +937,7 @@ def test_upsert_local_mapping_saves_symbol_without_realtime_price(tmp_path) -> N
     payload = json.loads(path.read_text(encoding="utf-8"))
 
     assert mapping["NVDA"]["binance_symbol"] == "NVDABUSDT"
-    assert loaded["NVDA"]["market_type"] == "spot"
+    assert loaded["NVDA"]["market_type"] == "usdm_futures"
     assert loaded["NVDA"]["mapping_confidence"] == "candidate"
     assert "manual_override_price" not in payload["mappings"]["NVDA"]
     assert "last_price" not in payload["mappings"]["NVDA"]
@@ -953,6 +952,19 @@ def test_upsert_local_mapping_rejects_missing_symbol(tmp_path) -> None:
         assert str(exc) == "binance_symbol_required"
     else:
         raise AssertionError("missing symbol should be rejected")
+
+    assert not path.exists()
+
+
+def test_upsert_local_mapping_rejects_spot_market_type(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_mapping.local.json"
+
+    try:
+        upsert_local_binance_symbol_mapping("NVDA", "NVDABUSDT", market_type="spot", path=path)
+    except ValueError as exc:
+        assert str(exc) == "stock_mapping_requires_usdm_futures"
+    else:
+        raise AssertionError("spot stock mapping should be disabled")
 
     assert not path.exists()
 
@@ -1020,7 +1032,7 @@ def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping
     assert "Binance 价格可通过 API 自动读取" in message
     assert "ticker -> binance_symbol" in message
     assert "binance_symbol_mapping.local.json" in message
-    assert "NVDA -> NVDABUSDT / spot / candidate" in message
+    assert "NVDA -> NVDABUSDT / usdm_futures / candidate" in message
     assert "不属于当前观察池" not in message
     assert weekend_spread._off_universe_mapping_note(counts) == "本地未配置映射"
 

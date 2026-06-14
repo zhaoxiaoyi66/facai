@@ -59,7 +59,7 @@ def upsert_local_binance_symbol_mapping(
     ticker: str,
     binance_symbol: str,
     *,
-    market_type: str = "spot",
+    market_type: str = "usdm_futures",
     quote_currency: str = "USDT",
     unit_multiplier: float = 1,
     mapping_confidence: str = "candidate",
@@ -73,6 +73,8 @@ def upsert_local_binance_symbol_mapping(
         raise ValueError("ticker_required")
     if not normalized_symbol:
         raise ValueError("binance_symbol_required")
+    if normalize_market_type(str(market_type or "")) != "usdm_futures":
+        raise ValueError("stock_mapping_requires_usdm_futures")
     existing = load_binance_symbol_mapping(path, local_path=None)
     existing[normalized_ticker] = _normalize_mapping_config(
         {
@@ -126,6 +128,20 @@ def build_weekend_spread_rows(
             )
             continue
         binance_symbol = str(mapping_config.get("binance_symbol") or "").strip().upper()
+        if normalize_market_type(str(mapping_config.get("market_type") or "")) != "usdm_futures":
+            row = _base_row(
+                ticker,
+                stock_name,
+                friday_close,
+                friday_date,
+                close_source,
+                mapping_config,
+                status="SPOT_DISABLED",
+            )
+            row["binance_symbol"] = binance_symbol
+            row["error"] = "stock_mapping_requires_usdm_futures"
+            rows.append(row)
+            continue
         if friday_close is None:
             rows.append(
                 _base_row(
@@ -334,7 +350,7 @@ def discover_binance_symbol_candidates(
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     raw_market_type = str(market_type or "").strip().lower()
     if raw_market_type in {"", "unknown", "all"}:
-        markets = ["spot", "usdm_futures"]
+        markets = ["usdm_futures"]
     else:
         markets = [normalize_market_type(raw_market_type)]
 
@@ -758,6 +774,8 @@ def _mapping_status(status: str, mapping_confidence: str) -> str:
         return NO_MAPPING_TEXT
     if status == "UNIT_UNCONFIRMED":
         return UNIT_REVIEW_TEXT
+    if status == "SPOT_DISABLED":
+        return "请改用合约映射"
     if status == "INVALID_SYMBOL":
         return "symbol 无效 / 映射待确认"
     if mapping_confidence == "confirmed":
@@ -768,6 +786,8 @@ def _mapping_status(status: str, mapping_confidence: str) -> str:
 def _mapping_risk(mapping_config: dict[str, Any], status: str) -> str:
     if status == "NO_MAPPING":
         return NO_MAPPING_TEXT
+    if status == "SPOT_DISABLED":
+        return "美股映射仅支持 USDT-M 合约；请将 market_type 改为 usdm_futures。"
     notes = [RISK_TEXT]
     if mapping_config.get("manual_override_enabled"):
         notes.append("手动覆盖 / 非实时 Binance 数据")
@@ -794,6 +814,7 @@ def _status_label(status: str) -> str:
         "MISSING_FRIDAY_CLOSE": "缺少周五收盘价",
         "BINANCE_UNAVAILABLE": "Binance 数据不可用",
         "UNIT_UNCONFIRMED": UNIT_REVIEW_TEXT,
+        "SPOT_DISABLED": "现货映射已关闭",
         "INVALID_SYMBOL": "symbol 无效 / 映射待确认",
     }.get(status, "数据不足")
 
@@ -803,6 +824,8 @@ def _status_direction(status: str) -> str:
         return "暂无映射"
     if status == "UNIT_UNCONFIRMED":
         return "映射待确认"
+    if status == "SPOT_DISABLED":
+        return "现货映射已关闭"
     if status == "INVALID_SYMBOL":
         return "symbol 无效"
     return "数据不足"

@@ -94,6 +94,7 @@ def render() -> None:
                 [
                     "- 未配置映射的股票显示“暂无映射”，不会请求或伪造 Binance 价格。",
                     "- 映射未确认时会显示“需人工确认映射”，价差只作观察，不是套利判断。",
+                    "- 美股映射只使用 Binance USDT-M 合约，现货映射已关闭。",
                     "- quote_currency 不是 USD/USDT 或 unit_multiplier 不明确时，不计算正式价差。",
                     "- 周一验证结果只叫“信号验证结果”，不是确定套利成功。",
                     "- V1 不输出套利建议、买入、卖出或对冲指令。",
@@ -119,15 +120,14 @@ def _render_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot:
 
 def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
     latest = _latest_updated_at(rows)
-    spot_status = _market_data_status(rows, "spot")
     futures_status = _market_data_status(rows, "usdm_futures")
     local_text = "local mapping 已加载" if local_mapping_path.exists() else "未发现 local mapping"
     st.info(
         " | ".join(
             [
-                f"Spot 价格源：{spot_status}",
-                "Spot 候选扫描：按需诊断",
-                f"Futures 数据源：{futures_status}",
+                "现货映射：已关闭",
+                "合约候选扫描：按需诊断",
+                f"合约价格源：{futures_status}",
                 f"本地配置映射总数：{mapping_counts['local_mapping_count']}",
                 _off_universe_mapping_note(mapping_counts),
                 local_text,
@@ -157,9 +157,9 @@ def _render_mapping_editor(
         ticker = st.selectbox("观察池 ticker", tickers, index=0)
         existing = mapping.get(str(ticker or "").upper(), {})
         symbol_value = str(existing.get("binance_symbol") or "")
-        market_value = str(existing.get("market_type") or "spot")
+        market_value = str(existing.get("market_type") or "usdm_futures")
         confidence_value = str(existing.get("mapping_confidence") or "candidate")
-        market_options = ["spot", "usdm_futures"]
+        market_options = ["usdm_futures"]
         confidence_options = ["candidate", "unverified", "confirmed"]
         symbol = st.text_input("Binance symbol", value=symbol_value, placeholder="例如 NVDABUSDT")
         market_type = st.selectbox(
@@ -314,7 +314,7 @@ def _empty_mapping_message(mapping_counts: dict[str, int], local_mapping_path: P
         "当前观察池暂无 Binance 映射。",
         "Binance 价格可通过 API 自动读取，但需要先配置 ticker -> binance_symbol。",
         f"本地配置文件：{local_mapping_path.as_posix()}",
-        "示例：NVDA -> NVDABUSDT / spot / candidate",
+        "示例：NVDA -> NVDABUSDT / usdm_futures / candidate",
     ]
     if mapping_counts.get("local_mapping_count", 0) > 0:
         lines.append("本地配置有 mapping，但不属于当前观察池。")
