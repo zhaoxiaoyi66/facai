@@ -161,6 +161,14 @@ TRADE_DISCIPLINE_COLUMNS = {
     "action_fusion_action": "TEXT",
     "left_side_action_cn": "TEXT",
     "position_status": "TEXT",
+    "sell_warning_level": "TEXT",
+    "sell_warning_text": "TEXT",
+    "sell_warning_reasons_json": "TEXT",
+    "sell_review_required": "INTEGER",
+    "sell_blocked": "INTEGER",
+    "user_confirmed_sell_warning": "INTEGER",
+    "buy_zone_display_json": "TEXT",
+    "final_decision_snapshot_json": "TEXT",
 }
 
 
@@ -549,6 +557,7 @@ class TradeJournalStore:
             _write_pullback_acceptance_snapshot(conn, int(entry_id), cleaned)
             _write_volume_price_acceptance_snapshot(conn, int(entry_id), cleaned)
             _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
+            _write_sell_advisory_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -668,6 +677,7 @@ class TradeJournalStore:
                 _write_pullback_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_volume_price_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_buy_advisory_snapshot(conn, clean_id, cleaned)
+                _write_sell_advisory_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -1120,6 +1130,49 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
     )
 
 
+def _write_sell_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, "", "[]", False}
+        for field in (
+            "sell_warning_level",
+            "sell_warning_text",
+            "sell_warning_reasons_json",
+            "sell_review_required",
+            "sell_blocked",
+            "user_confirmed_sell_warning",
+            "buy_zone_display_json",
+            "final_decision_snapshot_json",
+        )
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            sell_warning_level = ?,
+            sell_warning_text = ?,
+            sell_warning_reasons_json = ?,
+            sell_review_required = ?,
+            sell_blocked = ?,
+            user_confirmed_sell_warning = ?,
+            buy_zone_display_json = ?,
+            final_decision_snapshot_json = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["sell_warning_level"],
+            cleaned["sell_warning_text"],
+            cleaned["sell_warning_reasons_json"],
+            cleaned["sell_review_required"],
+            cleaned["sell_blocked"],
+            cleaned["user_confirmed_sell_warning"],
+            cleaned["buy_zone_display_json"],
+            cleaned["final_decision_snapshot_json"],
+            entry_id,
+        ),
+    )
+
+
 class DecisionOutcomeStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
         self.path = path
@@ -1527,6 +1580,7 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_pullback_acceptance_snapshot(action_type, values))
     cleaned.update(_clean_volume_price_acceptance_snapshot(action_type, values))
     cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
+    cleaned.update(_clean_sell_advisory_snapshot(action_type, {**values, **cleaned}))
     return cleaned
 
 
@@ -1592,6 +1646,7 @@ def _clean_structured_sell_reason(action_type: str, values: dict) -> dict:
 
 def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
     if action_type not in {"buy", "add"}:
+        context = _value(values, "buyZoneContext", "buy_zone_context", "buy_zone_context_json")
         return {
             "radar_decision": None,
             "radar_data_status": None,
@@ -1606,11 +1661,11 @@ def _clean_radar_gate_snapshot(action_type: str, values: dict) -> dict:
             "entry_action_hint": None,
             "entry_display_reason": None,
             "buy_zone_snapshot_json": None,
-            "buy_zone_context_json": None,
-            "setup_score": None,
-            "buy_zone_action": None,
-            "buy_zone_action_text": None,
-            "primary_zone_text": None,
+            "buy_zone_context_json": _dict_json(context),
+            "setup_score": _optional_non_negative_number(_value(values, "setupScore", "setup_score"), "setup_score"),
+            "buy_zone_action": _clean_optional_text(_value(values, "buyZoneAction", "buy_zone_action")),
+            "buy_zone_action_text": _clean_optional_text(_value(values, "buyZoneActionText", "buy_zone_action_text")),
+            "primary_zone_text": _clean_optional_text(_value(values, "primaryZoneText", "primary_zone_text")),
             "technical_entry_zone_json": None,
             "deep_valuation_zone_json": None,
             "chase_above_price": None,
@@ -1962,6 +2017,57 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
         "left_side_action_cn": _clean_optional_text(_value(values, "leftSideActionCn", "left_side_action_cn")),
         "position_status": _clean_optional_text(_value(values, "positionStatus", "position_status")),
     }
+
+
+def _clean_sell_advisory_snapshot(action_type: str, values: dict) -> dict:
+    if action_type not in {"sell", "trim"}:
+        return {
+            "sell_warning_level": None,
+            "sell_warning_text": None,
+            "sell_warning_reasons_json": "[]",
+            "sell_review_required": False,
+            "sell_blocked": False,
+            "user_confirmed_sell_warning": False,
+            "buy_zone_display_json": None,
+            "final_decision_snapshot_json": None,
+        }
+    reasons = _reasons_list(
+        _value(values, "sellWarningReasons", "sell_warning_reasons", "sell_warning_reasons_json")
+    )
+    if not reasons:
+        reasons = _reasons_list(_value(values, "warnings", "warnings_json"))
+    level = _clean_optional_text(_value(values, "sellWarningLevel", "sell_warning_level")) or _sell_warning_level_from_reasons(reasons)
+    text = _clean_optional_text(_value(values, "sellWarningText", "sell_warning_text")) or _sell_warning_text(level, reasons)
+    explicit_confirmed = _value(values, "userConfirmedSellWarning", "user_confirmed_sell_warning")
+    confirmed = _clean_bool(explicit_confirmed) if explicit_confirmed is not None else bool(reasons)
+    return {
+        "sell_warning_level": level,
+        "sell_warning_text": text,
+        "sell_warning_reasons_json": _reasons_json(_dedupe_text(reasons)),
+        "sell_review_required": bool(reasons) or level in {"WARNING", "HIGH_RISK"},
+        "sell_blocked": False,
+        "user_confirmed_sell_warning": confirmed,
+        "buy_zone_display_json": _dict_json(_value(values, "buyZoneDisplay", "buy_zone_display", "buy_zone_display_json")),
+        "final_decision_snapshot_json": _dict_json(
+            _value(values, "finalDecision", "final_decision", "finalDecisionSnapshot", "final_decision_snapshot", "final_decision_snapshot_json")
+        ),
+    }
+
+
+def _sell_warning_level_from_reasons(reasons: list[str]) -> str:
+    if not reasons:
+        return "NONE"
+    return "HIGH_RISK" if any("block" in str(item).lower() or "blocked" in str(item).lower() for item in reasons) else "WARNING"
+
+
+def _sell_warning_text(level: str, reasons: list[str]) -> str:
+    if level == "HIGH_RISK":
+        return "高风险卖出提醒：系统不建议，但你可以继续；继续操作将记录为人工确认。"
+    if level == "WARNING" or reasons:
+        return "卖出前复核：系统提示风险，但不会阻止你继续卖出。"
+    if level == "INFO":
+        return "卖出提醒：请确认本次卖出符合你的计划。"
+    return ""
 
 
 def _clean_entry_mode(value: object) -> str:
@@ -2566,9 +2672,16 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         }
     if "buy_advisory_warnings_json" in item:
         item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
+    if "sell_warning_reasons_json" in item:
+        item["sell_warning_reasons"] = _load_json_list(item["sell_warning_reasons_json"])
+    if "final_decision_snapshot_json" in item:
+        item["final_decision_snapshot"] = _load_json_dict(item["final_decision_snapshot_json"])
     for key in (
         "user_override",
         "buy_advisory_acknowledged",
+        "sell_review_required",
+        "sell_blocked",
+        "user_confirmed_sell_warning",
         "radar_blocked",
         "gate_hard_blocked",
         "radar_advisory_only",

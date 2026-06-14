@@ -356,9 +356,6 @@ def _render_editor(store: TradeJournalStore) -> None:
             if quantity_error:
                 st.session_state["trade_journal_notice"] = ("error", quantity_error)
                 st.rerun()
-            if not editing_entry and action_type in SELL_DISCIPLINE_ACTIONS and _discipline_result_blocked(discipline_result):
-                st.session_state["trade_journal_notice"] = ("error", "卖出纪律未通过，本次成交未入账，也未写入交易日志。")
-                st.rerun()
             entry_values = {
                 "trade_date": trade_date.isoformat(),
                 "action_type": action_type,
@@ -874,7 +871,7 @@ def _portfolio_sync_preview(symbol: str, action_type: str, quantity: object, pri
 
 
 def _discipline_result_blocked(result: object) -> bool:
-    return str(getattr(result, "disciplineStatus", "") or "") == "blocked"
+    return False
 
 
 def _sell_quantity_validation_error(action_type: str, quantity: object, current_quantity: object) -> str:
@@ -915,7 +912,7 @@ def _render_portfolio_sync_preview(preview: dict, *, checked: bool, discipline_b
     error = str(preview.get("error") or "").strip()
     hint = error if error else "确认成交后会同时写入交易日志并更新组合持仓。"
     if discipline_blocked:
-        hint = "当前交易未通过纪律门禁，不能入账，也不会写入交易日志。"
+        hint = "当前为卖出风险提醒；系统不建议时仍可继续，最终只由数量、价格、持仓等基础校验决定是否入账。"
     st.markdown(
         f"""
         <section class="trade-portfolio-sync-card {escape(tone)}">
@@ -1009,7 +1006,7 @@ def _render_trading_discipline_check(
         st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = True
         st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = False
         _render_discipline_gate_explanation(gate_result, discipline_context)
-        st.error("当前交易未通过纪律门禁，不能用回补计划合理化违规卖出。")
+        st.warning("高风险卖出提醒：系统不建议，但你可以继续；继续操作将记录为人工确认。")
         return gate_result
     st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = False
 
@@ -1186,11 +1183,8 @@ def _discipline_gate_context(
 
 def _discipline_gate_conclusion(result) -> str:
     blockers = {str(item) for item in (getattr(result, "blockers", []) or [])}
-    hard_blockers = blockers - FIX_REQUIRED_BLOCKERS
-    if hard_blockers:
-        return "BLOCK"
     if blockers:
-        return "FIX_REQUIRED"
+        return "WARN"
     if str(getattr(result, "disciplineStatus", "") or "") == "warning" or getattr(result, "warnings", []):
         return "WARN"
     return "PASS"
@@ -1271,8 +1265,8 @@ def _discipline_gate_summary(conclusion: str) -> str:
     return {
         "PASS": "可以确认入账，但仍按计划执行。",
         "WARN": "入账前继续复核，避免情绪驱动。",
-        "FIX_REQUIRED": "先修正比例、数量或回补计划；暂不允许入账。",
-        "BLOCK": "硬性拦截；不能入账，也不会写入交易日志。",
+        "FIX_REQUIRED": "卖出前建议先修正比例、数量或回补计划；如仍继续，将记录为人工确认。",
+        "BLOCK": "高风险卖出提醒；系统不建议，但你可以继续。",
     }.get(conclusion, "需要复核。")
 
 
@@ -1280,8 +1274,8 @@ def _discipline_gate_conclusion_label(conclusion: str) -> str:
     return {
         "PASS": "通过",
         "WARN": "需要复核",
-        "FIX_REQUIRED": "需要修正",
-        "BLOCK": "硬性拦截",
+        "FIX_REQUIRED": "卖出前复核",
+        "BLOCK": "高风险提醒",
     }.get(str(conclusion or ""), "需要复核")
 
 
@@ -1667,7 +1661,7 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
     reason_label = st.session_state.get(f"trade-discipline-sell-reason-{key_suffix}")
     position_class = _position_class_from_state(f"trade-discipline-position-class-{key_suffix}")
     reentry_values = _reentry_plan_form_values(key_suffix)
-    hard_blocked = bool(st.session_state.get(f"trade-discipline-hard-block-{key_suffix}"))
+    hard_blocked = False
     if hard_blocked:
         reentry_values = {
             "reentryPullbackPrice": "",
@@ -1691,6 +1685,7 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
         "hasReentryPlan": False if hard_blocked else _has_reentry_plan_values(reentry_values),
         "belowTargetSellPrice": bool(st.session_state.get(f"trade-discipline-below-target-{key_suffix}")),
         "inBuyZoneOrBelow": bool(st.session_state.get(f"trade-discipline-in-buy-zone-or-below-{key_suffix}")),
+        "userConfirmedSellWarning": True,
         **reentry_values,
         **_structured_sell_reason_form_values(key_suffix),
     }
@@ -1978,9 +1973,6 @@ def _apply_portfolio_ledger_or_remove(store: TradeJournalStore, saved: dict) -> 
     if action not in POSITION_AFFECTING_ACTIONS:
         store.delete_entry(int(saved.get("id") or 0))
         return ("error", "交易日志只记录真实 buy/add/sell/trim，本次未入账。")
-    if str(saved.get("action_type") or "") in SELL_DISCIPLINE_ACTIONS and str(saved.get("discipline_status") or "") == "blocked":
-        store.delete_entry(int(saved.get("id") or 0))
-        return ("error", f"{saved['symbol']} 卖出纪律未通过，本次未入账，也未写入交易日志。")
     result = apply_trade_to_portfolio(int(saved.get("id") or 0))
     status = str(result.get("status") or "")
     if status == "success":
@@ -2153,7 +2145,7 @@ def _is_executed_trade_entry(entry: dict) -> bool:
         return False
     if bool(entry.get("radar_observation_only")):
         return False
-    if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
+    if action not in SELL_DISCIPLINE_ACTIONS and str(entry.get("discipline_status") or "").strip().lower() == "blocked":
         return False
     entry_id = int(entry.get("id") or 0)
     if entry_id <= 0:
@@ -2186,7 +2178,7 @@ def _render_summary(entries: list[dict], performance_summary: dict | None = None
 
 def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]) -> None:
     with st.expander("完整战绩统计", expanded=False):
-        st.caption("只统计已入账的真实 buy/add/sell/trim；旧系统 blocked 和仅观察记录不计入已实现盈亏。")
+        st.caption("只统计已入账的真实 buy/add/sell/trim；仅观察记录不计入已实现盈亏。卖出风险提醒不会自动排除真实成交。")
         filters = _trade_performance_filters(symbols)
         try:
             result = summarize_trade_performance(path=store.path, filters=filters)
@@ -2653,7 +2645,7 @@ def _historical_non_trade_reason(entry: dict) -> str:
     if bool(entry.get("radar_observation_only")):
         return "旧系统仅观察记录"
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
-        return "旧系统拦截记录"
+        return "历史卖出风险提醒记录"
     return "旧系统未入账记录"
 
 
@@ -2957,7 +2949,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
     ]
     rows.append(("实际卖出", _discipline_percent(entry.get("actual_sell_pct"))))
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
-        rows.append(("入账限制", "纪律门禁硬性拦截，不能入账"))
+        rows.append(("卖出提醒", "系统不建议，但历史记录可按人工确认继续处理"))
     reentry_html = _entry_reentry_plan_html(entry)
     sell_review_html = _entry_sell_review_html(entry)
     blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)

@@ -112,7 +112,7 @@ def test_a_class_sell_without_reentry_plan_marks_discipline_issue() -> None:
     assert "A类卖出缺少具体回补计划" in flags
 
 
-def test_blocked_and_observation_only_records_do_not_count_realized_pnl() -> None:
+def test_sell_warning_records_are_kept_but_missing_cost_does_not_count_realized_pnl() -> None:
     summary = summarize_trade_performance(
         entries=[
             _entry(1, "NVDA", "buy", 5, 100, "2026-01-01", radar_observation_only=1),
@@ -121,11 +121,13 @@ def test_blocked_and_observation_only_records_do_not_count_realized_pnl() -> Non
         ]
     )
 
-    assert summary["realized_trades"] == []
+    assert len(summary["realized_trades"]) == 1
+    assert summary["realized_trades"][0]["included_in_performance"] is False
+    assert summary["realized_trades"][0]["cost_basis_missing"] is True
     assert summary["summary"]["total_realized_pnl"] == 0
 
 
-def test_blocked_sell_can_count_in_discipline_review_without_realized_pnl() -> None:
+def test_sell_warning_can_count_in_discipline_review_without_realized_pnl() -> None:
     summary = summarize_trade_performance(
         entries=[
             _entry(
@@ -142,7 +144,8 @@ def test_blocked_sell_can_count_in_discipline_review_without_realized_pnl() -> N
         ]
     )
 
-    assert summary["realized_trades"] == []
+    assert len(summary["realized_trades"]) == 1
+    assert summary["realized_trades"][0]["included_in_performance"] is False
     assert summary["summary"]["total_realized_pnl"] == 0
     assert summary["summary"]["suspected_sell_fly_count"] == 1
     assert summary["summary"]["a_class_suspected_sell_fly_count"] == 1

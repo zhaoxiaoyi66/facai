@@ -22,7 +22,7 @@ DECISION_MOOD_TYPES = {
     "calm",
     "discipline_check",
 }
-SELL_SYNC_BLOCK_REASON = "纪律门禁 BLOCK，不能入账；本次不会写入真实交易日志。"
+SELL_SYNC_BLOCK_REASON = "卖出基础校验未通过，不能入账。"
 BUY_RADAR_SYNC_BLOCK_REASON = "仅观察记录不是真实成交，不能入账。"
 BUY_RADAR_MISSING_GATE_REASON = "Radar 买入提示快照缺失；不作为买入硬拦截。"
 BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，不能入账。"
@@ -90,6 +90,7 @@ def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str,
         inBuyZoneOrBelow=_clean_bool(_value(values, "inBuyZoneOrBelow", "in_buy_zone_or_below")),
     )
 
+    advisory = _sell_advisory_from_result(result, values)
     return {
         "position_class": position_class or None,
         "core_position_min_pct": core_position_min_pct,
@@ -106,10 +107,11 @@ def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str,
         "max_allowed_sell_pct": result.maxAllowedSellPct,
         "can_sell_core": int(result.canSellCore),
         "requires_reentry_plan": int(result.requiresReentryPlan),
-        "discipline_status": result.disciplineStatus,
-        "blockers_json": _reasons_json(result.blockers),
-        "warnings_json": _reasons_json(result.warnings),
+        "discipline_status": _advisory_discipline_status(result),
+        "blockers_json": "[]",
+        "warnings_json": _reasons_json(advisory["sellWarningReasons"]),
         "reminder_text": result.reminderText,
+        **advisory,
     }
 
 
@@ -117,7 +119,7 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     action_type = str(entry.get("action_type") or "").strip().lower()
     discipline_status = str(entry.get("discipline_status") or "").strip().lower()
     blockers = _reasons_list(entry.get("blockers"), entry.get("blockers_json"))
-    sell_blocked = action_type in DISCIPLINE_ACTION_TYPES and (discipline_status == "blocked" or bool(blockers))
+    sell_blocked = False
     buy_blocked = _buy_sync_blocked_by_radar(entry, action_type)
     buy_invalid_plan = False
     buy_missing_gate = False
@@ -138,6 +140,53 @@ def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
         "canSync": not blocked,
         "reason": reason,
     }
+
+
+def _sell_advisory_from_result(result: Any, values: dict[str, Any]) -> dict[str, Any]:
+    reasons = _dedupe_reasons([*list(getattr(result, "blockers", []) or []), *list(getattr(result, "warnings", []) or [])])
+    status = str(getattr(result, "disciplineStatus", "") or "").strip().lower()
+    if reasons and (status == "blocked" or getattr(result, "blockers", [])):
+        level = "HIGH_RISK"
+        text = "高风险卖出提醒：系统不建议，但你可以继续；继续操作将记录为人工确认。"
+    elif reasons:
+        level = "WARNING"
+        text = "卖出前复核：系统提示风险，但不会阻止你继续卖出。"
+    elif str(getattr(result, "reminderText", "") or "").strip():
+        level = "INFO"
+        text = "卖出提醒：请确认本次卖出符合你的计划。"
+    else:
+        level = "NONE"
+        text = ""
+    return {
+        "sellWarningLevel": level,
+        "sellWarningText": text,
+        "sellWarningReasons": reasons,
+        "sellReviewRequired": bool(reasons),
+        "sellBlocked": False,
+        "userConfirmedSellWarning": _clean_bool(
+            _value(values, "userConfirmedSellWarning", "user_confirmed_sell_warning")
+        ),
+    }
+
+
+def _advisory_discipline_status(result: Any) -> str:
+    if getattr(result, "blockers", None) or getattr(result, "warnings", None):
+        return "warning"
+    status = str(getattr(result, "disciplineStatus", "") or "").strip().lower()
+    if status == "blocked":
+        return "warning"
+    return status or "ok"
+
+
+def _dedupe_reasons(items: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _buy_sync_blocked_by_radar(entry: dict[str, Any], action_type: str) -> bool:
@@ -247,6 +296,12 @@ def empty_trade_safety_snapshot() -> dict[str, Any]:
         "blockers_json": None,
         "warnings_json": None,
         "reminder_text": None,
+        "sellWarningLevel": "NONE",
+        "sellWarningText": "",
+        "sellWarningReasons": [],
+        "sellReviewRequired": False,
+        "sellBlocked": False,
+        "userConfirmedSellWarning": False,
     }
 
 

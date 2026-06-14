@@ -32,7 +32,8 @@ def test_trade_journal_snapshot_uses_actual_sell_ratio_from_quantity() -> None:
         )
 
         assert saved["actual_sell_pct"] == 100 / 158
-        assert saved["discipline_status"] == "blocked"
-        assert "planned_actual_sell_pct_mismatch" in saved["blockers"]
-        assert "a_class_core_floor_breached" in saved["blockers"]
-
+        assert saved["discipline_status"] == "warning"
+        assert saved["blockers"] == []
+        assert "planned_actual_sell_pct_mismatch" in saved["sell_warning_reasons"]
+        assert "a_class_core_floor_breached" in saved["sell_warning_reasons"]
+        assert saved["sell_blocked"] is False

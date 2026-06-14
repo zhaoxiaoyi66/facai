@@ -582,7 +582,7 @@ def test_full_exit_must_come_from_sell_trade_sync() -> None:
         assert view["rows"] == []
 
 
-def test_blocked_sell_cannot_sync_to_portfolio() -> None:
+def test_model_warning_sell_can_sync_to_portfolio() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
@@ -611,17 +611,18 @@ def test_blocked_sell_cannot_sync_to_portfolio() -> None:
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("NVDA")
 
-        assert entry["discipline_status"] == "blocked"
-        assert preview["status"] == "failed"
-        assert preview["syncStatus"] == "failed"
-        assert "BLOCK" in preview["error"]
-        assert result["status"] == "failed"
-        assert "纪律门禁 BLOCK" in result["error"]
-        assert position["quantity"] == 158
+        assert entry["discipline_status"] == "warning"
+        assert entry["blockers"] == []
+        assert entry["sell_warning_level"] == "HIGH_RISK"
+        assert entry["sell_blocked"] is False
+        assert entry["user_confirmed_sell_warning"] is False
+        assert preview["status"] == "ready"
+        assert result["status"] == "success"
+        assert position["quantity"] == 58
         assert position["average_cost"] == 100
 
 
-def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
+def test_legacy_blocker_json_sell_can_sync_as_advisory() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
@@ -646,16 +647,13 @@ def test_legacy_blocker_json_sell_cannot_sync_even_without_status() -> None:
         counts = unsynced_trade_counts_by_symbol(path)
         position = PortfolioPositionStore(path).get_position("NVDA")
 
-        assert preview["status"] == "failed"
-        assert preview["syncStatus"] == "failed"
-        assert "BLOCK" in preview["error"]
-        assert result["status"] == "failed"
-        assert "BLOCK" in result["error"]
+        assert preview["status"] == "ready"
+        assert result["status"] == "success"
         assert counts.get("NVDA", 0) == 0
-        assert position["quantity"] == 158
+        assert position["quantity"] == 108
 
 
-def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
+def test_trade_sync_policy_treats_sell_blocker_lists_as_advisory() -> None:
     sell_policy = trade_sync_policy({"action_type": "sell", "blockers": ["legacy_blocker"]})
     buy_policy = trade_sync_policy({"action_type": "buy", "blockers": ["legacy_blocker"], "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00", "position_class": "A"})
     missing_tier_policy = trade_sync_policy({"action_type": "buy", "radar_decision": "ALLOW_BUY", "gate_checked_at": "2026-05-30T12:00:00+00:00"})
@@ -674,8 +672,8 @@ def test_trade_sync_policy_blocks_parsed_blocker_lists() -> None:
     )
     observation_policy = trade_sync_policy({"action_type": "add", "radar_observation_only": 1})
 
-    assert sell_policy["canSync"] is False
-    assert "BLOCK" in sell_policy["reason"]
+    assert sell_policy["canSync"] is True
+    assert sell_policy["reason"] == ""
     assert buy_policy["canSync"] is True
     assert missing_tier_policy["canSync"] is False
     assert missing_gate_policy["canSync"] is True
@@ -820,7 +818,7 @@ def test_portfolio_view_model_flags_unsynced_trades_for_symbol() -> None:
         assert after["rows"][0]["unsyncedTradeCount"] == 0
 
 
-def test_blocked_sell_is_not_counted_as_actionable_unsynced_trade() -> None:
+def test_model_warning_sell_is_counted_as_actionable_unsynced_trade() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         PortfolioPositionStore(path).save_position("NVDA", {"quantity": 158, "average_cost": 100})
@@ -845,5 +843,5 @@ def test_blocked_sell_is_not_counted_as_actionable_unsynced_trade() -> None:
         counts = unsynced_trade_counts_by_symbol(path)
         view = build_portfolio_view_model(path, {"NVDA": 210})
 
-        assert counts.get("NVDA", 0) == 0
-        assert view["rows"][0]["unsyncedTradeCount"] == 0
+        assert counts.get("NVDA", 0) == 1
+        assert view["rows"][0]["unsyncedTradeCount"] == 1

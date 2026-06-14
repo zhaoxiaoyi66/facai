@@ -254,8 +254,8 @@ def test_b_class_gate_copy_does_not_use_a_class_core_language() -> None:
 def test_discipline_gate_conclusion_labels_are_chinese() -> None:
     assert trade_journal._discipline_gate_conclusion_label("PASS") == "通过"
     assert trade_journal._discipline_gate_conclusion_label("WARN") == "需要复核"
-    assert trade_journal._discipline_gate_conclusion_label("FIX_REQUIRED") == "需要修正"
-    assert trade_journal._discipline_gate_conclusion_label("BLOCK") == "硬性拦截"
+    assert trade_journal._discipline_gate_conclusion_label("FIX_REQUIRED") == "卖出前复核"
+    assert trade_journal._discipline_gate_conclusion_label("BLOCK") == "高风险提醒"
 
 
 def test_decision_mood_warning_uses_chinese_label() -> None:
@@ -500,7 +500,7 @@ def test_trade_journal_separates_executed_ledger_from_historical_non_trades(monk
     assert [entry["id"] for entry in executed] == [1]
     assert [entry["id"] for entry in historical] == [2, 3, 4]
     assert trade_journal._historical_non_trade_reason(entries[2]) == "旧系统仅观察记录"
-    assert trade_journal._historical_non_trade_reason(entries[3]) == "旧系统拦截记录"
+    assert trade_journal._historical_non_trade_reason(entries[3]) == "历史卖出风险提醒记录"
     assert trade_journal._historical_non_trade_reason(entries[4]) == "旧系统未入账记录"
 
 

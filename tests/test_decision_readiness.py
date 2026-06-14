@@ -104,7 +104,7 @@ def test_decision_readiness_includes_trade_sync_policy_without_recomputing_it() 
         data_health={"topIssues": []},
         final_decision=SimpleNamespace(finalAction="record_violation", blockReasons=[], reviewReasons=[]),
         buy_zone=SimpleNamespace(currentZone="tranche_buy", confidence="high", validationErrors=[]),
-        sync_policy={"canSync": False, "reason": "纪律门禁 BLOCK，禁止同步到组合持仓。"},
+        sync_policy={"canSync": False, "reason": "基础校验未通过，不能同步到组合持仓。"},
     )
 
     assert not result["canSyncTrade"]

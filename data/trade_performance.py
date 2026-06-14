@@ -728,8 +728,6 @@ def _is_real_trade(entry: dict[str, Any]) -> bool:
     portfolio_synced = _bool(entry.get("_portfolio_synced"))
     if action in BUY_ACTIONS and _bool(entry.get("radar_blocked")) and not portfolio_synced:
         return False
-    if action in SELL_ACTIONS and str(entry.get("discipline_status") or "").lower() == "blocked" and not portfolio_synced:
-        return False
     return True
 
 

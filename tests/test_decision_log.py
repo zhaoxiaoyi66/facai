@@ -588,8 +588,12 @@ class DecisionLogTests(unittest.TestCase):
                 },
             )
 
-            self.assertIn("now_style_error_risk", saved["blockers"])
-            self.assertIn("now_style_error_risk", json.loads(saved["blockers_json"]))
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("now_style_error_risk", saved["sell_warning_reasons"])
+            self.assertIn("now_style_error_risk", json.loads(saved["sell_warning_reasons_json"]))
+            self.assertEqual(saved["sell_warning_level"], "HIGH_RISK")
+            self.assertFalse(saved["sell_blocked"])
 
     def test_trade_journal_store_updates_entry_and_recomputes_discipline_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -637,8 +641,9 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(updated["action_type"], "trim")
             self.assertEqual(updated["quantity"], 2)
             self.assertEqual(updated["decision_mood"], "anxiety")
-            self.assertEqual(updated["discipline_status"], "blocked")
-            self.assertIn("reentry_plan_required_before_trim_or_sell", updated["blockers"])
+            self.assertEqual(updated["discipline_status"], "warning")
+            self.assertEqual(updated["blockers"], [])
+            self.assertIn("reentry_plan_required_before_trim_or_sell", updated["sell_warning_reasons"])
             with self.assertRaises(ValueError):
                 store.update_entry(9999, "msft", {"trade_date": "2026-05-27", "action_type": "buy", "quantity": 1, "price": 1})
 
@@ -681,10 +686,13 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["planned_sell_pct"], 1.0)
             self.assertEqual(saved["sell_reason_type"], "macro")
             self.assertEqual(saved["sell_level"], "L1")
-            self.assertEqual(saved["discipline_status"], "blocked")
-            self.assertIn("a_class_core_clear_requires_thesis_break", saved["blockers"])
-            self.assertIn("macro_risk_cannot_trigger_single_name_exit", saved["blockers"])
-            self.assertIn("宏观风险", saved["warnings"][0])
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("a_class_core_clear_requires_thesis_break", saved["sell_warning_reasons"])
+            self.assertIn("macro_risk_cannot_trigger_single_name_exit", saved["sell_warning_reasons"])
+            self.assertEqual(saved["sell_warning_level"], "HIGH_RISK")
+            self.assertFalse(saved["sell_blocked"])
+            self.assertTrue(any("宏观风险" in item for item in saved["warnings"]))
             self.assertEqual(saved["max_allowed_sell_pct"], 0.2)
             self.assertEqual(saved["can_sell_core"], 0)
             self.assertEqual(saved["requires_reentry_plan"], 1)
@@ -740,9 +748,10 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["action_type"], "trim")
             self.assertEqual(saved["sell_level"], "L1")
             self.assertEqual(saved["requires_reentry_plan"], 1)
-            self.assertEqual(saved["discipline_status"], "blocked")
-            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
-            self.assertEqual(json.loads(saved["blockers_json"]), saved["blockers"])
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["sell_warning_reasons"])
+            self.assertEqual(json.loads(saved["sell_warning_reasons_json"]), saved["sell_warning_reasons"])
 
     def test_trade_journal_trim_saves_structured_reentry_plan(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -804,8 +813,9 @@ class DecisionLogTests(unittest.TestCase):
             )
 
             self.assertEqual(saved["has_reentry_plan"], 0)
-            self.assertEqual(saved["discipline_status"], "blocked")
-            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["sell_warning_reasons"])
 
     def test_trade_journal_reentry_invalidation_only_does_not_pass(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -831,8 +841,9 @@ class DecisionLogTests(unittest.TestCase):
 
             self.assertEqual(saved["has_reentry_plan"], 0)
             self.assertEqual(saved["reentry_thesis_invalidation"], "thesis broken")
-            self.assertEqual(saved["discipline_status"], "blocked")
-            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["sell_warning_reasons"])
 
     def test_trade_journal_reentry_plan_text_only_does_not_pass(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -858,8 +869,9 @@ class DecisionLogTests(unittest.TestCase):
 
             self.assertEqual(saved["has_reentry_plan"], 0)
             self.assertEqual(saved["reentry_plan_text"], "看情况买回")
-            self.assertEqual(saved["discipline_status"], "blocked")
-            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["blockers"])
+            self.assertEqual(saved["discipline_status"], "warning")
+            self.assertEqual(saved["blockers"], [])
+            self.assertIn("reentry_plan_required_before_trim_or_sell", saved["sell_warning_reasons"])
 
     def test_trade_journal_accepts_pullback_reentry_plan_with_pct_and_invalidation(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1000,9 +1012,9 @@ class DecisionLogTests(unittest.TestCase):
             loaded = store.get_entry(saved["id"])
 
             self.assertEqual(loaded["planned_sell_pct"], 0.1)
-            self.assertEqual(loaded["discipline_status"], "blocked")
+            self.assertEqual(loaded["discipline_status"], "warning")
             self.assertEqual(loaded["reentry_plan_text"], "回踩 MA50 回补")
-            self.assertEqual(loaded["blockers"], saved["blockers"])
+            self.assertEqual(loaded["sell_warning_reasons"], saved["sell_warning_reasons"])
             self.assertEqual(loaded["warnings"], saved["warnings"])
 
     def test_decision_log_store_deletes_snapshot_and_related_records(self) -> None:
