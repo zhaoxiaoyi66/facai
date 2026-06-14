@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from data.afterhours_provider import default_afterhours_provider
+from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
     build_mapping_diagnostics,
@@ -34,6 +35,7 @@ TAB_REALTIME = "实时观察"
 TAB_WEEKLY = "本周记录"
 TAB_MONDAY = "周一验证"
 TAB_HISTORY = "历史规律"
+TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 
 
@@ -55,8 +57,8 @@ def render() -> None:
     mapping = load_binance_symbol_mapping()
     watchlist = load_watchlist()
 
-    realtime_tab, weekly_tab, monday_tab, history_tab, mapping_tab = st.tabs(
-        [TAB_REALTIME, TAB_WEEKLY, TAB_MONDAY, TAB_HISTORY, TAB_MAPPING]
+    realtime_tab, weekly_tab, monday_tab, history_tab, backtest_tab, mapping_tab = st.tabs(
+        [TAB_REALTIME, TAB_WEEKLY, TAB_MONDAY, TAB_HISTORY, TAB_BACKTEST, TAB_MAPPING]
     )
 
     with realtime_tab:
@@ -67,6 +69,8 @@ def render() -> None:
         _render_monday_tab(log_snapshot)
     with history_tab:
         _render_history_tab()
+    with backtest_tab:
+        _render_backtest_tab(watchlist, mapping)
     with mapping_tab:
         _render_mapping_tab(rows, mapping, mapping_counts)
 
@@ -301,6 +305,56 @@ def _render_history_tab() -> None:
         st.info("暂无历史验证记录。记录周末样本并完成周一验证后，这里会显示命中率和平均捕捉比例。")
         return
     st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
+
+
+def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
+    st.subheader("历史回测")
+    st.warning(
+        "这是历史观察回测，不构成套利建议。周末高点未必能成交；spot 映射不等于可直接做空合约收益；"
+        "futures 数据不可用时不能计算合约空单收益；mapping 未 confirmed 时结果仅作观察。"
+    )
+    mapped_tickers = [
+        str(ticker or "").upper()
+        for ticker in watchlist
+        if str(ticker or "").upper() in mapping
+        and mapping[str(ticker or "").upper()].get("enabled", True)
+        and mapping[str(ticker or "").upper()].get("binance_symbol")
+    ]
+    options = ["全部已映射"] + mapped_tickers
+    cols = st.columns(5)
+    selected = cols[0].selectbox("ticker", options, key="weekend_backtest_ticker")
+    weeks = int(cols[1].number_input("weeks", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
+    fee_pct = cols[2].number_input("fee_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
+    slippage_pct = cols[3].number_input("slippage_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
+    funding_pct = cols[4].number_input("funding_pct", value=0.00, step=0.01, key="weekend_backtest_funding")
+    if st.button("运行近 4 周回测", width="stretch", key="weekend_run_backtest"):
+        tickers = mapped_tickers if selected == "全部已映射" else [selected]
+        results = run_weekend_peak_short_backtest(
+            tickers,
+            mapping=mapping,
+            weeks=weeks,
+            fee_pct=fee_pct,
+            slippage_pct=slippage_pct,
+            funding_pct=funding_pct,
+        )
+        st.session_state["weekend_backtest_results"] = results
+    results = list(st.session_state.get("weekend_backtest_results") or [])
+    if not results:
+        st.info("暂无回测结果。先配置映射并点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
+        return
+    _render_backtest_kpis(results)
+    st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
+
+
+def _render_backtest_kpis(rows: list[dict]) -> None:
+    summary = summarize_backtest_results(rows)
+    cols = st.columns(6)
+    cols[0].metric("样本周数", int(summary.get("sample_weeks") or 0))
+    cols[1].metric("平均理论收益", _percent_text(summary.get("avg_net_return_pct")))
+    cols[2].metric("最大收益", _percent_text(summary.get("max_return_pct")))
+    cols[3].metric("最大亏损", _percent_text(summary.get("max_loss_pct")))
+    cols[4].metric("正收益周数", int(summary.get("positive_weeks") or 0))
+    cols[5].metric("胜率", _ratio_text(summary.get("win_rate")))
 
 
 def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
@@ -621,6 +675,33 @@ def _history_frame(rows: list[dict]) -> pd.DataFrame:
     display["avg_peak_spread"] = display["avg_peak_spread"].map(_percent_text)
     display["avg_capture_ratio"] = display["avg_capture_ratio"].map(_ratio_text)
     display["avg_net_edge"] = display["avg_net_edge"].map(_percent_text)
+    return display
+
+
+def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("week_id", "week_id"),
+        ("ticker", "Ticker"),
+        ("weekend_peak_time", "weekend_peak_time"),
+        ("weekend_peak_price", "weekend_peak_price"),
+        ("monday_bar_open", "美股夜盘开盘参考"),
+        ("monday_bar_close", "monday_close"),
+        ("short_return_at_open_pct", "short_return_at_open_pct"),
+        ("short_return_at_close_pct", "short_return_at_close_pct"),
+        ("net_return_at_open_pct", "net_return_at_open_pct"),
+        ("data_quality", "data_quality"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    for money_col in ("weekend_peak_price", "美股夜盘开盘参考", "monday_close"):
+        display[money_col] = display[money_col].map(_money_text)
+    for percent_col in ("short_return_at_open_pct", "short_return_at_close_pct", "net_return_at_open_pct"):
+        display[percent_col] = display[percent_col].map(_percent_text)
+    display["weekend_peak_time"] = display["weekend_peak_time"].replace("", "暂缺")
     return display
 
 

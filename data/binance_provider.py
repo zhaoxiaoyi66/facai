@@ -112,6 +112,18 @@ class BinancePriceProvider:
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
+    def get_klines(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[Any]:
+        raise NotImplementedError
+
 
 class CachedBinancePriceProvider(BinancePriceProvider):
     def __init__(
@@ -166,6 +178,25 @@ class CachedBinancePriceProvider(BinancePriceProvider):
         limit: int = 10,
     ) -> BinanceCandidateSearchResult:
         return self.provider.find_symbol_candidates_with_status(query, market_type=market_type, limit=limit)
+
+    def get_klines(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[Any]:
+        return self.provider.get_klines(
+            symbol,
+            market_type=market_type,
+            interval=interval,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            limit=limit,
+        )
 
     def _read_cached(self, cache_key: str) -> BinancePriceSnapshot | None:
         payload = _read_json(self.cache_path)
@@ -227,6 +258,32 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             return _error_snapshot(normalized, f"HTTPError: {exc}", market_type=normalized_market)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             return _error_snapshot(normalized, f"{type(exc).__name__}: {exc}", market_type=normalized_market)
+
+    def get_klines(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[Any]:
+        normalized = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
+        if not normalized:
+            return []
+        params: dict[str, str] = {
+            "symbol": normalized,
+            "interval": interval,
+            "limit": str(max(1, min(int(limit or 1000), 1000))),
+        }
+        if start_time_ms is not None:
+            params["startTime"] = str(int(start_time_ms))
+        if end_time_ms is not None:
+            params["endTime"] = str(int(end_time_ms))
+        payload = self._get_market_payload(normalized_market, "klines", params)
+        return payload if isinstance(payload, list) else []
 
     def _get_spot_snapshot(self, symbol: str) -> BinancePriceSnapshot:
         if not self._symbol_record("spot", symbol):
@@ -491,6 +548,7 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
                 "price": "/api/v3/ticker/price",
                 "book": "/api/v3/ticker/bookTicker",
                 "ticker": "/api/v3/ticker/24hr",
+                "klines": "/api/v3/klines",
             }[kind]
             return [(base_url, path) for base_url in self.spot_base_urls]
         path = {
@@ -499,10 +557,15 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             "book": (self.futures_base_url, "/fapi/v1/ticker/bookTicker"),
             "ticker": (self.futures_base_url, "/fapi/v1/ticker/24hr"),
             "funding": (self.futures_base_url, "/fapi/v1/premiumIndex"),
+            "klines": (self.futures_base_url, "/fapi/v1/klines"),
         }[kind]
         return [path]
 
     def _get_market_json(self, market_type: str, kind: str, params: dict[str, str]) -> dict[str, Any]:
+        payload = self._get_market_payload(market_type, kind, params)
+        return payload if isinstance(payload, dict) else {}
+
+    def _get_market_payload(self, market_type: str, kind: str, params: dict[str, str]) -> Any:
         errors: list[Exception] = []
         for base_url, path in self._endpoint_candidates(market_type, kind):
             try:
@@ -514,13 +577,13 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             raise errors[-1]
         raise RuntimeError("no Binance endpoint configured")
 
-    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> dict[str, Any]:
+    def _get_json(self, base_url: str, path: str, params: dict[str, str]) -> Any:
         query = f"?{urlencode(params)}" if params else ""
         url = f"{base_url.rstrip('/')}{path}{query}"
         request = Request(url, headers={"User-Agent": "facai-weekend-spread/1.2"})
         with urlopen(request, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
-        return payload if isinstance(payload, dict) else {}
+        return payload
 
     def _read_exchange_info_cache(self, cache_key: str, *, allow_expired: bool = False) -> dict[str, Any] | None:
         if self.exchange_info_cache_path is None:

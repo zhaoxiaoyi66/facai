@@ -4,11 +4,17 @@ from datetime import datetime, timedelta, timezone
 import inspect
 import json
 from urllib.error import HTTPError
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from data.afterhours_provider import AfterhoursReference, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
+from data.weekend_spread_backtest import (
+    recent_weekend_windows,
+    run_weekend_peak_short_backtest,
+    summarize_backtest_results,
+)
 from data.weekend_spread import (
     build_mapping_diagnostics,
     build_weekend_spread_rows,
@@ -165,6 +171,39 @@ class FakeAfterhoursProvider:
         )
 
 
+class FakeKlineProvider:
+    def __init__(self, bars: list[list] | None = None, *, error: Exception | None = None) -> None:
+        self.bars = bars or []
+        self.error = error
+        self.calls: list[dict] = []
+
+    def get_klines(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[list]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "market_type": market_type,
+                "interval": interval,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "limit": limit,
+            }
+        )
+        if self.error:
+            raise self.error
+        start = start_time_ms or 0
+        end = end_time_ms or 2**63 - 1
+        return [bar for bar in self.bars if start <= int(bar[0]) < end][:limit]
+
+
 class CandidateStatusProvider:
     def __init__(self, *, status: str = "OK", candidates: list[dict] | None = None, message: str = "") -> None:
         self.status = status
@@ -225,6 +264,10 @@ def _history(close: float = 100.0) -> pd.DataFrame:
             {"date": "2026-06-13", "close": close + 0.8},
         ]
     )
+
+
+def _kline(moment: datetime, open_: float, high: float, low: float, close: float, volume: float = 1_000) -> list:
+    return [int(moment.astimezone(timezone.utc).timestamp() * 1000), str(open_), str(high), str(low), str(close), str(volume)]
 
 
 def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
@@ -769,6 +812,8 @@ class RecordingHTTPProvider(BinanceHTTPPriceProvider):
             return {"lastPrice": "101.5", "volume": "100000"}
         if path.endswith("premiumIndex"):
             return {"lastFundingRate": "0.0001"}
+        if path.endswith("klines"):
+            return [[params.get("startTime") or 0, "100", "110", "95", "105", "1000"]]
         return {}
 
 
@@ -834,6 +879,18 @@ def test_http_provider_uses_spot_endpoints_without_funding_rate() -> None:
         "/api/v3/ticker/bookTicker",
         "/api/v3/ticker/24hr",
     ]
+
+
+def test_http_provider_fetches_klines_endpoints() -> None:
+    provider = RecordingHTTPProvider()
+
+    futures = provider.get_klines("NVDAUSDT", market_type="usdm_futures", start_time_ms=1, end_time_ms=2)
+    spot = provider.get_klines("NVDAUSDT", market_type="spot", start_time_ms=1, end_time_ms=2)
+
+    assert futures[0][2] == "110"
+    assert spot[0][2] == "110"
+    assert (provider.futures_base_url, "/fapi/v1/klines", {"symbol": "NVDAUSDT", "interval": "1m", "limit": "1000", "startTime": "1", "endTime": "2"}) in provider.calls
+    assert ("https://spot.test", "/api/v3/klines", {"symbol": "NVDAUSDT", "interval": "1m", "limit": "1000", "startTime": "1", "endTime": "2"}) in provider.calls
 
 
 def test_http_provider_spot_uses_data_api_base_url_first() -> None:
@@ -1436,6 +1493,113 @@ def test_history_stats_calculates_hit_rate(tmp_path) -> None:
     assert stats[0]["hit_rate"] == 0.5
 
 
+def test_recent_weekend_windows_use_sunday_20_et_and_convert_dst_to_shanghai() -> None:
+    windows = recent_weekend_windows(weeks=1, now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc))
+    window = windows[0]
+
+    assert window.start_et.tzinfo == ZoneInfo("America/New_York")
+    assert window.start_et.strftime("%A %H:%M") == "Friday 20:00"
+    assert window.end_et.strftime("%A %H:%M") == "Sunday 20:00"
+    assert window.end_shanghai.strftime("%A %H:%M") == "Monday 08:00"
+
+
+def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
+    window = recent_weekend_windows(weeks=1, now=datetime(2026, 1, 5, 2, tzinfo=timezone.utc))[0]
+
+    assert window.end_et.strftime("%A %H:%M") == "Sunday 20:00"
+    assert window.end_shanghai.strftime("%A %H:%M") == "Monday 09:00"
+
+
+def test_weekend_peak_short_backtest_calculates_returns_from_mock_klines() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
+        _kline(window.start_et + timedelta(hours=8), 108, 115, 107, 114),
+        _kline(window.end_et, 105, 106, 103, 104, 5000),
+    ]
+
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        fee_pct=0.10,
+        slippage_pct=0.10,
+        funding_pct=0.00,
+        now=now,
+    )
+
+    row = rows[0]
+    assert row["weekend_peak_price"] == 115
+    assert row["monday_bar_open"] == 105
+    assert row["monday_bar_close"] == 104
+    assert round(row["short_return_at_open_pct"], 2) == 8.7
+    assert round(row["short_return_at_close_pct"], 2) == 9.57
+    assert round(row["best_case_return_pct"], 2) == 10.43
+    assert round(row["worst_case_return_pct"], 2) == 7.83
+    assert round(row["net_return_at_open_pct"], 2) == 8.5
+    assert row["data_quality"] == "OK"
+
+
+def test_weekend_peak_short_backtest_marks_spot_as_observation_only() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
+        _kline(window.end_et, 105, 106, 103, 104),
+    ]
+
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(market_type="spot"),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["data_quality"] == "SPOT_OBSERVATION_ONLY"
+    assert "观察收益" in rows[0]["result_note"]
+
+
+def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeKlineProvider(error=TimeoutError("futures timeout")),
+        weeks=1,
+        now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert rows[0]["data_quality"] == "DATA_UNAVAILABLE"
+    assert "futures timeout" in rows[0]["error_message"]
+
+
+def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
+        _kline(window.end_et, 105, 106, 103, 104),
+    ]
+
+    rows = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["data_quality"] == "UNCONFIRMED_MAPPING"
+    assert "仅作观察" in rows[0]["result_note"]
+
+
+def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
+    assert summarize_backtest_results([])["sample_weeks"] == 0
+    assert weekend_spread._backtest_frame([]).empty
+
+
 def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
     snapshot = get_weekly_log_snapshot(path=tmp_path / "missing.json", week_id="2026-W24")
 
@@ -1445,7 +1609,7 @@ def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
     assert weekend_spread._history_frame([]).empty
 
 
-def test_weekend_spread_render_declares_five_workflow_tabs() -> None:
+def test_weekend_spread_render_declares_workflow_tabs() -> None:
     source = inspect.getsource(weekend_spread.render)
 
     assert "st.tabs" in source
@@ -1454,8 +1618,9 @@ def test_weekend_spread_render_declares_five_workflow_tabs() -> None:
         weekend_spread.TAB_WEEKLY,
         weekend_spread.TAB_MONDAY,
         weekend_spread.TAB_HISTORY,
+        weekend_spread.TAB_BACKTEST,
         weekend_spread.TAB_MAPPING,
-    ] == ["实时观察", "本周记录", "周一验证", "历史规律", "映射管理"]
+    ] == ["实时观察", "本周记录", "周一验证", "历史规律", "历史回测", "映射管理"]
 
 
 def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
