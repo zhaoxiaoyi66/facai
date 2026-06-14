@@ -1784,11 +1784,11 @@ def _setup_score_note(buy_zone_context: dict[str, Any]) -> str:
 
 def _core_position_notice(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
     if buy_zone_context and buy_zone_context.get("core_position_allowed") is False:
-        reason = str(buy_zone_context.get("core_position_reason") or "综合评分低于70，暂不支持核心仓买入。")
+        reason = str(buy_zone_context.get("core_position_reason") or "综合评分低于70，系统不建议作为核心仓。")
         return f"核心仓资格：{_localize_report_text(reason)}"
     final_score = _number(report.get("final_score"))
     if final_score is not None and final_score < 70:
-        return "核心仓资格：综合评分低于70，暂不支持核心仓买入；小仓仍看技术承接。"
+        return "核心仓资格：综合评分低于70，系统不建议作为核心仓；小仓仍看技术承接。"
     return "核心仓资格：基本面用于仓位上限，买点仍以击球区、量能承接和风险收益比为准。"
 
 
@@ -1830,7 +1830,7 @@ def _risk_gate_notice(report: dict[str, Any]) -> str:
     final_score = _number(report.get("final_score"))
     risk_score = _number(report.get("risk_score"))
     if final_score is not None and final_score < 70:
-        return "风险门禁：综合评分低于70，禁止核心仓买入。"
+        return "风险门禁：综合评分低于70，系统不建议作为核心仓。"
     if risk_score is not None and risk_score < 55:
         return "风险门禁：风险评分偏低，风险门禁未解除。"
     return "风险门禁：未解除强买条件，仍需量价与风险复核。"

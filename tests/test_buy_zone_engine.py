@@ -112,7 +112,8 @@ def test_low_final_score_does_not_auto_block_good_small_setup() -> None:
 
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.core_position_allowed is False
-    assert "禁止核心仓买入" in context.core_position_reason
+    assert "系统不建议作为核心仓" in context.core_position_reason
+    assert "禁止核心仓买入" not in context.core_position_reason
     assert "小仓观察" in context.no_position_action_text
 
 

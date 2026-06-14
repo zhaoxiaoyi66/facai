@@ -497,6 +497,22 @@ def test_report_localizes_backend_english_copy() -> None:
     assert "final score below 70" not in html
 
 
+def test_report_softens_core_position_gate_copy() -> None:
+    report = {"ticker": "ADBE", "final_score": 64, "risk_score": 62}
+    buy_zone_context = {
+        "core_position_allowed": False,
+        "core_position_reason": "综合评分低于70，系统不建议作为核心仓；小仓观察仍以技术承接和量价确认为准。",
+    }
+
+    core_notice = radar_ui._core_position_notice(report, buy_zone_context)
+    risk_notice = radar_ui._risk_gate_notice(report)
+
+    assert "系统不建议作为核心仓" in core_notice
+    assert "系统不建议作为核心仓" in risk_notice
+    assert "禁止核心仓买入" not in core_notice
+    assert "禁止核心仓买入" not in risk_notice
+
+
 def test_report_confirmation_is_review_trigger_not_buy_signal() -> None:
     conclusion = radar_ui._trade_conclusion(
         {

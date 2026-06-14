@@ -156,7 +156,7 @@ def build_buy_zone_context(
     core_reason = (
         ""
         if core_allowed
-        else "综合评分低于70，禁止核心仓买入；小仓观察仍以技术承接和量价确认为准。"
+        else "综合评分低于70，系统不建议作为核心仓；小仓观察仍以技术承接和量价确认为准。"
     )
     if missing:
         return BuyZoneContext(
