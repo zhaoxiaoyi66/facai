@@ -17,3 +17,10 @@ def test_dashboard_loaders_use_market_context_for_price_history() -> None:
     assert "provider.get_price_history(ticker, force_refresh=True)" in refresh_source
     assert 'snapshot["current_price"] = market_price' in price_source
     assert "setdefault(\"current_price\"" not in price_source
+
+
+def test_dashboard_cached_table_reuses_batch_portfolio_context() -> None:
+    source = inspect.getsource(dashboard._build_cached_dashboard_table)
+
+    assert "build_action_fusion_portfolio_contexts(tickers)" in source
+    assert "action_fusion_portfolio_context=portfolio_contexts.get" in source

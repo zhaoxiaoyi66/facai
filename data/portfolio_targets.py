@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from data.prices import CACHE_PATH
 from settings import PROJECT_ROOT
@@ -105,6 +105,45 @@ def build_action_fusion_portfolio_context(
     return apply_portfolio_target(symbol, context, config_path=config_path)
 
 
+def build_action_fusion_portfolio_contexts(
+    tickers: Iterable[str],
+    *,
+    path: Path = CACHE_PATH,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    symbols = _normalize_symbols(tickers)
+    contexts: dict[str, dict[str, Any]] = {symbol: {} for symbol in symbols}
+    targets = load_portfolio_targets(config_path)
+    try:
+        from data.portfolio_view_model import build_portfolio_view_model
+
+        view = build_portfolio_view_model(path)
+        summary = dict(view.get("summary") or {})
+        available_cash = summary.get("cashBalance")
+        for context in contexts.values():
+            context["available_cash"] = available_cash
+        for row in view.get("rows") or []:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol not in contexts:
+                continue
+            contexts[symbol].update(
+                {
+                    "current_shares": row.get("quantity"),
+                    "avg_cost": row.get("averageCost"),
+                    "market_value": row.get("marketValue"),
+                    "unrealized_pnl": row.get("unrealizedPnl"),
+                    "unrealized_pnl_pct": row.get("unrealizedPnlPct"),
+                    "portfolio_weight": row.get("positionPct"),
+                    "target_weight": row.get("targetPositionPct"),
+                    "max_weight": row.get("maxAcceptablePositionPct"),
+                    "portfolio_updated_at": row.get("updatedAt"),
+                }
+            )
+    except Exception:
+        contexts = {symbol: {} for symbol in symbols}
+    return {symbol: _apply_loaded_portfolio_target(symbol, context, targets) for symbol, context in contexts.items()}
+
+
 def _target_from_mapping(ticker: str, values: dict[str, Any]) -> PortfolioTarget:
     return PortfolioTarget(
         ticker=ticker,
@@ -114,6 +153,30 @@ def _target_from_mapping(ticker: str, values: dict[str, Any]) -> PortfolioTarget
         max_shares=_optional_number(values.get("max_shares")),
         notes=str(values.get("notes") or "").strip(),
     )
+
+
+def _apply_loaded_portfolio_target(
+    ticker: str,
+    portfolio_context: dict[str, Any] | None,
+    targets: dict[str, PortfolioTarget],
+) -> dict[str, Any]:
+    symbol = str(ticker or "").strip().upper()
+    context = dict(portfolio_context or {})
+    target = targets.get(symbol) or PortfolioTarget(ticker=symbol)
+    for key, value in target.to_context().items():
+        context[key] = value
+    return context
+
+
+def _normalize_symbols(tickers: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for ticker in tickers:
+        symbol = str(ticker or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
 
 
 def _weight_to_percent(value: Any, default: float) -> float:

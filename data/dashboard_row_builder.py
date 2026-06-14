@@ -67,7 +67,15 @@ DETAIL_GROUPS = [
 ]
 
 
-def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, data_quality: dict) -> dict:
+def build_dashboard_row(
+    ticker: str,
+    snapshot: dict,
+    technicals: dict,
+    score,
+    data_quality: dict,
+    *,
+    action_fusion_portfolio_context: dict[str, Any] | None = None,
+) -> dict:
     high_risk_flags = sum(1 for flag in score.risk_flags if flag.severity == "high")
     medium_risk_flags = sum(1 for flag in score.risk_flags if flag.severity == "medium")
     anti_fomo = _signal_message(score.trading_signals, "anti_fomo")
@@ -113,6 +121,9 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
     )
     current_add_limit = final_decision.currentAddLimitPercent
     max_portfolio_weight = final_decision.maxPortfolioWeightPercent
+    portfolio_context = action_fusion_portfolio_context
+    if portfolio_context is None:
+        portfolio_context = build_action_fusion_portfolio_context(ticker)
     action_fusion = evaluate_action_fusion(
         ticker=ticker,
         context={
@@ -127,7 +138,7 @@ def build_dashboard_row(ticker: str, snapshot: dict, technicals: dict, score, da
             "volume_regime_cn": volume_price_acceptance.volume_regime_cn,
             "volume_price_reason_cn": volume_price_acceptance.acceptance_reason_cn,
         },
-        portfolio_context=build_action_fusion_portfolio_context(ticker),
+        portfolio_context=portfolio_context,
     )
 
     return {

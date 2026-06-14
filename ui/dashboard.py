@@ -3,6 +3,7 @@
 from datetime import datetime
 from html import escape
 import json
+from typing import Any
 import pandas as pd
 import streamlit as st
 
@@ -56,6 +57,7 @@ from data.price_alerts import triggered_price_alerts
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_targets import build_action_fusion_portfolio_contexts
 from data.portfolio_structure_health import (
     build_portfolio_structure_check,
 )
@@ -557,7 +559,13 @@ def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_k
         unsafe_allow_html=True,
     )
     provider = get_market_data_provider(full_fundamentals=True)
-    refreshed_row = _load_dashboard_row(provider, symbol, force_refresh=True)
+    portfolio_contexts = build_action_fusion_portfolio_contexts([symbol])
+    refreshed_row = _load_dashboard_row(
+        provider,
+        symbol,
+        force_refresh=True,
+        action_fusion_portfolio_context=portfolio_contexts.get(symbol),
+    )
     table = _replace_dashboard_row(table, refreshed_row)
     _store_session_dashboard_table(cache_key, table)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
@@ -596,6 +604,7 @@ def _load_dashboard_with_progress(tickers: tuple[str, ...], refresh_symbols: set
     rows = []
     summary_provider = get_market_data_provider(full_fundamentals=False)
     full_provider = get_market_data_provider(full_fundamentals=True)
+    portfolio_contexts = build_action_fusion_portfolio_contexts(tickers)
     total = len(tickers)
     for index, ticker in enumerate(tickers, start=1):
         refresh_this_ticker = ticker.upper() in normalized_refresh_symbols
@@ -611,7 +620,14 @@ def _load_dashboard_with_progress(tickers: tuple[str, ...], refresh_symbols: set
             unsafe_allow_html=True,
         )
         provider = full_provider if refresh_this_ticker else summary_provider
-        rows.append(_load_dashboard_row(provider, ticker, refresh_this_ticker))
+        rows.append(
+            _load_dashboard_row(
+                provider,
+                ticker,
+                refresh_this_ticker,
+                action_fusion_portfolio_context=portfolio_contexts.get(ticker.upper()),
+            )
+        )
     progress_slot.markdown(_refresh_done_html(total), unsafe_allow_html=True)
     table = pd.DataFrame(rows)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
@@ -625,19 +641,40 @@ def _build_dashboard_table(tickers: tuple[str, ...], refresh_symbols: set[str]) 
     provider = get_market_data_provider(full_fundamentals=False)
     rows = []
     normalized_refresh_symbols = {symbol.upper() for symbol in refresh_symbols if symbol}
+    portfolio_contexts = build_action_fusion_portfolio_contexts(tickers)
     for ticker in tickers:
-        rows.append(_load_dashboard_row(provider, ticker, ticker.upper() in normalized_refresh_symbols))
+        rows.append(
+            _load_dashboard_row(
+                provider,
+                ticker,
+                ticker.upper() in normalized_refresh_symbols,
+                action_fusion_portfolio_context=portfolio_contexts.get(ticker.upper()),
+            )
+        )
     return pd.DataFrame(rows)
 
 
 def _build_cached_dashboard_table(tickers: tuple[str, ...]) -> pd.DataFrame:
     fundamental_cache = FundamentalCache()
+    portfolio_contexts = build_action_fusion_portfolio_contexts(tickers)
     return pd.DataFrame(
-        [_load_cached_dashboard_row(fundamental_cache, ticker) for ticker in tickers]
+        [
+            _load_cached_dashboard_row(
+                fundamental_cache,
+                ticker,
+                action_fusion_portfolio_context=portfolio_contexts.get(ticker.upper()),
+            )
+            for ticker in tickers
+        ]
     )
 
 
-def _load_cached_dashboard_row(fundamental_cache: FundamentalCache, ticker: str) -> dict:
+def _load_cached_dashboard_row(
+    fundamental_cache: FundamentalCache,
+    ticker: str,
+    *,
+    action_fusion_portfolio_context: dict[str, Any] | None = None,
+) -> dict:
     try:
         snapshot = fundamental_cache.get_snapshot(ticker, max_age_hours=24 * 3650)
         history = build_market_history(ticker)
@@ -655,7 +692,14 @@ def _load_cached_dashboard_row(fundamental_cache: FundamentalCache, ticker: str)
         _apply_market_price_to_snapshot(ticker, snapshot, technicals)
         score = calculate_total_score(snapshot, technicals)
         data_quality = {"pct": score.data_quality_pct, "missing": score.missing_data}
-        return _build_dashboard_row(ticker, snapshot, technicals, score, data_quality)
+        return _build_dashboard_row(
+            ticker,
+            snapshot,
+            technicals,
+            score,
+            data_quality,
+            action_fusion_portfolio_context=action_fusion_portfolio_context,
+        )
     except Exception as exc:
         return _error_dashboard_row(ticker, exc)
 
@@ -664,7 +708,13 @@ def _empty_price_history() -> pd.DataFrame:
     return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
 
-def _load_dashboard_row(provider, ticker: str, force_refresh: bool) -> dict:
+def _load_dashboard_row(
+    provider,
+    ticker: str,
+    force_refresh: bool,
+    *,
+    action_fusion_portfolio_context: dict[str, Any] | None = None,
+) -> dict:
     try:
         snapshot = provider.get_quote(ticker, force_refresh=force_refresh)
         if force_refresh:
@@ -674,7 +724,14 @@ def _load_dashboard_row(provider, ticker: str, force_refresh: bool) -> dict:
         _apply_market_price_to_snapshot(ticker, snapshot, technicals)
         score = calculate_total_score(snapshot, technicals)
         data_quality = {"pct": score.data_quality_pct, "missing": score.missing_data}
-        return _build_dashboard_row(ticker, snapshot, technicals, score, data_quality)
+        return _build_dashboard_row(
+            ticker,
+            snapshot,
+            technicals,
+            score,
+            data_quality,
+            action_fusion_portfolio_context=action_fusion_portfolio_context,
+        )
     except Exception as exc:
         return _error_dashboard_row(ticker, exc)
 

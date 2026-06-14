@@ -6,6 +6,7 @@ from data.portfolio import PortfolioPositionStore
 from data.portfolio_targets import (
     apply_portfolio_target,
     build_action_fusion_portfolio_context,
+    build_action_fusion_portfolio_contexts,
     get_portfolio_target,
     load_portfolio_targets,
 )
@@ -99,3 +100,25 @@ def test_action_fusion_portfolio_context_recognizes_existing_position_case_insen
     assert context["target_weight"] == 12.0
     assert context["max_weight"] == 16.0
     assert context["role"] == "ai_software_core"
+
+
+def test_batch_action_fusion_portfolio_context_reads_portfolio_once_for_many_tickers(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.sqlite"
+    PortfolioPositionStore(db_path).save_position(
+        "now",
+        {
+            "quantity": 100,
+            "average_cost": 106,
+            "position_tier": "A",
+        },
+    )
+
+    contexts = build_action_fusion_portfolio_contexts(["NOW", "ZZZ"], path=db_path)
+
+    assert contexts["NOW"]["current_shares"] == 100
+    assert contexts["NOW"]["target_weight"] == 12.0
+    assert contexts["NOW"]["max_weight"] == 16.0
+    assert contexts["NOW"]["role"] == "ai_software_core"
+    assert contexts["ZZZ"]["target_weight"] == 2.0
+    assert contexts["ZZZ"]["max_weight"] == 4.0
+    assert contexts["ZZZ"]["role"] == "watch_only"
