@@ -946,8 +946,10 @@ def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:
 
     assert counts["local_mapping_count"] == 1
     assert counts["universe_mapping_count"] == 0
+    assert counts["price_row_count"] == 0
     assert counts["universe_total"] == 2
     assert default_rows == []
+    assert weekend_spread._should_show_empty_mapping_state(counts, "重点/有数据") is True
 
 
 def test_mapping_counts_include_universe_mapping_when_ticker_is_in_watchlist() -> None:
@@ -964,8 +966,42 @@ def test_mapping_counts_include_universe_mapping_when_ticker_is_in_watchlist() -
 
     assert counts["local_mapping_count"] == 1
     assert counts["universe_mapping_count"] == 1
+    assert counts["price_row_count"] == 1
     assert counts["universe_total"] == 2
     assert [row["ticker"] for row in default_rows] == ["NVDA"]
+
+
+def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping(tmp_path) -> None:
+    counts = {
+        "local_mapping_count": 0,
+        "universe_mapping_count": 0,
+        "price_row_count": 0,
+        "universe_total": 32,
+    }
+
+    message = weekend_spread._empty_mapping_message(counts, tmp_path / "binance_symbol_mapping.local.json")
+
+    assert "当前观察池暂无 Binance 映射" in message
+    assert "Binance 价格可通过 API 自动读取" in message
+    assert "ticker -> binance_symbol" in message
+    assert "binance_symbol_mapping.local.json" in message
+    assert "NVDA -> NVDABUSDT / spot / candidate" in message
+    assert "不属于当前观察池" not in message
+    assert weekend_spread._off_universe_mapping_note(counts) == "本地未配置映射"
+
+
+def test_empty_mapping_state_mentions_local_mapping_outside_universe(tmp_path) -> None:
+    counts = {
+        "local_mapping_count": 1,
+        "universe_mapping_count": 0,
+        "price_row_count": 0,
+        "universe_total": 32,
+    }
+
+    message = weekend_spread._empty_mapping_message(counts, tmp_path / "binance_symbol_mapping.local.json")
+
+    assert "本地配置有 mapping，但不属于当前观察池" in message
+    assert weekend_spread._off_universe_mapping_note(counts) == "本地配置有 mapping，但不属于当前观察池"
 
 
 def test_non_universe_mapping_is_not_recorded_as_sample(tmp_path) -> None:

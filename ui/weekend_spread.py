@@ -71,7 +71,10 @@ def render() -> None:
         f"本地配置映射 {mapping_counts['local_mapping_count']} 只；"
         f"主表行数 {len(filtered_rows)}。"
     )
-    st.dataframe(_display_frame(filtered_rows), width="stretch", hide_index=True)
+    if _should_show_empty_mapping_state(mapping_counts, scope):
+        _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    else:
+        st.dataframe(_display_frame(filtered_rows), width="stretch", hide_index=True)
 
     no_mapping_rows = [row for row in rows if not row.get("binance_symbol")]
     if no_mapping_rows and scope != "暂无 mapping":
@@ -101,13 +104,15 @@ def render() -> None:
 def _render_kpis(rows: list[dict], mapping_counts: dict[str, int], log_snapshot: dict) -> None:
     abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
     status = _binance_status_text(rows, mapping_counts["universe_mapping_count"])
-    cols = st.columns(6)
+    cols = st.columns(8)
     cols[0].metric("本周已记录样本", int(log_snapshot.get("sample_count") or 0))
-    cols[1].metric("观察池映射", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}")
-    cols[2].metric("本周最大溢价", _percent_text(log_snapshot.get("max_premium_pct")))
-    cols[3].metric("本周最大折价", _percent_text(log_snapshot.get("max_discount_pct")))
-    cols[4].metric("异常价差", abnormal_count)
-    cols[5].metric("Binance 数据", status)
+    cols[1].metric("本地映射", mapping_counts["local_mapping_count"])
+    cols[2].metric("观察池映射", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}")
+    cols[3].metric("当前可拉价", mapping_counts["price_row_count"])
+    cols[4].metric("本周最大溢价", _percent_text(log_snapshot.get("max_premium_pct")))
+    cols[5].metric("本周最大折价", _percent_text(log_snapshot.get("max_discount_pct")))
+    cols[6].metric("异常价差", abnormal_count)
+    cols[7].metric("Binance 数据", status)
 
 
 def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
@@ -122,11 +127,16 @@ def _render_data_status(rows: list[dict], mapping_counts: dict[str, int], local_
                 "Spot 候选扫描：按需诊断",
                 f"Futures 数据源：{futures_status}",
                 f"本地配置映射总数：{mapping_counts['local_mapping_count']}",
+                _off_universe_mapping_note(mapping_counts),
                 local_text,
                 f"最后刷新：{latest or '暂缺'}",
             ]
         )
     )
+
+
+def _render_empty_mapping_state(mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
+    st.info(_empty_mapping_message(mapping_counts, local_mapping_path))
 
 
 def _render_recording_controls(rows: list[dict]) -> None:
@@ -214,11 +224,41 @@ def _filter_rows(
 def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
     local_mapping_count = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
     universe_mapping_count = sum(1 for row in rows if row.get("binance_symbol"))
+    price_row_count = sum(
+        1
+        for row in rows
+        if row.get("binance_symbol") and row.get("status") == "OK" and row.get("spread_pct") is not None
+    )
     return {
         "local_mapping_count": local_mapping_count,
         "universe_mapping_count": universe_mapping_count,
+        "price_row_count": price_row_count,
         "universe_total": len(rows),
     }
+
+
+def _should_show_empty_mapping_state(mapping_counts: dict[str, int], scope: str) -> bool:
+    return mapping_counts.get("universe_mapping_count", 0) <= 0 and scope != "暂无 mapping"
+
+
+def _empty_mapping_message(mapping_counts: dict[str, int], local_mapping_path: Path) -> str:
+    lines = [
+        "当前观察池暂无 Binance 映射。",
+        "Binance 价格可通过 API 自动读取，但需要先配置 ticker -> binance_symbol。",
+        f"本地配置文件：{local_mapping_path.as_posix()}",
+        "示例：NVDA -> NVDABUSDT / spot / candidate",
+    ]
+    if mapping_counts.get("local_mapping_count", 0) > 0:
+        lines.append("本地配置有 mapping，但不属于当前观察池。")
+    return "\n\n".join(lines)
+
+
+def _off_universe_mapping_note(mapping_counts: dict[str, int]) -> str:
+    if mapping_counts.get("local_mapping_count", 0) <= 0:
+        return "本地未配置映射"
+    if mapping_counts.get("local_mapping_count", 0) > 0 and mapping_counts.get("universe_mapping_count", 0) == 0:
+        return "本地配置有 mapping，但不属于当前观察池"
+    return "本地 mapping 与观察池匹配正常"
 
 
 def _display_frame(rows: list[dict]) -> pd.DataFrame:
