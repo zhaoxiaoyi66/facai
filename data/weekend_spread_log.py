@@ -146,14 +146,21 @@ def update_monday_outcome(
         return None
 
     price = _number(monday_reference_price)
-    friday_close = _number(summary.get("friday_close_price"))
+    regular_close = _number(summary.get("regular_close_price") or summary.get("friday_close_price"))
+    afterhours_price = _number(summary.get("afterhours_reference_price"))
+    primary_anchor = str(summary.get("primary_spread_anchor") or "")
+    primary_base = afterhours_price if primary_anchor == "AFTERHOURS_REFERENCE" and afterhours_price else regular_close
     peak_abs = _number(summary.get("max_abs_spread_pct"))
     monday_gap_pct = None
+    monday_gap_from_regular_close_pct = None
+    monday_gap_from_afterhours_pct = None
     direction_hit = False
     capture_ratio = None
     net_edge_pct = None
-    if price is not None and friday_close and friday_close > 0:
-        monday_gap_pct = (price / friday_close - 1.0) * 100.0
+    if price is not None:
+        monday_gap_from_regular_close_pct = _percent_change(price, regular_close)
+        monday_gap_from_afterhours_pct = _percent_change(price, afterhours_price)
+        monday_gap_pct = _percent_change(price, primary_base)
     signed_peak = _signed_peak_spread(summary)
     if monday_gap_pct is not None and peak_abs is not None and peak_abs > 0 and signed_peak is not None:
         direction_hit = _sign(monday_gap_pct) == _sign(signed_peak)
@@ -166,6 +173,8 @@ def update_monday_outcome(
             "monday_reference_time": reference_time or datetime.now(timezone.utc).isoformat(),
             "monday_reference_price": price,
             "monday_gap_pct": monday_gap_pct,
+            "monday_gap_from_regular_close_pct": monday_gap_from_regular_close_pct,
+            "monday_gap_from_afterhours_pct": monday_gap_from_afterhours_pct,
             "direction_hit": direction_hit,
             "capture_ratio": capture_ratio,
             "estimated_cost_pct": float(estimated_cost_pct or 0.0),
@@ -233,7 +242,7 @@ def get_weekly_log_snapshot(
     store = read_weekend_spread_store(path)
     samples = [item for item in store["samples"] if item.get("week_id") == effective_week_id]
     summaries = [item for item in store["summaries"] if item.get("week_id") == effective_week_id]
-    valid_spreads = [_number(item.get("spread_pct")) for item in samples]
+    valid_spreads = [_sample_spread(item) for item in samples]
     valid_spreads = [value for value in valid_spreads if value is not None]
     premiums = [value for value in valid_spreads if value > 0]
     discounts = [value for value in valid_spreads if value < 0]
@@ -256,6 +265,16 @@ def _sample_from_row(row: dict[str, Any], *, week_id: str, observed_at: str, sou
         "stock_name": str(row.get("stock_name") or ""),
         "friday_close_date": str(row.get("friday_close_date") or ""),
         "friday_close_price": _number(row.get("friday_close")),
+        "regular_close_date": str(row.get("regular_close_date") or row.get("friday_close_date") or ""),
+        "regular_close_price": _number(row.get("regular_close_price") or row.get("friday_close")),
+        "afterhours_reference_price": _number(row.get("afterhours_reference_price")),
+        "afterhours_reference_time": str(row.get("afterhours_reference_time") or ""),
+        "afterhours_reference_source": str(row.get("afterhours_reference_source") or ""),
+        "afterhours_gap_pct": _number(row.get("afterhours_gap_pct")),
+        "spread_vs_regular_close_pct": _number(row.get("spread_vs_regular_close_pct")),
+        "spread_vs_afterhours_pct": _number(row.get("spread_vs_afterhours_pct")),
+        "primary_spread_anchor": str(row.get("primary_spread_anchor") or ""),
+        "primary_spread_pct": _number(row.get("primary_spread_pct") or row.get("spread_pct")),
         "binance_symbol": str(row.get("binance_symbol") or "").upper(),
         "market_type": str(row.get("binance_market_type") or ""),
         "mapping_confidence": str(row.get("mapping_confidence") or "").lower(),
@@ -266,7 +285,7 @@ def _sample_from_row(row: dict[str, Any], *, week_id: str, observed_at: str, sou
         "bid_ask_spread_pct": _number(row.get("binance_spread_pct")),
         "volume_24h": _number(row.get("binance_volume_24h")),
         "funding_rate": _number(row.get("funding_rate")),
-        "spread_pct": _number(row.get("spread_pct")),
+        "spread_pct": _number(row.get("primary_spread_pct") or row.get("spread_pct")),
         "spread_direction": str(row.get("spread_direction") or ""),
         "alert_level": str(row.get("alert_level") or ""),
         "liquidity_warning": str(row.get("liquidity_warning") or ""),
@@ -278,12 +297,12 @@ def _sample_from_row(row: dict[str, Any], *, week_id: str, observed_at: str, sou
 
 
 def _summary_for_samples(week_id: str, ticker: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
-    valid = [sample for sample in samples if _number(sample.get("spread_pct")) is not None]
-    premiums = [sample for sample in valid if (_number(sample.get("spread_pct")) or 0.0) > 0]
-    discounts = [sample for sample in valid if (_number(sample.get("spread_pct")) or 0.0) < 0]
-    max_premium = max(premiums, key=lambda item: _number(item.get("spread_pct")) or 0.0) if premiums else None
-    max_discount = min(discounts, key=lambda item: _number(item.get("spread_pct")) or 0.0) if discounts else None
-    max_abs = max(valid, key=lambda item: abs(_number(item.get("spread_pct")) or 0.0)) if valid else None
+    valid = [sample for sample in samples if _sample_spread(sample) is not None]
+    premiums = [sample for sample in valid if (_sample_spread(sample) or 0.0) > 0]
+    discounts = [sample for sample in valid if (_sample_spread(sample) or 0.0) < 0]
+    max_premium = max(premiums, key=lambda item: _sample_spread(item) or 0.0) if premiums else None
+    max_discount = min(discounts, key=lambda item: _sample_spread(item) or 0.0) if discounts else None
+    max_abs = max(valid, key=lambda item: abs(_sample_spread(item) or 0.0)) if valid else None
     first = samples[0]
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -292,13 +311,20 @@ def _summary_for_samples(week_id: str, ticker: str, samples: list[dict[str, Any]
         "ticker": ticker,
         "friday_close_date": first.get("friday_close_date") or "",
         "friday_close_price": first.get("friday_close_price"),
-        "max_premium_pct": _number(max_premium.get("spread_pct")) if max_premium else None,
+        "regular_close_date": first.get("regular_close_date") or first.get("friday_close_date") or "",
+        "regular_close_price": first.get("regular_close_price") or first.get("friday_close_price"),
+        "afterhours_reference_price": first.get("afterhours_reference_price"),
+        "afterhours_reference_time": first.get("afterhours_reference_time") or "",
+        "afterhours_reference_source": first.get("afterhours_reference_source") or "",
+        "afterhours_gap_pct": first.get("afterhours_gap_pct"),
+        "primary_spread_anchor": first.get("primary_spread_anchor") or "",
+        "max_premium_pct": _sample_spread(max_premium) if max_premium else None,
         "max_premium_time": max_premium.get("observed_at") if max_premium else "",
         "max_premium_price": max_premium.get("adjusted_binance_price") if max_premium else None,
-        "max_discount_pct": _number(max_discount.get("spread_pct")) if max_discount else None,
+        "max_discount_pct": _sample_spread(max_discount) if max_discount else None,
         "max_discount_time": max_discount.get("observed_at") if max_discount else "",
         "max_discount_price": max_discount.get("adjusted_binance_price") if max_discount else None,
-        "max_abs_spread_pct": abs(_number(max_abs.get("spread_pct")) or 0.0) if max_abs else None,
+        "max_abs_spread_pct": abs(_sample_spread(max_abs) or 0.0) if max_abs else None,
         "max_abs_spread_direction": max_abs.get("spread_direction") if max_abs else "",
         "sample_count": len(samples),
         "data_quality": _summary_quality(samples),
@@ -306,6 +332,8 @@ def _summary_for_samples(week_id: str, ticker: str, samples: list[dict[str, Any]
         "monday_reference_time": "",
         "monday_reference_price": None,
         "monday_gap_pct": None,
+        "monday_gap_from_regular_close_pct": None,
+        "monday_gap_from_afterhours_pct": None,
         "direction_hit": None,
         "capture_ratio": None,
         "estimated_cost_pct": DEFAULT_ESTIMATED_COST_PCT,
@@ -324,6 +352,8 @@ def _preserve_outcome_fields(summary: dict[str, Any], existing: dict[str, Any] |
         "monday_reference_time",
         "monday_reference_price",
         "monday_gap_pct",
+        "monday_gap_from_regular_close_pct",
+        "monday_gap_from_afterhours_pct",
         "direction_hit",
         "capture_ratio",
         "estimated_cost_pct",
@@ -342,19 +372,21 @@ def _existing_summary_id(first_sample: dict[str, Any], week_id: str, ticker: str
 def _sample_quality(row: dict[str, Any]) -> str:
     if row.get("manual_override"):
         return "MANUAL_OVERRIDE"
-    if row.get("status") != "OK" or _number(row.get("spread_pct")) is None:
+    if row.get("status") != "OK" or _sample_spread(row) is None:
         return "DATA_INSUFFICIENT"
     if str(row.get("mapping_confidence") or "").lower() != "confirmed":
         return "MAPPING_UNCONFIRMED"
     warning = str(row.get("liquidity_warning") or "")
     if "不足" in warning or "偏宽" in warning:
         return "LIQUIDITY_RISK"
+    if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
+        return "REGULAR_CLOSE_FALLBACK"
     return "OK"
 
 
 def _summary_quality(samples: list[dict[str, Any]]) -> str:
     qualities = {str(item.get("data_quality") or "") for item in samples}
-    for quality in ("DATA_INSUFFICIENT", "MANUAL_OVERRIDE", "MAPPING_UNCONFIRMED", "LIQUIDITY_RISK"):
+    for quality in ("DATA_INSUFFICIENT", "MANUAL_OVERRIDE", "MAPPING_UNCONFIRMED", "LIQUIDITY_RISK", "REGULAR_CLOSE_FALLBACK"):
         if quality in qualities:
             return quality
     return "OK" if "OK" in qualities else "DATA_INSUFFICIENT"
@@ -370,7 +402,7 @@ def _outcome_status(
     if (
         monday_reference_price is None
         or _number(summary.get("max_abs_spread_pct")) is None
-        or str(summary.get("data_quality") or "") != "OK"
+        or str(summary.get("data_quality") or "") not in {"OK", "REGULAR_CLOSE_FALLBACK"}
     ):
         return "INVALID"
     if direction_hit and capture_ratio is not None and capture_ratio >= HIT_CAPTURE_THRESHOLD and (net_edge_pct or 0.0) > 0:
@@ -405,6 +437,21 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _sample_spread(sample: dict[str, Any] | None) -> float | None:
+    if not sample:
+        return None
+    primary = _number(sample.get("primary_spread_pct"))
+    return primary if primary is not None else _number(sample.get("spread_pct"))
+
+
+def _percent_change(current: Any, base: Any) -> float | None:
+    current_number = _number(current)
+    base_number = _number(base)
+    if current_number is None or base_number is None or base_number <= 0:
+        return None
+    return (current_number / base_number - 1.0) * 100.0
 
 
 def _average(values: Iterable[float | None]) -> float | None:

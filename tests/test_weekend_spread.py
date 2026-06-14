@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 
 import pandas as pd
 
+from data.afterhours_provider import AfterhoursReference, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.weekend_spread import (
     build_mapping_diagnostics,
@@ -112,6 +113,58 @@ class FakeProvider:
         return matches[:limit]
 
 
+class FakeAfterhoursProvider:
+    def __init__(
+        self,
+        reference_price: float | None = 102.0,
+        *,
+        reference_time: str = "2026-06-12T19:58:00-04:00",
+        reference_source: str = "mock_afterhours",
+        bid: float | None = 101.9,
+        ask: float | None = 102.1,
+        mid: float | None = 102.0,
+        last_trade: float | None = 102.0,
+        volume: float | None = 2_500,
+        data_quality: str = "HIGH",
+    ) -> None:
+        self.snapshot = AfterhoursReference(
+            symbol="",
+            reference_price=reference_price,
+            reference_time=reference_time,
+            reference_source=reference_source,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            last_trade=last_trade,
+            volume=volume,
+            data_quality=data_quality,
+        )
+        self.calls: list[tuple[str, str, bool]] = []
+
+    def get_afterhours_reference(
+        self,
+        symbol: str,
+        *,
+        regular_close_date: str = "",
+        force_refresh: bool = False,
+    ) -> AfterhoursReference:
+        self.calls.append((symbol, regular_close_date, force_refresh))
+        snapshot = self.snapshot
+        return AfterhoursReference(
+            symbol=symbol,
+            reference_price=snapshot.reference_price,
+            reference_time=snapshot.reference_time,
+            reference_source=snapshot.reference_source,
+            bid=snapshot.bid,
+            ask=snapshot.ask,
+            mid=snapshot.mid,
+            last_trade=snapshot.last_trade,
+            volume=snapshot.volume,
+            data_quality=snapshot.data_quality,
+            error=snapshot.error,
+        )
+
+
 class CandidateStatusProvider:
     def __init__(self, *, status: str = "OK", candidates: list[dict] | None = None, message: str = "") -> None:
         self.status = status
@@ -212,6 +265,78 @@ def test_spread_pct_and_alert_level_are_calculated_from_friday_close() -> None:
     assert row["spread_direction"] == "Binance 溢价"
     assert row["mapping_status"] == "映射已确认"
     assert provider.calls == ["usdm_futures:NVDAUSDT"]
+
+
+def test_primary_spread_uses_afterhours_reference_when_available() -> None:
+    provider = FakeProvider(price=210, bid=209.8, ask=210.2)
+    afterhours_provider = FakeAfterhoursProvider(reference_price=208, last_trade=208)
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=provider,
+        afterhours_provider=afterhours_provider,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    row = rows[0]
+    assert row["regular_close_price"] == 205
+    assert row["regular_close_date"] == "2026-06-12"
+    assert row["afterhours_reference_price"] == 208
+    assert round(row["afterhours_gap_pct"], 2) == 1.46
+    assert round(row["spread_vs_regular_close_pct"], 2) == 2.44
+    assert round(row["spread_vs_afterhours_pct"], 2) == 0.96
+    assert round(row["primary_spread_pct"], 2) == 0.96
+    assert round(row["spread_pct"], 2) == 0.96
+    assert row["primary_spread_anchor"] == "AFTERHOURS_REFERENCE"
+    assert afterhours_provider.calls == [("NVDA", "2026-06-12", False)]
+
+
+def test_primary_spread_falls_back_to_regular_close_when_afterhours_missing() -> None:
+    provider = FakeProvider(price=210, bid=209.8, ask=210.2)
+    afterhours_provider = FakeAfterhoursProvider(reference_price=None, data_quality="MISSING")
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=provider,
+        afterhours_provider=afterhours_provider,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    row = rows[0]
+    assert row["afterhours_reference_price"] is None
+    assert row["spread_vs_afterhours_pct"] is None
+    assert round(row["spread_vs_regular_close_pct"], 2) == 2.44
+    assert round(row["primary_spread_pct"], 2) == 2.44
+    assert row["primary_spread_anchor"] == "REGULAR_CLOSE_FALLBACK"
+
+
+def test_afterhours_quote_spread_wide_downgrades_quality() -> None:
+    snapshot = resolve_afterhours_reference(
+        "NVDA",
+        trade={},
+        quote={"bid": 100, "ask": 104, "timestamp": "2026-06-12T19:58:00-04:00", "volume": 5000},
+        regular_close_date="2026-06-12",
+    )
+
+    assert snapshot.reference_price == 102
+    assert snapshot.reference_source == "FMP_AFTERHOURS_QUOTE_MID"
+    assert snapshot.data_quality == "LOW"
+
+
+def test_afterhours_provider_missing_does_not_crash() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=None, data_quality="MISSING"),
+        cache=FakeCache(_history(close=205)),
+    )
+
+    assert rows[0]["status"] == "OK"
+    assert rows[0]["afterhours_data_quality"] == "MISSING"
+    assert rows[0]["primary_spread_anchor"] == "REGULAR_CLOSE_FALLBACK"
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
@@ -1156,7 +1281,7 @@ def test_record_current_snapshot_writes_mapped_samples_only(tmp_path) -> None:
     assert len(samples) == 1
     assert samples[0]["ticker"] == "NVDA"
     assert samples[0]["binance_symbol"] == "NVDAUSDT"
-    assert samples[0]["data_quality"] == "OK"
+    assert samples[0]["data_quality"] == "REGULAR_CLOSE_FALLBACK"
 
 
 def test_no_mapping_rows_do_not_pollute_weekly_summary(tmp_path) -> None:
@@ -1186,6 +1311,34 @@ def test_weekly_summary_calculates_peak_spreads(tmp_path) -> None:
     assert summary["sample_count"] == 2
 
 
+def test_weekly_summary_uses_primary_spread_pct_for_peak_spreads(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    premium = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=121),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=120),
+        cache=FakeCache(_history(close=100)),
+    )
+    discount = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=118),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=120),
+        cache=FakeCache(_history(close=100)),
+    )
+    record_spread_samples(premium, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    record_spread_samples(discount, path=path, week_id="2026-W24", observed_at="2026-06-15T12:00:00+00:00")
+
+    summary = generate_weekly_summary(path=path, week_id="2026-W24")[0]
+
+    assert round(summary["max_premium_pct"], 2) == 0.83
+    assert round(summary["max_discount_pct"], 2) == -1.67
+    assert round(summary["max_abs_spread_pct"], 2) == 1.67
+    assert summary["primary_spread_anchor"] == "AFTERHOURS_REFERENCE"
+    assert summary["data_quality"] == "OK"
+
+
 def test_monday_reference_generates_gap_direction_and_capture(tmp_path) -> None:
     path = tmp_path / "weekend_spread_log.json"
     rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=103), cache=FakeCache())
@@ -1207,6 +1360,26 @@ def test_monday_reference_generates_gap_direction_and_capture(tmp_path) -> None:
     assert round(updated["capture_ratio"], 2) == 0.67
     assert round(updated["net_edge_pct"], 2) == 1.9
     assert updated["outcome_status"] == "HIT"
+
+
+def test_monday_reference_prefers_afterhours_anchor(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=208),
+        cache=FakeCache(_history(close=205)),
+    )
+    record_spread_samples(rows, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    generate_weekly_summary(path=path, week_id="2026-W24")
+
+    updated = update_monday_outcome("NVDA", path=path, week_id="2026-W24", monday_reference_price=209)
+
+    assert updated is not None
+    assert round(updated["monday_gap_pct"], 2) == 0.48
+    assert round(updated["monday_gap_from_regular_close_pct"], 2) == 1.95
+    assert round(updated["monday_gap_from_afterhours_pct"], 2) == 0.48
 
 
 def test_outcome_status_partial_miss_and_invalid(tmp_path) -> None:
@@ -1314,7 +1487,21 @@ def test_live_frame_keeps_only_core_realtime_columns() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert list(frame.columns) == ["Ticker", "周五收盘", "Binance 最新", "价差", "方向", "提醒", "映射状态", "更新时间"]
+    assert list(frame.columns) == [
+        "Ticker",
+        "周五收盘",
+        "盘后参考",
+        "盘后变动",
+        "Binance 最新",
+        "Binance vs 盘后",
+        "Binance vs 收盘",
+        "方向",
+        "提醒",
+        "映射状态",
+        "更新时间",
+    ]
+    assert frame.loc[0, "盘后参考"] == "缺少盘后参考价"
+    assert frame.loc[0, "Binance vs 盘后"] == "缺少盘后参考价"
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns

@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from data.afterhours_provider import default_afterhours_provider
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
     build_mapping_diagnostics,
@@ -113,7 +114,12 @@ def _build_weekend_spread_rows_with_feedback(
     force_refresh: bool,
 ) -> list[dict]:
     if not force_refresh:
-        return build_weekend_spread_rows(watchlist, mapping=mapping, force_refresh=False)
+        return build_weekend_spread_rows(
+            watchlist,
+            mapping=mapping,
+            afterhours_provider=default_afterhours_provider(),
+            force_refresh=False,
+        )
     total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
     if total <= 0:
         st.info("观察池为空，暂无可刷新的 Binance 价格。")
@@ -131,6 +137,7 @@ def _build_weekend_spread_rows_with_feedback(
     rows = build_weekend_spread_rows(
         watchlist,
         mapping=mapping,
+        afterhours_provider=default_afterhours_provider(),
         force_refresh=True,
         progress_callback=update_progress,
     )
@@ -152,9 +159,12 @@ def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int], log_s
 
 
 def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path) -> None:
+    afterhours_counts = _afterhours_counts(rows)
     values = [
         ("本地映射总数", str(mapping_counts["local_mapping_count"])),
         ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
+        ("盘后参考", f"{afterhours_counts['available']} / {afterhours_counts['mapped']}"),
+        ("缺盘后", str(afterhours_counts["missing"])),
         ("Spot 状态", "已关闭"),
         ("Futures 状态", _market_data_status(rows, "usdm_futures")),
         ("最后刷新", _latest_updated_at(rows) or "暂缺"),
@@ -358,6 +368,16 @@ def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int
     }
 
 
+def _afterhours_counts(rows: list[dict]) -> dict[str, int]:
+    mapped_rows = [row for row in rows if row.get("binance_symbol")]
+    available = sum(1 for row in mapped_rows if row.get("afterhours_reference_price") is not None)
+    return {
+        "mapped": len(mapped_rows),
+        "available": available,
+        "missing": max(len(mapped_rows) - available, 0),
+    }
+
+
 def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
     counts = _mapping_counts(rows, mapping)
     local_items = [item for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol")]
@@ -487,9 +507,12 @@ def _mapping_editor_error_text(error_code: str) -> str:
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "Ticker"),
-        ("friday_close", "周五收盘"),
+        ("regular_close_price", "周五收盘"),
+        ("afterhours_reference_price", "盘后参考"),
+        ("afterhours_gap_pct", "盘后变动"),
         ("binance_last_price", "Binance 最新"),
-        ("spread_pct", "价差"),
+        ("spread_vs_afterhours_pct", "Binance vs 盘后"),
+        ("spread_vs_regular_close_pct", "Binance vs 收盘"),
         ("spread_direction", "方向"),
         ("alert_level_cn", "提醒"),
         ("mapping_status", "映射状态"),
@@ -501,9 +524,12 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
-    for money_col in ("周五收盘", "Binance 最新"):
+    for money_col in ("周五收盘", "盘后参考", "Binance 最新"):
         display[money_col] = display[money_col].map(_money_text)
-    display["价差"] = display["价差"].map(_percent_text)
+    display["盘后参考"] = display["盘后参考"].replace("暂缺", "缺少盘后参考价")
+    for percent_col in ("盘后变动", "Binance vs 盘后", "Binance vs 收盘"):
+        display[percent_col] = display[percent_col].map(_percent_text)
+    display["Binance vs 盘后"] = display["Binance vs 盘后"].replace("暂缺", "缺少盘后参考价")
     display["更新时间"] = display["更新时间"].replace("", "暂缺")
     return display
 
@@ -662,6 +688,9 @@ def _render_details(rows: list[dict]) -> None:
                   <span>bid-ask {_percent_text(row.get("binance_spread_pct"))}</span>
                   <span>24h volume {escape(_plain_number(row.get("binance_volume_24h")))}</span>
                   <span>funding {_funding_text(row.get("funding_rate"))}</span>
+                  <span>盘后 bid {escape(_money_text(row.get("afterhours_bid")))} / ask {escape(_money_text(row.get("afterhours_ask")))}</span>
+                  <span>盘后来源 {escape(str(row.get("afterhours_reference_source") or "缺少盘后参考价"))}</span>
+                  <span>盘后质量 {escape(str(row.get("afterhours_data_quality") or "MISSING"))}</span>
                   <span>{escape(str(row.get("fx_note") or ""))}</span>
                   <small>{escape(str(row.get("liquidity_warning") or ""))}</small>
                   <small>{escape(str(row.get("mapping_risk") or ""))}</small>
@@ -742,6 +771,8 @@ def _strongest_signal_row(rows: list[dict]) -> dict | None:
 def _strongest_signal_warning(row: dict) -> str:
     if str(row.get("mapping_confidence") or "") != "confirmed":
         return "映射未确认，不能作为正式套利信号。"
+    if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
+        return "缺少周五盘后参考价，当前按周五收盘价临时对比。"
     risk = _primary_risk_text(row)
     if risk:
         return risk
@@ -755,6 +786,8 @@ def _primary_risk_text(row: dict) -> str:
             return value
     if str(row.get("mapping_confidence") or "") != "confirmed":
         return "映射未确认，需要人工确认后再作为正式观察样本。"
+    if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
+        return "缺少周五盘后参考价，当前价差以周五正常收盘价为基准。"
     return "仅用于观察，不构成套利建议。"
 
 

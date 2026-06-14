@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from data.afterhours_provider import AfterhoursProvider, NullAfterhoursProvider
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.cache_read_model import CacheReadModel
 from settings import CONFIG_DIR
@@ -142,6 +143,7 @@ def build_weekend_spread_rows(
     *,
     mapping: dict[str, Any] | None = None,
     provider: BinancePriceProvider | None = None,
+    afterhours_provider: AfterhoursProvider | None = None,
     cache: CacheReadModel | None = None,
     force_refresh: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
@@ -149,6 +151,7 @@ def build_weekend_spread_rows(
     normalized = _normalize_tickers(tickers)
     effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    afterhours_data_provider = afterhours_provider or NullAfterhoursProvider()
     read_model = cache or CacheReadModel()
     rows: list[dict[str, Any]] = []
     total = len(normalized)
@@ -157,6 +160,17 @@ def build_weekend_spread_rows(
         quote = read_model.get_quote_payload(ticker) or {}
         stock_name = str(quote.get("companyName") or quote.get("company_name") or quote.get("name") or ticker)
         mapping_config = effective_mapping.get(ticker)
+        afterhours_fields = (
+            _afterhours_fields(
+                ticker,
+                regular_close_price=friday_close,
+                regular_close_date=friday_date,
+                provider=afterhours_data_provider,
+                force_refresh=force_refresh,
+            )
+            if mapping_config and mapping_config.get("enabled", True) and mapping_config.get("binance_symbol")
+            else {}
+        )
         if not mapping_config or not mapping_config.get("enabled", True) or not mapping_config.get("binance_symbol"):
             rows.append(
                 _base_row(
@@ -182,23 +196,24 @@ def build_weekend_spread_rows(
                 mapping_config,
                 status="SPOT_DISABLED",
             )
+            row.update(afterhours_fields)
             row["binance_symbol"] = binance_symbol
             row["error"] = "stock_mapping_requires_usdm_futures"
             rows.append(row)
             _notify_progress(progress_callback, index, total, ticker)
             continue
         if friday_close is None:
-            rows.append(
-                _base_row(
-                    ticker,
-                    stock_name,
-                    None,
-                    friday_date,
-                    close_source,
-                    mapping_config,
-                    status="MISSING_FRIDAY_CLOSE",
-                )
+            row = _base_row(
+                ticker,
+                stock_name,
+                None,
+                friday_date,
+                close_source,
+                mapping_config,
+                status="MISSING_FRIDAY_CLOSE",
             )
+            row.update(afterhours_fields)
+            rows.append(row)
             _notify_progress(progress_callback, index, total, ticker)
             continue
         unit_error = _unit_mapping_error(mapping_config)
@@ -212,6 +227,7 @@ def build_weekend_spread_rows(
                 mapping_config,
                 status="UNIT_UNCONFIRMED",
             )
+            row.update(afterhours_fields)
             row["binance_symbol"] = binance_symbol
             row["error"] = unit_error
             rows.append(row)
@@ -237,6 +253,7 @@ def build_weekend_spread_rows(
                 mapping_config,
                 status=status,
             )
+            row.update(afterhours_fields)
             row["updated_at"] = snapshot.get("updated_at") or ""
             row["error"] = snapshot.get("error") or "binance_price_missing"
             rows.append(row)
@@ -244,8 +261,9 @@ def build_weekend_spread_rows(
             continue
         unit_multiplier = float(_number(mapping_config.get("unit_multiplier")) or 1.0)
         adjusted_price = last_price / unit_multiplier
-        spread_pct = (adjusted_price / friday_close - 1.0) * 100.0
-        alert = classify_spread(spread_pct)
+        spread_fields = _spread_fields(adjusted_price, friday_close, afterhours_fields)
+        primary_spread_pct = _number(spread_fields.get("primary_spread_pct"))
+        alert = classify_spread(primary_spread_pct)
         bid = _number(snapshot.get("bid"))
         ask = _number(snapshot.get("ask"))
         bid_ask_spread_pct = _bid_ask_spread_pct(bid, ask)
@@ -270,8 +288,10 @@ def build_weekend_spread_rows(
                 "binance_spread_pct": bid_ask_spread_pct,
                 "binance_volume_24h": volume_24h,
                 "funding_rate": funding_rate,
-                "spread_pct": spread_pct,
-                "spread_direction": _spread_direction(spread_pct),
+                **afterhours_fields,
+                **spread_fields,
+                "spread_pct": primary_spread_pct,
+                "spread_direction": _spread_direction(primary_spread_pct),
                 "alert_level": alert["level"],
                 "alert_level_cn": alert["label"],
                 "liquidity_warning": liquidity_warning,
@@ -501,7 +521,23 @@ def _base_row(
         "stock_name": stock_name,
         "friday_close": friday_close,
         "friday_close_date": friday_date,
+        "regular_close_price": friday_close,
+        "regular_close_date": friday_date,
         "close_source": close_source,
+        "afterhours_reference_price": None,
+        "afterhours_reference_time": "",
+        "afterhours_reference_source": "",
+        "afterhours_bid": None,
+        "afterhours_ask": None,
+        "afterhours_mid": None,
+        "afterhours_last_trade": None,
+        "afterhours_volume": None,
+        "afterhours_data_quality": "MISSING",
+        "afterhours_gap_pct": None,
+        "spread_vs_regular_close_pct": None,
+        "spread_vs_afterhours_pct": None,
+        "primary_spread_pct": None,
+        "primary_spread_anchor": "MISSING",
         "binance_symbol": str(mapping_config.get("binance_symbol") or "").strip().upper(),
         "binance_market_type": str(mapping_config.get("market_type") or "unknown"),
         "binance_last_price": None,
@@ -526,6 +562,53 @@ def _base_row(
         "source": "",
         "manual_override": False,
         "error": "",
+    }
+
+
+def _afterhours_fields(
+    ticker: str,
+    *,
+    regular_close_price: float | None,
+    regular_close_date: str,
+    provider: AfterhoursProvider,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    snapshot = provider.get_afterhours_reference(
+        ticker,
+        regular_close_date=regular_close_date,
+        force_refresh=force_refresh,
+    )
+    reference_price = _number(getattr(snapshot, "reference_price", None))
+    return {
+        "afterhours_reference_price": reference_price,
+        "afterhours_reference_time": str(getattr(snapshot, "reference_time", "") or ""),
+        "afterhours_reference_source": str(getattr(snapshot, "reference_source", "") or ""),
+        "afterhours_bid": _number(getattr(snapshot, "bid", None)),
+        "afterhours_ask": _number(getattr(snapshot, "ask", None)),
+        "afterhours_mid": _number(getattr(snapshot, "mid", None)),
+        "afterhours_last_trade": _number(getattr(snapshot, "last_trade", None)),
+        "afterhours_volume": _number(getattr(snapshot, "volume", None)),
+        "afterhours_data_quality": str(getattr(snapshot, "data_quality", "") or "MISSING"),
+        "afterhours_gap_pct": _percent_change(reference_price, regular_close_price),
+    }
+
+
+def _spread_fields(adjusted_binance_price: float | None, regular_close_price: float | None, afterhours_fields: dict[str, Any]) -> dict[str, Any]:
+    afterhours_price = _number(afterhours_fields.get("afterhours_reference_price"))
+    spread_vs_regular = _percent_change(adjusted_binance_price, regular_close_price)
+    spread_vs_afterhours = _percent_change(adjusted_binance_price, afterhours_price)
+    if spread_vs_afterhours is not None:
+        return {
+            "spread_vs_regular_close_pct": spread_vs_regular,
+            "spread_vs_afterhours_pct": spread_vs_afterhours,
+            "primary_spread_pct": spread_vs_afterhours,
+            "primary_spread_anchor": "AFTERHOURS_REFERENCE",
+        }
+    return {
+        "spread_vs_regular_close_pct": spread_vs_regular,
+        "spread_vs_afterhours_pct": None,
+        "primary_spread_pct": spread_vs_regular,
+        "primary_spread_anchor": "REGULAR_CLOSE_FALLBACK" if spread_vs_regular is not None else "MISSING",
     }
 
 
@@ -880,7 +963,9 @@ def _status_direction(status: str) -> str:
     return "数据不足"
 
 
-def _spread_direction(spread_pct: float) -> str:
+def _spread_direction(spread_pct: float | None) -> str:
+    if spread_pct is None:
+        return "数据不足"
     if spread_pct > 0:
         return "Binance 溢价"
     if spread_pct < 0:
@@ -918,3 +1003,11 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _percent_change(current: Any, base: Any) -> float | None:
+    current_number = _number(current)
+    base_number = _number(base)
+    if current_number is None or base_number is None or base_number <= 0:
+        return None
+    return (current_number / base_number - 1.0) * 100.0
