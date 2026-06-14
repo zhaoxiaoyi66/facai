@@ -1780,28 +1780,80 @@ def test_market_price_source_status_uses_request_language() -> None:
     assert weekend_spread._market_price_source_status(futures_rows, "usdm_futures") == "可用"
 
 
-def test_live_frame_keeps_only_core_realtime_columns() -> None:
-    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
+def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=104.58),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=102.88),
+        cache=FakeCache(_history(close=102.15)),
+    )
 
     frame = weekend_spread._live_frame(rows)
 
     assert list(frame.columns) == [
         "Ticker",
-        "周五收盘",
+        "价格锚点",
         "Binance 最新",
-        "实时价差",
-        "方向",
-        "提醒",
-        "映射状态",
-        "流动性",
+        "vs 盘后",
+        "vs 收盘",
+        "状态",
+        "风险",
         "更新时间",
     ]
-    assert "盘后参考" not in frame.columns
-    assert "Binance vs 盘后" not in frame.columns
+    assert frame.loc[0, "价格锚点"] == "盘后 $102.88"
+    assert frame.loc[0, "vs 盘后"] == "+1.65%"
+    assert frame.loc[0, "vs 收盘"] == "+2.38%"
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns
     assert "risk_note" not in frame.columns
+
+
+def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=104.58),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=None),
+        cache=FakeCache(_history(close=102.15)),
+    )
+
+    frame = weekend_spread._live_frame(rows)
+
+    assert frame.loc[0, "价格锚点"] == "收盘 $102.15｜盘后缺失"
+    assert frame.loc[0, "vs 盘后"] == "—"
+    assert "缺少盘后参考价" in frame.loc[0, "风险"]
+
+
+def test_live_frame_formats_updated_at_as_short_hkt() -> None:
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
+
+    frame = weekend_spread._live_frame(rows)
+
+    assert frame.loc[0, "更新时间"] == "06-14 20:00 HKT"
+    assert "T12:" not in frame.loc[0, "更新时间"]
+
+
+def test_candidate_mapping_risk_is_merged_into_risk_column() -> None:
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        provider=FakeProvider(price=104.58),
+        cache=FakeCache(_history(close=102.15)),
+    )
+
+    frame = weekend_spread._live_frame(rows)
+
+    assert "映射未确认，仅观察，不能作为正式交易信号" in frame.loc[0, "风险"]
+
+
+def test_row_details_are_split_into_three_blocks() -> None:
+    source = inspect.getsource(weekend_spread._render_row_details)
+
+    assert "**盘后锚点**" in source
+    assert "**Binance 行情**" in source
+    assert "**风险说明**" in source
 
 
 def test_no_mapping_frame_only_shows_minimal_columns() -> None:

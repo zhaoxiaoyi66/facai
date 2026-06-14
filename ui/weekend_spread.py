@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -34,6 +36,7 @@ RISK_NOTICE = (
 TAB_REALTIME = "实时观察"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
+HKT = ZoneInfo("Asia/Hong_Kong")
 
 
 def render() -> None:
@@ -609,26 +612,27 @@ def _mapping_editor_error_text(error_code: str) -> str:
 
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
-        ("ticker", "Ticker"),
-        ("friday_close", "周五收盘"),
-        ("binance_last_price", "Binance 最新"),
-        ("spread_pct", "实时价差"),
-        ("spread_direction", "方向"),
-        ("alert_level_cn", "提醒"),
-        ("mapping_status", "映射状态"),
-        ("liquidity_warning", "流动性"),
-        ("updated_at", "更新时间"),
+        "Ticker",
+        "价格锚点",
+        "Binance 最新",
+        "vs 盘后",
+        "vs 收盘",
+        "状态",
+        "风险",
+        "更新时间",
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
-        return pd.DataFrame(columns=[label for _, label in columns])
+        return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
-    for key, label in columns:
-        display[label] = frame.get(key)
-    for money_col in ("周五收盘", "Binance 最新"):
-        display[money_col] = display[money_col].map(_money_text)
-    display["实时价差"] = display["实时价差"].map(_percent_text)
-    display["更新时间"] = display["更新时间"].replace("", "暂缺")
+    display["Ticker"] = frame.get("ticker")
+    display["价格锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
+    display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
+    display["vs 盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
+    display["vs 收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
+    display["状态"] = frame.get("alert_level_cn").replace("", "暂缺")
+    display["风险"] = frame.apply(lambda row: _risk_badge_text(row.to_dict()), axis=1)
+    display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
     return display
 
 
@@ -809,25 +813,27 @@ def _render_row_details(rows: list[dict]) -> None:
         return
     for row in rows:
         with st.expander(f"{str(row.get('ticker') or '').upper()} 行详情", expanded=False):
-            st.markdown(
-                f"""
-                <section class="weekend-spread-detail">
-                  <b>{escape(str(row.get("ticker") or ""))}</b>
-                  <span>bid {escape(_money_text(row.get("binance_bid")))} / ask {escape(_money_text(row.get("binance_ask")))}</span>
-                  <span>bid-ask {_percent_text(row.get("binance_spread_pct"))}</span>
-                  <span>24h volume {escape(_plain_number(row.get("binance_volume_24h")))}</span>
-                  <span>funding {_funding_text(row.get("funding_rate"))}</span>
-                  <span>盘后 bid {escape(_money_text(row.get("afterhours_bid")))} / ask {escape(_money_text(row.get("afterhours_ask")))}</span>
-                  <span>盘后来源 {escape(str(row.get("afterhours_reference_source") or "缺少盘后参考价"))}</span>
-                  <span>盘后质量 {escape(str(row.get("afterhours_data_quality") or "MISSING"))}</span>
-                  <span>{escape(str(row.get("fx_note") or ""))}</span>
-                  <small>{escape(str(row.get("liquidity_warning") or ""))}</small>
-                  <small>{escape(str(row.get("mapping_risk") or ""))}</small>
-                  <small>{escape(str(row.get("error") or ""))}</small>
-                </section>
-                """,
-                unsafe_allow_html=True,
-            )
+            col_anchor, col_binance, col_risk = st.columns(3)
+            with col_anchor:
+                st.markdown("**盘后锚点**")
+                st.caption(f"周五收盘：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
+                st.caption(f"盘后参考价：{_money_text(row.get('afterhours_reference_price'))}")
+                st.caption(f"盘后来源：{str(row.get('afterhours_reference_source') or '缺少盘后参考价')}")
+                st.caption(f"盘后质量：{str(row.get('afterhours_data_quality') or 'MISSING')}")
+                st.caption(f"盘后时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
+            with col_binance:
+                st.markdown("**Binance 行情**")
+                st.caption(f"bid：{_money_text(row.get('binance_bid'))}")
+                st.caption(f"ask：{_money_text(row.get('binance_ask'))}")
+                st.caption(f"bid-ask spread：{_percent_text(row.get('binance_spread_pct'))}")
+                st.caption(f"24h volume：{_plain_number(row.get('binance_volume_24h'))}")
+                st.caption(f"funding：{_funding_text(row.get('funding_rate'))}")
+            with col_risk:
+                st.markdown("**风险说明**")
+                st.caption(f"mapping_confidence：{str(row.get('mapping_confidence') or 'unknown')}")
+                st.caption(str(row.get("mapping_risk") or ""))
+                st.caption(str(row.get("liquidity_warning") or ""))
+                st.caption(f"raw_error：{str(row.get('error') or '')}")
 
 
 def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
@@ -1009,6 +1015,59 @@ def _money_text(value: object) -> str:
     if number is None:
         return "暂缺"
     return f"${number:,.2f}"
+
+
+def _price_anchor_text(row: dict) -> str:
+    afterhours = _number(row.get("afterhours_reference_price"))
+    if afterhours is not None:
+        return f"盘后 ${afterhours:,.2f}"
+    regular = _number(row.get("regular_close_price") or row.get("friday_close"))
+    if regular is None:
+        return "暂缺"
+    return f"收盘 ${regular:,.2f}｜盘后缺失"
+
+
+def _afterhours_spread_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "—"
+    return f"{number:+.2f}%"
+
+
+def _risk_badge_text(row: dict) -> str:
+    risks: list[str] = []
+    status = str(row.get("status") or "")
+    confidence = str(row.get("mapping_confidence") or "")
+    if confidence and confidence != "confirmed":
+        risks.append("映射未确认，仅观察，不能作为正式交易信号")
+    if status == "INVALID_SYMBOL":
+        risks.append("symbol 无效")
+    if status in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"}:
+        risks.append("数据不可用")
+    if _number(row.get("afterhours_reference_price")) is None and row.get("binance_symbol"):
+        risks.append("缺少盘后参考价，当前使用周五收盘作为 fallback")
+    liquidity = str(row.get("liquidity_warning") or "")
+    if "成交量不足" in liquidity:
+        risks.append("成交量不足")
+    if "价差偏宽" in liquidity:
+        risks.append("bid-ask 偏宽")
+    if not risks:
+        risks.append("仅观察")
+    return "；".join(dict.fromkeys(risks))
+
+
+def _short_hkt_time(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "暂缺"
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text[:16]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(HKT).strftime("%m-%d %H:%M HKT")
 
 
 def _percent_text(value: object) -> str:
