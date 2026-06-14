@@ -147,7 +147,7 @@ def build_weekend_spread_rows(
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[dict[str, Any]]:
     normalized = _normalize_tickers(tickers)
-    effective_mapping = _normalize_mapping(mapping or load_binance_symbol_mapping())
+    effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     read_model = cache or CacheReadModel()
     rows: list[dict[str, Any]] = []
@@ -292,7 +292,7 @@ def build_mapping_diagnostics(
     validate: bool = False,
     include_candidates: bool = False,
 ) -> list[dict[str, Any]]:
-    effective_mapping = _normalize_mapping(mapping or load_binance_symbol_mapping())
+    effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
     rows: list[dict[str, Any]] = []
     for ticker in _normalize_tickers(tickers):

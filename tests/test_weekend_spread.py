@@ -264,7 +264,7 @@ def test_alert_level_thresholds() -> None:
 
 def test_missing_symbol_mapping_does_not_call_provider() -> None:
     provider = FakeProvider(price=101.5)
-    rows = build_weekend_spread_rows(["MSFT"], mapping=_explicit_empty_mapping(), provider=provider, cache=FakeCache())
+    rows = build_weekend_spread_rows(["MSFT"], mapping={}, provider=provider, cache=FakeCache())
 
     assert rows[0]["status"] == "NO_MAPPING"
     assert rows[0]["alert_level_cn"] == "暂无映射"
@@ -291,10 +291,21 @@ def test_build_weekend_spread_rows_reports_refresh_progress() -> None:
 def test_mapping_diagnostics_reports_missing_mapping_without_price_request() -> None:
     provider = FakeProvider()
 
-    rows = build_mapping_diagnostics(["MSFT"], mapping=_explicit_empty_mapping(), provider=provider, validate=True, include_candidates=False)
+    rows = build_mapping_diagnostics(["MSFT"], mapping={}, provider=provider, validate=True, include_candidates=False)
 
     assert rows[0]["validation_status"] == "暂无映射"
     assert rows[0]["configured_symbol"] == ""
+    assert provider.calls == []
+
+
+def test_explicit_empty_mapping_does_not_fallback_to_local_mapping() -> None:
+    provider = FakeProvider()
+
+    rows = build_weekend_spread_rows(["NVDA"], mapping={}, provider=provider, cache=FakeCache())
+    diagnostics = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=True, include_candidates=False)
+
+    assert rows[0]["status"] == "NO_MAPPING"
+    assert diagnostics[0]["validation_status"] == "暂无映射"
     assert provider.calls == []
 
 
@@ -600,6 +611,12 @@ def test_smoke_script_supports_one_off_symbol_validation() -> None:
     assert row["ask"] == 207.2
     assert row["volume_24h"] == 123_456
     assert provider.calls == ["validate:spot:ADBEUSDT", "spot:ADBEUSDT"]
+
+
+def test_smoke_script_cli_defaults_to_usdm_futures_for_stock_mapping() -> None:
+    source = inspect.getsource(smoke_binance_provider.main)
+
+    assert 'default="usdm_futures"' in source
 
 
 class RecordingHTTPProvider(BinanceHTTPPriceProvider):

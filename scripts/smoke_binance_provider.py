@@ -166,7 +166,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Binance mapping and fetch live market data.")
     parser.add_argument("--ticker", default="", help="Ticker label for one-off symbol validation.")
     parser.add_argument("--symbol", default="", help="Binance symbol to validate without writing config.")
-    parser.add_argument("--market-type", default="spot", choices=["spot", "usdm_futures"], help="Binance market type.")
+    parser.add_argument("--market-type", default="usdm_futures", choices=["spot", "usdm_futures"], help="Binance market type.")
     args = parser.parse_args()
     if args.symbol:
         result = run_symbol_smoke(ticker=args.ticker or args.symbol, symbol=args.symbol, market_type=args.market_type)
