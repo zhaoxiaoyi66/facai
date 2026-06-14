@@ -687,7 +687,7 @@ def _list_buy_zone_context(
     snapshot: dict[str, Any],
     technicals: dict[str, Any],
 ) -> dict[str, Any]:
-    for source in (list_row, row, snapshot, technicals):
+    for source in (row, snapshot, technicals, list_row):
         existing = _dict_value(source, "buy_zone_context") or _dict_value(source, "buyZoneContext")
         if existing:
             return dict(existing)

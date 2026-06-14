@@ -558,6 +558,30 @@ def test_list_core_status_prefers_unified_buy_zone_context() -> None:
     assert radar_ui._core_status({"buy_zone_context": {"current_action": "DATA_INSUFFICIENT"}}) == "技术承接数据不足"
 
 
+def test_list_buy_zone_context_prefers_cached_canonical_context() -> None:
+    cached_context = {
+        "current_action": "WAIT_PULLBACK",
+        "setup_score": 69.5,
+        "missing_fields": [],
+        "volume_ratio": 0.64,
+    }
+    transient_context = {
+        "current_action": "DATA_INSUFFICIENT",
+        "setup_score": 0,
+        "missing_fields": ["volume_ratio", "volume_acceptance"],
+    }
+
+    context = radar_ui._list_buy_zone_context(
+        {"buy_zone_context": transient_context},
+        {"buyZoneContext": cached_context},
+        {},
+        {},
+    )
+
+    assert context == cached_context
+    assert radar_ui._core_status({"buy_zone_context": context}) == "观察"
+
+
 def test_crwv_report_uses_ai_cloud_infra_display_framework() -> None:
     report = {
         "ticker": "CRWV",
