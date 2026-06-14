@@ -167,7 +167,7 @@ def test_risk_reward_without_target_or_resistance_is_capped() -> None:
     assert context.rr_score_capped is True
 
 
-def test_chase_derived_resistance_target_is_capped_and_auditable() -> None:
+def test_resistance_zone_high_is_not_downgraded_to_chase_line() -> None:
     context = build_buy_zone_context(
         _base_source(
             current_price=101,
@@ -181,9 +181,25 @@ def test_chase_derived_resistance_target_is_capped_and_auditable() -> None:
 
     assert context.raw_rr is not None
     assert context.raw_rr >= 2
-    assert context.risk_reward_score == 55
+    assert context.risk_reward_score == 82
     assert context.rr_score_capped is True
     assert context.target_source == "resistance_zone_high"
+    assert context.target_quality == "TECH_RESISTANCE_HIGH"
+    assert context.rr_cap_reason == "target uses technical resistance; rr capped"
+
+
+def test_explicit_chase_price_is_chase_line_only_without_better_target() -> None:
+    source = _base_source(current_price=101, confirmation_price=96, chase_above_price=139.2)
+    for key in ("resistance_zone_high", "recent_swing_high"):
+        source.pop(key)
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.raw_rr is not None
+    assert context.raw_rr >= 2
+    assert context.risk_reward_score == 55
+    assert context.rr_score_capped is True
+    assert context.target_source == "chase_above_price"
     assert context.target_quality == "CHASE_LINE"
     assert context.rr_cap_reason == "target equals chase line; rr capped"
 
@@ -203,7 +219,88 @@ def test_explicit_target_can_score_high_without_chase_cap() -> None:
     assert context.risk_reward_score == 88
     assert context.rr_score_capped is False
     assert context.target_source == "target_price"
-    assert context.target_quality == "EXPLICIT_TARGET"
+    assert context.target_quality == "EXPLICIT_MANUAL_TARGET"
+
+
+def test_technical_resistance_price_is_preferred_over_swing_high() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            technical_resistance_price=112,
+            technical_resistance_source="MA50",
+            recent_swing_high=140,
+            resistance_zone_high=None,
+        ),
+        volume_snapshot=_volume(),
+    )
+
+    assert context.upside_target == 112
+    assert context.target_source == "technical_resistance_price"
+    assert context.target_quality == "TECH_RESISTANCE_HIGH"
+    assert context.target_source_detail == "MA50"
+
+
+def test_technical_entry_model_resistance_levels_choose_nearest_valid_target() -> None:
+    source = _base_source(current_price=101)
+    for key in ("resistance_zone_high", "recent_swing_high", "recent_breakout_level"):
+        source.pop(key, None)
+    source["technical_entry_model"] = {
+        "resistanceLevels": [
+            {"price": 99, "label": "MA20"},
+            {"price": 118, "label": "60D high"},
+            {"price": 112, "label": "MA50"},
+        ]
+    }
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.upside_target == 112
+    assert context.target_source == "resistanceLevels"
+    assert context.target_quality == "TECH_RESISTANCE_HIGH"
+    assert context.target_source_detail == "MA50"
+
+
+def test_recent_breakout_level_is_preferred_over_recent_swing_high() -> None:
+    source = _base_source(current_price=101, recent_breakout_level=130, recent_swing_high=140)
+    source.pop("resistance_zone_high")
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.upside_target == 130
+    assert context.target_source == "recent_breakout_level"
+    assert context.target_quality == "SWING_HIGH_60D"
+    assert context.risk_reward_score == 75
+    assert context.rr_score_capped is True
+
+
+def test_target_candidates_below_current_price_are_ignored() -> None:
+    source = _base_source(
+        current_price=101,
+        technical_resistance_price=99,
+        recent_breakout_level=130,
+        recent_swing_high=140,
+    )
+    source.pop("resistance_zone_high")
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.upside_target == 130
+    assert context.target_source == "recent_breakout_level"
+    assert context.target_quality == "SWING_HIGH_60D"
+
+
+def test_fifty_two_week_high_is_lower_quality_than_swing_or_resistance() -> None:
+    source = _base_source(current_price=101, fifty_two_week_high=160)
+    for key in ("resistance_zone_high", "recent_swing_high", "recent_breakout_level"):
+        source.pop(key, None)
+
+    context = build_buy_zone_context(source, volume_snapshot=_volume())
+
+    assert context.upside_target == 160
+    assert context.target_source == "fifty_two_week_high"
+    assert context.target_quality == "FIFTY_TWO_WEEK_HIGH"
+    assert context.risk_reward_score == 65
+    assert context.rr_score_capped is True
 
 
 def test_swing_high_target_is_capped_below_explicit_target_quality() -> None:
@@ -214,10 +311,34 @@ def test_swing_high_target_is_capped_below_explicit_target_quality() -> None:
 
     assert context.raw_rr is not None
     assert context.raw_rr >= 2
-    assert context.risk_reward_score == 75
+    assert context.risk_reward_score == 70
     assert context.rr_score_capped is True
     assert context.target_source == "recent_swing_high"
-    assert context.target_quality == "SWING_HIGH"
+    assert context.target_quality == "SWING_HIGH_20D"
+
+
+def test_now_nvda_vst_like_targets_are_not_all_chase_line() -> None:
+    samples = [
+        ("NOW", 102.15, 139.2),
+        ("NVDA", 205.19, 232.28),
+        ("VST", 148.02, 167.4),
+    ]
+    qualities = []
+    for ticker, price, resistance in samples:
+        context = build_buy_zone_context(
+            _base_source(
+                ticker=ticker,
+                current_price=price,
+                resistance_zone_high=resistance,
+                recent_swing_high=resistance,
+                chase_above_price=resistance,
+            ),
+            volume_snapshot=_volume(),
+        )
+        qualities.append(context.target_quality)
+
+    assert "CHASE_LINE" not in qualities
+    assert set(qualities) == {"TECH_RESISTANCE_HIGH"}
 
 
 def test_now_like_pullback_middle_observes_and_account_no_add() -> None:
@@ -343,7 +464,7 @@ def test_daily_ohlcv_derives_uncomputed_ma_atr_rsi_and_zones() -> None:
     assert context.support_zone_low is not None
     assert context.support_zone_high is not None
     assert context.confirmation_price is not None
-    assert context.chase_price is not None
+    assert context.chase_price is None
 
 
 def test_daily_ohlcv_dataframe_is_accepted_without_truth_value_error() -> None:

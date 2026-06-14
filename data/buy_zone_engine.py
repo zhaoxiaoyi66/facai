@@ -72,6 +72,7 @@ class BuyZoneContext:
     upside_target: float | None = None
     target_source: str = ""
     target_quality: str = ""
+    target_source_detail: str = ""
     raw_rr: float | None = None
     rr_score_capped: bool = False
     rr_cap_reason: str = ""
@@ -86,6 +87,7 @@ class RiskRewardAssessment:
     upside_target: float | None
     target_source: str
     target_quality: str
+    target_source_detail: str
     raw_rr: float | None
     rr_score_capped: bool
     rr_cap_reason: str
@@ -141,8 +143,6 @@ def build_buy_zone_context(
         "recent_breakout_level",
         "confirmation_price",
     )
-    if chase is None:
-        chase = resistance
     if invalidation is None and support_low is not None:
         invalidation = support_low
     final_score = _first_number(data, "final_score", "finalScore")
@@ -276,6 +276,7 @@ def build_buy_zone_context(
         upside_target=rr.upside_target,
         target_source=rr.target_source,
         target_quality=rr.target_quality,
+        target_source_detail=rr.target_source_detail,
         raw_rr=rr.raw_rr,
         rr_score_capped=rr.rr_score_capped,
         rr_cap_reason=rr.rr_cap_reason,
@@ -292,7 +293,6 @@ def _missing_fields(**values: Any) -> list[str]:
         "pullback_high",
         "confirmation",
         "invalidation",
-        "chase",
         "ma20",
         "ma50",
         "ma200",
@@ -347,11 +347,11 @@ def _primary_zone(
     repair_high: float | None,
     confirmation: float,
     invalidation: float,
-    chase: float,
+    chase: float | None,
 ) -> str:
     if price < invalidation:
         return "INVALIDATION"
-    if price >= chase:
+    if chase is not None and price >= chase:
         return "CHASE_RISK"
     if price >= confirmation:
         return "CONFIRMATION_REVIEW"
@@ -421,12 +421,13 @@ def _risk_reward_assessment(
             upside_target=None,
             target_source="",
             target_quality="NOT_APPLICABLE",
+            target_source_detail="",
             raw_rr=None,
             rr_score_capped=False,
             rr_cap_reason="",
         )
 
-    target, source, quality = _resolve_rr_target(data, confirmation=confirmation, chase=chase)
+    target, source, quality, detail = _resolve_rr_target(data, price=price, confirmation=confirmation, chase=chase)
     downside = price - invalidation
     upside = None if target is None else target - price
     if target is None or downside <= 0 or upside is None or upside <= 0:
@@ -435,6 +436,7 @@ def _risk_reward_assessment(
             upside_target=target,
             target_source=source,
             target_quality=quality,
+            target_source_detail=detail,
             raw_rr=None,
             rr_score_capped=False,
             rr_cap_reason="upside_or_downside_invalid",
@@ -465,6 +467,7 @@ def _risk_reward_assessment(
         upside_target=target,
         target_source=source,
         target_quality=quality,
+        target_source_detail=detail,
         raw_rr=raw_rr,
         rr_score_capped=capped,
         rr_cap_reason=cap_reason,
@@ -474,38 +477,74 @@ def _risk_reward_assessment(
 def _resolve_rr_target(
     data: dict[str, Any],
     *,
+    price: float,
     confirmation: float | None,
     chase: float | None,
-) -> tuple[float | None, str, str]:
-    explicit = _first_number_with_key(data, "target_price", "targetPrice", "analyst_target_price", "consensus_target_price")
+) -> tuple[float | None, str, str, str]:
+    explicit = _first_valid_target_with_key(
+        data,
+        price,
+        "manual_target_price",
+        "manualTargetPrice",
+        "target_price",
+        "targetPrice",
+    )
     if explicit is not None:
         key, value = explicit
-        return value, key, "EXPLICIT_TARGET"
+        return value, key, "EXPLICIT_MANUAL_TARGET", key
 
-    resistance = _first_number_with_key(data, "resistance_zone_high", "resistance_zone_upper")
-    if resistance is not None:
-        key, value = resistance
-        if _same_price(value, chase):
-            return value, key, "CHASE_LINE"
-        if _same_price(value, confirmation):
-            return value, key, "CONFIRMATION_LINE"
-        return value, key, "RESISTANCE_HIGH"
+    analyst = _first_valid_target_with_key(
+        data,
+        price,
+        "analyst_median_target_price",
+        "analystMedianTargetPrice",
+        "analyst_target_price",
+        "consensus_target_price",
+        "consensusTargetPrice",
+    )
+    if analyst is not None:
+        key, value = analyst
+        return value, key, "ANALYST_MEDIAN_TARGET", key
 
-    swing = _first_number_with_key(data, "recent_swing_high", "swing_high")
+    technical = _technical_resistance_candidate(data, price)
+    if technical is not None:
+        value, source, detail = technical
+        return value, source, "TECH_RESISTANCE_HIGH", detail
+
+    breakout = _first_valid_target_with_key(data, price, "recent_breakout_level", "recentBreakoutLevel", "swing_high_60d", "swingHigh60d")
+    if breakout is not None:
+        key, value = breakout
+        return value, key, "SWING_HIGH_60D", key
+
+    swing = _first_valid_target_with_key(data, price, "recent_swing_high", "recentSwingHigh", "swing_high", "swingHigh", "swing_high_20d", "swingHigh20d")
     if swing is not None:
         key, value = swing
-        if _same_price(value, chase):
-            return value, key, "SWING_HIGH"
-        return value, key, "SWING_HIGH"
+        return value, key, "SWING_HIGH_20D", key
 
-    if confirmation is not None:
-        return confirmation, "confirmation_price", "CONFIRMATION_LINE"
-    return None, "", "MISSING"
+    fifty_two_week = _first_valid_target_with_key(data, price, "fifty_two_week_high", "fiftyTwoWeekHigh", "yearHigh", "52_week_high")
+    if fifty_two_week is not None:
+        key, value = fifty_two_week
+        return value, key, "FIFTY_TWO_WEEK_HIGH", key
+
+    if _valid_upside_target(confirmation, price):
+        return confirmation, "confirmation_price", "CONFIRMATION_LINE", "confirmation_price"
+
+    explicit_chase = _first_valid_target_with_key(data, price, "chase_price", "chase_above_price", "radar_chase_above_price")
+    if explicit_chase is not None:
+        key, value = explicit_chase
+        return value, key, "CHASE_LINE", key
+    if _valid_upside_target(chase, price):
+        return chase, "chase_price", "CHASE_LINE", "chase_price"
+    return None, "", "MISSING", ""
 
 
 def _target_quality_cap(quality: str) -> float | None:
     return {
-        "SWING_HIGH": 75.0,
+        "TECH_RESISTANCE_HIGH": 82.0,
+        "SWING_HIGH": 70.0,
+        "SWING_HIGH_60D": 75.0,
+        "SWING_HIGH_20D": 70.0,
+        "FIFTY_TWO_WEEK_HIGH": 65.0,
         "CONFIRMATION_LINE": 60.0,
         "CHASE_LINE": 55.0,
         "MISSING": 45.0,
@@ -514,11 +553,113 @@ def _target_quality_cap(quality: str) -> float | None:
 
 def _target_quality_cap_reason(quality: str) -> str:
     return {
+        "TECH_RESISTANCE_HIGH": "target uses technical resistance; rr capped",
         "SWING_HIGH": "target uses swing high; rr capped",
+        "SWING_HIGH_60D": "target uses 60d swing high; rr capped",
+        "SWING_HIGH_20D": "target uses 20d swing high; rr capped",
+        "FIFTY_TWO_WEEK_HIGH": "target uses 52w high; rr capped",
         "CONFIRMATION_LINE": "target uses reevaluation line; rr capped",
         "CHASE_LINE": "target equals chase line; rr capped",
         "MISSING": "target missing; rr capped",
     }.get(quality, "")
+
+
+def _technical_resistance_candidate(data: dict[str, Any], price: float) -> tuple[float, str, str] | None:
+    explicit = _first_valid_target_with_key(
+        data,
+        price,
+        "technical_resistance_price",
+        "technicalResistancePrice",
+        "technical_resistance_high",
+        "technicalResistanceHigh",
+    )
+    if explicit is not None:
+        key, value = explicit
+        detail = str(_value(data, "technical_resistance_source", "technicalResistanceSource") or key)
+        return value, key, detail
+
+    level = _nearest_resistance_level(data, price)
+    if level is not None:
+        value, detail = level
+        return value, "resistanceLevels", detail
+
+    field_candidates: list[tuple[str, float]] = []
+    for key in (
+        "resistance_zone_low",
+        "resistanceZoneLow",
+        "resistance_zone_high",
+        "resistanceZoneHigh",
+        "resistance_zone_upper",
+        "resistanceZoneUpper",
+    ):
+        if key not in data:
+            continue
+        value = _number(data.get(key))
+        if _valid_upside_target(value, price, max_multiple=2.5):
+            field_candidates.append((key, value))
+    if not field_candidates:
+        return None
+    key, value = min(field_candidates, key=lambda item: item[1])
+    return value, key, key
+
+
+def _nearest_resistance_level(data: dict[str, Any], price: float) -> tuple[float, str] | None:
+    candidates: list[tuple[float, str]] = []
+    for item in _resistance_level_items(data):
+        value = _first_number(item, "price", "level", "value")
+        if not _valid_upside_target(value, price, max_multiple=2.5):
+            continue
+        label = str(item.get("label") or item.get("name") or item.get("source") or "resistanceLevels")
+        source = str(item.get("source") or "").strip()
+        detail = f"{label} / {source}" if source and source not in label else label
+        candidates.append((value, detail))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])
+
+
+def _resistance_level_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = [
+        _value(data, "resistanceLevels", "resistance_levels", "technical_resistance_levels", "technicalResistanceLevels"),
+        _nested_value(data, "technical_entry_model", "resistanceLevels"),
+        _nested_value(data, "technicalEntryModel", "resistanceLevels"),
+        _nested_value(data, "technical_entry", "resistanceLevels"),
+    ]
+    levels: list[dict[str, Any]] = []
+    for raw_levels in sources:
+        if not isinstance(raw_levels, (list, tuple)):
+            continue
+        for item in raw_levels:
+            if isinstance(item, dict):
+                levels.append(item)
+    return levels
+
+
+def _nested_value(source: dict[str, Any], outer_key: str, inner_key: str) -> Any:
+    outer = source.get(outer_key)
+    if isinstance(outer, dict):
+        return outer.get(inner_key)
+    return getattr(outer, inner_key, None)
+
+
+def _first_valid_target_with_key(source: dict[str, Any], price: float, *keys: str, max_multiple: float | None = None) -> tuple[str, float] | None:
+    for key in keys:
+        if key not in source:
+            continue
+        number = _number(source.get(key))
+        if _valid_upside_target(number, price, max_multiple=max_multiple):
+            return key, number
+    return None
+
+
+def _valid_upside_target(value: float | None, price: float, *, max_multiple: float | None = None) -> bool:
+    if value is None or price <= 0:
+        return False
+    if value <= price * 1.0001:
+        return False
+    if max_multiple is not None and value > price * max_multiple:
+        return False
+    return True
 
 
 def _current_action(primary_zone: str, setup_score: float, volume_status: str, volume_score: float, rr_score: float) -> str:
@@ -692,7 +833,6 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
         enriched.setdefault("resistance_zone_high", swing_high)
         enriched.setdefault("resistance_zone", {"low": resistance_low, "high": swing_high})
         enriched.setdefault("confirmation_price", resistance_low)
-        enriched.setdefault("chase_above_price", swing_high)
     if _first_number(enriched, "invalidation_price", "invalid_line") is None:
         support_low = _first_number(enriched, "support_zone_low", "deep_support_zone_low", "recent_swing_low")
         if support_low is not None:
