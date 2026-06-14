@@ -408,6 +408,7 @@ def _base_row(
         "funding_rate": None,
         "unit_multiplier": unit_multiplier,
         "quote_currency": quote_currency,
+        "mapping_confidence": mapping_confidence,
         "fx_note": _fx_note(quote_currency),
         "spread_pct": None,
         "spread_direction": _status_direction(status),

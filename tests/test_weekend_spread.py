@@ -15,6 +15,13 @@ from data.weekend_spread import (
     discover_binance_symbol_candidates,
     load_binance_symbol_mapping,
 )
+from data.weekend_spread_log import (
+    build_history_stats,
+    generate_weekly_summary,
+    get_weekly_log_snapshot,
+    record_spread_samples,
+    update_monday_outcome,
+)
 from scripts import smoke_binance_provider
 from ui import weekend_spread
 
@@ -915,8 +922,144 @@ def test_mapping_loader_returns_empty_when_example_and_local_are_missing(tmp_pat
     assert mapping == {}
 
 
-def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
-    source = inspect.getsource(weekend_spread.render)
+def test_record_current_snapshot_writes_mapped_samples_only(tmp_path) -> None:
+    provider = FakeProvider(price=101.5)
+    rows = build_weekend_spread_rows(
+        ["NVDA", "MSFT"],
+        mapping=_mapping(),
+        provider=provider,
+        cache=FakeCache(),
+    )
 
-    assert "text_input" not in source
-    assert "number_input" not in source
+    samples = record_spread_samples(
+        rows,
+        path=tmp_path / "weekend_spread_log.json",
+        week_id="2026-W24",
+        observed_at="2026-06-14T12:00:00+00:00",
+    )
+
+    assert len(samples) == 1
+    assert samples[0]["ticker"] == "NVDA"
+    assert samples[0]["binance_symbol"] == "NVDAUSDT"
+    assert samples[0]["data_quality"] == "OK"
+
+
+def test_no_mapping_rows_do_not_pollute_weekly_summary(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    rows = build_weekend_spread_rows(["MSFT"], mapping={}, provider=FakeProvider(), cache=FakeCache())
+
+    samples = record_spread_samples(rows, path=path, week_id="2026-W24")
+    summaries = generate_weekly_summary(path=path, week_id="2026-W24")
+
+    assert samples == []
+    assert summaries == []
+
+
+def test_weekly_summary_calculates_peak_spreads(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    premium = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=103), cache=FakeCache())
+    discount = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=98), cache=FakeCache())
+    record_spread_samples(premium, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    record_spread_samples(discount, path=path, week_id="2026-W24", observed_at="2026-06-15T12:00:00+00:00")
+
+    summaries = generate_weekly_summary(path=path, week_id="2026-W24")
+    summary = summaries[0]
+
+    assert round(summary["max_premium_pct"], 2) == 3.0
+    assert round(summary["max_discount_pct"], 2) == -2.0
+    assert round(summary["max_abs_spread_pct"], 2) == 3.0
+    assert summary["sample_count"] == 2
+
+
+def test_monday_reference_generates_gap_direction_and_capture(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=103), cache=FakeCache())
+    record_spread_samples(rows, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    generate_weekly_summary(path=path, week_id="2026-W24")
+
+    updated = update_monday_outcome(
+        "NVDA",
+        path=path,
+        week_id="2026-W24",
+        monday_reference_price=102,
+        reference_type="MONDAY_PREMARKET_OPEN",
+        estimated_cost_pct=0.1,
+    )
+
+    assert updated is not None
+    assert round(updated["monday_gap_pct"], 2) == 2.0
+    assert updated["direction_hit"] is True
+    assert round(updated["capture_ratio"], 2) == 0.67
+    assert round(updated["net_edge_pct"], 2) == 1.9
+    assert updated["outcome_status"] == "HIT"
+
+
+def test_outcome_status_partial_miss_and_invalid(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=104), cache=FakeCache())
+    record_spread_samples(rows, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    generate_weekly_summary(path=path, week_id="2026-W24")
+
+    partial = update_monday_outcome("NVDA", path=path, week_id="2026-W24", monday_reference_price=101)
+    miss = update_monday_outcome("NVDA", path=path, week_id="2026-W24", monday_reference_price=98)
+
+    unconfirmed = build_weekend_spread_rows(
+        ["ADBE"],
+        mapping={
+            "ADBE": {
+                "enabled": True,
+                "binance_symbol": "ADBEUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "manual_required",
+            }
+        },
+        provider=FakeProvider(price=207),
+        cache=FakeCache(_history(close=204)),
+    )
+    record_spread_samples(unconfirmed, path=path, week_id="2026-W24", observed_at="2026-06-14T12:05:00+00:00")
+    generate_weekly_summary(path=path, week_id="2026-W24")
+    invalid = update_monday_outcome("ADBE", path=path, week_id="2026-W24", monday_reference_price=207)
+
+    assert partial is not None and partial["outcome_status"] == "PARTIAL"
+    assert miss is not None and miss["outcome_status"] == "MISS"
+    assert invalid is not None and invalid["outcome_status"] == "INVALID"
+    assert invalid["data_quality"] == "MAPPING_UNCONFIRMED"
+
+
+def test_history_stats_calculates_hit_rate(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_log.json"
+    week1 = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=104), cache=FakeCache())
+    week2 = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(price=104), cache=FakeCache())
+    record_spread_samples(week1, path=path, week_id="2026-W24", observed_at="2026-06-14T12:00:00+00:00")
+    record_spread_samples(week2, path=path, week_id="2026-W25", observed_at="2026-06-21T12:00:00+00:00")
+    generate_weekly_summary(path=path, week_id="2026-W24")
+    generate_weekly_summary(path=path, week_id="2026-W25")
+    update_monday_outcome("NVDA", path=path, week_id="2026-W24", monday_reference_price=102)
+    update_monday_outcome("NVDA", path=path, week_id="2026-W25", monday_reference_price=98)
+
+    stats = build_history_stats(path)
+
+    assert stats[0]["ticker"] == "NVDA"
+    assert stats[0]["sample_weeks"] == 2
+    assert stats[0]["hit_count"] == 1
+    assert stats[0]["miss_count"] == 1
+    assert stats[0]["hit_rate"] == 0.5
+
+
+def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
+    snapshot = get_weekly_log_snapshot(path=tmp_path / "missing.json", week_id="2026-W24")
+
+    assert snapshot["sample_count"] == 0
+    assert snapshot["summaries"] == []
+    assert weekend_spread._summary_frame([]).empty
+    assert weekend_spread._history_frame([]).empty
+
+
+def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
+    source = inspect.getsource(weekend_spread)
+
+    assert "manual_override_price" not in source
+    assert "Binance 手动价格" not in source
+    assert "周一验证价" in source
