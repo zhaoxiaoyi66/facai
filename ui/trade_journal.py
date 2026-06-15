@@ -76,6 +76,15 @@ POSITION_CLASS_DEFAULTS = {
     "": (None, None),
 }
 SELL_REASON_OPTIONS = {
+    "未选择": "",
+    "止盈": "take_profit",
+    "止损": "stop_loss",
+    "清仓": "full_exit",
+    "减仓": "trim_position",
+    "换仓": "rotation",
+    "风险控制": "risk_control",
+    "恐慌卖出": "panic_sell",
+    "其他": "other",
     "宏观风险": "macro",
     "技术破位 / 过热": "technical",
     "估值过高": "valuation",
@@ -276,7 +285,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             if not active_positions:
                 st.info("当前没有可卖出的 active 持仓。")
                 return
-        st.markdown("### 交易执行")
+        st.markdown("### 成交信息")
         top_cols = st.columns([1.1, 1.2, 1])
         selected_position = None
         if editing_entry is None:
@@ -321,13 +330,14 @@ def _render_editor(store: TradeJournalStore) -> None:
             key=_editor_key("notes", editing_id),
             placeholder="只记录执行层信息，例如分批成交、夜盘流动性差、实际成交偏差。",
         )
-        with st.expander("高级信息", expanded=False):
+        with st.expander("复盘信息，可选", expanded=False):
             decision_snapshot_id = st.text_input(
                 "关联信号 ID（可选）",
                 value=_entry_int_text(editing_entry, "decision_snapshot_id"),
                 key=_editor_key("snapshot-id", editing_id),
             )
         sell_reference_context = _sell_reference_context(symbol, selected_position) if selected_position else {}
+        st.markdown("### 系统提醒")
         if editing_entry is None and selected_position:
             _render_sell_reference_card(symbol, selected_position, context=sell_reference_context)
 
@@ -374,23 +384,29 @@ def _render_editor(store: TradeJournalStore) -> None:
                 key_suffix=str(editing_id or "new"),
             )
 
-        _render_portfolio_ledger_preview(
-            symbol,
-            action_type,
-            quantity,
-            price,
-            preview=portfolio_preview,
-            discipline_blocked=_discipline_result_blocked(discipline_result),
-        )
+        with st.expander("成交后仓位变化详情", expanded=False):
+            _render_portfolio_ledger_preview(
+                symbol,
+                action_type,
+                quantity,
+                price,
+                preview=portfolio_preview,
+                discipline_blocked=_discipline_result_blocked(discipline_result),
+            )
 
         st.markdown("### 提交确认")
-        submit_cols = st.columns(3)
+        submit_cols = st.columns(5)
         submit_qty = _number(quantity)
         submit_price = _number(price)
         submit_notional = None if submit_qty is None or submit_price is None else submit_qty * submit_price
+        after_quantity = _number(portfolio_preview.get("afterQuantity"))
+        sell_type_text = "清仓" if action_type == "sell" or (after_quantity is not None and after_quantity <= 1e-9) else "减仓"
+        advisory_text = _discipline_gate_conclusion_label(_discipline_gate_conclusion(discipline_result)) if discipline_result is not None else "无"
         submit_cols[0].metric("卖出股数", _quantity_text(submit_qty))
         submit_cols[1].metric("卖出均价", format_currency(submit_price) if submit_price is not None else BLANK_TEXT)
         submit_cols[2].metric("本次成交额", format_currency(submit_notional) if submit_notional is not None else BLANK_TEXT)
+        submit_cols[3].metric("卖出后持仓", _quantity_text(after_quantity))
+        submit_cols[4].metric("卖出类型 / 提醒", f"{sell_type_text}｜{advisory_text}")
 
         button_label = "保存修改" if editing_entry else ("确认卖出并入账" if action_type == "sell" else "确认减仓并入账")
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
@@ -1086,18 +1102,9 @@ def _render_trading_discipline_check(
     sell_reference: dict | None = None,
     key_suffix: str = "new",
 ) -> None:
-    st.markdown("### 卖出决策")
-    cols = st.columns([0.82, 0.9, 1.3, 0.9, 0.9], gap="small")
     position_default = _default_position_class(editing_entry, stock_plan)
     position_default_label = _position_class_label(position_default)
     reason_default = _sell_reason_label_for_entry(editing_entry)
-    position_label = cols[0].selectbox(
-        "股票分类",
-        list(POSITION_CLASS_OPTIONS),
-        index=list(POSITION_CLASS_OPTIONS).index(position_default_label),
-        key=f"trade-discipline-position-class-{key_suffix}",
-    )
-    position_class = POSITION_CLASS_OPTIONS.get(position_label, "")
     actual_sell_pct = _actual_sell_pct(trade_quantity, current_quantity)
     st.session_state[f"trade-discipline-actual-sell-pct-{key_suffix}"] = actual_sell_pct
     st.session_state[f"trade-discipline-current-quantity-{key_suffix}"] = _number(current_quantity)
@@ -1105,11 +1112,49 @@ def _render_trading_discipline_check(
     st.session_state[f"trade-discipline-in-buy-zone-or-below-{key_suffix}"] = bool((sell_reference or {}).get("inBuyZoneOrBelow"))
     computed_sell_pct = "" if actual_sell_pct is None else f"{actual_sell_pct * 100:.2f}"
     st.session_state[f"trade-discipline-planned-sell-pct-{key_suffix}"] = computed_sell_pct
-    cols[1].metric("卖出比例", _pct_point_text(actual_sell_pct))
     planned_sell_pct = computed_sell_pct
-    reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
-    thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
-    position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
+
+    with st.expander("复盘信息，可选", expanded=False):
+        st.caption("卖出原因、回补计划和纪律细节只用于复盘；模型提醒不阻止提交，基础数量和价格校验仍会保留。")
+        cols = st.columns([0.9, 1.0, 1.35, 0.9, 0.9], gap="small")
+        position_label = cols[0].selectbox(
+            "股票分类",
+            list(POSITION_CLASS_OPTIONS),
+            index=list(POSITION_CLASS_OPTIONS).index(position_default_label),
+            key=f"trade-discipline-position-class-{key_suffix}",
+        )
+        cols[1].metric("卖出比例", _pct_point_text(actual_sell_pct))
+        reason_label = cols[2].selectbox(
+            "卖出原因（可选）",
+            list(SELL_REASON_OPTIONS),
+            index=list(SELL_REASON_OPTIONS).index(reason_default),
+            key=f"trade-discipline-sell-reason-{key_suffix}",
+        )
+        thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
+        position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
+        position_class = POSITION_CLASS_OPTIONS.get(position_label, "")
+        core_pct, trading_pct = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
+        st.session_state[f"trade-discipline-core-min-{key_suffix}"] = core_pct
+        st.session_state[f"trade-discipline-trading-max-{key_suffix}"] = trading_pct
+        _render_structured_sell_reason_editor(
+            position_class=position_class,
+            editing_entry=editing_entry,
+            key_suffix=key_suffix,
+        )
+        st.markdown("#### 回补计划（可选）")
+        reentry_values = _render_reentry_plan_editor(
+            symbol,
+            trade_price=trade_price,
+            sell_reason_type=SELL_REASON_OPTIONS[reason_label],
+            decision_mood=decision_mood,
+            editing_entry=editing_entry,
+            key_suffix=key_suffix,
+        )
+    position_label = st.session_state.get(f"trade-discipline-position-class-{key_suffix}", position_default_label)
+    reason_label = st.session_state.get(f"trade-discipline-sell-reason-{key_suffix}", reason_default)
+    position_class = POSITION_CLASS_OPTIONS.get(str(position_label or ""), "")
+    thesis_broken = bool(st.session_state.get(f"trade-discipline-thesis-broken-{key_suffix}"))
+    position_over_limit = bool(st.session_state.get(f"trade-discipline-position-over-limit-{key_suffix}"))
     core_pct, trading_pct = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
     st.session_state[f"trade-discipline-core-min-{key_suffix}"] = core_pct
     st.session_state[f"trade-discipline-trading-max-{key_suffix}"] = trading_pct
@@ -1121,23 +1166,7 @@ def _render_trading_discipline_check(
         actual_sell_pct=actual_sell_pct,
         core_pct=core_pct,
     )
-    _render_structured_sell_reason_editor(
-        position_class=position_class,
-        editing_entry=editing_entry,
-        key_suffix=key_suffix,
-    )
-
     st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = False
-
-    with st.expander("回补计划", expanded=False):
-        reentry_values = _render_reentry_plan_editor(
-            symbol,
-            trade_price=trade_price,
-            sell_reason_type=SELL_REASON_OPTIONS[reason_label],
-            decision_mood=decision_mood,
-            editing_entry=editing_entry,
-            key_suffix=key_suffix,
-        )
     has_reentry_plan = _has_reentry_plan_values(reentry_values)
     st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = has_reentry_plan
 
@@ -1165,6 +1194,8 @@ def _render_trading_discipline_check(
         actual_sell_pct=actual_sell_pct,
         has_reentry_plan=has_reentry_plan,
     )
+    if _discipline_gate_conclusion(result) != "PASS" and not _combined_sell_reason_note(editing_entry):
+        st.caption("建议填写卖出原因，便于复盘；不填写也可以继续提交。")
     with st.expander("纪律检查详情", expanded=False):
         _render_discipline_gate_explanation(result, discipline_context)
     return result
@@ -1222,11 +1253,11 @@ def _render_structured_sell_reason_editor(
         help="用于筛选和复盘，可同时标记估值、风险、仓位、市场环境或 thesis 变化。",
     )
     st.text_area(
-        "卖出理由（必填）",
+        "补充说明（可选）",
         value=_combined_sell_reason_note(editing_entry),
         height=96,
         key=f"trade-sell-thesis-note-{key_suffix}",
-        placeholder="记录本次卖出的核心原因，可包含估值、风险、仓位、市场环境、thesis 变化和回补判断。",
+        placeholder="可记录本次卖出的核心原因，例如止盈、止损、换仓、风险控制、thesis 变化或回补判断。",
     )
     if str(position_class or "").upper() == "A" and context_type in {"valuation_compression", "liquidity_shock"}:
         st.warning("这可能是在流动性较差或风险溢价上升时卖出核心资产。请确认不是恐慌卖出，并填写回补计划。")
@@ -1869,23 +1900,6 @@ def _structured_sell_reason_form_values(key_suffix: str = "new") -> dict:
 def _structured_sell_reason_validation_error(action_type: str, values: dict) -> str:
     if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
         return ""
-    context_type = str(values.get("sellContextType") or values.get("sell_context_type") or "").strip()
-    if not str(values.get("sellThesisNote") or values.get("sell_thesis_note") or "").strip():
-        return "请填写卖出理由（必填）。"
-    if context_type != "fundamental_change":
-        return ""
-    change_values = values.get("fundamentalChangeType") or values.get("fundamental_change_type") or []
-    if isinstance(change_values, str):
-        try:
-            parsed_changes = json.loads(change_values)
-        except json.JSONDecodeError:
-            parsed_changes = [change_values] if change_values.strip() else []
-    elif isinstance(change_values, (list, tuple, set)):
-        parsed_changes = list(change_values)
-    else:
-        parsed_changes = []
-    if not [str(item).strip() for item in parsed_changes if str(item).strip()]:
-        return "选择“基本面改写”时，请至少选择一项具体改写类型。"
     return ""
 
 

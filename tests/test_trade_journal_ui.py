@@ -97,7 +97,7 @@ def test_sell_form_keeps_signal_id_in_advanced_section_and_has_quantity_shortcut
     source = inspect.getsource(trade_journal._render_editor)
 
     assert "_render_sell_quantity_shortcuts" in source
-    assert "高级信息" in source
+    assert "复盘信息，可选" in source
     assert "trade_cols[3].text_input" not in source
 
 
@@ -105,7 +105,8 @@ def test_sell_form_renders_structured_sell_reason_advisory() -> None:
     source = inspect.getsource(trade_journal._render_structured_sell_reason_editor)
 
     assert "原因标签（多选）" in source
-    assert "卖出理由（必填）" in source
+    assert "补充说明（可选）" in source
+    assert "卖出理由（必填）" not in source
     assert "估值压缩 / 风险溢价原因" not in source
     assert "流动性冲击 / 市场恐慌原因" not in source
     assert "仓位风险原因" not in source
@@ -120,12 +121,17 @@ def test_sell_form_uses_compact_workflow_sections() -> None:
     discipline_source = inspect.getsource(trade_journal._render_trading_discipline_check)
     reentry_source = inspect.getsource(trade_journal._render_reentry_plan_editor)
 
-    assert "### 交易执行" in editor_source
+    assert "### 成交信息" in editor_source
+    assert "### 系统提醒" in editor_source
     assert "成交备注（可选）" in editor_source
-    assert "### 卖出决策" in discipline_source
-    assert 'st.expander("回补计划", expanded=False)' in discipline_source
+    assert "### 卖出决策" not in discipline_source
+    assert 'st.expander("复盘信息，可选", expanded=False)' in discipline_source
+    assert "卖出原因（可选）" in discipline_source
     assert 'st.expander("纪律检查详情", expanded=False)' in discipline_source
+    assert 'st.expander("成交后仓位变化详情", expanded=False)' in editor_source
     assert "### 提交确认" in editor_source
+    assert "卖出后持仓" in editor_source
+    assert "卖出类型 / 提醒" in editor_source
     assert "回补计划说明" in reentry_source
     assert "不回补条件" in reentry_source
     assert "完整回补计划摘要" not in reentry_source
@@ -683,7 +689,7 @@ def test_structured_sell_reason_options_cover_required_categories() -> None:
     assert trade_journal.FUNDAMENTAL_CHANGE_OPTIONS["其他"] == "other"
 
 
-def test_fundamental_change_sell_reason_requires_change_type_and_note() -> None:
+def test_sell_reason_fields_are_optional_for_submission() -> None:
     missing_change = trade_journal._structured_sell_reason_validation_error(
         "trim",
         {
@@ -700,18 +706,9 @@ def test_fundamental_change_sell_reason_requires_change_type_and_note() -> None:
             "sellThesisNote": "",
         },
     )
-    complete = trade_journal._structured_sell_reason_validation_error(
-        "trim",
-        {
-            "sellContextType": "fundamental_change",
-            "fundamentalChangeType": ["guidance_cut"],
-            "sellThesisNote": "管理层下修指引，原 thesis 需要重写",
-        },
-    )
 
-    assert "至少选择一项" in missing_change
-    assert "卖出理由" in missing_note
-    assert complete == ""
+    assert missing_change == ""
+    assert missing_note == ""
 
 
 def test_trade_entry_detail_displays_sell_context_snapshot() -> None:
