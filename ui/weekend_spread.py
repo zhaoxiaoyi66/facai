@@ -11,7 +11,14 @@ import streamlit as st
 
 from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.binance_provider import DEFAULT_BINANCE_CACHE_PATH, normalize_market_type
-from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
+from data.weekend_spread_backtest import (
+    build_weekend_backtest_preflight,
+    clear_backtest_view_state,
+    load_backtest_results,
+    run_weekend_peak_short_backtest,
+    save_backtest_results,
+    summarize_backtest_results,
+)
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
     build_mapping_diagnostics,
@@ -524,15 +531,15 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         key="weekend_backtest_include_unconfirmed",
         help="candidate 映射仅观察，默认不纳入正式胜率。",
     )
-    mapped_tickers = [
-        str(ticker or "").upper()
-        for ticker in watchlist
-        if str(ticker or "").upper() in mapping
-        and mapping[str(ticker or "").upper()].get("enabled", True)
-        and mapping[str(ticker or "").upper()].get("binance_symbol")
-        and (include_unconfirmed or str(mapping[str(ticker or "").upper()].get("mapping_confidence") or "") == "confirmed")
-    ]
-    options = ["全部已映射"] + mapped_tickers
+    anchors = _backtest_anchor_mapping()
+    all_tickers = [str(ticker or "").upper() for ticker in watchlist if str(ticker or "").strip()]
+    preliminary = build_weekend_backtest_preflight(
+        all_tickers,
+        mapping=mapping,
+        anchors=anchors,
+        include_unconfirmed=include_unconfirmed,
+    )
+    options = ["全部已映射"] + list(preliminary.get("eligible_tickers") or [])
     cols = st.columns(6)
     selected = cols[0].selectbox("ticker", options, key="weekend_backtest_ticker")
     weeks = int(cols[1].number_input("weeks", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
@@ -540,27 +547,143 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     fee_pct = cols[3].number_input("fee_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
     slippage_pct = cols[4].number_input("slippage_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
     funding_pct = cols[5].number_input("funding_pct", value=0.00, step=0.01, key="weekend_backtest_funding")
-    if st.button("运行近 4 周回测", width="stretch", key="weekend_run_backtest"):
-        tickers = mapped_tickers if selected == "全部已映射" else [selected]
+    run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
+    preflight = build_weekend_backtest_preflight(
+        run_tickers,
+        mapping=mapping,
+        anchors=anchors,
+        include_unconfirmed=include_unconfirmed,
+        ticker_filter="" if selected == "全部已映射" else selected,
+    )
+    _render_backtest_preflight(preflight)
+    if not preflight.get("can_run"):
+        st.warning(_backtest_block_text(str(preflight.get("primary_block_reason") or "")))
+    op_cols = st.columns([2, 1, 2])
+    run_clicked = op_cols[0].button(
+        "运行近 4 周回测",
+        width="stretch",
+        key="weekend_run_backtest",
+        disabled=not bool(preflight.get("can_run")),
+    )
+    clear_clicked = op_cols[1].button("清空本次结果", width="stretch", key="weekend_clear_backtest_view")
+    with op_cols[2].expander("查看排除原因", expanded=False):
+        excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
+        st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
+    if clear_clicked:
+        st.session_state["weekend_backtest_results"] = []
+        st.session_state["weekend_backtest_cache"] = clear_backtest_view_state()
+        st.info("已清空本次页面结果；不会删除已保存的历史回测缓存。")
+    if run_clicked:
+        tickers = list(preflight.get("eligible_tickers") or [])
+        progress_bar = st.progress(0.0)
+        status_slot = st.empty()
+        status_slot.caption(f"正在运行历史回测：{len(tickers)} 个标的，{weeks} 周。")
         results = run_weekend_peak_short_backtest(
             tickers,
             mapping=mapping,
-            anchors=_backtest_anchor_mapping(),
+            anchors=anchors,
             weeks=weeks,
             open_window_minutes=open_window,
             fee_pct=fee_pct,
             slippage_pct=slippage_pct,
             funding_pct=funding_pct,
         )
+        progress_bar.progress(1.0)
+        failed = [row for row in results if str(row.get("data_quality") or "") in {"DATA_UNAVAILABLE", "INVALID"}]
+        error_message = _backtest_error_message(failed)
+        saved = save_backtest_results(
+            results,
+            preflight=preflight,
+            params={
+                "ticker": selected,
+                "weeks": weeks,
+                "open_window": open_window,
+                "fee_pct": fee_pct,
+                "slippage_pct": slippage_pct,
+                "funding_pct": funding_pct,
+                "include_unconfirmed": include_unconfirmed,
+            },
+            error_message=error_message,
+        )
         st.session_state["weekend_backtest_results"] = results
-    results = list(st.session_state.get("weekend_backtest_results") or [])
+        st.session_state["weekend_backtest_cache"] = saved
+        if error_message:
+            status_slot.warning(error_message)
+        else:
+            status_slot.success(f"回测完成：{len(results)} 条结果。")
+    cached_result = dict(st.session_state.get("weekend_backtest_cache") or load_backtest_results())
+    results = list(st.session_state.get("weekend_backtest_results") or cached_result.get("rows") or [])
     if not results:
-        st.info("暂无回测结果。先配置映射并点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
+        if not preflight.get("can_run"):
+            st.info(f"没有可回测标的：{_backtest_block_text(str(preflight.get('primary_block_reason') or 'NO_MAPPING'))}")
+        elif cached_result.get("error_message"):
+            st.warning(f"上次运行失败：{cached_result.get('error_message')}")
+        else:
+            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
         _render_backtest_advanced_records()
         return
+    last_run_at = str(cached_result.get("last_run_at") or "")
+    if last_run_at:
+        st.caption(f"last_run_at：{_short_hkt_time(last_run_at)}")
+    if include_unconfirmed:
+        st.caption("观察回测：包含未确认映射，结果不计为正式胜率。")
     _render_backtest_kpis(results)
     st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
     _render_backtest_advanced_records()
+
+
+def _render_backtest_preflight(preflight: dict[str, object]) -> None:
+    cols = st.columns(4)
+    cols[0].metric("可回测标的", int(preflight.get("eligible_count") or 0))
+    cols[1].metric("已排除标的", int(preflight.get("excluded_count") or 0))
+    cols[2].metric("当前模式", str(preflight.get("mode") or "confirmed only"))
+    cols[3].metric("数据源状态", "USDT-M Futures")
+
+
+def _backtest_block_text(reason: str) -> str:
+    return {
+        "NO_MAPPING": "当前没有可回测标的：请配置 local mapping。",
+        "AUTO_CANDIDATE_NOT_ALLOWED": "自动候选映射默认不进入正式回测；如仅做观察，请勾选包含未确认映射。",
+        "UNCONFIRMED_EXCLUDED": "当前只有未确认映射；如仅做观察，请勾选包含未确认映射。",
+        "SYMBOL_INVALID": "symbol 无效，请先在映射管理里复核。",
+        "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用。",
+        "FUTURES_UNAVAILABLE": "Futures 数据源不可用。",
+        "NO_PRICE_ANCHOR": "缺少价格锚点：请先刷新实时观察或更新周五盘后锚点。",
+        "PROVIDER_ERROR": "数据源错误，请稍后重试。",
+    }.get(reason, reason or "当前没有可回测标的。")
+
+
+def _backtest_exclusion_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "ticker"),
+        ("symbol", "symbol"),
+        ("market_type", "market_type"),
+        ("mapping_status", "mapping_status"),
+        ("exclusion_reason", "exclusion_reason"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    return display
+
+
+def _backtest_error_message(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    reasons = []
+    for row in rows:
+        quality = str(row.get("data_quality") or "")
+        raw_error = str(row.get("error_message") or "")
+        if quality == "DATA_UNAVAILABLE":
+            reasons.append(f"{row.get('ticker')}: BINANCE_KLINE_UNAVAILABLE {raw_error}".strip())
+        elif quality == "INVALID":
+            reasons.append(f"{row.get('ticker')}: {raw_error or 'INVALID'}")
+        elif raw_error:
+            reasons.append(f"{row.get('ticker')}: {raw_error}")
+    return "；".join(reasons[:5])
 
 
 def _render_backtest_kpis(rows: list[dict]) -> None:
@@ -961,13 +1084,17 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
         ("theoretical_short_return_pct", "高点空到开盘理论收益"),
         ("net_short_return_pct", "扣费后收益"),
         ("data_quality", "data_quality"),
+        ("warning", "exclusion / warning"),
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
         return pd.DataFrame(columns=[label for _, label in columns])
     display = pd.DataFrame()
     for key, label in columns:
-        display[label] = frame.get(key)
+        if key == "warning":
+            display[label] = frame.apply(lambda row: _backtest_row_warning(row.to_dict()), axis=1)
+        else:
+            display[label] = frame.get(key)
     for percent_col in (
         "周末峰值溢价",
         "开盘剩余溢价",
@@ -979,6 +1106,19 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
         display[percent_col] = display[percent_col].map(_percent_text)
     display["周末高点时间"] = display["周末高点时间"].replace("", "暂缺")
     return display
+
+
+def _backtest_row_warning(row: dict) -> str:
+    quality = str(row.get("data_quality") or "")
+    error = str(row.get("error_message") or "")
+    note = str(row.get("result_note") or "")
+    if quality == "DATA_UNAVAILABLE":
+        return f"BINANCE_KLINE_UNAVAILABLE {error}".strip()
+    if quality == "INVALID":
+        return error or "INVALID"
+    if quality == "UNCONFIRMED_MAPPING":
+        return note or "UNCONFIRMED_MAPPING"
+    return note
 
 
 def _mapping_management_frame(rows: list[dict], mapping: dict[str, dict]) -> pd.DataFrame:

@@ -18,8 +18,12 @@ from data.equity_afterhours_provider import (
     PolygonTradesAfterhoursProvider,
 )
 from data.weekend_spread_backtest import (
+    build_weekend_backtest_preflight,
+    clear_backtest_view_state,
+    load_backtest_results,
     recent_weekend_windows,
     run_weekend_peak_short_backtest,
+    save_backtest_results,
     summarize_backtest_results,
 )
 from data.weekend_spread import (
@@ -2105,6 +2109,68 @@ def test_weekend_peak_short_backtest_marks_missing_anchor_invalid() -> None:
     assert rows[0]["error_message"] == "missing anchor price"
 
 
+def test_backtest_preflight_blocks_no_mapping() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping={},
+        anchors=_anchors(),
+        include_unconfirmed=False,
+    )
+
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "NO_MAPPING"
+    assert preflight["excluded"][0]["exclusion_reason"] == "NO_MAPPING"
+
+
+def test_backtest_preflight_excludes_candidate_by_default() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate", risk_note="manual candidate"),
+        anchors=_anchors(),
+        include_unconfirmed=False,
+    )
+
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "UNCONFIRMED_EXCLUDED"
+    assert preflight["excluded"][0]["symbol"] == "NVDAUSDT"
+
+
+def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate", risk_note="候选 symbol 按 ticker+USDT 自动生成"),
+        anchors=_anchors(),
+        include_unconfirmed=False,
+    )
+
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "AUTO_CANDIDATE_NOT_ALLOWED"
+
+
+def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        anchors=_anchors(),
+        include_unconfirmed=True,
+    )
+
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
+
+
+def test_backtest_preflight_blocks_missing_price_anchor() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        anchors=_anchors(afterhours=None, regular=None),
+        include_unconfirmed=False,
+    )
+
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "NO_PRICE_ANCHOR"
+
+
 def test_weekend_peak_short_backtest_normalizes_legacy_spot_mapping_to_usdm_futures() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
@@ -2140,6 +2206,9 @@ def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
 
     assert rows[0]["data_quality"] == "DATA_UNAVAILABLE"
     assert "futures timeout" in rows[0]["error_message"]
+    frame = weekend_spread._backtest_frame(rows)
+    assert "BINANCE_KLINE_UNAVAILABLE" in frame.loc[0, "exclusion / warning"]
+    assert "futures timeout" in frame.loc[0, "exclusion / warning"]
 
 
 def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
@@ -2175,6 +2244,42 @@ def test_backtest_summary_excludes_unconfirmed_mapping_from_formal_win_rate() ->
     assert summary["positive_weeks"] == 1
     assert summary["win_rate"] == 1.0
     assert summary["avg_net_return_pct"] == 2.0
+
+
+def test_backtest_results_are_persisted_and_reloadable(tmp_path) -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "week_id": "2026-W24",
+            "net_short_return_pct": 1.2,
+            "premium_decay_ratio": 50,
+            "theoretical_short_return_pct": 1.4,
+            "premium_decay_pct": 2.0,
+            "open_remaining_premium_pct": 1.0,
+            "data_quality": "OK",
+        }
+    ]
+    path = tmp_path / "backtest.json"
+
+    saved = save_backtest_results(rows, preflight={"can_run": True}, params={"weeks": 4}, path=path)
+    loaded = load_backtest_results(path=path)
+
+    assert saved["last_run_at"]
+    assert loaded["rows"][0]["ticker"] == "NVDA"
+    assert loaded["preflight"]["can_run"] is True
+    assert loaded["params"]["weeks"] == 4
+    assert loaded["summary"]["sample_weeks"] == 1
+
+
+def test_clear_backtest_view_state_does_not_delete_saved_cache(tmp_path) -> None:
+    path = tmp_path / "backtest.json"
+    save_backtest_results([{"ticker": "NVDA", "data_quality": "OK"}], path=path)
+
+    cleared = clear_backtest_view_state()
+    loaded = load_backtest_results(path=path)
+
+    assert cleared["rows"] == []
+    assert loaded["rows"][0]["ticker"] == "NVDA"
 
 
 def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
@@ -2315,7 +2420,8 @@ def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
 
     assert "包含未确认映射" in source
     assert "weekend_backtest_include_unconfirmed" in source
-    assert 'mapping_confidence") or "") == "confirmed"' in source
+    assert "build_weekend_backtest_preflight" in source
+    assert "disabled=not bool(preflight.get(\"can_run\"))" in source
 
 
 def test_market_price_source_status_uses_request_language() -> None:

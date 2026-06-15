@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+import json
+from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.weekend_spread import load_binance_symbol_mapping
+from settings import PROJECT_ROOT
 
 
 ET = ZoneInfo("America/New_York")
@@ -14,6 +17,7 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_FEE_PCT = 0.10
 DEFAULT_SLIPPAGE_PCT = 0.10
 DEFAULT_FUNDING_PCT = 0.00
+DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_results.json"
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,76 @@ class NormalizedKline:
     low: float
     close: float
     volume: float | None = None
+
+
+def build_weekend_backtest_preflight(
+    tickers: Iterable[str],
+    *,
+    mapping: dict[str, Any] | None = None,
+    anchors: dict[str, Any] | None = None,
+    include_unconfirmed: bool = False,
+    ticker_filter: str = "",
+) -> dict[str, Any]:
+    normalized_tickers = _normalize_tickers(tickers)
+    effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
+    effective_anchors = _normalize_mapping(anchors or {})
+    selected_filter = str(ticker_filter or "").strip().upper()
+    if selected_filter and selected_filter not in {"全部已映射", "ALL"}:
+        normalized_tickers = [ticker for ticker in normalized_tickers if ticker == selected_filter]
+    eligible: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for ticker in normalized_tickers:
+        config = effective_mapping.get(ticker)
+        row = {
+            "ticker": ticker,
+            "mapping_status": "NO_MAPPING",
+            "market_type": "usdm_futures",
+            "symbol": "",
+            "exclusion_reason": "",
+            "can_run": False,
+        }
+        if not config or not config.get("enabled", True) or not config.get("binance_symbol"):
+            row["exclusion_reason"] = "NO_MAPPING"
+            excluded.append(row)
+            continue
+        symbol = str(config.get("binance_symbol") or "").strip().upper()
+        confidence = str(config.get("mapping_confidence") or "").strip().lower()
+        row.update({"mapping_status": confidence or "unverified", "symbol": symbol})
+        if confidence == "candidate" and _is_auto_candidate(config):
+            if not include_unconfirmed:
+                row["exclusion_reason"] = "AUTO_CANDIDATE_NOT_ALLOWED"
+                excluded.append(row)
+                continue
+        elif confidence != "confirmed" and not include_unconfirmed:
+            row["exclusion_reason"] = "UNCONFIRMED_EXCLUDED"
+            excluded.append(row)
+            continue
+        if not symbol:
+            row["exclusion_reason"] = "NO_MAPPING"
+            excluded.append(row)
+            continue
+        if _anchor_for_ticker(ticker, config, effective_anchors).get("anchor_price") is None:
+            row["exclusion_reason"] = "NO_PRICE_ANCHOR"
+            excluded.append(row)
+            continue
+        row["can_run"] = True
+        eligible.append(row)
+    primary_block = ""
+    if not eligible:
+        reasons = [str(row.get("exclusion_reason") or "") for row in excluded]
+        primary_block = reasons[0] if reasons else "NO_MAPPING"
+    return {
+        "eligible_tickers": [row["ticker"] for row in eligible],
+        "eligible": eligible,
+        "excluded_tickers": [row["ticker"] for row in excluded],
+        "excluded": excluded,
+        "excluded_count": len(excluded),
+        "eligible_count": len(eligible),
+        "can_run": bool(eligible),
+        "primary_block_reason": primary_block,
+        "include_unconfirmed": bool(include_unconfirmed),
+        "mode": "include candidate" if include_unconfirmed else "confirmed only",
+    }
 
 
 def recent_weekend_windows(*, weeks: int = 4, now: datetime | None = None) -> list[WeekendWindow]:
@@ -127,6 +201,76 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "max_loss_pct": min(returns) if returns else None,
         "positive_weeks": len(positive),
         "win_rate": len(positive) / len(valid) if valid else None,
+    }
+
+
+def save_backtest_results(
+    rows: list[dict[str, Any]],
+    *,
+    preflight: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    path: Path = DEFAULT_BACKTEST_RESULTS_PATH,
+    ran_at: datetime | None = None,
+    error_message: str = "",
+) -> dict[str, Any]:
+    payload = {
+        "version": 1,
+        "last_run_at": (ran_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+        "rows": list(rows or []),
+        "preflight": dict(preflight or {}),
+        "params": dict(params or {}),
+        "summary": summarize_backtest_results(list(rows or [])),
+        "error_message": str(error_message or ""),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return payload
+
+
+def load_backtest_results(path: Path = DEFAULT_BACKTEST_RESULTS_PATH) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "version": 1,
+            "last_run_at": "",
+            "rows": [],
+            "preflight": {},
+            "params": {},
+            "summary": summarize_backtest_results([]),
+            "error_message": "",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {
+            "version": 1,
+            "last_run_at": "",
+            "rows": [],
+            "preflight": {},
+            "params": {},
+            "summary": summarize_backtest_results([]),
+            "error_message": "backtest cache unreadable",
+        }
+    rows = list(payload.get("rows") or []) if isinstance(payload, dict) else []
+    return {
+        "version": int(payload.get("version") or 1) if isinstance(payload, dict) else 1,
+        "last_run_at": str(payload.get("last_run_at") or "") if isinstance(payload, dict) else "",
+        "rows": rows,
+        "preflight": dict(payload.get("preflight") or {}) if isinstance(payload, dict) else {},
+        "params": dict(payload.get("params") or {}) if isinstance(payload, dict) else {},
+        "summary": dict(payload.get("summary") or summarize_backtest_results(rows)) if isinstance(payload, dict) else summarize_backtest_results(rows),
+        "error_message": str(payload.get("error_message") or "") if isinstance(payload, dict) else "",
+    }
+
+
+def clear_backtest_view_state() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "last_run_at": "",
+        "rows": [],
+        "preflight": {},
+        "params": {},
+        "summary": summarize_backtest_results([]),
+        "error_message": "",
     }
 
 
@@ -424,6 +568,12 @@ def _anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[str, d
     if regular is not None and regular > 0:
         return {"anchor_price": regular, "anchor_source": "REGULAR_CLOSE"}
     return {"anchor_price": None, "anchor_source": "MISSING"}
+
+
+def _is_auto_candidate(config: dict[str, Any]) -> bool:
+    risk_note = str(config.get("risk_note") or "")
+    confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    return confidence == "candidate" and ("ticker+USDT" in risk_note or "自动生成" in risk_note)
 
 
 def _normalize_tickers(tickers: Iterable[str]) -> list[str]:
