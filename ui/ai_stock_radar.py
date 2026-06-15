@@ -146,6 +146,13 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
     filter_key = _selected_radar_filter_key()
     filter_counts = _filter_counts(rows)
     st.markdown(_filter_chips_html(filter_key, filter_counts), unsafe_allow_html=True)
+    if st.button(
+        "刷新 / 重建买区上下文",
+        key="ai-radar-rebuild-buy-zone-context",
+        help="清理本页运行期缓存，重新读取本地缓存并生成统一买区上下文。",
+    ):
+        _clear_report_runtime_cache()
+        st.rerun()
     rows = _filter_rows(rows, filter_key)
     body = "".join(_list_row_html(row, selected) for row in rows)
     st.markdown(
@@ -156,7 +163,7 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
             '<div class="ai-radar-table-wrap">'
             '<table class="ai-radar-table">'
             "<thead><tr>"
-            "<th>股票</th><th>公司 / 赛道</th><th>当前价</th><th>核心状态</th><th>研报状态</th><th>数据完整度</th><th>更新时间</th><th>操作</th>"
+            "<th>股票</th><th>公司 / 赛道</th><th>当前价</th><th>Radar</th><th>买点</th><th>行情 / 买区数据</th><th>更新时间</th><th>操作</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -766,13 +773,14 @@ def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     status_rank = {
         "价值复核": 0,
         "近端复核": 0,
-        "买区内": 1,
-        "技术待确认": 2,
+        "可买": 1,
+        "等待": 2,
         "观察": 3,
-        "技术承接数据不足": 4,
-        "破位复核": 4,
-        "追高风险": 5,
-        "风险区": 5,
+        "数据不足": 4,
+        "未生成买区": 4,
+        "风控复核": 4,
+        "防追高": 5,
+        "回避": 6,
     }
     confidence_rank = {"高": 0, "中": 1, "低": 2, "不足": 3}
     return sorted(
@@ -822,13 +830,13 @@ def _row_matches_filter(row: dict[str, Any], filter_key: str) -> bool:
     if filter_key == "value":
         return status in {"价值复核", "近端复核"}
     if filter_key == "pullback":
-        return status == "买区内"
+        return status == "可买"
     if filter_key == "watch":
-        return status in {"观察", "技术待确认"}
+        return status in {"观察", "等待"}
     if filter_key == "chase":
-        return status in {"风险区", "追高风险", "破位复核"}
+        return status in {"回避", "防追高", "风控复核"}
     if filter_key == "data":
-        return status == "技术承接数据不足" or _data_confidence(row) != "高"
+        return status in {"数据不足", "未生成买区"} or _data_confidence(row) != "高"
     return False
 
 
@@ -836,9 +844,9 @@ def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
     labels = [
         ("all", "全部"),
         ("value", "价值复核"),
-        ("pullback", "回踩区"),
+        ("pullback", "可买"),
         ("watch", "观察"),
-        ("chase", "追高区"),
+        ("chase", "防追高 / 回避"),
         ("data", "数据缺口"),
     ]
     chips = "".join(
@@ -856,16 +864,16 @@ def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
 
 def _list_row_html(row: dict[str, Any], selected: str) -> str:
     ticker = str(row.get("ticker") or "")
-    decision = str(row.get("decision") or "")
+    radar_status = _core_status(row)
     active = " active" if ticker == selected else ""
     report_href = _report_view_href(ticker)
     return (
-        f'<tr class="{escape(_decision_tone(decision))}{active}">'
+        f'<tr class="{escape(_radar_status_tone(radar_status))}{active}">'
         f'<td><a class="ai-radar-ticker" href="{escape(report_href, quote=True)}" target="_self">{escape(ticker)}</a></td>'
         f"<td>{_company_track_html(row)}</td>"
         f'<td>{escape(_money(row.get("current_price")))}</td>'
-        f'<td><span class="ai-radar-status-pill">{escape(_core_status(row))}</span></td>'
-        f'<td><span class="ai-radar-report-status">{escape(_report_status_text(row))}</span></td>'
+        f'<td><span class="ai-radar-status-pill">{escape(radar_status)}</span></td>'
+        f'<td><span class="ai-radar-buy-point-reason">{escape(_buy_point_reason_text(row))}</span></td>'
         f"<td>{_data_confidence_html(row)}</td>"
         f'<td>{escape(_short_time(row.get("data_updated_at")))}</td>'
         f'<td><a class="ai-radar-report-link" href="{escape(report_href, quote=True)}" target="_self">查看</a></td>'
@@ -2633,7 +2641,33 @@ def _inline_list(value: Any) -> str:
 def _core_status(row: dict[str, Any]) -> str:
     display = _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay")
     if display:
-        return str(display.get("badge_label") or display.get("technical_action_text") or "").strip() or "观察"
+        display_action = str(
+            display.get("buy_zone_action")
+            or display.get("action_code")
+            or display.get("current_action")
+            or display.get("entry_context_status")
+            or ""
+        ).strip().upper()
+        if display_action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+            return "数据不足"
+        if display_action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+            return "未生成买区"
+        if display_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+            return "可买"
+        if display_action in {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}:
+            return "等待"
+        if display_action == "BLOCK_CHASE":
+            return "防追高"
+        if display_action == "RISK_REVIEW":
+            return "风控复核"
+        if display_action == "AVOID":
+            return "回避"
+        label = str(display.get("badge_label") or display.get("technical_action_text") or "").strip()
+        if label in {"不给买区", "技术承接数据不足"}:
+            return "数据不足"
+        if label in {"暂不生成", "区间待补"}:
+            return "未生成买区"
+        return label or "观察"
     context_status = _buy_zone_context_core_status(_dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext"))
     if context_status:
         return context_status
@@ -2643,22 +2677,26 @@ def _core_status(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or "")
     structure = str(row.get("technical_structure_status") or "")
     combined = f"{entry_label} {interpretation}"
+    if decision in {"DATA_MISSING", "DATA_INSUFFICIENT"}:
+        return "数据不足"
+    if decision in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "未生成买区"
     if price_position == "IN_CHASE_ZONE" or decision == "BLOCK_CHASE":
-        return "追高风险"
+        return "防追高"
     if "价值复核" in combined or "估值吸引" in combined:
         return "价值复核"
     if "近端复核" in combined or "近端修复" in combined:
         return "近端复核"
     if price_position == "IN_BUY_ZONE":
-        return "买区内"
+        return "可买"
     if structure == "BREAKDOWN_REVIEW":
-        return "破位复核"
+        return "风控复核"
     if structure == "WEAK_TREND_REPAIR":
-        return "技术待确认"
+        return "等待"
     if price_position in {"ABOVE_BUY_ZONE", "WAIT"}:
         return "观察"
     if decision == "AVOID":
-        return "风险区"
+        return "回避"
     return "观察"
 
 
@@ -2666,21 +2704,77 @@ def _buy_zone_context_core_status(context: dict[str, Any] | None) -> str:
     if not context:
         return ""
     action = str(context.get("current_action") or context.get("currentAction") or "").strip().upper()
-    if action == "DATA_INSUFFICIENT":
-        return "技术承接数据不足"
+    if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        return "数据不足"
+    if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "未生成买区"
     if action == "BLOCK_CHASE":
-        return "追高风险"
+        return "防追高"
     if action == "RISK_REVIEW":
-        return "破位复核"
+        return "风控复核"
     if action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
-        return "买区内"
+        return "可买"
     if action == "WAIT_CONFIRMATION":
-        return "技术待确认"
+        return "等待"
     if action == "WAIT_PULLBACK":
         return "观察"
     if action == "AVOID":
-        return "风险区"
+        return "回避"
     return ""
+
+
+def _buy_point_reason_text(row: dict[str, Any]) -> str:
+    context = _dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext")
+    action = str((context or {}).get("current_action") or (context or {}).get("currentAction") or "").strip().upper()
+    if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        missing = _buy_zone_context_missing_fields(context or {}) or _actionable_missing_fields(row)
+        return f"数据不足：{_field_list_display(missing, row) if missing else '技术承接数据'}"
+    if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+        missing = _buy_zone_context_missing_fields(context or {}) or ["support_zone", "resistance_zone"]
+        return f"未生成买区：{_field_list_display(missing, row)}"
+
+    display = _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay")
+    if display:
+        reason = str(
+            display.get("entry_display_reason")
+            or display.get("badge_hint")
+            or display.get("technical_reason")
+            or display.get("technical_action_text")
+            or ""
+        ).strip()
+        if reason:
+            return reason
+
+    reason = str(row.get("entry_display_reason") or row.get("entry_action_hint") or "").strip()
+    if reason:
+        return reason
+    if _legacy_buy_zone_context_missing(row):
+        return "旧记录缺少买区上下文，需刷新 / 重建"
+    return _report_status_text(row)
+
+
+def _legacy_buy_zone_context_missing(row: dict[str, Any]) -> bool:
+    if _dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext"):
+        return False
+    if _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay"):
+        return False
+    return bool(row.get("entry_display_label") or row.get("primary_entry_interpretation") or row.get("zone_semantic_label"))
+
+
+def _radar_status_tone(status: str) -> str:
+    if status in {"数据不足", "未生成买区"}:
+        return "missing"
+    if status == "可买":
+        return "allow"
+    if status in {"等待", "观察", "价值复核", "近端复核"}:
+        return "wait"
+    if status == "防追高":
+        return "blocked"
+    if status == "风控复核":
+        return "risk"
+    if status == "回避":
+        return "avoid"
+    return "wait"
 
 
 def _company_track_html(row: dict[str, Any]) -> str:
@@ -2756,7 +2850,25 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
     groups: list[str] = []
     if any(token in text for token in ("valuation", "forward_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf")):
         groups.append("估值缺口")
-    if any(token in text for token in ("technical", "ema", "atr", "swing", "history", "price_history", "buy_zone")):
+    if any(
+        token in text
+        for token in (
+            "technical",
+            "ema",
+            "atr",
+            "swing",
+            "history",
+            "price_history",
+            "buy_zone",
+            "ohlcv",
+            "ma20",
+            "ma50",
+            "ma200",
+            "volume_ratio",
+            "support",
+            "resistance",
+        )
+    ):
         groups.append("技术缺口")
     if any(token in text for token in ("disclosure", "filing", "kpi", "sec")):
         groups.append("披露缺口")
@@ -2787,6 +2899,9 @@ def _all_missing_fields(row: dict[str, Any]) -> list[str]:
     fields.extend(row.get("missing_entry_fields") or [])
     fields.extend(row.get("technical_entry_missing_fields") or [])
     fields.extend(row.get("technical_missing_fields") or [])
+    context = _dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext")
+    if context:
+        fields.extend(_buy_zone_context_missing_fields(context))
     return [str(field) for field in fields if str(field).strip()]
 
 
@@ -4125,6 +4240,13 @@ def _render_styles() -> None:
             background:#F8FAFC;
             color:#334155;
             border-color:#E2E8F0;
+        }
+        .ai-radar-buy-point-reason {
+            display:inline-block;
+            max-width:260px;
+            color:#334155;
+            font-size:12px;
+            line-height:1.45;
         }
         .ai-radar-report-link {
             background:transparent;

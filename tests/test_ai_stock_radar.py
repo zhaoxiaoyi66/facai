@@ -588,9 +588,56 @@ def test_report_range_chart_explains_primary_and_reference_zones() -> None:
 
 
 def test_list_core_status_prefers_unified_buy_zone_context() -> None:
-    assert radar_ui._core_status({"decision": "ALLOW_BUY", "buy_zone_context": {"current_action": "BLOCK_CHASE"}}) == "追高风险"
-    assert radar_ui._core_status({"decision": "BLOCK_CHASE", "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY"}}) == "买区内"
-    assert radar_ui._core_status({"buy_zone_context": {"current_action": "DATA_INSUFFICIENT"}}) == "技术承接数据不足"
+    assert radar_ui._core_status({"decision": "ALLOW_BUY", "buy_zone_context": {"current_action": "BLOCK_CHASE"}}) == "防追高"
+    assert radar_ui._core_status({"decision": "BLOCK_CHASE", "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY"}}) == "可买"
+    assert radar_ui._core_status({"buy_zone_context": {"current_action": "DATA_INSUFFICIENT"}}) == "数据不足"
+    assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "DATA_MISSING"}}) == "数据不足"
+    assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "NO_BUY_ZONE"}}) == "未生成买区"
+    assert radar_ui._core_status({"decision": "AVOID"}) == "回避"
+
+
+def test_list_row_shows_buy_point_gap_without_avoid_semantics() -> None:
+    row = {
+        "ticker": "MSFT",
+        "company_name": "Microsoft Corporation",
+        "sector": "云平台｜AI软件",
+        "current_price": 390,
+        "decision": "AVOID",
+        "data_status": "OK",
+        "buy_zone_context": {
+            "current_action": "DATA_INSUFFICIENT",
+            "missing_fields": ["daily_ohlcv", "volume_ratio", "support_zone"],
+        },
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "数据不足" in html
+    assert "日线 OHLCV" in html
+    assert "量比" in html
+    assert "支撑区" in html
+    assert "技术缺口" in html
+    assert "回避" not in html
+    assert 'class="missing"' in html
+
+
+def test_list_row_distinguishes_missing_buy_zone_from_avoid() -> None:
+    row = {
+        "ticker": "NOW",
+        "decision": "AVOID",
+        "data_status": "OK",
+        "buy_zone_context": {
+            "current_action": "ZONE_MISSING",
+            "missing_fields": ["support_zone", "resistance_zone"],
+        },
+    }
+
+    html = radar_ui._list_row_html(row, "")
+
+    assert "未生成买区" in html
+    assert "支撑区" in html
+    assert "压力区" in html
+    assert "回避" not in html
 
 
 def test_list_buy_zone_context_prefers_cached_canonical_context() -> None:
@@ -742,9 +789,10 @@ def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
     href_source = inspect.getsource(radar_ui._report_view_href)
 
     assert "Radar 研究入口" in source
-    assert "核心状态" in source
-    assert "研报状态" in source
-    assert "数据完整度" in source
+    assert "Radar" in source
+    assert "买点" in source
+    assert "行情 / 买区数据" in source
+    assert "刷新 / 重建买区上下文" in source
     assert ">查看</a>" in row_source
     assert "#radar-report" in href_source
     assert "Block reasons" not in source
