@@ -17,6 +17,15 @@ from data.equity_afterhours_provider import (
     PolygonQuoteMidAfterhoursProvider,
     PolygonTradesAfterhoursProvider,
 )
+from data.weekend_basis import (
+    BasisStrategyConfig,
+    build_basis_opportunity,
+    close_weekend_basis_trade,
+    create_weekend_basis_trade,
+    evaluate_open_trade,
+    max_broker_buy_price,
+    record_broker_hedge,
+)
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
@@ -2154,6 +2163,206 @@ def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
     assert rows[0]["status"] == "HEDGE_LOCKED"
     assert rows[0]["data_quality"] == "ESTIMATED_EXECUTION"
     assert summarize_backtest_results(rows)["sample_weeks"] == 0
+
+
+def test_basis_opportunity_blocks_unconfirmed_mapping() -> None:
+    now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
+    opportunity = build_basis_opportunity(
+        ticker="NVDA",
+        mapping=_mapping(mapping_confidence="candidate")["NVDA"],
+        broker_anchor_price=100,
+        binance_quotes=[_basis_quote(now, 102.0, 102.05)],
+        now=now,
+    )
+
+    assert opportunity["status"] == "BLOCK_MAPPING"
+    assert opportunity["data_quality"] == "UNCONFIRMED_MAPPING"
+
+
+def test_basis_opportunity_allows_short_only_when_signal_liquidity_and_mapping_pass() -> None:
+    now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
+    quotes = [
+        _basis_quote(now - timedelta(hours=4), 100.5, 100.55),
+        _basis_quote(now - timedelta(hours=3), 101.0, 101.05),
+        _basis_quote(now - timedelta(hours=2), 102.0, 102.05),
+        _basis_quote(now, 101.65, 101.7, depth_usd=500_000),
+    ]
+
+    opportunity = build_basis_opportunity(
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_quotes=quotes,
+        now=now,
+    )
+
+    assert opportunity["status"] == "ALLOW_SHORT"
+    assert opportunity["binance_entry_bid"] == 101.65
+    assert round(opportunity["entry_premium_bps"], 2) == 165.0
+    assert round(opportunity["pullback_bps"], 2) == 35.0
+    assert round(opportunity["min_binance_short_price"], 2) == 101.2
+
+
+def test_basis_opportunity_blocks_wide_binance_spread() -> None:
+    now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
+    opportunity = build_basis_opportunity(
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_quotes=[
+            _basis_quote(now - timedelta(hours=1), 102.0, 102.05),
+            _basis_quote(now, 101.65, 102.5),
+        ],
+        now=now,
+    )
+
+    assert opportunity["status"] == "BLOCK_LIQUIDITY"
+    assert opportunity["data_quality"] == "WIDE_SPREAD"
+
+
+def test_paper_trade_short_entry_uses_bid_or_manual_fill_price() -> None:
+    trade = create_weekend_basis_trade(
+        week_id="2026-W27",
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_entry_bid=101.8,
+        binance_entry_ask=101.9,
+        binance_short_qty=2,
+        entry_ts=datetime(2026, 7, 5, 18, tzinfo=timezone.utc),
+    )
+
+    assert trade["status"] == "SHORT_OPEN"
+    assert trade["binance_entry_price"] == 101.8
+    assert trade["binance_entry_bid"] == 101.8
+    assert trade["entry_notional"] == 203.6
+    assert round(trade["entry_premium_bps"], 2) == 180.0
+
+
+def test_paper_trade_hedge_uses_broker_ask_and_does_not_realize_pnl() -> None:
+    trade = create_weekend_basis_trade(
+        week_id="2026-W27",
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_entry_bid=101.8,
+        binance_short_qty=2,
+    )
+
+    locked = record_broker_hedge(
+        trade,
+        broker_hedge_bid=100.7,
+        broker_hedge_ask=100.8,
+        broker_shares=2,
+        binance_same_min_bid=101.0,
+        binance_same_min_ask=101.1,
+        hedge_ts=datetime(2026, 7, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert locked["status"] == "HEDGE_LOCKED"
+    assert locked["broker_hedge_price"] == 100.8
+    assert round(locked["net_locked_bps"], 2) == 99.21
+    assert locked["realized_pnl"] is None
+    assert locked["realized_pnl_bps"] is None
+
+
+def test_paper_trade_realized_pnl_only_after_both_legs_exit() -> None:
+    trade = create_weekend_basis_trade(
+        week_id="2026-W27",
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_entry_bid=101.8,
+        binance_short_qty=2,
+    )
+    locked = record_broker_hedge(trade, broker_hedge_ask=100.8, broker_shares=2)
+
+    closed = close_weekend_basis_trade(
+        locked,
+        binance_exit_ask=100.6,
+        broker_exit_bid=101.2,
+        fees=0.1,
+        funding=0.0,
+        slippage=0.0,
+        exit_ts=datetime(2026, 7, 6, 2, tzinfo=timezone.utc),
+    )
+
+    assert closed["status"] == "CLOSED"
+    assert round(closed["realized_pnl"], 2) == 3.1
+    assert round(closed["realized_pnl_bps"], 2) == 152.26
+
+
+def test_max_broker_buy_price_blocks_unpriced_hedge_prompt() -> None:
+    cfg = BasisStrategyConfig(required_net_locked_bps=100)
+    trade = create_weekend_basis_trade(
+        week_id="2026-W27",
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_entry_bid=101.0,
+    )
+    max_buy = max_broker_buy_price(trade, cfg)
+
+    evaluated = evaluate_open_trade(
+        trade,
+        broker_bar=_broker_bar(datetime(2026, 7, 6, 0, tzinfo=timezone.utc), max_buy + 0.2, max_buy + 0.3),
+        config=cfg,
+    )
+
+    assert round(max_buy, 2) == 100.0
+    assert evaluated["status"] == "HEDGE_DUE"
+    assert evaluated["hedge_ok"] is False
+    assert evaluated["warning"] == "BROKER_PRICE_ABOVE_LIMIT"
+
+
+def test_residual_basis_convergence_moves_hedged_trade_to_exit_ready() -> None:
+    trade = create_weekend_basis_trade(
+        week_id="2026-W27",
+        ticker="NVDA",
+        mapping=_mapping()["NVDA"],
+        broker_anchor_price=100,
+        binance_entry_bid=101.8,
+    )
+    locked = record_broker_hedge(trade, broker_hedge_bid=100.8, broker_hedge_ask=100.9)
+
+    evaluated = evaluate_open_trade(
+        locked,
+        current_binance_quote=_basis_quote(datetime(2026, 7, 6, 1, tzinfo=timezone.utc), 100.95, 101.0),
+        broker_bar=_broker_bar(datetime(2026, 7, 6, 1, tzinfo=timezone.utc), 100.9, 100.95),
+        config=BasisStrategyConfig(exit_basis_threshold_bps=10),
+    )
+
+    assert evaluated["status"] == "EXIT_READY"
+    assert abs(evaluated["residual_basis_bps"]) <= 10
+
+
+def test_weekend_spread_paper_opportunity_blocks_unconfirmed_mapping_in_ui_frame() -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "binance_bid": 101.65,
+            "binance_ask": 101.7,
+            "afterhours_reference_price": 100,
+            "friday_close_date": "2026-07-03",
+            "updated_at": "2026-07-05T18:00:00+00:00",
+        }
+    ]
+
+    opportunities = weekend_spread._paper_opportunities(rows, _mapping(mapping_confidence="candidate"))
+    frame = weekend_spread._paper_opportunity_frame(opportunities)
+
+    assert opportunities[0]["status"] == "BLOCK_MAPPING"
+    assert "映射未确认" in frame.loc[0, "status"]
+
+
+def test_weekend_spread_ui_exposes_paper_trade_area() -> None:
+    source = inspect.getsource(weekend_spread)
+
+    assert "实盘模拟 / Paper Trade" in source
+    assert "create_weekend_basis_trade" in source
+    assert "record_broker_hedge" in source
+    assert "close_weekend_basis_trade" in source
 
 
 def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap(tmp_path) -> None:

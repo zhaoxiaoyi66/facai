@@ -11,6 +11,14 @@ import streamlit as st
 
 from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.binance_provider import DEFAULT_BINANCE_CACHE_PATH, normalize_market_type
+from data.weekend_basis import (
+    build_basis_opportunity,
+    close_weekend_basis_trade,
+    create_weekend_basis_trade,
+    load_weekend_basis_trades,
+    record_broker_hedge,
+    upsert_weekend_basis_trade,
+)
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
@@ -109,6 +117,7 @@ def _render_realtime_tab(
     else:
         st.info("当前没有可展示的实时价差。若已有映射，请刷新价格或查看映射状态。")
 
+    _render_paper_trade_area(rows, mapping)
     _render_no_mapping_expander(rows)
     return rows, mapping_counts
 
@@ -694,6 +703,14 @@ def _data_quality_text(value: object) -> str:
 
 def _basis_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
+    overrides = {
+        "ALLOW_SHORT": "允许开空观察",
+        "BLOCK_MAPPING": "映射未确认",
+        "BLOCK_LIQUIDITY": "流动性阻断",
+        "BLOCK_DATA": "数据不足",
+    }
+    if text in overrides:
+        return overrides[text]
     return {
         "OBSERVE": "观察",
         "ENTRY_CANDIDATE": "入场候选",
@@ -808,6 +825,101 @@ def _render_backtest_advanced_records() -> None:
             st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
 
 
+def _render_paper_trade_area(rows: list[dict], mapping: dict[str, dict]) -> None:
+    with st.expander("实盘模拟 / Paper Trade", expanded=False):
+        st.caption("只做手动记录、状态流转和复盘，不连接真实下单 API，不输出套利、买卖或对冲指令。")
+        opportunities = _paper_opportunities(rows, mapping)
+        if not opportunities:
+            st.info("当前没有可展示的 basis 机会。请先配置 Binance 合约映射并刷新价格。")
+            return
+        best = max(opportunities, key=lambda item: abs(float(item.get("entry_premium_bps") or 0)))
+        cols = st.columns(5)
+        cols[0].metric("当前状态", _basis_status_text(best.get("status")))
+        cols[1].metric("当前最优", str(best.get("ticker") or ""))
+        cols[2].metric("entry premium", _bps_text(best.get("entry_premium_bps")))
+        cols[3].metric("expected locked", _bps_text(best.get("expected_net_locked_bps")))
+        cols[4].metric("warning", str(best.get("warning") or ""))
+        st.dataframe(_paper_opportunity_frame(opportunities), width="stretch", hide_index=True)
+
+        trades = load_weekend_basis_trades()
+        if trades:
+            st.dataframe(_paper_trade_frame(trades), width="stretch", hide_index=True)
+
+        selected = st.selectbox(
+            "Paper Trade ticker",
+            [str(item.get("ticker") or "") for item in opportunities],
+            key="weekend_basis_paper_ticker",
+        )
+        selected_opp = next((item for item in opportunities if str(item.get("ticker") or "") == selected), opportunities[0])
+        col_entry, col_hedge, col_exit = st.columns(3)
+        with col_entry:
+            st.markdown("**Entry Plan**")
+            st.caption(f"Binance 空单限价 ≥ {_money_text(selected_opp.get('min_binance_short_price'))}")
+            st.caption(f"当前 bid：{_money_text(selected_opp.get('binance_entry_bid'))}")
+            short_price = st.number_input(
+                "记录 Binance short 成交价",
+                min_value=0.0,
+                value=float(_number(selected_opp.get("binance_entry_bid")) or 0.0),
+                step=0.01,
+                key="weekend_basis_short_price",
+            )
+            short_qty = st.number_input(
+                "Binance short qty",
+                min_value=0.0,
+                value=0.0,
+                step=1.0,
+                key="weekend_basis_short_qty",
+            )
+            if st.button("记录 Binance 空单", width="stretch", key="weekend_basis_record_short"):
+                trade = create_weekend_basis_trade(
+                    week_id=_paper_week_id(selected_opp),
+                    ticker=str(selected_opp.get("ticker") or ""),
+                    mapping=mapping.get(str(selected_opp.get("ticker") or "").upper(), {}),
+                    broker_anchor_price=float(_number(selected_opp.get("broker_anchor_price")) or 0.0),
+                    binance_entry_bid=short_price,
+                    binance_entry_ask=_number(selected_opp.get("binance_entry_ask")),
+                    binance_short_qty=short_qty,
+                    entry_premium_bps=_number(selected_opp.get("entry_premium_bps")),
+                    warning=str(selected_opp.get("warning") or ""),
+                )
+                upsert_weekend_basis_trade(trade)
+                st.success("已记录 Binance 空单，状态 SHORT_OPEN。")
+        active_trades = [trade for trade in load_weekend_basis_trades() if str(trade.get("status") or "") not in {"CLOSED", "FAILED"}]
+        selected_trade = active_trades[-1] if active_trades else {}
+        with col_hedge:
+            st.markdown("**Hedge Plan**")
+            if selected_trade:
+                st.caption(f"Broker 买入限价 ≤ {_money_text(selected_opp.get('max_broker_buy_price'))}")
+                hedge_ask = st.number_input("记录 broker hedge ask", min_value=0.0, value=0.0, step=0.01, key="weekend_basis_hedge_ask")
+                hedge_bid = st.number_input("记录 broker hedge bid", min_value=0.0, value=0.0, step=0.01, key="weekend_basis_hedge_bid")
+                broker_shares = st.number_input("broker shares", min_value=0.0, value=0.0, step=1.0, key="weekend_basis_broker_shares")
+                if st.button("记录 Broker 买入对冲", width="stretch", key="weekend_basis_record_hedge"):
+                    updated = record_broker_hedge(
+                        selected_trade,
+                        broker_hedge_ask=hedge_ask,
+                        broker_hedge_bid=hedge_bid or None,
+                        broker_shares=broker_shares or None,
+                        binance_same_min_bid=_number(selected_opp.get("binance_entry_bid")),
+                        binance_same_min_ask=_number(selected_opp.get("binance_entry_ask")),
+                    )
+                    upsert_weekend_basis_trade(updated)
+                    st.success("已记录 broker hedge，状态 HEDGE_LOCKED。")
+            else:
+                st.caption("先记录 Binance 空单后，才会进入 hedge 记录。")
+        with col_exit:
+            st.markdown("**Exit Plan**")
+            if selected_trade:
+                st.caption("只有双腿都退出后才计算 realized_pnl。")
+                binance_exit = st.number_input("Binance exit ask", min_value=0.0, value=0.0, step=0.01, key="weekend_basis_exit_ask")
+                broker_exit = st.number_input("Broker exit bid", min_value=0.0, value=0.0, step=0.01, key="weekend_basis_exit_bid")
+                if st.button("记录双腿退出", width="stretch", key="weekend_basis_record_exit"):
+                    closed = close_weekend_basis_trade(selected_trade, binance_exit_ask=binance_exit, broker_exit_bid=broker_exit)
+                    upsert_weekend_basis_trade(closed)
+                    st.success("已记录双腿退出，状态 CLOSED。")
+            else:
+                st.caption("暂无打开中的 paper trade。")
+
+
 def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
     st.subheader("映射管理")
     status_counts = _mapping_management_counts(rows, mapping)
@@ -847,6 +959,117 @@ def _filter_rows(
     elif focus_only:
         result = [row for row in result if row.get("alert_level") in {"FOCUS", "ABNORMAL"}]
     return result
+
+
+def _paper_opportunities(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
+    opportunities: list[dict] = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker or not row.get("binance_symbol"):
+            continue
+        bid = _number(row.get("binance_bid"))
+        ask = _number(row.get("binance_ask"))
+        quote_rows = []
+        if bid is not None and ask is not None:
+            quote_rows.append(
+                {
+                    "ts": _parse_utc_time(row.get("updated_at")) or now,
+                    "bid": bid,
+                    "ask": ask,
+                    "depth_usd": row.get("binance_volume_24h"),
+                    "source": row.get("source") or "weekend_spread_row",
+                }
+            )
+        anchor = _number(row.get("afterhours_reference_price") or row.get("regular_close_price") or row.get("friday_close"))
+        opportunity = build_basis_opportunity(
+            ticker=ticker,
+            mapping=mapping.get(ticker, {}),
+            broker_anchor_price=anchor,
+            binance_quotes=quote_rows,
+            now=now,
+        )
+        opportunity.update(
+            {
+                "week_id": _paper_week_id(row),
+                "mapping_status": row.get("mapping_confidence") or opportunity.get("mapping_status"),
+                "data_quality": opportunity.get("data_quality") or row.get("status"),
+                "time_to_broker_open": row.get("time_to_broker_open") or "",
+            }
+        )
+        opportunities.append(opportunity)
+    return opportunities
+
+
+def _paper_opportunity_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "ticker"),
+        ("status", "status"),
+        ("entry_premium_bps", "entry_premium_bps"),
+        ("relative_high_rank", "relative_high_rank"),
+        ("pullback_bps", "pullback_bps"),
+        ("min_binance_short_price", "min_binance_short_price"),
+        ("max_broker_buy_price", "max_broker_buy_price"),
+        ("expected_net_locked_bps", "expected_net_locked_bps"),
+        ("time_to_broker_open", "time_to_broker_open"),
+        ("mapping_status", "mapping_status"),
+        ("data_quality", "data_quality"),
+        ("warning", "warning"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    display["status"] = display["status"].map(_basis_status_text)
+    for col in ("entry_premium_bps", "pullback_bps", "expected_net_locked_bps"):
+        display[col] = display[col].map(_bps_text)
+    display["relative_high_rank"] = display["relative_high_rank"].map(_percent_text)
+    for col in ("min_binance_short_price", "max_broker_buy_price"):
+        display[col] = display[col].map(_money_text)
+    display["data_quality"] = display["data_quality"].map(_data_quality_text)
+    return display
+
+
+def _paper_trade_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("trade_id", "trade_id"),
+        ("ticker", "ticker"),
+        ("status", "status"),
+        ("binance_entry_price", "binance_entry_price"),
+        ("broker_hedge_price", "broker_hedge_price"),
+        ("net_locked_bps", "net_locked_bps"),
+        ("residual_basis_bps", "residual_basis_bps"),
+        ("realized_pnl_bps", "realized_pnl_bps"),
+        ("updated_at", "updated_at"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    display["status"] = display["status"].map(_basis_status_text)
+    for col in ("binance_entry_price", "broker_hedge_price"):
+        display[col] = display[col].map(_money_text)
+    for col in ("net_locked_bps", "residual_basis_bps", "realized_pnl_bps"):
+        display[col] = display[col].map(_bps_text)
+    display["updated_at"] = display["updated_at"].map(_short_hkt_time)
+    return display
+
+
+def _paper_week_id(row: dict) -> str:
+    date_text = str(row.get("friday_close_date") or row.get("regular_close_date") or "").strip()
+    if date_text:
+        try:
+            parsed = datetime.fromisoformat(date_text)
+            iso = parsed.date().isocalendar()
+            return f"{iso.year}-W{iso.week:02d}"
+        except ValueError:
+            pass
+    iso = datetime.now(timezone.utc).date().isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 def _default_live_rows(rows: list[dict]) -> list[dict]:
