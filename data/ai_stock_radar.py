@@ -858,11 +858,11 @@ def calculate_decision(
         return "DATA_MISSING"
     if current_price is None:
         return "DATA_MISSING"
+    context_action = str((buy_zone_context or {}).get("current_action") or "").strip().upper()
+    if not context_action or context_action in {"DATA_INSUFFICIENT", "DATA_MISSING", "NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "DATA_MISSING"
     if _value(scores.risk_score) < 35:
         return "AVOID"
-    context_action = str((buy_zone_context or {}).get("current_action") or "").strip().upper()
-    if not context_action or context_action == "DATA_INSUFFICIENT":
-        return "DATA_MISSING"
     if context_action == "BLOCK_CHASE":
         return "BLOCK_CHASE"
     if context_action in {"RISK_REVIEW", "AVOID"}:

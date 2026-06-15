@@ -201,6 +201,27 @@ def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
     assert any("追高" in item for item in fields["radarAdvisoryWarnings"])
 
 
+def test_portfolio_trade_entry_detects_buy_zone_v2_inputs() -> None:
+    assert portfolio_trade_entry._has_buy_zone_context_inputs(
+        {
+            "current_price": 100,
+            "daily_ohlcv": [{"close": 100, "volume": 1000}],
+            "ema20": 98,
+            "atr_14": 3,
+            "support_clusters": [{"low": 95, "high": 99}],
+            "technical_levels": {"resistance": 105},
+        }
+    )
+
+
+def test_portfolio_trade_entry_detects_existing_canonical_display() -> None:
+    assert portfolio_trade_entry._has_buy_zone_context_inputs(
+        {
+            "buy_zone_display": {"action_code": "DATA_INSUFFICIENT"},
+        }
+    )
+
+
 def test_stock_plan_old_schema_adds_created_at_column_without_crashing() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"

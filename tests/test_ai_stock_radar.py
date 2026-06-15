@@ -26,6 +26,7 @@ from data.ai_stock_radar import (
 from data.sector_localization import get_ticker_research_track, localize_sector
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui import ai_stock_radar as radar_ui
+from ui import watchlist as watchlist_ui
 from ui.ai_stock_radar import select_radar_symbols
 
 
@@ -594,6 +595,47 @@ def test_list_core_status_prefers_unified_buy_zone_context() -> None:
     assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "DATA_MISSING"}}) == "数据不足"
     assert radar_ui._core_status({"decision": "AVOID", "buy_zone_context": {"current_action": "NO_BUY_ZONE"}}) == "未生成买区"
     assert radar_ui._core_status({"decision": "AVOID"}) == "回避"
+
+
+def test_decision_does_not_turn_missing_buy_zone_into_avoid() -> None:
+    for action in ("DATA_INSUFFICIENT", "DATA_MISSING", "NO_BUY_ZONE", "ZONE_MISSING"):
+        decision = radar_data.calculate_decision(
+            current_price=100,
+            scores=_scores(risk_score=10),
+            buy_zone=_buy_zone(),
+            chase_zone=_chase_zone(),
+            data_status="OK",
+            block_reasons=[],
+            buy_zone_context={"current_action": action},
+        )
+
+        assert decision == "DATA_MISSING"
+
+
+def test_watchlist_prefers_canonical_buy_zone_status_over_avoid() -> None:
+    html = watchlist_ui._decision_badge_html(
+        {
+            "decision": "AVOID",
+            "buy_zone_context": {"current_action": "DATA_INSUFFICIENT"},
+        }
+    )
+
+    assert "数据不足" in html
+    assert "回避" not in html
+
+
+def test_watchlist_held_missing_data_shows_pause_add_instead_of_avoid() -> None:
+    html = watchlist_ui._decision_badge_html(
+        {
+            "decision": "AVOID",
+            "buy_zone_context": {"current_action": "DATA_INSUFFICIENT"},
+        },
+        held=True,
+    )
+
+    assert "暂停加仓" in html
+    assert "数据不足" in html
+    assert "回避" not in html
 
 
 def test_list_row_shows_buy_point_gap_without_avoid_semantics() -> None:

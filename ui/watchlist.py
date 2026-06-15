@@ -119,7 +119,7 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None
         row[1].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
         row[2].caption(str(entry.get("theme") or "未设置"))
         row[3].caption("当前已持仓" if held else "未持仓")
-        row[4].markdown(_decision_badge_html(radar.get("decision")), unsafe_allow_html=True)
+        row[4].markdown(_decision_badge_html(radar, held=held), unsafe_allow_html=True)
         row[5].markdown(_entry_display_html(radar), unsafe_allow_html=True)
         row[6].caption(_data_status_label(radar.get("data_status")))
         row[7].caption(_date_text(entry.get("added_at")))
@@ -246,17 +246,66 @@ def _status_badge_html(status: object) -> str:
     return f'<span class="watchlist-badge {escape(tone)}">{escape(label)}</span>'
 
 
-def _decision_badge_html(decision: object) -> str:
-    value = str(decision or "DATA_MISSING")
-    label = _DECISION_LABELS.get(value, "数据不足")
+def _decision_badge_html(decision: object, *, held: bool = False) -> str:
+    value, label, canonical_tone = _decision_badge_parts(decision, held=held)
     tone = {
         "ALLOW_BUY": "ok",
         "WAIT": "wait",
         "BLOCK_CHASE": "block",
         "AVOID": "block",
         "DATA_MISSING": "muted",
-    }.get(value, "muted")
+        "NO_BUY_ZONE": "muted",
+    }.get(value, canonical_tone or "muted")
     return f'<span class="watchlist-badge {escape(tone)}">{escape(label)}</span>'
+
+
+def _decision_badge_parts(source: object, *, held: bool = False) -> tuple[str, str, str]:
+    row = source if isinstance(source, dict) else {}
+    canonical_action = _canonical_buy_zone_action(row)
+    if canonical_action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        return "DATA_MISSING", "暂停加仓 / 数据不足" if held else "数据不足", "muted"
+    if canonical_action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "NO_BUY_ZONE", "未生成买区", "muted"
+    if canonical_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "ALLOW_BUY", "允许复核买入", "ok"
+    if canonical_action in {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}:
+        return "WAIT", "等待", "wait"
+    if canonical_action == "BLOCK_CHASE":
+        return "BLOCK_CHASE", "禁止追高", "block"
+    if canonical_action == "RISK_REVIEW":
+        return "WAIT", "风控复核", "wait"
+    if canonical_action == "AVOID":
+        return "AVOID", "回避", "block"
+
+    decision = row.get("decision") if row else source
+    value = str(decision or "DATA_MISSING").strip().upper()
+    return value, _DECISION_LABELS.get(value, "数据不足"), ""
+
+
+def _canonical_buy_zone_action(row: dict) -> str:
+    display = row.get("buy_zone_display") or row.get("buyZoneDisplay")
+    if isinstance(display, dict):
+        for key in (
+            "current_action",
+            "currentAction",
+            "action_status",
+            "actionStatus",
+            "action_code",
+            "action",
+            "buy_zone_action",
+            "buyZoneAction",
+            "entry_context_status",
+        ):
+            value = str(display.get(key) or "").strip().upper()
+            if value:
+                return value
+    context = row.get("buy_zone_context") or row.get("buyZoneContext")
+    if isinstance(context, dict):
+        for key in ("current_action", "currentAction", "action_status", "actionStatus"):
+            value = str(context.get(key) or "").strip().upper()
+            if value:
+                return value
+    return ""
 
 
 def _data_status_label(value: object) -> str:

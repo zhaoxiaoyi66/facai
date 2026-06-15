@@ -321,9 +321,16 @@ def _safe_buy_zone_context(report_data: dict[str, Any], volume_price_acceptance:
 
 
 def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
+    if _present(data.get("buy_zone_context")) or _present(data.get("buyZoneContext")):
+        return True
+    if _present(data.get("buy_zone_display")) or _present(data.get("buyZoneDisplay")):
+        return True
     has_levels = any(
-        data.get(key) not in (None, "")
+        _present(data.get(key))
         for key in (
+            "current_price",
+            "currentPrice",
+            "price",
             "deep_support_zone_low",
             "support_watch_zone_low",
             "effective_technical_entry_zone_low",
@@ -332,9 +339,48 @@ def _has_buy_zone_context_inputs(data: dict[str, Any]) -> bool:
             "confirmation_price",
             "invalidation_price",
             "chase_above_price",
+            "daily_ohlcv",
+            "price_history",
+            "history",
+            "ohlcv",
+            "ma20",
+            "ma50",
+            "ma200",
+            "ema20",
+            "ema50",
+            "ema200",
+            "atr",
+            "atr_14",
+            "atr14",
+            "support_cluster",
+            "support_clusters",
+            "support_zone",
+            "support_zone_low",
+            "resistance",
+            "resistance_zone",
+            "resistance_zone_high",
+            "technical_levels",
         )
     )
     return has_levels
+
+
+def _present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return bool(value)
+    if isinstance(value, (list, tuple, set)):
+        return bool(value)
+    empty = getattr(value, "empty", None)
+    if empty is not None:
+        try:
+            return not bool(empty)
+        except Exception:
+            return True
+    return True
 
 
 def _buy_zone_context_advisory_notes(context: dict[str, Any]) -> list[str]:
