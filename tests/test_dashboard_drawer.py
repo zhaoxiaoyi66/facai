@@ -167,7 +167,7 @@ def test_quick_decision_blocks_chase_even_when_legacy_says_buy() -> None:
                 "current_price": 118,
                 "pullback_zone_low": 95,
                 "pullback_zone_high": 105,
-                "primary_zone_text": "追高禁区",
+                "primary_zone_text": "追高风险区",
                 "zone_selection_reason": "价格已脱离主击球区。",
             },
         }
@@ -200,8 +200,17 @@ def test_quick_decision_allows_small_buy_copy_without_raw_enum() -> None:
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "小仓观察参考" in html
+    assert "小仓观察" in html
+    assert "允许" not in html
     assert "ALLOW_SMALL_BUY" not in html
+
+
+def test_drawer_auxiliary_fallback_does_not_expose_backend_trade_enums() -> None:
+    html = dashboard_drawer._drawer_action_fusion_fallback_html()
+
+    assert "ALLOW_BUY" not in html
+    assert "portfolio sync" not in html
+    assert "辅助依据" in html
 
 
 def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:

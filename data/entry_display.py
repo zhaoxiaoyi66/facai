@@ -296,9 +296,9 @@ def build_entry_display(report_or_summary: dict[str, Any] | None = None, **overr
             )
         result.update(
             {
-                "entry_display_label": f"禁止追高，技术回踩参考 {label_zone}",
+                "entry_display_label": f"追高风险提醒，技术回踩参考 {label_zone}",
                 "entry_display_reason": reason,
-                "entry_action_hint": "进入追高区，禁止新增",
+                "entry_action_hint": "进入追高风险区，系统不建议新增",
                 "entry_context_status": "IN_CHASE_ZONE",
             }
         )
@@ -479,7 +479,7 @@ def format_entry_action_hint(
         return "买区内但估值评分低于 40，需复核"
     if _value_or_zero(risk_score) < 60:
         return "买区内但风险评分不足，需复核"
-    return "买区内但门禁未放行，需复核"
+    return "买区内但量价或风险条件不足，需复核"
 
 
 def explain_missing_entry_fields(
@@ -530,7 +530,7 @@ def _distance_reason(distance_pct: float | None, prefix: str, chase_above_price:
     if distance_pct is not None:
         parts.append(f"当前{prefix} {abs(distance_pct):g}%")
     if chase_above_price is not None:
-        parts.append(f"追高禁区 >{_price_text(chase_above_price)}")
+        parts.append(f"追高风险区 >{_price_text(chase_above_price)}")
     return "；".join(parts) if parts else "等待价格回到主击球区"
 
 
@@ -548,7 +548,7 @@ def _technical_pullback_reason(
         f"深度估值区 {deep_value_zone_text}",
     ]
     if overlap:
-        parts.append(f"原技术回踩区 {raw_technical_zone_text} 与追高禁区重叠，超过追高线部分不作为新增参考")
+        parts.append(f"原技术回踩区 {raw_technical_zone_text} 与追高风险区重叠，超过追高线部分不作为新增参考")
     if technical_reason:
         parts.append(technical_reason)
     if fallback:

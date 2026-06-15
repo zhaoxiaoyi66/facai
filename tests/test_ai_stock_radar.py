@@ -209,7 +209,7 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     assert "投资结论" in html
     assert "追高风险" in html
     assert "不主动追买" in html
-    assert "追高禁区" in html
+    assert "追高风险区" in html
     assert "当前位置" in html
     assert "当前位置" in html
     assert "入场条件" in html
@@ -1611,6 +1611,18 @@ def test_ai_radar_report_position_action_uses_buy_zone_display() -> None:
 
     assert "已有 100 股，当前新增额度为 0，系统不建议新增" in html
     assert "允许回踩复核加仓" not in html
+
+
+def test_ai_radar_fallback_action_copy_uses_advisory_language() -> None:
+    action_result = SimpleNamespace(action_code="ALLOW_SMALL_BUY")
+
+    rating = radar_ui._rating_text({}, action_result, {})
+    localized = radar_ui._localize_report_text("ALLOW_BUY")
+
+    assert rating == "小仓观察建议"
+    assert localized == "小仓观察建议"
+    assert "允许" not in rating
+    assert "允许" not in localized
 
 
 def test_ai_radar_report_completeness_localizes_raw_missing_fields() -> None:

@@ -1547,7 +1547,7 @@ def _buy_premise_text(report: dict[str, Any], buy_zone_context: dict[str, Any] |
     if len(parts) == 1:
         setup_score = _number(buy_zone_context.get("setup_score"))
         if setup_score is None or setup_score < 62:
-            parts.append("setup score 达到可小仓阈值")
+            parts.append("setup score 达到小仓观察阈值")
         parts.extend(["量价继续确认", "风险复核完成"])
     return " + ".join(parts)
 
@@ -1676,8 +1676,8 @@ def _batting_entry_condition(status: str, action_code: str) -> str:
     if status == "低于击球区":
         return "先确认未跌破失效线并出现承接"
     if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
-        return "区内缩量企稳 / 出现承接K线后小仓观察"
-    return "区内缩量企稳 / 出现承接K线"
+        return "价格候选区，仍需量价确认"
+    return "缩量回踩，承接未确认"
 
 
 def _batting_operation(status: str, action_text: str, action_code: str) -> str:
@@ -1688,7 +1688,7 @@ def _batting_operation(status: str, action_text: str, action_code: str) -> str:
     if status == "追高区":
         return "不追，等待回到击球区"
     if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
-        return "小仓观察参考，不能一次打满"
+        return "低风险观察参考，不能一次打满"
     if status == "高于击球区":
         return "不追，等回踩到击球区后观察承接"
     if status == "低于击球区":
@@ -1709,8 +1709,8 @@ def _batting_volume_state(report: dict[str, Any], buy_zone_context: dict[str, An
 def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_context: dict[str, Any] | None = None) -> str:
     context_action = str((buy_zone_context or {}).get("current_action") or "").upper()
     context_map = {
-        "ALLOW_SMALL_BUY": "小仓观察",
-        "ALLOW_ADD_ON_PULLBACK": "小仓观察",
+        "ALLOW_SMALL_BUY": "小仓观察建议",
+        "ALLOW_ADD_ON_PULLBACK": "小仓观察建议",
         "WAIT_PULLBACK": "等待回踩",
         "WAIT_CONFIRMATION": "等待确认",
         "BLOCK_CHASE": "追高风险",
@@ -1722,8 +1722,8 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
         return context_map[context_action]
     action_code = str(getattr(action_result, "action_code", "") or "").upper()
     action_map = {
-        "ALLOW_SMALL_BUY": "允许小仓",
-        "ADD_ON_PULLBACK": "小仓观察",
+        "ALLOW_SMALL_BUY": "小仓观察建议",
+        "ADD_ON_PULLBACK": "小仓观察建议",
         "ADD_ON_BREAKOUT": "等待确认",
         "WAIT_CONFIRMATION": "等待确认",
         "HOLD_NO_ADD": "等待确认",
@@ -1737,7 +1737,7 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
         return action_map[action_code]
     decision = str(report.get("decision") or "").upper()
     return {
-        "ALLOW_BUY": "小仓观察",
+        "ALLOW_BUY": "小仓观察建议",
         "WAIT": "等待确认",
         "BLOCK_CHASE": "追高风险",
         "DATA_MISSING": "数据不足",
@@ -1747,7 +1747,7 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
 
 def _current_action_text(report: dict[str, Any], action_result: Any | None) -> str:
     action_code = str(getattr(action_result, "action_code", "") or "").upper()
-    if action_code in {"BLOCK_CHASE"} or _trade_zone_text(report) == "追高禁区":
+    if action_code in {"BLOCK_CHASE"} or _trade_zone_text(report) in {"追高禁区", "追高风险区"}:
         return "不主动追买"
     if action_code in {"DATA_INSUFFICIENT"}:
         return "需人工判断"
@@ -1767,7 +1767,7 @@ def _trade_zone_text(report: dict[str, Any]) -> str:
         "估值参考区": "合理买区",
         "买区内": "合理买区",
         "近端修复观察区": "修复观察区",
-        "追高风险区": "追高禁区",
+        "追高风险区": "追高风险区",
         "破位复核区": "风险失效区",
         "区间待补": "数据不足",
     }.get(zone, zone or "数据不足")
@@ -1782,7 +1782,7 @@ def _zone_selection(report: dict[str, Any], buy_zone_context: dict[str, Any] | N
         for item in _range_chart_items(report, buy_zone_context):
             label = str(item.get("label") or "").strip()
             low, high = item.get("range") or (None, None)
-            if label == "追高禁区":
+            if label == "追高风险区":
                 if low is not None and current >= low:
                     references.append(label)
                 continue
@@ -1888,14 +1888,14 @@ def _action_for_existing_position(conclusion: dict[str, Any], action_result: Any
     if rating in {"禁止追高", "追高风险", "暂不参与", "数据不足"}:
         return "持有观察，系统不建议加仓"
     if action_code in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK"}:
-        return "可小幅复核加仓，不能一次打满"
+        return "回踩复核，是否新增由用户确认"
     return "持有观察，未到加仓确认位"
 
 
 def _action_for_no_position(conclusion: dict[str, Any], action_result: Any | None) -> str:
     rating = str(conclusion.get("rating_text") or "")
-    if rating in {"允许小仓", "小仓观察"}:
-        return "小仓观察参考，等待量价继续确认"
+    if rating in {"允许小仓", "小仓观察", "小仓观察建议"}:
+        return "小仓观察建议，等待量价继续确认"
     if rating in {"禁止追高", "追高风险"}:
         return "不追买，等待回到观察区"
     if rating in {"暂不参与", "数据不足"}:
@@ -2151,7 +2151,7 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
         {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
         {"label": "趋势临界 / 二次承接区", "range": (trend_low or support_low or invalidation, trend_high or support_high), "tone": "orange"},
         {"label": "深度恐慌复核区", "range": (deep_panic_low, deep_panic_high), "tone": "red"},
-        {"label": "追高禁区", "range": (chase, None), "tone": "red"},
+        {"label": "追高风险区", "range": (chase, None), "tone": "red"},
     ])
     return items
 
@@ -3948,7 +3948,7 @@ def _localize_report_text(text: str) -> str:
         "BLOCK_CHASE": "追高风险提示",
         "DATA_INSUFFICIENT": "数据不足",
         "DATA_MISSING": "数据不足",
-        "ALLOW_BUY": "允许小仓",
+        "ALLOW_BUY": "小仓观察建议",
         "AVOID": "暂不参与",
         "HOLD_NO_ADD": "仓位偏高，不建议继续加",
         "POSITION_LIMITED": "仓位接近上限，建议控制节奏",

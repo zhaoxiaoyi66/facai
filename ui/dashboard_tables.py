@@ -149,9 +149,9 @@ def _compact_action_summary_text(value: object) -> str:
     if not text:
         return "待复核"
     if any(token in text for token in ("禁止", "追高", "阻止", "BLOCK")):
-        return "禁止新增"
+        return "追高风险提醒"
     if any(token in text for token in ("可加仓", "可小仓", "可正常", "分批", "ALLOW")):
-        return "可加仓"
+        return "小仓观察建议"
     if any(token in text for token in ("复核", "确认", "REVIEW")):
         return "待复核"
     if any(token in text for token in ("只观察", "观察", "等回踩", "等待")):
@@ -163,9 +163,9 @@ def _compact_action_summary_text(value: object) -> str:
 
 def _action_summary_tone(value: object) -> str:
     text = str(value or "")
-    if "可加仓" in text:
+    if "小仓观察建议" in text:
         return "green"
-    if "禁止" in text:
+    if "追高风险" in text:
         return "red"
     if "待复核" in text:
         return "yellow"
@@ -279,15 +279,15 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
     if context_status == "DATA_INSUFFICIENT":
         return "数据不足", "不给买区"
     if context_status == "ALLOW_SMALL_BUY":
-        return "击球区内", "可小仓"
+        return "击球区内", "小仓观察建议"
     if context_status == "ALLOW_ADD_ON_PULLBACK":
-        return "击球区内", "可加仓"
+        return "击球区内", "小仓观察建议"
     if context_status == "WAIT_PULLBACK":
         return "等回击球区", "不追"
     if context_status == "WAIT_CONFIRMATION":
         return "区内看承接", "等量价"
     if context_status == "BLOCK_CHASE":
-        return "追高禁区", "禁止追"
+        return "追高风险区", "追高风险提醒"
     if context_status == "RISK_REVIEW":
         return "风控复核", "暂停加仓"
     if context_status == "AVOID":
@@ -313,7 +313,7 @@ def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple
             return "买区外", "等回踩"
         return "买区外", "等回落"
     if price_position == "IN_CHASE_ZONE" or "禁止追高" in label:
-        return "追高区", "禁止新增"
+        return "追高风险区", "系统不建议新增"
     if label.startswith("跌破结构区"):
         return "跌破结构区", "先复核"
     if price_position == "BELOW_BUY_ZONE" or label.startswith(("低于买区", "跌破买区")):
@@ -372,7 +372,7 @@ def _short_entry_status(label: str) -> str:
 def _short_entry_hint(hint: str, fallback: str) -> str:
     text = str(hint or "").strip()
     if "禁止" in text:
-        return "禁止新增"
+        return "追高风险提醒"
     if "技术回踩" in text:
         return "等回踩"
     if "等待" in text or "回落" in text:
@@ -555,8 +555,8 @@ def _misleading_entry_fallback_label(row: pd.Series | dict, label: str) -> str:
         return ""
     action_text = str(_row_value(row, "finalAction") or _row_value(row, "action") or "")
     lane = str(_row_value(row, "decisionLane") or "")
-    if _row_is_chase_context(row) and ("禁止追高" in action_text or lane == "blocked"):
-        return "禁止追高，未到估值买点"
+    if _row_is_chase_context(row) and ("禁止追高" in action_text or "追高风险" in action_text or lane == "blocked"):
+        return "追高风险提醒，未到估值买点"
     if "复核" in action_text or str(_row_value(row, "dataConfidence") or "") == "low":
         return "需复核，未到估值买点"
     return "合理观察，未到估值买点"
@@ -566,7 +566,7 @@ def _row_is_chase_context(row: pd.Series | dict) -> bool:
     context = str(_row_value(row, "entry_context_status") or _row_value(row, "radar_entry_context_status") or "").strip()
     price_position = str(_row_value(row, "radar_price_position") or _row_value(row, "price_position") or "").strip()
     label = str(_row_value(row, "entry_display_label") or "").strip()
-    return context == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE" or label.startswith("禁止追高")
+    return context == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE" or label.startswith(("禁止追高", "追高风险"))
 
 
 def _looks_like_rating_token(value: object) -> bool:
@@ -691,8 +691,8 @@ def _short_badge_text(value: object) -> str:
     text = str(value)
     replacements = {
         "可小仓观察，待关键数据复核后再加仓": "待复核",
-        "可小仓分批": "可小仓",
-        "可正常分批": "可分批",
+        "可小仓分批": "小仓观察",
+        "可正常分批": "分批参考",
         "回撤后有吸引力": "回撤买点",
         "数据不足，需复核": "数据不足",
     }

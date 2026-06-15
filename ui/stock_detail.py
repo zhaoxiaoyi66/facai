@@ -289,9 +289,9 @@ def _portfolio_system_action_text(row: dict) -> str:
     if lane == "review":
         return "待复核"
     if lane == "blocked":
-        return "禁止追高"
+        return "追高风险提醒"
     if lane == "actionable":
-        return "可加仓"
+        return "小仓观察建议"
     if lane == "wait":
         return "只观察"
     return action or "未生成"
@@ -817,11 +817,11 @@ def _manual_override_fields(model_type: str) -> list[tuple[str, str, bool]]:
 
 def _decision_summary_text(score, buy_zone: BuyZoneEstimate, final_decision=None) -> str:
     action = _final_action_text(score, final_decision)
-    if buy_zone.currentZone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} and action not in {"禁止追高", "剔除"}:
+    if buy_zone.currentZone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} and action not in {"追高风险提醒", "剔除"}:
         return f"{score.scoring_model} 模型显示当前已经接近系统买区，但仍按风险等级控制新增仓位。"
     if score.risk_rating == "低" and action in {"只观察", "等回踩"}:
         return "风险评级低代表公司基本面风险较低，不等于当前价格值得追；当前动作主要受买点和估值约束。"
-    if buy_zone.currentZone == "no_chase" or action == "禁止追高":
+    if buy_zone.currentZone == "no_chase" or action == "追高风险提醒":
         return "公司质量和当前价格需要分开看：短线或估值偏热时，系统不建议追高新增。"
     return f"当前操作建议为「{action}」，系统买区用于约束新增仓位，而不是替代评分结论。"
 
@@ -841,9 +841,9 @@ def _decision_wait_items(score, buy_zone: BuyZoneEstimate) -> list[str]:
 
 def _buy_zone_label(zone: str) -> str:
     return {
-        "no_chase": "禁止追高区",
+        "no_chase": "追高风险区",
         "fair_observation": "合理观察区",
-        "tranche_buy": "可分批区",
+        "tranche_buy": "分批参考区",
         "heavy_buy": DEEP_DISCOUNT_ZONE_LABEL,
         "below_heavy_buy": f"低于{DEEP_DISCOUNT_ZONE_LABEL}",
         "data_insufficient": "数据不足区",
@@ -988,7 +988,7 @@ def _render_buy_zone(
     validation_errors = list(getattr(active_zone, "validationErrors", None) or [])
     rows = [
         ("当前价格", format_currency(price), _buy_zone_label(active_zone.currentZone), "current"),
-        ("禁止追高价", _precision_above_text(active_zone, "noChaseAbove", active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
+        ("追高风险价", _precision_above_text(active_zone, "noChaseAbove", active_zone.noChaseAbove), _zone_status(price, lower=active_zone.noChaseAbove, mode="above"), "no-chase"),
         ("合理观察区", _precision_range_text(active_zone, "fairValueLow", active_zone.fairValueLow, "fairValueHigh", active_zone.fairValueHigh), _zone_status(price, active_zone.fairValueLow, active_zone.fairValueHigh), "observe"),
         ("估值折价区", _precision_range_text(active_zone, "trancheBuyLow", active_zone.trancheBuyLow, "trancheBuyHigh", active_zone.trancheBuyHigh), _zone_status(price, active_zone.trancheBuyLow, active_zone.trancheBuyHigh), "tranche"),
         (DEEP_DISCOUNT_ZONE_LABEL, _precision_below_text(active_zone, "heavyBuyBelow", active_zone.heavyBuyBelow), _zone_status(price, upper=active_zone.heavyBuyBelow, mode="below"), "heavy"),
@@ -1141,9 +1141,9 @@ def _technical_levels_text(value: object) -> str:
 def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
-        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把追高风险、结构失效或低置信买区变成低风险建议。", *raw]
     if review_only:
-        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成可买。", *raw]
+        return ["趋势破坏、结构失效或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把追高风险、结构失效或低置信买区变成低风险建议。", *raw]
     guardrail = "估值买点、技术回踩点、轻仓试探点和极端恐慌区分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
@@ -1166,7 +1166,7 @@ def _render_price_alert_panel(ticker: str, active_zone: BuyZoneEstimate) -> None
             ["买入计划", "卖出计划", "风险复核", "手动提醒"],
             key=f"price-alert-plan-{ticker}",
         )
-        reason = cols[3].text_input("提醒原因", placeholder="例如 第一笔买入价 / 禁止追高价", key=f"price-alert-reason-{ticker}")
+        reason = cols[3].text_input("提醒原因", placeholder="例如 第一笔买入价 / 追高风险价", key=f"price-alert-reason-{ticker}")
         is_active = st.checkbox("启用提醒", value=True, key=f"price-alert-active-{ticker}")
         note = st.text_input(
             "备注",
@@ -1571,7 +1571,7 @@ def _entry_explanation(score, snapshot: dict, technicals: dict, plan: dict, buy_
 
 def _entry_wait_items(score, technicals: dict, plan: dict) -> list[str]:
     items: list[str] = []
-    if score.action in {"等回踩", "只观察", "禁止追高"}:
+    if score.action in {"等回踩", "只观察", "禁止追高", "追高风险提醒"}:
         items.append("等待估值或技术结构进一步确认")
     if score.overheat_score >= 40:
         items.append("过热分仍未完全消化")
@@ -1736,7 +1736,7 @@ def _zone_status(price: float | None, lower: float | None = None, upper: float |
     if mode == "above":
         if lower is None:
             return "未设置"
-        return "已进入禁止追高区" if price >= lower else "未触发"
+        return "已进入追高风险区" if price >= lower else "未触发"
     if mode == "below":
         if upper is None:
             return "未设置"
@@ -2358,7 +2358,7 @@ def _buy_point_sanity_label_for_zone(buy_zone: BuyZoneEstimate | None) -> str | 
     if zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
         return "需复核，未到估值买点"
     if zone == "no_chase":
-        return "禁止追高，未到估值买点"
+        return "追高风险提醒，未到估值买点"
     if zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"}:
         return None
     tranche_low = _first_number(getattr(buy_zone, "trancheBuyLow", None))

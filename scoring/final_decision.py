@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-BUY_ACTIONS = {"可小仓分批", "可正常分批"}
+BUY_ACTIONS = {"可小仓分批", "可正常分批", "小仓观察建议", "正常分批参考"}
 NON_BUY_VALUATION_STATUSES = {"只观察", "偏贵", "极贵"}
 BLOCKING_ZONES = {"no_chase", "invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}
 REVIEW_ACTION = "待复核，暂不新增"
@@ -69,7 +69,7 @@ def derive_final_decision(score: Any, buy_zone: Any = None, position_plan: Any =
             review_reasons.append("buy_zone")
     elif zone in BLOCKING_ZONES:
         block_reasons.append("buy_zone")
-        final_action = "禁止追高" if zone == "no_chase" else REVIEW_ACTION
+        final_action = "追高风险提醒" if zone == "no_chase" else REVIEW_ACTION
 
     if data_confidence.lower() == "low":
         block_reasons.append("data_confidence")
@@ -182,9 +182,9 @@ def _unified_buy_zone_primary_zone(buy_zone: Any) -> str | None:
 
 def _final_action_from_unified_buy_zone(unified_action: str, fallback_action: str) -> str:
     if unified_action in UNIFIED_SMALL_BUY_ACTIONS:
-        return "可小仓分批"
+        return "小仓观察建议"
     if unified_action == "BLOCK_CHASE":
-        return "禁止追高"
+        return "追高风险提醒"
     if unified_action == "RISK_REVIEW":
         return REVIEW_ACTION
     if unified_action == "DATA_INSUFFICIENT":
@@ -218,8 +218,8 @@ def _classify(
         return "actionable", "可执行"
     if "data_confidence" in block_reasons or zone in {"invalid_zone", "invalid_manual_override", "data_insufficient", "low_confidence_zone", "unsupported_buy_zone_model"}:
         return "review", "需复核"
-    if final_action == "禁止追高" or zone == "no_chase":
-        return "blocked", "禁止追高"
+    if final_action == "追高风险提醒" or zone == "no_chase":
+        return "review", "追高风险提醒"
     if final_action == REVIEW_ACTION or "buy_zone" in block_reasons:
         return "review", "需复核"
     if review_reasons:

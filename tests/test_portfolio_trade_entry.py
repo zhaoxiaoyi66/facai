@@ -179,7 +179,7 @@ def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
             "buy_zone_context": {
                 "current_action": "BLOCK_CHASE",
                 "action_text": "追高风险提醒",
-                "primary_zone_text": "追高禁区",
+                "primary_zone_text": "追高风险区",
                 "setup_score": 22,
                 "zone_selection_reason": "价格远离承接区。",
             },

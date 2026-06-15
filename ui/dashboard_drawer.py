@@ -430,10 +430,10 @@ def _drawer_canonical_action_text(action_code: str, *, has_position: bool) -> st
     mapping = {
         "WAIT_PULLBACK": "等回击球区",
         "WAIT_CONFIRMATION": "区内看承接",
-        "ALLOW_SMALL_BUY": "小仓观察参考",
-        "ALLOW_ADD_ON_PULLBACK": "小仓观察参考",
-        "BLOCK_CHASE": "追高风险区",
-        "RISK_REVIEW": "进入风控复核",
+        "ALLOW_SMALL_BUY": "小仓观察建议",
+        "ALLOW_ADD_ON_PULLBACK": "小仓观察建议",
+        "BLOCK_CHASE": "追高风险提醒",
+        "RISK_REVIEW": "风险复核提醒",
         "AVOID": "暂不参与",
     }
     return mapping.get(action_code, _drawer_compact_action_text(action_code))
@@ -444,16 +444,16 @@ def _drawer_position_action_text(action_code: str, *, has_position: bool) -> str
         return "持有观察，不建议加仓" if has_position else "数据不足，等待数据补齐"
     if has_position:
         if action_code == "ALLOW_ADD_ON_PULLBACK":
-            return "回踩复核加仓"
+            return "回踩复核，谨慎观察"
         if action_code == "RISK_REVIEW":
-            return "进入风控复核"
+            return "风险复核提醒"
         if action_code == "BLOCK_CHASE":
             return "持有观察，不追高"
         return "持有观察"
     if action_code == "ALLOW_SMALL_BUY":
-        return "小仓观察参考"
+        return "小仓观察建议"
     if action_code == "BLOCK_CHASE":
-        return "不追买"
+        return "追高风险提醒"
     return _drawer_canonical_action_text(action_code, has_position=False)
 
 
@@ -616,7 +616,7 @@ def _drawer_action_fusion_fallback_html() -> str:
         '<div class="action-fusion-grid">'
         '<div><b>待确认事项</b><ul><li>补齐本地 Radar / 技术 / 量价缓存后再复核。</li></ul></div>'
         '</div>'
-        '<small>Action Fusion 仅作系统建议展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>'
+        '<small>Action Fusion 仅作辅助依据展示，不改变买区主建议、Radar 研究状态或组合同步。</small>'
         '</section>'
     )
 
@@ -755,7 +755,7 @@ def _drawer_radar_entry_card_html(row: pd.Series) -> str:
     if next_technical_steps:
         lines.append("下一步：" + "；".join(next_technical_steps[:3]))
     if overlap:
-        lines.append("技术回踩区与追高禁区重叠；超过追高线部分不作为新增参考。")
+        lines.append("技术回踩区与追高风险区重叠；超过追高线部分不作为新增参考。")
         lines.append(
             "有效技术复核区："
             + _drawer_zone_range_text(technical_low, _drawer_effective_technical_high(technical_high, chase_above))
@@ -959,10 +959,10 @@ def _drawer_entry_zone_structure_html(
             "极端回撤支撑，不是常规目标",
         ),
         (
-            "追高禁区",
+            "追高风险区",
             "> " + _drawer_money_text(chase_above) if _drawer_number(chase_above) is not None else "N/A",
             _drawer_chase_relationship(current_price, chase_above, overlap),
-            "超过后禁止新增",
+            "超过后系统不建议新增",
         ),
         (
             "最终纪律判断",
@@ -1027,9 +1027,9 @@ def _drawer_select_key_entry_zone_rows(
     if status in {"VALUATION_REVIEW_TECHNICAL_UNCONFIRMED", "VALUE_REVIEW_NEAR_TERM_REPAIR"}:
         preferred = ["近端修复观察区", "确认线", "趋势确认区"]
     elif status == "IN_TECHNICAL_PULLBACK_ZONE":
-        preferred = ["技术回踩区", "追高禁区", "确认线"]
+        preferred = ["技术回踩区", "追高风险区", "确认线"]
     elif status == "IN_CHASE_ZONE" or price_status == "IN_CHASE_ZONE":
-        preferred = ["追高禁区", "技术回踩区", "最终纪律判断"]
+        preferred = ["追高风险区", "技术回踩区", "最终纪律判断"]
     elif status in {"BELOW_TECHNICAL_PULLBACK_ZONE", "BELOW_VALUATION_REFERENCE", "BELOW_DISCIPLINE_BUY_ZONE"} or (
         price_status == "BELOW_BUY_ZONE"
     ):
@@ -1037,7 +1037,7 @@ def _drawer_select_key_entry_zone_rows(
     elif status == "ZONE_MISSING" or price_status == "ZONE_MISSING":
         preferred = ["技术回踩区", "技术结构", "最终纪律判断"]
     elif technical_available:
-        preferred = ["技术回踩区", "确认线", "追高禁区"]
+        preferred = ["技术回踩区", "确认线", "追高风险区"]
     else:
         preferred = ["近端修复观察区", "确认线", "趋势确认区"]
 
@@ -1177,7 +1177,7 @@ def _drawer_entry_summary_reason(
 ) -> str:
     status = str(entry_context_status or "").strip()
     if status == "IN_TECHNICAL_PULLBACK_ZONE":
-        return "进入技术回踩区，但未满足 ALLOW_BUY，需确认趋势修复和估值风险。"
+        return "进入技术回踩区，但量价/趋势确认不足，需复核趋势修复和估值风险。"
     if status == "ABOVE_TECHNICAL_PULLBACK_ZONE":
         return "价格仍高于技术回踩区，等待更好的近端复核位置。"
     if status == "BELOW_TECHNICAL_PULLBACK_ZONE":
@@ -1187,7 +1187,7 @@ def _drawer_entry_summary_reason(
     if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
         return "当前估值已具备复核价值，价格位于近端修复观察区；趋势和结构尚未确认，系统建议先复核，不自动买入。"
     if status == "IN_CHASE_ZONE" or price_position == "IN_CHASE_ZONE":
-        return "价格进入追高禁区，禁止新增。"
+        return "价格进入追高风险区，系统不建议新增。"
     if price_position == "BELOW_BUY_ZONE":
         return "当前低于估值参考，不等于结构破坏；需等待 EMA、相对强弱和收盘确认。"
     return reason or hint or label or "暂无说明。"
@@ -1510,7 +1510,7 @@ def _drawer_volume_price_acceptance_card_html(row: pd.Series) -> str:
     distribution_count = _drawer_number(snapshot.get("distribution_count_10d", snapshot.get("distributionCount10d")))
     deductions = _drawer_text_list(snapshot.get("risk_deductions") or snapshot.get("riskDeductions"))
     lines = [
-        "只读提示：不改变 ALLOW_BUY / Radar decision / portfolio sync。",
+        "只读提示：不改变买区主建议、Radar 研究状态或组合同步。",
         f"量能标签：{volume_regime_cn}",
         f"量比：{'缺失' if volume_ratio is None else f'{volume_ratio:.2f}x'}",
         f"20日均量：{_drawer_volume_text(volume_ma20)}",
@@ -1761,9 +1761,9 @@ def _drawer_compact_action_text(value: object) -> str:
     if not text:
         return "待复核"
     if any(token in text for token in ("禁止", "追高", "阻止", "BLOCK")):
-        return "禁止新增"
+        return "追高风险提醒"
     if any(token in text for token in ("可加仓", "可小仓", "可正常", "分批", "ALLOW")):
-        return "可加仓"
+        return "小仓观察建议"
     if any(token in text for token in ("复核", "确认", "REVIEW")):
         return "等突破再评估"
     if any(token in text for token in ("只观察", "观察", "等回踩", "等待")):
@@ -1846,9 +1846,9 @@ def _drawer_primary_block_reason(row: pd.Series) -> str:
     if hint:
         return hint
     action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "")
-    if action == "可加仓":
+    if action in {"可加仓", "小仓观察建议"}:
         return "仍需按交易计划控制仓位。"
-    if action == "禁止新增":
+    if action in {"禁止新增", "追高风险提醒"}:
         return "当前不满足纪律新增条件。"
     if action == "待复核":
         return "先复核数据、估值或买区条件。"

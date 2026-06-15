@@ -34,10 +34,10 @@ PORTFOLIO_OVERWEIGHT = "PORTFOLIO_OVERWEIGHT"
 LOW_CONFIDENCE = "LOW_CONFIDENCE"
 
 ACTION_LABELS = {
-    ALLOW_SMALL_BUY: "允许小仓试探",
+    ALLOW_SMALL_BUY: "小仓观察建议",
     WAIT_CONFIRMATION: "等待确认",
-    ADD_ON_PULLBACK: "回踩到位再加",
-    ADD_ON_BREAKOUT: "放量确认后加",
+    ADD_ON_PULLBACK: "回踩复核观察",
+    ADD_ON_BREAKOUT: "放量确认后复核",
     HOLD_NO_ADD: "仓位偏高，暂不建议加",
     REDUCE_RISK: "降低风险",
     BLOCK_CHASE: "追高风险提示",
@@ -56,8 +56,8 @@ VOLUME_STATUS_LABELS = {
 }
 
 LEFT_SIDE_ACTION_LABELS = {
-    LEFT_PROBE_ALLOWED: "允许左侧试探",
-    LEFT_ADD_ALLOWED: "允许左侧小幅加仓",
+    LEFT_PROBE_ALLOWED: "左侧试仓参考",
+    LEFT_ADD_ALLOWED: "左侧小幅新增参考",
     LEFT_WAIT_BETTER_PRICE: "等待更低左侧价",
     LEFT_NOT_ALLOWED: "左侧不建议买入",
     EVENT_REVIEW_ONLY: "事件复核，不做左侧摊低",
@@ -365,7 +365,7 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
         f"{position_html}"
         f"{left_side_html}"
         "</div>"
-        "<small>Action Fusion 仅作交易建议融合展示，不改变 ALLOW_BUY / Radar decision / portfolio sync。</small>"
+        "<small>Action Fusion 仅作辅助依据展示，不改变买区主建议、Radar 研究状态或组合同步。</small>"
         "</section>"
     )
 
@@ -457,7 +457,7 @@ def _source_with_buy_zone_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def _buy_plan(action_code: str, symbol: str, next_trigger: str) -> str:
     if action_code == ALLOW_SMALL_BUY:
-        return f"{symbol} 可小仓试探，但仍需人工确认；{next_trigger}"
+        return f"{symbol} 处于小仓观察参考状态，仍需人工确认；{next_trigger}"
     if action_code == BLOCK_CHASE:
         return "不建议追高，等待回踩观察区或新的确认结构。"
     if action_code == EVENT_REVIEW:
@@ -472,7 +472,7 @@ def _buy_plan(action_code: str, symbol: str, next_trigger: str) -> str:
 def _add_plan(action_code: str, next_trigger: str) -> str:
     if action_code in {ALLOW_SMALL_BUY, ADD_ON_BREAKOUT, ADD_ON_PULLBACK}:
         return f"仅按计划小额分批；{next_trigger}"
-    return f"暂不加仓；{next_trigger}"
+    return f"当前不建议新增；{next_trigger}"
 
 
 def _reduce_plan(action_code: str) -> str:
@@ -693,14 +693,14 @@ def _build_left_side_plan(
         return _left_plan(
             LEFT_ADD_ALLOWED,
             True,
-            "允许左侧小幅加仓，但未过确认线，不能一次打满。",
+            "左侧小幅新增参考，但未过确认线，不能一次打满。",
             probe_size_cn=_left_add_size(weight, target_weight, cap_ratio),
             **common,
         )
     return _left_plan(
         LEFT_PROBE_ALLOWED,
         True,
-        "允许左侧小仓试探，但尚未确认；先用目标仓位的 20%-30%，等待量价继续确认。",
+        "左侧试仓参考，但尚未确认；先用目标仓位的 20%-30%，等待量价继续确认。",
         probe_size_cn=_left_probe_size(target_weight, cap_ratio),
         **common,
     )

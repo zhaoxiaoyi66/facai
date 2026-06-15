@@ -19,7 +19,7 @@ PAUSE_BUY = "PAUSE_BUY"
 ACTION_TEXT = {
     WAIT_PULLBACK: "等待回踩",
     WAIT_CONFIRMATION: "等待确认",
-    ALLOW_SMALL_BUY: "小仓观察参考",
+    ALLOW_SMALL_BUY: "小仓观察建议",
     ALLOW_ADD_ON_PULLBACK: "回踩复核参考",
     BLOCK_CHASE: "追高风险提醒",
     RISK_REVIEW: "进入风控复核",
@@ -35,7 +35,7 @@ ZONE_TEXT = {
     "PULLBACK_UPPER_WATCH": "买区上沿 / 修复观察区",
     "REPAIR_WATCH": "修复观察区",
     "CONFIRMATION_REVIEW": "确认复核区",
-    "CHASE_RISK": "追高禁区",
+    "CHASE_RISK": "追高风险区",
     "INVALIDATION": "失效风控区",
     "DATA_INSUFFICIENT": "技术承接数据不足",
 }

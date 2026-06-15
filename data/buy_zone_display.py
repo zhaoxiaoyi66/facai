@@ -221,7 +221,7 @@ def _account_text(
     if action in SMALL_BUY_ACTIONS:
         return {
             "sizing_action": "CAN_PROBE",
-            "sizing_action_text": "可小仓观察",
+            "sizing_action_text": "小仓观察建议",
             "account_action_text": f"无持仓，新增额度参考 {_pct_text(current_add)}",
         }
     return {
@@ -344,7 +344,7 @@ def _volume_confirmation_text(context: dict[str, Any], row: dict[str, Any]) -> s
         confirmation = _number(_value(context, "confirmation_price", "confirm_price", "confirmation_line", "confirm_line"))
         resistance = _number(_value(context, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"))
         if volume_ratio is not None and volume_ratio > 1.2 and confirmation is not None and current_price is not None and current_price >= confirmation:
-            return "承接成立，可小仓复核"
+            return "承接成立，建议复核"
         if volume_ratio is not None and volume_ratio > 1.0 and resistance is not None and current_price is not None and current_price >= resistance:
             return "承接成立"
         if volume_ratio is not None and volume_ratio >= 2.0:
