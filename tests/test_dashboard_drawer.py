@@ -211,21 +211,21 @@ def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:
             "buyZoneContext": {"current_action": "ALLOW_SMALL_BUY"},
             "buy_zone_display": {
                 "action_code": "ALLOW_SMALL_BUY",
-                "main_action_text": "持有观察 / 当前不新增",
+                "main_action_text": "持有观察 / 当前不建议新增",
                 "technical_action_text": "技术回踩带内，可观察",
-                "account_action_text": "已有 100 股，当前新增额度为 0",
+                "account_action_text": "已有 100 股，当前新增额度为 0，系统不建议新增",
                 "next_step_text": "等待新增额度恢复或技术确认进一步增强",
                 "zone_text": "$99.29 - $108.33",
-                "badge_hint": "当前不新增",
+                "badge_hint": "当前不建议新增",
             },
         }
     )
 
     decision = dashboard_drawer.build_drawer_primary_decision(row)
 
-    assert decision["action_text"] == "持有观察 / 当前不新增"
+    assert decision["action_text"] == "持有观察 / 当前不建议新增"
     assert decision["main_reason"] == "技术回踩带内，可观察"
-    assert decision["position_action"] == "已有 100 股，当前新增额度为 0"
+    assert decision["position_action"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
 
 
 def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:

@@ -117,8 +117,11 @@ class BuyZoneContext:
     distance_to_left_probe_low_pct: float | None = None
     distance_to_left_probe_high_pct: float | None = None
     volume_price_gate: str = ""
+    volume_price_state: str = ""
     execution_gate_reason: str = ""
     zone_action_quality: str = ""
+    advisory_level: str = ""
+    advisory_reasons: list[str] = field(default_factory=list)
     confirmation_score: float = 0.0
     volume_price_status: str = ""
 
@@ -346,6 +349,12 @@ def build_buy_zone_context(
                 "volume_score": 0.0,
                 "risk_reward_score": 0.0,
             },
+            volume_price_gate="DATA_INSUFFICIENT",
+            volume_price_state="DATA_INSUFFICIENT",
+            execution_gate_reason="技术承接数据不足，不给明确买区。",
+            zone_action_quality="DATA_INSUFFICIENT",
+            advisory_level="WARNING",
+            advisory_reasons=["技术承接数据不足", *missing[:4]],
         )
 
     left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
@@ -424,6 +433,17 @@ def build_buy_zone_context(
     )
     current_subzone = _current_subzone(primary_zone, left_probe_label, zone_position)
     left_side_quality = _left_side_quality(left_probe_label, volume_price_gate, rr.target_quality, rr_score)
+    advisory_level, advisory_reasons = _advisory_review(
+        action=action,
+        primary_zone=primary_zone,
+        current_subzone=current_subzone,
+        left_probe_position_label=left_probe_label,
+        volume_price_gate=volume_price_gate,
+        confirmation_score=confirmation_score,
+        target_quality=rr.target_quality,
+        rr_score=rr_score,
+        execution_reason=execution_gate_reason,
+    )
     pause_text = _pause_new_condition_text(pullback_low, invalidation, data)
     add_trigger_text = _add_trigger_condition_text(confirmation, breakout_reevaluation)
     return BuyZoneContext(
@@ -506,8 +526,11 @@ def build_buy_zone_context(
         distance_to_left_probe_low_pct=_distance_pct(price, left_probe_low),
         distance_to_left_probe_high_pct=_distance_pct(price, left_probe_high),
         volume_price_gate=volume_price_gate,
+        volume_price_state=volume_price_gate,
         execution_gate_reason=execution_gate_reason,
         zone_action_quality=_zone_action_quality(action, volume_price_gate, rr_score),
+        advisory_level=advisory_level,
+        advisory_reasons=advisory_reasons,
         confirmation_score=confirmation_score,
         volume_price_status=volume_status,
     )
@@ -1015,9 +1038,9 @@ def _left_side_position_pct(price: float | None, left_low: float | None, left_hi
 def _left_probe_position_label(left_side_position_pct: float | None) -> str:
     if left_side_position_pct is None:
         return "OUTSIDE"
-    if left_side_position_pct <= 50:
+    if left_side_position_pct < 35:
         return "LOWER_EDGE"
-    if left_side_position_pct <= 80:
+    if left_side_position_pct <= 75:
         return "MID_ZONE"
     return "UPPER_EDGE"
 
@@ -1542,12 +1565,79 @@ def _left_side_quality(left_probe_label: str, volume_price_gate: str, target_qua
 
 def _zone_action_quality(action: str, volume_price_gate: str, rr_score: float) -> str:
     if action == ALLOW_SMALL_BUY:
-        return "ACTIONABLE"
+        return "LOW_RISK_OBSERVATION"
     if action in {PAUSE_BUY, RISK_REVIEW, BLOCK_CHASE}:
-        return "BLOCKED"
+        return "HIGH_RISK_ADVISORY"
     if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED" or rr_score < 65:
         return "WAIT_CONFIRMATION"
     return "OBSERVE"
+
+
+def _advisory_review(
+    *,
+    action: str,
+    primary_zone: str,
+    current_subzone: str,
+    left_probe_position_label: str,
+    volume_price_gate: str,
+    confirmation_score: float,
+    target_quality: str,
+    rr_score: float,
+    execution_reason: str,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    level = "INFO"
+    if action == ALLOW_SMALL_BUY:
+        return "INFO", ["左侧位置、量价承接、目标质量和风险收益比达到小仓观察参考条件"]
+    if primary_zone == "CHASE_RISK" or action == BLOCK_CHASE:
+        reasons.append("追高风险提醒")
+        level = "HIGH_RISK"
+    if primary_zone == "INVALIDATION" or action == PAUSE_BUY:
+        reasons.append("结构失效风险，建议复核")
+        level = "HIGH_RISK"
+    if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
+        reasons.append("放量未确认，等收盘确认 / 事件复核")
+        level = max(level, "WARNING", key=_advisory_rank)
+    if volume_price_gate == "FAILED_ACCEPTANCE":
+        reasons.append("量价承接失败")
+        level = "HIGH_RISK"
+    if left_probe_position_label == "UPPER_EDGE":
+        reasons.append("左侧试仓区上沿，边缘观察")
+        level = max(level, "WARNING", key=_advisory_rank)
+    elif left_probe_position_label == "MID_ZONE":
+        reasons.append("左侧试仓区中段，区内看承接")
+        level = max(level, "WARNING", key=_advisory_rank)
+    elif left_probe_position_label == "OUTSIDE" and current_subzone in {"ACCEPTANCE_OBSERVATION_ZONE", "REPAIR_OBSERVATION_ZONE"}:
+        reasons.append("技术回踩带观察层，不建议主动新增")
+        level = max(level, "WARNING", key=_advisory_rank)
+    if target_quality in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""}:
+        reasons.append("收益目标质量不足")
+        level = max(level, "WARNING", key=_advisory_rank)
+    if rr_score < 65:
+        reasons.append("风险收益比质量不足")
+        level = max(level, "WARNING", key=_advisory_rank)
+    if confirmation_score < 60 and action != WAIT_PULLBACK:
+        reasons.append("量价确认分不足")
+        level = max(level, "WARNING", key=_advisory_rank)
+    if execution_reason:
+        reasons.append(execution_reason)
+    return level, _dedupe_text(reasons)
+
+
+def _advisory_rank(level: str) -> int:
+    return {"INFO": 0, "WARNING": 1, "HIGH_RISK": 2, "CRITICAL": 3}.get(str(level or "").upper(), 0)
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _existing_position_action(action: str) -> str:

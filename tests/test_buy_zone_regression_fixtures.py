@@ -68,8 +68,8 @@ def test_now_regression_lower_pullback_still_holds_no_add() -> None:
     assert context.zone_position is not None
     assert context.zone_position < 0.35
     assert context.current_action == "WAIT_CONFIRMATION"
-    assert display["main_action_text"] == "持有观察 / 当前不新增"
-    assert display["account_action_text"] == "已有 100 股，当前新增额度为 0"
+    assert display["main_action_text"] == "持有观察 / 当前不建议新增"
+    assert display["account_action_text"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
 
 
 def test_vst_regression_pullback_buy_waits_for_confirmation() -> None:
@@ -95,7 +95,7 @@ def test_vst_regression_pullback_buy_waits_for_confirmation() -> None:
 
     assert context.primary_zone == "PULLBACK_BUY"
     assert context.current_action == "WAIT_CONFIRMATION"
-    assert display["main_action_text"] == "区内看承接 / 当前不新增"
+    assert display["main_action_text"] == "区内看承接 / 当前不建议新增"
     assert display["entry_display_label"] == "区内看承接"
 
 
@@ -113,7 +113,7 @@ def test_adbe_regression_high_volume_unconfirmed_event_review_copy() -> None:
         {"volumePriceStatus": "UNCONFIRMED", "volumePriceScore": 27.0, "currentAddLimitPercent": 0},
     )
 
-    assert display["main_action_text"] == "暂停买入 / 当前不新增"
+    assert display["main_action_text"] == "仅观察 / 当前不建议新增"
     assert display["volume_confirmation_text"] == "放量未确认，等收盘确认 / 事件复核"
 
 
@@ -126,7 +126,7 @@ def test_chase_regression_blocks_chase() -> None:
 
     assert context.primary_zone == "CHASE_RISK"
     assert context.current_action == "BLOCK_CHASE"
-    assert display["main_action_text"] == "禁止追高"
+    assert display["main_action_text"] == "追高风险提醒"
 
 
 def test_invalidation_regression_pauses_buy_or_add() -> None:
@@ -138,7 +138,7 @@ def test_invalidation_regression_pauses_buy_or_add() -> None:
 
     assert context.primary_zone == "INVALIDATION"
     assert context.current_action == "PAUSE_BUY"
-    assert display["main_action_text"] == "暂停买入 / 重新评估"
+    assert display["main_action_text"] == "结构失效风险 / 重新评估"
 
 
 def test_rr_target_quality_regression_samples() -> None:

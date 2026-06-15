@@ -1699,7 +1699,7 @@ def _batting_entry_condition(status: str, action_code: str) -> str:
 
 
 def _batting_operation(status: str, action_text: str, action_code: str) -> str:
-    if action_text and any(token in action_text for token in ("当前不新增", "持有观察", "不建议买入", "不建议加仓")):
+    if action_text and any(token in action_text for token in ("当前不新增", "当前不建议新增", "持有观察", "不建议买入", "不建议加仓")):
         return action_text
     if status == "数据不足":
         return "先补数据，不给明确买区"

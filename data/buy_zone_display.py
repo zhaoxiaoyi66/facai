@@ -94,8 +94,11 @@ def build_buy_zone_display(
         "distance_to_left_probe_low_pct": _number(_value(ctx, "distance_to_left_probe_low_pct", "distanceToLeftProbeLowPct")),
         "distance_to_left_probe_high_pct": _number(_value(ctx, "distance_to_left_probe_high_pct", "distanceToLeftProbeHighPct")),
         "volume_price_gate": str(_value(ctx, "volume_price_gate", "volumePriceGate", default="") or ""),
+        "volume_price_state": str(_value(ctx, "volume_price_state", "volumePriceState", "volume_price_gate", "volumePriceGate", default="") or ""),
         "execution_gate_reason": str(_value(ctx, "execution_gate_reason", "executionGateReason", default="") or ""),
         "zone_action_quality": str(_value(ctx, "zone_action_quality", "zoneActionQuality", default="") or ""),
+        "advisory_level": str(_value(ctx, "advisory_level", "advisoryLevel", default="") or _display_advisory_level(action)),
+        "advisory_reasons": _text_list(_value(ctx, "advisory_reasons", "advisoryReasons", default=[])),
         "next_step_text": next_step,
         "missing_fields": missing,
         "missing_fields_text": missing_text,
@@ -123,7 +126,7 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
         zone_position is not None and zone_position > 0.75 and "上沿" in primary_zone_text
     ):
         if action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
-            return _technical("买区上沿", "当前不新增", "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。")
+            return _technical("买区上沿", "不建议新增", "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。")
     if action == "WAIT_PULLBACK":
         return _technical("等回击球区", "不追", "价格偏高，等回到主击球区。")
     if action == "WAIT_CONFIRMATION":
@@ -195,13 +198,13 @@ def _account_text(
         if has_position:
             return {
                 "sizing_action": "CURRENT_NO_ADD",
-                "sizing_action_text": "当前不新增",
-                "account_action_text": f"已有 {_shares_text(shares)}，当前新增额度为 0",
+                "sizing_action_text": "当前不建议新增",
+                "account_action_text": f"已有 {_shares_text(shares)}，当前新增额度为 0，系统不建议新增",
             }
         return {
             "sizing_action": "CURRENT_NO_ADD",
-            "sizing_action_text": "当前不新增",
-            "account_action_text": "无持仓，当前新增额度为 0",
+            "sizing_action_text": "当前不建议新增",
+            "account_action_text": "无持仓，当前新增额度为 0，系统不建议新增",
         }
     if has_position:
         if action in SMALL_BUY_ACTIONS:
@@ -238,10 +241,10 @@ def _main_action_text(
 ) -> str:
     if current_add is not None and current_add <= 0:
         if has_position:
-            return "持有观察 / 当前不新增"
+            return "持有观察 / 当前不建议新增"
         if action == "WAIT_CONFIRMATION" and primary_zone == "PULLBACK_BUY":
-            return f"{technical['badge_label']} / 当前不新增"
-        return "仅观察 / 当前不新增"
+            return f"{technical['badge_label']} / 当前不建议新增"
+        return "仅观察 / 当前不建议新增"
     if action == "DATA_INSUFFICIENT":
         return "持有观察 / 不建议加仓" if has_position else "数据不足 / 等待补齐"
     if action == "BLOCK_CHASE":
@@ -500,6 +503,16 @@ def _missing_label(value: str) -> str:
         "price": "当前价格",
         "buy_zone_context": "统一买区上下文",
     }.get(text, text)
+
+
+def _display_advisory_level(action: str) -> str:
+    if action in {"PAUSE_BUY", "RISK_REVIEW", "BLOCK_CHASE"}:
+        return "HIGH_RISK"
+    if action in {"DATA_INSUFFICIENT", "WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        return "WARNING"
+    if action in SMALL_BUY_ACTIONS:
+        return "INFO"
+    return "INFO"
 
 
 def _money(value: float | None) -> str:

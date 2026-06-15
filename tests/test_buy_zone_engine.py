@@ -83,7 +83,7 @@ def test_good_company_in_chase_zone_blocks_chase() -> None:
 
 
 def test_pullback_zone_with_shrink_volume_and_good_risk_reward_allows_small_buy() -> None:
-    context = build_buy_zone_context(_base_source(current_price=101), volume_snapshot=_volume())
+    context = build_buy_zone_context(_base_source(current_price=100.5), volume_snapshot=_volume())
 
     assert context.primary_zone == "PULLBACK_BUY"
     assert context.current_action == ALLOW_SMALL_BUY
@@ -124,7 +124,7 @@ def test_left_probe_upper_edge_waits_confirmation_even_with_good_scores() -> Non
 
 def test_left_probe_lower_edge_requires_quality_and_allows_small_buy() -> None:
     context = build_buy_zone_context(
-        _base_source(current_price=100.8, technical_resistance_price=122),
+        _base_source(current_price=100.5, technical_resistance_price=122),
         volume_snapshot=_volume(
             volume_price_status="ACCEPTANCE_CONFIRMED",
             volume_price_score=78,
@@ -139,7 +139,8 @@ def test_left_probe_lower_edge_requires_quality_and_allows_small_buy() -> None:
     assert context.target_quality == "TECH_RESISTANCE_HIGH"
     assert context.risk_reward_score >= 65
     assert context.current_action == ALLOW_SMALL_BUY
-    assert context.zone_action_quality == "ACTIONABLE"
+    assert context.zone_action_quality == "LOW_RISK_OBSERVATION"
+    assert context.advisory_level == "INFO"
 
 
 def test_pullback_upper_half_does_not_allow_small_buy() -> None:
@@ -153,7 +154,7 @@ def test_pullback_upper_half_does_not_allow_small_buy() -> None:
 
 
 def test_confirmation_line_target_quality_blocks_small_buy() -> None:
-    source = _base_source(current_price=100.8)
+    source = _base_source(current_price=100.5)
     for key in ("resistance_zone_high", "recent_swing_high"):
         source.pop(key)
     source.pop("chase_above_price")
@@ -390,7 +391,7 @@ def test_below_invalidation_enters_risk_review_for_existing_and_no_position() ->
 
 
 def test_low_final_score_does_not_auto_block_good_small_setup() -> None:
-    context = build_buy_zone_context(_base_source(current_price=101, final_score=65), volume_snapshot=_volume())
+    context = build_buy_zone_context(_base_source(current_price=100.5, final_score=65), volume_snapshot=_volume())
 
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.core_position_allowed is False
@@ -638,8 +639,8 @@ def test_now_like_pullback_middle_observes_and_account_no_add() -> None:
     assert context.current_action == WAIT_CONFIRMATION
     assert context.left_probe_zone_high is not None
     assert context.left_probe_zone_high < context.current_price
-    assert display["main_action_text"] == "持有观察 / 当前不新增"
-    assert display["account_action_text"] == "已有 100 股，当前新增额度为 0"
+    assert display["main_action_text"] == "持有观察 / 当前不建议新增"
+    assert display["account_action_text"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
     assert "可小仓分批" not in display["main_action_text"]
 
 
@@ -813,7 +814,7 @@ def test_missing_resistance_zone_does_not_generate_buy_zone() -> None:
 
 
 def test_report_page_does_not_expose_buy_zone_raw_enum() -> None:
-    context = build_buy_zone_context(_base_source(current_price=101), volume_snapshot=_volume()).to_dict()
+    context = build_buy_zone_context(_base_source(current_price=100.5), volume_snapshot=_volume()).to_dict()
     conclusion = radar_ui._trade_conclusion(_base_source(), buy_zone_context=context)
     html = radar_ui._research_header_html(
         _base_source(),
@@ -831,7 +832,7 @@ def test_report_page_does_not_expose_buy_zone_raw_enum() -> None:
 
 
 def test_buy_zone_context_visible_text_has_no_mojibake() -> None:
-    context = build_buy_zone_context(_base_source(current_price=101), volume_snapshot=_volume())
+    context = build_buy_zone_context(_base_source(current_price=100.5), volume_snapshot=_volume())
     visible_text = " ".join(
         [
             context.action_text,
