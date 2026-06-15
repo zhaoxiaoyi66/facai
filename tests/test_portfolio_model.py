@@ -459,7 +459,7 @@ class PortfolioModelTests(unittest.TestCase):
             )
 
         row = view["rows"][0]
-        self.assertEqual(row["systemAction"], sorted(BUY_ACTIONS)[0])
+        self.assertEqual(row["systemAction"], "小仓观察建议")
         self.assertEqual(row["systemMaxPosition"], 20)
         self.assertEqual(row["systemCurrentAdd"], 6)
         self.assertEqual(row["buyZoneStatus"], "ALLOW_SMALL_BUY")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from data.advisory_compat import legacy_block_reason_list, review_reason_list
+
 
 DATA_BLOCKING_CATEGORIES = {"cache_missing", "missing_price", "final_decision_error"}
 DATA_REVIEW_CATEGORIES = {
@@ -83,11 +85,11 @@ def _final_decision_reasons(final_decision: Any) -> tuple[list[dict[str, Any]], 
         return [_reason("final_decision_missing", "", "缺少 finalDecision，不能作为当前操作依据。")], []
     blockers = [
         _reason(str(item), "", _final_reason_message(str(item), blocking=True))
-        for item in _list_value(final_decision, "blockReasons", "block_reasons")
+        for item in legacy_block_reason_list(final_decision)
     ]
     reviews = [
         _reason(str(item), "", _final_reason_message(str(item), blocking=False))
-        for item in _list_value(final_decision, "reviewReasons", "review_reasons")
+        for item in review_reason_list(final_decision)
     ]
     return blockers, reviews
 

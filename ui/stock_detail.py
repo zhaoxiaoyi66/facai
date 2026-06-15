@@ -16,6 +16,7 @@ from buy_zone_engine import (
     generate_buy_zone,
     has_buy_zone_override,
 )
+from data.advisory_compat import advisory_reason_list, review_reason_list
 from data.decision_log import save_decision_snapshot_from_bundle
 from data.buy_zone_engine import build_buy_zone_context as build_unified_buy_zone_context
 from data.buy_zone_display import build_buy_zone_display
@@ -298,7 +299,10 @@ def _portfolio_system_action_text(row: dict) -> str:
 
 
 def _portfolio_reason_text(row: dict) -> str:
-    reasons = [*_portfolio_translated_reasons(row.get("blockReasons")), *_portfolio_translated_reasons(row.get("reviewReasons"))]
+    reasons = [
+        *_portfolio_translated_reasons(advisory_reason_list(row)),
+        *_portfolio_translated_reasons(review_reason_list(row)),
+    ]
     return "，".join(reasons[:2]) if reasons else "—"
 
 

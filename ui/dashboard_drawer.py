@@ -10,6 +10,7 @@ from urllib.parse import quote
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from data.advisory_compat import advisory_reason_list
 from data.action_fusion import ActionFusionResult, action_fusion_card_html
 from data.buy_zone_display import build_buy_zone_display
 from data.entry_display import format_buy_zone, format_zone_status
@@ -1906,7 +1907,7 @@ def _drawer_data_status_text(row: pd.Series) -> str:
 
 
 def _drawer_primary_block_reason(row: pd.Series) -> str:
-    reasons = _drawer_text_list(row.get("blockReasons") or row.get("block_reasons") or row.get("radar_block_reasons"))
+    reasons = advisory_reason_list(row)
     if reasons:
         return reasons[0]
     hint = str(row.get("entry_action_hint") or "").strip()

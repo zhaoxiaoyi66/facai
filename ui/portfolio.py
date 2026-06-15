@@ -5,6 +5,7 @@ from html import escape
 from urllib.parse import quote
 import streamlit as st
 
+from data.advisory_compat import advisory_reason_list, review_reason_list
 from data.decision_log import DecisionLogStore, TradeJournalStore
 from data.portfolio import (
     PortfolioPositionStore,
@@ -1403,7 +1404,7 @@ def _system_reason_text(row: dict) -> str:
     deviation = _deviation_text(row)
     if deviation != "暂无偏离提示":
         return deviation
-    reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
+    reasons = [*_translated_reasons(advisory_reason_list(row)), *_translated_reasons(review_reason_list(row))]
     if reasons:
         return "，".join(reasons[:2])
     add = _percent_text(row.get("systemCurrentAdd"))
@@ -2176,8 +2177,8 @@ def _drawer_html(
             ("当前可加", _percent_text(row.get("systemCurrentAdd"))),
             ("决策通道", _decision_lane_text(row.get("decisionLane"))),
             ("估值参考状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
-            ("风险提示原因", _reason_text(row.get("blockReasons"))),
-            ("复核原因", _reason_text(row.get("reviewReasons"))),
+            ("风险提示原因", _reason_text(advisory_reason_list(row))),
+            ("复核原因", _reason_text(review_reason_list(row))),
         ]),
         ("交易纪律", discipline_items),
         ("最近信号", signal_items),
@@ -2350,7 +2351,10 @@ def _trade_action_text(value: object) -> str:
 
 
 def _snapshot_reason_text(snapshot: dict) -> str:
-    reasons = [*_translated_reasons(snapshot.get("block_reasons")), *_translated_reasons(snapshot.get("review_reasons"))]
+    reasons = [
+        *_translated_reasons(advisory_reason_list(snapshot)),
+        *_translated_reasons(review_reason_list(snapshot)),
+    ]
     if reasons:
         return "，".join(reasons[:2])
     raw_text = str(snapshot.get("reason_text") or "").strip()
@@ -2381,7 +2385,7 @@ def _main_reason_text(row: dict) -> str:
     warnings = _deviation_items(row)
     if warnings:
         return "，".join(warnings[:2])
-    reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
+    reasons = [*_translated_reasons(advisory_reason_list(row)), *_translated_reasons(review_reason_list(row))]
     return "，".join(reasons[:2]) if reasons else "暂无明确高风险/复核原因"
 
 
