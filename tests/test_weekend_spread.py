@@ -10,6 +10,13 @@ import pandas as pd
 
 from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
+from data.equity_afterhours_provider import (
+    AlphaVantageAfterhoursProvider,
+    MultiProviderAfterhoursProvider,
+    PolygonOpenCloseAfterhoursProvider,
+    PolygonQuoteMidAfterhoursProvider,
+    PolygonTradesAfterhoursProvider,
+)
 from data.weekend_spread_backtest import (
     recent_weekend_windows,
     run_weekend_peak_short_backtest,
@@ -218,6 +225,50 @@ class SequenceAfterhoursProvider:
             missing_reason=snapshot.missing_reason,
             cache_status=snapshot.cache_status,
         )
+
+
+class FakePolygonOpenCloseProvider(PolygonOpenCloseAfterhoursProvider):
+    def __init__(self, payload: dict, *, api_key: str = "polygon-key") -> None:
+        super().__init__(api_key=api_key, base_url="https://polygon.test")
+        self.payload = payload
+        self.calls: list[tuple[str, dict]] = []
+
+    def _get_json(self, endpoint: str, params: dict[str, str]) -> dict:
+        self.calls.append((endpoint, dict(params)))
+        return dict(self.payload)
+
+
+class FakePolygonTradesProvider(PolygonTradesAfterhoursProvider):
+    def __init__(self, results: list[dict], *, api_key: str = "polygon-key") -> None:
+        super().__init__(api_key=api_key, base_url="https://polygon.test")
+        self.results = results
+        self.calls: list[tuple[str, dict]] = []
+
+    def _get_json(self, endpoint: str, params: dict[str, str]) -> dict:
+        self.calls.append((endpoint, dict(params)))
+        return {"results": list(self.results)}
+
+
+class FakePolygonQuotesProvider(PolygonQuoteMidAfterhoursProvider):
+    def __init__(self, results: list[dict], *, api_key: str = "polygon-key") -> None:
+        super().__init__(api_key=api_key, base_url="https://polygon.test")
+        self.results = results
+        self.calls: list[tuple[str, dict]] = []
+
+    def _get_json(self, endpoint: str, params: dict[str, str]) -> dict:
+        self.calls.append((endpoint, dict(params)))
+        return {"results": list(self.results)}
+
+
+class FakeAlphaVantageProvider(AlphaVantageAfterhoursProvider):
+    def __init__(self, payload: dict, *, api_key: str = "alpha-key") -> None:
+        super().__init__(api_key=api_key, base_url="https://alpha.test/query")
+        self.payload = payload
+        self.calls: list[dict[str, str]] = []
+
+    def _get_json(self, params: dict[str, str]) -> dict:
+        self.calls.append(dict(params))
+        return dict(self.payload)
 
 
 class FakeKlineProvider:
@@ -521,6 +572,129 @@ def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp
 
     assert cached.reference_price == 208
     assert cached.cache_status == "CACHE_HIT"
+
+
+def test_polygon_open_close_afterhours_provider_uses_afterhours_price() -> None:
+    provider = FakePolygonOpenCloseProvider({"afterHours": 208.5})
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price == 208.5
+    assert snapshot.reference_source == "POLYGON_OPEN_CLOSE_AFTERHOURS"
+    assert snapshot.data_quality == "HIGH"
+    assert snapshot.missing_reason == ""
+    assert provider.calls[0][0] == "v1/open-close/NVDA/2026-06-12"
+
+
+def test_polygon_trades_provider_prefers_1955_to_2000_trade() -> None:
+    provider = FakePolygonTradesProvider(
+        [
+            {"price": 207.0, "sip_timestamp": "2026-06-12T19:30:00-04:00", "size": 100},
+            {"price": 208.25, "sip_timestamp": "2026-06-12T19:58:00-04:00", "size": 200},
+        ]
+    )
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price == 208.25
+    assert snapshot.reference_source == "POLYGON_TRADES_1955_2000"
+    assert snapshot.data_quality == "HIGH"
+    assert snapshot.volume == 200
+
+
+def test_polygon_quote_mid_provider_uses_valid_quote_mid() -> None:
+    provider = FakePolygonQuotesProvider(
+        [
+            {"bid_price": 207.8, "ask_price": 208.2, "sip_timestamp": "2026-06-12T19:58:00-04:00", "size": 10},
+        ]
+    )
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price == 208.0
+    assert snapshot.reference_source == "POLYGON_QUOTE_MID"
+    assert snapshot.bid == 207.8
+    assert snapshot.ask == 208.2
+    assert snapshot.data_quality == "HIGH"
+
+
+def test_multi_provider_falls_back_to_fmp_after_polygon_misses() -> None:
+    polygon = SequenceAfterhoursProvider([AfterhoursReference(symbol="NVDA", data_quality="MISSING", missing_reason="NO_AFTERHOURS_TRADE")])
+    fmp = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_source="FMP_AFTERHOURS_TRADE",
+                reference_time="2026-06-12T19:58:00-04:00",
+                data_quality="HIGH",
+            )
+        ]
+    )
+    provider = MultiProviderAfterhoursProvider([polygon, fmp])
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price == 208
+    assert snapshot.reference_source == "FMP_AFTERHOURS_TRADE"
+
+
+def test_multi_provider_falls_back_to_alphavantage_after_prior_misses() -> None:
+    alpha = FakeAlphaVantageProvider(
+        {
+            "Time Series (1min)": {
+                "2026-06-12 19:59:00": {"4. close": "208.75", "5. volume": "900"},
+            }
+        }
+    )
+    provider = MultiProviderAfterhoursProvider(
+        [
+            SequenceAfterhoursProvider([AfterhoursReference(symbol="NVDA", data_quality="MISSING", missing_reason="API_KEY_MISSING")]),
+            alpha,
+        ]
+    )
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price == 208.75
+    assert snapshot.reference_source == "ALPHAVANTAGE_INTRADAY_EXTENDED"
+    assert snapshot.data_quality == "HIGH"
+
+
+def test_afterhours_provider_api_key_missing_does_not_crash() -> None:
+    provider = PolygonOpenCloseAfterhoursProvider(api_key="polygon-key")
+    provider.api_key = ""
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert snapshot.reference_price is None
+    assert snapshot.missing_reason == "API_KEY_MISSING"
+
+
+def test_all_afterhours_providers_missing_keeps_regular_close_fallback() -> None:
+    provider = MultiProviderAfterhoursProvider(
+        [
+            SequenceAfterhoursProvider([AfterhoursReference(symbol="NVDA", data_quality="MISSING", missing_reason="API_KEY_MISSING")]),
+            SequenceAfterhoursProvider([AfterhoursReference(symbol="NVDA", data_quality="MISSING", missing_reason="NO_AFTERHOURS_TRADE")]),
+        ]
+    )
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=provider,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    assert rows[0]["afterhours_reference_price"] is None
+    assert rows[0]["afterhours_missing_reason"] == "NO_AFTERHOURS_TRADE"
+    assert rows[0]["primary_spread_anchor"] == "REGULAR_CLOSE_FALLBACK"
+
+
+def test_ui_maps_afterhours_source_and_quality_text() -> None:
+    assert weekend_spread._afterhours_source_text("POLYGON_OPEN_CLOSE_AFTERHOURS").startswith("Polygon/Massive")
+    assert weekend_spread._afterhours_source_text("ALPHAVANTAGE_INTRADAY_EXTENDED").startswith("Alpha Vantage")
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:

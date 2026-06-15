@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from data.afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
+from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
@@ -877,7 +877,7 @@ def _render_row_details(rows: list[dict]) -> None:
                 st.markdown("**盘后锚点**")
                 st.caption(f"周五收盘：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
                 st.caption(f"盘后参考价：{_money_text(row.get('afterhours_reference_price'))}")
-                st.caption(f"盘后来源：{str(row.get('afterhours_reference_source') or '缺少盘后参考价')}")
+                st.caption(f"盘后来源：{_afterhours_source_text(row.get('afterhours_reference_source'))}")
                 st.caption(f"盘后质量：{str(row.get('afterhours_data_quality') or 'MISSING')}")
                 st.caption(f"缺失原因：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}")
                 st.caption(f"缓存状态：{_afterhours_cache_text(row.get('afterhours_cache_status'))}")
@@ -1105,7 +1105,7 @@ def _afterhours_reason_text(value: object) -> str:
     code = str(value or "").strip()
     return {
         "PROVIDER_MISSING": "未配置盘后数据源",
-        "API_KEY_MISSING": "缺少 FMP API key",
+        "API_KEY_MISSING": "缺少盘后数据源 API key",
         "NOT_FETCHED": "未抓取盘后价",
         "FETCH_FAILED": "盘后接口失败",
         "NO_AFTERHOURS_TRADE": "当日无盘后成交",
@@ -1115,6 +1115,19 @@ def _afterhours_reason_text(value: object) -> str:
         "FIELD_NOT_PASSED": "字段未传入",
         "USING_CACHE": "使用缓存盘后价",
     }.get(code, code or "未抓取盘后价")
+
+
+def _afterhours_source_text(value: object) -> str:
+    code = str(value or "").strip()
+    return {
+        "POLYGON_OPEN_CLOSE_AFTERHOURS": "Polygon/Massive open-close afterHours",
+        "POLYGON_TRADES_1955_2000": "Polygon/Massive 19:55-20:00 trade",
+        "POLYGON_AFTERHOURS_LAST_TRADE": "Polygon/Massive afterhours last trade",
+        "POLYGON_QUOTE_MID": "Polygon/Massive quote mid",
+        "FMP_AFTERHOURS_TRADE": "FMP aftermarket trade",
+        "FMP_AFTERHOURS_QUOTE_MID": "FMP aftermarket quote mid",
+        "ALPHAVANTAGE_INTRADAY_EXTENDED": "Alpha Vantage extended-hours intraday",
+    }.get(code, code or "缺少盘后参考价")
 
 
 def _afterhours_cache_text(value: object) -> str:
