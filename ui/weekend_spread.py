@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
+import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
+from data.binance_provider import DEFAULT_BINANCE_CACHE_PATH, normalize_market_type
 from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
@@ -144,7 +146,7 @@ def _build_weekend_spread_rows_with_feedback(
             build_weekend_spread_rows(
                 watchlist,
                 mapping=mapping,
-                provider=_IdleBinanceProvider(),
+                provider=_CacheOnlyBinanceProvider(),
                 afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
                 force_refresh=False,
             ),
@@ -233,6 +235,25 @@ def _build_weekend_spread_rows_with_feedback(
         cache_status["cache_state"] = "REFRESH_FAILED"
         cache_status["cache_message"] = error_message
         return fallback_rows, cache_status
+    if is_provider_failure(rows):
+        error_message = _refresh_error_text(rows)
+        fallback_rows = build_weekend_spread_rows(
+            watchlist,
+            mapping=mapping,
+            provider=_CacheOnlyBinanceProvider(),
+            afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
+            force_refresh=False,
+        )
+        if has_successful_price(fallback_rows):
+            fallback_rows = annotate_cached_rows(fallback_rows, cache_state="REFRESH_FAILED", generated_at="")
+            status_slot.warning("Refresh failed; using last good Binance price cache.")
+            return fallback_rows, {
+                "cache_state": "REFRESH_FAILED",
+                "cache_message": error_message,
+                "rows": fallback_rows,
+                "generated_at": "",
+                "last_failure": {"error_message": error_message},
+            }
     status_slot.warning(f"Refresh complete: {ok_count}/{mapped_count} mapped prices available.")
     return annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at), {
         "cache_state": "API_LIVE",
@@ -256,6 +277,58 @@ class _IdleBinanceProvider:
             "source": "not_requested",
             "market_type": market_type,
             "error": "price_not_loaded",
+        }
+
+
+class _CacheOnlyBinanceProvider:
+    def __init__(self, *, cache_path: Path = DEFAULT_BINANCE_CACHE_PATH, ttl_seconds: int = 86_400) -> None:
+        self.cache_path = cache_path
+        self.ttl_seconds = ttl_seconds
+
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
+        cached = self._read_cached(f"{normalized_market}:{normalized_symbol}")
+        if cached is None:
+            return {
+                "symbol": normalized_symbol,
+                "last_price": None,
+                "bid": None,
+                "ask": None,
+                "volume_24h": None,
+                "funding_rate": None,
+                "updated_at": "",
+                "source": "cache_only_missing",
+                "market_type": normalized_market,
+                "error": "price_not_loaded",
+            }
+        cached["source"] = cached.get("source") or "binance_price_cache"
+        cached["market_type"] = normalized_market
+        cached["error"] = ""
+        return cached
+
+    def _read_cached(self, cache_key: str) -> dict | None:
+        if not self.cache_path.exists():
+            return None
+        try:
+            payload = json.loads(self.cache_path.read_text(encoding="utf-8") or "{}")
+        except (OSError, json.JSONDecodeError):
+            return None
+        raw = payload.get(cache_key) if isinstance(payload, dict) else None
+        if not isinstance(raw, dict):
+            return None
+        updated_at = _parse_utc_time(raw.get("updated_at"))
+        if updated_at is None or datetime.now(timezone.utc) - updated_at > timedelta(seconds=self.ttl_seconds):
+            return None
+        return {
+            "symbol": str(raw.get("symbol") or cache_key.split(":", 1)[-1]),
+            "last_price": raw.get("last_price"),
+            "bid": raw.get("bid"),
+            "ask": raw.get("ask"),
+            "volume_24h": raw.get("volume_24h"),
+            "funding_rate": raw.get("funding_rate"),
+            "updated_at": str(raw.get("updated_at") or ""),
+            "source": str(raw.get("source") or "binance_price_cache"),
         }
 
 
@@ -1268,6 +1341,19 @@ def _afterhours_spread_text(value: object) -> str:
     if number is None:
         return "—"
     return f"{number:+.2f}%"
+
+
+def _parse_utc_time(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _risk_badge_text(row: dict) -> str:

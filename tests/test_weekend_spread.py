@@ -574,6 +574,34 @@ def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp
     assert cached.cache_status == "CACHE_HIT"
 
 
+def test_afterhours_legacy_cache_key_is_migrated_with_anchor_metadata(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    legacy_payload = {
+        "NVDA:2026-06-12": {
+            "symbol": "NVDA",
+            "reference_price": 208,
+            "reference_time": "2026-06-12T19:58:00-04:00",
+            "reference_source": "FMP_AFTERHOURS_TRADE",
+            "data_quality": "HIGH",
+        }
+    }
+    cache_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    cached = CachedAfterhoursProvider(SequenceAfterhoursProvider([]), cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+    migrated = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    assert cached.reference_price == 208
+    assert cached.cache_status == "CACHE_HIT"
+    assert cached.week_id == "2026-W24"
+    assert cached.friday_date == "2026-06-12"
+    assert cached.anchor_status == "FINAL"
+    assert cached.provider_name == "FMP"
+    assert "2026-W24:2026-06-12:NVDA" in migrated
+
+
 def test_afterhours_anchor_cache_uses_week_friday_ticker_metadata(tmp_path) -> None:
     cache_path = tmp_path / "afterhours_reference_cache.json"
     provider = SequenceAfterhoursProvider(
@@ -2189,8 +2217,59 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
 def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
     source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
 
-    assert "provider=_IdleBinanceProvider()" in source
+    assert "provider=_CacheOnlyBinanceProvider()" in source
     assert "CachedAfterhoursProvider(NullAfterhoursProvider())" in source
+
+
+def test_cache_only_binance_provider_reads_recent_last_good_price(tmp_path) -> None:
+    cache_path = tmp_path / "binance_price_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "usdm_futures:NVDAUSDT": {
+                    "symbol": "NVDAUSDT",
+                    "market_type": "usdm_futures",
+                    "last_price": 207.08,
+                    "bid": 207.1,
+                    "ask": 207.2,
+                    "volume_24h": 43573.98,
+                    "funding_rate": 0.0,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "binance_usdm_futures",
+                    "error": "",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = weekend_spread._CacheOnlyBinanceProvider(cache_path=cache_path).get_last_price(
+        "NVDAUSDT",
+        market_type="usdm_futures",
+    )
+
+    assert snapshot["last_price"] == 207.08
+    assert snapshot["bid"] == 207.1
+    assert snapshot["ask"] == 207.2
+    assert snapshot["volume_24h"] == 43573.98
+    assert snapshot["error"] == ""
+
+
+def test_cache_only_binance_provider_ignores_stale_price_cache(tmp_path) -> None:
+    cache_path = tmp_path / "binance_price_cache.json"
+    stale_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    cache_path.write_text(
+        json.dumps({"usdm_futures:NVDAUSDT": {"symbol": "NVDAUSDT", "last_price": 207.08, "updated_at": stale_time}}),
+        encoding="utf-8",
+    )
+
+    snapshot = weekend_spread._CacheOnlyBinanceProvider(cache_path=cache_path).get_last_price(
+        "NVDAUSDT",
+        market_type="usdm_futures",
+    )
+
+    assert snapshot["last_price"] is None
+    assert snapshot["error"] == "price_not_loaded"
 
 
 def test_idle_provider_marks_rows_as_waiting_refresh() -> None:

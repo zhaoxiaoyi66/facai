@@ -91,7 +91,9 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         legacy_cache_key = f"{normalized}:{regular_close_date or 'latest'}"
         cached = self._read(cache_key) or self._read(legacy_cache_key)
         if not force_refresh and cached is not None:
-            return replace(cached, cache_status="CACHE_HIT")
+            cached_snapshot = _decorate_snapshot(cached, regular_close_date=regular_close_date, cache_status="CACHE_HIT")
+            self._write(cache_key, cached_snapshot)
+            return cached_snapshot
         snapshot = self.provider.get_afterhours_reference(
             normalized,
             regular_close_date=regular_close_date,
@@ -102,13 +104,16 @@ class CachedAfterhoursProvider(AfterhoursProvider):
             self._write(cache_key, live_snapshot)
             return live_snapshot
         if cached is not None:
-            return replace(
+            cached_snapshot = replace(
                 cached,
                 cache_status="CACHE_FALLBACK",
                 error=snapshot.error,
                 error_message=snapshot.error_message or snapshot.error,
                 missing_reason="",
             )
+            cached_snapshot = _decorate_snapshot(cached_snapshot, regular_close_date=regular_close_date, cache_status="CACHE_FALLBACK")
+            self._write(cache_key, cached_snapshot)
+            return cached_snapshot
         return _decorate_snapshot(snapshot, regular_close_date=regular_close_date, cache_status=snapshot.cache_status or "CACHE_MISSING")
 
     def _read(self, cache_key: str) -> AfterhoursReference | None:
