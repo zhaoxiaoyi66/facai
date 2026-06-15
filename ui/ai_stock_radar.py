@@ -155,27 +155,14 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
         _clear_report_runtime_cache()
         st.rerun()
     filtered_rows = _filter_rows(rows, filter_key)
-    show_all = _show_all_research_rows()
-    visible_rows = filtered_rows if show_all or filter_key != "all" else filtered_rows[:15]
-    hidden_count = max(0, len(filtered_rows) - len(visible_rows))
+    visible_rows = filtered_rows
     body = "".join(_list_row_html(row, selected) for row in visible_rows)
-    hidden_note = (
-        ""
-        if hidden_count <= 0
-        else (
-            '<p class="ai-radar-list-note ai-radar-list-note-compact">'
-            f"默认显示研究优先级最高的 15 只，已隐藏 {hidden_count} 只低优先级或数据不足标的。"
-            '<a href="?page=ai-radar&amp;view=list&amp;showAll=1">显示全部</a>'
-            "</p>"
-        )
-    )
     st.markdown(
         (
             f"{summary_html}"
             '<section class="ai-radar-list-card">'
             f'<div class="ai-radar-section-head"><strong>Radar 研究入口</strong><span>{len(visible_rows)}/{len(filtered_rows)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
             '<p class="ai-radar-list-note">研究入口按接近买区、等待确认、等待回落和数据质量排序；完整评分、区间判断和风险依据请进入单股研报页。</p>'
-            f"{hidden_note}"
             '<div class="ai-radar-table-wrap">'
             '<table class="ai-radar-table">'
             "<thead><tr>"
@@ -1095,11 +1082,6 @@ def _research_summary_cards_html(rows: list[dict[str, Any]]) -> str:
         for label, count in cards
     )
     return f'<section class="ai-radar-research-summary">{body}</section>'
-
-
-def _show_all_research_rows() -> bool:
-    value = str(st.query_params.get("showAll") or st.query_params.get("show_all") or "").strip().lower()
-    return value in {"1", "true", "yes", "all"}
 
 
 def _company_name_from_sources(ticker: str, row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
