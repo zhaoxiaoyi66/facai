@@ -15,6 +15,7 @@ from settings import PROJECT_ROOT
 ET = ZoneInfo("America/New_York")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_results.json"
+DEFAULT_BACKTEST_KLINE_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_klines.json"
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ def run_weekend_peak_short_backtest(
     provider: Any | None = None,
     weeks: int = 4,
     open_window_minutes: int = 5,
+    kline_cache_path: Path | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     normalized_tickers = _normalize_tickers(tickers)
@@ -142,6 +144,9 @@ def run_weekend_peak_short_backtest(
     effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
     effective_anchors = _normalize_mapping(anchors or {})
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    effective_kline_cache_path = kline_cache_path
+    if effective_kline_cache_path is None and provider is None:
+        effective_kline_cache_path = DEFAULT_BACKTEST_KLINE_CACHE_PATH
     windows = recent_weekend_windows(weeks=weeks, now=now)
     rows: list[dict[str, Any]] = []
     for ticker in normalized_tickers:
@@ -157,6 +162,7 @@ def run_weekend_peak_short_backtest(
                     anchor=_anchor_for_ticker(ticker, config, effective_anchors),
                     provider=price_provider,
                     open_window_minutes=open_window_minutes,
+                    kline_cache_path=effective_kline_cache_path,
                 )
             )
     return rows
@@ -283,6 +289,7 @@ def _backtest_one_window(
     anchor: dict[str, Any],
     provider: Any,
     open_window_minutes: int,
+    kline_cache_path: Path | None,
 ) -> dict[str, Any]:
     symbol = str(config.get("binance_symbol") or "").strip().upper()
     market_type = "usdm_futures"
@@ -305,7 +312,14 @@ def _backtest_one_window(
         }
     )
     try:
-        bars = _fetch_window_klines(provider, symbol, market_type=market_type, window=window, open_window_minutes=open_window_minutes)
+        bars, kline_cache_status = _fetch_window_klines(
+            provider,
+            symbol,
+            market_type=market_type,
+            window=window,
+            open_window_minutes=open_window_minutes,
+            cache_path=kline_cache_path,
+        )
     except Exception as exc:  # provider errors must not break the page
         base.update(
             {
@@ -348,6 +362,8 @@ def _backtest_one_window(
     if mapping_confidence != "confirmed":
         quality = "UNCONFIRMED_MAPPING"
         note = "mapping 未 confirmed，结果仅作观察。"
+    if kline_cache_status == "CACHE_FALLBACK":
+        note = f"{note} 使用缓存 K 线。"
     base.update(
         {
             "weekend_peak_binance_price": peak,
@@ -372,6 +388,7 @@ def _backtest_one_window(
             "best_case_return_pct": best_case,
             "worst_case_return_pct": worst_case,
             "net_return_at_open_pct": net_return,
+            "kline_cache_status": kline_cache_status,
             "data_quality": quality,
             "result_note": note,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -387,31 +404,134 @@ def _fetch_window_klines(
     market_type: str,
     window: WeekendWindow,
     open_window_minutes: int,
-) -> list[NormalizedKline]:
+    cache_path: Path | None = DEFAULT_BACKTEST_KLINE_CACHE_PATH,
+) -> tuple[list[NormalizedKline], str]:
     start_ms = _to_ms(window.start_et)
     end_ms = _to_ms(window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5))))
     cursor = start_ms
     all_payload: list[Any] = []
-    for _ in range(10):
-        payload = provider.get_klines(
-            symbol,
-            market_type=market_type,
-            interval="1m",
-            start_time_ms=cursor,
-            end_time_ms=end_ms,
-            limit=1000,
+    cache_key = _kline_cache_key(symbol, market_type, start_ms, end_ms)
+    try:
+        for _ in range(10):
+            payload = provider.get_klines(
+                symbol,
+                market_type=market_type,
+                interval="1m",
+                start_time_ms=cursor,
+                end_time_ms=end_ms,
+                limit=1000,
+            )
+            if not payload:
+                break
+            bars = normalize_klines(payload)
+            if not bars:
+                break
+            all_payload.extend(payload)
+            next_cursor = _to_ms(bars[-1].open_time + timedelta(minutes=1))
+            if next_cursor <= cursor or next_cursor >= end_ms:
+                break
+            cursor = next_cursor
+        bars = normalize_klines(all_payload)
+        if bars:
+            _write_kline_cache(cache_path, cache_key, symbol=symbol, market_type=market_type, start_ms=start_ms, end_ms=end_ms, bars=bars)
+            return bars, "API_LIVE"
+        cached = _read_kline_cache(cache_path, cache_key)
+        if cached:
+            return cached, "CACHE_FALLBACK"
+        return bars, "API_LIVE"
+    except Exception:
+        cached = _read_kline_cache(cache_path, cache_key)
+        if cached:
+            return cached, "CACHE_FALLBACK"
+        raise
+
+
+def _kline_cache_key(symbol: str, market_type: str, start_ms: int, end_ms: int) -> str:
+    return f"{normalize_market_type(market_type)}:{str(symbol or '').strip().upper()}:1m:{start_ms}:{end_ms}"
+
+
+def _read_kline_cache(path: Path | None, cache_key: str) -> list[NormalizedKline]:
+    if path is None or not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return []
+    entry = dict((payload.get("entries") or {}).get(cache_key) or {})
+    return _deserialize_klines(entry.get("bars") or [])
+
+
+def _write_kline_cache(
+    path: Path | None,
+    cache_key: str,
+    *,
+    symbol: str,
+    market_type: str,
+    start_ms: int,
+    end_ms: int,
+    bars: list[NormalizedKline],
+) -> None:
+    if path is None or not bars:
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}") if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    entries = dict(payload.get("entries") or {})
+    entries[cache_key] = {
+        "symbol": str(symbol or "").strip().upper(),
+        "market_type": normalize_market_type(market_type),
+        "interval": "1m",
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "bars": [_serialize_kline(bar) for bar in bars],
+    }
+    payload = {"version": 1, "entries": entries}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _serialize_kline(bar: NormalizedKline) -> dict[str, Any]:
+    return {
+        "open_time": bar.open_time.astimezone(timezone.utc).isoformat(),
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+    }
+
+
+def _deserialize_klines(rows: Iterable[Any]) -> list[NormalizedKline]:
+    bars: list[NormalizedKline] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            open_time = datetime.fromisoformat(str(row.get("open_time") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if open_time.tzinfo is None:
+            open_time = open_time.replace(tzinfo=timezone.utc)
+        open_price = _number(row.get("open"))
+        high = _number(row.get("high"))
+        low = _number(row.get("low"))
+        close = _number(row.get("close"))
+        if open_price is None or high is None or low is None or close is None:
+            continue
+        bars.append(
+            NormalizedKline(
+                open_time=open_time.astimezone(timezone.utc),
+                open=open_price,
+                high=high,
+                low=low,
+                close=close,
+                volume=_number(row.get("volume")),
+            )
         )
-        if not payload:
-            break
-        bars = normalize_klines(payload)
-        if not bars:
-            break
-        all_payload.extend(payload)
-        next_cursor = _to_ms(bars[-1].open_time + timedelta(minutes=1))
-        if next_cursor <= cursor or next_cursor >= end_ms:
-            break
-        cursor = next_cursor
-    return normalize_klines(all_payload)
+    deduped: dict[datetime, NormalizedKline] = {bar.open_time: bar for bar in bars}
+    return [deduped[key] for key in sorted(deduped)]
 
 
 def _monday_open_bar(bars: list[NormalizedKline], window: WeekendWindow) -> NormalizedKline | None:
@@ -493,6 +613,7 @@ def _base_result(ticker: str, symbol: str, market_type: str, mapping_confidence:
         "best_case_return_pct": None,
         "worst_case_return_pct": None,
         "net_return_at_open_pct": None,
+        "kline_cache_status": "",
         "data_quality": "DATA_INSUFFICIENT",
         "result_note": "",
         "error_message": "",

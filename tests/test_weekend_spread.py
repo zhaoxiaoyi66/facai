@@ -2012,7 +2012,7 @@ def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
     assert window.end_shanghai.strftime("%A %H:%M") == "Monday 09:00"
 
 
-def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap() -> None:
+def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap(tmp_path) -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [
@@ -2029,6 +2029,7 @@ def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_v
         provider=FakeKlineProvider(bars),
         weeks=1,
         open_window_minutes=5,
+        kline_cache_path=tmp_path / "klines.json",
         now=now,
     )
 
@@ -2047,6 +2048,44 @@ def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_v
     assert round(row["net_short_return_pct"], 2) == 10.22
     assert round(row["short_return_at_open_pct"], 2) == 10.22
     assert row["data_quality"] == "OK"
+    assert row["kline_cache_status"] == "API_LIVE"
+
+
+def test_weekend_peak_short_backtest_uses_cached_klines_when_provider_fails(tmp_path) -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
+        _kline(window.end_et, 105, 106, 103, 104, 1),
+    ]
+    cache_path = tmp_path / "weekend_backtest_klines.json"
+
+    first = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        kline_cache_path=cache_path,
+        now=now,
+    )
+    assert first[0]["kline_cache_status"] == "API_LIVE"
+    assert cache_path.exists()
+
+    second = run_weekend_peak_short_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(error=TimeoutError("futures timeout")),
+        weeks=1,
+        kline_cache_path=cache_path,
+        now=now,
+    )
+
+    assert second[0]["data_quality"] == "OK"
+    assert second[0]["kline_cache_status"] == "CACHE_FALLBACK"
+    assert second[0]["weekend_peak_binance_price"] == 110
+    assert "缓存 K 线" in second[0]["result_note"]
 
 
 def test_weekend_peak_short_backtest_falls_back_to_first_open_without_vwap() -> None:
