@@ -239,8 +239,9 @@ def render() -> None:
     _render_dashboard_styles()
     if "dashboard_density" not in st.session_state:
         st.session_state["dashboard_density"] = "紧凑"
+    query_refresh_symbol = _consume_refresh_ticker_query()
     force_refresh = bool(st.session_state.pop("dashboard_force_fmp_refresh", False))
-    force_refresh_symbol = st.session_state.pop("dashboard_force_fmp_refresh_symbol", None)
+    force_refresh_symbol = query_refresh_symbol or st.session_state.pop("dashboard_force_fmp_refresh_symbol", None)
     _render_dashboard_header(tickers)
     refresh_symbols = set(tickers) if force_refresh else {force_refresh_symbol} if force_refresh_symbol else set()
     if force_refresh:
@@ -271,7 +272,6 @@ def render() -> None:
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
     _handle_lane_filter_query()
-    _handle_refresh_ticker_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
 
@@ -2130,13 +2130,21 @@ def _table_symbols(table: pd.DataFrame) -> set[str]:
     return {str(value or "").strip().upper() for value in table["symbol"].tolist() if str(value or "").strip()}
 
 
-def _handle_refresh_ticker_query() -> None:
-    symbol = str(st.query_params.get("refreshTicker", "")).strip().upper()
+def _consume_refresh_ticker_query(*, query_params=None, session_state=None) -> str | None:
+    params = st.query_params if query_params is None else query_params
+    state = st.session_state if session_state is None else session_state
+    symbol = str(params.get("refreshTicker", "")).strip().upper()
     if not symbol:
+        return None
+    state["dashboard_force_fmp_refresh_symbol"] = symbol
+    if "refreshTicker" in params:
+        params.pop("refreshTicker")
+    return symbol
+
+
+def _handle_refresh_ticker_query() -> None:
+    if not _consume_refresh_ticker_query():
         return
-    st.session_state["data_health_last_refresh_result"] = _refresh_data_health_symbol(symbol)
-    if "refreshTicker" in st.query_params:
-        st.query_params.pop("refreshTicker")
     st.rerun()
 
 

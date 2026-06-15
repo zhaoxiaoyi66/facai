@@ -37,6 +37,25 @@ def test_price_and_technical_refresh_buttons_keep_dashboard_table_cache() -> Non
     assert "_clear_dashboard_table_cache()" not in technical_branch
 
 
+def test_refresh_ticker_query_schedules_single_dashboard_row_refresh() -> None:
+    params = {"refreshTicker": "now"}
+    state = {}
+
+    symbol = dashboard._consume_refresh_ticker_query(query_params=params, session_state=state)
+
+    assert symbol == "NOW"
+    assert state["dashboard_force_fmp_refresh_symbol"] == "NOW"
+    assert "refreshTicker" not in params
+    assert "_refresh_data_health_symbol" not in inspect.getsource(dashboard._handle_refresh_ticker_query)
+
+
+def test_refresh_ticker_query_is_consumed_before_dashboard_table_load() -> None:
+    source = inspect.getsource(dashboard.render)
+
+    assert source.index("_consume_refresh_ticker_query()") < source.index('pop("dashboard_force_fmp_refresh_symbol"')
+    assert "_handle_refresh_ticker_query()" not in source
+
+
 def test_sync_refreshed_symbols_replaces_existing_rows_without_adding_hidden_positions() -> None:
     state = {
         "dashboard_table_cache_key": (("NOW", "MSFT"), dashboard.DASHBOARD_SCORE_SCHEMA_VERSION),

@@ -1187,7 +1187,12 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertIn("refreshTicker=GLW", action_html)
         self.assertIn("刷新", action_html)
-        self.assertIn("_handle_refresh_ticker_query", inspect.getsource(dashboard_module.render))
+        render_source = inspect.getsource(dashboard_module.render)
+        self.assertIn("_consume_refresh_ticker_query", render_source)
+        self.assertLess(
+            render_source.index("_consume_refresh_ticker_query"),
+            render_source.index("_refresh_single_dashboard_row"),
+        )
 
     def test_dashboard_data_health_refresh_updates_symbol_session_row(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])
