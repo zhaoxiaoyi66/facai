@@ -658,7 +658,7 @@ def test_list_row_shows_buy_point_gap_without_avoid_semantics() -> None:
     assert "日线 OHLCV" in html
     assert "量比" in html
     assert "支撑区" in html
-    assert "技术缺口" in html
+    assert "技术数据缺口" in html
     assert "回避" not in html
     assert 'class="missing"' in html
 
@@ -676,10 +676,159 @@ def test_list_row_distinguishes_missing_buy_zone_from_avoid() -> None:
 
     html = radar_ui._list_row_html(row, "")
 
-    assert "未生成买区" in html
+    assert "买区未生成" in html
     assert "支撑区" in html
     assert "压力区" in html
     assert "回避" not in html
+
+
+def test_research_queue_data_insufficient_is_not_wait_or_avoid() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "IBM",
+            "decision": "AVOID",
+            "buy_zone_context": {
+                "current_action": "DATA_INSUFFICIENT",
+                "missing_fields": ["daily_ohlcv", "volume_ratio"],
+            },
+        }
+    )
+
+    assert view["status_text"] == "数据不足"
+    assert view["status_text"] not in {"等待", "回避"}
+    assert "数据不足" in view["summary_text"]
+
+
+def test_research_queue_near_buy_zone_status() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "NVDA",
+            "current_price": 102,
+            "buy_zone_display": {"action_code": "ALLOW_SMALL_BUY"},
+            "buy_zone_context": {
+                "current_action": "ALLOW_SMALL_BUY",
+                "left_probe_zone_low": 100,
+                "left_probe_zone_high": 105,
+                "setup_score": 73,
+            },
+        }
+    )
+
+    assert view["status_text"] == "接近买区"
+    assert view["distance_text"] == "区内"
+    assert view["priority_score"] >= 90
+
+
+def test_research_queue_wait_pullback_when_above_zone() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "MSFT",
+            "current_price": 112,
+            "buy_zone_display": {"action_code": "WAIT_PULLBACK"},
+            "buy_zone_context": {
+                "current_action": "WAIT_PULLBACK",
+                "left_probe_zone_low": 100,
+                "left_probe_zone_high": 105,
+                "setup_score": 64,
+            },
+        }
+    )
+
+    assert view["status_text"] == "等待回落"
+    assert "等回落" in view["summary_text"]
+
+
+def test_research_queue_far_above_zone_is_low_priority() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "ADBE",
+            "current_price": 150,
+            "buy_zone_display": {"action_code": "WAIT_PULLBACK"},
+            "buy_zone_context": {
+                "current_action": "WAIT_PULLBACK",
+                "left_probe_zone_low": 100,
+                "left_probe_zone_high": 105,
+                "setup_score": 60,
+            },
+        }
+    )
+
+    assert view["status_text"] == "低优先级"
+    assert "低优先级" in view["summary_text"]
+
+
+def test_research_queue_wait_confirmation_with_confirm_line() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "NOW",
+            "current_price": 104,
+            "buy_zone_display": {"action_code": "WAIT_CONFIRMATION"},
+            "buy_zone_context": {
+                "current_action": "WAIT_CONFIRMATION",
+                "left_probe_zone_low": 100,
+                "left_probe_zone_high": 105,
+                "confirmation_price": 110,
+                "setup_score": 66,
+            },
+        }
+    )
+
+    assert view["status_text"] == "等待确认"
+    assert view["next_trigger_text"] == "站上 $110.00 后重新评估"
+
+
+def test_research_priority_score_sorts_queue() -> None:
+    rows = [
+        {
+            "ticker": "LOW",
+            "current_price": 150,
+            "buy_zone_display": {"action_code": "WAIT_PULLBACK"},
+            "buy_zone_context": {"current_action": "WAIT_PULLBACK", "left_probe_zone_low": 100, "left_probe_zone_high": 105},
+        },
+        {
+            "ticker": "NEAR",
+            "current_price": 102,
+            "buy_zone_display": {"action_code": "ALLOW_SMALL_BUY"},
+            "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY", "left_probe_zone_low": 100, "left_probe_zone_high": 105, "setup_score": 75},
+        },
+        {
+            "ticker": "DATA",
+            "buy_zone_display": {"action_code": "DATA_INSUFFICIENT"},
+            "buy_zone_context": {"current_action": "DATA_INSUFFICIENT", "missing_fields": ["daily_ohlcv"]},
+        },
+    ]
+
+    sorted_rows = radar_ui._sort_rows(rows)
+
+    assert sorted_rows[0]["ticker"] == "NEAR"
+    assert radar_ui._research_queue_view(sorted_rows[1])["status_text"] == "数据不足"
+    assert radar_ui._research_queue_view(sorted_rows[-1])["status_text"] == "低优先级"
+
+
+def test_research_queue_legacy_row_shows_stale_format() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "OLD",
+            "entry_display_label": "回踩观察",
+            "primary_entry_interpretation": "旧格式",
+        }
+    )
+
+    assert view["status_text"] == "数据不足"
+    assert view["data_quality_text"] == "旧格式待刷新"
+    assert "旧格式待刷新" in view["summary_text"]
+
+
+def test_research_queue_uses_buy_zone_display_as_primary_source() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "NOW",
+            "buy_zone_display": {"action_code": "DATA_INSUFFICIENT"},
+            "buy_zone_context": {"current_action": "ALLOW_SMALL_BUY", "left_probe_zone_low": 100, "left_probe_zone_high": 105},
+        }
+    )
+
+    assert view["status_text"] == "数据不足"
 
 
 def test_list_buy_zone_context_prefers_cached_canonical_context() -> None:
@@ -832,8 +981,9 @@ def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
 
     assert "Radar 研究入口" in source
     assert "Radar" in source
-    assert "买点" in source
-    assert "行情 / 买区数据" in source
+    assert "研究优先级" in source
+    assert "距买区" in source
+    assert "下一触发" in source
     assert "刷新 / 重建买区上下文" in source
     assert ">查看</a>" in row_source
     assert "#radar-report" in href_source
@@ -946,11 +1096,11 @@ def test_ai_radar_report_view_has_return_link_and_missing_state() -> None:
 
 
 def test_ai_radar_query_params_support_deep_link_and_list_return() -> None:
-    with patch.object(radar_ui.st, "query_params", {"ticker": "MSFT", "radarFilter": "value"}):
+    with patch.object(radar_ui.st, "query_params", {"ticker": "MSFT", "radarFilter": "near"}):
         assert radar_ui._selected_radar_view() == "report"
         assert radar_ui._selected_symbol(["MSFT"]) == "MSFT"
         assert "view=list" in radar_ui._list_view_href()
-        assert "radarFilter=value" in radar_ui._list_view_href()
+        assert "radarFilter=near" in radar_ui._list_view_href()
 
     with patch.object(radar_ui.st, "query_params", {"view": "list", "ticker": "MSFT"}):
         assert radar_ui._selected_radar_view() == "list"
@@ -1511,8 +1661,7 @@ def test_data_missing_is_downgraded_to_confidence_and_missing_groups() -> None:
     html = radar_ui._list_row_html(row, "")
 
     assert "DATA_MISSING" not in html
-    assert "低｜3项缺口" in html
-    assert "title=\"估值缺口、技术缺口、评分缺口\"" in html
+    assert "技术数据缺口" in html
 
 
 def test_list_data_confidence_does_not_show_price_gap_when_current_price_exists() -> None:
@@ -1528,8 +1677,7 @@ def test_list_data_confidence_does_not_show_price_gap_when_current_price_exists(
     html = radar_ui._list_row_html(row, "")
 
     assert "价格缺口" not in html
-    assert "估值缺口" in html
-    assert "技术缺口" in html
+    assert "技术数据缺口" in html
 
 
 def test_list_data_confidence_shows_price_gap_only_when_price_missing() -> None:
@@ -1544,7 +1692,7 @@ def test_list_data_confidence_shows_price_gap_only_when_price_missing() -> None:
 
     html = radar_ui._list_row_html(row, "")
 
-    assert "不足｜价格缺失" in html
+    assert "价格缺失" in html
 
 
 def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:

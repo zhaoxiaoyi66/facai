@@ -145,6 +145,7 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
     rows = _sort_rows([_list_row(ticker) for ticker in tickers])
     filter_key = _selected_radar_filter_key()
     filter_counts = _filter_counts(rows)
+    summary_html = _research_summary_cards_html(rows)
     st.markdown(_filter_chips_html(filter_key, filter_counts), unsafe_allow_html=True)
     if st.button(
         "刷新 / 重建买区上下文",
@@ -153,17 +154,32 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
     ):
         _clear_report_runtime_cache()
         st.rerun()
-    rows = _filter_rows(rows, filter_key)
-    body = "".join(_list_row_html(row, selected) for row in rows)
+    filtered_rows = _filter_rows(rows, filter_key)
+    show_all = _show_all_research_rows()
+    visible_rows = filtered_rows if show_all or filter_key != "all" else filtered_rows[:15]
+    hidden_count = max(0, len(filtered_rows) - len(visible_rows))
+    body = "".join(_list_row_html(row, selected) for row in visible_rows)
+    hidden_note = (
+        ""
+        if hidden_count <= 0
+        else (
+            '<p class="ai-radar-list-note ai-radar-list-note-compact">'
+            f"默认显示研究优先级最高的 15 只，已隐藏 {hidden_count} 只低优先级或数据不足标的。"
+            '<a href="?page=ai-radar&amp;view=list&amp;showAll=1">显示全部</a>'
+            "</p>"
+        )
+    )
     st.markdown(
         (
+            f"{summary_html}"
             '<section class="ai-radar-list-card">'
-            f'<div class="ai-radar-section-head"><strong>Radar 研究入口</strong><span>{len(rows)}/{len(tickers)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
-            '<p class="ai-radar-list-note">列表只做研究入口；完整评分、区间判断和风险依据请进入单股研报页。</p>'
+            f'<div class="ai-radar-section-head"><strong>Radar 研究入口</strong><span>{len(visible_rows)}/{len(filtered_rows)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
+            '<p class="ai-radar-list-note">研究入口按接近买区、等待确认、等待回落和数据质量排序；完整评分、区间判断和风险依据请进入单股研报页。</p>'
+            f"{hidden_note}"
             '<div class="ai-radar-table-wrap">'
             '<table class="ai-radar-table">'
             "<thead><tr>"
-            "<th>股票</th><th>公司 / 赛道</th><th>当前价</th><th>Radar</th><th>买点</th><th>行情 / 买区数据</th><th>更新时间</th><th>操作</th>"
+            "<th>Ticker</th><th>当前价</th><th>Radar 状态</th><th>研究优先级</th><th>距买区</th><th>下一触发</th><th>买区置信度</th><th>数据质量</th><th>更新时间</th><th>查看</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -728,6 +744,16 @@ def _list_row(ticker: str) -> dict[str, Any]:
         list_row["entry_action_hint"] = buy_zone_display.get("entry_action_hint") or list_row.get("entry_action_hint")
         list_row["entry_display_reason"] = buy_zone_display.get("entry_display_reason") or list_row.get("entry_display_reason")
         list_row["entry_context_status"] = buy_zone_display.get("entry_context_status") or list_row.get("entry_context_status")
+    research = _research_queue_view(list_row)
+    list_row["research_queue"] = research
+    list_row["research_status"] = research["status_text"]
+    list_row["research_priority_score"] = research["priority_score"]
+    list_row["research_priority_text"] = research["priority_text"]
+    list_row["research_buy_point_summary"] = research["summary_text"]
+    list_row["research_distance_text"] = research["distance_text"]
+    list_row["research_next_trigger"] = research["next_trigger_text"]
+    list_row["research_confidence_text"] = research["confidence_text"]
+    list_row["research_data_quality"] = research["data_quality_text"]
     return list_row
 
 
@@ -746,6 +772,334 @@ def _list_buy_zone_context(
         return build_buy_zone_context(list_row, technicals=technicals, volume_snapshot=volume_snapshot).to_dict()
     except Exception:
         return {}
+
+
+def _research_queue_view(row: dict[str, Any]) -> dict[str, Any]:
+    display = _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay") or {}
+    context = _dict_value(row, "buy_zone_context") or _dict_value(row, "buyZoneContext") or {}
+    action = _research_action_code(display, context, row)
+    price = _first_number(row, context, "current_price", "currentPrice", "price", "close")
+    zone_low, zone_high = _research_entry_zone_bounds(context)
+    distance_pct = _research_distance_pct(price, zone_low, zone_high)
+    zone_position = _first_number(context, display, "zone_position", "zonePosition")
+    has_position = _row_has_position(row)
+    data_quality = _research_data_quality_text(row, context, action)
+    status_key, status_text = _research_status(action, price, zone_low, zone_high, distance_pct, zone_position, data_quality)
+    confidence_text = _research_confidence_text(row, context, action)
+    next_trigger = _research_next_trigger(status_key, context, price, zone_low, zone_high, action)
+    summary = _research_buy_point_summary(status_key, action, distance_pct, zone_low, zone_high, next_trigger, context, data_quality, row)
+    score = _research_priority_score(
+        status_key=status_key,
+        distance_pct=distance_pct,
+        confidence_text=confidence_text,
+        has_position=has_position,
+        row=row,
+        action=action,
+    )
+    return {
+        "status_key": status_key,
+        "status_text": status_text,
+        "priority_score": score,
+        "priority_text": _research_priority_text(score),
+        "distance_text": _research_distance_text(price, zone_low, zone_high, distance_pct),
+        "next_trigger_text": next_trigger,
+        "confidence_text": confidence_text,
+        "data_quality_text": data_quality,
+        "summary_text": summary,
+    }
+
+
+def _research_action_code(display: dict[str, Any], context: dict[str, Any], row: dict[str, Any]) -> str:
+    display_action = str(
+        display.get("buy_zone_action")
+        or display.get("action_code")
+        or display.get("current_action")
+        or display.get("entry_context_status")
+        or ""
+    ).strip().upper()
+    if display_action:
+        return display_action
+    context_action = str(context.get("current_action") or context.get("currentAction") or "").strip().upper()
+    if context_action:
+        return context_action
+    decision = str(row.get("decision") or "").strip().upper()
+    if decision in {"DATA_INSUFFICIENT", "DATA_MISSING", "NO_BUY_ZONE", "ZONE_MISSING", "BLOCK_CHASE", "AVOID"}:
+        return decision
+    if _legacy_buy_zone_context_missing(row):
+        return "ZONE_MISSING"
+    return decision or "WAIT"
+
+
+def _research_entry_zone_bounds(context: dict[str, Any]) -> tuple[float | None, float | None]:
+    candidates = (
+        ("left_probe_zone_low", "left_probe_zone_high"),
+        ("core_left_entry_zone_low", "core_left_entry_zone_high"),
+        ("primary_buy_zone_low", "primary_buy_zone_high"),
+        ("pullback_zone_low", "pullback_zone_high"),
+        ("support_zone_low", "support_zone_high"),
+        ("primary_zone_low", "primary_zone_high"),
+        ("technical_entry_zone_low", "technical_entry_zone_high"),
+    )
+    for low_key, high_key in candidates:
+        low = _first_number(context, low_key)
+        high = _first_number(context, high_key)
+        if low is not None and high is not None and high >= low:
+            return low, high
+    return None, None
+
+
+def _research_distance_pct(price: float | None, low: float | None, high: float | None) -> float | None:
+    if price is None or low is None or high is None or low <= 0 or high <= 0:
+        return None
+    if low <= price <= high:
+        return 0.0
+    if price > high:
+        return (price / high - 1.0) * 100.0
+    return (price / low - 1.0) * 100.0
+
+
+def _research_status(
+    action: str,
+    price: float | None,
+    low: float | None,
+    high: float | None,
+    distance_pct: float | None,
+    zone_position: float | None,
+    data_quality: str,
+) -> tuple[str, str]:
+    if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        return "data", "数据不足"
+    if action in {"NO_BUY_ZONE", "ZONE_MISSING"} or data_quality == "买区未生成":
+        return "data", "数据不足"
+    if action == "AVOID":
+        return "avoid", "暂不研究"
+    if action == "BLOCK_CHASE":
+        return "low", "低优先级"
+    if action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "near", "接近买区"
+    if action == "WAIT_CONFIRMATION":
+        return "confirm", "等待确认"
+    if action == "WAIT_PULLBACK":
+        if low is not None and high is not None and price is not None and price > high:
+            if distance_pct is not None and distance_pct > 22:
+                return "low", "低优先级"
+            return "pullback", "等待回落"
+        if zone_position is not None and zone_position <= 0.35:
+            return "near", "接近买区"
+        return "confirm", "等待确认"
+    if low is not None and high is not None and price is not None:
+        if low <= price <= high:
+            return ("near", "接近买区") if (zone_position is None or zone_position <= 0.35) else ("confirm", "等待确认")
+        if price > high:
+            return ("pullback", "等待回落") if (distance_pct is not None and distance_pct <= 22) else ("low", "低优先级")
+    if data_quality in {"旧格式待刷新", "行情正常 / 买区缺失"}:
+        return "data", "数据不足"
+    return "low", "低优先级"
+
+
+def _research_confidence_text(row: dict[str, Any], context: dict[str, Any], action: str) -> str:
+    if action in {"DATA_INSUFFICIENT", "DATA_MISSING", "NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "不足"
+    setup = _first_number(context, "setup_score", "setupScore")
+    if setup is None:
+        breakdown = context.get("confidence_breakdown") if isinstance(context.get("confidence_breakdown"), dict) else {}
+        values = [_number(value) for value in breakdown.values()]
+        values = [value for value in values if value is not None]
+        setup = sum(values) / len(values) if values else None
+    if setup is not None:
+        if setup >= 72:
+            return "高"
+        if setup >= 55:
+            return "中"
+        return "低"
+    return _data_confidence(row)
+
+
+def _research_data_quality_text(row: dict[str, Any], context: dict[str, Any], action: str) -> str:
+    price_state = _price_data_state(row)
+    if price_state == "missing":
+        return "价格缺失"
+    if price_state == "stale":
+        return "价格过期"
+    if _legacy_buy_zone_context_missing(row):
+        return "旧格式待刷新"
+    if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+        return "买区未生成"
+    if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
+        missing = _buy_zone_context_missing_fields(context) or _actionable_missing_fields(row)
+        if missing:
+            return "技术数据缺口"
+        return "买区未生成"
+    if not context:
+        groups = _missing_groups(row)
+        if any("技术" in group for group in groups):
+            return "技术数据缺口"
+        if groups:
+            return groups[0]
+        return "行情正常 / 买区缺失"
+    if _data_confidence(row) == "高":
+        return "数据完整"
+    groups = _missing_groups(row)
+    if any("技术" in group for group in groups):
+        return "技术数据缺口"
+    return "行情正常 / 买区缺失" if groups else "数据完整"
+
+
+def _research_next_trigger(
+    status_key: str,
+    context: dict[str, Any],
+    price: float | None,
+    low: float | None,
+    high: float | None,
+    action: str,
+) -> str:
+    if status_key == "data":
+        return "刷新买区上下文"
+    if status_key == "avoid":
+        return "排除规则复核"
+    if status_key == "pullback":
+        return f"等回落至 {_money(high)}" if high is not None else "等回落到击球区"
+    confirmation = _first_number(context, "near_confirm_line", "confirmation_price", "confirm_price", "confirmation_line", "confirm_line")
+    if status_key == "confirm":
+        if confirmation is not None:
+            return f"站上 {_money(confirmation)} 后重新评估"
+        return "等量价承接确认"
+    if status_key == "near":
+        invalidation = _first_number(context, "invalidation_price", "invalidation_line", "buy_zone_failure_line", "suspend_new_line")
+        if invalidation is not None:
+            return f"守住 {_money(invalidation)}"
+        return "观察承接K线"
+    if action == "BLOCK_CHASE":
+        return "等回落，不追高"
+    return "暂不新增"
+
+
+def _research_buy_point_summary(
+    status_key: str,
+    action: str,
+    distance_pct: float | None,
+    low: float | None,
+    high: float | None,
+    next_trigger: str,
+    context: dict[str, Any],
+    data_quality: str,
+    row: dict[str, Any],
+) -> str:
+    if status_key == "data":
+        if data_quality == "旧格式待刷新":
+            return "旧格式待刷新，需重建买区上下文"
+        if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
+            missing = _buy_zone_context_missing_fields(context) or ["support_zone", "resistance_zone"]
+            return f"买区未生成，缺少{_field_list_display(missing)}"
+        missing = _buy_zone_context_missing_fields(context) or _actionable_missing_fields(row)
+        missing_text = _field_list_display(missing) if missing else "技术承接数据"
+        return f"数据不足，缺少{missing_text}"
+    if status_key == "near":
+        if distance_pct is None or distance_pct == 0:
+            return "左侧买区附近，观察承接与量价"
+        return f"距左侧买区 {_signed_pct(distance_pct)}，接近观察"
+    if status_key == "confirm":
+        if next_trigger.startswith("站上"):
+            return f"{next_trigger}"
+        return "观察区内，但缺量价确认"
+    if status_key == "pullback":
+        distance = _signed_pct(distance_pct) if distance_pct is not None else "偏高"
+        return f"距左侧买区 {distance}，{next_trigger}"
+    if status_key == "avoid":
+        return "暂不研究，风险或排除规则优先"
+    if action == "BLOCK_CHASE":
+        return "当前追高语境，低优先级观察"
+    return "当前远离买区，低优先级观察"
+
+
+def _research_distance_text(price: float | None, low: float | None, high: float | None, distance_pct: float | None) -> str:
+    if price is None or low is None or high is None or distance_pct is None:
+        return "—"
+    if low <= price <= high:
+        return "区内"
+    return _signed_pct(distance_pct)
+
+
+def _research_priority_score(
+    *,
+    status_key: str,
+    distance_pct: float | None,
+    confidence_text: str,
+    has_position: bool,
+    row: dict[str, Any],
+    action: str,
+) -> float:
+    base = {
+        "near": 92.0,
+        "confirm": 82.0,
+        "pullback": 66.0,
+        "data": 34.0,
+        "low": 22.0,
+        "avoid": 0.0,
+    }.get(status_key, 20.0)
+    if status_key == "pullback" and distance_pct is not None:
+        base += max(-18.0, min(12.0, 12.0 - abs(distance_pct)))
+    if status_key == "near" and distance_pct is not None:
+        base += max(0.0, 6.0 - abs(distance_pct))
+    if confidence_text == "高":
+        base += 6.0
+    elif confidence_text == "中":
+        base += 3.0
+    elif confidence_text == "不足":
+        base -= 6.0
+    if has_position:
+        base += 7.0 if status_key in {"near", "confirm", "pullback", "data"} else 0.0
+    final_score = _first_number(row, "final_score", "finalScore", "quality_score", "qualityScore")
+    if status_key == "data" and final_score is not None and final_score >= 75:
+        base += 8.0
+    if action == "BLOCK_CHASE":
+        base = min(base, 28.0)
+    if status_key == "avoid":
+        base = min(base, 5.0)
+    return round(max(0.0, min(100.0, base)), 1)
+
+
+def _research_priority_text(score: float) -> str:
+    if score >= 82:
+        return f"高 {score:.0f}"
+    if score >= 55:
+        return f"中 {score:.0f}"
+    if score >= 30:
+        return f"低 {score:.0f}"
+    return f"很低 {score:.0f}"
+
+
+def _research_view(row: dict[str, Any]) -> dict[str, Any]:
+    existing = row.get("research_queue")
+    return existing if isinstance(existing, dict) else _research_queue_view(row)
+
+
+def _row_has_position(row: dict[str, Any]) -> bool:
+    shares = _first_number(row, "current_shares", "currentShares", "quantity", "shares", "position_shares", "positionShares")
+    weight = _first_number(row, "portfolio_weight", "portfolioWeight", "positionPct", "current_weight", "currentWeight")
+    return bool((shares is not None and shares > 0) or (shares is None and weight is not None and weight > 0))
+
+
+def _research_summary_cards_html(rows: list[dict[str, Any]]) -> str:
+    counts = _filter_counts(rows)
+    cards = [
+        ("接近买区", counts.get("near", 0)),
+        ("等待确认", counts.get("confirm", 0)),
+        ("数据不足", counts.get("data", 0)),
+        ("低优先级", sum(1 for row in rows if _research_view(row).get("status_key") == "low")),
+    ]
+    body = "".join(
+        '<div class="ai-radar-research-card">'
+        f"<span>{escape(label)}</span><strong>{escape(str(count))}</strong>"
+        "</div>"
+        for label, count in cards
+    )
+    return f'<section class="ai-radar-research-summary">{body}</section>'
+
+
+def _show_all_research_rows() -> bool:
+    value = str(st.query_params.get("showAll") or st.query_params.get("show_all") or "").strip().lower()
+    return value in {"1", "true", "yes", "all"}
 
 
 def _company_name_from_sources(ticker: str, row: dict[str, Any] | None, snapshot: dict[str, Any]) -> str:
@@ -770,24 +1124,10 @@ def _sector_track_from_sources(row: dict[str, Any] | None, snapshot: dict[str, A
 
 
 def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    status_rank = {
-        "价值复核": 0,
-        "近端复核": 0,
-        "可买": 1,
-        "等待": 2,
-        "观察": 3,
-        "数据不足": 4,
-        "未生成买区": 4,
-        "风控复核": 4,
-        "防追高": 5,
-        "回避": 6,
-    }
-    confidence_rank = {"高": 0, "中": 1, "低": 2, "不足": 3}
     return sorted(
         rows,
         key=lambda row: (
-            status_rank.get(_core_status(row), 9),
-            confidence_rank.get(_data_confidence(row), 9),
+            -float(_research_view(row).get("priority_score") or 0),
             _updated_sort_key(row),
             str(row.get("ticker") or ""),
         ),
@@ -806,14 +1146,16 @@ def _updated_sort_key(row: dict[str, Any]) -> float:
 
 def _selected_radar_filter_key() -> str:
     key = str(st.query_params.get("radarFilter", "all") or "all").strip()
-    valid = {"all", "value", "pullback", "watch", "chase", "data"}
+    legacy = {"value": "near", "pullback": "near", "watch": "confirm", "chase": "high"}
+    key = legacy.get(key, key)
+    valid = {"all", "near", "confirm", "data", "held", "high"}
     return key if key in valid else "all"
 
 
 def _filter_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {
         key: sum(1 for row in rows if _row_matches_filter(row, key))
-        for key in ("all", "value", "pullback", "watch", "chase", "data")
+        for key in ("all", "near", "confirm", "data", "held", "high")
     }
 
 
@@ -824,30 +1166,31 @@ def _filter_rows(rows: list[dict[str, Any]], filter_key: str) -> list[dict[str, 
 
 
 def _row_matches_filter(row: dict[str, Any], filter_key: str) -> bool:
-    status = _core_status(row)
+    view = _research_view(row)
+    status_key = str(view.get("status_key") or "")
     if filter_key == "all":
         return True
-    if filter_key == "value":
-        return status in {"价值复核", "近端复核"}
-    if filter_key == "pullback":
-        return status == "可买"
-    if filter_key == "watch":
-        return status in {"观察", "等待"}
-    if filter_key == "chase":
-        return status in {"回避", "防追高", "风控复核"}
+    if filter_key == "near":
+        return status_key == "near"
+    if filter_key == "confirm":
+        return status_key == "confirm"
     if filter_key == "data":
-        return status in {"数据不足", "未生成买区"} or _data_confidence(row) != "高"
+        return status_key == "data"
+    if filter_key == "held":
+        return _row_has_position(row)
+    if filter_key == "high":
+        return float(view.get("priority_score") or 0) >= 75
     return False
 
 
 def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
     labels = [
         ("all", "全部"),
-        ("value", "价值复核"),
-        ("pullback", "可买"),
-        ("watch", "观察"),
-        ("chase", "防追高 / 回避"),
-        ("data", "数据缺口"),
+        ("near", "接近买区"),
+        ("confirm", "等待确认"),
+        ("data", "数据不足"),
+        ("held", "已持仓"),
+        ("high", "高优先级"),
     ]
     chips = "".join(
         '<a class="ai-radar-filter-chip {active}" href="?page=ai-radar&amp;view=list&amp;radarFilter={key}">'
@@ -864,17 +1207,22 @@ def _filter_chips_html(active_key: str, counts: dict[str, int]) -> str:
 
 def _list_row_html(row: dict[str, Any], selected: str) -> str:
     ticker = str(row.get("ticker") or "")
-    radar_status = _core_status(row)
+    research = _research_view(row)
+    radar_status = str(research.get("status_text") or _core_status(row))
     active = " active" if ticker == selected else ""
     report_href = _report_view_href(ticker)
+    trigger_text = str(research.get("next_trigger_text") or research.get("summary_text") or "查看研报")
+    summary_text = str(research.get("summary_text") or trigger_text)
     return (
         f'<tr class="{escape(_radar_status_tone(radar_status))}{active}">'
-        f'<td><a class="ai-radar-ticker" href="{escape(report_href, quote=True)}" target="_self">{escape(ticker)}</a></td>'
-        f"<td>{_company_track_html(row)}</td>"
+        f'<td><a class="ai-radar-ticker" href="{escape(report_href, quote=True)}" target="_self">{escape(ticker)}</a>{_company_track_html(row)}</td>'
         f'<td>{escape(_money(row.get("current_price")))}</td>'
         f'<td><span class="ai-radar-status-pill">{escape(radar_status)}</span></td>'
-        f'<td><span class="ai-radar-buy-point-reason">{escape(_buy_point_reason_text(row))}</span></td>'
-        f"<td>{_data_confidence_html(row)}</td>"
+        f'<td><span class="ai-radar-priority-score">{escape(str(research.get("priority_text") or ""))}</span></td>'
+        f'<td>{escape(str(research.get("distance_text") or "—"))}</td>'
+        f'<td><span class="ai-radar-buy-point-reason" title="{escape(summary_text, quote=True)}">{escape(trigger_text)}</span></td>'
+        f'<td>{escape(str(research.get("confidence_text") or "不足"))}</td>'
+        f'<td><span class="ai-radar-data-quality">{escape(str(research.get("data_quality_text") or "数据待复核"))}</span></td>'
         f'<td>{escape(_short_time(row.get("data_updated_at")))}</td>'
         f'<td><a class="ai-radar-report-link" href="{escape(report_href, quote=True)}" target="_self">查看</a></td>'
         "</tr>"
@@ -2808,15 +3156,15 @@ def _legacy_buy_zone_context_missing(row: dict[str, Any]) -> bool:
 def _radar_status_tone(status: str) -> str:
     if status in {"数据不足", "未生成买区"}:
         return "missing"
-    if status == "可买":
+    if status in {"可买", "接近买区"}:
         return "allow"
-    if status in {"等待", "观察", "价值复核", "近端复核"}:
+    if status in {"等待", "观察", "等待确认", "等待回落", "价值复核", "近端复核"}:
         return "wait"
-    if status == "防追高":
+    if status in {"防追高", "低优先级"}:
         return "blocked"
     if status == "风控复核":
         return "risk"
-    if status == "回避":
+    if status in {"回避", "暂不研究"}:
         return "avoid"
     return "wait"
 
@@ -4166,6 +4514,45 @@ def _render_styles() -> None:
             font-size:12px;
             background:#FFFFFF;
         }
+        .ai-radar-list-note-compact {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            background:#F8FAFC;
+        }
+        .ai-radar-list-note-compact a {
+            color:#0B1F3A !important;
+            font-weight:800;
+            text-decoration:none !important;
+        }
+        .ai-radar-research-summary {
+            display:grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap:10px;
+            margin:8px 0 12px;
+        }
+        .ai-radar-research-card {
+            border:1px solid #D8E0EA;
+            border-radius:10px;
+            background:#FFFFFF;
+            padding:10px 12px;
+            box-shadow:0 8px 20px rgba(15, 23, 42, 0.045);
+        }
+        .ai-radar-research-card span {
+            display:block;
+            color:#64748B;
+            font-size:12px;
+            font-weight:720;
+        }
+        .ai-radar-research-card strong {
+            display:block;
+            margin-top:4px;
+            color:#0B1F3A;
+            font-size:24px;
+            line-height:1;
+            font-weight:860;
+        }
         .ai-radar-report-toolbar,
         .ai-radar-report-missing {
             display:flex;
@@ -4291,6 +4678,20 @@ def _render_styles() -> None:
             color:#334155;
             font-size:12px;
             line-height:1.45;
+        }
+        .ai-radar-priority-score,
+        .ai-radar-data-quality {
+            display:inline-flex;
+            align-items:center;
+            min-height:22px;
+            padding:2px 8px;
+            border-radius:999px;
+            background:#F8FAFC;
+            border:1px solid #E2E8F0;
+            color:#334155;
+            font-size:11px;
+            font-weight:760;
+            white-space:nowrap;
         }
         .ai-radar-report-link {
             background:transparent;
