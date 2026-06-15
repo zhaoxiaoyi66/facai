@@ -84,7 +84,7 @@ def test_pullback_zone_with_shrink_volume_and_good_risk_reward_allows_small_buy(
     assert context.primary_zone == "PULLBACK_BUY"
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.setup_score >= 62
-    assert context.left_probe_zone_high == 101.8
+    assert context.left_probe_zone_high == 102.1
     assert context.no_position_action_text == "未持仓：允许小仓观察，后续加仓必须等确认。"
 
 
@@ -106,8 +106,72 @@ def test_pullback_upper_half_does_not_allow_small_buy() -> None:
     assert context.primary_zone == "PULLBACK_WATCH"
     assert context.primary_zone_text == "技术回踩带内，可观察"
     assert context.current_action == WAIT_CONFIRMATION
-    assert context.left_probe_zone_high == 101.8
-    assert context.observe_zone_high == 104.2
+    assert context.left_probe_zone_high == 102.1
+    assert context.observe_zone_high == 104.5
+
+
+def test_ibm_upper_pullback_zone_is_repair_watch_not_main_batting_area() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            ticker="IBM",
+            current_price=272.0,
+            effective_technical_entry_zone_low=253.17,
+            effective_technical_entry_zone_high=273.56,
+            support_zone_low=242.0,
+            support_zone_high=250.0,
+            deep_support_zone_low=210.0,
+            deep_support_zone_high=220.0,
+            trend_critical_zone_low=242.0,
+            trend_critical_zone_high=250.0,
+            confirmation_price=332.46,
+            fifty_two_week_high=332.46,
+            resistance_zone_low=276.0,
+            resistance_zone_high=290.0,
+            recent_swing_high=286.0,
+            invalidation_price=249.0,
+            chase_above_price=310.0,
+        ),
+        volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=52, volume_ratio=0.65),
+    )
+
+    assert context.primary_zone == "PULLBACK_UPPER_WATCH"
+    assert context.primary_zone_text == "买区上沿 / 修复观察区"
+    assert context.current_action == WAIT_CONFIRMATION
+    assert context.zone_position is not None
+    assert context.zone_position > 0.75
+    assert context.zone_position_text == "买区上沿 / 修复观察区，不主动新增"
+    assert context.left_probe_zone_low == 253.17
+    assert round(context.left_probe_zone_high or 0, 2) == 260.31
+    assert round(context.observe_zone_high or 0, 2) == 268.46
+    assert context.confirmation_price == 276.0
+    assert context.breakout_reevaluation_price == 332.46
+    assert "52周高点 $332.46 仅作为突破重估线" not in context.add_trigger_condition_text
+    assert "近端确认线 $276.00" in context.add_trigger_condition_text
+    assert "跌破买区下沿 $253.17：暂停新增" in context.pause_new_condition_text
+    assert "跌破 $249.00：买区失效" in context.pause_new_condition_text
+    assert "$242.00 - $250.00：趋势恶化" in context.pause_new_condition_text
+    assert "$210.00 - $220.00：极端风险" in context.pause_new_condition_text
+
+
+def test_52_week_high_is_breakout_reevaluation_not_buy_confirmation() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=272.0,
+            effective_technical_entry_zone_low=253.17,
+            effective_technical_entry_zone_high=273.56,
+            support_zone_low=242.0,
+            support_zone_high=250.0,
+            confirmation_price=332.46,
+            fifty_two_week_high=332.46,
+            resistance_zone_low=276.0,
+            resistance_zone_high=290.0,
+            invalidation_price=249.0,
+        ),
+        volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=52, volume_ratio=0.8),
+    )
+
+    assert context.confirmation_price == 276.0
+    assert context.breakout_reevaluation_price == 332.46
 
 
 def test_price_at_reevaluation_line_inside_pullback_enters_confirmation_review() -> None:
@@ -363,7 +427,7 @@ def test_now_like_pullback_middle_observes_and_account_no_add() -> None:
     context = build_buy_zone_context(
         _base_source(
             ticker="NOW",
-            current_price=102.15,
+            current_price=103.0,
             final_score=68,
             deep_support_zone_low=88.92,
             deep_support_zone_high=93.5,

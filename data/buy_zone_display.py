@@ -96,6 +96,13 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
     near_recheck = _number(
         _value(context, "confirmation_price", "confirm_price", "confirmation_line", "confirm_line")
     ) is not None
+    zone_position = _number(_value(context, "zone_position", "zonePosition"))
+    primary_zone_code = str(_value(context, "primary_zone", "primaryZone") or "").upper()
+    if primary_zone_code == "PULLBACK_UPPER_WATCH" or (
+        zone_position is not None and zone_position > 0.75 and "上沿" in primary_zone_text
+    ):
+        if action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+            return _technical("买区上沿", "当前不新增", "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。")
     if action == "WAIT_PULLBACK":
         return _technical("等回击球区", "不追", "价格偏高，等回到主击球区。")
     if action == "WAIT_CONFIRMATION":
@@ -266,6 +273,19 @@ def _volume_confirmation_text(context: dict[str, Any], row: dict[str, Any]) -> s
             return "放量未确认，等收盘确认 / 事件复核"
         return "量价未确认，等收盘确认"
     if status == "FORMING" or (score is not None and score < 55):
+        daily_return = _number(_value(context, "daily_return_pct", "day_change_pct") or _value(row, "dailyReturnPct", "day_change_pct"))
+        close_position = _number(_value(context, "close_position", "closePosition", "close_position_in_range") or _value(row, "closePosition"))
+        if volume_ratio is not None and volume_ratio < 0.7:
+            if (daily_return is not None and daily_return < 0) and not (close_position is not None and close_position >= 0.55):
+                return "缩量调整，尚不构成承接"
+            return "初步止跌，仍需确认"
+        current_price = _number(_value(context, "current_price", "currentPrice") or _value(row, "current_price", "currentPrice", "price"))
+        confirmation = _number(_value(context, "confirmation_price", "confirm_price", "confirmation_line", "confirm_line"))
+        resistance = _number(_value(context, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"))
+        if volume_ratio is not None and volume_ratio > 1.2 and confirmation is not None and current_price is not None and current_price >= confirmation:
+            return "承接成立，可小仓复核"
+        if volume_ratio is not None and volume_ratio > 1.0 and resistance is not None and current_price is not None and current_price >= resistance:
+            return "承接成立"
         if volume_ratio is not None and volume_ratio >= 2.0:
             return "放量未确认，等收盘确认"
         return "初步承接，尚未确认"

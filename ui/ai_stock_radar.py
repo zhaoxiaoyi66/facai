@@ -1089,7 +1089,7 @@ def _research_header_html(
         f'<strong>{escape(str(conclusion.get("rating_text") or core_status))}</strong>'
         '<div class="ai-radar-header-decision-grid">'
         f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
-        f'<div><span>主击球区</span><b>{escape(str(batting.get("zone_range") or "暂缺"))}</b></div>'
+        f'<div><span>{escape(str(batting.get("zone_label") or "主击球区"))}</span><b>{escape(str(batting.get("zone_range") or "暂缺"))}</b></div>'
         f'<div><span>当前位置</span><b>{escape(str(batting.get("relative_text") or "暂缺"))}</b></div>'
         f'<div><span>入场条件</span><b>{escape(str(batting.get("entry_condition") or "等待承接确认"))}</b></div>'
         f'<div><span>重新评估线</span><b>{escape(str(batting.get("reevaluation_line") or "暂缺"))}</b></div>'
@@ -1267,12 +1267,15 @@ def _batting_zone_context(
     invalidation = _first_number(conclusion, "invalidation_price") or _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
     chase = _first_number(conclusion, "chase_price") or _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     action_code = str(buy_zone_context.get("current_action") or conclusion.get("current_action") or "").upper()
+    zone_position = _first_number(buy_zone_context, "zone_position", "zonePosition")
     if action_code == "DATA_INSUFFICIENT" or (low is None and high is None):
         status = "数据不足"
     elif current is None:
         status = "价格暂缺"
     elif chase is not None and current >= chase:
         status = "追高区"
+    elif zone_position is not None and zone_position > 0.75 and low is not None and high is not None and low <= current <= high:
+        status = "买区上沿"
     elif low is not None and high is not None and low <= current <= high:
         status = "区内"
     elif high is not None and current > high:
@@ -1284,7 +1287,9 @@ def _batting_zone_context(
     entry_condition = _batting_entry_condition(status, action_code)
     operation = _batting_operation(status, str(conclusion.get("action_text") or ""), action_code)
     relative_text = _batting_relative_text(current, low, high, status)
+    zone_label = _batting_zone_label(status)
     return {
+        "zone_label": zone_label,
         "zone_range": _range_text(low, high),
         "current_price": _money(current),
         "distance_to_upper": _distance_to_level_text(current, high),
@@ -1306,6 +1311,8 @@ def _batting_relative_text(current: float | None, low: float | None, high: float
     price = _money(current)
     if status == "区内":
         return f"当前价 {price}，在主击球区内"
+    if status == "买区上沿":
+        return f"当前价 {price}，位于买区上沿 / 修复观察区，不是主动买点"
     if status == "追高区":
         return f"当前价 {price}，已进入追高区"
     if status == "高于击球区":
@@ -1313,6 +1320,14 @@ def _batting_relative_text(current: float | None, low: float | None, high: float
     if status == "低于击球区":
         return f"当前价 {price}，低于主击球区"
     return f"当前价 {price}，击球区数据不足"
+
+
+def _batting_zone_label(status: str) -> str:
+    if status == "买区上沿":
+        return "买区上沿 / 修复观察区"
+    if status == "数据不足":
+        return "买区数据"
+    return "主击球区"
 
 
 def _distance_to_level_text(current: float | None, level: float | None) -> str:
@@ -1595,8 +1610,9 @@ def _batting_zone_card_html(
     buy_zone_context: dict[str, Any] | None = None,
 ) -> str:
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
+    zone_label = str(batting.get("zone_label") or "主击球区")
     rows = [
-        ("主击球区", str(batting.get("zone_range") or "暂缺")),
+        (zone_label, str(batting.get("zone_range") or "暂缺")),
         ("当前价", str(batting.get("current_price") or "暂缺")),
         ("距上沿", str(batting.get("distance_to_upper") or "暂缺")),
         ("距下沿", str(batting.get("distance_to_lower") or "暂缺")),
@@ -1608,7 +1624,7 @@ def _batting_zone_card_html(
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
     return (
         '<aside class="ai-radar-batting-card">'
-        '<div class="ai-radar-section-title"><span>击球区</span><b>主区间 / 位置 / 操作</b></div>'
+        f'<div class="ai-radar-section-title"><span>击球区</span><b>{escape(zone_label)} / 位置 / 操作</b></div>'
         f'<p>{escape(str(batting.get("relative_text") or "击球区数据不足"))}</p>'
         f'<div class="ai-radar-batting-grid">{body}</div>'
         "</aside>"
@@ -1635,7 +1651,7 @@ def _executive_judgments(
         else f"未持仓，{portfolio_context.get('action_for_no_position')}。"
     )
     return [
-        f"主击球区在 {batting.get('zone_range')}，{batting.get('relative_text')}，距上沿 {batting.get('distance_to_upper')}。",
+        f"{batting.get('zone_label')}在 {batting.get('zone_range')}，{batting.get('relative_text')}，距上沿 {batting.get('distance_to_upper')}。",
         f"入场条件：{batting.get('entry_condition')}；重新评估线：{batting.get('reevaluation_line')}。",
         f"{batting.get('invalidation_line')}；{position_action}",
     ]
@@ -1752,14 +1768,15 @@ def _range_chart_html(
         )
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
     reference_text = "、".join(label for label in (conclusion.get("reference_zone_texts") or []) if label != "主击球区 / 回踩击球区") or "暂无"
+    zone_label = str(batting.get("zone_label") or "主击球区")
     explanation = (
-        f"主击球区：{batting.get('zone_range')}；{batting.get('relative_text')}。"
+        f"{zone_label}：{batting.get('zone_range')}；{batting.get('relative_text')}。"
         f"观察区只观察，不主动买；重新评估线用于重新判断，不等于直接买入。"
         f"参考区间：{reference_text}。失效线：{batting.get('invalidation_line')}。"
     )
     return (
         '<section class="ai-radar-card ai-radar-range-card">'
-        '<div class="ai-radar-section-title"><span>买区与承接结构图</span><b>主击球区优先</b></div>'
+        f'<div class="ai-radar-section-title"><span>买区与承接结构图</span><b>{escape(zone_label)}优先</b></div>'
         f'<div class="ai-radar-range-axis"><span>{escape(_money(low))}</span><span>{escape(_money(high))}</span></div>'
         f'{"".join(rows)}'
         f'<p class="ai-radar-range-explain">{escape(explanation)}</p>'
@@ -1771,22 +1788,49 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
     buy_zone_context = buy_zone_context or {}
     pullback_low = _first_number(buy_zone_context, "pullback_zone_low") or _first_number(report, "effective_technical_entry_zone_low", "radar_effective_technical_entry_zone_low", "technical_pullback_zone_low", "radar_technical_pullback_zone_low", "technical_entry_zone_low", "radar_technical_entry_zone_low")
     pullback_high = _first_number(buy_zone_context, "pullback_zone_high") or _first_number(report, "effective_technical_entry_zone_high", "radar_effective_technical_entry_zone_high", "technical_pullback_zone_high", "radar_technical_pullback_zone_high", "technical_entry_zone_high", "radar_technical_entry_zone_high")
+    left_probe_low = _first_number(buy_zone_context, "left_probe_zone_low")
+    left_probe_high = _first_number(buy_zone_context, "left_probe_zone_high")
+    observe_high = _first_number(buy_zone_context, "observe_zone_high")
     support_low = _first_number(buy_zone_context, "support_zone_low") or _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price")
     support_high = _first_number(buy_zone_context, "support_zone_high") or _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")
+    trend_low = _first_number(report, "trend_critical_zone_low", "radar_trend_critical_zone_low")
+    trend_high = _first_number(report, "trend_critical_zone_high", "radar_trend_critical_zone_high")
+    deep_panic_low = _first_number(report, "deep_panic_zone_low", "radar_deep_panic_zone_low")
+    deep_panic_high = _first_number(report, "deep_panic_zone_high", "radar_deep_panic_zone_high")
     confirmation = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price")
     invalidation = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
     chase = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
-    return [
-        {"label": "主击球区 / 回踩击球区", "range": (pullback_low, pullback_high), "tone": "blue"},
+    items: list[dict[str, Any]] = []
+    if pullback_low is not None and pullback_high is not None and left_probe_high is not None and observe_high is not None:
+        items.extend(
+            [
+                {"label": "左侧回踩区", "range": (left_probe_low or pullback_low, left_probe_high), "tone": "blue"},
+                {"label": "承接观察区", "range": (left_probe_high, observe_high), "tone": "slate"},
+                {"label": "买区上沿 / 修复观察区", "range": (observe_high, pullback_high), "tone": "amber"},
+            ]
+        )
+    else:
+        items.append({"label": "主击球区 / 回踩击球区", "range": (pullback_low, pullback_high), "tone": "blue"})
+    items.extend([
         {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")), "tone": "slate"},
         {"label": "重新评估线", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high") or confirmation), "tone": "green"},
         {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
-        {"label": "深度承接区", "range": (support_low or invalidation, support_high), "tone": "orange"},
+        {"label": "趋势临界 / 二次承接区", "range": (trend_low or support_low or invalidation, trend_high or support_high), "tone": "orange"},
+        {"label": "深度恐慌复核区", "range": (deep_panic_low, deep_panic_high), "tone": "red"},
         {"label": "追高禁区", "range": (chase, None), "tone": "red"},
-    ]
+    ])
+    return items
 
 
 def _range_action_text(label: str) -> str:
+    if "买区上沿" in label:
+        return "持有观察，不主动新增"
+    if "承接观察" in label:
+        return "等待承接"
+    if "趋势临界" in label:
+        return "破位后重新评估"
+    if "深度恐慌" in label:
+        return "基本面复核"
     if "深度" in label or "承接" in label:
         return "允许分批建仓"
     if "估值" in label:

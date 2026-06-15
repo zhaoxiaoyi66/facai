@@ -209,7 +209,7 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     assert "禁止追高" in html
     assert "不主动追买" in html
     assert "追高禁区" in html
-    assert "主击球区" in html
+    assert "当前位置" in html
     assert "当前位置" in html
     assert "入场条件" in html
     assert "放量站上 $52.00 后重新判断" in html
@@ -1018,7 +1018,7 @@ def test_ai_radar_report_msft_near_repair_below_valuation_is_not_broken_buy_zone
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
     assert "近端修复观察区" in html
-    assert "主击球区" in html
+    assert "买区数据" in html
     assert "技术承接数据不足" in html
     assert "$377.84 - $415.02" in html
     assert "跌破纪律买区" not in html
@@ -1052,12 +1052,48 @@ def test_ai_radar_report_uses_dashboard_row_price_and_radar_zone_aliases() -> No
     assert "最新价" in html
     assert "$390.74" in html
     assert "近端修复观察区" in html
-    assert "主击球区" in html
+    assert "买区数据" in html
     assert "技术承接数据不足" in html
     assert "$377.84 - $415.02" in html
     assert "区间待补" not in html
     assert "跌破纪律买区" not in html
     assert report["decision"] == "WAIT"
+
+
+def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone() -> None:
+    report = {
+        "ticker": "IBM",
+        "company_name": "International Business Machines Corporation",
+        "current_price": 272.0,
+        "decision": "WAIT",
+        "final_score": 78,
+        "data_status": "OK",
+        "fifty_two_week_high": 332.46,
+    }
+    buy_zone_context = {
+        "pullback_zone_low": 253.17,
+        "pullback_zone_high": 273.56,
+        "left_probe_zone_low": 253.17,
+        "left_probe_zone_high": 260.31,
+        "observe_zone_high": 268.46,
+        "zone_position": 0.923,
+        "current_action": "WAIT_CONFIRMATION",
+        "confirmation_price": 276.0,
+        "breakout_reevaluation_price": 332.46,
+        "invalidation_price": 249.0,
+        "chase_price": 310.0,
+    }
+
+    card_html = radar_ui._batting_zone_card_html(report, {}, buy_zone_context)
+    chart_html = radar_ui._range_chart_html(report, {}, buy_zone_context)
+
+    assert "买区上沿 / 修复观察区" in card_html
+    assert "不是主动买点" in card_html
+    assert "主击球区" not in card_html
+    assert "左侧回踩区" in chart_html
+    assert "承接观察区" in chart_html
+    assert "买区上沿 / 修复观察区" in chart_html
+    assert "主击球区：" not in chart_html
 
 
 def test_ai_radar_report_shows_volume_price_acceptance_card() -> None:

@@ -77,6 +77,33 @@ def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
     assert display["action_code"] == "WAIT_CONFIRMATION"
 
 
+def test_upper_pullback_zone_display_does_not_call_it_main_batting_zone() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_UPPER_WATCH",
+            "primary_zone_text": "买区上沿 / 修复观察区",
+            "current_price": 272.0,
+            "pullback_zone_low": 253.17,
+            "pullback_zone_high": 273.56,
+            "zone_position": 0.923,
+            "confirmation_price": 276.0,
+            "breakout_reevaluation_price": 332.46,
+            "volume_price_status": "FORMING",
+            "volume_ratio": 0.65,
+            "daily_return_pct": -0.3,
+        },
+        {"current_shares": 100, "currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["badge_label"] == "买区上沿"
+    assert display["main_action_text"] == "持有观察 / 当前不新增"
+    assert display["technical_action_text"] == "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。"
+    assert "主击球区" not in display["technical_action_text"]
+    assert display["volume_confirmation_text"] == "缩量调整，尚不构成承接"
+
+
 def test_data_insufficient_position_pauses_add_without_legacy_buy_copy() -> None:
     display = build_buy_zone_display(
         {

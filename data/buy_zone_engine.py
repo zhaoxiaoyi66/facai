@@ -28,6 +28,7 @@ ZONE_TEXT = {
     "DEEP_ACCEPTANCE": "深度承接区",
     "PULLBACK_BUY": "回踩买区",
     "PULLBACK_WATCH": "技术回踩带内，可观察",
+    "PULLBACK_UPPER_WATCH": "买区上沿 / 修复观察区",
     "REPAIR_WATCH": "修复观察区",
     "CONFIRMATION_REVIEW": "确认复核区",
     "CHASE_RISK": "追高禁区",
@@ -52,9 +53,14 @@ class BuyZoneContext:
     left_probe_zone_high: float | None
     observe_zone_low: float | None
     observe_zone_high: float | None
+    zone_position: float | None
+    zone_position_text: str
     confirmation_price: float | None
     invalidation_price: float | None
     chase_price: float | None
+    breakout_reevaluation_price: float | None
+    add_trigger_condition_text: str
+    pause_new_condition_text: str
     current_action: str
     action_text: str
     existing_position_action_text: str
@@ -128,9 +134,13 @@ def build_buy_zone_context(
     )
     repair_low = _first_number(data, "near_term_repair_zone_low", "technical_repair_zone_low")
     repair_high = _first_number(data, "near_term_repair_zone_high", "technical_repair_zone_high")
-    confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line", "resistance_zone_low")
+    raw_confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line")
+    confirmation = _normalized_confirmation_price(data, price=price, raw_confirmation=raw_confirmation)
+    if confirmation is None:
+        confirmation = _first_number(data, "resistance_zone_low")
     invalidation = _first_number(data, "invalidation_price", "radar_invalidation_price", "invalid_line")
     chase = _first_number(data, "chase_above_price", "radar_chase_above_price", "chase_price")
+    breakout_reevaluation = _breakout_reevaluation_price(data, price=price)
     ma20 = _first_number(data, "ma20", "ema20")
     ma50 = _first_number(data, "ma50", "ema50")
     ma200 = _first_number(data, "ma200", "ema200")
@@ -196,9 +206,14 @@ def build_buy_zone_context(
             left_probe_zone_high=None,
             observe_zone_low=None,
             observe_zone_high=None,
+            zone_position=None,
+            zone_position_text="技术承接数据不足",
             confirmation_price=confirmation,
             invalidation_price=invalidation,
             chase_price=chase,
+            breakout_reevaluation_price=breakout_reevaluation,
+            add_trigger_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
+            pause_new_condition_text=_pause_new_condition_text(None, invalidation, data),
             current_action=DATA_INSUFFICIENT,
             action_text=ACTION_TEXT[DATA_INSUFFICIENT],
             existing_position_action_text="已有持仓：技术承接数据不足，先控制新增买入并人工复核。",
@@ -216,6 +231,7 @@ def build_buy_zone_context(
         )
 
     left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
+    zone_position = _zone_position(price, pullback_low, pullback_high)
     primary_zone = _primary_zone(
         price=price,
         support_low=support_low,
@@ -229,7 +245,16 @@ def build_buy_zone_context(
         chase=chase,
     )
     technical_score = _technical_structure_score(primary_zone)
-    volume_score = _volume_acceptance_score(volume_status, volume_score_input)
+    volume_score = _volume_acceptance_score(
+        volume_status,
+        volume_score_input,
+        volume_ratio=volume_ratio,
+        price=price,
+        confirmation=confirmation,
+        resistance=_first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"),
+        daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
+        close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
+    )
     rr = _risk_reward_assessment(
         data=data,
         price=price,
@@ -256,9 +281,14 @@ def build_buy_zone_context(
         left_probe_zone_high=left_probe_high,
         observe_zone_low=observe_low,
         observe_zone_high=observe_high,
+        zone_position=zone_position,
+        zone_position_text=_zone_position_text(zone_position),
         confirmation_price=confirmation,
         invalidation_price=invalidation,
         chase_price=chase,
+        breakout_reevaluation_price=breakout_reevaluation,
+        add_trigger_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
+        pause_new_condition_text=_pause_new_condition_text(pullback_low, invalidation, data),
         current_action=action,
         action_text=ACTION_TEXT[action],
         existing_position_action_text=_existing_position_action(action),
@@ -336,6 +366,104 @@ def _missing_fields(**values: Any) -> list[str]:
     return fields
 
 
+def _normalized_confirmation_price(data: dict[str, Any], *, price: float | None, raw_confirmation: float | None) -> float | None:
+    if raw_confirmation is None:
+        return None
+    if not _is_fifty_two_week_high(data, raw_confirmation):
+        return raw_confirmation
+    near = _near_confirmation_candidate(data, price)
+    return near
+
+
+def _is_fifty_two_week_high(data: dict[str, Any], value: float | None) -> bool:
+    target = _first_number(data, "fifty_two_week_high", "fiftyTwoWeekHigh", "yearHigh", "52_week_high")
+    if value is None or target is None:
+        return False
+    return abs(value - target) <= max(0.05, target * 0.001)
+
+
+def _breakout_reevaluation_price(data: dict[str, Any], *, price: float | None = None) -> float | None:
+    high = _first_number(data, "fifty_two_week_high", "fiftyTwoWeekHigh", "yearHigh", "52_week_high")
+    if high is not None:
+        return high
+    return _first_number(data, "breakout_reevaluation_price", "breakoutReevaluationPrice")
+
+
+def _near_confirmation_candidate(data: dict[str, Any], price: float | None) -> float | None:
+    candidates: list[float] = []
+    for key in (
+        "near_confirmation_price",
+        "nearConfirmationPrice",
+        "technical_resistance_price",
+        "technicalResistancePrice",
+        "resistance_zone_low",
+        "resistanceZoneLow",
+        "trend_reclaim_zone_low",
+        "trendReclaimZoneLow",
+        "recent_breakout_level",
+        "recentBreakoutLevel",
+        "recent_swing_high",
+        "recentSwingHigh",
+    ):
+        value = _number(data.get(key))
+        if value is None:
+            continue
+        if price is not None and value <= price * 1.0001:
+            continue
+        if price is not None and value > price * 1.18:
+            continue
+        candidates.append(value)
+    for item in _resistance_level_items(data):
+        value = _first_number(item, "price", "level", "value")
+        if value is None:
+            continue
+        if price is not None and (value <= price * 1.0001 or value > price * 1.18):
+            continue
+        candidates.append(value)
+    return min(candidates) if candidates else None
+
+
+def _add_trigger_condition_text(confirmation: float | None, breakout_reevaluation: float | None) -> str:
+    if confirmation is not None:
+        return f"加仓触发：放量站上近端确认线 {_money(confirmation)} 后重新评估。"
+    if breakout_reevaluation is not None:
+        return f"加仓触发：52周高点 {_money(breakout_reevaluation)} 仅作为突破重估线，不是买入确认线。"
+    return "加仓触发：等待近端压力位和量价承接补齐。"
+
+
+def _pause_new_condition_text(pullback_low: float | None, invalidation: float | None, data: dict[str, Any]) -> str:
+    trend_low = _first_number(data, "trend_critical_zone_low", "trendCriticalZoneLow", "support_zone_low", "supportZoneLow")
+    trend_high = _first_number(data, "trend_critical_zone_high", "trendCriticalZoneHigh", "support_zone_high", "supportZoneHigh")
+    deep_low = _first_number(data, "deep_panic_zone_low", "deepPanicZoneLow", "deep_support_zone_low", "deepSupportZoneLow")
+    deep_high = _first_number(data, "deep_panic_zone_high", "deepPanicZoneHigh", "deep_support_zone_high", "deepSupportZoneHigh")
+    parts: list[str] = []
+    if pullback_low is not None:
+        parts.append(f"跌破买区下沿 {_money(pullback_low)}：暂停新增")
+    if invalidation is not None and (pullback_low is None or abs(invalidation - pullback_low) > max(0.05, pullback_low * 0.005)):
+        parts.append(f"跌破 {_money(invalidation)}：买区失效，重新评估")
+    if trend_low is not None or trend_high is not None:
+        parts.append(f"跌破 {_range_money(trend_low, trend_high)}：趋势恶化，禁止继续摊低")
+    if deep_low is not None or deep_high is not None:
+        parts.append(f"{_range_money(deep_low, deep_high)}：极端风险/基本面复核区，不是自动买入区")
+    return "；".join(parts) if parts else "暂停新增条件：跌破失效线或承接失败。"
+
+
+def _range_money(low: float | None, high: float | None) -> str:
+    if low is not None and high is not None:
+        return f"{_money(low)} - {_money(high)}"
+    if low is not None:
+        return _money(low)
+    if high is not None:
+        return _money(high)
+    return "暂缺"
+
+
+def _money(value: float | None) -> str:
+    if value is None:
+        return "暂缺"
+    return f"${value:,.2f}"
+
+
 def _primary_zone(
     *,
     price: float,
@@ -359,6 +487,9 @@ def _primary_zone(
         return "DEEP_ACCEPTANCE"
     if _in_range(price, pullback_low, pullback_high):
         _left_low, left_probe_high, _observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
+        position = _zone_position(price, pullback_low, pullback_high)
+        if position is not None and position > 0.75:
+            return "PULLBACK_UPPER_WATCH"
         if price <= left_probe_high:
             return "PULLBACK_BUY"
         if price <= min(observe_high, confirmation):
@@ -374,9 +505,29 @@ def _primary_zone(
 def _pullback_layers(pullback_low: float, pullback_high: float) -> tuple[float, float, float, float]:
     low, high = sorted((pullback_low, pullback_high))
     width = max(high - low, 0.0)
-    left_probe_high = low + width * 0.30
-    observe_high = low + width * 0.70
+    left_probe_high = low + width * 0.35
+    observe_high = low + width * 0.75
     return low, left_probe_high, left_probe_high, observe_high
+
+
+def _zone_position(price: float | None, zone_low: float | None, zone_high: float | None) -> float | None:
+    if price is None or zone_low is None or zone_high is None:
+        return None
+    low, high = sorted((zone_low, zone_high))
+    width = high - low
+    if width <= 0:
+        return None
+    return round((price - low) / width, 4)
+
+
+def _zone_position_text(position: float | None) -> str:
+    if position is None:
+        return "位置暂缺"
+    if position < 0.35:
+        return "买区下沿，允许小仓观察"
+    if position <= 0.75:
+        return "买区中段，等待承接"
+    return "买区上沿 / 修复观察区，不主动新增"
 
 
 def _technical_structure_score(primary_zone: str) -> float:
@@ -384,6 +535,7 @@ def _technical_structure_score(primary_zone: str) -> float:
         "DEEP_ACCEPTANCE": 82.0,
         "PULLBACK_BUY": 78.0,
         "PULLBACK_WATCH": 63.0,
+        "PULLBACK_UPPER_WATCH": 56.0,
         "REPAIR_WATCH": 58.0,
         "CONFIRMATION_REVIEW": 62.0,
         "CHASE_RISK": 18.0,
@@ -392,7 +544,27 @@ def _technical_structure_score(primary_zone: str) -> float:
     }.get(primary_zone, 40.0)
 
 
-def _volume_acceptance_score(status: str, explicit_score: float | None) -> float:
+def _volume_acceptance_score(
+    status: str,
+    explicit_score: float | None,
+    *,
+    volume_ratio: float | None = None,
+    price: float | None = None,
+    confirmation: float | None = None,
+    resistance: float | None = None,
+    daily_return: float | None = None,
+    close_position: float | None = None,
+) -> float:
+    low_volume = volume_ratio is not None and volume_ratio < 0.7
+    close_improved = (daily_return is not None and daily_return >= 0) or (close_position is not None and close_position >= 0.55)
+    if low_volume and not close_improved:
+        return min(42.0, explicit_score or 38.0)
+    if low_volume and close_improved:
+        return min(55.0, max(45.0, explicit_score or 50.0))
+    if volume_ratio is not None and volume_ratio > 1.2 and confirmation is not None and price is not None and price >= confirmation:
+        return max(80.0, explicit_score or 82.0)
+    if volume_ratio is not None and volume_ratio > 1.0 and resistance is not None and price is not None and price >= resistance:
+        return max(70.0, explicit_score or 72.0)
     if status == "ACCEPTANCE_CONFIRMED":
         return max(78.0, explicit_score or 82.0)
     if status == "FORMING":
@@ -667,11 +839,15 @@ def _current_action(primary_zone: str, setup_score: float, volume_status: str, v
         return RISK_REVIEW
     if primary_zone == "CHASE_RISK" or volume_status == "OVEREXTENDED_SUPPORT_READ":
         return BLOCK_CHASE
-    if primary_zone in {"DEEP_ACCEPTANCE", "PULLBACK_BUY"} and setup_score >= 62 and volume_score >= 50 and rr_score >= 55:
+    if primary_zone in {"DEEP_ACCEPTANCE", "PULLBACK_BUY"} and setup_score >= 62 and volume_score >= 55 and rr_score >= 55:
+        return ALLOW_SMALL_BUY
+    if primary_zone == "CONFIRMATION_REVIEW" and setup_score >= 62 and volume_score >= 78 and rr_score >= 55:
         return ALLOW_SMALL_BUY
     if primary_zone == "PULLBACK_BUY":
         return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_WATCH":
+        return WAIT_CONFIRMATION
+    if primary_zone == "PULLBACK_UPPER_WATCH":
         return WAIT_CONFIRMATION
     if primary_zone == "REPAIR_WATCH":
         return WAIT_CONFIRMATION
@@ -711,6 +887,7 @@ def _zone_reason(primary_zone: str, volume_status: str, rr_score: float, core_re
         "DEEP_ACCEPTANCE": "价格接近强支撑 / 前低 / 承接区，按深度承接区处理。",
         "PULLBACK_BUY": "价格回到技术回踩买区，买区由技术结构和量价承接决定。",
         "PULLBACK_WATCH": "价格处于技术回踩带观察区，但未进入更靠近下沿的左侧试仓区。",
+        "PULLBACK_UPPER_WATCH": "当前价格位于买区上沿 75% 以上，按修复观察区处理，不主动新增。",
         "REPAIR_WATCH": "价格已修复但量能或承接尚未给出确认，先观察。",
         "CONFIRMATION_REVIEW": "价格接近确认复核区，确认线只触发重新评估，不等于直接买入。",
         "CHASE_RISK": "价格远离承接区或进入追高阈值，盈亏比恶化。",

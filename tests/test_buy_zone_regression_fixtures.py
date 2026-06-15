@@ -40,7 +40,7 @@ def _volume(**overrides):
     return data
 
 
-def test_now_regression_pullback_watch_hold_no_add() -> None:
+def test_now_regression_lower_pullback_still_holds_no_add() -> None:
     context = build_buy_zone_context(
         _source(
             ticker="NOW",
@@ -64,7 +64,9 @@ def test_now_regression_pullback_watch_hold_no_add() -> None:
     )
     display = build_buy_zone_display(context.to_dict(), {"current_shares": 100, "currentAddLimitPercent": 0})
 
-    assert context.primary_zone == "PULLBACK_WATCH"
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.zone_position is not None
+    assert context.zone_position < 0.35
     assert context.current_action == "WAIT_CONFIRMATION"
     assert display["main_action_text"] == "持有观察 / 当前不新增"
     assert display["account_action_text"] == "已有 100 股，当前新增额度为 0"
