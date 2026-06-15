@@ -8,6 +8,14 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider, normalize_market_type
+from data.weekend_basis import (
+    BasisQuote,
+    BasisStrategyConfig,
+    BrokerOvernightBar,
+    evaluate_basis_lock_strategy,
+    normalize_basis_quotes,
+    normalize_broker_overnight_bars,
+)
 from data.weekend_spread import load_binance_symbol_mapping
 from settings import PROJECT_ROOT
 
@@ -168,15 +176,60 @@ def run_weekend_peak_short_backtest(
     return rows
 
 
+def run_weekend_basis_backtest(
+    tickers: Iterable[str],
+    *,
+    mapping: dict[str, Any] | None = None,
+    anchors: dict[str, Any] | None = None,
+    provider: Any | None = None,
+    broker_provider: Any | None = None,
+    weeks: int = 4,
+    open_window_minutes: int = 5,
+    kline_cache_path: Path | None = None,
+    strategy_config: BasisStrategyConfig | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    normalized_tickers = _normalize_tickers(tickers)
+    effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
+    effective_anchors = _normalize_mapping(anchors or {})
+    price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    effective_kline_cache_path = kline_cache_path
+    if effective_kline_cache_path is None and provider is None:
+        effective_kline_cache_path = DEFAULT_BACKTEST_KLINE_CACHE_PATH
+    windows = recent_weekend_windows(weeks=weeks, now=now)
+    rows: list[dict[str, Any]] = []
+    for ticker in normalized_tickers:
+        config = effective_mapping.get(ticker)
+        if not config or not config.get("enabled", True) or not config.get("binance_symbol"):
+            continue
+        for window in windows:
+            rows.append(
+                _basis_backtest_one_window(
+                    ticker,
+                    config,
+                    window,
+                    anchor=_anchor_for_ticker(ticker, config, effective_anchors),
+                    anchor_source=dict(effective_anchors.get(ticker) or config),
+                    provider=price_provider,
+                    broker_provider=broker_provider,
+                    open_window_minutes=open_window_minutes,
+                    kline_cache_path=effective_kline_cache_path,
+                    strategy_config=strategy_config,
+                )
+            )
+    return rows
+
+
 def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
     valid = [
         row
         for row in rows
-        if _number(row.get("net_short_return_pct") or row.get("net_return_at_open_pct")) is not None
-        and str(row.get("data_quality") or "") not in {"UNCONFIRMED_MAPPING", "INVALID"}
+        if _number(row.get("net_locked_bps")) is not None
+        and str(row.get("data_quality") or "") == "OK"
     ]
-    returns = [_number(row.get("net_short_return_pct") or row.get("net_return_at_open_pct")) for row in valid]
-    returns = [value for value in returns if value is not None]
+    returns_bps = [_number(row.get("net_locked_bps")) for row in valid]
+    returns_bps = [value for value in returns_bps if value is not None]
+    returns = [value / 100.0 for value in returns_bps]
     positive = [value for value in returns if value > 0]
     decay_ratios = [_number(row.get("premium_decay_ratio")) for row in valid]
     decay_ratios = [value for value in decay_ratios if value is not None]
@@ -191,6 +244,7 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_premium_decay_ratio": _average(decay_ratios),
         "avg_theoretical_short_return_pct": _average(theoretical),
         "avg_net_return_pct": _average(returns),
+        "avg_net_locked_bps": _average(returns_bps),
         "avg_premium_decay_pct": _average(decay),
         "max_premium_decay_pct": max(decay) if decay else None,
         "max_unflattened_risk_pct": max(remaining) if remaining else None,
@@ -395,6 +449,169 @@ def _backtest_one_window(
         }
     )
     return base
+
+
+def _basis_backtest_one_window(
+    ticker: str,
+    config: dict[str, Any],
+    window: WeekendWindow,
+    *,
+    anchor: dict[str, Any],
+    anchor_source: dict[str, Any],
+    provider: Any,
+    broker_provider: Any | None,
+    open_window_minutes: int,
+    kline_cache_path: Path | None,
+    strategy_config: BasisStrategyConfig | None,
+) -> dict[str, Any]:
+    symbol = str(config.get("binance_symbol") or "").strip().upper()
+    market_type = "usdm_futures"
+    mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    anchor_price = _number(anchor.get("anchor_price"))
+    base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
+    base.update({"broker_anchor_price": anchor_price, "anchor_price": anchor_price, "anchor_source": str(anchor.get("anchor_source") or "")})
+    if anchor_price is None or anchor_price <= 0:
+        base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price", "error_message": "missing broker anchor price"})
+        return base
+    try:
+        quotes, kline_cache_status = _fetch_window_basis_quotes(
+            provider,
+            symbol,
+            market_type=market_type,
+            window=window,
+            open_window_minutes=open_window_minutes,
+            cache_path=kline_cache_path,
+        )
+    except Exception as exc:
+        base.update(
+            {
+                "status": "FAILED",
+                "data_quality": "BINANCE_KLINE_UNAVAILABLE",
+                "warning": "Binance K 线不可用",
+                "error_message": f"{type(exc).__name__}: {exc}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        return base
+    broker_bars = _broker_overnight_bars_for_window(
+        ticker,
+        broker_provider=broker_provider,
+        anchor_source=anchor_source,
+        window=window,
+        open_window_minutes=open_window_minutes,
+    )
+    result = evaluate_basis_lock_strategy(
+        ticker=ticker,
+        binance_symbol=symbol,
+        mapping_confidence=mapping_confidence,
+        broker_anchor_price=anchor_price,
+        binance_quotes=quotes,
+        broker_overnight_bars=broker_bars,
+        config=strategy_config,
+    )
+    result.update(
+        {
+            "week_id": window.week_id,
+            "market_type": market_type,
+            "weekend_window_start": window.start_et.isoformat(),
+            "weekend_window_end": window.end_et.isoformat(),
+            "monday_reference_time_et": window.end_et.isoformat(),
+            "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
+            "anchor_price": anchor_price,
+            "anchor_source": str(anchor.get("anchor_source") or ""),
+            "kline_cache_status": kline_cache_status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    _apply_basis_compat_fields(result)
+    return result
+
+
+def _fetch_window_basis_quotes(
+    provider: Any,
+    symbol: str,
+    *,
+    market_type: str,
+    window: WeekendWindow,
+    open_window_minutes: int,
+    cache_path: Path | None,
+) -> tuple[list[BasisQuote], str]:
+    if hasattr(provider, "get_basis_quotes"):
+        payload = provider.get_basis_quotes(
+            symbol,
+            market_type=market_type,
+            start_time_ms=_to_ms(window.start_et),
+            end_time_ms=_to_ms(window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))),
+        )
+        return normalize_basis_quotes(payload, estimated=False, source="basis_quotes"), "API_LIVE"
+    bars, cache_status = _fetch_window_klines(
+        provider,
+        symbol,
+        market_type=market_type,
+        window=window,
+        open_window_minutes=open_window_minutes,
+        cache_path=cache_path,
+    )
+    return _basis_quotes_from_klines(bars), cache_status
+
+
+def _basis_quotes_from_klines(bars: list[NormalizedKline]) -> list[BasisQuote]:
+    rows = [
+        {
+            "ts": bar.open_time,
+            "bid": bar.close,
+            "ask": bar.close,
+            "source": "binance_kline_estimated",
+            "estimated_execution": True,
+        }
+        for bar in bars
+    ]
+    return normalize_basis_quotes(rows, estimated=True, source="binance_kline_estimated")
+
+
+def _broker_overnight_bars_for_window(
+    ticker: str,
+    *,
+    broker_provider: Any | None,
+    anchor_source: dict[str, Any],
+    window: WeekendWindow,
+    open_window_minutes: int,
+) -> list[BrokerOvernightBar]:
+    start_ms = _to_ms(window.end_et)
+    end_ms = _to_ms(window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5))))
+    if broker_provider is not None and hasattr(broker_provider, "get_overnight_bars"):
+        return normalize_broker_overnight_bars(
+            broker_provider.get_overnight_bars(
+                ticker,
+                start_time_ms=start_ms,
+                end_time_ms=end_ms,
+                interval="1m",
+            )
+        )
+    return normalize_broker_overnight_bars(anchor_source.get("broker_overnight_bars") or anchor_source.get("broker_overnight_quotes") or [])
+
+
+def _apply_basis_compat_fields(row: dict[str, Any]) -> None:
+    net_locked = _number(row.get("net_locked_bps"))
+    gross_locked = _number(row.get("gross_locked_bps"))
+    oracle = _number(row.get("oracle_weekend_high_premium_bps"))
+    residual = _number(row.get("residual_basis_bps"))
+    row["net_short_return_pct"] = net_locked / 100.0 if net_locked is not None else None
+    row["net_return_at_open_pct"] = row["net_short_return_pct"]
+    row["theoretical_short_return_pct"] = gross_locked / 100.0 if gross_locked is not None else None
+    row["short_return_at_open_pct"] = row["theoretical_short_return_pct"]
+    row["weekend_peak_premium_pct"] = oracle / 100.0 if oracle is not None else None
+    row["weekend_peak_binance_price"] = row.get("oracle_weekend_high_bid")
+    row["weekend_peak_price"] = row.get("oracle_weekend_high_bid")
+    row["weekend_peak_time"] = row.get("oracle_weekend_high_time") or ""
+    row["open_remaining_premium_pct"] = residual / 100.0 if residual is not None else None
+    if oracle is not None and residual is not None:
+        premium_decay_bps = oracle - residual
+        row["premium_decay_pct"] = premium_decay_bps / 100.0
+        row["premium_decay_ratio"] = premium_decay_bps / oracle * 100.0 if oracle else None
+    else:
+        row["premium_decay_pct"] = None
+        row["premium_decay_ratio"] = None
 
 
 def _fetch_window_klines(

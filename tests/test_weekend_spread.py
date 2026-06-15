@@ -22,6 +22,7 @@ from data.weekend_spread_backtest import (
     clear_backtest_view_state,
     load_backtest_results,
     recent_weekend_windows,
+    run_weekend_basis_backtest,
     run_weekend_peak_short_backtest,
     save_backtest_results,
     summarize_backtest_results,
@@ -308,6 +309,39 @@ class FakeKlineProvider:
         return [bar for bar in self.bars if start <= int(bar[0]) < end][:limit]
 
 
+class FakeBasisQuoteProvider:
+    def __init__(self, quotes: list[dict] | None = None, *, error: Exception | None = None) -> None:
+        self.quotes = quotes or []
+        self.error = error
+        self.calls: list[dict] = []
+
+    def get_basis_quotes(
+        self,
+        symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> list[dict]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "market_type": market_type,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+            }
+        )
+        if self.error:
+            raise self.error
+        start = start_time_ms or 0
+        end = end_time_ms or 2**63 - 1
+        return [
+            quote
+            for quote in self.quotes
+            if start <= int(datetime.fromisoformat(str(quote["ts"]).replace("Z", "+00:00")).timestamp() * 1000) < end
+        ]
+
+
 class CandidateStatusProvider:
     def __init__(self, *, status: str = "OK", candidates: list[dict] | None = None, message: str = "") -> None:
         self.status = status
@@ -372,6 +406,25 @@ def _history(close: float = 100.0) -> pd.DataFrame:
 
 def _kline(moment: datetime, open_: float, high: float, low: float, close: float, volume: float = 1_000) -> list:
     return [int(moment.astimezone(timezone.utc).timestamp() * 1000), str(open_), str(high), str(low), str(close), str(volume)]
+
+
+def _basis_quote(moment: datetime, bid: float, ask: float | None = None, **extra) -> dict:
+    return {
+        "ts": moment.astimezone(timezone.utc).isoformat(),
+        "bid": bid,
+        "ask": ask if ask is not None else bid + 0.02,
+        **extra,
+    }
+
+
+def _broker_bar(moment: datetime, bid: float, ask: float | None = None, **extra) -> dict:
+    return {
+        "ts": moment.astimezone(timezone.utc).isoformat(),
+        "bid": bid,
+        "ask": ask if ask is not None else bid + 0.02,
+        "quote_age_seconds": 10,
+        **extra,
+    }
 
 
 def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
@@ -2012,6 +2065,97 @@ def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
     assert window.end_shanghai.strftime("%A %H:%M") == "Monday 09:00"
 
 
+def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5, 100.55),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0, 101.05),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0, 102.05),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65, 101.7),
+        _basis_quote(window.end_et, 101.1, 101.2),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
+        }
+    }
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+    )
+
+    row = rows[0]
+    assert row["status"] == "HEDGE_LOCKED"
+    assert row["binance_entry_bid"] == 101.65
+    assert row["broker_hedge_ask"] == 100.9
+    assert round(row["entry_premium_bps"], 2) == 165.0
+    assert round(row["pullback_bps"], 2) == 35.0
+    assert round(row["net_locked_bps"], 2) == 74.33
+    assert row["realized_pnl_bps"] is None
+    assert row["oracle_note"] == "事后高点，不可交易"
+
+
+def test_weekend_basis_backtest_requires_broker_overnight_bar() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65),
+    ]
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["status"] == "WAIT_BROKER_OPEN"
+    assert rows[0]["data_quality"] == "NO_BROKER_OVERNIGHT_BAR"
+
+
+def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=1), 100, 100.5, 99.8, 100.5),
+        _kline(window.start_et + timedelta(hours=2), 101, 101.2, 100.8, 101),
+        _kline(window.start_et + timedelta(hours=4), 102, 102.2, 101.8, 102),
+        _kline(window.start_et + timedelta(hours=5), 101.65, 101.7, 101.5, 101.65),
+        _kline(window.end_et, 101.1, 101.2, 101.0, 101.1),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
+        }
+    }
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["status"] == "HEDGE_LOCKED"
+    assert rows[0]["data_quality"] == "ESTIMATED_EXECUTION"
+    assert summarize_backtest_results(rows)["sample_weeks"] == 0
+
+
 def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap(tmp_path) -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
@@ -2270,8 +2414,8 @@ def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
 
 def test_backtest_summary_excludes_unconfirmed_mapping_from_formal_win_rate() -> None:
     rows = [
-        {"net_short_return_pct": 2.0, "theoretical_short_return_pct": 2.2, "premium_decay_ratio": 80, "premium_decay_pct": 4, "open_remaining_premium_pct": 1, "data_quality": "OK"},
-        {"net_short_return_pct": 9.0, "theoretical_short_return_pct": 9.2, "premium_decay_ratio": 90, "premium_decay_pct": 9, "open_remaining_premium_pct": 1, "data_quality": "UNCONFIRMED_MAPPING"},
+        {"net_locked_bps": 200, "theoretical_short_return_pct": 2.2, "premium_decay_ratio": 80, "premium_decay_pct": 4, "open_remaining_premium_pct": 1, "data_quality": "OK"},
+        {"net_locked_bps": 900, "theoretical_short_return_pct": 9.2, "premium_decay_ratio": 90, "premium_decay_pct": 9, "open_remaining_premium_pct": 1, "data_quality": "UNCONFIRMED_MAPPING"},
     ]
 
     summary = summarize_backtest_results(rows)
@@ -2280,6 +2424,7 @@ def test_backtest_summary_excludes_unconfirmed_mapping_from_formal_win_rate() ->
     assert summary["positive_weeks"] == 1
     assert summary["win_rate"] == 1.0
     assert summary["avg_net_return_pct"] == 2.0
+    assert summary["avg_net_locked_bps"] == 200
 
 
 def test_backtest_results_are_persisted_and_reloadable(tmp_path) -> None:
@@ -2287,7 +2432,7 @@ def test_backtest_results_are_persisted_and_reloadable(tmp_path) -> None:
         {
             "ticker": "NVDA",
             "week_id": "2026-W24",
-            "net_short_return_pct": 1.2,
+            "net_locked_bps": 120,
             "premium_decay_ratio": 50,
             "theoretical_short_return_pct": 1.4,
             "premium_decay_pct": 2.0,
@@ -2457,6 +2602,8 @@ def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
     assert "包含未确认映射" in source
     assert "weekend_backtest_include_unconfirmed" in source
     assert "build_weekend_backtest_preflight" in source
+    assert "run_weekend_basis_backtest" in source
+    assert "run_weekend_peak_short_backtest" not in source
     assert "disabled=not bool(preflight.get(\"can_run\"))" in source
 
 

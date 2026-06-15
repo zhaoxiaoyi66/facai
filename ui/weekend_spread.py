@@ -15,7 +15,7 @@ from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
     load_backtest_results,
-    run_weekend_peak_short_backtest,
+    run_weekend_basis_backtest,
     save_backtest_results,
     summarize_backtest_results,
 )
@@ -575,7 +575,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         progress_bar = st.progress(0.0)
         status_slot = st.empty()
         status_slot.caption(f"正在运行历史回测：{len(tickers)} 个标的，{weeks} 周。")
-        results = run_weekend_peak_short_backtest(
+        results = run_weekend_basis_backtest(
             tickers,
             mapping=mapping,
             anchors=anchors,
@@ -583,7 +583,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             open_window_minutes=open_window,
         )
         progress_bar.progress(1.0)
-        failed = [row for row in results if str(row.get("data_quality") or "") in {"DATA_UNAVAILABLE", "INVALID"}]
+        failed = [row for row in results if str(row.get("data_quality") or "") in {"BINANCE_KLINE_UNAVAILABLE", "NO_BROKER_OVERNIGHT_BAR", "STALE_OR_MISALIGNED", "INVALID", "NO_PRICE_ANCHOR"}]
         error_message = _backtest_error_message(failed)
         saved = save_backtest_results(
             results,
@@ -679,9 +679,31 @@ def _data_quality_text(value: object) -> str:
     return {
         "OK": "可用",
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
+        "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
+        "NO_BROKER_OVERNIGHT_BAR": "缺少券商 overnight bar",
+        "STALE_OR_MISALIGNED": "时间未对齐",
+        "WIDE_SPREAD": "价差过宽",
+        "LOW_DEPTH": "深度不足",
+        "ESTIMATED_EXECUTION": "估算执行，仅观察",
         "DATA_UNAVAILABLE": "数据不可用",
         "INVALID": "无效样本",
+        "NO_PRICE_ANCHOR": "缺少价格锚点",
         "MISSING": "缺失",
+    }.get(text, str(value or "暂缺"))
+
+
+def _basis_status_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "OBSERVE": "观察",
+        "ENTRY_CANDIDATE": "入场候选",
+        "SHORT_OPEN": "空单已开",
+        "WAIT_BROKER_OPEN": "等待券商夜盘",
+        "HEDGE_DUE": "待对冲",
+        "HEDGE_LOCKED": "已锁仓",
+        "EXIT_READY": "可准备退出",
+        "CLOSED": "双腿已关闭",
+        "FAILED": "失败",
     }.get(text, str(value or "暂缺"))
 
 
@@ -726,9 +748,13 @@ def _backtest_error_message(rows: list[dict]) -> str:
     for row in rows:
         quality = str(row.get("data_quality") or "")
         raw_error = str(row.get("error_message") or "")
-        if quality == "DATA_UNAVAILABLE":
+        if quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
             detail = f"：{raw_error}" if raw_error else ""
             reasons.append(f"{row.get('ticker')}：Binance K 线不可用{detail}")
+        elif quality == "NO_BROKER_OVERNIGHT_BAR":
+            reasons.append(f"{row.get('ticker')}：缺少券商 overnight 第一根有效 1m bar")
+        elif quality == "STALE_OR_MISALIGNED":
+            reasons.append(f"{row.get('ticker')}：Binance 与券商时间未对齐")
         elif quality == "INVALID":
             reasons.append(f"{row.get('ticker')}：{raw_error or '无效样本'}")
         elif raw_error:
@@ -741,7 +767,7 @@ def _render_backtest_kpis(rows: list[dict]) -> None:
     cols = st.columns(7)
     cols[0].metric("近4周样本数", int(summary.get("sample_weeks") or 0))
     cols[1].metric("平均溢价抹平率", _percent_text(summary.get("avg_premium_decay_ratio")))
-    cols[2].metric("平均理论收益", _percent_text(summary.get("avg_theoretical_short_return_pct")))
+    cols[2].metric("平均锁仓收益", _bps_text(summary.get("avg_net_locked_bps")))
     cols[3].metric("正收益周数", int(summary.get("positive_weeks") or 0))
     cols[4].metric("胜率", _ratio_text(summary.get("win_rate")))
     cols[5].metric("最大溢价抹平", _percent_text(summary.get("max_premium_decay_pct")))
@@ -1125,12 +1151,13 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("week_id", "周次"),
         ("ticker", "Ticker"),
-        ("weekend_peak_time", "周末高点时间"),
-        ("weekend_peak_premium_pct", "周末峰值溢价"),
-        ("open_remaining_premium_pct", "开盘剩余溢价"),
-        ("premium_decay_pct", "溢价抹平幅度"),
-        ("premium_decay_ratio", "溢价抹平率"),
-        ("theoretical_short_return_pct", "高点空到开盘理论收益"),
+        ("status", "状态"),
+        ("entry_premium_bps", "入场溢价"),
+        ("relative_high_rank", "相对高位"),
+        ("pullback_bps", "回落幅度"),
+        ("net_locked_bps", "锁仓收益"),
+        ("residual_basis_bps", "剩余基差"),
+        ("oracle_weekend_high_premium_bps", "事后峰值"),
         ("data_quality", "数据质量"),
         ("warning", "排除 / 提醒"),
     ]
@@ -1143,15 +1170,10 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
             display[label] = frame.apply(lambda row: _backtest_row_warning(row.to_dict()), axis=1)
         else:
             display[label] = frame.get(key)
-    for percent_col in (
-        "周末峰值溢价",
-        "开盘剩余溢价",
-        "溢价抹平幅度",
-        "溢价抹平率",
-        "高点空到开盘理论收益",
-    ):
-        display[percent_col] = display[percent_col].map(_percent_text)
-    display["周末高点时间"] = display["周末高点时间"].replace("", "暂缺")
+    for bps_col in ("入场溢价", "回落幅度", "锁仓收益", "剩余基差", "事后峰值"):
+        display[bps_col] = display[bps_col].map(_bps_text)
+    display["相对高位"] = display["相对高位"].map(_percent_text)
+    display["状态"] = display["状态"].map(_basis_status_text)
     display["数据质量"] = display["数据质量"].map(_data_quality_text)
     return display
 
@@ -1160,13 +1182,22 @@ def _backtest_row_warning(row: dict) -> str:
     quality = str(row.get("data_quality") or "")
     error = str(row.get("error_message") or "")
     note = str(row.get("result_note") or "")
-    if quality == "DATA_UNAVAILABLE":
+    warning = str(row.get("warning") or "")
+    if quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
         return f"Binance K 线不可用：{error}" if error else "Binance K 线不可用"
+    if quality == "NO_BROKER_OVERNIGHT_BAR":
+        return warning or "缺少券商 overnight 第一根有效 1m bar"
+    if quality == "STALE_OR_MISALIGNED":
+        return warning or "Binance 与 broker 报价时间未对齐"
+    if quality == "ESTIMATED_EXECUTION":
+        return warning or "估算执行，仅观察"
+    if quality in {"WIDE_SPREAD", "LOW_DEPTH"}:
+        return warning or _data_quality_text(quality)
     if quality == "INVALID":
         return error or "无效样本"
     if quality == "UNCONFIRMED_MAPPING":
-        return note or "未确认映射，仅观察"
-    return note
+        return warning or note or "未确认映射，仅观察"
+    return warning or note
 
 
 def _mapping_management_frame(rows: list[dict], mapping: dict[str, dict]) -> pd.DataFrame:
@@ -1590,6 +1621,13 @@ def _percent_text(value: object) -> str:
     if number is None:
         return "暂缺"
     return f"{number:+.2f}%"
+
+
+def _bps_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    return f"{number:+.1f} bps"
 
 
 def _ratio_text(value: object) -> str:
