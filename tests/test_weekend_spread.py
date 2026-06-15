@@ -31,9 +31,11 @@ from data.weekend_spread_backtest import (
     clear_backtest_view_state,
     load_backtest_results,
     recent_weekend_windows,
+    run_weekend_basis_backfill_audit,
     run_weekend_basis_backtest,
     run_weekend_peak_short_backtest,
     save_backtest_results,
+    summarize_backfill_audit_results,
     summarize_backtest_results,
 )
 from data.weekend_spread import (
@@ -2163,6 +2165,189 @@ def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
     assert rows[0]["status"] == "HEDGE_LOCKED"
     assert rows[0]["data_quality"] == "ESTIMATED_EXECUTION"
     assert summarize_backtest_results(rows)["sample_weeks"] == 0
+
+
+def test_weekend_basis_backfill_replays_complete_weekend_with_first_threshold_next_minute() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    sunday = window.end_et.date()
+    quotes = [
+        _basis_quote(datetime.combine(sunday, datetime.min.time(), ZoneInfo("America/New_York")), 100.3, 100.34),
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=2), 100.7, 100.74),
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 100.9, 100.94),
+        _basis_quote(window.end_et - timedelta(hours=3), 101.0, 101.04),
+        _basis_quote(window.end_et - timedelta(hours=2), 101.2, 101.5),
+        _basis_quote(window.end_et, 100.8, 100.84),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.65, 100.7)],
+        }
+    }
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+    )
+
+    first_80 = next(row for row in rows if row["rule_name"] == "FIRST_THRESHOLD_80")
+    assert first_80["status"] == "HEDGE_LOCKED"
+    assert first_80["data_mode"] == "STRICT"
+    assert first_80["entry_ts"] == quotes[3]["ts"]
+    assert first_80["broker_hedge_price"] == 100.7
+    assert round(first_80["net_locked_bps"], 2) == 29.79
+    assert round(first_80["max_adverse_bps"], 2) == 49.5
+    assert first_80["time_unhedged_minutes"] == 180
+    assert first_80["oracle_note"] == "事后高点，不可交易"
+
+
+def test_weekend_basis_backfill_blocks_unconfirmed_mapping_from_strict_stats() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        anchors=_anchors(afterhours=100),
+        provider=FakeBasisQuoteProvider([]),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["status"] == "BLOCK_MAPPING"
+    assert rows[0]["data_quality"] == "BLOCK_MAPPING"
+    assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+
+
+def test_weekend_basis_backfill_does_not_fallback_to_regular_open() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    regular_open = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), ZoneInfo("America/New_York")).replace(hour=9, minute=30)
+    quotes = [
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 100.9),
+        _basis_quote(window.end_et - timedelta(hours=3), 101.0),
+        _basis_quote(window.end_et, 100.8),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(regular_open, 100.6, 100.7)],
+        }
+    }
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+    )
+
+    threshold_rows = [row for row in rows if row["rule_name"].startswith("FIRST_THRESHOLD")]
+    assert threshold_rows
+    assert {row["data_quality"] for row in threshold_rows} == {"NO_BROKER_OVERNIGHT_BAR"}
+    assert all(row["status"] == "WAIT_BROKER_OPEN" for row in threshold_rows)
+
+
+def test_weekend_basis_backfill_marks_kline_execution_estimated_and_excludes_strict() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.end_et - timedelta(hours=3, minutes=1), 100.9, 100.95, 100.8, 100.9),
+        _kline(window.end_et - timedelta(hours=3), 101.0, 101.05, 100.9, 101.0),
+        _kline(window.end_et, 100.8, 100.85, 100.7, 100.8),
+    ]
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(bars),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["data_mode"] == "ESTIMATED"
+    assert rows[0]["data_quality"] == "ESTIMATED_EXECUTION"
+    assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+
+
+def test_weekend_basis_backfill_relative_high_uses_only_past_window() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.end_et - timedelta(hours=8), 100.8, 100.84),
+        _basis_quote(window.end_et - timedelta(hours=7, minutes=40), 100.9, 100.94),
+        _basis_quote(window.end_et - timedelta(hours=7, minutes=20), 101.0, 101.04),
+        _basis_quote(window.end_et - timedelta(hours=7), 101.1, 101.14),
+        _basis_quote(window.end_et - timedelta(hours=6, minutes=40), 101.2, 101.24),
+        _basis_quote(window.end_et - timedelta(hours=6, minutes=20), 101.3, 101.34),
+        _basis_quote(window.end_et - timedelta(hours=6), 101.8, 101.84),
+        _basis_quote(window.end_et - timedelta(hours=5, minutes=59), 101.65, 101.69),
+        _basis_quote(window.end_et, 101.1, 101.14),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
+        }
+    }
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+        strategy_config=BasisStrategyConfig(min_entry_premium_bps=120, min_percentile=85),
+    )
+
+    relative_rows = [row for row in rows if row["rule_name"].startswith("RELATIVE_HIGH_PULLBACK")]
+    assert relative_rows
+    assert all(datetime.fromisoformat(row["entry_ts"]).astimezone(timezone.utc) >= datetime.fromisoformat(quotes[2]["ts"]) for row in relative_rows)
+
+
+def test_weekend_basis_backfill_supports_weekly_anchor_and_low_risk_window() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    early_quote = _basis_quote(window.end_et - timedelta(hours=10), 101.0, 101.04)
+    low_risk_signal = _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 101.2, 101.24)
+    low_risk_entry = _basis_quote(window.end_et - timedelta(hours=3), 101.3, 101.34)
+    quotes = [early_quote, low_risk_signal, low_risk_entry, _basis_quote(window.end_et, 101.1, 101.14)]
+    anchors = {
+        "NVDA": {
+            "weekly_anchors": {
+                window.week_id: {
+                    "regular_close_price": 99,
+                    "regular_close_date": "2026-07-03",
+                }
+            },
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
+        }
+    }
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+        low_risk_window_only=True,
+    )
+
+    first_row = next(row for row in rows if row["rule_name"].startswith("FIRST_THRESHOLD"))
+    assert first_row["anchor_price"] == 99
+    assert first_row["data_quality"] == "ANCHOR_REGULAR_CLOSE_ONLY"
+    assert first_row["entry_ts"] == low_risk_entry["ts"]
+    assert first_row["entry_window"] == "LOW_RISK"
+    assert summarize_backfill_audit_results(rows)["strict_sample_count"] > 0
 
 
 def test_basis_opportunity_blocks_unconfirmed_mapping() -> None:

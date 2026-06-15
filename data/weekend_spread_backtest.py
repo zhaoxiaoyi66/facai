@@ -24,6 +24,8 @@ ET = ZoneInfo("America/New_York")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_results.json"
 DEFAULT_BACKTEST_KLINE_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_klines.json"
+BACKFILL_THRESHOLDS_BPS = (80.0, 100.0, 120.0, 150.0)
+BACKFILL_RELATIVE_WINDOWS_HOURS = (6, 12)
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,89 @@ def run_weekend_basis_backtest(
                 )
             )
     return rows
+
+
+def run_weekend_basis_backfill_audit(
+    tickers: Iterable[str],
+    *,
+    mapping: dict[str, Any] | None = None,
+    anchors: dict[str, Any] | None = None,
+    provider: Any | None = None,
+    broker_provider: Any | None = None,
+    weeks: int = 8,
+    kline_cache_path: Path | None = None,
+    strategy_config: BasisStrategyConfig | None = None,
+    now: datetime | None = None,
+    include_estimated: bool = False,
+    low_risk_window_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Replay complete historical weekends without using current prices.
+
+    This audit keeps oracle weekend highs as observation only. Formal rows require
+    confirmed mapping, historical Binance bid/ask quotes, and broker overnight
+    ask quotes after Sunday 20:00 ET.
+    """
+
+    normalized_tickers = _normalize_tickers(tickers)
+    effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
+    effective_anchors = _normalize_mapping(anchors or {})
+    price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider())
+    effective_kline_cache_path = kline_cache_path
+    if effective_kline_cache_path is None and provider is None:
+        effective_kline_cache_path = DEFAULT_BACKTEST_KLINE_CACHE_PATH
+    windows = recent_weekend_windows(weeks=weeks, now=now)
+    cfg = strategy_config or BasisStrategyConfig()
+    rows: list[dict[str, Any]] = []
+    for ticker in normalized_tickers:
+        config = effective_mapping.get(ticker)
+        if not config or not config.get("enabled", True) or not config.get("binance_symbol"):
+            rows.extend(_backfill_block_rows(ticker, config or {}, windows, reason="NO_MAPPING"))
+            continue
+        mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
+        if mapping_confidence != "confirmed":
+            rows.extend(_backfill_block_rows(ticker, config, windows, reason="BLOCK_MAPPING"))
+            continue
+        for window in windows:
+            rows.extend(
+                _basis_backfill_one_window(
+                    ticker,
+                    config,
+                    window,
+                    anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
+                    anchor_source=dict(effective_anchors.get(ticker) or config),
+                    provider=price_provider,
+                    broker_provider=broker_provider,
+                    kline_cache_path=effective_kline_cache_path,
+                    config=cfg,
+                    include_estimated=include_estimated,
+                    low_risk_window_only=low_risk_window_only,
+                )
+            )
+    return rows
+
+
+def summarize_backfill_audit_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    strict = [
+        row
+        for row in rows
+        if str(row.get("data_mode") or "") == "STRICT"
+        and str(row.get("data_quality") or "") in {"OK", "ANCHOR_REGULAR_CLOSE_ONLY"}
+        and _number(row.get("net_locked_bps")) is not None
+    ]
+    net_values = [_number(row.get("net_locked_bps")) for row in strict]
+    net_values = [value for value in net_values if value is not None]
+    adverse_values = [_number(row.get("max_adverse_bps")) for row in strict]
+    adverse_values = [value for value in adverse_values if value is not None]
+    hedge_success = [row for row in strict if row.get("hedge_success")]
+    return {
+        "sample_count": len(rows),
+        "strict_sample_count": len(strict),
+        "avg_net_locked_bps": _average(net_values),
+        "median_net_locked_bps": _median(net_values),
+        "worst_net_locked_bps": min(net_values) if net_values else None,
+        "max_adverse_bps": max(adverse_values) if adverse_values else None,
+        "hedge_success_rate": len(hedge_success) / len(strict) if strict else None,
+    }
 
 
 def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -525,6 +610,353 @@ def _basis_backtest_one_window(
     )
     _apply_basis_compat_fields(result)
     return result
+
+
+def _basis_backfill_one_window(
+    ticker: str,
+    mapping_config: dict[str, Any],
+    window: WeekendWindow,
+    *,
+    anchor: dict[str, Any],
+    anchor_source: dict[str, Any],
+    provider: Any,
+    broker_provider: Any | None,
+    kline_cache_path: Path | None,
+    config: BasisStrategyConfig,
+    include_estimated: bool,
+    low_risk_window_only: bool,
+) -> list[dict[str, Any]]:
+    symbol = str(mapping_config.get("binance_symbol") or "").strip().upper()
+    market_type = "usdm_futures"
+    mapping_confidence = str(mapping_config.get("mapping_confidence") or "").strip().lower()
+    base = _base_backfill_row(ticker, mapping_config, window)
+    anchor_price = _number(anchor.get("anchor_price"))
+    anchor_source_text = str(anchor.get("anchor_source") or "")
+    base.update(
+        {
+            "anchor_ts": str(anchor.get("anchor_ts") or anchor.get("anchor_time") or ""),
+            "anchor_price": anchor_price,
+            "anchor_source": anchor_source_text,
+            "data_quality": "ANCHOR_REGULAR_CLOSE_ONLY" if anchor_source_text == "ANCHOR_REGULAR_CLOSE_ONLY" else "OK",
+        }
+    )
+    if anchor_price is None or anchor_price <= 0:
+        base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 Friday anchor"})
+        return [base]
+    try:
+        quotes, kline_cache_status = _fetch_window_basis_quotes(
+            provider,
+            symbol,
+            market_type=market_type,
+            window=window,
+            open_window_minutes=5,
+            cache_path=kline_cache_path,
+        )
+    except Exception as exc:
+        base.update(
+            {
+                "status": "FAILED",
+                "data_quality": "BINANCE_KLINE_UNAVAILABLE",
+                "warning": "Binance K 线不可用",
+                "error_message": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        return [base]
+    if not quotes:
+        base.update({"status": "FAILED", "data_quality": "BINANCE_KLINE_UNAVAILABLE", "warning": "Binance K 线不可用"})
+        return [base]
+    if any(quote.estimated for quote in quotes) and not include_estimated:
+        observation = dict(base)
+        observation.update(
+            {
+                "status": "FAILED",
+                "data_mode": "ESTIMATED",
+                "data_quality": "ESTIMATED_EXECUTION",
+                "warning": "Binance 历史没有 bid/ask，估算执行不进入 strict statistics",
+                "kline_cache_status": kline_cache_status,
+            }
+        )
+        observation.update(_oracle_fields_for_backfill(quotes, anchor_price))
+        return [observation]
+    data_mode = "ESTIMATED" if any(quote.estimated for quote in quotes) else "STRICT"
+    entry_quotes = _entry_window_quotes(quotes, window, low_risk_only=low_risk_window_only)
+    broker_bars = _broker_overnight_bars_for_window(
+        ticker,
+        broker_provider=broker_provider,
+        anchor_source=anchor_source,
+        window=window,
+        open_window_minutes=5,
+    )
+    hedge_bar = _first_backfill_broker_bar(broker_bars, window, config)
+    candidates = _backfill_entry_candidates(entry_quotes, anchor_price, config)
+    oracle_fields = _oracle_fields_for_backfill(entry_quotes or quotes, anchor_price)
+    if not candidates:
+        row = dict(base)
+        row.update(
+            {
+                "status": "OBSERVE",
+                "data_mode": data_mode,
+                "warning": "未出现历史入场信号",
+                "kline_cache_status": kline_cache_status,
+                **oracle_fields,
+            }
+        )
+        return [row]
+    rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        row = dict(base)
+        row.update({"data_mode": data_mode, "kline_cache_status": kline_cache_status, **oracle_fields})
+        entry_quote = candidate["quote"]
+        entry_price = entry_quote.bid
+        entry_premium = (entry_price / anchor_price - 1.0) * 10_000.0
+        row.update(
+            {
+                "status": "SHORT_OPEN",
+                "rule_name": candidate["rule_name"],
+                "entry_window": "LOW_RISK" if _is_low_risk_entry_window(entry_quote.ts, window) else "FULL_SUNDAY",
+                "entry_ts": entry_quote.ts.isoformat(),
+                "entry_price": entry_price,
+                "binance_entry_bid": entry_price,
+                "binance_entry_ask": entry_quote.ask,
+                "entry_premium_bps": entry_premium,
+                "relative_high_rank": candidate.get("percentile"),
+                "pullback_bps": candidate.get("pullback_bps"),
+                "rolling_high_premium_bps": candidate.get("rolling_high_premium_bps"),
+                "data_quality": "ESTIMATED_EXECUTION" if data_mode == "ESTIMATED" else row.get("data_quality") or "OK",
+            }
+        )
+        if hedge_bar is None:
+            row.update(
+                {
+                    "status": "WAIT_BROKER_OPEN",
+                    "data_quality": "NO_BROKER_OVERNIGHT_BAR",
+                    "warning": "缺少 Sunday 20:00 ET 后券商 overnight 第一根有效 1m bar",
+                    "hedge_success": False,
+                }
+            )
+            rows.append(row)
+            continue
+        aligned_quote = _nearest_quote_for_backfill(quotes, hedge_bar.ts, max_seconds=config.max_alignment_seconds)
+        if aligned_quote is None:
+            row.update(
+                {
+                    "status": "HEDGE_DUE",
+                    "data_quality": "STALE_OR_MISALIGNED",
+                    "warning": "Binance 与 broker 时间差超过 60 秒",
+                    "hedge_success": False,
+                }
+            )
+            rows.append(row)
+            continue
+        gross_locked_bps = (entry_price / hedge_bar.ask - 1.0) * 10_000.0
+        net_locked_bps = gross_locked_bps - config.fees_bps - config.funding_bps - config.slippage_bps
+        residual_basis_bps = (aligned_quote.mid / hedge_bar.mid - 1.0) * 10_000.0
+        max_adverse_bps = _max_adverse_for_short(quotes, entry_quote.ts, hedge_bar.ts, entry_price)
+        row.update(
+            {
+                "status": "HEDGE_LOCKED",
+                "broker_hedge_ts": hedge_bar.ts.isoformat(),
+                "broker_hedge_price": hedge_bar.ask,
+                "broker_hedge_bid": hedge_bar.bid,
+                "broker_hedge_ask": hedge_bar.ask,
+                "gross_locked_bps": gross_locked_bps,
+                "net_locked_bps": net_locked_bps,
+                "residual_basis_bps": residual_basis_bps,
+                "max_adverse_bps": max_adverse_bps,
+                "time_unhedged_minutes": max(0.0, (hedge_bar.ts - entry_quote.ts).total_seconds() / 60.0),
+                "hedge_success": True,
+                "data_quality": "OK" if data_mode == "STRICT" and row.get("data_quality") != "ANCHOR_REGULAR_CLOSE_ONLY" else row.get("data_quality"),
+                "warning": "" if data_mode == "STRICT" else "ESTIMATED_EXECUTION",
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+def _backfill_block_rows(ticker: str, mapping_config: dict[str, Any], windows: list[WeekendWindow], *, reason: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for window in windows:
+        row = _base_backfill_row(ticker, mapping_config, window)
+        row.update(
+            {
+                "status": "BLOCK_MAPPING" if reason == "BLOCK_MAPPING" else "BLOCK_DATA",
+                "data_mode": "OBSERVATION",
+                "data_quality": reason,
+                "warning": "映射未确认，仅观察，不能进入正式收益统计" if reason == "BLOCK_MAPPING" else "暂无 confirmed mapping",
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+def _backfill_entry_candidates(entry_quotes: list[BasisQuote], anchor_price: float, cfg: BasisStrategyConfig) -> list[dict[str, Any]]:
+    if not entry_quotes:
+        return []
+    candidates: list[dict[str, Any]] = []
+    seen_rules: set[str] = set()
+    premiums = [(quote.bid / anchor_price - 1.0) * 10_000.0 for quote in entry_quotes]
+    for threshold in BACKFILL_THRESHOLDS_BPS:
+        rule = f"FIRST_THRESHOLD_{int(threshold)}"
+        for index, premium in enumerate(premiums[:-1]):
+            previous = premiums[index - 1] if index > 0 else -999_999.0
+            if previous < threshold <= premium:
+                next_quote = entry_quotes[index + 1]
+                if _quote_passes_backfill_liquidity(next_quote, cfg):
+                    candidates.append(
+                        {
+                            "rule_name": rule,
+                            "quote": next_quote,
+                            "percentile": _percentile_rank(premiums[: index + 2], premiums[index + 1]),
+                            "pullback_bps": max(0.0, max(premiums[: index + 2]) - premiums[index + 1]),
+                            "rolling_high_premium_bps": max(premiums[: index + 2]),
+                        }
+                    )
+                    seen_rules.add(rule)
+                break
+    for hours in BACKFILL_RELATIVE_WINDOWS_HOURS:
+        rule = f"RELATIVE_HIGH_PULLBACK_{hours}H"
+        if rule in seen_rules:
+            continue
+        window_delta = timedelta(hours=hours)
+        for quote in entry_quotes:
+            history = [item for item in entry_quotes if quote.ts - window_delta <= item.ts <= quote.ts]
+            if len(history) < 2:
+                continue
+            historical_premiums = [(item.bid / anchor_price - 1.0) * 10_000.0 for item in history]
+            current = historical_premiums[-1]
+            rolling_high = max(historical_premiums)
+            pullback = rolling_high - current
+            percentile = _percentile_rank(historical_premiums, current)
+            if rolling_high < cfg.min_entry_premium_bps:
+                continue
+            if current < cfg.min_entry_premium_bps - cfg.allowed_pullback_bps:
+                continue
+            if pullback < cfg.min_pullback_bps or pullback > min(30.0, cfg.max_pullback_bps):
+                continue
+            if percentile < max(85.0, cfg.min_percentile):
+                continue
+            if not _quote_passes_backfill_liquidity(quote, cfg):
+                continue
+            candidates.append(
+                {
+                    "rule_name": rule,
+                    "quote": quote,
+                    "percentile": percentile,
+                    "pullback_bps": pullback,
+                    "rolling_high_premium_bps": rolling_high,
+                }
+            )
+            break
+    return sorted(candidates, key=lambda item: (item["quote"].ts, str(item["rule_name"])))
+
+
+def _entry_window_quotes(quotes: list[BasisQuote], window: WeekendWindow, *, low_risk_only: bool) -> list[BasisQuote]:
+    sunday = window.end_et.date()
+    start_hour = 16 if low_risk_only else 0
+    start = datetime.combine(sunday, time(start_hour, 0), ET).astimezone(timezone.utc)
+    end = datetime.combine(sunday, time(19, 55), ET).astimezone(timezone.utc)
+    return [quote for quote in quotes if start <= quote.ts <= end]
+
+
+def _is_low_risk_entry_window(ts: datetime, window: WeekendWindow) -> bool:
+    sunday = window.end_et.date()
+    start = datetime.combine(sunday, time(16, 0), ET).astimezone(timezone.utc)
+    end = datetime.combine(sunday, time(19, 55), ET).astimezone(timezone.utc)
+    return start <= _ensure_utc_local(ts) <= end
+
+
+def _first_backfill_broker_bar(bars: list[BrokerOvernightBar], window: WeekendWindow, cfg: BasisStrategyConfig) -> BrokerOvernightBar | None:
+    target = window.end_et.astimezone(timezone.utc)
+    latest_allowed = target + timedelta(minutes=60)
+    for bar in sorted(bars, key=lambda item: item.ts):
+        if bar.ts < target or bar.ts >= latest_allowed:
+            continue
+        if bar.quote_age_seconds > cfg.max_alignment_seconds:
+            continue
+        if bar.spread_bps > cfg.max_broker_spread_bps:
+            continue
+        return bar
+    return None
+
+
+def _nearest_quote_for_backfill(quotes: list[BasisQuote], target: datetime, *, max_seconds: int) -> BasisQuote | None:
+    if not quotes:
+        return None
+    target_utc = _ensure_utc_local(target)
+    nearest = min(quotes, key=lambda quote: abs((quote.ts - target_utc).total_seconds()))
+    return nearest if abs((nearest.ts - target_utc).total_seconds()) <= max_seconds else None
+
+
+def _max_adverse_for_short(quotes: list[BasisQuote], entry_ts: datetime, hedge_ts: datetime, entry_price: float) -> float | None:
+    if entry_price <= 0:
+        return None
+    window_quotes = [quote for quote in quotes if entry_ts <= quote.ts <= hedge_ts]
+    if not window_quotes:
+        return None
+    highest_ask = max(quote.ask for quote in window_quotes)
+    return max(0.0, (highest_ask / entry_price - 1.0) * 10_000.0)
+
+
+def _quote_passes_backfill_liquidity(quote: BasisQuote, cfg: BasisStrategyConfig) -> bool:
+    if quote.spread_bps > cfg.max_binance_spread_bps:
+        return False
+    return not (quote.depth_usd is not None and quote.depth_usd < cfg.min_depth_usd)
+
+
+def _oracle_fields_for_backfill(quotes: list[BasisQuote], anchor_price: float) -> dict[str, Any]:
+    if not quotes or anchor_price <= 0:
+        return {}
+    best = max(quotes, key=lambda quote: (quote.bid / anchor_price - 1.0) * 10_000.0)
+    return {
+        "oracle_weekend_high_bid": best.bid,
+        "oracle_weekend_high_time": best.ts.isoformat(),
+        "oracle_weekend_high_premium_bps": (best.bid / anchor_price - 1.0) * 10_000.0,
+        "oracle_note": "事后高点，不可交易",
+    }
+
+
+def _base_backfill_row(ticker: str, mapping_config: dict[str, Any], window: WeekendWindow) -> dict[str, Any]:
+    symbol = str((mapping_config or {}).get("binance_symbol") or "").strip().upper()
+    mapping_confidence = str((mapping_config or {}).get("mapping_confidence") or "").strip().lower()
+    return {
+        "week_id": window.week_id,
+        "ticker": str(ticker or "").strip().upper(),
+        "rule_name": "",
+        "entry_window": "",
+        "binance_symbol": symbol,
+        "market_type": "usdm_futures",
+        "mapping_confidence": mapping_confidence,
+        "weekend_window_start": window.start_et.astimezone(timezone.utc).isoformat(),
+        "weekend_window_end": window.end_et.astimezone(timezone.utc).isoformat(),
+        "monday_reference_time_et": window.end_et.isoformat(),
+        "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
+        "status": "OBSERVE",
+        "data_mode": "STRICT",
+        "anchor_ts": "",
+        "anchor_price": None,
+        "entry_ts": "",
+        "entry_price": None,
+        "binance_entry_bid": None,
+        "binance_entry_ask": None,
+        "entry_premium_bps": None,
+        "broker_hedge_ts": "",
+        "broker_hedge_price": None,
+        "broker_hedge_bid": None,
+        "broker_hedge_ask": None,
+        "net_locked_bps": None,
+        "residual_basis_bps": None,
+        "max_adverse_bps": None,
+        "time_unhedged_minutes": None,
+        "hedge_success": False,
+        "data_quality": "DATA_INSUFFICIENT",
+        "warning": "",
+        "oracle_weekend_high_bid": None,
+        "oracle_weekend_high_time": "",
+        "oracle_weekend_high_premium_bps": None,
+        "oracle_note": "",
+        "error_message": "",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _fetch_window_basis_quotes(
@@ -894,6 +1326,32 @@ def _anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[str, d
     return {"anchor_price": None, "anchor_source": "MISSING"}
 
 
+def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[str, dict[str, Any]], window: WeekendWindow) -> dict[str, Any]:
+    root = anchors.get(ticker) or config
+    weekly = root.get("weekly_anchors") if isinstance(root.get("weekly_anchors"), dict) else {}
+    source = weekly.get(window.week_id) or root.get(window.week_id)
+    anchor_by_week = root.get("anchor_by_week")
+    if not source and isinstance(anchor_by_week, dict):
+        source = anchor_by_week.get(window.week_id)
+    if not isinstance(source, dict):
+        source = root
+    afterhours = _number(source.get("afterhours_reference_price"))
+    if afterhours is not None and afterhours > 0:
+        return {
+            "anchor_price": afterhours,
+            "anchor_source": "AFTERHOURS_REFERENCE",
+            "anchor_ts": str(source.get("afterhours_reference_time") or ""),
+        }
+    regular = _number(source.get("regular_close_price") or source.get("friday_close") or source.get("friday_close_price"))
+    if regular is not None and regular > 0:
+        return {
+            "anchor_price": regular,
+            "anchor_source": "ANCHOR_REGULAR_CLOSE_ONLY",
+            "anchor_ts": str(source.get("regular_close_date") or source.get("friday_close_date") or ""),
+        }
+    return {"anchor_price": None, "anchor_source": "MISSING", "anchor_ts": ""}
+
+
 def _is_auto_candidate(config: dict[str, Any]) -> bool:
     risk_note = str(config.get("risk_note") or "")
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
@@ -922,6 +1380,28 @@ def _average(values: Iterable[float | None]) -> float | None:
     if not numbers:
         return None
     return sum(numbers) / len(numbers)
+
+
+def _median(values: Iterable[float | None]) -> float | None:
+    numbers = sorted(float(value) for value in values if value is not None)
+    if not numbers:
+        return None
+    midpoint = len(numbers) // 2
+    if len(numbers) % 2:
+        return numbers[midpoint]
+    return (numbers[midpoint - 1] + numbers[midpoint]) / 2.0
+
+
+def _percentile_rank(values: list[float], value: float) -> float:
+    if not values:
+        return 0.0
+    return sum(1 for item in values if item <= value) / len(values) * 100.0
+
+
+def _ensure_utc_local(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _number(value: Any) -> float | None:
