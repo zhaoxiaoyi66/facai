@@ -7,8 +7,97 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from data.decision_log import TradeJournalStore
+from data.trade_activity import build_daily_trade_activity, build_monthly_trade_calendar, group_trade_decisions
 from data.trade_performance import summarize_trade_performance
 from ui import trade_journal
+
+
+def _trade(symbol: str, action: str, at: str, *, quantity: float = 1, price: float = 100, **extra) -> dict:
+    return {
+        "symbol": symbol,
+        "action_type": action,
+        "trade_date": at[:10],
+        "created_at": at,
+        "quantity": quantity,
+        "price": price,
+        **extra,
+    }
+
+
+def test_trade_activity_frequency_levels_by_decision_count() -> None:
+    base = "2026-06-15"
+
+    low = build_daily_trade_activity(base, [_trade("NVDA", "buy", f"{base}T09:00:00+08:00"), _trade("MSFT", "buy", f"{base}T10:00:00+08:00")])
+    medium = build_daily_trade_activity(base, [_trade(f"T{i}", "buy", f"{base}T1{i}:00:00+08:00") for i in range(4)])
+    high = build_daily_trade_activity(base, [_trade(f"H{i}", "buy", f"{base}T1{i}:00:00+08:00") for i in range(6)])
+    critical = build_daily_trade_activity(base, [_trade(f"C{i}", "buy", f"{base}T{i:02d}:00:00+08:00") for i in range(8)])
+
+    assert low["advisory_level"] == "LOW"
+    assert medium["advisory_level"] == "MEDIUM"
+    assert high["advisory_level"] == "HIGH"
+    assert critical["advisory_level"] == "CRITICAL"
+
+
+def test_trade_activity_groups_same_ticker_same_side_within_30_minutes() -> None:
+    trades = [
+        _trade("NVDA", "buy", "2026-06-15T09:00:00+08:00"),
+        _trade("NVDA", "buy", "2026-06-15T09:20:00+08:00"),
+        _trade("NVDA", "buy", "2026-06-15T10:10:00+08:00"),
+    ]
+
+    decisions = group_trade_decisions(trades)
+    activity = build_daily_trade_activity("2026-06-15", trades)
+
+    assert len(decisions) == 2
+    assert activity["trade_record_count"] == 3
+    assert activity["trade_decision_count"] == 2
+
+
+def test_trade_activity_detects_reverse_loss_after_loss_and_late_night() -> None:
+    trades = [
+        _trade("NVDA", "buy", "2026-06-15T00:20:00+08:00"),
+        _trade("NVDA", "sell", "2026-06-15T00:50:00+08:00", realized_pnl=-20),
+        _trade("MSFT", "buy", "2026-06-15T01:10:00+08:00"),
+        _trade("AAPL", "sell", "2026-06-15T01:40:00+08:00", advisory_level="HIGH_RISK"),
+    ]
+
+    activity = build_daily_trade_activity("2026-06-15", trades)
+
+    assert activity["reverse_trade_count"] == 1
+    assert activity["loss_sell_count"] == 1
+    assert activity["trades_after_loss_count"] == 2
+    assert activity["late_night_trade_count"] == 4
+    assert activity["high_risk_advisory_count"] == 1
+    assert activity["advisory_level"] in {"HIGH", "CRITICAL"}
+
+
+def test_trade_activity_monthly_calendar_and_day_html_render_counts() -> None:
+    trades = [
+        _trade("NVDA", "buy", "2026-06-15T09:00:00+08:00", quantity=2, price=100),
+        _trade("MSFT", "sell", "2026-06-15T10:00:00+08:00", quantity=1, price=200),
+    ]
+
+    calendar = build_monthly_trade_calendar(2026, 6, trades)
+    html = trade_journal._trade_activity_calendar_html(calendar)
+    day_html = trade_journal._trade_activity_day_table_html(trades)
+
+    assert calendar["summary"]["trade_day_count"] == 1
+    assert calendar["summary"]["monthly_trade_decision_count"] == 2
+    assert "2 决策 / 2 记录" in html
+    assert "tradeActivityDate=2026-06-15" in html
+    assert "NVDA" in day_html
+    assert "$200.00" in day_html
+
+
+def test_trade_activity_ui_is_advisory_only_and_advanced_calendar_tab_exists() -> None:
+    render_source = inspect.getsource(trade_journal.render)
+    editor_source = inspect.getsource(trade_journal._render_editor)
+
+    assert "交易日历" in render_source
+    assert "_render_trade_activity_calendar(real_entries)" in render_source
+    assert "_render_daily_trade_activity_advisory" in editor_source
+    assert "userConfirmedDailyTradeAdvisory" in editor_source
+    assert "quantity_error" in editor_source
 
 
 def test_new_trade_entry_actions_are_sell_trim_only() -> None:

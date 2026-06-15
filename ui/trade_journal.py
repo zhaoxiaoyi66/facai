@@ -34,6 +34,11 @@ from data.sell_fly_review import build_sell_fly_review_results
 from data.sell_review import evaluate_sell_review_flags, format_sell_review_label
 from data.stock_plan import StockPlanStore
 from data.trade_performance import EVENT_EXIT_REASONS, EVENT_PLAN_KEYWORDS, summarize_trade_performance
+from data.trade_activity import (
+    activity_level_label,
+    build_daily_trade_activity,
+    build_monthly_trade_calendar,
+)
 from data.trade_safety_gate import has_concrete_reentry_plan
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
@@ -249,9 +254,11 @@ def render() -> None:
     performance_summary = _load_trade_performance_summary(store)
     _render_summary(real_entries, performance_summary, legacy_count=len(historical_entries))
 
-    sell_tab, entries_tab, stats_tab, history_tab = st.tabs(["卖出 / 减仓", "真实交易流水", "战绩统计", "历史非成交记录"])
+    sell_tab, calendar_tab, entries_tab, stats_tab, history_tab = st.tabs(["卖出 / 减仓", "交易日历", "真实交易流水", "战绩统计", "历史非成交记录"])
     with sell_tab:
         _render_editor(store)
+    with calendar_tab:
+        _render_trade_activity_calendar(real_entries)
     with entries_tab:
         _render_entry_delete_confirmation(store)
         _render_entry_detail(store)
@@ -264,6 +271,208 @@ def render() -> None:
             _render_signal_replay(decision_store, outcome_store, error_tag_store)
     with history_tab:
         _render_historical_non_trade_records(historical_entries)
+
+
+def _render_trade_activity_calendar(entries: list[dict]) -> None:
+    st.markdown("### 交易频率日历")
+    if not entries:
+        st.info("暂无真实交易记录，交易日历会在有成交流水后显示。")
+        calendar = build_monthly_trade_calendar(_hkt_now().year, _hkt_now().month, [])
+        st.markdown(_trade_activity_calendar_html(calendar), unsafe_allow_html=True)
+        return
+    default_month = _latest_trade_month(entries)
+    year_month = st.session_state.get("trade_activity_calendar_month") or default_month
+    year, month = (int(part) for part in str(year_month).split("-", 1))
+    nav_cols = st.columns([1, 2, 1])
+    if nav_cols[0].button("上个月", key="trade-activity-prev-month", width="stretch"):
+        st.session_state["trade_activity_calendar_month"] = _shift_month(year, month, -1)
+        st.rerun()
+    nav_cols[1].markdown(f"<div class='trade-activity-month-title'>{year} 年 {month:02d} 月</div>", unsafe_allow_html=True)
+    if nav_cols[2].button("下个月", key="trade-activity-next-month", width="stretch"):
+        st.session_state["trade_activity_calendar_month"] = _shift_month(year, month, 1)
+        st.rerun()
+    calendar = build_monthly_trade_calendar(year, month, entries)
+    summary = calendar["summary"]
+    metrics = st.columns(5)
+    metrics[0].metric("本月交易日数", int(summary["trade_day_count"]))
+    metrics[1].metric("本月交易决策数", int(summary["monthly_trade_decision_count"]))
+    metrics[2].metric("高频交易日数", int(summary["high_frequency_day_count"]))
+    metrics[3].metric("最大单日决策数", int(summary["max_daily_decision_count"]))
+    metrics[4].metric("平均每日决策数", summary["avg_daily_decision_count"])
+    st.markdown(_trade_activity_calendar_html(calendar), unsafe_allow_html=True)
+    selected_date = _selected_trade_activity_date(calendar)
+    _render_trade_activity_day_detail(build_daily_trade_activity(selected_date, entries))
+
+
+def _trade_activity_calendar_html(calendar: dict) -> str:
+    days = {str(day["date_hkt"]): day for day in calendar.get("days", [])}
+    year = int(calendar.get("year") or 1970)
+    month = int(calendar.get("month") or 1)
+    weeks = __import__("calendar").monthcalendar(year, month)
+    weekday_header = "".join(f"<th>{label}</th>" for label in ["一", "二", "三", "四", "五", "六", "日"])
+    rows = []
+    for week in weeks:
+        cells = []
+        for day_number in week:
+            if not day_number:
+                cells.append('<td class="trade-activity-day empty"></td>')
+                continue
+            key = f"{year:04d}-{month:02d}-{day_number:02d}"
+            day = days.get(key, {})
+            level = str(day.get("advisory_level") or "LOW").lower()
+            decision_count = int(day.get("trade_decision_count") or 0)
+            record_count = int(day.get("trade_record_count") or 0)
+            buy_count = int(day.get("buy_count") or 0)
+            sell_count = int(day.get("sell_count") or 0)
+            href = f"?page=trade-journal&tradeActivityDate={key}#trade-activity-detail"
+            cells.append(
+                '<td class="trade-activity-day">'
+                f'<a class="trade-activity-cell level-{escape(level)}" href="{escape(href, quote=True)}" target="_self">'
+                f"<b>{day_number}</b>"
+                f"<span>{decision_count} 决策 / {record_count} 记录</span>"
+                f"<em>买 {buy_count}｜卖 {sell_count}</em>"
+                f"<strong>{escape(str(day.get('advisory_level') or 'LOW'))}</strong>"
+                "</a></td>"
+            )
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    return (
+        '<div class="trade-activity-calendar-wrap">'
+        '<table class="trade-activity-calendar">'
+        f"<thead><tr>{weekday_header}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _render_trade_activity_day_detail(activity: dict) -> None:
+    st.markdown('<div id="trade-activity-detail"></div>', unsafe_allow_html=True)
+    st.markdown(f"#### {activity['date_hkt']} 当天详情")
+    cols = st.columns(8)
+    cols[0].metric("成交记录", int(activity["trade_record_count"]))
+    cols[1].metric("交易决策", int(activity["trade_decision_count"]))
+    cols[2].metric("涉及股票", int(activity["unique_ticker_count"]))
+    cols[3].metric("买入", int(activity["buy_count"]))
+    cols[4].metric("卖出", int(activity["sell_count"]))
+    cols[5].metric("清仓", int(activity["liquidation_count"]))
+    cols[6].metric("反向交易", int(activity["reverse_trade_count"]))
+    cols[7].metric("深夜交易", int(activity["late_night_trade_count"]))
+    st.warning(str(activity["advisory_text"])) if activity["advisory_level"] in {"HIGH", "CRITICAL"} else st.info(str(activity["advisory_text"]))
+    if activity.get("advisory_reasons"):
+        st.caption(" / ".join(str(item) for item in activity["advisory_reasons"]))
+    st.markdown(_trade_activity_day_table_html(activity.get("trades") or []), unsafe_allow_html=True)
+
+
+def _trade_activity_day_table_html(trades: list[dict]) -> str:
+    if not trades:
+        return '<div class="trade-journal-empty"><strong>当天无交易</strong><span>没有需要复盘的操作频率。</span></div>'
+    headers = ["时间", "ticker", "side", "quantity", "price", "notional", "reason", "advisory", "note"]
+    rows = []
+    for trade in trades:
+        side = "buy" if str(trade.get("action_type") or "").lower() in {"buy", "add"} else "sell"
+        quantity = _number(trade.get("quantity")) or 0
+        price = _number(trade.get("price")) or 0
+        notional = quantity * price
+        rows.append(
+            "<tr>"
+            f"<td>{escape(_activity_time_text(trade))}</td>"
+            f"<td class='symbol'>{escape(str(trade.get('symbol') or ''))}</td>"
+            f"<td>{escape(side)}</td>"
+            f"<td>{_quantity_text(quantity)}</td>"
+            f"<td>{format_currency(price)}</td>"
+            f"<td>{format_currency(notional)}</td>"
+            f"<td>{escape(_sell_reason_text(trade.get('sell_reason_type')))}</td>"
+            f"<td>{escape(str(trade.get('daily_trade_advisory_level') or trade.get('advisory_level') or trade.get('sell_warning_level') or ''))}</td>"
+            f"<td>{escape(str(trade.get('notes') or ''))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="trade-journal-table-wrap trade-terminal-table-wrap">'
+        '<table class="trade-journal-table trade-terminal-table">'
+        f"<thead><tr>{''.join(f'<th>{escape(label)}</th>' for label in headers)}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
+def _selected_trade_activity_date(calendar: dict) -> str:
+    query_date = str(st.query_params.get("tradeActivityDate") or "").strip()
+    days = [str(day["date_hkt"]) for day in calendar.get("days", [])]
+    if query_date in days:
+        return query_date
+    trade_days = [str(day["date_hkt"]) for day in calendar.get("days", []) if int(day.get("trade_record_count") or 0) > 0]
+    return trade_days[-1] if trade_days else days[-1]
+
+
+def _latest_trade_month(entries: list[dict]) -> str:
+    latest = max(str(entry.get("trade_date") or "")[:10] for entry in entries if str(entry.get("trade_date") or "").strip())
+    return latest[:7]
+
+
+def _shift_month(year: int, month: int, delta: int) -> str:
+    total = year * 12 + (month - 1) + delta
+    new_year, zero_month = divmod(total, 12)
+    return f"{new_year:04d}-{zero_month + 1:02d}"
+
+
+def _activity_time_text(entry: dict) -> str:
+    text = str(entry.get("created_at") or entry.get("trade_date") or "")
+    if "T" in text:
+        return text.split("T", 1)[1][:5]
+    if " " in text:
+        return text.split(" ", 1)[1][:5]
+    return "日内"
+
+
+def _hkt_now() -> datetime:
+    return datetime.now(timezone(timedelta(hours=8)))
+
+
+def _pending_daily_trade_activity(
+    store: TradeJournalStore,
+    *,
+    symbol: str,
+    action_type: str,
+    trade_date: str,
+    quantity: object,
+    price: object,
+    editing_entry: dict | None,
+    decision_mood: str,
+) -> dict:
+    entries = store.list_entries()
+    if editing_entry:
+        edit_id = int(editing_entry.get("id") or 0)
+        entries = [entry for entry in entries if int(entry.get("id") or 0) != edit_id]
+    pending = {
+        "symbol": symbol,
+        "action_type": action_type,
+        "trade_date": trade_date,
+        "quantity": quantity,
+        "price": price,
+        "decision_mood": decision_mood,
+        "created_at": _hkt_now().isoformat(),
+    }
+    return build_daily_trade_activity(trade_date, [*entries, pending])
+
+
+def _render_daily_trade_activity_advisory(activity: dict, *, key_suffix: str) -> bool:
+    level = str(activity.get("advisory_level") or "LOW").upper()
+    text = str(activity.get("advisory_text") or "")
+    reasons = list(activity.get("advisory_reasons") or [])
+    st.markdown("#### 今日交易频率提醒")
+    cols = st.columns(4)
+    cols[0].metric("成交记录", int(activity.get("trade_record_count") or 0))
+    cols[1].metric("交易决策", int(activity.get("trade_decision_count") or 0))
+    cols[2].metric("涉及股票", int(activity.get("unique_ticker_count") or 0))
+    cols[3].metric("频率等级", activity_level_label(level))
+    if level in {"HIGH", "CRITICAL"}:
+        st.warning(text)
+        if reasons:
+            st.caption(" / ".join(str(item) for item in reasons))
+        return st.checkbox(
+            "我已阅读今日交易频率提醒，仍要继续记录",
+            key=f"daily-trade-advisory-confirm-{key_suffix}",
+        )
+    st.info(text)
+    return False
 
 
 def _render_editor(store: TradeJournalStore) -> None:
@@ -402,6 +611,20 @@ def _render_editor(store: TradeJournalStore) -> None:
         after_quantity = _number(portfolio_preview.get("afterQuantity"))
         sell_type_text = "清仓" if action_type == "sell" or (after_quantity is not None and after_quantity <= 1e-9) else "减仓"
         advisory_text = _discipline_gate_conclusion_label(_discipline_gate_conclusion(discipline_result)) if discipline_result is not None else "无"
+        daily_activity = _pending_daily_trade_activity(
+            store,
+            symbol=symbol,
+            action_type=action_type,
+            trade_date=trade_date.isoformat(),
+            quantity=quantity,
+            price=price,
+            editing_entry=editing_entry,
+            decision_mood=decision_mood,
+        )
+        user_confirmed_daily_advisory = _render_daily_trade_activity_advisory(
+            daily_activity,
+            key_suffix=str(editing_id or "new"),
+        )
         submit_cols[0].metric("卖出股数", _quantity_text(submit_qty))
         submit_cols[1].metric("卖出均价", format_currency(submit_price) if submit_price is not None else BLANK_TEXT)
         submit_cols[2].metric("本次成交额", format_currency(submit_notional) if submit_notional is not None else BLANK_TEXT)
@@ -432,6 +655,7 @@ def _render_editor(store: TradeJournalStore) -> None:
                 "decision_mood": decision_mood,
                 "decision_snapshot_id": decision_snapshot_id,
                 "notes": notes,
+                "userConfirmedDailyTradeAdvisory": user_confirmed_daily_advisory,
             }
             if selected_position:
                 entry_values["targetSellPrice"] = selected_position.get("plannedSellPrice")
@@ -5726,6 +5950,89 @@ def _render_styles() -> None:
         }
         .trade-journal-empty.signal-empty strong {
             font-size: 0.92rem;
+        }
+        .trade-activity-month-title {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:38px;
+            border:1px solid rgba(15,23,42,0.08);
+            border-radius:8px;
+            background:#FFFFFF;
+            color:#0F172A;
+            font-weight:760;
+        }
+        .trade-activity-calendar-wrap {
+            margin:0.8rem 0 1rem;
+            overflow-x:auto;
+            border:1px solid rgba(15,23,42,0.08);
+            border-radius:8px;
+            background:#FFFFFF;
+        }
+        .trade-activity-calendar {
+            width:100%;
+            border-collapse:collapse;
+            table-layout:fixed;
+        }
+        .trade-activity-calendar th {
+            padding:0.55rem;
+            background:#F8FAFC;
+            color:#64748B;
+            font-size:0.76rem;
+            text-align:left;
+        }
+        .trade-activity-day {
+            height:92px;
+            border-top:1px solid rgba(15,23,42,0.06);
+            border-right:1px solid rgba(15,23,42,0.06);
+            vertical-align:top;
+        }
+        .trade-activity-day.empty {
+            background:#F8FAFC;
+        }
+        .trade-activity-cell {
+            display:flex;
+            flex-direction:column;
+            gap:0.22rem;
+            min-height:92px;
+            padding:0.55rem;
+            color:#334155 !important;
+            text-decoration:none !important;
+        }
+        .trade-activity-cell b {
+            color:#0F172A;
+            font-size:0.88rem;
+        }
+        .trade-activity-cell span,
+        .trade-activity-cell em {
+            color:#64748B;
+            font-size:0.72rem;
+            font-style:normal;
+        }
+        .trade-activity-cell strong {
+            width:max-content;
+            margin-top:auto;
+            padding:0.12rem 0.4rem;
+            border-radius:999px;
+            font-size:0.68rem;
+            background:#F1F5F9;
+            color:#475569;
+        }
+        .trade-activity-cell.level-low strong {
+            background:#DCFCE7;
+            color:#166534;
+        }
+        .trade-activity-cell.level-medium strong {
+            background:#FEF3C7;
+            color:#92400E;
+        }
+        .trade-activity-cell.level-high strong {
+            background:#FFEDD5;
+            color:#9A3412;
+        }
+        .trade-activity-cell.level-critical strong {
+            background:#FEE2E2;
+            color:#991B1B;
         }
         [data-testid="stRadio"] label {
             color: var(--zhx-muted);

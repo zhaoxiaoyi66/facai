@@ -54,6 +54,9 @@ def submit_portfolio_buy_add(
     ).strip()
     observation_only = bool(values.get("radar_observation_only") or values.get("radarObservationOnly"))
     user_confirmed_advisory = bool(values.get("userConfirmedAdvisory") or values.get("user_confirmed_advisory"))
+    user_confirmed_daily_trade_advisory = bool(
+        values.get("userConfirmedDailyTradeAdvisory") or values.get("user_confirmed_daily_trade_advisory")
+    )
     _require_positive_number(quantity, "quantity")
     _require_positive_number(price, "price")
     if missing_buy_reason:
@@ -186,6 +189,7 @@ def submit_portfolio_buy_add(
         "tradingPositionMaxPct": trading_pct,
         "classificationNote": values.get("classification_note") or values.get("classificationNote") or "",
         "createdAt": submitted_at.isoformat(),
+        "userConfirmedDailyTradeAdvisory": user_confirmed_daily_trade_advisory,
         "radarDataStatus": _report_value(report_for_gate, "data_status"),
         "radarIsStale": bool(_report_value(report_for_gate, "is_stale")),
         **gate_fields,

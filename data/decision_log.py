@@ -11,6 +11,7 @@ from typing import Iterator
 
 from data.market_context import build_market_history
 from data.prices import CACHE_PATH
+from data.trade_activity import build_daily_trade_activity, snapshot_json
 from data.trade_safety_gate import build_trade_safety_snapshot
 
 
@@ -177,6 +178,13 @@ TRADE_DISCIPLINE_COLUMNS = {
     "user_confirmed_sell_warning": "INTEGER",
     "buy_zone_display_json": "TEXT",
     "final_decision_snapshot_json": "TEXT",
+    "daily_trade_record_count": "INTEGER",
+    "daily_trade_decision_count": "INTEGER",
+    "daily_trade_advisory_level": "TEXT",
+    "daily_trade_advisory_text": "TEXT",
+    "daily_trade_advisory_reasons_json": "TEXT",
+    "daily_trade_activity_snapshot_json": "TEXT",
+    "user_confirmed_daily_trade_advisory": "INTEGER",
 }
 
 
@@ -568,6 +576,7 @@ class TradeJournalStore:
             _write_volume_price_acceptance_snapshot(conn, int(entry_id), cleaned)
             _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
             _write_sell_advisory_snapshot(conn, int(entry_id), cleaned)
+            _write_daily_trade_activity_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -690,6 +699,7 @@ class TradeJournalStore:
                 _write_volume_price_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_buy_advisory_snapshot(conn, clean_id, cleaned)
                 _write_sell_advisory_snapshot(conn, clean_id, cleaned)
+                _write_daily_trade_activity_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -1203,6 +1213,49 @@ def _write_sell_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, clean
     )
 
 
+def _write_daily_trade_activity_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    trade_date = str(cleaned.get("trade_date") or "").strip()
+    if not trade_date:
+        return
+    cursor = conn.execute(
+        """
+        SELECT *
+        FROM trade_journal_entries
+        WHERE trade_date = ?
+        ORDER BY trade_date ASC, created_at ASC, id ASC
+        """,
+        (trade_date,),
+    )
+    rows = cursor.fetchall()
+    columns = [description[0] for description in cursor.description] if cursor.description else []
+    trades = [_row_to_dict(columns, row) for row in rows]
+    activity = build_daily_trade_activity(trade_date, trades)
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            daily_trade_record_count = ?,
+            daily_trade_decision_count = ?,
+            daily_trade_advisory_level = ?,
+            daily_trade_advisory_text = ?,
+            daily_trade_advisory_reasons_json = ?,
+            daily_trade_activity_snapshot_json = ?,
+            user_confirmed_daily_trade_advisory = ?
+        WHERE id = ?
+        """,
+        (
+            int(activity.get("trade_record_count") or 0),
+            int(activity.get("trade_decision_count") or 0),
+            str(activity.get("advisory_level") or "LOW"),
+            str(activity.get("advisory_text") or ""),
+            _reasons_json(activity.get("advisory_reasons") or []),
+            snapshot_json(activity),
+            _clean_bool(cleaned.get("user_confirmed_daily_trade_advisory")),
+            entry_id,
+        ),
+    )
+
+
 class DecisionOutcomeStore:
     def __init__(self, path: Path = CACHE_PATH) -> None:
         self.path = path
@@ -1611,7 +1664,16 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_volume_price_acceptance_snapshot(action_type, values))
     cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
     cleaned.update(_clean_sell_advisory_snapshot(action_type, {**values, **cleaned}))
+    cleaned.update(_clean_daily_trade_activity_snapshot(values))
     return cleaned
+
+
+def _clean_daily_trade_activity_snapshot(values: dict) -> dict:
+    return {
+        "user_confirmed_daily_trade_advisory": _clean_bool(
+            _value(values, "userConfirmedDailyTradeAdvisory", "user_confirmed_daily_trade_advisory")
+        )
+    }
 
 
 def _clean_pre_trade_snapshot(values: dict) -> dict:

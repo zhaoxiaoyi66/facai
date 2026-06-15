@@ -260,6 +260,40 @@ class DecisionLogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save_entry("msft", {"trade_date": "2026-05-29", "action_type": "buy", "decision_mood": "raw_bad"})
 
+    def test_trade_journal_store_saves_daily_activity_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            first = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-06-15",
+                    "action_type": "buy",
+                    "quantity": 1,
+                    "price": 100,
+                    "created_at": "2026-06-15T09:00:00+08:00",
+                },
+            )
+            second = store.save_entry(
+                "msft",
+                {
+                    "trade_date": "2026-06-15",
+                    "action_type": "sell",
+                    "quantity": 2,
+                    "price": 50,
+                    "created_at": "2026-06-15T10:00:00+08:00",
+                    "userConfirmedDailyTradeAdvisory": True,
+                },
+            )
+
+            self.assertEqual(first["daily_trade_record_count"], 1)
+            self.assertEqual(first["daily_trade_decision_count"], 1)
+            self.assertEqual(second["daily_trade_record_count"], 2)
+            self.assertEqual(second["daily_trade_decision_count"], 2)
+            self.assertEqual(second["daily_trade_advisory_level"], "LOW")
+            self.assertEqual(second["user_confirmed_daily_trade_advisory"], 1)
+            self.assertIn("trade_record_count", second["daily_trade_activity_snapshot_json"])
+
     def test_trade_safety_gate_accepts_neutral_decision_mood(self) -> None:
         self.assertEqual(clean_trade_safety_decision_mood("NEUTRAL"), "NEUTRAL")
 
