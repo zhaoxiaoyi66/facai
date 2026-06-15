@@ -564,28 +564,28 @@ def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_k
     table = _session_dashboard_table(cache_key)
     if table is None or table.empty:
         table = _load_dashboard(tickers, DASHBOARD_SCORE_SCHEMA_VERSION)
+        _store_session_dashboard_table(cache_key, table)
     progress_slot = st.empty()
     progress_slot.markdown(
         _refresh_progress_html(
             title="单只更新",
-            detail=f"只刷新 {symbol}，其他股票沿用当前表格缓存。",
-            current=1,
+            detail=f"只更新 {symbol} 的报价，其他股票沿用当前表格缓存。",
+            current=0,
             total=1,
             active_symbol=symbol,
         ),
         unsafe_allow_html=True,
     )
-    provider = get_market_data_provider(full_fundamentals=True)
-    portfolio_contexts = build_action_fusion_portfolio_contexts([symbol])
-    refreshed_row = _load_dashboard_row(
-        provider,
-        symbol,
-        force_refresh=True,
-        action_fusion_portfolio_context=portfolio_contexts.get(symbol),
-    )
-    table = _replace_dashboard_row(table, refreshed_row)
-    _store_session_dashboard_table(cache_key, table)
+    result = refresh_symbols_by_mode([symbol], RefreshMode.PRICE_ONLY)
+    refreshed_symbols = _successful_refresh_symbols(result)
+    if refreshed_symbols:
+        _sync_refreshed_symbols_to_dashboard_session(refreshed_symbols, tickers=tickers)
+        table = _session_dashboard_table(cache_key)
+    if table is None or table.empty:
+        table = _load_dashboard(tickers, DASHBOARD_SCORE_SCHEMA_VERSION)
+        _store_session_dashboard_table(cache_key, table)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+    st.session_state["dashboard_single_refresh_last_result"] = result
     progress_slot.markdown(_refresh_done_html(1), unsafe_allow_html=True)
     return table
 

@@ -37,6 +37,15 @@ def test_price_and_technical_refresh_buttons_keep_dashboard_table_cache() -> Non
     assert "_clear_dashboard_table_cache()" not in technical_branch
 
 
+def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
+    source = inspect.getsource(dashboard._refresh_single_dashboard_row)
+
+    assert "refresh_symbols_by_mode([symbol], RefreshMode.PRICE_ONLY)" in source
+    assert "get_market_data_provider(full_fundamentals=True)" not in source
+    assert "provider.get_price_history" not in source
+    assert "_sync_refreshed_symbols_to_dashboard_session" in source
+
+
 def test_refresh_ticker_query_schedules_single_dashboard_row_refresh() -> None:
     params = {"refreshTicker": "now"}
     state = {}

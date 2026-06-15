@@ -105,6 +105,25 @@ class FakeWrappedBatchQuoteProvider(FakeRefreshProvider):
         }
 
 
+class FakeLargeBatchQuoteProvider(FakeRefreshProvider):
+    def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
+        symbol_text = str(params.get("symbol") or params.get("symbols") or "")
+        self.calls.append((endpoint, symbol_text, force_refresh))
+        symbols = [symbol for symbol in symbol_text.split(",") if symbol]
+        if endpoint != "batch-quote":
+            return []
+        return [
+            {
+                "symbol": symbol,
+                "price": 66.0,
+                "change": 0.66,
+                "volume": 1000,
+                "marketCap": 123_000_000,
+            }
+            for symbol in symbols
+        ]
+
+
 class FakeSlowSingleQuoteProvider(FakeRefreshProvider):
     def _get_json(self, endpoint: str, params: dict, timeout_seconds: int = 20, retries: int = 2, force_refresh: bool = False):
         symbol_text = str(params.get("symbol") or params.get("symbols") or "")
@@ -299,6 +318,23 @@ def test_price_only_accepts_wrapped_batch_quote_payload(tmp_path) -> None:
     assert provider.calls == [("batch-quote", "NOW,ADBE", True)]
     assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["current_price"] == 77.7
     assert cache.get_snapshot("NOW", max_age_hours=24 * 3650)["price_change_pct"] == -1.3
+
+
+def test_price_only_uses_chunked_batch_quote_for_large_dashboard_refresh(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeLargeBatchQuoteProvider()
+    symbols = [f"T{i:02d}" for i in range(34)]
+
+    result = refresh_symbols_by_mode(symbols, RefreshMode.PRICE_ONLY, provider=provider, cache=cache)
+
+    assert result["status"] == "success"
+    assert result["refreshed_count"] == 34
+    assert result["quote_source"] == "batch_quote"
+    assert provider.fundamental_calls == 0
+    assert [call[0] for call in provider.calls] == ["batch-quote", "batch-quote"]
+    assert provider.calls[0][1] == ",".join(symbols[:25])
+    assert provider.calls[1][1] == ",".join(symbols[25:])
+    assert not any(call[0] == "quote-short" for call in provider.calls)
 
 
 def test_price_only_accepts_market_cap_aliases(tmp_path) -> None:

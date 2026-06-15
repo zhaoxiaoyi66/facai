@@ -65,7 +65,8 @@ class QuoteFetchResult:
 
 QUOTE_SINGLE_WORKERS = 8
 QUOTE_SINGLE_TIMEOUT_SECONDS = 4
-QUOTE_BATCH_PROBE_MAX_SYMBOLS = 10
+QUOTE_BATCH_SYMBOLS_PER_REQUEST = 25
+QUOTE_MULTI_SYMBOLS_PER_REQUEST = 25
 QUOTE_CAPABILITY_DISABLE_HOURS = 6
 _QUOTE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {}
 BATCH_QUOTE_CAPABILITY = "batch_quote"
@@ -464,53 +465,56 @@ def _quote_rows(tickers: list[str], provider: Any) -> QuoteFetchResult:
     source = "provider_quote"
     if hasattr(provider, "_get_json"):
         now = datetime.now(timezone.utc)
-        should_probe_batch = len(tickers) <= QUOTE_BATCH_PROBE_MAX_SYMBOLS
-        if not should_probe_batch:
-            provider_notes.append("batch/multi quote probe skipped for large PRICE_ONLY refresh")
-        if should_probe_batch and not _quote_capability_disabled(BATCH_QUOTE_CAPABILITY, now):
-            try:
-                payload = provider._get_json(  # noqa: SLF001 - quote-only endpoint, no fundamentals.
-                    "batch-quote",
-                    {"symbols": ",".join(tickers)},
-                    timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
-                    retries=0,
-                    force_refresh=True,
-                )
-                batch_rows = _quote_payload_rows(payload)
-                rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
-                if rows:
-                    source = "batch_quote"
-            except Exception as exc:
-                reason = _short_error(exc)
-                if "402" in reason:
-                    _disable_quote_capability(BATCH_QUOTE_CAPABILITY, reason, now)
-                    provider_notes.append(f"batch quote disabled: {reason}")
-                else:
-                    provider_notes.append(f"batch quote failed: {reason}")
-        elif should_probe_batch:
+        if not _quote_capability_disabled(BATCH_QUOTE_CAPABILITY, now):
+            for chunk in _symbol_chunks(tickers, QUOTE_BATCH_SYMBOLS_PER_REQUEST):
+                try:
+                    payload = provider._get_json(  # noqa: SLF001 - quote-only endpoint, no fundamentals.
+                        "batch-quote",
+                        {"symbols": ",".join(chunk)},
+                        timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
+                        retries=0,
+                        force_refresh=True,
+                    )
+                    batch_rows = _quote_payload_rows(payload)
+                    rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
+                    if rows:
+                        source = "batch_quote"
+                except Exception as exc:
+                    reason = _short_error(exc)
+                    if "402" in reason:
+                        _disable_quote_capability(BATCH_QUOTE_CAPABILITY, reason, now)
+                        provider_notes.append(f"batch quote disabled: {reason}")
+                        break
+                    provider_notes.append(f"batch quote failed for {len(chunk)} symbols: {reason}")
+        else:
             reason = _quote_capability_reason(BATCH_QUOTE_CAPABILITY, now)
             provider_notes.append(f"batch quote disabled: {reason}")
 
-        if should_probe_batch and not rows and len(tickers) > 1 and not _quote_capability_disabled(MULTI_SYMBOL_QUOTE_CAPABILITY, now):
-            try:
-                payload = provider._get_json(  # noqa: SLF001 - existing FMP multi-symbol quote endpoint.
-                    "quote",
-                    {"symbol": ",".join(tickers)},
-                    timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
-                    retries=0,
-                    force_refresh=True,
-                )
-                batch_rows = _quote_payload_rows(payload)
-                rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
-                if rows:
-                    source = "multi_symbol_quote"
-                elif len(tickers) > 1:
-                    reason = "empty response"
-                    _disable_quote_capability(MULTI_SYMBOL_QUOTE_CAPABILITY, reason, now)
-                    provider_notes.append(f"multi-symbol quote disabled: {reason}")
-            except Exception as exc:
-                provider_notes.append(f"multi-symbol quote failed: {_short_error(exc)}")
-        elif should_probe_batch and not rows and len(tickers) > 1:
+        missing_after_batch = [symbol for symbol in tickers if symbol not in rows]
+        if missing_after_batch and len(missing_after_batch) > 1 and not _quote_capability_disabled(MULTI_SYMBOL_QUOTE_CAPABILITY, now):
+            any_multi_rows = False
+            for chunk in _symbol_chunks(missing_after_batch, QUOTE_MULTI_SYMBOLS_PER_REQUEST):
+                try:
+                    payload = provider._get_json(  # noqa: SLF001 - existing FMP multi-symbol quote endpoint.
+                        "quote",
+                        {"symbol": ",".join(chunk)},
+                        timeout_seconds=QUOTE_SINGLE_TIMEOUT_SECONDS,
+                        retries=0,
+                        force_refresh=True,
+                    )
+                    batch_rows = _quote_payload_rows(payload)
+                    before_count = len(rows)
+                    rows.update({_quote_symbol(row): row for row in batch_rows if isinstance(row, dict) and _quote_symbol(row)})
+                    any_multi_rows = any_multi_rows or len(rows) > before_count
+                    if len(rows) > before_count and source not in {"batch_quote"}:
+                        source = "multi_symbol_quote"
+                except Exception as exc:
+                    provider_notes.append(f"multi-symbol quote failed for {len(chunk)} symbols: {_short_error(exc)}")
+            if not any_multi_rows and len(missing_after_batch) > 1:
+                reason = "empty response"
+                _disable_quote_capability(MULTI_SYMBOL_QUOTE_CAPABILITY, reason, now)
+                provider_notes.append(f"multi-symbol quote disabled: {reason}")
+        elif missing_after_batch and len(missing_after_batch) > 1:
             reason = _quote_capability_reason(MULTI_SYMBOL_QUOTE_CAPABILITY, now)
             provider_notes.append(f"multi-symbol quote disabled: {reason}")
 
@@ -551,6 +555,12 @@ def _quote_rows(tickers: list[str], provider: Any) -> QuoteFetchResult:
             else:
                 failed_symbols.add(symbol)
     return QuoteFetchResult(rows=rows, live_symbols=live_symbols, failed_symbols=failed_symbols, source=source, provider_notes=provider_notes)
+
+
+def _symbol_chunks(symbols: list[str], size: int) -> list[list[str]]:
+    if size <= 0:
+        return [symbols]
+    return [symbols[index : index + size] for index in range(0, len(symbols), size)]
 
 
 def _fetch_single_quote_row(provider: Any, symbol: str) -> dict | None:
