@@ -310,13 +310,15 @@ def test_edit_closed_sell_price_updates_original_record_and_performance() -> Non
         assert trade["realized_pnl"] == 250
 
 
-def test_reentry_plan_suggestion_uses_market_context_helpers() -> None:
+def test_reentry_plan_suggestion_uses_cached_radar_snapshot_boundary() -> None:
     source = inspect.getsource(trade_journal._build_reentry_plan_suggestion)
 
-    assert "build_market_context" in source
-    assert "build_market_history" in source
-    assert "build_buy_zone_context" in source
-    assert '"daily_ohlcv": history' in source
+    assert "build_cached_ai_stock_radar_report" in source
+    assert "build_market_context" not in source
+    assert "build_market_history" not in source
+    assert "build_buy_zone_context" not in source
+    assert "generate_buy_zone" not in source
+    assert '"daily_ohlcv": history' not in source
     assert "CacheReadModel" not in source
 
 

@@ -7,9 +7,7 @@ from html import escape
 
 import streamlit as st
 
-from buy_zone_engine import generate_buy_zone
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
-from data.buy_zone_engine import build_buy_zone_context
 from data.decision_log import (
     DecisionErrorTagStore,
     DecisionLogStore,
@@ -21,7 +19,6 @@ from data.decision_log import (
 from data.entry_display import format_buy_zone, format_zone_status
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
-from data.market_context import build_market_context, build_market_history
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
     apply_trade_to_portfolio,
@@ -43,8 +40,6 @@ from data.trade_safety_gate import has_concrete_reentry_plan
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
-from indicators.technicals import add_technical_indicators, latest_technical_snapshot
-from scoring.total_score import calculate_total_score
 from ui.theme import render_page_header, render_section_title
 
 
@@ -1954,40 +1949,14 @@ def _build_reentry_plan_suggestion(symbol: str, trade_price: object = None) -> d
     pullback = None
     breakout = sell_price
     try:
-        market = build_market_context(symbol)
-        snapshot = {}
-        if market.get("quotePrice") is not None:
-            snapshot["current_price"] = market.get("quotePrice")
-        history = build_market_history(symbol)
-        technicals = latest_technical_snapshot(add_technical_indicators(history)) if not history.empty else {}
-        current_price = _first_number(sell_price, technicals.get("price"), market.get("currentPrice"))
-        if current_price is not None:
-            score = calculate_total_score(snapshot, technicals)
-            stock_data = {**snapshot, **technicals, "price_history": history, "daily_ohlcv": history, "history": history, "price": current_price}
-            final_score_value = getattr(score, "final_score", getattr(score, "total_score", None))
-            if final_score_value is not None:
-                stock_data["final_score"] = final_score_value
-            buy_zone_context = build_buy_zone_context(stock_data).to_dict()
-            pullback, breakout = _reentry_levels_from_buy_zone_context(buy_zone_context, sell_price=sell_price, current_price=current_price)
-            if pullback is None or breakout is None:
-                zone = generate_buy_zone(str(symbol).upper(), stock_data, score, score.scoring_model)
-                combined = getattr(zone, "combinedEntry", None) or {}
-                technical = getattr(zone, "technicalEntry", None) or {}
-                pullback = _first_number(
-                    pullback,
-                    combined.get("technicalPullbackPrice"),
-                    combined.get("valuationEntryPrice"),
-                    _first_support_level_price(technical.get("supportLevels")),
-                    getattr(zone, "nextTriggerPrice", None),
-                    getattr(zone, "trancheBuyHigh", None),
-                )
-                breakout = _first_number(
-                    breakout,
-                    getattr(zone, "noChaseAbove", None),
-                    technical.get("technicalReviewPrice"),
-                    sell_price,
-                    current_price,
-                )
+        report = build_cached_ai_stock_radar_report(symbol).to_dict()
+        current_price = _first_number(sell_price, report.get("current_price"), report.get("price"))
+        buy_zone_context = report.get("buy_zone_context") if isinstance(report.get("buy_zone_context"), dict) else {}
+        pullback, breakout = _reentry_levels_from_buy_zone_context(
+            buy_zone_context,
+            sell_price=sell_price,
+            current_price=current_price,
+        )
     except Exception:
         pass
     if pullback is None and sell_price is not None:
@@ -2044,21 +2013,6 @@ def _first_number(*values: object) -> float | None:
         number = _number(value)
         if number is not None:
             return number
-    return None
-
-
-def _first_support_level_price(levels: object) -> float | None:
-    if not isinstance(levels, list):
-        return None
-    for level in levels:
-        if isinstance(level, dict):
-            number = _first_number(level.get("price"), level.get("level"), level.get("value"))
-            if number is not None:
-                return number
-        else:
-            number = _number(level)
-            if number is not None:
-                return number
     return None
 
 
