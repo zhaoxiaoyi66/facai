@@ -26,6 +26,11 @@ from data.weekend_basis import (
     max_broker_buy_price,
     record_broker_hedge,
 )
+from data.weekend_basis_mapping_audit import (
+    audit_weekend_basis_mappings,
+    confirm_weekend_basis_mapping,
+    reject_weekend_basis_mapping,
+)
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
@@ -320,6 +325,44 @@ class FakeKlineProvider:
         return [bar for bar in self.bars if start <= int(bar[0]) < end][:limit]
 
 
+class FakeMappingAuditProvider(FakeKlineProvider):
+    def __init__(
+        self,
+        bars: list[list] | None = None,
+        *,
+        exists: bool = True,
+        volume_24h: float | None = 250_000,
+        bid: float | None = 101.0,
+        ask: float | None = 101.1,
+    ) -> None:
+        super().__init__(bars or [])
+        self.exists = exists
+        self.volume_24h = volume_24h
+        self.bid = bid
+        self.ask = ask
+
+    def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> dict:
+        self.calls.append({"symbol": symbol, "market_type": market_type, "kind": "validate"})
+        return {
+            "symbol": symbol,
+            "exists": self.exists,
+            "status": "valid" if self.exists else "invalid_symbol",
+            "market_type": market_type,
+            "quote_currency": "USDT",
+        }
+
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        self.calls.append({"symbol": symbol, "market_type": market_type, "kind": "last_price"})
+        return {
+            "symbol": symbol,
+            "last_price": self.bid,
+            "bid": self.bid,
+            "ask": self.ask,
+            "volume_24h": self.volume_24h,
+            "updated_at": "2026-06-14T12:00:00+00:00",
+        }
+
+
 class FakeBasisQuoteProvider:
     def __init__(self, quotes: list[dict] | None = None, *, error: Exception | None = None) -> None:
         self.quotes = quotes or []
@@ -436,6 +479,26 @@ def _broker_bar(moment: datetime, bid: float, ask: float | None = None, **extra)
         "quote_age_seconds": 10,
         **extra,
     }
+
+
+def _audit_broker_history(prices: list[tuple[str, float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"date": date_text, "close": price} for date_text, price in prices]
+    )
+
+
+def _audit_binance_daily_bars(prices: list[tuple[str, float]]) -> list[list]:
+    rows = []
+    for date_text, price in prices:
+        ts = int(datetime.fromisoformat(f"{date_text}T20:00:00+00:00").timestamp() * 1000)
+        rows.append([ts, price, price, price, price, 1000])
+    return rows
+
+
+def _audit_weekend_bars(price: float = 101.0) -> list[list]:
+    sunday = datetime(2026, 6, 15, 0, 0, tzinfo=timezone.utc)
+    ts = int(sunday.timestamp() * 1000)
+    return [[ts, price, price + 1, price - 1, price, 1000]]
 
 
 def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
@@ -2221,6 +2284,148 @@ def test_weekend_basis_backfill_blocks_unconfirmed_mapping_from_strict_stats() -
     assert rows[0]["status"] == "BLOCK_MAPPING"
     assert rows[0]["data_quality"] == "BLOCK_MAPPING"
     assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+
+
+def test_weekend_basis_mapping_audit_marks_ratio_stable_candidate_verified_ready() -> None:
+    broker_history = {
+        "NVDA": _audit_broker_history(
+            [
+                ("2026-06-08", 100.0),
+                ("2026-06-09", 101.0),
+                ("2026-06-10", 102.0),
+                ("2026-06-11", 103.0),
+                ("2026-06-12", 104.0),
+            ]
+        )
+    }
+    provider = FakeMappingAuditProvider(
+        _audit_binance_daily_bars(
+            [
+                ("2026-06-08", 100.2),
+                ("2026-06-09", 101.1),
+                ("2026-06-10", 102.1),
+                ("2026-06-11", 103.1),
+                ("2026-06-12", 104.1),
+            ]
+        )
+        + _audit_weekend_bars(105.0)
+    )
+
+    rows = audit_weekend_basis_mappings(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        binance_provider=provider,
+        broker_history_provider=broker_history,
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+        min_samples=5,
+    )
+
+    row = rows[0]
+    assert row["audit_status"] == "verified_ready"
+    assert row["current_confidence"] == "candidate"
+    assert row["weekend_data_ok"] is True
+    assert row["sample_count"] == 5
+    assert "USDT_ASSUMED_1_0" in row["warning"]
+
+
+def test_verified_ready_mapping_still_requires_manual_confirm_for_strict_backfill() -> None:
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="verified_ready"),
+        anchors=_anchors(),
+        provider=FakeKlineProvider(_audit_weekend_bars(110.0)),
+    )
+
+    assert rows[0]["status"] == "BLOCK_MAPPING"
+    assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+
+
+def test_confirmed_mapping_can_enter_strict_backfill_after_manual_confirm(tmp_path) -> None:
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+    audit_result = {
+        "ticker": "NVDA",
+        "broker_symbol": "NVDA",
+        "binance_symbol": "NVDAUSDT",
+        "market_type": "usdm_futures",
+        "audit_status": "verified_ready",
+        "median_ratio": 1.001,
+        "median_abs_deviation_bps": 20,
+        "max_abs_deviation_bps": 40,
+        "sample_count": 5,
+        "weekend_data_ok": True,
+    }
+
+    updated = confirm_weekend_basis_mapping(
+        "NVDA",
+        audit_result,
+        path=mapping_path,
+        confirmed_by="pytest",
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+
+    assert updated["NVDA"]["mapping_confidence"] == "confirmed"
+    assert updated["NVDA"]["confirmed_by"] == "pytest"
+    assert updated["NVDA"]["audit_summary"]["median_ratio"] == 1.001
+    loaded = load_binance_symbol_mapping(mapping_path, local_path=None)
+    assert loaded["NVDA"]["mapping_confidence"] == "confirmed"
+    assert loaded["NVDA"]["confirmed_by"] == "pytest"
+    assert loaded["NVDA"]["audit_summary"]["median_ratio"] == 1.001
+
+
+def test_mapping_audit_flags_multiplier_mismatch_and_missing_weekend_data() -> None:
+    broker_history = {
+        "NVDA": _audit_broker_history(
+            [
+                ("2026-06-08", 100.0),
+                ("2026-06-09", 100.0),
+                ("2026-06-10", 100.0),
+                ("2026-06-11", 100.0),
+                ("2026-06-12", 100.0),
+            ]
+        )
+    }
+    provider = FakeMappingAuditProvider(
+        _audit_binance_daily_bars(
+            [
+                ("2026-06-08", 1000.0),
+                ("2026-06-09", 1000.0),
+                ("2026-06-10", 1000.0),
+                ("2026-06-11", 1000.0),
+                ("2026-06-12", 1000.0),
+            ]
+        )
+    )
+
+    rows = audit_weekend_basis_mappings(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        binance_provider=provider,
+        broker_history_provider=broker_history,
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+        min_samples=5,
+    )
+
+    row = rows[0]
+    assert row["audit_status"] == "rejected"
+    assert row["weekend_data_ok"] is False
+    assert "MULTIPLIER_MISMATCH" in row["warning"]
+    assert "NO_RECENT_WEEKEND_BINANCE_DATA" in row["warning"]
+
+
+def test_reject_weekend_basis_mapping_writes_rejected_without_confirming(tmp_path) -> None:
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+
+    updated = reject_weekend_basis_mapping(
+        "NVDA",
+        {"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "audit_status": "rejected"},
+        path=mapping_path,
+        rejected_by="pytest",
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+
+    assert updated["NVDA"]["mapping_confidence"] == "rejected"
+    assert updated["NVDA"]["rejected_by"] == "pytest"
+    assert updated["NVDA"]["binance_symbol"] == "NVDAUSDT"
 
 
 def test_weekend_basis_backfill_does_not_fallback_to_regular_open() -> None:

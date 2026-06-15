@@ -19,6 +19,11 @@ from data.weekend_basis import (
     record_broker_hedge,
     upsert_weekend_basis_trade,
 )
+from data.weekend_basis_mapping_audit import (
+    audit_weekend_basis_mappings,
+    confirm_weekend_basis_mapping,
+    reject_weekend_basis_mapping,
+)
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
@@ -667,7 +672,7 @@ def _render_backfill_audit_area(watchlist: list[str], mapping: dict[str, dict], 
         low_risk_only = cols[4].checkbox("仅低风险窗口", value=False, key="weekend_backfill_low_risk_only")
         run_tickers = confirmed_tickers if selected == "全部 confirmed" else [selected]
         if not confirmed_tickers:
-            st.info("当前没有 confirmed mapping，历史回放不会进入正式统计。")
+            st.info("当前没有 confirmed mapping，请先运行 Mapping Audit 并手动确认映射。")
         if st.button("运行历史周末回放", key="weekend_run_backfill_audit", width="stretch", disabled=not bool(run_tickers)):
             progress = st.progress(0.0)
             status = st.empty()
@@ -1004,7 +1009,79 @@ def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_coun
     )
     st.dataframe(_mapping_management_frame(rows, mapping), width="stretch", hide_index=True)
     _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_mapping_audit_area(rows, mapping, DEFAULT_LOCAL_MAPPING_PATH)
     _render_mapping_diagnostics(mapping)
+
+
+def _render_mapping_audit_area(rows: list[dict], mapping: dict[str, dict], local_mapping_path: Path) -> None:
+    with st.expander("Mapping Audit / 映射确认", expanded=False):
+        st.caption(
+            "Audit 只会把候选映射标记为 verified_ready。只有你点击确认后，local mapping 才会写入 confirmed。"
+        )
+        mapped_tickers = [
+            str(row.get("ticker") or "").strip().upper()
+            for row in rows
+            if str(row.get("ticker") or "").strip().upper() in mapping
+            and mapping.get(str(row.get("ticker") or "").strip().upper(), {}).get("binance_symbol")
+        ]
+        mapped_tickers = list(dict.fromkeys([ticker for ticker in mapped_tickers if ticker]))
+        col_run, col_count = st.columns([1, 2])
+        if col_run.button("运行 Mapping Audit", width="stretch", key="weekend_mapping_audit_run"):
+            if not mapped_tickers:
+                st.session_state["weekend_mapping_audit_rows"] = []
+                st.warning("当前观察池没有可审计的 local mapping。")
+            else:
+                with st.spinner("正在校验 Binance symbol、价格比例、周末数据和流动性..."):
+                    st.session_state["weekend_mapping_audit_rows"] = audit_weekend_basis_mappings(
+                        mapped_tickers,
+                        mapping=mapping,
+                    )
+        col_count.caption(f"待审计映射：{len(mapped_tickers)}")
+        audit_rows = list(st.session_state.get("weekend_mapping_audit_rows") or [])
+        if not audit_rows:
+            st.info("尚未运行 Mapping Audit。candidate / verified_ready 都不会进入 Backfill strict statistics。")
+            return
+        st.dataframe(_mapping_audit_frame(audit_rows), width="stretch", hide_index=True)
+        for audit_row in audit_rows:
+            ticker = str(audit_row.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            status = str(audit_row.get("audit_status") or "").strip().lower()
+            left, right = st.columns(2)
+            if status == "verified_ready":
+                if left.button(f"确认 {ticker} mapping", key=f"weekend_mapping_confirm_{ticker}", width="stretch"):
+                    confirm_weekend_basis_mapping(ticker, audit_row, path=local_mapping_path, confirmed_by="manual_ui")
+                    st.success(f"{ticker} 已写入 confirmed。刷新页面后可进入 Backfill strict statistics。")
+            if right.button(f"标记 {ticker} rejected", key=f"weekend_mapping_reject_{ticker}", width="stretch"):
+                reject_weekend_basis_mapping(ticker, audit_row, path=local_mapping_path, rejected_by="manual_ui")
+                st.warning(f"{ticker} 已标记 rejected；请修正 symbol / multiplier 后重新审计。")
+
+
+def _mapping_audit_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("ticker", "ticker"),
+        ("broker_symbol", "broker_symbol"),
+        ("binance_symbol", "binance_symbol"),
+        ("current_confidence", "current_confidence"),
+        ("audit_status", "audit_status"),
+        ("median_ratio", "median_ratio"),
+        ("median_abs_deviation_bps", "median_abs_deviation_bps"),
+        ("max_abs_deviation_bps", "max_abs_deviation_bps"),
+        ("sample_count", "sample_count"),
+        ("weekend_data_ok", "weekend_data_ok"),
+        ("liquidity_status", "liquidity_status"),
+        ("warning", "warning"),
+        ("action", "action"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    for key in ("median_ratio", "median_abs_deviation_bps", "max_abs_deviation_bps"):
+        display[key] = display[key].map(_plain_decimal_text)
+    return display
 
 
 def _filter_rows(
@@ -1203,7 +1280,11 @@ def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> di
     counts.update(
         {
             "confirmed_count": sum(1 for item in local_items if item.get("mapping_confidence") == "confirmed"),
-            "candidate_count": sum(1 for item in local_items if item.get("mapping_confidence") == "candidate"),
+            "candidate_count": sum(
+                1
+                for item in local_items
+                if item.get("mapping_confidence") in {"candidate", "unverified", "verified_ready", "stale"}
+            ),
             "no_mapping_count": sum(1 for row in rows if not row.get("binance_symbol")),
         }
     )
@@ -1272,7 +1353,7 @@ def _render_mapping_editor(
         market_value = str(existing.get("market_type") or "usdm_futures")
         confidence_value = str(existing.get("mapping_confidence") or "candidate")
         market_options = ["usdm_futures"]
-        confidence_options = ["candidate", "unverified", "confirmed"]
+        confidence_options = ["candidate", "unverified", "verified_ready", "confirmed", "rejected", "stale"]
         symbol = st.text_input("Binance symbol", value=symbol_value, placeholder="例如 NVDAUSDT", key="weekend_mapping_symbol")
         market_type = st.selectbox(
             "市场类型",
@@ -1994,6 +2075,13 @@ def _plain_number(value: object) -> str:
     if number is None:
         return "暂缺"
     return f"{number:,.0f}"
+
+
+def _plain_decimal_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    return f"{number:,.4f}"
 
 
 def _average_backtest_pullback(rows: list[dict]) -> float | None:

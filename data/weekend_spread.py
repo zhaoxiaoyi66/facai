@@ -835,10 +835,21 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
     normalized["market_type"] = "usdm_futures"
     normalized["quote_currency"] = str(normalized.get("quote_currency") or "USDT").strip().upper()
     normalized["unit_multiplier"] = _number(normalized.get("unit_multiplier")) or 1
+    normalized["mapping_multiplier"] = _number(normalized.get("mapping_multiplier")) or normalized["unit_multiplier"]
+    normalized["broker_symbol"] = str(normalized.get("broker_symbol") or "").strip().upper()
+    normalized["currency"] = str(normalized.get("currency") or "USD").strip().upper()
+    normalized["contract_type"] = str(normalized.get("contract_type") or "").strip()
+    normalized["min_qty"] = _number(normalized.get("min_qty"))
     normalized["mapping_confidence"] = str(normalized.get("mapping_confidence") or "manual_required").strip().lower()
     normalized["risk_note"] = str(normalized.get("risk_note") or "")
     normalized["last_validated_at"] = str(normalized.get("last_validated_at") or "")
     normalized["validation_status"] = str(normalized.get("validation_status") or "")
+    normalized["confirmed_at"] = str(normalized.get("confirmed_at") or "")
+    normalized["confirmed_by"] = str(normalized.get("confirmed_by") or "")
+    normalized["rejected_at"] = str(normalized.get("rejected_at") or "")
+    normalized["rejected_by"] = str(normalized.get("rejected_by") or "")
+    if not isinstance(normalized.get("audit_summary"), dict):
+        normalized["audit_summary"] = {}
     normalized["manual_override_enabled"] = bool(normalized.get("manual_override_enabled", False))
     normalized["manual_override_price"] = _number(normalized.get("manual_override_price"))
     return normalized
@@ -854,10 +865,27 @@ def _mapping_config_for_file(config: dict[str, Any]) -> dict[str, Any]:
         "mapping_confidence": str(config.get("mapping_confidence") or "manual_required").strip().lower(),
         "risk_note": str(config.get("risk_note") or ""),
     }
-    for optional_key in ("last_validated_at", "validation_status", "updated_at"):
+    for numeric_key in ("mapping_multiplier", "min_qty"):
+        value = _number(config.get(numeric_key))
+        if value is not None:
+            payload[numeric_key] = value
+    for optional_key in (
+        "broker_symbol",
+        "currency",
+        "contract_type",
+        "last_validated_at",
+        "validation_status",
+        "updated_at",
+        "confirmed_at",
+        "confirmed_by",
+        "rejected_at",
+        "rejected_by",
+    ):
         value = str(config.get(optional_key) or "").strip()
         if value:
             payload[optional_key] = value
+    if isinstance(config.get("audit_summary"), dict) and config.get("audit_summary"):
+        payload["audit_summary"] = config["audit_summary"]
     if config.get("manual_override_enabled") and _number(config.get("manual_override_price")) is not None:
         payload["manual_override_enabled"] = True
         payload["manual_override_price"] = _number(config.get("manual_override_price"))
