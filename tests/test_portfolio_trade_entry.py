@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -719,6 +720,74 @@ def test_portfolio_buy_add_button_is_not_disabled_by_advisory_state() -> None:
     submit_line = next(line for line in source.splitlines() if "确认买入 / 加仓并入账" in line)
     assert "form_submit_button" in submit_line
     assert "disabled=" not in submit_line
+
+
+def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
+    context = SimpleNamespace(
+        current_price=102.15,
+        structure_hint=SimpleNamespace(status="STRUCTURE_MISSING", label="待补数据", message="缺少历史K线。"),
+        action_fusion=SimpleNamespace(
+            action_code="DATA_INSUFFICIENT",
+            portfolio_role="watch_only",
+            watch_levels={
+                "observation_low": 99.0,
+                "observation_high": 108.0,
+                "confirm_line": 112.0,
+                "invalid_line": 96.0,
+            },
+            current_weight=5.0,
+            target_weight=8.0,
+            max_weight=10.0,
+            position_action_cn="已有持仓：暂停加仓，等待数据补齐。",
+            buy_plan_cn="数据不足，不给明确买区。",
+        ),
+    )
+
+    html = portfolio_ui._portfolio_buy_decision_panel_html(context, {}, "A")
+
+    assert "当前结论" in html
+    assert "仅观察 / 数据不足" in html
+    assert "当前价格" in html
+    assert "观察区间" in html
+    assert "$99.00 - $108.00" in html
+    assert "确认位" in html
+    assert "失效位" in html
+    assert "建议动作" in html
+    assert "系统建议" not in html
+
+
+def test_portfolio_buy_evidence_panel_uses_collapsed_details() -> None:
+    context = SimpleNamespace(
+        structure_hint=SimpleNamespace(
+            label="结构待确认",
+            structure_score=64,
+            message="已有部分结构信息。",
+            warnings=["缺少相对强弱"],
+            next_steps=["补齐量能"],
+        ),
+        pullback_acceptance=SimpleNamespace(
+            status_label="承接未确认",
+            acceptance_score=48,
+            acceptance_reasons=["支撑暂时守住"],
+            acceptance_warnings=["等待收盘确认"],
+            next_acceptance_steps=["观察承接K线"],
+        ),
+        volume_price_acceptance=SimpleNamespace(
+            status_label="放量未确认",
+            volume_price_score=42,
+            acceptance_reason_cn="放量但尚未确认。",
+            risk_deductions=["事件复核"],
+        ),
+    )
+
+    html = portfolio_ui._portfolio_buy_evidence_panel_html(context)
+
+    assert html.count("<details") == 3
+    assert "结构确认提示" in html
+    assert "回踩承接确认" in html
+    assert "量价承接" in html
+    assert "64 分" in html
+    assert "放量未确认" in html
 
 
 def test_planned_ladder_buy_can_sync_when_radar_blocks_chase_but_plan_matches() -> None:

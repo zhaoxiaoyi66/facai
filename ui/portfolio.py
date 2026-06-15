@@ -18,7 +18,7 @@ from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
-from data.buy_execution_context import build_buy_execution_advisory_context, buy_execution_advisory_context_html
+from data.buy_execution_context import build_buy_execution_advisory_context
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
 from formatting import format_currency, format_percent
 from settings import load_watchlist
@@ -163,11 +163,19 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
             key=f"{form_key}:position_tier",
         )
         selected_tier = POSITION_TIER_FORM_OPTIONS.get(str(tier_choice), "")
+        advisory_context = _safe_buy_execution_context(effective_ticker)
+        st.markdown('<div class="portfolio-buy-block-title">1. 基本信息</div>', unsafe_allow_html=True)
+        st.markdown(_portfolio_buy_basic_info_html(effective_ticker, current, selected_tier), unsafe_allow_html=True)
         _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
-        _render_macro_regime_buy_hint()
-        _render_structure_entry_buy_hint(effective_ticker)
+        st.markdown('<div class="portfolio-buy-block-title">2. 主结论</div>', unsafe_allow_html=True)
+        st.markdown(_portfolio_buy_decision_panel_html(advisory_context, current, selected_tier), unsafe_allow_html=True)
+        st.markdown('<div class="portfolio-buy-block-title">3. 买入策略</div>', unsafe_allow_html=True)
+        st.markdown(_portfolio_buy_strategy_panel_html(advisory_context), unsafe_allow_html=True)
+        with st.expander("4. 证据面板", expanded=False):
+            st.markdown(_portfolio_buy_evidence_panel_html(advisory_context), unsafe_allow_html=True)
+            _render_macro_regime_buy_hint()
         with st.form("portfolio-buy-add-form"):
-            st.markdown('<div class="portfolio-form-section">真实买入 / 加仓</div>', unsafe_allow_html=True)
+            st.markdown('<div class="portfolio-form-section portfolio-buy-execution-title">5. 执行区</div>', unsafe_allow_html=True)
             basic_cols = st.columns([1.2, 1, 1])
             basic_cols[0].text_input("股票代码", value=effective_ticker, disabled=True, key=f"{form_key}:symbol-disabled")
             basic_cols[1].text_input("数量", key=f"{form_key}:quantity")
@@ -189,12 +197,22 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
                 _submit_portfolio_buy_add(form_key, effective_ticker)
 
 
+def _safe_buy_execution_context(ticker: str):
+    symbol = str(ticker or "").strip().upper()
+    if not symbol:
+        return None
+    try:
+        return build_buy_execution_advisory_context(symbol)
+    except Exception:
+        return None
+
+
 def _render_macro_regime_buy_hint() -> None:
     try:
         snapshot = load_macro_regime()
     except Exception:
         return
-    st.info(macro_regime_trade_hint_text(snapshot, context="buy"))
+    st.caption(macro_regime_trade_hint_text(snapshot, context="buy"))
 
 
 def _render_structure_entry_buy_hint(ticker: str) -> None:
@@ -205,7 +223,227 @@ def _render_structure_entry_buy_hint(ticker: str) -> None:
         context = build_buy_execution_advisory_context(symbol)
     except Exception:
         return
-    st.markdown(buy_execution_advisory_context_html(context), unsafe_allow_html=True)
+    st.markdown(_portfolio_buy_evidence_panel_html(context), unsafe_allow_html=True)
+
+
+def _portfolio_buy_basic_info_html(ticker: str, current: dict, tier: str) -> str:
+    symbol = str(ticker or "").strip().upper() or "未选择"
+    shares = _number(current.get("quantity"))
+    avg_cost = _number(current.get("average_cost") or current.get("averageCost"))
+    tier_text = format_position_tier_label(tier or current.get("position_tier") or "") if (tier or current.get("position_tier")) else "未设置"
+    items = [
+        ("交易对象", symbol),
+        ("持仓等级", tier_text),
+        ("当前持仓", _share_count_text(shares)),
+        ("持仓成本", _money_text(avg_cost)),
+    ]
+    return _portfolio_buy_mini_grid_html(items, class_name="portfolio-buy-basic-grid")
+
+
+def _portfolio_buy_decision_panel_html(context, current: dict | None = None, tier: str = "") -> str:
+    fusion = getattr(context, "action_fusion", None)
+    hint = getattr(context, "structure_hint", None)
+    conclusion, tone = _portfolio_buy_conclusion(context)
+    price = getattr(context, "current_price", None)
+    role = str(getattr(fusion, "portfolio_role", "") or "watch_only")
+    levels = dict(getattr(fusion, "watch_levels", {}) or {})
+    observation = _range_text(levels.get("observation_low"), levels.get("observation_high"))
+    confirm = _money_text(levels.get("confirm_line"))
+    invalid = _money_text(levels.get("invalid_line"))
+    current_weight = getattr(fusion, "current_weight", None)
+    target_weight = getattr(fusion, "target_weight", None)
+    max_weight = getattr(fusion, "max_weight", None)
+    action = _compact_sentence(
+        getattr(fusion, "position_action_cn", "")
+        or getattr(fusion, "buy_plan_cn", "")
+        or getattr(hint, "message", "")
+        or "先补齐数据，再判断是否执行。"
+    )
+    if context is None:
+        action = "先选择标的并补齐 Radar / 技术数据，再判断是否执行。"
+    chips = [
+        role,
+        format_position_tier_label(tier) if tier else "未设持仓等级",
+        getattr(hint, "label", "") if hint else "数据待补",
+    ]
+    metrics = [
+        ("当前价格", _money_text(price), "strong"),
+        ("观察区间", observation, "strong"),
+        ("确认位", confirm, ""),
+        ("失效位", invalid, ""),
+        ("当前仓位", _percent_plain(current_weight), ""),
+        ("目标仓位", _percent_plain(target_weight), ""),
+        ("上限仓位", _percent_plain(max_weight), ""),
+        ("角色", role or "watch_only", ""),
+    ]
+    metric_html = "".join(
+        '<div class="portfolio-buy-metric">'
+        f"<span>{escape(label)}</span>"
+        f"<b class=\"{escape(css)}\">{escape(value)}</b>"
+        "</div>"
+        for label, value, css in metrics
+    )
+    chip_html = "".join(f"<em>{escape(str(chip))}</em>" for chip in chips if str(chip or "").strip())
+    return (
+        f'<section class="portfolio-buy-decision-card tone-{escape(tone)}">'
+        '<div class="portfolio-buy-decision-head">'
+        "<span>当前结论</span>"
+        f"<strong>{escape(conclusion)}</strong>"
+        f"<div>{chip_html}</div>"
+        "</div>"
+        f'<div class="portfolio-buy-metric-grid">{metric_html}</div>'
+        f'<p class="portfolio-buy-action-line">建议动作：{escape(action)}</p>'
+        "</section>"
+    )
+
+
+def _portfolio_buy_strategy_panel_html(context) -> str:
+    fusion = getattr(context, "action_fusion", None)
+    if fusion is None:
+        cards = [
+            ("左侧试仓", "暂不判断", "缺少 Radar / 技术上下文。"),
+            ("右侧确认", "等待数据", "补齐确认位和量价承接后再判断。"),
+            ("仓位建议", "先观察", "没有目标仓位和上限仓位快照。"),
+        ]
+    else:
+        left = getattr(fusion, "left_side_action_cn", "") or "左侧暂不主动新增"
+        probe = getattr(fusion, "left_probe_size_cn", "") or getattr(fusion, "left_add_levels_cn", "") or "等待更清晰击球区。"
+        right = getattr(fusion, "right_confirm_trigger_cn", "") or getattr(fusion, "next_trigger_cn", "") or "等待重新评估线。"
+        position = getattr(fusion, "position_advice_cn", "") or "按当前仓位上限控制节奏。"
+        status = getattr(fusion, "left_side_warning_cn", "") or _compact_sentence("；".join(getattr(fusion, "advisory_warnings_cn", [])[:2]))
+        cards = [
+            ("左侧试仓建议", left, probe),
+            ("右侧确认建议", "重新评估线", right),
+            ("仓位建议", _compact_sentence(position), status or "偏离建议会记录为人工 override。"),
+        ]
+    return _portfolio_buy_cards_html(cards, class_name="portfolio-buy-strategy-grid")
+
+
+def _portfolio_buy_evidence_panel_html(context) -> str:
+    if context is None:
+        return (
+            '<div class="portfolio-buy-empty-evidence">'
+            "<strong>证据待补</strong><span>选择股票后显示结构确认、回踩承接和量价承接。</span>"
+            "</div>"
+        )
+    hint = context.structure_hint
+    pullback = context.pullback_acceptance
+    volume = context.volume_price_acceptance
+    evidence = [
+        _portfolio_buy_evidence_block_html(
+            "结构确认提示",
+            getattr(hint, "label", "待补数据"),
+            getattr(hint, "structure_score", None),
+            getattr(hint, "message", ""),
+            [*getattr(hint, "warnings", [])[:3], *getattr(hint, "next_steps", [])[:3]],
+        ),
+        _portfolio_buy_evidence_block_html(
+            "回踩承接确认",
+            getattr(pullback, "status_label", "待确认"),
+            getattr(pullback, "acceptance_score", None),
+            _compact_sentence("；".join(getattr(pullback, "acceptance_reasons", [])[:2])),
+            [*getattr(pullback, "acceptance_warnings", [])[:3], *getattr(pullback, "next_acceptance_steps", [])[:3]],
+        ),
+        _portfolio_buy_evidence_block_html(
+            "量价承接",
+            getattr(volume, "status_label", "待确认"),
+            getattr(volume, "volume_price_score", None),
+            getattr(volume, "acceptance_reason_cn", ""),
+            list(getattr(volume, "risk_deductions", [])[:3]),
+        ),
+    ]
+    return '<div class="portfolio-buy-evidence-grid">' + "".join(evidence) + "</div>"
+
+
+def _portfolio_buy_evidence_block_html(title: str, status: str, score: object, summary: str, details: list[str]) -> str:
+    score_text = _score_text(score)
+    summary_text = _compact_sentence(summary) or "暂无进一步摘要。"
+    detail_items = "".join(f"<li>{escape(str(item))}</li>" for item in details if str(item or "").strip())
+    if not detail_items:
+        detail_items = "<li>暂无额外细节。</li>"
+    return (
+        '<details class="portfolio-buy-evidence-card">'
+        "<summary>"
+        f"<span>{escape(title)}</span>"
+        f"<b>{escape(status)}</b>"
+        f"<em>{escape(score_text)}</em>"
+        "</summary>"
+        f"<p>{escape(summary_text)}</p>"
+        f"<ul>{detail_items}</ul>"
+        "</details>"
+    )
+
+
+def _portfolio_buy_conclusion(context) -> tuple[str, str]:
+    if context is None:
+        return "仅观察 / 数据不足", "data"
+    fusion = getattr(context, "action_fusion", None)
+    hint = getattr(context, "structure_hint", None)
+    action = str(getattr(fusion, "action_code", "") or "").upper()
+    role = str(getattr(fusion, "portfolio_role", "") or "").lower()
+    structure_status = str(getattr(hint, "status", "") or "").upper()
+    if action == "DATA_INSUFFICIENT" or structure_status in {"STRUCTURE_MISSING", "STRUCTURE_STALE"}:
+        return "仅观察 / 数据不足", "data"
+    if role == "watch_only":
+        return "仅观察 / 等确认", "watch"
+    if action in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK", "ADD_ON_BREAKOUT"}:
+        return "可买 / 小仓执行", "buy"
+    if action in {"BLOCK_CHASE", "REDUCE_RISK", "BREAKDOWN_REVIEW", "EVENT_REVIEW"}:
+        return "暂不买 / 风险复核", "risk"
+    if action in {"HOLD_NO_ADD"}:
+        return "等待 / 当前不新增", "wait"
+    return "等待确认", "wait"
+
+
+def _portfolio_buy_cards_html(cards: list[tuple[str, str, str]], *, class_name: str) -> str:
+    html = "".join(
+        '<div class="portfolio-buy-small-card">'
+        f"<span>{escape(title)}</span>"
+        f"<strong>{escape(str(value or BLANK_TEXT))}</strong>"
+        f"<p>{escape(str(note or BLANK_TEXT))}</p>"
+        "</div>"
+        for title, value, note in cards
+    )
+    return f'<div class="{escape(class_name)}">{html}</div>'
+
+
+def _portfolio_buy_mini_grid_html(items: list[tuple[str, object]], *, class_name: str) -> str:
+    html = "".join(
+        '<div class="portfolio-buy-mini-item">'
+        f"<span>{escape(str(label))}</span>"
+        f"<b>{escape(str(value or BLANK_TEXT))}</b>"
+        "</div>"
+        for label, value in items
+    )
+    return f'<div class="{escape(class_name)}">{html}</div>'
+
+
+def _range_text(low: object, high: object) -> str:
+    low_text = _money_text(low)
+    high_text = _money_text(high)
+    if low_text != BLANK_TEXT and high_text != BLANK_TEXT:
+        return f"{low_text} - {high_text}"
+    return low_text if low_text != BLANK_TEXT else high_text
+
+
+def _score_text(score: object) -> str:
+    value = _number(score)
+    if value is None:
+        return "分数暂缺"
+    return f"{value:.0f} 分"
+
+
+def _compact_sentence(text: object, *, max_len: int = 72) -> str:
+    clean = " ".join(str(text or "").replace("\n", " ").split())
+    if not clean:
+        return ""
+    for sep in ("。", "；", ";"):
+        if sep in clean:
+            clean = clean.split(sep)[0] + ("。" if sep == "。" else "")
+            break
+    if len(clean) > max_len:
+        clean = clean[: max_len - 1].rstrip() + "…"
+    return clean
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
@@ -3157,6 +3395,209 @@ def _render_styles() -> None:
             letter-spacing: 0.05em;
             text-transform: uppercase;
         }
+        .portfolio-buy-block-title {
+            margin: 0.85rem 0 0.35rem;
+            color: var(--zhx-text);
+            font-size: 0.86rem;
+            font-weight: 860;
+        }
+        .portfolio-buy-basic-grid,
+        .portfolio-buy-metric-grid,
+        .portfolio-buy-strategy-grid {
+            display: grid;
+            gap: 0.55rem;
+        }
+        .portfolio-buy-basic-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            margin: 0.4rem 0 0.55rem;
+        }
+        .portfolio-buy-mini-item,
+        .portfolio-buy-small-card,
+        .portfolio-buy-metric,
+        .portfolio-buy-evidence-card,
+        .portfolio-buy-empty-evidence {
+            border: 1px solid var(--zhx-line);
+            border-radius: 8px;
+            background: #FFFFFF;
+        }
+        .portfolio-buy-mini-item {
+            padding: 0.58rem 0.68rem;
+            min-height: 62px;
+        }
+        .portfolio-buy-mini-item span,
+        .portfolio-buy-metric span,
+        .portfolio-buy-small-card span {
+            display: block;
+            color: var(--zhx-muted);
+            font-size: 0.68rem;
+            font-weight: 760;
+        }
+        .portfolio-buy-mini-item b,
+        .portfolio-buy-metric b {
+            display: block;
+            margin-top: 0.18rem;
+            color: var(--zhx-text);
+            font-size: 0.9rem;
+            line-height: 1.18;
+            overflow-wrap: anywhere;
+        }
+        .portfolio-buy-decision-card {
+            margin: 0.45rem 0 0.7rem;
+            border: 1px solid var(--zhx-line);
+            border-left: 5px solid var(--zhx-yellow);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+            box-shadow: 0 12px 26px rgba(15, 23, 42, 0.05);
+        }
+        .portfolio-buy-decision-card.tone-buy { border-left-color: var(--zhx-green); }
+        .portfolio-buy-decision-card.tone-wait { border-left-color: var(--zhx-yellow); }
+        .portfolio-buy-decision-card.tone-risk { border-left-color: var(--zhx-red); }
+        .portfolio-buy-decision-card.tone-data { border-left-color: var(--zhx-orange); }
+        .portfolio-buy-decision-card.tone-watch { border-left-color: var(--zhx-blue); }
+        .portfolio-buy-decision-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.76rem 0.86rem 0.35rem;
+        }
+        .portfolio-buy-decision-head span {
+            color: var(--zhx-muted);
+            font-size: 0.7rem;
+            font-weight: 800;
+        }
+        .portfolio-buy-decision-head strong {
+            color: var(--zhx-text);
+            font-size: 1.22rem;
+            line-height: 1.15;
+        }
+        .portfolio-buy-decision-head div {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 0.28rem;
+        }
+        .portfolio-buy-decision-head em {
+            padding: 0.14rem 0.42rem;
+            border-radius: 999px;
+            border: 1px solid var(--zhx-line);
+            background: #F8FAFC;
+            color: var(--zhx-muted);
+            font-size: 0.66rem;
+            font-style: normal;
+            font-weight: 760;
+        }
+        .portfolio-buy-metric-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            padding: 0.35rem 0.86rem 0.72rem;
+        }
+        .portfolio-buy-metric {
+            padding: 0.56rem 0.62rem;
+            min-height: 62px;
+            background: #FFFFFF;
+        }
+        .portfolio-buy-metric b.strong {
+            font-size: 1rem;
+            font-weight: 860;
+        }
+        .portfolio-buy-action-line {
+            margin: 0;
+            padding: 0.58rem 0.86rem;
+            border-top: 1px solid var(--zhx-line);
+            color: var(--zhx-text);
+            font-size: 0.78rem;
+            font-weight: 730;
+        }
+        .portfolio-buy-strategy-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            margin: 0.35rem 0 0.7rem;
+        }
+        .portfolio-buy-small-card {
+            padding: 0.68rem 0.74rem;
+            min-height: 96px;
+            background: #FFFFFF;
+        }
+        .portfolio-buy-small-card strong {
+            display: block;
+            margin-top: 0.18rem;
+            color: var(--zhx-text);
+            font-size: 0.88rem;
+            line-height: 1.2;
+            overflow-wrap: anywhere;
+        }
+        .portfolio-buy-small-card p {
+            margin: 0.38rem 0 0;
+            color: var(--zhx-muted);
+            font-size: 0.72rem;
+            line-height: 1.4;
+        }
+        .portfolio-buy-evidence-grid {
+            display: grid;
+            gap: 0.5rem;
+            margin: 0.15rem 0 0.55rem;
+        }
+        .portfolio-buy-evidence-card {
+            padding: 0;
+            overflow: hidden;
+        }
+        .portfolio-buy-evidence-card summary {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+            gap: 0.55rem;
+            align-items: center;
+            min-height: 48px;
+            padding: 0.55rem 0.68rem;
+            cursor: pointer;
+            list-style: none;
+        }
+        .portfolio-buy-evidence-card summary::-webkit-details-marker {
+            display: none;
+        }
+        .portfolio-buy-evidence-card summary span {
+            color: var(--zhx-text);
+            font-size: 0.78rem;
+            font-weight: 820;
+        }
+        .portfolio-buy-evidence-card summary b {
+            color: var(--zhx-muted);
+            font-size: 0.74rem;
+            overflow-wrap: anywhere;
+        }
+        .portfolio-buy-evidence-card summary em {
+            color: var(--zhx-blue);
+            font-size: 0.72rem;
+            font-style: normal;
+            font-weight: 820;
+        }
+        .portfolio-buy-evidence-card p,
+        .portfolio-buy-evidence-card ul {
+            margin: 0;
+            padding: 0.55rem 0.72rem;
+            color: var(--zhx-muted);
+            font-size: 0.74rem;
+            line-height: 1.45;
+            border-top: 1px solid var(--zhx-line);
+        }
+        .portfolio-buy-evidence-card ul {
+            padding-left: 1.45rem;
+        }
+        .portfolio-buy-empty-evidence {
+            padding: 0.75rem 0.85rem;
+            color: var(--zhx-muted);
+            font-size: 0.76rem;
+        }
+        .portfolio-buy-empty-evidence strong {
+            display: block;
+            color: var(--zhx-text);
+            margin-bottom: 0.2rem;
+        }
+        .portfolio-buy-execution-title {
+            margin-top: 0.5rem;
+            color: var(--zhx-text);
+            font-size: 0.82rem;
+            letter-spacing: 0;
+            text-transform: none;
+        }
         .buy-execution-plan-summary {
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3227,10 +3668,27 @@ def _render_styles() -> None:
             .portfolio-action-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
+            .portfolio-buy-basic-grid,
+            .portfolio-buy-metric-grid,
+            .portfolio-buy-strategy-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
         @media (max-width: 720px) {
             .portfolio-overview,
-            .portfolio-action-grid {
+            .portfolio-action-grid,
+            .portfolio-buy-basic-grid,
+            .portfolio-buy-metric-grid,
+            .portfolio-buy-strategy-grid {
+                grid-template-columns: 1fr;
+            }
+            .portfolio-buy-decision-head {
+                display: grid;
+            }
+            .portfolio-buy-decision-head div {
+                justify-content: flex-start;
+            }
+            .portfolio-buy-evidence-card summary {
                 grid-template-columns: 1fr;
             }
         }

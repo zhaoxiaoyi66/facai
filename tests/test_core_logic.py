@@ -3542,13 +3542,14 @@ class ScoringTests(unittest.TestCase):
         from ui import portfolio
 
         form_source = inspect.getsource(portfolio._render_portfolio_buy_add_form)
-        hint_source = inspect.getsource(portfolio._render_structure_entry_buy_hint)
 
-        self.assertIn("_render_structure_entry_buy_hint(effective_ticker)", form_source)
-        self.assertIn("build_buy_execution_advisory_context", hint_source)
-        self.assertIn("buy_execution_advisory_context_html", hint_source)
-        self.assertNotIn("disabled=True", hint_source)
-        self.assertNotIn("allowed_add_pct", hint_source)
+        self.assertIn("_safe_buy_execution_context(effective_ticker)", form_source)
+        self.assertIn("_portfolio_buy_decision_panel_html", form_source)
+        self.assertIn("_portfolio_buy_strategy_panel_html", form_source)
+        self.assertIn("_portfolio_buy_evidence_panel_html", form_source)
+        self.assertIn('st.expander("4. 证据面板", expanded=False)', form_source)
+        self.assertIn("确认买入 / 加仓并入账", form_source)
+        self.assertNotIn("allowed_add_pct", form_source)
 
     def test_scoring_output_includes_position_limit_and_proxy_metadata(self) -> None:
         coin = calculate_total_score(
