@@ -20,6 +20,7 @@ from data.decision_log import (
     refresh_decision_outcomes,
     save_decision_snapshot_from_bundle,
 )
+from data.trade_safety_gate import _clean_decision_mood as clean_trade_safety_decision_mood
 from scoring.final_decision import BUY_ACTIONS
 from scoring.final_decision_adapter import build_final_decision_bundle
 
@@ -251,8 +252,16 @@ class DecisionLogTests(unittest.TestCase):
 
             self.assertEqual(saved["decision_mood"], "plan_execution")
             self.assertIsNone(legacy["decision_mood"])
+            neutral = store.save_entry(
+                "msft",
+                {"trade_date": "2026-05-28", "action_type": "buy", "decision_mood": "NEUTRAL"},
+            )
+            self.assertEqual(neutral["decision_mood"], "NEUTRAL")
             with self.assertRaises(ValueError):
-                store.save_entry("msft", {"trade_date": "2026-05-28", "action_type": "buy", "decision_mood": "raw_bad"})
+                store.save_entry("msft", {"trade_date": "2026-05-29", "action_type": "buy", "decision_mood": "raw_bad"})
+
+    def test_trade_safety_gate_accepts_neutral_decision_mood(self) -> None:
+        self.assertEqual(clean_trade_safety_decision_mood("NEUTRAL"), "NEUTRAL")
 
     def test_trade_journal_store_saves_radar_buy_gate_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:

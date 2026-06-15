@@ -117,6 +117,7 @@ FUNDAMENTAL_CHANGE_OPTIONS = {
 FUNDAMENTAL_CHANGE_LABELS = {value: label for label, value in FUNDAMENTAL_CHANGE_OPTIONS.items()}
 DECISION_MOOD_OPTIONS = {
     "请选择": "",
+    "平静 / 无明显情绪": "NEUTRAL",
     "深思熟虑": "well_reasoned",
     "按计划执行": "plan_execution",
     "FOMO / 怕错过": "fomo",
@@ -2701,6 +2702,7 @@ def _performance_action_text(value: object) -> str:
 def _mood_text(value: object) -> str:
     mood = str(value or "")
     return {
+        "NEUTRAL": "平静 / 无明显情绪",
         "well_reasoned": "深思熟虑",
         "plan_execution": "计划内执行",
         "fomo": "FOMO",

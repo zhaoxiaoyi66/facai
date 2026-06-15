@@ -340,6 +340,16 @@ def test_decision_mood_warning_uses_chinese_label() -> None:
     assert "复核" in html
 
 
+def test_neutral_decision_mood_is_available_and_displayed() -> None:
+    assert list(trade_journal.DECISION_MOOD_OPTIONS.items())[1] == ("平静 / 无明显情绪", "NEUTRAL")
+    assert trade_journal._decision_mood_text("NEUTRAL") == "平静 / 无明显情绪"
+    assert trade_journal._decision_mood_label_for_entry({"decision_mood": "NEUTRAL"}) == "平静 / 无明显情绪"
+
+
+def test_neutral_mood_text_is_supported_for_performance_groups() -> None:
+    assert trade_journal._mood_text("NEUTRAL") == "平静 / 无明显情绪"
+
+
 def test_c_class_event_exit_discipline_badge_shows_planned_exit() -> None:
     html = trade_journal._discipline_snapshot_badge(
         {

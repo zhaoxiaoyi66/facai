@@ -382,10 +382,14 @@ def test_group_by_mood_summary_is_correct() -> None:
         entries=[
             _entry(1, "NVDA", "buy", 1, 100, "2026-01-01", decision_mood="plan_execution"),
             _entry(2, "NVDA", "sell", 1, 120, "2026-01-02", decision_mood="macro_fear"),
+            _entry(3, "MSFT", "buy", 1, 200, "2026-01-03", decision_mood="NEUTRAL"),
+            _entry(4, "MSFT", "sell", 1, 210, "2026-01-04", decision_mood="plan_execution"),
         ]
     )
 
-    assert summary["groups"]["buy_mood"][0]["key"] == "plan_execution"
+    buy_moods = {row["key"] for row in summary["groups"]["buy_mood"]}
+    assert "plan_execution" in buy_moods
+    assert "NEUTRAL" in buy_moods
     assert summary["groups"]["sell_mood"][0]["key"] == "macro_fear"
 
 

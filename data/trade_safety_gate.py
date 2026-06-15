@@ -9,6 +9,7 @@ from data.trading_discipline import evaluate_trading_discipline
 DISCIPLINE_ACTION_TYPES = {"sell", "trim"}
 CLASSIFICATION_ACTION_TYPES = {"buy", "add"}
 DECISION_MOOD_TYPES = {
+    "NEUTRAL",
     "well_reasoned",
     "plan_execution",
     "fomo",

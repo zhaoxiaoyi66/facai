@@ -59,6 +59,7 @@ POSITION_TIER_FORM_OPTIONS = {
 }
 PORTFOLIO_BUY_MOOD_OPTIONS = {
     "请选择": "",
+    "平静 / 无明显情绪": "NEUTRAL",
     "深思熟虑": "well_reasoned",
     "计划内执行": "plan_execution",
     "FOMO": "fomo",

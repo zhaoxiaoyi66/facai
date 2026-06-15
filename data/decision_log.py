@@ -16,6 +16,7 @@ from data.trade_safety_gate import build_trade_safety_snapshot
 
 ACTION_TYPES = {"buy", "sell", "add", "trim", "skip"}
 DECISION_MOOD_TYPES = {
+    "NEUTRAL",
     "well_reasoned",
     "plan_execution",
     "fomo",
