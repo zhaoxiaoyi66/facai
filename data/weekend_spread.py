@@ -537,6 +537,8 @@ def _base_row(
         "afterhours_last_trade": None,
         "afterhours_volume": None,
         "afterhours_data_quality": "MISSING",
+        "afterhours_missing_reason": "",
+        "afterhours_cache_status": "",
         "afterhours_gap_pct": None,
         "spread_vs_regular_close_pct": None,
         "spread_vs_afterhours_pct": None,
@@ -593,8 +595,28 @@ def _afterhours_fields(
         "afterhours_last_trade": _number(getattr(snapshot, "last_trade", None)),
         "afterhours_volume": _number(getattr(snapshot, "volume", None)),
         "afterhours_data_quality": str(getattr(snapshot, "data_quality", "") or "MISSING"),
+        "afterhours_missing_reason": _afterhours_missing_reason(snapshot),
+        "afterhours_cache_status": str(getattr(snapshot, "cache_status", "") or ""),
         "afterhours_gap_pct": _percent_change(reference_price, regular_close_price),
     }
+
+
+def _afterhours_missing_reason(snapshot: Any) -> str:
+    reference_price = _number(getattr(snapshot, "reference_price", None))
+    cache_status = str(getattr(snapshot, "cache_status", "") or "")
+    if reference_price is not None:
+        return "USING_CACHE" if cache_status in {"CACHE_HIT", "CACHE_FALLBACK"} else ""
+    reason = str(getattr(snapshot, "missing_reason", "") or "").strip()
+    if reason:
+        return reason
+    error = str(getattr(snapshot, "error", "") or "").strip()
+    if error == "afterhours_provider_not_configured":
+        return "PROVIDER_MISSING"
+    if error == "missing_fmp_api_key":
+        return "API_KEY_MISSING"
+    if error:
+        return "FETCH_FAILED"
+    return "NO_AFTERHOURS_TRADE"
 
 
 def _spread_fields(adjusted_binance_price: float | None, regular_close_price: float | None, afterhours_fields: dict[str, Any]) -> dict[str, Any]:

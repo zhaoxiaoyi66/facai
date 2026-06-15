@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time, timezone
 import json
 from pathlib import Path
@@ -31,6 +31,8 @@ class AfterhoursReference:
     volume: float | None = None
     data_quality: str = "MISSING"
     error: str = ""
+    missing_reason: str = ""
+    cache_status: str = ""
 
 
 class AfterhoursProvider:
@@ -52,7 +54,12 @@ class NullAfterhoursProvider(AfterhoursProvider):
         regular_close_date: str = "",
         force_refresh: bool = False,
     ) -> AfterhoursReference:
-        return AfterhoursReference(symbol=str(symbol or "").upper(), error="afterhours_provider_not_configured")
+        return AfterhoursReference(
+            symbol=str(symbol or "").upper(),
+            error="afterhours_provider_not_configured",
+            missing_reason="PROVIDER_MISSING",
+            cache_status="NOT_FETCHED",
+        )
 
 
 class CachedAfterhoursProvider(AfterhoursProvider):
@@ -74,18 +81,26 @@ class CachedAfterhoursProvider(AfterhoursProvider):
     ) -> AfterhoursReference:
         normalized = str(symbol or "").strip().upper()
         cache_key = f"{normalized}:{regular_close_date or 'latest'}"
-        if not force_refresh:
-            cached = self._read(cache_key)
-            if cached is not None:
-                return cached
+        cached = self._read(cache_key)
+        if not force_refresh and cached is not None:
+            return replace(cached, cache_status="CACHE_HIT")
         snapshot = self.provider.get_afterhours_reference(
             normalized,
             regular_close_date=regular_close_date,
             force_refresh=force_refresh,
         )
         if snapshot.data_quality != "MISSING":
-            self._write(cache_key, snapshot)
-        return snapshot
+            live_snapshot = replace(snapshot, cache_status="API_LIVE")
+            self._write(cache_key, live_snapshot)
+            return live_snapshot
+        if cached is not None:
+            return replace(
+                cached,
+                cache_status="CACHE_FALLBACK",
+                error=snapshot.error,
+                missing_reason="",
+            )
+        return replace(snapshot, cache_status=snapshot.cache_status or "CACHE_MISSING")
 
     def _read(self, cache_key: str) -> AfterhoursReference | None:
         payload = _read_json(self.cache_path)
@@ -124,14 +139,14 @@ class FMPAfterhoursProvider(AfterhoursProvider):
     ) -> AfterhoursReference:
         normalized = str(symbol or "").strip().upper()
         if not normalized:
-            return AfterhoursReference(symbol="", error="missing_symbol")
+            return AfterhoursReference(symbol="", error="missing_symbol", missing_reason="FIELD_NOT_PASSED")
         if not self.api_key:
-            return AfterhoursReference(symbol=normalized, error="missing_fmp_api_key")
+            return AfterhoursReference(symbol=normalized, error="missing_fmp_api_key", missing_reason="API_KEY_MISSING")
         try:
             trade = self._first_row("aftermarket-trade", {"symbol": normalized})
             quote = self._first_row("aftermarket-quote", {"symbol": normalized})
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-            return AfterhoursReference(symbol=normalized, error=f"{type(exc).__name__}: {exc}")
+            return AfterhoursReference(symbol=normalized, error=f"{type(exc).__name__}: {exc}", missing_reason="FETCH_FAILED")
         return resolve_afterhours_reference(normalized, trade=trade, quote=quote, regular_close_date=regular_close_date)
 
     def _first_row(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
@@ -206,7 +221,8 @@ def resolve_afterhours_reference(
             data_quality=quality,
         )
 
-    return AfterhoursReference(symbol=normalized, error="afterhours_reference_missing")
+    reason = "NO_AFTERHOURS_QUOTE" if quote_row else "NO_AFTERHOURS_TRADE"
+    return AfterhoursReference(symbol=normalized, error="afterhours_reference_missing", missing_reason=reason)
 
 
 def _is_afterhours_session(timestamp: str, regular_close_date: str) -> bool:
@@ -259,6 +275,8 @@ def _reference_from_dict(raw: dict[str, Any]) -> AfterhoursReference:
         volume=_number(raw.get("volume")),
         data_quality=str(raw.get("data_quality") or "MISSING"),
         error=str(raw.get("error") or ""),
+        missing_reason=str(raw.get("missing_reason") or ""),
+        cache_status=str(raw.get("cache_status") or ""),
     )
 
 

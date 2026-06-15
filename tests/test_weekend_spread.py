@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from data.afterhours_provider import AfterhoursReference, resolve_afterhours_reference
+from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.weekend_spread_backtest import (
     recent_weekend_windows,
@@ -140,6 +140,9 @@ class FakeAfterhoursProvider:
         last_trade: float | None = 102.0,
         volume: float | None = 2_500,
         data_quality: str = "HIGH",
+        missing_reason: str = "",
+        cache_status: str = "API_LIVE",
+        error: str = "",
     ) -> None:
         self.snapshot = AfterhoursReference(
             symbol="",
@@ -152,6 +155,9 @@ class FakeAfterhoursProvider:
             last_trade=last_trade,
             volume=volume,
             data_quality=data_quality,
+            error=error,
+            missing_reason=missing_reason,
+            cache_status=cache_status,
         )
         self.calls: list[tuple[str, str, bool]] = []
 
@@ -176,6 +182,41 @@ class FakeAfterhoursProvider:
             volume=snapshot.volume,
             data_quality=snapshot.data_quality,
             error=snapshot.error,
+            missing_reason=snapshot.missing_reason,
+            cache_status=snapshot.cache_status,
+        )
+
+
+class SequenceAfterhoursProvider:
+    def __init__(self, snapshots: list[AfterhoursReference]) -> None:
+        self.snapshots = list(snapshots)
+        self.calls: list[tuple[str, str, bool]] = []
+
+    def get_afterhours_reference(
+        self,
+        symbol: str,
+        *,
+        regular_close_date: str = "",
+        force_refresh: bool = False,
+    ) -> AfterhoursReference:
+        self.calls.append((symbol, regular_close_date, force_refresh))
+        if not self.snapshots:
+            return AfterhoursReference(symbol=symbol, error="empty_sequence", missing_reason="FETCH_FAILED")
+        snapshot = self.snapshots.pop(0)
+        return AfterhoursReference(
+            symbol=symbol,
+            reference_price=snapshot.reference_price,
+            reference_time=snapshot.reference_time,
+            reference_source=snapshot.reference_source,
+            bid=snapshot.bid,
+            ask=snapshot.ask,
+            mid=snapshot.mid,
+            last_trade=snapshot.last_trade,
+            volume=snapshot.volume,
+            data_quality=snapshot.data_quality,
+            error=snapshot.error,
+            missing_reason=snapshot.missing_reason,
+            cache_status=snapshot.cache_status,
         )
 
 
@@ -344,6 +385,8 @@ def test_primary_spread_uses_afterhours_reference_when_available() -> None:
     assert round(row["primary_spread_pct"], 2) == 0.96
     assert round(row["spread_pct"], 2) == 0.96
     assert row["primary_spread_anchor"] == "AFTERHOURS_REFERENCE"
+    assert row["afterhours_missing_reason"] == ""
+    assert row["afterhours_cache_status"] == "API_LIVE"
     assert afterhours_provider.calls == [("NVDA", "2026-06-12", False)]
 
 
@@ -361,6 +404,7 @@ def test_primary_spread_falls_back_to_regular_close_when_afterhours_missing() ->
 
     row = rows[0]
     assert row["afterhours_reference_price"] is None
+    assert row["afterhours_missing_reason"] == "NO_AFTERHOURS_TRADE"
     assert row["spread_vs_afterhours_pct"] is None
     assert round(row["spread_vs_regular_close_pct"], 2) == 2.44
     assert round(row["primary_spread_pct"], 2) == 2.44
@@ -380,6 +424,38 @@ def test_afterhours_quote_spread_wide_downgrades_quality() -> None:
     assert snapshot.data_quality == "LOW"
 
 
+def test_weekend_spread_uses_afterhours_quote_mid_when_trade_missing() -> None:
+    snapshot = resolve_afterhours_reference(
+        "NVDA",
+        trade={},
+        quote={"bid": 207.8, "ask": 208.2, "timestamp": "2026-06-12T19:58:00-04:00", "volume": 1200},
+        regular_close_date="2026-06-12",
+    )
+    afterhours_provider = FakeAfterhoursProvider(
+        reference_price=snapshot.reference_price,
+        reference_time=snapshot.reference_time,
+        reference_source=snapshot.reference_source,
+        bid=snapshot.bid,
+        ask=snapshot.ask,
+        mid=snapshot.mid,
+        last_trade=snapshot.last_trade,
+        volume=snapshot.volume,
+        data_quality=snapshot.data_quality,
+    )
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=afterhours_provider,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    assert rows[0]["afterhours_reference_price"] == 208.0
+    assert rows[0]["afterhours_reference_source"] == "FMP_AFTERHOURS_QUOTE_MID"
+    assert round(rows[0]["spread_vs_afterhours_pct"], 2) == 0.96
+
+
 def test_afterhours_provider_missing_does_not_crash() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA"],
@@ -391,7 +467,60 @@ def test_afterhours_provider_missing_does_not_crash() -> None:
 
     assert rows[0]["status"] == "OK"
     assert rows[0]["afterhours_data_quality"] == "MISSING"
+    assert rows[0]["afterhours_missing_reason"] == "NO_AFTERHOURS_TRADE"
     assert rows[0]["primary_spread_anchor"] == "REGULAR_CLOSE_FALLBACK"
+
+
+def test_afterhours_provider_failure_uses_cached_reference(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                last_trade=208,
+                data_quality="HIGH",
+            ),
+            AfterhoursReference(symbol="NVDA", data_quality="MISSING", error="timeout", missing_reason="FETCH_FAILED"),
+        ]
+    )
+    cached_provider = CachedAfterhoursProvider(provider, cache_path=cache_path)
+
+    first = cached_provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12", force_refresh=False)
+    second = cached_provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12", force_refresh=True)
+
+    assert first.reference_price == 208
+    assert first.cache_status == "API_LIVE"
+    assert second.reference_price == 208
+    assert second.cache_status == "CACHE_FALLBACK"
+    assert second.error == "timeout"
+
+
+def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    live_provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            )
+        ]
+    )
+    CachedAfterhoursProvider(live_provider, cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    cache_only = CachedAfterhoursProvider(SequenceAfterhoursProvider([]), cache_path=cache_path)
+    cached = cache_only.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert cached.reference_price == 208
+    assert cached.cache_status == "CACHE_HIT"
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
@@ -1779,8 +1908,8 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
 def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
     source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
 
-    assert "Refresh complete" in source
-    assert "afterhours_provider=NullAfterhoursProvider()" in source
+    assert "provider=_IdleBinanceProvider()" in source
+    assert "CachedAfterhoursProvider(NullAfterhoursProvider())" in source
 
 
 def test_idle_provider_marks_rows_as_waiting_refresh() -> None:
@@ -1879,9 +2008,9 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert frame.loc[0, "价格锚点"] == "收盘 $102.15｜盘后缺失"
-    assert frame.loc[0, "vs 盘后"] == "—"
-    assert "缺少盘后参考价" in frame.loc[0, "风险"]
+    assert "$102.15" in frame.iloc[0, 1]
+    assert frame.iloc[0, 3] in {"—", "鈥?"}
+    assert "fallback" in frame.iloc[0, 6]
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:

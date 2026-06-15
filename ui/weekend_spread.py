@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from data.afterhours_provider import NullAfterhoursProvider, default_afterhours_provider
+from data.afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.weekend_spread_backtest import run_weekend_peak_short_backtest, summarize_backtest_results
 from data.weekend_spread import (
     DEFAULT_LOCAL_MAPPING_PATH,
@@ -137,7 +137,7 @@ def _build_weekend_spread_rows_with_feedback(
                 watchlist,
                 mapping=mapping,
                 provider=_IdleBinanceProvider(),
-                afterhours_provider=NullAfterhoursProvider(),
+                afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
                 force_refresh=False,
             ),
             cached,
@@ -879,6 +879,8 @@ def _render_row_details(rows: list[dict]) -> None:
                 st.caption(f"盘后参考价：{_money_text(row.get('afterhours_reference_price'))}")
                 st.caption(f"盘后来源：{str(row.get('afterhours_reference_source') or '缺少盘后参考价')}")
                 st.caption(f"盘后质量：{str(row.get('afterhours_data_quality') or 'MISSING')}")
+                st.caption(f"缺失原因：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}")
+                st.caption(f"缓存状态：{_afterhours_cache_text(row.get('afterhours_cache_status'))}")
                 st.caption(f"盘后时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
             with col_binance:
                 st.markdown("**Binance 行情**")
@@ -1099,6 +1101,33 @@ def _refresh_error_text(rows: list[dict]) -> str:
     return "Binance refresh failed"
 
 
+def _afterhours_reason_text(value: object) -> str:
+    code = str(value or "").strip()
+    return {
+        "PROVIDER_MISSING": "未配置盘后数据源",
+        "API_KEY_MISSING": "缺少 FMP API key",
+        "NOT_FETCHED": "未抓取盘后价",
+        "FETCH_FAILED": "盘后接口失败",
+        "NO_AFTERHOURS_TRADE": "当日无盘后成交",
+        "NO_AFTERHOURS_QUOTE": "无有效 bid/ask",
+        "CACHE_MISSING": "盘后缓存缺失",
+        "STALE_CACHE": "盘后缓存过期",
+        "FIELD_NOT_PASSED": "字段未传入",
+        "USING_CACHE": "使用缓存盘后价",
+    }.get(code, code or "未抓取盘后价")
+
+
+def _afterhours_cache_text(value: object) -> str:
+    code = str(value or "").strip()
+    return {
+        "API_LIVE": "API 实时盘后价",
+        "CACHE_HIT": "使用缓存盘后价",
+        "CACHE_FALLBACK": "接口失败，使用缓存盘后价",
+        "CACHE_MISSING": "盘后缓存缺失",
+        "NOT_FETCHED": "未抓取盘后价",
+    }.get(code, code or "暂缺")
+
+
 def _money_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -1113,7 +1142,8 @@ def _price_anchor_text(row: dict) -> str:
     regular = _number(row.get("regular_close_price") or row.get("friday_close"))
     if regular is None:
         return "暂缺"
-    return f"收盘 ${regular:,.2f}｜盘后缺失"
+    reason = _afterhours_reason_text(row.get("afterhours_missing_reason"))
+    return f"收盘 ${regular:,.2f}｜盘后缺失：{reason}"
 
 
 def _afterhours_spread_text(value: object) -> str:
@@ -1137,7 +1167,9 @@ def _risk_badge_text(row: dict) -> str:
     if status in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"}:
         risks.append("数据不可用")
     if _number(row.get("afterhours_reference_price")) is None and row.get("binance_symbol"):
-        risks.append("缺少盘后参考价，当前使用周五收盘作为 fallback")
+        risks.append(f"缺少盘后参考价：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}，当前使用周五收盘作为 fallback")
+    elif str(row.get("afterhours_cache_status") or "") in {"CACHE_HIT", "CACHE_FALLBACK"}:
+        risks.append(_afterhours_cache_text(row.get("afterhours_cache_status")))
     liquidity = str(row.get("liquidity_warning") or "")
     if "成交量不足" in liquidity:
         risks.append("成交量不足")
