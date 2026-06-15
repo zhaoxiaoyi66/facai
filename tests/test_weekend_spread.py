@@ -2029,9 +2029,6 @@ def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_v
         provider=FakeKlineProvider(bars),
         weeks=1,
         open_window_minutes=5,
-        fee_pct=0.10,
-        slippage_pct=0.10,
-        funding_pct=0.00,
         now=now,
     )
 
@@ -2047,7 +2044,7 @@ def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_v
     assert round(row["premium_decay_pct"], 2) == 11.75
     assert round(row["premium_decay_ratio"], 2) == 78.33
     assert round(row["theoretical_short_return_pct"], 2) == 10.22
-    assert round(row["net_short_return_pct"], 2) == 10.02
+    assert round(row["net_short_return_pct"], 2) == 10.22
     assert round(row["short_return_at_open_pct"], 2) == 10.22
     assert row["data_quality"] == "OK"
 

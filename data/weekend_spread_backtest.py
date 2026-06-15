@@ -14,9 +14,6 @@ from settings import PROJECT_ROOT
 
 ET = ZoneInfo("America/New_York")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-DEFAULT_FEE_PCT = 0.10
-DEFAULT_SLIPPAGE_PCT = 0.10
-DEFAULT_FUNDING_PCT = 0.00
 DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_results.json"
 
 
@@ -138,9 +135,6 @@ def run_weekend_peak_short_backtest(
     provider: Any | None = None,
     weeks: int = 4,
     open_window_minutes: int = 5,
-    fee_pct: float = DEFAULT_FEE_PCT,
-    slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
-    funding_pct: float = DEFAULT_FUNDING_PCT,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     normalized_tickers = _normalize_tickers(tickers)
@@ -163,9 +157,6 @@ def run_weekend_peak_short_backtest(
                     anchor=_anchor_for_ticker(ticker, config, effective_anchors),
                     provider=price_provider,
                     open_window_minutes=open_window_minutes,
-                    fee_pct=fee_pct,
-                    slippage_pct=slippage_pct,
-                    funding_pct=funding_pct,
                 )
             )
     return rows
@@ -292,9 +283,6 @@ def _backtest_one_window(
     anchor: dict[str, Any],
     provider: Any,
     open_window_minutes: int,
-    fee_pct: float,
-    slippage_pct: float,
-    funding_pct: float,
 ) -> dict[str, Any]:
     symbol = str(config.get("binance_symbol") or "").strip().upper()
     market_type = "usdm_futures"
@@ -346,9 +334,7 @@ def _backtest_one_window(
     short_close = _return_pct(peak, first_open_bar.close)
     best_case = _return_pct(peak, first_open_bar.low)
     worst_case = _return_pct(peak, first_open_bar.high)
-    net_return = None
-    if short_open is not None:
-        net_return = short_open - float(fee_pct or 0.0) - float(slippage_pct or 0.0) - float(funding_pct or 0.0)
+    net_return = short_open
     weekend_peak_premium = _premium_pct(peak, anchor_price)
     open_remaining_premium = _premium_pct(open_reference_price, anchor_price)
     premium_decay = None
