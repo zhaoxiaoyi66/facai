@@ -237,6 +237,37 @@ def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:
     assert decision["position_action"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
 
 
+def test_drawer_actions_include_internal_report_navigation() -> None:
+    actions = dashboard_drawer.build_drawer_actions("nvda")
+    open_report = actions[0]
+    record_signal = actions[1]
+
+    assert open_report["action"] == "open_report"
+    assert open_report["label"] == "查看完整研报"
+    assert open_report["href"] == "?page=ai-radar&view=report&ticker=NVDA#radar-report"
+    assert open_report["target"] == "_self"
+    assert open_report["session_updates"]["ai_radar_selected_ticker"] == "NVDA"
+    assert open_report["session_updates"]["radar_report_ticker"] == "NVDA"
+    assert record_signal["action"] == "record_signal"
+    assert record_signal["href"] == "?page=dashboard&recordSignal=NVDA#watchlist-table"
+
+
+def test_drawer_actions_html_uses_current_app_links_only() -> None:
+    html = dashboard_drawer._drawer_actions_html("PLTR")
+
+    assert "查看完整研报" in html
+    assert "记录当前信号" in html
+    assert "page=ai-radar" in html
+    assert "view=report" in html
+    assert "ticker=PLTR" in html
+    assert "target=\"_self\"" in html
+    assert "target=\"_blank\"" not in html
+    assert "http://" not in html
+    assert "https://" not in html
+    assert "dashboard-open-report-action" in html
+    assert "__dashboardCloseDrawer" in html
+
+
 def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:
     drawer_source = inspect.getsource(dashboard_drawer.drawer_html)
     detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)

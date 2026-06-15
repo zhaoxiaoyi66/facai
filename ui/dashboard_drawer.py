@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from html import escape
 import json
 import math
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -23,6 +24,8 @@ from ui.metric_labels import model_type_label, resolution_status_label
 
 DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
 DRAWER_FOCUS_SESSION_KEY = "dashboard_drawer_focus"
+DRAWER_REPORT_PAGE_QUERY = "ai-radar"
+DRAWER_REPORT_VIEW_QUERY = "report"
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,70 @@ def drawer_open_menu_html(symbol: str, label: str, focus: str | None = None) -> 
         f'<button type="button" class="drawer-menu-link" data-dashboard-drawer-open="{safe_symbol}"{focus_attr} '
         f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板">{escape(label)}</button>'
     )
+
+
+def drawer_report_href(symbol: str) -> str:
+    normalized_symbol = str(symbol or "").strip().upper()
+    safe_symbol = quote(normalized_symbol)
+    return f"?page={DRAWER_REPORT_PAGE_QUERY}&view={DRAWER_REPORT_VIEW_QUERY}&ticker={safe_symbol}#radar-report"
+
+
+def build_drawer_actions(symbol: str) -> list[dict[str, object]]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    safe_symbol = quote(normalized_symbol)
+    return [
+        {
+            "action": "open_report",
+            "label": "查看完整研报",
+            "href": drawer_report_href(normalized_symbol),
+            "target": "_self",
+            "variant": "primary",
+            "session_updates": {
+                "ai_radar_selected_ticker": normalized_symbol,
+                "radar_report_ticker": normalized_symbol,
+                DRAWER_SYMBOL_SESSION_KEY: "",
+            },
+        },
+        {
+            "action": "record_signal",
+            "label": "记录当前信号",
+            "href": f"?page=dashboard&recordSignal={safe_symbol}#watchlist-table",
+            "target": "_self",
+            "variant": "secondary",
+            "session_updates": {},
+        },
+    ]
+
+
+def _drawer_actions_html(symbol: str) -> str:
+    items: list[str] = []
+    for action in build_drawer_actions(symbol):
+        action_id = str(action["action"])
+        href = str(action["href"])
+        label = str(action["label"])
+        target = str(action.get("target") or "_self")
+        variant = str(action.get("variant") or "secondary")
+        extra_class = ""
+        if action_id == "open_report":
+            onclick = (
+                "event.preventDefault();event.stopPropagation();"
+                "if(window.__dashboardCloseDrawer){window.__dashboardCloseDrawer();}"
+                "window.location.assign(this.href);"
+                "return false;"
+            )
+            extra_class = " dashboard-open-report-action"
+        elif action_id == "record_signal":
+            onclick = "event.stopPropagation();"
+            extra_class = " dashboard-record-action"
+        else:
+            onclick = "event.stopPropagation();"
+        items.append(
+            f'<a class="drawer-action-link is-{escape(variant)}{extra_class}" '
+            f'href="{escape(href, quote=True)}" target="{escape(target, quote=True)}" '
+            f'data-dashboard-drawer-action="{escape(action_id)}" onclick="{escape(onclick, quote=True)}">'
+            f'{escape(label)}</a>'
+        )
+    return f'<div class="drawer-signal-actions">{"".join(items)}</div>'
 
 
 def render_client_stock_detail_drawers(table: pd.DataFrame, deps: DashboardDrawerDeps | None = None) -> None:
@@ -299,7 +366,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
         '</div>'
         f'<div class="drawer-badges">{"".join(badges)}</div>'
-        f'<div class="drawer-signal-actions"><a href="?page=dashboard&recordSignal={safe_symbol}" target="_self">记录当前信号</a></div>'
+        f'{_drawer_actions_html(symbol)}'
         f'{_drawer_quick_decision_html(row, primary_decision)}'
         f'{full_basis}'
         '</aside>'

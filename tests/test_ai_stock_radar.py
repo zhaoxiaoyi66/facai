@@ -1102,6 +1102,10 @@ def test_ai_radar_query_params_support_deep_link_and_list_return() -> None:
         assert "view=list" in radar_ui._list_view_href()
         assert "radarFilter=near" in radar_ui._list_view_href()
 
+    with patch.object(radar_ui.st, "query_params", {"page": "ai-radar", "view": "report", "ticker": "NVDA"}):
+        assert radar_ui._selected_radar_view() == "report"
+        assert radar_ui._selected_symbol(["NVDA"]) == "NVDA"
+
     with patch.object(radar_ui.st, "query_params", {"view": "list", "ticker": "MSFT"}):
         assert radar_ui._selected_radar_view() == "list"
 

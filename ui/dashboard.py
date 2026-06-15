@@ -5349,6 +5349,7 @@ def _render_dashboard_styles() -> None:
         }
         .drawer-signal-actions {
             display:flex;
+            gap:0.45rem;
             justify-content:flex-end;
             margin:-0.35rem 0 0.72rem;
         }
@@ -5370,6 +5371,16 @@ def _render_dashboard_styles() -> None:
             background:#FFFFFF;
             border-color:rgba(15, 23, 42, 0.12);
             color:#0F172A;
+        }
+        .drawer-signal-actions a.is-primary {
+            background:#0F172A;
+            border-color:#0F172A;
+            color:#FFFFFF;
+        }
+        .drawer-signal-actions a.is-primary:hover {
+            background:#1E293B;
+            border-color:#1E293B;
+            color:#FFFFFF;
         }
         .drawer-decision-card {
             margin: 0.64rem 0;
