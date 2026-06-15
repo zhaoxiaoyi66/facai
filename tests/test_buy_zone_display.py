@@ -92,6 +92,13 @@ def test_upper_pullback_zone_display_does_not_call_it_main_batting_zone() -> Non
             "volume_price_status": "FORMING",
             "volume_ratio": 0.65,
             "daily_return_pct": -0.3,
+            "risk_reward": 1.4,
+            "risk_reward_text": "RR 1.40：观察",
+            "action_new_cash": "未持仓：等待重新评估线和量价确认。",
+            "action_existing_position": "已有持仓：持有观察，等待量价确认或更低回踩。",
+            "entry_condition_text": "加仓触发：放量站上近端确认线 $276.00 后重新评估。",
+            "invalidation_condition_text": "跌破买区下沿 $253.17：暂停新增",
+            "confidence_breakdown": {"support_score": 70, "trend_score": 80, "volume_score": 42, "risk_reward_score": 55},
         },
         {"current_shares": 100, "currentAddLimitPercent": 0},
         mode="test",
@@ -102,6 +109,10 @@ def test_upper_pullback_zone_display_does_not_call_it_main_batting_zone() -> Non
     assert display["technical_action_text"] == "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。"
     assert "主击球区" not in display["technical_action_text"]
     assert display["volume_confirmation_text"] == "缩量调整，尚不构成承接"
+    assert display["risk_reward_text"] == "RR 1.40：观察"
+    assert display["entry_condition_text"].startswith("加仓触发")
+    assert display["invalidation_condition_text"].startswith("跌破买区下沿")
+    assert display["confidence_breakdown"]["support_score"] == 70
 
 
 def test_data_insufficient_position_pauses_add_without_legacy_buy_copy() -> None:

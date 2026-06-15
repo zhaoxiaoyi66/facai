@@ -1801,9 +1801,9 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         assert report.next_action_price == 100
         assert report.chase_above_price == 120
         assert report.current_vs_entry_pct == 10.0
-        assert report.entry_display_label == "等突破再评估"
+        assert report.entry_display_label == "等回击球区"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
-        assert "重新评估" in report.entry_display_reason
+        assert report.entry_display_reason
 
 
 def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
@@ -1911,7 +1911,7 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         )
 
         assert row["decision"] == "WAIT"
-        assert row["entry_display_label"] == "等突破再评估"
+        assert row["entry_display_label"] == "等回击球区"
         assert row["entry_context_status"] == "WAIT_CONFIRMATION"
         assert row["entry_reference_high"] == 100
         assert row["current_vs_entry_pct"] == 10.0
@@ -1955,10 +1955,10 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.technical_pullback_zone_high == 117.5
         assert report.confirmation_price == 116
         assert report.invalidation_price == 108
-        assert report.entry_display_label == "等突破再评估"
+        assert report.entry_display_label == "等回击球区"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
-        assert "重新评估" in report.entry_display_reason
+        assert report.entry_display_reason
         assert report.debug["technical_entry_zone"]["source"] == "ema_pullback"
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -82,6 +84,30 @@ class BuyZoneContext:
     raw_rr: float | None = None
     rr_score_capped: bool = False
     rr_cap_reason: str = ""
+    support_clusters: list[dict[str, Any]] = field(default_factory=list)
+    selected_support_cluster: dict[str, Any] = field(default_factory=dict)
+    support_cluster_score: float = 0.0
+    support_score: float = 0.0
+    trend_score: float = 0.0
+    zone_width: float | None = None
+    repair_observation_zone_low: float | None = None
+    repair_observation_zone_high: float | None = None
+    primary_buy_zone_low: float | None = None
+    primary_buy_zone_high: float | None = None
+    deep_support_zone_low: float | None = None
+    deep_support_zone_high: float | None = None
+    invalidation_zone_low: float | None = None
+    invalidation_zone_high: float | None = None
+    suspend_new_line: float | None = None
+    buy_zone_failure_line: float | None = None
+    deep_support_break_line: float | None = None
+    risk_reward: float | None = None
+    risk_reward_text: str = ""
+    action_new_cash: str = ""
+    action_existing_position: str = ""
+    entry_condition_text: str = ""
+    invalidation_condition_text: str = ""
+    confidence_breakdown: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +125,44 @@ class RiskRewardAssessment:
     rr_cap_reason: str
 
 
+@dataclass(frozen=True)
+class SupportCluster:
+    low: float
+    high: float
+    center: float
+    score: float
+    sources: list[str]
+    candidate_count: int
+    zone_low: float
+    zone_high: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BuyZoneSnapshot:
+    symbol: str
+    date: str
+    price: float | None
+    zone_low: float | None
+    zone_high: float | None
+    zone_position: float | None
+    setup_score: float
+    support_score: float
+    trend_score: float
+    volume_score: float
+    risk_reward: float | None
+    action_new_cash: str
+    action_existing_position: str
+    invalidation_line: float | None
+    confirmation_line: float | None
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def build_buy_zone_context(
     source: dict[str, Any] | None = None,
     *,
@@ -108,8 +172,15 @@ def build_buy_zone_context(
     data = _enrich_daily_technical_inputs({**(source or {}), **(technicals or {})})
     volume = _enrich_daily_volume_inputs(dict(volume_snapshot or {}), data)
     price = _first_number(data, "current_price", "currentPrice", "price", "close")
+    atr = _first_number(data, "atr_20", "atr20", "atr_14", "atr14")
+    zone_width = _dynamic_zone_width(price, atr)
+    support_clusters = _support_clusters(data, price=price, atr=atr)
+    selected_cluster = _select_support_cluster(support_clusters, price)
     support_low = _first_number(data, "support_zone_low", "deep_support_zone_low", "support_watch_zone_low", "recent_swing_low")
     support_high = _first_number(data, "support_zone_high", "deep_support_zone_high", "support_watch_zone_high", "recent_swing_low")
+    if selected_cluster is not None:
+        support_low = support_low if support_low is not None else selected_cluster.zone_low
+        support_high = support_high if support_high is not None else selected_cluster.zone_high
     pullback_low = _first_number(
         data,
         "effective_technical_entry_zone_low",
@@ -132,6 +203,9 @@ def build_buy_zone_context(
         "ema20",
         "ema50",
     )
+    if selected_cluster is not None:
+        pullback_low = pullback_low if pullback_low is not None else selected_cluster.zone_low
+        pullback_high = pullback_high if pullback_high is not None else selected_cluster.zone_high
     repair_low = _first_number(data, "near_term_repair_zone_low", "technical_repair_zone_low")
     repair_high = _first_number(data, "near_term_repair_zone_high", "technical_repair_zone_high")
     raw_confirmation = _first_number(data, "confirmation_price", "radar_confirmation_price", "confirm_line")
@@ -144,7 +218,6 @@ def build_buy_zone_context(
     ma20 = _first_number(data, "ma20", "ema20")
     ma50 = _first_number(data, "ma50", "ema50")
     ma200 = _first_number(data, "ma200", "ema200")
-    atr = _first_number(data, "atr_14", "atr14")
     resistance = _first_number(
         data,
         "resistance_zone_high",
@@ -153,8 +226,11 @@ def build_buy_zone_context(
         "recent_breakout_level",
         "confirmation_price",
     )
-    if invalidation is None and support_low is not None:
-        invalidation = support_low
+    suspend_new_line = _suspend_new_line(pullback_low, atr)
+    buy_zone_failure_line = pullback_low
+    deep_support_break_line = support_low
+    if invalidation is None:
+        invalidation = suspend_new_line if suspend_new_line is not None else support_low
     final_score = _first_number(data, "final_score", "finalScore")
     volume_status = str(
         _value(volume, "volume_price_status", "volumePriceStatus")
@@ -228,6 +304,35 @@ def build_buy_zone_context(
             volume_ratio=volume_ratio,
             volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
             technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
+            support_clusters=[cluster.to_dict() for cluster in support_clusters],
+            selected_support_cluster=selected_cluster.to_dict() if selected_cluster is not None else {},
+            support_cluster_score=selected_cluster.score if selected_cluster is not None else 0.0,
+            support_score=selected_cluster.score if selected_cluster is not None else 0.0,
+            trend_score=_trend_score(price, ma20, ma50, ma200),
+            zone_width=zone_width,
+            repair_observation_zone_low=repair_low,
+            repair_observation_zone_high=repair_high,
+            primary_buy_zone_low=pullback_low,
+            primary_buy_zone_high=pullback_high,
+            deep_support_zone_low=support_low,
+            deep_support_zone_high=support_high,
+            invalidation_zone_low=suspend_new_line,
+            invalidation_zone_high=buy_zone_failure_line,
+            suspend_new_line=suspend_new_line,
+            buy_zone_failure_line=buy_zone_failure_line,
+            deep_support_break_line=deep_support_break_line,
+            risk_reward=None,
+            risk_reward_text="风险收益比暂缺",
+            action_new_cash="暂停买入 / 等待数据补齐",
+            action_existing_position="持有观察 / 暂停加仓",
+            entry_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
+            invalidation_condition_text=_pause_new_condition_text(pullback_low, invalidation, data),
+            confidence_breakdown={
+                "support_score": selected_cluster.score if selected_cluster is not None else 0.0,
+                "trend_score": _trend_score(price, ma20, ma50, ma200),
+                "volume_score": 0.0,
+                "risk_reward_score": 0.0,
+            },
         )
 
     left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
@@ -252,6 +357,7 @@ def build_buy_zone_context(
         price=price,
         confirmation=confirmation,
         resistance=_first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"),
+        support_low=support_low,
         daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
         close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
     )
@@ -264,8 +370,12 @@ def build_buy_zone_context(
         primary_zone=primary_zone,
     )
     rr_score = rr.score
-    setup_score = round(technical_score * 0.45 + volume_score * 0.35 + rr_score * 0.20, 1)
+    support_score = selected_cluster.score if selected_cluster is not None else 0.0
+    trend_score = _trend_score(price, ma20, ma50, ma200)
+    setup_score = round(technical_score * 0.35 + volume_score * 0.30 + rr_score * 0.20 + support_score * 0.10 + trend_score * 0.05, 1)
     action = _current_action(primary_zone, setup_score, volume_status, volume_score, rr_score)
+    pause_text = _pause_new_condition_text(pullback_low, invalidation, data)
+    add_trigger_text = _add_trigger_condition_text(confirmation, breakout_reevaluation)
     return BuyZoneContext(
         primary_zone=primary_zone,
         primary_zone_text=ZONE_TEXT.get(primary_zone, "修复观察区"),
@@ -287,8 +397,8 @@ def build_buy_zone_context(
         invalidation_price=invalidation,
         chase_price=chase,
         breakout_reevaluation_price=breakout_reevaluation,
-        add_trigger_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
-        pause_new_condition_text=_pause_new_condition_text(pullback_low, invalidation, data),
+        add_trigger_condition_text=add_trigger_text,
+        pause_new_condition_text=pause_text,
         current_action=action,
         action_text=ACTION_TEXT[action],
         existing_position_action_text=_existing_position_action(action),
@@ -310,7 +420,155 @@ def build_buy_zone_context(
         raw_rr=rr.raw_rr,
         rr_score_capped=rr.rr_score_capped,
         rr_cap_reason=rr.rr_cap_reason,
+        support_clusters=[cluster.to_dict() for cluster in support_clusters],
+        selected_support_cluster=selected_cluster.to_dict() if selected_cluster is not None else {},
+        support_cluster_score=support_score,
+        support_score=support_score,
+        trend_score=trend_score,
+        zone_width=zone_width,
+        repair_observation_zone_low=repair_low,
+        repair_observation_zone_high=repair_high,
+        primary_buy_zone_low=pullback_low,
+        primary_buy_zone_high=pullback_high,
+        deep_support_zone_low=support_low,
+        deep_support_zone_high=support_high,
+        invalidation_zone_low=suspend_new_line,
+        invalidation_zone_high=buy_zone_failure_line,
+        suspend_new_line=suspend_new_line,
+        buy_zone_failure_line=buy_zone_failure_line,
+        deep_support_break_line=deep_support_break_line,
+        risk_reward=rr.raw_rr,
+        risk_reward_text=_risk_reward_text(rr.raw_rr),
+        action_new_cash=_no_position_action(action),
+        action_existing_position=_existing_position_action(action),
+        entry_condition_text=add_trigger_text,
+        invalidation_condition_text=pause_text,
+        confidence_breakdown={
+            "support_score": support_score,
+            "trend_score": trend_score,
+            "volume_score": volume_score,
+            "risk_reward_score": rr_score,
+        },
     )
+
+
+def build_buy_zone_snapshot(
+    symbol: str,
+    snapshot_date: str,
+    source: dict[str, Any] | None = None,
+    *,
+    technicals: dict[str, Any] | None = None,
+    volume_snapshot: dict[str, Any] | None = None,
+) -> BuyZoneSnapshot:
+    context = build_buy_zone_context({"ticker": symbol, **(source or {})}, technicals=technicals, volume_snapshot=volume_snapshot)
+    return BuyZoneSnapshot(
+        symbol=symbol,
+        date=str(snapshot_date),
+        price=context.current_price,
+        zone_low=context.primary_buy_zone_low,
+        zone_high=context.primary_buy_zone_high,
+        zone_position=context.zone_position,
+        setup_score=context.setup_score,
+        support_score=context.support_score,
+        trend_score=context.trend_score,
+        volume_score=context.volume_acceptance_score,
+        risk_reward=context.risk_reward,
+        action_new_cash=context.action_new_cash,
+        action_existing_position=context.action_existing_position,
+        invalidation_line=context.invalidation_price,
+        confirmation_line=context.confirmation_price,
+        context=context.to_dict(),
+    )
+
+
+def save_buy_zone_snapshot(snapshot: BuyZoneSnapshot | dict[str, Any], path: str | Path = "data/cache/buy_zone_snapshots.json") -> dict[str, Any]:
+    record = snapshot.to_dict() if isinstance(snapshot, BuyZoneSnapshot) else dict(snapshot)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    if target.exists():
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                records = [item for item in loaded if isinstance(item, dict)]
+        except (OSError, json.JSONDecodeError):
+            records = []
+    symbol = str(record.get("symbol") or "")
+    date_text = str(record.get("date") or "")
+    records = [item for item in records if not (str(item.get("symbol") or "") == symbol and str(item.get("date") or "") == date_text)]
+    records.append(record)
+    records.sort(key=lambda item: (str(item.get("symbol") or ""), str(item.get("date") or "")))
+    target.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    return record
+
+
+def backtest_buy_zone_snapshots(
+    symbol: str,
+    daily_ohlcv: Any,
+    *,
+    base_source: dict[str, Any] | None = None,
+    min_history: int = 60,
+) -> list[dict[str, Any]]:
+    bars = _daily_bars({"daily_ohlcv": daily_ohlcv})
+    if len(bars) <= min_history + 5:
+        return []
+    results: list[dict[str, Any]] = []
+    max_horizon = 60
+    for index in range(min_history, len(bars) - 5):
+        history = bars[: index + 1]
+        latest = history[-1]
+        date_text = str(latest.get("date") or index)
+        source = {**(base_source or {}), "ticker": symbol, "daily_ohlcv": history}
+        context = build_buy_zone_context(source)
+        close = context.current_price
+        if close is None:
+            continue
+        future = bars[index + 1 : min(len(bars), index + 1 + max_horizon)]
+        if not future:
+            continue
+        result = build_buy_zone_snapshot(symbol, date_text, source).to_dict()
+        result.update(_future_return_metrics(close, future, context.invalidation_price))
+        results.append(result)
+    return results
+
+
+def _future_return_metrics(close: float, future: list[dict[str, Any]], invalidation_line: float | None) -> dict[str, Any]:
+    closes = [_number(bar.get("close")) for bar in future]
+    highs = [_number(bar.get("high")) for bar in future]
+    lows = [_number(bar.get("low")) for bar in future]
+    closes = [value for value in closes if value is not None]
+    highs = [value for value in highs if value is not None]
+    lows = [value for value in lows if value is not None]
+
+    def ret(days: int) -> float | None:
+        if len(closes) < days or close == 0:
+            return None
+        return (closes[days - 1] / close - 1.0) * 100.0
+
+    lows_20 = lows[:20]
+    highs_20 = highs[:20]
+    mae_20 = (min(lows_20) / close - 1.0) * 100.0 if lows_20 and close else None
+    mfe_20 = (max(highs_20) / close - 1.0) * 100.0 if highs_20 and close else None
+    stop_hit_index = None
+    rebound_hit_index = None
+    for offset, bar in enumerate(future[:20], start=1):
+        low = _number(bar.get("low"))
+        high = _number(bar.get("high"))
+        if stop_hit_index is None and invalidation_line is not None and low is not None and low <= invalidation_line:
+            stop_hit_index = offset
+        if rebound_hit_index is None and high is not None and high >= close * 1.03:
+            rebound_hit_index = offset
+    stop_first = stop_hit_index is not None and (rebound_hit_index is None or stop_hit_index <= rebound_hit_index)
+    return {
+        "return_5d": ret(5),
+        "return_20d": ret(20),
+        "return_60d": ret(60),
+        "MAE_20": mae_20,
+        "MFE_20": mfe_20,
+        "stop_first_rate": 1.0 if stop_first else 0.0,
+        "rebound_rate": 1.0 if rebound_hit_index is not None else 0.0,
+        "false_buy_rate": 1.0 if stop_first or ((ret(20) or 0.0) < 0) else 0.0,
+    }
 
 
 def _missing_fields(**values: Any) -> list[str]:
@@ -366,6 +624,149 @@ def _missing_fields(**values: Any) -> list[str]:
     return fields
 
 
+def _dynamic_zone_width(price: float | None, atr: float | None) -> float | None:
+    if price is None or price <= 0:
+        return None
+    atr_component = 0.8 * atr if atr is not None and atr > 0 else 0.0
+    width = max(atr_component, price * 0.015)
+    return round(min(width, price * 0.06), 4)
+
+
+def _support_clusters(data: dict[str, Any], *, price: float | None, atr: float | None) -> list[SupportCluster]:
+    if price is None or price <= 0:
+        return []
+    width = _dynamic_zone_width(price, atr) or price * 0.015
+    merge_distance = max((atr or 0.0) * 0.6, price * 0.015)
+    candidates = _support_candidates(data)
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item["price"])
+    groups: list[list[dict[str, Any]]] = []
+    for candidate in candidates:
+        if not groups:
+            groups.append([candidate])
+            continue
+        last_group = groups[-1]
+        group_center = sum(item["price"] for item in last_group) / len(last_group)
+        if abs(candidate["price"] - group_center) <= merge_distance:
+            last_group.append(candidate)
+        else:
+            groups.append([candidate])
+    clusters: list[SupportCluster] = []
+    for group in groups:
+        prices = [item["price"] for item in group]
+        center = sum(prices) / len(prices)
+        score = min(100.0, sum(float(item["score"]) for item in group) + min(len(group), 6) * 4.0)
+        sources = sorted({str(item["source"]) for item in group})
+        zone_low = max(0.0, min(prices) - width * 0.35)
+        zone_high = max(prices) + width * 0.65
+        clusters.append(
+            SupportCluster(
+                low=min(prices),
+                high=max(prices),
+                center=center,
+                score=round(score, 1),
+                sources=sources,
+                candidate_count=len(group),
+                zone_low=round(zone_low, 2),
+                zone_high=round(zone_high, 2),
+            )
+        )
+    return clusters
+
+
+def _support_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def add(value: float | None, source: str, score: float) -> None:
+        if value is not None and value > 0:
+            candidates.append({"price": value, "source": source, "score": score})
+
+    for key, source, score in (
+        ("swing_low_20d", "20日波段低点", 20),
+        ("swingLow20d", "20日波段低点", 20),
+        ("recent_swing_low", "20日波段低点", 20),
+        ("swing_low", "20日波段低点", 18),
+        ("swing_low_60d", "60日波段低点", 22),
+        ("swingLow60d", "60日波段低点", 22),
+        ("swing_low_120d", "120日波段低点", 24),
+        ("swingLow120d", "120日波段低点", 24),
+        ("ma20", "EMA20", 14),
+        ("ema20", "EMA20", 14),
+        ("ma50", "EMA50", 18),
+        ("ema50", "EMA50", 18),
+        ("sma100", "SMA100", 18),
+        ("ma100", "SMA100", 18),
+        ("sma200", "SMA200", 20),
+        ("ma200", "SMA200", 20),
+        ("ema200", "SMA200", 20),
+        ("recent_breakout_level", "前高回踩位", 18),
+        ("recentBreakoutLevel", "前高回踩位", 18),
+        ("previous_platform_high", "前一平台高点", 18),
+        ("previousPlatformHigh", "前一平台高点", 18),
+        ("gap_low", "跳空缺口下沿", 16),
+        ("gapLow", "跳空缺口下沿", 16),
+        ("gap_high", "跳空缺口上沿", 15),
+        ("gapHigh", "跳空缺口上沿", 15),
+        ("volume_profile_poc", "成交量密集区", 22),
+        ("volumeProfilePoc", "成交量密集区", 22),
+        ("volume_profile_support", "成交量密集区", 22),
+        ("anchored_vwap", "Anchored VWAP", 20),
+        ("anchoredVwap", "Anchored VWAP", 20),
+        ("high_volume_bullish_low", "前期放量阳线低点", 18),
+        ("highVolumeBullishLow", "前期放量阳线低点", 18),
+        ("high_volume_bullish_mid", "前期放量阳线中位线", 17),
+        ("highVolumeBullishMid", "前期放量阳线中位线", 17),
+        ("support_zone_low", "显式支撑区", 22),
+        ("support_zone_high", "显式支撑区", 18),
+        ("effective_technical_entry_zone_low", "显式技术买区", 22),
+        ("effective_technical_entry_zone_high", "显式技术买区", 16),
+        ("technical_pullback_zone_low", "显式回踩区", 22),
+        ("technical_pullback_zone_high", "显式回踩区", 16),
+    ):
+        add(_first_number(data, key), source, score)
+
+    bars = _daily_bars(data)
+    if bars:
+        lows = [_number(bar.get("low")) for bar in bars]
+        highs = [_number(bar.get("high")) for bar in bars]
+        closes = [_number(bar.get("close")) for bar in bars]
+        volumes = [_number(bar.get("volume")) for bar in bars]
+        lows = [value for value in lows if value is not None]
+        highs = [value for value in highs if value is not None]
+        closes = [value for value in closes if value is not None]
+        volumes = [value for value in volumes if value is not None and value > 0]
+        for window, label, score in ((20, "20日波段低点", 20), (60, "60日波段低点", 22), (120, "120日波段低点", 24)):
+            if len(lows) >= window:
+                add(min(lows[-window:]), label, score)
+        if len(highs) >= 40:
+            add(max(highs[-40:-5] or highs[-40:]), "前高回踩位", 16)
+        avg_volume = _tail_mean(volumes, 20, require_full=False)
+        if avg_volume is not None and avg_volume > 0:
+            for bar in bars[-60:]:
+                open_price = _number(bar.get("open"))
+                high = _number(bar.get("high"))
+                low = _number(bar.get("low"))
+                close = _number(bar.get("close"))
+                volume = _number(bar.get("volume"))
+                if None in (open_price, high, low, close, volume) or avg_volume in (None, 0):
+                    continue
+                if close > open_price and volume >= avg_volume * 1.4:
+                    add(low, "前期放量阳线低点", 18)
+                    add((low + high) / 2.0, "前期放量阳线中位线", 17)
+    return candidates
+
+
+def _select_support_cluster(clusters: list[SupportCluster], price: float | None) -> SupportCluster | None:
+    if not clusters:
+        return None
+    if price is None:
+        return max(clusters, key=lambda cluster: cluster.score)
+    below_or_near = [cluster for cluster in clusters if cluster.center <= price * 1.03]
+    pool = below_or_near or clusters
+    return max(pool, key=lambda cluster: cluster.score - abs(cluster.center - price) / max(price, 1.0) * 120.0)
+
+
 def _normalized_confirmation_price(data: dict[str, Any], *, price: float | None, raw_confirmation: float | None) -> float | None:
     if raw_confirmation is None:
         return None
@@ -396,12 +797,20 @@ def _near_confirmation_candidate(data: dict[str, Any], price: float | None) -> f
         "nearConfirmationPrice",
         "technical_resistance_price",
         "technicalResistancePrice",
+        "ma20",
+        "ema20",
+        "ma50",
+        "ema50",
         "resistance_zone_low",
         "resistanceZoneLow",
         "trend_reclaim_zone_low",
         "trendReclaimZoneLow",
+        "previous_platform_high",
+        "previousPlatformHigh",
         "recent_breakout_level",
         "recentBreakoutLevel",
+        "recent_high_volume_bearish_high",
+        "recentHighVolumeBearishHigh",
         "recent_swing_high",
         "recentSwingHigh",
     ):
@@ -527,7 +936,45 @@ def _zone_position_text(position: float | None) -> str:
         return "买区下沿，允许小仓观察"
     if position <= 0.75:
         return "买区中段，等待承接"
+    if position > 1.0:
+        return "高于买区，等待回踩/防追高"
     return "买区上沿 / 修复观察区，不主动新增"
+
+
+def _suspend_new_line(zone_low: float | None, atr: float | None) -> float | None:
+    if zone_low is None:
+        return None
+    if atr is None or atr <= 0:
+        return zone_low
+    return round(max(0.0, zone_low - atr * 0.4), 2)
+
+
+def _trend_score(price: float | None, ma20: float | None, ma50: float | None, ma200: float | None) -> float:
+    if price is None:
+        return 0.0
+    available = [level for level in (ma20, ma50, ma200) if level is not None and level > 0]
+    if not available:
+        return 0.0
+    score = 45.0
+    if ma20 is not None and price >= ma20:
+        score += 18.0
+    if ma50 is not None and price >= ma50:
+        score += 18.0
+    if ma200 is not None and price >= ma200:
+        score += 14.0
+    return min(100.0, score)
+
+
+def _risk_reward_text(raw_rr: float | None) -> str:
+    if raw_rr is None:
+        return "风险收益比暂缺"
+    if raw_rr < 1.2:
+        return f"RR {raw_rr:.2f}：不买"
+    if raw_rr < 1.8:
+        return f"RR {raw_rr:.2f}：观察"
+    if raw_rr < 2.5:
+        return f"RR {raw_rr:.2f}：小仓"
+    return f"RR {raw_rr:.2f}：高优先级"
 
 
 def _technical_structure_score(primary_zone: str) -> float:
@@ -552,9 +999,12 @@ def _volume_acceptance_score(
     price: float | None = None,
     confirmation: float | None = None,
     resistance: float | None = None,
+    support_low: float | None = None,
     daily_return: float | None = None,
     close_position: float | None = None,
 ) -> float:
+    if volume_ratio is not None and volume_ratio > 1.2 and support_low is not None and price is not None and price < support_low:
+        return 0.0
     low_volume = volume_ratio is not None and volume_ratio < 0.7
     close_improved = (daily_return is not None and daily_return >= 0) or (close_position is not None and close_position >= 0.55)
     if low_volume and not close_improved:
@@ -615,16 +1065,14 @@ def _risk_reward_assessment(
         )
 
     raw_rr = upside / downside
-    if raw_rr >= 2.0:
+    if raw_rr >= 2.5:
         score = 88.0
-    elif raw_rr >= 1.4:
-        score = 75.0
-    elif raw_rr >= 1.0:
-        score = 62.0
-    elif raw_rr >= 0.6:
-        score = 45.0
+    elif raw_rr >= 1.8:
+        score = 72.0
+    elif raw_rr >= 1.2:
+        score = 55.0
     else:
-        score = 28.0
+        score = 35.0
 
     cap = _target_quality_cap(quality)
     cap_reason = ""
@@ -836,6 +1284,8 @@ def _valid_upside_target(value: float | None, price: float, *, max_multiple: flo
 
 def _current_action(primary_zone: str, setup_score: float, volume_status: str, volume_score: float, rr_score: float) -> str:
     if primary_zone == "INVALIDATION" or volume_status == "FAILED":
+        return RISK_REVIEW
+    if volume_score <= 0:
         return RISK_REVIEW
     if primary_zone == "CHASE_RISK" or volume_status == "OVEREXTENDED_SUPPORT_READ":
         return BLOCK_CHASE
@@ -1086,13 +1536,14 @@ def _normalize_bar(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         return {}
     bar = {
+        "date": _value(item, "date", "datetime", "timestamp", "time", "t"),
         "open": _first_number(item, "open", "o"),
         "high": _first_number(item, "high", "h"),
         "low": _first_number(item, "low", "l"),
         "close": _first_number(item, "close", "c", "adjClose", "adj_close"),
         "volume": _first_number(item, "volume", "v"),
     }
-    return bar if any(value is not None for value in bar.values()) else {}
+    return bar if any(bar.get(key) is not None for key in ("open", "high", "low", "close", "volume")) else {}
 
 
 def _tail_mean(values: list[float], window: int, *, require_full: bool = False) -> float | None:

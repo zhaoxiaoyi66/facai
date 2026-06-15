@@ -9,7 +9,10 @@ from data.buy_zone_engine import (
     DATA_INSUFFICIENT,
     RISK_REVIEW,
     WAIT_CONFIRMATION,
+    backtest_buy_zone_snapshots,
     build_buy_zone_context,
+    build_buy_zone_snapshot,
+    save_buy_zone_snapshot,
 )
 from ui import ai_stock_radar as radar_ui
 
@@ -172,6 +175,105 @@ def test_52_week_high_is_breakout_reevaluation_not_buy_confirmation() -> None:
 
     assert context.confirmation_price == 276.0
     assert context.breakout_reevaluation_price == 332.46
+
+
+def test_support_cluster_and_atr_width_build_primary_zone_without_explicit_buy_zone() -> None:
+    context = build_buy_zone_context(
+        {
+            "ticker": "V2",
+            "current_price": 104.0,
+            "final_score": 82,
+            "recent_swing_low": 100.2,
+            "ma50": 100.8,
+            "anchored_vwap": 101.0,
+            "volume_profile_poc": 100.5,
+            "ma20": 106.0,
+            "ma200": 91.0,
+            "atr_20": 3.0,
+            "resistance_zone_low": 108.0,
+            "resistance_zone_high": 114.0,
+        },
+        volume_snapshot=_volume(volume_price_score=58, volume_ratio=0.9),
+    )
+
+    assert context.support_clusters
+    assert context.selected_support_cluster["candidate_count"] >= 3
+    assert context.zone_width == 2.4
+    assert context.primary_buy_zone_low is not None
+    assert context.primary_buy_zone_high is not None
+    assert context.primary_buy_zone_high - context.primary_buy_zone_low <= context.current_price * 0.06
+    assert context.support_score > 0
+
+
+def test_zone_position_above_one_waits_pullback_or_chase_defense() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=117, near_term_repair_zone_low=None, near_term_repair_zone_high=None),
+        volume_snapshot=_volume(volume_price_score=58, volume_ratio=0.9),
+    )
+
+    assert context.zone_position is not None
+    assert context.zone_position > 1.0
+    assert context.zone_position_text == "高于买区，等待回踩/防追高"
+
+
+def test_high_volume_breakdown_below_support_enters_risk_review() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=89, invalidation_price=80),
+        volume_snapshot=_volume(volume_price_score=80, volume_ratio=1.4),
+    )
+
+    assert context.volume_acceptance_score == 0.0
+    assert context.current_action == RISK_REVIEW
+
+
+def test_buy_zone_snapshot_and_backtest_metrics_are_generated() -> None:
+    bars = _daily_bars(130)
+    snapshot = build_buy_zone_snapshot(
+        "MSFT",
+        "2026-06-12",
+        _base_source(current_price=101, daily_ohlcv=bars),
+        volume_snapshot=_volume(),
+    )
+    rows = backtest_buy_zone_snapshots(
+        "MSFT",
+        bars + [
+            {"date": "future-1", "open": 105, "high": 107, "low": 100, "close": 106, "volume": 2_500_000}
+            for _ in range(65)
+        ],
+        min_history=80,
+    )
+
+    assert snapshot.symbol == "MSFT"
+    assert snapshot.zone_low is not None
+    assert snapshot.action_new_cash
+    assert rows
+    assert {"return_5d", "return_20d", "MAE_20", "MFE_20", "false_buy_rate"}.issubset(rows[0])
+
+
+def test_buy_zone_snapshot_save_upserts_symbol_date(tmp_path) -> None:
+    path = tmp_path / "snapshots.json"
+    first = build_buy_zone_snapshot(
+        "MSFT",
+        "2026-06-12",
+        _base_source(current_price=101),
+        volume_snapshot=_volume(),
+    )
+    second = build_buy_zone_snapshot(
+        "MSFT",
+        "2026-06-12",
+        _base_source(current_price=102),
+        volume_snapshot=_volume(),
+    )
+
+    save_buy_zone_snapshot(first, path)
+    save_buy_zone_snapshot(second, path)
+
+    import json
+
+    records = json.loads(path.read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["symbol"] == "MSFT"
+    assert records[0]["price"] == 102
 
 
 def test_price_at_reevaluation_line_inside_pullback_enters_confirmation_review() -> None:

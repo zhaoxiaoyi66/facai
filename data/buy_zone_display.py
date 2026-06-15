@@ -77,6 +77,15 @@ def build_buy_zone_display(
         "primary_zone_range_text": zone_text,
         "current_price_text": _money(current_price),
         "volume_confirmation_text": volume_text,
+        "risk_reward_text": str(_value(ctx, "risk_reward_text", "riskRewardText", default="") or ""),
+        "risk_reward": _number(_value(ctx, "risk_reward", "riskReward", "raw_rr", "rawRr")),
+        "action_new_cash": str(_value(ctx, "action_new_cash", "actionNewCash", default="") or account["account_action_text"]),
+        "action_existing_position": str(_value(ctx, "action_existing_position", "actionExistingPosition", default="") or account["account_action_text"]),
+        "entry_condition_text": str(_value(ctx, "entry_condition_text", "entryConditionText", "add_trigger_condition_text", default="") or ""),
+        "invalidation_condition_text": str(_value(ctx, "invalidation_condition_text", "invalidationConditionText", "pause_new_condition_text", default="") or ""),
+        "confidence_breakdown": _dict(_value(ctx, "confidence_breakdown", "confidenceBreakdown", default={}) or {}),
+        "zone_position": _number(_value(ctx, "zone_position", "zonePosition")),
+        "zone_position_text": str(_value(ctx, "zone_position_text", "zonePositionText", default="") or ""),
         "next_step_text": next_step,
         "missing_fields": missing,
         "missing_fields_text": missing_text,
@@ -98,6 +107,8 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
     ) is not None
     zone_position = _number(_value(context, "zone_position", "zonePosition"))
     primary_zone_code = str(_value(context, "primary_zone", "primaryZone") or "").upper()
+    if zone_position is not None and zone_position > 1.0 and action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
+        return _technical("等回击球区", "不追", "当前价高于买区，等待回踩；若继续上冲则防追高。")
     if primary_zone_code == "PULLBACK_UPPER_WATCH" or (
         zone_position is not None and zone_position > 0.75 and "上沿" in primary_zone_text
     ):
