@@ -144,7 +144,7 @@ def evaluate_buy_gate(
     advisory_warnings.extend(position_reasons)
     advisory_warnings.extend(evaluate_position_advisory(data, bucket, planned_after_position_pct))
     if decision == "ALLOW_BUY" and not str(buy_reason or "").strip():
-        advisory_warnings.append("ALLOW_BUY 仍建议填写买入理由，防止临场拍脑袋。")
+        advisory_warnings.append("即使当前为低风险买入参考，仍建议填写买入理由，防止临场拍脑袋。")
 
     is_blocked = False
     can_sync = not bool(observation_only)

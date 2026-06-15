@@ -46,7 +46,7 @@ def build_dashboard_risk_radar(table: pd.DataFrame, portfolio_view: dict) -> lis
     industry_concentration = industry_concentration_symbols(rows, portfolio_rows)
     return [
         {"key": "overweight", "label": "超仓位", "tone": "red", "symbols": overweight, "reason": "暂无" if not overweight else "持仓高于系统或个人上限"},
-        {"key": "noChase", "label": "禁止追高", "tone": "red", "symbols": no_chase, "reason": "暂无" if not no_chase else "当前价格不适合新增"},
+        {"key": "noChase", "label": "追高风险提醒", "tone": "red", "symbols": no_chase, "reason": "暂无" if not no_chase else "当前价格不适合新增"},
         {"key": "review", "label": "需复核", "tone": "amber", "symbols": review, "reason": "暂无" if not review else "买区异常或数据置信低"},
         {"key": "lowConfidence", "label": "低置信", "tone": "amber", "symbols": low_confidence, "reason": "暂无" if not low_confidence else "数据置信度偏低"},
         {"key": "noAdd", "label": "不可新增", "tone": "slate", "symbols": no_add, "reason": "暂无" if not no_add else "当前可加仓为 0"},

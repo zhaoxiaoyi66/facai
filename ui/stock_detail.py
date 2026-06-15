@@ -304,7 +304,7 @@ def _portfolio_reason_text(row: dict) -> str:
 
 def _portfolio_translated_reasons(value: object) -> list[str]:
     labels = {
-        "buy_zone": "买区阻断",
+        "buy_zone": "买区风险提示",
         "data_confidence": "数据置信度",
         "valuation_status": "估值状态",
         "entry_rating": "入场评级",
@@ -2385,7 +2385,7 @@ def _price_in_range(price: float, low: float | None, high: float | None) -> bool
 
 
 def _rating_color(value: str) -> str:
-    if "极贵" in value or "禁止追高" in value:
+    if "极贵" in value or "禁止追高" in value or "追高风险" in value:
         return "deepred"
     if "偏贵" in value:
         return "orange"

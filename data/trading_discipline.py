@@ -323,7 +323,7 @@ def _reminder_text(symbol: str, position_class: str, sell_level: str, status: st
     ticker = str(symbol or "").upper()
     pct_text = f"{planned_sell_pct * 100:.1f}%"
     if status == "blocked":
-        return f"{ticker} 卖出计划被纪律拦截：先复核核心仓、回补计划和卖出等级上限。"
+        return f"{ticker} 卖出计划触发高风险提醒：先复核核心仓、回补计划和卖出等级上限。"
     if sell_level == "L0":
         return f"{ticker} 当前不卖，继续按 {position_class} 类纪律持有。"
     return f"{ticker} 当前为 {sell_level} 卖出纪律，计划卖出 {pct_text} 前请优先处理交易仓并保留回补条件。"

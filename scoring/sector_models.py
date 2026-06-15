@@ -2687,8 +2687,8 @@ def _final_action(
         return "剔除"
     if risk > 70:
         return "财报后复核"
-    if valuation_status in {"极贵", "禁止追高"}:
-        return "禁止追高"
+    if valuation_status in {"极贵", "禁止追高", "追高风险提醒"}:
+        return "追高风险提醒"
 
     base_action = _base_action(quality, entry, risk)
     if (
@@ -2709,7 +2709,7 @@ def _final_action(
         elif risk > 25 and base_action == "可正常分批":
             base_action = "可小仓分批"
     if overheat.score >= 80:
-        return "禁止追高"
+        return "追高风险提醒"
     if overheat.score >= 60 and base_action in {"可小仓分批", "可正常分批", "等回踩"}:
         return "只观察"
     if overheat.score >= 40 and base_action in {"可小仓分批", "可正常分批"}:
@@ -2739,14 +2739,14 @@ def _base_action(quality: float, entry: float, risk: float) -> str:
     if entry >= 65 and risk <= 70:
         return "可小仓分批"
     if entry < 40 and risk >= 55:
-        return "禁止追高"
+        return "追高风险提醒"
     if quality < 40:
         return "只观察"
     return "只观察"
 
 
 def _max_suggested_position_percent(quality: float, risk: float, action: str, data_insufficient: bool) -> float:
-    if data_insufficient or "复核" in str(action) or action in {"剔除", "禁止追高", "只观察", "等回踩"}:
+    if data_insufficient or "复核" in str(action) or action in {"剔除", "禁止追高", "追高风险提醒", "只观察", "等回踩"}:
         return 0.0
     if risk > 70:
         max_position = 5.0

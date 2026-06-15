@@ -45,7 +45,7 @@ ZONE_LABELS = {
     "invalid_zone": "买区异常",
     "invalid_manual_override": "买区异常",
     "low_confidence_zone": "需复核",
-    "no_chase": "禁止追高",
+    "no_chase": "追高风险提醒",
     "fair_observation": "合理观察区",
     "tranche_buy": "可分批区",
     "heavy_buy": "极端恐慌区",
@@ -330,8 +330,8 @@ def _render_summary(rows: list[dict]) -> None:
             sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "等回踩"),
             "估值未到买区，先观察",
         ),
-        "禁止追高": (
-            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "禁止追高"),
+        "追高风险提醒": (
+            sum(1 for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] in {"禁止追高", "追高风险提醒"}),
             "当前价格不适合新增",
         ),
         "需复核": (
@@ -352,7 +352,7 @@ def _priority_rows_html(rows: list[dict]) -> str:
         ("可执行", "green", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "可执行"]),
         ("接近", "blue", [row for row in rows if resolve_buy_zone_display_category(row)["priorityEligible"]]),
         ("复核", "amber", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "需复核"]),
-        ("禁追", "red", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] == "禁止追高"]),
+        ("追高", "red", [row for row in rows if resolve_buy_zone_display_category(row)["displayCategory"] in {"禁止追高", "追高风险提醒"}]),
     ]
     for label, tone, group_rows in groups:
         for row in group_rows[:2]:
@@ -389,7 +389,7 @@ def _priority_text(row: dict, label: str) -> tuple[str, str]:
 
 
 def _render_filters(rows: list[dict]) -> str:
-    options = ["全部", "可执行", "接近", "等回踩", "禁止追高", "需复核", "手动"]
+    options = ["全部", "可执行", "接近", "等回踩", "追高风险", "需复核", "手动"]
     return st.radio("买区筛选", options, horizontal=True, label_visibility="collapsed", key="buy-zone-filter")
 
 
@@ -415,7 +415,7 @@ def _filter_rows(rows: list[dict], active_filter: str) -> list[dict]:
         "可执行": "可执行",
         "接近": "接近买区",
         "等回踩": "等回踩",
-        "禁止追高": "禁止追高",
+        "追高风险": "追高风险提醒",
         "需复核": "需复核",
     }
     if active_filter in status_filter_map:
@@ -678,7 +678,7 @@ def _buy_zone_drawer_html(row: dict) -> str:
         f'{_buy_zone_explainability_html(row)}'
         '<div class="drawer-section-title">系统估值入场参考</div>'
         f'{_combined_entry_html(_combined_entry_for_row(row))}'
-        '<div class="drawer-muted">本页来自 legacy buy_zone_engine，用于计划建仓与估值参考；不等同于 Radar 主击球区，也不直接代表 ALLOW_BUY。</div>'
+        '<div class="drawer-muted">本页来自 legacy buy_zone_engine，用于计划建仓与估值参考；不等同于 Radar 主击球区，也不直接代表低风险买入建议。</div>'
         '<div class="drawer-section-title">技术面辅助</div>'
         f'{_technical_entry_html(_technical_entry_for_row(row))}'
         '<div class="drawer-section-title">价格提醒</div>'
@@ -718,7 +718,7 @@ def _quick_price_alerts_html(row: dict) -> str:
         if price is not None and price > 0:
             items.append((label, "below", price, "buy_plan"))
     if no_chase is not None and no_chase > 0:
-        items.append(("禁止追高价", "above", no_chase, "risk_review"))
+        items.append(("追高风险线", "above", no_chase, "risk_review"))
     if not items:
         return '<div class="drawer-muted">暂无可用系统价格。可在个股详情页手动设置提醒。</div>'
     links = "".join(
@@ -749,7 +749,7 @@ def _price_alert_query(symbol: object, direction: str, price: float, reason: str
 
 def _price_ladder_html(row: dict) -> str:
     bands = [
-        ("禁止追高", _precision_money(row, "noChaseAbove", row.get("noChaseAbove"))),
+        ("追高风险线", _precision_money(row, "noChaseAbove", row.get("noChaseAbove"))),
         ("合理观察区", _precision_range_text(row, "fairValueLow", row.get("fairValueLow"), "fairValueHigh", row.get("fairValueHigh"))),
         ("估值折价区", _precision_range_text(row, "trancheBuyLow", row.get("trancheBuyLow"), "trancheBuyHigh", row.get("trancheBuyHigh"))),
         ("极端恐慌区", _precision_money(row, "heavyBuyBelow", row.get("heavyBuyBelow"))),
@@ -762,7 +762,7 @@ def _zone_snapshot_html(zone: BuyZoneEstimate) -> str:
     items = [
         ("当前区间", _zone_label(zone.currentZone)),
         ("触发条件", _zone_next_trigger_text(zone)),
-        ("禁止追高", _precision_money(zone, "noChaseAbove", zone.noChaseAbove, optional=True)),
+        ("追高风险线", _precision_money(zone, "noChaseAbove", zone.noChaseAbove, optional=True)),
         ("合理观察区", _precision_range_text(zone, "fairValueLow", zone.fairValueLow, "fairValueHigh", zone.fairValueHigh, optional=True)),
         ("估值折价区", _precision_range_text(zone, "trancheBuyLow", zone.trancheBuyLow, "trancheBuyHigh", zone.trancheBuyHigh, optional=True)),
         ("极端恐慌区", _precision_money(zone, "heavyBuyBelow", zone.heavyBuyBelow, optional=True)),
@@ -890,7 +890,7 @@ def _combined_entry_html(entry: object) -> str:
     return (
         '<div class="drawer-technical-entry">'
         f"<strong>{escape(label)}</strong>"
-        "<p>合理观察、技术回踩、轻仓试探、估值折价和深度折价分层显示；禁止追高、等回踩、阻断或低置信状态不会生成可买触发。</p>"
+        "<p>合理观察、技术回踩、轻仓试探、估值折价和深度折价分层显示；追高风险、等回踩、复核或低置信状态不会生成低风险买入触发。</p>"
         f'<div class="drawer-technical-grid"><ul>{metrics}</ul></div>'
         f'<div class="drawer-technical-reasons"><b>综合说明</b><ul>{reason_html}</ul></div>'
         "</div>"
@@ -996,9 +996,9 @@ def _technical_levels_text(value: object) -> str:
 def _technical_reasons_list(technical: dict, unavailable: bool, review_only: bool = False) -> list[str]:
     raw = [str(item) for item in technical.get("technicalReasons") or [] if str(item).strip()]
     if unavailable:
-        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
+        return ["技术数据不足，不生成技术回踩建议。", "技术层不能把追高风险、复核或低置信买区变成入场信号。", *raw]
     if review_only:
-        return ["趋势破坏、阻断或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把禁止追高、阻断或低置信买区变成入场信号。", *raw]
+        return ["趋势破坏或需要复核时，技术层只给复核线，不给入场建议。", "技术层不能把追高风险、复核或低置信买区变成入场信号。", *raw]
     guardrail = "估值买点、技术回踩点、轻仓试探点和极端恐慌区分开理解；技术层只辅助入场。"
     return [guardrail, *raw] if raw else [guardrail]
 
@@ -1016,7 +1016,7 @@ def _humanize_buy_zone_explain_item(value: object) -> str:
         "invalid_manual_override": "手动买区区间异常",
         "data_insufficient": "关键买区输入不足",
         "low_confidence_zone": "买区置信度不足",
-        "no_chase": "当前价格处于禁止追高区",
+        "no_chase": "当前价格处于追高风险区",
         "missing_networking_hardware_growth_or_margin": "缺少网络硬件模型所需的增长或利润率输入",
         "networking_hardware_sales_multiple_overextended": "销售倍数偏高，优先不追高",
         "networking_hardware_risk_inputs_missing: customer concentration / cloud capex risk": "缺客户集中度 / 云资本开支风险输入，置信度受限",
@@ -1048,7 +1048,7 @@ def _plan_html(row: dict) -> str:
         ("第一笔买入价", _money(row.get("firstBuyPrice"))),
         ("第二笔买入价", _money(row.get("secondBuyPrice"))),
         ("深度折价买入价", _money(row.get("thirdBuyPrice"))),
-        ("禁止追高价", _money(row.get("noChaseAbove"))),
+        ("追高风险线", _money(row.get("noChaseAbove"))),
         ("停止加仓条件", str(row.get("stopAddingCondition") or "")),
         ("财报复核点", str(row.get("earningsReviewCondition") or "")),
     ]
@@ -1143,7 +1143,7 @@ def _render_valuation_sandbox_body() -> None:
 
 
 def _render_price_ladder_chart(output: dict) -> None:
-    labels = ["禁止追高", "试探", "正常买入", "极端恐慌", "恐慌"]
+    labels = ["追高风险", "试探", "正常买入", "极端恐慌", "恐慌"]
     prices = [
         output["margin_adjusted_fair_value"],
         output["starter_position_price"],
@@ -2281,9 +2281,9 @@ def _final_decision_display_gate(
     if decision_lane == "review":
         return _display_category_result("需复核", "需复核", "先复核数据与风险", False, "warning")
 
-    if zone == "no_chase" or decision_lane == "blocked" or action == "禁止追高":
+    if zone == "no_chase" or decision_lane == "blocked" or action in {"禁止追高", "追高风险提醒"}:
         secondary = trigger_secondary if has_trigger else "等待价格回落"
-        return _display_category_result("禁止追高", "等待回踩", secondary, False, "caution")
+        return _display_category_result("追高风险提醒", "等待回踩", secondary, False, "caution")
 
     if is_actionable or (not has_final_decision and (zone in {"tranche_buy", "heavy_buy", "below_heavy_buy"} or (current_add is not None and current_add > 0))):
         return _display_category_result("可执行", "已进入买区", "可按计划执行", False, "ready")
@@ -2373,7 +2373,7 @@ def _execution_tone(status: str) -> str:
         "可执行": "green",
         "接近买区": "blue",
         "等回踩": "gray",
-        "禁止追高": "red",
+        "追高风险提醒": "red",
         "需复核": "orange",
     }.get(status, "gray")
 
@@ -2384,7 +2384,7 @@ def _action_short_text(row: dict) -> str:
     zone = str(row.get("currentZone") or "")
     if status == "需复核":
         return "需复核"
-    if zone == "no_chase" or "禁止追高" in action:
+    if zone == "no_chase" or "禁止追高" in action or "追高风险" in action:
         return "不新增"
     if "可小仓" in action or "可正常" in action:
         return "可小仓"
@@ -2414,8 +2414,8 @@ def _status_detail_text(row: dict) -> str:
         return "已进入买区"
     if status == "接近买区":
         return "接近触发"
-    if status == "禁止追高":
-        return "禁止追高"
+    if status in {"禁止追高", "追高风险提醒"}:
+        return "追高风险提醒"
     if zone == "fair_observation":
         return FAIR_OBSERVATION_NOT_BUY_LABEL
     return "等待触发"
@@ -2432,7 +2432,7 @@ def _current_add_text(row: dict) -> tuple[str, str]:
     action = _row_action(row)
     if status == "需复核":
         return "复核", "gray"
-    if status == "禁止追高":
+    if status in {"禁止追高", "追高风险提醒"}:
         return "不新增", "gray"
     if "只观察" in action:
         return "观察", "gray"
@@ -2478,8 +2478,8 @@ def _row_reason(row: dict) -> str:
         return "数据不足"
     if row.get("confidence") == "low" or row.get("dataConfidence") == "low":
         return "低置信，先复核"
-    if zone == "no_chase" or action == "禁止追高":
-        return "禁止追高"
+    if zone == "no_chase" or action in {"禁止追高", "追高风险提醒"}:
+        return "追高风险提醒"
     return _next_trigger_text(row)
 
 
@@ -2594,7 +2594,7 @@ def _action_tone(action: str) -> str:
         return "green"
     if action in {"等回踩", "只观察"}:
         return "blue"
-    if action in {"禁止追高", "剔除"}:
+    if action in {"禁止追高", "追高风险提醒", "剔除"}:
         return "red"
     if "复核" in action:
         return "yellow"

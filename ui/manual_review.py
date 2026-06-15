@@ -87,7 +87,7 @@ AI_TRIAGE_LABELS = {
     "ai_invalid_output": "AI输出无效",
     "ai_skipped": "已跳过",
     "ai_auto_archived": "AI自动归档",
-    "extraction_rejected_by_rule": "规则拦截图谱",
+    "extraction_rejected_by_rule": "规则未通过图谱",
 }
 AI_TRIAGE_TONES = {
     "auto_approved_by_ai": "green",
@@ -1855,7 +1855,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
             evidence_text = str(row.get("evidenceText") or "").strip()
             system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
             if row.get("aiTriageStatus") == "extraction_rejected_by_rule":
-                st.markdown(f"**规则已拦截**：{escape(_review_system_reason_text(system_reason) or '该抽取候选未通过指标校验。')}")
+                st.markdown(f"**规则未通过**：{escape(_review_system_reason_text(system_reason) or '该抽取候选未通过指标校验。')}")
             elif evidence_text:
                 st.markdown(f"**原文片段**：{escape(evidence_text)}")
             else:

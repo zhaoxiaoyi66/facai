@@ -213,7 +213,7 @@ LANE_FILTER_LABELS = {
 }
 RISK_RADAR_FILTER_LABELS = {
     "overweight": "超仓位",
-    "noChase": "禁止追高",
+    "noChase": "追高风险提醒",
     "review": "需复核",
     "lowConfidence": "低置信",
     "noAdd": "不可新增",
@@ -2265,7 +2265,7 @@ def _data_health_issue_action_html(action: str, target: str, ticker: str) -> str
 def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.DataFrame) -> None:
     summary_items = [
         ("超仓", _risk_item_symbol_count(items, "overweight")),
-        ("禁止追高", _risk_item_symbol_count(items, "noChase")),
+        ("追高风险", _risk_item_symbol_count(items, "noChase")),
         ("需要核验", _risk_item_symbol_count(items, "review")),
         ("低置信", _risk_item_symbol_count(items, "lowConfidence")),
         ("不可新增", _risk_item_symbol_count(items, "noAdd")),
@@ -2591,7 +2591,7 @@ def _action_recommendation(score, data_quality: dict, anti_fomo: str, high_risk_
     if data_quality["pct"] < 40:
         return "数据不足，需复核"
     if anti_fomo:
-        return "禁止追高"
+        return "追高风险提醒"
     if high_risk_flags > 0:
         return "剔除" if score.total_score < 50 else "财报后复核"
 
@@ -2615,7 +2615,7 @@ def _entry_rating(score, data_quality: dict, anti_fomo: str) -> str:
     if data_quality["pct"] < 40:
         return "数据不足"
     if anti_fomo:
-        return "D - 禁止追高"
+        return "D - 追高风险"
     if score.scoring_model == "power_company":
         if score.value_zone == "回撤后有吸引力":
             return "B+ - 回撤买点"
@@ -2650,7 +2650,7 @@ def _risk_rating(risk_flags, high_flags: int, medium_flags: int, data_quality: d
 
 
 def _valuation_status(value_zone: str, data_quality: dict) -> str:
-    if value_zone in {"回撤后有吸引力", "回撤买点", "击球区附近", "合理偏便宜", "极贵", "偏贵", "只观察", "禁止追高", "数据不足"}:
+    if value_zone in {"回撤后有吸引力", "回撤买点", "击球区附近", "合理偏便宜", "极贵", "偏贵", "只观察", "禁止追高", "追高风险提醒", "数据不足"}:
         return value_zone
     if data_quality["pct"] < 40:
         return "数据不足"
@@ -3375,7 +3375,7 @@ def _top_research_rows(table: pd.DataFrame) -> list[pd.Series]:
     candidates = [
         row
         for _, row in table.iterrows()
-        if row.get("action") not in {"禁止追高", "财报后复核", "数据不足，需复核", "剔除"} and row.get("dataQualityPct", 0) >= 40
+        if row.get("action") not in {"禁止追高", "追高风险提醒", "财报后复核", "数据不足，需复核", "剔除"} and row.get("dataQualityPct", 0) >= 40
     ]
     return sorted(candidates, key=lambda row: row.get("totalScore", 0), reverse=True)[:4]
 
@@ -3446,7 +3446,7 @@ def _overheat_rows(table: pd.DataFrame) -> list[pd.Series]:
     rows = [
         row
         for _, row in table.iterrows()
-        if _numeric(row.get("overheatScore")) >= 40 or row.get("action") == "禁止追高"
+        if _numeric(row.get("overheatScore")) >= 40 or row.get("action") in {"禁止追高", "追高风险提醒"}
     ]
     return sorted(rows, key=lambda row: _numeric(row.get("overheatScore")), reverse=True)[:8]
 
@@ -3518,7 +3518,7 @@ def _buy_point_tone(value: object, row: pd.Series | None = None) -> str:
         action_text = str(row.get("action") or "")
     combined = " ".join(part for part in primary_texts if part)
     severe_text = f"{combined} {action_text}"
-    if "极贵" in severe_text or "禁止追高" in severe_text or "高风险" in severe_text:
+    if "极贵" in severe_text or "禁止追高" in severe_text or "追高风险" in severe_text or "高风险" in severe_text:
         return "deepred"
     if "偏贵" in combined or combined.startswith("D"):
         return "orange"
@@ -3535,7 +3535,7 @@ def _buy_point_tone(value: object, row: pd.Series | None = None) -> str:
 
 def _badge_color_for_action(value: object) -> str:
     text = str(value)
-    if "极贵" in text or "禁止追高" in text:
+    if "极贵" in text or "禁止追高" in text or "追高风险" in text:
         return "deepred"
     if text in {"回撤买点", "回撤后有吸引力", "可小仓分批", "可正常分批"}:
         return "green"
@@ -3545,7 +3545,7 @@ def _badge_color_for_action(value: object) -> str:
         return "yellow"
     if text in {"偏贵", "合理偏便宜"}:
         return "orange"
-    if text in {"禁止追高", "高风险", "高", "剔除"}:
+    if text in {"禁止追高", "追高风险提醒", "高风险", "高", "剔除"}:
         return "red"
     if text in {"数据不足", "数据不足，需复核"}:
         return "gray"

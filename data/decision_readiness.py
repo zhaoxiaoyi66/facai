@@ -119,7 +119,7 @@ def _final_decision_present(final_decision: Any) -> bool:
 
 def _buy_zone_message(zone: str) -> str:
     labels = {
-        "no_chase": "当前处于禁止追高或等待回踩状态，不展示精确买点。",
+        "no_chase": "当前处于追高风险或等待回踩状态，不展示精确买点。",
         "invalid_zone": "买区校验异常，不能展示精确买点。",
         "invalid_manual_override": "手动买区参数异常，不能展示精确买点。",
         "data_insufficient": "买区核心输入不足，不能展示精确买点。",
@@ -172,13 +172,13 @@ def _buy_zone_validation_message(reason: str) -> str:
 
 def _final_reason_message(reason: str, *, blocking: bool) -> str:
     messages = {
-        "buy_zone": "finalDecision 已被买区守门阻断。",
-        "data_confidence": "finalDecision 已被数据置信度阻断。",
+        "buy_zone": "finalDecision 触发买区风险提示。",
+        "data_confidence": "finalDecision 触发数据置信度风险提示。",
         "quality": "质量或评分条件需要复核。",
     }
     if reason in messages:
         return messages[reason]
-    return f"finalDecision {'阻断' if blocking else '要求复核'}：{reason}"
+    return f"finalDecision {'风险提示' if blocking else '要求复核'}：{reason}"
 
 
 def _list_value(source: Any, *names: str) -> list[Any]:

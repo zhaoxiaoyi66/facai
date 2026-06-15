@@ -70,7 +70,7 @@ POSITION_CLASS_OPTIONS = {
 }
 POSITION_CLASS_COPY = {
     "": "未设置分类，后续卖出不会自动套 A 类核心仓纪律。",
-    "A": "长期核心，禁止宏观恐慌清仓。",
+    "A": "长期核心，不建议因宏观恐慌清仓。",
     "B": "有逻辑但不做核心，允许波段。",
     "C": "短线 / 情绪 / 高波动，快进快出。",
 }
@@ -168,7 +168,7 @@ DISCIPLINE_STATUS_LABELS = {
 DISCIPLINE_STATUS_COMPACT_LABELS = {
     "allowed": "通过",
     "warning": "警告",
-    "blocked": "阻断",
+    "blocked": "高风险",
     "hold": "无",
 }
 DISCIPLINE_BLOCKER_LABELS = {
@@ -2178,7 +2178,7 @@ def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bo
     if not items:
         return ""
     class_name = "blockers" if is_blocker else "warnings"
-    label = "阻断提醒" if is_blocker else "复核提醒"
+    label = "高风险提醒" if is_blocker else "复核提醒"
     rows = "".join(f"<li>{escape(_discipline_message_text(item))}</li>" for item in items)
     return f'<div class="trade-discipline-messages {class_name}"><b>{escape(label)}</b><ul>{rows}</ul></div>'
 
@@ -2416,7 +2416,7 @@ def _render_weekly_discipline_summary() -> None:
         ("回补触发", summary.get("reentryObligationTriggeredCount", 0)),
         ("回补逾期", summary.get("reentryObligationOverdueCount", 0)),
         ("NOW 式风险", summary.get("nowStyleRiskCount", 0)),
-        ("纪律阻断", summary.get("disciplineBlockerCount", 0)),
+        ("纪律高风险提醒", summary.get("disciplineBlockerCount", 0)),
         ("纪律提醒", summary.get("disciplineWarningCount", 0)),
         ("FOMO", summary.get("fomoTradeCount", 0)),
         ("焦虑/恐慌", summary.get("anxietyPanicTradeCount", 0)),
@@ -3349,7 +3349,7 @@ def _entry_discipline_snapshot_html(entry: dict) -> str:
         rows.append(("卖出提醒", "系统不建议，但历史记录可按人工确认继续处理"))
     reentry_html = _entry_reentry_plan_html(entry)
     sell_review_html = _entry_sell_review_html(entry)
-    blocker_html = _discipline_detail_messages_html("阻断提醒", entry.get("blockers") or [], is_blocker=True)
+    blocker_html = _discipline_detail_messages_html("高风险提醒", entry.get("blockers") or [], is_blocker=True)
     warning_html = _discipline_detail_messages_html("复核提醒", entry.get("warnings") or [], is_blocker=False)
     reminder = escape(_text(entry.get("reminder_text")))
     return (
@@ -4128,10 +4128,10 @@ def _signal_snapshot_reasons_html(snapshot: dict) -> str:
     if reasons:
         body = "".join(f"<li>{escape(reason)}</li>" for reason in reasons[:6])
     else:
-        body = "<li>暂无阻断或复核原因。</li>"
+        body = "<li>暂无高风险或复核原因。</li>"
     return (
         '<section class="trade-signal-drawer-card">'
-        "<h4>阻断 / 复核原因</h4>"
+        "<h4>高风险 / 复核原因</h4>"
         f"<ul>{body}</ul>"
         "</section>"
     )
@@ -4140,7 +4140,7 @@ def _signal_snapshot_reasons_html(snapshot: dict) -> str:
 def _signal_reason_label(value: object) -> str:
     text = str(value or "").strip()
     labels = {
-        "buy_zone": "买区阻断",
+        "buy_zone": "买区风险提示",
         "data_confidence": "数据置信度",
         "valuation_status": "估值状态",
         "entry_rating": "入场评级",

@@ -842,7 +842,7 @@ def _basis_status_text(value: object) -> str:
     overrides = {
         "ALLOW_SHORT": "允许开空观察",
         "BLOCK_MAPPING": "映射未确认",
-        "BLOCK_LIQUIDITY": "流动性阻断",
+        "BLOCK_LIQUIDITY": "流动性风险",
         "BLOCK_DATA": "数据不足",
     }
     if text in overrides:

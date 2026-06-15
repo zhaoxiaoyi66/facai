@@ -25,9 +25,9 @@ from ui.theme import render_page_header, render_section_title
 
 
 _DECISION_LABELS = {
-    "ALLOW_BUY": "允许复核买入",
+    "ALLOW_BUY": "小仓观察建议",
     "WAIT": "等待",
-    "BLOCK_CHASE": "禁止追高",
+    "BLOCK_CHASE": "追高风险提醒",
     "AVOID": "回避",
     "DATA_MISSING": "数据不足",
 }
@@ -224,7 +224,7 @@ def _safe_radar_summary(ticker: str) -> dict:
 
 def _entry_display_html(row: dict) -> str:
     label = str(row.get("entry_display_label") or "暂无参考买区").strip()
-    hint = str(row.get("entry_action_hint") or row.get("entry_display_reason") or "只读参考，不改变门禁").strip()
+    hint = str(row.get("entry_action_hint") or row.get("entry_display_reason") or "只读参考，仅作风险提示").strip()
     return (
         '<div class="watchlist-entry-ref">'
         f'<strong>{escape(label)}</strong>'
@@ -267,11 +267,11 @@ def _decision_badge_parts(source: object, *, held: bool = False) -> tuple[str, s
     if canonical_action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
         return "NO_BUY_ZONE", "未生成买区", "muted"
     if canonical_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
-        return "ALLOW_BUY", "允许复核买入", "ok"
+        return "ALLOW_BUY", "小仓观察建议", "ok"
     if canonical_action in {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}:
         return "WAIT", "等待", "wait"
     if canonical_action == "BLOCK_CHASE":
-        return "BLOCK_CHASE", "禁止追高", "block"
+        return "BLOCK_CHASE", "追高风险提醒", "block"
     if canonical_action == "RISK_REVIEW":
         return "WAIT", "风控复核", "wait"
     if canonical_action == "AVOID":

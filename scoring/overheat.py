@@ -229,7 +229,7 @@ def _cooling_credit(
 
 def _status_for_score(score: float) -> tuple[str, str, str]:
     if score >= 80:
-        return "极度过热", "禁止追高", "等待更深回调或财报后确认"
+        return "极度过热", "追高风险提醒", "等待更深回调或财报后确认"
     if score >= 60:
         return "偏热", "只观察", "等待更深回调或财报后确认"
     if score >= 40:

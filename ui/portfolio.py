@@ -1648,7 +1648,7 @@ def _reason_text(value: object) -> str:
 
 def _translated_reasons(value: object) -> list[str]:
     labels = {
-        "buy_zone": "系统估值参考阻断",
+        "buy_zone": "系统估值参考风险提示",
         "data_confidence": "数据置信度",
         "valuation_status": "估值状态",
         "entry_rating": "入场评级",
@@ -2176,7 +2176,7 @@ def _drawer_html(
             ("当前可加", _percent_text(row.get("systemCurrentAdd"))),
             ("决策通道", _decision_lane_text(row.get("decisionLane"))),
             ("估值参考状态", _buy_zone_status_text(row.get("buyZoneStatus"))),
-            ("阻断原因", _reason_text(row.get("blockReasons"))),
+            ("风险提示原因", _reason_text(row.get("blockReasons"))),
             ("复核原因", _reason_text(row.get("reviewReasons"))),
         ]),
         ("交易纪律", discipline_items),
@@ -2339,7 +2339,7 @@ def _snapshot_action_text(value: object) -> str:
         "buy": "买入",
         "wait": "等待",
         "review": "复核",
-        "blocked": "阻断",
+        "blocked": "高风险",
         "unknown": "未标记",
     }.get(text, text or BLANK_TEXT)
 
@@ -2371,7 +2371,7 @@ def _system_explanation_text(row: dict) -> str:
     if lane == "review":
         return f"系统建议先复核；主要原因：{reason}。"
     if lane == "blocked":
-        return f"系统当前阻断新增；主要原因：{reason}。"
+        return f"系统当前不建议新增；主要原因：{reason}。"
     if lane == "wait":
         return f"系统建议等待，不急于新增；主要原因：{reason}。"
     return "系统估值参考不足，先按手动计划管理。"
@@ -2382,7 +2382,7 @@ def _main_reason_text(row: dict) -> str:
     if warnings:
         return "，".join(warnings[:2])
     reasons = [*_translated_reasons(row.get("blockReasons")), *_translated_reasons(row.get("reviewReasons"))]
-    return "，".join(reasons[:2]) if reasons else "暂无明确阻断/复核原因"
+    return "，".join(reasons[:2]) if reasons else "暂无明确高风险/复核原因"
 
 
 def _deviation_text(row: dict) -> str:

@@ -100,7 +100,7 @@ def render_plan_preview_card(plan: dict, suggestion: Any, active_zone: Any, fina
         rows.append((label, _value_with_source(value, _has_plan_value(plan, field), True)))
     rows.append(
         (
-            "禁止追高价",
+            "追高风险线",
             _value_with_source(
                 _plan_or_system(plan, "no_chase_above", system_values["no_chase_above"]),
                 _has_plan_value(plan, "no_chase_above"),
@@ -163,7 +163,7 @@ def render_buy_plan_editor(
             st,
             key_prefix,
             "no_chase_above",
-            "禁止追高价",
+            "追高风险线",
             system_values["no_chase_above"],
         )
         risk_cols = st.columns(2)

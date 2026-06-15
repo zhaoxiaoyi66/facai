@@ -1405,7 +1405,7 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
     if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:
         return "低于估值参考，等待结构确认"
     if status == "IN_CHASE_ZONE":
-        return "进入追高区，禁止新增"
+        return "进入追高风险区，系统不建议新增"
     return format_zone_status(price_position)
 
 
@@ -1916,7 +1916,7 @@ def _drawer_primary_block_reason(row: pd.Series) -> str:
     if action in {"可加仓", "小仓观察建议"}:
         return "仍需按交易计划控制仓位。"
     if action in {"禁止新增", "追高风险提醒"}:
-        return "当前不满足纪律新增条件。"
+        return "当前为高风险新增场景，建议先复核。"
     if action == "待复核":
         return "先复核数据、估值或买区条件。"
     return "保持观察，等待更清晰的买区或数据确认。"

@@ -127,7 +127,7 @@ def build_trading_discipline_stats(
         warnings.append("本周存在无回补计划的 sell / trim，需要停止高抛低吸式操作。")
     if blocker_entries:
         level = _max_level(level, "danger")
-        warnings.append("本周存在纪律阻断的 sell / trim，需要先处理阻断项再行动。")
+        warnings.append("本周存在高风险 sell / trim 纪律提醒，建议先复核原因再行动。")
 
     if now_style_risk_entries:
         level = _max_level(level, "danger")
@@ -260,7 +260,7 @@ def _discipline_score(
     macro_sell_count: int,
 ) -> dict[str, Any]:
     penalties: list[tuple[str, int]] = []
-    _add_penalty(penalties, "纪律阻断", blocker_count, 25)
+    _add_penalty(penalties, "纪律高风险提醒", blocker_count, 25)
     _add_penalty(penalties, "NOW 式错误风险", now_style_risk_count, 30)
     _add_penalty(penalties, "无回补计划卖出", no_reentry_sell_count, 22)
     _add_penalty(penalties, "疑似卖飞", suspected_sell_fly_count, 15)

@@ -1150,7 +1150,7 @@ def macro_regime_detail_html(snapshot: MacroRegimeSnapshot) -> str:
     hints = "".join(f"<li>{escape(hint)}</li>" for hint in snapshot.action_hints) or "<li>按个股纪律执行。</li>"
     return (
         '<section class="macro-regime-detail">'
-        f"<div><strong>大盘环境：{escape(snapshot.regime)}</strong><span>置信度：{escape(snapshot.confidence)}，只读提示，不改变买卖门禁。</span></div>"
+        f"<div><strong>大盘环境：{escape(snapshot.regime)}</strong><span>置信度：{escape(snapshot.confidence)}，只读提示，不改变交易记录与基础校验。</span></div>"
         '<table><thead><tr><th>官方核心指标</th><th>当前值</th><th>近期变化</th><th>来源</th><th>状态</th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
         f'<div class="macro-regime-detail-grid"><div><b>判断原因</b><ul>{reasons}</ul></div><div><b>纪律提示</b><ul>{hints}</ul></div></div>'
@@ -1202,13 +1202,13 @@ def macro_regime_trade_hint_text(snapshot: MacroRegimeSnapshot, *, context: str 
     if snapshot.regime == REGIME_RISK_OFF:
         hint = "不追涨，A类等回踩；这只是提示，不改变允许新增仓位。"
     elif snapshot.regime == REGIME_STRESS:
-        hint = "C类暂停新增，优先复核仓位和现金；这只是提示，不改变门禁。"
+        hint = "C类不建议新增，优先复核仓位和现金；这只是提示，不改变交易记录与基础校验。"
     elif snapshot.regime == REGIME_PANIC:
-        hint = "只做计划内核心仓，避免情绪化交易；这只是提示，不改变门禁。"
+        hint = "只做计划内核心仓，避免情绪化交易；这只是提示，不改变交易记录与基础校验。"
     elif snapshot.regime == REGIME_DATA_GAP:
-        hint = "宏观数据不足，先补齐再复核；这只是提示，不改变门禁。"
+        hint = "宏观数据不足，先补齐再复核；这只是提示，不改变交易记录与基础校验。"
     else:
-        hint = "按个股 Radar、买入计划和纪律门禁执行。"
+        hint = "按个股 Radar、买入计划和纪律风险提示执行。"
     return f"大盘环境：{snapshot.regime}｜{prefix}：{hint}"
 
 
@@ -2165,7 +2165,7 @@ def _build_sentiment_proxy_snapshot(
         fetched_at=now.isoformat(),
         observation_date=now.date().isoformat(),
         reasons=[f"情绪代理：{label}。", *reasons],
-        action_hints=["情绪代理只做提示，不改变买卖门禁。"],
+        action_hints=["情绪代理只做提示，不改变交易记录与基础校验。"],
         raw_payload=_compact_raw_payload(
             {
                 "vix": vix,

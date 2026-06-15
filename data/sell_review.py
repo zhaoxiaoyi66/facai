@@ -40,7 +40,7 @@ FLAG_LABELS = {
     "emotional_sell": "情绪型卖出",
     "full_exit_without_review": "清仓无复盘",
     "non_c_event_review": "非 C 类事件交易需复核",
-    "gate_blocked": "卖出门禁曾阻断",
+    "gate_blocked": "历史卖出风险提醒",
     "core_review": "核心仓卖出需复盘",
     "fundamental_change_sell": "基本面改写型卖出",
     "valuation_compression_sell": "估值压缩型卖出",
