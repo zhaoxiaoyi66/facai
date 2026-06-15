@@ -233,7 +233,9 @@ def run_weekend_basis_backfill_audit(
     kline_cache_path: Path | None = None,
     strategy_config: BasisStrategyConfig | None = None,
     now: datetime | None = None,
-    include_estimated: bool = False,
+    include_estimated: bool = True,
+    include_observation: bool = True,
+    trade_grade_only: bool = False,
     low_risk_window_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Replay complete historical weekends without using current prices.
@@ -259,49 +261,93 @@ def run_weekend_basis_backfill_audit(
             rows.extend(_backfill_block_rows(ticker, config or {}, windows, reason="NO_MAPPING"))
             continue
         mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
-        if mapping_confidence != "confirmed":
+        if mapping_confidence != "confirmed" and (trade_grade_only or not include_observation):
             rows.extend(_backfill_block_rows(ticker, config, windows, reason="BLOCK_MAPPING"))
             continue
+        observation_only = mapping_confidence != "confirmed"
+        price_ratio_warning = _price_ratio_warning(config)
         for window in windows:
+            window_rows = _basis_backfill_one_window(
+                ticker,
+                config,
+                window,
+                anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
+                anchor_source=dict(effective_anchors.get(ticker) or config),
+                provider=price_provider,
+                broker_provider=broker_provider,
+                kline_cache_path=effective_kline_cache_path,
+                config=cfg,
+                include_estimated=include_estimated,
+                low_risk_window_only=low_risk_window_only,
+            )
             rows.extend(
-                _basis_backfill_one_window(
+                _finalize_backfill_rows(
+                    window_rows,
                     ticker,
                     config,
-                    window,
-                    anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
-                    anchor_source=dict(effective_anchors.get(ticker) or config),
-                    provider=price_provider,
-                    broker_provider=broker_provider,
-                    kline_cache_path=effective_kline_cache_path,
-                    config=cfg,
-                    include_estimated=include_estimated,
-                    low_risk_window_only=low_risk_window_only,
+                    observation_only=observation_only,
+                    price_ratio_warning=price_ratio_warning,
                 )
             )
     return rows
 
 
 def summarize_backfill_audit_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    strict = [
+    trade_grade = [
         row
         for row in rows
         if str(row.get("data_mode") or "") == "STRICT"
+        and str(row.get("mapping_status") or "") != "CANDIDATE_OBSERVATION"
         and str(row.get("data_quality") or "") in {"OK", "ANCHOR_REGULAR_CLOSE_ONLY"}
         and _number(row.get("net_locked_bps")) is not None
     ]
-    net_values = [_number(row.get("net_locked_bps")) for row in strict]
+    observation = [
+        row
+        for row in rows
+        if str(row.get("data_mode") or "") == "OBSERVATION"
+        and _number(row.get("oracle_weekend_high_premium_bps")) is not None
+    ]
+    estimated = [
+        row
+        for row in rows
+        if str(row.get("execution_data_mode") or row.get("data_mode") or "") == "ESTIMATED"
+        or str(row.get("data_quality") or "") == "ESTIMATED_EXECUTION"
+    ]
+    excluded = [
+        row
+        for row in rows
+        if str(row.get("status") or "") in {"BLOCK_MAPPING", "BLOCK_DATA", "FAILED"}
+        or str(row.get("data_quality") or "") in {"NO_MAPPING", "BINANCE_KLINE_UNAVAILABLE", "NO_PRICE_ANCHOR"}
+    ]
+    net_values = [_number(row.get("net_locked_bps")) for row in trade_grade]
     net_values = [value for value in net_values if value is not None]
-    adverse_values = [_number(row.get("max_adverse_bps")) for row in strict]
+    adverse_values = [_number(row.get("max_adverse_bps")) for row in trade_grade]
     adverse_values = [value for value in adverse_values if value is not None]
-    hedge_success = [row for row in strict if row.get("hedge_success")]
+    hedge_success = [row for row in trade_grade if row.get("hedge_success")]
+    oracle_values = [_number(row.get("oracle_weekend_high_premium_bps")) for row in observation]
+    residual_values = [_number(row.get("residual_basis_bps")) for row in observation]
+    decay_values = [
+        oracle - residual
+        for oracle, residual in zip(oracle_values, residual_values)
+        if oracle is not None and residual is not None
+    ]
+    observation_adverse = [_number(row.get("max_adverse_bps")) for row in observation]
     return {
         "sample_count": len(rows),
-        "strict_sample_count": len(strict),
+        "strict_sample_count": len(trade_grade),
+        "trade_grade_sample_count": len(trade_grade),
+        "observation_sample_count": len(observation),
+        "estimated_sample_count": len(estimated),
+        "excluded_count": len(excluded),
+        "avg_sunday_max_premium_bps": _average(oracle_values),
+        "avg_open_residual_basis_bps": _average(residual_values),
+        "avg_premium_decay_bps": _average(decay_values),
+        "avg_max_adverse_bps": _average(observation_adverse),
         "avg_net_locked_bps": _average(net_values),
         "median_net_locked_bps": _median(net_values),
         "worst_net_locked_bps": min(net_values) if net_values else None,
         "max_adverse_bps": max(adverse_values) if adverse_values else None,
-        "hedge_success_rate": len(hedge_success) / len(strict) if strict else None,
+        "hedge_success_rate": len(hedge_success) / len(trade_grade) if trade_grade else None,
     }
 
 
@@ -789,6 +835,70 @@ def _backfill_block_rows(ticker: str, mapping_config: dict[str, Any], windows: l
     return rows
 
 
+def _finalize_backfill_rows(
+    rows: list[dict[str, Any]],
+    ticker: str,
+    mapping_config: dict[str, Any],
+    *,
+    observation_only: bool,
+    price_ratio_warning: str,
+) -> list[dict[str, Any]]:
+    finalized: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        row.setdefault("broker_symbol", str(mapping_config.get("broker_symbol") or ticker).strip().upper())
+        row.setdefault("mapping_status", "CONFIRMED_TRADE_GRADE")
+        row.setdefault("trade_grade_eligible", True)
+        row.setdefault("friday_anchor_price", row.get("anchor_price"))
+        row.setdefault("sunday_max_premium_bps", row.get("oracle_weekend_high_premium_bps"))
+        row.setdefault("sunday_max_ts", row.get("oracle_weekend_high_time"))
+        row.setdefault("sunday_relative_high_premium_bps", row.get("rolling_high_premium_bps") or row.get("entry_premium_bps"))
+        row.setdefault("broker_overnight_open_ts", row.get("broker_hedge_ts"))
+        row.setdefault("broker_overnight_open_price", row.get("broker_hedge_price"))
+        row.setdefault("open_residual_basis_bps", row.get("residual_basis_bps"))
+        row.setdefault("premium_decay_bps", _premium_decay_bps(row))
+        if observation_only:
+            previous_mode = str(row.get("data_mode") or "")
+            if previous_mode and previous_mode != "OBSERVATION":
+                row["execution_data_mode"] = previous_mode
+            row["data_mode"] = "OBSERVATION"
+            row["mapping_status"] = "CANDIDATE_OBSERVATION"
+            row["trade_grade_eligible"] = False
+            row["warning"] = _append_warning(
+                row.get("warning"),
+                "映射未人工确认，仅供观察复盘，不作为交易依据",
+            )
+        if price_ratio_warning:
+            row["price_ratio_warning"] = True
+            row["warning"] = _append_warning(row.get("warning"), price_ratio_warning)
+        finalized.append(row)
+    return finalized
+
+
+def _premium_decay_bps(row: dict[str, Any]) -> float | None:
+    oracle = _number(row.get("oracle_weekend_high_premium_bps"))
+    residual = _number(row.get("residual_basis_bps"))
+    if oracle is None or residual is None:
+        return None
+    return oracle - residual
+
+
+def _price_ratio_warning(mapping_config: dict[str, Any]) -> str:
+    summary = mapping_config.get("audit_summary") if isinstance(mapping_config.get("audit_summary"), dict) else {}
+    ratio = _number(summary.get("median_ratio") if isinstance(summary, dict) else None)
+    if ratio is None:
+        return ""
+    if 0.98 <= ratio <= 1.02:
+        return ""
+    severity = "黄色警告" if 0.95 <= ratio <= 1.05 else "红色警告"
+    return f"PRICE_RATIO_WARNING：{severity}，价格比例异常，可能不是 1:1 映射"
+
+
+def _append_warning(current: Any, addition: str) -> str:
+    parts = [str(item or "").strip() for item in (current, addition)]
+    return "；".join(dict.fromkeys([item for item in parts if item]))
+
+
 def _backfill_entry_candidates(entry_quotes: list[BasisQuote], anchor_price: float, cfg: BasisStrategyConfig) -> list[dict[str, Any]]:
     if not entry_quotes:
         return []
@@ -918,14 +1028,18 @@ def _oracle_fields_for_backfill(quotes: list[BasisQuote], anchor_price: float) -
 def _base_backfill_row(ticker: str, mapping_config: dict[str, Any], window: WeekendWindow) -> dict[str, Any]:
     symbol = str((mapping_config or {}).get("binance_symbol") or "").strip().upper()
     mapping_confidence = str((mapping_config or {}).get("mapping_confidence") or "").strip().lower()
+    broker_symbol = str((mapping_config or {}).get("broker_symbol") or ticker).strip().upper()
     return {
         "week_id": window.week_id,
         "ticker": str(ticker or "").strip().upper(),
+        "broker_symbol": broker_symbol,
         "rule_name": "",
         "entry_window": "",
         "binance_symbol": symbol,
         "market_type": "usdm_futures",
         "mapping_confidence": mapping_confidence,
+        "mapping_status": "CONFIRMED_TRADE_GRADE" if mapping_confidence == "confirmed" else "CANDIDATE_OBSERVATION",
+        "trade_grade_eligible": mapping_confidence == "confirmed",
         "weekend_window_start": window.start_et.astimezone(timezone.utc).isoformat(),
         "weekend_window_end": window.end_et.astimezone(timezone.utc).isoformat(),
         "monday_reference_time_et": window.end_et.isoformat(),
@@ -954,6 +1068,14 @@ def _base_backfill_row(ticker: str, mapping_config: dict[str, Any], window: Week
         "oracle_weekend_high_time": "",
         "oracle_weekend_high_premium_bps": None,
         "oracle_note": "",
+        "friday_anchor_price": None,
+        "sunday_max_premium_bps": None,
+        "sunday_max_ts": "",
+        "sunday_relative_high_premium_bps": None,
+        "broker_overnight_open_ts": "",
+        "broker_overnight_open_price": None,
+        "open_residual_basis_bps": None,
+        "premium_decay_bps": None,
         "error_message": "",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

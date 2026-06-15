@@ -2269,21 +2269,37 @@ def test_weekend_basis_backfill_replays_complete_weekend_with_first_threshold_ne
     assert first_80["oracle_note"] == "事后高点，不可交易"
 
 
-def test_weekend_basis_backfill_blocks_unconfirmed_mapping_from_strict_stats() -> None:
+def test_weekend_basis_backfill_allows_candidate_observation_but_not_trade_grade() -> None:
     now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.end_et - timedelta(hours=4), 100.9, 100.94),
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 101.0, 101.04),
+        _basis_quote(window.end_et - timedelta(hours=3), 101.25, 101.29),
+        _basis_quote(window.end_et, 100.9, 100.94),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.7, 100.75)],
+        }
+    }
 
     rows = run_weekend_basis_backfill_audit(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="candidate"),
-        anchors=_anchors(afterhours=100),
-        provider=FakeBasisQuoteProvider([]),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
         weeks=1,
         now=now,
     )
 
-    assert rows[0]["status"] == "BLOCK_MAPPING"
-    assert rows[0]["data_quality"] == "BLOCK_MAPPING"
-    assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+    assert any(row["data_mode"] == "OBSERVATION" for row in rows)
+    assert any(row["mapping_status"] == "CANDIDATE_OBSERVATION" for row in rows)
+    assert not any(row["status"] == "BLOCK_MAPPING" for row in rows)
+    summary = summarize_backfill_audit_results(rows)
+    assert summary["observation_sample_count"] > 0
+    assert summary["trade_grade_sample_count"] == 0
 
 
 def test_weekend_basis_mapping_audit_marks_ratio_stable_candidate_verified_ready() -> None:
@@ -2329,15 +2345,31 @@ def test_weekend_basis_mapping_audit_marks_ratio_stable_candidate_verified_ready
 
 
 def test_verified_ready_mapping_still_requires_manual_confirm_for_strict_backfill() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 101.0, 101.04),
+        _basis_quote(window.end_et - timedelta(hours=3), 101.25, 101.29),
+        _basis_quote(window.end_et, 100.9, 100.94),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 100.7, 100.75)],
+        }
+    }
+
     rows = run_weekend_basis_backfill_audit(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="verified_ready"),
-        anchors=_anchors(),
-        provider=FakeKlineProvider(_audit_weekend_bars(110.0)),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
     )
 
-    assert rows[0]["status"] == "BLOCK_MAPPING"
-    assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
+    assert any(row["data_mode"] == "OBSERVATION" for row in rows)
+    assert summarize_backfill_audit_results(rows)["trade_grade_sample_count"] == 0
 
 
 def test_confirmed_mapping_can_enter_strict_backfill_after_manual_confirm(tmp_path) -> None:
@@ -2412,6 +2444,40 @@ def test_mapping_audit_flags_multiplier_mismatch_and_missing_weekend_data() -> N
     assert "NO_RECENT_WEEKEND_BINANCE_DATA" in row["warning"]
 
 
+def test_weekend_basis_backfill_marks_candidate_ratio_warning_but_keeps_observation() -> None:
+    now = datetime(2026, 7, 8, 12, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    quotes = [
+        _basis_quote(window.end_et - timedelta(hours=3, minutes=1), 108.0, 108.04),
+        _basis_quote(window.end_et - timedelta(hours=3), 108.5, 108.54),
+        _basis_quote(window.end_et, 107.5, 107.54),
+    ]
+    anchors = {
+        "NVDA": {
+            "afterhours_reference_price": 100,
+            "broker_overnight_bars": [_broker_bar(window.end_et, 101.0, 101.1)],
+        }
+    }
+
+    rows = run_weekend_basis_backfill_audit(
+        ["NVDA"],
+        mapping=_mapping(
+            mapping_confidence="candidate",
+            audit_summary={"median_ratio": 1.08, "sample_count": 5},
+        ),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        weeks=1,
+        now=now,
+    )
+
+    assert any(row["mapping_status"] == "CANDIDATE_OBSERVATION" for row in rows)
+    assert any("PRICE_RATIO_WARNING" in str(row.get("warning") or "") for row in rows)
+    summary = summarize_backfill_audit_results(rows)
+    assert summary["observation_sample_count"] > 0
+    assert summary["trade_grade_sample_count"] == 0
+
+
 def test_reject_weekend_basis_mapping_writes_rejected_without_confirming(tmp_path) -> None:
     mapping_path = tmp_path / "binance_symbol_mapping.local.json"
 
@@ -2475,6 +2541,7 @@ def test_weekend_basis_backfill_marks_kline_execution_estimated_and_excludes_str
         provider=FakeKlineProvider(bars),
         weeks=1,
         now=now,
+        include_estimated=False,
     )
 
     assert rows[0]["data_mode"] == "ESTIMATED"
@@ -2749,7 +2816,7 @@ def test_weekend_spread_paper_opportunity_blocks_unconfirmed_mapping_in_ui_frame
 def test_weekend_spread_ui_exposes_paper_trade_area() -> None:
     source = inspect.getsource(weekend_spread)
 
-    assert "实盘模拟 / Paper Trade" in source
+    assert "手动交易记录（可选） / Paper Trade" in source
     assert "create_weekend_basis_trade" in source
     assert "record_broker_hedge" in source
     assert "close_weekend_basis_trade" in source

@@ -627,7 +627,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             st.warning(f"上次运行失败：{cached_result.get('error_message')}")
         else:
             st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
-        _render_backfill_audit_area(watchlist, mapping, anchors)
+        _render_backfill_audit_area_v2(watchlist, mapping, anchors)
         _render_backtest_advanced_records()
         return
     last_run_at = str(cached_result.get("last_run_at") or "")
@@ -637,7 +637,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.caption("观察回测：包含未确认映射，结果不计为正式胜率。")
     _render_backtest_kpis(results)
     st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
-    _render_backfill_audit_area(watchlist, mapping, anchors)
+    _render_backfill_audit_area_v2(watchlist, mapping, anchors)
     _render_backtest_advanced_records()
 
 
@@ -647,6 +647,71 @@ def _render_backtest_preflight(preflight: dict[str, object]) -> None:
     cols[1].metric("已排除标的", int(preflight.get("excluded_count") or 0))
     cols[2].metric("当前模式", _backtest_mode_text(preflight.get("mode")))
     cols[3].metric("数据源状态", "USDT-M 合约")
+
+
+def _render_backfill_audit_area_v2(watchlist: list[str], mapping: dict[str, dict], anchors: dict[str, dict]) -> None:
+    with st.expander("历史周末回放 / Backfill Audit", expanded=False):
+        st.caption("价差复盘看板：candidate 映射默认可进入观察样本；只有 confirmed mapping 进入交易级统计。")
+        all_tickers = [str(ticker or "").strip().upper() for ticker in watchlist if str(ticker or "").strip()]
+        mapped_tickers = [
+            ticker
+            for ticker in all_tickers
+            if (mapping.get(ticker) or {}).get("binance_symbol")
+        ]
+        confirmed_tickers = [
+            ticker
+            for ticker in mapped_tickers
+            if str((mapping.get(ticker) or {}).get("mapping_confidence") or "").strip().lower() == "confirmed"
+        ]
+        mode = st.radio(
+            "统计口径",
+            ["全部观察样本", "仅 confirmed / trade-grade 样本"],
+            horizontal=True,
+            key="weekend_backfill_mode",
+        )
+        trade_grade_only = mode.startswith("仅 confirmed")
+        available_tickers = confirmed_tickers if trade_grade_only else mapped_tickers
+        options = ["全部可用映射"] + available_tickers if available_tickers else ["全部可用映射"]
+        cols = st.columns([1.1, 0.8, 1.2, 1.1, 1])
+        selected = cols[0].selectbox("回放标的", options, key="weekend_backfill_ticker")
+        weeks = int(cols[1].number_input("完整周末数", min_value=1, max_value=16, value=8, step=1, key="weekend_backfill_weeks"))
+        rule_filter = cols[2].selectbox(
+            "规则",
+            ["全部规则", "FIRST_THRESHOLD", "RELATIVE_HIGH_PULLBACK"],
+            key="weekend_backfill_rule",
+        )
+        include_estimated = cols[3].checkbox("包含 estimated", value=True, key="weekend_backfill_include_estimated")
+        low_risk_only = cols[4].checkbox("仅低风险窗口", value=False, key="weekend_backfill_low_risk_only")
+        run_tickers = available_tickers if selected == "全部可用映射" else [selected]
+        if not confirmed_tickers:
+            st.info("当前无 confirmed mapping，因此没有交易级样本；候选映射仍可用于观察复盘，不作为交易依据。")
+        if st.button("运行历史周末回放", key="weekend_run_backfill_audit", width="stretch", disabled=not bool(run_tickers)):
+            progress = st.progress(0.0)
+            status = st.empty()
+            status.caption(f"正在回放 {len(run_tickers)} 个标的，最近 {weeks} 个完整周末。")
+            rows = run_weekend_basis_backfill_audit(
+                run_tickers,
+                mapping=mapping,
+                anchors=anchors,
+                weeks=weeks,
+                include_estimated=include_estimated,
+                include_observation=not trade_grade_only,
+                trade_grade_only=trade_grade_only,
+                low_risk_window_only=low_risk_only,
+            )
+            progress.progress(1.0)
+            st.session_state["weekend_backfill_audit_rows"] = rows
+            status.success(f"历史回放完成：{len(rows)} 条结果。")
+        rows = list(st.session_state.get("weekend_backfill_audit_rows") or [])
+        if rule_filter != "全部规则":
+            rows = [row for row in rows if str(row.get("rule_name") or "").startswith(rule_filter)]
+        if not rows:
+            st.info("暂无历史回放结果。点击上方按钮后会显示 observation / trade-grade / estimated 明细。")
+            return
+        _render_backfill_kpis_v2(rows)
+        st.dataframe(_backfill_frame_v2(rows), width="stretch", hide_index=True)
+        with st.expander("单周详情", expanded=False):
+            st.dataframe(_backfill_detail_frame(rows), width="stretch", hide_index=True)
 
 
 def _render_backfill_audit_area(watchlist: list[str], mapping: dict[str, dict], anchors: dict[str, dict]) -> None:
@@ -764,6 +829,14 @@ def _data_quality_text(value: object) -> str:
     }.get(text, str(value or "暂缺"))
 
 
+def _backfill_mapping_status_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "CONFIRMED_TRADE_GRADE": "已确认 / 交易级",
+        "CANDIDATE_OBSERVATION": "候选映射，仅观察",
+    }.get(text, str(value or "暂缺"))
+
+
 def _basis_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
     overrides = {
@@ -854,6 +927,23 @@ def _render_backtest_kpis(rows: list[dict]) -> None:
     cols[6].metric("最大未抹平风险", _percent_text(summary.get("max_unflattened_risk_pct")))
 
 
+def _render_backfill_kpis_v2(rows: list[dict]) -> None:
+    summary = summarize_backfill_audit_results(rows)
+    obs_cols = st.columns(5)
+    obs_cols[0].metric("观察样本", int(summary.get("observation_sample_count") or 0))
+    obs_cols[1].metric("平均周日峰值溢价", _bps_text(summary.get("avg_sunday_max_premium_bps")))
+    obs_cols[2].metric("平均开盘残余价差", _bps_text(summary.get("avg_open_residual_basis_bps")))
+    obs_cols[3].metric("平均溢价抹平", _bps_text(summary.get("avg_premium_decay_bps")))
+    obs_cols[4].metric("平均最大不利波动", _bps_text(summary.get("avg_max_adverse_bps")))
+    trade_cols = st.columns(4)
+    trade_cols[0].metric("交易级样本", int(summary.get("trade_grade_sample_count") or 0))
+    trade_cols[1].metric("平均锁结 bps", _bps_text(summary.get("avg_net_locked_bps")))
+    trade_cols[2].metric("中位锁结 bps", _bps_text(summary.get("median_net_locked_bps")))
+    trade_cols[3].metric("hedge success", _ratio_text(summary.get("hedge_success_rate")))
+    if not int(summary.get("trade_grade_sample_count") or 0):
+        st.info("当前无 confirmed mapping，因此没有交易级样本；下方为候选映射观察复盘，不作为交易依据。")
+
+
 def _render_backfill_kpis(rows: list[dict]) -> None:
     summary = summarize_backfill_audit_results(rows)
     cols = st.columns(6)
@@ -900,7 +990,7 @@ def _render_backtest_advanced_records() -> None:
 
 
 def _render_paper_trade_area(rows: list[dict], mapping: dict[str, dict]) -> None:
-    with st.expander("实盘模拟 / Paper Trade", expanded=False):
+    with st.expander("手动交易记录（可选） / Paper Trade", expanded=False):
         st.caption("只做手动记录、状态流转和复盘，不连接真实下单 API，不输出套利、买卖或对冲指令。")
         opportunities = _paper_opportunities(rows, mapping)
         if not opportunities:
@@ -1548,6 +1638,50 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     display["相对高位"] = display["相对高位"].map(_percent_text)
     display["状态"] = display["状态"].map(_basis_status_text)
     display["数据质量"] = display["数据质量"].map(_data_quality_text)
+    return display
+
+
+def _backfill_frame_v2(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("week_id", "week_id"),
+        ("ticker", "ticker"),
+        ("broker_symbol", "broker_symbol"),
+        ("binance_symbol", "binance_symbol"),
+        ("mapping_status", "mapping_status"),
+        ("data_mode", "data_mode"),
+        ("friday_anchor_price", "friday_anchor_price"),
+        ("sunday_max_premium_bps", "sunday_max_premium_bps"),
+        ("sunday_max_ts", "sunday_max_ts"),
+        ("sunday_relative_high_premium_bps", "sunday_relative_high_premium_bps"),
+        ("broker_overnight_open_ts", "broker_overnight_open_ts"),
+        ("broker_overnight_open_price", "broker_overnight_open_price"),
+        ("open_residual_basis_bps", "open_residual_basis_bps"),
+        ("premium_decay_bps", "premium_decay_bps"),
+        ("max_adverse_bps", "max_adverse_bps"),
+        ("data_quality", "data_quality"),
+        ("warning", "warning"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        display[label] = frame.get(key)
+    for time_col in ("sunday_max_ts", "broker_overnight_open_ts"):
+        display[time_col] = display[time_col].map(_short_hkt_time)
+    for price_col in ("friday_anchor_price", "broker_overnight_open_price"):
+        display[price_col] = display[price_col].map(_money_text)
+    for bps_col in (
+        "sunday_max_premium_bps",
+        "sunday_relative_high_premium_bps",
+        "open_residual_basis_bps",
+        "premium_decay_bps",
+        "max_adverse_bps",
+    ):
+        display[bps_col] = display[bps_col].map(_bps_text)
+    display["mapping_status"] = display["mapping_status"].map(_backfill_mapping_status_text)
+    display["data_quality"] = display["data_quality"].map(_data_quality_text)
+    display["warning"] = frame.apply(lambda row: _backtest_row_warning(row.to_dict()), axis=1)
     return display
 
 
