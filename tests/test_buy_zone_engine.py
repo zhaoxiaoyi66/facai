@@ -7,6 +7,7 @@ from data.buy_zone_engine import (
     ALLOW_SMALL_BUY,
     BLOCK_CHASE,
     DATA_INSUFFICIENT,
+    PAUSE_BUY,
     RISK_REVIEW,
     WAIT_CONFIRMATION,
     backtest_buy_zone_snapshots,
@@ -103,6 +104,44 @@ def test_pullback_probe_zone_with_weak_volume_waits_confirmation_not_pullback() 
     assert context.current_action != ALLOW_SMALL_BUY
 
 
+def test_left_probe_upper_edge_waits_confirmation_even_with_good_scores() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=102.05),
+        volume_snapshot=_volume(
+            volume_price_status="ACCEPTANCE_CONFIRMED",
+            volume_price_score=76,
+            volume_ratio=1.1,
+            confirmation_score=76,
+        ),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.left_probe_position_label == "UPPER_EDGE"
+    assert context.left_side_position_pct is not None
+    assert context.current_action == WAIT_CONFIRMATION
+    assert "价格在左侧试仓区中上部" in context.execution_gate_reason
+
+
+def test_left_probe_lower_edge_requires_quality_and_allows_small_buy() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=100.8, technical_resistance_price=122),
+        volume_snapshot=_volume(
+            volume_price_status="ACCEPTANCE_CONFIRMED",
+            volume_price_score=78,
+            volume_ratio=1.15,
+            confirmation_score=78,
+        ),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.left_probe_position_label == "LOWER_EDGE"
+    assert context.volume_price_gate in {"CONFIRMED_ACCEPTANCE", "FORMING_ACCEPTANCE"}
+    assert context.target_quality == "TECH_RESISTANCE_HIGH"
+    assert context.risk_reward_score >= 65
+    assert context.current_action == ALLOW_SMALL_BUY
+    assert context.zone_action_quality == "ACTIONABLE"
+
+
 def test_pullback_upper_half_does_not_allow_small_buy() -> None:
     context = build_buy_zone_context(_base_source(current_price=104), volume_snapshot=_volume())
 
@@ -111,6 +150,46 @@ def test_pullback_upper_half_does_not_allow_small_buy() -> None:
     assert context.current_action == WAIT_CONFIRMATION
     assert context.left_probe_zone_high == 102.1
     assert context.observe_zone_high == 104.5
+
+
+def test_confirmation_line_target_quality_blocks_small_buy() -> None:
+    source = _base_source(current_price=100.8)
+    for key in ("resistance_zone_high", "recent_swing_high"):
+        source.pop(key)
+    source.pop("chase_above_price")
+
+    context = build_buy_zone_context(
+        source,
+        volume_snapshot=_volume(
+            volume_price_status="ACCEPTANCE_CONFIRMED",
+            volume_price_score=82,
+            volume_ratio=1.2,
+            confirmation_score=82,
+        ),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.left_probe_position_label == "LOWER_EDGE"
+    assert context.target_quality == "CONFIRMATION_LINE"
+    assert context.current_action == WAIT_CONFIRMATION
+    assert "收益目标质量不足" in context.execution_gate_reason
+
+
+def test_high_volume_unconfirmed_gate_waits_confirmation() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=100.8, technical_resistance_price=122),
+        volume_snapshot=_volume(
+            volume_price_status="UNCONFIRMED",
+            volume_price_score=32,
+            volume_ratio=2.4,
+            confirmation_score=70,
+        ),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.volume_price_gate == "HIGH_VOLUME_UNCONFIRMED"
+    assert context.current_action == WAIT_CONFIRMATION
+    assert "放量未确认" in context.execution_gate_reason
 
 
 def test_ibm_upper_pullback_zone_is_repair_watch_not_main_batting_area() -> None:
@@ -223,7 +302,8 @@ def test_high_volume_breakdown_below_support_enters_risk_review() -> None:
     )
 
     assert context.volume_acceptance_score == 0.0
-    assert context.current_action == RISK_REVIEW
+    assert context.current_action == PAUSE_BUY
+    assert context.volume_price_gate == "FAILED_ACCEPTANCE"
 
 
 def test_buy_zone_snapshot_and_backtest_metrics_are_generated() -> None:
@@ -304,9 +384,9 @@ def test_below_invalidation_enters_risk_review_for_existing_and_no_position() ->
     )
 
     assert context.primary_zone == "INVALIDATION"
-    assert context.current_action == RISK_REVIEW
-    assert context.existing_position_action_text == "已有持仓：进入风控复核，暂停新增买入。"
-    assert context.no_position_action_text == "未持仓：暂停买入，先复核失效风险。"
+    assert context.current_action == PAUSE_BUY
+    assert context.existing_position_action_text == "已有持仓：暂停新增，复核失效线和放量破位风险。"
+    assert context.no_position_action_text == "未持仓：暂停买入，等待买区重新生成。"
 
 
 def test_low_final_score_does_not_auto_block_good_small_setup() -> None:
@@ -327,10 +407,11 @@ def test_risk_reward_without_target_or_resistance_is_capped() -> None:
 
     context = build_buy_zone_context(source, volume_snapshot=_volume())
 
-    assert context.current_action == ALLOW_SMALL_BUY
+    assert context.current_action == WAIT_CONFIRMATION
     assert context.risk_reward_score <= 60
     assert context.target_quality == "CONFIRMATION_LINE"
     assert context.rr_score_capped is True
+    assert "收益目标质量不足" in context.execution_gate_reason
 
 
 def test_resistance_zone_high_is_not_downgraded_to_chase_line() -> None:

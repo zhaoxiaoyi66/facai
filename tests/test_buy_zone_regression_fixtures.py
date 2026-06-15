@@ -137,8 +137,8 @@ def test_invalidation_regression_pauses_buy_or_add() -> None:
     display = build_buy_zone_display(context.to_dict(), {})
 
     assert context.primary_zone == "INVALIDATION"
-    assert context.current_action == "RISK_REVIEW"
-    assert display["main_action_text"] == "风控复核 / 暂停买入"
+    assert context.current_action == "PAUSE_BUY"
+    assert display["main_action_text"] == "暂停买入 / 重新评估"
 
 
 def test_rr_target_quality_regression_samples() -> None:

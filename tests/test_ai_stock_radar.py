@@ -943,7 +943,7 @@ def _cached_technicals(**overrides: float) -> dict:
         "gain_20d_pct": 4,
         "gain_60d_pct": 8,
         "volume_price_status": "FORMING",
-        "volume_price_score": 58,
+        "volume_price_score": 60,
         "volume_ratio": 1.1,
         "chase_price": 130,
     }
@@ -2060,10 +2060,11 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
             now=NOW,
         )
 
-        assert report.decision == "AVOID"
+        assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "风控复核"
-        assert report.entry_context_status == "RISK_REVIEW"
+        assert report.entry_display_label == "暂停买入"
+        assert report.entry_context_status == "PAUSE_BUY"
+        assert report.allowed_add_pct == 0
 
 
 def test_entry_display_missing_zone_shows_specific_missing_reason() -> None:
@@ -2966,8 +2967,9 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
             now=NOW,
         )
 
-        assert report.decision == "AVOID"
+        assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
+        assert report.entry_context_status == "PAUSE_BUY"
         assert report.allowed_add_pct == 0
         assert report.block_reasons
         assert "current price is below the discipline buy zone lower bound" in report.block_reasons[0]

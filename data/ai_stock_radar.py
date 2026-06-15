@@ -865,7 +865,11 @@ def calculate_decision(
         return "AVOID"
     if context_action == "BLOCK_CHASE":
         return "BLOCK_CHASE"
-    if context_action in {"RISK_REVIEW", "AVOID"}:
+    if context_action == "PAUSE_BUY":
+        return "WAIT"
+    if context_action == "RISK_REVIEW":
+        return "WAIT"
+    if context_action == "AVOID":
         return "AVOID"
     if context_action in {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}:
         return "WAIT"

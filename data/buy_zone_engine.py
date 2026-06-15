@@ -14,6 +14,7 @@ BLOCK_CHASE = "BLOCK_CHASE"
 RISK_REVIEW = "RISK_REVIEW"
 DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
 AVOID = "AVOID"
+PAUSE_BUY = "PAUSE_BUY"
 
 ACTION_TEXT = {
     WAIT_PULLBACK: "等待回踩",
@@ -24,6 +25,7 @@ ACTION_TEXT = {
     RISK_REVIEW: "进入风控复核",
     DATA_INSUFFICIENT: "技术承接数据不足",
     AVOID: "暂不参与",
+    PAUSE_BUY: "暂停买入",
 }
 
 ZONE_TEXT = {
@@ -108,6 +110,17 @@ class BuyZoneContext:
     entry_condition_text: str = ""
     invalidation_condition_text: str = ""
     confidence_breakdown: dict[str, float] = field(default_factory=dict)
+    current_subzone: str = ""
+    left_side_position_pct: float | None = None
+    left_side_quality: str = ""
+    left_probe_position_label: str = ""
+    distance_to_left_probe_low_pct: float | None = None
+    distance_to_left_probe_high_pct: float | None = None
+    volume_price_gate: str = ""
+    execution_gate_reason: str = ""
+    zone_action_quality: str = ""
+    confirmation_score: float = 0.0
+    volume_price_status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -337,6 +350,8 @@ def build_buy_zone_context(
 
     left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
     zone_position = _zone_position(price, pullback_low, pullback_high)
+    left_side_position_pct = _left_side_position_pct(price, left_probe_low, left_probe_high)
+    left_probe_label = _left_probe_position_label(left_side_position_pct)
     primary_zone = _primary_zone(
         price=price,
         support_low=support_low,
@@ -361,6 +376,20 @@ def build_buy_zone_context(
         daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
         close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
     )
+    confirmation_score = _confirmation_score(data, volume, volume_score)
+    volume_price_gate = _volume_price_gate(
+        primary_zone=primary_zone,
+        volume_status=volume_status,
+        volume_score=volume_score,
+        volume_ratio=volume_ratio,
+        price=price,
+        confirmation=confirmation,
+        resistance=_first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"),
+        support_low=support_low,
+        invalidation=invalidation,
+        daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
+        close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
+    )
     rr = _risk_reward_assessment(
         data=data,
         price=price,
@@ -373,7 +402,28 @@ def build_buy_zone_context(
     support_score = selected_cluster.score if selected_cluster is not None else 0.0
     trend_score = _trend_score(price, ma20, ma50, ma200)
     setup_score = round(technical_score * 0.35 + volume_score * 0.30 + rr_score * 0.20 + support_score * 0.10 + trend_score * 0.05, 1)
-    action = _current_action(primary_zone, setup_score, volume_status, volume_score, rr_score)
+    action = _current_action(
+        primary_zone,
+        setup_score,
+        volume_status,
+        volume_score,
+        rr_score,
+        left_probe_position_label=left_probe_label,
+        volume_price_gate=volume_price_gate,
+        confirmation_score=confirmation_score,
+        target_quality=rr.target_quality,
+    )
+    execution_gate_reason = _execution_gate_reason(
+        action=action,
+        primary_zone=primary_zone,
+        left_probe_position_label=left_probe_label,
+        volume_price_gate=volume_price_gate,
+        confirmation_score=confirmation_score,
+        target_quality=rr.target_quality,
+        rr_score=rr_score,
+    )
+    current_subzone = _current_subzone(primary_zone, left_probe_label, zone_position)
+    left_side_quality = _left_side_quality(left_probe_label, volume_price_gate, rr.target_quality, rr_score)
     pause_text = _pause_new_condition_text(pullback_low, invalidation, data)
     add_trigger_text = _add_trigger_condition_text(confirmation, breakout_reevaluation)
     return BuyZoneContext(
@@ -449,6 +499,17 @@ def build_buy_zone_context(
             "volume_score": volume_score,
             "risk_reward_score": rr_score,
         },
+        current_subzone=current_subzone,
+        left_side_position_pct=left_side_position_pct,
+        left_side_quality=left_side_quality,
+        left_probe_position_label=left_probe_label,
+        distance_to_left_probe_low_pct=_distance_pct(price, left_probe_low),
+        distance_to_left_probe_high_pct=_distance_pct(price, left_probe_high),
+        volume_price_gate=volume_price_gate,
+        execution_gate_reason=execution_gate_reason,
+        zone_action_quality=_zone_action_quality(action, volume_price_gate, rr_score),
+        confirmation_score=confirmation_score,
+        volume_price_status=volume_status,
     )
 
 
@@ -941,6 +1002,32 @@ def _zone_position_text(position: float | None) -> str:
     return "买区上沿 / 修复观察区，不主动新增"
 
 
+def _left_side_position_pct(price: float | None, left_low: float | None, left_high: float | None) -> float | None:
+    if price is None or left_low is None or left_high is None:
+        return None
+    low, high = sorted((left_low, left_high))
+    width = high - low
+    if width <= 0 or price < low or price > high:
+        return None
+    return round((price - low) / width * 100.0, 1)
+
+
+def _left_probe_position_label(left_side_position_pct: float | None) -> str:
+    if left_side_position_pct is None:
+        return "OUTSIDE"
+    if left_side_position_pct <= 50:
+        return "LOWER_EDGE"
+    if left_side_position_pct <= 80:
+        return "MID_ZONE"
+    return "UPPER_EDGE"
+
+
+def _distance_pct(price: float | None, reference: float | None) -> float | None:
+    if price is None or reference is None or reference <= 0:
+        return None
+    return round((price / reference - 1.0) * 100.0, 2)
+
+
 def _suspend_new_line(zone_low: float | None, atr: float | None) -> float | None:
     if zone_low is None:
         return None
@@ -1026,6 +1113,62 @@ def _volume_acceptance_score(
     if status == "OVEREXTENDED_SUPPORT_READ":
         return 20.0
     return 0.0
+
+
+def _confirmation_score(data: dict[str, Any], volume: dict[str, Any], volume_score: float) -> float:
+    explicit = _first_number(volume, "confirmation_score", "confirmationScore") or _first_number(
+        data, "confirmation_score", "confirmationScore"
+    )
+    if explicit is not None:
+        return max(0.0, min(100.0, explicit))
+    return max(0.0, min(100.0, volume_score))
+
+
+def _volume_price_gate(
+    *,
+    primary_zone: str,
+    volume_status: str,
+    volume_score: float,
+    volume_ratio: float | None,
+    price: float,
+    confirmation: float,
+    resistance: float | None,
+    support_low: float,
+    invalidation: float,
+    daily_return: float | None,
+    close_position: float | None,
+) -> str:
+    if primary_zone == "INVALIDATION" or volume_status == "FAILED":
+        return "FAILED_ACCEPTANCE"
+    if volume_ratio is not None and volume_ratio > 1.2 and (price < support_low or price < invalidation):
+        return "FAILED_ACCEPTANCE"
+    if volume_status == "OVEREXTENDED_SUPPORT_READ":
+        return "OVEREXTENDED"
+    stood_up = (
+        (confirmation is not None and price >= confirmation)
+        or (resistance is not None and price >= resistance)
+        or (support_low is not None and price >= support_low)
+    )
+    high_volume = volume_ratio is not None and volume_ratio > 1.2
+    if high_volume and not stood_up:
+        return "HIGH_VOLUME_UNCONFIRMED"
+    if volume_status == "UNCONFIRMED":
+        if high_volume or volume_score < 45:
+            return "HIGH_VOLUME_UNCONFIRMED"
+        return "FORMING_ACCEPTANCE"
+    if volume_status == "ACCEPTANCE_CONFIRMED":
+        return "CONFIRMED_ACCEPTANCE"
+    low_volume = volume_ratio is not None and volume_ratio < 0.7
+    close_improved = (daily_return is not None and daily_return >= 0) or (
+        close_position is not None and close_position >= 0.55
+    )
+    if low_volume and not close_improved:
+        return "FORMING_ACCEPTANCE"
+    if volume_ratio is not None and volume_ratio > 1.0 and stood_up and volume_score >= 60:
+        return "CONFIRMED_ACCEPTANCE"
+    if volume_score >= 60:
+        return "FORMING_ACCEPTANCE"
+    return "FORMING_ACCEPTANCE"
 
 
 def _risk_reward_assessment(
@@ -1282,17 +1425,40 @@ def _valid_upside_target(value: float | None, price: float, *, max_multiple: flo
     return True
 
 
-def _current_action(primary_zone: str, setup_score: float, volume_status: str, volume_score: float, rr_score: float) -> str:
-    if primary_zone == "INVALIDATION" or volume_status == "FAILED":
-        return RISK_REVIEW
+def _current_action(
+    primary_zone: str,
+    setup_score: float,
+    volume_status: str,
+    volume_score: float,
+    rr_score: float,
+    *,
+    left_probe_position_label: str,
+    volume_price_gate: str,
+    confirmation_score: float,
+    target_quality: str,
+) -> str:
+    if primary_zone == "INVALIDATION" or volume_status == "FAILED" or volume_price_gate == "FAILED_ACCEPTANCE":
+        return PAUSE_BUY
     if volume_score <= 0:
         return RISK_REVIEW
-    if primary_zone == "CHASE_RISK" or volume_status == "OVEREXTENDED_SUPPORT_READ":
+    if primary_zone == "CHASE_RISK" or volume_status == "OVEREXTENDED_SUPPORT_READ" or volume_price_gate == "OVEREXTENDED":
         return BLOCK_CHASE
-    if primary_zone in {"DEEP_ACCEPTANCE", "PULLBACK_BUY"} and setup_score >= 62 and volume_score >= 55 and rr_score >= 55:
+    target_ok = target_quality not in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""}
+    volume_ok = volume_price_gate in {"CONFIRMED_ACCEPTANCE", "FORMING_ACCEPTANCE"}
+    left_position_ok = primary_zone == "DEEP_ACCEPTANCE" or (
+        primary_zone == "PULLBACK_BUY" and left_probe_position_label == "LOWER_EDGE"
+    )
+    if (
+        left_position_ok
+        and setup_score >= 62
+        and confirmation_score >= 60
+        and volume_ok
+        and target_ok
+        and rr_score >= 65
+    ):
         return ALLOW_SMALL_BUY
-    if primary_zone == "CONFIRMATION_REVIEW" and setup_score >= 62 and volume_score >= 78 and rr_score >= 55:
-        return ALLOW_SMALL_BUY
+    if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
+        return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_BUY":
         return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_WATCH":
@@ -1306,6 +1472,84 @@ def _current_action(primary_zone: str, setup_score: float, volume_status: str, v
     return WAIT_PULLBACK
 
 
+def _execution_gate_reason(
+    *,
+    action: str,
+    primary_zone: str,
+    left_probe_position_label: str,
+    volume_price_gate: str,
+    confirmation_score: float,
+    target_quality: str,
+    rr_score: float,
+) -> str:
+    if action == ALLOW_SMALL_BUY:
+        return "左侧位置、量价承接、目标质量和风险收益比均满足小仓观察条件。"
+    if action == PAUSE_BUY:
+        return "跌破失效线或放量破位，暂停买入并重新评估。"
+    if action == BLOCK_CHASE:
+        return "价格脱离承接区或进入追高语境，禁止追买。"
+    reasons: list[str] = []
+    if primary_zone == "PULLBACK_BUY" and left_probe_position_label != "LOWER_EDGE":
+        reasons.append("价格在左侧试仓区中上部，先看承接。")
+    if primary_zone in {"PULLBACK_WATCH", "PULLBACK_UPPER_WATCH", "REPAIR_WATCH"}:
+        reasons.append("价格仍在技术回踩带观察层，不是主动买点。")
+    if confirmation_score < 60:
+        reasons.append("量价确认分低于60。")
+    if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
+        reasons.append("放量未确认，需等收盘确认或事件复核。")
+    if target_quality in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""}:
+        reasons.append("收益目标质量不足，不能作为左侧买入依据。")
+    if rr_score < 65:
+        reasons.append("风险收益比分未达到小仓门槛。")
+    return "".join(reasons) or "等待更清晰的技术承接与量价确认。"
+
+
+def _current_subzone(primary_zone: str, left_probe_label: str, zone_position: float | None) -> str:
+    if primary_zone == "DEEP_ACCEPTANCE":
+        return "DEEP_SUPPORT_ZONE"
+    if primary_zone == "PULLBACK_BUY":
+        return {
+            "LOWER_EDGE": "LEFT_PROBE_LOWER",
+            "MID_ZONE": "LEFT_PROBE_MID",
+            "UPPER_EDGE": "LEFT_PROBE_UPPER",
+        }.get(left_probe_label, "LEFT_PROBE")
+    if primary_zone == "PULLBACK_WATCH":
+        return "ACCEPTANCE_OBSERVATION_ZONE"
+    if primary_zone in {"PULLBACK_UPPER_WATCH", "REPAIR_WATCH"}:
+        return "REPAIR_OBSERVATION_ZONE"
+    if primary_zone == "CONFIRMATION_REVIEW":
+        return "REEVALUATION_ZONE"
+    if primary_zone == "INVALIDATION":
+        return "INVALIDATION_ZONE"
+    if primary_zone == "CHASE_RISK":
+        return "CHASE_RISK_ZONE"
+    if zone_position is not None and zone_position > 1.0:
+        return "ABOVE_TECHNICAL_PULLBACK_BAND"
+    return "OUTSIDE"
+
+
+def _left_side_quality(left_probe_label: str, volume_price_gate: str, target_quality: str, rr_score: float) -> str:
+    if left_probe_label == "OUTSIDE":
+        return "OUTSIDE"
+    if volume_price_gate in {"FAILED_ACCEPTANCE", "HIGH_VOLUME_UNCONFIRMED", "OVEREXTENDED"}:
+        return "WEAK"
+    if target_quality in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""} or rr_score < 65:
+        return "WATCH"
+    if left_probe_label == "LOWER_EDGE":
+        return "GOOD"
+    return "WATCH"
+
+
+def _zone_action_quality(action: str, volume_price_gate: str, rr_score: float) -> str:
+    if action == ALLOW_SMALL_BUY:
+        return "ACTIONABLE"
+    if action in {PAUSE_BUY, RISK_REVIEW, BLOCK_CHASE}:
+        return "BLOCKED"
+    if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED" or rr_score < 65:
+        return "WAIT_CONFIRMATION"
+    return "OBSERVE"
+
+
 def _existing_position_action(action: str) -> str:
     if action == ALLOW_SMALL_BUY:
         return "已有持仓：股票层可观察，是否新增取决于账户额度与持仓约束。"
@@ -1313,6 +1557,8 @@ def _existing_position_action(action: str) -> str:
         return "已有持仓：不追高加仓，等待回到承接区。"
     if action == RISK_REVIEW:
         return "已有持仓：进入风控复核，暂停新增买入。"
+    if action == PAUSE_BUY:
+        return "已有持仓：暂停新增，复核失效线和放量破位风险。"
     if action == DATA_INSUFFICIENT:
         return "已有持仓：技术承接数据不足，先暂停新增买入。"
     return "已有持仓：持有观察，等待量价确认或更低回踩。"
@@ -1325,6 +1571,8 @@ def _no_position_action(action: str) -> str:
         return "未持仓：禁止追高，等待回到回踩买区。"
     if action == RISK_REVIEW:
         return "未持仓：暂停买入，先复核失效风险。"
+    if action == PAUSE_BUY:
+        return "未持仓：暂停买入，等待买区重新生成。"
     if action == DATA_INSUFFICIENT:
         return "未持仓：技术承接数据不足，不给明确买入区。"
     if action == WAIT_PULLBACK:

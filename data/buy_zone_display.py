@@ -6,6 +6,7 @@ from typing import Any
 
 SMALL_BUY_ACTIONS = {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}
 WAIT_ACTIONS = {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}
+PAUSE_ACTIONS = {"PAUSE_BUY"}
 
 
 def build_buy_zone_display(
@@ -86,6 +87,15 @@ def build_buy_zone_display(
         "confidence_breakdown": _dict(_value(ctx, "confidence_breakdown", "confidenceBreakdown", default={}) or {}),
         "zone_position": _number(_value(ctx, "zone_position", "zonePosition")),
         "zone_position_text": str(_value(ctx, "zone_position_text", "zonePositionText", default="") or ""),
+        "current_subzone": str(_value(ctx, "current_subzone", "currentSubzone", default="") or ""),
+        "left_side_position_pct": _number(_value(ctx, "left_side_position_pct", "leftSidePositionPct")),
+        "left_side_quality": str(_value(ctx, "left_side_quality", "leftSideQuality", default="") or ""),
+        "left_probe_position_label": str(_value(ctx, "left_probe_position_label", "leftProbePositionLabel", default="") or ""),
+        "distance_to_left_probe_low_pct": _number(_value(ctx, "distance_to_left_probe_low_pct", "distanceToLeftProbeLowPct")),
+        "distance_to_left_probe_high_pct": _number(_value(ctx, "distance_to_left_probe_high_pct", "distanceToLeftProbeHighPct")),
+        "volume_price_gate": str(_value(ctx, "volume_price_gate", "volumePriceGate", default="") or ""),
+        "execution_gate_reason": str(_value(ctx, "execution_gate_reason", "executionGateReason", default="") or ""),
+        "zone_action_quality": str(_value(ctx, "zone_action_quality", "zoneActionQuality", default="") or ""),
         "next_step_text": next_step,
         "missing_fields": missing,
         "missing_fields_text": missing_text,
@@ -132,6 +142,8 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
         return _technical("追高禁区", "禁止追", "价格已脱离主击球区，不追高。")
     if action == "RISK_REVIEW":
         return _technical("风控复核", "暂停加仓", "先复核失效线和风险，再决定是否处理。")
+    if action == "PAUSE_BUY":
+        return _technical("暂停买入", "暂停新增", "买区或承接已经失效，等待重新评估。")
     if action == "AVOID":
         return _technical("暂不参与", "观望", "当前不参与，等待结构改善。")
     return _technical("数据不足", "不给买区", "技术承接数据不足，不生成明确主击球区。")
@@ -166,6 +178,18 @@ def _account_text(
             "sizing_action": "WAIT_DATA",
             "sizing_action_text": "暂停买入",
             "account_action_text": "无持仓，暂停买入，等待数据补齐",
+        }
+    if action == "PAUSE_BUY" and not add_is_zero:
+        if has_position:
+            return {
+                "sizing_action": "PAUSE_ADD",
+                "sizing_action_text": "暂停加仓",
+                "account_action_text": f"已有 {_shares_text(shares)}，持有观察，暂停新增",
+            }
+        return {
+            "sizing_action": "PAUSE_BUY",
+            "sizing_action_text": "暂停买入",
+            "account_action_text": "无持仓，暂停买入，等待买区重新评估",
         }
     if add_is_zero:
         if has_position:
@@ -224,6 +248,8 @@ def _main_action_text(
         return "禁止追高"
     if action == "RISK_REVIEW":
         return "风控复核 / 暂停加仓" if has_position else "风控复核 / 暂停买入"
+    if action == "PAUSE_BUY":
+        return "持有观察 / 暂停加仓" if has_position else "暂停买入 / 重新评估"
     if action in SMALL_BUY_ACTIONS:
         return "允许小仓观察"
     if action == "WAIT_PULLBACK":
@@ -255,6 +281,17 @@ def _is_current_in_primary_zone(context: dict[str, Any], current_price: float | 
 
 def _volume_confirmation_text(context: dict[str, Any], row: dict[str, Any]) -> str:
     nested = _dict(_value(row, "volumePriceAcceptance", "volume_price_acceptance"))
+    gate = str(_value(context, "volume_price_gate", "volumePriceGate") or "").strip().upper()
+    if gate == "CONFIRMED_ACCEPTANCE":
+        return "量价承接确认"
+    if gate == "FORMING_ACCEPTANCE":
+        return "初步承接，尚未确认"
+    if gate == "HIGH_VOLUME_UNCONFIRMED":
+        return "放量未确认，等收盘确认 / 事件复核"
+    if gate == "FAILED_ACCEPTANCE":
+        return "承接失败"
+    if gate == "OVEREXTENDED":
+        return "脱离观察区，不构成低吸依据"
     status = str(
         _value(context, "volume_price_status", "volumePriceStatus")
         or _value(row, "volumePriceStatus", "volume_price_status")
@@ -331,6 +368,10 @@ def _next_step_text(
         if invalidation is not None:
             return f"复核是否跌破 {_money(invalidation)}"
         return "先复核失效线和风险"
+    if action == "PAUSE_BUY":
+        if invalidation is not None:
+            return f"跌破 {_money(invalidation)} 后暂停买入"
+        return "等待买区重新评估"
     return "等待结构改善"
 
 

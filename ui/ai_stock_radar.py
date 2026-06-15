@@ -3052,6 +3052,8 @@ def _core_status(row: dict[str, Any]) -> str:
             return "防追高"
         if display_action == "RISK_REVIEW":
             return "风控复核"
+        if display_action == "PAUSE_BUY":
+            return "风控复核"
         if display_action == "AVOID":
             return "回避"
         label = str(display.get("badge_label") or display.get("technical_action_text") or "").strip()
@@ -3103,6 +3105,8 @@ def _buy_zone_context_core_status(context: dict[str, Any] | None) -> str:
     if action == "BLOCK_CHASE":
         return "防追高"
     if action == "RISK_REVIEW":
+        return "风控复核"
+    if action == "PAUSE_BUY":
         return "风控复核"
     if action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
         return "可买"
