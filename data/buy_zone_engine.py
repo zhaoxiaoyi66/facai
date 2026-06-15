@@ -19,13 +19,13 @@ PAUSE_BUY = "PAUSE_BUY"
 ACTION_TEXT = {
     WAIT_PULLBACK: "等待回踩",
     WAIT_CONFIRMATION: "等待确认",
-    ALLOW_SMALL_BUY: "允许小仓观察",
-    ALLOW_ADD_ON_PULLBACK: "允许回踩复核加仓",
-    BLOCK_CHASE: "禁止追高",
+    ALLOW_SMALL_BUY: "小仓观察参考",
+    ALLOW_ADD_ON_PULLBACK: "回踩复核参考",
+    BLOCK_CHASE: "追高风险提醒",
     RISK_REVIEW: "进入风控复核",
     DATA_INSUFFICIENT: "技术承接数据不足",
     AVOID: "暂不参与",
-    PAUSE_BUY: "暂停买入",
+    PAUSE_BUY: "系统不建议新增",
 }
 
 ZONE_TEXT = {
@@ -336,8 +336,8 @@ def build_buy_zone_context(
             deep_support_break_line=deep_support_break_line,
             risk_reward=None,
             risk_reward_text="风险收益比暂缺",
-            action_new_cash="暂停买入 / 等待数据补齐",
-            action_existing_position="持有观察 / 暂停加仓",
+            action_new_cash="数据不足 / 等待补齐",
+            action_existing_position="持有观察 / 不建议加仓",
             entry_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
             invalidation_condition_text=_pause_new_condition_text(pullback_low, invalidation, data),
             confidence_breakdown={
@@ -912,7 +912,7 @@ def _pause_new_condition_text(pullback_low: float | None, invalidation: float | 
     if invalidation is not None and (pullback_low is None or abs(invalidation - pullback_low) > max(0.05, pullback_low * 0.005)):
         parts.append(f"跌破 {_money(invalidation)}：买区失效，重新评估")
     if trend_low is not None or trend_high is not None:
-        parts.append(f"跌破 {_range_money(trend_low, trend_high)}：趋势恶化，禁止继续摊低")
+        parts.append(f"跌破 {_range_money(trend_low, trend_high)}：趋势恶化，系统不建议继续摊低")
     if deep_low is not None or deep_high is not None:
         parts.append(f"{_range_money(deep_low, deep_high)}：极端风险/基本面复核区，不是自动买入区")
     return "；".join(parts) if parts else "暂停新增条件：跌破失效线或承接失败。"
@@ -994,7 +994,7 @@ def _zone_position_text(position: float | None) -> str:
     if position is None:
         return "位置暂缺"
     if position < 0.35:
-        return "买区下沿，允许小仓观察"
+        return "买区下沿，小仓观察参考"
     if position <= 0.75:
         return "买区中段，等待承接"
     if position > 1.0:
@@ -1485,9 +1485,9 @@ def _execution_gate_reason(
     if action == ALLOW_SMALL_BUY:
         return "左侧位置、量价承接、目标质量和风险收益比均满足小仓观察条件。"
     if action == PAUSE_BUY:
-        return "跌破失效线或放量破位，暂停买入并重新评估。"
+        return "跌破失效线或放量破位，系统不建议新增并需要重新评估。"
     if action == BLOCK_CHASE:
-        return "价格脱离承接区或进入追高语境，禁止追买。"
+        return "价格脱离承接区或进入追高语境，提示追高风险。"
     reasons: list[str] = []
     if primary_zone == "PULLBACK_BUY" and left_probe_position_label != "LOWER_EDGE":
         reasons.append("价格在左侧试仓区中上部，先看承接。")
@@ -1566,13 +1566,13 @@ def _existing_position_action(action: str) -> str:
 
 def _no_position_action(action: str) -> str:
     if action == ALLOW_SMALL_BUY:
-        return "未持仓：允许小仓观察，后续加仓必须等确认。"
+        return "未持仓：小仓观察参考，后续加仓仍需确认。"
     if action == BLOCK_CHASE:
-        return "未持仓：禁止追高，等待回到回踩买区。"
+        return "未持仓：追高风险提醒，等待回到技术回踩带。"
     if action == RISK_REVIEW:
-        return "未持仓：暂停买入，先复核失效风险。"
+        return "未持仓：系统不建议新增，先复核失效风险。"
     if action == PAUSE_BUY:
-        return "未持仓：暂停买入，等待买区重新生成。"
+        return "未持仓：系统不建议新增，等待买区重新生成。"
     if action == DATA_INSUFFICIENT:
         return "未持仓：技术承接数据不足，不给明确买入区。"
     if action == WAIT_PULLBACK:

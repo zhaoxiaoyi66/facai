@@ -153,6 +153,12 @@ TRADE_DISCIPLINE_COLUMNS = {
     "volume_price_checked_at": "TEXT",
     "buy_advisory_warnings_json": "TEXT",
     "buy_advisory_acknowledged": "INTEGER",
+    "advisory_level": "TEXT",
+    "advisory_text": "TEXT",
+    "advisory_reasons_json": "TEXT",
+    "user_confirmed_advisory": "INTEGER",
+    "validation_passed": "INTEGER",
+    "can_submit": "INTEGER",
     "advisory_checked_at": "TEXT",
     "macro_regime": "TEXT",
     "portfolio_structure_status": "TEXT",
@@ -1087,6 +1093,12 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
         for field in (
             "buy_advisory_warnings_json",
             "buy_advisory_acknowledged",
+            "advisory_level",
+            "advisory_text",
+            "advisory_reasons_json",
+            "user_confirmed_advisory",
+            "validation_passed",
+            "can_submit",
             "advisory_checked_at",
             "macro_regime",
             "portfolio_structure_status",
@@ -1106,6 +1118,12 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
         SET
             buy_advisory_warnings_json = ?,
             buy_advisory_acknowledged = ?,
+            advisory_level = ?,
+            advisory_text = ?,
+            advisory_reasons_json = ?,
+            user_confirmed_advisory = ?,
+            validation_passed = ?,
+            can_submit = ?,
             advisory_checked_at = ?,
             macro_regime = ?,
             portfolio_structure_status = ?,
@@ -1121,6 +1139,12 @@ def _write_buy_advisory_snapshot(conn: sqlite3.Connection, entry_id: int, cleane
         (
             cleaned["buy_advisory_warnings_json"],
             cleaned["buy_advisory_acknowledged"],
+            cleaned["advisory_level"],
+            cleaned["advisory_text"],
+            cleaned["advisory_reasons_json"],
+            cleaned["user_confirmed_advisory"],
+            cleaned["validation_passed"],
+            cleaned["can_submit"],
             cleaned["advisory_checked_at"],
             cleaned["macro_regime"],
             cleaned["portfolio_structure_status"],
@@ -1763,7 +1787,7 @@ def _buy_advisory_warnings_from_values(values: dict) -> list[str]:
     if _clean_bool(_value(values, "radarBlocked", "radar_blocked")) and not warnings:
         warnings.append("Radar 买区提示需人工复核；可手动继续，系统会记录为人工 override。")
     if _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked")) and not warnings:
-        warnings.append("旧买入门禁标记已按提示保存；可手动继续，系统会记录为人工 override。")
+        warnings.append("旧买入风险标记已按提示保存；可手动继续，系统会记录为人工 override。")
     if _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")):
         warnings.append("买入情绪提示：请确认这不是 FOMO / 焦虑 / 复仇交易。")
     if _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")):
@@ -1990,6 +2014,12 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
         return {
             "buy_advisory_warnings_json": "[]",
             "buy_advisory_acknowledged": False,
+            "advisory_level": None,
+            "advisory_text": None,
+            "advisory_reasons_json": "[]",
+            "user_confirmed_advisory": False,
+            "validation_passed": True,
+            "can_submit": True,
             "advisory_checked_at": None,
             "macro_regime": None,
             "portfolio_structure_status": None,
@@ -2004,11 +2034,24 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
     warnings = _reasons_list(_value(values, "buyAdvisoryWarnings", "buy_advisory_warnings", "buy_advisory_warnings_json"))
     if not warnings:
         warnings = _buy_advisory_warnings_from_values(values)
+    explicit_reasons = _reasons_list(_value(values, "advisoryReasons", "advisory_reasons", "advisory_reasons_json"))
+    if explicit_reasons:
+        warnings = explicit_reasons
+    level = _clean_optional_text(_value(values, "advisoryLevel", "advisory_level")) or _buy_advisory_level_from_reasons(warnings)
+    text = _clean_optional_text(_value(values, "advisoryText", "advisory_text")) or _buy_advisory_text(level, warnings)
+    explicit_confirmed = _value(values, "userConfirmedAdvisory", "user_confirmed_advisory")
+    confirmed = _clean_bool(explicit_confirmed) if explicit_confirmed is not None else bool(warnings)
     explicit_override = _value(values, "userOverride", "user_override")
     user_override = _clean_bool(explicit_override) if explicit_override is not None else bool(warnings)
     return {
         "buy_advisory_warnings_json": _reasons_json(_dedupe_text(warnings)),
-        "buy_advisory_acknowledged": _clean_bool(_value(values, "buyAdvisoryAcknowledged", "buy_advisory_acknowledged")),
+        "buy_advisory_acknowledged": _clean_bool(_value(values, "buyAdvisoryAcknowledged", "buy_advisory_acknowledged")) or confirmed,
+        "advisory_level": level,
+        "advisory_text": text,
+        "advisory_reasons_json": _reasons_json(_dedupe_text(warnings)),
+        "user_confirmed_advisory": confirmed,
+        "validation_passed": _clean_bool(_value(values, "validationPassed", "validation_passed")) if _value(values, "validationPassed", "validation_passed") is not None else True,
+        "can_submit": _clean_bool(_value(values, "canSubmit", "can_submit")) if _value(values, "canSubmit", "can_submit") is not None else True,
         "advisory_checked_at": _clean_optional_text(_value(values, "advisoryCheckedAt", "advisory_checked_at", "gateCheckedAt", "gate_checked_at")),
         "macro_regime": _clean_optional_text(_value(values, "macroRegime", "macro_regime")),
         "portfolio_structure_status": _clean_optional_text(
@@ -2025,6 +2068,26 @@ def _clean_buy_advisory_snapshot(action_type: str, values: dict) -> dict:
         "left_side_action_cn": _clean_optional_text(_value(values, "leftSideActionCn", "left_side_action_cn")),
         "position_status": _clean_optional_text(_value(values, "positionStatus", "position_status")),
     }
+
+
+def _buy_advisory_level_from_reasons(reasons: list[str]) -> str:
+    if not reasons:
+        return "NONE"
+    text = " ".join(str(item or "") for item in reasons).upper()
+    if any(token in text for token in ("BLOCK_CHASE", "HIGH_RISK", "追高", "风险", "数据不足", "失效", "RR")):
+        return "HIGH_RISK"
+    return "WARNING"
+
+
+def _buy_advisory_text(level: str, reasons: list[str]) -> str:
+    if not reasons:
+        return ""
+    normalized = str(level or "").strip().upper()
+    if normalized in {"HIGH_RISK", "CRITICAL"}:
+        return "高风险买入提醒：系统不建议，但不会阻止；继续操作将记录为已确认风险。"
+    if normalized == "WARNING":
+        return "买入前风险提示：系统建议复核，但不会阻止你继续。"
+    return "买入提醒：请确认本次操作符合你的计划。"
 
 
 def _clean_sell_advisory_snapshot(action_type: str, values: dict) -> dict:
@@ -2682,6 +2745,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         }
     if "buy_advisory_warnings_json" in item:
         item["buy_advisory_warnings"] = _load_json_list(item["buy_advisory_warnings_json"])
+    if "advisory_reasons_json" in item:
+        item["advisory_reasons"] = _load_json_list(item["advisory_reasons_json"])
     if "sell_warning_reasons_json" in item:
         item["sell_warning_reasons"] = _load_json_list(item["sell_warning_reasons_json"])
     if "final_decision_snapshot_json" in item:
@@ -2689,6 +2754,9 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
     for key in (
         "user_override",
         "buy_advisory_acknowledged",
+        "user_confirmed_advisory",
+        "validation_passed",
+        "can_submit",
         "sell_review_required",
         "sell_blocked",
         "user_confirmed_sell_warning",

@@ -137,13 +137,13 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
             text = "技术回踩带内，可观察"
         else:
             text = "主击球区内，可观察"
-        return _technical("击球区内", "可小仓", text)
+        return _technical("击球区内", "小仓观察参考", text)
     if action == "BLOCK_CHASE":
-        return _technical("追高禁区", "禁止追", "价格已脱离主击球区，不追高。")
+        return _technical("追高风险区", "高风险", "价格已脱离主击球区，系统不建议追高新增。")
     if action == "RISK_REVIEW":
-        return _technical("风控复核", "暂停加仓", "先复核失效线和风险，再决定是否处理。")
+        return _technical("风险复核", "不建议加仓", "先复核失效线和风险，再决定是否处理。")
     if action == "PAUSE_BUY":
-        return _technical("暂停买入", "暂停新增", "买区或承接已经失效，等待重新评估。")
+        return _technical("结构失效风险", "不建议新增", "买区或承接已经失效，等待重新评估。")
     if action == "AVOID":
         return _technical("暂不参与", "观望", "当前不参与，等待结构改善。")
     return _technical("数据不足", "不给买区", "技术承接数据不足，不生成明确主击球区。")
@@ -171,25 +171,25 @@ def _account_text(
         if has_position:
             return {
                 "sizing_action": "HOLD_NO_ADD",
-                "sizing_action_text": "暂停加仓",
-                "account_action_text": f"已有 {_shares_text(shares)}，持有观察，暂停加仓",
+                "sizing_action_text": "不建议加仓",
+                "account_action_text": f"已有 {_shares_text(shares)}，持有观察，不建议加仓",
             }
         return {
             "sizing_action": "WAIT_DATA",
-            "sizing_action_text": "暂停买入",
-            "account_action_text": "无持仓，暂停买入，等待数据补齐",
+            "sizing_action_text": "不建议买入",
+            "account_action_text": "无持仓，不建议买入，等待数据补齐",
         }
     if action == "PAUSE_BUY" and not add_is_zero:
         if has_position:
             return {
                 "sizing_action": "PAUSE_ADD",
-                "sizing_action_text": "暂停加仓",
-                "account_action_text": f"已有 {_shares_text(shares)}，持有观察，暂停新增",
+                "sizing_action_text": "不建议加仓",
+                "account_action_text": f"已有 {_shares_text(shares)}，持有观察，不建议新增",
             }
         return {
             "sizing_action": "PAUSE_BUY",
-            "sizing_action_text": "暂停买入",
-            "account_action_text": "无持仓，暂停买入，等待买区重新评估",
+            "sizing_action_text": "不建议买入",
+            "account_action_text": "无持仓，不建议买入，等待买区重新评估",
         }
     if add_is_zero:
         if has_position:
@@ -241,17 +241,17 @@ def _main_action_text(
             return "持有观察 / 当前不新增"
         if action == "WAIT_CONFIRMATION" and primary_zone == "PULLBACK_BUY":
             return f"{technical['badge_label']} / 当前不新增"
-        return "暂停买入 / 当前不新增"
+        return "仅观察 / 当前不新增"
     if action == "DATA_INSUFFICIENT":
-        return "持有观察 / 暂停加仓" if has_position else "暂停买入 / 等待数据补齐"
+        return "持有观察 / 不建议加仓" if has_position else "数据不足 / 等待补齐"
     if action == "BLOCK_CHASE":
-        return "禁止追高"
+        return "追高风险提醒"
     if action == "RISK_REVIEW":
-        return "风控复核 / 暂停加仓" if has_position else "风控复核 / 暂停买入"
+        return "风险复核 / 不建议加仓" if has_position else "风险复核 / 不建议新增"
     if action == "PAUSE_BUY":
-        return "持有观察 / 暂停加仓" if has_position else "暂停买入 / 重新评估"
+        return "持有观察 / 不建议加仓" if has_position else "结构失效风险 / 重新评估"
     if action in SMALL_BUY_ACTIONS:
-        return "允许小仓观察"
+        return "小仓观察参考"
     if action == "WAIT_PULLBACK":
         return "等回击球区"
     if action == "WAIT_CONFIRMATION":
@@ -370,7 +370,7 @@ def _next_step_text(
         return "先复核失效线和风险"
     if action == "PAUSE_BUY":
         if invalidation is not None:
-            return f"跌破 {_money(invalidation)} 后暂停买入"
+            return f"跌破 {_money(invalidation)} 后系统不建议新增"
         return "等待买区重新评估"
     return "等待结构改善"
 

@@ -207,15 +207,15 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
     )
 
     assert "投资结论" in html
-    assert "禁止追高" in html
+    assert "追高风险" in html
     assert "不主动追买" in html
     assert "追高禁区" in html
     assert "当前位置" in html
     assert "当前位置" in html
     assert "入场条件" in html
     assert "放量站上 $52.00 后重新判断" in html
-    assert "跌破 $44.00 暂停买入" in html
-    assert "≥ $50.00 禁止追买" in html
+    assert "跌破 $44.00 后系统不建议新增" in html
+    assert "≥ $50.00 追高风险提醒" in html
     assert "BLOCK_CHASE" not in html
     assert "OVEREXTENDED_SUPPORT_READ" not in html
 
@@ -562,7 +562,7 @@ def test_report_confirmation_is_review_trigger_not_buy_signal() -> None:
     )
 
     assert conclusion["confirm_text"] == "重新评估线：放量站上 $104.93 后重新评估"
-    assert conclusion["buy_premise_text"] == "重新评估线 + 综合评分回到70以上 + 风险门禁解除"
+    assert conclusion["buy_premise_text"] == "重新评估线 + 综合评分回到70以上 + 风险复核完成"
 
 
 def test_report_range_chart_explains_primary_and_reference_zones() -> None:
@@ -1398,7 +1398,7 @@ def test_ai_radar_report_only_marks_breakdown_when_price_breaks_invalidation() -
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
     assert "破位复核区" in html
-    assert "跌破 $196.90 暂停买入" in html
+    assert "跌破 $196.90 后系统不建议新增" in html
     assert "技术承接数据不足" in html
     assert "current price is below" not in html
     assert report["decision"] == "WAIT"
@@ -1562,7 +1562,7 @@ def test_ai_radar_report_position_action_uses_buy_zone_display() -> None:
         "portfolio_weight": 0.058,
         "action_for_existing_position": "已有持仓：允许回踩复核加仓，但不能一次打满。",
     }
-    action_result = SimpleNamespace(action_code="ALLOW_SMALL_BUY", action_cn="允许小仓观察")
+    action_result = SimpleNamespace(action_code="ALLOW_SMALL_BUY", action_cn="小仓观察参考")
 
     html = radar_ui._report_html(
         report,
@@ -2014,7 +2014,7 @@ def test_entry_display_in_chase_zone_keeps_block_chase() -> None:
         )
 
         assert report.decision == "BLOCK_CHASE"
-        assert report.entry_display_label == "追高禁区"
+        assert report.entry_display_label == "追高风险区"
         assert report.entry_context_status == "BLOCK_CHASE"
 
 
@@ -2062,7 +2062,7 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
 
         assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "暂停买入"
+        assert report.entry_display_label == "结构失效风险"
         assert report.entry_context_status == "PAUSE_BUY"
         assert report.allowed_add_pct == 0
 
@@ -2223,7 +2223,7 @@ def test_technical_pullback_overlap_with_chase_is_truncated_for_display_only() -
         assert report.technical_chase_overlap is True
         assert report.technical_entry_zone_high and report.technical_entry_zone_high > 110
         assert report.effective_technical_entry_zone_high == 110
-        assert report.entry_display_label == "追高禁区"
+        assert report.entry_display_label == "追高风险区"
 
 
 def test_technical_entry_zone_needs_trend_confirmation() -> None:

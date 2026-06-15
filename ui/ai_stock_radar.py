@@ -1561,12 +1561,12 @@ def _buy_premise_text(report: dict[str, Any], buy_zone_context: dict[str, Any] |
     if final_score is None or final_score < 70:
         parts.append("综合评分回到70以上")
     if risk_score is None or risk_score < 55:
-        parts.append("风险门禁解除")
+        parts.append("风险复核完成")
     if len(parts) == 1:
         setup_score = _number(buy_zone_context.get("setup_score"))
         if setup_score is None or setup_score < 62:
             parts.append("setup score 达到可小仓阈值")
-        parts.extend(["量价继续确认", "风险门禁解除"])
+        parts.extend(["量价继续确认", "风险复核完成"])
     return " + ".join(parts)
 
 
@@ -1647,8 +1647,8 @@ def _batting_zone_context(
         "entry_condition": entry_condition,
         "operation": operation,
         "reevaluation_line": f"放量站上 {_money(confirm)} 后重新判断" if confirm is not None else "暂缺",
-        "invalidation_line": f"跌破 {_money(invalidation)} 暂停买入" if invalidation is not None else "暂缺",
-        "chase_line": f"≥ {_money(chase)} 禁止追买" if chase is not None else "暂缺",
+        "invalidation_line": f"跌破 {_money(invalidation)} 后系统不建议新增" if invalidation is not None else "暂缺",
+        "chase_line": f"≥ {_money(chase)} 追高风险提醒" if chase is not None else "暂缺",
         "volume_state": _batting_volume_state(report, buy_zone_context),
     }
 
@@ -1699,18 +1699,18 @@ def _batting_entry_condition(status: str, action_code: str) -> str:
 
 
 def _batting_operation(status: str, action_text: str, action_code: str) -> str:
-    if action_text and any(token in action_text for token in ("当前不新增", "持有观察", "暂停买入", "暂停加仓")):
+    if action_text and any(token in action_text for token in ("当前不新增", "持有观察", "不建议买入", "不建议加仓")):
         return action_text
     if status == "数据不足":
         return "先补数据，不给明确买区"
     if status == "追高区":
         return "不追，等待回到击球区"
     if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
-        return "可小仓观察，不能一次打满"
+        return "小仓观察参考，不能一次打满"
     if status == "高于击球区":
         return "不追，等回踩到击球区后观察承接"
     if status == "低于击球区":
-        return "暂停，先复核失效线"
+        return "先复核失效线，系统不建议新增"
     return action_text or "等待承接确认"
 
 
@@ -1727,11 +1727,11 @@ def _batting_volume_state(report: dict[str, Any], buy_zone_context: dict[str, An
 def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_context: dict[str, Any] | None = None) -> str:
     context_action = str((buy_zone_context or {}).get("current_action") or "").upper()
     context_map = {
-        "ALLOW_SMALL_BUY": "允许小仓",
-        "ALLOW_ADD_ON_PULLBACK": "允许小仓",
+        "ALLOW_SMALL_BUY": "小仓观察",
+        "ALLOW_ADD_ON_PULLBACK": "小仓观察",
         "WAIT_PULLBACK": "等待回踩",
         "WAIT_CONFIRMATION": "等待确认",
-        "BLOCK_CHASE": "禁止追高",
+        "BLOCK_CHASE": "追高风险",
         "RISK_REVIEW": "暂不参与",
         "DATA_INSUFFICIENT": "数据不足",
         "AVOID": "暂不参与",
@@ -1741,11 +1741,11 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
     action_code = str(getattr(action_result, "action_code", "") or "").upper()
     action_map = {
         "ALLOW_SMALL_BUY": "允许小仓",
-        "ADD_ON_PULLBACK": "允许小仓",
+        "ADD_ON_PULLBACK": "小仓观察",
         "ADD_ON_BREAKOUT": "等待确认",
         "WAIT_CONFIRMATION": "等待确认",
         "HOLD_NO_ADD": "等待确认",
-        "BLOCK_CHASE": "禁止追高",
+        "BLOCK_CHASE": "追高风险",
         "BREAKDOWN_REVIEW": "暂不参与",
         "EVENT_REVIEW": "暂不参与",
         "DATA_INSUFFICIENT": "数据不足",
@@ -1755,9 +1755,9 @@ def _rating_text(report: dict[str, Any], action_result: Any | None, buy_zone_con
         return action_map[action_code]
     decision = str(report.get("decision") or "").upper()
     return {
-        "ALLOW_BUY": "允许小仓",
+        "ALLOW_BUY": "小仓观察",
         "WAIT": "等待确认",
-        "BLOCK_CHASE": "禁止追高",
+        "BLOCK_CHASE": "追高风险",
         "DATA_MISSING": "数据不足",
         "AVOID": "暂不参与",
     }.get(decision, "等待确认")
@@ -1770,7 +1770,7 @@ def _current_action_text(report: dict[str, Any], action_result: Any | None) -> s
     if action_code in {"DATA_INSUFFICIENT"}:
         return "需人工判断"
     if action_code in {"BREAKDOWN_REVIEW", "EVENT_REVIEW", "REDUCE_RISK"}:
-        return "暂停买入"
+        return "不建议新增"
     if action_code in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK"}:
         return "小仓观察"
     if action_code in {"HOLD_NO_ADD"}:
@@ -1903,8 +1903,8 @@ def _position_status_text(shares: float | None, weight: float | None) -> str:
 def _action_for_existing_position(conclusion: dict[str, Any], action_result: Any | None) -> str:
     rating = str(conclusion.get("rating_text") or "")
     action_code = str(getattr(action_result, "action_code", "") or "").upper()
-    if rating in {"禁止追高", "暂不参与", "数据不足"}:
-        return "持有观察，暂停加仓"
+    if rating in {"禁止追高", "追高风险", "暂不参与", "数据不足"}:
+        return "持有观察，系统不建议加仓"
     if action_code in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK"}:
         return "可小幅复核加仓，不能一次打满"
     return "持有观察，未到加仓确认位"
@@ -1912,9 +1912,9 @@ def _action_for_existing_position(conclusion: dict[str, Any], action_result: Any
 
 def _action_for_no_position(conclusion: dict[str, Any], action_result: Any | None) -> str:
     rating = str(conclusion.get("rating_text") or "")
-    if rating == "允许小仓":
-        return "允许小仓观察，等待量价继续确认"
-    if rating == "禁止追高":
+    if rating in {"允许小仓", "小仓观察"}:
+        return "小仓观察参考，等待量价继续确认"
+    if rating in {"禁止追高", "追高风险"}:
         return "不追买，等待回到观察区"
     if rating in {"暂不参与", "数据不足"}:
         return "暂不参与，先补数据或等事件复核"
@@ -2184,14 +2184,14 @@ def _range_action_text(label: str) -> str:
     if "估值" in label:
         return "仅作仓位参考"
     if "回踩" in label:
-        return "允许小仓观察"
+        return "小仓观察参考"
     if "重新评估" in label:
         return "站上后重新判断"
     if "修复" in label or "确认" in label:
         return "等待确认"
     if "追高" in label:
-        return "禁止追买"
-    return "暂停买入" if "失效" in label else "等待确认"
+        return "追高风险提醒"
+    return "不建议新增" if "失效" in label else "等待确认"
 
 
 def _range_item_is_current(label: str, zone_text: str) -> bool:
@@ -2304,18 +2304,18 @@ def _gate_reason_text(report: dict[str, Any]) -> str:
         ]
     )
     if reasons:
-        return f"门禁/复核限制：{reasons[0]}。"
-    return "门禁/复核限制：未触发强买确认。"
+        return f"风险复核提示：{reasons[0]}。"
+    return "风险复核提示：未触发强买确认。"
 
 
 def _risk_gate_notice(report: dict[str, Any]) -> str:
     final_score = _number(report.get("final_score"))
     risk_score = _number(report.get("risk_score"))
     if final_score is not None and final_score < 70:
-        return "风险门禁：综合评分低于70，系统不建议作为核心仓。"
+        return "风险提示：综合评分低于70，系统不建议作为核心仓。"
     if risk_score is not None and risk_score < 55:
-        return "风险门禁：风险评分偏低，风险门禁未解除。"
-    return "风险门禁：未解除强买条件，仍需量价与风险复核。"
+        return "风险提示：风险评分偏低，仍需风险复核。"
+    return "风险提示：未满足强买条件，仍需量价与风险复核。"
 
 
 def _volume_price_acceptance_card_html(
@@ -4219,7 +4219,7 @@ def _entry_display_html(row: dict[str, Any]) -> str:
     label = str(row.get("entry_display_label") or "暂无参考买区").strip()
     hint = str(row.get("entry_action_hint") or row.get("entry_display_reason") or "").strip()
     if not hint:
-        hint = "只读参考，不改变门禁"
+        hint = "只读参考，不改变主结论"
     return (
         '<div class="ai-radar-entry-ref">'
         f'<strong>{escape(label)}</strong>'

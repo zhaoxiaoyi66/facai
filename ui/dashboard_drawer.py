@@ -430,9 +430,9 @@ def _drawer_canonical_action_text(action_code: str, *, has_position: bool) -> st
     mapping = {
         "WAIT_PULLBACK": "等回击球区",
         "WAIT_CONFIRMATION": "区内看承接",
-        "ALLOW_SMALL_BUY": "击球区内",
-        "ALLOW_ADD_ON_PULLBACK": "击球区内",
-        "BLOCK_CHASE": "追高禁区",
+        "ALLOW_SMALL_BUY": "小仓观察参考",
+        "ALLOW_ADD_ON_PULLBACK": "小仓观察参考",
+        "BLOCK_CHASE": "追高风险区",
         "RISK_REVIEW": "进入风控复核",
         "AVOID": "暂不参与",
     }
@@ -441,7 +441,7 @@ def _drawer_canonical_action_text(action_code: str, *, has_position: bool) -> st
 
 def _drawer_position_action_text(action_code: str, *, has_position: bool) -> str:
     if action_code == "DATA_INSUFFICIENT":
-        return "持有观察，暂停加仓" if has_position else "暂停买入，等待数据补齐"
+        return "持有观察，不建议加仓" if has_position else "数据不足，等待数据补齐"
     if has_position:
         if action_code == "ALLOW_ADD_ON_PULLBACK":
             return "回踩复核加仓"
@@ -451,7 +451,7 @@ def _drawer_position_action_text(action_code: str, *, has_position: bool) -> str
             return "持有观察，不追高"
         return "持有观察"
     if action_code == "ALLOW_SMALL_BUY":
-        return "允许小仓观察"
+        return "小仓观察参考"
     if action_code == "BLOCK_CHASE":
         return "不追买"
     return _drawer_canonical_action_text(action_code, has_position=False)
@@ -570,7 +570,7 @@ def _drawer_conflict_notice(row: pd.Series, action_code: str) -> str:
     )
     conflict_tokens = ("可加仓", "允许买入", "允许小仓", "进入买点", "买区内", "估值买点", "价值复核", "ALLOW")
     if any(token in text for token in conflict_tokens):
-        return "结论冲突已拦截：技术承接数据不足，旧估值参考不改变买入权限。"
+        return "结论冲突提示：技术承接数据不足，旧估值参考只作风险提示，不改变主结论。"
     return ""
 
 
@@ -1399,7 +1399,7 @@ def _drawer_structure_entry_card_html(row: pd.Series) -> str:
     if warnings:
         detail_lines.append("风险：" + "；".join(warnings[:2]))
     lines = [
-        "只读提示，不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
+        "只读提示，不改变主结论和账户层新增额度。",
         "一句话提示：" + _structure_entry_summary_hint(status_code, status, is_data_missing, bool(gaps)),
     ]
     if gaps:
@@ -1446,7 +1446,7 @@ def _drawer_pullback_acceptance_card_html(row: pd.Series) -> str:
     warnings = _drawer_text_list(snapshot.get("acceptance_warnings") or snapshot.get("acceptanceWarnings"))
     steps = _drawer_text_list(snapshot.get("next_acceptance_steps") or snapshot.get("nextAcceptanceSteps"))
     lines = [
-        "只读提示：不改变 ALLOW_BUY / 买入门禁 / allowed_add_pct。",
+        "只读提示：不改变主结论和账户层新增额度。",
         f"支撑：{support or '数据不足'}",
         f"收盘：{close or '数据不足'}",
         f"量能：{volume or '数据不足'}",
@@ -1998,7 +1998,7 @@ def _short_action_for_sentence(action: str) -> str:
     if "分批" in action:
         return "分批执行"
     if "禁止" in action:
-        return "禁止追高"
+        return "追高风险提醒"
     if "复核" in action:
         return "等突破再评估"
     if "只观察" in action or "观察" in action:

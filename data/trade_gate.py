@@ -242,13 +242,20 @@ def evaluate_mood_gate(mood: str) -> list[str]:
 def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = "") -> dict[str, Any]:
     if result is None:
         if str(action_type or "").strip().lower() in {"buy", "add"}:
+            advisory_reasons = [MISSING_BUY_GATE_REASON]
             return {
                 "radarDecision": "DATA_MISSING",
                 "radarBlocked": False,
                 "radarBlockReasons": [],
                 "gateHardBlocked": False,
                 "radarAdvisoryOnly": True,
-                "radarAdvisoryWarnings": [MISSING_BUY_GATE_REASON],
+                "radarAdvisoryWarnings": advisory_reasons,
+                "advisoryLevel": "WARNING",
+                "advisoryText": _advisory_text("WARNING", advisory_reasons),
+                "advisoryReasons": advisory_reasons,
+                "userConfirmedAdvisory": False,
+                "validationPassed": True,
+                "canSubmit": True,
                 "warningLevel": "warning",
                 "moodGateBlocked": False,
                 "positionGateBlocked": False,
@@ -268,6 +275,12 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "gateHardBlocked": False,
             "radarAdvisoryOnly": False,
             "radarAdvisoryWarnings": [],
+            "advisoryLevel": "NONE",
+            "advisoryText": "",
+            "advisoryReasons": [],
+            "userConfirmedAdvisory": False,
+            "validationPassed": True,
+            "canSubmit": True,
             "warningLevel": "info",
             "moodGateBlocked": False,
             "positionGateBlocked": False,
@@ -280,6 +293,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
             "primaryZoneText": "",
             "gateCheckedAt": "",
         }
+    advisory_level = _advisory_level(result.warning_level, result.advisory_warnings)
     return {
         "radarDecision": result.decision,
         "radarBlocked": False,
@@ -287,6 +301,12 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "gateHardBlocked": False,
         "radarAdvisoryOnly": result.radar_advisory_only,
         "radarAdvisoryWarnings": result.advisory_warnings,
+        "advisoryLevel": advisory_level,
+        "advisoryText": _advisory_text(advisory_level, result.advisory_warnings),
+        "advisoryReasons": result.advisory_warnings,
+        "userConfirmedAdvisory": False,
+        "validationPassed": True,
+        "canSubmit": True,
         "warningLevel": result.warning_level,
         "pricePosition": result.price_position,
         "entryDisplayLabel": result.entry_display_label,
@@ -307,6 +327,28 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
         "radarObservationOnly": result.is_observation_only,
         "gateCheckedAt": result.gate_checked_at,
     }
+
+
+def _advisory_level(warning_level: str, reasons: list[str]) -> str:
+    if not reasons:
+        return "NONE"
+    level = str(warning_level or "").strip().upper()
+    if level in {"DANGER", "HIGH_RISK", "CRITICAL"}:
+        return "HIGH_RISK"
+    if level in {"WARNING", "WARN"}:
+        return "WARNING"
+    return "INFO"
+
+
+def _advisory_text(level: str, reasons: list[str]) -> str:
+    if not reasons:
+        return ""
+    normalized = str(level or "").strip().upper()
+    if normalized in {"HIGH_RISK", "CRITICAL"}:
+        return "高风险买入提醒：系统不建议，但不会阻止；继续操作将记录为已确认风险。"
+    if normalized == "WARNING":
+        return "买入前风险提示：系统建议复核，但不会阻止你继续。"
+    return "买入提醒：请确认本次操作符合你的计划。"
 
 
 def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation_only: bool) -> list[str]:
@@ -397,7 +439,7 @@ def _buy_zone_context_warnings(context: dict[str, Any]) -> list[str]:
         warning = str(context.get("core_position_reason") or "").strip()
         return [warning] if warning else []
     if action == "BLOCK_CHASE":
-        return [f"统一买区：{zone_text or '追高禁区'}，{action_text or '禁止追高'}；如仍继续，将记录为人工 override。"]
+        return [f"统一买区：{zone_text or '追高风险区'}，{action_text or '追高风险提醒'}；如仍继续，将记录为人工 override。"]
     if action == "RISK_REVIEW":
         return [f"统一买区：{zone_text or '失效风控区'}，{action_text or '进入风控复核'}；{reason or '跌破失效线，暂停新增买入。'}"]
     if action == "DATA_INSUFFICIENT":
@@ -417,7 +459,7 @@ def _warning_level(data: dict[str, Any], decision: str, advisory_warnings: list[
     text = " ".join([decision, price_position, *[str(item) for item in advisory_warnings]]).upper()
     if any(token in text for token in ("BLOCK_CHASE", "IN_CHASE_ZONE", "AVOID", "FAILED", "EVENT", "追高", "冲击", "仓位")):
         return "danger"
-    if any(token in text for token in ("风控复核", "数据不足", "禁止追高", "失效")):
+    if any(token in text for token in ("风控复核", "数据不足", "追高风险", "失效")):
         return "danger"
     return "warning"
 

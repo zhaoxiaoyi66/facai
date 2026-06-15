@@ -314,7 +314,7 @@ class DecisionLogTests(unittest.TestCase):
                     },
                     "setupScore": 66,
                     "buyZoneAction": "ALLOW_SMALL_BUY",
-                    "buyZoneActionText": "允许小仓观察",
+                    "buyZoneActionText": "小仓观察参考",
                     "primaryZoneText": "回踩买区",
                     "gateCheckedAt": "2026-05-26T12:00:00+00:00",
                 },
@@ -322,7 +322,7 @@ class DecisionLogTests(unittest.TestCase):
 
             self.assertEqual(saved["setup_score"], 66)
             self.assertEqual(saved["buy_zone_action"], "ALLOW_SMALL_BUY")
-            self.assertEqual(saved["buy_zone_action_text"], "允许小仓观察")
+            self.assertEqual(saved["buy_zone_action_text"], "小仓观察参考")
             self.assertEqual(saved["primary_zone_text"], "回踩买区")
             self.assertEqual(saved["buy_zone_context"]["current_action"], "ALLOW_SMALL_BUY")
 

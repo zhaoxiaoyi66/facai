@@ -124,7 +124,7 @@ def test_data_insufficient_position_pauses_add_without_legacy_buy_copy() -> None
         {"current_shares": 100},
     )
 
-    assert display["main_action_text"] == "持有观察 / 暂停加仓"
-    assert display["account_action_text"] == "已有 100 股，持有观察，暂停加仓"
+    assert display["main_action_text"] == "持有观察 / 不建议加仓"
+    assert display["account_action_text"] == "已有 100 股，持有观察，不建议加仓"
     assert display["zone_text"] == "暂不生成"
     assert display["badge_label"] == "数据不足"

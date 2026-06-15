@@ -78,7 +78,7 @@ def test_good_company_in_chase_zone_blocks_chase() -> None:
 
     assert context.primary_zone == "CHASE_RISK"
     assert context.current_action == BLOCK_CHASE
-    assert context.action_text == "禁止追高"
+    assert context.action_text == "追高风险提醒"
     assert "好公司" not in context.zone_selection_reason
 
 
@@ -89,7 +89,7 @@ def test_pullback_zone_with_shrink_volume_and_good_risk_reward_allows_small_buy(
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.setup_score >= 62
     assert context.left_probe_zone_high == 102.1
-    assert context.no_position_action_text == "未持仓：允许小仓观察，后续加仓必须等确认。"
+    assert context.no_position_action_text == "未持仓：小仓观察参考，后续加仓仍需确认。"
 
 
 def test_pullback_probe_zone_with_weak_volume_waits_confirmation_not_pullback() -> None:
@@ -386,7 +386,7 @@ def test_below_invalidation_enters_risk_review_for_existing_and_no_position() ->
     assert context.primary_zone == "INVALIDATION"
     assert context.current_action == PAUSE_BUY
     assert context.existing_position_action_text == "已有持仓：暂停新增，复核失效线和放量破位风险。"
-    assert context.no_position_action_text == "未持仓：暂停买入，等待买区重新生成。"
+    assert context.no_position_action_text == "未持仓：系统不建议新增，等待买区重新生成。"
 
 
 def test_low_final_score_does_not_auto_block_good_small_setup() -> None:
@@ -825,7 +825,7 @@ def test_report_page_does_not_expose_buy_zone_raw_enum() -> None:
         conclusion=conclusion,
     )
 
-    assert "允许小仓观察" in html
+    assert "小仓观察参考" in html
     assert "ALLOW_SMALL_BUY" not in html
     assert "PULLBACK_BUY" not in html
 
@@ -842,6 +842,6 @@ def test_buy_zone_context_visible_text_has_no_mojibake() -> None:
         ]
     )
 
-    assert "允许小仓观察" in visible_text
+    assert "小仓观察参考" in visible_text
     assert "买区由技术结构" in visible_text
     assert not any(token in visible_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))

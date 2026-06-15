@@ -271,7 +271,7 @@ def _render_editor(store: TradeJournalStore) -> None:
         st.session_state["trade_journal_editor_open"] = False
         active_positions = _active_sell_positions()
         if editing_entry is None:
-            st.caption("买入/加仓请前往组合持仓页操作；这里只记录减仓、清仓，并继续走卖出纪律门禁。")
+            st.caption("买入/加仓请前往组合持仓页操作；这里只记录减仓、清仓，并显示卖出风险提示。")
             _render_macro_regime_sell_hint()
             if not active_positions:
                 st.info("当前没有可卖出的 active 持仓。")
@@ -825,7 +825,7 @@ def _sell_reference_alerts(context: dict) -> list[str]:
     holding_days = _number(context.get("holdingDays"))
     if holding_days is not None and holding_days < 30:
         alerts.append("A 类核心仓：持仓天数偏短，注意 NOW 式卖飞风险。")
-    alerts.append("A 类核心仓：下方必须写清具体回补计划，否则卖出纪律会拦截或要求复核。")
+    alerts.append("A 类核心仓：下方必须写清具体回补计划，否则卖出纪律会提示高风险并要求复核。")
     return alerts
 
 
@@ -841,7 +841,7 @@ def _sell_reference_hint(zone_status: str, current_price: float | None, target_s
     if current_price is not None and target_sell is not None and target_sell > 0 and current_price < target_sell:
         return "当前价低于买入时设定的卖出目标，先复核是否真的需要卖。"
     if status == "IN_CHASE_ZONE":
-        return "价格进入追高区，可复核是否按计划减交易仓，核心仓仍需纪律门禁。"
+        return "价格进入追高区，可复核是否按计划减交易仓，核心仓仍需纪律复核。"
     return "卖出前先看目标价、买区位置和回补计划，避免临场卖飞。"
 
 
@@ -1187,7 +1187,7 @@ def _render_discipline_summary_row(
     summary_cols[2].metric("本次比例", _pct_point_text(actual_sell_pct))
     summary_cols[3].metric("需要回补计划", "是" if has_reentry_plan else "否")
     if conclusion != "PASS":
-        st.caption("纪律检查有提醒，完整门禁和比例明细已折叠到下方。")
+        st.caption("纪律检查有提醒，完整风险提示和比例明细已折叠到下方。")
 
 
 def _render_structured_sell_reason_editor(
@@ -1202,7 +1202,7 @@ def _render_structured_sell_reason_editor(
         list(SELL_CONTEXT_TYPE_OPTIONS),
         index=list(SELL_CONTEXT_TYPE_OPTIONS).index(context_default),
         key=f"trade-sell-context-type-{key_suffix}",
-        help="只用于记录和复盘，不改变卖出门禁；真实成交入账仍由用户确认。",
+        help="只用于记录和复盘，不改变卖出风险提示；真实成交入账仍由用户确认。",
     )
     context_type = SELL_CONTEXT_TYPE_OPTIONS.get(context_label, "")
     if context_type == "fundamental_change":
@@ -1213,7 +1213,7 @@ def _render_structured_sell_reason_editor(
             key=f"trade-fundamental-change-type-{key_suffix}",
         )
         if not selected_changes:
-            st.warning("选择“基本面改写”时，请至少选择一项具体改写类型；本提示只用于复盘，不改变门禁。")
+            st.warning("选择“基本面改写”时，请至少选择一项具体改写类型；本提示只用于复盘，不改变风险提示。")
     st.multiselect(
         "原因标签（多选）",
         list(SELL_REASON_TAG_OPTIONS),
@@ -1397,12 +1397,12 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
         f"""
         <section class="trade-gate-card {escape(tone)}">
           <div class="trade-gate-head">
-            <strong>门禁结论：{escape(_discipline_gate_conclusion_label(conclusion))}</strong>
+            <strong>风险提示：{escape(_discipline_gate_conclusion_label(conclusion))}</strong>
             <span>{escape(_discipline_gate_summary(conclusion))}</span>
           </div>
           <div class="trade-gate-body">
-            <div><b>需修正原因</b><ul>{reason_html}</ul></div>
-            <div><b>可修正动作</b><ul>{action_html}</ul></div>
+            <div><b>提示原因</b><ul>{reason_html}</ul></div>
+            <div><b>可选复核动作</b><ul>{action_html}</ul></div>
           </div>
           <div class="trade-gate-subtitle">卖出比例核对</div>
           <div class="trade-gate-grid">{metric_html}</div>

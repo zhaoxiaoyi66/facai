@@ -36,7 +36,7 @@ def _report(decision: str = "ALLOW_BUY") -> dict:
         "core_max_pct": 20,
         "trade_max_pct": 8,
         "allowed_add_pct": 3,
-        "block_reasons": ["当前价进入追高禁止区"] if decision == "BLOCK_CHASE" else [],
+        "block_reasons": ["当前价进入追高风险区"] if decision == "BLOCK_CHASE" else [],
         "data_status": "OK",
         "is_stale": False,
     }
@@ -178,7 +178,7 @@ def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
             **_report("ALLOW_BUY"),
             "buy_zone_context": {
                 "current_action": "BLOCK_CHASE",
-                "action_text": "禁止追高",
+                "action_text": "追高风险提醒",
                 "primary_zone_text": "追高禁区",
                 "setup_score": 22,
                 "zone_selection_reason": "价格远离承接区。",
@@ -570,7 +570,7 @@ def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch
         relative_strength_status="弱于 SPY/QQQ",
         volume_confirmation="量能不足",
         structure_reasons=["主线破坏"],
-        structure_warnings=["结构破坏仅提示，不作为门禁"],
+        structure_warnings=["结构破坏仅提示，不作为硬阻止"],
         next_confirmation_steps=["等待重新确认主线"],
         structure_checked_at="2026-06-12T10:30:00+08:00",
     )
@@ -591,7 +591,7 @@ def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch
         assert entry["structure_status"] == STRUCTURE_BROKEN
         assert entry["structure_score"] == 22
         assert entry["structure_reasons"] == ["主线破坏"]
-        assert entry["structure_warnings"] == ["结构破坏仅提示，不作为门禁"]
+        assert entry["structure_warnings"] == ["结构破坏仅提示，不作为硬阻止"]
 
 
 def test_portfolio_buy_add_saves_pullback_acceptance_snapshot() -> None:
@@ -1163,13 +1163,18 @@ def test_planned_ladder_buy_advisory_attempts_are_real_trades_when_confirmed() -
             path=path,
             radar_report=_blocked_chase_report(),
         )
-        with pytest.raises(ValueError, match="仅观察不是真实成交"):
-            submit_portfolio_buy_add(
-                "NOK",
-                _base_values(quantity=100, price=4.8, position_tier="C", radar_observation_only=True, entry_mode="planned_ladder_buy"),
-                path=path,
-                radar_report=_blocked_chase_report(),
-            )
+        observation = submit_portfolio_buy_add(
+            "NOK",
+            _base_values(
+                quantity=100,
+                price=4.8,
+                position_tier="C",
+                radar_observation_only=True,
+                entry_mode="planned_ladder_buy",
+            ),
+            path=path,
+            radar_report=_blocked_chase_report(),
+        )
         allowed = submit_portfolio_buy_add(
             "NOK",
             _base_values(quantity=100, price=4.8, position_tier="C", entry_mode="planned_ladder_buy"),
@@ -1179,14 +1184,18 @@ def test_planned_ladder_buy_advisory_attempts_are_real_trades_when_confirmed() -
 
         allowed_entry = TradeJournalStore(path).get_entry(int(allowed["entry"]["id"]))
         fomo_entry = TradeJournalStore(path).get_entry(int(fomo["entry"]["id"]))
+        observation_entry = TradeJournalStore(path).get_entry(int(observation["entry"]["id"]))
         position = PortfolioPositionStore(path).get_position("NOK")
         assert fomo["synced"] is True
         assert fomo_entry is not None
         assert json.loads(fomo_entry["radar_advisory_warnings_json"])
+        assert observation["synced"] is True
+        assert observation_entry is not None
+        assert observation_entry["radar_advisory_only"]
         assert allowed_entry is not None
         assert allowed["synced"] is True
         assert position is not None
-        assert position["quantity"] == 200
+        assert position["quantity"] == 300
 
 
 def test_planned_ladder_buy_records_fomo_mood_as_advisory() -> None:
@@ -1566,17 +1575,23 @@ def test_starter_position_uses_buy_reason_as_thesis_and_allows_small_valuation_w
         assert position["quantity"] == 25
 
 
-def test_observation_only_is_rejected_without_journal() -> None:
+def test_observation_only_is_saved_as_advisory_trade() -> None:
     with TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "cache.sqlite"
 
-        _assert_rejected_trade_leaves_no_journal(
+        result = submit_portfolio_buy_add(
             "NVDA",
             _base_values(radar_observation_only=True),
             path=path,
             radar_report=_report(),
-            match="仅观察不是真实成交",
         )
+        entry = TradeJournalStore(path).get_entry(int(result["entry"]["id"]))
+        position = PortfolioPositionStore(path).get_position("NVDA")
+
+        assert result["synced"] is True
+        assert entry is not None
+        assert entry["radar_advisory_only"]
+        assert position is not None
 
 
 def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:

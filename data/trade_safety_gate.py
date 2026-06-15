@@ -24,9 +24,9 @@ DECISION_MOOD_TYPES = {
     "discipline_check",
 }
 SELL_SYNC_BLOCK_REASON = "卖出基础校验未通过，不能入账。"
-BUY_RADAR_SYNC_BLOCK_REASON = "仅观察记录不是真实成交，不能入账。"
-BUY_RADAR_MISSING_GATE_REASON = "Radar 买入提示快照缺失；不作为买入硬拦截。"
-BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性，不能入账。"
+BUY_RADAR_SYNC_BLOCK_REASON = "Radar 买入提示仅作为风险提醒，不阻止入账。"
+BUY_RADAR_MISSING_GATE_REASON = "Radar 买入提示快照缺失；仅记录为人工复核提示。"
+BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性；仅作为风险提示。"
 BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整；仅作为买入提示记录。"
 
 
@@ -118,25 +118,15 @@ def build_trade_safety_snapshot(symbol: str, action_type: str, values: dict[str,
 
 def trade_sync_policy(entry: dict[str, Any]) -> dict[str, Any]:
     action_type = str(entry.get("action_type") or "").strip().lower()
-    discipline_status = str(entry.get("discipline_status") or "").strip().lower()
-    blockers = _reasons_list(entry.get("blockers"), entry.get("blockers_json"))
     sell_blocked = False
-    buy_blocked = _buy_sync_blocked_by_radar(entry, action_type)
+    buy_blocked = False
     buy_invalid_plan = False
     buy_missing_gate = False
-    buy_missing_tier = _buy_sync_missing_position_class(entry, action_type)
-    blocked = sell_blocked or buy_blocked or buy_invalid_plan or buy_missing_gate or buy_missing_tier
+    buy_missing_tier = False
+    blocked = sell_blocked
     reason = ""
     if sell_blocked:
         reason = SELL_SYNC_BLOCK_REASON
-    elif buy_blocked:
-        reason = BUY_RADAR_SYNC_BLOCK_REASON
-    elif buy_invalid_plan:
-        reason = BUY_PLANNED_LADDER_INVALID_REASON
-    elif buy_missing_gate:
-        reason = BUY_RADAR_MISSING_GATE_REASON
-    elif buy_missing_tier:
-        reason = BUY_TIER_MISSING_REASON
     return {
         "canSync": not blocked,
         "reason": reason,

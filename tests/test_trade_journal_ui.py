@@ -112,7 +112,7 @@ def test_sell_form_renders_structured_sell_reason_advisory() -> None:
     assert "sellContextType" not in source
     assert "这可能是在流动性较差或风险溢价上升时卖出核心资产" in source
     assert "情绪性卖出容易造成卖飞" in source
-    assert "只用于复盘，不改变门禁" in source
+    assert "只用于复盘，不改变风险提示" in source
 
 
 def test_sell_form_uses_compact_workflow_sections() -> None:

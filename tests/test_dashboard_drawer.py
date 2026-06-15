@@ -27,11 +27,11 @@ def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insuffic
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "暂停加仓" in html
-    assert "持有观察，暂停加仓" in html
+    assert "不建议加仓" in html
+    assert "持有观察，不建议加仓" in html
     assert "主击球区" in html
     assert "暂不生成" in html
-    assert "结论冲突已拦截：技术承接数据不足，旧估值参考不改变买入权限。" in html
+    assert "结论冲突提示：技术承接数据不足，旧估值参考只作风险提示，不改变主结论。" in html
     assert "历史K线" in html
     assert "成交量/量比" in html
     assert "均线" in html
@@ -57,8 +57,8 @@ def test_quick_decision_uses_no_position_pause_copy_for_data_insufficient() -> N
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "暂停买入" in html
-    assert "暂停买入，等待数据补齐" in html
+    assert "数据不足" in html
+    assert "补齐技术承接数据" in html
     assert "持有观察" not in html
     assert "允许买入" not in html
 
@@ -137,7 +137,7 @@ def test_build_drawer_primary_decision_ignores_action_fusion_nested_context_for_
                 "buyZoneContext": {
                     "current_action": "ALLOW_SMALL_BUY",
                     "primary_zone_text": "回踩买区",
-                    "action_text": "允许小仓观察",
+                    "action_text": "小仓观察参考",
                 },
                 "action_code": "ALLOW_SMALL_BUY",
                 "action_cn": "可买",
@@ -148,9 +148,9 @@ def test_build_drawer_primary_decision_ignores_action_fusion_nested_context_for_
     decision = dashboard_drawer.build_drawer_primary_decision(row)
     html = dashboard_drawer._drawer_quick_decision_html(row, decision)
 
-    assert decision["action_text"] == "暂停买入 / 等待数据补齐"
+    assert decision["action_text"] == "数据不足 / 等待补齐"
     assert decision["zone_text"] == "暂不生成"
-    assert "允许小仓观察" not in html
+    assert "小仓观察参考" not in html
     assert "ALLOW_SMALL_BUY" not in html
 
 
@@ -176,8 +176,8 @@ def test_quick_decision_blocks_chase_even_when_legacy_says_buy() -> None:
     decision = dashboard_drawer.build_drawer_primary_decision(row)
     html = dashboard_drawer._drawer_quick_decision_html(row, decision)
 
-    assert decision["action_text"] == "禁止追高"
-    assert "禁止追高" in html
+    assert decision["action_text"] == "追高风险提醒"
+    assert "追高风险提醒" in html
     assert "允许买入" not in html
     assert "可买" not in html
     assert "BLOCK_CHASE" not in html
@@ -200,7 +200,7 @@ def test_quick_decision_allows_small_buy_copy_without_raw_enum() -> None:
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "允许小仓观察" in html
+    assert "小仓观察参考" in html
     assert "ALLOW_SMALL_BUY" not in html
 
 

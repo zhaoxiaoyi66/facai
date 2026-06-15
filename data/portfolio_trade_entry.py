@@ -44,6 +44,7 @@ def submit_portfolio_buy_add(
     tier = _clean_position_tier(values.get("position_tier") or values.get("positionClass"))
     decision_mood = str(values.get("decision_mood") or values.get("decisionMood") or "").strip()
     buy_reason = str(values.get("buy_reason") or values.get("notes") or "").strip()
+    missing_buy_reason = not bool(buy_reason)
     target_sell_price = values.get("target_sell_price") or values.get("targetSellPrice")
     entry_mode = _clean_entry_mode(values.get("entry_mode") or values.get("entryMode"))
     starter_thesis = str(values.get("starter_thesis") or values.get("thesis") or buy_reason).strip()
@@ -52,12 +53,11 @@ def submit_portfolio_buy_add(
         values.get("starter_invalidation_condition") or values.get("invalidation_condition") or values.get("starterInvalidationCondition") or ""
     ).strip()
     observation_only = bool(values.get("radar_observation_only") or values.get("radarObservationOnly"))
-    if observation_only:
-        raise ValueError("仅观察不是真实成交；请用计划买入或价格提醒记录观察，不写入交易日志。")
+    user_confirmed_advisory = bool(values.get("userConfirmedAdvisory") or values.get("user_confirmed_advisory"))
     _require_positive_number(quantity, "quantity")
     _require_positive_number(price, "price")
-    if not buy_reason:
-        raise ValueError("buy_reason is required")
+    if missing_buy_reason:
+        buy_reason = "未填写买入理由；系统已记录为风险提示。"
     action_type = _portfolio_trade_action(ticker, path, values.get("action_type"))
     submitted_at = _hkt_now()
     portfolio_preview = preview_trade_values_portfolio_effect(
@@ -128,6 +128,8 @@ def submit_portfolio_buy_add(
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
+    if missing_buy_reason:
+        advisory_notes.append("买入理由缺失；系统只做风险提示，不阻止你继续入账。")
     advisory_notes.extend(_buy_zone_context_advisory_notes(buy_zone_context))
     advisory_notes.extend(_action_fusion_advisory_notes(action_fusion))
     if entry_mode == "planned_ladder_buy":
@@ -138,6 +140,18 @@ def submit_portfolio_buy_add(
         advisory_notes.extend(starter_gate.starter_block_reasons)
     gate_fields["radarAdvisoryWarnings"] = _dedupe_text(advisory_notes)
     gate_fields["radarAdvisoryOnly"] = bool(gate_fields["radarAdvisoryWarnings"])
+    gate_fields["advisoryReasons"] = list(gate_fields["radarAdvisoryWarnings"])
+    gate_fields["advisoryLevel"] = _entry_advisory_level(
+        gate_fields.get("warningLevel"),
+        gate_fields["radarAdvisoryWarnings"],
+    )
+    gate_fields["advisoryText"] = _entry_advisory_text(
+        gate_fields["advisoryLevel"],
+        gate_fields["radarAdvisoryWarnings"],
+    )
+    gate_fields["userConfirmedAdvisory"] = user_confirmed_advisory
+    gate_fields["validationPassed"] = True
+    gate_fields["canSubmit"] = True
     gate_fields["radarBlocked"] = False
     gate_fields["gateHardBlocked"] = False
     gate_fields["moodGateBlocked"] = False
@@ -184,15 +198,6 @@ def submit_portfolio_buy_add(
         **action_fusion_fields,
         "gateCheckedAt": submitted_at.isoformat(),
     }
-    can_sync = _can_sync_buy_entry(
-        entry_mode=entry_mode,
-        gate=gate,
-        plan_gate=plan_gate,
-        starter_gate=starter_gate,
-        observation_only=observation_only,
-    )
-    if not can_sync:
-        raise ValueError(_buy_entry_block_reason(gate=gate, plan_gate=plan_gate, starter_gate=starter_gate, entry_mode=entry_mode))
     store = TradeJournalStore(path)
     saved = store.save_entry(ticker, entry_values)
     sync_result = apply_trade_to_portfolio(int(saved.get("id") or 0), path=path)
@@ -208,11 +213,16 @@ def submit_portfolio_buy_add(
     )
     gate_snapshot = gate.to_dict()
     gate_snapshot["warning_level"] = gate_fields.get("warningLevel")
+    gate_snapshot["advisory_level"] = gate_fields.get("advisoryLevel")
+    gate_snapshot["advisory_text"] = gate_fields.get("advisoryText")
     gate_snapshot["advisory_warnings"] = gate_fields["radarAdvisoryWarnings"]
+    gate_snapshot["user_confirmed_advisory"] = user_confirmed_advisory
+    gate_snapshot["validation_passed"] = True
+    gate_snapshot["can_submit"] = True
     gate_snapshot["radar_advisory_only"] = bool(gate_fields["radarAdvisoryWarnings"])
     gate_snapshot["is_blocked"] = False
     gate_snapshot["can_continue"] = True
-    gate_snapshot["can_sync_to_portfolio"] = not bool(observation_only)
+    gate_snapshot["can_sync_to_portfolio"] = True
     return {
         "entry": saved,
         "gate": gate_snapshot,
@@ -228,6 +238,28 @@ def submit_portfolio_buy_add(
         "actionType": action_type,
         "synced": bool(sync_result and sync_result.get("status") == "success"),
     }
+
+
+def _entry_advisory_level(warning_level: object, warnings: list[str]) -> str:
+    if not warnings:
+        return "NONE"
+    level = str(warning_level or "").strip().upper()
+    if level in {"DANGER", "HIGH_RISK", "CRITICAL"}:
+        return "HIGH_RISK"
+    if level in {"WARNING", "WARN"}:
+        return "WARNING"
+    return "INFO"
+
+
+def _entry_advisory_text(level: str, warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+    normalized = str(level or "").strip().upper()
+    if normalized in {"HIGH_RISK", "CRITICAL"}:
+        return "高风险买入提醒：系统不建议，但不会阻止；继续操作将记录为已确认风险。"
+    if normalized == "WARNING":
+        return "买入前风险提示：系统建议复核，但不会阻止你继续。"
+    return "买入提醒：请确认本次操作符合你的计划。"
 
 
 def _buy_entry_block_reason(*, gate: Any, plan_gate: Any, starter_gate: Any, entry_mode: str) -> str:
@@ -249,7 +281,7 @@ def _can_sync_buy_entry(
     starter_gate: Any,
     observation_only: bool,
 ) -> bool:
-    return not observation_only
+    return True
 
 
 def _dedupe_text(items: list[Any]) -> list[str]:
@@ -645,7 +677,7 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
     elif buy_zone_action == "BLOCK_CHASE":
         discipline_status = "统一买区提示追高风险，不建议追买"
     elif buy_zone_action == "ALLOW_SMALL_BUY":
-        discipline_status = "统一买区允许小仓观察"
+        discipline_status = "统一买区小仓观察参考"
     elif buy_zone_action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
         discipline_status = "统一买区建议等待确认或回踩"
     elif is_stale or data_status in {"missing", "data_missing", "stale"}:

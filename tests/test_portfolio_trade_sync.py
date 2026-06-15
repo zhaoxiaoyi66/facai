@@ -385,7 +385,7 @@ def test_starter_snapshot_with_block_reasons_can_sync_as_advisory() -> None:
         assert position["quantity"] == 25
 
 
-def test_radar_observation_only_buy_cannot_sync_to_portfolio() -> None:
+def test_radar_observation_only_buy_syncs_with_advisory_snapshot() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
         entry = TradeJournalStore(path).save_entry(
@@ -406,9 +406,9 @@ def test_radar_observation_only_buy_cannot_sync_to_portfolio() -> None:
         result = apply_trade_to_portfolio(entry["id"], path)
         position = PortfolioPositionStore(path).get_position("MSFT")
 
-        assert result["status"] == "failed"
-        assert "仅观察记录" in result["error"]
-        assert position is None
+        assert result["status"] == "success"
+        assert position is not None
+        assert position["quantity"] == 3
 
 
 def test_missing_radar_gate_buy_can_sync_when_basic_fields_exist() -> None:
@@ -675,13 +675,13 @@ def test_trade_sync_policy_treats_sell_blocker_lists_as_advisory() -> None:
     assert sell_policy["canSync"] is True
     assert sell_policy["reason"] == ""
     assert buy_policy["canSync"] is True
-    assert missing_tier_policy["canSync"] is False
+    assert missing_tier_policy["canSync"] is True
     assert missing_gate_policy["canSync"] is True
     assert missing_gate_policy["reason"] == ""
-    assert radar_policy["canSync"] is False
-    assert "A/B/C" in radar_policy["reason"]
+    assert radar_policy["canSync"] is True
+    assert radar_policy["reason"] == ""
     assert legacy_price_zone_policy["canSync"] is True
-    assert observation_policy["canSync"] is False
+    assert observation_policy["canSync"] is True
 
 
 def test_trade_sync_policy_allows_advisory_radar_zone_warnings() -> None:
