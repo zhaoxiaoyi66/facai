@@ -33,6 +33,13 @@ class AfterhoursReference:
     error: str = ""
     missing_reason: str = ""
     cache_status: str = ""
+    week_id: str = ""
+    friday_date: str = ""
+    fetched_at: str = ""
+    finalized_at: str = ""
+    provider_name: str = ""
+    anchor_status: str = ""
+    error_message: str = ""
 
 
 class AfterhoursProvider:
@@ -80,8 +87,9 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         force_refresh: bool = False,
     ) -> AfterhoursReference:
         normalized = str(symbol or "").strip().upper()
-        cache_key = f"{normalized}:{regular_close_date or 'latest'}"
-        cached = self._read(cache_key)
+        cache_key = _anchor_cache_key(normalized, regular_close_date)
+        legacy_cache_key = f"{normalized}:{regular_close_date or 'latest'}"
+        cached = self._read(cache_key) or self._read(legacy_cache_key)
         if not force_refresh and cached is not None:
             return replace(cached, cache_status="CACHE_HIT")
         snapshot = self.provider.get_afterhours_reference(
@@ -90,7 +98,7 @@ class CachedAfterhoursProvider(AfterhoursProvider):
             force_refresh=force_refresh,
         )
         if snapshot.data_quality != "MISSING":
-            live_snapshot = replace(snapshot, cache_status="API_LIVE")
+            live_snapshot = _decorate_snapshot(snapshot, regular_close_date=regular_close_date, cache_status="API_LIVE")
             self._write(cache_key, live_snapshot)
             return live_snapshot
         if cached is not None:
@@ -98,9 +106,10 @@ class CachedAfterhoursProvider(AfterhoursProvider):
                 cached,
                 cache_status="CACHE_FALLBACK",
                 error=snapshot.error,
+                error_message=snapshot.error_message or snapshot.error,
                 missing_reason="",
             )
-        return replace(snapshot, cache_status=snapshot.cache_status or "CACHE_MISSING")
+        return _decorate_snapshot(snapshot, regular_close_date=regular_close_date, cache_status=snapshot.cache_status or "CACHE_MISSING")
 
     def _read(self, cache_key: str) -> AfterhoursReference | None:
         payload = _read_json(self.cache_path)
@@ -277,7 +286,68 @@ def _reference_from_dict(raw: dict[str, Any]) -> AfterhoursReference:
         error=str(raw.get("error") or ""),
         missing_reason=str(raw.get("missing_reason") or ""),
         cache_status=str(raw.get("cache_status") or ""),
+        week_id=str(raw.get("week_id") or ""),
+        friday_date=str(raw.get("friday_date") or ""),
+        fetched_at=str(raw.get("fetched_at") or ""),
+        finalized_at=str(raw.get("finalized_at") or ""),
+        provider_name=str(raw.get("provider_name") or ""),
+        anchor_status=str(raw.get("anchor_status") or ""),
+        error_message=str(raw.get("error_message") or raw.get("error") or ""),
     )
+
+
+def _anchor_cache_key(symbol: str, regular_close_date: str) -> str:
+    date_text = regular_close_date or "latest"
+    week_id = _week_id(regular_close_date) if regular_close_date else "latest"
+    return f"{week_id}:{date_text}:{symbol}"
+
+
+def _decorate_snapshot(snapshot: AfterhoursReference, *, regular_close_date: str, cache_status: str) -> AfterhoursReference:
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    anchor_status = _anchor_status(regular_close_date)
+    finalized_at = fetched_at if anchor_status == "FINAL" and snapshot.reference_price is not None else snapshot.finalized_at
+    return replace(
+        snapshot,
+        week_id=snapshot.week_id or _week_id(regular_close_date),
+        friday_date=snapshot.friday_date or regular_close_date,
+        fetched_at=snapshot.fetched_at or fetched_at,
+        finalized_at=finalized_at or "",
+        provider_name=snapshot.provider_name or _provider_name(snapshot.reference_source),
+        anchor_status=snapshot.anchor_status or anchor_status,
+        error_message=snapshot.error_message or snapshot.error,
+        cache_status=cache_status,
+    )
+
+
+def _week_id(regular_close_date: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(regular_close_date).date()
+    except ValueError:
+        return ""
+    iso = parsed.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _anchor_status(regular_close_date: str) -> str:
+    if not regular_close_date:
+        return ""
+    try:
+        close_date = datetime.fromisoformat(regular_close_date).date()
+    except ValueError:
+        return ""
+    final_cutoff = datetime.combine(close_date, time(20, 5), ET)
+    return "FINAL" if datetime.now(timezone.utc).astimezone(ET) >= final_cutoff else "PROVISIONAL"
+
+
+def _provider_name(reference_source: str) -> str:
+    source = str(reference_source or "").upper()
+    if source.startswith("POLYGON"):
+        return "Polygon/Massive"
+    if source.startswith("FMP"):
+        return "FMP"
+    if source.startswith("ALPHAVANTAGE"):
+        return "AlphaVantage"
+    return ""
 
 
 def _read_json(path: Path) -> dict[str, Any]:

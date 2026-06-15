@@ -574,6 +574,110 @@ def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp
     assert cached.cache_status == "CACHE_HIT"
 
 
+def test_afterhours_anchor_cache_uses_week_friday_ticker_metadata(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2000-01-07T19:58:00-05:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            )
+        ]
+    )
+
+    snapshot = CachedAfterhoursProvider(provider, cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2000-01-07",
+    )
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    assert "2000-W01:2000-01-07:NVDA" in payload
+    assert snapshot.week_id == "2000-W01"
+    assert snapshot.friday_date == "2000-01-07"
+    assert snapshot.anchor_status == "FINAL"
+    assert snapshot.finalized_at
+    assert snapshot.fetched_at
+    assert snapshot.provider_name == "FMP"
+
+
+def test_binance_refresh_reuses_afterhours_anchor_cache_without_provider_fetch(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    live_provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            ),
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=209,
+                reference_time="2026-06-12T19:59:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            ),
+        ]
+    )
+    cached_provider = CachedAfterhoursProvider(live_provider, cache_path=cache_path)
+    cached_provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=cached_provider,
+        afterhours_force_refresh=False,
+        force_refresh=True,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    assert rows[0]["afterhours_reference_price"] == 208
+    assert rows[0]["afterhours_cache_status"] == "CACHE_HIT"
+    assert len(live_provider.calls) == 1
+
+
+def test_anchor_refresh_can_force_rebuild_afterhours_cache(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    live_provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            ),
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=209,
+                reference_time="2026-06-12T19:59:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            ),
+        ]
+    )
+    cached_provider = CachedAfterhoursProvider(live_provider, cache_path=cache_path)
+    cached_provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=210),
+        afterhours_provider=cached_provider,
+        afterhours_force_refresh=True,
+        cache=FakeCache(_history(close=205)),
+    )
+
+    assert rows[0]["afterhours_reference_price"] == 209
+    assert rows[0]["afterhours_cache_status"] == "API_LIVE"
+    assert len(live_provider.calls) == 2
+
+
 def test_polygon_open_close_afterhours_provider_uses_afterhours_price() -> None:
     provider = FakePolygonOpenCloseProvider({"afterHours": 208.5})
 
@@ -2162,7 +2266,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "风险",
         "更新时间",
     ]
-    assert frame.loc[0, "价格锚点"] == "盘后 $102.88"
+    assert frame.loc[0, "价格锚点"] == "盘后 $102.88（已更新）"
     assert frame.loc[0, "vs 盘后"] == "+1.65%"
     assert frame.loc[0, "vs 收盘"] == "+2.38%"
     assert "bid" not in frame.columns

@@ -105,12 +105,18 @@ def _render_realtime_tab(
 
 
 def _render_realtime_action_bar() -> dict[str, bool]:
-    col_cache, col_refresh, col_force, col_note = st.columns([1, 1, 1, 3])
+    col_cache, col_refresh, col_anchor, col_force_anchor, col_note = st.columns([1, 1, 1, 1, 3])
     use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
-    refresh = col_refresh.button("刷新 Binance 数据", width="stretch", key="weekend_spread_refresh")
-    force_refresh = col_force.button("强制刷新", width="stretch", key="weekend_spread_force_refresh")
-    col_note.caption("价格由 Binance API 自动读取；本页只做价差观察，不输出套利或交易指令。")
-    return {"use_cache": bool(use_cache), "refresh": bool(refresh), "force_refresh": bool(force_refresh)}
+    refresh = col_refresh.button("刷新 Binance 价格", width="stretch", key="weekend_spread_refresh")
+    anchor_refresh = col_anchor.button("更新周五盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
+    force_anchor = col_force_anchor.button("强制重建锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
+    col_note.caption("Binance 价格和周五盘后锚点已解耦：刷新 Binance 不会重新请求盘后数据。")
+    return {
+        "use_cache": bool(use_cache),
+        "refresh": bool(refresh),
+        "anchor_refresh": bool(anchor_refresh),
+        "force_anchor_refresh": bool(force_anchor),
+    }
 
 
 def _build_weekend_spread_rows_with_feedback(
@@ -120,9 +126,11 @@ def _build_weekend_spread_rows_with_feedback(
     refresh_options: dict[str, bool] | None = None,
 ) -> tuple[list[dict], dict]:
     options = refresh_options or {}
-    force_refresh = bool(options.get("refresh") or options.get("force_refresh"))
+    force_refresh = bool(options.get("refresh"))
+    anchor_refresh = bool(options.get("anchor_refresh") or options.get("force_anchor_refresh"))
+    force_anchor_refresh = bool(options.get("force_anchor_refresh"))
     cached = read_weekend_spread_snapshot(mapping=mapping, tickers=watchlist)
-    if not force_refresh and cached.get("rows"):
+    if not force_refresh and not anchor_refresh and cached.get("rows"):
         return (
             annotate_cached_rows(
                 list(cached.get("rows") or []),
@@ -131,7 +139,7 @@ def _build_weekend_spread_rows_with_feedback(
             ),
             cached,
         )
-    if not force_refresh:
+    if not force_refresh and not anchor_refresh:
         return (
             build_weekend_spread_rows(
                 watchlist,
@@ -142,6 +150,39 @@ def _build_weekend_spread_rows_with_feedback(
             ),
             cached,
         )
+    if anchor_refresh and not force_refresh:
+        total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
+        progress_bar = st.progress(0.0)
+        status_slot = st.empty()
+        status_slot.caption(f"Updating Friday afterhours anchors: {total} symbols.")
+
+        def update_anchor_progress(completed: int, total_count: int, ticker: str) -> None:
+            ratio = completed / max(total_count, 1)
+            progress_bar.progress(min(max(ratio, 0.0), 1.0))
+            status_slot.caption(f"Updating afterhours anchor: {ticker} ({completed}/{total_count})")
+
+        rows = build_weekend_spread_rows(
+            watchlist,
+            mapping=mapping,
+            provider=_CachedRowBinanceProvider(list(cached.get("rows") or [])),
+            afterhours_provider=default_afterhours_provider(),
+            force_refresh=False,
+            afterhours_force_refresh=force_anchor_refresh,
+            progress_callback=update_anchor_progress,
+        )
+        generated_at = datetime.now(timezone.utc).isoformat()
+        progress_bar.progress(1.0)
+        if has_successful_price(rows):
+            write_weekend_spread_snapshot(rows, mapping=mapping, tickers=watchlist, generated_at=datetime.now(timezone.utc))
+        live_rows = annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at)
+        status_slot.success("Afterhours anchor update complete.")
+        return live_rows, {
+            "cache_state": "API_LIVE",
+            "cache_message": "afterhours anchors updated",
+            "rows": live_rows,
+            "generated_at": generated_at,
+            "last_failure": {},
+        }
     total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
     if total <= 0:
         st.info("No watchlist symbols available for Binance refresh.")
@@ -159,8 +200,9 @@ def _build_weekend_spread_rows_with_feedback(
     rows = build_weekend_spread_rows(
         watchlist,
         mapping=mapping,
-        afterhours_provider=default_afterhours_provider(),
+        afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
         force_refresh=True,
+        afterhours_force_refresh=False,
         progress_callback=update_progress,
     )
     ok_count = sum(1 for row in rows if row.get("status") == "OK")
@@ -217,6 +259,34 @@ class _IdleBinanceProvider:
         }
 
 
+class _CachedRowBinanceProvider:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = [dict(row) for row in rows or []]
+
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        row = next(
+            (
+                item
+                for item in self.rows
+                if str(item.get("binance_symbol") or "").strip().upper() == normalized_symbol
+            ),
+            {},
+        )
+        return {
+            "symbol": normalized_symbol,
+            "last_price": row.get("binance_last_price"),
+            "bid": row.get("binance_bid"),
+            "ask": row.get("binance_ask"),
+            "volume_24h": row.get("binance_volume_24h"),
+            "funding_rate": row.get("funding_rate"),
+            "updated_at": row.get("updated_at") or "",
+            "source": row.get("source") or "weekend_spread_snapshot",
+            "market_type": market_type,
+            "error": "" if row.get("binance_last_price") is not None else "price_not_loaded",
+        }
+
+
 def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
     cols = st.columns(3)
@@ -231,7 +301,7 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
         ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
         ("Spot 价格源", _market_price_source_status(rows, "spot")),
         ("Futures 价格源", _market_price_source_status(rows, "usdm_futures")),
-        ("盘后参考", f"{afterhours_counts['available']} / {afterhours_counts['mapped']}"),
+        ("盘后锚点", _afterhours_anchor_status_text(rows, afterhours_counts)),
         ("最后刷新", _latest_updated_at(rows) or "暂缺"),
         ("缓存时间", _cache_generated_text(cache_status)),
         ("缓存状态", _cache_state_text(cache_status)),
@@ -541,6 +611,28 @@ def _afterhours_counts(rows: list[dict]) -> dict[str, int]:
         "available": available,
         "missing": max(len(mapped_rows) - available, 0),
     }
+
+
+def _afterhours_anchor_status_text(rows: list[dict], counts: dict[str, int]) -> str:
+    mapped = int(counts.get("mapped") or 0)
+    if mapped <= 0:
+        return "无请求"
+    mapped_rows = [row for row in rows if row.get("binance_symbol")]
+    available = int(counts.get("available") or 0)
+    final_count = sum(1 for row in mapped_rows if str(row.get("afterhours_anchor_status") or "") == "FINAL")
+    provisional_count = sum(1 for row in mapped_rows if str(row.get("afterhours_anchor_status") or "") == "PROVISIONAL")
+    fallback_count = sum(1 for row in mapped_rows if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK")
+    cache_count = sum(1 for row in mapped_rows if str(row.get("afterhours_cache_status") or "") in {"CACHE_HIT", "CACHE_FALLBACK"})
+    parts = [f"可用 {available} / {mapped}"]
+    if final_count:
+        parts.append(f"FINAL {final_count}")
+    if provisional_count:
+        parts.append(f"PROVISIONAL {provisional_count}")
+    if cache_count:
+        parts.append(f"已缓存 {cache_count}")
+    if fallback_count:
+        parts.append(f"fallback {fallback_count}")
+    return "｜".join(parts)
 
 
 def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
@@ -879,6 +971,9 @@ def _render_row_details(rows: list[dict]) -> None:
                 st.caption(f"盘后参考价：{_money_text(row.get('afterhours_reference_price'))}")
                 st.caption(f"盘后来源：{_afterhours_source_text(row.get('afterhours_reference_source'))}")
                 st.caption(f"盘后质量：{str(row.get('afterhours_data_quality') or 'MISSING')}")
+                st.caption(f"锚点状态：{_afterhours_anchor_badge(row)}")
+                st.caption(f"抓取时间：{_short_hkt_time(row.get('afterhours_fetched_at'))}")
+                st.caption(f"finalized_at：{_short_hkt_time(row.get('afterhours_finalized_at'))}")
                 st.caption(f"缺失原因：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}")
                 st.caption(f"缓存状态：{_afterhours_cache_text(row.get('afterhours_cache_status'))}")
                 st.caption(f"盘后时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
@@ -1141,6 +1236,20 @@ def _afterhours_cache_text(value: object) -> str:
     }.get(code, code or "暂缺")
 
 
+def _afterhours_anchor_badge(row: dict) -> str:
+    if _number(row.get("afterhours_reference_price")) is None:
+        return "盘后缺失 fallback"
+    status = str(row.get("afterhours_anchor_status") or "").strip().upper()
+    cache_status = str(row.get("afterhours_cache_status") or "").strip().upper()
+    if status in {"FINAL", "PROVISIONAL"}:
+        return status
+    if cache_status in {"CACHE_HIT", "CACHE_FALLBACK"}:
+        return "已缓存"
+    if cache_status == "API_LIVE":
+        return "已更新"
+    return "已缓存"
+
+
 def _money_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -1151,7 +1260,7 @@ def _money_text(value: object) -> str:
 def _price_anchor_text(row: dict) -> str:
     afterhours = _number(row.get("afterhours_reference_price"))
     if afterhours is not None:
-        return f"盘后 ${afterhours:,.2f}"
+        return f"盘后 ${afterhours:,.2f}（{_afterhours_anchor_badge(row)}）"
     regular = _number(row.get("regular_close_price") or row.get("friday_close"))
     if regular is None:
         return "暂缺"

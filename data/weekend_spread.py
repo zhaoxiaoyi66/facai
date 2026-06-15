@@ -146,6 +146,7 @@ def build_weekend_spread_rows(
     afterhours_provider: AfterhoursProvider | None = None,
     cache: CacheReadModel | None = None,
     force_refresh: bool = False,
+    afterhours_force_refresh: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[dict[str, Any]]:
     normalized = _normalize_tickers(tickers)
@@ -166,7 +167,7 @@ def build_weekend_spread_rows(
                 regular_close_price=friday_close,
                 regular_close_date=friday_date,
                 provider=afterhours_data_provider,
-                force_refresh=force_refresh,
+                force_refresh=afterhours_force_refresh,
             )
             if mapping_config and mapping_config.get("enabled", True) and mapping_config.get("binance_symbol")
             else {}
@@ -539,6 +540,12 @@ def _base_row(
         "afterhours_data_quality": "MISSING",
         "afterhours_missing_reason": "",
         "afterhours_cache_status": "",
+        "afterhours_anchor_status": "",
+        "afterhours_week_id": "",
+        "afterhours_fetched_at": "",
+        "afterhours_finalized_at": "",
+        "afterhours_provider_name": "",
+        "afterhours_error_message": "",
         "afterhours_gap_pct": None,
         "spread_vs_regular_close_pct": None,
         "spread_vs_afterhours_pct": None,
@@ -597,6 +604,12 @@ def _afterhours_fields(
         "afterhours_data_quality": str(getattr(snapshot, "data_quality", "") or "MISSING"),
         "afterhours_missing_reason": _afterhours_missing_reason(snapshot),
         "afterhours_cache_status": str(getattr(snapshot, "cache_status", "") or ""),
+        "afterhours_anchor_status": str(getattr(snapshot, "anchor_status", "") or ""),
+        "afterhours_week_id": str(getattr(snapshot, "week_id", "") or ""),
+        "afterhours_fetched_at": str(getattr(snapshot, "fetched_at", "") or ""),
+        "afterhours_finalized_at": str(getattr(snapshot, "finalized_at", "") or ""),
+        "afterhours_provider_name": str(getattr(snapshot, "provider_name", "") or ""),
+        "afterhours_error_message": str(getattr(snapshot, "error_message", "") or getattr(snapshot, "error", "") or ""),
         "afterhours_gap_pct": _percent_change(reference_price, regular_close_price),
     }
 
