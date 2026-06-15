@@ -299,8 +299,7 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
     afterhours_counts = _afterhours_counts(rows)
     values = [
         ("观察池映射数", f"{mapping_counts['universe_mapping_count']} / {mapping_counts['universe_total']}"),
-        ("Spot 价格源", _market_price_source_status(rows, "spot")),
-        ("Futures 价格源", _market_price_source_status(rows, "usdm_futures")),
+        ("USDT-M 合约价格源", _market_price_source_status(rows, "usdm_futures")),
         ("盘后锚点", _afterhours_anchor_status_text(rows, afterhours_counts)),
         ("最后刷新", _latest_updated_at(rows) or "暂缺"),
         ("缓存时间", _cache_generated_text(cache_status)),
@@ -443,8 +442,8 @@ def _render_history_tab() -> None:
 def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
     st.subheader("历史回测")
     st.warning(
-        "这是历史观察回测，不构成套利建议。周末高点未必能成交；spot 映射不等于可直接做空合约收益；"
-        "futures 数据不可用时不能计算合约空单收益；mapping 未 confirmed 时结果仅作观察。"
+        "这是历史观察回测，不构成套利建议。周末高点未必能成交；"
+        "USDT-M 合约数据不可用时不能计算观察收益；mapping 未 confirmed 时结果仅作观察。"
     )
     include_unconfirmed = st.checkbox(
         "包含未确认映射",
@@ -1089,8 +1088,6 @@ def _last_price_status(row: dict) -> str:
         return "价格可用"
     if row.get("status") == "INVALID_SYMBOL":
         return "symbol 无效"
-    if row.get("status") == "SPOT_DISABLED":
-        return "现货已关闭"
     return str(row.get("mapping_status") or row.get("status") or "数据不可用")
 
 
@@ -1147,8 +1144,6 @@ def _market_data_status(rows: list[dict], market_type: str) -> str:
         return "可用"
     if any(row.get("status") == "INVALID_SYMBOL" for row in market_rows):
         return "symbol 无效"
-    if any(row.get("status") == "SPOT_DISABLED" for row in market_rows):
-        return "已关闭"
     return "数据不可用"
 
 

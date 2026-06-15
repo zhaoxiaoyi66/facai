@@ -153,7 +153,7 @@ def _backtest_one_window(
     funding_pct: float,
 ) -> dict[str, Any]:
     symbol = str(config.get("binance_symbol") or "").strip().upper()
-    market_type = normalize_market_type(str(config.get("market_type") or "usdm_futures"))
+    market_type = "usdm_futures"
     mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
     base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
     anchor_price = _number(anchor.get("anchor_price"))
@@ -218,9 +218,6 @@ def _backtest_one_window(
     if mapping_confidence != "confirmed":
         quality = "UNCONFIRMED_MAPPING"
         note = "mapping 未 confirmed，结果仅作观察。"
-    elif market_type == "spot":
-        quality = "SPOT_OBSERVATION_ONLY"
-        note = "spot 映射仅作观察收益，不代表合约空单收益。"
     base.update(
         {
             "weekend_peak_binance_price": peak,

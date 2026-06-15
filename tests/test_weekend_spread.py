@@ -963,7 +963,7 @@ def test_mapping_diagnostics_marks_unverified_valid_symbol() -> None:
     assert rows[0]["price_available"] is True
 
 
-def test_spot_stock_mapping_is_disabled_before_price_fetch() -> None:
+def test_legacy_spot_stock_mapping_is_normalized_to_usdm_futures() -> None:
     provider = FakeProvider(price=101.5, funding_rate=None)
     rows = build_weekend_spread_rows(
         ["NVDA"],
@@ -972,14 +972,13 @@ def test_spot_stock_mapping_is_disabled_before_price_fetch() -> None:
         cache=FakeCache(),
     )
 
-    assert rows[0]["status"] == "SPOT_DISABLED"
-    assert rows[0]["binance_last_price"] is None
-    assert rows[0]["spread_pct"] is None
-    assert rows[0]["error"] == "stock_mapping_requires_usdm_futures"
-    assert provider.calls == []
+    assert rows[0]["status"] == "OK"
+    assert rows[0]["binance_market_type"] == "usdm_futures"
+    assert rows[0]["binance_last_price"] == 101.5
+    assert provider.calls == ["usdm_futures:NVDAUSDT"]
 
 
-def test_spot_stock_mapping_does_not_use_symbol_specific_spot_validate() -> None:
+def test_legacy_spot_stock_mapping_does_not_use_spot_price_path() -> None:
     provider = SpotSymbolSpecificProvider()
 
     rows = build_weekend_spread_rows(
@@ -990,9 +989,9 @@ def test_spot_stock_mapping_does_not_use_symbol_specific_spot_validate() -> None
     )
 
     row = rows[0]
-    assert row["status"] == "SPOT_DISABLED"
-    assert row["binance_last_price"] is None
-    assert provider.calls == []
+    assert row["status"] == "OK"
+    assert row["binance_market_type"] == "usdm_futures"
+    assert all(call[0] != "https://spot.test" for call in provider.calls)
 
 
 def test_friday_holiday_uses_previous_trading_day_close() -> None:
@@ -1192,18 +1191,20 @@ def test_smoke_script_supports_one_off_symbol_validation() -> None:
 
     assert row["ticker"] == "ADBE"
     assert row["binance_symbol"] == "ADBEUSDT"
+    assert row["market_type"] == "usdm_futures"
     assert row["exists"] is True
     assert row["last_price"] == 207
     assert row["bid"] == 206.8
     assert row["ask"] == 207.2
     assert row["volume_24h"] == 123_456
-    assert provider.calls == ["validate:spot:ADBEUSDT", "spot:ADBEUSDT"]
+    assert provider.calls == ["validate:usdm_futures:ADBEUSDT", "usdm_futures:ADBEUSDT"]
 
 
 def test_smoke_script_cli_defaults_to_usdm_futures_for_stock_mapping() -> None:
     source = inspect.getsource(smoke_binance_provider.main)
 
     assert 'default="usdm_futures"' in source
+    assert 'choices=["usdm_futures"]' in source
 
 
 class RecordingHTTPProvider(BinanceHTTPPriceProvider):
@@ -2076,25 +2077,27 @@ def test_weekend_peak_short_backtest_marks_missing_anchor_invalid() -> None:
     assert rows[0]["error_message"] == "missing anchor price"
 
 
-def test_weekend_peak_short_backtest_marks_spot_as_observation_only() -> None:
+def test_weekend_peak_short_backtest_normalizes_legacy_spot_mapping_to_usdm_futures() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [
         _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
         _kline(window.end_et, 105, 106, 103, 104),
     ]
+    provider = FakeKlineProvider(bars)
 
     rows = run_weekend_peak_short_backtest(
         ["NVDA"],
         mapping=_mapping(market_type="spot"),
         anchors=_anchors(),
-        provider=FakeKlineProvider(bars),
+        provider=provider,
         weeks=1,
         now=now,
     )
 
-    assert rows[0]["data_quality"] == "SPOT_OBSERVATION_ONLY"
-    assert "观察收益" in rows[0]["result_note"]
+    assert rows[0]["market_type"] == "usdm_futures"
+    assert rows[0]["data_quality"] == "OK"
+    assert provider.calls[0]["market_type"] == "usdm_futures"
 
 
 def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
