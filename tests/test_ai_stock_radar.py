@@ -1282,10 +1282,41 @@ def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone
     assert "买区上沿 / 修复观察区" in card_html
     assert "不是主动买点" in card_html
     assert "主击球区" not in card_html
-    assert "左侧回踩区" in chart_html
+    assert "左侧试仓区" in chart_html
     assert "承接观察区" in chart_html
     assert "买区上沿 / 修复观察区" in chart_html
     assert "主击球区：" not in chart_html
+
+
+def test_ai_radar_range_chart_separates_invalidation_overlap_from_left_probe() -> None:
+    report = {
+        "ticker": "NOW",
+        "company_name": "ServiceNow",
+        "current_price": 105.81,
+        "decision": "WAIT",
+        "final_score": 78,
+        "data_status": "OK",
+    }
+    buy_zone_context = {
+        "pullback_zone_low": 94.60,
+        "pullback_zone_high": 108.09,
+        "left_probe_zone_low": 97.50,
+        "left_probe_zone_high": 99.32,
+        "observe_zone_high": 104.72,
+        "invalidation_price": 97.50,
+        "invalidation_risk_zone_low": 94.60,
+        "invalidation_risk_zone_high": 97.50,
+        "current_action": "WAIT_CONFIRMATION",
+    }
+
+    chart_html = radar_ui._range_chart_html(report, {}, buy_zone_context)
+
+    assert "左侧试仓区" in chart_html
+    assert "$97.50 - $99.32" in chart_html
+    assert "结构失效风险区" in chart_html
+    assert "$94.60 - $97.50" in chart_html
+    assert "小仓观察参考" not in chart_html
+    assert "允许小仓观察" not in chart_html
 
 
 def test_ai_radar_report_shows_volume_price_acceptance_card() -> None:

@@ -2121,6 +2121,8 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
     left_probe_low = _first_number(buy_zone_context, "left_probe_zone_low")
     left_probe_high = _first_number(buy_zone_context, "left_probe_zone_high")
     observe_high = _first_number(buy_zone_context, "observe_zone_high")
+    invalidation_risk_low = _first_number(buy_zone_context, "invalidation_risk_zone_low")
+    invalidation_risk_high = _first_number(buy_zone_context, "invalidation_risk_zone_high")
     support_low = _first_number(buy_zone_context, "support_zone_low") or _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price")
     support_high = _first_number(buy_zone_context, "support_zone_high") or _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")
     trend_low = _first_number(report, "trend_critical_zone_low", "radar_trend_critical_zone_low")
@@ -2131,14 +2133,16 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
     invalidation = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
     chase = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     items: list[dict[str, Any]] = []
-    if pullback_low is not None and pullback_high is not None and left_probe_high is not None and observe_high is not None:
-        items.extend(
-            [
-                {"label": "左侧回踩区", "range": (left_probe_low or pullback_low, left_probe_high), "tone": "blue"},
-                {"label": "承接观察区", "range": (left_probe_high, observe_high), "tone": "slate"},
-                {"label": "买区上沿 / 修复观察区", "range": (observe_high, pullback_high), "tone": "amber"},
-            ]
-        )
+    if pullback_low is not None and pullback_high is not None and observe_high is not None:
+        if left_probe_low is not None and left_probe_high is not None:
+            items.append({"label": "左侧试仓区", "range": (left_probe_low, left_probe_high), "tone": "blue"})
+        observation_start = left_probe_high or invalidation_risk_high or pullback_low
+        if observation_start is None or observe_high is None or observation_start <= observe_high:
+            items.append({"label": "承接观察区", "range": (observation_start, observe_high), "tone": "slate"})
+        if observe_high is None or pullback_high is None or observe_high <= pullback_high:
+            items.append({"label": "买区上沿 / 修复观察区", "range": (observe_high, pullback_high), "tone": "amber"})
+        if invalidation_risk_low is not None and invalidation_risk_high is not None:
+            items.append({"label": "结构失效风险区", "range": (invalidation_risk_low, invalidation_risk_high), "tone": "red"})
     else:
         items.append({"label": "主击球区 / 回踩击球区", "range": (pullback_low, pullback_high), "tone": "blue"})
     items.extend([
@@ -2155,18 +2159,22 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
 def _range_action_text(label: str) -> str:
     if "买区上沿" in label:
         return "持有观察，不主动新增"
+    if "左侧试仓" in label:
+        return "价格候选区，需量价确认"
     if "承接观察" in label:
-        return "等待承接"
+        return "等承接确认"
+    if "结构失效" in label:
+        return "跌破后建议复核，不建议新增"
     if "趋势临界" in label:
         return "破位后重新评估"
     if "深度恐慌" in label:
         return "基本面复核"
     if "深度" in label or "承接" in label:
-        return "允许分批建仓"
+        return "等承接确认"
     if "估值" in label:
         return "仅作仓位参考"
     if "回踩" in label:
-        return "小仓观察参考"
+        return "价格候选区，需量价确认"
     if "重新评估" in label:
         return "站上后重新判断"
     if "修复" in label or "确认" in label:

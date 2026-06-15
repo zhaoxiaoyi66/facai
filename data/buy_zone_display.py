@@ -285,9 +285,19 @@ def _is_current_in_primary_zone(context: dict[str, Any], current_price: float | 
 def _volume_confirmation_text(context: dict[str, Any], row: dict[str, Any]) -> str:
     nested = _dict(_value(row, "volumePriceAcceptance", "volume_price_acceptance"))
     gate = str(_value(context, "volume_price_gate", "volumePriceGate") or "").strip().upper()
+    confirmation_score = _number(_value(context, "confirmation_score", "confirmationScore"))
+    early_volume_ratio = _number(
+        _value(context, "volume_ratio", "volumeRatio")
+        or _value(row, "volumeRatio", "volume_ratio")
+        or _value(nested, "volume_ratio", "volumeRatio")
+    )
     if gate == "CONFIRMED_ACCEPTANCE":
         return "量价承接确认"
     if gate == "FORMING_ACCEPTANCE":
+        if early_volume_ratio is not None and early_volume_ratio < 0.7:
+            return "缩量回踩，但承接未确认"
+        if confirmation_score is not None and confirmation_score < 60:
+            return "量能不足，暂不能确认有效承接"
         return "初步承接，尚未确认"
     if gate == "HIGH_VOLUME_UNCONFIRMED":
         return "放量未确认，等收盘确认 / 事件复核"

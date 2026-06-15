@@ -236,6 +236,35 @@ def test_ibm_upper_pullback_zone_is_repair_watch_not_main_batting_area() -> None
     assert "$210.00 - $220.00：极端风险" in context.pause_new_condition_text
 
 
+def test_left_probe_zone_is_clipped_by_invalidation_risk() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            ticker="NOW",
+            current_price=105.81,
+            effective_technical_entry_zone_low=94.60,
+            effective_technical_entry_zone_high=108.09,
+            support_zone_low=94.60,
+            support_zone_high=99.32,
+            confirmation_price=113.0,
+            resistance_zone_low=113.0,
+            resistance_zone_high=126.0,
+            recent_swing_high=126.0,
+            invalidation_price=97.50,
+            chase_above_price=135.0,
+        ),
+        volume_snapshot=_volume(volume_price_score=48, volume_ratio=0.55, confirmation_score=48),
+    )
+
+    assert context.primary_zone == "PULLBACK_UPPER_WATCH"
+    assert context.current_action == WAIT_CONFIRMATION
+    assert context.left_probe_zone_low == 97.50
+    assert round(context.left_probe_zone_high or 0, 2) == 99.32
+    assert context.invalidation_risk_zone_low == 94.60
+    assert context.invalidation_risk_zone_high == 97.50
+    assert context.left_side_position_pct is None
+    assert context.left_probe_position_label == "OUTSIDE"
+
+
 def test_52_week_high_is_breakout_reevaluation_not_buy_confirmation() -> None:
     context = build_buy_zone_context(
         _base_source(

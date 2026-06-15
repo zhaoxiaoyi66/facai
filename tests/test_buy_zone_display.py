@@ -54,6 +54,27 @@ def test_high_volume_unconfirmed_copy_is_more_cautious() -> None:
     assert display["entry_context_status"] == "WAIT_CONFIRMATION"
 
 
+def test_low_confirmation_forming_acceptance_does_not_claim_confirmed_support() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_BUY",
+            "primary_zone_text": "技术回踩带",
+            "current_price": 98.5,
+            "pullback_zone_low": 97.5,
+            "pullback_zone_high": 105.0,
+            "volume_price_gate": "FORMING_ACCEPTANCE",
+            "confirmation_score": 48,
+            "volume_ratio": 0.55,
+        },
+        {"currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["volume_confirmation_text"] == "缩量回踩，但承接未确认"
+    assert "承接K线" not in display["next_step_text"]
+
+
 def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
     display = build_buy_zone_display(
         {

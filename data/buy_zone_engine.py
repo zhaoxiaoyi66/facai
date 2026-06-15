@@ -100,6 +100,8 @@ class BuyZoneContext:
     deep_support_zone_high: float | None = None
     invalidation_zone_low: float | None = None
     invalidation_zone_high: float | None = None
+    invalidation_risk_zone_low: float | None = None
+    invalidation_risk_zone_high: float | None = None
     suspend_new_line: float | None = None
     buy_zone_failure_line: float | None = None
     deep_support_break_line: float | None = None
@@ -357,7 +359,12 @@ def build_buy_zone_context(
             advisory_reasons=["技术承接数据不足", *missing[:4]],
         )
 
-    left_probe_low, left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
+    raw_left_probe_low, raw_left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
+    left_probe_low, left_probe_high, invalidation_risk_low, invalidation_risk_high = _clip_left_probe_by_invalidation(
+        raw_left_probe_low,
+        raw_left_probe_high,
+        invalidation,
+    )
     zone_position = _zone_position(price, pullback_low, pullback_high)
     left_side_position_pct = _left_side_position_pct(price, left_probe_low, left_probe_high)
     left_probe_label = _left_probe_position_label(left_side_position_pct)
@@ -504,6 +511,8 @@ def build_buy_zone_context(
         deep_support_zone_high=support_high,
         invalidation_zone_low=suspend_new_line,
         invalidation_zone_high=buy_zone_failure_line,
+        invalidation_risk_zone_low=invalidation_risk_low,
+        invalidation_risk_zone_high=invalidation_risk_high,
         suspend_new_line=suspend_new_line,
         buy_zone_failure_line=buy_zone_failure_line,
         deep_support_break_line=deep_support_break_line,
@@ -1001,6 +1010,24 @@ def _pullback_layers(pullback_low: float, pullback_high: float) -> tuple[float, 
     left_probe_high = low + width * 0.35
     observe_high = low + width * 0.75
     return low, left_probe_high, left_probe_high, observe_high
+
+
+def _clip_left_probe_by_invalidation(
+    left_probe_low: float | None,
+    left_probe_high: float | None,
+    invalidation: float | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    if left_probe_low is None or left_probe_high is None:
+        return left_probe_low, left_probe_high, None, None
+    low, high = sorted((left_probe_low, left_probe_high))
+    if invalidation is None or invalidation <= low:
+        return low, high, None, None
+    risk_high = min(invalidation, high)
+    risk_low = low
+    effective_low = max(invalidation, low)
+    if effective_low >= high:
+        return None, None, risk_low, high
+    return effective_low, high, risk_low, risk_high
 
 
 def _zone_position(price: float | None, zone_low: float | None, zone_high: float | None) -> float | None:
