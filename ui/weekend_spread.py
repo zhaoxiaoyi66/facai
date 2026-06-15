@@ -523,13 +523,13 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     st.subheader("历史回测")
     st.warning(
         "这是历史观察回测，不构成套利建议。周末高点未必能成交；"
-        "USDT-M 合约数据不可用时不能计算观察收益；mapping 未 confirmed 时结果仅作观察。"
+        "USDT-M 合约数据不可用时不能计算观察收益；映射未确认时结果仅作观察。"
     )
     include_unconfirmed = st.checkbox(
         "包含未确认映射",
         value=False,
         key="weekend_backtest_include_unconfirmed",
-        help="candidate 映射仅观察，默认不纳入正式胜率。",
+        help="未确认映射仅观察，默认不纳入正式胜率。",
     )
     anchors = _backtest_anchor_mapping()
     all_tickers = [str(ticker or "").upper() for ticker in watchlist if str(ticker or "").strip()]
@@ -541,12 +541,12 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     )
     options = ["全部已映射"] + list(preliminary.get("eligible_tickers") or [])
     cols = st.columns(6)
-    selected = cols[0].selectbox("ticker", options, key="weekend_backtest_ticker")
-    weeks = int(cols[1].number_input("weeks", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
-    open_window = int(cols[2].selectbox("open_window", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
-    fee_pct = cols[3].number_input("fee_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
-    slippage_pct = cols[4].number_input("slippage_pct", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
-    funding_pct = cols[5].number_input("funding_pct", value=0.00, step=0.01, key="weekend_backtest_funding")
+    selected = cols[0].selectbox("标的", options, key="weekend_backtest_ticker")
+    weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
+    open_window = int(cols[2].selectbox("开盘窗口（分钟）", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
+    fee_pct = cols[3].number_input("手续费（%）", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_fee")
+    slippage_pct = cols[4].number_input("滑点（%）", min_value=0.0, value=0.10, step=0.01, key="weekend_backtest_slippage")
+    funding_pct = cols[5].number_input("资金费率（%）", value=0.00, step=0.01, key="weekend_backtest_funding")
     run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
     preflight = build_weekend_backtest_preflight(
         run_tickers,
@@ -624,7 +624,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         return
     last_run_at = str(cached_result.get("last_run_at") or "")
     if last_run_at:
-        st.caption(f"last_run_at：{_short_hkt_time(last_run_at)}")
+        st.caption(f"上次运行：{_short_hkt_time(last_run_at)}")
     if include_unconfirmed:
         st.caption("观察回测：包含未确认映射，结果不计为正式胜率。")
     _render_backtest_kpis(results)
@@ -636,8 +636,8 @@ def _render_backtest_preflight(preflight: dict[str, object]) -> None:
     cols = st.columns(4)
     cols[0].metric("可回测标的", int(preflight.get("eligible_count") or 0))
     cols[1].metric("已排除标的", int(preflight.get("excluded_count") or 0))
-    cols[2].metric("当前模式", str(preflight.get("mode") or "confirmed only"))
-    cols[3].metric("数据源状态", "USDT-M Futures")
+    cols[2].metric("当前模式", _backtest_mode_text(preflight.get("mode")))
+    cols[3].metric("数据源状态", "USDT-M 合约")
 
 
 def _backtest_block_text(reason: str) -> str:
@@ -653,13 +653,68 @@ def _backtest_block_text(reason: str) -> str:
     }.get(reason, reason or "当前没有可回测标的。")
 
 
+def _backtest_mode_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"include candidate", "include_candidates", "include unconfirmed"}:
+        return "包含未确认映射"
+    if text in {"confirmed only", "confirmed_only", "confirmed"}:
+        return "仅确认映射"
+    return str(value or "仅确认映射")
+
+
+def _market_type_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text == "usdm_futures":
+        return "USDT-M 合约"
+    if text == "spot":
+        return "现货（已停用）"
+    return str(value or "暂缺")
+
+
+def _mapping_status_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "confirmed": "已确认",
+        "candidate": "候选待确认",
+        "unverified": "未验证",
+        "no_mapping": "暂无映射",
+        "missing": "暂无映射",
+        "invalid": "无效",
+    }.get(text, str(value or "暂缺"))
+
+
+def _data_quality_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "OK": "可用",
+        "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
+        "DATA_UNAVAILABLE": "数据不可用",
+        "INVALID": "无效样本",
+        "MISSING": "缺失",
+    }.get(text, str(value or "暂缺"))
+
+
+def _exclusion_reason_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "NO_MAPPING": "暂无映射",
+        "AUTO_CANDIDATE_NOT_ALLOWED": "自动候选不进入主流程",
+        "UNCONFIRMED_EXCLUDED": "未确认映射默认排除",
+        "SYMBOL_INVALID": "合约无效",
+        "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
+        "FUTURES_UNAVAILABLE": "USDT-M 合约数据源不可用",
+        "NO_PRICE_ANCHOR": "缺少价格锚点",
+        "PROVIDER_ERROR": "数据源错误",
+    }.get(text, str(value or "暂缺"))
+
+
 def _backtest_exclusion_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
-        ("ticker", "ticker"),
-        ("symbol", "symbol"),
-        ("market_type", "market_type"),
-        ("mapping_status", "mapping_status"),
-        ("exclusion_reason", "exclusion_reason"),
+        ("ticker", "标的"),
+        ("symbol", "合约"),
+        ("market_type", "市场"),
+        ("mapping_status", "映射状态"),
+        ("exclusion_reason", "排除原因"),
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -667,6 +722,9 @@ def _backtest_exclusion_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     for key, label in columns:
         display[label] = frame.get(key)
+    display["市场"] = display["市场"].map(_market_type_text)
+    display["映射状态"] = display["映射状态"].map(_mapping_status_text)
+    display["排除原因"] = display["排除原因"].map(_exclusion_reason_text)
     return display
 
 
@@ -678,11 +736,12 @@ def _backtest_error_message(rows: list[dict]) -> str:
         quality = str(row.get("data_quality") or "")
         raw_error = str(row.get("error_message") or "")
         if quality == "DATA_UNAVAILABLE":
-            reasons.append(f"{row.get('ticker')}: BINANCE_KLINE_UNAVAILABLE {raw_error}".strip())
+            detail = f"：{raw_error}" if raw_error else ""
+            reasons.append(f"{row.get('ticker')}：Binance K 线不可用{detail}")
         elif quality == "INVALID":
-            reasons.append(f"{row.get('ticker')}: {raw_error or 'INVALID'}")
+            reasons.append(f"{row.get('ticker')}：{raw_error or '无效样本'}")
         elif raw_error:
-            reasons.append(f"{row.get('ticker')}: {raw_error}")
+            reasons.append(f"{row.get('ticker')}：{raw_error}")
     return "；".join(reasons[:5])
 
 
@@ -1074,7 +1133,7 @@ def _history_frame(rows: list[dict]) -> pd.DataFrame:
 
 def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
-        ("week_id", "week_id"),
+        ("week_id", "周次"),
         ("ticker", "Ticker"),
         ("weekend_peak_time", "周末高点时间"),
         ("weekend_peak_premium_pct", "周末峰值溢价"),
@@ -1083,8 +1142,8 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
         ("premium_decay_ratio", "溢价抹平率"),
         ("theoretical_short_return_pct", "高点空到开盘理论收益"),
         ("net_short_return_pct", "扣费后收益"),
-        ("data_quality", "data_quality"),
-        ("warning", "exclusion / warning"),
+        ("data_quality", "数据质量"),
+        ("warning", "排除 / 提醒"),
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -1105,6 +1164,7 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
     ):
         display[percent_col] = display[percent_col].map(_percent_text)
     display["周末高点时间"] = display["周末高点时间"].replace("", "暂缺")
+    display["数据质量"] = display["数据质量"].map(_data_quality_text)
     return display
 
 
@@ -1113,11 +1173,11 @@ def _backtest_row_warning(row: dict) -> str:
     error = str(row.get("error_message") or "")
     note = str(row.get("result_note") or "")
     if quality == "DATA_UNAVAILABLE":
-        return f"BINANCE_KLINE_UNAVAILABLE {error}".strip()
+        return f"Binance K 线不可用：{error}" if error else "Binance K 线不可用"
     if quality == "INVALID":
-        return error or "INVALID"
+        return error or "无效样本"
     if quality == "UNCONFIRMED_MAPPING":
-        return note or "UNCONFIRMED_MAPPING"
+        return note or "未确认映射，仅观察"
     return note
 
 

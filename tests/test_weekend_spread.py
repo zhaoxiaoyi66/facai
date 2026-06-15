@@ -2207,8 +2207,8 @@ def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
     assert rows[0]["data_quality"] == "DATA_UNAVAILABLE"
     assert "futures timeout" in rows[0]["error_message"]
     frame = weekend_spread._backtest_frame(rows)
-    assert "BINANCE_KLINE_UNAVAILABLE" in frame.loc[0, "exclusion / warning"]
-    assert "futures timeout" in frame.loc[0, "exclusion / warning"]
+    assert "Binance K 线不可用" in frame.loc[0, "排除 / 提醒"]
+    assert "futures timeout" in frame.loc[0, "排除 / 提醒"]
 
 
 def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
