@@ -51,6 +51,7 @@ TRADE_DISCIPLINE_COLUMNS = {
     "actual_sell_pct": "REAL",
     "sell_reason_type": "TEXT",
     "sell_context_type": "TEXT",
+    "sell_reason_tags": "TEXT",
     "fundamental_change_type": "TEXT",
     "valuation_compression_reason": "TEXT",
     "liquidity_shock_reason": "TEXT",
@@ -474,6 +475,7 @@ class TradeJournalStore:
                     actual_sell_pct,
                     sell_reason_type,
                     sell_context_type,
+                    sell_reason_tags,
                     fundamental_change_type,
                     valuation_compression_reason,
                     liquidity_shock_reason,
@@ -499,7 +501,7 @@ class TradeJournalStore:
                     reminder_text,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cleaned["symbol"],
@@ -522,6 +524,7 @@ class TradeJournalStore:
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_context_type"],
+                    cleaned["sell_reason_tags"],
                     cleaned["fundamental_change_type"],
                     cleaned["valuation_compression_reason"],
                     cleaned["liquidity_shock_reason"],
@@ -596,6 +599,7 @@ class TradeJournalStore:
                     actual_sell_pct = ?,
                     sell_reason_type = ?,
                     sell_context_type = ?,
+                    sell_reason_tags = ?,
                     fundamental_change_type = ?,
                     valuation_compression_reason = ?,
                     liquidity_shock_reason = ?,
@@ -642,6 +646,7 @@ class TradeJournalStore:
                     cleaned["actual_sell_pct"],
                     cleaned["sell_reason_type"],
                     cleaned["sell_context_type"],
+                    cleaned["sell_reason_tags"],
                     cleaned["fundamental_change_type"],
                     cleaned["valuation_compression_reason"],
                     cleaned["liquidity_shock_reason"],
@@ -1625,6 +1630,7 @@ def _clean_structured_sell_reason(action_type: str, values: dict) -> dict:
     if action_type not in {"sell", "trim"}:
         return {
             "sell_context_type": None,
+            "sell_reason_tags": None,
             "fundamental_change_type": None,
             "valuation_compression_reason": None,
             "liquidity_shock_reason": None,
@@ -1633,6 +1639,7 @@ def _clean_structured_sell_reason(action_type: str, values: dict) -> dict:
         }
     return {
         "sell_context_type": _clean_optional_text(_value(values, "sellContextType", "sell_context_type")),
+        "sell_reason_tags": _reasons_json(_value(values, "sellReasonTags", "sell_reason_tags", "sell_reason_tag_list")),
         "fundamental_change_type": _reasons_json(
             _value(values, "fundamentalChangeType", "fundamental_change_type", "fundamental_change_types")
         ),
@@ -2647,6 +2654,8 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict:
         item["sell_context_snapshot"] = _load_json_dict(item["sell_context_snapshot_json"])
     if "fundamental_change_type" in item:
         item["fundamental_change_types"] = _load_json_list(item["fundamental_change_type"])
+    if "sell_reason_tags" in item:
+        item["sell_reason_tag_list"] = _load_json_list(item["sell_reason_tags"])
     if "structure_reasons_json" in item:
         item["structure_reasons"] = _load_json_list(item["structure_reasons_json"])
     if "structure_warnings_json" in item:

@@ -115,6 +115,17 @@ FUNDAMENTAL_CHANGE_OPTIONS = {
     "其他": "other",
 }
 FUNDAMENTAL_CHANGE_LABELS = {value: label for label, value in FUNDAMENTAL_CHANGE_OPTIONS.items()}
+SELL_REASON_TAG_OPTIONS = {
+    "估值": "valuation",
+    "风险控制": "risk_control",
+    "仓位管理": "position_management",
+    "流动性 / 市场环境": "liquidity_market",
+    "thesis 变化": "thesis_change",
+    "纪律止盈": "discipline_take_profit",
+    "纪律止损": "discipline_stop_loss",
+    "其他": "other",
+}
+SELL_REASON_TAG_LABELS = {value: label for label, value in SELL_REASON_TAG_OPTIONS.items()}
 DECISION_MOOD_OPTIONS = {
     "请选择": "",
     "平静 / 无明显情绪": "NEUTRAL",
@@ -265,6 +276,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             if not active_positions:
                 st.info("当前没有可卖出的 active 持仓。")
                 return
+        st.markdown("### 交易执行")
         top_cols = st.columns([1.1, 1.2, 1])
         selected_position = None
         if editing_entry is None:
@@ -297,12 +309,18 @@ def _render_editor(store: TradeJournalStore) -> None:
         if editing_entry is None and action_type == "sell":
             selected_quantity = _number((selected_position or {}).get("quantity"))
             quantity_default = "" if selected_quantity is None else f"{selected_quantity:g}"
-        quantity = trade_cols[0].text_input("数量", value=quantity_default, key=_editor_key("quantity", editing_id))
-        price = trade_cols[1].text_input("价格", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
+        quantity = trade_cols[0].text_input("卖出数量", value=quantity_default, key=_editor_key("quantity", editing_id))
+        price = trade_cols[1].text_input("卖出均价", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
         mood_default = _decision_mood_label_for_entry(editing_entry)
-        mood_label = trade_cols[2].selectbox("交易心理标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
+        mood_label = trade_cols[2].selectbox("情绪标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
         decision_mood = DECISION_MOOD_OPTIONS.get(mood_label, "")
-        notes = st.text_area("备注", value=_entry_value(editing_entry, "notes"), height=86, key=_editor_key("notes", editing_id))
+        notes = st.text_area(
+            "成交备注（可选）",
+            value=_entry_value(editing_entry, "notes"),
+            height=72,
+            key=_editor_key("notes", editing_id),
+            placeholder="只记录执行层信息，例如分批成交、夜盘流动性差、实际成交偏差。",
+        )
         with st.expander("高级信息", expanded=False):
             decision_snapshot_id = st.text_input(
                 "关联信号 ID（可选）",
@@ -364,6 +382,15 @@ def _render_editor(store: TradeJournalStore) -> None:
             preview=portfolio_preview,
             discipline_blocked=_discipline_result_blocked(discipline_result),
         )
+
+        st.markdown("### 提交确认")
+        submit_cols = st.columns(3)
+        submit_qty = _number(quantity)
+        submit_price = _number(price)
+        submit_notional = None if submit_qty is None or submit_price is None else submit_qty * submit_price
+        submit_cols[0].metric("卖出股数", _quantity_text(submit_qty))
+        submit_cols[1].metric("卖出均价", format_currency(submit_price) if submit_price is not None else BLANK_TEXT)
+        submit_cols[2].metric("本次成交额", format_currency(submit_notional) if submit_notional is not None else BLANK_TEXT)
 
         button_label = "保存修改" if editing_entry else ("确认卖出并入账" if action_type == "sell" else "确认减仓并入账")
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
@@ -706,6 +733,7 @@ def _sell_context_snapshot_values(
         "sell_pct": sell_pct,
         "sell_reason": entry_values.get("sellReasonType"),
         "sell_context_type": entry_values.get("sellContextType"),
+        "sell_reason_tags": entry_values.get("sellReasonTags") or [],
         "fundamental_change_type": entry_values.get("fundamentalChangeType") or [],
         "valuation_compression_reason": entry_values.get("valuationCompressionReason"),
         "liquidity_shock_reason": entry_values.get("liquidityShockReason"),
@@ -1058,8 +1086,8 @@ def _render_trading_discipline_check(
     sell_reference: dict | None = None,
     key_suffix: str = "new",
 ) -> None:
-    st.markdown('<div class="trade-discipline-title">交易纪律检查</div>', unsafe_allow_html=True)
-    cols = st.columns([0.72, 0.92, 1.2, 0.86, 0.86, 0.92], gap="small")
+    st.markdown("### 卖出决策")
+    cols = st.columns([0.82, 0.9, 1.3, 0.9, 0.9], gap="small")
     position_default = _default_position_class(editing_entry, stock_plan)
     position_default_label = _position_class_label(position_default)
     reason_default = _sell_reason_label_for_entry(editing_entry)
@@ -1082,7 +1110,6 @@ def _render_trading_discipline_check(
     reason_label = cols[2].selectbox("卖出原因", list(SELL_REASON_OPTIONS), index=list(SELL_REASON_OPTIONS).index(reason_default), key=f"trade-discipline-sell-reason-{key_suffix}")
     thesis_broken = cols[3].checkbox("投资逻辑破裂", value=_entry_bool(editing_entry, "thesis_broken"), key=f"trade-discipline-thesis-broken-{key_suffix}")
     position_over_limit = cols[4].checkbox("仓位超限", value=_entry_bool(editing_entry, "position_over_limit"), key=f"trade-discipline-position-over-limit-{key_suffix}")
-    cols[5].markdown('<div class="trade-reentry-state">回补计划由下方字段判断</div>', unsafe_allow_html=True)
     core_pct, trading_pct = _classification_ratio_defaults(position_class, editing_entry, stock_plan)
     st.session_state[f"trade-discipline-core-min-{key_suffix}"] = core_pct
     st.session_state[f"trade-discipline-trading-max-{key_suffix}"] = trading_pct
@@ -1094,51 +1121,23 @@ def _render_trading_discipline_check(
         actual_sell_pct=actual_sell_pct,
         core_pct=core_pct,
     )
-    if position_class:
-        st.caption("股票分类默认来自股票纪律档案；本次卖出/减仓仍可临时覆盖。")
-    else:
-        st.caption("未设置分类：本次不会按 A 类核心仓纪律检查，建议先补股票纪律档案。")
     _render_structured_sell_reason_editor(
         position_class=position_class,
         editing_entry=editing_entry,
         key_suffix=key_suffix,
     )
 
-    gate_result = evaluate_trading_discipline(
-        symbol=symbol,
-        positionClass=position_class or "C",
-        corePositionPct=core_pct,
-        tradingPositionPct=trading_pct,
-        unrealizedGainPct=None,
-        plannedAction=action_type,
-        plannedSellPct=_parse_optional_float(planned_sell_pct),
-        sellReasonType=SELL_REASON_OPTIONS[reason_label],
-        thesisBroken=thesis_broken,
-        positionOverLimit=position_over_limit,
-        hasReentryPlan=True,
-        actualSellPct=actual_sell_pct,
-        decisionMood=decision_mood or _entry_value(editing_entry, "decision_mood"),
-        belowTargetSellPrice=bool((sell_reference or {}).get("belowTargetSellPrice")),
-        inBuyZoneOrBelow=bool((sell_reference or {}).get("inBuyZoneOrBelow")),
-    )
-    gate_conclusion = _discipline_gate_conclusion(gate_result)
-    hard_blocked = gate_conclusion in {"BLOCK", "FIX_REQUIRED"}
-    if hard_blocked:
-        st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = True
-        st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = False
-        _render_discipline_gate_explanation(gate_result, discipline_context)
-        st.warning("高风险卖出提醒：系统不建议，但你可以继续；继续操作将记录为人工确认。")
-        return gate_result
     st.session_state[f"trade-discipline-hard-block-{key_suffix}"] = False
 
-    reentry_values = _render_reentry_plan_editor(
-        symbol,
-        trade_price=trade_price,
-        sell_reason_type=SELL_REASON_OPTIONS[reason_label],
-        decision_mood=decision_mood,
-        editing_entry=editing_entry,
-        key_suffix=key_suffix,
-    )
+    with st.expander("回补计划", expanded=False):
+        reentry_values = _render_reentry_plan_editor(
+            symbol,
+            trade_price=trade_price,
+            sell_reason_type=SELL_REASON_OPTIONS[reason_label],
+            decision_mood=decision_mood,
+            editing_entry=editing_entry,
+            key_suffix=key_suffix,
+        )
     has_reentry_plan = _has_reentry_plan_values(reentry_values)
     st.session_state[f"trade-discipline-has-reentry-plan-{key_suffix}"] = has_reentry_plan
 
@@ -1159,8 +1158,36 @@ def _render_trading_discipline_check(
         belowTargetSellPrice=bool((sell_reference or {}).get("belowTargetSellPrice")),
         inBuyZoneOrBelow=bool((sell_reference or {}).get("inBuyZoneOrBelow")),
     )
-    _render_discipline_gate_explanation(result, discipline_context)
+    _render_discipline_summary_row(
+        result,
+        action_type=action_type,
+        sell_reason_label=reason_label,
+        actual_sell_pct=actual_sell_pct,
+        has_reentry_plan=has_reentry_plan,
+    )
+    with st.expander("纪律检查详情", expanded=False):
+        _render_discipline_gate_explanation(result, discipline_context)
     return result
+
+
+def _render_discipline_summary_row(
+    result,
+    *,
+    action_type: str,
+    sell_reason_label: str,
+    actual_sell_pct: float | None,
+    has_reentry_plan: bool,
+) -> None:
+    conclusion = _discipline_gate_conclusion(result)
+    status_text = _discipline_gate_conclusion_label(conclusion)
+    action_text = "清仓" if str(action_type or "") == "sell" else "减仓"
+    summary_cols = st.columns([1.1, 1, 1, 1], gap="small")
+    summary_cols[0].metric("纪律检查", status_text)
+    summary_cols[1].metric("卖出类型", action_text)
+    summary_cols[2].metric("本次比例", _pct_point_text(actual_sell_pct))
+    summary_cols[3].metric("需要回补计划", "是" if has_reentry_plan else "否")
+    if conclusion != "PASS":
+        st.caption("纪律检查有提醒，完整门禁和比例明细已折叠到下方。")
 
 
 def _render_structured_sell_reason_editor(
@@ -1169,7 +1196,6 @@ def _render_structured_sell_reason_editor(
     editing_entry: dict | None = None,
     key_suffix: str = "new",
 ) -> None:
-    st.markdown('<div class="trade-discipline-title">卖出原因复盘</div>', unsafe_allow_html=True)
     context_default = _sell_context_type_label_for_entry(editing_entry)
     context_label = st.selectbox(
         "卖出原因类型",
@@ -1188,34 +1214,19 @@ def _render_structured_sell_reason_editor(
         )
         if not selected_changes:
             st.warning("选择“基本面改写”时，请至少选择一项具体改写类型；本提示只用于复盘，不改变门禁。")
-    reason_cols = st.columns([1, 1, 1])
-    reason_cols[0].text_area(
-        "估值压缩 / 风险溢价原因",
-        value=_entry_value(editing_entry, "valuation_compression_reason"),
-        height=62,
-        key=f"trade-valuation-compression-reason-{key_suffix}",
-        placeholder="例如：无风险利率上行、风险溢价抬升、估值倍数回归。",
-    )
-    reason_cols[1].text_area(
-        "流动性冲击 / 市场恐慌原因",
-        value=_entry_value(editing_entry, "liquidity_shock_reason"),
-        height=62,
-        key=f"trade-liquidity-shock-reason-{key_suffix}",
-        placeholder="例如：市场恐慌、ETF 抛压、信用收缩、流动性踩踏。",
-    )
-    reason_cols[2].text_area(
-        "仓位风险原因",
-        value=_entry_value(editing_entry, "position_risk_reason"),
-        height=62,
-        key=f"trade-position-risk-reason-{key_suffix}",
-        placeholder="例如：单票超限、C 类过高、组合集中度过高。",
+    st.multiselect(
+        "原因标签（多选）",
+        list(SELL_REASON_TAG_OPTIONS),
+        default=_sell_reason_tag_labels_for_entry(editing_entry),
+        key=f"trade-sell-reason-tags-{key_suffix}",
+        help="用于筛选和复盘，可同时标记估值、风险、仓位、市场环境或 thesis 变化。",
     )
     st.text_area(
-        "卖出 thesis / 复盘说明",
-        value=_entry_value(editing_entry, "sell_thesis_note"),
-        height=74,
+        "卖出理由（必填）",
+        value=_combined_sell_reason_note(editing_entry),
+        height=96,
         key=f"trade-sell-thesis-note-{key_suffix}",
-        placeholder="这次卖出是理性调整，还是恐慌砍核心仓？请写清判断依据和回补条件。",
+        placeholder="记录本次卖出的核心原因，可包含估值、风险、仓位、市场环境、thesis 变化和回补判断。",
     )
     if str(position_class or "").upper() == "A" and context_type in {"valuation_compression", "liquidity_shock"}:
         st.warning("这可能是在流动性较差或风险溢价上升时卖出核心资产。请确认不是恐慌卖出，并填写回补计划。")
@@ -1242,6 +1253,37 @@ def _fundamental_change_labels_for_entry(entry: dict | None) -> list[str]:
     else:
         parsed = []
     return [FUNDAMENTAL_CHANGE_LABELS.get(str(item), str(item)) for item in parsed if str(item).strip()]
+
+
+def _sell_reason_tag_labels_for_entry(entry: dict | None) -> list[str]:
+    raw = (entry or {}).get("sell_reason_tags")
+    if raw is None:
+        raw = (entry or {}).get("sell_reason_tag_list")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        parsed = list(raw)
+    else:
+        parsed = []
+    return [SELL_REASON_TAG_LABELS.get(str(item), str(item)) for item in parsed if str(item).strip()]
+
+
+def _combined_sell_reason_note(entry: dict | None) -> str:
+    if not entry:
+        return ""
+    direct = _entry_value(entry, "sell_thesis_note")
+    if direct:
+        return direct
+    legacy_parts = [
+        ("估值 / 风险", _entry_value(entry, "valuation_compression_reason")),
+        ("流动性 / 市场", _entry_value(entry, "liquidity_shock_reason")),
+        ("仓位", _entry_value(entry, "position_risk_reason")),
+    ]
+    lines = [f"{label}：{value}" for label, value in legacy_parts if value]
+    return "\n".join(lines)
 
 
 def _discipline_gate_context(
@@ -1565,15 +1607,7 @@ def _render_reentry_plan_editor(
         decision_mood or ""
     ) in SELL_EMOTIONAL_MOODS
     tone = " alert" if emotional_sell else ""
-    st.markdown(
-        (
-            f'<section class="trade-reentry-shell{tone}">'
-            '<div class="trade-reentry-head"><strong>回补计划</strong>'
-            '<span>卖出前先写清楚怎么追回，避免卖飞后临场拍脑袋。</span></div>'
-            "</section>"
-        ),
-        unsafe_allow_html=True,
-    )
+    st.caption("按需填写回补条件；基础卖出记录只需要完成上方执行与理由。")
     keys = _reentry_keys(key_suffix)
     if st.button("使用系统建议生成回补计划", key=keys["generate"], width="stretch"):
         suggestion = _build_reentry_plan_suggestion(symbol, trade_price)
@@ -1581,42 +1615,39 @@ def _render_reentry_plan_editor(
             if field in keys:
                 st.session_state[keys[field]] = value
 
-    price_cols = st.columns([1, 1, 0.72, 0.88, 0.88], gap="small")
+    price_cols = st.columns([1, 1, 0.72, 0.88], gap="small")
     pullback_price = price_cols[0].text_input(
-        "回踩买回价",
+        "目标买回价",
         value=_entry_number_text(editing_entry, "reentry_pullback_price"),
         key=keys["pullback"],
     )
     breakout_price = price_cols[1].text_input(
-        "不跌反涨买回价",
+        "不涨回补价（可选）",
         value=_entry_number_text(editing_entry, "reentry_breakout_price"),
         key=keys["breakout"],
     )
     time_stop_days = price_cols[2].text_input(
-        "时间止损天数",
+        "时间上限天数",
         value=_entry_int_text(editing_entry, "reentry_time_stop_days") or "5",
         key=keys["time_stop"],
     )
     pullback_pct = price_cols[3].text_input(
-        "回踩买回比例 %",
+        "回补比例 %",
         value=_entry_percent_text(editing_entry, "reentry_buy_back_pct_on_pullback", "50"),
         key=keys["pullback_pct"],
     )
-    breakout_pct = price_cols[4].text_input(
-        "反涨买回比例 %",
-        value=_entry_percent_text(editing_entry, "reentry_buy_back_pct_on_breakout", "30"),
-        key=keys["breakout_pct"],
-    )
-    thesis_invalidation = st.text_input(
-        "不回补条件 / 投资逻辑破坏条件",
-        value=_entry_value(editing_entry, "reentry_thesis_invalidation"),
-        key=keys["invalidation"],
-    )
+    st.session_state[keys["breakout_pct"]] = pullback_pct
+    breakout_pct = pullback_pct
     plan_text = st.text_area(
-        "完整回补计划摘要",
+        "回补计划说明",
         value=_entry_value(editing_entry, "reentry_plan_text"),
         height=64,
         key=keys["plan_text"],
+    )
+    thesis_invalidation = st.text_input(
+        "不回补条件",
+        value=_entry_value(editing_entry, "reentry_thesis_invalidation"),
+        key=keys["invalidation"],
     )
     values = {
         "reentryPullbackPrice": pullback_price,
@@ -1815,6 +1846,7 @@ def _trade_discipline_form_values(action_type: str, key_suffix: str = "new") -> 
 def _structured_sell_reason_form_values(key_suffix: str = "new") -> dict:
     context_label = st.session_state.get(f"trade-sell-context-type-{key_suffix}")
     fundamental_labels = st.session_state.get(f"trade-fundamental-change-type-{key_suffix}") or []
+    reason_tag_labels = st.session_state.get(f"trade-sell-reason-tags-{key_suffix}") or []
     return {
         "sellContextType": SELL_CONTEXT_TYPE_OPTIONS.get(str(context_label or ""), str(context_label or "")),
         "fundamentalChangeType": [
@@ -1822,9 +1854,14 @@ def _structured_sell_reason_form_values(key_suffix: str = "new") -> dict:
             for label in fundamental_labels
             if str(label).strip()
         ],
-        "valuationCompressionReason": st.session_state.get(f"trade-valuation-compression-reason-{key_suffix}") or "",
-        "liquidityShockReason": st.session_state.get(f"trade-liquidity-shock-reason-{key_suffix}") or "",
-        "positionRiskReason": st.session_state.get(f"trade-position-risk-reason-{key_suffix}") or "",
+        "sellReasonTags": [
+            SELL_REASON_TAG_OPTIONS.get(str(label), str(label))
+            for label in reason_tag_labels
+            if str(label).strip()
+        ],
+        "valuationCompressionReason": "",
+        "liquidityShockReason": "",
+        "positionRiskReason": "",
         "sellThesisNote": st.session_state.get(f"trade-sell-thesis-note-{key_suffix}") or "",
     }
 
@@ -1833,6 +1870,8 @@ def _structured_sell_reason_validation_error(action_type: str, values: dict) -> 
     if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
         return ""
     context_type = str(values.get("sellContextType") or values.get("sell_context_type") or "").strip()
+    if not str(values.get("sellThesisNote") or values.get("sell_thesis_note") or "").strip():
+        return "请填写卖出理由（必填）。"
     if context_type != "fundamental_change":
         return ""
     change_values = values.get("fundamentalChangeType") or values.get("fundamental_change_type") or []
@@ -1847,8 +1886,6 @@ def _structured_sell_reason_validation_error(action_type: str, values: dict) -> 
         parsed_changes = []
     if not [str(item).strip() for item in parsed_changes if str(item).strip()]:
         return "选择“基本面改写”时，请至少选择一项具体改写类型。"
-    if not str(values.get("sellThesisNote") or values.get("sell_thesis_note") or "").strip():
-        return "选择“基本面改写”时，请填写卖出 thesis / 复盘说明。"
     return ""
 
 
@@ -3170,12 +3207,24 @@ def _structured_fundamental_change_values(entry: dict, snapshot: dict | None = N
 
 def _structured_sell_note_html(entry: dict, snapshot: dict | None = None) -> str:
     snapshot = snapshot or {}
-    notes = [
-        ("估值压缩说明", entry.get("valuation_compression_reason") or snapshot.get("valuation_compression_reason")),
-        ("流动性冲击说明", entry.get("liquidity_shock_reason") or snapshot.get("liquidity_shock_reason")),
-        ("仓位风险说明", entry.get("position_risk_reason") or snapshot.get("position_risk_reason")),
-        ("卖出 thesis", entry.get("sell_thesis_note") or snapshot.get("sell_thesis_note")),
-    ]
+    tag_labels = _sell_reason_tag_labels_for_entry(
+        {
+            "sell_reason_tags": entry.get("sell_reason_tags")
+            or entry.get("sell_reason_tag_list")
+            or snapshot.get("sell_reason_tags")
+        }
+    )
+    notes = [("原因标签", " / ".join(tag_labels))]
+    thesis_note = entry.get("sell_thesis_note") or snapshot.get("sell_thesis_note")
+    notes.append(("卖出理由", thesis_note))
+    if not thesis_note:
+        notes.extend(
+            [
+                ("估值 / 风险说明", entry.get("valuation_compression_reason") or snapshot.get("valuation_compression_reason")),
+                ("流动性 / 市场说明", entry.get("liquidity_shock_reason") or snapshot.get("liquidity_shock_reason")),
+                ("仓位风险说明", entry.get("position_risk_reason") or snapshot.get("position_risk_reason")),
+            ]
+        )
     rows = [(label, _text(value)) for label, value in notes if _entry_text_value(value)]
     if not rows:
         return ""

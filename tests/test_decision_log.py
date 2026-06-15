@@ -717,6 +717,7 @@ class DecisionLogTests(unittest.TestCase):
                     "trade_date": "2026-05-26",
                     "action_type": "trim",
                     "sellContextType": "fundamental_change",
+                    "sellReasonTags": ["valuation", "risk_control"],
                     "fundamentalChangeType": ["revenue_growth_deterioration", "margin_deterioration"],
                     "valuationCompressionReason": "risk premium up",
                     "liquidityShockReason": "market panic",
@@ -726,6 +727,8 @@ class DecisionLogTests(unittest.TestCase):
             )
 
             self.assertEqual(saved["sell_context_type"], "fundamental_change")
+            self.assertEqual(saved["sell_reason_tag_list"], ["valuation", "risk_control"])
+            self.assertEqual(json.loads(saved["sell_reason_tags"]), saved["sell_reason_tag_list"])
             self.assertEqual(saved["fundamental_change_types"], ["revenue_growth_deterioration", "margin_deterioration"])
             self.assertEqual(json.loads(saved["fundamental_change_type"]), saved["fundamental_change_types"])
             self.assertEqual(saved["valuation_compression_reason"], "risk premium up")

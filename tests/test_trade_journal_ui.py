@@ -104,11 +104,31 @@ def test_sell_form_keeps_signal_id_in_advanced_section_and_has_quantity_shortcut
 def test_sell_form_renders_structured_sell_reason_advisory() -> None:
     source = inspect.getsource(trade_journal._render_structured_sell_reason_editor)
 
-    assert "卖出原因复盘" in source
+    assert "原因标签（多选）" in source
+    assert "卖出理由（必填）" in source
+    assert "估值压缩 / 风险溢价原因" not in source
+    assert "流动性冲击 / 市场恐慌原因" not in source
+    assert "仓位风险原因" not in source
     assert "sellContextType" not in source
     assert "这可能是在流动性较差或风险溢价上升时卖出核心资产" in source
     assert "情绪性卖出容易造成卖飞" in source
     assert "只用于复盘，不改变门禁" in source
+
+
+def test_sell_form_uses_compact_workflow_sections() -> None:
+    editor_source = inspect.getsource(trade_journal._render_editor)
+    discipline_source = inspect.getsource(trade_journal._render_trading_discipline_check)
+    reentry_source = inspect.getsource(trade_journal._render_reentry_plan_editor)
+
+    assert "### 交易执行" in editor_source
+    assert "成交备注（可选）" in editor_source
+    assert "### 卖出决策" in discipline_source
+    assert 'st.expander("回补计划", expanded=False)' in discipline_source
+    assert 'st.expander("纪律检查详情", expanded=False)' in discipline_source
+    assert "### 提交确认" in editor_source
+    assert "回补计划说明" in reentry_source
+    assert "不回补条件" in reentry_source
+    assert "完整回补计划摘要" not in reentry_source
 
 
 def test_edit_trade_entry_locks_symbol_and_action_type() -> None:
@@ -690,7 +710,7 @@ def test_fundamental_change_sell_reason_requires_change_type_and_note() -> None:
     )
 
     assert "至少选择一项" in missing_change
-    assert "卖出 thesis" in missing_note
+    assert "卖出理由" in missing_note
     assert complete == ""
 
 
