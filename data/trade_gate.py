@@ -297,7 +297,7 @@ def buy_gate_entry_fields(result: BuyGateResult | None, *, action_type: str = ""
     return {
         "radarDecision": result.decision,
         "radarBlocked": False,
-        "radarBlockReasons": result.reasons + result.required_actions,
+        "radarBlockReasons": [],
         "gateHardBlocked": False,
         "radarAdvisoryOnly": result.radar_advisory_only,
         "radarAdvisoryWarnings": result.advisory_warnings,
