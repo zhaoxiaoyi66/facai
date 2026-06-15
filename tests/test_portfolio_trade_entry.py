@@ -195,9 +195,12 @@ def test_buy_gate_uses_unified_buy_zone_context_as_advisory_only() -> None:
     assert gate.is_blocked is False
     assert gate.can_continue is True
     assert fields["gateHardBlocked"] is False
+    assert fields["radarBlockReasons"] == []
     assert fields["setupScore"] == 22
     assert fields["buyZoneAction"] == "BLOCK_CHASE"
     assert fields["warningLevel"] == "danger"
+    assert fields["advisoryReasons"] == fields["radarAdvisoryWarnings"]
+    assert fields["canSubmit"] is True
     assert any("追高" in item for item in fields["radarAdvisoryWarnings"])
 
 
