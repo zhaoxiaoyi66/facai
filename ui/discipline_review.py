@@ -9,10 +9,12 @@ import streamlit as st
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
+    EQUITY_SOURCE_ACCOUNT_SNAPSHOT,
     EQUITY_FILL_AUTO,
     EQUITY_FILL_MANUAL,
     EQUITY_SOURCE_NOT_FOUND,
     EQUITY_SOURCE_PORTFOLIO,
+    EQUITY_SOURCE_PREVIOUS_REVIEW,
     MISTAKE_REVIEW_STATUSES,
     MISTAKE_TAG_OPTIONS,
     PERIODIC_RETURN_TYPES,
@@ -174,27 +176,57 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
     state = _prepare_periodic_return_form_state(store, rows, editing_row)
     meta = dict(state["meta"])
 
-    st.markdown("#### 收益数据")
-    control_cols = st.columns([1.1, 1, 1, 1, 1])
-    control_cols[0].selectbox("周期类型", PERIODIC_RETURN_TYPES, key=state["period_type_key"])
+    _render_periodic_feedback(state)
+
+    st.markdown("#### 1. 周期选择")
+    control_cols = st.columns([1.1, 1, 1])
+    control_cols[0].selectbox("复盘类型", PERIODIC_RETURN_TYPES, key=state["period_type_key"])
     control_cols[1].date_input("开始日期", key=state["start_date_key"])
     control_cols[2].date_input("结束日期", key=state["end_date_key"])
-    if control_cols[3].button("从持仓记录重新读取", key=f"{state['prefix']}-reload", width="stretch"):
-        st.session_state[state["reload_key"]] = True
+    action_cols = st.columns([1, 1.25, 1, 2])
+    if action_cols[0].button("读取账户净资产", key=f"{state['prefix']}-reload", width="stretch"):
+        _apply_periodic_return_prefill(store, state, rows, editing_row)
         st.rerun()
-    if control_cols[4].button("使用上一条复盘期末净资产作为期初净资产", key=f"{state['prefix']}-use-previous", width="stretch"):
+    if action_cols[1].button("使用上一条复盘期末净资产作为期初净资产", key=f"{state['prefix']}-use-previous", width="stretch"):
         previous_ending = _previous_periodic_ending_equity(rows, editing_row, st.session_state[state["start_date_key"]])
         if previous_ending is not None:
             st.session_state[state["starting_equity_key"]] = _amount_input_value(previous_ending, allow_blank=True)
-            meta["starting_source_label"] = EQUITY_FILL_MANUAL
+            meta["starting_auto_value"] = previous_ending
+            meta["starting_source_label"] = EQUITY_SOURCE_PREVIOUS_REVIEW
+            meta["starting_snapshot_date"] = ""
             st.session_state[state["meta_key"]] = meta
+            st.session_state[state["feedback_key"]] = {
+                "level": "success",
+                "text": f"已使用上一条复盘期末净资产作为期初账户净资产：${_money(previous_ending)}。",
+            }
             st.rerun()
-        st.info("没有可复用的上一条复盘期末净资产。")
+        st.session_state[state["feedback_key"]] = {
+            "level": "warning",
+            "text": "没有可复用的上一条复盘期末净资产，请手动填写期初账户净资产。",
+        }
+        st.rerun()
+    if action_cols[2].button("保存当前账户快照", key=f"{state['prefix']}-save-snapshot", width="stretch"):
+        snapshot = store.capture_current_account_equity_snapshot()
+        if snapshot:
+            st.session_state[state["feedback_key"]] = {
+                "level": "success",
+                "text": (
+                    f"已保存当前账户快照：${_money(snapshot.get('account_equity'))}，"
+                    f"数据来源：{snapshot.get('source') or EQUITY_SOURCE_PORTFOLIO}。"
+                ),
+            }
+        else:
+            st.session_state[state["feedback_key"]] = {
+                "level": "error",
+                "text": "未找到组合持仓净资产，也未找到账户快照。请先在组合持仓页确认账户净资产是否已保存。",
+            }
+        st.rerun()
 
     st.caption(_periodic_source_note(meta))
     if meta.get("only_latest_available"):
-        st.info("当前系统暂无历史账户快照，只能读取最新账户净资产。建议从今天开始保存每日 / 每次刷新快照。")
+        st.info("当前系统暂无历史账户快照，只能读取最新账户净资产。建议每周五收盘后保存一次账户快照，用于周复盘自动计算收益。")
 
+    st.markdown("#### 2. 收益数据")
     equity_cols = st.columns(4)
     equity_cols[0].text_input("期初账户净资产", key=state["starting_equity_key"], placeholder="自动读取或手动填写")
     equity_cols[0].caption(_field_source_caption(meta, "starting"))
@@ -212,7 +244,7 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
     st.markdown(_periodic_preview_cards_html(preview_profit, preview_return, _periodic_source_card_text(meta)), unsafe_allow_html=True)
 
     with st.form(f"periodic-return-review-form-{state['prefix']}", clear_on_submit=False):
-        st.markdown("#### 复盘内容")
+        st.markdown("#### 3. 复盘内容")
         review_cols = st.columns(2)
         biggest_contributor = review_cols[0].text_area("本期最大贡献", key=state["biggest_contributor_key"], height=72)
         biggest_drag = review_cols[1].text_area("本期最大拖累", key=state["biggest_drag_key"], height=72)
@@ -254,8 +286,8 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
                 "what_went_wrong": what_went_wrong,
                 "next_period_rule": next_period_rule,
                 "notes": notes,
-                "starting_equity_source": _saved_equity_source_label(meta.get("starting_snapshot_date"), starting_equity, starting_manual),
-                "ending_equity_source": _saved_equity_source_label(meta.get("ending_snapshot_date"), ending_equity, ending_manual),
+                "starting_equity_source": _saved_equity_source_label(meta.get("starting_source_label"), starting_equity, starting_manual),
+                "ending_equity_source": _saved_equity_source_label(meta.get("ending_source_label"), ending_equity, ending_manual),
                 "starting_equity_snapshot_date": meta.get("starting_snapshot_date") or "",
                 "ending_equity_snapshot_date": meta.get("ending_snapshot_date") or "",
                 "starting_equity_is_manual_override": starting_manual,
@@ -614,6 +646,7 @@ def _prepare_periodic_return_form_state(
         "next_period_rule_key": f"{prefix}-next-rule",
         "notes_key": f"{prefix}-notes",
         "meta_key": f"{prefix}-meta",
+        "feedback_key": f"{prefix}-feedback",
         "signature_key": f"{prefix}-signature",
         "reload_key": f"{prefix}-reload-flag",
         "initialized_key": f"{prefix}-initialized",
@@ -667,7 +700,12 @@ def _prepare_periodic_return_form_state(
             st.session_state[keys["starting_equity_key"]] = _amount_input_value(editing_row.get("starting_equity"), allow_blank=True)
             st.session_state[keys["ending_equity_key"]] = _amount_input_value(editing_row.get("ending_equity"), allow_blank=True)
         else:
-            prefill = store.build_periodic_return_prefill(start_date=start_date, end_date=end_date)
+            previous_ending = _previous_periodic_ending_equity(rows, editing_row, start_date)
+            prefill = store.build_periodic_return_prefill(
+                start_date=start_date,
+                end_date=end_date,
+                previous_ending_equity=previous_ending,
+            )
             meta = _periodic_meta_from_prefill(prefill)
             st.session_state[keys["starting_equity_key"]] = _amount_input_value(prefill.get("starting_equity"), allow_blank=True)
             st.session_state[keys["ending_equity_key"]] = _amount_input_value(prefill.get("ending_equity"), allow_blank=True)
@@ -696,47 +734,140 @@ def _periodic_meta_from_prefill(prefill: dict[str, Any]) -> dict[str, Any]:
     return {
         "starting_auto_value": _nullable_float(prefill.get("starting_equity")),
         "ending_auto_value": _nullable_float(prefill.get("ending_equity")),
-        "starting_source_label": EQUITY_FILL_AUTO if prefill.get("starting_snapshot") else EQUITY_SOURCE_NOT_FOUND,
-        "ending_source_label": EQUITY_FILL_AUTO if prefill.get("ending_snapshot") else EQUITY_SOURCE_NOT_FOUND,
+        "starting_source_label": str(prefill.get("starting_equity_source") or EQUITY_SOURCE_NOT_FOUND),
+        "ending_source_label": str(prefill.get("ending_equity_source") or EQUITY_SOURCE_NOT_FOUND),
         "starting_snapshot_date": str(prefill.get("starting_equity_snapshot_date") or ""),
         "ending_snapshot_date": str(prefill.get("ending_equity_snapshot_date") or ""),
         "only_latest_available": bool(prefill.get("only_latest_available")),
     }
 
 
+def _apply_periodic_return_prefill(
+    store: DisciplineReviewStore,
+    state: dict[str, Any],
+    rows: list[dict[str, Any]],
+    editing_row: dict[str, Any] | None,
+) -> None:
+    start_date = _date_value(st.session_state.get(state["start_date_key"]), date.today())
+    end_date = _date_value(st.session_state.get(state["end_date_key"]), start_date)
+    previous_ending = _previous_periodic_ending_equity(rows, editing_row, start_date)
+    prefill = store.build_periodic_return_prefill(
+        start_date=start_date,
+        end_date=end_date,
+        previous_ending_equity=previous_ending,
+        use_current_nav_fallback=True,
+    )
+    meta = _periodic_meta_from_prefill(prefill)
+    st.session_state[state["starting_equity_key"]] = _amount_input_value(prefill.get("starting_equity"), allow_blank=True)
+    st.session_state[state["ending_equity_key"]] = _amount_input_value(prefill.get("ending_equity"), allow_blank=True)
+    st.session_state[state["meta_key"]] = meta
+    st.session_state[state["signature_key"]] = (
+        f"{int(editing_row['id']) if editing_row else 'new'}|"
+        f"{st.session_state.get(state['period_type_key']) or PERIODIC_RETURN_TYPES[0]}|"
+        f"{start_date.isoformat()}|{end_date.isoformat()}"
+    )
+    st.session_state[state["reload_key"]] = False
+    st.session_state[state["feedback_key"]] = _periodic_reload_feedback(prefill)
+
+
+def _periodic_reload_feedback(prefill: dict[str, Any]) -> dict[str, str]:
+    start_value = _nullable_float(prefill.get("starting_equity"))
+    end_value = _nullable_float(prefill.get("ending_equity"))
+    start_source = _source_display_label(prefill.get("starting_equity_source"))
+    end_source = _source_display_label(prefill.get("ending_equity_source"))
+    if start_value is not None and end_value is not None:
+        return {
+            "level": "success",
+            "text": (
+                f"已读取账户净资产：期初 ${_money(start_value)}，期末 ${_money(end_value)}，"
+                f"数据来源：期初 {start_source} / 期末 {end_source}。"
+            ),
+        }
+    if end_value is not None:
+        return {
+            "level": "warning",
+            "text": (
+                f"已读取当前最新账户净资产 ${_money(end_value)}，但未找到期初快照。"
+                "请手动填写期初账户净资产，或使用上一条复盘期末净资产。"
+            ),
+        }
+    if start_value is not None:
+        return {
+            "level": "warning",
+            "text": (
+                f"已读取期初账户净资产 ${_money(start_value)}，但未找到期末账户净资产。"
+                "请保存当前账户快照，或手动填写期末账户净资产。"
+            ),
+        }
+    return {
+        "level": "error",
+        "text": "未找到可用账户净资产数据。请先在组合持仓页保存账户快照，或手动填写。",
+    }
+
+
+def _render_periodic_feedback(state: dict[str, Any]) -> None:
+    feedback = st.session_state.get(state.get("feedback_key"))
+    if not isinstance(feedback, dict):
+        return
+    text = str(feedback.get("text") or "").strip()
+    if not text:
+        return
+    level = str(feedback.get("level") or "info")
+    if level == "success":
+        st.success(text)
+    elif level == "warning":
+        st.warning(text)
+    elif level == "error":
+        st.error(text)
+    else:
+        st.info(text)
+
+
 def _periodic_source_note(meta: dict[str, Any]) -> str:
-    start_date_text = _display_snapshot_date(meta.get("starting_snapshot_date"))
-    end_date_text = _display_snapshot_date(meta.get("ending_snapshot_date"))
     start_equity = _money(meta.get("starting_auto_value"))
     end_equity = _money(meta.get("ending_auto_value"))
-    if meta.get("starting_snapshot_date") and meta.get("ending_snapshot_date"):
+    start_source = _source_detail_text(meta, "starting")
+    end_source = _source_detail_text(meta, "ending")
+    if meta.get("starting_auto_value") is not None and meta.get("ending_auto_value") is not None:
         return (
-            "数据来源：已从持仓记录自动读取账户净资产"
-            f"；期初快照：{start_date_text}  ${start_equity}"
-            f"；期末快照：{end_date_text}  ${end_equity}"
+            "数据来源：已读取账户净资产"
+            f"；期初：{start_source} ${start_equity}"
+            f"；期末：{end_source} ${end_equity}"
         )
-    if meta.get("starting_snapshot_date") or meta.get("ending_snapshot_date"):
-        parts = ["数据来源：部分已自动读取，其余请手动填写"]
-        if meta.get("starting_snapshot_date"):
-            parts.append(f"期初快照：{start_date_text}  ${start_equity}")
+    if meta.get("starting_auto_value") is not None or meta.get("ending_auto_value") is not None:
+        parts = ["数据来源：部分已读取，其余请手动填写"]
+        if meta.get("starting_auto_value") is not None:
+            parts.append(f"期初：{start_source} ${start_equity}")
         else:
-            parts.append("期初快照：未找到")
-        if meta.get("ending_snapshot_date"):
-            parts.append(f"期末快照：{end_date_text}  ${end_equity}")
+            parts.append("期初：未找到")
+        if meta.get("ending_auto_value") is not None:
+            parts.append(f"期末：{end_source} ${end_equity}")
         else:
-            parts.append("期末快照：未找到")
+            parts.append("期末：未找到")
         return "；".join(parts)
-    return "数据来源：未找到对应账户快照，请手动填写"
+    return "数据来源：未找到对应账户净资产。请保存当前账户快照，或手动填写。"
 
 
 def _field_source_caption(meta: dict[str, Any], side: str) -> str:
     label = str(meta.get(f"{side}_source_label") or EQUITY_SOURCE_NOT_FOUND)
-    if label == EQUITY_FILL_AUTO:
+    if label == EQUITY_SOURCE_ACCOUNT_SNAPSHOT:
         snapshot_date = _display_snapshot_date(meta.get(f"{side}_snapshot_date"))
-        return f"自动读取自持仓记录 · 快照日期 {snapshot_date}"
+        return f"账户快照 · {snapshot_date}"
+    if label == EQUITY_SOURCE_PORTFOLIO:
+        return "当前持仓汇总"
+    if label == EQUITY_SOURCE_PREVIOUS_REVIEW:
+        return "上一条复盘"
     if label == EQUITY_FILL_MANUAL:
         return "手动修改"
-    return "未找到快照，可手动填写"
+    return "未找到，可手动填写"
+
+
+def _source_detail_text(meta: dict[str, Any], side: str) -> str:
+    label = _source_display_label(meta.get(f"{side}_source_label"))
+    snapshot_date = _display_snapshot_date(meta.get(f"{side}_snapshot_date"))
+    if label == EQUITY_SOURCE_ACCOUNT_SNAPSHOT:
+        return f"{label} {snapshot_date}"
+    return label
 
 
 def _periodic_source_card_text(meta: dict[str, Any]) -> str:
@@ -745,12 +876,20 @@ def _periodic_source_card_text(meta: dict[str, Any]) -> str:
         str(meta.get("ending_source_label") or EQUITY_SOURCE_NOT_FOUND),
     }
     labels.discard("")
-    if labels == {EQUITY_FILL_AUTO}:
-        return EQUITY_SOURCE_PORTFOLIO
+    if labels == {EQUITY_SOURCE_ACCOUNT_SNAPSHOT}:
+        return EQUITY_SOURCE_ACCOUNT_SNAPSHOT
     if EQUITY_FILL_MANUAL in labels:
         return EQUITY_FILL_MANUAL
-    if EQUITY_FILL_AUTO in labels:
-        return f"{EQUITY_SOURCE_PORTFOLIO} / {EQUITY_SOURCE_NOT_FOUND}"
+    display_labels = [_source_display_label(label) for label in labels]
+    return " / ".join(sorted(display_labels)) if display_labels else EQUITY_SOURCE_NOT_FOUND
+
+
+def _source_display_label(value: object) -> str:
+    text = str(value or "").strip()
+    if text == EQUITY_FILL_AUTO:
+        return EQUITY_SOURCE_ACCOUNT_SNAPSHOT
+    if text in {EQUITY_SOURCE_ACCOUNT_SNAPSHOT, EQUITY_SOURCE_PORTFOLIO, EQUITY_SOURCE_PREVIOUS_REVIEW, EQUITY_FILL_MANUAL}:
+        return text
     return EQUITY_SOURCE_NOT_FOUND
 
 
@@ -817,17 +956,17 @@ def _is_manual_equity_override(value: float | None, baseline: object, source_lab
     baseline_value = _nullable_float(baseline)
     if value is None:
         return False
-    if label == EQUITY_FILL_AUTO:
+    if label in {EQUITY_FILL_AUTO, EQUITY_SOURCE_ACCOUNT_SNAPSHOT, EQUITY_SOURCE_PORTFOLIO, EQUITY_SOURCE_PREVIOUS_REVIEW}:
         return baseline_value is None or abs(value - baseline_value) > 0.005
     return True
 
 
-def _saved_equity_source_label(snapshot_date: object, value: float | None, is_manual_override: bool) -> str:
+def _saved_equity_source_label(source_label: object, value: float | None, is_manual_override: bool) -> str:
     if value is None:
         return EQUITY_SOURCE_NOT_FOUND
     if is_manual_override:
         return EQUITY_FILL_MANUAL
-    return EQUITY_FILL_AUTO if str(snapshot_date or "").strip() else EQUITY_SOURCE_NOT_FOUND
+    return _source_display_label(source_label)
 
 
 def _display_snapshot_date(value: object) -> str:
@@ -851,6 +990,7 @@ def _clear_periodic_return_form_state(state: dict[str, Any]) -> None:
         "next_period_rule_key",
         "notes_key",
         "meta_key",
+        "feedback_key",
         "signature_key",
         "reload_key",
         "initialized_key",

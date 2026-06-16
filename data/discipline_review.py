@@ -66,7 +66,10 @@ MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
 
 PERIODIC_RETURN_TYPES = ["周复盘", "月复盘"]
 
-EQUITY_SOURCE_PORTFOLIO = "持仓记录"
+EQUITY_SOURCE_PORTFOLIO = "当前持仓汇总"
+EQUITY_SOURCE_LEGACY_PORTFOLIO = "持仓记录"
+EQUITY_SOURCE_ACCOUNT_SNAPSHOT = "账户快照"
+EQUITY_SOURCE_PREVIOUS_REVIEW = "上一条复盘"
 EQUITY_SOURCE_MANUAL = "手动录入"
 EQUITY_SOURCE_NOT_FOUND = "未找到快照"
 EQUITY_FILL_AUTO = "自动读取"
@@ -475,7 +478,7 @@ class DisciplineReviewStore:
         market_value = _optional_nonnegative_number(values.get("market_value"))
         source = _clean_choice(
             values.get("source"),
-            [EQUITY_SOURCE_PORTFOLIO, EQUITY_SOURCE_MANUAL],
+            [EQUITY_SOURCE_PORTFOLIO, EQUITY_SOURCE_LEGACY_PORTFOLIO, EQUITY_SOURCE_MANUAL],
             EQUITY_SOURCE_PORTFOLIO,
         )
         latest = self.get_latest_account_equity_snapshot()
@@ -526,24 +529,17 @@ class DisciplineReviewStore:
         }
 
     def capture_current_account_equity_snapshot(self) -> dict[str, Any] | None:
-        settings = PortfolioSettingsStore(self.path).get_settings()
-        positions = PortfolioPositionStore(self.path).list_active_positions()
-        total_equity = _optional_nonnegative_number(settings.get("total_portfolio_value"))
-        cash = _optional_nonnegative_number(settings.get("cash_balance"))
-        market_value = _portfolio_market_value_from_snapshot(positions, self.path)
-        if total_equity is None:
-            total_equity = market_value
+        nav = get_current_account_nav(self.path)
+        total_equity = _optional_nonnegative_number(nav.get("account_nav"))
         if total_equity is None or total_equity <= 0:
             return None
-        if cash is None and market_value is not None:
-            cash = round(total_equity - market_value, 2)
         return self.save_account_equity_snapshot(
             {
                 "snapshot_time": datetime.now(),
                 "account_equity": total_equity,
-                "cash": cash,
-                "market_value": market_value,
-                "source": EQUITY_SOURCE_PORTFOLIO,
+                "cash": nav.get("cash"),
+                "market_value": nav.get("market_value"),
+                "source": nav.get("source") or EQUITY_SOURCE_PORTFOLIO,
             }
         )
 
@@ -614,23 +610,39 @@ class DisciplineReviewStore:
         *,
         start_date: date | str | None,
         end_date: date | str | None,
+        previous_ending_equity: object = None,
+        use_current_nav_fallback: bool = True,
     ) -> dict[str, Any]:
         start = _parse_date(start_date)
         end = _parse_date(end_date)
         latest = self.get_latest_account_equity_snapshot()
         starting_snapshot = self.find_account_equity_snapshot(start)
         ending_snapshot = self.find_account_equity_snapshot(end, allow_latest_if_today=end == date.today() if end else False)
+        current_nav = get_current_account_nav(self.path) if use_current_nav_fallback else {}
+        previous_ending = _optional_nonnegative_number(previous_ending_equity)
+        starting_equity = _optional_nonnegative_number((starting_snapshot or {}).get("account_equity"))
+        starting_source = EQUITY_SOURCE_ACCOUNT_SNAPSHOT if starting_snapshot else EQUITY_SOURCE_NOT_FOUND
+        if starting_equity is None and previous_ending is not None:
+            starting_equity = previous_ending
+            starting_source = EQUITY_SOURCE_PREVIOUS_REVIEW
+        ending_equity = _optional_nonnegative_number((ending_snapshot or {}).get("account_equity"))
+        ending_source = EQUITY_SOURCE_ACCOUNT_SNAPSHOT if ending_snapshot else EQUITY_SOURCE_NOT_FOUND
+        if ending_equity is None:
+            ending_equity = _optional_nonnegative_number(current_nav.get("account_nav"))
+            if ending_equity is not None:
+                ending_source = EQUITY_SOURCE_PORTFOLIO
         only_latest_available = latest is not None and starting_snapshot is None and ending_snapshot is None
         return {
-            "starting_equity": _optional_nonnegative_number((starting_snapshot or {}).get("account_equity")),
-            "ending_equity": _optional_nonnegative_number((ending_snapshot or {}).get("account_equity")),
+            "starting_equity": starting_equity,
+            "ending_equity": ending_equity,
             "starting_snapshot": starting_snapshot,
             "ending_snapshot": ending_snapshot,
-            "starting_equity_source": EQUITY_FILL_AUTO if starting_snapshot else EQUITY_SOURCE_NOT_FOUND,
-            "ending_equity_source": EQUITY_FILL_AUTO if ending_snapshot else EQUITY_SOURCE_NOT_FOUND,
+            "starting_equity_source": starting_source,
+            "ending_equity_source": ending_source,
             "starting_equity_snapshot_date": _snapshot_date_text(starting_snapshot),
             "ending_equity_snapshot_date": _snapshot_date_text(ending_snapshot),
             "latest_snapshot": latest,
+            "current_nav": current_nav,
             "only_latest_available": only_latest_available,
         }
 
@@ -966,6 +978,32 @@ def build_dashboard_discipline_snapshot(
 
 def label_for_tag(tag: object) -> str:
     return DISCIPLINE_TAG_LABELS.get(str(tag or ""), str(tag or ""))
+
+
+def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
+    settings = PortfolioSettingsStore(path).get_settings()
+    positions = PortfolioPositionStore(path).list_active_positions()
+    total_equity = _optional_nonnegative_number(settings.get("total_portfolio_value"))
+    cash = _optional_nonnegative_number(settings.get("cash_balance"))
+    market_value = _portfolio_market_value_from_snapshot(positions, path)
+    account_nav = total_equity if total_equity is not None and total_equity > 0 else market_value
+    if account_nav is None or account_nav <= 0:
+        return {
+            "account_nav": None,
+            "cash": cash,
+            "market_value": market_value,
+            "source": EQUITY_SOURCE_NOT_FOUND,
+            "updated_at": settings.get("updated_at") or "",
+        }
+    if cash is None and market_value is not None:
+        cash = round(account_nav - market_value, 2)
+    return {
+        "account_nav": round(account_nav, 2),
+        "cash": round(cash, 2) if cash is not None else None,
+        "market_value": round(market_value, 2) if market_value is not None else None,
+        "source": EQUITY_SOURCE_PORTFOLIO,
+        "updated_at": settings.get("updated_at") or _now(),
+    }
 
 
 def _period_stats(entries: list[dict[str, Any]], tag_rows: list[dict[str, Any]], *, current: date, days: int) -> dict[str, Any]:

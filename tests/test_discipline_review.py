@@ -9,6 +9,7 @@ from data.discipline_review import (
     DEFAULT_PRINCIPLES,
     EQUITY_FILL_AUTO,
     EQUITY_FILL_MANUAL,
+    EQUITY_SOURCE_PREVIOUS_REVIEW,
     EQUITY_SOURCE_PORTFOLIO,
     DisciplineReviewStore,
     build_discipline_review_stats,
@@ -16,6 +17,7 @@ from data.discipline_review import (
     build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
     default_period_dates,
+    get_current_account_nav,
 )
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from ui import discipline_review
@@ -278,6 +280,37 @@ def test_latest_only_snapshot_does_not_backfill_historical_period() -> None:
         assert prefill["only_latest_available"] is True
 
 
+def test_current_account_nav_prefers_portfolio_total_value() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000, "cash_balance": 25000})
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+
+        nav = get_current_account_nav(path)
+
+        assert nav["account_nav"] == 170000
+        assert nav["cash"] == 25000
+        assert nav["source"] == EQUITY_SOURCE_PORTFOLIO
+
+
+def test_periodic_prefill_uses_previous_review_and_current_nav_when_snapshots_missing() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        store = DisciplineReviewStore(path)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 174000, "cash_balance": 24000})
+
+        prefill = store.build_periodic_return_prefill(
+            start_date="2026-06-08",
+            end_date="2026-06-14",
+            previous_ending_equity=170000,
+        )
+
+        assert prefill["starting_equity"] == 170000
+        assert prefill["starting_equity_source"] == EQUITY_SOURCE_PREVIOUS_REVIEW
+        assert prefill["ending_equity"] == 174000
+        assert prefill["ending_equity_source"] == EQUITY_SOURCE_PORTFOLIO
+
+
 def test_capture_current_account_equity_snapshot_prefers_total_portfolio_value() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _path(tmpdir)
@@ -384,9 +417,13 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "周期收益复盘" in source
     assert "保存周期复盘" in source
     assert "保存这条错题" in source
-    assert "从持仓记录重新读取" in source
+    assert "读取账户净资产" in source
+    assert "保存当前账户快照" in source
     assert "使用上一条复盘期末净资产作为期初净资产" in source
-    assert "数据来源：未找到对应账户快照，请手动填写" in source
+    assert "数据来源：未找到对应账户净资产。请保存当前账户快照，或手动填写。" in source
+    assert "已读取账户净资产" in source
+    assert "当前持仓汇总" in source
+    assert "上一条复盘" in source
     assert "当前系统暂无历史账户快照" in source
     assert "标的 / 场景" in source
     assert "损失金额 / 影响" in source
