@@ -902,12 +902,14 @@ def _research_data_quality_text(row: dict[str, Any], context: dict[str, Any], ac
     if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
         missing = _buy_zone_context_missing_fields(context) or _actionable_missing_fields(row)
         if missing:
-            return "技术数据缺口"
+            return _missing_fields_data_quality_text(missing)
         return "买区未生成"
     if not context:
         groups = _missing_groups(row)
         if any("技术" in group for group in groups):
             return "技术数据缺口"
+        if any("量价" in group for group in groups):
+            return "量价数据缺口"
         if groups:
             return groups[0]
         return "行情正常 / 买区缺失"
@@ -916,7 +918,17 @@ def _research_data_quality_text(row: dict[str, Any], context: dict[str, Any], ac
     groups = _missing_groups(row)
     if any("技术" in group for group in groups):
         return "技术数据缺口"
+    if any("量价" in group for group in groups):
+        return "量价数据缺口"
     return "行情正常 / 买区缺失" if groups else "数据完整"
+
+
+def _missing_fields_data_quality_text(fields: list[str]) -> str:
+    if any(_is_technical_gap_field(field) for field in fields):
+        return "技术数据缺口"
+    if any(_is_volume_acceptance_gap_field(field) for field in fields):
+        return "量价数据缺口"
+    return "数据缺口"
 
 
 def _research_next_trigger(
@@ -3371,6 +3383,8 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
     text = " ".join(str(item).lower() for item in fields)
     price_state = _price_data_state(row, text)
     groups: list[str] = []
+    if any(_is_volume_acceptance_gap_field(field) for field in fields):
+        groups.append("量价缺口")
     if any(token in text for token in ("valuation", "forward_pe", "enterprise_to_revenue", "free_cash_flow_yield", "fcf")):
         groups.append("估值缺口")
     if any(
@@ -3387,7 +3401,6 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
             "ma20",
             "ma50",
             "ma200",
-            "volume_ratio",
             "support",
             "resistance",
         )
@@ -3404,6 +3417,42 @@ def _missing_groups(row: dict[str, Any]) -> list[str]:
     if any(token in text for token in ("score", "quality", "growth", "risk")):
         groups.append("评分缺口")
     return _dedupe_text(groups)
+
+
+def _is_volume_acceptance_gap_field(field: str) -> bool:
+    text = str(field or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text in {
+        "volume_acceptance",
+        "volume_price_acceptance",
+        "volume_price_status",
+        "volume_price_score",
+        "volume_ratio",
+        "volumeratio",
+    }
+
+
+def _is_technical_gap_field(field: str) -> bool:
+    text = str(field or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if _is_volume_acceptance_gap_field(text):
+        return False
+    return any(
+        token in text
+        for token in (
+            "technical",
+            "ema",
+            "atr",
+            "swing",
+            "history",
+            "price_history",
+            "buy_zone",
+            "ohlcv",
+            "ma20",
+            "ma50",
+            "ma200",
+            "support",
+            "resistance",
+        )
+    )
 
 
 def _actionable_missing_fields(row: dict[str, Any]) -> list[str]:
@@ -3964,6 +4013,10 @@ FIELD_DISPLAY_LABELS = {
     "rsi_14": "RSI14",
     "avg_volume_20d": "20日均量",
     "volume_ratio": "量比",
+    "volume_acceptance": "量价承接",
+    "volume_price_acceptance": "量价承接",
+    "volume_price_status": "量价状态",
+    "volume_price_score": "量价评分",
     "ma20": "MA20",
     "ma50": "MA50",
     "ma200": "MA200",

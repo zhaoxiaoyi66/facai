@@ -878,6 +878,46 @@ def test_research_queue_uses_buy_zone_display_as_primary_source() -> None:
     assert view["status_text"] == "数据不足"
 
 
+def test_research_queue_labels_volume_only_gap_as_volume_price_gap() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "NOW",
+            "current_price": 104.15,
+            "data_status": "OK",
+            "buy_zone_context": {
+                "current_action": "WAIT_CONFIRMATION",
+                "left_probe_zone_low": 97.5,
+                "left_probe_zone_high": 99.32,
+                "setup_score": 62,
+                "missing_fields": [],
+            },
+            "missing_entry_fields": ["volume_acceptance", "volume_ratio"],
+            "ema20": 107.37,
+            "ema50": 105.12,
+            "atr14": 8.56,
+        }
+    )
+
+    assert view["data_quality_text"] == "量价数据缺口"
+    assert "技术数据缺口" not in view["data_quality_text"]
+    assert radar_ui._field_list_display(["volume_acceptance", "volume_ratio"]) == "量价承接、量比"
+
+
+def test_research_queue_keeps_structural_missing_fields_as_technical_gap() -> None:
+    view = radar_ui._research_queue_view(
+        {
+            "ticker": "DATA",
+            "buy_zone_display": {"action_code": "DATA_INSUFFICIENT"},
+            "buy_zone_context": {
+                "current_action": "DATA_INSUFFICIENT",
+                "missing_fields": ["daily_ohlcv", "volume_ratio"],
+            },
+        }
+    )
+
+    assert view["data_quality_text"] == "技术数据缺口"
+
+
 def test_list_buy_zone_context_prefers_cached_canonical_context() -> None:
     cached_context = {
         "current_action": "WAIT_PULLBACK",
