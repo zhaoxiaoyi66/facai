@@ -12,6 +12,16 @@ from data.portfolio import (
     PortfolioSettingsStore,
     calculate_portfolio_positions,
 )
+from data.portfolio_roles import (
+    build_portfolio_role_structure,
+    portfolio_role_badge_class,
+    portfolio_role_core_tactical_split,
+    portfolio_role_description,
+    portfolio_role_label,
+    portfolio_role_short_label,
+    portfolio_role_sort_key,
+    portfolio_role_target_weight,
+)
 from data.portfolio_trade_sync import unsynced_trade_counts_by_symbol
 from data.prices import CACHE_PATH
 from data.volume_price_acceptance import evaluate_volume_price_acceptance
@@ -52,6 +62,7 @@ def build_portfolio_view_model(
         )
         for row in calculated
     ]
+    rows = sorted(rows, key=lambda row: (portfolio_role_sort_key(row.get("holdingRole")), str(row.get("symbol") or "")))
     return {
         "summary": _summary(rows, settings),
         "actionGroups": _action_groups(rows),
@@ -67,6 +78,13 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any], unsynced
         "quantity": row.get("quantity"),
         "averageCost": row.get("average_cost"),
         "positionTier": row.get("position_tier"),
+        "holdingRole": row.get("role"),
+        "roleLabel": portfolio_role_label(row.get("role")),
+        "roleShortLabel": portfolio_role_short_label(row.get("role")),
+        "roleBadgeClass": portfolio_role_badge_class(row.get("role")),
+        "roleTargetWeight": portfolio_role_target_weight(row.get("role")),
+        "roleCoreTacticalSplit": portfolio_role_core_tactical_split(row.get("role")),
+        "roleDescription": portfolio_role_description(row.get("role")),
         "updatedAt": row.get("updated_at"),
         "currentPrice": row.get("currentPrice"),
         "priceStatus": price_status,
@@ -122,6 +140,7 @@ def _summary(rows: list[dict], settings: dict | None = None) -> dict[str, Any]:
         "cashBalance": cash_balance,
         "cashBalanceSource": "derived" if cash_balance is not None else "unavailable",
         "positionCount": len(rows),
+        "roleStructure": build_portfolio_role_structure(rows),
         "overweightCount": sum(1 for row in rows if row["overweightSystem"] or row["overweightPersonal"]),
         "needsReviewCount": sum(1 for row in rows if row["needsReview"] or row["missingPrice"]),
     }

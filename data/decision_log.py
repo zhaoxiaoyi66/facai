@@ -11,6 +11,12 @@ from typing import Iterator
 
 from data.market_context import build_market_history
 from data.prices import CACHE_PATH
+from data.portfolio_roles import (
+    normalize_portfolio_role,
+    portfolio_role_core_tactical_split,
+    portfolio_role_label,
+    portfolio_role_target_weight,
+)
 from data.trade_activity import build_daily_trade_activity, snapshot_json
 from data.trade_safety_gate import build_trade_safety_snapshot
 
@@ -185,6 +191,11 @@ TRADE_DISCIPLINE_COLUMNS = {
     "daily_trade_advisory_reasons_json": "TEXT",
     "daily_trade_activity_snapshot_json": "TEXT",
     "user_confirmed_daily_trade_advisory": "INTEGER",
+    "trade_role": "TEXT",
+    "role_label": "TEXT",
+    "role_target_weight": "TEXT",
+    "core_tactical_split": "TEXT",
+    "role_reason": "TEXT",
 }
 
 
@@ -577,6 +588,7 @@ class TradeJournalStore:
             _write_buy_advisory_snapshot(conn, int(entry_id), cleaned)
             _write_sell_advisory_snapshot(conn, int(entry_id), cleaned)
             _write_daily_trade_activity_snapshot(conn, int(entry_id), cleaned)
+            _write_trade_role_snapshot(conn, int(entry_id), cleaned)
         return self.get_entry(int(entry_id)) or cleaned
 
     def update_entry(self, entry_id: int, symbol: str, values: dict) -> dict:
@@ -697,9 +709,10 @@ class TradeJournalStore:
                 _write_structure_entry_snapshot(conn, clean_id, cleaned)
                 _write_pullback_acceptance_snapshot(conn, clean_id, cleaned)
                 _write_volume_price_acceptance_snapshot(conn, clean_id, cleaned)
-                _write_buy_advisory_snapshot(conn, clean_id, cleaned)
-                _write_sell_advisory_snapshot(conn, clean_id, cleaned)
-                _write_daily_trade_activity_snapshot(conn, clean_id, cleaned)
+            _write_buy_advisory_snapshot(conn, clean_id, cleaned)
+            _write_sell_advisory_snapshot(conn, clean_id, cleaned)
+            _write_daily_trade_activity_snapshot(conn, clean_id, cleaned)
+            _write_trade_role_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
             raise ValueError("trade entry not found")
         return self.get_entry(clean_id) or cleaned
@@ -1226,6 +1239,7 @@ def _write_daily_trade_activity_snapshot(conn: sqlite3.Connection, entry_id: int
         """,
         (trade_date,),
     )
+
     rows = cursor.fetchall()
     columns = [description[0] for description in cursor.description] if cursor.description else []
     trades = [_row_to_dict(columns, row) for row in rows]
@@ -1251,6 +1265,34 @@ def _write_daily_trade_activity_snapshot(conn: sqlite3.Connection, entry_id: int
             _reasons_json(activity.get("advisory_reasons") or []),
             snapshot_json(activity),
             _clean_bool(cleaned.get("user_confirmed_daily_trade_advisory")),
+            entry_id,
+        ),
+    )
+
+
+def _write_trade_role_snapshot(conn: sqlite3.Connection, entry_id: int, cleaned: dict) -> None:
+    if not any(
+        cleaned.get(field) not in {None, ""}
+        for field in ("trade_role", "role_label", "role_target_weight", "core_tactical_split", "role_reason")
+    ):
+        return
+    conn.execute(
+        """
+        UPDATE trade_journal_entries
+        SET
+            trade_role = ?,
+            role_label = ?,
+            role_target_weight = ?,
+            core_tactical_split = ?,
+            role_reason = ?
+        WHERE id = ?
+        """,
+        (
+            cleaned["trade_role"],
+            cleaned["role_label"],
+            cleaned["role_target_weight"],
+            cleaned["core_tactical_split"],
+            cleaned["role_reason"],
             entry_id,
         ),
     )
@@ -1665,7 +1707,29 @@ def _clean_trade_entry(symbol: str, values: dict) -> dict:
     cleaned.update(_clean_buy_advisory_snapshot(action_type, values))
     cleaned.update(_clean_sell_advisory_snapshot(action_type, {**values, **cleaned}))
     cleaned.update(_clean_daily_trade_activity_snapshot(values))
+    cleaned.update(_clean_trade_role_snapshot(values))
     return cleaned
+
+
+def _clean_trade_role_snapshot(values: dict) -> dict:
+    role = normalize_portfolio_role(_value(values, "tradeRole", "trade_role", "role", "portfolio_role"), default=None)
+    if role is None:
+        return {
+            "trade_role": None,
+            "role_label": _clean_optional_text(_value(values, "roleLabel", "role_label")),
+            "role_target_weight": _clean_optional_text(_value(values, "roleTargetWeight", "role_target_weight")),
+            "core_tactical_split": _clean_optional_text(_value(values, "coreTacticalSplit", "core_tactical_split")),
+            "role_reason": _clean_optional_text(_value(values, "roleReason", "role_reason")),
+        }
+    return {
+        "trade_role": role,
+        "role_label": portfolio_role_label(role),
+        "role_target_weight": _clean_optional_text(_value(values, "roleTargetWeight", "role_target_weight"))
+        or portfolio_role_target_weight(role),
+        "core_tactical_split": _clean_optional_text(_value(values, "coreTacticalSplit", "core_tactical_split"))
+        or portfolio_role_core_tactical_split(role),
+        "role_reason": _clean_optional_text(_value(values, "roleReason", "role_reason")),
+    }
 
 
 def _clean_daily_trade_activity_snapshot(values: dict) -> dict:

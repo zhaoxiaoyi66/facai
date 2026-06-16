@@ -9,6 +9,7 @@ import pytest
 
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio_roles import ROLE_SATELLITE, ROLE_STRONG_CORE
 from data.portfolio_trade_sync import (
     apply_trade_to_portfolio,
     preview_trade_portfolio_effect,
@@ -72,6 +73,52 @@ def test_buy_trade_sync_creates_or_increases_position() -> None:
         assert result["status"] == "success"
         assert position["quantity"] == 10
         assert position["average_cost"] == 500
+
+
+def test_buy_trade_sync_applies_trade_role_to_position() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        entry = TradeJournalStore(path).save_entry(
+            "NVDA",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "buy",
+                "quantity": 10,
+                "price": 200,
+                "tradeRole": ROLE_SATELLITE,
+                **_radar_allowed(),
+            },
+        )
+
+        apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("NVDA")
+
+        assert position["role"] == ROLE_SATELLITE
+
+
+def test_buy_trade_sync_preserves_existing_role_when_trade_has_no_role() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        PortfolioPositionStore(path).save_position(
+            "ADBE",
+            {"quantity": 2, "average_cost": 100, "role": ROLE_STRONG_CORE},
+        )
+        entry = TradeJournalStore(path).save_entry(
+            "ADBE",
+            {
+                "trade_date": "2026-05-30",
+                "action_type": "add",
+                "quantity": 1,
+                "price": 120,
+                **_radar_allowed(),
+            },
+        )
+
+        apply_trade_to_portfolio(entry["id"], path)
+        position = PortfolioPositionStore(path).get_position("ADBE")
+
+        assert position["quantity"] == 3
+        assert position["role"] == ROLE_STRONG_CORE
 
 
 def test_legacy_radar_blocked_price_zone_buy_can_sync_when_snapshot_is_complete() -> None:

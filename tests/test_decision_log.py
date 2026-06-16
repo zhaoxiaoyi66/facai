@@ -20,6 +20,7 @@ from data.decision_log import (
     refresh_decision_outcomes,
     save_decision_snapshot_from_bundle,
 )
+from data.portfolio_roles import ROLE_SATELLITE
 from data.trade_safety_gate import _clean_decision_mood as clean_trade_safety_decision_mood
 from scoring.final_decision import BUY_ACTIONS
 from scoring.final_decision_adapter import build_final_decision_bundle
@@ -233,6 +234,28 @@ class DecisionLogTests(unittest.TestCase):
             self.assertEqual(saved["quantity"], 5)
             self.assertEqual(saved["decision_snapshot_id"], snapshot["id"])
             self.assertEqual(store.list_entries("crm")[0]["notes"], "followed signal")
+
+    def test_trade_journal_store_saves_portfolio_role_snapshot(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "decision_log.sqlite")
+
+            saved = store.save_entry(
+                "nvda",
+                {
+                    "trade_date": "2026-05-26",
+                    "action_type": "buy",
+                    "quantity": 2,
+                    "price": 200,
+                    "tradeRole": ROLE_SATELLITE,
+                    "roleReason": "赔率仓测试",
+                },
+            )
+
+            self.assertEqual(saved["trade_role"], ROLE_SATELLITE)
+            self.assertEqual(saved["role_label"], "卫星赔率仓")
+            self.assertEqual(saved["role_target_weight"], "5%–10%")
+            self.assertEqual(saved["core_tactical_split"], "50% / 50%")
+            self.assertEqual(saved["role_reason"], "赔率仓测试")
 
     def test_trade_journal_store_saves_optional_decision_mood(self) -> None:
         with TemporaryDirectory() as tmpdir:

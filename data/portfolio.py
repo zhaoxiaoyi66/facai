@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Iterator
 
 from data.prices import CACHE_PATH
+from data.portfolio_roles import (
+    ROLE_UNDEFINED,
+    normalize_portfolio_role,
+    portfolio_role_badge_class,
+    portfolio_role_label,
+)
 
 
 POSITION_NUMERIC_FIELDS = [
@@ -56,6 +62,7 @@ class PortfolioPositionStore:
                     quantity REAL NOT NULL,
                     average_cost REAL NOT NULL,
                     position_tier TEXT,
+                    role TEXT NOT NULL DEFAULT 'UNDEFINED',
                     target_position_pct REAL,
                     max_acceptable_position_pct REAL,
                     planned_sell_price REAL,
@@ -76,6 +83,7 @@ class PortfolioPositionStore:
         additions = {
             "target_position_pct": "REAL",
             "position_tier": "TEXT",
+            "role": "TEXT NOT NULL DEFAULT 'UNDEFINED'",
             "max_acceptable_position_pct": "REAL",
             "planned_sell_price": "REAL",
             "first_trim_price": "REAL",
@@ -95,7 +103,7 @@ class PortfolioPositionStore:
         now = _now()
         with self.connect() as conn:
             existing = conn.execute(
-                "SELECT created_at, position_tier FROM portfolio_positions WHERE symbol = ?",
+                "SELECT created_at, position_tier, role FROM portfolio_positions WHERE symbol = ?",
                 (cleaned["symbol"],),
             ).fetchone()
             created_at = existing[0] if existing and existing[0] else now
@@ -105,6 +113,10 @@ class PortfolioPositionStore:
                     position_tier = _clean_position_tier(existing[1], required=False)
                 except ValueError:
                     position_tier = None
+            role = cleaned["role"]
+            if role is None and existing:
+                role = _clean_position_role(existing[2])
+            role = role or ROLE_UNDEFINED
             conn.execute(
                 """
                 INSERT INTO portfolio_positions (
@@ -112,6 +124,7 @@ class PortfolioPositionStore:
                     quantity,
                     average_cost,
                     position_tier,
+                    role,
                     target_position_pct,
                     max_acceptable_position_pct,
                     planned_sell_price,
@@ -123,11 +136,12 @@ class PortfolioPositionStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
                     quantity = excluded.quantity,
                     average_cost = excluded.average_cost,
                     position_tier = excluded.position_tier,
+                    role = excluded.role,
                     target_position_pct = excluded.target_position_pct,
                     max_acceptable_position_pct = excluded.max_acceptable_position_pct,
                     planned_sell_price = excluded.planned_sell_price,
@@ -143,6 +157,7 @@ class PortfolioPositionStore:
                     cleaned["quantity"],
                     cleaned["average_cost"],
                     position_tier,
+                    role,
                     cleaned["target_position_pct"],
                     cleaned["max_acceptable_position_pct"],
                     cleaned["planned_sell_price"],
@@ -200,6 +215,25 @@ class PortfolioPositionStore:
         if cursor.rowcount <= 0:
             raise ValueError("position not found")
         return self.get_position(clean_symbol) or {"symbol": clean_symbol, "position_tier": clean_tier}
+
+    def update_position_role(self, symbol: str, role: str) -> dict:
+        clean_symbol = _normalize_symbol(symbol)
+        clean_role = _clean_position_role(role) or ROLE_UNDEFINED
+        now = _now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE portfolio_positions
+                SET role = ?,
+                    updated_at = ?
+                WHERE symbol = ?
+                  AND is_active = 1
+                """,
+                (clean_role, now, clean_symbol),
+            )
+        if cursor.rowcount <= 0:
+            raise ValueError("position not found")
+        return self.get_position(clean_symbol) or {"symbol": clean_symbol, "role": clean_role}
 
     def deactivate_position(self, symbol: str) -> dict | None:
         now = _now()
@@ -350,6 +384,7 @@ def calculate_portfolio_position(
     return {
         **position,
         "symbol": symbol,
+        "role": _clean_position_role(position.get("role")) or ROLE_UNDEFINED,
         "currentPrice": price,
         "marketValue": market_value,
         "costBasis": cost_basis,
@@ -372,6 +407,11 @@ def _clean_position(symbol: str, values: dict) -> dict:
         "quantity": _to_non_negative_number(values.get("quantity"), "quantity", required=True),
         "average_cost": _to_non_negative_number(values.get("average_cost"), "average_cost", required=True),
         "position_tier": _clean_position_tier(values.get("position_tier"), required=False),
+        "role": _clean_position_role(
+            values.get("role", values.get("holding_role", values.get("portfolio_role")))
+            if any(key in values for key in ("role", "holding_role", "portfolio_role"))
+            else None
+        ),
         "target_position_pct": _to_non_negative_number(values.get("target_position_pct"), "target_position_pct", required=False),
         "max_acceptable_position_pct": _to_non_negative_number(values.get("max_acceptable_position_pct"), "max_acceptable_position_pct", required=False),
         "planned_sell_price": _to_non_negative_number(values.get("planned_sell_price"), "planned_sell_price", required=False),
@@ -401,6 +441,10 @@ def _clean_position_tier(value, *, required: bool) -> str | None:
     return tier
 
 
+def _clean_position_role(value) -> str | None:
+    return normalize_portfolio_role(value, default=None)
+
+
 def _has_position_quantity(position: dict) -> bool:
     quantity = _to_non_negative_number(position.get("quantity"), "quantity", required=True) or 0.0
     return quantity > 0
@@ -414,6 +458,14 @@ def format_position_tier_label(value) -> str:
     if tier is None:
         return POSITION_TIER_MISSING_LABEL
     return POSITION_TIER_LABELS[tier]
+
+
+def format_portfolio_role_label(value) -> str:
+    return portfolio_role_label(value)
+
+
+def portfolio_role_badge_class_for_value(value) -> str:
+    return portfolio_role_badge_class(value)
 
 
 def position_tier_badge_class(value) -> str:

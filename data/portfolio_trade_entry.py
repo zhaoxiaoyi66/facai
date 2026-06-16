@@ -14,6 +14,13 @@ from data.macro_regime import load_macro_regime
 from data.market_context import build_market_history
 from data.planned_ladder_buy import evaluate_planned_ladder_buy
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_roles import (
+    ROLE_UNDEFINED,
+    normalize_portfolio_role,
+    portfolio_role_core_tactical_split,
+    portfolio_role_label,
+    portfolio_role_target_weight,
+)
 from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.portfolio_structure_health import build_portfolio_structure_check
 from data.portfolio_trade_sync import apply_trade_to_portfolio, get_trade_portfolio_sync_status, preview_trade_values_portfolio_effect
@@ -45,6 +52,7 @@ def submit_portfolio_buy_add(
     price = values.get("price")
     tier = _clean_position_tier(values.get("position_tier") or values.get("positionClass"))
     decision_mood = str(values.get("decision_mood") or values.get("decisionMood") or "NEUTRAL").strip()
+    portfolio_role = normalize_portfolio_role(values.get("role") or values.get("portfolio_role") or values.get("tradeRole")) or ROLE_UNDEFINED
     buy_reason = str(values.get("buy_reason") or values.get("notes") or "").strip()
     missing_buy_reason = not bool(buy_reason)
     target_sell_price = values.get("target_sell_price") or values.get("targetSellPrice")
@@ -188,6 +196,11 @@ def submit_portfolio_buy_add(
         "targetSellPrice": target_sell_price,
         "entryMode": entry_mode,
         "positionClass": tier,
+        "tradeRole": portfolio_role,
+        "roleLabel": portfolio_role_label(portfolio_role),
+        "roleTargetWeight": portfolio_role_target_weight(portfolio_role),
+        "coreTacticalSplit": portfolio_role_core_tactical_split(portfolio_role),
+        "roleReason": values.get("role_reason") or values.get("roleReason") or "",
         "corePositionMinPct": core_pct,
         "tradingPositionMaxPct": trading_pct,
         "classificationNote": values.get("classification_note") or values.get("classificationNote") or "",

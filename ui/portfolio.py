@@ -15,6 +15,23 @@ from data.portfolio import (
     format_position_tier_label,
     position_tier_badge_class,
 )
+from data.portfolio_roles import (
+    BUY_ROLE_FORM_OPTIONS,
+    ROLE_FIRST_CORE,
+    ROLE_SATELLITE,
+    ROLE_STRONG_CORE,
+    ROLE_TACTICAL,
+    ROLE_UNDEFINED,
+    ROLE_FORM_OPTIONS,
+    build_portfolio_role_structure,
+    portfolio_role_badge_class,
+    portfolio_role_capacity_warning,
+    portfolio_role_core_tactical_split,
+    portfolio_role_description,
+    portfolio_role_label,
+    portfolio_role_short_label,
+    portfolio_role_target_weight,
+)
 from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
@@ -36,6 +53,7 @@ EMPTY_POSITION = {
     "quantity": "",
     "average_cost": "",
     "position_tier": "",
+    "role": "UNDEFINED",
     "target_position_pct": "",
     "max_acceptable_position_pct": "",
     "planned_sell_price": "",
@@ -871,10 +889,19 @@ def _render_pending_portfolio_buy_intent_dialog() -> None:
 
     def confirm(intent: dict[str, str]) -> None:
         st.session_state.pop("portfolio_pending_trade_intent", None)
+        values = dict(pending.get("values") or {})
+        role = intent.get("portfolio_role") or intent.get("trade_role")
+        if role:
+            values["role"] = role
+            values["portfolio_role"] = role
+            values["tradeRole"] = role
+            values["roleLabel"] = intent.get("role_label") or portfolio_role_label(role)
+        payload = dict(pending)
+        payload["values"] = values
         _submit_portfolio_buy_add(
             "",
             "",
-            pending_payload=pending,
+            pending_payload=payload,
             pre_trade_intent=intent,
         )
 
@@ -889,6 +916,10 @@ def _render_pending_portfolio_buy_intent_dialog() -> None:
         key_prefix="portfolio-buy-intent",
         on_confirm=confirm,
         on_cancel=cancel,
+        portfolio_role_context=_portfolio_buy_role_context(
+            str(pending.get("symbol") or ""),
+            dict(pending.get("values") or {}),
+        ),
     )
 
 
@@ -902,6 +933,35 @@ def _portfolio_buy_intent_validation_error(symbol: str, values: dict[str, object
     if price is None or price <= 0:
         return "请填写大于 0 的成交价格。"
     return ""
+
+
+def _portfolio_buy_role_context(symbol: str, values: dict[str, object]) -> dict[str, object]:
+    clean_symbol = str(symbol or "").strip().upper()
+    try:
+        rows = list(build_portfolio_view_model().get("rows") or [])
+    except Exception:
+        rows = []
+    current_row = next(
+        (row for row in rows if str(row.get("symbol") or "").strip().upper() == clean_symbol),
+        {},
+    )
+    selected_role = (
+        values.get("role")
+        or values.get("portfolio_role")
+        or values.get("tradeRole")
+        or current_row.get("holdingRole")
+        or current_row.get("role")
+        or ROLE_UNDEFINED
+    )
+    warnings_by_role = {
+        role: portfolio_role_capacity_warning(role, rows, symbol=clean_symbol)
+        for role in BUY_ROLE_FORM_OPTIONS.values()
+    }
+    return {
+        "current_role": current_row.get("holdingRole") or current_row.get("role") or ROLE_UNDEFINED,
+        "selected_role": selected_role,
+        "warnings_by_role": warnings_by_role,
+    }
 
 
 def _submit_portfolio_buy_add(
@@ -1556,7 +1616,7 @@ def _render_position_tier_editor(position_store: PortfolioPositionStore, rows: l
     if not active_rows:
         return
     with st.expander("编辑持仓属性", expanded=False):
-        st.caption("这里只能修改 A/B/C 持仓属性，不会改变持股数量、成本或仓位。")
+        st.caption("这里只修改持仓等级和持仓角色，不改变持股数量、成本或仓位。")
         symbols = [str(row.get("symbol") or "").strip().upper() for row in active_rows]
         selected = st.selectbox("持仓", symbols, key="portfolio-tier-edit-symbol")
         row = next((item for item in active_rows if str(item.get("symbol") or "").strip().upper() == selected), {})
@@ -1572,13 +1632,32 @@ def _render_position_tier_editor(position_store: PortfolioPositionStore, rows: l
             index=tier_labels.index(current_label),
             key="portfolio-tier-edit-tier",
         )
-        if st.button("保存持仓等级", key="portfolio-tier-edit-save", width="stretch"):
+        role_labels = list(ROLE_FORM_OPTIONS.keys())
+        current_role = row.get("holdingRole") or row.get("role") or ROLE_UNDEFINED
+        current_role_label = next(
+            (label for label, value in ROLE_FORM_OPTIONS.items() if value == current_role),
+            "未定义",
+        )
+        selected_role_label = st.selectbox(
+            "持仓角色",
+            role_labels,
+            index=role_labels.index(current_role_label) if current_role_label in role_labels else 0,
+            key="portfolio-tier-edit-role",
+        )
+        selected_role = ROLE_FORM_OPTIONS[selected_role_label]
+        st.caption(
+            f"{portfolio_role_label(selected_role)}：目标仓位 {portfolio_role_target_weight(selected_role) or '未设'}；"
+            f"核心 / 战术 {portfolio_role_core_tactical_split(selected_role) or '未设'}。"
+            f"{portfolio_role_description(selected_role)}"
+        )
+        if st.button("保存持仓属性", key="portfolio-tier-edit-save", width="stretch"):
             try:
                 position_store.update_position_tier(selected, POSITION_TIER_FORM_OPTIONS[selected_label])
+                position_store.update_position_role(selected, selected_role)
             except ValueError as exc:
                 st.session_state["portfolio_save_notice"] = ("error", str(exc))
             else:
-                st.session_state["portfolio_save_notice"] = ("success", f"{selected} 持仓等级已更新。")
+                st.session_state["portfolio_save_notice"] = ("success", f"{selected} 持仓属性已更新。")
             st.rerun()
 
 
@@ -1987,6 +2066,7 @@ def render() -> None:
     rows = [_attach_reconciliation(row, reconciliation_by_symbol) for row in rows]
 
     _render_overview_strip(view["summary"])
+    _render_role_structure_card(view["summary"].get("roleStructure") or build_portfolio_role_structure(rows))
     _render_reconciliation_strip(reconciliation_rows)
     _render_action_panel(view["actionGroups"])
     _render_positions_table(rows, position_store, plan_store)
@@ -2248,6 +2328,51 @@ def _render_overview_strip(summary: dict) -> None:
     st.markdown(f'<div class="portfolio-overview compact">{html}</div>', unsafe_allow_html=True)
 
 
+def _render_role_structure_card(structure: dict) -> None:
+    counts = dict((structure or {}).get("counts") or {})
+    formal_count = int((structure or {}).get("formalCount") or 0)
+    undefined_count = int((structure or {}).get("undefinedCount") or 0)
+    role_items = [
+        (ROLE_FIRST_CORE, "第一核心", 1),
+        (ROLE_STRONG_CORE, "强核心", 2),
+        (ROLE_SATELLITE, "卫星赔率仓", 2),
+        (ROLE_TACTICAL, "战术仓", 1),
+    ]
+    cards = [
+        '<div class="portfolio-role-card-item formal">'
+        '<span>正式持仓</span>'
+        f"<strong>{formal_count} / 6</strong>"
+        "<em>目标 6 只</em>"
+        "</div>"
+    ]
+    for role, label, limit in role_items:
+        count = int(counts.get(role, 0) or 0)
+        cards.append(
+            f'<div class="portfolio-role-card-item {escape(portfolio_role_badge_class(role))}">'
+            f"<span>{escape(label)}</span>"
+            f"<strong>{count} / {limit}</strong>"
+            f"<em>{escape(portfolio_role_target_weight(role))}</em>"
+            "</div>"
+        )
+    warning_items = [str(item) for item in ((structure or {}).get("warnings") or []) if str(item).strip()]
+    if undefined_count > 0 and not any("尚未定义角色" in item for item in warning_items):
+        warning_items.insert(0, f"有 {undefined_count} 只持仓尚未定义角色，请先完成组合角色归类。")
+    warning_html = "".join(f"<li>{escape(item)}</li>" for item in warning_items)
+    if warning_html:
+        warning_html = f'<ul class="portfolio-role-warnings">{warning_html}</ul>'
+    st.markdown(
+        '<section class="portfolio-role-structure-card">'
+        '<div class="portfolio-role-structure-head">'
+        "<strong>组合结构</strong>"
+        "<span>正式持仓按 1 第一核心 / 2 强核心 / 2 卫星 / 1 战术管理；观察仓不计入 6 只上限。</span>"
+        "</div>"
+        f'<div class="portfolio-role-card-grid">{"".join(cards)}</div>'
+        f"{warning_html}"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_action_panel(action_groups: list[dict]) -> None:
     lanes = []
     for group in action_groups:
@@ -2292,7 +2417,7 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
         )
         return
 
-    headers = ["股票", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统估值参考", "我的计划", "操作"]
+    headers = ["股票", "持仓角色", "持仓 / 成本", "现价 / 盈亏", "仓位 / 上限", "系统估值参考", "我的计划", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body_html = "".join(_position_row_html(row, plan_store) for row in rows)
     decision_store = DecisionLogStore()
@@ -2301,6 +2426,7 @@ def _render_positions_table(rows: list[dict], position_store: PortfolioPositionS
     colgroup = (
         '<colgroup>'
         '<col class="portfolio-col-symbol">'
+        '<col class="portfolio-col-role">'
         '<col class="portfolio-col-cost">'
         '<col class="portfolio-col-pnl">'
         '<col class="portfolio-col-weight">'
@@ -2332,6 +2458,7 @@ def _position_row_html(row: dict, plan_store: StockPlanStore | None = None) -> s
     return (
         "<tr>"
         f'<td class="portfolio-symbol-cell">{_symbol_cell_html(row)}</td>'
+        f"<td>{_role_cell_html(row)}</td>"
         f"<td>{_cell_html(_share_count_text(row.get('quantity')), '成本 ' + _money_text(row.get('costBasis')) + ' / 均价 ' + _money_text(row.get('averageCost')))}</td>"
         f"<td>{_cell_html(_money_text(row.get('currentPrice')), _money_text(row.get('unrealizedPnl')) + ' / ' + _percent_text(row.get('unrealizedPnlPct')))}</td>"
         f"<td>{_cell_html(_percent_text(row.get('positionPct')), '系统 ' + _percent_text(row.get('systemMaxPosition')) + ' / 个人 ' + _percent_text(row.get('maxAcceptablePositionPct')))}</td>"
@@ -2355,6 +2482,23 @@ def _symbol_cell_html(row: dict) -> str:
         f"<b>{escape(symbol)}</b>"
         f"<small>{escape(_row_status_text(row))}</small>"
         f"{_position_tier_badge_html(tier)}"
+        "</div>"
+    )
+
+
+def _role_cell_html(row: dict) -> str:
+    role = row.get("holdingRole") or row.get("role") or ROLE_UNDEFINED
+    label = row.get("roleShortLabel") or portfolio_role_short_label(role)
+    target = row.get("roleTargetWeight") or portfolio_role_target_weight(role)
+    split = row.get("roleCoreTacticalSplit") or portfolio_role_core_tactical_split(role)
+    description = row.get("roleDescription") or portfolio_role_description(role)
+    details = " / ".join(str(value) for value in (target, split) if str(value or "").strip())
+    if not details:
+        details = description or "请补充定义"
+    return (
+        f'<div class="portfolio-role-cell {escape(portfolio_role_badge_class(role))}">'
+        f"<b>{escape(str(label or portfolio_role_label(role)))}</b>"
+        f"<small>{escape(str(details))}</small>"
         "</div>"
     )
 
@@ -2460,6 +2604,9 @@ def _drawer_html(
             ("平均成本", _money_text(row.get("averageCost"))),
             ("现价", _money_text(row.get("currentPrice"))),
             ("价格状态", _price_status_text(row.get("priceStatus"))),
+            ("持仓角色", portfolio_role_label(row.get("holdingRole") or row.get("role"))),
+            ("角色仓位框架", row.get("roleTargetWeight") or portfolio_role_target_weight(row.get("holdingRole") or row.get("role")) or BLANK_TEXT),
+            ("核心 / 战术", row.get("roleCoreTacticalSplit") or portfolio_role_core_tactical_split(row.get("holdingRole") or row.get("role")) or BLANK_TEXT),
             ("市值", _money_text(row.get("marketValue"))),
             ("浮动盈亏", _money_text(row.get("unrealizedPnl")) + " / " + _percent_text(row.get("unrealizedPnlPct"))),
             ("当前仓位", _percent_text(row.get("positionPct"))),
@@ -2789,6 +2936,70 @@ def _render_final_portfolio_styles() -> None:
             opacity: 1;
             font-size: 0.62rem;
         }
+        .portfolio-role-structure-card {
+            margin: 0.15rem 0 0.8rem;
+            padding: 0.68rem 0.78rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #FFFFFF;
+        }
+        .portfolio-role-structure-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.55rem;
+        }
+        .portfolio-role-structure-head strong {
+            color: #0f172a;
+            font-size: 0.9rem;
+            font-weight: 820;
+        }
+        .portfolio-role-structure-head span {
+            color: #64748b;
+            font-size: 0.7rem;
+        }
+        .portfolio-role-card-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.45rem;
+        }
+        .portfolio-role-card-item {
+            min-height: 54px;
+            padding: 0.44rem 0.56rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-left: 3px solid #6B83A6;
+            border-radius: 7px;
+            background: #F8FAFC;
+        }
+        .portfolio-role-card-item span,
+        .portfolio-role-card-item em {
+            display: block;
+            color: #64748b;
+            font-size: 0.62rem;
+            font-style: normal;
+        }
+        .portfolio-role-card-item strong {
+            display: block;
+            margin: 0.08rem 0;
+            color: #0f172a;
+            font-size: 1rem;
+        }
+        .portfolio-role-card-item.role-first-core { border-left-color: #7C3AED; }
+        .portfolio-role-card-item.role-strong-core { border-left-color: #2563EB; }
+        .portfolio-role-card-item.role-satellite { border-left-color: #D97706; }
+        .portfolio-role-card-item.role-tactical { border-left-color: #0F766E; }
+        .portfolio-role-card-item.role-observation { border-left-color: #64748B; }
+        .portfolio-role-card-item.role-undefined { border-left-color: #B45309; }
+        .portfolio-role-warnings {
+            margin: 0.55rem 0 0;
+            padding: 0.48rem 0.72rem 0.48rem 1.25rem;
+            border: 1px solid rgba(180, 83, 9, 0.18);
+            border-radius: 7px;
+            background: rgba(245, 158, 11, 0.08);
+            color: #92400E;
+            font-size: 0.7rem;
+        }
         .ladder-buy-reference {
             margin: 0.55rem 0 0.25rem;
             padding: 0.58rem 0.68rem;
@@ -3076,10 +3287,11 @@ def _render_final_portfolio_styles() -> None:
         }
         .portfolio-table.terminal {
             table-layout: fixed;
-            min-width: 1030px;
+            min-width: 1160px;
             font-size: 0.72rem;
         }
         .portfolio-col-symbol { width: 110px; }
+        .portfolio-col-role { width: 128px; }
         .portfolio-col-cost { width: 150px; }
         .portfolio-col-pnl { width: 140px; }
         .portfolio-col-weight { width: 130px; }
@@ -3111,6 +3323,33 @@ def _render_final_portfolio_styles() -> None:
         .portfolio-table.terminal tr:hover td {
             background: #FBFCFE;
         }
+        .portfolio-role-cell {
+            display: grid;
+            gap: 0.08rem;
+            padding: 0.22rem 0.34rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-left: 3px solid #64748B;
+            border-radius: 7px;
+            background: rgba(248, 250, 252, 0.72);
+        }
+        .portfolio-role-cell b {
+            color: #0f172a;
+            font-size: 0.72rem;
+            font-weight: 820;
+        }
+        .portfolio-role-cell small {
+            color: #64748b;
+            font-size: 0.6rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .portfolio-role-cell.role-first-core { border-left-color: #7C3AED; background: rgba(124, 58, 237, 0.055); }
+        .portfolio-role-cell.role-strong-core { border-left-color: #2563EB; background: rgba(37, 99, 235, 0.052); }
+        .portfolio-role-cell.role-satellite { border-left-color: #D97706; background: rgba(217, 119, 6, 0.055); }
+        .portfolio-role-cell.role-tactical { border-left-color: #0F766E; background: rgba(15, 118, 110, 0.052); }
+        .portfolio-role-cell.role-observation { border-left-color: #64748B; }
+        .portfolio-role-cell.role-undefined { border-left-color: #B45309; background: rgba(245, 158, 11, 0.08); }
         .portfolio-symbol-stack {
             display: flex;
             flex-direction: column;

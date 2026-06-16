@@ -16,6 +16,7 @@ from data.portfolio import (
     calculate_portfolio_positions,
     format_position_tier_label,
 )
+from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_SATELLITE, ROLE_STRONG_CORE, ROLE_UNDEFINED
 from data.portfolio_view_model import build_portfolio_view_model
 import data.portfolio_view_model as portfolio_view_model_module
 from scoring.final_decision import BUY_ACTIONS
@@ -120,6 +121,38 @@ class PortfolioModelTests(unittest.TestCase):
                 store.update_position_tier("NVDA", "")
             with self.assertRaises(ValueError):
                 store.update_position_tier("NVDA", "UNCLASSIFIED")
+
+    def test_portfolio_position_role_defaults_to_undefined_and_can_update(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+
+            created = store.save_position("NVDA", {"quantity": 2, "average_cost": 100})
+            updated = store.update_position_role("NVDA", ROLE_FIRST_CORE)
+
+            self.assertEqual(created["role"], ROLE_UNDEFINED)
+            self.assertEqual(updated["role"], ROLE_FIRST_CORE)
+            self.assertEqual(updated["quantity"], 2)
+            self.assertEqual(updated["average_cost"], 100)
+
+    def test_portfolio_view_model_counts_roles_and_sorts_by_role_priority(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            store = PortfolioPositionStore(db_path)
+            settings = PortfolioSettingsStore(db_path)
+            settings.save_settings({"total_portfolio_value": 10000, "base_currency": "USD"})
+            store.save_position("SAT", {"quantity": 1, "average_cost": 10, "role": ROLE_SATELLITE})
+            store.save_position("FIRST", {"quantity": 1, "average_cost": 10, "role": ROLE_FIRST_CORE})
+            store.save_position("STRONG", {"quantity": 1, "average_cost": 10, "role": ROLE_STRONG_CORE})
+            store.save_position("UNDEF", {"quantity": 1, "average_cost": 10})
+
+            view = build_portfolio_view_model(db_path, {"SAT": 10, "FIRST": 10, "STRONG": 10, "UNDEF": 10})
+            symbols = [row["symbol"] for row in view["rows"]]
+            structure = view["summary"]["roleStructure"]
+
+            self.assertEqual(symbols, ["FIRST", "STRONG", "SAT", "UNDEF"])
+            self.assertEqual(structure["formalCount"], 3)
+            self.assertEqual(structure["undefinedCount"], 1)
+            self.assertIn("尚未定义角色", " ".join(structure["warnings"]))
 
     def test_portfolio_settings_store_saves_and_loads_defaults(self) -> None:
         with TemporaryDirectory() as tmpdir:

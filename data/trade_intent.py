@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo
 
+from data.portfolio_roles import (
+    normalize_portfolio_role,
+    portfolio_role_core_tactical_split,
+    portfolio_role_label,
+    portfolio_role_target_weight,
+)
 from data.prices import CACHE_PATH
 
 
@@ -335,6 +341,11 @@ class TradeIntentStore:
                     review_type TEXT NOT NULL,
                     stock_stage_self_judgment TEXT,
                     trade_behavior_self_judgment TEXT,
+                    trade_role TEXT,
+                    role_label TEXT,
+                    role_target_weight TEXT,
+                    core_tactical_split TEXT,
+                    role_reason TEXT,
                     question_1_answer TEXT,
                     question_2_answer TEXT,
                     question_3_answer TEXT,
@@ -365,6 +376,11 @@ class TradeIntentStore:
                 {
                     "stock_stage_self_judgment": "TEXT",
                     "trade_behavior_self_judgment": "TEXT",
+                    "trade_role": "TEXT",
+                    "role_label": "TEXT",
+                    "role_target_weight": "TEXT",
+                    "core_tactical_split": "TEXT",
+                    "role_reason": "TEXT",
                     "discipline_tags_json": "TEXT",
                 },
             )
@@ -401,6 +417,11 @@ class TradeIntentStore:
         attention_flags = _attention_flags(normalized)
         stock_stage = normalized.get("stock_stage_self_judgment")
         trade_behavior = normalized.get("trade_behavior_self_judgment")
+        trade_role = normalized.get("trade_role")
+        role_label = normalized.get("role_label")
+        role_target_weight = normalized.get("role_target_weight")
+        core_tactical_split = normalized.get("core_tactical_split")
+        role_reason = normalized.get("role_reason")
         snapshot_values = _clean_snapshot_values(snapshots or {})
         payload_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         with self.connect() as conn:
@@ -413,6 +434,11 @@ class TradeIntentStore:
                     review_type,
                     stock_stage_self_judgment,
                     trade_behavior_self_judgment,
+                    trade_role,
+                    role_label,
+                    role_target_weight,
+                    core_tactical_split,
+                    role_reason,
                     question_1_answer,
                     question_2_answer,
                     question_3_answer,
@@ -434,13 +460,18 @@ class TradeIntentStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_id) DO UPDATE SET
                     symbol = excluded.symbol,
                     side = excluded.side,
                     review_type = excluded.review_type,
                     stock_stage_self_judgment = excluded.stock_stage_self_judgment,
                     trade_behavior_self_judgment = excluded.trade_behavior_self_judgment,
+                    trade_role = excluded.trade_role,
+                    role_label = excluded.role_label,
+                    role_target_weight = excluded.role_target_weight,
+                    core_tactical_split = excluded.core_tactical_split,
+                    role_reason = excluded.role_reason,
                     question_1_answer = excluded.question_1_answer,
                     question_2_answer = excluded.question_2_answer,
                     question_3_answer = excluded.question_3_answer,
@@ -468,6 +499,11 @@ class TradeIntentStore:
                     review_type,
                     stock_stage,
                     trade_behavior,
+                    trade_role,
+                    role_label,
+                    role_target_weight,
+                    core_tactical_split,
+                    role_reason,
                     answers[0],
                     answers[1],
                     answers[2],
@@ -566,6 +602,7 @@ def _normalize_buy_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {"intent_side": "buy"}
     result["stock_stage_self_judgment"] = _clean_optional_choice(payload.get("stock_stage_self_judgment"), STOCK_STAGE_OPTIONS)
     result["trade_behavior_self_judgment"] = _clean_optional_choice(payload.get("trade_behavior_self_judgment"), BUY_BEHAVIOR_OPTIONS)
+    _copy_portfolio_role_fields(payload, result)
     for item in BUY_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -605,6 +642,7 @@ def _normalize_sell_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {"intent_side": "sell"}
     result["stock_stage_self_judgment"] = _clean_optional_choice(payload.get("stock_stage_self_judgment"), STOCK_STAGE_OPTIONS)
     result["trade_behavior_self_judgment"] = _clean_optional_choice(payload.get("trade_behavior_self_judgment"), SELL_BEHAVIOR_OPTIONS)
+    _copy_portfolio_role_fields(payload, result)
     for item in SELL_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -882,6 +920,31 @@ def _clean_side(value: object) -> str:
     return ""
 
 
+def _copy_portfolio_role_fields(payload: dict[str, Any], result: dict[str, str]) -> None:
+    role = normalize_portfolio_role(
+        payload.get("trade_role") or payload.get("portfolio_role") or payload.get("tradeRole"),
+        default=None,
+    )
+    if role:
+        result["portfolio_role"] = role
+        result["trade_role"] = role
+        result["role_label"] = str(payload.get("role_label") or payload.get("roleLabel") or portfolio_role_label(role))
+        result["role_target_weight"] = str(
+            payload.get("role_target_weight") or payload.get("roleTargetWeight") or portfolio_role_target_weight(role)
+        )
+        result["core_tactical_split"] = str(
+            payload.get("core_tactical_split") or payload.get("coreTacticalSplit") or portfolio_role_core_tactical_split(role)
+        )
+        reason = str(payload.get("role_reason") or payload.get("roleReason") or "").strip()
+        if reason:
+            result["role_reason"] = reason
+        return
+    for key in ("portfolio_role", "trade_role", "role_label", "role_target_weight", "core_tactical_split", "role_reason"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            result[key] = value
+
+
 def _clean_choice(value: object, options: list[str]) -> str:
     text = str(value or "").strip()
     return text if text in options else options[-1]
@@ -939,6 +1002,11 @@ def _review_row_to_dict(columns: list[str], row: Any) -> dict[str, Any]:
     result["intent_side"] = side
     result["stock_stage_self_judgment"] = result.get("stock_stage_self_judgment") or payload.get("stock_stage_self_judgment")
     result["trade_behavior_self_judgment"] = result.get("trade_behavior_self_judgment") or payload.get("trade_behavior_self_judgment")
+    result["trade_role"] = result.get("trade_role") or payload.get("trade_role") or payload.get("portfolio_role")
+    result["role_label"] = result.get("role_label") or payload.get("role_label")
+    result["role_target_weight"] = result.get("role_target_weight") or payload.get("role_target_weight")
+    result["core_tactical_split"] = result.get("core_tactical_split") or payload.get("core_tactical_split")
+    result["role_reason"] = result.get("role_reason") or payload.get("role_reason")
     result["primary_intent"] = payload.get("primary_intent") or result.get("question_1_answer")
     result["position_intent"] = payload.get("position_intent") or result.get("question_3_answer")
     result["timing_intent"] = payload.get("timing_intent") or result.get("question_2_answer")

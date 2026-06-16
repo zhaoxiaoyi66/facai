@@ -16,6 +16,7 @@ from data.trade_intent import (
     build_trade_intent_review_stats,
     normalize_trade_intent_payload,
 )
+from data.portfolio_roles import ROLE_STRONG_CORE
 from ui import trade_intent
 
 
@@ -55,6 +56,39 @@ def test_trade_intent_store_persists_pre_trade_choices() -> None:
         assert row[2] == "[]"
         assert row[3] == "市场重新定价 / 事件催化"
         assert row[4].startswith("右侧事件买入")
+
+
+def test_trade_intent_store_persists_portfolio_role_snapshot() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "intent.sqlite"
+        store = TradeIntentStore(path)
+
+        saved = store.save_intent(
+            13,
+            "nvda",
+            "buy",
+            {
+                "intent_side": "buy",
+                "portfolio_role": ROLE_STRONG_CORE,
+                "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[1],
+                "trade_behavior_self_judgment": BUY_BEHAVIOR_OPTIONS[1],
+                "core_direction_intent": "是，在加强核心方向",
+                "objective_reason_intent": "承接变好 / 回到买区 / 赔率合适",
+                "drawdown_plan_intent": "有，已想好持有、加仓或止错计划",
+                "tracking_commitment_intent": "愿意，后续会持续跟踪和复盘",
+                "portfolio_clarity_intent": "会，更聚焦于核心方向",
+            },
+        )
+
+        assert saved["trade_role"] == ROLE_STRONG_CORE
+        assert saved["role_label"] == "强核心"
+        assert saved["role_target_weight"] == "10%–20%"
+        assert saved["core_tactical_split"] == "65% / 35%"
+        with closing(sqlite3.connect(path)) as conn:
+            row = conn.execute(
+                "SELECT trade_role, role_label, role_target_weight, core_tactical_split FROM trade_intent_reviews WHERE trade_id = 13"
+            ).fetchone()
+        assert row == (ROLE_STRONG_CORE, "强核心", "10%–20%", "65% / 35%")
 
 
 def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:

@@ -28,6 +28,12 @@ from data.portfolio_trade_sync import (
     preview_trade_values_portfolio_effect,
 )
 from data.portfolio import PortfolioPositionStore
+from data.portfolio_roles import (
+    ROLE_UNDEFINED,
+    portfolio_role_core_tactical_split,
+    portfolio_role_label,
+    portfolio_role_target_weight,
+)
 from data.portfolio_view_model import build_portfolio_view_model
 from data.sell_fly_review import build_sell_fly_review_results
 from data.sell_review import evaluate_sell_review_flags, format_sell_review_label
@@ -822,11 +828,16 @@ def _pre_trade_snapshot_values(position_row: dict) -> dict:
     if total_cost is None and quantity is not None and avg_cost is not None:
         total_cost = quantity * avg_cost
     tier = str(position_row.get("positionTier") or "").strip().upper()
+    role = position_row.get("holdingRole") or position_row.get("role") or ROLE_UNDEFINED
     return {
         "preTradeQuantity": quantity,
         "preTradeAvgCost": avg_cost,
         "preTradeTotalCost": total_cost,
         "preTradePositionTier": tier if tier in {"A", "B", "C"} else "",
+        "tradeRole": role,
+        "roleLabel": portfolio_role_label(role),
+        "roleTargetWeight": portfolio_role_target_weight(role),
+        "coreTacticalSplit": portfolio_role_core_tactical_split(role),
         "preTradeTargetSellPrice": _number(position_row.get("plannedSellPrice")),
         "preTradeUnrealizedPnl": _number(position_row.get("unrealizedPnl")),
         "costBasisSource": "position_snapshot" if avg_cost is not None else "",
@@ -2231,6 +2242,22 @@ def _queue_sell_intent(symbol: str, action_type: str, values: dict) -> None:
     st.rerun()
 
 
+def _sell_portfolio_role_context(symbol: str, values: dict) -> dict[str, object]:
+    role = values.get("tradeRole") or values.get("trade_role") or ROLE_UNDEFINED
+    clean_symbol = str(symbol or "").strip().upper()
+    if role == ROLE_UNDEFINED and clean_symbol:
+        try:
+            rows = build_portfolio_view_model().get("rows") or []
+        except Exception:
+            rows = []
+        current_row = next(
+            (row for row in rows if str(row.get("symbol") or "").strip().upper() == clean_symbol),
+            {},
+        )
+        role = current_row.get("holdingRole") or current_row.get("role") or ROLE_UNDEFINED
+    return {"current_role": role or ROLE_UNDEFINED}
+
+
 def _render_pending_sell_intent_dialog(store: TradeJournalStore) -> None:
     pending = st.session_state.get("trade_journal_pending_trade_intent")
     if not isinstance(pending, dict):
@@ -2239,6 +2266,10 @@ def _render_pending_sell_intent_dialog(store: TradeJournalStore) -> None:
     def confirm(intent: dict[str, str]) -> None:
         st.session_state.pop("trade_journal_pending_trade_intent", None)
         values = dict(pending.get("values") or {})
+        role = intent.get("portfolio_role") or intent.get("trade_role")
+        if role:
+            values["tradeRole"] = role
+            values["roleLabel"] = intent.get("role_label") or portfolio_role_label(role)
         values["pre_trade_intent"] = intent
         _save_entry(store, str(pending.get("symbol") or ""), values)
 
@@ -2253,6 +2284,10 @@ def _render_pending_sell_intent_dialog(store: TradeJournalStore) -> None:
         key_prefix="trade-journal-sell-intent",
         on_confirm=confirm,
         on_cancel=cancel,
+        portfolio_role_context=_sell_portfolio_role_context(
+            str(pending.get("symbol") or ""),
+            dict(pending.get("values") or {}),
+        ),
     )
 
 
