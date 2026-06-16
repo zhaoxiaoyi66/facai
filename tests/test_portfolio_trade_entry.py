@@ -798,6 +798,7 @@ def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
     context = SimpleNamespace(
         current_price=102.15,
         structure_hint=SimpleNamespace(status="STRUCTURE_MISSING", label="待补数据", message="缺少历史K线。"),
+        radar_report={"buy_zone_context": {"setup_score": 64, "volume_acceptance_score": 48}},
         action_fusion=SimpleNamespace(
             action_code="DATA_INSUFFICIENT",
             portfolio_role="watch_only",
@@ -815,10 +816,13 @@ def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
         ),
     )
 
-    html = portfolio_ui._portfolio_buy_decision_panel_html(context, {}, "A")
+    html = portfolio_ui._portfolio_buy_decision_panel_html(context, {"quantity": 160}, "A")
 
     assert "当前结论" in html
-    assert "仅观察 / 数据不足" in html
+    assert "持有观察 / 承接待确认" in html
+    assert "辅助数据待补" in html
+    assert "数据不足" not in html
+    assert "已有持仓，暂不新增；等待量价承接改善" in html
     assert "当前价格" in html
     assert "观察区间" in html
     assert "$99.00 - $108.00" in html
@@ -826,6 +830,62 @@ def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
     assert "失效位" in html
     assert "建议动作" in html
     assert "系统建议" not in html
+
+
+def test_portfolio_buy_decision_panel_separates_critical_missing_data() -> None:
+    context = SimpleNamespace(
+        current_price=102.15,
+        structure_hint=SimpleNamespace(status="STRUCTURE_MISSING", label="待补数据", message="缺少关键价格。"),
+        radar_report={"buy_zone_context": {"setup_score": 72, "volume_acceptance_score": 66}},
+        action_fusion=SimpleNamespace(
+            action_code="DATA_INSUFFICIENT",
+            portfolio_role="watch_only",
+            watch_levels={
+                "observation_low": 99.0,
+                "observation_high": 108.0,
+            },
+            current_weight=9.46818,
+            target_weight=12.0,
+            max_weight=15.0,
+        ),
+    )
+
+    html = portfolio_ui._portfolio_buy_decision_panel_html(context, {"quantity": 160}, "A")
+
+    assert "关键数据不足" in html
+    assert "仅记录，不建议新增" in html
+    assert "确认位" in html
+    assert "待补" in html
+    assert "9.5%" in html
+
+
+def test_portfolio_buy_strategy_panel_uses_add_language_for_existing_position() -> None:
+    context = SimpleNamespace(
+        current_price=102.15,
+        structure_hint=SimpleNamespace(status="OK", label="数据完整", message=""),
+        radar_report={"buy_zone_context": {"setup_score": 78, "volume_acceptance_score": 66}},
+        action_fusion=SimpleNamespace(
+            action_code="ALLOW_SMALL_BUY",
+            portfolio_role="trading",
+            watch_levels={
+                "observation_low": 99.0,
+                "observation_high": 108.0,
+                "confirm_line": 112.0,
+                "invalid_line": 96.0,
+            },
+            left_side_action_cn="可建仓",
+            left_probe_size_cn="小仓观察",
+            right_confirm_trigger_cn="站上确认位后重新评估",
+            position_advice_cn="控制节奏",
+            left_side_warning_cn="",
+            advisory_warnings_cn=[],
+        ),
+    )
+
+    html = portfolio_ui._portfolio_buy_strategy_panel_html(context, {"quantity": 160})
+
+    assert "可建仓" not in html
+    assert "可加仓" in html
 
 
 def test_portfolio_buy_evidence_panel_uses_collapsed_details() -> None:
@@ -860,6 +920,39 @@ def test_portfolio_buy_evidence_panel_uses_collapsed_details() -> None:
     assert "量价承接" in html
     assert "64 分" in html
     assert "放量未确认" in html
+
+
+def test_portfolio_buy_evidence_panel_localizes_auxiliary_missing_fields_once() -> None:
+    context = SimpleNamespace(
+        structure_hint=SimpleNamespace(
+            label="待补数据",
+            structure_score=58,
+            message="relative_strength / volume / decline_reason / thesis_status 待补。",
+            missing_fields=["relative_strength", "volume", "decline_reason", "thesis_status"],
+            warnings=[],
+            next_steps=[],
+        ),
+        pullback_acceptance=SimpleNamespace(
+            status_label="承接未确认",
+            acceptance_score=48,
+            acceptance_reasons=[],
+            acceptance_warnings=[],
+            next_acceptance_steps=[],
+        ),
+        volume_price_acceptance=SimpleNamespace(
+            status_label="量价待确认",
+            volume_price_score=42,
+            acceptance_reason_cn="volume 数据待补。",
+            risk_deductions=[],
+        ),
+    )
+
+    html = portfolio_ui._portfolio_buy_evidence_panel_html(context)
+
+    assert "辅助确认数据待补：相对强弱、成交量、下跌原因、投资逻辑状态。" in html
+    assert "relative_strength" not in html
+    assert "decline_reason" not in html
+    assert "thesis_status" not in html
 
 
 def test_planned_ladder_buy_can_sync_when_radar_blocks_chase_but_plan_matches() -> None:

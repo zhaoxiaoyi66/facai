@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import re
 from urllib.parse import quote
 import streamlit as st
 
@@ -176,7 +177,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         st.markdown('<div class="portfolio-buy-block-title">2. 主结论</div>', unsafe_allow_html=True)
         st.markdown(_portfolio_buy_decision_panel_html(advisory_context, current, selected_tier), unsafe_allow_html=True)
         st.markdown('<div class="portfolio-buy-block-title">3. 买入策略</div>', unsafe_allow_html=True)
-        st.markdown(_portfolio_buy_strategy_panel_html(advisory_context), unsafe_allow_html=True)
+        st.markdown(_portfolio_buy_strategy_panel_html(advisory_context, current), unsafe_allow_html=True)
         st.markdown(trade_entry_discipline_hint_html(_trade_entry_setup_score(advisory_context)), unsafe_allow_html=True)
         with st.expander("4. 证据面板", expanded=False):
             st.markdown(_portfolio_buy_evidence_panel_html(advisory_context), unsafe_allow_html=True)
@@ -257,38 +258,33 @@ def _portfolio_buy_basic_info_html(ticker: str, current: dict, tier: str) -> str
 def _portfolio_buy_decision_panel_html(context, current: dict | None = None, tier: str = "") -> str:
     fusion = getattr(context, "action_fusion", None)
     hint = getattr(context, "structure_hint", None)
-    conclusion, tone = _portfolio_buy_conclusion(context)
+    summary = _portfolio_buy_page_summary(context, current)
+    conclusion = summary["conclusion"]
+    tone = summary["tone"]
     price = getattr(context, "current_price", None)
     role = str(getattr(fusion, "portfolio_role", "") or "watch_only")
     levels = dict(getattr(fusion, "watch_levels", {}) or {})
     observation = _range_text(levels.get("observation_low"), levels.get("observation_high"))
-    confirm = _money_text(levels.get("confirm_line"))
-    invalid = _money_text(levels.get("invalid_line"))
+    confirm = _pending_money_text(levels.get("confirm_line"))
+    invalid = _pending_money_text(levels.get("invalid_line"))
     current_weight = getattr(fusion, "current_weight", None)
     target_weight = getattr(fusion, "target_weight", None)
     max_weight = getattr(fusion, "max_weight", None)
-    action = _compact_sentence(
-        getattr(fusion, "position_action_cn", "")
-        or getattr(fusion, "buy_plan_cn", "")
-        or getattr(hint, "message", "")
-        or "先补齐数据，再判断是否执行。"
-    )
-    if context is None:
-        action = "先选择标的并补齐 Radar / 技术数据，再判断是否执行。"
+    action = summary["action_text"]
     chips = [
-        role,
+        _cn_label(role),
         format_position_tier_label(tier) if tier else "未设持仓等级",
-        getattr(hint, "label", "") if hint else "数据待补",
+        summary["data_label"] or (getattr(hint, "label", "") if hint else "待补"),
     ]
     metrics = [
-        ("当前价格", _money_text(price), "strong"),
+        ("当前价格", _pending_money_text(price), "strong"),
         ("观察区间", observation, "strong"),
         ("确认位", confirm, ""),
         ("失效位", invalid, ""),
         ("当前仓位", _percent_plain(current_weight), ""),
         ("目标仓位", _percent_plain(target_weight), ""),
         ("上限仓位", _percent_plain(max_weight), ""),
-        ("角色", role or "watch_only", ""),
+        ("股票定位", _cn_label(role), ""),
     ]
     metric_html = "".join(
         '<div class="portfolio-buy-metric">'
@@ -311,24 +307,49 @@ def _portfolio_buy_decision_panel_html(context, current: dict | None = None, tie
     )
 
 
-def _portfolio_buy_strategy_panel_html(context) -> str:
+def _portfolio_buy_strategy_panel_html(context, current: dict | None = None) -> str:
     fusion = getattr(context, "action_fusion", None)
+    summary = _portfolio_buy_page_summary(context, current)
     if fusion is None:
         cards = [
-            ("左侧试仓", "暂不判断", "缺少 Radar / 技术上下文。"),
+            ("左侧策略", "暂不判断", "缺少关键价格或买区上下文。"),
             ("右侧确认", "等待数据", "补齐确认位和量价承接后再判断。"),
             ("仓位建议", "先观察", "没有目标仓位和上限仓位快照。"),
         ]
-    else:
-        left = getattr(fusion, "left_side_action_cn", "") or "左侧暂不主动新增"
-        probe = getattr(fusion, "left_probe_size_cn", "") or getattr(fusion, "left_add_levels_cn", "") or "等待更清晰击球区。"
-        right = getattr(fusion, "right_confirm_trigger_cn", "") or getattr(fusion, "next_trigger_cn", "") or "等待重新评估线。"
-        position = getattr(fusion, "position_advice_cn", "") or "按当前仓位上限控制节奏。"
-        status = getattr(fusion, "left_side_warning_cn", "") or _compact_sentence("；".join(getattr(fusion, "advisory_warnings_cn", [])[:2]))
+    elif summary["data_state"] == "critical":
         cards = [
-            ("左侧试仓建议", left, probe),
-            ("右侧确认建议", "重新评估线", right),
-            ("仓位建议", _compact_sentence(position), status or "偏离建议会记录为人工 override。"),
+            ("左侧策略", "仅记录", "关键数据不足，不建议新增。"),
+            ("右侧确认", "等待补齐", "补齐价格、观察区间、确认位和失效位。"),
+            ("仓位建议", "暂不新增", "基础行情或关键价位缺失。"),
+        ]
+    elif summary["volume_weak"]:
+        cards = [
+            ("左侧策略", "承接待确认", "价格可观察，但量价承接不足。"),
+            ("右侧确认", "等待确认位", f"站上 {summary['confirm_text']} 后重新评估。"),
+            ("仓位建议", "暂不新增", "量价未确认，不急于新增。"),
+        ]
+    elif summary["held"] and summary["setup_weak"]:
+        cards = [
+            ("左侧策略", "持有观察", "已有持仓，买点质量一般。"),
+            ("右侧确认", "等待确认", f"站上 {summary['confirm_text']} 后重新评估。"),
+            ("仓位建议", "暂不加仓", "等待承接改善或重新站上确认位。"),
+        ]
+    else:
+        left = _localized_text(getattr(fusion, "left_side_action_cn", "") or "左侧暂不主动新增")
+        probe = _localized_text(
+            getattr(fusion, "left_probe_size_cn", "") or getattr(fusion, "left_add_levels_cn", "") or "等待更清晰技术回踩带。"
+        )
+        right = _localized_text(getattr(fusion, "right_confirm_trigger_cn", "") or getattr(fusion, "next_trigger_cn", "") or "等待重新评估线。")
+        position = _localized_text(getattr(fusion, "position_advice_cn", "") or "按当前仓位上限控制节奏。")
+        status = _localized_text(
+            getattr(fusion, "left_side_warning_cn", "") or _compact_sentence("；".join(getattr(fusion, "advisory_warnings_cn", [])[:2]))
+        )
+        if summary["held"]:
+            left = left.replace("可建仓", "可加仓").replace("建仓", "加仓复核")
+        cards = [
+            ("左侧策略", left, probe),
+            ("右侧确认", "重新评估线", right),
+            ("仓位建议", _compact_sentence(position), status or "偏离系统提醒会记录为人工确认。"),
         ]
     return _portfolio_buy_cards_html(cards, class_name="portfolio-buy-strategy-grid")
 
@@ -343,6 +364,15 @@ def _portfolio_buy_evidence_panel_html(context) -> str:
     hint = context.structure_hint
     pullback = context.pullback_acceptance
     volume = context.volume_price_acceptance
+    missing_fields = _missing_fields_cn(getattr(hint, "missing_fields", []) if hint else [])
+    missing_html = ""
+    if missing_fields:
+        missing_html = (
+            '<div class="portfolio-buy-empty-evidence">'
+            "<strong>待补数据</strong>"
+            f"<span>辅助确认数据待补：{escape('、'.join(missing_fields))}。</span>"
+            "</div>"
+        )
     evidence = [
         _portfolio_buy_evidence_block_html(
             "结构确认提示",
@@ -366,20 +396,21 @@ def _portfolio_buy_evidence_panel_html(context) -> str:
             list(getattr(volume, "risk_deductions", [])[:3]),
         ),
     ]
-    return '<div class="portfolio-buy-evidence-grid">' + "".join(evidence) + "</div>"
+    return '<div class="portfolio-buy-evidence-grid">' + missing_html + "".join(evidence) + "</div>"
 
 
 def _portfolio_buy_evidence_block_html(title: str, status: str, score: object, summary: str, details: list[str]) -> str:
     score_text = _score_text(score)
-    summary_text = _compact_sentence(summary) or "暂无进一步摘要。"
-    detail_items = "".join(f"<li>{escape(str(item))}</li>" for item in details if str(item or "").strip())
+    summary_text = _compact_sentence(_localized_text(summary)) or "暂无进一步摘要。"
+    clean_details = [_localized_text(item) for item in details if str(item or "").strip()]
+    detail_items = "".join(f"<li>{escape(str(item))}</li>" for item in clean_details[:3])
     if not detail_items:
         detail_items = "<li>暂无额外细节。</li>"
     return (
         '<details class="portfolio-buy-evidence-card">'
         "<summary>"
         f"<span>{escape(title)}</span>"
-        f"<b>{escape(status)}</b>"
+        f"<b>{escape(_localized_text(status))}</b>"
         f"<em>{escape(score_text)}</em>"
         "</summary>"
         f"<p>{escape(summary_text)}</p>"
@@ -388,33 +419,125 @@ def _portfolio_buy_evidence_block_html(title: str, status: str, score: object, s
     )
 
 
-def _portfolio_buy_conclusion(context) -> tuple[str, str]:
+def _portfolio_buy_conclusion(context, current: dict | None = None) -> tuple[str, str]:
+    summary = _portfolio_buy_page_summary(context, current)
+    return summary["conclusion"], summary["tone"]
+
+
+def _portfolio_buy_page_summary(context, current: dict | None = None) -> dict[str, object]:
     if context is None:
-        return "仅观察 / 数据不足", "data"
+        return {
+            "conclusion": "关键数据不足",
+            "tone": "data",
+            "data_state": "critical",
+            "data_label": "关键数据不足",
+            "action_text": "仅记录，不建议新增；先补齐当前价、观察区间、确认位和失效位。",
+            "held": False,
+            "volume_weak": False,
+            "setup_weak": True,
+            "confirm_text": "确认位",
+        }
     fusion = getattr(context, "action_fusion", None)
     hint = getattr(context, "structure_hint", None)
     action = str(getattr(fusion, "action_code", "") or "").upper()
     role = str(getattr(fusion, "portfolio_role", "") or "").lower()
     structure_status = str(getattr(hint, "status", "") or "").upper()
-    if action == "DATA_INSUFFICIENT" or structure_status in {"STRUCTURE_MISSING", "STRUCTURE_STALE"}:
-        return "仅观察 / 数据不足", "data"
-    if role == "watch_only":
-        return "仅观察 / 等确认", "watch"
-    if action in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK", "ADD_ON_BREAKOUT"}:
-        return "可买 / 小仓执行", "buy"
+    levels = dict(getattr(fusion, "watch_levels", {}) or {})
+    price = _number(getattr(context, "current_price", None))
+    confirm = _number(levels.get("confirm_line"))
+    invalid = _number(levels.get("invalid_line"))
+    observation_low = _number(levels.get("observation_low"))
+    observation_high = _number(levels.get("observation_high"))
+    has_core_prices = all(value is not None for value in (price, confirm, invalid, observation_low, observation_high))
+    critical_missing = not has_core_prices
+    data_state = "ready"
+    data_label = "数据完整"
+    if critical_missing:
+        data_state = "critical"
+        data_label = "关键数据不足"
+    elif structure_status in {"STRUCTURE_MISSING", "STRUCTURE_STALE", "STRUCTURE_PARTIAL"} or action == "DATA_INSUFFICIENT":
+        data_state = "auxiliary"
+        data_label = "辅助数据待补"
+
+    held = _held_quantity(current) > 0
+    report = getattr(context, "radar_report", {}) or {}
+    buy_zone_context = report.get("buy_zone_context") if isinstance(report, dict) else {}
+    setup_score = _number((buy_zone_context or {}).get("setup_score") or (buy_zone_context or {}).get("setupScore"))
+    volume_score = _number(
+        (buy_zone_context or {}).get("volume_acceptance_score")
+        or (buy_zone_context or {}).get("volumeAcceptanceScore")
+        or getattr(getattr(context, "volume_price_acceptance", None), "volume_price_score", None)
+    )
+    volume_weak = bool(volume_score is not None and volume_score < 50)
+    setup_weak = bool(setup_score is not None and setup_score < 70)
+    confirm_text = _money_text(confirm) if confirm is not None else "确认位"
+
+    if critical_missing:
+        conclusion = "关键数据不足"
+        tone = "data"
+        action_text = "仅记录，不建议新增；先补齐当前价、观察区间、确认位和失效位。"
+    elif action in {"BLOCK_CHASE", "REDUCE_RISK", "BREAKDOWN_REVIEW", "EVENT_REVIEW"}:
+        conclusion = "暂不买 / 风险复核"
+        tone = "risk"
+        action_text = "风险较高，仅作提醒；如继续记录，请在交易意图中说明原因。"
+    elif volume_weak:
+        conclusion = "持有观察 / 承接待确认" if held else "买区附近 / 承接待确认"
+        tone = "wait"
+        action_text = "量价未确认，暂不新增；等待放量收复或低点抬高。"
+    elif held and setup_weak:
+        conclusion = "持有观察 / 暂不加仓"
+        tone = "watch"
+        action_text = "已有持仓，暂不新增；等待量价承接改善或重新站上确认位后再评估。"
+    elif role == "watch_only":
+        conclusion = "持有观察 / 等待确认" if held else "仅观察 / 等待确认"
+        tone = "watch"
+        action_text = "股票定位偏观察，等待承接和确认位进一步清晰。"
+    elif action in {"ALLOW_SMALL_BUY", "ADD_ON_PULLBACK", "ADD_ON_BREAKOUT"}:
+        conclusion = "可加仓 / 小仓复核" if held else "可试仓 / 小仓复核"
+        tone = "buy"
+        action_text = "买点质量可观察，但仍需按交易意图记录和仓位计划执行。"
     if action in {"BLOCK_CHASE", "REDUCE_RISK", "BREAKDOWN_REVIEW", "EVENT_REVIEW"}:
-        return "暂不买 / 风险复核", "risk"
-    if action in {"HOLD_NO_ADD"}:
-        return "等待 / 当前不新增", "wait"
-    return "等待确认", "wait"
+        pass
+    elif action in {"HOLD_NO_ADD"} and not (volume_weak or setup_weak):
+        conclusion = "持有观察 / 暂不加仓" if held else "等待确认 / 暂不新增"
+        tone = "wait"
+        action_text = "当前不建议新增，等待更明确的承接或确认位。"
+    elif action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"} and not (volume_weak or setup_weak):
+        conclusion = "等待确认 / 暂不新增"
+        tone = "wait"
+        action_text = "等待量价确认或回落到更有赔率的位置。"
+    else:
+        conclusion = locals().get("conclusion", "等待确认 / 暂不新增")
+        tone = locals().get("tone", "wait")
+        action_text = locals().get("action_text", "等待量价确认后再评估。")
+
+    if data_state == "auxiliary" and not critical_missing:
+        if held and conclusion in {"仅观察 / 等待确认", "等待确认 / 暂不新增"}:
+            conclusion = "持有观察 / 承接待确认"
+        action_text = (
+            "已有持仓，暂不新增；等待量价承接改善或重新站上确认位后再评估。"
+            if held and tone != "buy"
+            else action_text
+        )
+    return {
+        "conclusion": _localized_text(conclusion),
+        "tone": tone,
+        "data_state": data_state,
+        "data_label": data_label,
+        "action_text": _localized_text(action_text),
+        "held": held,
+        "volume_weak": volume_weak,
+        "setup_weak": setup_weak,
+        "confirm_text": confirm_text,
+    }
 
 
 def _portfolio_buy_cards_html(cards: list[tuple[str, str, str]], *, class_name: str) -> str:
     html = "".join(
         '<div class="portfolio-buy-small-card">'
-        f"<span>{escape(title)}</span>"
-        f"<strong>{escape(str(value or BLANK_TEXT))}</strong>"
-        f"<p>{escape(str(note or BLANK_TEXT))}</p>"
+        f"<span>{escape(_localized_text(title))}</span>"
+        f"<strong>{escape(_localized_text(value or '待补'))}</strong>"
+        f"<p>{escape(_localized_text(note or '待补'))}</p>"
         "</div>"
         for title, value, note in cards
     )
@@ -425,7 +548,7 @@ def _portfolio_buy_mini_grid_html(items: list[tuple[str, object]], *, class_name
     html = "".join(
         '<div class="portfolio-buy-mini-item">'
         f"<span>{escape(str(label))}</span>"
-        f"<b>{escape(str(value or BLANK_TEXT))}</b>"
+        f"<b>{escape(_localized_text(value or '待补'))}</b>"
         "</div>"
         for label, value in items
     )
@@ -433,22 +556,28 @@ def _portfolio_buy_mini_grid_html(items: list[tuple[str, object]], *, class_name
 
 
 def _range_text(low: object, high: object) -> str:
-    low_text = _money_text(low)
-    high_text = _money_text(high)
-    if low_text != BLANK_TEXT and high_text != BLANK_TEXT:
+    low_text = _pending_money_text(low)
+    high_text = _pending_money_text(high)
+    if not _is_pending_text(low_text) and not _is_pending_text(high_text):
         return f"{low_text} - {high_text}"
-    return low_text if low_text != BLANK_TEXT else high_text
+    if not _is_pending_text(low_text):
+        return low_text
+    if not _is_pending_text(high_text):
+        return high_text
+    return "待补"
 
 
 def _score_text(score: object) -> str:
     value = _number(score)
     if value is None:
-        return "分数暂缺"
-    return f"{value:.0f} 分"
+        return "待补"
+    if value == int(value):
+        return f"{int(value)} 分"
+    return f"{value:.1f} 分"
 
 
 def _compact_sentence(text: object, *, max_len: int = 72) -> str:
-    clean = " ".join(str(text or "").replace("\n", " ").split())
+    clean = " ".join(_localized_text(text).replace("\n", " ").split())
     if not clean:
         return ""
     for sep in ("。", "；", ";"):
@@ -458,6 +587,72 @@ def _compact_sentence(text: object, *, max_len: int = 72) -> str:
     if len(clean) > max_len:
         clean = clean[: max_len - 1].rstrip() + "…"
     return clean
+
+
+def _held_quantity(current: dict | None) -> float:
+    if not isinstance(current, dict):
+        return 0.0
+    return _number(current.get("quantity")) or 0.0
+
+
+def _cn_label(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "待补"
+    labels = {
+        "ai_software_core": "人工智能软件核心",
+        "watch_only": "仅观察",
+        "core": "核心仓",
+        "trading": "交易仓",
+        "satellite": "卫星仓",
+        "relative_strength": "相对强弱",
+        "relative_strength_vs_QQQ": "相对强弱",
+        "relative_strength_vs_SPY": "相对强弱",
+        "volume": "成交量",
+        "decline_reason": "下跌原因",
+        "thesis_status": "投资逻辑状态",
+        "market_context": "大盘环境",
+        "radar": "选股雷达",
+        "setup": "买点结构",
+        "DATA_INSUFFICIENT": "数据不足",
+        "STRUCTURE_MISSING": "关键结构待补",
+        "STRUCTURE_STALE": "结构数据偏旧",
+        "STRUCTURE_PARTIAL": "辅助数据待补",
+        "buy_zone": "买区",
+        "confirmation": "确认位",
+        "stop_loss": "失效位",
+    }
+    return labels.get(raw, raw)
+
+
+def _missing_fields_cn(fields: object) -> list[str]:
+    if not isinstance(fields, (list, tuple, set)):
+        return []
+    result: list[str] = []
+    for field in fields:
+        text = _cn_label(field)
+        if text not in result:
+            result.append(text)
+    return result
+
+
+def _localized_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    replacements = {
+        "主击球区": "技术回踩带",
+        "击球区": "技术回踩带",
+        "override": "人工确认",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    def replace_snake(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return _cn_label(token) if _cn_label(token) != token else "未归类"
+
+    return re.sub(r"\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b", replace_snake, text)
 
 
 def _render_starter_check_card(form_key: str, current: dict) -> None:
@@ -1445,8 +1640,10 @@ def _percent_text(value: object) -> str:
 def _percent_plain(value: object) -> str:
     number = _number(value)
     if number is None:
-        return BLANK_TEXT
-    return f"{number:g}%"
+        return "待补"
+    if number == int(number):
+        return f"{int(number)}%"
+    return f"{number:.1f}%"
 
 
 def _money_text(value: object) -> str:
@@ -1454,6 +1651,17 @@ def _money_text(value: object) -> str:
     if number is None:
         return BLANK_TEXT
     return format_currency(number)
+
+
+def _pending_money_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "待补"
+    return format_currency(number)
+
+
+def _is_pending_text(value: object) -> bool:
+    return str(value or "").strip() in {"", BLANK_TEXT, "待补"}
 
 
 def _price_status_text(value: object) -> str:
