@@ -64,6 +64,7 @@ from data.portfolio_structure_health import (
 )
 from data.refresh_policy import RefreshMode, refresh_symbols_by_mode
 from data.trading_discipline_stats import build_trading_discipline_summary
+from data.watchlist_stars import WatchlistStarStore
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from scoring.total_score import calculate_total_score
@@ -136,6 +137,7 @@ DASHBOARD_COLUMNS = [
 ]
 
 WATCHLIST_COLUMNS = [
+    {"key": "star", "label": "星标", "align": "center"},
     {"key": "symbol", "label": "代码", "align": "left"},
     {"key": "priceMarket", "label": "价格 / 市值"},
     {"key": "qualityRating", "label": "质量", "kind": "badge"},
@@ -208,6 +210,7 @@ DASHBOARD_SCORE_SCHEMA_VERSION = 5
 LANE_FILTER_SESSION_KEY = "dashboard_active_lane_filter"
 RISK_RADAR_FILTER_SESSION_KEY = "dashboard_active_risk_filter"
 LANE_FILTER_LABELS = {
+    "starred": "星标",
     "actionable": "可行动",
     "nearBuyZone": "接近买区",
     "waitOrReview": "待确认",
@@ -241,6 +244,7 @@ def render() -> None:
     _render_dashboard_styles()
     if "dashboard_density" not in st.session_state:
         st.session_state["dashboard_density"] = "紧凑"
+    _handle_star_toggle_query()
     query_refresh_symbol = _consume_refresh_ticker_query()
     force_refresh = bool(st.session_state.pop("dashboard_force_fmp_refresh", False))
     force_refresh_symbol = query_refresh_symbol or st.session_state.pop("dashboard_force_fmp_refresh_symbol", None)
@@ -271,6 +275,7 @@ def render() -> None:
     if table.empty:
         st.warning("还没有加载到仪表盘数据。请检查观察名单或数据连接。")
         return
+    table = _apply_watchlist_star_marks(table)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
     _handle_lane_filter_query()
@@ -2375,6 +2380,7 @@ def _dashboard_filter_strip_html(table: pd.DataFrame) -> str:
 def _dashboard_filter_chips_html(table: pd.DataFrame) -> str:
     summary_groups = _summary_lane_groups(table)
     chips = [_dashboard_filter_chip_html("all", "全部", len(table))]
+    chips.append(_dashboard_filter_chip_html("starred", "星标", _starred_count(table), "blue"))
     chips.extend(
         _dashboard_filter_chip_html(lane_key, title, len(rows), color)
         for lane_key, title, _subtitle, rows, color in summary_groups
@@ -2406,6 +2412,7 @@ def _render_decision_table(table: pd.DataFrame) -> None:
         "</section>",
         unsafe_allow_html=True,
     )
+    st.caption("星标只影响排序和显示，不影响买点评分。买入仍看 Setup、承接和风险收益。")
     st.markdown('<div id="watchlist-table"></div>', unsafe_allow_html=True)
     table = _filtered_table_for_active_lane(table)
     _render_active_lane_filter_status(table)
@@ -2544,6 +2551,17 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
     st.rerun()
 
 
+def _handle_star_toggle_query() -> None:
+    symbol = str(st.query_params.get("toggleStar", "")).strip().upper()
+    if not symbol:
+        return
+    WatchlistStarStore().toggle_star(symbol)
+    st.session_state["dashboard_star_notice"] = f"{symbol} 星标已更新。"
+    if "toggleStar" in st.query_params:
+        st.query_params.pop("toggleStar")
+    st.rerun()
+
+
 def _handle_risk_radar_filter_query() -> None:
     key = str(st.query_params.get("riskFilter", "")).strip()
     if key in RISK_RADAR_FILTER_LABELS:
@@ -2568,6 +2586,9 @@ def _handle_lane_filter_query() -> None:
 
 
 def _render_record_signal_notice() -> None:
+    star_message = st.session_state.pop("dashboard_star_notice", "")
+    if star_message:
+        st.info(star_message)
     message = st.session_state.pop("dashboard_record_signal_notice", "")
     if message == "已记录系统信号。":
         st.success(message)
@@ -3407,10 +3428,34 @@ def _filtered_table_for_active_lane(table: pd.DataFrame) -> pd.DataFrame:
     lane_key = str(st.session_state.get(LANE_FILTER_SESSION_KEY) or "")
     if lane_key not in LANE_FILTER_LABELS or "symbol" not in table.columns:
         return table
+    if lane_key == "starred":
+        if "isStarred" not in table.columns:
+            return table.iloc[0:0].copy()
+        return table[table["isStarred"].astype(bool)].copy()
     symbols = {str(row.get("symbol") or "").upper() for row in _lane_filter_rows(table, lane_key)}
     if not symbols:
         return table.iloc[0:0].copy()
     return table[table["symbol"].astype(str).str.upper().isin(symbols)].copy()
+
+
+def _apply_watchlist_star_marks(table: pd.DataFrame, store: WatchlistStarStore | None = None) -> pd.DataFrame:
+    if table.empty or "symbol" not in table.columns:
+        return table
+    store = store or WatchlistStarStore()
+    symbols = [str(symbol or "").strip().upper() for symbol in table["symbol"].tolist()]
+    marks = store.get_marks(symbols)
+    starred = [bool(marks.get(symbol, {}).get("is_starred")) for symbol in symbols]
+    notes = [str(marks.get(symbol, {}).get("star_note") or "") for symbol in symbols]
+    result = table.copy()
+    result["isStarred"] = starred
+    result["starNote"] = notes
+    return result.sort_values(by="isStarred", ascending=False, kind="mergesort").reset_index(drop=True)
+
+
+def _starred_count(table: pd.DataFrame) -> int:
+    if "isStarred" not in table.columns:
+        return 0
+    return int(table["isStarred"].astype(bool).sum())
 
 
 def _render_active_lane_filter_status(filtered_table: pd.DataFrame) -> None:
@@ -6972,6 +7017,7 @@ def _render_dashboard_styles() -> None:
         .decision-grid {
             display:grid;
             grid-template-columns:
+                minmax(42px, 0.22fr)
                 minmax(124px, 0.82fr)
                 minmax(188px, 1.12fr)
                 minmax(88px, 0.46fr)
@@ -6983,7 +7029,7 @@ def _render_dashboard_styles() -> None:
             align-items:center;
             gap:0.72rem;
             min-height:var(--dash-table-row-height);
-            min-width:1080px;
+            min-width:1130px;
             width:100%;
             padding:0 16px;
             box-sizing:border-box;
@@ -7001,6 +7047,27 @@ def _render_dashboard_styles() -> None:
         }
         .decision-grid > :nth-child(3) {
             padding-left:2px;
+        }
+        .star-cell {
+            justify-content:center;
+            align-items:center;
+        }
+        .dashboard-star-toggle {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            width:30px;
+            height:30px;
+            border-radius:999px;
+            color:#C59A32;
+            background:#FFF7D6;
+            border:1px solid rgba(197, 154, 50, 0.25);
+            font-size:16px;
+            text-decoration:none;
+        }
+        .dashboard-star-toggle:hover {
+            background:#FFEFB0;
+            color:#8A6400;
         }
         .decision-grid-head {
             min-height:30px;
@@ -7297,8 +7364,8 @@ def _render_dashboard_styles() -> None:
                 border-radius:7px;
             }
             .decision-grid {
-                grid-template-columns:112px 172px 88px 172px 90px 148px 92px 92px;
-                min-width:948px;
+                grid-template-columns:42px 112px 172px 88px 172px 90px 148px 92px 92px;
+                min-width:998px;
                 gap:8px;
                 min-height:48px;
                 padding:0 8px;
@@ -7587,6 +7654,7 @@ def _render_dashboard_styles() -> None:
         }
         .decision-grid {
             grid-template-columns:
+                minmax(42px, 0.22fr)
                 minmax(118px, 0.74fr)
                 minmax(190px, 1.2fr)
                 minmax(86px, 0.44fr)
@@ -7596,7 +7664,7 @@ def _render_dashboard_styles() -> None:
                 minmax(88px, 0.42fr)
                 minmax(92px, 0.42fr);
             gap:0.7rem;
-            min-width:1120px;
+            min-width:1170px;
             padding:0 18px;
         }
         .decision-grid-head {

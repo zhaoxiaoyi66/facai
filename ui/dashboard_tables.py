@@ -75,6 +75,17 @@ def _decision_table_cell_html(
             f'<strong>{escape(symbol)}</strong>'
             "</div>"
         )
+    if key == "star":
+        starred = bool(row.get("isStarred"))
+        symbol_param = escape(symbol, quote=True)
+        icon = "⭐" if starred else "☆"
+        title = "取消星标关注" if starred else "设为星标关注"
+        return (
+            '<div class="decision-cell star-cell">'
+            f'<a class="dashboard-star-toggle" href="?page=dashboard&toggleStar={symbol_param}#watchlist-table" '
+            f'target="_self" onclick="event.stopPropagation();" title="{escape(title)}">{escape(icon)}</a>'
+            "</div>"
+        )
     if key == "priceMarket":
         price = _display_table_text(_safe_table_value("price", row.get("price")), fallback="当前价待补")
         market_cap = _display_table_text(_safe_table_value("marketCap", row.get("marketCap")), fallback="市值待补")

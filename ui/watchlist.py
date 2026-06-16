@@ -20,6 +20,7 @@ from data.watchlist_store import normalize_watchlist_symbol
 from data.watchlist_store import remove_watchlist_symbol
 from data.watchlist_store import save_watchlist_entries
 from data.watchlist_store import update_watchlist_symbol
+from data.watchlist_stars import WatchlistStarStore
 from settings import DEFAULT_TICKERS, WATCHLIST_PATH
 from ui.theme import render_page_header, render_section_title
 
@@ -45,9 +46,10 @@ def render() -> None:
 
     entries = load_watchlist_entries(WATCHLIST_PATH, default_symbols=DEFAULT_TICKERS)
     active_positions = _active_positions_by_symbol()
+    star_store = WatchlistStarStore()
 
     _render_quick_add(active_positions)
-    _render_pool(entries, active_positions)
+    _render_pool(entries, active_positions, star_store)
     _render_edit_panel()
     _render_advanced_management()
 
@@ -98,15 +100,24 @@ def _render_quick_add(active_positions: dict[str, dict]) -> None:
     st.rerun()
 
 
-def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None:
+def _render_pool(entries: list[dict], active_positions: dict[str, dict], star_store: WatchlistStarStore | None = None) -> None:
     render_section_title("当前观察池")
     if not entries:
         st.info("观察池为空。先用快速添加加入研究标的。")
         return
 
-    widths = [0.75, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
+    star_store = star_store or WatchlistStarStore()
+    star_marks = star_store.get_marks([entry.get("ticker") for entry in entries])
+    filter_choice = _render_star_filter_controls(star_marks)
+    entries = _sort_watchlist_entries_by_star(entries, star_marks)
+    if filter_choice == "starred":
+        entries = [entry for entry in entries if _entry_is_starred(entry, star_marks)]
+
+    st.caption("星标只影响排序和显示，不影响买点评分。买入仍看 Setup、承接和风险收益。")
+
+    widths = [0.42, 0.75, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
     header = st.columns(widths)
-    labels = ["Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
+    labels = ["星标", "Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
     for col, label in zip(header, labels):
         col.markdown(f'<span class="watchlist-th">{escape(label)}</span>', unsafe_allow_html=True)
 
@@ -114,21 +125,25 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None
         ticker = entry["ticker"]
         radar = _safe_radar_summary(ticker)
         held = ticker in active_positions
+        is_starred = _entry_is_starred(entry, star_marks)
         row = st.columns(widths)
-        row[0].markdown(f'<strong class="watchlist-ticker">{escape(ticker)}</strong>', unsafe_allow_html=True)
-        row[1].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
-        row[2].caption(str(entry.get("theme") or "未设置"))
-        row[3].caption("当前已持仓" if held else "未持仓")
-        row[4].markdown(_decision_badge_html(radar, held=held), unsafe_allow_html=True)
-        row[5].markdown(_entry_display_html(radar), unsafe_allow_html=True)
-        row[6].caption(_data_status_label(radar.get("data_status")))
-        row[7].caption(_date_text(entry.get("added_at")))
-        row[8].caption(str(entry.get("note") or entry.get("added_reason") or ""))
-        row[9].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
-        if row[10].button("编辑", key=f"watchlist-edit:{ticker}"):
+        if row[0].button("⭐" if is_starred else "☆", key=f"watchlist-star:{ticker}", help="切换星标关注"):
+            star_store.toggle_star(ticker)
+            st.rerun()
+        row[1].markdown(f'<strong class="watchlist-ticker">{escape(ticker)}</strong>', unsafe_allow_html=True)
+        row[2].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
+        row[3].caption(str(entry.get("theme") or "未设置"))
+        row[4].caption("当前已持仓" if held else "未持仓")
+        row[5].markdown(_decision_badge_html(radar, held=held), unsafe_allow_html=True)
+        row[6].markdown(_entry_display_html(radar), unsafe_allow_html=True)
+        row[7].caption(_data_status_label(radar.get("data_status")))
+        row[8].caption(_date_text(entry.get("added_at")))
+        row[9].caption(str(entry.get("note") or entry.get("added_reason") or ""))
+        row[10].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
+        if row[11].button("编辑", key=f"watchlist-edit:{ticker}"):
             st.session_state["watchlist_edit_symbol"] = ticker
             st.rerun()
-        if row[11].button("移除", key=f"watchlist-remove:{ticker}"):
+        if row[12].button("移除", key=f"watchlist-remove:{ticker}"):
             result = remove_watchlist_symbol(ticker, path=WATCHLIST_PATH)
             if result["action"] == "removed":
                 if held:
@@ -137,6 +152,30 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict]) -> None
                     st.success(f"{ticker} 已从观察池移除。")
                 st.cache_data.clear()
                 st.rerun()
+
+
+def _render_star_filter_controls(star_marks: dict[str, dict]) -> str:
+    current = str(st.session_state.get("watchlist_star_filter") or "all")
+    left, middle, _spacer = st.columns([0.16, 0.16, 0.68], gap="small")
+    if left.button("全部", key="watchlist-filter-all", width="stretch", type="primary" if current == "all" else "secondary"):
+        st.session_state["watchlist_star_filter"] = "all"
+        st.rerun()
+    starred_count = sum(1 for mark in star_marks.values() if mark.get("is_starred"))
+    if middle.button(f"星标 {starred_count}", key="watchlist-filter-starred", width="stretch", type="primary" if current == "starred" else "secondary"):
+        st.session_state["watchlist_star_filter"] = "starred"
+        st.rerun()
+    return current
+
+
+def _sort_watchlist_entries_by_star(entries: list[dict], star_marks: dict[str, dict]) -> list[dict]:
+    indexed = list(enumerate(entries))
+    indexed.sort(key=lambda item: (not _entry_is_starred(item[1], star_marks), item[0]))
+    return [entry for _index, entry in indexed]
+
+
+def _entry_is_starred(entry: dict, star_marks: dict[str, dict]) -> bool:
+    symbol = str(entry.get("ticker") or entry.get("symbol") or "").strip().upper()
+    return bool(star_marks.get(symbol, {}).get("is_starred"))
 
 
 def _render_edit_panel() -> None:

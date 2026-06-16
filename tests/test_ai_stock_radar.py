@@ -791,6 +791,18 @@ def test_watchlist_held_missing_data_shows_pause_add_instead_of_avoid() -> None:
     assert "回避" not in html
 
 
+def test_watchlist_star_sort_keeps_original_order_within_groups() -> None:
+    entries = [{"ticker": "NOW"}, {"ticker": "NVDA"}, {"ticker": "ADBE"}, {"ticker": "CRM"}]
+    marks = {
+        "NVDA": {"is_starred": True},
+        "CRM": {"is_starred": True},
+    }
+
+    sorted_entries = watchlist_ui._sort_watchlist_entries_by_star(entries, marks)
+
+    assert [entry["ticker"] for entry in sorted_entries] == ["NVDA", "CRM", "NOW", "ADBE"]
+
+
 def test_list_row_shows_buy_point_gap_without_avoid_semantics() -> None:
     row = {
         "ticker": "MSFT",

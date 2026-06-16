@@ -265,6 +265,13 @@ def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
     assert "承接状态" in html
 
 
+def test_drawer_shows_star_badge_without_changing_primary_decision() -> None:
+    source = inspect.getsource(dashboard_drawer.drawer_html)
+
+    assert "⭐ 星标关注" in source
+    assert "isStarred" in source
+
+
 def test_drawer_actions_include_internal_report_navigation() -> None:
     actions = dashboard_drawer.build_drawer_actions("nvda")
     open_report = actions[0]

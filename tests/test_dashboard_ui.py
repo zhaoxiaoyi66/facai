@@ -4,7 +4,9 @@ import inspect
 
 import pandas as pd
 
+from data.watchlist_stars import WatchlistStarStore
 from ui import dashboard
+from ui import dashboard_tables
 
 
 def test_dashboard_loaders_use_market_context_for_price_history() -> None:
@@ -88,3 +90,34 @@ def test_sync_refreshed_symbols_replaces_existing_rows_without_adding_hidden_pos
     assert table["symbol"].tolist() == ["NOW", "MSFT"]
     assert table.loc[table["symbol"] == "NOW", "price"].iloc[0] == "new-NOW"
     assert table.loc[table["symbol"] == "MSFT", "price"].iloc[0] == "old"
+
+
+def test_dashboard_star_marks_sort_before_unstarred_without_changing_row_fields(tmp_path) -> None:
+    store = WatchlistStarStore(tmp_path / "cache.sqlite")
+    store.set_star("NVDA", True)
+    table = pd.DataFrame(
+        [
+            {"symbol": "NOW", "setup_score": 64, "action": "等待确认"},
+            {"symbol": "NVDA", "setup_score": 64, "action": "等待确认"},
+        ]
+    )
+
+    result = dashboard._apply_watchlist_star_marks(table, store)
+
+    assert result["symbol"].tolist() == ["NVDA", "NOW"]
+    assert bool(result.loc[result["symbol"] == "NVDA", "isStarred"].iloc[0]) is True
+    assert bool(result.loc[result["symbol"] == "NOW", "isStarred"].iloc[0]) is False
+    assert result.loc[result["symbol"] == "NVDA", "setup_score"].iloc[0] == 64
+    assert "manual_rank" not in result.columns
+    assert "conviction_score" not in result.columns
+
+
+def test_dashboard_star_cell_uses_star_only_and_no_pin_language() -> None:
+    row = pd.Series({"symbol": "NVDA", "isStarred": True})
+
+    html = dashboard_tables._decision_table_cell_html(row, {"key": "star"}, "NVDA")
+
+    assert "⭐" in html
+    assert "toggleStar=NVDA" in html
+    assert "置顶" not in html
+    assert "pinned" not in html

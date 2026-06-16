@@ -22,6 +22,7 @@ from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.buy_execution_context import build_buy_execution_advisory_context
 from data.trading_discipline import evaluate_trading_discipline, load_trading_discipline_config
+from data.watchlist_stars import WatchlistStarStore
 from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
@@ -246,8 +247,10 @@ def _portfolio_buy_basic_info_html(ticker: str, current: dict, tier: str) -> str
     shares = _number(current.get("quantity"))
     avg_cost = _number(current.get("average_cost") or current.get("averageCost"))
     tier_text = format_position_tier_label(tier or current.get("position_tier") or "") if (tier or current.get("position_tier")) else "未设置"
+    is_starred = WatchlistStarStore().is_starred(symbol) if symbol != "未选择" else False
     items = [
         ("交易对象", symbol),
+        ("星标", "⭐ 星标关注" if is_starred else "未星标"),
         ("持仓等级", tier_text),
         ("当前持仓", _share_count_text(shares)),
         ("持仓成本", _money_text(avg_cost)),

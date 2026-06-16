@@ -330,6 +330,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     entry_display = _entry_rating_chip_text(entry_label, entry_grade)
     primary_decision = build_drawer_primary_decision(row)
     badges = [
+        drawer_deps.badge_span_html("⭐ 星标关注", "yellow") if bool(row.get("isStarred")) else "",
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
         drawer_deps.badge_span_html(primary_decision["badge_zone"], _buy_point_label_tone(primary_decision["badge_zone"])),
         drawer_deps.badge_span_html(primary_decision.get("acceptance_state_text"), _acceptance_badge_tone(primary_decision.get("acceptance_state_text"))),
@@ -367,7 +368,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         '<span>结论源：统一买区</span>'
         f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
         '</div>'
-        f'<div class="drawer-badges">{"".join(badges)}</div>'
+        f'<div class="drawer-badges">{"".join(badge for badge in badges if badge)}</div>'
         f'{_drawer_actions_html(symbol)}'
         f'{_drawer_quick_decision_html(row, primary_decision)}'
         f'{full_basis}'
