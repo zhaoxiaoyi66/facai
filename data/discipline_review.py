@@ -15,7 +15,7 @@ from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 
 
 DEFAULT_PRINCIPLES = (
-    "少而硬：做高信念集中的少量股票。\n"
+    "少而硬：做高信念、能长期拿住的少数股票。\n"
     "不基金化分散。\n"
     "不为参与感买小仓。\n"
     "好公司很多，但适合我持有的好公司很少。\n"
@@ -62,6 +62,8 @@ MISTAKE_TAG_OPTIONS = [
 ]
 
 MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
+
+PERIODIC_RETURN_TYPES = ["周复盘", "月复盘"]
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,30 @@ class DisciplineReviewStore:
                 """
             )
             self._ensure_mistake_review_columns(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS periodic_return_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period_type TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    starting_equity REAL,
+                    ending_equity REAL,
+                    deposit_amount REAL,
+                    withdrawal_amount REAL,
+                    profit_amount REAL,
+                    return_rate REAL,
+                    biggest_contributor TEXT,
+                    biggest_drag TEXT,
+                    what_went_well TEXT,
+                    what_went_wrong TEXT,
+                    next_period_rule TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _ensure_mistake_review_columns(self, conn: sqlite3.Connection) -> None:
         existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(mistake_reviews)").fetchall()}
@@ -405,6 +431,156 @@ class DisciplineReviewStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_mistake_row_to_dict(columns, row) for row in rows]
 
+    def save_periodic_return_review(self, values: dict[str, Any], review_id: int | None = None) -> dict[str, Any]:
+        period_type = _clean_choice(values.get("period_type"), PERIODIC_RETURN_TYPES, "周复盘")
+        start_date = _parse_date(values.get("start_date")) or date.today()
+        end_date = _parse_date(values.get("end_date")) or start_date
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+        starting_equity = _optional_nonnegative_number(values.get("starting_equity"))
+        ending_equity = _optional_nonnegative_number(values.get("ending_equity"))
+        deposit_amount = _number(values.get("deposit_amount"), 0.0)
+        withdrawal_amount = _number(values.get("withdrawal_amount"), 0.0)
+        profit_amount, return_rate = _calculate_period_return(
+            starting_equity=starting_equity,
+            ending_equity=ending_equity,
+            deposit_amount=deposit_amount,
+            withdrawal_amount=withdrawal_amount,
+        )
+        now = _now()
+        fields = {
+            "period_type": period_type,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "starting_equity": starting_equity,
+            "ending_equity": ending_equity,
+            "deposit_amount": deposit_amount,
+            "withdrawal_amount": withdrawal_amount,
+            "profit_amount": profit_amount,
+            "return_rate": return_rate,
+            "biggest_contributor": _clean_text(values.get("biggest_contributor")),
+            "biggest_drag": _clean_text(values.get("biggest_drag")),
+            "what_went_well": _clean_text(values.get("what_went_well")),
+            "what_went_wrong": _clean_text(values.get("what_went_wrong")),
+            "next_period_rule": _clean_text(values.get("next_period_rule")),
+            "notes": _clean_text(values.get("notes")),
+            "updated_at": now,
+        }
+        with self.connect() as conn:
+            if review_id is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO periodic_return_reviews (
+                        period_type,
+                        start_date,
+                        end_date,
+                        starting_equity,
+                        ending_equity,
+                        deposit_amount,
+                        withdrawal_amount,
+                        profit_amount,
+                        return_rate,
+                        biggest_contributor,
+                        biggest_drag,
+                        what_went_well,
+                        what_went_wrong,
+                        next_period_rule,
+                        notes,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fields["period_type"],
+                        fields["start_date"],
+                        fields["end_date"],
+                        fields["starting_equity"],
+                        fields["ending_equity"],
+                        fields["deposit_amount"],
+                        fields["withdrawal_amount"],
+                        fields["profit_amount"],
+                        fields["return_rate"],
+                        fields["biggest_contributor"],
+                        fields["biggest_drag"],
+                        fields["what_went_well"],
+                        fields["what_went_wrong"],
+                        fields["next_period_rule"],
+                        fields["notes"],
+                        now,
+                        fields["updated_at"],
+                    ),
+                )
+                saved_id = int(cursor.lastrowid)
+            else:
+                saved_id = int(review_id)
+                conn.execute(
+                    """
+                    UPDATE periodic_return_reviews
+                    SET period_type = ?,
+                        start_date = ?,
+                        end_date = ?,
+                        starting_equity = ?,
+                        ending_equity = ?,
+                        deposit_amount = ?,
+                        withdrawal_amount = ?,
+                        profit_amount = ?,
+                        return_rate = ?,
+                        biggest_contributor = ?,
+                        biggest_drag = ?,
+                        what_went_well = ?,
+                        what_went_wrong = ?,
+                        next_period_rule = ?,
+                        notes = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        fields["period_type"],
+                        fields["start_date"],
+                        fields["end_date"],
+                        fields["starting_equity"],
+                        fields["ending_equity"],
+                        fields["deposit_amount"],
+                        fields["withdrawal_amount"],
+                        fields["profit_amount"],
+                        fields["return_rate"],
+                        fields["biggest_contributor"],
+                        fields["biggest_drag"],
+                        fields["what_went_well"],
+                        fields["what_went_wrong"],
+                        fields["next_period_rule"],
+                        fields["notes"],
+                        fields["updated_at"],
+                        saved_id,
+                    ),
+                )
+        return self.get_periodic_return_review(saved_id) or {"id": saved_id, **fields}
+
+    def get_periodic_return_review(self, review_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT * FROM periodic_return_reviews WHERE id = ?", (int(review_id),))
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_dict(columns, row) if row else None
+
+    def list_periodic_return_reviews(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM periodic_return_reviews
+                ORDER BY end_date DESC, start_date DESC, id DESC
+                """
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def delete_periodic_return_review(self, review_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM periodic_return_reviews WHERE id = ?", (int(review_id),))
+
 
 def build_discipline_review_stats(
     entries: list[dict[str, Any]],
@@ -485,6 +661,43 @@ def build_mistake_review_summary(
     }
 
 
+def build_periodic_return_review_summary(
+    rows: list[dict[str, Any]],
+    *,
+    current_date: date | str | None = None,
+) -> dict[str, Any]:
+    current = _parse_date(current_date) or date.today()
+    week_start = current - timedelta(days=current.weekday())
+    week_end = week_start + timedelta(days=6)
+    month_start = current.replace(day=1)
+    if current.month == 12:
+        next_month_start = current.replace(year=current.year + 1, month=1, day=1)
+    else:
+        next_month_start = current.replace(month=current.month + 1, day=1)
+    month_end = next_month_start - timedelta(days=1)
+    weekly_rows = _sorted_period_rows(rows, "周复盘")
+    monthly_rows = _sorted_period_rows(rows, "月复盘")
+    current_week_row = _latest_overlapping_period(weekly_rows, week_start, week_end)
+    current_month_row = _latest_overlapping_period(monthly_rows, month_start, month_end)
+    recent_4_week_rows = weekly_rows[:4]
+    recent_3_month_rows = monthly_rows[:3]
+    return {
+        "weekly_count": len(weekly_rows),
+        "monthly_count": len(monthly_rows),
+        "has_current_week_review": current_week_row is not None,
+        "has_current_month_review": current_month_row is not None,
+        "current_week_profit": _row_profit(current_week_row),
+        "current_week_return": _row_return_rate(current_week_row),
+        "current_month_profit": _row_profit(current_month_row),
+        "current_month_return": _row_return_rate(current_month_row),
+        "recent_4_week_profit": _sum_profit(recent_4_week_rows),
+        "recent_4_week_max_loss": _max_loss(recent_4_week_rows),
+        "recent_3_month_profit": _sum_profit(recent_3_month_rows),
+        "max_weekly_loss": _max_loss(weekly_rows),
+        "max_monthly_loss": _max_loss(monthly_rows),
+    }
+
+
 def build_dashboard_discipline_snapshot(
     path: Path = CACHE_PATH,
     *,
@@ -506,10 +719,15 @@ def build_dashboard_discipline_snapshot(
         store.get_settings(),
         current_date=current_date,
     )
+    periodic_summary = build_periodic_return_review_summary(
+        store.list_periodic_return_reviews(),
+        current_date=current_date,
+    )
     return {
         "principle_first_line": principles.splitlines()[0] if principles else "",
         "portfolio": summary,
         "trade_intent": intent_stats["thirty_days"],
+        "periodic_returns": periodic_summary,
     }
 
 
@@ -639,6 +857,72 @@ def _optional_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _optional_nonnegative_number(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _calculate_period_return(
+    *,
+    starting_equity: float | None,
+    ending_equity: float | None,
+    deposit_amount: float,
+    withdrawal_amount: float,
+) -> tuple[float | None, float | None]:
+    if starting_equity is None or ending_equity is None:
+        return None, None
+    profit = ending_equity - starting_equity - deposit_amount + withdrawal_amount
+    if starting_equity <= 0:
+        return round(profit, 2), None
+    return round(profit, 2), round(profit / starting_equity, 6)
+
+
+def _sorted_period_rows(rows: list[dict[str, Any]], period_type: str) -> list[dict[str, Any]]:
+    filtered = [row for row in rows if str(row.get("period_type") or "") == period_type]
+    return sorted(filtered, key=lambda row: (str(row.get("end_date") or ""), str(row.get("start_date") or ""), int(row.get("id") or 0)), reverse=True)
+
+
+def _latest_overlapping_period(rows: list[dict[str, Any]], start: date, end: date) -> dict[str, Any] | None:
+    for row in rows:
+        row_start = _parse_date(row.get("start_date"))
+        row_end = _parse_date(row.get("end_date"))
+        if row_start is None or row_end is None:
+            continue
+        if row_start <= end and row_end >= start:
+            return row
+    return None
+
+
+def _row_profit(row: dict[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    value = row.get("profit_amount")
+    return float(value) if value is not None else None
+
+
+def _row_return_rate(row: dict[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    value = row.get("return_rate")
+    return float(value) if value is not None else None
+
+
+def _sum_profit(rows: list[dict[str, Any]]) -> float | None:
+    values = [_row_profit(row) for row in rows]
+    clean = [value for value in values if value is not None]
+    return round(sum(clean), 2) if clean else None
+
+
+def _max_loss(rows: list[dict[str, Any]]) -> float | None:
+    losses = [value for value in (_row_profit(row) for row in rows) if value is not None and value < 0]
+    return round(min(losses), 2) if losses else None
 
 
 def _plain_number(value: float) -> str:

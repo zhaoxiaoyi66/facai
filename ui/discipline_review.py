@@ -11,8 +11,10 @@ from data.decision_log import TradeJournalStore
 from data.discipline_review import (
     MISTAKE_REVIEW_STATUSES,
     MISTAKE_TAG_OPTIONS,
+    PERIODIC_RETURN_TYPES,
     DisciplineReviewStore,
     build_mistake_review_summary,
+    build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
 )
 from data.portfolio import PortfolioPositionStore
@@ -38,6 +40,7 @@ def render(path: Path = CACHE_PATH) -> None:
 
     _render_principles_card(discipline_store)
     _render_mistake_reviews(discipline_store)
+    _render_periodic_return_reviews(discipline_store)
     with st.expander("组合纪律体检", expanded=False):
         _render_portfolio_discipline(discipline_store, positions, entries)
     _render_discipline_stats(discipline_store, entries)
@@ -45,6 +48,7 @@ def render(path: Path = CACHE_PATH) -> None:
 
 def _render_principles_card(store: DisciplineReviewStore) -> None:
     render_section_title("我的投资原则", "个人纪律备忘，不参与 Setup 评分，也不会阻止交易。")
+    st.markdown('<div class="discipline-principle-note">个人纪律备忘，不参与评分，也不影响交易。</div>', unsafe_allow_html=True)
     current = store.get_principles()
     with st.form("discipline-principles-form"):
         text = st.text_area("原则文本", value=current, height=100)
@@ -174,6 +178,117 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
             st.markdown(_mistake_detail_html(detail), unsafe_allow_html=True)
 
 
+def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
+    render_section_title(
+        "周期收益复盘",
+        "每周末或每月末记录一次账户表现，把收益、错误和下期规则沉淀下来。",
+    )
+    rows = store.list_periodic_return_reviews()
+    summary = build_periodic_return_review_summary(rows)
+    st.markdown(_periodic_summary_html(summary), unsafe_allow_html=True)
+
+    editing_id = st.session_state.get("periodic-return-edit-id")
+    editing_row = store.get_periodic_return_review(int(editing_id)) if editing_id else None
+    with st.form("periodic-return-review-form", clear_on_submit=not bool(editing_row)):
+        st.markdown("#### 收益数据")
+        date_cols = st.columns([1, 1, 1])
+        period_type = date_cols[0].selectbox(
+            "周期类型",
+            PERIODIC_RETURN_TYPES,
+            index=_option_index(PERIODIC_RETURN_TYPES, editing_row.get("period_type") if editing_row else None),
+        )
+        start_date = date_cols[1].date_input("开始日期", value=_date_value(editing_row.get("start_date") if editing_row else None, date.today()))
+        end_date = date_cols[2].date_input("结束日期", value=_date_value(editing_row.get("end_date") if editing_row else None, date.today()))
+        equity_cols = st.columns(4)
+        starting_equity = equity_cols[0].number_input(
+            "期初净资产",
+            min_value=0.0,
+            value=_float_value(editing_row.get("starting_equity") if editing_row else None),
+            step=1000.0,
+        )
+        ending_equity = equity_cols[1].number_input(
+            "期末净资产",
+            min_value=0.0,
+            value=_float_value(editing_row.get("ending_equity") if editing_row else None),
+            step=1000.0,
+        )
+        deposit_amount = equity_cols[2].number_input(
+            "本期入金",
+            min_value=0.0,
+            value=_float_value(editing_row.get("deposit_amount") if editing_row else None),
+            step=1000.0,
+        )
+        withdrawal_amount = equity_cols[3].number_input(
+            "本期出金",
+            min_value=0.0,
+            value=_float_value(editing_row.get("withdrawal_amount") if editing_row else None),
+            step=1000.0,
+        )
+        preview_profit = ending_equity - starting_equity - deposit_amount + withdrawal_amount
+        preview_return = None if starting_equity <= 0 else preview_profit / starting_equity
+        st.caption(f"本期盈亏：{_profit_text(preview_profit)}；本期收益率：{_return_rate_text(preview_return)}。这是手动复盘口径，不做复杂时间加权收益率。")
+
+        st.markdown("#### 复盘内容")
+        review_cols = st.columns(2)
+        biggest_contributor = review_cols[0].text_area("本期最大贡献", value=str(editing_row.get("biggest_contributor") or "") if editing_row else "", height=72)
+        biggest_drag = review_cols[1].text_area("本期最大拖累", value=str(editing_row.get("biggest_drag") or "") if editing_row else "", height=72)
+        what_went_well = review_cols[0].text_area("本期做对了什么", value=str(editing_row.get("what_went_well") or "") if editing_row else "", height=86)
+        what_went_wrong = review_cols[1].text_area("本期做错了什么", value=str(editing_row.get("what_went_wrong") or "") if editing_row else "", height=86)
+        next_period_rule = st.text_area("下期重点规则", value=str(editing_row.get("next_period_rule") or "") if editing_row else "", height=72)
+        notes = st.text_area("备注，可选", value=str(editing_row.get("notes") or "") if editing_row else "", height=64)
+        submit_label = "保存修改" if editing_row else "保存周期复盘"
+        form_cols = st.columns([1, 1, 4])
+        submitted = form_cols[0].form_submit_button(submit_label, width="stretch")
+        cancel_edit = bool(editing_row) and form_cols[1].form_submit_button("取消编辑", width="stretch")
+    if submitted:
+        store.save_periodic_return_review(
+            {
+                "period_type": period_type,
+                "start_date": start_date,
+                "end_date": end_date,
+                "starting_equity": starting_equity,
+                "ending_equity": ending_equity,
+                "deposit_amount": deposit_amount,
+                "withdrawal_amount": withdrawal_amount,
+                "biggest_contributor": biggest_contributor,
+                "biggest_drag": biggest_drag,
+                "what_went_well": what_went_well,
+                "what_went_wrong": what_went_wrong,
+                "next_period_rule": next_period_rule,
+                "notes": notes,
+            },
+            review_id=int(editing_row["id"]) if editing_row else None,
+        )
+        st.session_state.pop("periodic-return-edit-id", None)
+        st.success("周期复盘已保存。")
+        st.rerun()
+    if cancel_edit:
+        st.session_state.pop("periodic-return-edit-id", None)
+        st.rerun()
+
+    filtered = _filter_periodic_return_reviews(rows)
+    st.markdown(_periodic_table_html(filtered), unsafe_allow_html=True)
+    if filtered:
+        options = [int(row["id"]) for row in filtered]
+        selected_id = st.selectbox("选择周期复盘记录", options, format_func=lambda value: _periodic_option_label(filtered, value))
+        detail = next((row for row in filtered if int(row.get("id") or 0) == int(selected_id)), None)
+        if detail:
+            action_cols = st.columns([1, 1, 1, 5])
+            if action_cols[0].button("查看详情", key=f"periodic-detail-{selected_id}", width="stretch"):
+                st.session_state["periodic-return-detail-id"] = selected_id
+            if action_cols[1].button("编辑", key=f"periodic-edit-{selected_id}", width="stretch"):
+                st.session_state["periodic-return-edit-id"] = selected_id
+                st.rerun()
+            if action_cols[2].button("删除", key=f"periodic-delete-{selected_id}", width="stretch"):
+                store.delete_periodic_return_review(selected_id)
+                st.session_state.pop("periodic-return-edit-id", None)
+                st.session_state.pop("periodic-return-detail-id", None)
+                st.success("周期复盘已删除。")
+                st.rerun()
+            if st.session_state.get("periodic-return-detail-id") == selected_id:
+                st.markdown(_periodic_detail_html(detail), unsafe_allow_html=True)
+
+
 def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cols = st.columns([1, 1, 1, 1])
     tag = cols[0].selectbox("按错误类型筛选", ["全部", *MISTAKE_TAG_OPTIONS], key="mistake-tag-filter")
@@ -198,6 +313,16 @@ def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) -> None:
     render_section_title("纪律统计", "统计来自交易日志和交易意图记录；不要求手动给交易打标签。")
+    periodic_summary = build_periodic_return_review_summary(store.list_periodic_return_reviews())
+    periodic_cards = [
+        ("周复盘记录数", str(periodic_summary.get("weekly_count") or 0), "手动记录"),
+        ("月复盘记录数", str(periodic_summary.get("monthly_count") or 0), "手动记录"),
+        ("最近4周累计收益", _profit_text(periodic_summary.get("recent_4_week_profit")), "周复盘口径"),
+        ("最近3个月累计收益", _profit_text(periodic_summary.get("recent_3_month_profit")), "月复盘口径"),
+        ("最大单周亏损", _profit_text(periodic_summary.get("max_weekly_loss")), "暂无记录则不显示亏损"),
+        ("最大单月亏损", _profit_text(periodic_summary.get("max_monthly_loss")), "暂无记录则不显示亏损"),
+    ]
+    st.markdown(_card_grid_html(periodic_cards), unsafe_allow_html=True)
     intent_reviews = TradeIntentStore(store.path).list_intents()
     intent_stats = build_trade_intent_review_stats(entries, intent_reviews)
     intent_seven = intent_stats["seven_days"]
@@ -243,6 +368,13 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
 def dashboard_discipline_card_html(snapshot: dict[str, Any]) -> str:
     intent = dict(snapshot.get("trade_intent") or {})
     flag_counts = dict(intent.get("attention_flag_counts") or {})
+    periodic = dict(snapshot.get("periodic_returns") or {})
+    reminders = []
+    if not periodic.get("has_current_week_review"):
+        reminders.append("本周尚未记录收益复盘。")
+    if not periodic.get("has_current_month_review"):
+        reminders.append("本月尚未记录收益复盘。")
+    reminder_items = "".join(f"<li>{escape(item)}</li>" for item in reminders)
     return f"""
     <section class="dashboard-discipline-card">
       <div>
@@ -255,6 +387,7 @@ def dashboard_discipline_card_html(snapshot: dict[str, Any]) -> str:
         <li>怕错过风险：{int(flag_counts.get("怕错过风险") or 0)}</li>
         <li>情绪卖出风险：{int(flag_counts.get("情绪卖出风险") or 0)}</li>
         <li>无回补预案：{int(flag_counts.get("无回补预案") or 0)}</li>
+        {reminder_items}
       </ul>
     </section>
     """
@@ -343,6 +476,85 @@ def _mistake_option_label(rows: list[dict[str, Any]], review_id: int) -> str:
     return f"#{review_id} · {row.get('review_date', '')} · {_scene_or_symbol(row)}"
 
 
+def _periodic_summary_html(summary: dict[str, Any]) -> str:
+    cards = [
+        ("本周收益", _profit_with_return(summary.get("current_week_profit"), summary.get("current_week_return")), "周复盘"),
+        ("本月收益", _profit_with_return(summary.get("current_month_profit"), summary.get("current_month_return")), "月复盘"),
+        ("最近4周累计收益", _profit_text(summary.get("recent_4_week_profit")), "按最近4条周复盘"),
+        ("最近4周最大亏损", _profit_text(summary.get("recent_4_week_max_loss")), "暂无记录则不显示亏损"),
+    ]
+    return _card_grid_html(cards)
+
+
+def _filter_periodic_return_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    options = ["全部", "只看周复盘", "只看月复盘", "最近4周", "最近3个月", "今年"]
+    selected = st.selectbox("周期收益复盘筛选", options, key="periodic-return-filter")
+    current = date.today()
+    if selected == "全部":
+        return rows
+    if selected == "只看周复盘":
+        return [row for row in rows if row.get("period_type") == "周复盘"]
+    if selected == "只看月复盘":
+        return [row for row in rows if row.get("period_type") == "月复盘"]
+    if selected == "最近4周":
+        start = current - timedelta(days=27)
+        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
+    if selected == "最近3个月":
+        start = current - timedelta(days=92)
+        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
+    if selected == "今年":
+        start = date(current.year, 1, 1)
+        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
+    return rows
+
+
+def _periodic_table_html(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return '<div class="discipline-empty">暂无周期收益复盘记录。</div>'
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(str(row.get('period_type') or ''))}</td>"
+        f"<td>{escape(str(row.get('start_date') or ''))} 至 {escape(str(row.get('end_date') or ''))}</td>"
+        f"<td>{escape(_money(row.get('starting_equity')))}</td>"
+        f"<td>{escape(_money(row.get('ending_equity')))}</td>"
+        f"<td>{escape(_profit_text(row.get('profit_amount')))}</td>"
+        f"<td>{escape(_return_rate_text(row.get('return_rate')))}</td>"
+        f"<td>{escape(_one_line(row.get('biggest_contributor')))}</td>"
+        f"<td>{escape(_one_line(row.get('biggest_drag')))}</td>"
+        "<td>查看 / 编辑 / 删除</td>"
+        "</tr>"
+        for row in rows[:80]
+    )
+    return (
+        '<div class="discipline-table-wrap"><table class="discipline-table">'
+        "<thead><tr><th>周期</th><th>起止日期</th><th>期初净资产</th><th>期末净资产</th><th>本期盈亏</th><th>收益率</th><th>最大贡献</th><th>最大拖累</th><th>操作</th></tr></thead>"
+        f"<tbody>{body}</tbody></table></div>"
+    )
+
+
+def _periodic_detail_html(row: dict[str, Any]) -> str:
+    return f"""
+    <section class="mistake-detail-card">
+      <h4>{escape(str(row.get('period_type') or ''))} · {escape(str(row.get('start_date') or ''))} 至 {escape(str(row.get('end_date') or ''))}</h4>
+      <dl>
+        <dt>本期盈亏</dt><dd>{escape(_profit_text(row.get('profit_amount')))}</dd>
+        <dt>收益率</dt><dd>{escape(_return_rate_text(row.get('return_rate')))}</dd>
+        <dt>本期做对了什么</dt><dd>{escape(str(row.get('what_went_well') or '未记录'))}</dd>
+        <dt>本期做错了什么</dt><dd>{escape(str(row.get('what_went_wrong') or '未记录'))}</dd>
+        <dt>下期重点规则</dt><dd>{escape(str(row.get('next_period_rule') or '未记录'))}</dd>
+        <dt>备注</dt><dd>{escape(str(row.get('notes') or '未记录'))}</dd>
+        <dt>创建时间</dt><dd>{escape(str(row.get('created_at') or ''))}</dd>
+        <dt>更新时间</dt><dd>{escape(str(row.get('updated_at') or ''))}</dd>
+      </dl>
+    </section>
+    """
+
+
+def _periodic_option_label(rows: list[dict[str, Any]], review_id: int) -> str:
+    row = next((item for item in rows if int(item.get("id") or 0) == int(review_id)), {})
+    return f"#{review_id} · {row.get('period_type', '')} · {row.get('start_date', '')} 至 {row.get('end_date', '')}"
+
+
 def _date_in_range(value: object, start: date, end: date) -> bool:
     try:
         parsed = date.fromisoformat(str(value)[:10])
@@ -361,6 +573,54 @@ def _money_value(value: object) -> float:
 def _money(value: object) -> str:
     number = _money_value(value)
     return "-" if number <= 0 else f"{number:,.2f}"
+
+
+def _profit_text(value: object) -> str:
+    if value is None or value == "":
+        return "暂无记录"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "暂无记录"
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:,.2f}"
+
+
+def _return_rate_text(value: object) -> str:
+    if value is None or value == "":
+        return "无法计算"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "无法计算"
+    return f"{number * 100:.2f}%"
+
+
+def _profit_with_return(profit: object, return_rate: object) -> str:
+    if profit is None:
+        return "暂无记录"
+    return f"{_profit_text(profit)} / {_return_rate_text(return_rate)}"
+
+
+def _option_index(options: list[str], value: object) -> int:
+    text = str(value or "")
+    return options.index(text) if text in options else 0
+
+
+def _date_value(value: object, default: date) -> date:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: object) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _scene_or_symbol(row: dict[str, Any]) -> str:
@@ -396,6 +656,10 @@ def _render_styles() -> None:
             box-shadow: 0 14px 28px rgba(15,23,42,.05);
         }
         .discipline-checklist { padding: .8rem 1rem; margin-bottom: .9rem; }
+        .discipline-principle-note {
+            text-align: right; color: #64748b; font-size: .78rem; font-weight: 800;
+            margin: -.35rem 0 .35rem;
+        }
         .discipline-checklist ol { margin: 0; padding: 0; list-style: none; display: grid; gap: .45rem; }
         .discipline-checklist li { display: flex; gap: .55rem; color: #334155; font-size: .9rem; }
         .discipline-checklist li span {

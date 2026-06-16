@@ -9,6 +9,7 @@ from data.discipline_review import (
     DisciplineReviewStore,
     build_discipline_review_stats,
     build_mistake_review_summary,
+    build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
 )
 from ui import discipline_review
@@ -144,6 +145,95 @@ def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None
     assert summary["repeated_mistake_types"] == ["没设止损"]
 
 
+def test_periodic_return_reviews_calculate_profit_and_return_rate() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_periodic_return_review(
+            {
+                "period_type": "周复盘",
+                "start_date": "2026-06-08",
+                "end_date": "2026-06-14",
+                "starting_equity": 170000,
+                "ending_equity": 174000,
+                "deposit_amount": 0,
+                "withdrawal_amount": 0,
+                "biggest_contributor": "NVDA",
+                "biggest_drag": "NOK",
+                "what_went_well": "减少无计划交易。",
+                "what_went_wrong": "有一笔追涨。",
+                "next_period_rule": "等待确认后再加仓。",
+                "notes": "手动复盘。",
+            }
+        )
+
+        assert saved["period_type"] == "周复盘"
+        assert saved["profit_amount"] == 4000
+        assert saved["return_rate"] == 0.023529
+        assert store.list_periodic_return_reviews()[0]["biggest_contributor"] == "NVDA"
+
+
+def test_periodic_return_reviews_support_edit_delete_and_zero_starting_equity() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_periodic_return_review(
+            {
+                "period_type": "月复盘",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-30",
+                "starting_equity": 0,
+                "ending_equity": 1000,
+                "deposit_amount": 0,
+                "withdrawal_amount": 0,
+            }
+        )
+
+        assert saved["profit_amount"] == 1000
+        assert saved["return_rate"] is None
+
+        updated = store.save_periodic_return_review(
+            {
+                "period_type": "月复盘",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-30",
+                "starting_equity": 1000,
+                "ending_equity": 900,
+                "deposit_amount": 0,
+                "withdrawal_amount": 0,
+                "what_went_wrong": "回撤控制不足。",
+            },
+            review_id=int(saved["id"]),
+        )
+
+        assert updated["profit_amount"] == -100
+        assert updated["return_rate"] == -0.1
+        assert updated["what_went_wrong"] == "回撤控制不足。"
+
+        store.delete_periodic_return_review(int(saved["id"]))
+        assert store.list_periodic_return_reviews() == []
+
+
+def test_periodic_return_summary_counts_weekly_monthly_and_dashboard_gaps() -> None:
+    rows = [
+        {"id": 1, "period_type": "周复盘", "start_date": "2026-06-08", "end_date": "2026-06-14", "profit_amount": 4000, "return_rate": 0.0235},
+        {"id": 2, "period_type": "周复盘", "start_date": "2026-06-01", "end_date": "2026-06-07", "profit_amount": -500, "return_rate": -0.003},
+        {"id": 3, "period_type": "月复盘", "start_date": "2026-06-01", "end_date": "2026-06-30", "profit_amount": 3500, "return_rate": 0.02},
+    ]
+
+    summary = build_periodic_return_review_summary(rows, current_date="2026-06-16")
+
+    assert summary["weekly_count"] == 2
+    assert summary["monthly_count"] == 1
+    assert summary["has_current_week_review"] is False
+    assert summary["has_current_month_review"] is True
+    assert summary["recent_4_week_profit"] == 3500
+    assert summary["recent_4_week_max_loss"] == -500
+    assert summary["recent_3_month_profit"] == 3500
+    assert summary["max_weekly_loss"] == -500
+    assert summary["max_monthly_loss"] is None
+
+
 def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     card = discipline_review.dashboard_discipline_card_html(
         {
@@ -156,6 +246,10 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
                     "无回补预案": 1,
                 },
             },
+            "periodic_returns": {
+                "has_current_week_review": False,
+                "has_current_month_review": False,
+            },
         }
     )
     hint = discipline_review.trade_entry_discipline_hint_html(64)
@@ -167,6 +261,8 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     assert "怕错过风险：2" in card
     assert "情绪卖出风险：1" in card
     assert "无回补预案：1" in card
+    assert "本周尚未记录收益复盘。" in card
+    assert "本月尚未记录收益复盘。" in card
     assert "这笔交易会让组合更集中" in hint
     assert "当前 Setup 不是高质量买点" in hint
     assert "禁止" not in hint
@@ -177,6 +273,8 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
 
     assert "交易错题本" in source
+    assert "周期收益复盘" in source
+    assert "保存周期复盘" in source
     assert "保存这条错题" in source
     assert "标的 / 场景" in source
     assert "损失金额 / 影响" in source
@@ -192,6 +290,12 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "交易纪律标签" not in source
     assert "通过 / 未通过" not in source
     assert "门禁" not in source
+
+    render_body = source[source.index("def render(") : source.index("def _render_principles_card")]
+    assert render_body.index("_render_principles_card") < render_body.index("_render_mistake_reviews")
+    assert render_body.index("_render_mistake_reviews") < render_body.index("_render_periodic_return_reviews")
+    assert render_body.index("_render_periodic_return_reviews") < render_body.index("_render_portfolio_discipline")
+    assert render_body.index("_render_portfolio_discipline") < render_body.index("_render_discipline_stats")
 
 
 def test_app_registers_discipline_review_page() -> None:
