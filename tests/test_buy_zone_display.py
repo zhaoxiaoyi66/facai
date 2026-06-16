@@ -161,7 +161,7 @@ def test_upper_pullback_zone_display_does_not_call_it_main_batting_zone() -> Non
     assert display["technical_action_text"] == "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。"
     assert "主击球区" not in display["technical_action_text"]
     assert display["volume_confirmation_text"] == "缩量调整，尚不构成承接"
-    assert display["risk_reward_text"] == "RR 1.40：观察"
+    assert display["risk_reward_text"] == "RR 1.40：观察（仅作参考，量价未确认）"
     assert display["entry_condition_text"].startswith("加仓触发")
     assert display["invalidation_condition_text"].startswith("跌破买区下沿")
     assert display["confidence_breakdown"]["support_score"] == 70

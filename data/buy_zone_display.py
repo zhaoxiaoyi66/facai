@@ -18,11 +18,33 @@ ACCEPTANCE_STATE_TEXT = {
 }
 
 ENTRY_QUALITY_TEXT = {
-    "GOOD_LEFT_SIDE": "左侧质量较好",
+    "GOOD_LEFT_SIDE": "舒服左侧",
     "EDGE_OBSERVE": "边缘观察",
     "WAIT_CONFIRMATION": "等确认",
     "HIGH_RISK": "高风险",
     "INVALID": "无效",
+}
+
+SUBZONE_TEXT = {
+    "DEEP_SUPPORT_ZONE": "深度承接区",
+    "LEFT_PROBE": "左侧试仓候选区",
+    "LEFT_PROBE_LOWER": "左侧试仓候选区",
+    "LEFT_PROBE_MID": "左侧试仓候选区",
+    "LEFT_PROBE_UPPER": "左侧试仓候选区",
+    "ACCEPTANCE_OBSERVATION_ZONE": "承接观察区",
+    "REPAIR_OBSERVATION_ZONE": "修复观察区",
+    "REEVALUATION_ZONE": "重评区",
+    "INVALIDATION_ZONE": "结构失效风险区",
+    "CHASE_RISK_ZONE": "追高风险区",
+    "ABOVE_TECHNICAL_PULLBACK_BAND": "等待回踩区",
+    "OUTSIDE": "观察区外",
+}
+
+POSITION_TEXT = {
+    "LOWER_EDGE": "下沿",
+    "MID_ZONE": "中段",
+    "UPPER_EDGE": "上沿",
+    "OUTSIDE": "",
 }
 
 
@@ -69,11 +91,23 @@ def build_buy_zone_display(
     ).strip()
     entry_quality = str(_value(ctx, "entry_quality", "entryQuality", default="") or "").strip().upper()
     entry_quality_text = ENTRY_QUALITY_TEXT.get(entry_quality, entry_quality)
+    current_subzone = str(_value(ctx, "current_subzone", "currentSubzone", default="") or "").strip().upper()
+    subzone_text = _current_subzone_text(ctx, current_subzone)
+    subzone_position_label = _current_subzone_position_label(ctx, current_subzone, current_price)
+    subzone_position_text = POSITION_TEXT.get(subzone_position_label, "")
+    subzone_display_text = _join_subzone_position(subzone_text, subzone_position_text)
     missing = _text_list(_value(ctx, "missing_fields", "missingFields", default=[]))
     missing_text = " / ".join(_missing_label(item) for item in missing if str(item).strip())
     explanation = _explanation(ctx, technical["explanation"], account["sizing_action_text"])
     next_step = _next_step_text(action, ctx, missing_text, has_position, current_add)
     entry_hint = account["sizing_action_text"] if current_add is not None and current_add <= 0 else technical["badge_hint"]
+    risk_reward_text = _risk_reward_display_text(ctx, row_data)
+    main_conclusion = _main_conclusion_text(
+        acceptance_text=acceptance_text,
+        subzone_display_text=subzone_display_text,
+        entry_quality_text=entry_quality_text,
+        main_action=main_action,
+    )
     result = {
         "mode": mode,
         "action": action,
@@ -88,6 +122,10 @@ def build_buy_zone_display(
         "technical_status_text": technical["technical_action_text"],
         "technical_layer_text": technical["technical_action_text"],
         "main_action_text": main_action,
+        "main_advisory_text": main_action,
+        "main_conclusion_text": main_conclusion,
+        "advisory_headline_text": main_conclusion,
+        "sharp_conclusion_text": main_conclusion,
         "action_text": main_action,
         "display_action_text": main_action,
         "sizing_action": account["sizing_action"],
@@ -112,7 +150,8 @@ def build_buy_zone_display(
         "acceptance_reasons": _text_list(_value(ctx, "acceptance_reasons", "acceptanceReasons", default=[])),
         "missing_confirmation": _text_list(_value(ctx, "missing_confirmation", "missingConfirmation", default=[])),
         "required_confirmation_price": _number(_value(ctx, "required_confirmation_price", "requiredConfirmationPrice", "confirmation_price", "confirmationPrice")),
-        "risk_reward_text": str(_value(ctx, "risk_reward_text", "riskRewardText", default="") or ""),
+        "risk_reward_text": risk_reward_text,
+        "risk_reward_note": _risk_reward_note(ctx, row_data),
         "risk_reward": _number(_value(ctx, "risk_reward", "riskReward", "raw_rr", "rawRr")),
         "action_new_cash": str(_value(ctx, "action_new_cash", "actionNewCash", default="") or account["account_action_text"]),
         "action_existing_position": str(_value(ctx, "action_existing_position", "actionExistingPosition", default="") or account["account_action_text"]),
@@ -121,7 +160,11 @@ def build_buy_zone_display(
         "confidence_breakdown": _dict(_value(ctx, "confidence_breakdown", "confidenceBreakdown", default={}) or {}),
         "zone_position": _number(_value(ctx, "zone_position", "zonePosition")),
         "zone_position_text": str(_value(ctx, "zone_position_text", "zonePositionText", default="") or ""),
-        "current_subzone": str(_value(ctx, "current_subzone", "currentSubzone", default="") or ""),
+        "current_subzone": current_subzone,
+        "current_subzone_text": subzone_text,
+        "current_subzone_position_label": subzone_position_label,
+        "current_subzone_position_text": subzone_position_text,
+        "current_subzone_display_text": subzone_display_text,
         "left_side_position_pct": _number(_value(ctx, "left_side_position_pct", "leftSidePositionPct")),
         "left_side_quality": str(_value(ctx, "left_side_quality", "leftSideQuality", default="") or ""),
         "left_probe_position_label": str(_value(ctx, "left_probe_position_label", "leftProbePositionLabel", default="") or ""),
@@ -148,6 +191,105 @@ def build_buy_zone_display(
     return result
 
 
+def _main_conclusion_text(
+    *,
+    acceptance_text: str,
+    subzone_display_text: str,
+    entry_quality_text: str,
+    main_action: str,
+) -> str:
+    parts = [part for part in (acceptance_text, subzone_display_text, entry_quality_text, main_action) if str(part or "").strip()]
+    if not parts:
+        return main_action or "等待复核"
+    return "，".join(dict.fromkeys(parts))
+
+
+def _current_subzone_text(context: dict[str, Any], current_subzone: str) -> str:
+    explicit = str(_value(context, "current_subzone_text", "currentSubzoneText", default="") or "").strip()
+    if explicit:
+        return explicit
+    if current_subzone in SUBZONE_TEXT:
+        return SUBZONE_TEXT[current_subzone]
+    primary_zone = str(_value(context, "primary_zone", "primaryZone", default="") or "").strip().upper()
+    if primary_zone in {"PULLBACK_WATCH", "PULLBACK_BUY"}:
+        return "承接观察区" if primary_zone == "PULLBACK_WATCH" else "左侧试仓候选区"
+    if primary_zone in {"PULLBACK_UPPER_WATCH", "REPAIR_WATCH"}:
+        return "修复观察区"
+    if primary_zone == "CONFIRMATION_REVIEW":
+        return "重评区"
+    if primary_zone == "INVALIDATION":
+        return "结构失效风险区"
+    if primary_zone == "CHASE_RISK":
+        return "追高风险区"
+    return ""
+
+
+def _current_subzone_position_label(context: dict[str, Any], current_subzone: str, current_price: float | None) -> str:
+    explicit = str(_value(context, "current_subzone_position_label", "currentSubzonePositionLabel", default="") or "").strip().upper()
+    if explicit:
+        return explicit
+    if current_subzone.startswith("LEFT_PROBE"):
+        return str(_value(context, "left_probe_position_label", "leftProbePositionLabel", default="") or "OUTSIDE").strip().upper()
+    bounds = _current_subzone_bounds(context, current_subzone)
+    position = _range_position(current_price, bounds[0], bounds[1])
+    if position is None:
+        return "OUTSIDE"
+    if position < 0.35:
+        return "LOWER_EDGE"
+    if position < 0.70:
+        return "MID_ZONE"
+    return "UPPER_EDGE"
+
+
+def _current_subzone_bounds(context: dict[str, Any], current_subzone: str) -> tuple[float | None, float | None]:
+    if current_subzone == "ACCEPTANCE_OBSERVATION_ZONE":
+        return (
+            _number(_value(context, "left_probe_zone_high", "leftProbeZoneHigh")),
+            _number(_value(context, "observe_zone_high", "observeZoneHigh")),
+        )
+    if current_subzone == "REPAIR_OBSERVATION_ZONE":
+        return (
+            _number(_value(context, "observe_zone_high", "observeZoneHigh")),
+            _number(_value(context, "pullback_zone_high", "pullbackZoneHigh")),
+        )
+    if current_subzone.startswith("LEFT_PROBE") or current_subzone == "LEFT_PROBE":
+        return (
+            _number(_value(context, "left_probe_zone_low", "leftProbeZoneLow")),
+            _number(_value(context, "left_probe_zone_high", "leftProbeZoneHigh")),
+        )
+    if current_subzone == "DEEP_SUPPORT_ZONE":
+        return (
+            _number(_value(context, "deep_support_zone_low", "deepSupportZoneLow", "support_zone_low", "supportZoneLow")),
+            _number(_value(context, "deep_support_zone_high", "deepSupportZoneHigh", "support_zone_high", "supportZoneHigh")),
+        )
+    if current_subzone == "INVALIDATION_ZONE":
+        return (
+            _number(_value(context, "invalidation_risk_zone_low", "invalidationRiskZoneLow", "invalidation_zone_low", "invalidationZoneLow")),
+            _number(_value(context, "invalidation_risk_zone_high", "invalidationRiskZoneHigh", "invalidation_zone_high", "invalidationZoneHigh")),
+        )
+    return (None, None)
+
+
+def _range_position(current: float | None, low: float | None, high: float | None) -> float | None:
+    if current is None or low is None or high is None:
+        return None
+    low, high = sorted((low, high))
+    width = high - low
+    if width <= 0 or current < low or current > high:
+        return None
+    return (current - low) / width
+
+
+def _join_subzone_position(subzone_text: str, position_text: str) -> str:
+    if not subzone_text:
+        return ""
+    if not position_text:
+        return subzone_text
+    if subzone_text.endswith(position_text):
+        return subzone_text
+    return f"{subzone_text}{position_text}"
+
+
 def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context: dict[str, Any]) -> dict[str, str]:
     near_recheck = _number(
         _value(context, "confirmation_price", "confirm_price", "confirmation_line", "confirm_line")
@@ -155,14 +297,14 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
     zone_position = _number(_value(context, "zone_position", "zonePosition"))
     primary_zone_code = str(_value(context, "primary_zone", "primaryZone") or "").upper()
     if zone_position is not None and zone_position > 1.0 and action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
-        return _technical("等回击球区", "不追", "当前价高于买区，等待回踩；若继续上冲则防追高。")
+        return _technical("等待回踩", "不追", "当前价高于技术回踩带，等待回踩；若继续上冲则提示追高风险。")
     if primary_zone_code == "PULLBACK_UPPER_WATCH" or (
         zone_position is not None and zone_position > 0.75 and "上沿" in primary_zone_text
     ):
         if action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
             return _technical("买区上沿", "不建议新增", "当前价位于买区上沿 / 修复观察区，持有观察，不主动新增。")
     if action == "WAIT_PULLBACK":
-        return _technical("等回击球区", "不追", "价格偏高，等回到主击球区。")
+        return _technical("等待回踩", "不追", "价格偏高，等待回到技术回踩带。")
     if action == "WAIT_CONFIRMATION":
         if in_zone:
             return _technical("区内看承接", "等量价", "价格到了，但还要看量价和K线承接。")
@@ -173,17 +315,17 @@ def _technical_text(action: str, primary_zone_text: str, in_zone: bool, context:
         if "回踩" in primary_zone_text or str(context.get("primary_zone") or "") == "PULLBACK_BUY":
             text = "技术回踩带内，可观察"
         else:
-            text = "主击球区内，可观察"
-        return _technical("击球区内", "小仓观察参考", text)
+            text = "价格候选区内，可观察"
+        return _technical("区内观察", "小仓观察参考", text)
     if action == "BLOCK_CHASE":
-        return _technical("追高风险区", "高风险", "价格已脱离主击球区，系统不建议追高新增。")
+        return _technical("追高风险区", "高风险", "价格已脱离技术回踩带，系统提示追高风险。")
     if action == "RISK_REVIEW":
         return _technical("风险复核", "不建议加仓", "先复核失效线和风险，再决定是否处理。")
     if action == "PAUSE_BUY":
         return _technical("结构失效风险", "不建议新增", "买区或承接已经失效，等待重新评估。")
     if action == "AVOID":
         return _technical("暂不参与", "观望", "当前不参与，等待结构改善。")
-    return _technical("数据不足", "不给买区", "技术承接数据不足，不生成明确主击球区。")
+    return _technical("数据不足", "不给买区", "技术承接数据不足，不生成明确买区建议。")
 
 
 def _technical(label: str, hint: str, explanation: str) -> dict[str, str]:
@@ -290,7 +432,7 @@ def _main_action_text(
     if action in SMALL_BUY_ACTIONS:
         return "小仓观察参考"
     if action == "WAIT_PULLBACK":
-        return "等回击球区"
+        return "等待回踩"
     if action == "WAIT_CONFIRMATION":
         return technical["badge_label"]
     if action == "AVOID":
@@ -402,15 +544,16 @@ def _next_step_text(
     confirmation = _number(_value(context, "confirmation_price", "confirm_price", "confirmation_line", "confirm_line"))
     invalidation = _number(_value(context, "invalidation_price", "invalid_price", "invalid_line"))
     if action == "WAIT_PULLBACK":
-        return "等待价格回到主击球区"
+        return "等待价格回到技术回踩带"
     if action == "WAIT_CONFIRMATION":
         if confirmation is not None:
-            return f"放量站上 {_money(confirmation)} 后重新判断"
+            extra = _higher_confirmation_text(context, confirmation)
+            return f"站上 {_money(confirmation)} 后重新评估，不等于直接买入。{extra}".strip()
         return "等待量价和K线承接"
     if action in SMALL_BUY_ACTIONS:
         return "先小仓观察，后续加仓仍等确认"
     if action == "BLOCK_CHASE":
-        return "等待回到击球区或重新形成低吸结构"
+        return "等待回到技术回踩带或重新形成低吸结构"
     if action == "RISK_REVIEW":
         if invalidation is not None:
             return f"复核是否跌破 {_money(invalidation)}"
@@ -420,6 +563,43 @@ def _next_step_text(
             return f"跌破 {_money(invalidation)} 后系统不建议新增"
         return "等待买区重新评估"
     return "等待结构改善"
+
+
+def _higher_confirmation_text(context: dict[str, Any], confirmation: float) -> str:
+    candidates = (
+        _number(_value(context, "resistance_zone_high", "resistanceZoneHigh")),
+        _number(_value(context, "technical_resistance_price", "technicalResistancePrice")),
+        _number(_value(context, "recent_breakout_level", "recentBreakoutLevel")),
+        _number(_value(context, "pullback_zone_high", "pullbackZoneHigh")),
+    )
+    higher = [value for value in candidates if value is not None and value > confirmation * 1.001]
+    if not higher:
+        return ""
+    return f" 放量站稳上方压力 {_money(min(higher))} 后，确认质量提高。"
+
+
+def _risk_reward_display_text(context: dict[str, Any], row: dict[str, Any]) -> str:
+    text = str(_value(context, "risk_reward_text", "riskRewardText", default="") or "").strip()
+    note = _risk_reward_note(context, row)
+    if not text:
+        return note
+    if note and note not in text:
+        return f"{text}（{note}）"
+    return text
+
+
+def _risk_reward_note(context: dict[str, Any], row: dict[str, Any]) -> str:
+    acceptance_state = str(_value(context, "acceptance_state", "acceptanceState", default="") or "").strip().upper()
+    volume_score = _number(
+        _value(context, "volume_acceptance_score", "volume_price_score", "volumePriceScore")
+        or _value(row, "volumePriceScore", "volume_price_score")
+    )
+    if volume_score is None:
+        breakdown = _dict(_value(context, "confidence_breakdown", "confidenceBreakdown", default={}) or {})
+        volume_score = _number(_value(breakdown, "volume_score", "volumeScore"))
+    if (acceptance_state and acceptance_state != "CLEAR_ACCEPTANCE") or (volume_score is not None and volume_score < 60):
+        return "仅作参考，量价未确认"
+    return ""
 
 
 def _explanation(context: dict[str, Any], technical_text: str, sizing_text: str) -> str:
@@ -541,8 +721,8 @@ def _missing_label(value: str) -> str:
         "atr": "ATR",
         "support_zone_low": "支撑压力",
         "support_zone_high": "支撑压力",
-        "pullback_zone_low": "主击球区",
-        "pullback_zone_high": "主击球区",
+        "pullback_zone_low": "技术回踩带",
+        "pullback_zone_high": "技术回踩带",
         "resistance_zone": "阻力区",
         "price": "当前价格",
         "buy_zone_context": "统一买区上下文",

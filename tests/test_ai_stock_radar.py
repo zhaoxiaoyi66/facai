@@ -288,6 +288,10 @@ def test_report_summary_surfaces_acceptance_state() -> None:
         "current_action": "WAIT_CONFIRMATION",
         "primary_zone": "PULLBACK_UPPER_WATCH",
         "primary_zone_text": "买区上沿 / 修复观察区",
+        "current_subzone": "ACCEPTANCE_OBSERVATION_ZONE",
+        "current_price": 104.15,
+        "left_probe_zone_high": 99.28,
+        "observe_zone_high": 104.65,
         "acceptance_state": "WEAK_ACCEPTANCE",
         "acceptance_state_text": "承接不足",
         "entry_quality": "EDGE_OBSERVE",
@@ -301,6 +305,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
         "buy_zone_display": {
             "acceptance_state_text": "承接不足",
             "entry_quality_text": "边缘观察",
+            "current_subzone_display_text": "承接观察区上沿",
         },
     }
 
@@ -318,7 +323,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
     assert "承接状态" in html
     assert "承接不足" in html
     assert "边缘观察" in html
-    assert "NOW：承接不足，持有观察 / 当前不建议新增" in html
+    assert "NOW：承接不足，承接观察区上沿，持有观察 / 当前不建议新增" in html
     assert html.count("<li>") == 4
     assert "若无持仓" not in html
 
@@ -690,7 +695,7 @@ def test_report_confirmation_is_review_trigger_not_buy_signal() -> None:
         }
     )
 
-    assert conclusion["confirm_text"] == "重新评估线：放量站上 $104.93 后重新评估"
+    assert conclusion["confirm_text"] == "重新评估线：放量站上 $104.93 后重新评估，不等于直接买入"
     assert conclusion["buy_premise_text"] == "重新评估线 + 综合评分回到70以上 + 风险复核完成"
 
 
@@ -1458,7 +1463,8 @@ def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone
     assert "主击球区" not in card_html
     assert "左侧试仓候选区" in chart_html
     assert "承接观察区" in chart_html
-    assert "买区上沿 / 修复观察区" in chart_html
+    assert "修复观察区" in chart_html
+    assert "当前位于修复观察区" in chart_html
     assert "主击球区：" not in chart_html
 
 
@@ -2208,7 +2214,7 @@ def test_entry_display_above_buy_zone_shows_wait_price_reference() -> None:
         assert report.next_action_price == 100
         assert report.chase_above_price == 120
         assert report.current_vs_entry_pct == 10.0
-        assert report.entry_display_label == "等回击球区"
+        assert report.entry_display_label == "等待回踩"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
         assert report.entry_display_reason
 
@@ -2254,7 +2260,7 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
 
         assert report.decision == "ALLOW_BUY"
         assert report.buy_zone_context["primary_zone"] == "DEEP_ACCEPTANCE"
-        assert report.entry_display_label == "击球区内"
+        assert report.entry_display_label == "区内观察"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
         assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
@@ -2319,7 +2325,7 @@ def test_list_row_includes_entry_display_fields_without_changing_decision() -> N
         )
 
         assert row["decision"] == "WAIT"
-        assert row["entry_display_label"] == "等回击球区"
+        assert row["entry_display_label"] == "等待回踩"
         assert row["entry_context_status"] == "WAIT_CONFIRMATION"
         assert row["entry_reference_high"] == 100
         assert row["current_vs_entry_pct"] == 10.0
@@ -2363,7 +2369,7 @@ def test_derived_deep_value_zone_can_show_technical_pullback_without_changing_de
         assert report.technical_pullback_zone_high == 117.5
         assert report.confirmation_price == 116
         assert report.invalidation_price == 108
-        assert report.entry_display_label == "等回击球区"
+        assert report.entry_display_label == "等待回踩"
         assert report.technical_position == "ABOVE_TECHNICAL_PULLBACK_ZONE"
         assert report.entry_context_status == "WAIT_CONFIRMATION"
         assert report.entry_display_reason

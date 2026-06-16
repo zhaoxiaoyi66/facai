@@ -29,7 +29,7 @@ def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insuffic
 
     assert "不建议加仓" in html
     assert "持有观察，不建议加仓" in html
-    assert "主击球区" in html
+    assert "当前子区" in html
     assert "暂不生成" in html
     assert "结论冲突提示：技术承接数据不足，旧估值参考只作风险提示，不改变主结论。" in html
     assert "历史K线" in html
@@ -83,9 +83,9 @@ def test_quick_decision_shows_batting_zone_when_context_is_complete() -> None:
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "等回击球区" in html
+    assert "等待回踩" in html
     assert "$377.50 - $384.70" in html
-    assert "等待价格回到主击球区" in html
+    assert "等待价格回到技术回踩带" in html
     assert "暂不生成" not in html
     assert "数据不足" not in html
 
@@ -121,9 +121,8 @@ def test_quick_decision_uses_specific_wait_confirmation_copy() -> None:
     breakout_html = dashboard_drawer._drawer_quick_decision_html(breakout)
 
     assert "区内看承接" in in_zone_html
-    assert "等量价" in in_zone_html
-    assert "等突破再评估" in breakout_html
-    assert "不追" in breakout_html
+    assert "等待量价和K线承接" in in_zone_html
+    assert "站上 $413.71 后重新评估，不等于直接买入" in breakout_html
     assert "等待确认" not in in_zone_html
     assert "等待确认" not in breakout_html
 
@@ -305,4 +304,4 @@ def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:
     assert "_drawer_quick_decision_html" in drawer_source
     assert "<summary>查看完整依据</summary>" in drawer_source
     assert "旧估值参考，仅供辅助" in detail_source
-    assert "该参考不改变买入权限，主击球区以技术承接 buy_zone_context 为准。" in detail_source
+    assert "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。" in detail_source

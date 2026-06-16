@@ -1534,11 +1534,18 @@ def _executive_summary_card_html(
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
     buy_zone_context = buy_zone_context or {}
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
-    summary = _decision_summary_sentence(report, batting, portfolio_context, buy_zone_context)
-    key_prices = _decision_key_price_items(report, conclusion, buy_zone_context)
     buy_zone_display = conclusion.get("buy_zone_display") if isinstance(conclusion.get("buy_zone_display"), dict) else {}
+    subzone_display = str(buy_zone_display.get("current_subzone_display_text") or _current_subzone_display_text(buy_zone_context) or batting.get("zone_label") or "观察区").strip()
+    summary = _decision_summary_sentence(report, batting, portfolio_context, buy_zone_context, conclusion)
+    key_prices = _decision_key_price_items(report, conclusion, buy_zone_context, buy_zone_display)
     acceptance_text = _buy_zone_acceptance_text(buy_zone_context, buy_zone_display)
     entry_quality_text = _entry_quality_text(buy_zone_context, buy_zone_display)
+    main_headline = str(
+        buy_zone_display.get("main_conclusion_text")
+        or conclusion.get("main_conclusion_text")
+        or "，".join(part for part in (acceptance_text, subzone_display, entry_quality_text, conclusion.get("action_text") or batting.get("operation")) if part)
+        or subzone_display
+    ).strip()
     key_price_html = "".join(
         "<div>"
         f"<span>{escape(label)}</span>"
@@ -1560,7 +1567,7 @@ def _executive_summary_card_html(
         '<div class="ai-radar-section-title"><span>决策摘要</span><b>当前建议 / 关键价格 / 下一步</b></div>'
         '<div class="ai-radar-decision-summary-head">'
         f'<div><span>{escape(str(report.get("ticker") or "UNKNOWN"))} / {_money(_report_current_price(report))}</span>'
-        f'<strong>{escape(str(batting.get("zone_label") or "技术回踩带"))}</strong></div>'
+        f'<strong>{escape(main_headline)}</strong></div>'
         f'<div><span>承接状态</span><strong>{escape(acceptance_text or "承接待确认")}</strong>'
         f'<em>{escape(entry_quality_text or "等确认")}</em></div>'
         f'<div><span>主建议</span><strong>{escape(str(conclusion.get("action_text") or batting.get("operation") or "等待复核"))}</strong></div>'
@@ -1582,17 +1589,20 @@ def _decision_summary_sentence(
     batting: dict[str, str],
     portfolio_context: dict[str, Any],
     buy_zone_context: dict[str, Any],
+    conclusion: dict[str, Any] | None = None,
 ) -> str:
+    conclusion = conclusion or {}
+    buy_zone_display = conclusion.get("buy_zone_display") if isinstance(conclusion.get("buy_zone_display"), dict) else {}
     ticker = str(report.get("ticker") or "该股票")
     current = batting.get("current_price") or _money(_report_current_price(report))
-    zone = str(batting.get("zone_label") or "技术回踩带")
+    zone = str(buy_zone_display.get("current_subzone_display_text") or _current_subzone_display_text(buy_zone_context) or batting.get("zone_label") or "观察区")
     action = (
         str(portfolio_context.get("action_for_existing_position") or "")
         if portfolio_context.get("has_position")
         else str(portfolio_context.get("action_for_no_position") or "")
-    ).strip() or str(batting.get("operation") or "等待复核")
-    reason = _decision_primary_reason(batting, buy_zone_context)
-    acceptance_text = _buy_zone_acceptance_text(buy_zone_context)
+    ).strip() or str(conclusion.get("action_text") or batting.get("operation") or "等待复核")
+    reason = _decision_primary_reason(batting, buy_zone_context, buy_zone_display)
+    acceptance_text = _buy_zone_acceptance_text(buy_zone_context, buy_zone_display)
     holding = ""
     shares = _number(portfolio_context.get("shares"))
     current_add = _first_number(buy_zone_context, "current_add_limit_percent", "currentAddLimitPercent")
@@ -1601,7 +1611,7 @@ def _decision_summary_sentence(
         if current_add is not None:
             holding += f"，当前新增额度为 {_number_text(current_add)}"
     if acceptance_text:
-        return f"{ticker}：{acceptance_text}，{action}。当前价 {current} 位于{zone}。{reason}{holding}。"
+        return f"{ticker}：{acceptance_text}，{zone}，{action}。当前价 {current} 位于{zone}。{reason}{holding}。"
     return f"{ticker} 当前价 {current}，位于{zone}，{action}。{reason}{holding}。"
 
 
@@ -1636,7 +1646,7 @@ def _entry_quality_text(
         return text
     quality = str(display.get("entry_quality") or context.get("entry_quality") or "").strip().upper()
     return {
-        "GOOD_LEFT_SIDE": "左侧质量较好",
+        "GOOD_LEFT_SIDE": "舒服左侧",
         "EDGE_OBSERVE": "边缘观察",
         "WAIT_CONFIRMATION": "等确认",
         "HIGH_RISK": "高风险",
@@ -1644,7 +1654,126 @@ def _entry_quality_text(
     }.get(quality, "")
 
 
-def _decision_primary_reason(batting: dict[str, str], buy_zone_context: dict[str, Any]) -> str:
+def _current_subzone_display_text(
+    buy_zone_context: dict[str, Any] | None,
+    buy_zone_display: dict[str, Any] | None = None,
+) -> str:
+    display = buy_zone_display or {}
+    context = buy_zone_context or {}
+    explicit = str(display.get("current_subzone_display_text") or context.get("current_subzone_display_text") or "").strip()
+    if explicit:
+        return explicit
+    subzone = str(display.get("current_subzone") or context.get("current_subzone") or "").strip().upper()
+    base = {
+        "DEEP_SUPPORT_ZONE": "深度承接区",
+        "LEFT_PROBE": "左侧试仓候选区",
+        "LEFT_PROBE_LOWER": "左侧试仓候选区",
+        "LEFT_PROBE_MID": "左侧试仓候选区",
+        "LEFT_PROBE_UPPER": "左侧试仓候选区",
+        "ACCEPTANCE_OBSERVATION_ZONE": "承接观察区",
+        "REPAIR_OBSERVATION_ZONE": "修复观察区",
+        "REEVALUATION_ZONE": "重评区",
+        "INVALIDATION_ZONE": "结构失效风险区",
+        "CHASE_RISK_ZONE": "追高风险区",
+        "ABOVE_TECHNICAL_PULLBACK_BAND": "等待回踩区",
+        "OUTSIDE": "观察区外",
+    }.get(subzone, "")
+    if not base:
+        primary = str(context.get("primary_zone") or "").strip().upper()
+        if primary == "PULLBACK_WATCH":
+            base = "承接观察区"
+        elif primary == "PULLBACK_BUY":
+            base = "左侧试仓候选区"
+        elif primary in {"PULLBACK_UPPER_WATCH", "REPAIR_WATCH"}:
+            base = "修复观察区"
+        elif primary == "INVALIDATION":
+            base = "结构失效风险区"
+        elif primary == "CHASE_RISK":
+            base = "追高风险区"
+    position = str(display.get("current_subzone_position_label") or context.get("current_subzone_position_label") or "").strip().upper()
+    if not position:
+        position = _infer_current_subzone_position_label(context, subzone)
+    suffix = {
+        "LOWER_EDGE": "下沿",
+        "MID_ZONE": "中段",
+        "UPPER_EDGE": "上沿",
+    }.get(position, "")
+    if base and suffix and not base.endswith(suffix):
+        return f"{base}{suffix}"
+    return base
+
+
+def _infer_current_subzone_position_label(context: dict[str, Any], subzone: str) -> str:
+    current = _first_number(context, "current_price", "currentPrice")
+    if current is None:
+        return ""
+    if subzone == "ACCEPTANCE_OBSERVATION_ZONE":
+        low = _first_number(context, "left_probe_zone_high", "leftProbeZoneHigh")
+        high = _first_number(context, "observe_zone_high", "observeZoneHigh")
+    elif subzone == "REPAIR_OBSERVATION_ZONE":
+        low = _first_number(context, "observe_zone_high", "observeZoneHigh")
+        high = _first_number(context, "pullback_zone_high", "pullbackZoneHigh")
+    elif subzone.startswith("LEFT_PROBE") or subzone == "LEFT_PROBE":
+        explicit = str(context.get("left_probe_position_label") or "").strip().upper()
+        if explicit:
+            return explicit
+        low = _first_number(context, "left_probe_zone_low", "leftProbeZoneLow")
+        high = _first_number(context, "left_probe_zone_high", "leftProbeZoneHigh")
+    else:
+        return ""
+    if low is None or high is None:
+        return ""
+    low, high = sorted((low, high))
+    width = high - low
+    if width <= 0 or current < low or current > high:
+        return "OUTSIDE"
+    position = (current - low) / width
+    if position < 0.35:
+        return "LOWER_EDGE"
+    if position < 0.70:
+        return "MID_ZONE"
+    return "UPPER_EDGE"
+
+
+def _decision_primary_reason(
+    batting: dict[str, str],
+    buy_zone_context: dict[str, Any],
+    buy_zone_display: dict[str, Any] | None = None,
+) -> str:
+    display = buy_zone_display or {}
+    acceptance = str(display.get("acceptance_state") or buy_zone_context.get("acceptance_state") or "").strip().upper()
+    volume_score = _first_number(
+        buy_zone_context,
+        "volume_price_score",
+        "volumePriceScore",
+        "volume_acceptance_score",
+        "volumeAcceptanceScore",
+        "confirmation_score",
+        "confirmationScore",
+    )
+    confirm = _first_number(
+        buy_zone_context,
+        "required_confirmation_price",
+        "requiredConfirmationPrice",
+        "confirmation_price",
+        "confirmationPrice",
+    )
+    if acceptance == "WEAK_ACCEPTANCE":
+        if volume_score is not None and confirm is not None:
+            return f"量价承接 {_number_text(volume_score)}，尚未站上 {_money(confirm)}"
+        if confirm is not None:
+            return f"量价承接不足，尚未站上 {_money(confirm)}"
+        return "量价承接不足，尚未形成主动买点"
+    if acceptance == "FORMING_ACCEPTANCE":
+        return "初步承接，但尚未完全站上确认线"
+    if acceptance == "CLEAR_ACCEPTANCE":
+        return "量价承接较清晰，仍需按仓位与风险复核"
+    if acceptance == "HIGH_VOLUME_UNCONFIRMED":
+        return "放量未确认，等收盘确认 / 事件复核"
+    if acceptance == "FALLING_KNIFE_RISK":
+        return "快速下跌或靠近失效线，存在飞刀风险"
+    if acceptance == "STRUCTURE_BROKEN":
+        return "价格跌破失效线，原左侧逻辑需重新复核"
     volume_state = str(batting.get("volume_state") or "").strip()
     status = str(batting.get("status") or "").strip()
     if status in {"买区上沿", "修复观察区"} or "修复观察" in str(batting.get("zone_label") or ""):
@@ -1662,6 +1791,7 @@ def _decision_key_price_items(
     report: dict[str, Any],
     conclusion: dict[str, Any],
     buy_zone_context: dict[str, Any],
+    buy_zone_display: dict[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
     left_low = _first_number(buy_zone_context, "left_probe_zone_low")
     left_high = _first_number(buy_zone_context, "left_probe_zone_high")
@@ -1670,11 +1800,13 @@ def _decision_key_price_items(
     confirm = _first_number(conclusion, "confirm_price") or _first_number(buy_zone_context, "confirmation_price")
     invalidation = _first_number(conclusion, "invalidation_price") or _first_number(buy_zone_context, "invalidation_price")
     current_zone = _current_subzone_range(report, buy_zone_context)
+    current_subzone = _current_subzone_display_text(buy_zone_context, buy_zone_display)
+    current_text = f"{current_subzone}｜{current_zone}" if current_subzone and current_zone else current_subzone or current_zone
     return [
         ("左侧试仓候选", _range_text(left_low, left_high)),
         ("承接观察", _range_text(left_high, observe_high)),
-        ("当前所在", current_zone),
-        ("重评线", f"站上 {_money(confirm)}" if confirm is not None else "暂缺"),
+        ("当前所在", current_text),
+        ("重评线", f"站上 {_money(confirm)} 后重新评估" if confirm is not None else "暂缺"),
         ("失效复核", f"跌破 {_money(invalidation)}" if invalidation is not None else "暂缺"),
     ]
 
@@ -1703,7 +1835,7 @@ def _decision_next_steps(batting: dict[str, str], buy_zone_context: dict[str, An
     return [
         f"不新增：{batting.get('entry_condition') or '量价承接未确认'}",
         f"若回落：观察 {_range_text(left_low, left_high)} 是否承接",
-        f"若上行：站上 {_money(confirm)} 后重新评估" if confirm is not None else "若上行：等待重新评估线补齐",
+        f"若上行：站上 {_money(confirm)} 后重新评估，不等于直接买入" if confirm is not None else "若上行：等待重新评估线补齐",
         f"若破位：跌破 {_money(invalidation)} 后复核" if invalidation is not None else "若破位：等待失效线补齐",
     ]
 
@@ -1727,7 +1859,11 @@ def _trade_conclusion(
     zone_text = str(buy_zone_display.get("zone_text") or buy_zone_context.get("primary_zone_text") or _trade_zone_text(report))
     rating_text = str(buy_zone_display.get("badge_label") or _rating_text(report, action_result, buy_zone_context))
     action_text = str(buy_zone_display.get("main_action_text") or buy_zone_context.get("action_text") or _current_action_text(report, action_result))
-    confirm_text = f"重新评估线：放量站上 {_money(confirm_price)} 后重新评估" if confirm_price is not None else _next_step_sentence(report)
+    confirm_text = (
+        f"重新评估线：放量站上 {_money(confirm_price)} 后重新评估，不等于直接买入"
+        if confirm_price is not None
+        else _next_step_sentence(report)
+    )
     risk_line_text = f"跌破 {_money(invalidation_price)}" if invalidation_price is not None else "暂缺"
     next_review_trigger = confirm_text if confirm_price is not None else _next_step_sentence(report)
     confidence = str(getattr(action_result, "confidence_level", "") or _data_confidence(report) or "中")
@@ -1751,6 +1887,13 @@ def _trade_conclusion(
         "buy_premise_text": buy_premise_text,
         "confidence_level": confidence,
         "buy_zone_display": buy_zone_display,
+        "main_conclusion_text": str(buy_zone_display.get("main_conclusion_text") or ""),
+        "current_subzone_display_text": str(
+            buy_zone_display.get("current_subzone_display_text")
+            or _current_subzone_display_text(buy_zone_context, buy_zone_display)
+            or ""
+        ),
+        "risk_reward_text": str(buy_zone_display.get("risk_reward_text") or ""),
     }
 
 
@@ -2304,7 +2447,9 @@ def _range_chart_html(
         else ""
     )
     rows = []
-    primary_zone = str(conclusion.get("primary_zone_text") or _current_zone_label(report))
+    buy_zone_display = conclusion.get("buy_zone_display") if isinstance(conclusion.get("buy_zone_display"), dict) else {}
+    current_subzone = _current_subzone_display_text(buy_zone_context, buy_zone_display)
+    primary_zone = str(current_subzone or conclusion.get("primary_zone_text") or _current_zone_label(report))
     for item in ranges:
         item_low, item_high = item["range"]
         if item_low is None and item_high is None:
@@ -2323,10 +2468,11 @@ def _range_chart_html(
         )
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
     reference_text = "、".join(label for label in (conclusion.get("reference_zone_texts") or []) if label not in {"主击球区 / 回踩击球区", "技术回踩带"}) or "暂无"
-    zone_label = str(batting.get("zone_label") or "技术回踩带")
+    zone_label = str(current_subzone or batting.get("zone_label") or "观察区")
+    reason = _decision_primary_reason(batting, buy_zone_context, buy_zone_display)
     explanation = (
-        f"{zone_label}：{batting.get('zone_range')}；{batting.get('relative_text')}。"
-        f"观察区只观察，不主动新增；重新评估线用于重新判断，不等于直接买入。"
+        f"当前位于{zone_label}，价格已回到技术带，但{reason}，尚不构成主动买点。"
+        f"重新评估线用于重新判断，不等于直接买入。"
         f"参考区间：{reference_text}。失效线：{batting.get('invalidation_line')}。"
     )
     return (
@@ -2383,7 +2529,7 @@ def _range_action_text(label: str) -> str:
     if "结构失效" in label:
         return "跌破后建议复核，不建议新增"
     if "重评" in label:
-        return "站上后重新评估"
+        return "站上后重新评估，不等于直接买入"
     if "趋势临界" in label:
         return "破位后重新评估"
     if "深度恐慌" in label:
@@ -2395,7 +2541,7 @@ def _range_action_text(label: str) -> str:
     if "回踩" in label:
         return "价格候选区，需量价确认"
     if "重新评估" in label:
-        return "站上后重新判断"
+        return "站上后重新评估，不等于直接买入"
     if "修复" in label or "确认" in label:
         return "等待确认"
     if "追高" in label:

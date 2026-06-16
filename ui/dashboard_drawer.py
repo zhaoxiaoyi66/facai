@@ -381,7 +381,7 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
         ("当前动作", decision["action_text"]),
         ("承接状态", decision.get("acceptance_state_text")),
         ("主原因", decision["main_reason"]),
-        ("主击球区", decision["zone_text"]),
+        ("当前子区", decision.get("current_subzone_display_text") or decision["zone_text"]),
         ("当前持仓动作", decision["position_action"]),
         ("下一步", decision["next_step"]),
     ]
@@ -423,6 +423,7 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     action_text = str(display.get("main_action_text") or display.get("badge_label") or "数据不足，不给买区")
     acceptance_state_text = str(display.get("acceptance_state_text") or display.get("acceptance_badge_text") or "")
     entry_quality_text = str(display.get("entry_quality_text") or "")
+    current_subzone_display_text = str(display.get("current_subzone_display_text") or display.get("current_subzone_text") or "")
     zone_text = str(display.get("zone_text") or "暂不生成")
     main_reason = (
         "技术承接数据不足"
@@ -435,13 +436,18 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     next_step = str(display.get("next_step_text") or "")
     conflict_notice = _drawer_conflict_notice(row, action_code)
     missing_fields_text = " / ".join(missing_labels)
-    headline = "｜".join(part for part in (acceptance_state_text, action_text, display.get("badge_hint"), main_reason) if part)
+    headline = str(display.get("main_conclusion_text") or "").strip()
+    if not headline:
+        headline = "｜".join(part for part in (acceptance_state_text, current_subzone_display_text, entry_quality_text, action_text) if part)
+    if not headline:
+        headline = "｜".join(part for part in (acceptance_state_text, action_text, display.get("badge_hint"), main_reason) if part)
     badge_zone = "数据不足" if is_data_insufficient else zone_text
     return {
         "action_code": action_code,
         "action_text": action_text,
         "acceptance_state_text": acceptance_state_text,
         "entry_quality_text": entry_quality_text,
+        "current_subzone_display_text": current_subzone_display_text,
         "headline": headline,
         "main_reason": main_reason,
         "zone_text": zone_text,
@@ -517,7 +523,7 @@ def _drawer_canonical_action_text(action_code: str, *, has_position: bool) -> st
     if action_code == "DATA_INSUFFICIENT":
         return "数据不足"
     mapping = {
-        "WAIT_PULLBACK": "等回击球区",
+        "WAIT_PULLBACK": "等待回踩",
         "WAIT_CONFIRMATION": "区内看承接",
         "ALLOW_SMALL_BUY": "小仓观察建议",
         "ALLOW_ADD_ON_PULLBACK": "小仓观察建议",
@@ -560,14 +566,14 @@ def _drawer_next_step_text(
     if confirm:
         return confirm
     if action_code == "WAIT_PULLBACK":
-        return "等待回到主击球区并观察承接"
+        return "等待回到技术回踩带并观察承接"
     if action_code == "WAIT_CONFIRMATION":
         return "等待量价确认后重新判断"
     if action_code == "BLOCK_CHASE":
         return "等待回到观察区，不追高"
     if has_position:
-        return "按主击球区和仓位纪律复核"
-    return "按主击球区等待"
+        return "按技术回踩带和仓位纪律复核"
+    return "按技术回踩带等待"
 
 
 def _drawer_confirmation_line_text(context: dict[str, object]) -> str:
@@ -579,7 +585,7 @@ def _drawer_confirmation_line_text(context: dict[str, object]) -> str:
     )
     if price is None:
         return ""
-    return f"放量站上 {_drawer_money_text(price)} 后重新判断"
+    return f"放量站上 {_drawer_money_text(price)} 后重新评估，不等于直接买入"
 
 
 def _drawer_position_state(row: pd.Series) -> tuple[bool, float | None]:
@@ -714,7 +720,7 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
     drawer_deps = _drawer_deps(deps)
     symbol = str(row.get("symbol") or "该股票")
     model = model_type_label(row.get("modelType"))
-    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "等回击球区")
+    action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "等待回踩")
     quality = str(row.get("qualityRating") or "N/A")
     entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
     entry = _entry_rating_chip_text(entry_label, entry_grade) or str(row.get("entryRating") or "N/A")
@@ -739,7 +745,7 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
 
 
 def _drawer_radar_entry_card_html(row: pd.Series) -> str:
-    label = _drawer_clean_text(row.get("entry_display_label")) or "暂无 Radar 主击球区"
+    label = _drawer_clean_text(row.get("entry_display_label")) or "暂无 Radar 买区建议"
     hint = _drawer_clean_text(row.get("entry_action_hint"))
     reason = _drawer_clean_text(row.get("entry_display_reason"))
     buy_zone = row.get("radar_buy_zone") or row.get("buy_zone") or {}
@@ -906,7 +912,7 @@ def _drawer_entry_current_conclusion_html(
     focus_line: str = "",
 ) -> str:
     status = _drawer_entry_primary_status_text(entry_context_status, price_position)
-    action = _drawer_compact_action_text(hint or row.get("finalAction") or row.get("action") or "等回击球区")
+    action = _drawer_compact_action_text(hint or row.get("finalAction") or row.get("action") or "等待回踩")
     summary_reason = _drawer_entry_summary_reason(
         entry_context_status=entry_context_status,
         price_position=price_position,
@@ -1423,7 +1429,7 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
     if status == "VALUE_REVIEW_NEAR_TERM_REPAIR":
         return "价值复核，结构待确认"
     if status == "IN_DISCIPLINE_BUY_ZONE":
-        return "位于 Radar 主击球区"
+        return "位于 Radar 技术回踩带"
     if status in {"BELOW_DISCIPLINE_BUY_ZONE", "BELOW_VALUATION_REFERENCE"}:
         return "低于估值参考，等待结构确认"
     if status == "IN_CHASE_ZONE":
@@ -1726,8 +1732,8 @@ def _drawer_detail_basis_html(
             str(summary.get("quality") or ""),
         ]),
         _drawer_card_html("旧估值参考，仅供辅助", entry_display or str(row.get("entryRating") or "N/A"), [
-            "该参考不改变买入权限，主击球区以技术承接 buy_zone_context 为准。",
-            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 主击球区。",
+            "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。",
+            "该区域来自 legacy 估值参考 / combinedEntry，不等同于主表 Radar 买区建议。",
             _clean_buy_point_summary_text(summary.get("valuation"), row),
             _clean_buy_point_summary_text(summary.get("technical"), row),
             _clean_buy_point_summary_text(summary.get("entry"), row),
@@ -1856,7 +1862,7 @@ def _drawer_compact_action_text(value: object) -> str:
     if any(token in text for token in ("复核", "确认", "REVIEW")):
         return "等突破再评估"
     if any(token in text for token in ("只观察", "观察", "等回踩", "等待")):
-        return "等回击球区"
+        return "等待回踩"
     if any(token in text for token in ("暂不", "不建议新增", "WAIT", "AVOID")):
         return "暂不参与"
     return text
@@ -2081,7 +2087,7 @@ def _is_observe_or_wait_action(action: str, entry: str) -> bool:
 
 def _short_action_for_sentence(action: str) -> str:
     if "等回踩" in action:
-        return "等回击球区"
+        return "等待回踩"
     if "小仓" in action:
         return "小仓观察"
     if "分批" in action:
@@ -2091,8 +2097,8 @@ def _short_action_for_sentence(action: str) -> str:
     if "复核" in action:
         return "等突破再评估"
     if "只观察" in action or "观察" in action:
-        return "等回击球区"
-    return action or "等回击球区"
+        return "等待回踩"
+    return action or "等待回踩"
 
 
 def _drawer_card_html(title: str, headline: str, lines: list[str]) -> str:
