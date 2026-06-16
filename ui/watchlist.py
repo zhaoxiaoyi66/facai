@@ -115,9 +115,9 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict], star_st
 
     st.caption("星标只影响排序和显示，不影响买点评分。买入仍看 Setup、承接和风险收益。")
 
-    widths = [0.42, 0.75, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
+    widths = [0.9, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
     header = st.columns(widths)
-    labels = ["星标", "Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
+    labels = ["Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
     for col, label in zip(header, labels):
         col.markdown(f'<span class="watchlist-th">{escape(label)}</span>', unsafe_allow_html=True)
 
@@ -127,23 +127,25 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict], star_st
         held = ticker in active_positions
         is_starred = _entry_is_starred(entry, star_marks)
         row = st.columns(widths)
-        if row[0].button("⭐" if is_starred else "☆", key=f"watchlist-star:{ticker}", help="切换星标关注"):
+        star_prefix = "⭐ " if is_starred else ""
+        row[0].markdown(f'<strong class="watchlist-ticker">{escape(star_prefix + ticker)}</strong>', unsafe_allow_html=True)
+        star_action = "取消星标" if is_starred else "标星"
+        if row[0].button(star_action, key=f"watchlist-star:{ticker}", help="只影响排序和显示"):
             star_store.toggle_star(ticker)
             st.rerun()
-        row[1].markdown(f'<strong class="watchlist-ticker">{escape(ticker)}</strong>', unsafe_allow_html=True)
-        row[2].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
-        row[3].caption(str(entry.get("theme") or "未设置"))
-        row[4].caption("当前已持仓" if held else "未持仓")
-        row[5].markdown(_decision_badge_html(radar, held=held), unsafe_allow_html=True)
-        row[6].markdown(_entry_display_html(radar), unsafe_allow_html=True)
-        row[7].caption(_data_status_label(radar.get("data_status")))
-        row[8].caption(_date_text(entry.get("added_at")))
-        row[9].caption(str(entry.get("note") or entry.get("added_reason") or ""))
-        row[10].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
-        if row[11].button("编辑", key=f"watchlist-edit:{ticker}"):
+        row[1].markdown(_status_badge_html(entry.get("status")), unsafe_allow_html=True)
+        row[2].caption(str(entry.get("theme") or "未设置"))
+        row[3].caption("当前已持仓" if held else "未持仓")
+        row[4].markdown(_decision_badge_html(radar, held=held), unsafe_allow_html=True)
+        row[5].markdown(_entry_display_html(radar), unsafe_allow_html=True)
+        row[6].caption(_data_status_label(radar.get("data_status")))
+        row[7].caption(_date_text(entry.get("added_at")))
+        row[8].caption(str(entry.get("note") or entry.get("added_reason") or ""))
+        row[9].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
+        if row[10].button("编辑", key=f"watchlist-edit:{ticker}"):
             st.session_state["watchlist_edit_symbol"] = ticker
             st.rerun()
-        if row[12].button("移除", key=f"watchlist-remove:{ticker}"):
+        if row[11].button("移除", key=f"watchlist-remove:{ticker}"):
             result = remove_watchlist_symbol(ticker, path=WATCHLIST_PATH)
             if result["action"] == "removed":
                 if held:

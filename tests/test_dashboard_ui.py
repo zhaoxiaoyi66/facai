@@ -112,12 +112,46 @@ def test_dashboard_star_marks_sort_before_unstarred_without_changing_row_fields(
     assert "conviction_score" not in result.columns
 
 
-def test_dashboard_star_cell_uses_star_only_and_no_pin_language() -> None:
-    row = pd.Series({"symbol": "NVDA", "isStarred": True})
+def test_dashboard_symbol_cell_only_marks_starred_rows() -> None:
+    starred = pd.Series({"symbol": "NVDA", "isStarred": True})
+    normal = pd.Series({"symbol": "NOW", "isStarred": False})
 
-    html = dashboard_tables._decision_table_cell_html(row, {"key": "star"}, "NVDA")
+    starred_html = dashboard_tables._decision_table_cell_html(starred, {"key": "symbol"}, "NVDA")
+    normal_html = dashboard_tables._decision_table_cell_html(normal, {"key": "symbol"}, "NOW")
 
-    assert "⭐" in html
+    assert "⭐" in starred_html
+    assert "NVDA" in starred_html
+    assert "⭐" not in normal_html
+    assert "☆" not in normal_html
+    assert "toggleStar" not in starred_html
+    assert "置顶" not in starred_html
+    assert "pinned" not in starred_html
+
+
+def test_dashboard_watchlist_columns_do_not_include_star_column() -> None:
+    labels = [column["label"] for column in dashboard.WATCHLIST_COLUMNS]
+
+    assert "星标" not in labels
+    assert labels[0] == "代码"
+
+
+def test_dashboard_star_action_is_lightweight_row_action(monkeypatch) -> None:
+    class DummyStarStore:
+        def is_starred(self, symbol: object) -> bool:
+            return False
+
+    monkeypatch.setattr(dashboard, "WatchlistStarStore", DummyStarStore)
+
+    html = dashboard._dashboard_view_action_html("NVDA")
+
     assert "toggleStar=NVDA" in html
-    assert "置顶" not in html
-    assert "pinned" not in html
+    assert "标星" in html
+    assert "event.stopPropagation();" in html
+    assert "dashboard-star-toggle" not in html
+
+
+def test_dashboard_drawer_click_handler_ignores_star_action() -> None:
+    source = inspect.getsource(dashboard.render_client_stock_detail_drawers)
+
+    assert ".dashboard-star-action" in source
+    assert ".dashboard-refresh-action" in source

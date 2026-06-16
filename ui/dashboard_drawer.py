@@ -119,8 +119,16 @@ def build_drawer_actions(symbol: str) -> list[dict[str, object]]:
     ]
 
 
-def _drawer_actions_html(symbol: str) -> str:
+def _drawer_actions_html(symbol: str, is_starred: bool = False) -> str:
     items: list[str] = []
+    safe_symbol = quote(str(symbol or "").strip().upper())
+    star_label = "取消星标" if is_starred else "标为星标"
+    items.append(
+        f'<a class="drawer-action-link is-secondary dashboard-star-action" '
+        f'href="?page=dashboard&toggleStar={safe_symbol}#watchlist-table" target="_self" '
+        f'onclick="event.stopPropagation();" data-dashboard-drawer-action="toggle_star">'
+        f'{escape(star_label)}</a>'
+    )
     for action in build_drawer_actions(symbol):
         action_id = str(action["action"])
         href = str(action["href"])
@@ -251,7 +259,7 @@ def render_client_stock_detail_drawers(table: pd.DataFrame, deps: DashboardDrawe
               if (!(target instanceof win.Element)) {{
                 return;
               }}
-              if (target.closest(".dashboard-record-action")) {{
+              if (target.closest(".dashboard-record-action, .dashboard-refresh-action, .dashboard-star-action")) {{
                 return;
               }}
               const opener = target.closest("[data-dashboard-drawer-open]");
@@ -369,7 +377,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
         '</div>'
         f'<div class="drawer-badges">{"".join(badge for badge in badges if badge)}</div>'
-        f'{_drawer_actions_html(symbol)}'
+        f'{_drawer_actions_html(symbol, bool(row.get("isStarred")))}'
         f'{_drawer_quick_decision_html(row, primary_decision)}'
         f'{full_basis}'
         '</aside>'

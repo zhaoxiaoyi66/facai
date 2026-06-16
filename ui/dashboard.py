@@ -137,7 +137,6 @@ DASHBOARD_COLUMNS = [
 ]
 
 WATCHLIST_COLUMNS = [
-    {"key": "star", "label": "星标", "align": "center"},
     {"key": "symbol", "label": "代码", "align": "left"},
     {"key": "priceMarket", "label": "价格 / 市值"},
     {"key": "qualityRating", "label": "质量", "kind": "badge"},
@@ -7017,7 +7016,6 @@ def _render_dashboard_styles() -> None:
         .decision-grid {
             display:grid;
             grid-template-columns:
-                minmax(42px, 0.22fr)
                 minmax(124px, 0.82fr)
                 minmax(188px, 1.12fr)
                 minmax(88px, 0.46fr)
@@ -7025,11 +7023,11 @@ def _render_dashboard_styles() -> None:
                 minmax(92px, 0.46fr)
                 minmax(156px, 0.78fr)
                 minmax(92px, 0.44fr)
-                88px;
+                132px;
             align-items:center;
             gap:0.72rem;
             min-height:var(--dash-table-row-height);
-            min-width:1130px;
+            min-width:1080px;
             width:100%;
             padding:0 16px;
             box-sizing:border-box;
@@ -7041,33 +7039,19 @@ def _render_dashboard_styles() -> None:
             max-width:100%;
             overflow:hidden;
         }
-        .decision-grid > :nth-child(2) {
+        .decision-grid > :nth-child(1) {
             padding-left:16px;
             padding-right:14px;
         }
-        .decision-grid > :nth-child(3) {
+        .decision-grid > :nth-child(2) {
             padding-left:2px;
         }
-        .star-cell {
-            justify-content:center;
-            align-items:center;
-        }
-        .dashboard-star-toggle {
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            width:30px;
-            height:30px;
-            border-radius:999px;
-            color:#C59A32;
-            background:#FFF7D6;
-            border:1px solid rgba(197, 154, 50, 0.25);
-            font-size:16px;
-            text-decoration:none;
-        }
-        .dashboard-star-toggle:hover {
-            background:#FFEFB0;
-            color:#8A6400;
+        .watchlist-symbol-star {
+            display:inline;
+            margin-right:4px;
+            font-size:12px;
+            line-height:1;
+            vertical-align:1px;
         }
         .decision-grid-head {
             min-height:30px;
@@ -7364,8 +7348,8 @@ def _render_dashboard_styles() -> None:
                 border-radius:7px;
             }
             .decision-grid {
-                grid-template-columns:42px 112px 172px 88px 172px 90px 148px 92px 92px;
-                min-width:998px;
+                grid-template-columns:112px 172px 88px 172px 90px 148px 92px 132px;
+                min-width:956px;
                 gap:8px;
                 min-height:48px;
                 padding:0 8px;
@@ -7654,7 +7638,6 @@ def _render_dashboard_styles() -> None:
         }
         .decision-grid {
             grid-template-columns:
-                minmax(42px, 0.22fr)
                 minmax(118px, 0.74fr)
                 minmax(190px, 1.2fr)
                 minmax(86px, 0.44fr)
@@ -7662,9 +7645,9 @@ def _render_dashboard_styles() -> None:
                 minmax(92px, 0.46fr)
                 minmax(150px, 0.76fr)
                 minmax(88px, 0.42fr)
-                minmax(92px, 0.42fr);
+                minmax(132px, 0.58fr);
             gap:0.7rem;
-            min-width:1170px;
+            min-width:1100px;
             padding:0 18px;
         }
         .decision-grid-head {
@@ -7757,9 +7740,13 @@ def _render_dashboard_styles() -> None:
     )
 
 
-def _dashboard_view_action_html(symbol: str) -> str:
+def _dashboard_view_action_html(symbol: str, row: pd.Series | None = None) -> str:
     normalized_symbol = str(symbol or "").upper()
     safe_symbol = escape(normalized_symbol)
+    if row is not None:
+        is_starred = bool(row.get("isStarred"))
+    else:
+        is_starred = bool(WatchlistStarStore().is_starred(normalized_symbol)) if normalized_symbol else False
     onclick = (
         "event.preventDefault();event.stopPropagation();"
         f"if(window.__dashboardOpenDrawer){{window.__dashboardOpenDrawer({json.dumps(normalized_symbol, ensure_ascii=False)},null);}}"
@@ -7767,10 +7754,14 @@ def _dashboard_view_action_html(symbol: str) -> str:
     )
     record_href = f"?page=dashboard&recordSignal={escape(normalized_symbol, quote=True)}#watchlist-table"
     refresh_href = f"?page=dashboard&refreshTicker={escape(normalized_symbol, quote=True)}#watchlist-table"
+    star_href = f"?page=dashboard&toggleStar={escape(normalized_symbol, quote=True)}#watchlist-table"
+    star_text = "取消星标" if is_starred else "标星"
     return (
         '<span class="dashboard-row-actions">'
         f'<a class="dashboard-view-action" href="#" data-dashboard-drawer-open="{safe_symbol}" '
         f'onclick="{escape(onclick, quote=True)}" title="打开 {safe_symbol} 右侧详情面板"><span>查看</span></a>'
+        f'<a class="dashboard-view-action dashboard-star-action" href="{star_href}" target="_self" '
+        f'onclick="event.stopPropagation();" title="{escape(star_text)} {safe_symbol}"><span>{escape(star_text)}</span></a>'
         f'<a class="dashboard-view-action dashboard-record-action" href="{record_href}" target="_self" '
         f'onclick="event.stopPropagation();" title="记录 {safe_symbol} 当前系统信号"><span>记录</span></a>'
         f'<a class="dashboard-view-action dashboard-refresh-action" href="{refresh_href}" target="_self" '

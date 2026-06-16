@@ -70,20 +70,10 @@ def _decision_table_cell_html(
     key = str(definition["key"])
     align_class = " align-right" if definition.get("align") == "right" else ""
     if key == "symbol":
+        star = '<span class="watchlist-symbol-star" title="星标关注">⭐</span>' if bool(row.get("isStarred")) else ""
         return (
             '<div class="decision-cell decision-cell-stack stock-cell">'
-            f'<strong>{escape(symbol)}</strong>'
-            "</div>"
-        )
-    if key == "star":
-        starred = bool(row.get("isStarred"))
-        symbol_param = escape(symbol, quote=True)
-        icon = "⭐" if starred else "☆"
-        title = "取消星标关注" if starred else "设为星标关注"
-        return (
-            '<div class="decision-cell star-cell">'
-            f'<a class="dashboard-star-toggle" href="?page=dashboard&toggleStar={symbol_param}#watchlist-table" '
-            f'target="_self" onclick="event.stopPropagation();" title="{escape(title)}">{escape(icon)}</a>'
+            f'<strong>{star}{escape(symbol)}</strong>'
             "</div>"
         )
     if key == "priceMarket":
@@ -125,7 +115,12 @@ def _decision_table_cell_html(
         value = _display_table_text(_safe_table_value(key, row.get(key)), fallback="待复核")
         return f'<div class="decision-cell">{_data_status_dot_html(value)}</div>'
     if key == "actions":
-        action_html = action_html_builder(symbol) if action_html_builder else ""
+        action_html = ""
+        if action_html_builder:
+            try:
+                action_html = action_html_builder(symbol, row)
+            except TypeError:
+                action_html = action_html_builder(symbol)
         return f'<div class="decision-cell action-view-cell">{action_html}</div>'
     if key == "entryRating":
         return _entry_rating_cell_html(row)

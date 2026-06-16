@@ -290,6 +290,8 @@ def test_drawer_actions_include_internal_report_navigation() -> None:
 def test_drawer_actions_html_uses_current_app_links_only() -> None:
     html = dashboard_drawer._drawer_actions_html("PLTR")
 
+    assert "标为星标" in html
+    assert "toggleStar=PLTR" in html
     assert "查看完整研报" in html
     assert "记录当前信号" in html
     assert "page=ai-radar" in html
