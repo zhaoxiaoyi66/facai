@@ -39,6 +39,7 @@ from data.dashboard_risk_model import (
     row_current_add_limit_value as _row_current_add_limit_value,
 )
 from data.data_health import build_data_health_summary
+from data.discipline_review import build_dashboard_discipline_snapshot
 from data.market_context import build_market_context, build_market_history
 from data.market_data_refresh import refresh_symbol_market_data
 from data.macro_regime import (
@@ -116,6 +117,7 @@ from ui.dashboard_tables import (
     _looks_like_rating_token,
     _short_badge_text,
 )
+from ui.discipline_review import dashboard_discipline_card_html
 from ui.metric_labels import action_label, confidence_label, metric_label, model_type_label, resolution_status_label
 
 
@@ -288,6 +290,7 @@ def render() -> None:
         portfolio_structure_check=portfolio_structure_check,
         tickers=tickers,
     )
+    _render_discipline_reminder_card()
     _render_portfolio_structure_terminal_strip(portfolio_structure_check)
     _render_price_alert_strip(tickers)
     _render_decision_table(table)
@@ -380,6 +383,14 @@ def _render_terminal_notice(title: str, detail: str, tone: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_discipline_reminder_card() -> None:
+    try:
+        snapshot = build_dashboard_discipline_snapshot()
+    except Exception:  # pragma: no cover - dashboard should not fail on optional review card
+        return
+    st.markdown(dashboard_discipline_card_html(snapshot), unsafe_allow_html=True)
 
 
 def _loading_shell_html(title: str, detail: str) -> str:
@@ -4736,6 +4747,7 @@ def _render_dashboard_styles() -> None:
             font-weight: 650;
         }
         .terminal-notice,
+        .dashboard-discipline-card,
         .terminal-refresh-card,
         .terminal-loading-shell {
             max-width: var(--dash-shell-width);
@@ -4778,6 +4790,35 @@ def _render_dashboard_styles() -> None:
         .terminal-notice.tone-blue .terminal-notice-dot {
             background: #1D4ED8;
             box-shadow: 0 0 0 4px #EFF6FF;
+        }
+        .dashboard-discipline-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.68rem 0.86rem;
+        }
+        .dashboard-discipline-card span {
+            display: block;
+            color: var(--dash-secondary);
+            font-size: 0.72rem;
+            font-weight: 760;
+        }
+        .dashboard-discipline-card strong {
+            display: block;
+            margin-top: 0.08rem;
+            color: var(--dash-text);
+            font-size: 0.86rem;
+        }
+        .dashboard-discipline-card ul {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 0.8rem;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            color: var(--dash-secondary);
+            font-size: 0.78rem;
         }
         .terminal-loading-shell {
             padding: 1rem;

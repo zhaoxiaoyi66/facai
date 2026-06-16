@@ -24,6 +24,7 @@ from data.trading_discipline import evaluate_trading_discipline, load_trading_di
 from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
+from ui.discipline_review import trade_entry_discipline_hint_html
 
 
 EMPTY_POSITION = {
@@ -172,6 +173,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         st.markdown(_portfolio_buy_decision_panel_html(advisory_context, current, selected_tier), unsafe_allow_html=True)
         st.markdown('<div class="portfolio-buy-block-title">3. 买入策略</div>', unsafe_allow_html=True)
         st.markdown(_portfolio_buy_strategy_panel_html(advisory_context), unsafe_allow_html=True)
+        st.markdown(trade_entry_discipline_hint_html(_trade_entry_setup_score(advisory_context)), unsafe_allow_html=True)
         with st.expander("4. 证据面板", expanded=False):
             st.markdown(_portfolio_buy_evidence_panel_html(advisory_context), unsafe_allow_html=True)
             _render_macro_regime_buy_hint()
@@ -206,6 +208,20 @@ def _safe_buy_execution_context(ticker: str):
         return build_buy_execution_advisory_context(symbol)
     except Exception:
         return None
+
+
+def _trade_entry_setup_score(context) -> float | None:
+    if context is None:
+        return None
+    report = getattr(context, "radar_report", {}) or {}
+    buy_zone_context = report.get("buy_zone_context") if isinstance(report, dict) else {}
+    if isinstance(buy_zone_context, dict):
+        score = _number(buy_zone_context.get("setup_score") or buy_zone_context.get("setupScore"))
+        if score is not None:
+            return score
+    if isinstance(report, dict):
+        return _number(report.get("setup_score") or report.get("setupScore"))
+    return None
 
 
 def _render_macro_regime_buy_hint() -> None:

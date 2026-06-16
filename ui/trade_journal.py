@@ -16,6 +16,7 @@ from data.decision_log import (
     build_decision_signal_stats,
     refresh_decision_outcomes,
 )
+from data.discipline_review import DISCIPLINE_TAG_LABELS, DisciplineReviewStore, label_for_tag
 from data.entry_display import format_buy_zone, format_zone_status
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
@@ -3111,6 +3112,7 @@ def _render_entry_detail(store: TradeJournalStore) -> None:
         st.rerun()
 
     st.markdown(_entry_detail_html(entry), unsafe_allow_html=True)
+    _render_trade_discipline_tag_editor(entry)
 
 
 def _render_sell_fly_review() -> None:
@@ -3274,6 +3276,41 @@ def _entry_detail_html(entry: dict) -> str:
         f'<p class="trade-entry-detail-note">{notes}</p>'
         "</section>"
     )
+
+
+def _render_trade_discipline_tag_editor(entry: dict) -> None:
+    entry_id = int(entry.get("id") or 0)
+    if entry_id <= 0:
+        return
+    store = DisciplineReviewStore()
+    rows = store.list_tags_for_trade(entry_id)
+    current_tags = [str(row.get("tag") or "") for row in rows if str(row.get("tag") or "").strip()]
+    labels = list(DISCIPLINE_TAG_LABELS.values())
+    label_to_tag = {label: tag for tag, label in DISCIPLINE_TAG_LABELS.items()}
+    default_labels = [DISCIPLINE_TAG_LABELS[tag] for tag in current_tags if tag in DISCIPLINE_TAG_LABELS]
+    with st.expander("纪律标签（可选）", expanded=False):
+        st.caption("这些标签只用于个人复盘统计，不参与买入评分，也不会阻止交易。")
+        selected = st.multiselect("纪律标签", labels, default=default_labels, key=f"trade-discipline-tags-{entry_id}")
+        notes = st.text_area("标签备注", value=_first_discipline_tag_note(rows), height=68, key=f"trade-discipline-tag-notes-{entry_id}")
+        if st.button("保存纪律标签", key=f"trade-discipline-tags-save-{entry_id}", width="stretch"):
+            store.save_trade_tags(entry_id, [label_to_tag[label] for label in selected], notes)
+            st.success("纪律标签已保存。")
+            st.rerun()
+        if current_tags:
+            st.markdown(_discipline_tag_chips_html(current_tags), unsafe_allow_html=True)
+
+
+def _first_discipline_tag_note(rows: list[dict]) -> str:
+    for row in rows:
+        note = str(row.get("notes") or "").strip()
+        if note:
+            return note
+    return ""
+
+
+def _discipline_tag_chips_html(tags: list[str]) -> str:
+    chips = "".join(f"<span>{escape(label_for_tag(tag))}</span>" for tag in tags)
+    return f'<div class="discipline-tag-chip-row">{chips}</div>'
 
 
 def _entry_discipline_snapshot_html(entry: dict) -> str:
@@ -5670,6 +5707,21 @@ def _render_styles() -> None:
             border-color: rgba(185, 28, 28, 0.18);
             background: rgba(254, 226, 226, 0.72);
             color: #991b1b;
+        }
+        .discipline-tag-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.36rem;
+            margin-top: 0.45rem;
+        }
+        .discipline-tag-chip-row span {
+            border: 1px solid #dbeafe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            border-radius: 999px;
+            padding: 0.14rem 0.46rem;
+            font-size: 0.78rem;
+            font-weight: 800;
         }
         .trade-delete-confirm {
             display: flex;
