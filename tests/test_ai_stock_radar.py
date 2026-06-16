@@ -23,6 +23,7 @@ from data.ai_stock_radar import (
     build_technical_entry_zone,
     normalize_radar_inputs,
 )
+from data.buy_setup_quality import setup_quality_note, setup_quality_status
 from data.sector_localization import get_ticker_research_track, localize_sector
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from ui import ai_stock_radar as radar_ui
@@ -31,6 +32,19 @@ from ui.ai_stock_radar import select_radar_symbols
 
 
 NOW = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+
+
+def test_setup_quality_status_uses_setup_score_as_single_canonical_score() -> None:
+    assert setup_quality_status(82) == "HIGH_QUALITY_SETUP"
+    assert setup_quality_status(72) == "STARTER_REASONABLE"
+    assert setup_quality_status(64) == "SETUP_WATCH"
+    assert setup_quality_status(55) == "WEAK_SETUP"
+    assert setup_quality_status(42) == "HIGH_RISK_SETUP"
+    assert setup_quality_status(None) == "DATA_INSUFFICIENT"
+
+    note = setup_quality_note(82, volume_acceptance_score=42)
+    assert "Setup 综合 82" in note
+    assert "量价未确认 / 承接不足" in note
 
 
 def _db(tmpdir: str) -> Path:
@@ -661,24 +675,29 @@ def test_report_localizes_backend_english_copy() -> None:
     assert "自由现金流为负" in html
     assert "杠杆偏高" in html
     assert "自由现金流路径不确定" in html
-    assert "综合评分低于70，不建议作为核心仓" in html
+    assert "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核" in html
+    assert "不建议作为核心仓" not in html
     assert "禁止核心仓买入" not in html
     assert "Revenue growth" not in html
     assert "final score below 70" not in html
 
 
-def test_report_softens_core_position_gate_copy() -> None:
+def test_report_uses_setup_quality_copy_instead_of_core_position_copy() -> None:
     report = {"ticker": "ADBE", "final_score": 64, "risk_score": 62}
     buy_zone_context = {
         "core_position_allowed": False,
-        "core_position_reason": "综合评分低于70，系统不建议作为核心仓；小仓观察仍以技术承接和量价确认为准。",
+        "setup_score": 64,
+        "volume_acceptance_score": 48,
+        "core_position_reason": "旧字段应被展示层忽略",
     }
 
     core_notice = radar_ui._core_position_notice(report, buy_zone_context)
     risk_notice = radar_ui._risk_gate_notice(report)
 
-    assert core_notice == "非核心仓候选：综合分 < 70"
-    assert "系统不建议作为核心仓" in risk_notice
+    assert core_notice == "观察级 Setup：综合分 < 70"
+    assert "买入时机仍以 setup_score" in risk_notice
+    assert "非核心仓候选" not in core_notice
+    assert "系统不建议作为核心仓" not in risk_notice
     assert "禁止核心仓买入" not in core_notice
     assert "禁止核心仓买入" not in risk_notice
 
@@ -1307,7 +1326,7 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "决策摘要" in html
     assert "技术回踩带" in html
     assert "价格行动地图" in html
-    assert "Setup 评分卡" in html
+    assert "买入时机评分卡" in html
     assert "看多逻辑" in html
     assert "核心风险" in html
     assert "关键监控点" in html
@@ -2263,7 +2282,8 @@ def test_entry_display_inside_buy_zone_low_score_still_allows_technical_small_bu
         assert report.entry_display_label == "区内观察"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
-        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
+        assert "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核。" in report.block_reasons
+        assert not any("核心仓" in reason for reason in report.block_reasons)
 
 
 def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
@@ -2829,7 +2849,8 @@ def test_cached_rules_cheap_but_mediocre_company_does_not_allow_buy() -> None:
 
         assert report.decision in {"WAIT", "AVOID"}
         assert report.allowed_add_pct == 0
-        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
+        assert "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核。" in report.block_reasons
+        assert not any("核心仓" in reason for reason in report.block_reasons)
         assert not any("final score below 70" in reason for reason in report.block_reasons)
 
 
@@ -3243,7 +3264,8 @@ def test_low_final_score_cannot_get_core_position() -> None:
         assert report.decision == "ALLOW_BUY"
         assert report.core_max_pct == 0
         assert report.allowed_add_pct > 0
-        assert "综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。" in report.block_reasons
+        assert "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核。" in report.block_reasons
+        assert not any("核心仓" in reason for reason in report.block_reasons)
 
 
 def test_watchlist_empty_and_sample_fallback_do_not_override_real_symbols() -> None:

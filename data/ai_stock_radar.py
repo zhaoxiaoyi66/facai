@@ -887,7 +887,7 @@ def _decision_blocking_reasons(block_reasons: list[str]) -> list[str]:
         "final score below 70",
         "core position is not allowed",
         "综合评分低于70",
-        "系统不建议作为核心仓",
+        "买入时机仍以 setup_score",
         "valuation score below 40",
         "heavy position is not allowed",
     )
@@ -2026,7 +2026,7 @@ def _block_reasons(
     if _value(scores.valuation_score) < 40:
         reasons.append("valuation score below 40; heavy position is not allowed")
     if _value(scores.final_score) < 70:
-        reasons.append("综合评分低于70，系统不建议作为核心仓；是否小仓观察取决于 setup 与量价承接。")
+        reasons.append("公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核。")
     return reasons
 
 
@@ -2057,7 +2057,7 @@ def _summary_reason_text(reason: str) -> str:
     if "valuation score below 40" in lower:
         return "估值评分偏低，不支持重仓。"
     if "final score below 70" in lower or "core position is not allowed" in lower or "综合评分低于70" in text:
-        return "综合评分低于70，系统不建议作为核心仓；小仓观察仍以技术承接和量价确认为准。"
+        return "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核。"
     if "missing current price" in lower:
         return "当前价格缺失，需人工判断。"
     return text

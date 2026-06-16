@@ -91,6 +91,10 @@ def test_display_exposes_acceptance_state_and_quality() -> None:
             "acceptance_reasons": ["缩量回踩，但承接未确认"],
             "missing_confirmation": ["量价确认分低于60"],
             "required_confirmation_price": 105.12,
+            "setup_score": 64,
+            "technical_structure_score": 68,
+            "volume_acceptance_score": 48,
+            "risk_reward_score": 72,
         },
         {"current_shares": 160, "currentAddLimitPercent": 0},
         mode="test",
@@ -104,6 +108,14 @@ def test_display_exposes_acceptance_state_and_quality() -> None:
     assert display["acceptance_action_text"] == "承接不足 / 持有观察 / 当前不建议新增"
     assert display["required_confirmation_price"] == 105.12
     assert any("缩量回踩" in reason for reason in display["acceptance_reasons"])
+    assert display["setup_score"] == 64
+    assert display["technical_structure_score"] == 68
+    assert display["volume_acceptance_score"] == 48
+    assert display["risk_reward_score"] == 72
+    assert display["setup_quality_status"] == "SETUP_WATCH"
+    assert display["setup_quality_text"] == "观察级 Setup"
+    assert "Setup 综合 64" in display["setup_quality_note"]
+    assert "量价未确认 / 承接不足" in display["setup_quality_note"]
 
 
 def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:

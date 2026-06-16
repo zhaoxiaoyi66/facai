@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from data.buy_setup_quality import setup_quality_note, setup_quality_status, setup_quality_text
+
 
 SMALL_BUY_ACTIONS = {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}
 WAIT_ACTIONS = {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}
@@ -102,6 +104,12 @@ def build_buy_zone_display(
     next_step = _next_step_text(action, ctx, missing_text, has_position, current_add)
     entry_hint = account["sizing_action_text"] if current_add is not None and current_add <= 0 else technical["badge_hint"]
     risk_reward_text = _risk_reward_display_text(ctx, row_data)
+    setup_score = _number(_value(ctx, "setup_score", "setupScore"))
+    technical_structure_score = _number(_value(ctx, "technical_structure_score", "technicalStructureScore"))
+    volume_acceptance_score = _number(
+        _value(ctx, "volume_acceptance_score", "volumeAcceptanceScore", "volume_price_score", "volumePriceScore")
+    )
+    risk_reward_score = _number(_value(ctx, "risk_reward_score", "riskRewardScore", "rr_score", "rrScore"))
     main_conclusion = _main_conclusion_text(
         acceptance_text=acceptance_text,
         subzone_display_text=subzone_display_text,
@@ -150,6 +158,13 @@ def build_buy_zone_display(
         "acceptance_reasons": _text_list(_value(ctx, "acceptance_reasons", "acceptanceReasons", default=[])),
         "missing_confirmation": _text_list(_value(ctx, "missing_confirmation", "missingConfirmation", default=[])),
         "required_confirmation_price": _number(_value(ctx, "required_confirmation_price", "requiredConfirmationPrice", "confirmation_price", "confirmationPrice")),
+        "setup_score": setup_score,
+        "technical_structure_score": technical_structure_score,
+        "volume_acceptance_score": volume_acceptance_score,
+        "risk_reward_score": risk_reward_score,
+        "setup_quality_status": setup_quality_status(setup_score),
+        "setup_quality_text": setup_quality_text(setup_score),
+        "setup_quality_note": setup_quality_note(setup_score, volume_acceptance_score=volume_acceptance_score),
         "risk_reward_text": risk_reward_text,
         "risk_reward_note": _risk_reward_note(ctx, row_data),
         "risk_reward": _number(_value(ctx, "risk_reward", "riskReward", "raw_rr", "rawRr")),

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from data.action_fusion import evaluate_action_fusion
 from data.ai_stock_radar import build_cached_ai_stock_radar_report
+from data.buy_setup_quality import setup_quality_note
 from data.buy_zone_engine import build_buy_zone_context
 from data.decision_log import TradeJournalStore
 from data.macro_regime import load_macro_regime
@@ -702,10 +703,9 @@ def _buy_market_status(report: object, gate) -> dict[str, Any]:
         notes.append("不是系统错误；大跌不等于进入买区。")
     if valuation_score is not None and valuation_score < 40:
         notes.append("估值分低，不能因为回撤自动放行。")
-    if final_score is not None and final_score < 70:
-        notes.append("综合评分低于 70，系统不建议作为核心仓；是否小仓取决于 setup 与量价承接。")
     if setup_score is not None:
-        notes.append(f"Setup 分 {setup_score:.1f}；买区由技术结构、量价承接和风险收益比决定。")
+        volume_score = _number(buy_zone_context.get("volume_acceptance_score"))
+        notes.append(setup_quality_note(setup_score, volume_acceptance_score=volume_score))
 
     return {
         "technical_status": technical_status,

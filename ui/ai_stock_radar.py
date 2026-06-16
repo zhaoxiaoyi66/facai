@@ -10,6 +10,7 @@ import streamlit as st
 
 from data.action_fusion import action_fusion_card_html, evaluate_action_fusion
 from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stock_radar_list_row, build_ai_stock_radar_report
+from data.buy_setup_quality import setup_quality_note, setup_quality_status, setup_quality_text
 from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
 from data.entry_display import format_buy_zone, format_zone_status
@@ -2580,20 +2581,20 @@ def _range_position(value: float | None, low: float, high: float) -> float:
 def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | None = None) -> str:
     buy_zone_context = buy_zone_context or {}
     items = [
-        ("Setup", buy_zone_context.get("setup_score")),
+        ("Setup 综合", buy_zone_context.get("setup_score")),
         ("技术结构", buy_zone_context.get("technical_structure_score")),
         ("量能承接", buy_zone_context.get("volume_acceptance_score")),
         ("风险收益", buy_zone_context.get("risk_reward_score")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_number_text(value))}</strong></div>" for label, value in items)
-    core_note = _core_position_notice(report, buy_zone_context)
+    setup_quality = _setup_quality_notice(buy_zone_context)
     setup_note = _setup_score_note(buy_zone_context)
     return (
         '<section class="ai-radar-card score">'
-        '<div class="ai-radar-section-title"><span>Setup 评分卡</span><b>结构 / 量能 / 盈亏比</b></div>'
+        '<div class="ai-radar-section-title"><span>买入时机评分卡</span><b>结构 / 量能 / 盈亏比</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
         f'<p class="ai-radar-setup-explain">{escape(setup_note)}</p>'
-        f'<span class="ai-radar-core-badge">{escape(core_note)}</span>'
+        f'<span class="ai-radar-core-badge">{escape(setup_quality)}</span>'
         "</section>"
     )
 
@@ -2608,25 +2609,32 @@ def _score_explanation(report: dict[str, Any]) -> str:
     support, drag = _score_support_and_drag(report)
     gate = _gate_reason_text(report)
     score_text = _number_text(final_score)
-    return f"综合评分 {score_text}，用于核心仓资格、仓位上限和风险提示，不直接生成买区。主要支撑来自{support}，主要限制来自{drag}。{gate}"
+    return f"综合评分 {score_text}，仅作为公司质量/风险背景；买入时机综合分统一使用 setup_score。主要支撑来自{support}，主要限制来自{drag}。{gate}"
 
 
 def _setup_score_note(buy_zone_context: dict[str, Any]) -> str:
-    if not buy_zone_context:
-        return "Setup 分暂缺；买区应由技术结构、量价承接和风险收益比共同决定。"
     score = _number(buy_zone_context.get("setup_score"))
-    if score is not None and score >= 70:
-        return "观察级 setup，仍需量价确认和账户额度配合。"
-    return "观察级 setup，量价未确认，不建议新增。"
+    volume_score = _number(buy_zone_context.get("volume_acceptance_score"))
+    return setup_quality_note(score, volume_acceptance_score=volume_score)
+
+
+def _setup_quality_notice(buy_zone_context: dict[str, Any]) -> str:
+    score = _number(buy_zone_context.get("setup_score"))
+    status = setup_quality_status(score)
+    text = setup_quality_text(score)
+    if status == "DATA_INSUFFICIENT":
+        return "数据不足：Setup 综合暂缺"
+    if status == "SETUP_WATCH":
+        return "观察级 Setup：综合分 < 70"
+    if status == "WEAK_SETUP":
+        return "买入质量偏弱：综合分 < 60"
+    if status == "HIGH_RISK_SETUP":
+        return "高风险 Setup：综合分 < 50"
+    return f"{text}：Setup 综合 {_number_text(score)}"
 
 
 def _core_position_notice(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
-    if buy_zone_context and buy_zone_context.get("core_position_allowed") is False:
-        return "非核心仓候选：综合分 < 70"
-    final_score = _number(report.get("final_score"))
-    if final_score is not None and final_score < 70:
-        return "非核心仓候选：综合分 < 70"
-    return "核心仓候选：仍需量价承接和风险收益比确认"
+    return _setup_quality_notice(buy_zone_context)
 
 
 def _score_support_and_drag(report: dict[str, Any]) -> tuple[str, str]:
@@ -2667,7 +2675,7 @@ def _risk_gate_notice(report: dict[str, Any]) -> str:
     final_score = _number(report.get("final_score"))
     risk_score = _number(report.get("risk_score"))
     if final_score is not None and final_score < 70:
-        return "风险提示：综合评分低于70，系统不建议作为核心仓。"
+        return "风险提示：公司综合评分低于70；买入时机仍以 setup_score 和量价承接复核。"
     if risk_score is not None and risk_score < 55:
         return "风险提示：风险评分偏低，仍需风险复核。"
     return "风险提示：未满足强买条件，仍需量价与风险复核。"
@@ -4385,8 +4393,8 @@ def _localize_report_text(text: str) -> str:
         "high leverage": "杠杆偏高",
         "FCF trajectory": "自由现金流路径不确定",
         "fcf trajectory": "自由现金流路径不确定",
-        "final score below 70; core position is not allowed.": "综合评分低于70，不建议作为核心仓",
-        "final score below 70; core position is not allowed": "综合评分低于70，不建议作为核心仓",
+        "final score below 70; core position is not allowed.": "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核",
+        "final score below 70; core position is not allowed": "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score 与量价承接复核",
         "Operating Margin": "经营利润率",
         "FCF Margin": "自由现金流率",
         "ROIC": "投入资本回报率",
