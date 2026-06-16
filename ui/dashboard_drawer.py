@@ -380,10 +380,21 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
 def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | None = None) -> str:
     decision = decision or build_drawer_primary_decision(row)
     if _drawer_low_data_confidence(row, decision):
+        momentum_note = _drawer_short_sentence(decision.get("momentum_note"), 42)
+        momentum_html = (
+            '<div class="drawer-decision-grid">'
+            '<span><b>动能辅助</b>'
+            f'<strong>{escape(momentum_note)}</strong>'
+            '</span>'
+            '</div>'
+            if momentum_note
+            else ""
+        )
         return (
             '<div class="drawer-decision-card drawer-quick-decision-card">'
             '<div class="drawer-card-title">快速决策</div>'
             '<p class="drawer-single-line-note">数据可信度低，先复核关键数据。</p>'
+            f'{momentum_html}'
             '</div>'
         )
     field_items = [

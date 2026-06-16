@@ -53,6 +53,31 @@ def test_quick_decision_uses_no_position_pause_copy_for_data_insufficient() -> N
     assert "允许买入" not in html
 
 
+def test_low_data_confidence_quick_decision_keeps_momentum_note() -> None:
+    row = pd.Series(
+        {
+            "symbol": "ADBE",
+            "price": "$211.07",
+            "buyZoneContext": {
+                "current_action": "DATA_INSUFFICIENT",
+                "missing_fields": ["daily_ohlcv"],
+            },
+            "buyZoneDisplay": {
+                "action_code": "DATA_INSUFFICIENT",
+                "main_action_text": "仅观察 / 当前不建议新增",
+                "momentum_note": "RSI 33，布林位置中性，动能未给额外信号。",
+            },
+        }
+    )
+
+    decision = dashboard_drawer.build_drawer_primary_decision(row)
+    html = dashboard_drawer._drawer_quick_decision_html(row, decision)
+
+    assert "数据可信度低，先复核关键数据。" in html
+    assert "动能辅助" in html
+    assert "RSI 33，布林位置中性，动能未给额外信号。" in html
+
+
 def test_quick_decision_shows_batting_zone_when_context_is_complete() -> None:
     row = pd.Series(
         {
