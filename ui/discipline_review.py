@@ -142,6 +142,7 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
     intent_seven = intent_stats["seven_days"]
     intent_thirty = intent_stats["thirty_days"]
     flag_counts = intent_thirty["attention_flag_counts"]
+    discipline_tag_counts = intent_thirty.get("discipline_tag_counts", {})
     stock_stage_counts = intent_thirty.get("stock_stage_counts", {})
     buy_behavior_counts = intent_thirty.get("buy_behavior_counts", {})
     sell_behavior_counts = intent_thirty.get("sell_behavior_counts", {})
@@ -156,7 +157,8 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("无下跌预案", str(flag_counts.get("无下跌预案", 0)), "最近 30 天"),
         ("长期跟踪不足", str(flag_counts.get("长期跟踪不足", 0)), "最近 30 天"),
         ("组合碎片化风险", str(flag_counts.get("组合碎片化风险", 0)), "最近 30 天"),
-        ("临时卖出风险", str(flag_counts.get("临时卖出风险", 0)), "最近 30 天"),
+        ("情绪卖出风险", str(flag_counts.get("情绪卖出风险", 0)), "最近 30 天"),
+        ("卖出原因不清", str(flag_counts.get("卖出原因不清", 0)), "最近 30 天"),
         ("卖出依据不清", str(flag_counts.get("卖出依据不清", 0)), "最近 30 天"),
         ("卖出比例未想清楚", str(flag_counts.get("卖出比例未想清楚", 0)), "最近 30 天"),
         ("资金安排不清", str(flag_counts.get("资金安排不清", 0)), "最近 30 天"),
@@ -166,6 +168,19 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("量能承接 < 50 仍买入", str(intent_thirty["low_volume_acceptance_buy_count"]), "只做复盘"),
     ]
     st.markdown(_card_grid_html(intent_cards), unsafe_allow_html=True)
+    discipline_sell_cards = [
+        ("组合精简", str(discipline_tag_counts.get("组合精简", 0)), "纪律性卖出"),
+        ("腾出仓位", str(discipline_tag_counts.get("腾出仓位", 0)), "纪律性卖出"),
+        ("认知不匹配退出", str(discipline_tag_counts.get("认知不匹配退出", 0)), "纪律性卖出"),
+        ("噪音过滤", str(discipline_tag_counts.get("噪音过滤", 0)), "纪律性卖出"),
+        ("等待更好买点", str(discipline_tag_counts.get("等待更好买点", 0)), "纪律性卖出"),
+        ("情绪卖出", str(flag_counts.get("情绪卖出风险", 0)), "风险性卖出"),
+        ("卖出依据不清", str(flag_counts.get("卖出依据不清", 0)), "风险性卖出"),
+        ("无回补预案", str(flag_counts.get("无回补预案", 0)), "风险性卖出"),
+        ("资金安排不清", str(flag_counts.get("资金安排不清", 0)), "风险性卖出"),
+        ("卖出后组合不清晰", str(flag_counts.get("卖出后组合不清晰", 0)), "风险性卖出"),
+    ]
+    st.markdown(_card_grid_html(discipline_sell_cards), unsafe_allow_html=True)
     stage_cards = [(option, str(stock_stage_counts.get(option, 0)), "股票阶段") for option in STOCK_STAGE_OPTIONS]
     buy_behavior_cards = [(option.split("：", 1)[0], str(buy_behavior_counts.get(option, 0)), "买入行为") for option in BUY_BEHAVIOR_OPTIONS]
     sell_behavior_cards = [(option.split("：", 1)[0], str(sell_behavior_counts.get(option, 0)), "卖出行为") for option in SELL_BEHAVIOR_OPTIONS]
@@ -210,7 +225,7 @@ def dashboard_discipline_card_html(snapshot: dict[str, Any]) -> str:
         <li>最近 30 天交易次数：{int(intent.get("trade_count") or 0)}</li>
         <li>有复盘关注点：{int(intent.get("attention_trade_count") or 0)}</li>
         <li>怕错过风险：{int(flag_counts.get("怕错过风险") or 0)}</li>
-        <li>临时卖出风险：{int(flag_counts.get("临时卖出风险") or 0)}</li>
+        <li>情绪卖出风险：{int(flag_counts.get("情绪卖出风险") or 0)}</li>
         <li>无回补预案：{int(flag_counts.get("无回补预案") or 0)}</li>
       </ul>
     </section>

@@ -73,13 +73,13 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         }
         sell_payload = {
             "intent_side": "sell",
-            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[4],
-            "trade_behavior_self_judgment": SELL_BEHAVIOR_OPTIONS[4],
-            SELL_INTENT_QUESTIONS[0]["field"]: SELL_INTENT_QUESTIONS[0]["options"][1],
-            SELL_INTENT_QUESTIONS[1]["field"]: SELL_INTENT_QUESTIONS[1]["options"][0],
+            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[5],
+            "trade_behavior_self_judgment": SELL_BEHAVIOR_OPTIONS[6],
+            SELL_INTENT_QUESTIONS[0]["field"]: SELL_INTENT_QUESTIONS[0]["options"][4],
+            SELL_INTENT_QUESTIONS[1]["field"]: SELL_INTENT_QUESTIONS[1]["options"][4],
             SELL_INTENT_QUESTIONS[2]["field"]: SELL_INTENT_QUESTIONS[2]["options"][2],
-            SELL_INTENT_QUESTIONS[3]["field"]: SELL_INTENT_QUESTIONS[3]["options"][2],
-            SELL_INTENT_QUESTIONS[4]["field"]: SELL_INTENT_QUESTIONS[4]["options"][1],
+            SELL_INTENT_QUESTIONS[3]["field"]: SELL_INTENT_QUESTIONS[3]["options"][4],
+            SELL_INTENT_QUESTIONS[4]["field"]: SELL_INTENT_QUESTIONS[4]["options"][2],
             SELL_INTENT_QUESTIONS[5]["field"]: SELL_INTENT_QUESTIONS[5]["options"][0],
         }
         store.save_intent(
@@ -117,7 +117,7 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         assert flags["情绪卖出风险"] == 1
         assert flags["怕错过风险"] == 1
         assert flags["无下跌预案"] == 1
-        assert flags["临时卖出风险"] == 1
+        assert flags["外部噪音影响"] == 1
         assert flags["卖出比例未想清楚"] == 1
         assert flags["资金安排不清"] == 1
         assert flags["无回补预案"] == 1
@@ -126,7 +126,7 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         assert thirty["stock_stage_counts"]["还没想清楚"] == 1
         assert thirty["stock_stage_counts"]["破位退潮 / 逻辑受损"] == 1
         assert thirty["buy_behavior_counts"][BUY_BEHAVIOR_OPTIONS[3]] == 1
-        assert thirty["sell_behavior_counts"][SELL_BEHAVIOR_OPTIONS[4]] == 1
+        assert thirty["sell_behavior_counts"][SELL_BEHAVIOR_OPTIONS[6]] == 1
 
 
 def test_trade_intent_store_persists_sell_pre_trade_choices() -> None:
@@ -184,7 +184,7 @@ def test_sell_intent_defaults_to_not_clear_and_flags_attention_points() -> None:
     assert payload["capital_plan_intent"] == "还没想清楚"
     assert payload["rebound_plan_intent"] == "还没想清楚"
     assert payload["portfolio_clarity_after_sell_intent"] == "还没想清楚"
-    assert "临时卖出风险" in payload["attention_points"]
+    assert "卖出原因不清" in payload["attention_points"]
     assert "卖出依据不清" in payload["attention_points"]
     assert "卖出比例未想清楚" in payload["attention_points"]
     assert "资金安排不清" in payload["attention_points"]
@@ -206,6 +206,33 @@ def test_sell_full_exit_is_not_automatically_attention_flagged() -> None:
     )
 
     assert payload["attention_points"] == "[]"
+
+
+def test_sell_cognitive_mismatch_exit_creates_discipline_tags_not_attention_flags() -> None:
+    payload = normalize_trade_intent_payload(
+        {
+            "intent_side": "sell",
+            "stock_stage_self_judgment": "主题拥挤 / 噪音升高",
+            "trade_behavior_self_judgment": "认知不匹配退出：我没有真正理解这只股票，不适合继续持有",
+            "sell_reason_intent": "认知不匹配：我没有真正理解这只股票，不适合继续持有",
+            "sell_basis_intent": "噪音过滤：外部观点太多，我不想被别人安利牵着走",
+            "sell_size_intent": "全部卖出，暂时退出这只股票",
+            "capital_plan_intent": "腾给更高确定性的核心方向",
+            "rebound_plan_intent": "不追，除非重新研究清楚并出现新的买点",
+            "portfolio_clarity_after_sell_intent": "会，减少噪音、降低风险或让仓位更聚焦",
+        }
+    )
+
+    assert "认知不匹配退出" in payload["discipline_tags"]
+    assert "噪音过滤" in payload["discipline_tags"]
+    assert "腾出仓位" in payload["discipline_tags"]
+    assert "等待更好买点" in payload["discipline_tags"]
+    assert payload["attention_points"] == "[]"
+    with TemporaryDirectory() as tmpdir:
+        store = TradeIntentStore(Path(tmpdir) / "intent.sqlite")
+        saved = store.save_intent(12, "NOK", "sell", payload)
+        assert "认知不匹配退出" in saved["discipline_tags"]
+        assert saved["attention_flags"] == []
 
 
 def test_buy_intent_defaults_to_not_clear_and_flags_attention_points() -> None:
@@ -294,6 +321,7 @@ def test_trade_intent_record_html_shows_review_snapshots_and_attention_points() 
             "portfolio_clarity_intent": BUY_INTENT_QUESTIONS[4]["options"][0],
         },
         "attention_flags": ["新增小仓风险", "怕错过风险"],
+        "discipline_tags": ["组合精简", "认知不匹配退出"],
         "setup_score_snapshot": 64,
         "technical_structure_score_snapshot": 70,
         "volume_acceptance_score_snapshot": 48,
@@ -308,6 +336,8 @@ def test_trade_intent_record_html_shows_review_snapshots_and_attention_points() 
     assert "市场重新定价 / 事件催化" in html
     assert "本次交易行为" in html
     assert "右侧事件买入" in html
+    assert "纪律标签" in html
+    assert "组合精简" in html
     assert "复盘关注点" in html
     assert "新增小仓风险" in html
     assert "当时 Setup 评分" in html

@@ -120,12 +120,14 @@ def test_trade_journal_row_shows_intent_review_tags_without_pass_fail_copy() -> 
         {
             "action_type": "buy",
             "trade_intent_review": {
+                "discipline_tags": ["组合精简"],
                 "attention_flags": ["怕错过风险"],
             },
         }
     )
 
     assert "有交易意图记录" in html
+    assert "有纪律标签" in html
     assert "有复盘关注点" in html
     assert "\u901a\u8fc7" not in html
     assert "\u672a\u901a\u8fc7" not in html

@@ -20,18 +20,35 @@ BUY_ATTENTION_FLAG_LABELS = [
 ]
 
 SELL_ATTENTION_FLAG_LABELS = [
-    "临时卖出风险",
+    "情绪卖出风险",
+    "卖出原因不清",
     "卖出依据不清",
     "卖出比例未想清楚",
     "资金安排不清",
     "无回补预案",
     "卖出后组合不清晰",
+    "外部噪音影响",
+    "卖出行为不清",
+]
+
+SELL_DISCIPLINE_TAG_LABELS = [
+    "计划止盈",
+    "风险止错",
+    "仓位再平衡",
+    "调仓换股",
+    "组合精简",
+    "腾出仓位",
+    "认知不匹配退出",
+    "噪音过滤",
+    "等待更好买点",
+    "降低组合复杂度",
 ]
 
 STOCK_STAGE_OPTIONS = [
     "低位修复 / 左侧筑底",
     "市场重新定价 / 事件催化",
     "快速重估 / 主升加速",
+    "主题拥挤 / 噪音升高",
     "高位拥挤 / 兑现压力",
     "破位退潮 / 逻辑受损",
     "还没想清楚",
@@ -51,6 +68,8 @@ SELL_BEHAVIOR_OPTIONS = [
     "风险止错：基本面变差、技术破位或逻辑受损",
     "仓位再平衡：单票过重，主动降低波动",
     "调仓换股：换到我认为更好的机会",
+    "组合精简 / 腾出仓位：减少小仓和噪音，让组合更集中",
+    "认知不匹配退出：我没有真正理解这只股票，不适合继续持有",
     "情绪减压：短期波动让我不舒服，想先卖掉",
     "还没想清楚",
 ]
@@ -194,20 +213,26 @@ SELL_INTENT_QUESTIONS = [
         "question": "我为什么卖出？",
         "options": [
             "计划内止盈 / 止错 / 减仓 / 仓位控制",
+            "认知不匹配：我没有真正理解这只股票，不适合继续持有",
+            "噪音过多 / 主题拥挤：外部安利太多，影响判断质量",
+            "组合精简 / 腾出仓位：减少小仓，让组合更集中",
             "短期波动让我不舒服，想先卖了再说",
             "还没想清楚",
         ],
-        "attention": "临时卖出风险",
+        "attention_by_index": {4: "情绪卖出风险", 5: "卖出原因不清"},
     },
     {
         "field": "sell_basis_intent",
         "question": "这笔卖出的核心依据是什么？",
         "options": [
             "基本面变差 / 技术破位 / 估值极端 / 仓位过重",
+            "认知边界：我没有真正看懂它的核心逻辑",
+            "组合纪律：去掉低确定性小仓，提高组合集中度",
+            "噪音过滤：外部观点太多，我不想被别人安利牵着走",
             "别人唱空 / 短期下跌 / 盘中情绪影响",
             "还没想清楚",
         ],
-        "attention": "卖出依据不清",
+        "attention_by_index": {4: "外部噪音影响", 5: "卖出依据不清"},
     },
     {
         "field": "sell_size_intent",
@@ -225,21 +250,25 @@ SELL_INTENT_QUESTIONS = [
         "question": "卖出后的资金安排是什么？",
         "options": [
             "提高现金 / 降低风险 / 等更好买点",
+            "腾给更高确定性的核心方向",
+            "等我真正研究清楚后，再考虑是否重新买入",
             "换入我认为更好的机会",
             "还没想清楚",
         ],
         "attention": "资金安排不清",
-        "attention_on": [2],
+        "attention_on": [4],
     },
     {
         "field": "rebound_plan_intent",
         "question": "如果卖出后股价继续上涨，我怎么处理？",
         "options": [
+            "不追，除非重新研究清楚并出现新的买点",
             "有明确回补条件，或者明确接受不回补",
             "没有计划，涨了可能会后悔或追回",
             "还没想清楚",
         ],
         "attention": "无回补预案",
+        "attention_on": [2, 3],
     },
     {
         "field": "portfolio_clarity_after_sell_intent",
@@ -312,6 +341,7 @@ class TradeIntentStore:
                     question_4_answer TEXT,
                     question_5_answer TEXT,
                     question_6_answer TEXT,
+                    discipline_tags_json TEXT,
                     attention_flags_json TEXT,
                     setup_score_snapshot REAL,
                     technical_structure_score_snapshot REAL,
@@ -335,6 +365,7 @@ class TradeIntentStore:
                 {
                     "stock_stage_self_judgment": "TEXT",
                     "trade_behavior_self_judgment": "TEXT",
+                    "discipline_tags_json": "TEXT",
                 },
             )
             conn.execute(
@@ -366,6 +397,7 @@ class TradeIntentStore:
         side = normalized["intent_side"]
         review_type = intent_title(side)
         answers = _review_answers(normalized)
+        discipline_tags = _discipline_tags(normalized)
         attention_flags = _attention_flags(normalized)
         stock_stage = normalized.get("stock_stage_self_judgment")
         trade_behavior = normalized.get("trade_behavior_self_judgment")
@@ -387,6 +419,7 @@ class TradeIntentStore:
                     question_4_answer,
                     question_5_answer,
                     question_6_answer,
+                    discipline_tags_json,
                     attention_flags_json,
                     setup_score_snapshot,
                     technical_structure_score_snapshot,
@@ -401,7 +434,7 @@ class TradeIntentStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_id) DO UPDATE SET
                     symbol = excluded.symbol,
                     side = excluded.side,
@@ -414,6 +447,7 @@ class TradeIntentStore:
                     question_4_answer = excluded.question_4_answer,
                     question_5_answer = excluded.question_5_answer,
                     question_6_answer = excluded.question_6_answer,
+                    discipline_tags_json = excluded.discipline_tags_json,
                     attention_flags_json = excluded.attention_flags_json,
                     setup_score_snapshot = excluded.setup_score_snapshot,
                     technical_structure_score_snapshot = excluded.technical_structure_score_snapshot,
@@ -440,6 +474,7 @@ class TradeIntentStore:
                     answers[3],
                     answers[4],
                     answers[5],
+                    json.dumps(discipline_tags, ensure_ascii=False),
                     json.dumps(attention_flags, ensure_ascii=False),
                     snapshot_values["setup_score_snapshot"],
                     snapshot_values["technical_structure_score_snapshot"],
@@ -563,7 +598,7 @@ def buy_intent_attention_points(payload: dict[str, Any]) -> list[str]:
         attention_on = set(int(index) for index in item.get("attention_on", [1, 2]))
         if any(0 <= index < len(options) and value == options[index] for index in attention_on):
             points.append(str(item["attention"]))
-    return points
+    return _dedupe_labels(points, TRADE_INTENT_ATTENTION_FLAG_LABELS)
 
 
 def _normalize_sell_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
@@ -581,9 +616,54 @@ def _normalize_sell_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
     result["position_intent"] = result["sell_size_intent"]
     result["timing_intent"] = result["sell_basis_intent"]
     result["risk_intent"] = result["rebound_plan_intent"]
+    discipline_tags = sell_intent_discipline_tags(result)
     attention = sell_intent_attention_points(result)
+    result["discipline_tags"] = json.dumps(discipline_tags, ensure_ascii=False)
     result["attention_points"] = json.dumps(attention, ensure_ascii=False)
     return result
+
+
+def sell_intent_discipline_tags(payload: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    stage = str(payload.get("stock_stage_self_judgment") or "").strip()
+    behavior = str(payload.get("trade_behavior_self_judgment") or "").strip()
+    if stage == "主题拥挤 / 噪音升高":
+        tags.append("噪音过滤")
+    behavior_tags = {
+        "计划止盈：涨到目标或快速重估后兑现": ["计划止盈"],
+        "风险止错：基本面变差、技术破位或逻辑受损": ["风险止错"],
+        "仓位再平衡：单票过重，主动降低波动": ["仓位再平衡"],
+        "调仓换股：换到我认为更好的机会": ["调仓换股"],
+        "组合精简 / 腾出仓位：减少小仓和噪音，让组合更集中": ["组合精简", "腾出仓位", "降低组合复杂度"],
+        "认知不匹配退出：我没有真正理解这只股票，不适合继续持有": ["认知不匹配退出"],
+    }
+    for tag in behavior_tags.get(behavior, []):
+        tags.append(tag)
+
+    values = {str(payload.get(str(item["field"])) or "").strip() for item in SELL_INTENT_QUESTIONS}
+    if "认知不匹配：我没有真正理解这只股票，不适合继续持有" in values:
+        tags.append("认知不匹配退出")
+    if "噪音过多 / 主题拥挤：外部安利太多，影响判断质量" in values:
+        tags.append("噪音过滤")
+    if "组合精简 / 腾出仓位：减少小仓，让组合更集中" in values:
+        tags.extend(["组合精简", "腾出仓位", "降低组合复杂度"])
+    if "认知边界：我没有真正看懂它的核心逻辑" in values:
+        tags.append("认知不匹配退出")
+    if "组合纪律：去掉低确定性小仓，提高组合集中度" in values:
+        tags.extend(["组合精简", "降低组合复杂度"])
+    if "噪音过滤：外部观点太多，我不想被别人安利牵着走" in values:
+        tags.append("噪音过滤")
+    if "提高现金 / 降低风险 / 等更好买点" in values:
+        tags.append("等待更好买点")
+    if "腾给更高确定性的核心方向" in values:
+        tags.append("腾出仓位")
+    if "等我真正研究清楚后，再考虑是否重新买入" in values:
+        tags.extend(["等待更好买点", "认知不匹配退出"])
+    if "换入我认为更好的机会" in values:
+        tags.append("调仓换股")
+    if "不追，除非重新研究清楚并出现新的买点" in values:
+        tags.append("等待更好买点")
+    return _dedupe_labels(tags, SELL_DISCIPLINE_TAG_LABELS)
 
 
 def sell_intent_attention_points(payload: dict[str, Any]) -> list[str]:
@@ -599,10 +679,17 @@ def sell_intent_attention_points(payload: dict[str, Any]) -> list[str]:
         field = str(item["field"])
         options = list(item["options"])
         value = str(payload.get(field) or "").strip()
+        attention_by_index = {int(index): str(label) for index, label in dict(item.get("attention_by_index", {})).items()}
+        for index, label in attention_by_index.items():
+            if 0 <= index < len(options) and value == options[index]:
+                points.append(label)
+                break
+        if attention_by_index:
+            continue
         attention_on = set(int(index) for index in item.get("attention_on", [1, 2]))
         if any(0 <= index < len(options) and value == options[index] for index in attention_on):
             points.append(str(item["attention"]))
-    return points
+    return _dedupe_labels(points, TRADE_INTENT_ATTENTION_FLAG_LABELS)
 
 
 def intent_side_for_action(action_type: object) -> str:
@@ -631,6 +718,13 @@ def _attention_flags(payload: dict[str, Any]) -> list[str]:
         return sell_intent_attention_points(payload)
     if side == "buy":
         return buy_intent_attention_points(payload)
+    return []
+
+
+def _discipline_tags(payload: dict[str, Any]) -> list[str]:
+    side = str(payload.get("intent_side") or "").strip().lower()
+    if side == "sell":
+        return sell_intent_discipline_tags(payload)
     return []
 
 
@@ -682,6 +776,7 @@ def _period_review_stats(
     period_entries = [entry for entry in entries if _is_trade_entry(entry) and _date_in_range(entry.get("trade_date"), start, current)]
     period_reviews = [review for review in reviews if _date_in_range(review.get("created_at"), start, current)]
     flag_counts = {flag: 0 for flag in TRADE_INTENT_ATTENTION_FLAG_LABELS}
+    discipline_tag_counts = {tag: 0 for tag in SELL_DISCIPLINE_TAG_LABELS}
     stock_stage_counts = {option: 0 for option in STOCK_STAGE_OPTIONS}
     buy_behavior_counts = {option: 0 for option in BUY_BEHAVIOR_OPTIONS}
     sell_behavior_counts = {option: 0 for option in SELL_BEHAVIOR_OPTIONS}
@@ -721,6 +816,12 @@ def _period_review_stats(
         for flag in clean_flags:
             if flag in flag_counts:
                 flag_counts[flag] += 1
+        tags = review.get("discipline_tags")
+        if not isinstance(tags, list):
+            tags = _loads_list(review.get("discipline_tags_json"))
+        for tag in [str(item) for item in tags if str(item or "").strip()]:
+            if tag in discipline_tag_counts:
+                discipline_tag_counts[tag] += 1
 
     return {
         "days": days,
@@ -731,6 +832,7 @@ def _period_review_stats(
         "low_setup_buy_count": low_setup_buy_count,
         "low_volume_acceptance_buy_count": low_volume_acceptance_buy_count,
         "attention_flag_counts": flag_counts,
+        "discipline_tag_counts": discipline_tag_counts,
         "stock_stage_counts": stock_stage_counts,
         "buy_behavior_counts": buy_behavior_counts,
         "sell_behavior_counts": sell_behavior_counts,
@@ -792,6 +894,16 @@ def _clean_optional_choice(value: object, options: list[str]) -> str:
     return _clean_choice(text, options)
 
 
+def _dedupe_labels(values: list[str], allowed: list[str]) -> list[str]:
+    allowed_set = set(allowed)
+    result: list[str] = []
+    for value in values:
+        label = str(value or "").strip()
+        if label and label in allowed_set and label not in result:
+            result.append(label)
+    return result
+
+
 def _hkt_now() -> str:
     return datetime.now(ZoneInfo("Asia/Hong_Kong")).isoformat(timespec="seconds")
 
@@ -821,6 +933,7 @@ def _review_row_to_dict(columns: list[str], row: Any) -> dict[str, Any]:
     side = str(result.get("side") or payload.get("intent_side") or "").strip().lower()
     result["payload"] = payload
     result["attention_flags"] = flags
+    result["discipline_tags"] = _loads_list(result.get("discipline_tags_json"))
     result["trade_entry_id"] = result.get("trade_id")
     result["action_type"] = side
     result["intent_side"] = side

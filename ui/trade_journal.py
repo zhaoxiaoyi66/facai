@@ -4340,6 +4340,9 @@ def _entry_review_tags_html(entry: dict) -> str:
     intent = entry.get("trade_intent_review")
     if isinstance(intent, dict):
         chips.append("有交易意图记录")
+        discipline_tags = intent.get("discipline_tags")
+        if isinstance(discipline_tags, list) and discipline_tags:
+            chips.append("有纪律标签")
         flags = intent.get("attention_flags")
         if isinstance(flags, list) and flags:
             chips.append("有复盘关注点")

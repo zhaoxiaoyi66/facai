@@ -14,6 +14,7 @@ from data.trade_intent import (
     STOCK_STAGE_OPTIONS,
     buy_intent_attention_points,
     intent_title,
+    sell_intent_discipline_tags,
     sell_intent_attention_points,
 )
 
@@ -134,6 +135,10 @@ def _render_sell_intent_body(
         )
 
     st.info("本次卖出意图将随交易记录保存，用于日后复盘。")
+    discipline_tags = sell_intent_discipline_tags(payload)
+    if discipline_tags:
+        tags = "、".join(discipline_tags)
+        st.info(f"本次交易标签：{tags}")
     attention_points = sell_intent_attention_points(payload)
     if attention_points:
         points = "、".join(attention_points)
@@ -190,6 +195,7 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
             f'<p class="trade-intent-title">{escape(title)}</p>'
             f"{label_html}"
             f'<div class="trade-intent-grid buy">{body}</div>'
+            f"{_discipline_html(intent)}"
             f"{_attention_html(intent)}"
             f"{_snapshot_html(intent)}"
             "</section>"
@@ -208,6 +214,7 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
             f'<p class="trade-intent-title">{escape(title)}</p>'
             f"{label_html}"
             f'<div class="trade-intent-grid sell">{body}</div>'
+            f"{_discipline_html(intent)}"
             f"{_attention_html(intent)}"
             f"{_snapshot_html(intent)}"
             "</section>"
@@ -228,6 +235,7 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
         f'<p class="trade-intent-title">{escape(title)}</p>'
         f"{_intent_label_html(intent)}"
         f'<div class="trade-intent-grid">{body}</div>'
+        f"{_discipline_html(intent)}"
         f"{_attention_html(intent)}"
         f"{_snapshot_html(intent)}"
         "</section>"
@@ -247,6 +255,16 @@ def _intent_label_html(intent: dict[str, Any]) -> str:
         for label, value in items
     )
     return f'<div class="trade-intent-label-grid">{body}</div>'
+
+
+def _discipline_html(intent: dict[str, Any]) -> str:
+    tags = intent.get("discipline_tags")
+    if not isinstance(tags, list):
+        tags = []
+    if not tags:
+        return ""
+    chips = "".join(f"<span>{escape(str(tag))}</span>" for tag in tags)
+    return f'<div class="trade-intent-discipline"><b>纪律标签</b><div>{chips}</div></div>'
 
 
 def _attention_html(intent: dict[str, Any]) -> str:
