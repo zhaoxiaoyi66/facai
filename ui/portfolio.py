@@ -2265,13 +2265,13 @@ def _trading_discipline_items(row: dict) -> list[tuple[str, object]]:
         hasReentryPlan=False,
         config=config,
     )
-    can_sell_core = "允许" if macro_check.canSellCore else "不允许，除非投资逻辑已确认破裂"
+    can_sell_core = "可作为参考" if macro_check.canSellCore else "系统不建议动核心仓，除非投资逻辑已确认破裂"
     requires_reentry = "需要" if trim_check.requiresReentryPlan else "不需要"
     return [
         ("股票分类", POSITION_CLASS_LABELS.get(position_class, position_class)),
         ("核心仓比例", format_percent(core_pct, already_percent=False)),
         ("交易仓比例", format_percent(trading_pct, already_percent=False)),
-        ("允许卖核心仓", can_sell_core),
+        ("核心仓卖出提示", can_sell_core),
         ("需要回补计划", requires_reentry),
         ("纪律提醒", _discipline_reminder_text(row, macro_check, trim_check)),
     ]
@@ -2371,7 +2371,7 @@ def _system_explanation_text(row: dict) -> str:
     current_add = _percent_text(row.get("systemCurrentAdd"))
     reason = _main_reason_text(row)
     if lane == "actionable":
-        return f"系统允许新增，当前可加 {current_add}，系统仓位上限 {max_position}。"
+        return f"系统建议小仓观察，当前新增参考 {current_add}，系统仓位上限 {max_position}。"
     if lane == "review":
         return f"系统建议先复核；主要原因：{reason}。"
     if lane == "blocked":

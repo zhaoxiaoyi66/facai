@@ -1357,7 +1357,7 @@ def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> 
         f'<div><span>击球区</span><strong>{escape(str(zone_sources.get("buy_zone") or "missing"))}</strong></div>'
         f'<div><span>观察区</span><strong>{escape(str(zone_sources.get("watch_zone") or "missing"))}</strong></div>'
         f'<div><span>追高区</span><strong>{escape(str(zone_sources.get("chase_zone") or "missing"))}</strong></div>'
-        f'<div><span>阻止原因</span><strong>{escape(_inline_list(debug.get("block_reasons")))}</strong></div>'
+        f'<div><span>风险提示原因</span><strong>{escape(_inline_list(debug.get("block_reasons")))}</strong></div>'
         '</div>'
         f'{below_note}'
         '<table class="ai-radar-debug-table">'

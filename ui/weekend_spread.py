@@ -840,7 +840,7 @@ def _backfill_mapping_status_text(value: object) -> str:
 def _basis_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
     overrides = {
-        "ALLOW_SHORT": "允许开空观察",
+        "ALLOW_SHORT": "高溢价观察",
         "BLOCK_MAPPING": "映射未确认",
         "BLOCK_LIQUIDITY": "流动性风险",
         "BLOCK_DATA": "数据不足",

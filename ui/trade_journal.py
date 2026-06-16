@@ -155,7 +155,7 @@ SELL_EMOTIONAL_MOODS = {"anxiety", "macro_fear", "panic_sell", "regret_chase"}
 BUY_EMOTIONAL_MOODS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
 FIX_REQUIRED_BLOCKERS = {"planned_actual_sell_pct_mismatch", "reentry_plan_required_before_trim_or_sell"}
 DISCIPLINE_STATUS_LABELS = {
-    "allowed": "允许执行",
+    "allowed": "风险较低",
     "warning": "需要复核",
     "blocked": "纪律不建议执行",
     "hold": "无需卖出",
@@ -2101,7 +2101,7 @@ def _render_trading_discipline_result(result) -> None:
         ("纪律状态", DISCIPLINE_STATUS_LABELS.get(status, status or "N/A")),
         ("卖出等级", str(result.sellLevel or "N/A")),
         ("上限比例", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
-        ("允许卖核心仓", _yes_no(result.canSellCore)),
+        ("核心仓卖出提示", "可作为参考" if result.canSellCore else "系统不建议动核心仓"),
         ("需要回补计划", _yes_no(result.requiresReentryPlan)),
     ]
     metric_html = "".join(

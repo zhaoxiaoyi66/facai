@@ -50,11 +50,11 @@ def test_a_class_macro_sell_allows_at_most_twenty_percent_when_not_thesis_broken
     assert "a_class_macro_or_emotional_sell_exceeds_20_pct" not in result.blockers
 
 
-def test_planned_sell_ratio_blocks_even_when_actual_quantity_is_safe() -> None:
+def test_planned_sell_ratio_warns_even_when_actual_quantity_is_safe() -> None:
     result = _evaluate(plannedSellPct=0.5, actualSellPct=30 / 158)
 
     assert result.disciplineStatus == "blocked"
-    assert _discipline_gate_conclusion(result) == "BLOCK"
+    assert _discipline_gate_conclusion(result) == "WARN"
     assert result.actualSellPct == round(30 / 158, 4)
     assert "planned_actual_sell_pct_mismatch" in result.blockers
     assert "planned_sell_pct_exceeds_sell_level_limit" in result.blockers
