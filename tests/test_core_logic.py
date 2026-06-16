@@ -1112,9 +1112,14 @@ class DashboardLayoutTests(unittest.TestCase):
 
         self.assertNotIn("dashboard_refresh_symbol_choice", source)
         self.assertNotIn("更新单只", source)
-        self.assertIn("更新价格", source)
+        self.assertIn("智能刷新市场数据", source)
+        self.assertIn("dashboard_smart_market_refresh", source)
+        before_more = source.split('with st.popover("更多 ▾"', 1)[0]
+        self.assertNotIn("更新价格", before_more)
+        self.assertNotIn("更新技术", before_more)
+        self.assertIn("仅更新价格", source)
         self.assertIn("RefreshMode.PRICE_ONLY", source)
-        self.assertIn("更新技术", source)
+        self.assertIn("重算技术指标", source)
         self.assertIn("RefreshMode.DAILY_TECHNICAL", source)
         self.assertIn("更多 ▾", source)
         self.assertIn("视图设置", source)

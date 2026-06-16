@@ -70,6 +70,7 @@ from data.portfolio_structure_health import (
 )
 from data.refresh_policy import RefreshMode, refresh_symbols_by_mode
 from data.trading_discipline_stats import build_trading_discipline_summary
+from data.us_market_session import USMarketSession, get_us_market_session_status
 from data.watchlist_stars import WatchlistStarStore
 from formatting import format_currency, format_multiple, format_percent
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot
@@ -253,7 +254,8 @@ def render() -> None:
     query_refresh_symbol = _consume_refresh_ticker_query()
     force_refresh = bool(st.session_state.pop("dashboard_force_fmp_refresh", False))
     force_refresh_symbol = query_refresh_symbol or st.session_state.pop("dashboard_force_fmp_refresh_symbol", None)
-    _render_dashboard_header(tickers)
+    market_session = get_us_market_session_status()
+    _render_dashboard_header(tickers, market_session)
     refresh_symbols = set(tickers) if force_refresh else {force_refresh_symbol} if force_refresh_symbol else set()
     if force_refresh:
         _render_terminal_notice("全量更新", "正在逐只绕过缓存拉取，建议只在大面积数据异常时使用。", "orange")
@@ -282,13 +284,14 @@ def render() -> None:
         return
     table = _apply_watchlist_star_marks(table)
     _handle_buy_plan_alert_query(table)
-    table = _apply_buy_plan_alerts(table)
+    table = _apply_buy_plan_alerts(table, trigger_source=_buy_alert_trigger_source_for_market_session(market_session.status))
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
     _handle_lane_filter_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
     _render_buy_plan_alert_notice()
+    _render_dashboard_refresh_notice()
 
     data_health_context = _build_data_health_context(table)
     portfolio_view = build_portfolio_view_model()
@@ -313,7 +316,8 @@ def render() -> None:
     st.caption("缺失财务数据显示为 N/A；评分不会用模型补造财务数字。")
 
 
-def _render_dashboard_header(tickers: list[str]) -> None:
+def _render_dashboard_header(tickers: list[str], market_session: Any | None = None) -> None:
+    market_session = market_session or get_us_market_session_status()
     now_text = datetime.now().strftime("%H:%M")
     left, right = st.columns([1.15, 2.35], vertical_alignment="bottom")
     with left:
@@ -332,22 +336,34 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             f"""
             <div class="terminal-meta">
                 <span>{len(tickers)}只观察</span>
-                <span>最后更新 {escape(now_text)}</span>
-                <span>本地缓存 · FMP Starter</span>
+                <span>{escape(market_session.label)}</span>
+                <span>最新数据：{escape(market_session.latest_data_label)}</span>
+                <span>技术数据：{escape(market_session.technical_status_label)}</span>
+                <span>数据源：FMP Starter</span>
+                {f'<span>下次开盘：{escape(market_session.next_regular_open_hkt_text)}</span>' if market_session.next_regular_open_hkt_text else ''}
+                <span>页面更新 {escape(now_text)}</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-    command_cols = st.columns([0.9, 0.9, 4.8, 0.86], vertical_alignment="center")
+    command_cols = st.columns([1.35, 5.25, 0.86], vertical_alignment="center")
     with command_cols[0]:
-        if st.button("更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
-            _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
+        running = bool(st.session_state.get("dashboard_smart_refresh_running"))
+        if st.button(
+            "刷新中..." if running else "智能刷新市场数据",
+            width="stretch",
+            type="primary",
+            disabled=running,
+            help="根据美股盘前、盘中、盘后、已收盘或休市状态自动选择刷新模式。",
+            key="dashboard_smart_market_refresh",
+        ):
+            st.session_state["dashboard_smart_refresh_running"] = True
+            try:
+                _smart_refresh_dashboard_market_data(tickers, market_session)
+            finally:
+                st.session_state["dashboard_smart_refresh_running"] = False
             st.rerun()
-    with command_cols[1]:
-        if st.button("更新技术", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
-            _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
-            st.rerun()
-    with command_cols[3]:
+    with command_cols[2]:
         with st.popover("更多 ▾", use_container_width=True):
             st.markdown("**视图设置**")
             st.selectbox(
@@ -360,6 +376,14 @@ def _render_dashboard_header(tickers: list[str]) -> None:
             st.divider()
             st.markdown("**数据操作**")
             st.caption("低频或高成本操作。批量类任务会消耗 API 次数。")
+            if st.button("仅更新价格", width="stretch", help="只更新 quote：当前价、涨跌幅、成交量、市值；基本面沿用缓存。", key="dashboard_refresh_price_only"):
+                _refresh_dashboard_cache_for_mode(tickers, RefreshMode.PRICE_ONLY)
+                st.session_state["dashboard_manual_refresh_notice"] = "仅更新价格完成。"
+                st.rerun()
+            if st.button("重算技术指标", width="stretch", help="只刷新日线、EMA、ATR、技术回踩区；不刷新基本面。", key="dashboard_refresh_daily_technical"):
+                _refresh_dashboard_cache_for_mode(tickers, RefreshMode.DAILY_TECHNICAL)
+                st.session_state["dashboard_manual_refresh_notice"] = "重算技术指标完成。"
+                st.rerun()
             if st.button("刷新大盘环境", width="stretch", key="dashboard_refresh_macro_regime_cache", help="只更新 VIX、信用利差、利率、曲线、观察池强弱等宏观缓存，不刷新个股。"):
                 _refresh_dashboard_cache_for_mode(tickers, RefreshMode.MACRO_ONLY)
                 st.rerun()
@@ -481,7 +505,54 @@ def _refresh_macro_cache_for_dashboard() -> None:
     _refresh_dashboard_cache_for_mode([], RefreshMode.MACRO_ONLY)
 
 
-def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> None:
+def _smart_refresh_dashboard_market_data(tickers: list[str], market_session: Any | None = None) -> None:
+    session = market_session or get_us_market_session_status()
+    st.session_state["dashboard_smart_refresh_alert_triggers"] = []
+    if session.status == USMarketSession.WEEKEND_OR_HOLIDAY:
+        result = {
+            "mode": "SMART_SKIP",
+            "status": "skipped",
+            "refreshed_count": 0,
+            "skipped_count": len(_dashboard_refresh_symbols(tickers)),
+            "failed_count": 0,
+            "summary": "美股休市中，已使用最新可用收盘数据。",
+            "ticker_results": [],
+        }
+    else:
+        mode = _smart_refresh_mode_for_market_session(session.status)
+        result = _refresh_dashboard_cache_for_mode(tickers, mode)
+    st.session_state["dashboard_smart_refresh_last_result"] = {
+        "session_status": session.status.value if isinstance(session.status, USMarketSession) else str(session.status),
+        "session_label": session.label,
+        "latest_data_label": session.latest_data_label,
+        "result": result,
+    }
+
+
+def _smart_refresh_mode_for_market_session(status: USMarketSession | str) -> RefreshMode:
+    normalized = USMarketSession(status)
+    if normalized == USMarketSession.CLOSED_AFTER_SESSION:
+        return RefreshMode.DAILY_TECHNICAL
+    if normalized in {USMarketSession.REGULAR, USMarketSession.PRE_MARKET, USMarketSession.AFTER_HOURS}:
+        return RefreshMode.PRICE_ONLY
+    return RefreshMode.PRICE_ONLY
+
+
+def _buy_alert_trigger_source_for_market_session(status: USMarketSession | str) -> str:
+    try:
+        normalized = USMarketSession(status)
+    except ValueError:
+        return "REGULAR"
+    if normalized == USMarketSession.PRE_MARKET:
+        return "PRE_MARKET"
+    if normalized == USMarketSession.AFTER_HOURS:
+        return "AFTER_HOURS"
+    if normalized in {USMarketSession.CLOSED_AFTER_SESSION, USMarketSession.WEEKEND_OR_HOLIDAY}:
+        return "LAST_CLOSE"
+    return "REGULAR"
+
+
+def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> dict[str, Any]:
     symbols = [] if mode == RefreshMode.MACRO_ONLY else _dashboard_refresh_symbols(tickers)
     progress_slot = st.empty()
     progress_total = 1 if mode == RefreshMode.MACRO_ONLY else len(symbols)
@@ -549,6 +620,7 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
                 result["dashboard_cache_synced"] = "dashboard_table_cache" in synced
                 result["dashboard_cache_sync_symbols"] = refreshed_symbols
     st.session_state["dashboard_refresh_mode_last_result"] = result
+    return result
 
 
 def _successful_refresh_symbols(result: dict[str, Any]) -> list[str]:
@@ -2581,6 +2653,7 @@ def _handle_buy_plan_alert_query(table: pd.DataFrame) -> None:
                 st.query_params.get("plannedBuyShares"),
                 st.query_params.get("buyPlanNote"),
                 current_price=_dashboard_current_price_for_symbol(table, save_symbol),
+                trigger_source=_buy_alert_trigger_source_for_market_session(get_us_market_session_status().status),
             )
             st.session_state["dashboard_buy_alert_notice"] = f"{save_symbol} 计划买入提醒已保存。"
         except ValueError as exc:
@@ -2654,7 +2727,13 @@ def _render_buy_plan_alert_notice() -> None:
     message = str(st.session_state.pop("dashboard_buy_alert_notice", "") or "").strip()
     if not message:
         return
-    if "已到达计划买入价" in message or "已低于计划买入价" in message:
+    if (
+        "已到达计划买入价" in message
+        or "已低于计划买入价" in message
+        or "盘前价格已到计划价" in message
+        or "盘后价格已到计划价" in message
+        or "昨夜收盘已到达计划买入价" in message
+    ):
         st.warning(message)
     elif "已保存" in message:
         st.success(message)
@@ -2662,6 +2741,68 @@ def _render_buy_plan_alert_notice() -> None:
         st.info(message)
     else:
         st.warning(message)
+
+
+def _render_dashboard_refresh_notice() -> None:
+    manual_message = str(st.session_state.pop("dashboard_manual_refresh_notice", "") or "").strip()
+    if manual_message:
+        st.success(manual_message)
+    payload = st.session_state.pop("dashboard_smart_refresh_last_result", None)
+    if not isinstance(payload, dict):
+        return
+    message, tone = _smart_refresh_feedback_message(payload)
+    if tone == "success":
+        st.success(message)
+    elif tone == "error":
+        st.error(message)
+    elif tone == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def _smart_refresh_feedback_message(payload: dict[str, Any]) -> tuple[str, str]:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    session_status = str(payload.get("session_status") or "")
+    session_label = str(payload.get("session_label") or "市场状态")
+    refreshed = int(result.get("refreshed_count") or 0)
+    skipped = int(result.get("skipped_count") or 0)
+    failed = int(result.get("failed_count") or 0)
+    triggered_symbols = st.session_state.pop("dashboard_smart_refresh_alert_triggers", [])
+    triggered_count = len(triggered_symbols) if isinstance(triggered_symbols, list) else 0
+    if result.get("mode") == "SMART_SKIP":
+        return "美股休市中，已使用最新可用收盘数据。", "info"
+    if failed and not refreshed and not skipped:
+        return f"{session_label}刷新失败：{_refresh_failure_reason(result)}", "error"
+    if session_status == USMarketSession.CLOSED_AFTER_SESSION.value and refreshed == 0 and skipped and not failed:
+        return "当前已是最新收盘数据，无需重复刷新。", "info"
+    if session_status == USMarketSession.PRE_MARKET.value:
+        prefix = "盘前数据已刷新。盘前价格仅作参考，正式买入建议等待开盘确认。"
+    elif session_status == USMarketSession.AFTER_HOURS.value:
+        prefix = "盘后数据已刷新。盘后价格仅作参考，建议次日开盘确认。"
+    elif session_status == USMarketSession.CLOSED_AFTER_SESSION.value:
+        prefix = "已同步昨夜收盘。"
+    elif session_status == USMarketSession.REGULAR.value:
+        prefix = "盘中数据已刷新。"
+    else:
+        prefix = "市场数据已刷新。"
+    summary = f"本次刷新：{refreshed} 只股票"
+    if triggered_count:
+        summary += f"，{triggered_count} 个买入提醒触发"
+    if failed:
+        summary += f"，{failed} 只失败"
+        return f"{prefix}{summary}，部分数据沿用缓存。", "warning"
+    if skipped and not refreshed:
+        return f"{prefix}暂无重要状态变化。", "info"
+    return f"{prefix}{summary}。", "success"
+
+
+def _refresh_failure_reason(result: dict[str, Any]) -> str:
+    for item in result.get("ticker_results") or []:
+        message = str(item.get("message") or "").strip()
+        if message:
+            return message
+    return str(result.get("summary") or "请检查数据源或稍后重试。")
 
 
 def _signal_price_from_dashboard_row(row: pd.Series) -> float | None:
@@ -3520,7 +3661,12 @@ def _apply_watchlist_star_marks(table: pd.DataFrame, store: WatchlistStarStore |
     return result.sort_values(by="isStarred", ascending=False, kind="mergesort").reset_index(drop=True)
 
 
-def _apply_buy_plan_alerts(table: pd.DataFrame, store: BuyPlanAlertStore | None = None) -> pd.DataFrame:
+def _apply_buy_plan_alerts(
+    table: pd.DataFrame,
+    store: BuyPlanAlertStore | None = None,
+    *,
+    trigger_source: str = "REGULAR",
+) -> pd.DataFrame:
     if table.empty or "symbol" not in table.columns:
         return table
     store = store or BuyPlanAlertStore()
@@ -3536,11 +3682,15 @@ def _apply_buy_plan_alerts(table: pd.DataFrame, store: BuyPlanAlertStore | None 
         symbol = str(row.get("symbol") or "").strip().upper()
         current_price = _dashboard_current_price_value(row)
         try:
-            alert = store.check_and_update(symbol, current_price) if symbol else None
+            alert = store.check_and_update(symbol, current_price, trigger_source=trigger_source) if symbol else None
         except Exception:
             alert = None
         if alert and alert.get("just_triggered"):
             st.session_state["dashboard_buy_alert_notice"] = buy_plan_alert_message(alert, current_price)
+            triggers = st.session_state.get("dashboard_smart_refresh_alert_triggers")
+            if isinstance(triggers, list):
+                triggers.append(symbol)
+                st.session_state["dashboard_smart_refresh_alert_triggers"] = triggers
         alerts.append(alert)
         labels.append(buy_plan_alert_table_label(alert))
         status = str((alert or {}).get("status") or "")

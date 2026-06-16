@@ -31,13 +31,27 @@ def test_dashboard_cached_table_reuses_batch_portfolio_context() -> None:
     assert "action_fusion_portfolio_context=portfolio_contexts.get" in source
 
 
-def test_price_and_technical_refresh_buttons_keep_dashboard_table_cache() -> None:
+def test_price_and_technical_refresh_actions_keep_dashboard_table_cache() -> None:
     source = inspect.getsource(dashboard._render_dashboard_header)
-    price_branch = source.split('key="dashboard_refresh_price_only"', 1)[1].split("with command_cols[1]", 1)[0]
-    technical_branch = source.split('key="dashboard_refresh_daily_technical"', 1)[1].split("with command_cols[3]", 1)[0]
+    price_branch = source.split('key="dashboard_refresh_price_only"', 1)[1].split('key="dashboard_refresh_daily_technical"', 1)[0]
+    technical_branch = source.split('key="dashboard_refresh_daily_technical"', 1)[1].split('if st.button("刷新大盘环境"', 1)[0]
 
     assert "_clear_dashboard_table_cache()" not in price_branch
     assert "_clear_dashboard_table_cache()" not in technical_branch
+
+
+def test_dashboard_header_uses_smart_market_refresh_as_primary_action() -> None:
+    source = inspect.getsource(dashboard._render_dashboard_header)
+    before_more = source.split('with st.popover("更多 ▾"', 1)[0]
+
+    assert "智能刷新市场数据" in before_more
+    assert "dashboard_smart_market_refresh" in before_more
+    assert "更新价格" not in before_more
+    assert "更新技术" not in before_more
+    assert "仅更新价格" in source
+    assert "重算技术指标" in source
+    assert "强制全量刷新" in source
+    assert "get_us_market_session_status" in source
 
 
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
@@ -171,6 +185,17 @@ def test_dashboard_apply_buy_plan_alerts_triggers_and_sorts_first(tmp_path) -> N
     assert result["symbol"].tolist()[0] == "ORCL"
     assert result.loc[result["symbol"] == "ORCL", "buyPlanAlertStatus"].iloc[0] == "TRIGGERED"
     assert result.loc[result["symbol"] == "ORCL", "buyPlanAlertLabel"].iloc[0] == "已到计划价"
+
+
+def test_dashboard_apply_buy_plan_alerts_records_trigger_source(tmp_path) -> None:
+    store = BuyPlanAlertStore(tmp_path / "cache.sqlite")
+    store.save_alert("ORCL", 185, 50)
+    table = pd.DataFrame([{"symbol": "ORCL", "price": "$184.90"}])
+
+    result = dashboard._apply_buy_plan_alerts(table, store, trigger_source="LAST_CLOSE")
+
+    alert = result.loc[result["symbol"] == "ORCL", "buyPlanAlert"].iloc[0]
+    assert alert["trigger_source"] == "LAST_CLOSE"
 
 
 def test_dashboard_star_action_is_lightweight_row_action(monkeypatch) -> None:

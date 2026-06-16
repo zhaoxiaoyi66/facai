@@ -15,6 +15,11 @@ ALERT_TRIGGERED = "TRIGGERED"
 ALERT_CANCELLED = "CANCELLED"
 
 VALID_ALERT_STATUSES = {ALERT_ACTIVE, ALERT_TRIGGERED, ALERT_CANCELLED}
+TRIGGER_REGULAR = "REGULAR"
+TRIGGER_PRE_MARKET = "PRE_MARKET"
+TRIGGER_AFTER_HOURS = "AFTER_HOURS"
+TRIGGER_LAST_CLOSE = "LAST_CLOSE"
+VALID_TRIGGER_SOURCES = {TRIGGER_REGULAR, TRIGGER_PRE_MARKET, TRIGGER_AFTER_HOURS, TRIGGER_LAST_CLOSE}
 
 ALERT_STATUS_LABELS = {
     ALERT_ACTIVE: "等待触发",
@@ -51,10 +56,14 @@ class BuyPlanAlertStore:
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    triggered_at TEXT
+                    triggered_at TEXT,
+                    trigger_source TEXT
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(buy_plan_alerts)").fetchall()}
+            if "trigger_source" not in columns:
+                conn.execute("ALTER TABLE buy_plan_alerts ADD COLUMN trigger_source TEXT")
 
     def save_alert(
         self,
@@ -64,6 +73,7 @@ class BuyPlanAlertStore:
         note: object = "",
         *,
         current_price: object = None,
+        trigger_source: object = None,
     ) -> dict:
         clean_symbol = _normalize_symbol(symbol)
         price = _required_positive_number(planned_buy_price, "计划买入价")
@@ -76,6 +86,9 @@ class BuyPlanAlertStore:
         if current is not None and current <= price:
             status = ALERT_TRIGGERED
             triggered_at = now
+            trigger_source = _normalize_trigger_source(trigger_source)
+        else:
+            trigger_source = None
         with self.connect() as conn:
             existing = conn.execute(
                 "SELECT created_at FROM buy_plan_alerts WHERE symbol = ?",
@@ -92,18 +105,20 @@ class BuyPlanAlertStore:
                     status,
                     created_at,
                     updated_at,
-                    triggered_at
+                    triggered_at,
+                    trigger_source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
                     planned_buy_price = excluded.planned_buy_price,
                     planned_buy_shares = excluded.planned_buy_shares,
                     note = excluded.note,
                     status = excluded.status,
                     updated_at = excluded.updated_at,
-                    triggered_at = excluded.triggered_at
+                    triggered_at = excluded.triggered_at,
+                    trigger_source = excluded.trigger_source
                 """,
-                (clean_symbol, price, shares, clean_note, status, created_at, now, triggered_at),
+                (clean_symbol, price, shares, clean_note, status, created_at, now, triggered_at, trigger_source),
             )
         return self.get_alert(clean_symbol) or {}
 
@@ -116,7 +131,8 @@ class BuyPlanAlertStore:
                 UPDATE buy_plan_alerts
                 SET status = ?,
                     updated_at = ?,
-                    triggered_at = NULL
+                    triggered_at = NULL,
+                    trigger_source = NULL
                 WHERE symbol = ?
                 """,
                 (ALERT_CANCELLED, now, clean_symbol),
@@ -159,7 +175,7 @@ class BuyPlanAlertStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
 
-    def check_and_update(self, symbol: object, current_price: object) -> dict | None:
+    def check_and_update(self, symbol: object, current_price: object, *, trigger_source: object = None) -> dict | None:
         alert = self.get_alert(symbol)
         if not alert:
             return None
@@ -172,17 +188,19 @@ class BuyPlanAlertStore:
             alert["just_triggered"] = False
             return alert
         now = _now()
+        normalized_source = _normalize_trigger_source(trigger_source)
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE buy_plan_alerts
                 SET status = ?,
                     updated_at = ?,
-                    triggered_at = ?
+                    triggered_at = ?,
+                    trigger_source = ?
                 WHERE symbol = ?
                   AND status = ?
                 """,
-                (ALERT_TRIGGERED, now, now, alert["symbol"], ALERT_ACTIVE),
+                (ALERT_TRIGGERED, now, now, normalized_source, alert["symbol"], ALERT_ACTIVE),
             )
         updated = self.get_alert(symbol) or alert
         updated["just_triggered"] = True
@@ -213,7 +231,15 @@ def buy_plan_alert_message(alert: dict | None, current_price: object = None) -> 
     shares = int(alert.get("planned_buy_shares") or 0)
     symbol = str(alert.get("symbol") or "").strip().upper()
     current = _format_money(current_price)
+    source = _normalize_trigger_source(alert.get("trigger_source"))
     if status == ALERT_TRIGGERED:
+        if source == TRIGGER_LAST_CLOSE:
+            close_text = f"收盘 {current}" if current else "昨夜收盘"
+            return f"{symbol} 昨夜收盘已到达计划买入价：{close_text}，计划 {planned}，今晚开盘重点观察。"
+        if source == TRIGGER_PRE_MARKET:
+            return f"{symbol} 盘前价格已到计划价，但盘前流动性较低，建议等待开盘确认。"
+        if source == TRIGGER_AFTER_HOURS:
+            return f"{symbol} 盘后价格已到计划价，建议次日开盘确认。"
         if current:
             return f"{symbol} 已到达计划买入价：当前 {current}，计划 {planned}，提醒买入 {shares} 股。"
         return f"{symbol} 已到达计划买入价：计划 {planned}，提醒买入 {shares} 股。"
@@ -235,6 +261,11 @@ def _normalize_symbol(symbol: object) -> str:
     if not text:
         raise ValueError("股票代码不能为空")
     return text
+
+
+def _normalize_trigger_source(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return text if text in VALID_TRIGGER_SOURCES else TRIGGER_REGULAR
 
 
 def _required_positive_number(value: object, label: str) -> float:
