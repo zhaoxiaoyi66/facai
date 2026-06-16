@@ -65,6 +65,7 @@ RISK_NOTICE = (
     "V1 仅用于周末价差观察和历史统计，不构成套利建议。Binance 映射价格不等于真实美股可成交价格；"
     "价差可能来自流动性、点差、资金费率、映射误差或币种单位差异。"
 )
+LARGE_WEEKEND_PREMIUM_PCT = 1.5
 
 TAB_REALTIME = "实时观察"
 TAB_BACKTEST = "历史回测"
@@ -645,8 +646,12 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.caption(f"上次运行：{_short_hkt_time(last_run_at)}")
     if include_unconfirmed:
         st.caption("观察回测：包含未确认映射，结果不计为正式胜率。")
-    _render_backtest_kpis(results)
-    st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
+    review_rows = _weekend_review_rows(results)
+    _render_weekend_review_kpis(review_rows)
+    _render_weekend_review_table(review_rows)
+    with st.expander("历史回测 / 数据质量 / 排除提醒", expanded=False):
+        _render_backtest_kpis(results)
+        st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
     _render_backfill_audit_area_v2(watchlist, mapping, anchors)
     _render_backtest_advanced_records()
 
@@ -660,8 +665,8 @@ def _render_backtest_preflight(preflight: dict[str, object]) -> None:
 
 
 def _render_backfill_audit_area_v2(watchlist: list[str], mapping: dict[str, dict], anchors: dict[str, dict]) -> None:
-    with st.expander("历史周末回放 / Backfill Audit", expanded=False):
-        st.caption("价差复盘看板：candidate 映射默认可进入观察样本；只有 confirmed mapping 进入交易级统计。")
+    with st.expander("周末价差回顾 / 历史回放", expanded=False):
+        st.caption("默认只看价差和溢价百分比；Backfill Audit、数据质量和排除提醒收在详情里。")
         all_tickers = [str(ticker or "").strip().upper() for ticker in watchlist if str(ticker or "").strip()]
         mapped_tickers = [
             ticker
@@ -718,9 +723,12 @@ def _render_backfill_audit_area_v2(watchlist: list[str], mapping: dict[str, dict
         if not rows:
             st.info("暂无历史回放结果。点击上方按钮后会显示 observation / trade-grade / estimated 明细。")
             return
-        _render_backfill_kpis_v2(rows)
-        st.dataframe(_backfill_frame_v2(rows), width="stretch", hide_index=True)
-        with st.expander("单周详情", expanded=False):
+        review_rows = _weekend_review_rows(rows)
+        _render_weekend_review_kpis(review_rows)
+        _render_weekend_review_table(review_rows)
+        with st.expander("历史回放 / 数据质量 / 排除提醒 / Backfill Audit", expanded=False):
+            _render_backfill_kpis_v2(rows)
+            st.dataframe(_backfill_frame_v2(rows), width="stretch", hide_index=True)
             st.dataframe(_backfill_detail_frame(rows), width="stretch", hide_index=True)
 
 
@@ -963,6 +971,268 @@ def _render_backfill_kpis(rows: list[dict]) -> None:
     cols[3].metric("中位锁仓", _bps_text(summary.get("median_net_locked_bps")))
     cols[4].metric("最差收益", _bps_text(summary.get("worst_net_locked_bps")))
     cols[5].metric("hedge success", _ratio_text(summary.get("hedge_success_rate")))
+
+
+def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
+    summary = _weekend_review_summary(review_rows)
+    if not int(summary.get("sample_count") or 0):
+        st.info("暂无可展示的价差数据。")
+        return
+    metrics: list[tuple[str, object, str]] = [
+        ("近4周样本数", int(summary.get("sample_count") or 0), ""),
+        ("平均价差", summary.get("avg_price_diff"), "money_diff"),
+        ("平均溢价%", summary.get("avg_premium_pct"), "percent"),
+        ("最大溢价%", summary.get("max_premium_pct"), "percent"),
+    ]
+    if summary.get("latest_week_avg_premium_pct") is not None:
+        metrics.append(("最新一周溢价%", summary.get("latest_week_avg_premium_pct"), "percent"))
+    cols = st.columns(len(metrics))
+    for col, (label, value, kind) in zip(cols, metrics):
+        if kind == "money_diff":
+            col.metric(label, _signed_money_text(value, missing="暂无数据"))
+        elif kind == "percent":
+            col.metric(label, _review_percent_text(value))
+        else:
+            col.metric(label, value)
+
+
+def _render_weekend_review_table(review_rows: list[dict]) -> None:
+    frame = _weekend_review_frame(review_rows)
+    if frame.empty:
+        st.info("暂无数据。")
+        return
+    st.dataframe(_style_weekend_review_frame(frame), width="stretch", hide_index=True)
+
+
+def _weekend_review_rows(rows: list[dict]) -> list[dict]:
+    selected: dict[tuple[str, str], dict] = {}
+    for source in rows:
+        row = dict(source)
+        week_id = str(row.get("week_id") or "").strip()
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not week_id or not ticker:
+            continue
+        anchor_price = _first_number(
+            row,
+            (
+                "friday_anchor_price",
+                "anchor_price",
+                "broker_anchor_price",
+                "regular_close_price",
+                "friday_close_price",
+                "friday_close",
+            ),
+        )
+        premium_pct = _weekend_review_premium_pct(row, anchor_price)
+        binance_price = _weekend_review_binance_price(row, anchor_price, premium_pct)
+        price_diff = binance_price - anchor_price if anchor_price is not None and binance_price is not None else None
+        record = {
+            "week_id": week_id,
+            "ticker": ticker,
+            "stock_price": anchor_price,
+            "binance_price": binance_price,
+            "price_diff": price_diff,
+            "premium_pct": premium_pct,
+            "status": _weekend_review_status(row, anchor_price, binance_price, premium_pct),
+            "raw_row": row,
+        }
+        key = (week_id, ticker)
+        current = selected.get(key)
+        if current is None or _weekend_review_rank(record) > _weekend_review_rank(current):
+            selected[key] = record
+    return sorted(
+        selected.values(),
+        key=lambda item: (_week_id_sort_key(str(item.get("week_id") or "")), str(item.get("ticker") or "")),
+        reverse=True,
+    )
+
+
+def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
+    latest_weeks = set(_latest_week_ids(review_rows, limit=4))
+    scoped = [row for row in review_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(review_rows)
+    valid = [row for row in scoped if _number(row.get("price_diff")) is not None and _number(row.get("premium_pct")) is not None]
+    if not valid:
+        return {
+            "sample_count": 0,
+            "avg_price_diff": None,
+            "avg_premium_pct": None,
+            "max_premium_pct": None,
+            "latest_week_avg_premium_pct": None,
+        }
+    premiums = [float(_number(row.get("premium_pct")) or 0.0) for row in valid]
+    diffs = [float(_number(row.get("price_diff")) or 0.0) for row in valid]
+    latest_week = _latest_week_ids(valid, limit=1)
+    latest_rows = [row for row in valid if latest_week and row.get("week_id") == latest_week[0]]
+    latest_premiums = [float(_number(row.get("premium_pct")) or 0.0) for row in latest_rows]
+    return {
+        "sample_count": len(valid),
+        "avg_price_diff": sum(diffs) / len(diffs),
+        "avg_premium_pct": sum(premiums) / len(premiums),
+        "max_premium_pct": max(premiums),
+        "latest_week_avg_premium_pct": sum(latest_premiums) / len(latest_premiums) if latest_premiums else None,
+    }
+
+
+def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
+    columns = ["周次", "股票", "美股价格", "币安价格", "价差", "溢价%", "状态"]
+    if not review_rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(
+        [
+            {
+                "周次": row.get("week_id"),
+                "股票": row.get("ticker"),
+                "美股价格": row.get("stock_price"),
+                "币安价格": row.get("binance_price"),
+                "价差": row.get("price_diff"),
+                "溢价%": row.get("premium_pct"),
+                "状态": row.get("status"),
+            }
+            for row in review_rows
+        ],
+        columns=columns,
+    )
+
+
+def _style_weekend_review_frame(frame: pd.DataFrame):
+    def color_value(value: object) -> str:
+        number = _number(value)
+        if number is None:
+            return "color: #94a3b8;"
+        if number > 0.05:
+            return "color: #c2410c; font-weight: 800;"
+        if number < -0.05:
+            return "color: #047857; font-weight: 800;"
+        return "color: #64748b; font-weight: 700;"
+
+    return (
+        frame.style.format(
+            {
+                "美股价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+                "币安价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+                "价差": lambda value: _signed_money_text(value, missing="暂无数据"),
+                "溢价%": lambda value: _review_percent_text(value),
+            }
+        )
+        .applymap(color_value, subset=["价差", "溢价%"])
+    )
+
+
+def _weekend_review_status(row: dict, anchor_price: float | None, binance_price: float | None, premium_pct: float | None) -> str:
+    quality = str(row.get("data_quality") or "").strip().upper()
+    if (
+        anchor_price is None
+        or binance_price is None
+        or premium_pct is None
+        or quality
+        in {
+            "NO_PRICE_ANCHOR",
+            "BINANCE_KLINE_UNAVAILABLE",
+            "DATA_UNAVAILABLE",
+            "DATA_INSUFFICIENT",
+            "INVALID",
+            "MISSING",
+        }
+    ):
+        return "数据不完整"
+    if abs(premium_pct) >= LARGE_WEEKEND_PREMIUM_PCT:
+        return "价差较大"
+    return "可观察"
+
+
+def _weekend_review_rank(row: dict) -> tuple[int, float]:
+    premium = _number(row.get("premium_pct"))
+    anchor = _number(row.get("stock_price"))
+    binance = _number(row.get("binance_price"))
+    valid = 1 if premium is not None and anchor is not None and binance is not None else 0
+    return (valid, abs(float(premium or 0.0)))
+
+
+def _weekend_review_premium_pct(row: dict, anchor_price: float | None) -> float | None:
+    for key in ("sunday_max_premium_bps", "oracle_weekend_high_premium_bps", "entry_premium_bps"):
+        bps = _number(row.get(key))
+        if bps is not None:
+            return bps / 100.0
+    for key in ("weekend_peak_premium_pct", "primary_spread_pct", "spread_pct"):
+        pct = _number(row.get(key))
+        if pct is not None:
+            return pct
+    binance_price = _first_number(
+        row,
+        (
+            "oracle_weekend_high_bid",
+            "weekend_peak_binance_price",
+            "weekend_peak_price",
+            "binance_entry_bid",
+            "entry_price",
+            "binance_last_price",
+        ),
+    )
+    if anchor_price is None or anchor_price <= 0 or binance_price is None:
+        return None
+    return (binance_price - anchor_price) / anchor_price * 100.0
+
+
+def _weekend_review_binance_price(row: dict, anchor_price: float | None, premium_pct: float | None) -> float | None:
+    price = _first_number(
+        row,
+        (
+            "oracle_weekend_high_bid",
+            "weekend_peak_binance_price",
+            "weekend_peak_price",
+            "binance_entry_bid",
+            "entry_price",
+            "binance_last_price",
+        ),
+    )
+    if price is not None:
+        return price
+    if anchor_price is not None and premium_pct is not None:
+        return anchor_price * (1.0 + premium_pct / 100.0)
+    return None
+
+
+def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        number = _number(row.get(key))
+        if number is not None:
+            return number
+    return None
+
+
+def _latest_week_ids(rows: list[dict], *, limit: int) -> list[str]:
+    week_ids = sorted(
+        {str(row.get("week_id") or "").strip() for row in rows if str(row.get("week_id") or "").strip()},
+        key=_week_id_sort_key,
+        reverse=True,
+    )
+    return week_ids[:limit]
+
+
+def _week_id_sort_key(week_id: str) -> tuple[int, int, str]:
+    text = str(week_id or "").strip()
+    if "-W" in text:
+        year, week = text.split("-W", 1)
+        try:
+            return (int(year), int(week), text)
+        except ValueError:
+            return (0, 0, text)
+    return (0, 0, text)
+
+
+def _signed_money_text(value: object, *, missing: str = "暂缺") -> str:
+    number = _number(value)
+    if number is None:
+        return missing
+    sign = "+" if number >= 0 else "-"
+    return f"{sign}${abs(number):,.2f}"
+
+
+def _review_percent_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂无数据"
+    return f"{number:+.2f}%"
 
 
 def _backtest_anchor_mapping() -> dict[str, dict]:

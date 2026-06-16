@@ -3249,6 +3249,89 @@ def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
     assert weekend_spread._backtest_frame([]).empty
 
 
+def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "friday_anchor_price": 100.0,
+            "oracle_weekend_high_bid": 102.0,
+            "oracle_weekend_high_premium_bps": 200.0,
+            "entry_price": 101.0,
+            "entry_premium_bps": 100.0,
+            "data_quality": "OK",
+        },
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "friday_anchor_price": 100.0,
+            "entry_price": 101.0,
+            "entry_premium_bps": 100.0,
+            "data_quality": "OK",
+        },
+        {
+            "week_id": "2026-W23",
+            "ticker": "ADBE",
+            "friday_anchor_price": 200.0,
+            "oracle_weekend_high_bid": 198.0,
+            "oracle_weekend_high_premium_bps": -100.0,
+            "data_quality": "OK",
+        },
+    ]
+
+    review_rows = weekend_spread._weekend_review_rows(rows)
+    frame = weekend_spread._weekend_review_frame(review_rows)
+
+    assert list(frame.columns) == ["周次", "股票", "美股价格", "币安价格", "价差", "溢价%", "状态"]
+    assert "锁仓收益" not in frame.columns
+    assert "剩余基差" not in frame.columns
+    assert len(frame) == 2
+    nvda = frame[frame["股票"] == "NVDA"].iloc[0]
+    assert nvda["币安价格"] == 102.0
+    assert nvda["价差"] == 2.0
+    assert nvda["溢价%"] == 2.0
+    assert nvda["状态"] == "价差较大"
+
+
+def test_weekend_review_summary_uses_latest_four_weeks() -> None:
+    rows = [
+        {
+            "week_id": f"2026-W{week:02d}",
+            "ticker": "NVDA",
+            "friday_anchor_price": 100.0,
+            "oracle_weekend_high_bid": 100.0 + week,
+            "oracle_weekend_high_premium_bps": float(week * 100),
+            "data_quality": "OK",
+        }
+        for week in range(20, 25)
+    ]
+
+    summary = weekend_spread._weekend_review_summary(weekend_spread._weekend_review_rows(rows))
+
+    assert summary["sample_count"] == 4
+    assert round(summary["avg_premium_pct"], 2) == 22.5
+    assert summary["max_premium_pct"] == 24.0
+    assert summary["latest_week_avg_premium_pct"] == 24.0
+
+
+def test_weekend_review_marks_missing_price_as_incomplete() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "NOW",
+            "data_quality": "BINANCE_KLINE_UNAVAILABLE",
+            "warning": "Binance K 线不可用",
+        }
+    ]
+
+    review_rows = weekend_spread._weekend_review_rows(rows)
+    frame = weekend_spread._weekend_review_frame(review_rows)
+
+    assert frame.iloc[0]["状态"] == "数据不完整"
+    assert frame.iloc[0]["美股价格"] is None
+    assert frame.iloc[0]["币安价格"] is None
+
+
 def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
     snapshot = get_weekly_log_snapshot(path=tmp_path / "missing.json", week_id="2026-W24")
 
