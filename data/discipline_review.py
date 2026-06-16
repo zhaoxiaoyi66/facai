@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from data.decision_log import TradeJournalStore
 from data.market_context import build_market_context
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
+from data.portfolio_accounting import derive_cash_and_account_nav, realized_pnl_from_entries
 from data.prices import CACHE_PATH
 from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 
@@ -984,23 +985,25 @@ def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
     settings = PortfolioSettingsStore(path).get_settings()
     positions = PortfolioPositionStore(path).list_active_positions()
     total_equity = _optional_nonnegative_number(settings.get("total_portfolio_value"))
-    cash = _optional_nonnegative_number(settings.get("cash_balance"))
+    manual_cash = _optional_nonnegative_number(settings.get("cash_balance"))
     market_value = _portfolio_market_value_from_snapshot(positions, path)
-    if cash is None and total_equity is not None:
-        cash = round(total_equity - market_value, 2) if market_value is not None else total_equity
-    if market_value is not None and cash is not None:
-        account_nav = round(market_value + cash, 2)
-    elif market_value is not None:
-        account_nav = market_value
-    elif cash is not None:
-        account_nav = cash
-    else:
-        account_nav = None
+    cost_basis = _portfolio_cost_basis_from_positions(positions)
+    realized_pnl = _realized_pnl_from_trade_entries(path)
+    account = derive_cash_and_account_nav(
+        portfolio_basis_value=total_equity,
+        open_cost_basis=cost_basis,
+        market_value=market_value,
+        realized_pnl=realized_pnl,
+        manual_cash=manual_cash,
+    )
+    account_nav = account["account_nav"]
+    cash = account["cash"]
     if account_nav is None or account_nav <= 0:
         return {
             "account_nav": None,
             "cash": cash,
             "market_value": market_value,
+            "realized_pnl": round(realized_pnl, 2),
             "source": EQUITY_SOURCE_NOT_FOUND,
             "updated_at": settings.get("updated_at") or "",
         }
@@ -1008,6 +1011,7 @@ def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
         "account_nav": round(account_nav, 2),
         "cash": round(cash, 2) if cash is not None else None,
         "market_value": round(market_value, 2) if market_value is not None else None,
+        "realized_pnl": round(realized_pnl, 2),
         "source": EQUITY_SOURCE_PORTFOLIO,
         "updated_at": settings.get("updated_at") or _now(),
     }
@@ -1210,6 +1214,34 @@ def _portfolio_market_value_from_snapshot(positions: list[dict[str, Any]], path:
         total += quantity * price
         has_value = True
     return round(total, 2) if has_value else None
+
+
+def _portfolio_cost_basis_from_positions(positions: list[dict[str, Any]]) -> float | None:
+    total = 0.0
+    has_value = False
+    for position in positions:
+        quantity = _number(position.get("quantity"))
+        average_cost = _optional_nonnegative_number(position.get("average_cost"))
+        if quantity <= 0 or average_cost is None:
+            continue
+        total += quantity * average_cost
+        has_value = True
+    return round(total, 2) if has_value else None
+
+
+def _realized_pnl_from_trade_entries(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_journal_entries'"
+            ).fetchone()
+        if not exists:
+            return 0.0
+        return realized_pnl_from_entries(TradeJournalStore(path).list_entries())
+    except Exception:
+        return 0.0
 
 
 def _snapshot_date_text(snapshot: dict[str, Any] | None) -> str:

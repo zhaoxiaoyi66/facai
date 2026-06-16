@@ -2316,7 +2316,8 @@ def _render_overview_strip(summary: dict) -> None:
         ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "cost basis"),
         ("浮动盈亏", _money_or_dash(summary.get("unrealizedPnl")), _percent_or_dash(summary.get("unrealizedPnlPct"))),
         ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "manual total"),
-        ("现金", _money_or_dash(summary.get("cashBalance")), "auto cash"),
+        ("账户净值", _money_or_dash(summary.get("accountNav")), "市值 + 现金"),
+        ("现金", _money_or_dash(summary.get("cashBalance")), _cash_source_text(summary.get("cashBalanceSource"))),
     ]
     html = "".join(
         '<div class="portfolio-stat compact">'
@@ -2327,6 +2328,15 @@ def _render_overview_strip(summary: dict) -> None:
         for label, value, detail in items
     )
     st.markdown(f'<div class="portfolio-overview compact">{html}</div>', unsafe_allow_html=True)
+
+
+def _cash_source_text(source: object) -> str:
+    value = str(source or "").strip()
+    if value == "manual":
+        return "手动现金"
+    if value == "basis_realized":
+        return "本金/成本/已实现盈亏推导"
+    return "现金待补"
 
 
 def _render_role_structure_card(structure: dict) -> None:

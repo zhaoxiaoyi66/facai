@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,8 @@ from data.portfolio import (
     PortfolioSettingsStore,
     calculate_portfolio_positions,
 )
+from data.decision_log import TradeJournalStore
+from data.portfolio_accounting import derive_cash_and_account_nav, realized_pnl_from_entries
 from data.portfolio_roles import (
     build_portfolio_role_structure,
     portfolio_role_badge_class,
@@ -64,7 +68,7 @@ def build_portfolio_view_model(
     ]
     rows = sorted(rows, key=lambda row: (portfolio_role_sort_key(row.get("holdingRole")), str(row.get("symbol") or "")))
     return {
-        "summary": _summary(rows, settings),
+        "summary": _summary(rows, settings, db_path=db_path),
         "actionGroups": _action_groups(rows),
         "rows": rows,
         "settings": settings,
@@ -125,25 +129,52 @@ def _row_view(row: dict, price_status: str, system_ref: dict[str, Any], unsynced
     }
 
 
-def _summary(rows: list[dict], settings: dict | None = None) -> dict[str, Any]:
+def _summary(rows: list[dict], settings: dict | None = None, *, db_path: Path | None = None) -> dict[str, Any]:
     market_value = _sum_present(row.get("marketValue") for row in rows)
     cost_basis = _sum_present(row.get("costBasis") for row in rows)
     unrealized_pnl = _sum_present(row.get("unrealizedPnl") for row in rows)
     total_value = _number((settings or {}).get("total_portfolio_value"))
-    cash_balance = total_value - market_value if total_value is not None and total_value > 0 else None
+    manual_cash = _number((settings or {}).get("cash_balance"))
+    realized_pnl = _realized_pnl_from_trade_journal(db_path)
+    account = derive_cash_and_account_nav(
+        portfolio_basis_value=total_value,
+        open_cost_basis=cost_basis,
+        market_value=market_value,
+        realized_pnl=realized_pnl,
+        manual_cash=manual_cash,
+    )
     return {
         "marketValue": market_value,
         "costBasis": cost_basis,
         "unrealizedPnl": unrealized_pnl,
         "unrealizedPnlPct": unrealized_pnl / cost_basis * 100 if cost_basis > 0 else None,
         "totalPortfolioValue": total_value,
-        "cashBalance": cash_balance,
-        "cashBalanceSource": "derived" if cash_balance is not None else "unavailable",
+        "accountNav": account["account_nav"],
+        "cashBalance": account["cash"],
+        "cashBalanceSource": account["cash_source"],
+        "realizedPnl": account["realized_pnl"],
         "positionCount": len(rows),
         "roleStructure": build_portfolio_role_structure(rows),
         "overweightCount": sum(1 for row in rows if row["overweightSystem"] or row["overweightPersonal"]),
         "needsReviewCount": sum(1 for row in rows if row["needsReview"] or row["missingPrice"]),
     }
+
+
+def _realized_pnl_from_trade_journal(db_path: Path | None) -> float:
+    path = db_path or CACHE_PATH
+    if not path.exists():
+        return 0.0
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_journal_entries'"
+            ).fetchone()
+        if not exists:
+            return 0.0
+        entries = TradeJournalStore(path).list_entries()
+    except Exception:
+        return 0.0
+    return realized_pnl_from_entries(entries)
 
 
 def _action_groups(rows: list[dict]) -> list[dict[str, Any]]:

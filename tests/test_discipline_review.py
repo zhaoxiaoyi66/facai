@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,6 +28,24 @@ from ui import discipline_review
 
 def _path(tmpdir: str) -> Path:
     return Path(tmpdir) / "decision_log.sqlite"
+
+
+def _insert_quote(path: Path, symbol: str, price: float) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quote_snapshots (
+                ticker TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO quote_snapshots VALUES (?, ?, ?)",
+            (symbol.upper(), json.dumps({"current_price": price}), "2026-06-16T08:00:00+00:00"),
+        )
+        conn.commit()
 
 
 def test_discipline_principles_can_be_saved_and_reset() -> None:
@@ -325,12 +346,31 @@ def test_current_account_nav_derives_cash_from_total_when_cash_is_missing() -> N
         path = _path(tmpdir)
         PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000})
         PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+        _insert_quote(path, "NVDA", 90)
 
         nav = get_current_account_nav(path)
 
-        assert nav["market_value"] == 1000
+        assert nav["market_value"] == 900
         assert nav["cash"] == 169000
-        assert nav["account_nav"] == 170000
+        assert nav["account_nav"] == 169900
+
+
+def test_current_account_nav_subtracts_realized_loss_from_derived_cash() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 10000})
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+        _insert_quote(path, "NVDA", 90)
+        journal = TradeJournalStore(path)
+        journal.save_entry("MSFT", {"trade_date": "2026-01-01", "action_type": "buy", "quantity": 10, "price": 100})
+        journal.save_entry("MSFT", {"trade_date": "2026-01-05", "action_type": "sell", "quantity": 10, "price": 80})
+
+        nav = get_current_account_nav(path)
+
+        assert nav["realized_pnl"] == -200
+        assert nav["cash"] == 8800
+        assert nav["market_value"] == 900
+        assert nav["account_nav"] == 9700
 
 
 def test_current_account_nav_uses_cash_when_no_stock_market_value() -> None:

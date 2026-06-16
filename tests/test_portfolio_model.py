@@ -16,6 +16,7 @@ from data.portfolio import (
     calculate_portfolio_positions,
     format_position_tier_label,
 )
+from data.decision_log import TradeJournalStore
 from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_OBSERVATION, ROLE_SATELLITE, ROLE_STRONG_CORE
 from data.portfolio_view_model import build_portfolio_view_model
 import data.portfolio_view_model as portfolio_view_model_module
@@ -322,13 +323,44 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertEqual(view["summary"]["marketValue"], 1200)
         self.assertEqual(view["summary"]["costBasis"], 1000)
         self.assertEqual(view["summary"]["totalPortfolioValue"], 10000)
-        self.assertEqual(view["summary"]["cashBalance"], 8800)
-        self.assertEqual(view["summary"]["cashBalanceSource"], "derived")
+        self.assertEqual(view["summary"]["cashBalance"], 500)
+        self.assertEqual(view["summary"]["cashBalanceSource"], "manual")
+        self.assertEqual(view["summary"]["accountNav"], 1700)
         self.assertEqual(view["summary"]["unrealizedPnl"], 200)
         self.assertEqual(view["summary"]["unrealizedPnlPct"], 20)
         self.assertEqual(view["rows"][0]["positionPct"], 12)
         self.assertEqual(view["rows"][0]["actionGroup"], "addable")
         self.assertEqual(view["rows"][0]["priceStatus"], "provided")
+
+    def test_portfolio_view_model_derives_cash_from_basis_not_market_value(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 176000})
+            PortfolioPositionStore(db_path).save_position("NOW", {"quantity": 1, "average_cost": 99546.25})
+
+            view = build_portfolio_view_model(db_path, {"NOW": 97892.40})
+
+        self.assertEqual(view["summary"]["marketValue"], 97892.40)
+        self.assertEqual(view["summary"]["costBasis"], 99546.25)
+        self.assertEqual(round(view["summary"]["unrealizedPnl"], 2), -1653.85)
+        self.assertEqual(view["summary"]["cashBalance"], 76453.75)
+        self.assertEqual(view["summary"]["cashBalanceSource"], "basis_realized")
+        self.assertEqual(view["summary"]["accountNav"], 174346.15)
+
+    def test_portfolio_view_model_realized_loss_reduces_derived_cash(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            PortfolioSettingsStore(db_path).save_settings({"total_portfolio_value": 10000})
+            PortfolioPositionStore(db_path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+            journal = TradeJournalStore(db_path)
+            journal.save_entry("MSFT", {"trade_date": "2026-01-01", "action_type": "buy", "quantity": 10, "price": 100})
+            journal.save_entry("MSFT", {"trade_date": "2026-01-05", "action_type": "sell", "quantity": 10, "price": 80})
+
+            view = build_portfolio_view_model(db_path, {"NVDA": 90})
+
+        self.assertEqual(view["summary"]["realizedPnl"], -200)
+        self.assertEqual(view["summary"]["cashBalance"], 8800)
+        self.assertEqual(view["summary"]["accountNav"], 9700)
 
     def test_portfolio_view_model_prefers_quote_snapshot_price(self) -> None:
         with TemporaryDirectory() as tmpdir:
