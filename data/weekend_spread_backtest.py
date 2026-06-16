@@ -210,7 +210,7 @@ def run_weekend_basis_backtest(
                     ticker,
                     config,
                     window,
-                    anchor=_anchor_for_ticker(ticker, config, effective_anchors),
+                    anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
                     anchor_source=dict(effective_anchors.get(ticker) or config),
                     provider=price_provider,
                     broker_provider=broker_provider,
@@ -600,7 +600,14 @@ def _basis_backtest_one_window(
     mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
     anchor_price = _number(anchor.get("anchor_price"))
     base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
-    base.update({"broker_anchor_price": anchor_price, "anchor_price": anchor_price, "anchor_source": str(anchor.get("anchor_source") or "")})
+    base.update(
+        {
+            "broker_anchor_price": anchor_price,
+            "anchor_price": anchor_price,
+            "anchor_source": str(anchor.get("anchor_source") or ""),
+            "anchor_ts": str(anchor.get("anchor_ts") or ""),
+        }
+    )
     if anchor_price is None or anchor_price <= 0:
         base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price", "error_message": "missing broker anchor price"})
         return base
@@ -650,6 +657,7 @@ def _basis_backtest_one_window(
             "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
             "anchor_price": anchor_price,
             "anchor_source": str(anchor.get("anchor_source") or ""),
+            "anchor_ts": str(anchor.get("anchor_ts") or ""),
             "kline_cache_status": kline_cache_status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1362,6 +1370,7 @@ def _base_result(ticker: str, symbol: str, market_type: str, mapping_confidence:
         "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
         "anchor_price": None,
         "anchor_source": "",
+        "anchor_ts": "",
         "weekend_peak_binance_price": None,
         "weekend_peak_price": None,
         "weekend_peak_time": "",
@@ -1466,9 +1475,10 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
         }
     regular = _number(source.get("regular_close_price") or source.get("friday_close") or source.get("friday_close_price"))
     if regular is not None and regular > 0:
+        regular_source = str(source.get("anchor_source") or "ANCHOR_REGULAR_CLOSE_ONLY")
         return {
             "anchor_price": regular,
-            "anchor_source": "ANCHOR_REGULAR_CLOSE_ONLY",
+            "anchor_source": regular_source,
             "anchor_ts": str(source.get("regular_close_date") or source.get("friday_close_date") or ""),
         }
     return {"anchor_price": None, "anchor_source": "MISSING", "anchor_ts": ""}

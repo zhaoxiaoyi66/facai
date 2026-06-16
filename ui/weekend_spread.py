@@ -12,6 +12,7 @@ import streamlit as st
 
 from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.binance_provider import DEFAULT_BINANCE_CACHE_PATH, normalize_market_type
+from data.cache_read_model import CacheReadModel
 from data.weekend_basis import (
     build_basis_opportunity,
     close_weekend_basis_trade,
@@ -29,6 +30,7 @@ from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
     load_backtest_results,
+    recent_weekend_windows,
     run_weekend_basis_backfill_audit,
     run_weekend_basis_backtest,
     save_backtest_results,
@@ -558,8 +560,8 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         key="weekend_backtest_include_unconfirmed",
         help="未确认映射仅观察，默认不纳入正式胜率。",
     )
-    anchors = _backtest_anchor_mapping()
     all_tickers = [str(ticker or "").upper() for ticker in watchlist if str(ticker or "").strip()]
+    anchors = _backtest_anchor_mapping(all_tickers, weeks=4)
     preliminary = build_weekend_backtest_preflight(
         all_tickers,
         mapping=mapping,
@@ -572,6 +574,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
     open_window = int(cols[2].selectbox("开盘窗口（分钟）", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
     run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
+    anchors = _backtest_anchor_mapping(run_tickers or all_tickers, weeks=weeks)
     preflight = build_weekend_backtest_preflight(
         run_tickers,
         mapping=mapping,
@@ -593,6 +596,11 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     with op_cols[2].expander("查看排除原因", expanded=False):
         excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
         st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
+    if not preflight.get("can_run"):
+        st.session_state["weekend_backtest_results"] = []
+        st.session_state["weekend_backtest_cache"] = clear_backtest_view_state()
+        st.info(f"没有可回测标的：{_backtest_block_text(str(preflight.get('primary_block_reason') or 'NO_MAPPING'))}")
+        return
     if clear_clicked:
         st.session_state["weekend_backtest_results"] = []
         st.session_state["weekend_backtest_cache"] = clear_backtest_view_state()
@@ -630,7 +638,13 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         else:
             status_slot.success(f"回测完成：{len(results)} 条结果。")
     cached_result = dict(st.session_state.get("weekend_backtest_cache") or load_backtest_results())
-    results = list(st.session_state.get("weekend_backtest_results") or cached_result.get("rows") or [])
+    results = _current_backtest_results(
+        st.session_state.get("weekend_backtest_results"),
+        cached_result,
+        preflight=preflight,
+        mapping=mapping,
+        include_unconfirmed=include_unconfirmed,
+    )
     if not results:
         if not preflight.get("can_run"):
             st.info(f"没有可回测标的：{_backtest_block_text(str(preflight.get('primary_block_reason') or 'NO_MAPPING'))}")
@@ -647,13 +661,49 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     if include_unconfirmed:
         st.caption("观察回测：包含未确认映射，结果不计为正式胜率。")
     review_rows = _weekend_review_rows(results)
+    ok_review_rows = _ok_weekend_review_rows(review_rows)
     _render_weekend_review_kpis(review_rows)
     _render_weekend_review_table(review_rows)
     with st.expander("历史回测 / 数据质量 / 排除提醒", expanded=False):
-        _render_backtest_kpis(results)
-        st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
+        if ok_review_rows:
+            _render_backtest_kpis(results)
+            st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
+        else:
+            st.info("本次没有 OK 样本，不展示历史回测表；请先检查 mapping、历史美股收盘价和合约 K 线。")
     _render_backfill_audit_area_v2(watchlist, mapping, anchors)
     _render_backtest_advanced_records()
+
+
+def _current_backtest_results(
+    session_rows: object,
+    cached_result: dict,
+    *,
+    preflight: dict[str, object],
+    mapping: dict[str, dict],
+    include_unconfirmed: bool,
+) -> list[dict]:
+    if not preflight.get("can_run"):
+        return []
+    source_rows = list(session_rows or cached_result.get("rows") or [])
+    allowed_tickers = {str(ticker or "").strip().upper() for ticker in (preflight.get("eligible_tickers") or [])}
+    if not allowed_tickers:
+        return []
+    filtered: list[dict] = []
+    for source in source_rows:
+        row = dict(source or {})
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker not in allowed_tickers:
+            continue
+        config = mapping.get(ticker) or {}
+        configured_symbol = str(config.get("binance_symbol") or "").strip().upper()
+        row_symbol = str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper()
+        if configured_symbol and row_symbol and configured_symbol != row_symbol:
+            continue
+        confidence = str(config.get("mapping_confidence") or row.get("mapping_confidence") or "").strip().lower()
+        if not include_unconfirmed and confidence != "confirmed":
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def _render_backtest_preflight(preflight: dict[str, object]) -> None:
@@ -830,6 +880,11 @@ def _data_quality_text(value: object) -> str:
     text = str(value or "").strip().upper()
     return {
         "OK": "可用",
+        "MAPPING_MISSING": "映射缺失",
+        "STOCK_MISSING": "美股价格缺失",
+        "CONTRACT_MISSING": "合约价格缺失",
+        "STALE_CACHE": "缓存过期",
+        "INVALID_PRICE": "价格无效",
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
         "NO_BROKER_OVERNIGHT_BAR": "缺少券商 overnight bar",
@@ -975,18 +1030,19 @@ def _render_backfill_kpis(rows: list[dict]) -> None:
 
 def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
-    if not int(summary.get("sample_count") or 0):
-        st.info("暂无可展示的价差数据。")
-        return
     metrics: list[tuple[str, object, str]] = [
         ("近4周样本数", int(summary.get("sample_count") or 0), ""),
         ("平均价差", summary.get("avg_price_diff"), "money_diff"),
         ("平均溢价%", summary.get("avg_premium_pct"), "percent"),
         ("最大溢价%", summary.get("max_premium_pct"), "percent"),
+        ("最新一周溢价%", summary.get("latest_week_avg_premium_pct"), "percent"),
     ]
-    if summary.get("latest_week_avg_premium_pct") is not None:
-        metrics.append(("最新一周溢价%", summary.get("latest_week_avg_premium_pct"), "percent"))
     cols = st.columns(len(metrics))
+    if not int(summary.get("sample_count") or 0):
+        for col, (label, _, _) in zip(cols, metrics):
+            col.metric(label, "暂无数据")
+        st.info("暂无可信价差样本；请先配置有效 mapping 并运行回测。")
+        return
     for col, (label, value, kind) in zip(cols, metrics):
         if kind == "money_diff":
             col.metric(label, _signed_money_text(value, missing="暂无数据"))
@@ -997,9 +1053,9 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
 
 
 def _render_weekend_review_table(review_rows: list[dict]) -> None:
-    frame = _weekend_review_frame(review_rows)
+    frame = _weekend_review_frame(_ok_weekend_review_rows(review_rows))
     if frame.empty:
-        st.info("暂无数据。")
+        st.info("暂无可信历史回测表；没有 OK 样本时不会展示旧缓存或 fallback 数据。")
         return
     st.dataframe(_style_weekend_review_frame(frame), width="stretch", hide_index=True)
 
@@ -1026,14 +1082,18 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
         premium_pct = _weekend_review_premium_pct(row, anchor_price)
         binance_price = _weekend_review_binance_price(row, anchor_price, premium_pct)
         price_diff = binance_price - anchor_price if anchor_price is not None and binance_price is not None else None
+        data_quality = _weekend_review_data_quality(row, anchor_price, binance_price, premium_pct)
         record = {
             "week_id": week_id,
             "ticker": ticker,
+            "stock_reference_date": _weekend_review_stock_reference_date(row),
             "stock_price": anchor_price,
+            "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
             "price_diff": price_diff,
             "premium_pct": premium_pct,
-            "status": _weekend_review_status(row, anchor_price, binance_price, premium_pct),
+            "data_quality": data_quality,
+            "status": _weekend_review_status(data_quality, premium_pct),
             "raw_row": row,
         }
         key = (week_id, ticker)
@@ -1048,8 +1108,9 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
 
 
 def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
-    latest_weeks = set(_latest_week_ids(review_rows, limit=4))
-    scoped = [row for row in review_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(review_rows)
+    ok_rows = _ok_weekend_review_rows(review_rows)
+    latest_weeks = set(_latest_week_ids(ok_rows, limit=4))
+    scoped = [row for row in ok_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(ok_rows)
     valid = [row for row in scoped if _number(row.get("price_diff")) is not None and _number(row.get("premium_pct")) is not None]
     if not valid:
         return {
@@ -1074,7 +1135,7 @@ def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
 
 
 def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
-    columns = ["周次", "股票", "美股价格", "币安价格", "价差", "溢价%", "状态"]
+    columns = ["周次", "股票", "美股参考日", "美股价格", "合约采样时间", "合约价格", "价差", "溢价%", "数据质量", "状态"]
     if not review_rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(
@@ -1082,10 +1143,13 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
             {
                 "周次": row.get("week_id"),
                 "股票": row.get("ticker"),
+                "美股参考日": row.get("stock_reference_date") or "暂无数据",
                 "美股价格": row.get("stock_price"),
-                "币安价格": row.get("binance_price"),
+                "合约采样时间": row.get("contract_sample_time") or "暂无数据",
+                "合约价格": row.get("binance_price"),
                 "价差": row.get("price_diff"),
                 "溢价%": row.get("premium_pct"),
+                "数据质量": _data_quality_text(row.get("data_quality")),
                 "状态": row.get("status"),
             }
             for row in review_rows
@@ -1108,32 +1172,55 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
     styler = frame.style.format(
         {
             "美股价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
-            "币安价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "合约价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
             "价差": lambda value: _signed_money_text(value, missing="暂无数据"),
             "溢价%": lambda value: _review_percent_text(value),
         }
     )
     if hasattr(styler, "map"):
         return styler.map(color_value, subset=["价差", "溢价%"])
-    return styler.applymap(color_value, subset=["价差", "溢价%"])
+
+    def color_frame(data: pd.DataFrame) -> pd.DataFrame:
+        if hasattr(data, "map"):
+            return data.map(color_value)
+        return data.applymap(color_value)
+
+    return styler.apply(color_frame, subset=["价差", "溢价%"], axis=None)
 
 
-def _weekend_review_status(row: dict, anchor_price: float | None, binance_price: float | None, premium_pct: float | None) -> str:
+def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
+    return [row for row in review_rows if str(row.get("data_quality") or "").strip().upper() == "OK"]
+
+
+def _weekend_review_data_quality(
+    row: dict,
+    anchor_price: float | None,
+    binance_price: float | None,
+    premium_pct: float | None,
+) -> str:
     quality = str(row.get("data_quality") or "").strip().upper()
-    if (
-        anchor_price is None
-        or binance_price is None
-        or premium_pct is None
-        or quality
-        in {
-            "NO_PRICE_ANCHOR",
-            "BINANCE_KLINE_UNAVAILABLE",
-            "DATA_UNAVAILABLE",
-            "DATA_INSUFFICIENT",
-            "INVALID",
-            "MISSING",
-        }
-    ):
+    status = str(row.get("status") or "").strip().upper()
+    mapping_status = str(row.get("mapping_status") or "").strip().upper()
+    cache_status = str(row.get("kline_cache_status") or row.get("cache_status") or "").strip().upper()
+    if quality in {"BLOCK_MAPPING", "NO_MAPPING", "MAPPING_MISSING"} or status == "BLOCK_MAPPING":
+        return "MAPPING_MISSING"
+    if mapping_status == "CANDIDATE_OBSERVATION":
+        return "MAPPING_MISSING"
+    if anchor_price is None or anchor_price <= 0 or quality in {"NO_PRICE_ANCHOR", "STOCK_MISSING"}:
+        return "STOCK_MISSING"
+    if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
+        return "CONTRACT_MISSING"
+    if cache_status in {"STALE", "STALE_CACHE", "CACHE_FALLBACK"} or quality in {"STALE_CACHE", "STALE_OR_MISALIGNED"}:
+        return "STALE_CACHE"
+    if premium_pct is None or quality in {"INVALID", "MISSING", "DATA_INSUFFICIENT", "INVALID_PRICE"}:
+        return "INVALID_PRICE"
+    if quality in {"", "OK"}:
+        return "OK"
+    return "INVALID_PRICE"
+
+
+def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
+    if data_quality != "OK" or premium_pct is None:
         return "数据不完整"
     if abs(premium_pct) >= LARGE_WEEKEND_PREMIUM_PCT:
         return "价差较大"
@@ -1144,8 +1231,31 @@ def _weekend_review_rank(row: dict) -> tuple[int, float]:
     premium = _number(row.get("premium_pct"))
     anchor = _number(row.get("stock_price"))
     binance = _number(row.get("binance_price"))
-    valid = 1 if premium is not None and anchor is not None and binance is not None else 0
+    valid = 1 if row.get("data_quality") == "OK" and premium is not None and anchor is not None and binance is not None else 0
     return (valid, abs(float(premium or 0.0)))
+
+
+def _weekend_review_stock_reference_date(row: dict) -> str:
+    for key in ("regular_close_date", "friday_close_date", "anchor_ts", "weekend_window_start"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value[:10]
+    return ""
+
+
+def _weekend_review_contract_sample_time(row: dict) -> str:
+    for key in (
+        "oracle_weekend_high_time",
+        "weekend_peak_time",
+        "binance_entry_ts",
+        "entry_ts",
+        "sample_time",
+        "updated_at",
+    ):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _weekend_review_premium_pct(row: dict, anchor_price: float | None) -> float | None:
@@ -1235,7 +1345,13 @@ def _review_percent_text(value: object) -> str:
     return f"{number:+.2f}%"
 
 
-def _backtest_anchor_mapping() -> dict[str, dict]:
+def _backtest_anchor_mapping(
+    tickers: list[str] | None = None,
+    *,
+    weeks: int = 4,
+    cache: CacheReadModel | None = None,
+    now: datetime | None = None,
+) -> dict[str, dict]:
     rows = list(st.session_state.get("weekend_realtime_rows") or [])
     result: dict[str, dict] = {}
     for row in rows:
@@ -1245,9 +1361,72 @@ def _backtest_anchor_mapping() -> dict[str, dict]:
         result[ticker] = {
             "afterhours_reference_price": row.get("afterhours_reference_price"),
             "regular_close_price": row.get("regular_close_price") or row.get("friday_close"),
+            "regular_close_date": row.get("regular_close_date") or row.get("friday_close_date"),
             "friday_close": row.get("friday_close"),
+            "friday_close_date": row.get("friday_close_date"),
         }
+    _merge_historical_weekly_anchors(result, tickers or list(result), weeks=weeks, cache=cache, now=now)
     return result
+
+
+def _merge_historical_weekly_anchors(
+    anchors: dict[str, dict],
+    tickers: list[str],
+    *,
+    weeks: int,
+    cache: CacheReadModel | None = None,
+    now: datetime | None = None,
+) -> None:
+    if not tickers:
+        return
+    read_model = cache or CacheReadModel()
+    windows = recent_weekend_windows(weeks=max(1, int(weeks or 1)), now=now)
+    for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+        try:
+            history = read_model.get_price_history(ticker)
+        except Exception:
+            history = pd.DataFrame()
+        weekly: dict[str, dict] = {}
+        for window in windows:
+            anchor = _historical_regular_close_anchor(history, window)
+            if anchor:
+                weekly[window.week_id] = anchor
+        if not weekly:
+            continue
+        current = anchors.setdefault(ticker, {})
+        existing_weekly = current.get("weekly_anchors") if isinstance(current.get("weekly_anchors"), dict) else {}
+        current["weekly_anchors"] = {**existing_weekly, **weekly}
+        latest = weekly.get(windows[0].week_id)
+        if latest:
+            current["regular_close_price"] = latest.get("regular_close_price")
+            current["regular_close_date"] = latest.get("regular_close_date")
+            current["anchor_source"] = latest.get("anchor_source")
+
+
+def _historical_regular_close_anchor(history: pd.DataFrame, window) -> dict[str, object] | None:
+    if history is None or history.empty or "date" not in history.columns or "close" not in history.columns:
+        return None
+    frame = history.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    target = window.start_et.date()
+    lower_bound = target - timedelta(days=7)
+    candidates = frame[(frame["date"] <= target) & (frame["date"] >= lower_bound) & (frame["close"] > 0)]
+    if candidates.empty:
+        return None
+    row = candidates.sort_values("date").iloc[-1]
+    close = _number(row.get("close"))
+    if close is None or close <= 0:
+        return None
+    close_date = row.get("date")
+    close_date_text = close_date.isoformat() if hasattr(close_date, "isoformat") else str(close_date or "")
+    return {
+        "regular_close_price": close,
+        "friday_close": close,
+        "regular_close_date": close_date_text,
+        "friday_close_date": close_date_text,
+        "anchor_source": "HISTORICAL_REGULAR_CLOSE",
+    }
 
 
 def _render_backtest_advanced_records() -> None:

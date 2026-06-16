@@ -3255,7 +3255,9 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
             "week_id": "2026-W24",
             "ticker": "NVDA",
             "friday_anchor_price": 100.0,
+            "regular_close_date": "2026-06-12",
             "oracle_weekend_high_bid": 102.0,
+            "oracle_weekend_high_time": "2026-06-14 20:05:00",
             "oracle_weekend_high_premium_bps": 200.0,
             "entry_price": 101.0,
             "entry_premium_bps": 100.0,
@@ -3282,14 +3284,28 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     review_rows = weekend_spread._weekend_review_rows(rows)
     frame = weekend_spread._weekend_review_frame(review_rows)
 
-    assert list(frame.columns) == ["周次", "股票", "美股价格", "币安价格", "价差", "溢价%", "状态"]
+    assert list(frame.columns) == [
+        "周次",
+        "股票",
+        "美股参考日",
+        "美股价格",
+        "合约采样时间",
+        "合约价格",
+        "价差",
+        "溢价%",
+        "数据质量",
+        "状态",
+    ]
     assert "锁仓收益" not in frame.columns
     assert "剩余基差" not in frame.columns
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["币安价格"] == 102.0
+    assert nvda["美股参考日"] == "2026-06-12"
+    assert nvda["合约采样时间"] == "2026-06-14 20:05:00"
+    assert nvda["合约价格"] == 102.0
     assert nvda["价差"] == 2.0
     assert nvda["溢价%"] == 2.0
+    assert nvda["数据质量"] == "可用"
     assert nvda["状态"] == "价差较大"
 
 
@@ -3314,6 +3330,36 @@ def test_weekend_review_summary_uses_latest_four_weeks() -> None:
     assert summary["latest_week_avg_premium_pct"] == 24.0
 
 
+def test_weekend_review_summary_counts_only_ok_samples() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "friday_anchor_price": 100.0,
+            "oracle_weekend_high_bid": 104.0,
+            "oracle_weekend_high_premium_bps": 400.0,
+            "data_quality": "OK",
+        },
+        {
+            "week_id": "2026-W24",
+            "ticker": "NOW",
+            "friday_anchor_price": 100.0,
+            "oracle_weekend_high_bid": 120.0,
+            "oracle_weekend_high_premium_bps": 2000.0,
+            "data_quality": "NO_MAPPING",
+        },
+    ]
+
+    summary = weekend_spread._weekend_review_summary(weekend_spread._weekend_review_rows(rows))
+    frame = weekend_spread._weekend_review_frame(
+        weekend_spread._ok_weekend_review_rows(weekend_spread._weekend_review_rows(rows))
+    )
+
+    assert summary["sample_count"] == 1
+    assert summary["avg_premium_pct"] == 4.0
+    assert list(frame["股票"]) == ["NVDA"]
+
+
 def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     rows = [
         {
@@ -3329,7 +3375,8 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
 
     assert frame.iloc[0]["状态"] == "数据不完整"
     assert frame.iloc[0]["美股价格"] is None
-    assert frame.iloc[0]["币安价格"] is None
+    assert frame.iloc[0]["合约价格"] is None
+    assert frame.iloc[0]["数据质量"] == "美股价格缺失"
 
 
 def test_weekend_review_style_renders_with_current_pandas() -> None:
@@ -3351,6 +3398,55 @@ def test_weekend_review_style_renders_with_current_pandas() -> None:
 
     assert "NVDA" in html
     assert "$2.00" in html
+
+
+def test_backtest_results_do_not_use_cache_when_preflight_has_no_eligible_mapping() -> None:
+    cached = {
+        "rows": [
+            {
+                "week_id": "2026-W24",
+                "ticker": "NVDA",
+                "binance_symbol": "NVDAUSDT",
+                "data_quality": "OK",
+            }
+        ]
+    }
+
+    rows = weekend_spread._current_backtest_results(
+        None,
+        cached,
+        preflight={"can_run": False, "eligible_tickers": []},
+        mapping={},
+        include_unconfirmed=False,
+    )
+
+    assert rows == []
+
+
+def test_backtest_anchor_mapping_uses_distinct_historical_weekly_closes() -> None:
+    history = pd.DataFrame(
+        [
+            {"date": "2026-06-12", "close": 100.0},
+            {"date": "2026-06-19", "close": 110.0},
+            {"date": "2026-06-26", "close": 120.0},
+            {"date": "2026-07-03", "close": 130.0},
+        ]
+    )
+
+    anchors = weekend_spread._backtest_anchor_mapping(
+        ["NVDA"],
+        weeks=4,
+        cache=FakeCache(history),
+        now=datetime(2026, 7, 8, 12, tzinfo=timezone.utc),
+    )
+    weekly = anchors["NVDA"]["weekly_anchors"]
+
+    closes = [float(anchor["regular_close_price"]) for anchor in weekly.values()]
+    dates = {anchor["regular_close_date"] for anchor in weekly.values()}
+
+    assert len(weekly) == 4
+    assert sorted(closes) == [100.0, 110.0, 120.0, 130.0]
+    assert dates == {"2026-06-12", "2026-06-19", "2026-06-26", "2026-07-03"}
 
 
 def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
