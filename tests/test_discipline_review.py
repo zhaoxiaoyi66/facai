@@ -306,7 +306,7 @@ def test_latest_only_snapshot_does_not_backfill_historical_period() -> None:
         assert prefill["only_latest_available"] is True
 
 
-def test_current_account_nav_prefers_portfolio_total_value() -> None:
+def test_current_account_nav_uses_market_value_plus_cash() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _path(tmpdir)
         PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000, "cash_balance": 25000})
@@ -314,16 +314,43 @@ def test_current_account_nav_prefers_portfolio_total_value() -> None:
 
         nav = get_current_account_nav(path)
 
-        assert nav["account_nav"] == 170000
+        assert nav["account_nav"] == 26000
         assert nav["cash"] == 25000
+        assert nav["market_value"] == 1000
         assert nav["source"] == EQUITY_SOURCE_PORTFOLIO
+
+
+def test_current_account_nav_derives_cash_from_total_when_cash_is_missing() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000})
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+
+        nav = get_current_account_nav(path)
+
+        assert nav["market_value"] == 1000
+        assert nav["cash"] == 169000
+        assert nav["account_nav"] == 170000
+
+
+def test_current_account_nav_uses_cash_when_no_stock_market_value() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000, "cash_balance": 25000})
+
+        nav = get_current_account_nav(path)
+
+        assert nav["market_value"] is None
+        assert nav["cash"] == 25000
+        assert nav["account_nav"] == 25000
 
 
 def test_periodic_prefill_uses_previous_review_and_current_nav_when_snapshots_missing() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _path(tmpdir)
         store = DisciplineReviewStore(path)
-        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 174000, "cash_balance": 24000})
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 999999, "cash_balance": 24000})
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 15000})
 
         prefill = store.build_periodic_return_prefill(
             start_date="2026-06-08",
@@ -337,7 +364,7 @@ def test_periodic_prefill_uses_previous_review_and_current_nav_when_snapshots_mi
         assert prefill["ending_equity_source"] == EQUITY_SOURCE_PORTFOLIO
 
 
-def test_capture_current_account_equity_snapshot_prefers_total_portfolio_value() -> None:
+def test_capture_current_account_equity_snapshot_uses_market_value_plus_cash() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _path(tmpdir)
         store = DisciplineReviewStore(path)
@@ -347,7 +374,9 @@ def test_capture_current_account_equity_snapshot_prefers_total_portfolio_value()
         snapshot = store.capture_current_account_equity_snapshot()
 
         assert snapshot is not None
-        assert snapshot["account_equity"] == 170000
+        assert snapshot["account_equity"] == 26000
+        assert snapshot["cash"] == 25000
+        assert snapshot["market_value"] == 1000
         assert snapshot["source"] == EQUITY_SOURCE_PORTFOLIO
 
 
@@ -441,16 +470,22 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
 
     assert "交易错题本" in source
     assert "周期收益复盘" in source
-    assert "保存周期复盘" in source
     assert "归档这条错误" in source
+    assert "周期与数据源" in source
+    assert "收益结算" in source
+    assert "交易复盘" in source
+    assert "历史记录" in source
+    assert "保存本期复盘" in source
     assert "读取账户净资产" in source
-    assert "保存当前账户快照" in source
-    assert "使用上一条复盘期末净资产作为期初净资产" in source
-    assert "数据来源：未找到对应账户净资产。请保存当前账户快照，或手动填写。" in source
+    assert "保存当前快照" in source
+    assert "用上期末值作为期初" in source
+    assert "未找到账户净资产。请保存当前快照，或手动填写期初和期末。" in source
+    assert "periodic-status" in source
+    assert "periodic-settlement-bar" in source
+    assert "待计算" in source
     assert "已读取账户净资产" in source
     assert "当前持仓汇总" in source
     assert "上一条复盘" in source
-    assert "当前系统暂无历史账户快照" in source
     assert "标的 / 场景" in source
     assert "错误档案" in source
     assert "错误复盘" in source
@@ -477,6 +512,12 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "with st.expander(\"SPACX" not in source
     assert "基本信息" not in source
     assert "复盘正文" not in source
+    assert "周期选择" not in source
+    assert "收益数据" not in source
+    assert "复盘内容" not in source
+    assert "保存周期复盘" not in source
+    assert "使用上一条复盘期末净资产作为期初净资产" not in source
+    assert "周期收益复盘筛选" not in source
     assert "损失金额 / 影响" not in source
     assert "例如：800U、亏损500美元、卖飞约10%" not in source
     assert "复盘状态\", MISTAKE_REVIEW_STATUSES" not in source

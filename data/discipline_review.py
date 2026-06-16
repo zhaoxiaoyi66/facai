@@ -986,7 +986,16 @@ def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
     total_equity = _optional_nonnegative_number(settings.get("total_portfolio_value"))
     cash = _optional_nonnegative_number(settings.get("cash_balance"))
     market_value = _portfolio_market_value_from_snapshot(positions, path)
-    account_nav = total_equity if total_equity is not None and total_equity > 0 else market_value
+    if cash is None and total_equity is not None:
+        cash = round(total_equity - market_value, 2) if market_value is not None else total_equity
+    if market_value is not None and cash is not None:
+        account_nav = round(market_value + cash, 2)
+    elif market_value is not None:
+        account_nav = market_value
+    elif cash is not None:
+        account_nav = cash
+    else:
+        account_nav = None
     if account_nav is None or account_nav <= 0:
         return {
             "account_nav": None,
@@ -995,8 +1004,6 @@ def get_current_account_nav(path: Path = CACHE_PATH) -> dict[str, Any]:
             "source": EQUITY_SOURCE_NOT_FOUND,
             "updated_at": settings.get("updated_at") or "",
         }
-    if cash is None and market_value is not None:
-        cash = round(account_nav - market_value, 2)
     return {
         "account_nav": round(account_nav, 2),
         "cash": round(cash, 2) if cash is not None else None,

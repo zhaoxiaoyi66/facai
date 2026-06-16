@@ -180,18 +180,16 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
     state = _prepare_periodic_return_form_state(store, rows, editing_row)
     meta = dict(state["meta"])
 
-    _render_periodic_feedback(state)
-
-    st.markdown("#### 1. 周期选择")
+    st.markdown("#### 1. 周期与数据源")
     control_cols = st.columns([1.1, 1, 1])
     control_cols[0].selectbox("复盘类型", PERIODIC_RETURN_TYPES, key=state["period_type_key"])
     control_cols[1].date_input("开始日期", key=state["start_date_key"])
     control_cols[2].date_input("结束日期", key=state["end_date_key"])
-    action_cols = st.columns([1, 1.25, 1, 2])
-    if action_cols[0].button("读取账户净资产", key=f"{state['prefix']}-reload", width="stretch"):
+    action_cols = st.columns([1.15, 1.2, 1, 2.65])
+    if action_cols[0].button("读取账户净资产", type="primary", key=f"{state['prefix']}-reload", width="stretch"):
         _apply_periodic_return_prefill(store, state, rows, editing_row)
         st.rerun()
-    if action_cols[1].button("使用上一条复盘期末净资产作为期初净资产", key=f"{state['prefix']}-use-previous", width="stretch"):
+    if action_cols[1].button("用上期末值作为期初", key=f"{state['prefix']}-use-previous", width="stretch"):
         previous_ending = _previous_periodic_ending_equity(rows, editing_row, st.session_state[state["start_date_key"]])
         if previous_ending is not None:
             st.session_state[state["starting_equity_key"]] = _amount_input_value(previous_ending, allow_blank=True)
@@ -209,13 +207,13 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
             "text": "没有可复用的上一条复盘期末净资产，请手动填写期初账户净资产。",
         }
         st.rerun()
-    if action_cols[2].button("保存当前账户快照", key=f"{state['prefix']}-save-snapshot", width="stretch"):
+    if action_cols[2].button("保存当前快照", key=f"{state['prefix']}-save-snapshot", width="stretch"):
         snapshot = store.capture_current_account_equity_snapshot()
         if snapshot:
             st.session_state[state["feedback_key"]] = {
                 "level": "success",
                 "text": (
-                    f"已保存当前账户快照：${_money(snapshot.get('account_equity'))}，"
+                    f"已保存当前快照：${_money(snapshot.get('account_equity'))}，"
                     f"数据来源：{snapshot.get('source') or EQUITY_SOURCE_PORTFOLIO}。"
                 ),
             }
@@ -226,11 +224,10 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
             }
         st.rerun()
 
-    st.caption(_periodic_source_note(meta))
-    if meta.get("only_latest_available"):
-        st.info("当前系统暂无历史账户快照，只能读取最新账户净资产。建议每周五收盘后保存一次账户快照，用于周复盘自动计算收益。")
+    if not _render_periodic_feedback(state):
+        st.markdown(_periodic_status_html(_periodic_source_note(meta), "muted"), unsafe_allow_html=True)
 
-    st.markdown("#### 2. 收益数据")
+    st.markdown("#### 2. 收益结算")
     equity_cols = st.columns(4)
     equity_cols[0].text_input("期初账户净资产", key=state["starting_equity_key"], placeholder="自动读取或手动填写")
     equity_cols[0].caption(_field_source_caption(meta, "starting"))
@@ -245,19 +242,47 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
     withdrawal_amount = _parse_amount_text(st.session_state.get(state["withdrawal_key"]), default=0.0)
     preview_profit = None if starting_equity is None or ending_equity is None else ending_equity - starting_equity - deposit_amount + withdrawal_amount
     preview_return = None if preview_profit is None or starting_equity is None or starting_equity <= 0 else preview_profit / starting_equity
-    st.markdown(_periodic_preview_cards_html(preview_profit, preview_return, _periodic_source_card_text(meta)), unsafe_allow_html=True)
+    st.markdown(
+        _periodic_settlement_bar_html(starting_equity, ending_equity, deposit_amount, withdrawal_amount, preview_profit, preview_return, meta),
+        unsafe_allow_html=True,
+    )
 
     with st.form(f"periodic-return-review-form-{state['prefix']}", clear_on_submit=False):
-        st.markdown("#### 3. 复盘内容")
+        st.markdown("#### 3. 交易复盘")
         review_cols = st.columns(2)
-        biggest_contributor = review_cols[0].text_area("本期最大贡献", key=state["biggest_contributor_key"], height=72)
-        biggest_drag = review_cols[1].text_area("本期最大拖累", key=state["biggest_drag_key"], height=72)
-        what_went_well = review_cols[0].text_area("本期做对了什么", key=state["what_went_well_key"], height=86)
-        what_went_wrong = review_cols[1].text_area("本期做错了什么", key=state["what_went_wrong_key"], height=86)
-        next_period_rule = st.text_area("下期重点规则", key=state["next_period_rule_key"], height=72)
-        notes = st.text_area("备注，可选", key=state["notes_key"], height=64)
-        submit_label = "保存修改" if editing_row else "保存周期复盘"
-        form_cols = st.columns([1, 1, 4])
+        biggest_contributor = review_cols[0].text_area(
+            "本期最大贡献",
+            key=state["biggest_contributor_key"],
+            height=72,
+            placeholder="哪只股票、哪次决策或哪条主线贡献最大？",
+        )
+        biggest_drag = review_cols[1].text_area(
+            "本期最大拖累",
+            key=state["biggest_drag_key"],
+            height=72,
+            placeholder="哪只股票、哪次错误或哪类仓位拖累最大？",
+        )
+        what_went_well = review_cols[0].text_area(
+            "本期做对了什么",
+            key=state["what_went_well_key"],
+            height=86,
+            placeholder="本期哪些交易行为值得保留？",
+        )
+        what_went_wrong = review_cols[1].text_area(
+            "本期做错了什么",
+            key=state["what_went_wrong_key"],
+            height=86,
+            placeholder="本期哪些交易行为需要纠正？",
+        )
+        next_period_rule = st.text_area(
+            "下期重点规则",
+            key=state["next_period_rule_key"],
+            height=112,
+            placeholder="下周 / 下月必须执行的 1-3 条规则。",
+        )
+        notes = st.text_area("备注，可选", key=state["notes_key"], height=64, placeholder="其他补充，可选。")
+        submit_label = "保存本期复盘"
+        form_cols = st.columns([1.2, 1, 4.8])
         submitted = form_cols[0].form_submit_button(submit_label, width="stretch")
         cancel_edit = bool(editing_row) and form_cols[1].form_submit_button("取消编辑", width="stretch")
     if submitted:
@@ -308,6 +333,7 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
         st.session_state.pop("periodic-return-edit-id", None)
         st.rerun()
 
+    st.markdown("#### 4. 历史记录")
     filtered = _filter_periodic_return_reviews(rows)
     st.markdown(_periodic_table_html(filtered), unsafe_allow_html=True)
     if filtered:
@@ -572,30 +598,20 @@ def _periodic_summary_html(summary: dict[str, Any]) -> str:
 
 
 def _filter_periodic_return_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    options = ["全部", "只看周复盘", "只看月复盘", "最近4周", "最近3个月", "今年"]
-    selected = st.selectbox("周期收益复盘筛选", options, key="periodic-return-filter")
-    current = date.today()
+    options = ["全部", "周复盘", "月复盘"]
+    selected = st.selectbox("历史记录筛选", options, key="periodic-return-filter")
     if selected == "全部":
         return rows
-    if selected == "只看周复盘":
+    if selected == "周复盘":
         return [row for row in rows if row.get("period_type") == "周复盘"]
-    if selected == "只看月复盘":
+    if selected == "月复盘":
         return [row for row in rows if row.get("period_type") == "月复盘"]
-    if selected == "最近4周":
-        start = current - timedelta(days=27)
-        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
-    if selected == "最近3个月":
-        start = current - timedelta(days=92)
-        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
-    if selected == "今年":
-        start = date(current.year, 1, 1)
-        return [row for row in rows if _date_in_range(row.get("end_date"), start, current)]
     return rows
 
 
 def _periodic_table_html(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<div class="discipline-empty">暂无周期收益复盘记录。</div>'
+        return '<div class="discipline-empty">暂无周期收益复盘记录。保存本期复盘后会显示在这里。</div>'
     body = "".join(
         "<tr>"
         f"<td>{escape(str(row.get('period_type') or ''))}</td>"
@@ -807,8 +823,8 @@ def _periodic_reload_feedback(prefill: dict[str, Any]) -> dict[str, str]:
         return {
             "level": "warning",
             "text": (
-                f"已读取当前最新账户净资产 ${_money(end_value)}，但未找到期初快照。"
-                "请手动填写期初账户净资产，或使用上一条复盘期末净资产。"
+                f"期末已读取{end_source}：${_money(end_value)}；"
+                "期初快照缺失，请手动填写或使用上期末值。"
             ),
         }
     if start_value is not None:
@@ -816,7 +832,7 @@ def _periodic_reload_feedback(prefill: dict[str, Any]) -> dict[str, str]:
             "level": "warning",
             "text": (
                 f"已读取期初账户净资产 ${_money(start_value)}，但未找到期末账户净资产。"
-                "请保存当前账户快照，或手动填写期末账户净资产。"
+                "请保存当前快照，或手动填写期末账户净资产。"
             ),
         }
     return {
@@ -825,22 +841,16 @@ def _periodic_reload_feedback(prefill: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _render_periodic_feedback(state: dict[str, Any]) -> None:
+def _render_periodic_feedback(state: dict[str, Any]) -> bool:
     feedback = st.session_state.get(state.get("feedback_key"))
     if not isinstance(feedback, dict):
-        return
+        return False
     text = str(feedback.get("text") or "").strip()
     if not text:
-        return
+        return False
     level = str(feedback.get("level") or "info")
-    if level == "success":
-        st.success(text)
-    elif level == "warning":
-        st.warning(text)
-    elif level == "error":
-        st.error(text)
-    else:
-        st.info(text)
+    st.markdown(_periodic_status_html(text, level), unsafe_allow_html=True)
+    return True
 
 
 def _periodic_source_note(meta: dict[str, Any]) -> str:
@@ -850,36 +860,35 @@ def _periodic_source_note(meta: dict[str, Any]) -> str:
     end_source = _source_detail_text(meta, "ending")
     if meta.get("starting_auto_value") is not None and meta.get("ending_auto_value") is not None:
         return (
-            "数据来源：已读取账户净资产"
-            f"；期初：{start_source} ${start_equity}"
-            f"；期末：{end_source} ${end_equity}"
+            f"期初已读取{start_source}：${start_equity}；"
+            f"期末已读取{end_source}：${end_equity}。"
         )
     if meta.get("starting_auto_value") is not None or meta.get("ending_auto_value") is not None:
-        parts = ["数据来源：部分已读取，其余请手动填写"]
+        parts = []
         if meta.get("starting_auto_value") is not None:
-            parts.append(f"期初：{start_source} ${start_equity}")
+            parts.append(f"期初已读取{start_source}：${start_equity}")
         else:
-            parts.append("期初：未找到")
+            parts.append("期初快照缺失，请手动填写或使用上期末值")
         if meta.get("ending_auto_value") is not None:
-            parts.append(f"期末：{end_source} ${end_equity}")
+            parts.append(f"期末已读取{end_source}：${end_equity}")
         else:
-            parts.append("期末：未找到")
+            parts.append("期末快照缺失，请保存当前快照或手动填写")
         return "；".join(parts)
-    return "数据来源：未找到对应账户净资产。请保存当前账户快照，或手动填写。"
+    return "未找到账户净资产。请保存当前快照，或手动填写期初和期末。"
 
 
 def _field_source_caption(meta: dict[str, Any], side: str) -> str:
     label = str(meta.get(f"{side}_source_label") or EQUITY_SOURCE_NOT_FOUND)
+    prefix = "期初" if side == "starting" else "期末"
     if label == EQUITY_SOURCE_ACCOUNT_SNAPSHOT:
-        snapshot_date = _display_snapshot_date(meta.get(f"{side}_snapshot_date"))
-        return f"账户快照 · {snapshot_date}"
+        return f"{prefix}：账户快照"
     if label == EQUITY_SOURCE_PORTFOLIO:
-        return "当前持仓汇总"
+        return f"{prefix}：当前持仓汇总"
     if label == EQUITY_SOURCE_PREVIOUS_REVIEW:
-        return "上一条复盘"
+        return f"{prefix}：上期复盘"
     if label == EQUITY_FILL_MANUAL:
-        return "手动修改"
-    return "未找到，可手动填写"
+        return f"{prefix}：手动填写"
+    return f"{prefix}：未找到"
 
 
 def _source_detail_text(meta: dict[str, Any], side: str) -> str:
@@ -913,13 +922,51 @@ def _source_display_label(value: object) -> str:
     return EQUITY_SOURCE_NOT_FOUND
 
 
-def _periodic_preview_cards_html(profit: float | None, return_rate: float | None, source_text: str) -> str:
-    cards = [
-        ("本期盈亏", _profit_text(profit), "按账户净资产口径计算"),
-        ("本期收益率", _return_rate_text(return_rate), "期初净资产为分母"),
-        ("数据来源", source_text or "未找到账户快照", "自动读取或手动修改"),
+def _periodic_status_html(text: str, level: str = "muted") -> str:
+    tone = "error" if level == "error" else "warning" if level == "warning" else "success" if level == "success" else "muted"
+    return f'<div class="periodic-status {tone}">{escape(text)}</div>'
+
+
+def _settlement_money_text(value: float | None, missing: str) -> str:
+    if value is None:
+        return missing
+    return f"${value:,.2f}"
+
+
+def _settlement_profit_text(value: float | None) -> str:
+    if value is None:
+        return "待计算"
+    sign = "+" if value > 0 else ""
+    return f"{sign}${value:,.2f}"
+
+
+def _settlement_return_text(value: float | None) -> str:
+    if value is None:
+        return "待计算"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value * 100:.2f}%"
+
+
+def _periodic_settlement_bar_html(
+    starting_equity: float | None,
+    ending_equity: float | None,
+    deposit_amount: float,
+    withdrawal_amount: float,
+    profit: float | None,
+    return_rate: float | None,
+    meta: dict[str, Any],
+) -> str:
+    items = [
+        ("期初", _settlement_money_text(starting_equity, "未找到")),
+        ("期末", _settlement_money_text(ending_equity, "未找到")),
+        ("入金", _settlement_money_text(deposit_amount, "$0")),
+        ("出金", _settlement_money_text(withdrawal_amount, "$0")),
+        ("收益", _settlement_profit_text(profit)),
+        ("收益率", _settlement_return_text(return_rate)),
     ]
-    return _card_grid_html(cards)
+    body = " ｜ ".join(f"<span>{escape(label)}：<strong>{escape(value)}</strong></span>" for label, value in items)
+    source = escape(_periodic_source_card_text(meta))
+    return f'<div class="periodic-settlement-bar">{body}<em>来源：{source}</em></div>'
 
 
 def _parse_amount_text(value: object, *, default: float | None = None) -> float | None:
@@ -1150,6 +1197,20 @@ def _render_styles() -> None:
         .discipline-table th, .discipline-table td { padding: .5rem .58rem; border-bottom: 1px solid rgba(148,163,184,.16); text-align: left; vertical-align: top; }
         .discipline-table th { color: #64748b; background: #f8fafc; }
         .discipline-empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: .9rem; color: #64748b; background: #f8fafc; margin: .7rem 0; }
+        .periodic-status {
+            margin: .45rem 0 .75rem; padding: .46rem .65rem; border-radius: 6px;
+            font-size: .82rem; color: #475569; background: #f8fafc; border: 1px solid rgba(148,163,184,.22);
+        }
+        .periodic-status.success { background: #f0fdf4; border-color: rgba(34,197,94,.22); color: #166534; }
+        .periodic-status.warning { background: #fffbeb; border-color: rgba(245,158,11,.25); color: #92400e; }
+        .periodic-status.error { background: #fef2f2; border-color: rgba(239,68,68,.24); color: #991b1b; }
+        .periodic-settlement-bar {
+            margin: .55rem 0 .9rem; padding: .58rem .72rem; border-radius: 8px;
+            background: #f8fafc; border: 1px solid rgba(148,163,184,.22);
+            color: #475569; font-size: .84rem; line-height: 1.7;
+        }
+        .periodic-settlement-bar strong { color: #0f172a; font-weight: 800; }
+        .periodic-settlement-bar em { display: block; color: #64748b; font-size: .76rem; font-style: normal; margin-top: .1rem; }
         .mistake-detail-card { padding: .9rem 1rem; margin: .8rem 0; }
         .mistake-detail-card h4 { margin: 0 0 .55rem; color: #0f172a; }
         .mistake-detail-card dl { margin: 0; display: grid; grid-template-columns: 7rem 1fr; gap: .45rem .75rem; }
