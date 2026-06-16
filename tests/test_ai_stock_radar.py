@@ -543,6 +543,88 @@ def test_report_volume_snapshot_backfills_technicals_and_health_gaps() -> None:
     assert "buy_zone.upper" not in data_health["missing_fields"]
 
 
+def test_list_row_volume_snapshot_clears_volume_data_gaps() -> None:
+    history = pd.DataFrame(
+        [
+            {"date": f"2026-05-{day:02d}", "open": 100, "high": 106, "low": 96, "close": 102, "volume": 1_000_000}
+            for day in range(1, 21)
+        ]
+        + [{"date": "2026-05-21", "open": 102, "high": 108, "low": 101, "close": 104, "volume": 1_500_000}]
+    )
+    technicals = {
+        "current_price": 104,
+        "support_watch_zone_low": 96,
+        "support_watch_zone_high": 108,
+        "confirmation_price": 106,
+        "invalidation_price": 95,
+        "ema20": 103,
+        "ema50": 101,
+        "atr14": 5,
+    }
+    volume_snapshot = radar_ui._volume_price_acceptance_snapshot(
+        {"ticker": "NOW", "current_price": 104},
+        technicals,
+        {},
+        history,
+    )
+    row = {
+        "ticker": "NOW",
+        "current_price": 104,
+        "data_status": "OK",
+        "missing_entry_fields": ["volume_acceptance", "volume_ratio"],
+        "buy_zone_context": {"current_action": "WAIT_CONFIRMATION"},
+    }
+
+    radar_ui._apply_volume_snapshot_to_list_row(row, volume_snapshot)
+
+    assert row["volume_ratio"] is not None
+    assert row["volume_price_status"] != "DATA_MISSING"
+    assert row["missing_entry_fields"] == []
+    assert radar_ui._research_queue_view(row)["data_quality_text"] != "量价数据缺口"
+
+
+def test_list_buy_zone_context_rebuilds_stale_context_when_volume_snapshot_is_available() -> None:
+    history = pd.DataFrame(
+        [
+            {"date": f"2026-05-{day:02d}", "open": 100, "high": 106, "low": 96, "close": 102, "volume": 1_000_000}
+            for day in range(1, 21)
+        ]
+        + [{"date": "2026-05-21", "open": 102, "high": 108, "low": 101, "close": 104, "volume": 1_500_000}]
+    )
+    technicals = {
+        "current_price": 104,
+        "support_watch_zone_low": 96,
+        "support_watch_zone_high": 108,
+        "technical_pullback_zone_low": 96,
+        "technical_pullback_zone_high": 108,
+        "confirmation_price": 106,
+        "invalidation_price": 95,
+        "ema20": 103,
+        "ema50": 101,
+        "ema200": 90,
+        "atr14": 5,
+        "recent_swing_low": 96,
+        "recent_swing_high": 112,
+    }
+    volume_snapshot = radar_ui._volume_price_acceptance_snapshot(
+        {"ticker": "NOW", "current_price": 104},
+        technicals,
+        {},
+        history,
+    )
+
+    context = radar_ui._list_buy_zone_context(
+        {"ticker": "NOW", "current_price": 104, "buy_zone_context": {"current_action": "WAIT_CONFIRMATION"}},
+        {},
+        {},
+        technicals,
+        history=history,
+        volume_snapshot=volume_snapshot,
+    )
+
+    assert context.get("volume_ratio") is not None
+
+
 def test_report_localizes_short_history_missing_field() -> None:
     assert radar_ui._field_display_label("daily_ohlcv_window") == "日线样本不足"
 

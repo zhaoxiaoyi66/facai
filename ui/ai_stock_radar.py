@@ -518,6 +518,44 @@ def _apply_volume_snapshot_to_technicals(technicals: dict[str, Any], volume_snap
     return ctx
 
 
+def _apply_volume_snapshot_to_list_row(row: dict[str, Any], volume_snapshot: dict[str, Any]) -> None:
+    volume = dict(volume_snapshot or {})
+    latest_volume = _first_number(volume, "latest_volume", "latestVolume")
+    volume_ma20 = _first_number(volume, "volume_ma20", "volumeMa20", "avg_volume_20d", "avgVolume20d")
+    volume_ratio = _first_number(volume, "volume_ratio", "volumeRatio")
+    volume_status = str(volume.get("volume_price_status") or volume.get("volumePriceStatus") or "").strip()
+    volume_score = _first_number(volume, "volume_price_score", "volumePriceScore")
+    if latest_volume is not None:
+        row["latest_volume"] = latest_volume
+        row.setdefault("volume", latest_volume)
+    if volume_ma20 is not None:
+        row["volume_ma20"] = volume_ma20
+        row["avg_volume_20d"] = volume_ma20
+    if volume_ratio is not None:
+        row["volume_ratio"] = volume_ratio
+    if volume_status:
+        row["volume_price_status"] = volume_status
+    if volume_score is not None:
+        row["volume_price_score"] = volume_score
+    if volume.get("volume_source"):
+        row["volume_source"] = volume.get("volume_source")
+        row["volume_data_source"] = volume.get("volume_source")
+    if volume_ratio is not None and volume_status.upper() != "DATA_MISSING":
+        _remove_resolved_volume_missing_fields(row)
+
+
+def _remove_resolved_volume_missing_fields(row: dict[str, Any]) -> None:
+    for key in ("missing_entry_fields", "technical_entry_missing_fields", "technical_missing_fields", "data_missing_fields"):
+        value = row.get(key)
+        if isinstance(value, list):
+            row[key] = [field for field in value if not _is_volume_acceptance_gap_field(str(field))]
+    debug = row.get("debug") if isinstance(row.get("debug"), dict) else None
+    if debug and isinstance(debug.get("data_missing_fields"), list):
+        debug["data_missing_fields"] = [
+            field for field in debug.get("data_missing_fields") or [] if not _is_volume_acceptance_gap_field(str(field))
+        ]
+
+
 def _daily_ohlcv_snapshot(*sources: dict[str, Any]) -> dict[str, Any]:
     return {
         "open": _first_number(*sources, "open"),
@@ -708,8 +746,19 @@ def _list_row(ticker: str) -> dict[str, Any]:
         snapshot=snapshot,
         technicals=technicals,
     )
+    history = _list_market_history(ticker)
+    volume_snapshot = _volume_price_acceptance_snapshot(list_row, technicals or {}, row or {}, history)
+    technicals = _apply_volume_snapshot_to_technicals(technicals or {}, volume_snapshot)
+    _apply_volume_snapshot_to_list_row(list_row, volume_snapshot)
     list_row["sector"] = _sector_track_from_sources(row, snapshot or {}, ticker)
-    buy_zone_context = _list_buy_zone_context(list_row, row or {}, snapshot or {}, technicals or {})
+    buy_zone_context = _list_buy_zone_context(
+        list_row,
+        row or {},
+        snapshot or {},
+        technicals or {},
+        history=history,
+        volume_snapshot=volume_snapshot,
+    )
     if buy_zone_context:
         list_row["buy_zone_context"] = buy_zone_context
         buy_zone_display = build_buy_zone_display(buy_zone_context, {**(row or {}), **list_row}, mode="radar_list")
@@ -731,18 +780,43 @@ def _list_row(ticker: str) -> dict[str, Any]:
     return list_row
 
 
+def _list_market_history(symbol: str) -> pd.DataFrame:
+    return _runtime_cached(
+        ("market_history", str(symbol or "").strip().upper()),
+        HISTORY_TTL_SECONDS,
+        lambda: build_market_history(symbol),
+        PerfProbe(),
+        "历史 K 线读取",
+    )
+
+
 def _list_buy_zone_context(
     list_row: dict[str, Any],
     row: dict[str, Any],
     snapshot: dict[str, Any],
     technicals: dict[str, Any],
+    *,
+    history: pd.DataFrame | None = None,
+    volume_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    volume_snapshot = dict(volume_snapshot or {})
+    has_volume_snapshot = _first_number(volume_snapshot, "volume_ratio", "volumeRatio") is not None or bool(
+        volume_snapshot.get("volume_price_status") or volume_snapshot.get("volumePriceStatus")
+    )
     for source in (row, snapshot, technicals, list_row):
         existing = _dict_value(source, "buy_zone_context") or _dict_value(source, "buyZoneContext")
         if existing:
+            if has_volume_snapshot and _first_number(existing, "volume_ratio", "volumeRatio") is None:
+                continue
             return dict(existing)
     try:
-        volume_snapshot = _volume_price_acceptance_snapshot(list_row, technicals, row, _empty_history_frame())
+        if not volume_snapshot:
+            volume_snapshot = _volume_price_acceptance_snapshot(
+                list_row,
+                technicals,
+                row,
+                history if history is not None else _empty_history_frame(),
+            )
         return build_buy_zone_context(list_row, technicals=technicals, volume_snapshot=volume_snapshot).to_dict()
     except Exception:
         return {}
