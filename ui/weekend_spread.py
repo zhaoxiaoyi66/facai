@@ -2053,6 +2053,8 @@ def _afterhours_reason_text(value: object) -> str:
         "NO_AFTERHOURS_TRADE": "当日无盘后成交",
         "NO_AFTERHOURS_QUOTE": "无有效 bid/ask",
         "CACHE_MISSING": "盘后缓存缺失",
+        "CACHE_CORRUPT": "盘后缓存损坏",
+        "CACHE_DATE_MISMATCH": "盘后缓存日期不匹配",
         "STALE_CACHE": "盘后缓存过期",
         "FIELD_NOT_PASSED": "字段未传入",
         "USING_CACHE": "使用缓存盘后价",
@@ -2079,6 +2081,8 @@ def _afterhours_cache_text(value: object) -> str:
         "CACHE_HIT": "使用缓存盘后价",
         "CACHE_FALLBACK": "接口失败，使用缓存盘后价",
         "CACHE_MISSING": "盘后缓存缺失",
+        "CACHE_CORRUPT": "盘后缓存损坏",
+        "CACHE_DATE_MISMATCH": "盘后缓存日期不匹配",
         "NOT_FETCHED": "未抓取盘后价",
     }.get(code, code or "暂缺")
 

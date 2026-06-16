@@ -5,6 +5,7 @@ from datetime import datetime, time, timezone
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -89,11 +90,45 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         normalized = str(symbol or "").strip().upper()
         cache_key = _anchor_cache_key(normalized, regular_close_date)
         legacy_cache_key = f"{normalized}:{regular_close_date or 'latest'}"
-        cached = self._read(cache_key) or self._read(legacy_cache_key)
+        cache_error = _read_json_error(self.cache_path)
+        primary_cached = self._read(cache_key)
+        legacy_cached = self._read(legacy_cache_key)
+        cached = _valid_cached_reference(primary_cached, regular_close_date) or _valid_cached_reference(legacy_cached, regular_close_date)
+        cache_date_mismatch = (primary_cached is not None or legacy_cached is not None) and cached is None
         if not force_refresh and cached is not None:
             cached_snapshot = _decorate_snapshot(cached, regular_close_date=regular_close_date, cache_status="CACHE_HIT")
             self._write(cache_key, cached_snapshot)
             return cached_snapshot
+        corrupt_snapshot = None
+        if cache_error:
+            corrupt_snapshot = _decorate_snapshot(
+                AfterhoursReference(
+                    symbol=normalized,
+                    error="afterhours_cache_corrupt",
+                    missing_reason="CACHE_CORRUPT",
+                    cache_status="CACHE_CORRUPT",
+                    error_message=cache_error,
+                ),
+                regular_close_date=regular_close_date,
+                cache_status="CACHE_CORRUPT",
+            )
+            if isinstance(self.provider, NullAfterhoursProvider):
+                return corrupt_snapshot
+        mismatch_snapshot = None
+        if cache_date_mismatch:
+            mismatch_snapshot = _decorate_snapshot(
+                AfterhoursReference(
+                    symbol=normalized,
+                    error="afterhours_cache_date_mismatch",
+                    missing_reason="CACHE_DATE_MISMATCH",
+                    cache_status="CACHE_DATE_MISMATCH",
+                    error_message="cached afterhours reference_time does not match regular_close_date",
+                ),
+                regular_close_date=regular_close_date,
+                cache_status="CACHE_DATE_MISMATCH",
+            )
+            if isinstance(self.provider, NullAfterhoursProvider):
+                return mismatch_snapshot
         snapshot = self.provider.get_afterhours_reference(
             normalized,
             regular_close_date=regular_close_date,
@@ -114,6 +149,10 @@ class CachedAfterhoursProvider(AfterhoursProvider):
             cached_snapshot = _decorate_snapshot(cached_snapshot, regular_close_date=regular_close_date, cache_status="CACHE_FALLBACK")
             self._write(cache_key, cached_snapshot)
             return cached_snapshot
+        if corrupt_snapshot is not None and snapshot.missing_reason in {"PROVIDER_MISSING", ""}:
+            return corrupt_snapshot
+        if mismatch_snapshot is not None and snapshot.data_quality == "MISSING":
+            return mismatch_snapshot
         return _decorate_snapshot(snapshot, regular_close_date=regular_close_date, cache_status=snapshot.cache_status or "CACHE_MISSING")
 
     def _read(self, cache_key: str) -> AfterhoursReference | None:
@@ -129,7 +168,9 @@ class CachedAfterhoursProvider(AfterhoursProvider):
             payload = {}
         payload[cache_key] = asdict(snapshot)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path = self.cache_path.with_name(f".{self.cache_path.name}.{uuid4().hex}.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(self.cache_path)
 
 
 class FMPAfterhoursProvider(AfterhoursProvider):
@@ -218,7 +259,7 @@ def resolve_afterhours_reference(
     quote_time = _first_text(quote_row.get("timestamp"), quote_row.get("time"), quote_row.get("date"), quote_row.get("datetime"))
     quote_volume = _first_number(quote_row.get("volume"), quote_row.get("bidSize"), quote_row.get("askSize"))
     mid = _quote_mid(bid, ask)
-    if mid is not None:
+    if mid is not None and _is_afterhours_session(quote_time, regular_close_date):
         spread_pct = (ask - bid) / mid * 100.0 if bid is not None and ask is not None else None
         quality = "LOW" if spread_pct is not None and spread_pct > 1.0 else "HIGH"
         if quality == "HIGH" and not _is_near_afterhours_close(quote_time, regular_close_date):
@@ -260,7 +301,18 @@ def _is_near_afterhours_close(timestamp: str, regular_close_date: str) -> bool:
 def _parse_et_time(value: str) -> datetime | None:
     if not value:
         return None
-    text = str(value).strip().replace("Z", "+00:00")
+    text = str(value).strip()
+    try:
+        if text.replace(".", "", 1).isdigit():
+            number = float(text)
+            if number > 1_000_000_000_000_000:
+                number /= 1_000_000_000
+            elif number > 1_000_000_000_000:
+                number /= 1_000
+            return datetime.fromtimestamp(number, tz=timezone.utc).astimezone(ET)
+    except (OSError, OverflowError, ValueError):
+        return None
+    text = text.replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -299,6 +351,16 @@ def _reference_from_dict(raw: dict[str, Any]) -> AfterhoursReference:
         anchor_status=str(raw.get("anchor_status") or ""),
         error_message=str(raw.get("error_message") or raw.get("error") or ""),
     )
+
+
+def _valid_cached_reference(snapshot: AfterhoursReference | None, regular_close_date: str) -> AfterhoursReference | None:
+    if snapshot is None:
+        return None
+    if snapshot.reference_price is None:
+        return snapshot
+    if regular_close_date and snapshot.reference_time and not _is_afterhours_session(snapshot.reference_time, regular_close_date):
+        return None
+    return snapshot
 
 
 def _anchor_cache_key(symbol: str, regular_close_date: str) -> str:
@@ -356,13 +418,63 @@ def _provider_name(reference_source: str) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    payload, _error = _read_json_payload(path)
+    return payload
+
+
+def _read_json_error(path: Path) -> str:
+    _payload, error = _read_json_payload(path)
+    return error
+
+
+def _read_json_payload(path: Path) -> tuple[dict[str, Any], str]:
     if not path.exists():
-        return {}
+        return {}, ""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (json.JSONDecodeError, OSError):
+        text = path.read_text(encoding="utf-8") or "{}"
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        recovered = _recover_cache_payload_from_text(text if "text" in locals() else "")
+        if recovered:
+            return recovered, ""
+        return {}, f"JSONDecodeError: {exc}"
+    except OSError as exc:
+        return {}, f"OSError: {exc}"
+    return (payload if isinstance(payload, dict) else {}), ""
+
+
+def _recover_cache_payload_from_text(text: str) -> dict[str, Any]:
+    if not text:
         return {}
-    return payload if isinstance(payload, dict) else {}
+    decoder = json.JSONDecoder()
+    recovered: dict[str, Any] = {}
+    index = 0
+    while True:
+        key_start = text.find('"', index)
+        if key_start < 0:
+            break
+        key_end = text.find('"', key_start + 1)
+        if key_end < 0:
+            break
+        key = text[key_start + 1 : key_end]
+        colon = text.find(":", key_end + 1)
+        if colon < 0:
+            break
+        brace = text.find("{", colon + 1)
+        comma = text.find(",", colon + 1)
+        next_quote = text.find('"', colon + 1)
+        if brace < 0 or (comma >= 0 and comma < brace) or (next_quote >= 0 and next_quote < brace):
+            index = key_end + 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, brace)
+        except json.JSONDecodeError:
+            index = key_end + 1
+            continue
+        if isinstance(value, dict) and ":" in key:
+            recovered[key] = value
+        index = end
+    return recovered
 
 
 def _first_number(*values: Any) -> float | None:

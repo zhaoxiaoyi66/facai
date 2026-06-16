@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, resolve_afterhours_reference
+from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, NullAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.equity_afterhours_provider import (
     AlphaVantageAfterhoursProvider,
@@ -638,6 +638,32 @@ def test_weekend_spread_uses_afterhours_quote_mid_when_trade_missing() -> None:
     assert round(rows[0]["spread_vs_afterhours_pct"], 2) == 0.96
 
 
+def test_fmp_afterhours_millisecond_timestamp_must_match_regular_close_date() -> None:
+    valid = resolve_afterhours_reference(
+        "NVDA",
+        trade={"price": 205.42, "timestamp": "1781308799000"},
+        regular_close_date="2026-06-12",
+    )
+    stale = resolve_afterhours_reference(
+        "NVDA",
+        trade={"price": 211.94, "timestamp": "1781567999000"},
+        regular_close_date="2026-06-12",
+    )
+    stale_quote = resolve_afterhours_reference(
+        "NVDA",
+        trade={},
+        quote={"bid": 211.8, "ask": 212.0, "timestamp": "1781567999000"},
+        regular_close_date="2026-06-12",
+    )
+
+    assert valid.reference_price == 205.42
+    assert valid.data_quality == "HIGH"
+    assert stale.reference_price is None
+    assert stale.missing_reason == "NO_AFTERHOURS_TRADE"
+    assert stale_quote.reference_price is None
+    assert stale_quote.missing_reason == "NO_AFTERHOURS_QUOTE"
+
+
 def test_afterhours_provider_missing_does_not_crash() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA"],
@@ -703,6 +729,91 @@ def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp
 
     assert cached.reference_price == 208
     assert cached.cache_status == "CACHE_HIT"
+
+
+def test_afterhours_corrupt_cache_reports_cache_corrupt(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    cache_path.write_text("not valid json", encoding="utf-8")
+
+    cached = CachedAfterhoursProvider(NullAfterhoursProvider(), cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    assert cached.reference_price is None
+    assert cached.cache_status == "CACHE_CORRUPT"
+    assert cached.missing_reason == "CACHE_CORRUPT"
+    assert "JSONDecodeError" in cached.error_message
+
+
+def test_afterhours_corrupt_cache_recovers_reference_entries(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    cache_path.write_text(
+        '{"2026-W24:2026-06-12:CEG": {"symbol": "CEG", "reference_price": 260, "data_quality": "HIGH"}}'
+        '  "NVDA:2026-06-12": {"symbol": "NVDA", "reference_price": 208, '
+        '"reference_time": "2026-06-12T19:58:00-04:00", "reference_source": "FMP_AFTERHOURS_TRADE", "data_quality": "HIGH"}',
+        encoding="utf-8",
+    )
+
+    cached = CachedAfterhoursProvider(NullAfterhoursProvider(), cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    assert cached.reference_price == 208
+    assert cached.cache_status == "CACHE_HIT"
+
+
+def test_afterhours_cache_skips_date_mismatched_primary_and_uses_legacy(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    payload = {
+        "2026-W24:2026-06-12:NVDA": {
+            "symbol": "NVDA",
+            "reference_price": 211.94,
+            "reference_time": "1781567999000",
+            "reference_source": "FMP_AFTERHOURS_TRADE",
+            "data_quality": "MEDIUM",
+        },
+        "NVDA:2026-06-12": {
+            "symbol": "NVDA",
+            "reference_price": 205.42,
+            "reference_time": "1781308799000",
+            "reference_source": "FMP_AFTERHOURS_TRADE",
+            "data_quality": "HIGH",
+        },
+    }
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    cached = CachedAfterhoursProvider(NullAfterhoursProvider(), cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    assert cached.reference_price == 205.42
+    assert cached.cache_status == "CACHE_HIT"
+
+
+def test_afterhours_cache_date_mismatch_reports_clear_reason(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    payload = {
+        "2026-W24:2026-06-12:NVDA": {
+            "symbol": "NVDA",
+            "reference_price": 211.94,
+            "reference_time": "1781567999000",
+            "reference_source": "FMP_AFTERHOURS_TRADE",
+            "data_quality": "MEDIUM",
+        },
+    }
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    cached = CachedAfterhoursProvider(NullAfterhoursProvider(), cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    assert cached.reference_price is None
+    assert cached.cache_status == "CACHE_DATE_MISMATCH"
+    assert cached.missing_reason == "CACHE_DATE_MISMATCH"
 
 
 def test_afterhours_legacy_cache_key_is_migrated_with_anchor_metadata(tmp_path) -> None:
@@ -958,6 +1069,10 @@ def test_all_afterhours_providers_missing_keeps_regular_close_fallback() -> None
 def test_ui_maps_afterhours_source_and_quality_text() -> None:
     assert weekend_spread._afterhours_source_text("POLYGON_OPEN_CLOSE_AFTERHOURS").startswith("Polygon/Massive")
     assert weekend_spread._afterhours_source_text("ALPHAVANTAGE_INTRADAY_EXTENDED").startswith("Alpha Vantage")
+    assert weekend_spread._afterhours_reason_text("CACHE_CORRUPT") == "盘后缓存损坏"
+    assert weekend_spread._afterhours_cache_text("CACHE_CORRUPT") == "盘后缓存损坏"
+    assert weekend_spread._afterhours_reason_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
+    assert weekend_spread._afterhours_cache_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
