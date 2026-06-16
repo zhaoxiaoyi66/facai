@@ -23,14 +23,6 @@ DEFAULT_PRINCIPLES = (
     "现金也是仓位，等待也是操作。"
 )
 
-SELF_CHECK_QUESTIONS = [
-    "这笔交易是在加强我的核心方向，还是又多买一个小仓？",
-    "我买它是因为 Setup 承接好，还是因为怕错过？",
-    "如果继续跌 10%-15%，我会按计划处理，还是会焦虑？",
-    "这只股票我是否愿意长期跟踪？",
-    "这笔交易会让组合更清晰，还是更碎片化？",
-]
-
 DISCIPLINE_TAG_LABELS = {
     "plan_followed": "符合计划",
     "chase": "追高",
@@ -60,17 +52,16 @@ MISTAKE_TAG_OPTIONS = [
     "忘记持仓",
     "隔夜暴露",
     "无计划开仓",
-    "合约纪律问题",
     "仓位过大",
     "情绪交易",
     "怕错过",
-    "看到别人观点后交易",
     "追涨杀跌",
-    "没有回补计划",
-    "其他",
+    "听别人观点交易",
+    "无回补计划",
+    "执行纪律问题",
 ]
 
-MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已完成复盘"]
+MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
 
 
 @dataclass(frozen=True)
@@ -159,7 +150,9 @@ class DisciplineReviewStore:
                     review_date TEXT NOT NULL,
                     market_type TEXT NOT NULL,
                     symbol TEXT,
+                    scene_or_symbol TEXT,
                     loss_amount REAL,
+                    loss_impact_text TEXT,
                     trigger_event TEXT,
                     action_taken TEXT,
                     result_text TEXT,
@@ -173,6 +166,17 @@ class DisciplineReviewStore:
                 )
                 """
             )
+            self._ensure_mistake_review_columns(conn)
+
+    def _ensure_mistake_review_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(mistake_reviews)").fetchall()}
+        additions = {
+            "scene_or_symbol": "TEXT",
+            "loss_impact_text": "TEXT",
+        }
+        for column, column_type in additions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE mistake_reviews ADD COLUMN {column} {column_type}")
 
     def get_principles(self) -> str:
         with self.connect() as conn:
@@ -308,14 +312,22 @@ class DisciplineReviewStore:
         market_type = _clean_choice(values.get("market_type"), MISTAKE_MARKET_TYPES, "其他")
         review_status = _clean_choice(values.get("review_status"), MISTAKE_REVIEW_STATUSES, "已记录")
         tags = _dedupe([tag for tag in values.get("mistake_tags", []) if tag in MISTAKE_TAG_OPTIONS])
-        symbol = str(values.get("symbol") or "").strip().upper()
+        scene_or_symbol = _clean_text(values.get("scene_or_symbol") or values.get("symbol"))
+        symbol = str(values.get("symbol") or scene_or_symbol or "").strip().upper()
+        loss_impact_text = _clean_text(values.get("loss_impact_text"))
         loss_amount = _optional_number(values.get("loss_amount"))
+        if not loss_impact_text and loss_amount is not None:
+            loss_impact_text = _plain_number(loss_amount)
+        if loss_amount is None:
+            loss_amount = _optional_number(loss_impact_text)
         now = _now()
         fields = {
             "review_date": review_date.isoformat(),
             "market_type": market_type,
             "symbol": symbol,
+            "scene_or_symbol": scene_or_symbol,
             "loss_amount": loss_amount,
+            "loss_impact_text": loss_impact_text,
             "trigger_event": _clean_text(values.get("trigger_event")),
             "action_taken": _clean_text(values.get("action_taken")),
             "result_text": _clean_text(values.get("result_text")),
@@ -334,7 +346,9 @@ class DisciplineReviewStore:
                     review_date,
                     market_type,
                     symbol,
+                    scene_or_symbol,
                     loss_amount,
+                    loss_impact_text,
                     trigger_event,
                     action_taken,
                     result_text,
@@ -346,13 +360,15 @@ class DisciplineReviewStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fields["review_date"],
                     fields["market_type"],
                     fields["symbol"],
+                    fields["scene_or_symbol"],
                     fields["loss_amount"],
+                    fields["loss_impact_text"],
                     fields["trigger_event"],
                     fields["action_taken"],
                     fields["result_text"],
@@ -451,15 +467,18 @@ def build_mistake_review_summary(
     all_tag_counts = _mistake_tag_counts(rows)
     recent_tag_counts = _mistake_tag_counts(recent_rows)
     most_common = sorted(all_tag_counts.items(), key=lambda item: (-item[1], item[0]))
-    repeated = [tag for tag, count in sorted(recent_tag_counts.items(), key=lambda item: (-item[1], item[0])) if count > 2]
+    repeated = [tag for tag, count in sorted(recent_tag_counts.items(), key=lambda item: (-item[1], item[0])) if count >= 2]
     recent_loss = sum(_optional_number(row.get("loss_amount")) or 0.0 for row in recent_rows)
+    recent_loss_impact_count = sum(1 for row in recent_rows if _has_loss_impact(row))
     return {
         "total_count": len(rows),
         "recent_30_count": len(recent_rows),
         "recent_30_loss_amount": round(recent_loss, 2),
+        "recent_30_loss_impact_count": recent_loss_impact_count,
+        "recent_30_loss_impact_text": _loss_impact_summary(recent_loss, recent_loss_impact_count),
         "most_common_mistake_type": most_common[0][0] if most_common else "",
         "most_common_mistake_count": most_common[0][1] if most_common else 0,
-        "unruled_count": sum(1 for row in rows if str(row.get("review_status") or "") != "已形成规则"),
+        "unruled_count": sum(1 for row in rows if str(row.get("review_status") or "") not in {"已形成规则", "已设置防线"}),
         "repeated_mistake_types": repeated,
         "tag_counts": all_tag_counts,
         "recent_tag_counts": recent_tag_counts,
@@ -622,6 +641,24 @@ def _optional_number(value: Any) -> float | None:
     return number if number > 0 else None
 
 
+def _plain_number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(round(float(value), 2))
+
+
+def _has_loss_impact(row: dict[str, Any]) -> bool:
+    if _clean_text(row.get("loss_impact_text")):
+        return True
+    return (_optional_number(row.get("loss_amount")) or 0.0) > 0
+
+
+def _loss_impact_summary(recent_loss: float, impact_count: int) -> str:
+    if recent_loss > 0:
+        return f"{recent_loss:,.2f}"
+    if impact_count > 0:
+        return f"{impact_count} 条已记录"
+    return "暂无记录"
+
+
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -656,6 +693,10 @@ def _row_to_dict(columns: list[str], row: tuple) -> dict[str, Any]:
 def _mistake_row_to_dict(columns: list[str], row: tuple) -> dict[str, Any]:
     data = _row_to_dict(columns, row)
     data["mistake_tags"] = _parse_json_list(data.get("mistake_tags_json"))
+    data["scene_or_symbol"] = _clean_text(data.get("scene_or_symbol")) or _clean_text(data.get("symbol"))
+    if not _clean_text(data.get("loss_impact_text")) and data.get("loss_amount") is not None:
+        numeric_loss = _optional_number(data.get("loss_amount"))
+        data["loss_impact_text"] = _plain_number(numeric_loss) if numeric_loss is not None else ""
     return data
 
 

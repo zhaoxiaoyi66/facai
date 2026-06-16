@@ -102,9 +102,8 @@ def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
         saved = store.save_mistake_review(
             {
                 "review_date": "2026-06-15",
-                "market_type": "币安合约",
-                "symbol": "SPACX",
-                "loss_amount": 800,
+                "scene_or_symbol": "SPACX 合约空单",
+                "loss_impact_text": "800U",
                 "trigger_event": "短线想做回落，开了一笔空单。",
                 "action_taken": "没有设置止盈止损。",
                 "result_text": "隔夜后亏损。",
@@ -118,9 +117,11 @@ def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
 
         rows = store.list_mistake_reviews()
 
-        assert saved["symbol"] == "SPACX"
-        assert saved["market_type"] == "币安合约"
-        assert saved["loss_amount"] == 800
+        assert saved["scene_or_symbol"] == "SPACX 合约空单"
+        assert saved["symbol"] == "SPACX 合约空单"
+        assert saved["market_type"] == "其他"
+        assert saved["loss_amount"] is None
+        assert saved["loss_impact_text"] == "800U"
         assert saved["mistake_tags"] == ["没设止损", "没设止盈", "忘记持仓"]
         assert rows[0]["reflection"] == "这是流程错误。"
 
@@ -129,7 +130,7 @@ def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None
     rows = [
         {"review_date": "2026-06-16", "loss_amount": 100, "mistake_tags": ["没设止损"], "review_status": "已记录"},
         {"review_date": "2026-06-15", "loss_amount": 200, "mistake_tags": ["没设止损"], "review_status": "已形成规则"},
-        {"review_date": "2026-06-14", "loss_amount": 300, "mistake_tags": ["没设止损", "隔夜暴露"], "review_status": "已完成复盘"},
+        {"review_date": "2026-06-14", "loss_amount": 300, "mistake_tags": ["没设止损", "隔夜暴露"], "review_status": "已设置防线"},
         {"review_date": "2026-05-01", "loss_amount": 500, "mistake_tags": ["怕错过"], "review_status": "已记录"},
     ]
 
@@ -139,7 +140,7 @@ def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None
     assert summary["recent_30_count"] == 3
     assert summary["recent_30_loss_amount"] == 600
     assert summary["most_common_mistake_type"] == "没设止损"
-    assert summary["unruled_count"] == 3
+    assert summary["unruled_count"] == 2
     assert summary["repeated_mistake_types"] == ["没设止损"]
 
 
@@ -176,7 +177,16 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
 
     assert "交易错题本" in source
-    assert "添加错误复盘" in source
+    assert "保存这条错题" in source
+    assert "标的 / 场景" in source
+    assert "损失金额 / 影响" in source
+    assert "选择错误类型" in source
+    assert "_render_self_check_questions" not in source
+    assert "SELF_CHECK_QUESTIONS" not in source
+    assert "交易前纪律提醒" not in source
+    assert "市场类型" not in source
+    assert "按市场类型筛选" not in source
+    assert "添加错误复盘" not in source
     assert "保存标签" not in source
     assert "选择交易记录" not in source
     assert "交易纪律标签" not in source
