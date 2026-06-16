@@ -131,6 +131,11 @@ def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
         assert saved["loss_impact_text"] == "800U"
         assert saved["mistake_tags"] == ["没设止损", "没设止盈", "忘记持仓"]
         assert rows[0]["reflection"] == "这是流程错误。"
+        assert "短线想做回落" in discipline_review._mistake_event_summary(rows[0])
+        assert "没有设置止盈止损" in discipline_review._mistake_event_summary(rows[0])
+        assert "隔夜后亏损" in discipline_review._mistake_event_summary(rows[0])
+        assert "睡前检查持仓" in discipline_review._mistake_next_defense(rows[0])
+        assert "合约单必须有保护单" in discipline_review._mistake_next_defense(rows[0])
 
 
 def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None:
@@ -386,11 +391,23 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "标的 / 场景" in source
     assert "损失金额 / 影响" in source
     assert "选择错误类型" in source
+    assert "事件经过" in source
+    assert "核心反思" in source
+    assert "下次防线" in source
+    assert "这件事是怎么发生的？我当时做了什么？造成了什么影响？" in source
+    assert "真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？" in source
+    assert "下次遇到类似情况，必须执行什么规则？如何防止重复犯错？" in source
     assert "_render_self_check_questions" not in source
     assert "SELF_CHECK_QUESTIONS" not in source
     assert "交易前纪律提醒" not in source
     assert "市场类型" not in source
     assert "按市场类型筛选" not in source
+    assert "SPACX 示例模板" not in source
+    assert "with st.expander(\"SPACX" not in source
+    assert "复盘状态\", MISTAKE_REVIEW_STATUSES" not in source
+    assert "当时操作\", height" not in source
+    assert "结果\", height" not in source
+    assert "改进规则\", height" not in source
     assert "添加错误复盘" not in source
     assert "保存标签" not in source
     assert "选择交易记录" not in source

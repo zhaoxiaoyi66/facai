@@ -126,20 +126,15 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
 
     with st.form("mistake-review-form", clear_on_submit=True):
         st.markdown("#### 基本信息")
-        cols = st.columns([1, 2, 2, 1])
+        cols = st.columns([1, 2, 2])
         review_date = cols[0].date_input("日期", value=date.today())
-        scene_or_symbol = cols[1].text_input("标的 / 场景")
-        loss_impact_text = cols[2].text_input("损失金额 / 影响，可选", placeholder="例如 800U、500美元、卖飞、无实际亏损")
-        review_status = cols[3].selectbox("复盘状态", MISTAKE_REVIEW_STATUSES, index=0)
+        scene_or_symbol = cols[1].text_input("标的 / 场景", placeholder="例如：SPACX 空单、NOK 清仓、NVDA 追高")
+        loss_impact_text = cols[2].text_input("损失金额 / 影响，可选", placeholder="例如：800U、亏损500美元、卖飞约10%、无实际亏损但操作失控")
         mistake_tags = st.multiselect("错误类型，多选", MISTAKE_TAG_OPTIONS, placeholder="选择错误类型")
         st.markdown("#### 复盘正文")
-        body_cols = st.columns(2)
-        trigger_event = body_cols[0].text_area("事件导火索", height=72, placeholder="这件事是怎么开始的？")
-        action_taken = body_cols[1].text_area("当时操作", height=72, placeholder="我具体做了什么？")
-        result_text = body_cols[0].text_area("结果", height=72, placeholder="造成了什么结果？")
-        reflection = body_cols[1].text_area("反思", height=90, placeholder="真正的问题是什么？")
-        improvement_rule = body_cols[0].text_area("改进规则", height=72, placeholder="以后必须遵守什么规则？")
-        next_defense = body_cols[1].text_area("下次防线", height=72, placeholder="下一次如何防止重复？")
+        trigger_event = st.text_area("事件经过", height=88, placeholder="这件事是怎么发生的？我当时做了什么？造成了什么影响？")
+        reflection = st.text_area("核心反思", height=82, placeholder="真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？")
+        next_defense = st.text_area("下次防线", height=82, placeholder="下次遇到类似情况，必须执行什么规则？如何防止重复犯错？")
         if st.form_submit_button("保存这条错题", width="stretch"):
             store.save_mistake_review(
                 {
@@ -147,32 +142,13 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
                     "scene_or_symbol": scene_or_symbol,
                     "loss_impact_text": loss_impact_text,
                     "trigger_event": trigger_event,
-                    "action_taken": action_taken,
-                    "result_text": result_text,
                     "mistake_tags": mistake_tags,
                     "reflection": reflection,
-                    "improvement_rule": improvement_rule,
                     "next_defense": next_defense,
-                    "review_status": review_status,
                 }
             )
             st.success("错误复盘已记录。")
             st.rerun()
-
-    with st.expander("SPACX 示例模板", expanded=False):
-        st.markdown(
-            """
-            - 标的 / 场景：SPACX 合约空单
-            - 事件导火索：短线想做回落，开了一笔空单。
-            - 当时操作：开仓后没有设置止盈、止损，也没有设置提醒。
-            - 结果：早上醒来发现单子还在，亏损约 800U。
-            - 损失金额 / 影响：800U
-            - 错误类型：没设止损、没设止盈、忘记持仓、隔夜暴露、执行纪律问题
-            - 反思：这笔亏损不是方向判断问题，而是流程错误。合约单没有保护单，本质上就是裸奔。
-            - 改进规则：所有币安合约单，开仓后必须立刻设置止盈止损；没有止损，不允许隔夜。
-            - 下次防线：睡前固定检查币安持仓、止盈、止损、杠杆和保证金。
-            """
-        )
 
     filtered = _filter_mistake_reviews(rows)
     st.markdown(_mistake_table_html(filtered), unsafe_allow_html=True)
@@ -475,7 +451,7 @@ def _mistake_table_html(rows: list[dict[str, Any]]) -> str:
     )
     return (
         '<div class="discipline-table-wrap"><table class="discipline-table">'
-        "<thead><tr><th>日期</th><th>标的 / 场景</th><th>损失金额 / 影响</th><th>错误类型</th><th>一句话反思</th><th>复盘状态</th><th>操作</th></tr></thead>"
+        "<thead><tr><th>日期</th><th>标的 / 场景</th><th>损失金额 / 影响</th><th>错误类型</th><th>核心反思摘要</th><th>状态</th><th>操作</th></tr></thead>"
         f"<tbody>{body}</tbody></table></div>"
     )
 
@@ -487,13 +463,10 @@ def _mistake_detail_html(row: dict[str, Any]) -> str:
       <h4>{escape(str(row.get('review_date') or ''))} · {escape(_scene_or_symbol(row))}</h4>
       <dl>
         <dt>损失金额 / 影响</dt><dd>{escape(_loss_impact(row))}</dd>
-        <dt>事件导火索</dt><dd>{escape(str(row.get('trigger_event') or '未记录'))}</dd>
-        <dt>当时操作</dt><dd>{escape(str(row.get('action_taken') or '未记录'))}</dd>
-        <dt>结果</dt><dd>{escape(str(row.get('result_text') or '未记录'))}</dd>
+        <dt>事件经过</dt><dd>{_detail_text_html(_mistake_event_summary(row))}</dd>
         <dt>错误类型</dt><dd>{escape(tags)}</dd>
-        <dt>反思</dt><dd>{escape(str(row.get('reflection') or '未记录'))}</dd>
-        <dt>改进规则</dt><dd>{escape(str(row.get('improvement_rule') or '未记录'))}</dd>
-        <dt>下次防线</dt><dd>{escape(str(row.get('next_defense') or '未记录'))}</dd>
+        <dt>核心反思</dt><dd>{_detail_text_html(str(row.get('reflection') or '未记录'))}</dd>
+        <dt>下次防线</dt><dd>{_detail_text_html(_mistake_next_defense(row))}</dd>
         <dt>创建时间</dt><dd>{escape(str(row.get('created_at') or ''))}</dd>
         <dt>更新时间</dt><dd>{escape(str(row.get('updated_at') or ''))}</dd>
       </dl>
@@ -504,6 +477,36 @@ def _mistake_detail_html(row: dict[str, Any]) -> str:
 def _mistake_option_label(rows: list[dict[str, Any]], review_id: int) -> str:
     row = next((item for item in rows if int(item.get("id") or 0) == int(review_id)), {})
     return f"#{review_id} · {row.get('review_date', '')} · {_scene_or_symbol(row)}"
+
+
+def _mistake_event_summary(row: dict[str, Any]) -> str:
+    parts = [
+        _clean_detail_part(row.get("trigger_event")),
+        _clean_detail_part(row.get("action_taken")),
+        _clean_detail_part(row.get("result_text")),
+    ]
+    clean = [part for part in parts if part]
+    return "\n".join(clean) if clean else "未记录"
+
+
+def _mistake_next_defense(row: dict[str, Any]) -> str:
+    parts = [
+        _clean_detail_part(row.get("next_defense")),
+        _clean_detail_part(row.get("improvement_rule")),
+    ]
+    clean = []
+    for part in parts:
+        if part and part not in clean:
+            clean.append(part)
+    return "\n".join(clean) if clean else "未记录"
+
+
+def _clean_detail_part(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _detail_text_html(value: object) -> str:
+    return escape(str(value or "未记录")).replace("\n", "<br>")
 
 
 def _periodic_summary_html(summary: dict[str, Any]) -> str:
