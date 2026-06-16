@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
+import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -263,7 +264,7 @@ def _build_weekend_spread_rows_with_feedback(
         fallback_rows = build_weekend_spread_rows(
             watchlist,
             mapping=mapping,
-            provider=_CacheOnlyBinanceProvider(),
+            provider=_CacheOnlyBinanceProvider(allow_stale=True),
             afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
             force_refresh=False,
         )
@@ -304,9 +305,16 @@ class _IdleBinanceProvider:
 
 
 class _CacheOnlyBinanceProvider:
-    def __init__(self, *, cache_path: Path = DEFAULT_BINANCE_CACHE_PATH, ttl_seconds: int = 86_400) -> None:
+    def __init__(
+        self,
+        *,
+        cache_path: Path = DEFAULT_BINANCE_CACHE_PATH,
+        ttl_seconds: int = 86_400,
+        allow_stale: bool = False,
+    ) -> None:
         self.cache_path = cache_path
         self.ttl_seconds = ttl_seconds
+        self.allow_stale = allow_stale
 
     def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
         normalized_symbol = str(symbol or "").strip().upper()
@@ -341,7 +349,8 @@ class _CacheOnlyBinanceProvider:
         if not isinstance(raw, dict):
             return None
         updated_at = _parse_utc_time(raw.get("updated_at"))
-        if updated_at is None or datetime.now(timezone.utc) - updated_at > timedelta(seconds=self.ttl_seconds):
+        is_stale = updated_at is None or datetime.now(timezone.utc) - updated_at > timedelta(seconds=self.ttl_seconds)
+        if is_stale and not self.allow_stale:
             return None
         return {
             "symbol": str(raw.get("symbol") or cache_key.split(":", 1)[-1]),
@@ -351,7 +360,8 @@ class _CacheOnlyBinanceProvider:
             "volume_24h": raw.get("volume_24h"),
             "funding_rate": raw.get("funding_rate"),
             "updated_at": str(raw.get("updated_at") or ""),
-            "source": str(raw.get("source") or "binance_price_cache"),
+            "source": "stale_binance_price_cache" if is_stale else str(raw.get("source") or "binance_price_cache"),
+            "cache_status": "STALE" if is_stale else "FRESH",
         }
 
 
@@ -2234,6 +2244,9 @@ def _number(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(number):
+        return None
+    return number

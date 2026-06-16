@@ -3339,6 +3339,44 @@ def test_cache_only_binance_provider_ignores_stale_price_cache(tmp_path) -> None
     assert snapshot["error"] == "price_not_loaded"
 
 
+def test_cache_only_binance_provider_can_use_stale_last_good_price_for_failure_fallback(tmp_path) -> None:
+    cache_path = tmp_path / "binance_price_cache.json"
+    stale_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    cache_path.write_text(
+        json.dumps(
+            {
+                "usdm_futures:NVDAUSDT": {
+                    "symbol": "NVDAUSDT",
+                    "last_price": 207.08,
+                    "bid": 207.1,
+                    "ask": 207.2,
+                    "volume_24h": 43573.98,
+                    "updated_at": stale_time,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = weekend_spread._CacheOnlyBinanceProvider(cache_path=cache_path, allow_stale=True).get_last_price(
+        "NVDAUSDT",
+        market_type="usdm_futures",
+    )
+
+    assert snapshot["last_price"] == 207.08
+    assert snapshot["bid"] == 207.1
+    assert snapshot["ask"] == 207.2
+    assert snapshot["source"] == "stale_binance_price_cache"
+    assert snapshot["cache_status"] == "STALE"
+    assert snapshot["error"] == ""
+
+
+def test_refresh_failure_falls_back_to_stale_last_good_price_cache() -> None:
+    source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
+
+    assert "_CacheOnlyBinanceProvider(allow_stale=True)" in source
+
+
 def test_idle_provider_marks_rows_as_waiting_refresh() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA"],
@@ -3441,6 +3479,47 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
     assert "$102.15" in frame.iloc[0, 1]
     assert frame.iloc[0, 3] in {"—", "鈥?"}
     assert "fallback" in frame.iloc[0, 6]
+
+
+def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "regular_close_price": 205.19,
+            "afterhours_reference_price": 205.4238,
+            "afterhours_cache_status": "CACHE_HIT",
+            "afterhours_missing_reason": "",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 207.08,
+            "spread_vs_afterhours_pct": 0.81,
+            "spread_vs_regular_close_pct": 0.92,
+            "alert_level_cn": "观察",
+            "mapping_confidence": "candidate",
+            "updated_at": "2026-06-14T17:17:11+00:00",
+        },
+        {
+            "ticker": "NOW",
+            "regular_close_price": 102.15,
+            "afterhours_reference_price": None,
+            "afterhours_cache_status": "CACHE_DATE_MISMATCH",
+            "afterhours_missing_reason": "CACHE_DATE_MISMATCH",
+            "binance_symbol": "NOWUSDT",
+            "binance_last_price": 104.32,
+            "spread_vs_afterhours_pct": None,
+            "spread_vs_regular_close_pct": 2.12,
+            "alert_level_cn": "重点关注",
+            "mapping_confidence": "candidate",
+            "updated_at": "2026-06-14T17:16:45+00:00",
+        },
+    ]
+
+    frame = weekend_spread._live_frame(rows)
+
+    assert "$nan" not in frame.to_string()
+    assert frame.loc[0, "价格锚点"] == "盘后 $205.42（已缓存）"
+    assert frame.loc[1, "价格锚点"] == "收盘 $102.15｜盘后缺失：盘后缓存日期不匹配"
+    assert frame.loc[1, "vs 盘后"] in {"—", "鈥?"}
+    assert "当前使用周五收盘作为 fallback" in frame.loc[1, "风险"]
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:
