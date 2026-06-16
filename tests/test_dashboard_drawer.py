@@ -237,6 +237,35 @@ def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:
     assert decision["position_action"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
 
 
+def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
+    row = pd.Series(
+        {
+            "symbol": "NOW",
+            "price": "$104.15",
+            "buyZoneContext": {
+                "current_action": "WAIT_CONFIRMATION",
+                "primary_zone": "PULLBACK_UPPER_WATCH",
+                "current_price": 104.15,
+                "pullback_zone_low": 97.5,
+                "pullback_zone_high": 108.0,
+                "acceptance_state": "WEAK_ACCEPTANCE",
+                "acceptance_state_text": "承接不足",
+                "entry_quality": "EDGE_OBSERVE",
+                "required_confirmation_price": 105.12,
+            },
+            "current_shares": 160,
+            "currentAddLimitPercent": 0,
+        }
+    )
+
+    decision = dashboard_drawer.build_drawer_primary_decision(row)
+    html = dashboard_drawer._drawer_quick_decision_html(row, decision)
+
+    assert decision["acceptance_state_text"] == "承接不足"
+    assert "承接不足" in html
+    assert "承接状态" in html
+
+
 def test_drawer_actions_include_internal_report_navigation() -> None:
     actions = dashboard_drawer.build_drawer_actions("nvda")
     open_report = actions[0]

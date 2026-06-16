@@ -332,6 +332,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     badges = [
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
         drawer_deps.badge_span_html(primary_decision["badge_zone"], _buy_point_label_tone(primary_decision["badge_zone"])),
+        drawer_deps.badge_span_html(primary_decision.get("acceptance_state_text"), _acceptance_badge_tone(primary_decision.get("acceptance_state_text"))),
         drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
         drawer_deps.badge_span_html(primary_decision["action_text"], drawer_deps.badge_color_for_cell("action", primary_decision["action_text"], row)),
     ]
@@ -378,6 +379,7 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
     decision = decision or build_drawer_primary_decision(row)
     field_items = [
         ("当前动作", decision["action_text"]),
+        ("承接状态", decision.get("acceptance_state_text")),
         ("主原因", decision["main_reason"]),
         ("主击球区", decision["zone_text"]),
         ("当前持仓动作", decision["position_action"]),
@@ -419,6 +421,8 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     if not context:
         missing_labels = _dedupe_text(["统一买区上下文", *missing_labels])
     action_text = str(display.get("main_action_text") or display.get("badge_label") or "数据不足，不给买区")
+    acceptance_state_text = str(display.get("acceptance_state_text") or display.get("acceptance_badge_text") or "")
+    entry_quality_text = str(display.get("entry_quality_text") or "")
     zone_text = str(display.get("zone_text") or "暂不生成")
     main_reason = (
         "技术承接数据不足"
@@ -431,11 +435,13 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     next_step = str(display.get("next_step_text") or "")
     conflict_notice = _drawer_conflict_notice(row, action_code)
     missing_fields_text = " / ".join(missing_labels)
-    headline = "｜".join(part for part in (action_text, display.get("badge_hint"), main_reason) if part)
+    headline = "｜".join(part for part in (acceptance_state_text, action_text, display.get("badge_hint"), main_reason) if part)
     badge_zone = "数据不足" if is_data_insufficient else zone_text
     return {
         "action_code": action_code,
         "action_text": action_text,
+        "acceptance_state_text": acceptance_state_text,
+        "entry_quality_text": entry_quality_text,
         "headline": headline,
         "main_reason": main_reason,
         "zone_text": zone_text,
@@ -446,6 +452,21 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
         "missing_fields_text": missing_fields_text,
         "buy_zone_display": display,
     }
+
+
+def _acceptance_badge_tone(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "gray"
+    if "明显承接" in text:
+        return "green"
+    if "初步承接" in text:
+        return "blue"
+    if "承接不足" in text or "放量未确认" in text:
+        return "yellow"
+    if "飞刀风险" in text or "结构破坏" in text:
+        return "red"
+    return "gray"
 
 
 def _drawer_quick_decision(row: pd.Series | dict) -> dict[str, object]:

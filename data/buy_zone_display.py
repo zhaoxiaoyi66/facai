@@ -8,6 +8,23 @@ SMALL_BUY_ACTIONS = {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}
 WAIT_ACTIONS = {"WAIT_PULLBACK", "WAIT_CONFIRMATION"}
 PAUSE_ACTIONS = {"PAUSE_BUY"}
 
+ACCEPTANCE_STATE_TEXT = {
+    "CLEAR_ACCEPTANCE": "明显承接",
+    "FORMING_ACCEPTANCE": "初步承接",
+    "WEAK_ACCEPTANCE": "承接不足",
+    "HIGH_VOLUME_UNCONFIRMED": "放量未确认",
+    "FALLING_KNIFE_RISK": "飞刀风险",
+    "STRUCTURE_BROKEN": "结构破坏",
+}
+
+ENTRY_QUALITY_TEXT = {
+    "GOOD_LEFT_SIDE": "左侧质量较好",
+    "EDGE_OBSERVE": "边缘观察",
+    "WAIT_CONFIRMATION": "等确认",
+    "HIGH_RISK": "高风险",
+    "INVALID": "无效",
+}
+
 
 def build_buy_zone_display(
     context: Any,
@@ -45,6 +62,13 @@ def build_buy_zone_display(
         row=row_data,
     )
     main_action = _main_action_text(action, account, technical, has_position, current_add, primary_zone)
+    acceptance_state = str(_value(ctx, "acceptance_state", "acceptanceState", default="") or "").strip().upper()
+    acceptance_text = str(
+        _value(ctx, "acceptance_state_text", "acceptanceStateText", default="")
+        or ACCEPTANCE_STATE_TEXT.get(acceptance_state, "")
+    ).strip()
+    entry_quality = str(_value(ctx, "entry_quality", "entryQuality", default="") or "").strip().upper()
+    entry_quality_text = ENTRY_QUALITY_TEXT.get(entry_quality, entry_quality)
     missing = _text_list(_value(ctx, "missing_fields", "missingFields", default=[]))
     missing_text = " / ".join(_missing_label(item) for item in missing if str(item).strip())
     explanation = _explanation(ctx, technical["explanation"], account["sizing_action_text"])
@@ -78,6 +102,16 @@ def build_buy_zone_display(
         "primary_zone_range_text": zone_text,
         "current_price_text": _money(current_price),
         "volume_confirmation_text": volume_text,
+        "acceptance_state": acceptance_state,
+        "acceptance_state_text": acceptance_text,
+        "acceptance_badge_text": acceptance_text,
+        "acceptance_action_text": f"{acceptance_text} / {main_action}" if acceptance_text else main_action,
+        "entry_quality": entry_quality,
+        "entry_quality_text": entry_quality_text,
+        "falling_knife_risk": str(_value(ctx, "falling_knife_risk", "fallingKnifeRisk", default="") or ""),
+        "acceptance_reasons": _text_list(_value(ctx, "acceptance_reasons", "acceptanceReasons", default=[])),
+        "missing_confirmation": _text_list(_value(ctx, "missing_confirmation", "missingConfirmation", default=[])),
+        "required_confirmation_price": _number(_value(ctx, "required_confirmation_price", "requiredConfirmationPrice", "confirmation_price", "confirmationPrice")),
         "risk_reward_text": str(_value(ctx, "risk_reward_text", "riskRewardText", default="") or ""),
         "risk_reward": _number(_value(ctx, "risk_reward", "riskReward", "raw_rr", "rawRr")),
         "action_new_cash": str(_value(ctx, "action_new_cash", "actionNewCash", default="") or account["account_action_text"]),

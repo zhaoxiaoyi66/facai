@@ -141,6 +141,10 @@ def test_left_probe_lower_edge_requires_quality_and_allows_small_buy() -> None:
     assert context.current_action == ALLOW_SMALL_BUY
     assert context.zone_action_quality == "LOW_RISK_OBSERVATION"
     assert context.advisory_level == "INFO"
+    assert context.acceptance_state == "CLEAR_ACCEPTANCE"
+    assert context.acceptance_state_text == "明显承接"
+    assert context.entry_quality == "GOOD_LEFT_SIDE"
+    assert context.falling_knife_risk == "LOW"
 
 
 def test_pullback_upper_half_does_not_allow_small_buy() -> None:
@@ -189,8 +193,58 @@ def test_high_volume_unconfirmed_gate_waits_confirmation() -> None:
 
     assert context.primary_zone == "PULLBACK_BUY"
     assert context.volume_price_gate == "HIGH_VOLUME_UNCONFIRMED"
+    assert context.acceptance_state == "HIGH_VOLUME_UNCONFIRMED"
+    assert context.acceptance_state_text == "放量未确认"
+    assert context.entry_quality == "HIGH_RISK"
     assert context.current_action == WAIT_CONFIRMATION
     assert "放量未确认" in context.execution_gate_reason
+
+
+def test_low_confirmation_score_marks_weak_acceptance() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=100.8, technical_resistance_price=122),
+        volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=54, volume_ratio=0.68, confirmation_score=48),
+    )
+
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.acceptance_state == "WEAK_ACCEPTANCE"
+    assert context.acceptance_state_text == "承接不足"
+    assert context.entry_quality in {"EDGE_OBSERVE", "WAIT_CONFIRMATION"}
+    assert "量价确认分低于60" in context.missing_confirmation
+    assert context.required_confirmation_price == 118
+
+
+def test_price_below_invalidation_marks_structure_broken() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=95.5, technical_resistance_price=122),
+        volume_snapshot=_volume(volume_price_status="FAILED", volume_price_score=20, volume_ratio=1.6),
+    )
+
+    assert context.primary_zone == "INVALIDATION"
+    assert context.acceptance_state == "STRUCTURE_BROKEN"
+    assert context.acceptance_state_text == "结构破坏"
+    assert context.entry_quality == "INVALID"
+    assert context.falling_knife_risk == "HIGH"
+
+
+def test_fast_selloff_near_invalidation_marks_falling_knife_risk() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=97.2,
+            effective_technical_entry_zone_low=96.8,
+            effective_technical_entry_zone_high=104.0,
+            invalidation_price=96.0,
+            daily_return_pct=-4.8,
+            technical_resistance_price=122,
+        ),
+        volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=42, volume_ratio=1.55, confirmation_score=42),
+    )
+
+    assert context.primary_zone == "DEEP_ACCEPTANCE"
+    assert context.acceptance_state == "FALLING_KNIFE_RISK"
+    assert context.acceptance_state_text == "飞刀风险"
+    assert context.entry_quality == "HIGH_RISK"
+    assert context.falling_knife_risk == "HIGH"
 
 
 def test_ibm_upper_pullback_zone_is_repair_watch_not_main_batting_area() -> None:

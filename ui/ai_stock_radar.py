@@ -1393,6 +1393,7 @@ def _research_header_html(
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", volume_text),
         ("当前区间", str(conclusion.get("zone_text") or current_zone)),
+        ("主建议", str(conclusion.get("action_text") or "等待复核")),
         ("总分", _number_text(report.get("final_score"))),
     ]
     stat_html = "".join(
@@ -1449,6 +1450,9 @@ def _executive_summary_card_html(
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
     summary = _decision_summary_sentence(report, batting, portfolio_context, buy_zone_context)
     key_prices = _decision_key_price_items(report, conclusion, buy_zone_context)
+    buy_zone_display = conclusion.get("buy_zone_display") if isinstance(conclusion.get("buy_zone_display"), dict) else {}
+    acceptance_text = _buy_zone_acceptance_text(buy_zone_context, buy_zone_display)
+    entry_quality_text = _entry_quality_text(buy_zone_context, buy_zone_display)
     key_price_html = "".join(
         "<div>"
         f"<span>{escape(label)}</span>"
@@ -1471,6 +1475,8 @@ def _executive_summary_card_html(
         '<div class="ai-radar-decision-summary-head">'
         f'<div><span>{escape(str(report.get("ticker") or "UNKNOWN"))} / {_money(_report_current_price(report))}</span>'
         f'<strong>{escape(str(batting.get("zone_label") or "技术回踩带"))}</strong></div>'
+        f'<div><span>承接状态</span><strong>{escape(acceptance_text or "承接待确认")}</strong>'
+        f'<em>{escape(entry_quality_text or "等确认")}</em></div>'
         f'<div><span>主建议</span><strong>{escape(str(conclusion.get("action_text") or batting.get("operation") or "等待复核"))}</strong></div>'
         f'<div><span>我的持仓动作</span><strong>{escape(str(position_action or "先观察"))}</strong></div>'
         "</div>"
@@ -1500,6 +1506,7 @@ def _decision_summary_sentence(
         else str(portfolio_context.get("action_for_no_position") or "")
     ).strip() or str(batting.get("operation") or "等待复核")
     reason = _decision_primary_reason(batting, buy_zone_context)
+    acceptance_text = _buy_zone_acceptance_text(buy_zone_context)
     holding = ""
     shares = _number(portfolio_context.get("shares"))
     current_add = _first_number(buy_zone_context, "current_add_limit_percent", "currentAddLimitPercent")
@@ -1507,7 +1514,48 @@ def _decision_summary_sentence(
         holding = f"；已有 {_quantity_text(shares)} 股"
         if current_add is not None:
             holding += f"，当前新增额度为 {_number_text(current_add)}"
+    if acceptance_text:
+        return f"{ticker}：{acceptance_text}，{action}。当前价 {current} 位于{zone}。{reason}{holding}。"
     return f"{ticker} 当前价 {current}，位于{zone}，{action}。{reason}{holding}。"
+
+
+def _buy_zone_acceptance_text(
+    buy_zone_context: dict[str, Any] | None,
+    buy_zone_display: dict[str, Any] | None = None,
+) -> str:
+    display = buy_zone_display or {}
+    context = buy_zone_context or {}
+    text = str(display.get("acceptance_state_text") or context.get("acceptance_state_text") or "").strip()
+    if text:
+        return text
+    state = str(display.get("acceptance_state") or context.get("acceptance_state") or "").strip().upper()
+    return {
+        "CLEAR_ACCEPTANCE": "明显承接",
+        "FORMING_ACCEPTANCE": "初步承接",
+        "WEAK_ACCEPTANCE": "承接不足",
+        "HIGH_VOLUME_UNCONFIRMED": "放量未确认",
+        "FALLING_KNIFE_RISK": "飞刀风险",
+        "STRUCTURE_BROKEN": "结构破坏",
+    }.get(state, "")
+
+
+def _entry_quality_text(
+    buy_zone_context: dict[str, Any] | None,
+    buy_zone_display: dict[str, Any] | None = None,
+) -> str:
+    display = buy_zone_display or {}
+    context = buy_zone_context or {}
+    text = str(display.get("entry_quality_text") or "").strip()
+    if text:
+        return text
+    quality = str(display.get("entry_quality") or context.get("entry_quality") or "").strip().upper()
+    return {
+        "GOOD_LEFT_SIDE": "左侧质量较好",
+        "EDGE_OBSERVE": "边缘观察",
+        "WAIT_CONFIRMATION": "等确认",
+        "HIGH_RISK": "高风险",
+        "INVALID": "无效",
+    }.get(quality, "")
 
 
 def _decision_primary_reason(batting: dict[str, str], buy_zone_context: dict[str, Any]) -> str:
@@ -3206,6 +3254,10 @@ def _buy_point_reason_text(row: dict[str, Any]) -> str:
 
     display = _dict_value(row, "buy_zone_display") or _dict_value(row, "buyZoneDisplay")
     if display:
+        acceptance_text = str(display.get("acceptance_state_text") or display.get("acceptance_badge_text") or "").strip()
+        action_text = str(display.get("main_action_text") or display.get("display_action_text") or "").strip()
+        if acceptance_text and action_text:
+            return f"{acceptance_text} / {action_text}"
         reason = str(
             display.get("entry_display_reason")
             or display.get("badge_hint")

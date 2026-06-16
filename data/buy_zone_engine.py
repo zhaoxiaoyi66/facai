@@ -40,6 +40,15 @@ ZONE_TEXT = {
     "DATA_INSUFFICIENT": "技术承接数据不足",
 }
 
+ACCEPTANCE_STATE_TEXT = {
+    "CLEAR_ACCEPTANCE": "明显承接",
+    "FORMING_ACCEPTANCE": "初步承接",
+    "WEAK_ACCEPTANCE": "承接不足",
+    "HIGH_VOLUME_UNCONFIRMED": "放量未确认",
+    "FALLING_KNIFE_RISK": "飞刀风险",
+    "STRUCTURE_BROKEN": "结构破坏",
+}
+
 
 @dataclass(frozen=True)
 class BuyZoneContext:
@@ -126,6 +135,13 @@ class BuyZoneContext:
     advisory_reasons: list[str] = field(default_factory=list)
     confirmation_score: float = 0.0
     volume_price_status: str = ""
+    acceptance_state: str = ""
+    acceptance_state_text: str = ""
+    entry_quality: str = ""
+    falling_knife_risk: str = ""
+    acceptance_reasons: list[str] = field(default_factory=list)
+    missing_confirmation: list[str] = field(default_factory=list)
+    required_confirmation_price: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -357,6 +373,13 @@ def build_buy_zone_context(
             zone_action_quality="DATA_INSUFFICIENT",
             advisory_level="WARNING",
             advisory_reasons=["技术承接数据不足", *missing[:4]],
+            acceptance_state="WEAK_ACCEPTANCE",
+            acceptance_state_text=ACCEPTANCE_STATE_TEXT["WEAK_ACCEPTANCE"],
+            entry_quality="WAIT_CONFIRMATION",
+            falling_knife_risk="MEDIUM",
+            acceptance_reasons=["技术承接数据不足，无法确认承接。"],
+            missing_confirmation=missing,
+            required_confirmation_price=confirmation,
         )
 
     raw_left_probe_low, raw_left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
@@ -381,16 +404,19 @@ def build_buy_zone_context(
         chase=chase,
     )
     technical_score = _technical_structure_score(primary_zone)
+    resistance_low = _first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level")
+    daily_return = _first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent")
+    close_position = _first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange")
     volume_score = _volume_acceptance_score(
         volume_status,
         volume_score_input,
         volume_ratio=volume_ratio,
         price=price,
         confirmation=confirmation,
-        resistance=_first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"),
+        resistance=resistance_low,
         support_low=support_low,
-        daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
-        close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
+        daily_return=daily_return,
+        close_position=close_position,
     )
     confirmation_score = _confirmation_score(data, volume, volume_score)
     volume_price_gate = _volume_price_gate(
@@ -400,11 +426,11 @@ def build_buy_zone_context(
         volume_ratio=volume_ratio,
         price=price,
         confirmation=confirmation,
-        resistance=_first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level"),
+        resistance=resistance_low,
         support_low=support_low,
         invalidation=invalidation,
-        daily_return=_first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent"),
-        close_position=_first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange"),
+        daily_return=daily_return,
+        close_position=close_position,
     )
     rr = _risk_reward_assessment(
         data=data,
@@ -450,6 +476,29 @@ def build_buy_zone_context(
         target_quality=rr.target_quality,
         rr_score=rr_score,
         execution_reason=execution_gate_reason,
+    )
+    acceptance = _acceptance_assessment(
+        primary_zone=primary_zone,
+        current_subzone=current_subzone,
+        price=price,
+        support_low=support_low,
+        invalidation=invalidation,
+        confirmation=confirmation,
+        volume_price_gate=volume_price_gate,
+        volume_status=volume_status,
+        volume_score=volume_score,
+        confirmation_score=confirmation_score,
+        volume_ratio=volume_ratio,
+        daily_return=daily_return,
+        close_position=close_position,
+    )
+    entry_quality = _entry_quality(
+        acceptance_state=str(acceptance["acceptance_state"]),
+        primary_zone=primary_zone,
+        current_subzone=current_subzone,
+        left_probe_position_label=left_probe_label,
+        target_quality=rr.target_quality,
+        rr_score=rr_score,
     )
     pause_text = _pause_new_condition_text(pullback_low, invalidation, data)
     add_trigger_text = _add_trigger_condition_text(confirmation, breakout_reevaluation)
@@ -542,6 +591,13 @@ def build_buy_zone_context(
         advisory_reasons=advisory_reasons,
         confirmation_score=confirmation_score,
         volume_price_status=volume_status,
+        acceptance_state=str(acceptance["acceptance_state"]),
+        acceptance_state_text=str(acceptance["acceptance_state_text"]),
+        entry_quality=entry_quality,
+        falling_knife_risk=str(acceptance["falling_knife_risk"]),
+        acceptance_reasons=list(acceptance["acceptance_reasons"]),
+        missing_confirmation=list(acceptance["missing_confirmation"]),
+        required_confirmation_price=confirmation,
     )
 
 
@@ -1473,6 +1529,140 @@ def _valid_upside_target(value: float | None, price: float, *, max_multiple: flo
     if max_multiple is not None and value > price * max_multiple:
         return False
     return True
+
+
+def _acceptance_assessment(
+    *,
+    primary_zone: str,
+    current_subzone: str,
+    price: float,
+    support_low: float,
+    invalidation: float,
+    confirmation: float,
+    volume_price_gate: str,
+    volume_status: str,
+    volume_score: float,
+    confirmation_score: float,
+    volume_ratio: float | None,
+    daily_return: float | None,
+    close_position: float | None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    missing: list[str] = []
+    falling_risk = "LOW"
+    technical_area = primary_zone in {
+        "DEEP_ACCEPTANCE",
+        "PULLBACK_BUY",
+        "PULLBACK_WATCH",
+        "PULLBACK_UPPER_WATCH",
+        "REPAIR_WATCH",
+    }
+
+    if price < invalidation or primary_zone == "INVALIDATION" or volume_price_gate == "FAILED_ACCEPTANCE":
+        return {
+            "acceptance_state": "STRUCTURE_BROKEN",
+            "acceptance_state_text": ACCEPTANCE_STATE_TEXT["STRUCTURE_BROKEN"],
+            "falling_knife_risk": "HIGH",
+            "acceptance_reasons": ["跌破失效线或量价承接失败，原左侧逻辑需要复核。"],
+            "missing_confirmation": ["重新生成买区上下文", "复核失效线"],
+        }
+
+    high_volume = volume_ratio is not None and volume_ratio >= 1.2
+    fast_selloff = daily_return is not None and daily_return <= -3.0
+    weak_close = close_position is not None and close_position <= 0.25
+    near_invalidation = invalidation > 0 and price <= invalidation * 1.03
+    broke_short_support = price < support_low
+    if high_volume and (fast_selloff or weak_close) and (near_invalidation or broke_short_support or confirmation_score < 50):
+        return {
+            "acceptance_state": "FALLING_KNIFE_RISK",
+            "acceptance_state_text": ACCEPTANCE_STATE_TEXT["FALLING_KNIFE_RISK"],
+            "falling_knife_risk": "HIGH",
+            "acceptance_reasons": ["价格快速下跌且量能放大，靠近失效风险区，暂未看到稳定承接。"],
+            "missing_confirmation": ["止跌K线", "站回关键支撑", "收盘确认"],
+        }
+
+    if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
+        return {
+            "acceptance_state": "HIGH_VOLUME_UNCONFIRMED",
+            "acceptance_state_text": ACCEPTANCE_STATE_TEXT["HIGH_VOLUME_UNCONFIRMED"],
+            "falling_knife_risk": "MEDIUM",
+            "acceptance_reasons": ["量能明显放大，但尚未站回关键线。"],
+            "missing_confirmation": ["收盘确认", "事件复核", _confirmation_requirement(confirmation)],
+        }
+
+    if confirmation_score < 60:
+        missing.append("量价确认分低于60")
+    if volume_score < 60:
+        missing.append("量价承接分低于60")
+    if confirmation is not None and price < confirmation:
+        missing.append(_confirmation_requirement(confirmation))
+    if volume_ratio is not None and volume_ratio < 0.7:
+        reasons.append("缩量回踩，但承接未确认。")
+    if volume_status == "UNCONFIRMED":
+        reasons.append("量价状态未确认。")
+
+    stood_back = price >= support_low and (confirmation is None or price >= min(confirmation, support_low * 1.08))
+    if technical_area and volume_price_gate == "CONFIRMED_ACCEPTANCE" and confirmation_score >= 65 and volume_score >= 60 and stood_back:
+        return {
+            "acceptance_state": "CLEAR_ACCEPTANCE",
+            "acceptance_state_text": ACCEPTANCE_STATE_TEXT["CLEAR_ACCEPTANCE"],
+            "falling_knife_risk": falling_risk,
+            "acceptance_reasons": _dedupe_text(["价格守住技术区并站回关键支撑，量价承接确认。", *reasons]),
+            "missing_confirmation": [],
+        }
+
+    if technical_area and confirmation_score >= 55 and volume_score >= 50 and volume_price_gate in {"FORMING_ACCEPTANCE", "CONFIRMED_ACCEPTANCE"}:
+        return {
+            "acceptance_state": "FORMING_ACCEPTANCE",
+            "acceptance_state_text": ACCEPTANCE_STATE_TEXT["FORMING_ACCEPTANCE"],
+            "falling_knife_risk": "LOW" if not near_invalidation else "MEDIUM",
+            "acceptance_reasons": _dedupe_text(["技术区暂时守住，承接正在形成但尚未完全确认。", *reasons]),
+            "missing_confirmation": _dedupe_text(missing),
+        }
+
+    if near_invalidation and (fast_selloff or high_volume):
+        falling_risk = "MEDIUM"
+    return {
+        "acceptance_state": "WEAK_ACCEPTANCE",
+        "acceptance_state_text": ACCEPTANCE_STATE_TEXT["WEAK_ACCEPTANCE"],
+        "falling_knife_risk": falling_risk,
+        "acceptance_reasons": _dedupe_text(reasons or ["价格在技术区内，但量价承接不足。"]),
+        "missing_confirmation": _dedupe_text(missing),
+    }
+
+
+def _confirmation_requirement(confirmation: float | None) -> str:
+    if confirmation is None:
+        return "站回确认线"
+    return f"站上 {_money(confirmation)} 确认线"
+
+
+def _entry_quality(
+    *,
+    acceptance_state: str,
+    primary_zone: str,
+    current_subzone: str,
+    left_probe_position_label: str,
+    target_quality: str,
+    rr_score: float,
+) -> str:
+    if acceptance_state == "STRUCTURE_BROKEN":
+        return "INVALID"
+    if acceptance_state in {"FALLING_KNIFE_RISK", "HIGH_VOLUME_UNCONFIRMED"} or primary_zone == "CHASE_RISK":
+        return "HIGH_RISK"
+    target_ok = target_quality not in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""}
+    if (
+        acceptance_state == "CLEAR_ACCEPTANCE"
+        and (primary_zone == "DEEP_ACCEPTANCE" or left_probe_position_label == "LOWER_EDGE")
+        and target_ok
+        and rr_score >= 65
+    ):
+        return "GOOD_LEFT_SIDE"
+    if current_subzone in {"LEFT_PROBE_UPPER", "LEFT_PROBE_MID", "ACCEPTANCE_OBSERVATION_ZONE", "REPAIR_OBSERVATION_ZONE"}:
+        return "EDGE_OBSERVE"
+    if acceptance_state in {"FORMING_ACCEPTANCE", "WEAK_ACCEPTANCE"}:
+        return "WAIT_CONFIRMATION"
+    return "EDGE_OBSERVE"
 
 
 def _current_action(

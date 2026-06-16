@@ -75,6 +75,37 @@ def test_low_confirmation_forming_acceptance_does_not_claim_confirmed_support() 
     assert "承接K线" not in display["next_step_text"]
 
 
+def test_display_exposes_acceptance_state_and_quality() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_BUY",
+            "primary_zone_text": "技术回踩带",
+            "current_price": 104.15,
+            "pullback_zone_low": 97.5,
+            "pullback_zone_high": 108.0,
+            "acceptance_state": "WEAK_ACCEPTANCE",
+            "acceptance_state_text": "承接不足",
+            "entry_quality": "EDGE_OBSERVE",
+            "falling_knife_risk": "LOW",
+            "acceptance_reasons": ["缩量回踩，但承接未确认"],
+            "missing_confirmation": ["量价确认分低于60"],
+            "required_confirmation_price": 105.12,
+        },
+        {"current_shares": 160, "currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["acceptance_state"] == "WEAK_ACCEPTANCE"
+    assert display["acceptance_state_text"] == "承接不足"
+    assert display["entry_quality"] == "EDGE_OBSERVE"
+    assert display["entry_quality_text"] == "边缘观察"
+    assert display["falling_knife_risk"] == "LOW"
+    assert display["acceptance_action_text"] == "承接不足 / 持有观察 / 当前不建议新增"
+    assert display["required_confirmation_price"] == 105.12
+    assert any("缩量回踩" in reason for reason in display["acceptance_reasons"])
+
+
 def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
     display = build_buy_zone_display(
         {

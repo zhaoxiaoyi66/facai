@@ -268,7 +268,57 @@ def test_report_summary_is_conclusion_first_and_shows_position_actions() -> None
     assert "我的持仓：12 股｜成本 $320.00｜浮盈亏 +$840.00 / +21.9%" in html
     assert "已有持仓动作" in html
     assert "无持仓动作" not in html
-    assert "持有观察，未到加仓确认位" in html
+
+
+def test_report_summary_surfaces_acceptance_state() -> None:
+    action_result = evaluate_action_fusion(
+        ticker="NOW",
+        context={
+            "ticker": "NOW",
+            "current_price": 104.15,
+            "observation_low": 97.5,
+            "observation_high": 108.0,
+            "quality_score": 82,
+            "volume_price_status": "FORMING",
+            "volume_price_score": 48,
+        },
+        portfolio_context={"current_shares": 160},
+    )
+    buy_zone_context = {
+        "current_action": "WAIT_CONFIRMATION",
+        "primary_zone": "PULLBACK_UPPER_WATCH",
+        "primary_zone_text": "买区上沿 / 修复观察区",
+        "acceptance_state": "WEAK_ACCEPTANCE",
+        "acceptance_state_text": "承接不足",
+        "entry_quality": "EDGE_OBSERVE",
+        "confirmation_score": 48,
+        "volume_acceptance_score": 48,
+        "confirmation_price": 105.12,
+        "current_add_limit_percent": 0,
+    }
+    conclusion = {
+        "action_text": "持有观察 / 当前不建议新增",
+        "buy_zone_display": {
+            "acceptance_state_text": "承接不足",
+            "entry_quality_text": "边缘观察",
+        },
+    }
+
+    html = radar_ui._executive_summary_card_html(
+        {"ticker": "NOW", "current_price": 104.15, "decision": "WAIT"},
+        {},
+        {},
+        {"ticker": "NOW"},
+        action_result,
+        portfolio_context={"has_position": True, "shares": 160, "action_for_existing_position": "持有观察 / 当前不建议新增"},
+        conclusion=conclusion,
+        buy_zone_context=buy_zone_context,
+    )
+
+    assert "承接状态" in html
+    assert "承接不足" in html
+    assert "边缘观察" in html
+    assert "NOW：承接不足，持有观察 / 当前不建议新增" in html
     assert html.count("<li>") == 4
     assert "若无持仓" not in html
 
