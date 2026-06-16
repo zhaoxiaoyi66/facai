@@ -44,7 +44,7 @@ def submit_portfolio_buy_add(
     quantity = values.get("quantity")
     price = values.get("price")
     tier = _clean_position_tier(values.get("position_tier") or values.get("positionClass"))
-    decision_mood = str(values.get("decision_mood") or values.get("decisionMood") or "").strip()
+    decision_mood = str(values.get("decision_mood") or values.get("decisionMood") or "NEUTRAL").strip()
     buy_reason = str(values.get("buy_reason") or values.get("notes") or "").strip()
     missing_buy_reason = not bool(buy_reason)
     target_sell_price = values.get("target_sell_price") or values.get("targetSellPrice")
@@ -59,14 +59,11 @@ def submit_portfolio_buy_add(
     user_confirmed_daily_trade_advisory = bool(
         values.get("userConfirmedDailyTradeAdvisory") or values.get("user_confirmed_daily_trade_advisory")
     )
-    pre_trade_intent = normalize_trade_intent_payload(
-        values.get("pre_trade_intent") or values.get("preTradeIntent"),
-        side="buy",
-    )
+    pre_trade_intent = normalize_trade_intent_payload(values.get("pre_trade_intent") or values.get("preTradeIntent"), side="buy")
     _require_positive_number(quantity, "quantity")
     _require_positive_number(price, "price")
     if missing_buy_reason:
-        buy_reason = "未填写买入理由；系统已记录为风险提示。"
+        buy_reason = "买入前记录已保存。" if pre_trade_intent else "未填写买入理由；系统已记录为风险提示。"
     action_type = _portfolio_trade_action(ticker, path, values.get("action_type"))
     submitted_at = _hkt_now()
     portfolio_preview = preview_trade_values_portfolio_effect(
@@ -137,7 +134,7 @@ def submit_portfolio_buy_add(
     plan_fields = _buy_plan_entry_fields(plan_gate)
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
-    if missing_buy_reason:
+    if missing_buy_reason and not pre_trade_intent:
         advisory_notes.append("买入理由缺失；系统只做风险提示，不阻止你继续入账。")
     advisory_notes.extend(_buy_zone_context_advisory_notes(buy_zone_context))
     advisory_notes.extend(_action_fusion_advisory_notes(action_fusion))

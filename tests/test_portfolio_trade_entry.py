@@ -779,6 +779,18 @@ def test_portfolio_buy_submit_queues_intent_dialog_before_save() -> None:
     assert "_queue_portfolio_buy_intent(form_key, effective_ticker)" in source
 
 
+def test_portfolio_buy_entry_keeps_intent_fields_out_of_main_form() -> None:
+    source = inspect.getsource(portfolio_ui._render_portfolio_buy_add_form)
+    payload_source = inspect.getsource(portfolio_ui._portfolio_buy_add_submit_payload)
+
+    assert 'selectbox("交易心理"' not in source
+    assert 'text_area(\n                "买入理由"' not in source
+    assert 'with st.expander("可选信息", expanded=False)' in source
+    assert "卖出目标价（可选）" in source
+    assert '"decision_mood": "NEUTRAL"' in payload_source
+    assert '"buy_reason": ""' in payload_source
+
+
 def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
     context = SimpleNamespace(
         current_price=102.15,

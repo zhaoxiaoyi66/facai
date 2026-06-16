@@ -170,7 +170,9 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         advisory_context = _safe_buy_execution_context(effective_ticker)
         st.markdown('<div class="portfolio-buy-block-title">1. 基本信息</div>', unsafe_allow_html=True)
         st.markdown(_portfolio_buy_basic_info_html(effective_ticker, current, selected_tier), unsafe_allow_html=True)
-        _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
+        plan_for_summary = StockPlanStore().get_plan(effective_ticker) if effective_ticker else {}
+        with st.expander("计划摘要", expanded=bool(_plan_has_buy_execution_evidence(plan_for_summary))):
+            _render_buy_execution_plan_summary(effective_ticker, current, selected_tier)
         st.markdown('<div class="portfolio-buy-block-title">2. 主结论</div>', unsafe_allow_html=True)
         st.markdown(_portfolio_buy_decision_panel_html(advisory_context, current, selected_tier), unsafe_allow_html=True)
         st.markdown('<div class="portfolio-buy-block-title">3. 买入策略</div>', unsafe_allow_html=True)
@@ -185,19 +187,12 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
             basic_cols[0].text_input("股票代码", value=effective_ticker, disabled=True, key=f"{form_key}:symbol-disabled")
             basic_cols[1].text_input("数量", key=f"{form_key}:quantity")
             basic_cols[2].text_input("成交价", key=f"{form_key}:price")
-            discipline_cols = st.columns([1.2, 1])
-            discipline_cols[0].selectbox("交易心理", list(PORTFOLIO_BUY_MOOD_OPTIONS), key=f"{form_key}:decision_mood")
-            discipline_cols[1].text_input(
-                "卖出目标价",
-                value=_input_value(_plan_target_sell_price(StockPlanStore().get_plan(effective_ticker)) or current.get("planned_sell_price")),
-                key=f"{form_key}:target_sell_price",
-            )
-            st.text_area(
-                "买入理由",
-                height=86,
-                placeholder="本次为什么执行？例如：触发计划第1档 / 建底仓第一笔 / 价格回踩后确认执行",
-                key=f"{form_key}:buy_reason",
-            )
+            with st.expander("可选信息", expanded=False):
+                st.text_input(
+                    "卖出目标价（可选）",
+                    value=_input_value(_plan_target_sell_price(StockPlanStore().get_plan(effective_ticker)) or current.get("planned_sell_price")),
+                    key=f"{form_key}:target_sell_price",
+                )
             if st.form_submit_button("确认买入 / 加仓并入账", width="stretch"):
                 _queue_portfolio_buy_intent(form_key, effective_ticker)
 
@@ -645,9 +640,9 @@ def _portfolio_buy_add_submit_payload(form_key: str, selected_symbol: str) -> tu
             "quantity": _form_value(form_key, "quantity"),
             "price": _form_value(form_key, "price"),
             "position_tier": tier,
-            "decision_mood": PORTFOLIO_BUY_MOOD_OPTIONS.get(str(_form_value(form_key, "decision_mood") or ""), ""),
+            "decision_mood": "NEUTRAL",
             "entry_mode": plan_fields["entry_mode"],
-            "buy_reason": _form_value(form_key, "buy_reason"),
+            "buy_reason": "",
             "target_sell_price": _form_value(form_key, "target_sell_price"),
             "starter_thesis": plan_fields["starter_thesis"],
             "starter_add_plan": plan_fields["starter_add_plan"],

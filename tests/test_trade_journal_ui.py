@@ -232,23 +232,23 @@ def test_sell_form_renders_structured_sell_reason_advisory() -> None:
 
 def test_sell_form_uses_compact_workflow_sections() -> None:
     editor_source = inspect.getsource(trade_journal._render_editor)
-    discipline_source = inspect.getsource(trade_journal._render_trading_discipline_check)
-    reentry_source = inspect.getsource(trade_journal._render_reentry_plan_editor)
+    activity_source = inspect.getsource(trade_journal._render_daily_trade_activity_advisory)
+    summary_source = inspect.getsource(trade_journal._render_sell_reference_card)
 
     assert "### 成交信息" in editor_source
-    assert "### 系统提醒" in editor_source
+    assert "### 系统摘要" in editor_source
+    assert "### 提交按钮" in editor_source
     assert "成交备注（可选）" in editor_source
-    assert "### 卖出决策" not in discipline_source
-    assert 'st.expander("复盘信息，可选", expanded=False)' in discipline_source
-    assert "卖出原因（可选）" in discipline_source
-    assert 'st.expander("纪律检查详情", expanded=False)' in discipline_source
-    assert 'st.expander("成交后仓位变化详情", expanded=False)' in editor_source
-    assert "### 提交确认" in editor_source
-    assert "卖出后持仓" in editor_source
-    assert "卖出类型 / 提醒" in editor_source
-    assert "回补计划说明" in reentry_source
-    assert "不回补条件" in reentry_source
-    assert "完整回补计划摘要" not in reentry_source
+    assert "情绪标签" not in editor_source
+    assert "_render_trading_discipline_check(" not in editor_source
+    assert 'st.expander("成交后仓位变化详情", expanded=False)' not in editor_source
+    assert "### 提交确认" not in editor_source
+    assert "卖出后剩余持仓" in summary_source
+    assert "系统摘要" in summary_source
+    assert "卖出类型 / 提醒" not in editor_source
+    assert "今日交易较多" in activity_source
+    assert "st.checkbox" not in activity_source
+    assert "我已阅读今日交易频率提醒" not in activity_source
 
 
 def test_edit_trade_entry_locks_symbol_and_action_type() -> None:

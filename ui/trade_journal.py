@@ -454,23 +454,11 @@ def _pending_daily_trade_activity(
 
 def _render_daily_trade_activity_advisory(activity: dict, *, key_suffix: str) -> bool:
     level = str(activity.get("advisory_level") or "LOW").upper()
-    text = str(activity.get("advisory_text") or "")
-    reasons = list(activity.get("advisory_reasons") or [])
-    st.markdown("#### 今日交易频率提醒")
-    cols = st.columns(4)
-    cols[0].metric("成交记录", int(activity.get("trade_record_count") or 0))
-    cols[1].metric("交易决策", int(activity.get("trade_decision_count") or 0))
-    cols[2].metric("涉及股票", int(activity.get("unique_ticker_count") or 0))
-    cols[3].metric("频率等级", activity_level_label(level))
     if level in {"HIGH", "CRITICAL"}:
-        st.warning(text)
-        if reasons:
-            st.caption(" / ".join(str(item) for item in reasons))
-        return st.checkbox(
-            "我已阅读今日交易频率提醒，仍要继续记录",
-            key=f"daily-trade-advisory-confirm-{key_suffix}",
+        st.warning(
+            f"今日交易较多：已记录 {int(activity.get('trade_record_count') or 0)} 笔，"
+            "建议确认是否属于计划内操作。"
         )
-    st.info(text)
     return False
 
 
@@ -522,16 +510,14 @@ def _render_editor(store: TradeJournalStore) -> None:
 
         if editing_entry is None and selected_position:
             _render_sell_quantity_shortcuts(selected_position, key_suffix=str(editing_id or "new"))
-        trade_cols = st.columns([1, 1, 1.2])
+        trade_cols = st.columns([1, 1])
         quantity_default = _entry_number_text(editing_entry, "quantity")
         if editing_entry is None and action_type == "sell":
             selected_quantity = _number((selected_position or {}).get("quantity"))
             quantity_default = "" if selected_quantity is None else f"{selected_quantity:g}"
         quantity = trade_cols[0].text_input("卖出数量", value=quantity_default, key=_editor_key("quantity", editing_id))
         price = trade_cols[1].text_input("卖出均价", value=_entry_number_text(editing_entry, "price"), key=_editor_key("price", editing_id))
-        mood_default = _decision_mood_label_for_entry(editing_entry)
-        mood_label = trade_cols[2].selectbox("情绪标签", list(DECISION_MOOD_OPTIONS), index=list(DECISION_MOOD_OPTIONS).index(mood_default), key=_editor_key("decision-mood", editing_id))
-        decision_mood = DECISION_MOOD_OPTIONS.get(mood_label, "")
+        decision_mood = str((editing_entry or {}).get("decision_mood") or "NEUTRAL").strip()
         notes = st.text_area(
             "成交备注（可选）",
             value=_entry_value(editing_entry, "notes"),
@@ -546,9 +532,6 @@ def _render_editor(store: TradeJournalStore) -> None:
                 key=_editor_key("snapshot-id", editing_id),
             )
         sell_reference_context = _sell_reference_context(symbol, selected_position) if selected_position else {}
-        st.markdown("### 系统提醒")
-        if editing_entry is None and selected_position:
-            _render_sell_reference_card(symbol, selected_position, context=sell_reference_context)
 
         portfolio_preview = _portfolio_sync_preview(symbol, action_type, quantity, price)
         effective_sell_quantity = _effective_sell_available_quantity(
@@ -567,6 +550,10 @@ def _render_editor(store: TradeJournalStore) -> None:
         )
         discipline_result = None
         radar_gate_result = None
+        after_quantity = _number(portfolio_preview.get("afterQuantity"))
+        st.markdown("### 系统摘要")
+        if editing_entry is None and selected_position:
+            _render_sell_reference_card(symbol, selected_position, context=sell_reference_context, after_quantity=after_quantity)
 
         if action_type in CLASSIFICATION_ACTIONS:
             radar_gate_result = _render_radar_buy_gate(
@@ -579,38 +566,9 @@ def _render_editor(store: TradeJournalStore) -> None:
             )
             _render_buy_classification_editor(symbol, editing_entry=editing_entry, stock_plan=stock_plan, key_suffix=str(editing_id or "new"))
 
-        if action_type in SELL_DISCIPLINE_ACTIONS:
-            discipline_result = _render_trading_discipline_check(
-                symbol,
-                action_type,
-                decision_mood=decision_mood,
-                trade_quantity=quantity,
-                trade_price=price,
-                current_quantity=effective_sell_quantity,
-                editing_entry=editing_entry,
-                stock_plan=stock_plan,
-                sell_reference=sell_reference_context,
-                key_suffix=str(editing_id or "new"),
-            )
-
-        with st.expander("成交后仓位变化详情", expanded=False):
-            _render_portfolio_ledger_preview(
-                symbol,
-                action_type,
-                quantity,
-                price,
-                preview=portfolio_preview,
-                discipline_blocked=_discipline_result_blocked(discipline_result),
-            )
-
-        st.markdown("### 提交确认")
-        submit_cols = st.columns(5)
+        st.markdown("### 提交按钮")
         submit_qty = _number(quantity)
         submit_price = _number(price)
-        submit_notional = None if submit_qty is None or submit_price is None else submit_qty * submit_price
-        after_quantity = _number(portfolio_preview.get("afterQuantity"))
-        sell_type_text = "清仓" if action_type == "sell" or (after_quantity is not None and after_quantity <= 1e-9) else "减仓"
-        advisory_text = _discipline_gate_conclusion_label(_discipline_gate_conclusion(discipline_result)) if discipline_result is not None else "无"
         daily_activity = _pending_daily_trade_activity(
             store,
             symbol=symbol,
@@ -625,11 +583,6 @@ def _render_editor(store: TradeJournalStore) -> None:
             daily_activity,
             key_suffix=str(editing_id or "new"),
         )
-        submit_cols[0].metric("卖出股数", _quantity_text(submit_qty))
-        submit_cols[1].metric("卖出均价", format_currency(submit_price) if submit_price is not None else BLANK_TEXT)
-        submit_cols[2].metric("本次成交额", format_currency(submit_notional) if submit_notional is not None else BLANK_TEXT)
-        submit_cols[3].metric("卖出后持仓", _quantity_text(after_quantity))
-        submit_cols[4].metric("卖出类型 / 提醒", f"{sell_type_text}｜{advisory_text}")
 
         button_label = "保存修改" if editing_entry else ("确认卖出并入账" if action_type == "sell" else "确认减仓并入账")
         if st.button(button_label, key=_editor_key("save", editing_id), width="stretch"):
@@ -1001,14 +954,13 @@ def _sell_context_snapshot_values(
     return {"sellContextSnapshot": snapshot}
 
 
-def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dict | None = None) -> None:
+def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dict | None = None, after_quantity: object = None) -> None:
     context = context or _sell_reference_context(symbol, position_row)
     current_price = _number(context.get("currentPrice"))
     average_cost = _number(context.get("averageCost"))
     unrealized_pnl = _number(context.get("unrealizedPnl"))
     unrealized_pnl_pct = _number(context.get("unrealizedPnlPct"))
     holding_days = _number(context.get("holdingDays"))
-    position_tier = str(context.get("positionTier") or "").strip().upper()
     target_sell = _number(context.get("targetSellPrice"))
     distance_to_target = _number(context.get("distanceToTarget"))
     zone_status = str(context.get("zoneStatus") or "ZONE_MISSING")
@@ -1018,27 +970,21 @@ def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dic
         ("成本价", _money_text(average_cost)),
         ("浮盈亏", _pnl_text(unrealized_pnl, unrealized_pnl_pct)),
         ("持仓天数", _position_holding_days_text(holding_days)),
-        ("持仓等级", _position_class_label(position_tier) if position_tier else "需设置等级"),
         ("目标卖出价", _money_text(target_sell)),
-        ("Radar 买区", buy_zone_text),
-        ("区间状态", _zone_status_text(zone_status)),
         ("距目标", _percent_or_dash(distance_to_target)),
+        ("卖出后剩余持仓", _quantity_text(after_quantity)),
         ("回补参考", buy_zone_text),
     ]
     hint = _sell_reference_hint(zone_status, current_price, target_sell)
-    alerts = _sell_reference_alerts(context)
     metrics_html = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
         for label, value in reference_rows
     )
-    alerts_html = "".join(f"<li>{escape(item)}</li>" for item in alerts)
-    alerts_block = f'<ul class="trade-sell-reference-alerts">{alerts_html}</ul>' if alerts_html else ""
     st.markdown(
         f"""
         <section class="trade-sell-reference-card">
-          <div><b>卖出纪律参考</b><span>{escape(hint)}</span></div>
+          <div><b>系统摘要</b><span>{escape(hint)}</span></div>
           <div class="trade-portfolio-sync-grid">{metrics_html}</div>
-          {alerts_block}
         </section>
         """,
         unsafe_allow_html=True,
@@ -2320,9 +2266,6 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
     if not str(values.get("price") or "").strip():
         st.session_state["trade_journal_notice"] = ("error", "请填写价格。")
         st.rerun()
-    if not str(values.get("decision_mood") or "").strip():
-        st.session_state["trade_journal_notice"] = ("error", "请选择交易心理标签。")
-        st.rerun()
     try:
         saved = store.save_entry(symbol, values)
         _sync_stock_classification_profile(saved["symbol"], values)
@@ -2356,9 +2299,6 @@ def _update_entry(store: TradeJournalStore, entry_id: int, symbol: str, values: 
         st.rerun()
     if not str(values.get("price") or "").strip():
         st.session_state["trade_journal_notice"] = ("error", "请填写价格。")
-        st.rerun()
-    if not str(values.get("decision_mood") or "").strip():
-        st.session_state["trade_journal_notice"] = ("error", "请选择交易心理标签。")
         st.rerun()
     try:
         saved = store.update_entry(entry_id, symbol, values)
