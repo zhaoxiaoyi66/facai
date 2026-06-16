@@ -113,8 +113,6 @@ def render() -> None:
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision, buy_zone_display)
     _render_current_position_summary(portfolio_row)
     _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision, buy_zone_display)
-    _render_buy_zone(ticker, plan_store, plan, effective_buy_zone, buy_zone, score)
-    _render_technical_entry_reference(effective_buy_zone)
     _render_price_alert_panel(ticker, effective_buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_research_memo(ticker, plan_store, plan)
@@ -875,10 +873,10 @@ def _buy_zone_source(plan: dict) -> str:
 
 def _buy_zone_section_title(source: str) -> tuple[str, str]:
     if source == "manual":
-        return "手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
+        return "历史计划快照", "仅供回溯，当前建议以统一买区展示为准"
     if source == "mixed":
-        return "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
-    return "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
+        return "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
+    return "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
 
 
 def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str) -> tuple[str, float | None]:
@@ -982,7 +980,7 @@ def _render_buy_zone(
     source = _buy_zone_source(plan)
     manual = source == "manual"
     if source == "system":
-        title, title_suffix = "旧估值参考 / 手动计划参考", "仅供辅助，主击球区以统一技术承接为准"
+        title, title_suffix = "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
     else:
         title, title_suffix = _buy_zone_section_title(source)
     render_section_title(title, title_suffix)
@@ -1082,7 +1080,7 @@ def _render_technical_entry_reference(active_zone: BuyZoneEstimate) -> None:
         '<section class="research-card technical-entry-card">'
         '<div class="technical-entry-head">'
         f"<div><strong>{escape(title)}</strong><span>{escape(summary)}</span></div>"
-        '<em>辅助层，不覆盖估值参考</em>'
+        '<em>辅助层，不覆盖当前买区建议</em>'
         "</div>"
         f'<div class="technical-entry-grid">{metric_html}</div>'
         f'<ul class="technical-entry-reasons">{reason_html}</ul>'

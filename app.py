@@ -7,13 +7,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from data.fmp_queue import get_fmp_request_queue
-from ui import ai_stock_radar, buy_zone, dashboard, discipline_review, manual_review, portfolio, stock_detail, trade_journal, watchlist, weekend_spread
+from ui import ai_stock_radar, dashboard, discipline_review, manual_review, portfolio, stock_detail, trade_journal, watchlist, weekend_spread
 from ui.theme import render_global_styles
 
 
 PAGE_DASHBOARD = "决策总览"
 PAGE_STOCK_DETAIL = "个股研究"
-PAGE_BUY_ZONE = "买区计划"
 PAGE_PORTFOLIO = "组合持仓"
 PAGE_TRADE_JOURNAL = "交易日志"
 PAGE_DISCIPLINE_REVIEW = "纪律复盘"
@@ -25,7 +24,7 @@ PAGE_WEEKEND_SPREAD = "周末价差"
 PAGE_QUERY_VALUES = {
     "dashboard": PAGE_DASHBOARD,
     "detail": PAGE_STOCK_DETAIL,
-    "buy-zone": PAGE_BUY_ZONE,
+    "buy-zone": PAGE_DASHBOARD,
     "portfolio": PAGE_PORTFOLIO,
     "trade-journal": PAGE_TRADE_JOURNAL,
     "discipline-review": PAGE_DISCIPLINE_REVIEW,
@@ -41,7 +40,6 @@ LEGACY_PAGE_ALIASES = {
     "总览仪表盘": PAGE_DASHBOARD,
     "决策仪表盘": PAGE_DASHBOARD,
     "单股详情": PAGE_STOCK_DETAIL,
-    "买区计算器": PAGE_BUY_ZONE,
     "组合持仓": PAGE_PORTFOLIO,
     "交易日志": PAGE_TRADE_JOURNAL,
     "观察名单": PAGE_WATCHLIST,
@@ -59,7 +57,6 @@ st.set_page_config(
 PAGES = {
     PAGE_DASHBOARD: dashboard.render,
     PAGE_STOCK_DETAIL: stock_detail.render,
-    PAGE_BUY_ZONE: buy_zone.render,
     PAGE_PORTFOLIO: portfolio.render,
     PAGE_TRADE_JOURNAL: trade_journal.render,
     PAGE_DISCIPLINE_REVIEW: discipline_review.render,
@@ -181,7 +178,6 @@ def _nav_label(page_name: str) -> str:
     labels = {
         PAGE_DASHBOARD: "决策总览",
         PAGE_STOCK_DETAIL: "个股研究",
-        PAGE_BUY_ZONE: "买区计划",
         PAGE_PORTFOLIO: "组合持仓",
         PAGE_TRADE_JOURNAL: "交易日志",
         PAGE_WATCHLIST: "观察池",
@@ -194,7 +190,6 @@ def _nav_icon(page_name: str) -> str:
     icons = {
         PAGE_DASHBOARD: "◇",
         PAGE_STOCK_DETAIL: "⌕",
-        PAGE_BUY_ZONE: "◎",
         PAGE_PORTFOLIO: "▣",
         PAGE_TRADE_JOURNAL: "▤",
         PAGE_WATCHLIST: "≡",

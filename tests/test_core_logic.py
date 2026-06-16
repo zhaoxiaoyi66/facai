@@ -176,7 +176,7 @@ from ui.dashboard import (
     _translate_factor,
     _valuation_status,
 )
-from ui import buy_zone, manual_review, stock_detail
+from ui import manual_review, stock_detail
 from ui.metric_labels import is_internal_metric_field, metric_label, model_type_label, resolution_status_label, unmapped_metric_labels
 
 
@@ -5152,18 +5152,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(suggestion.currentAddLimitPercent, 0)
 
     def test_buy_zone_short_action_prioritizes_no_chase_over_buy_wording(self) -> None:
-        label = buy_zone._action_short_text(
-            {
-                "currentZone": "no_chase",
-                "currentPrice": 100,
-                "action": "可小仓分批",
-                "dataConfidence": "medium",
-                "confidence": "high",
-                "isValid": True,
-            }
-        )
-
-        self.assertEqual(label, "不新增")
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_manual_buy_zone_override_takes_priority_and_can_be_cleared(self) -> None:
         system = generate_buy_zone(
@@ -8622,27 +8611,10 @@ class BuyZonePlanPageTests(unittest.TestCase):
         )
 
     def test_buy_zone_page_is_system_plan_center_not_default_eps_calculator(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        source = inspect.getsource(buy_zone_page.render)
-        self.assertIn("估值参考 / 旧计划参考", source)
-        self.assertIn("根据评分、估值、风险和技术位置生成估值参考区", source)
-        self.assertIn("主击球区以 AI Stock Radar 的统一 buy_zone_context 为准", source)
-        self.assertNotIn("系统估值买区", source)
-        self.assertIn("_load_buy_zone_rows", source)
-        self.assertNotIn("买区计算器", source)
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_page_uses_engines_and_drawer(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        source = inspect.getsource(buy_zone_page)
-        self.assertIn("generate_buy_zone", source)
-        self.assertIn("generate_position_plan", source)
-        self.assertIn("data-buy-zone-drawer-open", source)
-        self.assertIn("buy-zone-drawer", source)
-        self.assertIn("高级估值沙盒", source)
-        self.assertIn("估值参考 / 旧计划参考详情", source)
-        self.assertIn("legacy buy_zone_engine", source)
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_zero_price_is_not_used_for_valid_buy_zone(self) -> None:
         zone = generate_buy_zone("ZERO", {"current_price": 0, "price_to_fcf": 20, "free_cash_flow_yield": 0.05}, None, "SAAS_SOFTWARE")
@@ -8650,161 +8622,25 @@ class BuyZonePlanPageTests(unittest.TestCase):
         self.assertIn("缺少当前价格", " ".join(zone.keyReasons))
 
     def test_buy_zone_page_displays_missing_price_instead_of_zero(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        self.assertEqual(buy_zone_page._money(0), "价格缺失")
-        self.assertEqual(buy_zone_page._money(None), "价格缺失")
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_page_prefers_final_action_for_display(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        legacy_buy_action = sorted(BUY_ACTIONS)[0]
-        final_non_buy_action = sorted(NON_BUY_VALUATION_STATUSES)[0]
-        row = {
-            "action": legacy_buy_action,
-            "finalAction": final_non_buy_action,
-            "currentZone": "tranche_buy",
-            "currentPrice": 95,
-            "currentAddLimitPercent": 0,
-            "confidence": "high",
-            "dataConfidence": "high",
-            "isValid": True,
-        }
-        fallback_row = dict(row)
-        fallback_row.pop("finalAction")
-        fallback_row.pop("currentAddLimitPercent")
-
-        self.assertEqual(buy_zone_page._row_action(row), final_non_buy_action)
-        self.assertEqual(buy_zone_page._row_action(fallback_row), legacy_buy_action)
-        self.assertNotEqual(buy_zone_page._action_short_text(row), buy_zone_page._action_short_text(fallback_row))
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_page_shows_zero_when_final_decision_blocks_add(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        score = self._buy_zone_score(valuation_status=sorted(NON_BUY_VALUATION_STATUSES)[0])
-        zone = self._buy_zone_estimate()
-        plan = generate_position_plan("ZERO", zone, score)
-
-        row = buy_zone_page._row_from_outputs("ZERO", {}, {}, score, zone, plan, "system_generated", False)
-
-        self.assertEqual(row["action"], score.action)
-        self.assertNotEqual(row["finalAction"], row["action"])
-        self.assertFalse(row["isActionable"])
-        self.assertEqual(row["currentAddLimitPercent"], 0)
-        self.assertEqual(buy_zone_page._current_add_text(row)[0], "不新增")
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_manual_override_rederives_final_decision(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        score = self._buy_zone_score()
-        zone = self._buy_zone_estimate(symbol="MAN")
-        plan = generate_position_plan("MAN", zone, score)
-        row = buy_zone_page._row_from_outputs("MAN", {}, {}, score, zone, plan, "system_generated", False)
-        manual_plan = {
-            "no_chase_above": 90,
-            "fair_value_low": 70,
-            "fair_value_high": 80,
-            "tranche_buy_low": 55,
-            "tranche_buy_high": 65,
-            "heavy_buy_below": 45,
-        }
-
-        updated = buy_zone_page._apply_manual_plan(row, manual_plan)
-
-        self.assertFalse(row["isActionable"])
-        self.assertEqual(updated["currentZone"], "no_chase")
-        self.assertEqual(updated["decisionLane"], "review")
-        self.assertFalse(updated["isActionable"])
-        self.assertEqual(updated["currentAddLimitPercent"], 0)
-        self.assertEqual(updated["finalAction"], row["finalAction"])
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_near_trigger_logic_survives_final_decision_wait_lane(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        result = buy_zone_page.resolve_buy_zone_display_category(
-            {
-                "currentZone": "fair_observation",
-                "currentPrice": 100,
-                "nextTriggerPrice": 90,
-                "finalAction": "wait",
-                "decisionLane": "wait",
-                "isActionable": False,
-                "currentAddLimitPercent": 0,
-                "confidence": "high",
-                "dataConfidence": "high",
-                "isValid": True,
-            }
-        )
-
-        self.assertTrue(result["priorityEligible"])
-        self.assertEqual(result["triggerTone"], "near")
-        self.assertIn("10.0", str(result["triggerPrimary"]))
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_page_fair_zone_far_from_first_buy_is_observation_not_near(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        row = {
-            "currentZone": "fair_observation",
-            "currentPrice": 212.60,
-            "fairValueLow": 158.96,
-            "fairValueHigh": 225.38,
-            "trancheBuyLow": 121.33,
-            "trancheBuyHigh": 155.78,
-            "nextTriggerPrice": 155.78,
-            "nextBuyPrice": 155.78,
-            "firstBuyPrice": 155.78,
-            "finalAction": "等回踩",
-            "decisionLane": "wait",
-            "isActionable": False,
-            "currentAddLimitPercent": 0,
-            "confidence": "high",
-            "dataConfidence": "high",
-            "isValid": True,
-        }
-
-        result = buy_zone_page.resolve_buy_zone_display_category(row)
-        primary, _secondary, tone = buy_zone_page.format_trigger_cell(row)
-
-        self.assertEqual(result["displayCategory"], "等回踩")
-        self.assertEqual(result["triggerPrimary"], "合理观察，未到估值买点")
-        self.assertFalse(result["priorityEligible"])
-        self.assertEqual(primary, "合理观察，未到估值买点")
-        self.assertEqual(tone, "neutral")
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_buy_zone_page_hides_precise_trigger_when_precision_contract_blocks(self) -> None:
-        from ui import buy_zone as buy_zone_page
-
-        row = {
-            "currentZone": "fair_observation",
-            "currentPrice": 110,
-            "fairValueLow": 100,
-            "fairValueHigh": 120,
-            "trancheBuyLow": 80,
-            "trancheBuyHigh": 90,
-            "nextTriggerPrice": 90,
-            "nextBuyPrice": 90,
-            "finalAction": "wait",
-            "decisionLane": "wait",
-            "isActionable": False,
-            "currentAddLimitPercent": 0,
-            "confidence": "high",
-            "dataConfidence": "high",
-            "isValid": True,
-            "precisionContract": {
-                "canShowPreciseBuyZone": False,
-                "allowedPriceFields": ["fairValueLow", "fairValueHigh"],
-                "blockedPriceFields": ["trancheBuyLow", "trancheBuyHigh", "heavyBuyBelow", "nextTriggerPrice"],
-            },
-        }
-
-        primary, secondary, _tone = buy_zone_page.format_trigger_cell(row)
-        ladder_html = buy_zone_page._price_ladder_html(row)
-
-        self.assertEqual(primary, "等待估值折价触发")
-        self.assertEqual(secondary, "不展示精确买点")
-        self.assertNotIn("$90", secondary)
-        self.assertIn("不展示精确买点", ladder_html)
-        self.assertNotIn("$90.00", ladder_html)
+        self.skipTest("legacy valuation buy-zone view removed from the main workflow")
 
     def test_stock_detail_buy_point_status_uses_buy_zone_distance_sanity(self) -> None:
         score = SimpleNamespace(
