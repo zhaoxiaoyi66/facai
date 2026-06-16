@@ -3332,6 +3332,27 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     assert frame.iloc[0]["币安价格"] is None
 
 
+def test_weekend_review_style_renders_with_current_pandas() -> None:
+    frame = weekend_spread._weekend_review_frame(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "NVDA",
+                "stock_price": 100.0,
+                "binance_price": 102.0,
+                "price_diff": 2.0,
+                "premium_pct": 2.0,
+                "status": "价差较大",
+            }
+        ]
+    )
+
+    html = weekend_spread._style_weekend_review_frame(frame).to_html()
+
+    assert "NVDA" in html
+    assert "$2.00" in html
+
+
 def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
     snapshot = get_weekly_log_snapshot(path=tmp_path / "missing.json", week_id="2026-W24")
 

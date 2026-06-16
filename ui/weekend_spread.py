@@ -1105,17 +1105,17 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
             return "color: #047857; font-weight: 800;"
         return "color: #64748b; font-weight: 700;"
 
-    return (
-        frame.style.format(
-            {
-                "美股价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
-                "币安价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
-                "价差": lambda value: _signed_money_text(value, missing="暂无数据"),
-                "溢价%": lambda value: _review_percent_text(value),
-            }
-        )
-        .applymap(color_value, subset=["价差", "溢价%"])
+    styler = frame.style.format(
+        {
+            "美股价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "币安价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "价差": lambda value: _signed_money_text(value, missing="暂无数据"),
+            "溢价%": lambda value: _review_percent_text(value),
+        }
     )
+    if hasattr(styler, "map"):
+        return styler.map(color_value, subset=["价差", "溢价%"])
+    return styler.applymap(color_value, subset=["价差", "溢价%"])
 
 
 def _weekend_review_status(row: dict, anchor_price: float | None, binance_price: float | None, premium_pct: float | None) -> str:
