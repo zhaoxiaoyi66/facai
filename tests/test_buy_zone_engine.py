@@ -410,8 +410,26 @@ def test_buy_zone_snapshot_and_backtest_metrics_are_generated() -> None:
     assert snapshot.symbol == "MSFT"
     assert snapshot.zone_low is not None
     assert snapshot.action_new_cash
+    assert snapshot.acceptance_state
+    assert snapshot.entry_quality
+    assert snapshot.current_subzone
+    assert snapshot.main_advisory
+    assert snapshot.rr_score == snapshot.context["risk_reward_score"]
+    assert snapshot.target_quality == snapshot.context["target_quality"]
     assert rows
-    assert {"return_5d", "return_20d", "MAE_20", "MFE_20", "false_buy_rate"}.issubset(rows[0])
+    assert {
+        "return_5d",
+        "return_20d",
+        "MAE_20",
+        "MFE_20",
+        "false_buy_rate",
+        "acceptance_state",
+        "entry_quality",
+        "current_subzone",
+        "main_advisory",
+        "rr_score",
+        "target_quality",
+    }.issubset(rows[0])
 
 
 def test_buy_zone_snapshot_save_upserts_symbol_date(tmp_path) -> None:
@@ -438,6 +456,8 @@ def test_buy_zone_snapshot_save_upserts_symbol_date(tmp_path) -> None:
     assert len(records) == 1
     assert records[0]["symbol"] == "MSFT"
     assert records[0]["price"] == 102
+    assert records[0]["acceptance_state"] == second.acceptance_state
+    assert records[0]["main_advisory"] == second.main_advisory
 
 
 def test_price_at_reevaluation_line_inside_pullback_enters_confirmation_review() -> None:

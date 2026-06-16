@@ -187,6 +187,12 @@ class BuyZoneSnapshot:
     trend_score: float
     volume_score: float
     risk_reward: float | None
+    rr_score: float
+    target_quality: str
+    acceptance_state: str
+    entry_quality: str
+    current_subzone: str
+    main_advisory: str
     action_new_cash: str
     action_existing_position: str
     invalidation_line: float | None
@@ -622,6 +628,12 @@ def build_buy_zone_snapshot(
         trend_score=context.trend_score,
         volume_score=context.volume_acceptance_score,
         risk_reward=context.risk_reward,
+        rr_score=context.risk_reward_score,
+        target_quality=context.target_quality,
+        acceptance_state=context.acceptance_state,
+        entry_quality=context.entry_quality,
+        current_subzone=context.current_subzone,
+        main_advisory=context.action_text,
         action_new_cash=context.action_new_cash,
         action_existing_position=context.action_existing_position,
         invalidation_line=context.invalidation_price,
