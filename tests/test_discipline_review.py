@@ -8,6 +8,7 @@ from data.discipline_review import (
     DEFAULT_PRINCIPLES,
     DisciplineReviewStore,
     build_discipline_review_stats,
+    build_mistake_review_summary,
     build_portfolio_discipline_summary,
 )
 from ui import discipline_review
@@ -28,7 +29,7 @@ def test_discipline_principles_can_be_saved_and_reset() -> None:
         assert store.get_principles() == DEFAULT_PRINCIPLES
 
 
-def test_trade_discipline_tags_are_persisted_without_touching_trade_validation() -> None:
+def test_trade_discipline_tags_are_kept_for_history_compatibility() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _path(tmpdir)
         trade_store = TradeJournalStore(path)
@@ -48,7 +49,7 @@ def test_trade_discipline_tags_are_persisted_without_touching_trade_validation()
         assert all(row["notes"] == "复盘备注" for row in saved)
 
 
-def test_discipline_stats_count_recent_tags_and_plan_ratio() -> None:
+def test_discipline_stats_count_recent_tags_for_legacy_history() -> None:
     entries = [
         {"id": 1, "trade_date": "2026-06-10", "action_type": "buy"},
         {"id": 2, "trade_date": "2026-06-15", "action_type": "sell"},
@@ -94,6 +95,54 @@ def test_portfolio_discipline_summary_counts_concentration_and_unplanned_trades(
     assert summary["unplanned_trade_count_this_week"] == 1
 
 
+def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_mistake_review(
+            {
+                "review_date": "2026-06-15",
+                "market_type": "币安合约",
+                "symbol": "SPACX",
+                "loss_amount": 800,
+                "trigger_event": "短线想做回落，开了一笔空单。",
+                "action_taken": "没有设置止盈止损。",
+                "result_text": "隔夜后亏损。",
+                "mistake_tags": ["没设止损", "没设止盈", "忘记持仓", "not-real"],
+                "reflection": "这是流程错误。",
+                "improvement_rule": "合约单必须有保护单。",
+                "next_defense": "睡前检查持仓。",
+                "review_status": "已记录",
+            }
+        )
+
+        rows = store.list_mistake_reviews()
+
+        assert saved["symbol"] == "SPACX"
+        assert saved["market_type"] == "币安合约"
+        assert saved["loss_amount"] == 800
+        assert saved["mistake_tags"] == ["没设止损", "没设止盈", "忘记持仓"]
+        assert rows[0]["reflection"] == "这是流程错误。"
+
+
+def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None:
+    rows = [
+        {"review_date": "2026-06-16", "loss_amount": 100, "mistake_tags": ["没设止损"], "review_status": "已记录"},
+        {"review_date": "2026-06-15", "loss_amount": 200, "mistake_tags": ["没设止损"], "review_status": "已形成规则"},
+        {"review_date": "2026-06-14", "loss_amount": 300, "mistake_tags": ["没设止损", "隔夜暴露"], "review_status": "已完成复盘"},
+        {"review_date": "2026-05-01", "loss_amount": 500, "mistake_tags": ["怕错过"], "review_status": "已记录"},
+    ]
+
+    summary = build_mistake_review_summary(rows, current_date="2026-06-16")
+
+    assert summary["total_count"] == 4
+    assert summary["recent_30_count"] == 3
+    assert summary["recent_30_loss_amount"] == 600
+    assert summary["most_common_mistake_type"] == "没设止损"
+    assert summary["unruled_count"] == 3
+    assert summary["repeated_mistake_types"] == ["没设止损"]
+
+
 def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     card = discipline_review.dashboard_discipline_card_html(
         {
@@ -102,7 +151,7 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
                 "attention_trade_count": 3,
                 "attention_flag_counts": {
                     "怕错过风险": 2,
-                    "临时卖出风险": 1,
+                    "情绪卖出风险": 1,
                     "无回补预案": 1,
                 },
             },
@@ -115,17 +164,29 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     assert "最近 30 天交易次数：8" in card
     assert "有复盘关注点：3" in card
     assert "怕错过风险：2" in card
-    assert "临时卖出风险：1" in card
+    assert "情绪卖出风险：1" in card
     assert "无回补预案：1" in card
     assert "这笔交易会让组合更集中" in hint
     assert "当前 Setup 不是高质量买点" in hint
     assert "禁止" not in hint
-    assert "\u95e8\u7981" not in hint
+    assert "门禁" not in hint
+
+
+def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_tags() -> None:
+    source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
+
+    assert "交易错题本" in source
+    assert "添加错误复盘" in source
+    assert "保存标签" not in source
+    assert "选择交易记录" not in source
+    assert "交易纪律标签" not in source
+    assert "通过 / 未通过" not in source
+    assert "门禁" not in source
 
 
 def test_app_registers_discipline_review_page() -> None:
     source = Path("app.py").read_text(encoding="utf-8")
 
     assert "PAGE_DISCIPLINE_REVIEW" in source
-    assert "\"discipline-review\"" in source
+    assert '"discipline-review"' in source
     assert "discipline_review.render" in source

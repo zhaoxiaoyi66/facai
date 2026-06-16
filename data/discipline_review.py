@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -50,6 +51,26 @@ DEFAULT_SETTINGS = {
     "target_core_min": 1,
     "target_core_max": 3,
 }
+
+MISTAKE_MARKET_TYPES = ["美股", "港股", "币安现货", "币安合约", "其他"]
+
+MISTAKE_TAG_OPTIONS = [
+    "没设止损",
+    "没设止盈",
+    "忘记持仓",
+    "隔夜暴露",
+    "无计划开仓",
+    "合约纪律问题",
+    "仓位过大",
+    "情绪交易",
+    "怕错过",
+    "看到别人观点后交易",
+    "追涨杀跌",
+    "没有回补计划",
+    "其他",
+]
+
+MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已完成复盘"]
 
 
 @dataclass(frozen=True)
@@ -128,6 +149,27 @@ class DisciplineReviewStore:
                     note_date TEXT NOT NULL,
                     text TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mistake_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    review_date TEXT NOT NULL,
+                    market_type TEXT NOT NULL,
+                    symbol TEXT,
+                    loss_amount REAL,
+                    trigger_event TEXT,
+                    action_taken TEXT,
+                    result_text TEXT,
+                    mistake_tags_json TEXT NOT NULL,
+                    reflection TEXT,
+                    improvement_rule TEXT,
+                    next_defense TEXT,
+                    review_status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -261,6 +303,92 @@ class DisciplineReviewStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_row_to_dict(columns, row) for row in rows]
 
+    def save_mistake_review(self, values: dict[str, Any]) -> dict[str, Any]:
+        review_date = _parse_date(values.get("review_date")) or date.today()
+        market_type = _clean_choice(values.get("market_type"), MISTAKE_MARKET_TYPES, "其他")
+        review_status = _clean_choice(values.get("review_status"), MISTAKE_REVIEW_STATUSES, "已记录")
+        tags = _dedupe([tag for tag in values.get("mistake_tags", []) if tag in MISTAKE_TAG_OPTIONS])
+        symbol = str(values.get("symbol") or "").strip().upper()
+        loss_amount = _optional_number(values.get("loss_amount"))
+        now = _now()
+        fields = {
+            "review_date": review_date.isoformat(),
+            "market_type": market_type,
+            "symbol": symbol,
+            "loss_amount": loss_amount,
+            "trigger_event": _clean_text(values.get("trigger_event")),
+            "action_taken": _clean_text(values.get("action_taken")),
+            "result_text": _clean_text(values.get("result_text")),
+            "mistake_tags_json": json.dumps(tags, ensure_ascii=False),
+            "reflection": _clean_text(values.get("reflection")),
+            "improvement_rule": _clean_text(values.get("improvement_rule")),
+            "next_defense": _clean_text(values.get("next_defense")),
+            "review_status": review_status,
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO mistake_reviews (
+                    review_date,
+                    market_type,
+                    symbol,
+                    loss_amount,
+                    trigger_event,
+                    action_taken,
+                    result_text,
+                    mistake_tags_json,
+                    reflection,
+                    improvement_rule,
+                    next_defense,
+                    review_status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fields["review_date"],
+                    fields["market_type"],
+                    fields["symbol"],
+                    fields["loss_amount"],
+                    fields["trigger_event"],
+                    fields["action_taken"],
+                    fields["result_text"],
+                    fields["mistake_tags_json"],
+                    fields["reflection"],
+                    fields["improvement_rule"],
+                    fields["next_defense"],
+                    fields["review_status"],
+                    fields["created_at"],
+                    fields["updated_at"],
+                ),
+            )
+            review_id = int(cursor.lastrowid)
+        saved = self.get_mistake_review(review_id)
+        return saved or {"id": review_id, **fields, "mistake_tags": tags}
+
+    def get_mistake_review(self, review_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT * FROM mistake_reviews WHERE id = ?", (int(review_id),))
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _mistake_row_to_dict(columns, row) if row else None
+
+    def list_mistake_reviews(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM mistake_reviews
+                ORDER BY review_date DESC, updated_at DESC, id DESC
+                """
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_mistake_row_to_dict(columns, row) for row in rows]
+
 
 def build_discipline_review_stats(
     entries: list[dict[str, Any]],
@@ -310,6 +438,32 @@ def build_portfolio_discipline_summary(
         target_core_max=int(clean_settings["target_core_max"]),
     )
     return summary.to_dict()
+
+
+def build_mistake_review_summary(
+    rows: list[dict[str, Any]],
+    *,
+    current_date: date | str | None = None,
+) -> dict[str, Any]:
+    current = _parse_date(current_date) or date.today()
+    recent_start = current - timedelta(days=29)
+    recent_rows = [row for row in rows if _date_in_range(row.get("review_date"), recent_start, current)]
+    all_tag_counts = _mistake_tag_counts(rows)
+    recent_tag_counts = _mistake_tag_counts(recent_rows)
+    most_common = sorted(all_tag_counts.items(), key=lambda item: (-item[1], item[0]))
+    repeated = [tag for tag, count in sorted(recent_tag_counts.items(), key=lambda item: (-item[1], item[0])) if count > 2]
+    recent_loss = sum(_optional_number(row.get("loss_amount")) or 0.0 for row in recent_rows)
+    return {
+        "total_count": len(rows),
+        "recent_30_count": len(recent_rows),
+        "recent_30_loss_amount": round(recent_loss, 2),
+        "most_common_mistake_type": most_common[0][0] if most_common else "",
+        "most_common_mistake_count": most_common[0][1] if most_common else 0,
+        "unruled_count": sum(1 for row in rows if str(row.get("review_status") or "") != "已形成规则"),
+        "repeated_mistake_types": repeated,
+        "tag_counts": all_tag_counts,
+        "recent_tag_counts": recent_tag_counts,
+    }
 
 
 def build_dashboard_discipline_snapshot(
@@ -375,6 +529,20 @@ def _tag_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _mistake_tag_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        tags = row.get("mistake_tags") or []
+        if isinstance(tags, str):
+            tags = _parse_json_list(tags)
+        for tag in tags:
+            text = str(tag or "").strip()
+            if not text:
+                continue
+            counts[text] = counts.get(text, 0) + 1
+    return counts
+
+
 def _clean_settings(values: dict[str, Any]) -> dict[str, Any]:
     target_min = max(1, int(_number(values.get("target_holding_min"), DEFAULT_SETTINGS["target_holding_min"])))
     target_max = max(target_min, int(_number(values.get("target_holding_max"), DEFAULT_SETTINGS["target_holding_max"])))
@@ -407,6 +575,15 @@ def _looks_unplanned_trade(entry: dict[str, Any]) -> bool:
     return any(token in note for token in ("fomo", "冲动", "参与感", "panic", "追高"))
 
 
+def _clean_choice(value: object, allowed: list[str], default: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
 def _date_in_range(value: object, start: date, end: date) -> bool:
     parsed = _parse_date(value)
     return bool(parsed is not None and start <= parsed <= end)
@@ -435,6 +612,16 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_number(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -447,8 +634,29 @@ def _dedupe(items: list[str]) -> list[str]:
     return result
 
 
+def _parse_json_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item) for item in data]
+
+
 def _row_to_dict(columns: list[str], row: tuple) -> dict[str, Any]:
     return {columns[index]: row[index] for index in range(len(columns))}
+
+
+def _mistake_row_to_dict(columns: list[str], row: tuple) -> dict[str, Any]:
+    data = _row_to_dict(columns, row)
+    data["mistake_tags"] = _parse_json_list(data.get("mistake_tags_json"))
+    return data
 
 
 def _now() -> str:

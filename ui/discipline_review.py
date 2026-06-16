@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -8,12 +9,13 @@ import streamlit as st
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
-    DISCIPLINE_TAG_LABELS,
+    MISTAKE_MARKET_TYPES,
+    MISTAKE_REVIEW_STATUSES,
+    MISTAKE_TAG_OPTIONS,
     SELF_CHECK_QUESTIONS,
     DisciplineReviewStore,
-    build_discipline_review_stats,
+    build_mistake_review_summary,
     build_portfolio_discipline_summary,
-    label_for_tag,
 )
 from data.portfolio import PortfolioPositionStore
 from data.prices import CACHE_PATH
@@ -29,7 +31,7 @@ from ui.theme import render_page_header, render_section_title
 
 def render(path: Path = CACHE_PATH) -> None:
     _render_styles()
-    render_page_header("纪律复盘", "记录个人投资原则、交易纪律标签和组合清晰度提醒。")
+    render_page_header("纪律复盘", "记录投资原则、组合纪律和交易错误复盘。")
     discipline_store = DisciplineReviewStore(path)
     trade_store = TradeJournalStore(path)
     position_store = PortfolioPositionStore(path)
@@ -39,12 +41,12 @@ def render(path: Path = CACHE_PATH) -> None:
     _render_principles_card(discipline_store)
     _render_self_check_questions()
     _render_portfolio_discipline(discipline_store, positions, entries)
-    _render_trade_tag_editor(discipline_store, entries)
+    _render_mistake_reviews(discipline_store)
     _render_discipline_stats(discipline_store, entries)
 
 
 def _render_principles_card(store: DisciplineReviewStore) -> None:
-    render_section_title("我的投资原则", "这是个人纪律备忘，不参与 Setup 评分，也不会阻止交易。")
+    render_section_title("我的投资原则", "个人纪律备忘，不参与 Setup 评分，也不会阻止交易。")
     current = store.get_principles()
     with st.form("discipline-principles-form"):
         text = st.text_area("原则文本", value=current, height=150)
@@ -71,7 +73,7 @@ def _render_self_check_questions() -> None:
 
 
 def _render_portfolio_discipline(store: DisciplineReviewStore, positions: list[dict], entries: list[dict]) -> None:
-    render_section_title("组合纪律检查", "聚焦持仓数量、集中度和小仓数量。")
+    render_section_title("组合纪律体检", "聚焦持仓数量、集中度和小仓数量。")
     settings = store.get_settings()
     summary = build_portfolio_discipline_summary(positions, entries, settings)
     cards = [
@@ -80,7 +82,7 @@ def _render_portfolio_discipline(store: DisciplineReviewStore, positions: list[d
         ("Top 3 仓位", f"{summary['top3_weight_pct']:.1f}%", "集中度参考"),
         ("小仓数量", str(summary["small_position_count"]), f"低于 {settings['small_position_threshold_pct']}%"),
         ("本周新开仓", str(summary["new_position_count_this_week"]), "只做频率提醒"),
-        ("本周计划外", str(summary["unplanned_trade_count_this_week"]), "按情绪/标签粗略识别"),
+        ("本周计划外", str(summary["unplanned_trade_count_this_week"]), "按情绪标签粗略识别"),
     ]
     st.markdown(_card_grid_html(cards), unsafe_allow_html=True)
     with st.expander("纪律目标设置", expanded=False):
@@ -111,32 +113,104 @@ def _render_portfolio_discipline(store: DisciplineReviewStore, positions: list[d
                 st.rerun()
 
 
-def _render_trade_tag_editor(store: DisciplineReviewStore, entries: list[dict]) -> None:
-    render_section_title("交易纪律标签", "标签用于复盘统计，不参与买入评分。")
-    real_entries = [entry for entry in entries if str(entry.get("action_type") or "").lower() in {"buy", "add", "sell", "trim"}]
-    if not real_entries:
-        st.info("暂无可打标签的真实交易记录。")
-        return
-    options = {int(entry.get("id") or 0): _trade_option_label(entry) for entry in real_entries if int(entry.get("id") or 0) > 0}
-    selected_id = st.selectbox("选择交易记录", list(options), format_func=lambda value: options.get(value, str(value)))
-    current_rows = store.list_tags_for_trade(int(selected_id))
-    current_tags = [str(row.get("tag") or "") for row in current_rows]
-    labels = list(DISCIPLINE_TAG_LABELS.values())
-    label_to_tag = {label: tag for tag, label in DISCIPLINE_TAG_LABELS.items()}
-    default_labels = [DISCIPLINE_TAG_LABELS[tag] for tag in current_tags if tag in DISCIPLINE_TAG_LABELS]
-    with st.form(f"discipline-tag-form-{selected_id}"):
-        selected_labels = st.multiselect("纪律标签", labels, default=default_labels)
-        notes = st.text_area("标签备注（可选）", value=_first_note(current_rows), height=72)
-        if st.form_submit_button("保存标签", width="stretch"):
-            store.save_trade_tags(int(selected_id), [label_to_tag[label] for label in selected_labels], notes)
-            st.success("纪律标签已保存。")
+def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
+    render_section_title(
+        "交易错题本",
+        "记录每一次不该发生的交易错误。重点不是责备自己，而是把错误沉淀成下一次的防线。",
+    )
+    rows = store.list_mistake_reviews()
+    summary = build_mistake_review_summary(rows)
+    st.markdown(_mistake_summary_html(summary), unsafe_allow_html=True)
+    repeated = summary.get("repeated_mistake_types") or []
+    if repeated:
+        st.warning(f"最近重复出现：{'、'.join(repeated)}，建议把它写成明确规则。")
+
+    with st.form("mistake-review-form", clear_on_submit=True):
+        cols = st.columns([1, 1, 1, 1])
+        review_date = cols[0].date_input("日期", value=date.today())
+        market_type = cols[1].selectbox("市场类型", MISTAKE_MARKET_TYPES, index=0)
+        symbol = cols[2].text_input("标的")
+        loss_amount = cols[3].number_input("损失金额，可选", min_value=0.0, value=0.0, step=10.0)
+        trigger_event = st.text_area("事件导火索", height=72)
+        action_taken = st.text_area("当时操作", height=72)
+        result_text = st.text_area("结果", height=72)
+        mistake_tags = st.multiselect("错误类型，多选", MISTAKE_TAG_OPTIONS)
+        reflection = st.text_area("反思", height=90)
+        improvement_rule = st.text_area("改进规则", height=72)
+        next_defense = st.text_area("下次防线", height=72)
+        review_status = st.selectbox("复盘状态", MISTAKE_REVIEW_STATUSES, index=0)
+        if st.form_submit_button("添加错误复盘", width="stretch"):
+            store.save_mistake_review(
+                {
+                    "review_date": review_date,
+                    "market_type": market_type,
+                    "symbol": symbol,
+                    "loss_amount": loss_amount,
+                    "trigger_event": trigger_event,
+                    "action_taken": action_taken,
+                    "result_text": result_text,
+                    "mistake_tags": mistake_tags,
+                    "reflection": reflection,
+                    "improvement_rule": improvement_rule,
+                    "next_defense": next_defense,
+                    "review_status": review_status,
+                }
+            )
+            st.success("错误复盘已记录。")
             st.rerun()
-    if current_rows:
-        st.markdown(_tag_chip_html(current_tags), unsafe_allow_html=True)
+
+    with st.expander("SPACX 示例模板", expanded=False):
+        st.markdown(
+            """
+            - 市场类型：币安合约
+            - 标的：SPACX
+            - 事件导火索：短线想做回落，开了一笔空单。
+            - 当时操作：开仓后没有设置止盈、止损，也没有设置提醒。
+            - 结果：早上醒来发现单子还在，亏损约 800U。
+            - 错误类型：没设止损、没设止盈、忘记持仓、隔夜暴露、合约纪律问题
+            - 反思：这笔亏损不是方向判断问题，而是流程错误。合约单没有保护单，本质上就是裸奔。
+            - 改进规则：所有币安合约单，开仓后必须立刻设置止盈止损；没有止损，不允许隔夜。
+            - 下次防线：睡前固定检查币安持仓、止盈、止损、杠杆和保证金。
+            """
+        )
+
+    filtered = _filter_mistake_reviews(rows)
+    st.markdown(_mistake_table_html(filtered), unsafe_allow_html=True)
+    if filtered:
+        options = [int(row["id"]) for row in filtered]
+        selected_id = st.selectbox("查看记录详情", options, format_func=lambda value: _mistake_option_label(filtered, value))
+        detail = next((row for row in filtered if int(row.get("id") or 0) == int(selected_id)), None)
+        if detail:
+            st.markdown(_mistake_detail_html(detail), unsafe_allow_html=True)
+
+
+def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cols = st.columns([1, 1, 1, 1, 1])
+    market = cols[0].selectbox("按市场类型筛选", ["全部", *MISTAKE_MARKET_TYPES], key="mistake-market-filter")
+    tag = cols[1].selectbox("按错误类型筛选", ["全部", *MISTAKE_TAG_OPTIONS], key="mistake-tag-filter")
+    status = cols[2].selectbox("按复盘状态筛选", ["全部", *MISTAKE_REVIEW_STATUSES], key="mistake-status-filter")
+    recent_only = cols[3].checkbox("只看最近30天", value=False, key="mistake-recent-filter")
+    loss_only = cols[4].checkbox("只看有损失金额", value=False, key="mistake-loss-filter")
+    current = date.today()
+    start = current - timedelta(days=29)
+    result = []
+    for row in rows:
+        if market != "全部" and row.get("market_type") != market:
+            continue
+        if tag != "全部" and tag not in (row.get("mistake_tags") or []):
+            continue
+        if status != "全部" and row.get("review_status") != status:
+            continue
+        if recent_only and not _date_in_range(row.get("review_date"), start, current):
+            continue
+        if loss_only and not _money_value(row.get("loss_amount")):
+            continue
+        result.append(row)
+    return result
 
 
 def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) -> None:
-    render_section_title("纪律复盘统计", "统计来自交易日志、交易意图记录和手动纪律标签。")
+    render_section_title("纪律统计", "统计来自交易日志和交易意图记录；不要求手动给交易打标签。")
     intent_reviews = TradeIntentStore(store.path).list_intents()
     intent_stats = build_trade_intent_review_stats(entries, intent_reviews)
     intent_seven = intent_stats["seven_days"]
@@ -155,15 +229,7 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("新增小仓风险", str(flag_counts.get("新增小仓风险", 0)), "最近 30 天"),
         ("怕错过风险", str(flag_counts.get("怕错过风险", 0)), "最近 30 天"),
         ("无下跌预案", str(flag_counts.get("无下跌预案", 0)), "最近 30 天"),
-        ("长期跟踪不足", str(flag_counts.get("长期跟踪不足", 0)), "最近 30 天"),
-        ("组合碎片化风险", str(flag_counts.get("组合碎片化风险", 0)), "最近 30 天"),
-        ("情绪卖出风险", str(flag_counts.get("情绪卖出风险", 0)), "最近 30 天"),
-        ("卖出原因不清", str(flag_counts.get("卖出原因不清", 0)), "最近 30 天"),
-        ("卖出依据不清", str(flag_counts.get("卖出依据不清", 0)), "最近 30 天"),
-        ("卖出比例未想清楚", str(flag_counts.get("卖出比例未想清楚", 0)), "最近 30 天"),
-        ("资金安排不清", str(flag_counts.get("资金安排不清", 0)), "最近 30 天"),
         ("无回补预案", str(flag_counts.get("无回补预案", 0)), "最近 30 天"),
-        ("卖出后组合不清晰", str(flag_counts.get("卖出后组合不清晰", 0)), "最近 30 天"),
         ("买点评分 < 70 仍买入", str(intent_thirty["low_setup_buy_count"]), "只做复盘"),
         ("量能承接 < 50 仍买入", str(intent_thirty["low_volume_acceptance_buy_count"]), "只做复盘"),
     ]
@@ -176,9 +242,7 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("等待更好买点", str(discipline_tag_counts.get("等待更好买点", 0)), "纪律性卖出"),
         ("情绪卖出", str(flag_counts.get("情绪卖出风险", 0)), "风险性卖出"),
         ("卖出依据不清", str(flag_counts.get("卖出依据不清", 0)), "风险性卖出"),
-        ("无回补预案", str(flag_counts.get("无回补预案", 0)), "风险性卖出"),
         ("资金安排不清", str(flag_counts.get("资金安排不清", 0)), "风险性卖出"),
-        ("卖出后组合不清晰", str(flag_counts.get("卖出后组合不清晰", 0)), "风险性卖出"),
     ]
     st.markdown(_card_grid_html(discipline_sell_cards), unsafe_allow_html=True)
     stage_cards = [(option, str(stock_stage_counts.get(option, 0)), "股票阶段") for option in STOCK_STAGE_OPTIONS]
@@ -187,29 +251,6 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
     st.markdown(_card_grid_html(stage_cards), unsafe_allow_html=True)
     st.markdown(_card_grid_html(buy_behavior_cards), unsafe_allow_html=True)
     st.markdown(_card_grid_html(sell_behavior_cards), unsafe_allow_html=True)
-    tag_rows = store.list_trade_tags(days=30)
-    stats = build_discipline_review_stats(entries, tag_rows)
-    seven = stats["seven_days"]
-    thirty = stats["thirty_days"]
-    cards = [
-        ("近 7 天交易", str(seven["trade_count"]), "真实成交记录"),
-        ("近 30 天交易", str(thirty["trade_count"]), "真实成交记录"),
-        ("参与感小仓", str(thirty["participation_small_position_count"]), "近 30 天标签"),
-        ("追高", str(thirty["chase_count"]), "近 30 天标签"),
-        ("Setup 低分仍买", str(thirty["low_setup_buy_count"]), "近 30 天标签"),
-        ("符合计划占比", f"{thirty['plan_followed_ratio']:.1f}%", "按已打标签记录"),
-    ]
-    st.markdown(_card_grid_html(cards), unsafe_allow_html=True)
-    if not tag_rows:
-        st.info("暂无纪律标签。先给交易记录打标签后，这里会出现统计。")
-        return
-    selected_label = st.selectbox("按标签筛选", ["全部", *DISCIPLINE_TAG_LABELS.values()], key="discipline-tag-filter")
-    selected_tag = "" if selected_label == "全部" else next(
-        (tag for tag, label in DISCIPLINE_TAG_LABELS.items() if label == selected_label),
-        "",
-    )
-    rows = [row for row in tag_rows if not selected_tag or row.get("tag") == selected_tag]
-    st.markdown(_tagged_trade_table_html(rows[:50]), unsafe_allow_html=True)
 
 
 def dashboard_discipline_card_html(snapshot: dict[str, Any]) -> str:
@@ -256,46 +297,89 @@ def _card_grid_html(cards: list[tuple[str, str, str]]) -> str:
     return f'<section class="discipline-card-grid">{body}</section>'
 
 
-def _tag_chip_html(tags: list[str]) -> str:
-    chips = "".join(f"<span>{escape(label_for_tag(tag))}</span>" for tag in tags)
-    return f'<div class="discipline-tag-chip-row">{chips}</div>'
+def _mistake_summary_html(summary: dict[str, Any]) -> str:
+    cards = [
+        ("错误记录总数", str(summary.get("total_count") or 0), "全部错题"),
+        ("最近30天错误数", str(summary.get("recent_30_count") or 0), "按复盘日期"),
+        ("最近30天累计损失", _money(summary.get("recent_30_loss_amount")), "只统计已填写金额"),
+        ("最常见错误类型", str(summary.get("most_common_mistake_type") or "暂无"), f"{int(summary.get('most_common_mistake_count') or 0)} 次"),
+        ("未形成规则", str(summary.get("unruled_count") or 0), "建议继续沉淀"),
+    ]
+    return _card_grid_html(cards)
 
 
-def _tagged_trade_table_html(rows: list[dict[str, Any]]) -> str:
+def _mistake_table_html(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<div class="discipline-empty">没有匹配的纪律标签记录。</div>'
+        return '<div class="discipline-empty">暂无符合条件的错误复盘记录。</div>'
     body = "".join(
         "<tr>"
-        f"<td>{escape(str(row.get('trade_date') or ''))}</td>"
+        f"<td>{escape(str(row.get('review_date') or ''))}</td>"
+        f"<td>{escape(str(row.get('market_type') or ''))}</td>"
         f"<td>{escape(str(row.get('symbol') or ''))}</td>"
-        f"<td>{escape(str(row.get('action_type') or ''))}</td>"
-        f"<td>{escape(label_for_tag(row.get('tag')))}</td>"
-        f"<td>{escape(str(row.get('notes') or ''))}</td>"
+        f"<td>{escape(_money(row.get('loss_amount')))}</td>"
+        f"<td>{escape('、'.join(row.get('mistake_tags') or []))}</td>"
+        f"<td>{escape(_one_line(row.get('reflection')))}</td>"
+        f"<td>{escape(str(row.get('review_status') or ''))}</td>"
         "</tr>"
-        for row in rows
+        for row in rows[:80]
     )
     return (
         '<div class="discipline-table-wrap"><table class="discipline-table">'
-        "<thead><tr><th>日期</th><th>Ticker</th><th>操作</th><th>标签</th><th>备注</th></tr></thead>"
+        "<thead><tr><th>日期</th><th>市场类型</th><th>标的</th><th>损失金额</th><th>错误类型</th><th>一句话反思</th><th>复盘状态</th></tr></thead>"
         f"<tbody>{body}</tbody></table></div>"
     )
 
 
-def _trade_option_label(entry: dict[str, Any]) -> str:
-    quantity = entry.get("quantity")
-    price = entry.get("price")
-    return (
-        f"#{entry.get('id')} · {entry.get('trade_date')} · {entry.get('symbol')} · "
-        f"{entry.get('action_type')} · {quantity or '-'} @ {price or '-'}"
-    )
+def _mistake_detail_html(row: dict[str, Any]) -> str:
+    tags = "、".join(row.get("mistake_tags") or []) or "未记录"
+    return f"""
+    <section class="mistake-detail-card">
+      <h4>{escape(str(row.get('review_date') or ''))} · {escape(str(row.get('symbol') or ''))}</h4>
+      <dl>
+        <dt>事件导火索</dt><dd>{escape(str(row.get('trigger_event') or '未记录'))}</dd>
+        <dt>当时操作</dt><dd>{escape(str(row.get('action_taken') or '未记录'))}</dd>
+        <dt>结果</dt><dd>{escape(str(row.get('result_text') or '未记录'))}</dd>
+        <dt>错误类型</dt><dd>{escape(tags)}</dd>
+        <dt>反思</dt><dd>{escape(str(row.get('reflection') or '未记录'))}</dd>
+        <dt>改进规则</dt><dd>{escape(str(row.get('improvement_rule') or '未记录'))}</dd>
+        <dt>下次防线</dt><dd>{escape(str(row.get('next_defense') or '未记录'))}</dd>
+        <dt>创建时间</dt><dd>{escape(str(row.get('created_at') or ''))}</dd>
+        <dt>更新时间</dt><dd>{escape(str(row.get('updated_at') or ''))}</dd>
+      </dl>
+    </section>
+    """
 
 
-def _first_note(rows: list[dict[str, Any]]) -> str:
-    for row in rows:
-        note = str(row.get("notes") or "").strip()
-        if note:
-            return note
-    return ""
+def _mistake_option_label(rows: list[dict[str, Any]], review_id: int) -> str:
+    row = next((item for item in rows if int(item.get("id") or 0) == int(review_id)), {})
+    return f"#{review_id} · {row.get('review_date', '')} · {row.get('symbol') or '未填标的'}"
+
+
+def _date_in_range(value: object, start: date, end: date) -> bool:
+    try:
+        parsed = date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return False
+    return start <= parsed <= end
+
+
+def _money_value(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _money(value: object) -> str:
+    number = _money_value(value)
+    return "-" if number <= 0 else f"{number:,.2f}"
+
+
+def _one_line(value: object, limit: int = 32) -> str:
+    text = str(value or "").strip().replace("\n", " ")
+    if not text:
+        return "-"
+    return text if len(text) <= limit else f"{text[:limit]}..."
 
 
 def _render_styles() -> None:
@@ -305,7 +389,8 @@ def _render_styles() -> None:
         .discipline-checklist,
         .discipline-card-grid,
         .dashboard-discipline-card,
-        .trade-entry-discipline-hint {
+        .trade-entry-discipline-hint,
+        .mistake-detail-card {
             border: 1px solid rgba(148,163,184,.24);
             border-radius: 8px;
             background: #fff;
@@ -319,23 +404,23 @@ def _render_styles() -> None:
             width: 1.35rem; height: 1.35rem; border-radius: 999px; background: #eef2ff; color: #3730a3; font-weight: 800;
         }
         .discipline-card-grid {
-            display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: .55rem; padding: .65rem; margin-bottom: .9rem;
         }
         .discipline-card-grid div { border-right: 1px solid rgba(148,163,184,.18); padding: .2rem .55rem; }
         .discipline-card-grid div:last-child { border-right: none; }
         .discipline-card-grid span, .discipline-card-grid em { display: block; color: #64748b; font-size: .76rem; font-style: normal; }
-        .discipline-card-grid strong { display: block; color: #0f172a; font-size: 1.24rem; margin: .12rem 0; }
-        .discipline-tag-chip-row { display: flex; flex-wrap: wrap; gap: .38rem; margin: .45rem 0 .9rem; }
-        .discipline-tag-chip-row span {
-            border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; border-radius: 999px;
-            padding: .16rem .48rem; font-size: .78rem; font-weight: 800;
-        }
+        .discipline-card-grid strong { display: block; color: #0f172a; font-size: 1.18rem; margin: .12rem 0; }
         .discipline-table-wrap { overflow: auto; border: 1px solid rgba(148,163,184,.24); border-radius: 8px; background: #fff; }
         .discipline-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-        .discipline-table th, .discipline-table td { padding: .5rem .58rem; border-bottom: 1px solid rgba(148,163,184,.16); text-align: left; }
+        .discipline-table th, .discipline-table td { padding: .5rem .58rem; border-bottom: 1px solid rgba(148,163,184,.16); text-align: left; vertical-align: top; }
         .discipline-table th { color: #64748b; background: #f8fafc; }
-        .discipline-empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: .9rem; color: #64748b; background: #f8fafc; }
+        .discipline-empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: .9rem; color: #64748b; background: #f8fafc; margin: .7rem 0; }
+        .mistake-detail-card { padding: .9rem 1rem; margin: .8rem 0; }
+        .mistake-detail-card h4 { margin: 0 0 .55rem; color: #0f172a; }
+        .mistake-detail-card dl { margin: 0; display: grid; grid-template-columns: 7rem 1fr; gap: .45rem .75rem; }
+        .mistake-detail-card dt { color: #64748b; font-weight: 800; }
+        .mistake-detail-card dd { margin: 0; color: #334155; }
         .dashboard-discipline-card {
             display: flex; justify-content: space-between; gap: 1rem; padding: .75rem .9rem; margin: .65rem 0;
         }
@@ -348,6 +433,7 @@ def _render_styles() -> None:
         @media (max-width: 900px) {
             .discipline-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .dashboard-discipline-card { display: block; }
+            .mistake-detail-card dl { grid-template-columns: 1fr; }
         }
         </style>
         """,
