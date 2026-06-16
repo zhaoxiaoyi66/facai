@@ -25,6 +25,7 @@ from data.stock_plan import StockPlanStore, is_active_buy_plan
 from data.starter_position import evaluate_starter_position
 from data.structure_entry import build_structure_entry_advisor_for_symbol, structure_entry_snapshot_fields
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
+from data.trade_intent import TradeIntentStore, normalize_trade_intent_payload
 from data.volume_price_acceptance import evaluate_volume_price_acceptance, volume_price_acceptance_snapshot_fields
 
 
@@ -57,6 +58,10 @@ def submit_portfolio_buy_add(
     user_confirmed_advisory = bool(values.get("userConfirmedAdvisory") or values.get("user_confirmed_advisory"))
     user_confirmed_daily_trade_advisory = bool(
         values.get("userConfirmedDailyTradeAdvisory") or values.get("user_confirmed_daily_trade_advisory")
+    )
+    pre_trade_intent = normalize_trade_intent_payload(
+        values.get("pre_trade_intent") or values.get("preTradeIntent"),
+        side="buy",
     )
     _require_positive_number(quantity, "quantity")
     _require_positive_number(price, "price")
@@ -209,6 +214,14 @@ def submit_portfolio_buy_add(
     if str(sync_result.get("status") or "") != "success":
         store.delete_entry(int(saved.get("id") or 0))
         raise ValueError(str(sync_result.get("error") or "成交入账失败，交易日志未保存。"))
+    if pre_trade_intent:
+        TradeIntentStore(path).save_intent(
+            int(saved.get("id") or 0),
+            ticker,
+            action_type,
+            pre_trade_intent,
+            source="portfolio_trade_entry",
+        )
     completed_plan = _complete_buy_plan_after_success(
         ticker=ticker,
         plan=plan,

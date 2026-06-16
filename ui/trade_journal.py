@@ -37,11 +37,13 @@ from data.trade_activity import (
     build_daily_trade_activity,
     build_monthly_trade_calendar,
 )
+from data.trade_intent import TradeIntentStore
 from data.trade_safety_gate import has_concrete_reentry_plan
 from data.trading_discipline import evaluate_trading_discipline
 from data.trading_discipline_stats import build_trading_discipline_summary
 from formatting import format_currency, format_percent
 from ui.theme import render_page_header, render_section_title
+from ui.trade_intent import intent_record_html, render_trade_intent_dialog
 
 
 ACTION_OPTIONS = {
@@ -472,6 +474,7 @@ def _render_daily_trade_activity_advisory(activity: dict, *, key_suffix: str) ->
 
 
 def _render_editor(store: TradeJournalStore) -> None:
+    _render_pending_sell_intent_dialog(store)
     editing_id = _query_int("editTrade")
     editing_entry = store.get_entry(editing_id) if editing_id is not None else None
     if editing_id is not None and editing_entry is None:
@@ -677,7 +680,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             if editing_entry:
                 _update_entry(store, int(editing_id or 0), symbol, entry_values)
             else:
-                _save_entry(store, symbol, entry_values)
+                _queue_sell_intent(symbol, action_type, entry_values)
         if editing_entry and st.button("取消编辑", key=_editor_key("cancel", editing_id), width="stretch"):
             _clear_trade_edit_query()
             st.rerun()
@@ -2271,6 +2274,41 @@ def _sync_stock_classification_profile(symbol: str, values: dict) -> None:
     )
 
 
+def _queue_sell_intent(symbol: str, action_type: str, values: dict) -> None:
+    st.session_state["trade_journal_pending_trade_intent"] = {
+        "symbol": str(symbol or "").strip().upper(),
+        "action_type": str(action_type or "").strip().lower(),
+        "action_label": "清仓" if str(action_type or "").strip().lower() == "sell" else "减仓",
+        "values": values,
+    }
+    st.rerun()
+
+
+def _render_pending_sell_intent_dialog(store: TradeJournalStore) -> None:
+    pending = st.session_state.get("trade_journal_pending_trade_intent")
+    if not isinstance(pending, dict):
+        return
+
+    def confirm(intent: dict[str, str]) -> None:
+        st.session_state.pop("trade_journal_pending_trade_intent", None)
+        values = dict(pending.get("values") or {})
+        values["pre_trade_intent"] = intent
+        _save_entry(store, str(pending.get("symbol") or ""), values)
+
+    def cancel() -> None:
+        st.session_state.pop("trade_journal_pending_trade_intent", None)
+        st.rerun()
+
+    render_trade_intent_dialog(
+        side="sell",
+        ticker=str(pending.get("symbol") or ""),
+        action_label=str(pending.get("action_label") or "卖出 / 减仓"),
+        key_prefix="trade-journal-sell-intent",
+        on_confirm=confirm,
+        on_cancel=cancel,
+    )
+
+
 def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
     if not str(symbol or "").strip():
         st.session_state["trade_journal_notice"] = ("error", "请填写股票代码。")
@@ -2292,6 +2330,14 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
         st.session_state["trade_journal_notice"] = ("error", _friendly_error(str(exc)))
         st.rerun()
     st.session_state["trade_journal_notice"] = ledger_notice
+    if ledger_notice[0] == "success" and values.get("pre_trade_intent"):
+        TradeIntentStore(store.path).save_intent(
+            int(saved.get("id") or 0),
+            saved["symbol"],
+            saved["action_type"],
+            values["pre_trade_intent"],
+            source="trade_journal",
+        )
     st.rerun()
 
 
@@ -3112,6 +3158,7 @@ def _render_entry_detail(store: TradeJournalStore) -> None:
         st.rerun()
 
     st.markdown(_entry_detail_html(entry), unsafe_allow_html=True)
+    _render_trade_intent_record(entry, store)
     _render_trade_discipline_tag_editor(entry)
 
 
@@ -3298,6 +3345,12 @@ def _render_trade_discipline_tag_editor(entry: dict) -> None:
             st.rerun()
         if current_tags:
             st.markdown(_discipline_tag_chips_html(current_tags), unsafe_allow_html=True)
+
+
+def _render_trade_intent_record(entry: dict, store: TradeJournalStore) -> None:
+    entry_id = int(entry.get("id") or 0)
+    intent = TradeIntentStore(store.path).get_intent_for_trade(entry_id) if entry_id > 0 else None
+    st.markdown(intent_record_html(intent), unsafe_allow_html=True)
 
 
 def _first_discipline_tag_note(rows: list[dict]) -> str:
@@ -5849,6 +5902,52 @@ def _render_styles() -> None:
             border-style: solid;
             background: rgba(239, 246, 255, 0.62);
             color: #334155;
+        }
+        .trade-intent-record {
+            margin: 0.35rem 0 0.9rem;
+            padding: 0.65rem;
+            border: 1px solid rgba(37, 99, 235, 0.12);
+            border-radius: 8px;
+            background: rgba(239, 246, 255, 0.5);
+        }
+        .trade-intent-record h4 {
+            margin: 0 0 0.45rem;
+            color: #0f172a;
+            font-size: 0.82rem;
+            font-weight: 840;
+        }
+        .trade-intent-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.42rem;
+        }
+        .trade-intent-grid div {
+            padding: 0.42rem 0.5rem;
+            border: 1px solid rgba(37, 99, 235, 0.1);
+            border-radius: 6px;
+            background: #fff;
+        }
+        .trade-intent-grid span {
+            display: block;
+            color: #64748b;
+            font-size: 0.66rem;
+            font-weight: 760;
+        }
+        .trade-intent-grid strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: #0f172a;
+            font-size: 0.8rem;
+            font-weight: 820;
+        }
+        .trade-intent-empty {
+            margin: 0.35rem 0 0.9rem;
+            padding: 0.58rem 0.68rem;
+            border: 1px dashed rgba(148, 163, 184, 0.3);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.72);
+            color: #64748b;
+            font-size: 0.78rem;
         }
         .trade-entry-reentry-plan {
             margin-top: 0.48rem;

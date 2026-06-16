@@ -25,6 +25,7 @@ from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
 from ui.discipline_review import trade_entry_discipline_hint_html
+from ui.trade_intent import render_trade_intent_dialog
 
 
 EMPTY_POSITION = {
@@ -132,6 +133,7 @@ def _render_portfolio_settings_form(settings_store: PortfolioSettingsStore, sett
 
 
 def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows: list[dict]) -> None:
+    _render_pending_portfolio_buy_intent_dialog()
     position_open = bool(st.session_state.get("portfolio_position_editor_open", False))
     st.markdown('<div id="portfolio-trade-entry"></div>', unsafe_allow_html=True)
     with st.expander("买入 / 加仓", expanded=position_open):
@@ -197,7 +199,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
                 key=f"{form_key}:buy_reason",
             )
             if st.form_submit_button("确认买入 / 加仓并入账", width="stretch"):
-                _submit_portfolio_buy_add(form_key, effective_ticker)
+                _queue_portfolio_buy_intent(form_key, effective_ticker)
 
 
 def _safe_buy_execution_context(ticker: str):
@@ -632,26 +634,100 @@ def _buy_execution_plan_submit_fields(plan: dict, tier: str) -> dict[str, object
     }
 
 
-def _submit_portfolio_buy_add(form_key: str, selected_symbol: str) -> None:
+def _portfolio_buy_add_submit_payload(form_key: str, selected_symbol: str) -> tuple[str, dict[str, object]]:
     symbol = selected_symbol or str(_form_value(form_key, "symbol") or "").strip().upper()
     plan = StockPlanStore().get_plan(symbol) if symbol else {}
     tier = _form_position_tier(form_key)
     plan_fields = _buy_execution_plan_submit_fields(plan, tier)
+    return (
+        symbol,
+        {
+            "quantity": _form_value(form_key, "quantity"),
+            "price": _form_value(form_key, "price"),
+            "position_tier": tier,
+            "decision_mood": PORTFOLIO_BUY_MOOD_OPTIONS.get(str(_form_value(form_key, "decision_mood") or ""), ""),
+            "entry_mode": plan_fields["entry_mode"],
+            "buy_reason": _form_value(form_key, "buy_reason"),
+            "target_sell_price": _form_value(form_key, "target_sell_price"),
+            "starter_thesis": plan_fields["starter_thesis"],
+            "starter_add_plan": plan_fields["starter_add_plan"],
+            "starter_invalidation_condition": plan_fields["starter_invalidation_condition"],
+        },
+    )
+
+
+def _queue_portfolio_buy_intent(form_key: str, selected_symbol: str) -> None:
+    symbol, values = _portfolio_buy_add_submit_payload(form_key, selected_symbol)
+    validation_error = _portfolio_buy_intent_validation_error(symbol, values)
+    if validation_error:
+        st.session_state["portfolio_save_notice"] = ("error", validation_error)
+        st.rerun()
+    st.session_state["portfolio_pending_trade_intent"] = {
+        "symbol": symbol,
+        "values": values,
+        "action_label": "买入 / 加仓",
+    }
+    st.rerun()
+
+
+def _render_pending_portfolio_buy_intent_dialog() -> None:
+    pending = st.session_state.get("portfolio_pending_trade_intent")
+    if not isinstance(pending, dict):
+        return
+
+    def confirm(intent: dict[str, str]) -> None:
+        st.session_state.pop("portfolio_pending_trade_intent", None)
+        _submit_portfolio_buy_add(
+            "",
+            "",
+            pending_payload=pending,
+            pre_trade_intent=intent,
+        )
+
+    def cancel() -> None:
+        st.session_state.pop("portfolio_pending_trade_intent", None)
+        st.rerun()
+
+    render_trade_intent_dialog(
+        side="buy",
+        ticker=str(pending.get("symbol") or ""),
+        action_label=str(pending.get("action_label") or "买入 / 加仓"),
+        key_prefix="portfolio-buy-intent",
+        on_confirm=confirm,
+        on_cancel=cancel,
+    )
+
+
+def _portfolio_buy_intent_validation_error(symbol: str, values: dict[str, object]) -> str:
+    if not str(symbol or "").strip():
+        return "请填写股票代码。"
+    quantity = _number(values.get("quantity"))
+    if quantity is None or quantity <= 0:
+        return "请填写大于 0 的买入数量。"
+    price = _number(values.get("price"))
+    if price is None or price <= 0:
+        return "请填写大于 0 的成交价格。"
+    return ""
+
+
+def _submit_portfolio_buy_add(
+    form_key: str,
+    selected_symbol: str,
+    *,
+    pending_payload: dict | None = None,
+    pre_trade_intent: dict[str, str] | None = None,
+) -> None:
+    if pending_payload is not None:
+        symbol = str(pending_payload.get("symbol") or "").strip().upper()
+        values = dict(pending_payload.get("values") or {})
+    else:
+        symbol, values = _portfolio_buy_add_submit_payload(form_key, selected_symbol)
+    if pre_trade_intent:
+        values["pre_trade_intent"] = pre_trade_intent
     try:
         result = submit_portfolio_buy_add(
             symbol,
-            {
-                "quantity": _form_value(form_key, "quantity"),
-                "price": _form_value(form_key, "price"),
-                "position_tier": tier,
-                "decision_mood": PORTFOLIO_BUY_MOOD_OPTIONS.get(str(_form_value(form_key, "decision_mood") or ""), ""),
-                "entry_mode": plan_fields["entry_mode"],
-                "buy_reason": _form_value(form_key, "buy_reason"),
-                "target_sell_price": _form_value(form_key, "target_sell_price"),
-                "starter_thesis": plan_fields["starter_thesis"],
-                "starter_add_plan": plan_fields["starter_add_plan"],
-                "starter_invalidation_condition": plan_fields["starter_invalidation_condition"],
-            },
+            values,
         )
     except ValueError as exc:
         st.session_state["portfolio_save_notice"] = ("error", str(exc))

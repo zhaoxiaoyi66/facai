@@ -21,6 +21,7 @@ from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
+from data.trade_intent import TradeIntentStore
 
 
 def _report(decision: str = "ALLOW_BUY") -> dict:
@@ -562,6 +563,29 @@ def test_portfolio_buy_add_allowed_creates_journal_and_syncs_position() -> None:
         assert "技术承接数据不足" in entry["buy_advisory_warnings"][0]
 
 
+def test_portfolio_buy_add_saves_pre_trade_intent_after_successful_sync() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        values = _base_values(
+            pre_trade_intent={
+                "intent_side": "buy",
+                "primary_intent": "计划内买入",
+                "position_intent": "让组合更集中",
+                "timing_intent": "量价承接改善",
+                "risk_intent": "按计划执行",
+            }
+        )
+
+        result = submit_portfolio_buy_add("NVDA", values, path=path, radar_report=_report())
+
+        intent = TradeIntentStore(path).get_intent_for_trade(int(result["entry"]["id"]))
+        assert intent is not None
+        assert intent["symbol"] == "NVDA"
+        assert intent["action_type"] == "buy"
+        assert intent["intent_side"] == "buy"
+        assert intent["primary_intent"] == "计划内买入"
+
+
 def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch: pytest.MonkeyPatch) -> None:
     advisor = StructureEntryAdvisor(
         structure_status=STRUCTURE_BROKEN,
@@ -744,6 +768,13 @@ def test_portfolio_buy_add_button_is_not_disabled_by_advisory_state() -> None:
     submit_line = next(line for line in source.splitlines() if "确认买入 / 加仓并入账" in line)
     assert "form_submit_button" in submit_line
     assert "disabled=" not in submit_line
+
+
+def test_portfolio_buy_submit_queues_intent_dialog_before_save() -> None:
+    source = inspect.getsource(portfolio_ui._render_portfolio_buy_add_form)
+
+    assert "_render_pending_portfolio_buy_intent_dialog()" in source
+    assert "_queue_portfolio_buy_intent(form_key, effective_ticker)" in source
 
 
 def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:

@@ -106,6 +106,15 @@ def test_new_trade_entry_actions_are_sell_trim_only() -> None:
     assert "add" not in trade_journal.SELL_ENTRY_ACTION_OPTIONS.values()
 
 
+def test_new_sell_entry_queues_intent_dialog_before_save() -> None:
+    source = inspect.getsource(trade_journal._render_editor)
+
+    assert "_render_pending_sell_intent_dialog(store)" in source
+    assert "_queue_sell_intent(symbol, action_type, entry_values)" in source
+    assert "_save_entry(store, symbol, entry_values)" not in source
+    assert "_update_entry(store" in source
+
+
 def test_new_trade_entry_uses_active_position_dropdown() -> None:
     source = inspect.getsource(trade_journal._render_editor)
 
