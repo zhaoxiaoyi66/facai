@@ -63,7 +63,7 @@ def submit_portfolio_buy_add(
     _require_positive_number(quantity, "quantity")
     _require_positive_number(price, "price")
     if missing_buy_reason:
-        buy_reason = "买入前记录已保存。" if pre_trade_intent else "未填写买入理由；系统已记录为风险提示。"
+        buy_reason = "买入前记录已保存。" if pre_trade_intent else "未保存买入前记录；系统已记录为风险提示。"
     action_type = _portfolio_trade_action(ticker, path, values.get("action_type"))
     submitted_at = _hkt_now()
     portfolio_preview = preview_trade_values_portfolio_effect(
@@ -135,7 +135,7 @@ def submit_portfolio_buy_add(
     starter_fields = _starter_entry_fields(entry_mode, starter_gate)
     advisory_notes = list(gate_fields.get("radarAdvisoryWarnings") or [])
     if missing_buy_reason and not pre_trade_intent:
-        advisory_notes.append("买入理由缺失；系统只做风险提示，不阻止你继续入账。")
+        advisory_notes.append("买入前记录缺失；系统只做风险提示，不阻止你继续入账。")
     advisory_notes.extend(_buy_zone_context_advisory_notes(buy_zone_context))
     advisory_notes.extend(_action_fusion_advisory_notes(action_fusion))
     if entry_mode == "planned_ladder_buy":

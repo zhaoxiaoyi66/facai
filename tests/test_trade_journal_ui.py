@@ -245,6 +245,8 @@ def test_sell_form_uses_compact_workflow_sections() -> None:
     assert "### 提交确认" not in editor_source
     assert "卖出后剩余持仓" in summary_source
     assert "系统摘要" in summary_source
+    assert "卖出后处理预案" in inspect.getsource(trade_journal._sell_reference_hint)
+    assert "和回补计划" not in inspect.getsource(trade_journal._sell_reference_hint)
     assert "卖出类型 / 提醒" not in editor_source
     assert "今日交易较多" in activity_source
     assert "st.checkbox" not in activity_source

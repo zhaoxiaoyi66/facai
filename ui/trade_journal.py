@@ -1028,7 +1028,7 @@ def _sell_reference_hint(zone_status: str, current_price: float | None, target_s
         return "当前价低于买入时设定的卖出目标，先复核是否真的需要卖。"
     if status == "IN_CHASE_ZONE":
         return "价格进入追高区，可复核是否按计划减交易仓，核心仓仍需纪律复核。"
-    return "卖出前先看目标价、买区位置和回补计划，避免临场卖飞。"
+    return "卖出前先看目标价、买区位置和卖出后处理预案，避免临场卖飞。"
 
 
 def _render_buy_classification_editor(

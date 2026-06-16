@@ -465,14 +465,14 @@ def _render_starter_check_card(form_key: str, current: dict) -> None:
     tier = POSITION_TIER_FORM_OPTIONS.get(str(st.session_state.get(f"{form_key}:position_tier") or ""), "")
     if mode != "starter_position":
         return
-    thesis_text = str(st.session_state.get(f"{form_key}:starter_thesis") or st.session_state.get(f"{form_key}:buy_reason") or "").strip()
+    thesis_text = str(st.session_state.get(f"{form_key}:starter_thesis") or "").strip()
     add_plan_text = str(st.session_state.get(f"{form_key}:starter_add_plan") or "").strip()
     invalidation_text = str(st.session_state.get(f"{form_key}:starter_invalidation") or "").strip()
     target = _number(st.session_state.get(f"{form_key}:target_sell_price"))
     items = [
         ("持仓等级", "A类" if tier == "A" else "仅 A 类可用"),
         ("底仓上限", "7%"),
-        ("thesis", "已填写" if thesis_text else "可用买入理由补足"),
+        ("建仓 thesis", "已随计划带入" if thesis_text else "计划未提供"),
         ("后续加仓计划", "已填写" if add_plan_text else "请填写后续加仓计划"),
         ("失效条件", "已填写" if invalidation_text else "请填写失效条件"),
         ("目标卖出价", "已填写" if target is not None else "请填写目标卖出价"),
@@ -488,7 +488,7 @@ def _render_starter_check_card(form_key: str, current: dict) -> None:
         '<div class="starter-check-card">'
         "<strong>A类底仓检查</strong>"
         f"{html}"
-        "<small>底仓建仓不要求已有分批买入计划；仍需通过数据、仓位、情绪和后端快照校验。</small>"
+        "<small>底仓建仓不要求已有分批买入计划；交易意图由买入前记录弹窗保存。</small>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1156,10 +1156,6 @@ def _prefill_buy_form_from_plan(symbol: str, plan: dict, level: dict) -> None:
     st.session_state[f"{form_key}:price"] = _input_value(trigger_price)
     st.session_state[f"{form_key}:target_sell_price"] = _input_value(plan.get("target_sell_price"))
     st.session_state[f"{form_key}:position_tier"] = _position_tier_form_label(plan.get("position_class"))
-    st.session_state[f"{form_key}:decision_mood"] = "计划内执行"
-    reason = str(plan.get("thesis") or "").strip()
-    label = level.get("label") or "快捷计划"
-    st.session_state[f"{form_key}:buy_reason"] = f"按计划买入：{label}。{reason}".strip()
 
 
 def _save_buy_plan_pause_note(symbol: str, plan: dict, reason: str, detail: str) -> None:
