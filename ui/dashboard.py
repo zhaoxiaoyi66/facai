@@ -5373,14 +5373,14 @@ def _render_dashboard_styles() -> None:
             color:#0F172A;
         }
         .drawer-signal-actions a.is-primary {
-            background:#0F172A;
-            border-color:#0F172A;
-            color:#FFFFFF;
+            background:#EFF6FF;
+            border-color:#BFDBFE;
+            color:#1D4ED8 !important;
         }
         .drawer-signal-actions a.is-primary:hover {
-            background:#1E293B;
-            border-color:#1E293B;
-            color:#FFFFFF;
+            background:#DBEAFE;
+            border-color:#93C5FD;
+            color:#1E40AF !important;
         }
         .drawer-decision-card {
             margin: 0.64rem 0;
