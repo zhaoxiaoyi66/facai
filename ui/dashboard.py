@@ -55,6 +55,12 @@ from data.macro_regime import (
 )
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import triggered_price_alerts
+from data.buy_plan_alerts import (
+    ALERT_TRIGGERED,
+    BuyPlanAlertStore,
+    buy_plan_alert_message,
+    buy_plan_alert_table_label,
+)
 from data.providers import get_market_data_provider
 from data.fundamentals import FundamentalCache
 from data.portfolio import PortfolioPositionStore
@@ -275,11 +281,14 @@ def render() -> None:
         st.warning("还没有加载到仪表盘数据。请检查观察名单或数据连接。")
         return
     table = _apply_watchlist_star_marks(table)
+    _handle_buy_plan_alert_query(table)
+    table = _apply_buy_plan_alerts(table)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     _handle_risk_radar_filter_query()
     _handle_lane_filter_query()
     _handle_record_signal_query(table)
     _render_record_signal_notice()
+    _render_buy_plan_alert_notice()
 
     data_health_context = _build_data_health_context(table)
     portfolio_view = build_portfolio_view_model()
@@ -2550,6 +2559,52 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
     st.rerun()
 
 
+def _handle_buy_plan_alert_query(table: pd.DataFrame) -> None:
+    save_symbol = str(st.query_params.get("saveBuyPlanAlert", "")).strip().upper()
+    cancel_symbol = str(st.query_params.get("cancelBuyPlanAlert", "")).strip().upper()
+    if not save_symbol and not cancel_symbol:
+        return
+    store = BuyPlanAlertStore()
+    if cancel_symbol:
+        try:
+            store.cancel_alert(cancel_symbol)
+            st.session_state["dashboard_buy_alert_notice"] = f"{cancel_symbol} 计划买入提醒已取消。"
+        except ValueError as exc:
+            st.session_state["dashboard_buy_alert_notice"] = str(exc)
+        _clear_buy_plan_alert_query_params()
+        st.rerun()
+    if save_symbol:
+        try:
+            store.save_alert(
+                save_symbol,
+                st.query_params.get("plannedBuyPrice"),
+                st.query_params.get("plannedBuyShares"),
+                st.query_params.get("buyPlanNote"),
+                current_price=_dashboard_current_price_for_symbol(table, save_symbol),
+            )
+            st.session_state["dashboard_buy_alert_notice"] = f"{save_symbol} 计划买入提醒已保存。"
+        except ValueError as exc:
+            st.session_state["dashboard_buy_alert_notice"] = str(exc)
+        _clear_buy_plan_alert_query_params()
+        st.rerun()
+
+
+def _clear_buy_plan_alert_query_params() -> None:
+    for key in ("saveBuyPlanAlert", "cancelBuyPlanAlert", "plannedBuyPrice", "plannedBuyShares", "buyPlanNote"):
+        if key in st.query_params:
+            st.query_params.pop(key)
+
+
+def _dashboard_current_price_for_symbol(table: pd.DataFrame, symbol: str) -> float | None:
+    if table.empty or "symbol" not in table.columns:
+        return None
+    clean_symbol = str(symbol or "").strip().upper()
+    matches = table[table["symbol"].astype(str).str.upper() == clean_symbol]
+    if matches.empty:
+        return None
+    return _dashboard_current_price_value(matches.iloc[0])
+
+
 def _handle_star_toggle_query() -> None:
     symbol = str(st.query_params.get("toggleStar", "")).strip().upper()
     if not symbol:
@@ -2592,6 +2647,20 @@ def _render_record_signal_notice() -> None:
     if message == "已记录系统信号。":
         st.success(message)
     elif message:
+        st.warning(message)
+
+
+def _render_buy_plan_alert_notice() -> None:
+    message = str(st.session_state.pop("dashboard_buy_alert_notice", "") or "").strip()
+    if not message:
+        return
+    if "已到达计划买入价" in message or "已低于计划买入价" in message:
+        st.warning(message)
+    elif "已保存" in message:
+        st.success(message)
+    elif "已取消" in message:
+        st.info(message)
+    else:
         st.warning(message)
 
 
@@ -3449,6 +3518,83 @@ def _apply_watchlist_star_marks(table: pd.DataFrame, store: WatchlistStarStore |
     result["isStarred"] = starred
     result["starNote"] = notes
     return result.sort_values(by="isStarred", ascending=False, kind="mergesort").reset_index(drop=True)
+
+
+def _apply_buy_plan_alerts(table: pd.DataFrame, store: BuyPlanAlertStore | None = None) -> pd.DataFrame:
+    if table.empty or "symbol" not in table.columns:
+        return table
+    store = store or BuyPlanAlertStore()
+    result = table.copy()
+    alerts: list[dict | None] = []
+    labels: list[str] = []
+    statuses: list[str] = []
+    prices: list[float | None] = []
+    shares: list[int | None] = []
+    notes: list[str] = []
+    triggered: list[bool] = []
+    for _, row in result.iterrows():
+        symbol = str(row.get("symbol") or "").strip().upper()
+        current_price = _dashboard_current_price_value(row)
+        try:
+            alert = store.check_and_update(symbol, current_price) if symbol else None
+        except Exception:
+            alert = None
+        if alert and alert.get("just_triggered"):
+            st.session_state["dashboard_buy_alert_notice"] = buy_plan_alert_message(alert, current_price)
+        alerts.append(alert)
+        labels.append(buy_plan_alert_table_label(alert))
+        status = str((alert or {}).get("status") or "")
+        statuses.append(status)
+        prices.append(_dashboard_number((alert or {}).get("planned_buy_price")))
+        shares.append(int((alert or {}).get("planned_buy_shares") or 0) if alert else None)
+        notes.append(str((alert or {}).get("note") or ""))
+        triggered.append(status == ALERT_TRIGGERED)
+    result["buyPlanAlert"] = alerts
+    result["buyPlanAlertLabel"] = labels
+    result["buyPlanAlertStatus"] = statuses
+    result["buyPlanAlertPrice"] = prices
+    result["buyPlanAlertShares"] = shares
+    result["buyPlanAlertNote"] = notes
+    result["buyPlanAlertTriggered"] = triggered
+    sort_columns = ["buyPlanAlertTriggered"]
+    ascending = [False]
+    if "isStarred" in result.columns:
+        sort_columns.append("isStarred")
+        ascending.append(False)
+    return result.sort_values(by=sort_columns, ascending=ascending, kind="mergesort").reset_index(drop=True)
+
+
+def _dashboard_current_price_value(row: pd.Series | dict) -> float | None:
+    value = (
+        row.get("price")
+        or row.get("currentPrice")
+        or row.get("current_price")
+    )
+    number = _dashboard_number(value)
+    if number is not None:
+        return number
+    technicals = row.get("rawTechnicals") if isinstance(row, (dict, pd.Series)) else {}
+    snapshot = row.get("rawSnapshot") if isinstance(row, (dict, pd.Series)) else {}
+    if isinstance(technicals, dict):
+        number = _dashboard_number(technicals.get("price"))
+        if number is not None:
+            return number
+    if isinstance(snapshot, dict):
+        return _dashboard_number(snapshot.get("current_price") or snapshot.get("price"))
+    return None
+
+
+def _dashboard_number(value: object) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "nan", "null", "n/a"}:
+        return None
+    text = text.replace("$", "").replace(",", "").replace("%", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _starred_count(table: pd.DataFrame) -> int:
@@ -5522,6 +5668,102 @@ def _render_dashboard_styles() -> None:
             font-weight: 820;
             font-variant-numeric: tabular-nums;
         }
+        .drawer-buy-alert-card {
+            margin: 0.64rem 0;
+            padding: 0.74rem 0.78rem;
+            border: 1px solid var(--dash-border);
+            border-radius: var(--dash-radius);
+            background: #FFFFFF;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.035);
+        }
+        .drawer-alert-current {
+            margin-top: 0.32rem;
+            color: var(--dash-secondary);
+            font-size: 0.78rem;
+        }
+        .drawer-alert-current strong {
+            color: var(--dash-text);
+            font-variant-numeric: tabular-nums;
+        }
+        .drawer-buy-alert-status {
+            display: grid;
+            gap: 0.12rem;
+            margin: 0.52rem 0;
+            padding: 0.52rem 0.58rem;
+            border-radius: var(--dash-radius);
+            border: 1px solid var(--dash-border);
+            background: var(--dash-surface-muted);
+        }
+        .drawer-buy-alert-status strong {
+            color: var(--dash-text);
+            font-size: 0.84rem;
+        }
+        .drawer-buy-alert-status span {
+            color: var(--dash-secondary);
+            font-size: 0.74rem;
+            line-height: 1.42;
+        }
+        .drawer-buy-alert-status.is-triggered {
+            border-color: rgba(245, 158, 11, 0.28);
+            background: rgba(255, 247, 237, 0.86);
+        }
+        .drawer-buy-alert-status.is-active {
+            border-color: rgba(37, 99, 235, 0.18);
+            background: rgba(239, 246, 255, 0.82);
+        }
+        .drawer-buy-alert-form {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.46rem;
+        }
+        .drawer-buy-alert-form label {
+            display: grid;
+            gap: 0.18rem;
+            margin: 0;
+        }
+        .drawer-buy-alert-form label span {
+            color: var(--dash-secondary);
+            font-size: 0.72rem;
+            font-weight: 740;
+        }
+        .drawer-buy-alert-form input {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 32px;
+            padding: 0.36rem 0.45rem;
+            border: 1px solid var(--dash-border);
+            border-radius: var(--dash-radius);
+            background: #FFFFFF;
+            color: var(--dash-text);
+            font-size: 0.78rem;
+        }
+        .drawer-alert-note,
+        .drawer-alert-actions {
+            grid-column: 1 / -1;
+        }
+        .drawer-alert-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.06rem;
+        }
+        .drawer-alert-actions button {
+            height: 32px;
+            padding: 0 0.72rem;
+            border: 1px solid #BFDBFE;
+            border-radius: var(--dash-radius);
+            background: #EFF6FF;
+            color: #1D4ED8;
+            font-size: 0.76rem;
+            font-weight: 820;
+            cursor: pointer;
+        }
+        .drawer-alert-cancel {
+            color: var(--dash-muted);
+            font-size: 0.74rem;
+            font-weight: 760;
+            text-decoration: none !important;
+        }
         .drawer-position-card {
             margin: 0.62rem 0;
         }
@@ -7052,6 +7294,30 @@ def _render_dashboard_styles() -> None:
             font-size:12px;
             line-height:1;
             vertical-align:1px;
+        }
+        .watchlist-buy-alert {
+            display:inline-flex;
+            align-items:center;
+            width:max-content;
+            max-width:100%;
+            margin-top:4px;
+            padding:2px 6px;
+            border:1px solid rgba(37, 99, 235, 0.16);
+            border-radius:999px;
+            background:#EFF6FF;
+            color:#1D4ED8;
+            font-size:10.5px;
+            font-style:normal;
+            font-weight:760;
+            line-height:1.2;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .watchlist-buy-alert.is-triggered {
+            border-color:rgba(245, 158, 11, 0.28);
+            background:#FFF7ED;
+            color:#B45309;
         }
         .decision-grid-head {
             min-height:30px;

@@ -71,9 +71,18 @@ def _decision_table_cell_html(
     align_class = " align-right" if definition.get("align") == "right" else ""
     if key == "symbol":
         star = '<span class="watchlist-symbol-star" title="星标关注">⭐</span>' if bool(row.get("isStarred")) else ""
+        alert_label = str(row.get("buyPlanAlertLabel") or "").strip()
+        alert_status = str(row.get("buyPlanAlertStatus") or "").strip().upper()
+        alert_class = " is-triggered" if alert_status == "TRIGGERED" else ""
+        alert_html = (
+            f'<em class="watchlist-buy-alert{alert_class}">{escape(alert_label)}</em>'
+            if alert_label
+            else ""
+        )
         return (
             '<div class="decision-cell decision-cell-stack stock-cell">'
             f'<strong>{star}{escape(symbol)}</strong>'
+            f"{alert_html}"
             "</div>"
         )
     if key == "priceMarket":

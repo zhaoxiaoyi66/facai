@@ -12,6 +12,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 from data.advisory_compat import advisory_reason_list
 from data.action_fusion import ActionFusionResult, action_fusion_card_html
+from data.buy_plan_alerts import (
+    ALERT_ACTIVE,
+    ALERT_TRIGGERED,
+    BuyPlanAlertStore,
+    buy_plan_alert_message,
+    buy_plan_alert_status_label,
+    buy_plan_alert_table_label,
+)
 from data.buy_zone_display import build_buy_zone_display
 from data.entry_display import format_buy_zone, format_zone_status
 from data.pullback_acceptance import pullback_acceptance_context_lines
@@ -329,14 +337,11 @@ def render_stock_detail_drawer(table: pd.DataFrame, deps: DashboardDrawerDeps | 
 
 def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     drawer_deps = _drawer_deps(deps)
-    summary = row.get("humanReadableSummary")
-    if not isinstance(summary, dict):
-        summary = {}
     symbol = str(row.get("symbol") or "").upper()
     safe_symbol = escape(symbol)
-    entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
-    entry_display = _entry_rating_chip_text(entry_label, entry_grade)
     primary_decision = build_drawer_primary_decision(row)
+    current_price = _drawer_current_price(row)
+    alert = _drawer_buy_plan_alert(row, symbol, current_price)
     badges = [
         drawer_deps.badge_span_html("⭐ 星标关注", "yellow") if bool(row.get("isStarred")) else "",
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
@@ -344,55 +349,48 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         drawer_deps.badge_span_html(primary_decision.get("acceptance_state_text"), _acceptance_badge_tone(primary_decision.get("acceptance_state_text"))),
         drawer_deps.badge_span_html(row.get("riskRating"), drawer_deps.badge_color_for_cell("riskRating", row.get("riskRating"), row)),
         drawer_deps.badge_span_html(primary_decision["action_text"], drawer_deps.badge_color_for_cell("action", primary_decision["action_text"], row)),
+        drawer_deps.badge_span_html(buy_plan_alert_table_label(alert), "orange") if alert else "",
     ]
-    full_basis = (
-        '<details class="drawer-raw drawer-full-basis">'
-        '<summary>查看完整依据</summary>'
-        f'{_drawer_action_fusion_card_html(row)}'
-        f'{_drawer_decision_summary_html(row, drawer_deps)}'
-        f'{_drawer_radar_entry_card_html(row)}'
-        f'{_drawer_pullback_acceptance_card_html(row)}'
-        f'{_drawer_volume_price_acceptance_card_html(row)}'
-        f'{_drawer_structure_entry_card_html(row)}'
-        f'{_drawer_next_action_html(row, drawer_deps)}'
-        f'{_drawer_detail_basis_html(row, drawer_deps, summary, entry_display)}'
-        '</details>'
-    )
     return (
         '<div class="drawer-backdrop"></div>'
         '<aside class="stock-drawer">'
         '<a class="drawer-close-link" href="#" data-dashboard-drawer-close="1" title="关闭右侧详情面板">×</a>'
-        '<div class="drawer-topline">右侧详情面板</div>'
+        '<div class="drawer-topline">快速决策</div>'
         '<div class="drawer-head">'
         '<div>'
         f'<div class="drawer-symbol">{safe_symbol}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or "公司名待补充"))}</div>'
         '</div>'
-        f'<div class="drawer-price">{escape(str(row.get("price") or "N/A"))}</div>'
+        f'<div class="drawer-price">{escape(_drawer_money_text(current_price))}</div>'
         '</div>'
         '<div class="drawer-meta-grid">'
         f'<span>模型：{escape(model_type_label(row.get("modelType")))}</span>'
         f'<span>市值：{escape(str(row.get("marketCap") or "N/A"))}</span>'
-        '<span>结论源：统一买区</span>'
-        f'<span>数据：{escape(str(row.get("dataStatus") or "N/A"))}</span>'
+        f'<span>统一买区：{escape(str(primary_decision.get("acceptance_state_text") or primary_decision.get("badge_zone") or "待复核"))}</span>'
+        f'<span>数据：{escape(_drawer_data_status_text(row))}</span>'
         '</div>'
         f'<div class="drawer-badges">{"".join(badge for badge in badges if badge)}</div>'
-        f'{_drawer_actions_html(symbol, bool(row.get("isStarred")))}'
         f'{_drawer_quick_decision_html(row, primary_decision)}'
-        f'{full_basis}'
+        f'{_drawer_buy_plan_alert_html(symbol, current_price, alert)}'
+        f'{_drawer_actions_html(symbol, bool(row.get("isStarred")))}'
         '</aside>'
     )
 
 
 def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | None = None) -> str:
     decision = decision or build_drawer_primary_decision(row)
+    if _drawer_low_data_confidence(row, decision):
+        return (
+            '<div class="drawer-decision-card drawer-quick-decision-card">'
+            '<div class="drawer-card-title">快速决策</div>'
+            '<p class="drawer-single-line-note">数据可信度低，先复核关键数据。</p>'
+            '</div>'
+        )
     field_items = [
-        ("当前动作", decision["action_text"]),
-        ("承接状态", decision.get("acceptance_state_text")),
-        ("主原因", decision["main_reason"]),
-        ("当前子区", decision.get("current_subzone_display_text") or decision["zone_text"]),
-        ("当前持仓动作", decision["position_action"]),
-        ("下一步", decision["next_step"]),
+        ("当前动作", _drawer_short_sentence(decision["action_text"], 32)),
+        ("当前子区", _drawer_short_sentence(decision.get("current_subzone_display_text") or decision["zone_text"], 32)),
+        ("主原因", _drawer_short_sentence(decision["main_reason"], 38)),
+        ("下一步", _drawer_short_sentence(decision["next_step"], 42)),
     ]
     fields_html = "".join(
         "<span>"
@@ -402,23 +400,134 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
         for label, value in field_items
         if value
     )
-    conflict_html = ""
-    if decision.get("conflict_notice"):
-        conflict_html = f'<p class="drawer-muted">{escape(str(decision["conflict_notice"]))}</p>'
-    missing_fields_html = ""
-    if decision.get("missing_fields_text"):
-        missing_fields_html = f'<p class="drawer-muted">缺失字段：{escape(str(decision["missing_fields_text"]))}</p>'
     return (
         '<div class="drawer-decision-card drawer-quick-decision-card">'
         '<div class="drawer-card-title">快速决策</div>'
-        f'<div class="drawer-decision-headline">{escape(str(decision["headline"]))}</div>'
-        f'{conflict_html}'
         '<div class="drawer-decision-grid">'
         f'{fields_html}'
         '</div>'
-        f'{missing_fields_html}'
         '</div>'
     )
+
+
+def _drawer_current_price(row: pd.Series | dict) -> float | None:
+    return _drawer_number(
+        row.get("price")
+        or row.get("currentPrice")
+        or row.get("current_price")
+    )
+
+
+def _drawer_buy_plan_alert(row: pd.Series | dict, symbol: str, current_price: object) -> dict | None:
+    value = row.get("buyPlanAlert")
+    if isinstance(value, dict) and value:
+        return dict(value)
+    status = str(row.get("buyPlanAlertStatus") or "").strip().upper()
+    price = _drawer_number(row.get("buyPlanAlertPrice"))
+    shares = _drawer_number(row.get("buyPlanAlertShares"))
+    if status and price is not None and shares is not None:
+        return {
+            "symbol": str(symbol or "").strip().upper(),
+            "planned_buy_price": price,
+            "planned_buy_shares": int(shares),
+            "note": row.get("buyPlanAlertNote") or "",
+            "status": status,
+            "status_label": buy_plan_alert_status_label(status),
+        }
+    clean_symbol = str(symbol or "").strip().upper()
+    if not clean_symbol:
+        return None
+    try:
+        return BuyPlanAlertStore().check_and_update(clean_symbol, current_price)
+    except Exception:
+        return None
+
+
+def _drawer_buy_plan_alert_html(symbol: str, current_price: object, alert: dict | None) -> str:
+    clean_symbol = str(symbol or "").strip().upper()
+    current_text = _drawer_money_text(current_price)
+    status = str((alert or {}).get("status") or "").strip().upper()
+    planned_price = _drawer_number((alert or {}).get("planned_buy_price"))
+    planned_shares = int(_drawer_number((alert or {}).get("planned_buy_shares")) or 0)
+    note = str((alert or {}).get("note") or "").strip()
+    if status == ALERT_TRIGGERED:
+        status_html = (
+            '<div class="drawer-buy-alert-status is-triggered">'
+            '<strong>已到计划价</strong>'
+            f"<span>{escape(buy_plan_alert_message(alert, current_price))}</span>"
+            "</div>"
+        )
+    elif status == ALERT_ACTIVE:
+        status_html = (
+            '<div class="drawer-buy-alert-status is-active">'
+            '<strong>等待触发</strong>'
+            f"<span>{escape(buy_plan_alert_message(alert, current_price))}</span>"
+            "</div>"
+        )
+    else:
+        status_html = (
+            '<div class="drawer-buy-alert-status is-empty">'
+            '<strong>未设置计划买入提醒</strong>'
+            "<span>填写价格和股数后，系统只做提醒，不会自动下单。</span>"
+            "</div>"
+        )
+    cancel_html = ""
+    if status in {ALERT_ACTIVE, ALERT_TRIGGERED}:
+        cancel_html = (
+            f'<a class="drawer-alert-cancel" href="?page=dashboard&cancelBuyPlanAlert={escape(quote(clean_symbol), quote=True)}#watchlist-table" '
+            'target="_self" onclick="event.stopPropagation();">取消提醒</a>'
+        )
+    return (
+        '<section class="drawer-buy-alert-card">'
+        '<div class="drawer-card-title">计划买入提醒</div>'
+        f'<div class="drawer-alert-current">当前价：<strong>{escape(current_text)}</strong></div>'
+        f"{status_html}"
+        '<form class="drawer-buy-alert-form" method="get" action="">'
+        '<input type="hidden" name="page" value="dashboard">'
+        f'<input type="hidden" name="saveBuyPlanAlert" value="{escape(clean_symbol, quote=True)}">'
+        '<label><span>计划买入价</span>'
+        f'<input type="number" min="0.01" step="0.01" name="plannedBuyPrice" value="{escape(_drawer_input_number(planned_price), quote=True)}" required>'
+        '</label>'
+        '<label><span>计划买入股数</span>'
+        f'<input type="number" min="1" step="1" name="plannedBuyShares" value="{escape(str(planned_shares or ""), quote=True)}" required>'
+        '</label>'
+        '<label class="drawer-alert-note"><span>备注，可选</span>'
+        f'<input type="text" name="buyPlanNote" maxlength="80" value="{escape(note, quote=True)}" placeholder="例如：跌到观察区下沿再买">'
+        '</label>'
+        '<div class="drawer-alert-actions">'
+        '<button type="submit">保存提醒</button>'
+        f'{cancel_html}'
+        '</div>'
+        '</form>'
+        '</section>'
+    )
+
+
+def _drawer_low_data_confidence(row: pd.Series | dict, decision: dict[str, object]) -> bool:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            row.get("dataStatus"),
+            row.get("dataConfidence"),
+            decision.get("action_code"),
+            decision.get("missing_fields_text"),
+        )
+    )
+    return any(token in text for token in ("低", "缺", "DATA_INSUFFICIENT", "MISSING", "missing"))
+
+
+def _drawer_short_sentence(value: object, limit: int = 40) -> str:
+    text = _drawer_clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip("，；。 ") + "…"
+
+
+def _drawer_input_number(value: object) -> str:
+    number = _drawer_number(value)
+    if number is None:
+        return ""
+    return f"{number:g}"
 
 
 def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:

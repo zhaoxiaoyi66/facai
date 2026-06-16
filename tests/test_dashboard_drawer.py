@@ -27,16 +27,7 @@ def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insuffic
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "不建议加仓" in html
-    assert "持有观察，不建议加仓" in html
-    assert "当前子区" in html
-    assert "暂不生成" in html
-    assert "结论冲突提示：技术承接数据不足，旧估值参考只作风险提示，不改变主结论。" in html
-    assert "历史K线" in html
-    assert "成交量/量比" in html
-    assert "均线" in html
-    assert "ATR" in html
-    assert "支撑压力" in html
+    assert "数据可信度低，先复核关键数据。" in html
     assert "可加仓" not in html
     assert "DATA_INSUFFICIENT" not in html
     assert "daily_ohlcv" not in html
@@ -57,8 +48,7 @@ def test_quick_decision_uses_no_position_pause_copy_for_data_insufficient() -> N
 
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
-    assert "数据不足" in html
-    assert "补齐技术承接数据" in html
+    assert "数据可信度低，先复核关键数据。" in html
     assert "持有观察" not in html
     assert "允许买入" not in html
 
@@ -84,7 +74,7 @@ def test_quick_decision_shows_batting_zone_when_context_is_complete() -> None:
     html = dashboard_drawer._drawer_quick_decision_html(row)
 
     assert "等待回踩" in html
-    assert "$377.50 - $384.70" in html
+    assert "当前子区" in html
     assert "等待价格回到技术回踩带" in html
     assert "暂不生成" not in html
     assert "数据不足" not in html
@@ -123,8 +113,7 @@ def test_quick_decision_uses_specific_wait_confirmation_copy() -> None:
     assert "区内看承接" in in_zone_html
     assert "等待量价和K线承接" in in_zone_html
     assert "站上 $413.71 后重新评估，不等于直接买入" in breakout_html
-    assert "等待确认" not in in_zone_html
-    assert "等待确认" not in breakout_html
+    assert "当前子区" in in_zone_html
 
 
 def test_build_drawer_primary_decision_ignores_action_fusion_nested_context_for_main_conclusion() -> None:
@@ -261,8 +250,9 @@ def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
     html = dashboard_drawer._drawer_quick_decision_html(row, decision)
 
     assert decision["acceptance_state_text"] == "承接不足"
-    assert "承接不足" in html
-    assert "承接状态" in html
+    assert "当前子区" in html
+    assert "当前动作" in html
+    assert "主原因" in html
 
 
 def test_drawer_shows_star_badge_without_changing_primary_decision() -> None:
@@ -305,12 +295,58 @@ def test_drawer_actions_html_uses_current_app_links_only() -> None:
     assert "__dashboardCloseDrawer" in html
 
 
-def test_drawer_moves_legacy_reference_under_collapsed_full_basis() -> None:
+def test_drawer_keeps_full_basis_out_of_main_view() -> None:
     drawer_source = inspect.getsource(dashboard_drawer.drawer_html)
     detail_source = inspect.getsource(dashboard_drawer._drawer_detail_basis_html)
 
     assert "build_drawer_primary_decision" in drawer_source
     assert "_drawer_quick_decision_html" in drawer_source
-    assert "<summary>查看完整依据</summary>" in drawer_source
+    assert "_drawer_detail_basis_html" not in drawer_source
+    assert "查看完整依据" not in drawer_source
+    assert "_drawer_buy_plan_alert_html" in drawer_source
     assert "旧估值参考，仅供辅助" in detail_source
     assert "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。" in detail_source
+
+
+def test_drawer_renders_minimal_buy_plan_alert_form() -> None:
+    html = dashboard_drawer._drawer_buy_plan_alert_html(
+        "ORCL",
+        192.64,
+        {
+            "symbol": "ORCL",
+            "planned_buy_price": 185,
+            "planned_buy_shares": 50,
+            "note": "跌到观察区下沿再买",
+            "status": "ACTIVE",
+        },
+    )
+
+    assert "计划买入提醒" in html
+    assert "当前价：<strong>$192.64</strong>" in html
+    assert "已设置：跌到 $185.00 提醒买入 50 股" in html
+    assert "计划买入价" in html
+    assert "计划买入股数" in html
+    assert "备注，可选" in html
+    assert "保存提醒" in html
+    assert "取消提醒" in html
+    assert "持仓角色" not in html
+    assert "买入类型" not in html
+    assert "目标仓位" not in html
+    assert "确认价" not in html
+    assert "失效价" not in html
+
+
+def test_drawer_buy_plan_alert_html_shows_triggered_state() -> None:
+    html = dashboard_drawer._drawer_buy_plan_alert_html(
+        "ORCL",
+        184.9,
+        {
+            "symbol": "ORCL",
+            "planned_buy_price": 185,
+            "planned_buy_shares": 50,
+            "status": "TRIGGERED",
+        },
+    )
+
+    assert "已到计划价" in html
+    assert "ORCL 已到达计划买入价：当前 $184.90，计划 $185.00，提醒买入 50 股。" in html

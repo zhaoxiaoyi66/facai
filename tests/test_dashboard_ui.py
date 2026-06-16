@@ -5,6 +5,7 @@ import inspect
 import pandas as pd
 
 from data.watchlist_stars import WatchlistStarStore
+from data.buy_plan_alerts import BuyPlanAlertStore
 from ui import dashboard
 from ui import dashboard_tables
 
@@ -128,11 +129,48 @@ def test_dashboard_symbol_cell_only_marks_starred_rows() -> None:
     assert "pinned" not in starred_html
 
 
+def test_dashboard_symbol_cell_shows_buy_alert_label_without_extra_column() -> None:
+    row = pd.Series(
+        {
+            "symbol": "ORCL",
+            "isStarred": False,
+            "buyPlanAlertLabel": "买入提醒 $185.00",
+            "buyPlanAlertStatus": "ACTIVE",
+        }
+    )
+
+    html = dashboard_tables._decision_table_cell_html(row, {"key": "symbol"}, "ORCL")
+
+    assert "ORCL" in html
+    assert "买入提醒 $185.00" in html
+    assert "watchlist-buy-alert" in html
+    assert "⭐" not in html
+    assert "☆" not in html
+
+
 def test_dashboard_watchlist_columns_do_not_include_star_column() -> None:
     labels = [column["label"] for column in dashboard.WATCHLIST_COLUMNS]
 
     assert "星标" not in labels
+    assert "计划买入提醒" not in labels
     assert labels[0] == "代码"
+
+
+def test_dashboard_apply_buy_plan_alerts_triggers_and_sorts_first(tmp_path) -> None:
+    store = BuyPlanAlertStore(tmp_path / "cache.sqlite")
+    store.save_alert("ORCL", 185, 50)
+    table = pd.DataFrame(
+        [
+            {"symbol": "NVDA", "price": "$200.00"},
+            {"symbol": "ORCL", "price": "$184.90"},
+        ]
+    )
+
+    result = dashboard._apply_buy_plan_alerts(table, store)
+
+    assert result["symbol"].tolist()[0] == "ORCL"
+    assert result.loc[result["symbol"] == "ORCL", "buyPlanAlertStatus"].iloc[0] == "TRIGGERED"
+    assert result.loc[result["symbol"] == "ORCL", "buyPlanAlertLabel"].iloc[0] == "已到计划价"
 
 
 def test_dashboard_star_action_is_lightweight_row_action(monkeypatch) -> None:

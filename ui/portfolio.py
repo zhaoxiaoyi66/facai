@@ -36,6 +36,7 @@ from data.portfolio_reconciliation import build_portfolio_reconciliation
 from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
+from data.buy_plan_alerts import BuyPlanAlertStore, buy_plan_alert_table_label
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.buy_execution_context import build_buy_execution_advisory_context
@@ -2477,13 +2478,31 @@ def _position_row_html(row: dict, plan_store: StockPlanStore | None = None) -> s
 def _symbol_cell_html(row: dict) -> str:
     symbol = str(row.get("symbol") or "")
     tier = row.get("positionTier")
+    buy_alert = _portfolio_buy_alert_badge_html(row)
     return (
         '<div class="portfolio-symbol-stack">'
         f"<b>{escape(symbol)}</b>"
         f"<small>{escape(_row_status_text(row))}</small>"
         f"{_position_tier_badge_html(tier)}"
+        f"{buy_alert}"
         "</div>"
     )
+
+
+def _portfolio_buy_alert_badge_html(row: dict) -> str:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return ""
+    try:
+        alert = BuyPlanAlertStore().check_and_update(symbol, row.get("currentPrice"))
+    except Exception:
+        alert = None
+    label = buy_plan_alert_table_label(alert)
+    if not label:
+        return ""
+    status = str((alert or {}).get("status") or "").strip().upper()
+    status_class = " is-triggered" if status == "TRIGGERED" else ""
+    return f'<em class="portfolio-buy-alert-badge{status_class}">{escape(label)}</em>'
 
 
 def _role_cell_html(row: dict) -> str:
@@ -3370,6 +3389,30 @@ def _render_final_portfolio_styles() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .portfolio-buy-alert-badge {
+            display:inline-flex;
+            align-items:center;
+            width:max-content;
+            max-width:100%;
+            margin-top:2px;
+            padding:2px 6px;
+            border:1px solid rgba(37, 99, 235, 0.16);
+            border-radius:999px;
+            background:#EFF6FF;
+            color:#1D4ED8;
+            font-size:0.58rem;
+            font-style:normal;
+            font-weight:760;
+            line-height:1.15;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .portfolio-buy-alert-badge.is-triggered {
+            border-color:rgba(245, 158, 11, 0.28);
+            background:#FFF7ED;
+            color:#B45309;
         }
         .portfolio-tier-badge {
             display: inline-flex;
