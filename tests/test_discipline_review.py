@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
     DEFAULT_PRINCIPLES,
+    EQUITY_FILL_AUTO,
+    EQUITY_FILL_MANUAL,
+    EQUITY_SOURCE_PORTFOLIO,
     DisciplineReviewStore,
     build_discipline_review_stats,
     build_mistake_review_summary,
     build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
+    default_period_dates,
 )
+from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from ui import discipline_review
 
 
@@ -214,6 +220,103 @@ def test_periodic_return_reviews_support_edit_delete_and_zero_starting_equity() 
         assert store.list_periodic_return_reviews() == []
 
 
+def test_default_period_dates_use_previous_complete_week_and_month() -> None:
+    assert default_period_dates("周复盘", today="2026-06-16") == (date.fromisoformat("2026-06-08"), date.fromisoformat("2026-06-14"))
+    assert default_period_dates("月复盘", today="2026-06-16") == (date.fromisoformat("2026-05-01"), date.fromisoformat("2026-05-31"))
+
+
+def test_account_equity_prefill_reads_nearest_snapshot_without_faking_zero() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+        store.save_account_equity_snapshot(
+            {
+                "snapshot_time": "2026-06-08T19:00:00",
+                "account_equity": 170000,
+                "source": EQUITY_SOURCE_PORTFOLIO,
+            }
+        )
+        store.save_account_equity_snapshot(
+            {
+                "snapshot_time": "2026-06-14T20:00:00",
+                "account_equity": 174000,
+                "source": EQUITY_SOURCE_PORTFOLIO,
+            }
+        )
+
+        prefill = store.build_periodic_return_prefill(start_date="2026-06-08", end_date="2026-06-14")
+
+        assert prefill["starting_equity"] == 170000
+        assert prefill["ending_equity"] == 174000
+        assert prefill["starting_equity_snapshot_date"] == "2026-06-08"
+        assert prefill["ending_equity_snapshot_date"] == "2026-06-14"
+
+        missing = store.build_periodic_return_prefill(start_date="2026-06-01", end_date="2026-06-07")
+        assert missing["starting_equity"] is None
+        assert missing["ending_equity"] is None
+
+
+def test_latest_only_snapshot_does_not_backfill_historical_period() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+        store.save_account_equity_snapshot(
+            {
+                "snapshot_time": "2026-06-16T09:30:00",
+                "account_equity": 174000,
+                "source": EQUITY_SOURCE_PORTFOLIO,
+            }
+        )
+
+        prefill = store.build_periodic_return_prefill(start_date="2026-06-08", end_date="2026-06-14")
+
+        assert prefill["starting_equity"] is None
+        assert prefill["ending_equity"] is None
+        assert prefill["only_latest_available"] is True
+
+
+def test_capture_current_account_equity_snapshot_prefers_total_portfolio_value() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _path(tmpdir)
+        store = DisciplineReviewStore(path)
+        PortfolioSettingsStore(path).save_settings({"total_portfolio_value": 170000, "cash_balance": 25000})
+        PortfolioPositionStore(path).save_position("NVDA", {"quantity": 10, "average_cost": 100})
+
+        snapshot = store.capture_current_account_equity_snapshot()
+
+        assert snapshot is not None
+        assert snapshot["account_equity"] == 170000
+        assert snapshot["source"] == EQUITY_SOURCE_PORTFOLIO
+
+
+def test_periodic_return_review_saves_equity_sources_and_manual_override() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_periodic_return_review(
+            {
+                "period_type": "周复盘",
+                "start_date": "2026-06-08",
+                "end_date": "2026-06-14",
+                "starting_equity": 170000,
+                "ending_equity": 174500,
+                "deposit_amount": 0,
+                "withdrawal_amount": 0,
+                "starting_equity_source": EQUITY_FILL_AUTO,
+                "ending_equity_source": EQUITY_FILL_MANUAL,
+                "starting_equity_snapshot_date": "2026-06-08",
+                "ending_equity_snapshot_date": "2026-06-14",
+                "starting_equity_is_manual_override": False,
+                "ending_equity_is_manual_override": True,
+            }
+        )
+
+        assert saved["starting_equity_source"] == EQUITY_FILL_AUTO
+        assert saved["ending_equity_source"] == EQUITY_FILL_MANUAL
+        assert saved["starting_equity_snapshot_date"] == "2026-06-08"
+        assert saved["ending_equity_snapshot_date"] == "2026-06-14"
+        assert saved["starting_equity_is_manual_override"] == 0
+        assert saved["ending_equity_is_manual_override"] == 1
+
+
 def test_periodic_return_summary_counts_weekly_monthly_and_dashboard_gaps() -> None:
     rows = [
         {"id": 1, "period_type": "周复盘", "start_date": "2026-06-08", "end_date": "2026-06-14", "profit_amount": 4000, "return_rate": 0.0235},
@@ -276,6 +379,10 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "周期收益复盘" in source
     assert "保存周期复盘" in source
     assert "保存这条错题" in source
+    assert "从持仓记录重新读取" in source
+    assert "使用上一条复盘期末净资产作为期初净资产" in source
+    assert "数据来源：未找到对应账户快照，请手动填写" in source
+    assert "当前系统暂无历史账户快照" in source
     assert "标的 / 场景" in source
     assert "损失金额 / 影响" in source
     assert "选择错误类型" in source

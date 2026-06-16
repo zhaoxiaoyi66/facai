@@ -8,6 +8,7 @@ import streamlit as st
 
 from data.advisory_compat import advisory_reason_list, review_reason_list
 from data.decision_log import DecisionLogStore, TradeJournalStore
+from data.discipline_review import DisciplineReviewStore
 from data.portfolio import (
     PortfolioPositionStore,
     PortfolioSettingsStore,
@@ -1975,6 +1976,7 @@ def render() -> None:
     settings_store = PortfolioSettingsStore()
     plan_store = StockPlanStore()
     view = build_portfolio_view_model()
+    DisciplineReviewStore().capture_current_account_equity_snapshot()
     settings = view["settings"]
     rows = view["rows"]
     reconciliation_rows = _safe_portfolio_reconciliation()

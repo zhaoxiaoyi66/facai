@@ -9,6 +9,10 @@ import streamlit as st
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
+    EQUITY_FILL_AUTO,
+    EQUITY_FILL_MANUAL,
+    EQUITY_SOURCE_NOT_FOUND,
+    EQUITY_SOURCE_PORTFOLIO,
     MISTAKE_REVIEW_STATUSES,
     MISTAKE_TAG_OPTIONS,
     PERIODIC_RETURN_TYPES,
@@ -16,6 +20,7 @@ from data.discipline_review import (
     build_mistake_review_summary,
     build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
+    default_period_dates,
 )
 from data.portfolio import PortfolioPositionStore
 from data.prices import CACHE_PATH
@@ -37,6 +42,7 @@ def render(path: Path = CACHE_PATH) -> None:
     position_store = PortfolioPositionStore(path)
     entries = trade_store.list_entries()
     positions = position_store.list_active_positions()
+    discipline_store.capture_current_account_equity_snapshot()
 
     _render_principles_card(discipline_store)
     _render_mistake_reviews(discipline_store)
@@ -189,63 +195,79 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
 
     editing_id = st.session_state.get("periodic-return-edit-id")
     editing_row = store.get_periodic_return_review(int(editing_id)) if editing_id else None
-    with st.form("periodic-return-review-form", clear_on_submit=not bool(editing_row)):
-        st.markdown("#### 收益数据")
-        date_cols = st.columns([1, 1, 1])
-        period_type = date_cols[0].selectbox(
-            "周期类型",
-            PERIODIC_RETURN_TYPES,
-            index=_option_index(PERIODIC_RETURN_TYPES, editing_row.get("period_type") if editing_row else None),
-        )
-        start_date = date_cols[1].date_input("开始日期", value=_date_value(editing_row.get("start_date") if editing_row else None, date.today()))
-        end_date = date_cols[2].date_input("结束日期", value=_date_value(editing_row.get("end_date") if editing_row else None, date.today()))
-        equity_cols = st.columns(4)
-        starting_equity = equity_cols[0].number_input(
-            "期初净资产",
-            min_value=0.0,
-            value=_float_value(editing_row.get("starting_equity") if editing_row else None),
-            step=1000.0,
-        )
-        ending_equity = equity_cols[1].number_input(
-            "期末净资产",
-            min_value=0.0,
-            value=_float_value(editing_row.get("ending_equity") if editing_row else None),
-            step=1000.0,
-        )
-        deposit_amount = equity_cols[2].number_input(
-            "本期入金",
-            min_value=0.0,
-            value=_float_value(editing_row.get("deposit_amount") if editing_row else None),
-            step=1000.0,
-        )
-        withdrawal_amount = equity_cols[3].number_input(
-            "本期出金",
-            min_value=0.0,
-            value=_float_value(editing_row.get("withdrawal_amount") if editing_row else None),
-            step=1000.0,
-        )
-        preview_profit = ending_equity - starting_equity - deposit_amount + withdrawal_amount
-        preview_return = None if starting_equity <= 0 else preview_profit / starting_equity
-        st.caption(f"本期盈亏：{_profit_text(preview_profit)}；本期收益率：{_return_rate_text(preview_return)}。这是手动复盘口径，不做复杂时间加权收益率。")
+    state = _prepare_periodic_return_form_state(store, rows, editing_row)
+    meta = dict(state["meta"])
 
+    st.markdown("#### 收益数据")
+    control_cols = st.columns([1.1, 1, 1, 1, 1])
+    control_cols[0].selectbox("周期类型", PERIODIC_RETURN_TYPES, key=state["period_type_key"])
+    control_cols[1].date_input("开始日期", key=state["start_date_key"])
+    control_cols[2].date_input("结束日期", key=state["end_date_key"])
+    if control_cols[3].button("从持仓记录重新读取", key=f"{state['prefix']}-reload", width="stretch"):
+        st.session_state[state["reload_key"]] = True
+        st.rerun()
+    if control_cols[4].button("使用上一条复盘期末净资产作为期初净资产", key=f"{state['prefix']}-use-previous", width="stretch"):
+        previous_ending = _previous_periodic_ending_equity(rows, editing_row, st.session_state[state["start_date_key"]])
+        if previous_ending is not None:
+            st.session_state[state["starting_equity_key"]] = _amount_input_value(previous_ending, allow_blank=True)
+            meta["starting_source_label"] = EQUITY_FILL_MANUAL
+            st.session_state[state["meta_key"]] = meta
+            st.rerun()
+        st.info("没有可复用的上一条复盘期末净资产。")
+
+    st.caption(_periodic_source_note(meta))
+    if meta.get("only_latest_available"):
+        st.info("当前系统暂无历史账户快照，只能读取最新账户净资产。建议从今天开始保存每日 / 每次刷新快照。")
+
+    equity_cols = st.columns(4)
+    equity_cols[0].text_input("期初账户净资产", key=state["starting_equity_key"], placeholder="自动读取或手动填写")
+    equity_cols[0].caption(_field_source_caption(meta, "starting"))
+    equity_cols[1].text_input("期末账户净资产", key=state["ending_equity_key"], placeholder="自动读取或手动填写")
+    equity_cols[1].caption(_field_source_caption(meta, "ending"))
+    equity_cols[2].text_input("本期入金", key=state["deposit_key"], placeholder="默认 0")
+    equity_cols[3].text_input("本期出金", key=state["withdrawal_key"], placeholder="默认 0")
+
+    starting_equity = _parse_amount_text(st.session_state.get(state["starting_equity_key"]))
+    ending_equity = _parse_amount_text(st.session_state.get(state["ending_equity_key"]))
+    deposit_amount = _parse_amount_text(st.session_state.get(state["deposit_key"]), default=0.0)
+    withdrawal_amount = _parse_amount_text(st.session_state.get(state["withdrawal_key"]), default=0.0)
+    preview_profit = None if starting_equity is None or ending_equity is None else ending_equity - starting_equity - deposit_amount + withdrawal_amount
+    preview_return = None if preview_profit is None or starting_equity is None or starting_equity <= 0 else preview_profit / starting_equity
+    st.markdown(_periodic_preview_cards_html(preview_profit, preview_return, _periodic_source_card_text(meta)), unsafe_allow_html=True)
+
+    with st.form(f"periodic-return-review-form-{state['prefix']}", clear_on_submit=False):
         st.markdown("#### 复盘内容")
         review_cols = st.columns(2)
-        biggest_contributor = review_cols[0].text_area("本期最大贡献", value=str(editing_row.get("biggest_contributor") or "") if editing_row else "", height=72)
-        biggest_drag = review_cols[1].text_area("本期最大拖累", value=str(editing_row.get("biggest_drag") or "") if editing_row else "", height=72)
-        what_went_well = review_cols[0].text_area("本期做对了什么", value=str(editing_row.get("what_went_well") or "") if editing_row else "", height=86)
-        what_went_wrong = review_cols[1].text_area("本期做错了什么", value=str(editing_row.get("what_went_wrong") or "") if editing_row else "", height=86)
-        next_period_rule = st.text_area("下期重点规则", value=str(editing_row.get("next_period_rule") or "") if editing_row else "", height=72)
-        notes = st.text_area("备注，可选", value=str(editing_row.get("notes") or "") if editing_row else "", height=64)
+        biggest_contributor = review_cols[0].text_area("本期最大贡献", key=state["biggest_contributor_key"], height=72)
+        biggest_drag = review_cols[1].text_area("本期最大拖累", key=state["biggest_drag_key"], height=72)
+        what_went_well = review_cols[0].text_area("本期做对了什么", key=state["what_went_well_key"], height=86)
+        what_went_wrong = review_cols[1].text_area("本期做错了什么", key=state["what_went_wrong_key"], height=86)
+        next_period_rule = st.text_area("下期重点规则", key=state["next_period_rule_key"], height=72)
+        notes = st.text_area("备注，可选", key=state["notes_key"], height=64)
         submit_label = "保存修改" if editing_row else "保存周期复盘"
         form_cols = st.columns([1, 1, 4])
         submitted = form_cols[0].form_submit_button(submit_label, width="stretch")
         cancel_edit = bool(editing_row) and form_cols[1].form_submit_button("取消编辑", width="stretch")
     if submitted:
+        if _has_invalid_amount_input(st.session_state.get(state["starting_equity_key"])):
+            st.error("期初账户净资产请输入有效数字，或留空。")
+            return
+        if _has_invalid_amount_input(st.session_state.get(state["ending_equity_key"])):
+            st.error("期末账户净资产请输入有效数字，或留空。")
+            return
+        if _has_invalid_amount_input(st.session_state.get(state["deposit_key"]), allow_blank=False):
+            st.error("本期入金请输入有效数字。")
+            return
+        if _has_invalid_amount_input(st.session_state.get(state["withdrawal_key"]), allow_blank=False):
+            st.error("本期出金请输入有效数字。")
+            return
+        starting_manual = _is_manual_equity_override(starting_equity, meta.get("starting_auto_value"), meta.get("starting_source_label"))
+        ending_manual = _is_manual_equity_override(ending_equity, meta.get("ending_auto_value"), meta.get("ending_source_label"))
         store.save_periodic_return_review(
             {
-                "period_type": period_type,
-                "start_date": start_date,
-                "end_date": end_date,
+                "period_type": st.session_state[state["period_type_key"]],
+                "start_date": st.session_state[state["start_date_key"]],
+                "end_date": st.session_state[state["end_date_key"]],
                 "starting_equity": starting_equity,
                 "ending_equity": ending_equity,
                 "deposit_amount": deposit_amount,
@@ -256,13 +278,21 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
                 "what_went_wrong": what_went_wrong,
                 "next_period_rule": next_period_rule,
                 "notes": notes,
+                "starting_equity_source": _saved_equity_source_label(meta.get("starting_snapshot_date"), starting_equity, starting_manual),
+                "ending_equity_source": _saved_equity_source_label(meta.get("ending_snapshot_date"), ending_equity, ending_manual),
+                "starting_equity_snapshot_date": meta.get("starting_snapshot_date") or "",
+                "ending_equity_snapshot_date": meta.get("ending_snapshot_date") or "",
+                "starting_equity_is_manual_override": starting_manual,
+                "ending_equity_is_manual_override": ending_manual,
             },
             review_id=int(editing_row["id"]) if editing_row else None,
         )
+        _clear_periodic_return_form_state(state)
         st.session_state.pop("periodic-return-edit-id", None)
         st.success("周期复盘已保存。")
         st.rerun()
     if cancel_edit:
+        _clear_periodic_return_form_state(state)
         st.session_state.pop("periodic-return-edit-id", None)
         st.rerun()
 
@@ -539,6 +569,10 @@ def _periodic_detail_html(row: dict[str, Any]) -> str:
       <dl>
         <dt>本期盈亏</dt><dd>{escape(_profit_text(row.get('profit_amount')))}</dd>
         <dt>收益率</dt><dd>{escape(_return_rate_text(row.get('return_rate')))}</dd>
+        <dt>期初来源</dt><dd>{escape(str(row.get('starting_equity_source') or '未记录'))}</dd>
+        <dt>期末来源</dt><dd>{escape(str(row.get('ending_equity_source') or '未记录'))}</dd>
+        <dt>期初快照日期</dt><dd>{escape(str(row.get('starting_equity_snapshot_date') or '未记录'))}</dd>
+        <dt>期末快照日期</dt><dd>{escape(str(row.get('ending_equity_snapshot_date') or '未记录'))}</dd>
         <dt>本期做对了什么</dt><dd>{escape(str(row.get('what_went_well') or '未记录'))}</dd>
         <dt>本期做错了什么</dt><dd>{escape(str(row.get('what_went_wrong') or '未记录'))}</dd>
         <dt>下期重点规则</dt><dd>{escape(str(row.get('next_period_rule') or '未记录'))}</dd>
@@ -553,6 +587,275 @@ def _periodic_detail_html(row: dict[str, Any]) -> str:
 def _periodic_option_label(rows: list[dict[str, Any]], review_id: int) -> str:
     row = next((item for item in rows if int(item.get("id") or 0) == int(review_id)), {})
     return f"#{review_id} · {row.get('period_type', '')} · {row.get('start_date', '')} 至 {row.get('end_date', '')}"
+
+
+def _prepare_periodic_return_form_state(
+    store: DisciplineReviewStore,
+    rows: list[dict[str, Any]],
+    editing_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    prefix = f"periodic-return-{int(editing_row['id'])}" if editing_row else "periodic-return-new"
+    keys = {
+        "prefix": prefix,
+        "period_type_key": f"{prefix}-period-type",
+        "start_date_key": f"{prefix}-start-date",
+        "end_date_key": f"{prefix}-end-date",
+        "starting_equity_key": f"{prefix}-starting-equity",
+        "ending_equity_key": f"{prefix}-ending-equity",
+        "deposit_key": f"{prefix}-deposit",
+        "withdrawal_key": f"{prefix}-withdrawal",
+        "biggest_contributor_key": f"{prefix}-biggest-contributor",
+        "biggest_drag_key": f"{prefix}-biggest-drag",
+        "what_went_well_key": f"{prefix}-went-well",
+        "what_went_wrong_key": f"{prefix}-went-wrong",
+        "next_period_rule_key": f"{prefix}-next-rule",
+        "notes_key": f"{prefix}-notes",
+        "meta_key": f"{prefix}-meta",
+        "signature_key": f"{prefix}-signature",
+        "reload_key": f"{prefix}-reload-flag",
+        "initialized_key": f"{prefix}-initialized",
+        "last_period_type_key": f"{prefix}-last-period-type",
+    }
+
+    initial_period_type = str((editing_row or {}).get("period_type") or PERIODIC_RETURN_TYPES[0])
+    if keys["period_type_key"] not in st.session_state:
+        st.session_state[keys["period_type_key"]] = initial_period_type
+    current_period_type = str(st.session_state.get(keys["period_type_key"]) or PERIODIC_RETURN_TYPES[0])
+    default_start, default_end = default_period_dates(current_period_type, today=date.today())
+    initial_start = _date_value((editing_row or {}).get("start_date"), default_start) if editing_row else default_start
+    initial_end = _date_value((editing_row or {}).get("end_date"), default_end) if editing_row else default_end
+
+    if not st.session_state.get(keys["initialized_key"]):
+        st.session_state[keys["start_date_key"]] = initial_start
+        st.session_state[keys["end_date_key"]] = initial_end
+        st.session_state[keys["deposit_key"]] = _amount_input_value((editing_row or {}).get("deposit_amount"), allow_blank=False)
+        st.session_state[keys["withdrawal_key"]] = _amount_input_value((editing_row or {}).get("withdrawal_amount"), allow_blank=False)
+        st.session_state[keys["biggest_contributor_key"]] = str((editing_row or {}).get("biggest_contributor") or "")
+        st.session_state[keys["biggest_drag_key"]] = str((editing_row or {}).get("biggest_drag") or "")
+        st.session_state[keys["what_went_well_key"]] = str((editing_row or {}).get("what_went_well") or "")
+        st.session_state[keys["what_went_wrong_key"]] = str((editing_row or {}).get("what_went_wrong") or "")
+        st.session_state[keys["next_period_rule_key"]] = str((editing_row or {}).get("next_period_rule") or "")
+        st.session_state[keys["notes_key"]] = str((editing_row or {}).get("notes") or "")
+        st.session_state[keys["initialized_key"]] = True
+
+    if st.session_state.get(keys["last_period_type_key"]) != current_period_type and not editing_row:
+        st.session_state[keys["start_date_key"]] = default_start
+        st.session_state[keys["end_date_key"]] = default_end
+    st.session_state[keys["last_period_type_key"]] = current_period_type
+
+    start_date = _date_value(st.session_state.get(keys["start_date_key"]), default_start)
+    end_date = _date_value(st.session_state.get(keys["end_date_key"]), default_end)
+    st.session_state[keys["start_date_key"]] = start_date
+    st.session_state[keys["end_date_key"]] = end_date
+
+    current_signature = f"{int(editing_row['id']) if editing_row else 'new'}|{current_period_type}|{start_date.isoformat()}|{end_date.isoformat()}"
+    original_signature = None
+    if editing_row:
+        original_signature = (
+            f"{int(editing_row['id'])}|"
+            f"{editing_row.get('period_type') or PERIODIC_RETURN_TYPES[0]}|"
+            f"{str(editing_row.get('start_date') or '')[:10]}|"
+            f"{str(editing_row.get('end_date') or '')[:10]}"
+        )
+
+    if st.session_state.get(keys["signature_key"]) != current_signature or st.session_state.get(keys["reload_key"]):
+        if editing_row and current_signature == original_signature:
+            meta = _periodic_meta_from_saved_review(editing_row)
+            st.session_state[keys["starting_equity_key"]] = _amount_input_value(editing_row.get("starting_equity"), allow_blank=True)
+            st.session_state[keys["ending_equity_key"]] = _amount_input_value(editing_row.get("ending_equity"), allow_blank=True)
+        else:
+            prefill = store.build_periodic_return_prefill(start_date=start_date, end_date=end_date)
+            meta = _periodic_meta_from_prefill(prefill)
+            st.session_state[keys["starting_equity_key"]] = _amount_input_value(prefill.get("starting_equity"), allow_blank=True)
+            st.session_state[keys["ending_equity_key"]] = _amount_input_value(prefill.get("ending_equity"), allow_blank=True)
+        st.session_state[keys["meta_key"]] = meta
+        st.session_state[keys["signature_key"]] = current_signature
+        st.session_state[keys["reload_key"]] = False
+
+    keys["meta"] = dict(st.session_state.get(keys["meta_key"]) or {})
+    keys["all_keys"] = list(keys.values())
+    return keys
+
+
+def _periodic_meta_from_saved_review(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "starting_auto_value": _nullable_float(row.get("starting_equity")),
+        "ending_auto_value": _nullable_float(row.get("ending_equity")),
+        "starting_source_label": str(row.get("starting_equity_source") or EQUITY_SOURCE_NOT_FOUND),
+        "ending_source_label": str(row.get("ending_equity_source") or EQUITY_SOURCE_NOT_FOUND),
+        "starting_snapshot_date": str(row.get("starting_equity_snapshot_date") or ""),
+        "ending_snapshot_date": str(row.get("ending_equity_snapshot_date") or ""),
+        "only_latest_available": False,
+    }
+
+
+def _periodic_meta_from_prefill(prefill: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "starting_auto_value": _nullable_float(prefill.get("starting_equity")),
+        "ending_auto_value": _nullable_float(prefill.get("ending_equity")),
+        "starting_source_label": EQUITY_FILL_AUTO if prefill.get("starting_snapshot") else EQUITY_SOURCE_NOT_FOUND,
+        "ending_source_label": EQUITY_FILL_AUTO if prefill.get("ending_snapshot") else EQUITY_SOURCE_NOT_FOUND,
+        "starting_snapshot_date": str(prefill.get("starting_equity_snapshot_date") or ""),
+        "ending_snapshot_date": str(prefill.get("ending_equity_snapshot_date") or ""),
+        "only_latest_available": bool(prefill.get("only_latest_available")),
+    }
+
+
+def _periodic_source_note(meta: dict[str, Any]) -> str:
+    start_date_text = _display_snapshot_date(meta.get("starting_snapshot_date"))
+    end_date_text = _display_snapshot_date(meta.get("ending_snapshot_date"))
+    start_equity = _money(meta.get("starting_auto_value"))
+    end_equity = _money(meta.get("ending_auto_value"))
+    if meta.get("starting_snapshot_date") and meta.get("ending_snapshot_date"):
+        return (
+            "数据来源：已从持仓记录自动读取账户净资产"
+            f"；期初快照：{start_date_text}  ${start_equity}"
+            f"；期末快照：{end_date_text}  ${end_equity}"
+        )
+    if meta.get("starting_snapshot_date") or meta.get("ending_snapshot_date"):
+        parts = ["数据来源：部分已自动读取，其余请手动填写"]
+        if meta.get("starting_snapshot_date"):
+            parts.append(f"期初快照：{start_date_text}  ${start_equity}")
+        else:
+            parts.append("期初快照：未找到")
+        if meta.get("ending_snapshot_date"):
+            parts.append(f"期末快照：{end_date_text}  ${end_equity}")
+        else:
+            parts.append("期末快照：未找到")
+        return "；".join(parts)
+    return "数据来源：未找到对应账户快照，请手动填写"
+
+
+def _field_source_caption(meta: dict[str, Any], side: str) -> str:
+    label = str(meta.get(f"{side}_source_label") or EQUITY_SOURCE_NOT_FOUND)
+    if label == EQUITY_FILL_AUTO:
+        snapshot_date = _display_snapshot_date(meta.get(f"{side}_snapshot_date"))
+        return f"自动读取自持仓记录 · 快照日期 {snapshot_date}"
+    if label == EQUITY_FILL_MANUAL:
+        return "手动修改"
+    return "未找到快照，可手动填写"
+
+
+def _periodic_source_card_text(meta: dict[str, Any]) -> str:
+    labels = {
+        str(meta.get("starting_source_label") or EQUITY_SOURCE_NOT_FOUND),
+        str(meta.get("ending_source_label") or EQUITY_SOURCE_NOT_FOUND),
+    }
+    labels.discard("")
+    if labels == {EQUITY_FILL_AUTO}:
+        return EQUITY_SOURCE_PORTFOLIO
+    if EQUITY_FILL_MANUAL in labels:
+        return EQUITY_FILL_MANUAL
+    if EQUITY_FILL_AUTO in labels:
+        return f"{EQUITY_SOURCE_PORTFOLIO} / {EQUITY_SOURCE_NOT_FOUND}"
+    return EQUITY_SOURCE_NOT_FOUND
+
+
+def _periodic_preview_cards_html(profit: float | None, return_rate: float | None, source_text: str) -> str:
+    cards = [
+        ("本期盈亏", _profit_text(profit), "按账户净资产口径计算"),
+        ("本期收益率", _return_rate_text(return_rate), "期初净资产为分母"),
+        ("数据来源", source_text or "未找到账户快照", "自动读取或手动修改"),
+    ]
+    return _card_grid_html(cards)
+
+
+def _parse_amount_text(value: object, *, default: float | None = None) -> float | None:
+    text = str(value or "").replace(",", "").strip()
+    if not text:
+        return default
+    return round(float(text), 2)
+
+
+def _has_invalid_amount_input(value: object, *, allow_blank: bool = True) -> bool:
+    text = str(value or "").replace(",", "").strip()
+    if not text:
+        return not allow_blank
+    try:
+        return float(text) < 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _amount_input_value(value: object, *, allow_blank: bool) -> str:
+    number = _nullable_float(value)
+    if number is None:
+        return "" if allow_blank else "0"
+    if float(number).is_integer():
+        return str(int(number))
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _nullable_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _previous_periodic_ending_equity(rows: list[dict[str, Any]], editing_row: dict[str, Any] | None, start_date: date) -> float | None:
+    candidates = []
+    for row in rows:
+        if editing_row and int(row.get("id") or 0) == int(editing_row.get("id") or 0):
+            continue
+        row_end = _date_value(row.get("end_date"), start_date)
+        ending_equity = _nullable_float(row.get("ending_equity"))
+        if ending_equity is None or row_end >= start_date:
+            continue
+        candidates.append((row_end, ending_equity))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1] if candidates else None
+
+
+def _is_manual_equity_override(value: float | None, baseline: object, source_label: object) -> bool:
+    label = str(source_label or EQUITY_SOURCE_NOT_FOUND)
+    baseline_value = _nullable_float(baseline)
+    if value is None:
+        return False
+    if label == EQUITY_FILL_AUTO:
+        return baseline_value is None or abs(value - baseline_value) > 0.005
+    return True
+
+
+def _saved_equity_source_label(snapshot_date: object, value: float | None, is_manual_override: bool) -> str:
+    if value is None:
+        return EQUITY_SOURCE_NOT_FOUND
+    if is_manual_override:
+        return EQUITY_FILL_MANUAL
+    return EQUITY_FILL_AUTO if str(snapshot_date or "").strip() else EQUITY_SOURCE_NOT_FOUND
+
+
+def _display_snapshot_date(value: object) -> str:
+    text = str(value or "").strip()
+    return text.replace("-", "/") if text else "未找到"
+
+
+def _clear_periodic_return_form_state(state: dict[str, Any]) -> None:
+    for key_name in (
+        "period_type_key",
+        "start_date_key",
+        "end_date_key",
+        "starting_equity_key",
+        "ending_equity_key",
+        "deposit_key",
+        "withdrawal_key",
+        "biggest_contributor_key",
+        "biggest_drag_key",
+        "what_went_well_key",
+        "what_went_wrong_key",
+        "next_period_rule_key",
+        "notes_key",
+        "meta_key",
+        "signature_key",
+        "reload_key",
+        "initialized_key",
+        "last_period_type_key",
+    ):
+        key = state.get(key_name)
+        if key:
+            st.session_state.pop(key, None)
 
 
 def _date_in_range(value: object, start: date, end: date) -> bool:

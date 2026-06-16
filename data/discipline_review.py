@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from data.decision_log import TradeJournalStore
-from data.portfolio import PortfolioPositionStore
+from data.market_context import build_market_context
+from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from data.prices import CACHE_PATH
 from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 
@@ -64,6 +65,12 @@ MISTAKE_TAG_OPTIONS = [
 MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
 
 PERIODIC_RETURN_TYPES = ["周复盘", "月复盘"]
+
+EQUITY_SOURCE_PORTFOLIO = "持仓记录"
+EQUITY_SOURCE_MANUAL = "手动录入"
+EQUITY_SOURCE_NOT_FOUND = "未找到快照"
+EQUITY_FILL_AUTO = "自动读取"
+EQUITY_FILL_MANUAL = "手动修改"
 
 
 @dataclass(frozen=True)
@@ -193,6 +200,20 @@ class DisciplineReviewStore:
                 )
                 """
             )
+            self._ensure_periodic_return_review_columns(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_equity_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_time TEXT NOT NULL,
+                    account_equity REAL NOT NULL,
+                    cash REAL,
+                    market_value REAL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _ensure_mistake_review_columns(self, conn: sqlite3.Connection) -> None:
         existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(mistake_reviews)").fetchall()}
@@ -203,6 +224,20 @@ class DisciplineReviewStore:
         for column, column_type in additions.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE mistake_reviews ADD COLUMN {column} {column_type}")
+
+    def _ensure_periodic_return_review_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(periodic_return_reviews)").fetchall()}
+        additions = {
+            "starting_equity_source": "TEXT",
+            "ending_equity_source": "TEXT",
+            "starting_equity_snapshot_date": "TEXT",
+            "ending_equity_snapshot_date": "TEXT",
+            "starting_equity_is_manual_override": "INTEGER NOT NULL DEFAULT 0",
+            "ending_equity_is_manual_override": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, column_type in additions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE periodic_return_reviews ADD COLUMN {column} {column_type}")
 
     def get_principles(self) -> str:
         with self.connect() as conn:
@@ -431,6 +466,174 @@ class DisciplineReviewStore:
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_mistake_row_to_dict(columns, row) for row in rows]
 
+    def save_account_equity_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
+        snapshot_time = _parse_datetime(values.get("snapshot_time")) or datetime.now()
+        account_equity = _optional_nonnegative_number(values.get("account_equity"))
+        if account_equity is None or account_equity <= 0:
+            raise ValueError("account_equity is required")
+        cash = _optional_nonnegative_number(values.get("cash"))
+        market_value = _optional_nonnegative_number(values.get("market_value"))
+        source = _clean_choice(
+            values.get("source"),
+            [EQUITY_SOURCE_PORTFOLIO, EQUITY_SOURCE_MANUAL],
+            EQUITY_SOURCE_PORTFOLIO,
+        )
+        latest = self.get_latest_account_equity_snapshot()
+        snapshot_time_text = snapshot_time.isoformat(timespec="seconds")
+        if latest:
+            latest_equity = _optional_nonnegative_number(latest.get("account_equity"))
+            latest_source = str(latest.get("source") or "")
+            latest_day = str(latest.get("snapshot_time") or "")[:10]
+            if (
+                latest_equity is not None
+                and abs(latest_equity - account_equity) < 0.01
+                and latest_source == source
+                and latest_day == snapshot_time_text[:10]
+            ):
+                return latest
+        now = _now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO account_equity_snapshots (
+                    snapshot_time,
+                    account_equity,
+                    cash,
+                    market_value,
+                    source,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_time_text,
+                    round(account_equity, 2),
+                    round(cash, 2) if cash is not None else None,
+                    round(market_value, 2) if market_value is not None else None,
+                    source,
+                    now,
+                ),
+            )
+            snapshot_id = int(cursor.lastrowid)
+        return self.get_account_equity_snapshot(snapshot_id) or {
+            "id": snapshot_id,
+            "snapshot_time": snapshot_time_text,
+            "account_equity": round(account_equity, 2),
+            "cash": round(cash, 2) if cash is not None else None,
+            "market_value": round(market_value, 2) if market_value is not None else None,
+            "source": source,
+            "created_at": now,
+        }
+
+    def capture_current_account_equity_snapshot(self) -> dict[str, Any] | None:
+        settings = PortfolioSettingsStore(self.path).get_settings()
+        positions = PortfolioPositionStore(self.path).list_active_positions()
+        total_equity = _optional_nonnegative_number(settings.get("total_portfolio_value"))
+        cash = _optional_nonnegative_number(settings.get("cash_balance"))
+        market_value = _portfolio_market_value_from_snapshot(positions, self.path)
+        if total_equity is None:
+            total_equity = market_value
+        if total_equity is None or total_equity <= 0:
+            return None
+        if cash is None and market_value is not None:
+            cash = round(total_equity - market_value, 2)
+        return self.save_account_equity_snapshot(
+            {
+                "snapshot_time": datetime.now(),
+                "account_equity": total_equity,
+                "cash": cash,
+                "market_value": market_value,
+                "source": EQUITY_SOURCE_PORTFOLIO,
+            }
+        )
+
+    def get_account_equity_snapshot(self, snapshot_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT * FROM account_equity_snapshots WHERE id = ?", (int(snapshot_id),))
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_dict(columns, row) if row else None
+
+    def get_latest_account_equity_snapshot(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM account_equity_snapshots
+                ORDER BY snapshot_time DESC, id DESC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return _row_to_dict(columns, row) if row else None
+
+    def list_account_equity_snapshots(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM account_equity_snapshots
+                ORDER BY snapshot_time DESC, id DESC
+                """
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        return [_row_to_dict(columns, row) for row in rows]
+
+    def find_account_equity_snapshot(
+        self,
+        target_date: date | str | None,
+        *,
+        allow_latest_if_today: bool = False,
+    ) -> dict[str, Any] | None:
+        target = _parse_date(target_date)
+        if target is None:
+            return None
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT *
+                FROM account_equity_snapshots
+                WHERE substr(snapshot_time, 1, 10) <= ?
+                ORDER BY snapshot_time DESC, id DESC
+                LIMIT 1
+                """,
+                (target.isoformat(),),
+            )
+            row = cursor.fetchone()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+        if row:
+            return _row_to_dict(columns, row)
+        if allow_latest_if_today and target == date.today():
+            return self.get_latest_account_equity_snapshot()
+        return None
+
+    def build_periodic_return_prefill(
+        self,
+        *,
+        start_date: date | str | None,
+        end_date: date | str | None,
+    ) -> dict[str, Any]:
+        start = _parse_date(start_date)
+        end = _parse_date(end_date)
+        latest = self.get_latest_account_equity_snapshot()
+        starting_snapshot = self.find_account_equity_snapshot(start)
+        ending_snapshot = self.find_account_equity_snapshot(end, allow_latest_if_today=end == date.today() if end else False)
+        only_latest_available = latest is not None and starting_snapshot is None and ending_snapshot is None
+        return {
+            "starting_equity": _optional_nonnegative_number((starting_snapshot or {}).get("account_equity")),
+            "ending_equity": _optional_nonnegative_number((ending_snapshot or {}).get("account_equity")),
+            "starting_snapshot": starting_snapshot,
+            "ending_snapshot": ending_snapshot,
+            "starting_equity_source": EQUITY_FILL_AUTO if starting_snapshot else EQUITY_SOURCE_NOT_FOUND,
+            "ending_equity_source": EQUITY_FILL_AUTO if ending_snapshot else EQUITY_SOURCE_NOT_FOUND,
+            "starting_equity_snapshot_date": _snapshot_date_text(starting_snapshot),
+            "ending_equity_snapshot_date": _snapshot_date_text(ending_snapshot),
+            "latest_snapshot": latest,
+            "only_latest_available": only_latest_available,
+        }
+
     def save_periodic_return_review(self, values: dict[str, Any], review_id: int | None = None) -> dict[str, Any]:
         period_type = _clean_choice(values.get("period_type"), PERIODIC_RETURN_TYPES, "周复盘")
         start_date = _parse_date(values.get("start_date")) or date.today()
@@ -464,6 +667,12 @@ class DisciplineReviewStore:
             "what_went_wrong": _clean_text(values.get("what_went_wrong")),
             "next_period_rule": _clean_text(values.get("next_period_rule")),
             "notes": _clean_text(values.get("notes")),
+            "starting_equity_source": _clean_text(values.get("starting_equity_source")),
+            "ending_equity_source": _clean_text(values.get("ending_equity_source")),
+            "starting_equity_snapshot_date": _clean_text(values.get("starting_equity_snapshot_date")),
+            "ending_equity_snapshot_date": _clean_text(values.get("ending_equity_snapshot_date")),
+            "starting_equity_is_manual_override": 1 if bool(values.get("starting_equity_is_manual_override")) else 0,
+            "ending_equity_is_manual_override": 1 if bool(values.get("ending_equity_is_manual_override")) else 0,
             "updated_at": now,
         }
         with self.connect() as conn:
@@ -486,10 +695,16 @@ class DisciplineReviewStore:
                         what_went_wrong,
                         next_period_rule,
                         notes,
+                        starting_equity_source,
+                        ending_equity_source,
+                        starting_equity_snapshot_date,
+                        ending_equity_snapshot_date,
+                        starting_equity_is_manual_override,
+                        ending_equity_is_manual_override,
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         fields["period_type"],
@@ -507,6 +722,12 @@ class DisciplineReviewStore:
                         fields["what_went_wrong"],
                         fields["next_period_rule"],
                         fields["notes"],
+                        fields["starting_equity_source"],
+                        fields["ending_equity_source"],
+                        fields["starting_equity_snapshot_date"],
+                        fields["ending_equity_snapshot_date"],
+                        fields["starting_equity_is_manual_override"],
+                        fields["ending_equity_is_manual_override"],
                         now,
                         fields["updated_at"],
                     ),
@@ -532,6 +753,12 @@ class DisciplineReviewStore:
                         what_went_wrong = ?,
                         next_period_rule = ?,
                         notes = ?,
+                        starting_equity_source = ?,
+                        ending_equity_source = ?,
+                        starting_equity_snapshot_date = ?,
+                        ending_equity_snapshot_date = ?,
+                        starting_equity_is_manual_override = ?,
+                        ending_equity_is_manual_override = ?,
                         updated_at = ?
                     WHERE id = ?
                     """,
@@ -551,6 +778,12 @@ class DisciplineReviewStore:
                         fields["what_went_wrong"],
                         fields["next_period_rule"],
                         fields["notes"],
+                        fields["starting_equity_source"],
+                        fields["ending_equity_source"],
+                        fields["starting_equity_snapshot_date"],
+                        fields["ending_equity_snapshot_date"],
+                        fields["starting_equity_is_manual_override"],
+                        fields["ending_equity_is_manual_override"],
                         fields["updated_at"],
                         saved_id,
                     ),
@@ -840,6 +1073,32 @@ def _parse_date(value: date | str | object | None) -> date | None:
         return None
 
 
+def _parse_datetime(value: datetime | str | object | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def default_period_dates(period_type: str, *, today: date | str | None = None) -> tuple[date, date]:
+    current = _parse_date(today) or date.today()
+    if str(period_type or "") == "月复盘":
+        month_end = current.replace(day=1) - timedelta(days=1)
+        month_start = month_end.replace(day=1)
+        return month_start, month_end
+    current_week_start = current - timedelta(days=current.weekday())
+    week_end = current_week_start - timedelta(days=1)
+    week_start = week_end - timedelta(days=6)
+    return week_start, week_end
+
+
 def _number(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
@@ -882,6 +1141,36 @@ def _calculate_period_return(
     if starting_equity <= 0:
         return round(profit, 2), None
     return round(profit, 2), round(profit / starting_equity, 6)
+
+
+def _portfolio_market_value_from_snapshot(positions: list[dict[str, Any]], path: Path) -> float | None:
+    total = 0.0
+    has_value = False
+    for position in positions:
+        quantity = _number(position.get("quantity"))
+        if quantity <= 0:
+            continue
+        symbol = str(position.get("symbol") or "").strip().upper()
+        price = None
+        if symbol:
+            try:
+                market = build_market_context(symbol, path=path)
+                price = _optional_nonnegative_number(market.get("currentPrice"))
+            except Exception:
+                price = None
+        if price is None:
+            price = _optional_nonnegative_number(position.get("average_cost"))
+        if price is None:
+            continue
+        total += quantity * price
+        has_value = True
+    return round(total, 2) if has_value else None
+
+
+def _snapshot_date_text(snapshot: dict[str, Any] | None) -> str:
+    if not snapshot:
+        return ""
+    return str(snapshot.get("snapshot_time") or "")[:10]
 
 
 def _sorted_period_rows(rows: list[dict[str, Any]], period_type: str) -> list[dict[str, Any]]:
