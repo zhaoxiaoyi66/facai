@@ -9,6 +9,7 @@ import streamlit as st
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
+    DEFAULT_PRINCIPLE_RULES,
     EQUITY_SOURCE_ACCOUNT_SNAPSHOT,
     EQUITY_FILL_AUTO,
     EQUITY_FILL_MANUAL,
@@ -55,21 +56,81 @@ def render(path: Path = CACHE_PATH) -> None:
 
 
 def _render_principles_card(store: DisciplineReviewStore) -> None:
-    render_section_title("我的投资原则", "个人纪律备忘，不参与 Setup 评分，也不会阻止交易。")
-    st.markdown('<div class="discipline-principle-note">个人纪律备忘，不参与评分，也不影响交易。</div>', unsafe_allow_html=True)
-    current = store.get_principles()
-    with st.form("discipline-principles-form"):
-        text = st.text_area("原则文本", value=current, height=100)
-        cols = st.columns([1, 1, 4])
-        save = cols[0].form_submit_button("保存原则", width="stretch")
-        reset = cols[1].form_submit_button("重置默认", width="stretch")
-    if save:
-        store.save_principles(text)
+    render_section_title("我的投资原则", "个人纪律备忘，不参与评分，也不阻止交易。")
+    edit_key = "discipline_principles_editing"
+    rules_key = "discipline_principle_edit_rules"
+    revision_key = "discipline_principle_edit_revision"
+    if not st.session_state.get(edit_key):
+        rules = store.get_principle_rules()
+        st.markdown(_principle_cards_html(rules), unsafe_allow_html=True)
+        if st.button("编辑原则", key="discipline-principles-edit"):
+            st.session_state[rules_key] = [dict(rule) for rule in rules]
+            st.session_state[revision_key] = int(st.session_state.get(revision_key, 0)) + 1
+            st.session_state[edit_key] = True
+            st.rerun()
+        return
+
+    rules = [dict(rule) for rule in st.session_state.get(rules_key, store.get_principle_rules())]
+    revision = int(st.session_state.get(revision_key, 0))
+    st.caption("编辑模式：每条原则独立维护，保存后会回到卡片展示。")
+    updated_rules: list[dict[str, str]] = []
+    for index, rule in enumerate(rules):
+        cols = st.columns([0.7, 2.5, 5.2, 0.8, 0.8, 0.8])
+        cols[0].markdown(f'<div class="principle-edit-number">{index + 1:02d}</div>', unsafe_allow_html=True)
+        title = cols[1].text_input(
+            "标题",
+            value=str(rule.get("title") or ""),
+            key=f"discipline-principle-title-{revision}-{index}",
+            label_visibility="collapsed",
+            placeholder="原则标题",
+        )
+        content = cols[2].text_area(
+            "内容",
+            value=str(rule.get("content") or ""),
+            key=f"discipline-principle-content-{revision}-{index}",
+            label_visibility="collapsed",
+            placeholder="原则内容",
+            height=68,
+        )
+        updated_rules.append({"title": title, "content": content})
+        if cols[3].button("上移", key=f"discipline-principle-up-{revision}-{index}", disabled=index == 0):
+            updated_rules[index - 1], updated_rules[index] = updated_rules[index], updated_rules[index - 1]
+            st.session_state[rules_key] = updated_rules + rules[index + 1 :]
+            st.session_state[revision_key] = revision + 1
+            st.rerun()
+        if cols[4].button("下移", key=f"discipline-principle-down-{revision}-{index}", disabled=index >= len(rules) - 1):
+            remainder = [dict(item) for item in rules[index + 1 :]]
+            if remainder:
+                next_rule = remainder.pop(0)
+                st.session_state[rules_key] = updated_rules[:-1] + [next_rule, updated_rules[-1]] + remainder
+                st.session_state[revision_key] = revision + 1
+                st.rerun()
+        if cols[5].button("删除", key=f"discipline-principle-delete-{revision}-{index}"):
+            st.session_state[rules_key] = updated_rules[:-1] + rules[index + 1 :]
+            st.session_state[revision_key] = revision + 1
+            st.rerun()
+
+    st.session_state[rules_key] = updated_rules
+    cols = st.columns([1, 1, 1, 1, 4])
+    if cols[0].button("新增原则", key="discipline-principles-add", width="stretch"):
+        st.session_state[rules_key] = updated_rules + [{"title": "新原则", "content": ""}]
+        st.session_state[revision_key] = revision + 1
+        st.rerun()
+    if cols[1].button("保存原则", key="discipline-principles-save", type="primary", width="stretch"):
+        store.save_principle_rules(updated_rules)
+        st.session_state[edit_key] = False
+        st.session_state.pop(rules_key, None)
         st.success("投资原则已保存。")
         st.rerun()
-    if reset:
+    if cols[2].button("重置默认", key="discipline-principles-reset", width="stretch"):
         store.reset_principles()
+        st.session_state[edit_key] = False
+        st.session_state.pop(rules_key, None)
         st.success("已恢复默认投资原则。")
+        st.rerun()
+    if cols[3].button("取消编辑", key="discipline-principles-cancel", width="stretch"):
+        st.session_state[edit_key] = False
+        st.session_state.pop(rules_key, None)
         st.rerun()
 
 
@@ -471,6 +532,28 @@ def trade_entry_discipline_hint_html(setup_score: float | None = None) -> str:
         f"<span>{escape('这笔交易会让组合更集中，还是更碎片化？' + extra)}</span>"
         "</div>"
     )
+
+
+def _principle_cards_html(rules: list[dict[str, Any]]) -> str:
+    normalized = [
+        {
+            "title": str(rule.get("title") or "").strip() or "未命名原则",
+            "content": str(rule.get("content") or "").strip(),
+        }
+        for rule in rules
+        if str(rule.get("title") or rule.get("content") or "").strip()
+    ]
+    if not normalized:
+        normalized = [dict(rule) for rule in DEFAULT_PRINCIPLE_RULES]
+    cards = "".join(
+        '<article class="principle-rule-card">'
+        f'<span class="principle-rule-number">{index:02d}</span>'
+        f"<strong>{escape(rule['title'])}</strong>"
+        f"<p>{escape(rule['content'])}</p>"
+        "</article>"
+        for index, rule in enumerate(normalized, start=1)
+    )
+    return f'<section class="principle-rule-grid">{cards}</section>'
 
 
 def _card_grid_html(cards: list[tuple[str, str, str]]) -> str:
@@ -1165,6 +1248,7 @@ def _render_styles() -> None:
         <style>
         .discipline-checklist,
         .discipline-card-grid,
+        .principle-rule-card,
         .dashboard-discipline-card,
         .trade-entry-discipline-hint,
         .mistake-detail-card {
@@ -1174,15 +1258,29 @@ def _render_styles() -> None:
             box-shadow: 0 14px 28px rgba(15,23,42,.05);
         }
         .discipline-checklist { padding: .8rem 1rem; margin-bottom: .9rem; }
-        .discipline-principle-note {
-            text-align: right; color: #64748b; font-size: .78rem; font-weight: 800;
-            margin: -.35rem 0 .35rem;
-        }
         .discipline-checklist ol { margin: 0; padding: 0; list-style: none; display: grid; gap: .45rem; }
         .discipline-checklist li { display: flex; gap: .55rem; color: #334155; font-size: .9rem; }
         .discipline-checklist li span {
             display: inline-flex; align-items: center; justify-content: center;
             width: 1.35rem; height: 1.35rem; border-radius: 999px; background: #eef2ff; color: #3730a3; font-weight: 800;
+        }
+        .principle-rule-grid {
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: .68rem; margin: .45rem 0 .75rem;
+        }
+        .principle-rule-card { padding: .82rem .92rem; min-height: 6rem; }
+        .principle-rule-number {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 2.2rem; height: 1.45rem; border-radius: 999px;
+            background: #eef2ff; color: #3730a3; font-size: .72rem; font-weight: 900; letter-spacing: .04em;
+            margin-bottom: .42rem;
+        }
+        .principle-rule-card strong { display: block; color: #0f172a; font-size: .98rem; margin-bottom: .24rem; }
+        .principle-rule-card p { margin: 0; color: #64748b; font-size: .84rem; line-height: 1.45; }
+        .principle-edit-number {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 2rem; height: 2rem; border-radius: 999px; background: #f1f5f9;
+            color: #334155; font-size: .78rem; font-weight: 900; margin-top: .18rem;
         }
         .discipline-card-grid {
             display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1226,6 +1324,7 @@ def _render_styles() -> None:
         .trade-entry-discipline-hint strong { display: block; color: #0f172a; }
         .trade-entry-discipline-hint span { display: block; color: #475569; font-size: .85rem; margin-top: .1rem; }
         @media (max-width: 900px) {
+            .principle-rule-grid { grid-template-columns: 1fr; }
             .discipline-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .dashboard-discipline-card { display: block; }
             .mistake-detail-card dl { grid-template-columns: 1fr; }

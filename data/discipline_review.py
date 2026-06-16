@@ -16,13 +16,39 @@ from data.prices import CACHE_PATH
 from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 
 
-DEFAULT_PRINCIPLES = (
-    "少而硬：做高信念、能长期拿住的少数股票。\n"
-    "不基金化分散。\n"
-    "不为参与感买小仓。\n"
-    "好公司很多，但适合我持有的好公司很少。\n"
-    "买点看客观 Setup，仓位看纪律。\n"
-    "现金也是仓位，等待也是操作。"
+DEFAULT_PRINCIPLE_RULES = [
+    {
+        "title": "高信念集中",
+        "content": "不做全市场股票，只做少数真正看懂的高信念股票。",
+    },
+    {
+        "title": "持仓结构",
+        "content": "长期只持有约 6 只股票：1 只第一核心、2 只强核心、2 只卫星赔率仓、1 只战术仓。",
+    },
+    {
+        "title": "新增必须替换",
+        "content": "新增股票必须替换低信念持仓，而不是继续摊大饼。",
+    },
+    {
+        "title": "左侧买入",
+        "content": "不追涨，不因 FOMO 买入；买点看承接、位置和风险收益。",
+    },
+    {
+        "title": "核心仓不乱卖",
+        "content": "核心仓只因基本面破坏、极端泡沫、仓位失控或更强替代标的才调整。",
+    },
+    {
+        "title": "现金也是仓位",
+        "content": "现金不是踏空，而是等待更好击球区的操作空间。",
+    },
+    {
+        "title": "复盘沉淀规则",
+        "content": "每周或每月记录收益、错误和下期纪律，把错误沉淀成防线。",
+    },
+]
+
+DEFAULT_PRINCIPLES = "\n".join(
+    f"{index}. {rule['title']}\n{rule['content']}" for index, rule in enumerate(DEFAULT_PRINCIPLE_RULES, start=1)
 )
 
 DISCIPLINE_TAG_LABELS = {
@@ -75,6 +101,77 @@ EQUITY_SOURCE_MANUAL = "手动录入"
 EQUITY_SOURCE_NOT_FOUND = "未找到快照"
 EQUITY_FILL_AUTO = "自动读取"
 EQUITY_FILL_MANUAL = "手动修改"
+
+
+def normalize_principle_rules(rules: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in rules or []:
+        title = str((item or {}).get("title") or "").strip()
+        content = str((item or {}).get("content") or "").strip()
+        if not title and not content:
+            continue
+        normalized.append(
+            {
+                "title": title or "未命名原则",
+                "content": content,
+            }
+        )
+    return normalized or [dict(rule) for rule in DEFAULT_PRINCIPLE_RULES]
+
+
+def serialize_principle_rules(rules: list[dict[str, Any]] | None) -> str:
+    return json.dumps(
+        {"version": 1, "rules": normalize_principle_rules(rules)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def parse_principle_rules(text: str | None) -> list[dict[str, str]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return [dict(rule) for rule in DEFAULT_PRINCIPLE_RULES]
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
+        return normalize_principle_rules([item for item in payload["rules"] if isinstance(item, dict)])
+    return _parse_legacy_principles(raw)
+
+
+def flatten_principle_rules(rules: list[dict[str, Any]] | None) -> str:
+    return "\n".join(
+        f"{index}. {rule['title']}\n{rule['content']}".strip()
+        for index, rule in enumerate(normalize_principle_rules(rules), start=1)
+    )
+
+
+def _parse_legacy_principles(text: str) -> list[dict[str, str]]:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    rules: list[dict[str, str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        cleaned = line
+        has_number = ". " in cleaned[:5] and cleaned.split(". ", 1)[0].isdigit()
+        if has_number:
+            _, cleaned = cleaned.split(". ", 1)
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+            if next_line and not (". " in next_line[:5] and next_line.split(". ", 1)[0].isdigit()):
+                rules.append({"title": cleaned.strip() or "原则", "content": next_line.strip()})
+                index += 2
+                continue
+        if "：" in cleaned:
+            title, content = cleaned.split("：", 1)
+            rules.append({"title": title.strip() or "原则", "content": content.strip()})
+        elif ":" in cleaned:
+            title, content = cleaned.split(":", 1)
+            rules.append({"title": title.strip() or "原则", "content": content.strip()})
+        else:
+            rules.append({"title": cleaned[:12] or "原则", "content": cleaned})
+        index += 1
+    return normalize_principle_rules(rules)
 
 
 @dataclass(frozen=True)
@@ -246,7 +343,21 @@ class DisciplineReviewStore:
     def get_principles(self) -> str:
         with self.connect() as conn:
             row = conn.execute("SELECT text FROM discipline_principles WHERE id = 1").fetchone()
-        return str(row[0]) if row else DEFAULT_PRINCIPLES
+        if not row:
+            return DEFAULT_PRINCIPLES
+        raw = str(row[0])
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
+            return flatten_principle_rules(parse_principle_rules(raw))
+        return raw or DEFAULT_PRINCIPLES
+
+    def get_principle_rules(self) -> list[dict[str, str]]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT text FROM discipline_principles WHERE id = 1").fetchone()
+        return parse_principle_rules(str(row[0])) if row else [dict(rule) for rule in DEFAULT_PRINCIPLE_RULES]
 
     def save_principles(self, text: str) -> str:
         clean = str(text or "").strip() or DEFAULT_PRINCIPLES
@@ -262,8 +373,24 @@ class DisciplineReviewStore:
             )
         return clean
 
+    def save_principle_rules(self, rules: list[dict[str, Any]]) -> list[dict[str, str]]:
+        normalized = normalize_principle_rules(rules)
+        payload = serialize_principle_rules(normalized)
+        now = _now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO discipline_principles (id, text, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at
+                """,
+                (payload, now),
+            )
+        return normalized
+
     def reset_principles(self) -> str:
-        return self.save_principles(DEFAULT_PRINCIPLES)
+        self.save_principle_rules([dict(rule) for rule in DEFAULT_PRINCIPLE_RULES])
+        return DEFAULT_PRINCIPLES
 
     def get_settings(self) -> dict[str, Any]:
         with self.connect() as conn:

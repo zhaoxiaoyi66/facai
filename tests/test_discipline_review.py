@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
     DEFAULT_PRINCIPLES,
+    DEFAULT_PRINCIPLE_RULES,
     EQUITY_FILL_AUTO,
     EQUITY_FILL_MANUAL,
     EQUITY_SOURCE_PREVIOUS_REVIEW,
@@ -57,6 +58,23 @@ def test_discipline_principles_can_be_saved_and_reset() -> None:
         assert store.get_principles() == "少而硬，只做少数高质量机会。"
         store.reset_principles()
         assert store.get_principles() == DEFAULT_PRINCIPLES
+
+
+def test_discipline_principle_rules_can_be_saved_reordered_and_reset() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+        rules = [
+            {"title": "左侧买入", "content": "买点看承接、位置和风险收益。"},
+            {"title": "现金也是仓位", "content": "等待也是操作。"},
+        ]
+
+        saved = store.save_principle_rules(rules)
+
+        assert saved == rules
+        assert store.get_principle_rules() == rules
+        assert store.get_principles() == "1. 左侧买入\n买点看承接、位置和风险收益。\n2. 现金也是仓位\n等待也是操作。"
+        store.reset_principles()
+        assert store.get_principle_rules() == DEFAULT_PRINCIPLE_RULES
 
 
 def test_trade_discipline_tags_are_kept_for_history_compatibility() -> None:
@@ -510,6 +528,10 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
 
     assert "交易错题本" in source
     assert "周期收益复盘" in source
+    assert "编辑原则" in source
+    assert "新增原则" in source
+    assert "principle-rule-card" in source
+    assert "个人纪律备忘，不参与评分，也不阻止交易。" in source
     assert "归档这条错误" in source
     assert "周期与数据源" in source
     assert "收益结算" in source
@@ -559,6 +581,7 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "使用上一条复盘期末净资产作为期初净资产" not in source
     assert "周期收益复盘筛选" not in source
     assert "损失金额 / 影响" not in source
+    assert "原则文本" not in source
     assert "例如：800U、亏损500美元、卖飞约10%" not in source
     assert "复盘状态\", MISTAKE_REVIEW_STATUSES" not in source
     assert "当时操作\", height" not in source
