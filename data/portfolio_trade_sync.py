@@ -9,7 +9,7 @@ from typing import Any
 from data.market_context import build_market_context
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
-from data.portfolio_roles import ROLE_UNDEFINED, normalize_portfolio_role
+from data.portfolio_roles import ROLE_OBSERVATION, normalize_portfolio_role
 from data.portfolio_ledger_projection import POSITION_AFFECTING_ACTIONS
 from data.portfolio_ledger_projection import project_trade_effect
 from data.prices import CACHE_PATH
@@ -333,7 +333,7 @@ def _entry_position_role(entry: dict[str, Any], current: dict[str, Any]) -> str:
     if entry_role:
         return entry_role
     current_role = normalize_portfolio_role(current.get("role"), default=None)
-    return current_role or ROLE_UNDEFINED
+    return current_role or ROLE_OBSERVATION
 
 
 def _ensure_sync_schema(path: Path) -> None:

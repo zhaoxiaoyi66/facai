@@ -19,6 +19,14 @@ VALID_PORTFOLIO_ROLES = {
     ROLE_UNDEFINED,
 }
 
+ACTIVE_PORTFOLIO_ROLES = {
+    ROLE_FIRST_CORE,
+    ROLE_STRONG_CORE,
+    ROLE_SATELLITE,
+    ROLE_TACTICAL,
+    ROLE_OBSERVATION,
+}
+
 FORMAL_PORTFOLIO_ROLES = {
     ROLE_FIRST_CORE,
     ROLE_STRONG_CORE,
@@ -48,7 +56,7 @@ ROLE_LABELS = {
     ROLE_SATELLITE: "卫星赔率仓",
     ROLE_TACTICAL: "战术仓",
     ROLE_OBSERVATION: "观察仓",
-    ROLE_UNDEFINED: "未定义",
+    ROLE_UNDEFINED: "观察仓",
 }
 
 ROLE_SHORT_LABELS = {
@@ -57,7 +65,7 @@ ROLE_SHORT_LABELS = {
     ROLE_SATELLITE: "卫星",
     ROLE_TACTICAL: "战术",
     ROLE_OBSERVATION: "观察",
-    ROLE_UNDEFINED: "未定义",
+    ROLE_UNDEFINED: "观察",
 }
 
 ROLE_FRAMEWORKS = {
@@ -87,9 +95,9 @@ ROLE_FRAMEWORKS = {
         "description": "小仓观察，不计入正式持仓数量",
     },
     ROLE_UNDEFINED: {
-        "target_weight": "",
-        "split": "",
-        "description": "请先完成组合角色归类",
+        "target_weight": "0%–2%",
+        "split": "0% / 100%",
+        "description": "旧记录未设置角色，按观察仓处理",
     },
 }
 
@@ -99,11 +107,9 @@ ROLE_FORM_OPTIONS = {
     "卫星赔率仓": ROLE_SATELLITE,
     "战术仓": ROLE_TACTICAL,
     "观察仓": ROLE_OBSERVATION,
-    "未定义": ROLE_UNDEFINED,
 }
 
 BUY_ROLE_FORM_OPTIONS = {
-    "请选择持仓角色": ROLE_UNDEFINED,
     "第一核心": ROLE_FIRST_CORE,
     "强核心": ROLE_STRONG_CORE,
     "卫星赔率仓": ROLE_SATELLITE,
@@ -117,16 +123,18 @@ SELL_ROLE_REMINDERS = {
     ROLE_SATELLITE: "这是卫星赔率仓。允许波段，但不要让亏损扩大成核心仓。",
     ROLE_TACTICAL: "这是战术仓。可以按计划止盈止损，不要临时改成长线信仰仓。",
     ROLE_OBSERVATION: "这是观察仓。卖出只影响观察记录，不计入正式持仓结构。",
-    ROLE_UNDEFINED: "这只持仓尚未定义角色。卖出前建议先回顾它在组合中的位置。",
+    ROLE_UNDEFINED: "这是观察仓。卖出只影响观察记录，不计入正式持仓结构。",
 }
 
 
-def normalize_portfolio_role(value: object, *, default: str | None = ROLE_UNDEFINED) -> str | None:
+def normalize_portfolio_role(value: object, *, default: str | None = ROLE_OBSERVATION) -> str | None:
     text = str(value or "").strip()
     if not text:
         return default
     upper = text.upper()
-    if upper in VALID_PORTFOLIO_ROLES:
+    if upper == ROLE_UNDEFINED:
+        return default if default is not None else ROLE_OBSERVATION
+    if upper in ACTIVE_PORTFOLIO_ROLES:
         return upper
     for label, role in ROLE_FORM_OPTIONS.items():
         if text == label:
@@ -136,27 +144,27 @@ def normalize_portfolio_role(value: object, *, default: str | None = ROLE_UNDEFI
 
 def portfolio_role_label(value: object) -> str:
     role = normalize_portfolio_role(value)
-    return ROLE_LABELS.get(role or ROLE_UNDEFINED, ROLE_LABELS[ROLE_UNDEFINED])
+    return ROLE_LABELS.get(role or ROLE_OBSERVATION, ROLE_LABELS[ROLE_OBSERVATION])
 
 
 def portfolio_role_short_label(value: object) -> str:
     role = normalize_portfolio_role(value)
-    return ROLE_SHORT_LABELS.get(role or ROLE_UNDEFINED, ROLE_SHORT_LABELS[ROLE_UNDEFINED])
+    return ROLE_SHORT_LABELS.get(role or ROLE_OBSERVATION, ROLE_SHORT_LABELS[ROLE_OBSERVATION])
 
 
 def portfolio_role_badge_class(value: object) -> str:
     role = normalize_portfolio_role(value)
-    return f"role-{str(role or ROLE_UNDEFINED).lower().replace('_', '-')}"
+    return f"role-{str(role or ROLE_OBSERVATION).lower().replace('_', '-')}"
 
 
 def portfolio_role_sort_key(value: object) -> int:
     role = normalize_portfolio_role(value)
-    return ROLE_ORDER.get(role or ROLE_UNDEFINED, ROLE_ORDER[ROLE_UNDEFINED])
+    return ROLE_ORDER.get(role or ROLE_OBSERVATION, ROLE_ORDER[ROLE_OBSERVATION])
 
 
 def portfolio_role_framework(value: object) -> dict[str, str]:
     role = normalize_portfolio_role(value)
-    return dict(ROLE_FRAMEWORKS.get(role or ROLE_UNDEFINED, ROLE_FRAMEWORKS[ROLE_UNDEFINED]))
+    return dict(ROLE_FRAMEWORKS.get(role or ROLE_OBSERVATION, ROLE_FRAMEWORKS[ROLE_OBSERVATION]))
 
 
 def portfolio_role_target_weight(value: object) -> str:
@@ -177,24 +185,21 @@ def is_formal_portfolio_role(value: object) -> bool:
 
 
 def build_portfolio_role_structure(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = {role: 0 for role in VALID_PORTFOLIO_ROLES}
-    symbols_by_role = {role: [] for role in VALID_PORTFOLIO_ROLES}
+    counts = {role: 0 for role in ACTIVE_PORTFOLIO_ROLES}
+    symbols_by_role = {role: [] for role in ACTIVE_PORTFOLIO_ROLES}
     for row in rows:
         symbol = str(row.get("symbol") or "").strip().upper()
         role = normalize_portfolio_role(row.get("role") or row.get("holdingRole") or row.get("portfolio_role"))
-        role = role or ROLE_UNDEFINED
+        role = role or ROLE_OBSERVATION
         counts[role] = counts.get(role, 0) + 1
         if symbol:
             symbols_by_role.setdefault(role, []).append(symbol)
     formal_count = sum(counts.get(role, 0) for role in FORMAL_PORTFOLIO_ROLES)
-    undefined_count = counts.get(ROLE_UNDEFINED, 0)
     warnings: list[str] = []
     for role, limit in ROLE_LIMITS.items():
         count = counts.get(role, 0)
         if count > limit:
             warnings.append(f"{portfolio_role_label(role)} 已有 {count} / {limit}，超过角色名额。")
-    if undefined_count > 0:
-        warnings.append(f"有 {undefined_count} 只持仓尚未定义角色，请先完成组合角色归类。")
     if formal_count > 8:
         warnings.append("组合过度分散，新增前应先替换。")
     elif formal_count > 6:
@@ -204,7 +209,7 @@ def build_portfolio_role_structure(rows: list[dict[str, Any]]) -> dict[str, Any]
         "symbolsByRole": symbols_by_role,
         "formalCount": formal_count,
         "formalTarget": 6,
-        "undefinedCount": undefined_count,
+        "undefinedCount": 0,
         "warnings": warnings,
     }
 
@@ -233,4 +238,3 @@ def portfolio_role_capacity_warning(role: object, rows: list[dict[str, Any]], *,
     if not has_existing_symbol and formal_count >= 6:
         return "当前正式持仓已超过 6 只，偏离激进集中型组合原则。新增前建议先明确替换对象。"
     return ""
-

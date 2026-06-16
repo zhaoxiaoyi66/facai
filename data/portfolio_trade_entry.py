@@ -15,7 +15,7 @@ from data.market_context import build_market_history
 from data.planned_ladder_buy import evaluate_planned_ladder_buy
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_roles import (
-    ROLE_UNDEFINED,
+    ROLE_OBSERVATION,
     normalize_portfolio_role,
     portfolio_role_core_tactical_split,
     portfolio_role_label,
@@ -52,7 +52,7 @@ def submit_portfolio_buy_add(
     price = values.get("price")
     tier = _clean_position_tier(values.get("position_tier") or values.get("positionClass"))
     decision_mood = str(values.get("decision_mood") or values.get("decisionMood") or "NEUTRAL").strip()
-    portfolio_role = normalize_portfolio_role(values.get("role") or values.get("portfolio_role") or values.get("tradeRole")) or ROLE_UNDEFINED
+    portfolio_role = normalize_portfolio_role(values.get("role") or values.get("portfolio_role") or values.get("tradeRole")) or ROLE_OBSERVATION
     buy_reason = str(values.get("buy_reason") or values.get("notes") or "").strip()
     missing_buy_reason = not bool(buy_reason)
     target_sell_price = values.get("target_sell_price") or values.get("targetSellPrice")

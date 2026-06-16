@@ -29,7 +29,7 @@ from data.portfolio_trade_sync import (
 )
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_roles import (
-    ROLE_UNDEFINED,
+    ROLE_OBSERVATION,
     portfolio_role_core_tactical_split,
     portfolio_role_label,
     portfolio_role_target_weight,
@@ -828,7 +828,7 @@ def _pre_trade_snapshot_values(position_row: dict) -> dict:
     if total_cost is None and quantity is not None and avg_cost is not None:
         total_cost = quantity * avg_cost
     tier = str(position_row.get("positionTier") or "").strip().upper()
-    role = position_row.get("holdingRole") or position_row.get("role") or ROLE_UNDEFINED
+    role = position_row.get("holdingRole") or position_row.get("role") or ROLE_OBSERVATION
     return {
         "preTradeQuantity": quantity,
         "preTradeAvgCost": avg_cost,
@@ -2243,9 +2243,10 @@ def _queue_sell_intent(symbol: str, action_type: str, values: dict) -> None:
 
 
 def _sell_portfolio_role_context(symbol: str, values: dict) -> dict[str, object]:
-    role = values.get("tradeRole") or values.get("trade_role") or ROLE_UNDEFINED
+    explicit_role = values.get("tradeRole") or values.get("trade_role")
+    role = explicit_role or ROLE_OBSERVATION
     clean_symbol = str(symbol or "").strip().upper()
-    if role == ROLE_UNDEFINED and clean_symbol:
+    if clean_symbol and not explicit_role:
         try:
             rows = build_portfolio_view_model().get("rows") or []
         except Exception:
@@ -2254,8 +2255,8 @@ def _sell_portfolio_role_context(symbol: str, values: dict) -> dict[str, object]
             (row for row in rows if str(row.get("symbol") or "").strip().upper() == clean_symbol),
             {},
         )
-        role = current_row.get("holdingRole") or current_row.get("role") or ROLE_UNDEFINED
-    return {"current_role": role or ROLE_UNDEFINED}
+        role = current_row.get("holdingRole") or current_row.get("role") or ROLE_OBSERVATION
+    return {"current_role": role or ROLE_OBSERVATION}
 
 
 def _render_pending_sell_intent_dialog(store: TradeJournalStore) -> None:

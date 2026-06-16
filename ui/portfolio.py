@@ -18,10 +18,10 @@ from data.portfolio import (
 from data.portfolio_roles import (
     BUY_ROLE_FORM_OPTIONS,
     ROLE_FIRST_CORE,
+    ROLE_OBSERVATION,
     ROLE_SATELLITE,
     ROLE_STRONG_CORE,
     ROLE_TACTICAL,
-    ROLE_UNDEFINED,
     ROLE_FORM_OPTIONS,
     build_portfolio_role_structure,
     portfolio_role_badge_class,
@@ -54,7 +54,7 @@ EMPTY_POSITION = {
     "quantity": "",
     "average_cost": "",
     "position_tier": "",
-    "role": "UNDEFINED",
+    "role": "OBSERVATION",
     "target_position_pct": "",
     "max_acceptable_position_pct": "",
     "planned_sell_price": "",
@@ -952,14 +952,14 @@ def _portfolio_buy_role_context(symbol: str, values: dict[str, object]) -> dict[
         or values.get("tradeRole")
         or current_row.get("holdingRole")
         or current_row.get("role")
-        or ROLE_UNDEFINED
+        or ROLE_OBSERVATION
     )
     warnings_by_role = {
         role: portfolio_role_capacity_warning(role, rows, symbol=clean_symbol)
         for role in BUY_ROLE_FORM_OPTIONS.values()
     }
     return {
-        "current_role": current_row.get("holdingRole") or current_row.get("role") or ROLE_UNDEFINED,
+        "current_role": current_row.get("holdingRole") or current_row.get("role") or ROLE_OBSERVATION,
         "selected_role": selected_role,
         "warnings_by_role": warnings_by_role,
     }
@@ -1634,10 +1634,10 @@ def _render_position_tier_editor(position_store: PortfolioPositionStore, rows: l
             key="portfolio-tier-edit-tier",
         )
         role_labels = list(ROLE_FORM_OPTIONS.keys())
-        current_role = row.get("holdingRole") or row.get("role") or ROLE_UNDEFINED
+        current_role = row.get("holdingRole") or row.get("role") or ROLE_OBSERVATION
         current_role_label = next(
             (label for label, value in ROLE_FORM_OPTIONS.items() if value == current_role),
-            "未定义",
+            "观察仓",
         )
         selected_role_label = st.selectbox(
             "持仓角色",
@@ -2332,7 +2332,6 @@ def _render_overview_strip(summary: dict) -> None:
 def _render_role_structure_card(structure: dict) -> None:
     counts = dict((structure or {}).get("counts") or {})
     formal_count = int((structure or {}).get("formalCount") or 0)
-    undefined_count = int((structure or {}).get("undefinedCount") or 0)
     role_items = [
         (ROLE_FIRST_CORE, "第一核心", 1),
         (ROLE_STRONG_CORE, "强核心", 2),
@@ -2356,8 +2355,6 @@ def _render_role_structure_card(structure: dict) -> None:
             "</div>"
         )
     warning_items = [str(item) for item in ((structure or {}).get("warnings") or []) if str(item).strip()]
-    if undefined_count > 0 and not any("尚未定义角色" in item for item in warning_items):
-        warning_items.insert(0, f"有 {undefined_count} 只持仓尚未定义角色，请先完成组合角色归类。")
     warning_html = "".join(f"<li>{escape(item)}</li>" for item in warning_items)
     if warning_html:
         warning_html = f'<ul class="portfolio-role-warnings">{warning_html}</ul>'
@@ -2506,7 +2503,7 @@ def _portfolio_buy_alert_badge_html(row: dict) -> str:
 
 
 def _role_cell_html(row: dict) -> str:
-    role = row.get("holdingRole") or row.get("role") or ROLE_UNDEFINED
+    role = row.get("holdingRole") or row.get("role") or ROLE_OBSERVATION
     label = row.get("roleShortLabel") or portfolio_role_short_label(role)
     target = row.get("roleTargetWeight") or portfolio_role_target_weight(role)
     split = row.get("roleCoreTacticalSplit") or portfolio_role_core_tactical_split(role)

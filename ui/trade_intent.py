@@ -19,7 +19,7 @@ from data.trade_intent import (
 )
 from data.portfolio_roles import (
     BUY_ROLE_FORM_OPTIONS,
-    ROLE_UNDEFINED,
+    ROLE_OBSERVATION,
     SELL_ROLE_REMINDERS,
     normalize_portfolio_role,
     portfolio_role_core_tactical_split,
@@ -120,9 +120,6 @@ def _render_buy_intent_body(
 
     cols = st.columns(2)
     if cols[0].button("确认并记录", type="primary", width="stretch", key=f"{key_prefix}-confirm"):
-        if portfolio_role_context is not None and payload.get("portfolio_role") == ROLE_UNDEFINED:
-            st.warning("请先定义这只股票在组合里的角色。")
-            return
         on_confirm(payload)
     if cols[1].button("返回修改", width="stretch", key=f"{key_prefix}-cancel"):
         on_cancel()
@@ -206,7 +203,7 @@ def _render_buy_portfolio_role_selector(
         return
     st.markdown("##### 持仓角色")
     options = list(BUY_ROLE_FORM_OPTIONS)
-    current_role = normalize_portfolio_role(context.get("selected_role") or context.get("current_role"), default=ROLE_UNDEFINED)
+    current_role = normalize_portfolio_role(context.get("selected_role") or context.get("current_role"), default=ROLE_OBSERVATION)
     current_label = next((label for label, role in BUY_ROLE_FORM_OPTIONS.items() if role == current_role), options[0])
     selected_label = st.selectbox(
         "这次买入后，这只股票在组合里的角色是什么？",
@@ -214,15 +211,12 @@ def _render_buy_portfolio_role_selector(
         index=options.index(current_label) if current_label in options else 0,
         key=f"{key_prefix}-portfolio-role",
     )
-    role = BUY_ROLE_FORM_OPTIONS.get(str(selected_label), ROLE_UNDEFINED)
+    role = BUY_ROLE_FORM_OPTIONS.get(str(selected_label), ROLE_OBSERVATION)
     payload["portfolio_role"] = role
     payload["trade_role"] = role
     payload["role_label"] = portfolio_role_label(role)
     payload["role_target_weight"] = portfolio_role_target_weight(role)
     payload["core_tactical_split"] = portfolio_role_core_tactical_split(role)
-    if role == ROLE_UNDEFINED:
-        st.warning("新增股票必须先定义角色；观察仓不计入正式 6 只上限。")
-        return
     target = portfolio_role_target_weight(role) or "未设"
     split = portfolio_role_core_tactical_split(role) or "未设"
     description = portfolio_role_description(role)
@@ -235,7 +229,7 @@ def _render_buy_portfolio_role_selector(
 def _render_sell_portfolio_role_notice(payload: dict[str, str], *, context: dict[str, Any] | None) -> None:
     if context is None:
         return
-    role = normalize_portfolio_role(context.get("current_role"), default=ROLE_UNDEFINED) or ROLE_UNDEFINED
+    role = normalize_portfolio_role(context.get("current_role"), default=ROLE_OBSERVATION) or ROLE_OBSERVATION
     payload["portfolio_role"] = role
     payload["trade_role"] = role
     payload["role_label"] = portfolio_role_label(role)
@@ -246,7 +240,7 @@ def _render_sell_portfolio_role_notice(payload: dict[str, str], *, context: dict
     detail = f"目标仓位 {target}"
     if split:
         detail += f"；核心 / 战术 {split}"
-    reminder = SELL_ROLE_REMINDERS.get(role, SELL_ROLE_REMINDERS[ROLE_UNDEFINED])
+    reminder = SELL_ROLE_REMINDERS.get(role, SELL_ROLE_REMINDERS[ROLE_OBSERVATION])
     st.info(f"当前持仓角色：{portfolio_role_label(role)}。{detail}。{reminder}")
 
 

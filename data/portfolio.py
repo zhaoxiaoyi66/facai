@@ -8,7 +8,7 @@ from typing import Iterator
 
 from data.prices import CACHE_PATH
 from data.portfolio_roles import (
-    ROLE_UNDEFINED,
+    ROLE_OBSERVATION,
     normalize_portfolio_role,
     portfolio_role_badge_class,
     portfolio_role_label,
@@ -62,7 +62,7 @@ class PortfolioPositionStore:
                     quantity REAL NOT NULL,
                     average_cost REAL NOT NULL,
                     position_tier TEXT,
-                    role TEXT NOT NULL DEFAULT 'UNDEFINED',
+                    role TEXT NOT NULL DEFAULT 'OBSERVATION',
                     target_position_pct REAL,
                     max_acceptable_position_pct REAL,
                     planned_sell_price REAL,
@@ -83,7 +83,7 @@ class PortfolioPositionStore:
         additions = {
             "target_position_pct": "REAL",
             "position_tier": "TEXT",
-            "role": "TEXT NOT NULL DEFAULT 'UNDEFINED'",
+            "role": "TEXT NOT NULL DEFAULT 'OBSERVATION'",
             "max_acceptable_position_pct": "REAL",
             "planned_sell_price": "REAL",
             "first_trim_price": "REAL",
@@ -116,7 +116,7 @@ class PortfolioPositionStore:
             role = cleaned["role"]
             if role is None and existing:
                 role = _clean_position_role(existing[2])
-            role = role or ROLE_UNDEFINED
+            role = role or ROLE_OBSERVATION
             conn.execute(
                 """
                 INSERT INTO portfolio_positions (
@@ -218,7 +218,7 @@ class PortfolioPositionStore:
 
     def update_position_role(self, symbol: str, role: str) -> dict:
         clean_symbol = _normalize_symbol(symbol)
-        clean_role = _clean_position_role(role) or ROLE_UNDEFINED
+        clean_role = _clean_position_role(role) or ROLE_OBSERVATION
         now = _now()
         with self.connect() as conn:
             cursor = conn.execute(
@@ -384,7 +384,7 @@ def calculate_portfolio_position(
     return {
         **position,
         "symbol": symbol,
-        "role": _clean_position_role(position.get("role")) or ROLE_UNDEFINED,
+        "role": _clean_position_role(position.get("role")) or ROLE_OBSERVATION,
         "currentPrice": price,
         "marketValue": market_value,
         "costBasis": cost_basis,

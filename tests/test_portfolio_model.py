@@ -16,7 +16,7 @@ from data.portfolio import (
     calculate_portfolio_positions,
     format_position_tier_label,
 )
-from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_SATELLITE, ROLE_STRONG_CORE, ROLE_UNDEFINED
+from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_OBSERVATION, ROLE_SATELLITE, ROLE_STRONG_CORE
 from data.portfolio_view_model import build_portfolio_view_model
 import data.portfolio_view_model as portfolio_view_model_module
 from scoring.final_decision import BUY_ACTIONS
@@ -122,14 +122,14 @@ class PortfolioModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update_position_tier("NVDA", "UNCLASSIFIED")
 
-    def test_portfolio_position_role_defaults_to_undefined_and_can_update(self) -> None:
+    def test_portfolio_position_role_defaults_to_observation_and_can_update(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
 
             created = store.save_position("NVDA", {"quantity": 2, "average_cost": 100})
             updated = store.update_position_role("NVDA", ROLE_FIRST_CORE)
 
-            self.assertEqual(created["role"], ROLE_UNDEFINED)
+            self.assertEqual(created["role"], ROLE_OBSERVATION)
             self.assertEqual(updated["role"], ROLE_FIRST_CORE)
             self.assertEqual(updated["quantity"], 2)
             self.assertEqual(updated["average_cost"], 100)
@@ -151,8 +151,8 @@ class PortfolioModelTests(unittest.TestCase):
 
             self.assertEqual(symbols, ["FIRST", "STRONG", "SAT", "UNDEF"])
             self.assertEqual(structure["formalCount"], 3)
-            self.assertEqual(structure["undefinedCount"], 1)
-            self.assertIn("尚未定义角色", " ".join(structure["warnings"]))
+            self.assertEqual(structure["undefinedCount"], 0)
+            self.assertNotIn("尚未定义角色", " ".join(structure["warnings"]))
 
     def test_portfolio_settings_store_saves_and_loads_defaults(self) -> None:
         with TemporaryDirectory() as tmpdir:
