@@ -240,6 +240,10 @@ def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
                 "acceptance_state_text": "承接不足",
                 "entry_quality": "EDGE_OBSERVE",
                 "required_confirmation_price": 105.12,
+                "momentum_context": {
+                    "momentum_note": "RSI 74，价格贴近布林上轨，追高风险升高。",
+                    "momentum_bias": "CHASE_RISK",
+                },
             },
             "current_shares": 160,
             "currentAddLimitPercent": 0,
@@ -250,9 +254,11 @@ def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
     html = dashboard_drawer._drawer_quick_decision_html(row, decision)
 
     assert decision["acceptance_state_text"] == "承接不足"
+    assert decision["momentum_note"] == "RSI 74，价格贴近布林上轨，追高风险升高。"
     assert "当前子区" in html
     assert "当前动作" in html
     assert "主原因" in html
+    assert "动能辅助" in html
 
 
 def test_drawer_shows_star_badge_without_changing_primary_decision() -> None:

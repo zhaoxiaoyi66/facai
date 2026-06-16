@@ -390,6 +390,7 @@ def _drawer_quick_decision_html(row: pd.Series, decision: dict[str, object] | No
         ("当前动作", _drawer_short_sentence(decision["action_text"], 32)),
         ("当前子区", _drawer_short_sentence(decision.get("current_subzone_display_text") or decision["zone_text"], 32)),
         ("主原因", _drawer_short_sentence(decision["main_reason"], 38)),
+        ("动能辅助", _drawer_short_sentence(decision.get("momentum_note"), 42)),
         ("下一步", _drawer_short_sentence(decision["next_step"], 42)),
     ]
     fields_html = "".join(
@@ -552,6 +553,7 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
     )
     position_action = str(display.get("account_action_text") or "")
     next_step = str(display.get("next_step_text") or "")
+    momentum_note = str(display.get("momentum_note") or "")
     conflict_notice = _drawer_conflict_notice(row, action_code)
     missing_fields_text = " / ".join(missing_labels)
     headline = str(display.get("main_conclusion_text") or "").strip()
@@ -572,6 +574,7 @@ def build_drawer_primary_decision(row: pd.Series | dict) -> dict[str, object]:
         "badge_zone": badge_zone,
         "position_action": position_action,
         "next_step": next_step,
+        "momentum_note": momentum_note,
         "conflict_notice": conflict_notice,
         "missing_fields_text": missing_fields_text,
         "buy_zone_display": display,

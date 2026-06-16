@@ -15,6 +15,7 @@ from data.buy_zone_engine import (
     build_buy_zone_snapshot,
     save_buy_zone_snapshot,
 )
+from indicators.technicals import add_technical_indicators, latest_technical_snapshot
 from ui import ai_stock_radar as radar_ui
 
 
@@ -835,6 +836,89 @@ def test_daily_ohlcv_derives_uncomputed_ma_atr_rsi_and_zones() -> None:
     assert context.support_zone_high is not None
     assert context.confirmation_price is not None
     assert context.chase_price is None
+    assert context.momentum_context["bb_upper"] is not None
+    assert context.momentum_context["bb_lower"] is not None
+
+
+def test_add_technical_indicators_calculates_bollinger_bands() -> None:
+    history = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=40),
+            "close": [100 + index for index in range(40)],
+            "high": [101 + index for index in range(40)],
+            "low": [99 + index for index in range(40)],
+            "volume": [1_000_000 + index * 1_000 for index in range(40)],
+        }
+    )
+
+    result = add_technical_indicators(history)
+    snapshot = latest_technical_snapshot(result)
+
+    for field in ("bb_upper", "bb_middle", "bb_lower", "bb_percent_b", "bb_width"):
+        assert field in result
+        assert snapshot[field] is not None
+
+
+def test_momentum_context_flags_overheated_upper_band_chase_risk() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=104.5,
+            rsi14=74,
+            bb_lower=92,
+            bb_middle=99,
+            bb_upper=105,
+            bb_percent_b=0.96,
+            bb_width=13,
+        ),
+        volume_snapshot=_volume(volume_price_score=58, volume_ratio=0.9),
+    )
+
+    assert context.momentum_context["rsi_state"] == "OVERHEATED"
+    assert context.momentum_context["bb_position"] == "NEAR_UPPER"
+    assert context.momentum_context["momentum_bias"] == "CHASE_RISK"
+    assert "MOMENTUM_OVERHEATED" in context.risk_flags
+    assert context.current_action != ALLOW_SMALL_BUY
+
+
+def test_momentum_context_does_not_turn_oversold_lower_band_into_buy_signal() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            rsi14=26,
+            bb_lower=100,
+            bb_middle=108,
+            bb_upper=116,
+            bb_percent_b=0.06,
+            bb_width=14,
+        ),
+        volume_snapshot=_volume(volume_price_status="UNCONFIRMED", volume_price_score=42, volume_ratio=0.6, confirmation_score=42),
+    )
+
+    assert context.momentum_context["momentum_bias"] == "OVERSOLD_OBSERVE"
+    assert context.momentum_context["momentum_score_adjustment"] > 0
+    assert context.current_action != ALLOW_SMALL_BUY
+    assert context.acceptance_state != "CLEAR_ACCEPTANCE"
+
+
+def test_momentum_context_marks_below_lower_band_volume_selloff_as_falling_knife() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=99,
+            rsi14=34,
+            bb_lower=100,
+            bb_middle=108,
+            bb_upper=116,
+            bb_percent_b=-0.06,
+            bb_width=14,
+            daily_return_pct=-4.2,
+            close_position=0.12,
+        ),
+        volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=58, volume_ratio=1.55, confirmation_score=58),
+    )
+
+    assert context.momentum_context["momentum_bias"] == "FALLING_KNIFE_RISK"
+    assert context.acceptance_state == "FALLING_KNIFE_RISK"
+    assert context.falling_knife_risk == "HIGH"
 
 
 def test_daily_ohlcv_dataframe_is_accepted_without_truth_value_error() -> None:

@@ -188,6 +188,7 @@ def _render_conclusion_card(
         ("买点状态", buy_point_html, True),
         ("风险评级", score.risk_rating),
         ("数据状态", data_status),
+        ("动能辅助", str(display.get("momentum_note") or "未参与判断")),
         ("最近刷新", refreshed),
     ]
 

@@ -1541,6 +1541,8 @@ def _executive_summary_card_html(
     key_prices = _decision_key_price_items(report, conclusion, buy_zone_context, buy_zone_display)
     acceptance_text = _buy_zone_acceptance_text(buy_zone_context, buy_zone_display)
     entry_quality_text = _entry_quality_text(buy_zone_context, buy_zone_display)
+    momentum_note = str(buy_zone_display.get("momentum_note") or "").strip()
+    momentum_html = f'<p class="ai-radar-thesis">动能辅助：{escape(momentum_note)}</p>' if momentum_note else ""
     main_headline = str(
         buy_zone_display.get("main_conclusion_text")
         or conclusion.get("main_conclusion_text")
@@ -1575,6 +1577,7 @@ def _executive_summary_card_html(
         f'<div><span>我的持仓动作</span><strong>{escape(str(position_action or "先观察"))}</strong></div>'
         "</div>"
         f'<p class="ai-radar-thesis">{escape(summary)}</p>'
+        f"{momentum_html}"
         f"{position_html}"
         f'<div class="ai-radar-key-price-grid">{key_price_html}</div>'
         '<div class="ai-radar-next-step-card">'

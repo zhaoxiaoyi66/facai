@@ -320,6 +320,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
             "acceptance_state_text": "承接不足",
             "entry_quality_text": "边缘观察",
             "current_subzone_display_text": "承接观察区上沿",
+            "momentum_note": "RSI 74，价格贴近布林上轨，追高风险升高。",
         },
     }
 
@@ -337,6 +338,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
     assert "承接状态" in html
     assert "承接不足" in html
     assert "边缘观察" in html
+    assert "动能辅助：RSI 74，价格贴近布林上轨，追高风险升高。" in html
     assert "NOW：承接不足，承接观察区上沿，持有观察 / 当前不建议新增" in html
     assert html.count("<li>") == 4
     assert "若无持仓" not in html

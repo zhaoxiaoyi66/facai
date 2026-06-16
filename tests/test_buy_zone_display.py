@@ -118,6 +118,37 @@ def test_display_exposes_acceptance_state_and_quality() -> None:
     assert "量价未确认 / 承接不足" in display["setup_quality_note"]
 
 
+def test_display_exposes_momentum_context_note() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_BUY",
+            "primary_zone_text": "技术回踩带",
+            "current_price": 104.15,
+            "pullback_zone_low": 97.5,
+            "pullback_zone_high": 108.0,
+            "momentum_context": {
+                "rsi14": 74,
+                "rsi_state": "OVERHEATED",
+                "bb_position": "NEAR_UPPER",
+                "bb_width_state": "NORMAL",
+                "momentum_bias": "CHASE_RISK",
+                "momentum_score_adjustment": -8,
+                "momentum_note": "RSI 74，价格贴近布林上轨，追高风险升高。",
+                "momentum_reasons": ["RSI 过热且靠近布林上轨，新增语气需降级。"],
+            },
+            "risk_flags": ["MOMENTUM_OVERHEATED"],
+        },
+        {},
+        mode="test",
+    )
+
+    assert display["momentum_context"]["rsi_state"] == "OVERHEATED"
+    assert display["momentum_note"] == "RSI 74，价格贴近布林上轨，追高风险升高。"
+    assert display["momentum_score_adjustment"] == -8
+    assert display["risk_flags"] == ["MOMENTUM_OVERHEATED"]
+
+
 def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
     display = build_buy_zone_display(
         {

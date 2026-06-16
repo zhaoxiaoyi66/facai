@@ -142,6 +142,8 @@ class BuyZoneContext:
     acceptance_reasons: list[str] = field(default_factory=list)
     missing_confirmation: list[str] = field(default_factory=list)
     required_confirmation_price: float | None = None
+    momentum_context: dict[str, Any] = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -306,6 +308,20 @@ def build_buy_zone_context(
         if core_allowed
         else "公司综合评分低于70，仅作为风险背景；买入时机仍以 setup_score、量价承接和风险收益为准。"
     )
+    daily_return_for_momentum = _first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent")
+    close_position_for_momentum = _first_number(data, "close_position", "closePosition", "close_position_in_range", "closePositionInRange")
+    momentum_context = _momentum_context(
+        data=data,
+        price=price,
+        support_low=support_low,
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        confirmation=confirmation,
+        volume_score=0.0,
+        volume_ratio=volume_ratio,
+        daily_return=daily_return_for_momentum,
+        close_position=close_position_for_momentum,
+    )
     if missing:
         return BuyZoneContext(
             primary_zone="DATA_INSUFFICIENT",
@@ -386,6 +402,8 @@ def build_buy_zone_context(
             acceptance_reasons=["技术承接数据不足，无法确认承接。"],
             missing_confirmation=missing,
             required_confirmation_price=confirmation,
+            momentum_context=momentum_context,
+            risk_flags=list(momentum_context.get("risk_flags") or []),
         )
 
     raw_left_probe_low, raw_left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
@@ -472,6 +490,18 @@ def build_buy_zone_context(
     )
     current_subzone = _current_subzone(primary_zone, left_probe_label, zone_position)
     left_side_quality = _left_side_quality(left_probe_label, volume_price_gate, rr.target_quality, rr_score)
+    momentum_context = _momentum_context(
+        data=data,
+        price=price,
+        support_low=support_low,
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        confirmation=confirmation,
+        volume_score=volume_score,
+        volume_ratio=volume_ratio,
+        daily_return=daily_return,
+        close_position=close_position,
+    )
     advisory_level, advisory_reasons = _advisory_review(
         action=action,
         primary_zone=primary_zone,
@@ -483,6 +513,9 @@ def build_buy_zone_context(
         rr_score=rr_score,
         execution_reason=execution_gate_reason,
     )
+    advisory_reasons = _dedupe_text([*advisory_reasons, *list(momentum_context.get("momentum_reasons") or [])])
+    if momentum_context.get("momentum_bias") in {"CHASE_RISK", "FALLING_KNIFE_RISK"}:
+        advisory_level = max(advisory_level, "WARNING", key=_advisory_rank)
     acceptance = _acceptance_assessment(
         primary_zone=primary_zone,
         current_subzone=current_subzone,
@@ -498,6 +531,7 @@ def build_buy_zone_context(
         daily_return=daily_return,
         close_position=close_position,
     )
+    acceptance = _adjust_acceptance_with_momentum(acceptance, momentum_context)
     entry_quality = _entry_quality(
         acceptance_state=str(acceptance["acceptance_state"]),
         primary_zone=primary_zone,
@@ -582,6 +616,7 @@ def build_buy_zone_context(
             "trend_score": trend_score,
             "volume_score": volume_score,
             "risk_reward_score": rr_score,
+            "momentum_score_adjustment": float(momentum_context.get("momentum_score_adjustment") or 0.0),
         },
         current_subzone=current_subzone,
         left_side_position_pct=left_side_position_pct,
@@ -604,6 +639,8 @@ def build_buy_zone_context(
         acceptance_reasons=list(acceptance["acceptance_reasons"]),
         missing_confirmation=list(acceptance["missing_confirmation"]),
         required_confirmation_price=confirmation,
+        momentum_context=momentum_context,
+        risk_flags=list(momentum_context.get("risk_flags") or []),
     )
 
 
@@ -2004,6 +2041,11 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
         enriched.setdefault("rsi_14", rsi14)
         enriched.setdefault("rsi14", rsi14)
 
+    bollinger = _bollinger_bands(closes, 20, 2.0)
+    for key, value in bollinger.items():
+        if value is not None:
+            enriched.setdefault(key, value)
+
     swing_high = max(highs[-20:]) if highs else None
     swing_low = min(lows[-20:]) if lows else None
     if swing_high is not None:
@@ -2163,6 +2205,232 @@ def _rsi(closes: list[float], window: int = 14) -> float | None:
         return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _bollinger_bands(closes: list[float], window: int = 20, multiplier: float = 2.0) -> dict[str, float | None]:
+    usable = [value for value in closes if value is not None]
+    if len(usable) < window:
+        return {
+            "bb_upper": None,
+            "bb_middle": None,
+            "bb_lower": None,
+            "bb_percent_b": None,
+            "bb_width": None,
+        }
+    tail = usable[-window:]
+    middle = sum(tail) / len(tail)
+    variance = sum((value - middle) ** 2 for value in tail) / len(tail)
+    deviation = variance ** 0.5
+    upper = middle + deviation * multiplier
+    lower = middle - deviation * multiplier
+    latest = usable[-1]
+    band_range = upper - lower
+    percent_b = (latest - lower) / band_range if band_range > 0 else None
+    width = band_range / middle * 100.0 if middle > 0 else None
+    return {
+        "bb_upper": upper,
+        "bb_middle": middle,
+        "bb_lower": lower,
+        "bb_percent_b": percent_b,
+        "bb_width": width,
+    }
+
+
+def _momentum_context(
+    *,
+    data: dict[str, Any],
+    price: float | None,
+    support_low: float | None,
+    pullback_low: float | None,
+    pullback_high: float | None,
+    confirmation: float | None,
+    volume_score: float,
+    volume_ratio: float | None,
+    daily_return: float | None,
+    close_position: float | None,
+) -> dict[str, Any]:
+    rsi = _first_number(data, "rsi14", "rsi_14", "rsi")
+    bb_upper = _first_number(data, "bb_upper", "bollinger_upper", "upper_band")
+    bb_middle = _first_number(data, "bb_middle", "bollinger_middle", "middle_band")
+    bb_lower = _first_number(data, "bb_lower", "bollinger_lower", "lower_band")
+    bb_percent_b = _first_number(data, "bb_percent_b", "bbPercentB")
+    bb_width = _first_number(data, "bb_width", "bbWidth")
+    context = {
+        "rsi14": rsi,
+        "rsi_state": _rsi_state(rsi),
+        "bb_position": "",
+        "bb_width_state": _bb_width_state(bb_width),
+        "bb_upper": bb_upper,
+        "bb_middle": bb_middle,
+        "bb_lower": bb_lower,
+        "bb_percent_b": bb_percent_b,
+        "bb_width": bb_width,
+        "momentum_bias": "DATA_INSUFFICIENT",
+        "momentum_score_adjustment": 0.0,
+        "momentum_note": "RSI / 布林轨数据不足，未参与判断。",
+        "momentum_reasons": [],
+        "missing_momentum_fields": [],
+        "risk_flags": [],
+    }
+    missing = []
+    if rsi is None:
+        missing.append("rsi14")
+    if price is None:
+        missing.append("current_price")
+    if bb_upper is None or bb_middle is None or bb_lower is None:
+        missing.append("bollinger_bands")
+    if missing:
+        context["missing_momentum_fields"] = missing
+        return context
+
+    bb_position = _bb_position(price, bb_lower, bb_middle, bb_upper, bb_percent_b)
+    context["bb_position"] = bb_position
+    high_volume = volume_ratio is not None and volume_ratio >= 1.2
+    volume_improving = volume_score >= 60 or (volume_ratio is not None and volume_ratio >= 1.0)
+    fast_selloff = daily_return is not None and daily_return <= -3.0
+    weak_close = close_position is not None and close_position <= 0.25
+    in_pullback_area = _price_near_zone(price, pullback_low, pullback_high, tolerance_pct=0.015)
+    near_support = (support_low is not None and price <= support_low * 1.04) or in_pullback_area
+    above_confirmation = confirmation is not None and price >= confirmation
+    note = "RSI %.0f，布林位置中性，动能未给额外信号。" % rsi
+    reasons: list[str] = []
+    risk_flags: list[str] = []
+    adjustment = 0.0
+    bias = "NEUTRAL"
+
+    if bb_position == "BELOW_LOWER" and high_volume and (fast_selloff or weak_close):
+        bias = "FALLING_KNIFE_RISK"
+        adjustment = -10.0
+        note = "跌破布林下轨且放量下杀，飞刀风险较高。"
+        reasons.append("跌破布林下轨且放量下杀，先等止跌和收回关键线。")
+        risk_flags.append("FALLING_KNIFE_RISK")
+    elif rsi > 70 and bb_position in {"NEAR_UPPER", "ABOVE_UPPER"}:
+        bias = "CHASE_RISK"
+        adjustment = -8.0 if bb_position == "NEAR_UPPER" else -10.0
+        note = f"RSI {rsi:.0f}，价格贴近布林上轨，追高风险升高。"
+        reasons.append("RSI 过热且靠近布林上轨，新增语气需降级。")
+        risk_flags.append("MOMENTUM_OVERHEATED")
+    elif bb_position == "NEAR_UPPER" and not high_volume:
+        bias = "UPPER_PRESSURE"
+        adjustment = -5.0
+        note = f"RSI {rsi:.0f}，价格贴近布林上轨但未见放量突破，上沿压力较大。"
+        reasons.append("贴近布林上轨但未见放量突破，追高风险升高。")
+        risk_flags.append("UPPER_BAND_PRESSURE")
+    elif rsi < 30 and bb_position in {"NEAR_LOWER", "BELOW_LOWER"}:
+        bias = "OVERSOLD_OBSERVE"
+        adjustment = 3.0
+        note = f"RSI {rsi:.0f}，靠近布林下轨，左侧观察价值增强。"
+        reasons.append("RSI 超跌且接近布林下轨，只增强观察价值，不单独触发买入。")
+    elif bb_position == "NEAR_LOWER" and daily_return is not None and daily_return >= 0 and volume_score >= 55:
+        bias = "RECLAIM_LOWER_BAND"
+        adjustment = 4.0
+        note = f"RSI {rsi:.0f}，下轨附近企稳且量价改善，初步承接。"
+        reasons.append("布林下轨附近企稳，量价改善，仍需确认线和收盘确认。")
+    elif 30 <= rsi < 45 and near_support and volume_improving:
+        bias = "LEFT_SIDE_SUPPORT"
+        adjustment = 6.0
+        note = f"RSI {rsi:.0f}，靠近支撑/低吸区，左侧试仓可信度提高。"
+        reasons.append("RSI 偏弱但靠近支撑，且量价承接改善，左侧观察质量提高。")
+    elif 45 <= rsi <= 60 and above_confirmation:
+        bias = "RIGHT_CONFIRMATION_AID"
+        adjustment = 5.0
+        note = f"RSI {rsi:.0f}，站上确认线，右侧确认质量提高。"
+        reasons.append(f"RSI 中性且站上确认线 {_money(confirmation)}，右侧确认质量提高。")
+
+    context.update(
+        {
+            "momentum_bias": bias,
+            "momentum_score_adjustment": max(-10.0, min(8.0, adjustment)),
+            "momentum_note": note,
+            "momentum_reasons": _dedupe_text(reasons),
+            "risk_flags": _dedupe_text(risk_flags),
+        }
+    )
+    return context
+
+
+def _adjust_acceptance_with_momentum(acceptance: dict[str, Any], momentum: dict[str, Any]) -> dict[str, Any]:
+    adjusted = dict(acceptance)
+    bias = str(momentum.get("momentum_bias") or "")
+    note = str(momentum.get("momentum_note") or "").strip()
+    if not note or adjusted.get("acceptance_state") == "STRUCTURE_BROKEN":
+        return adjusted
+    reasons = _dedupe_text([*list(adjusted.get("acceptance_reasons") or []), note])
+    adjusted["acceptance_reasons"] = reasons
+    if bias == "FALLING_KNIFE_RISK":
+        adjusted["acceptance_state"] = "FALLING_KNIFE_RISK"
+        adjusted["acceptance_state_text"] = ACCEPTANCE_STATE_TEXT["FALLING_KNIFE_RISK"]
+        adjusted["falling_knife_risk"] = "HIGH"
+        adjusted["missing_confirmation"] = _dedupe_text(
+            [*list(adjusted.get("missing_confirmation") or []), "止跌 K 线", "收回布林下轨", "站回确认线"]
+        )
+    elif bias in {"RECLAIM_LOWER_BAND", "RIGHT_CONFIRMATION_AID"} and adjusted.get("acceptance_state") == "WEAK_ACCEPTANCE":
+        adjusted["acceptance_state"] = "FORMING_ACCEPTANCE"
+        adjusted["acceptance_state_text"] = ACCEPTANCE_STATE_TEXT["FORMING_ACCEPTANCE"]
+        adjusted["falling_knife_risk"] = "LOW"
+    return adjusted
+
+
+def _rsi_state(rsi: float | None) -> str:
+    if rsi is None:
+        return ""
+    if rsi < 30:
+        return "OVERSOLD"
+    if rsi < 45:
+        return "WEAK"
+    if rsi <= 60:
+        return "NEUTRAL"
+    if rsi <= 70:
+        return "STRONG"
+    return "OVERHEATED"
+
+
+def _bb_position(
+    price: float,
+    lower: float | None,
+    middle: float | None,
+    upper: float | None,
+    percent_b: float | None,
+) -> str:
+    if lower is None or middle is None or upper is None:
+        return ""
+    if price < lower:
+        return "BELOW_LOWER"
+    if price > upper:
+        return "ABOVE_UPPER"
+    if percent_b is not None:
+        if percent_b <= 0.18:
+            return "NEAR_LOWER"
+        if percent_b >= 0.82:
+            return "NEAR_UPPER"
+        if 0.35 <= percent_b <= 0.65:
+            return "MID_RANGE"
+    band_range = upper - lower
+    if band_range <= 0:
+        return "MID_RANGE"
+    if price <= lower + band_range * 0.18:
+        return "NEAR_LOWER"
+    if price >= upper - band_range * 0.18:
+        return "NEAR_UPPER"
+    return "MID_RANGE"
+
+
+def _bb_width_state(width: float | None) -> str:
+    if width is None:
+        return ""
+    if width <= 6:
+        return "SQUEEZE"
+    if width >= 18:
+        return "EXPANDING"
+    return "NORMAL"
+
+
+def _price_near_zone(price: float, low: float | None, high: float | None, *, tolerance_pct: float) -> bool:
+    if low is None or high is None:
+        return False
+    lower, upper = sorted((low, high))
+    tolerance = max(abs(price) * tolerance_pct, 0.01)
+    return lower - tolerance <= price <= upper + tolerance
 
 
 def _in_range(price: float, low: float, high: float) -> bool:

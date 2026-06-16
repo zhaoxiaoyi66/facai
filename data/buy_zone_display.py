@@ -110,6 +110,12 @@ def build_buy_zone_display(
         _value(ctx, "volume_acceptance_score", "volumeAcceptanceScore", "volume_price_score", "volumePriceScore")
     )
     risk_reward_score = _number(_value(ctx, "risk_reward_score", "riskRewardScore", "rr_score", "rrScore"))
+    momentum_context = _dict(_value(ctx, "momentum_context", "momentumContext", default={}) or {})
+    momentum_note = str(
+        _value(momentum_context, "momentum_note", "momentumNote", default="")
+        or _value(ctx, "momentum_note", "momentumNote", default="")
+        or ""
+    ).strip()
     main_conclusion = _main_conclusion_text(
         acceptance_text=acceptance_text,
         subzone_display_text=subzone_display_text,
@@ -168,6 +174,11 @@ def build_buy_zone_display(
         "risk_reward_text": risk_reward_text,
         "risk_reward_note": _risk_reward_note(ctx, row_data),
         "risk_reward": _number(_value(ctx, "risk_reward", "riskReward", "raw_rr", "rawRr")),
+        "momentum_context": momentum_context,
+        "momentum_note": momentum_note,
+        "momentum_reasons": _text_list(_value(momentum_context, "momentum_reasons", "momentumReasons", default=[])),
+        "momentum_score_adjustment": _number(_value(momentum_context, "momentum_score_adjustment", "momentumScoreAdjustment")),
+        "risk_flags": _text_list(_value(ctx, "risk_flags", "riskFlags", default=[])),
         "action_new_cash": str(_value(ctx, "action_new_cash", "actionNewCash", default="") or account["account_action_text"]),
         "action_existing_position": str(_value(ctx, "action_existing_position", "actionExistingPosition", default="") or account["account_action_text"]),
         "entry_condition_text": str(_value(ctx, "entry_condition_text", "entryConditionText", "add_trigger_condition_text", default="") or ""),

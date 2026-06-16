@@ -64,6 +64,30 @@ def calculate_atr14(highs: pd.Series, lows: pd.Series, closes: pd.Series) -> pd.
     return true_range.rolling(14, min_periods=14).mean()
 
 
+def calculate_bollinger_bands(
+    prices: pd.Series,
+    window: int = 20,
+    multiplier: float = 2.0,
+) -> pd.DataFrame:
+    prices = pd.to_numeric(prices, errors="coerce")
+    middle = prices.rolling(window, min_periods=window).mean()
+    deviation = prices.rolling(window, min_periods=window).std()
+    upper = middle + deviation * multiplier
+    lower = middle - deviation * multiplier
+    band_range = (upper - lower).replace(0, np.nan)
+    percent_b = ((prices - lower) / band_range).replace([np.inf, -np.inf], np.nan)
+    width = ((upper - lower) / middle.replace(0, np.nan) * 100.0).replace([np.inf, -np.inf], np.nan)
+    return pd.DataFrame(
+        {
+            "bb_upper": upper,
+            "bb_middle": middle,
+            "bb_lower": lower,
+            "bb_percent_b": percent_b,
+            "bb_width": width,
+        }
+    )
+
+
 def calculate_drawdown_from_52_week_high(
     closes: pd.Series,
     highs: pd.Series | None = None,
@@ -91,6 +115,9 @@ def add_technical_indicators(history: pd.DataFrame) -> pd.DataFrame:
     df["ema200"] = calculate_ema200(df["close"])
     df["atr14"] = calculate_atr14(high_series, low_series, df["close"])
     df["rsi14"] = calculate_rsi14(df["close"])
+    bollinger = calculate_bollinger_bands(df["close"])
+    for column in ("bb_upper", "bb_middle", "bb_lower", "bb_percent_b", "bb_width"):
+        df[column] = bollinger[column]
     df["fifty_two_week_high"] = high_series.rolling(TRADING_DAYS_IN_YEAR, min_periods=30).max()
     df["fifty_two_week_low"] = low_series.rolling(TRADING_DAYS_IN_YEAR, min_periods=30).min()
     df["recent_swing_low"] = low_series.rolling(20, min_periods=10).min()
@@ -126,6 +153,11 @@ def latest_technical_snapshot(history_with_indicators: pd.DataFrame) -> dict:
             "ema200": None,
             "atr14": None,
             "rsi14": None,
+            "bb_upper": None,
+            "bb_middle": None,
+            "bb_lower": None,
+            "bb_percent_b": None,
+            "bb_width": None,
             "fifty_two_week_high": None,
             "fifty_two_week_low": None,
             "recent_swing_low": None,
@@ -153,6 +185,11 @@ def latest_technical_snapshot(history_with_indicators: pd.DataFrame) -> dict:
         "ema200": _clean(latest.get("ema200")),
         "atr14": _clean(latest.get("atr14")),
         "rsi14": _clean(latest.get("rsi14")),
+        "bb_upper": _clean(latest.get("bb_upper")),
+        "bb_middle": _clean(latest.get("bb_middle")),
+        "bb_lower": _clean(latest.get("bb_lower")),
+        "bb_percent_b": _clean(latest.get("bb_percent_b")),
+        "bb_width": _clean(latest.get("bb_width")),
         "fifty_two_week_high": _clean(latest.get("fifty_two_week_high")),
         "fifty_two_week_low": _clean(latest.get("fifty_two_week_low")),
         "recent_swing_low": _clean(latest.get("recent_swing_low")),
