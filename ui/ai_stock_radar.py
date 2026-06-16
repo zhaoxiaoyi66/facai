@@ -652,19 +652,6 @@ def _report_loading_shell_html(symbol: str) -> str:
         "<p>正在读取本地缓存</p>"
         "<em>先展示研报框架，重数据稍后加载。</em>"
         "</div>"
-        '<aside class="ai-radar-header-decision">'
-        '<span class="ai-radar-header-kicker">投资结论</span>'
-        "<strong>加载中</strong>"
-        '<div class="ai-radar-header-decision-grid">'
-        "<div><span>当前动作</span><b>等待刷新</b></div>"
-        "<div><span>主击球区</span><b>暂缺</b></div>"
-        "<div><span>当前位置</span><b>加载中</b></div>"
-        "<div><span>入场条件</span><b>加载中</b></div>"
-        "<div><span>重新评估线</span><b>加载中</b></div>"
-        "<div><span>失效线</span><b>加载中</b></div>"
-        "<div><span>追高线</span><b>加载中</b></div>"
-        "</div>"
-        "</aside>"
         '<div class="ai-radar-header-stats">'
         "<div><span>最新价</span><strong>加载中</strong></div>"
         "<div><span>当前区间</span><strong>加载中</strong></div>"
@@ -672,7 +659,7 @@ def _report_loading_shell_html(symbol: str) -> str:
         "</div>"
         "</header>"
         '<section class="ai-radar-executive-card">'
-        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 触发 / 失效</b></div>'
+        '<div class="ai-radar-section-title"><span>决策摘要</span><b>当前建议 / 关键价格 / 下一步</b></div>'
         '<p class="ai-radar-thesis">本页结论：正在读取本地缓存，先展示研报框架。</p>'
         '<aside class="ai-radar-position-context">'
         "<strong>我的持仓：加载中</strong>"
@@ -945,7 +932,7 @@ def _research_next_trigger(
     if status_key == "avoid":
         return "排除规则复核"
     if status_key == "pullback":
-        return f"等回落至 {_money(high)}" if high is not None else "等回落到击球区"
+        return f"等回落至 {_money(high)}" if high is not None else "等回落到技术回踩带"
     confirmation = _first_number(context, "near_confirm_line", "confirmation_price", "confirm_price", "confirmation_line", "confirm_line")
     if status_key == "confirm":
         if confirmation is not None:
@@ -1256,14 +1243,20 @@ def _report_html(
         f"{_score_card_html(report, buy_zone_context)}"
         "</section>"
         f"{_ai_cloud_infra_card_html(row, snapshot, report)}"
+        '<details class="ai-radar-folded-section">'
+        '<summary>看多逻辑 / 核心风险</summary>'
         '<section class="ai-radar-opinion-grid two-col">'
         f'{_text_card_html("看多逻辑", report.get("bull_points") or [], subtitle="", limit=4)}'
         f'{_text_card_html("核心风险", report.get("risk_points") or [], subtitle="", limit=4)}'
         "</section>"
+        "</details>"
+        '<details class="ai-radar-folded-section">'
+        '<summary>关键监控点 / 量价承接详情</summary>'
         '<section class="ai-radar-evidence-grid">'
         f"{_watch_points_table_html(report, row)}"
         f"{_volume_price_acceptance_card_html(report, technicals, row, history)}"
         "</section>"
+        "</details>"
         f"{appendix_html}"
         '<footer class="ai-radar-report-foot">'
         f'<span>更新时间：{escape(_display_value(market.get("fetchedAt") or report.get("data_updated_at")))}</span>'
@@ -1286,7 +1279,7 @@ def _report_appendix_html(
     confidence = _data_confidence(report)
     return (
         '<section class="ai-radar-appendix">'
-        '<details class="ai-radar-appendix-details" open>'
+        '<details class="ai-radar-appendix-details">'
         '<summary>附录数据</summary>'
         '<section class="ai-radar-research-grid">'
         f'{_metric_table_card_html("关键指标（今日）", _key_metric_rows(report, market, snapshot, technicals, history))}'
@@ -1354,7 +1347,7 @@ def _debug_html(debug: dict[str, Any], report: dict[str, Any] | None = None) -> 
         f'<div><span>字段别名风险</span><strong>{escape(_inline_list(debug.get("field_alias_notes")))}</strong></div>'
         '</div>'
         '<div class="ai-radar-debug-summary compact">'
-        f'<div><span>击球区</span><strong>{escape(str(zone_sources.get("buy_zone") or "missing"))}</strong></div>'
+        f'<div><span>技术回踩带</span><strong>{escape(str(zone_sources.get("buy_zone") or "missing"))}</strong></div>'
         f'<div><span>观察区</span><strong>{escape(str(zone_sources.get("watch_zone") or "missing"))}</strong></div>'
         f'<div><span>追高区</span><strong>{escape(str(zone_sources.get("chase_zone") or "missing"))}</strong></div>'
         f'<div><span>风险提示原因</span><strong>{escape(_inline_list(debug.get("block_reasons")))}</strong></div>'
@@ -1390,7 +1383,6 @@ def _research_header_html(
     market_label = _clean_text(_first_present(snapshot, "country", "exchange")) or "本地缓存"
     meta = "｜".join(item for item in (track, market_label) if item) or "本地缓存研究视图"
     conclusion = conclusion or _trade_conclusion(report, action_result)
-    batting = _batting_zone_context(report, conclusion)
     volume = _volume_snapshot(market, snapshot, technicals, history)
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
@@ -1414,19 +1406,6 @@ def _research_header_html(
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
         "</div>"
-        '<aside class="ai-radar-header-decision">'
-        '<span class="ai-radar-header-kicker">投资结论</span>'
-        f'<strong>{escape(str(conclusion.get("rating_text") or core_status))}</strong>'
-        '<div class="ai-radar-header-decision-grid">'
-        f'<div><span>当前动作</span><b>{escape(str(conclusion.get("action_text") or "等待复核"))}</b></div>'
-        f'<div><span>{escape(str(batting.get("zone_label") or "主击球区"))}</span><b>{escape(str(batting.get("zone_range") or "暂缺"))}</b></div>'
-        f'<div><span>当前位置</span><b>{escape(str(batting.get("relative_text") or "暂缺"))}</b></div>'
-        f'<div><span>入场条件</span><b>{escape(str(batting.get("entry_condition") or "等待承接确认"))}</b></div>'
-        f'<div><span>重新评估线</span><b>{escape(str(batting.get("reevaluation_line") or "暂缺"))}</b></div>'
-        f'<div><span>失效线</span><b>{escape(str(batting.get("invalidation_line") or "暂缺"))}</b></div>'
-        f'<div><span>追高线</span><b>{escape(str(batting.get("chase_line") or "暂缺"))}</b></div>'
-        "</div>"
-        "</aside>"
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
         "</header>"
     )
@@ -1467,26 +1446,132 @@ def _executive_summary_card_html(
     conclusion = conclusion or _trade_conclusion(report, action_result)
     portfolio_context = portfolio_context or _portfolio_context(report, row, action_result)
     buy_zone_context = buy_zone_context or {}
-    batting_html = _batting_zone_card_html(report, conclusion, buy_zone_context)
-    summary = _conclusion_first_sentence(report, conclusion, buy_zone_context)
-    judgments = _executive_judgments(report, action_result, portfolio_context, conclusion, buy_zone_context)
-    judgment_html = "".join(f"<li>{escape(item)}</li>" for item in judgments if item)
-    position_html = _position_context_panel_html(portfolio_context)
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
+    summary = _decision_summary_sentence(report, batting, portfolio_context, buy_zone_context)
+    key_prices = _decision_key_price_items(report, conclusion, buy_zone_context)
+    key_price_html = "".join(
+        "<div>"
+        f"<span>{escape(label)}</span>"
+        f"<strong>{escape(value)}</strong>"
+        "</div>"
+        for label, value in key_prices
+        if value
+    )
+    next_steps = _decision_next_steps(batting, buy_zone_context)
+    next_step_html = "".join(f"<li>{escape(item)}</li>" for item in next_steps if item)
+    position_html = _position_context_panel_html(portfolio_context)
+    position_action = (
+        portfolio_context.get("action_for_existing_position")
+        if portfolio_context.get("has_position")
+        else portfolio_context.get("action_for_no_position")
+    )
     return (
-        '<section class="ai-radar-executive-card">'
-        f"{batting_html}"
-        '<div class="ai-radar-section-title"><span>执行摘要</span><b>结论 / 等待 / 失效</b></div>'
+        '<section class="ai-radar-executive-card ai-radar-decision-summary-card">'
+        '<div class="ai-radar-section-title"><span>决策摘要</span><b>当前建议 / 关键价格 / 下一步</b></div>'
+        '<div class="ai-radar-decision-summary-head">'
+        f'<div><span>{escape(str(report.get("ticker") or "UNKNOWN"))} / {_money(_report_current_price(report))}</span>'
+        f'<strong>{escape(str(batting.get("zone_label") or "技术回踩带"))}</strong></div>'
+        f'<div><span>主建议</span><strong>{escape(str(conclusion.get("action_text") or batting.get("operation") or "等待复核"))}</strong></div>'
+        f'<div><span>我的持仓动作</span><strong>{escape(str(position_action or "先观察"))}</strong></div>'
+        "</div>"
         f'<p class="ai-radar-thesis">{escape(summary)}</p>'
         f"{position_html}"
-        '<div class="ai-radar-exec-grid">'
-        f'<div><span>当前操作</span><strong>{escape(str(batting.get("operation") or getattr(action_result, "action_cn", "等待确认")))}</strong></div>'
-        f'<div><span>等什么</span><strong>{escape(str(batting.get("entry_condition") or "等待承接确认"))}</strong></div>'
-        f'<div><span>失效条件</span><strong>{escape(str(batting.get("invalidation_line") or _invalidation_sentence(report)))}</strong></div>'
+        f'<div class="ai-radar-key-price-grid">{key_price_html}</div>'
+        '<div class="ai-radar-next-step-card">'
+        '<b>下一步</b>'
+        f'<ol>{next_step_html}</ol>'
         "</div>"
-        f'<ol class="ai-radar-conclusion-list">{judgment_html}</ol>'
         "</section>"
     )
+
+
+def _decision_summary_sentence(
+    report: dict[str, Any],
+    batting: dict[str, str],
+    portfolio_context: dict[str, Any],
+    buy_zone_context: dict[str, Any],
+) -> str:
+    ticker = str(report.get("ticker") or "该股票")
+    current = batting.get("current_price") or _money(_report_current_price(report))
+    zone = str(batting.get("zone_label") or "技术回踩带")
+    action = (
+        str(portfolio_context.get("action_for_existing_position") or "")
+        if portfolio_context.get("has_position")
+        else str(portfolio_context.get("action_for_no_position") or "")
+    ).strip() or str(batting.get("operation") or "等待复核")
+    reason = _decision_primary_reason(batting, buy_zone_context)
+    holding = ""
+    shares = _number(portfolio_context.get("shares"))
+    current_add = _first_number(buy_zone_context, "current_add_limit_percent", "currentAddLimitPercent")
+    if shares is not None and shares > 0:
+        holding = f"；已有 {_quantity_text(shares)} 股"
+        if current_add is not None:
+            holding += f"，当前新增额度为 {_number_text(current_add)}"
+    return f"{ticker} 当前价 {current}，位于{zone}，{action}。{reason}{holding}。"
+
+
+def _decision_primary_reason(batting: dict[str, str], buy_zone_context: dict[str, Any]) -> str:
+    volume_state = str(batting.get("volume_state") or "").strip()
+    status = str(batting.get("status") or "").strip()
+    if status in {"买区上沿", "修复观察区"} or "修复观察" in str(batting.get("zone_label") or ""):
+        return "当前价接近技术回踩带上沿，量价承接未确认"
+    if "高于" in status or "追高" in status:
+        return "当前价高于技术回踩带，系统提示追高风险"
+    if "数据不足" in status:
+        return "技术承接数据不足，需补齐后再复核"
+    if "未确认" in volume_state or "不足" in volume_state:
+        return "价格进入技术回踩带，但量价承接未确认"
+    return "当前仍需等待量价确认和风险收益比复核"
+
+
+def _decision_key_price_items(
+    report: dict[str, Any],
+    conclusion: dict[str, Any],
+    buy_zone_context: dict[str, Any],
+) -> list[tuple[str, str]]:
+    left_low = _first_number(buy_zone_context, "left_probe_zone_low")
+    left_high = _first_number(buy_zone_context, "left_probe_zone_high")
+    observe_high = _first_number(buy_zone_context, "observe_zone_high")
+    pullback_high = _first_number(buy_zone_context, "pullback_zone_high")
+    confirm = _first_number(conclusion, "confirm_price") or _first_number(buy_zone_context, "confirmation_price")
+    invalidation = _first_number(conclusion, "invalidation_price") or _first_number(buy_zone_context, "invalidation_price")
+    current_zone = _current_subzone_range(report, buy_zone_context)
+    return [
+        ("左侧试仓候选", _range_text(left_low, left_high)),
+        ("承接观察", _range_text(left_high, observe_high)),
+        ("当前所在", current_zone),
+        ("重评线", f"站上 {_money(confirm)}" if confirm is not None else "暂缺"),
+        ("失效复核", f"跌破 {_money(invalidation)}" if invalidation is not None else "暂缺"),
+    ]
+
+
+def _current_subzone_range(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
+    current = _report_current_price(report)
+    left_low = _first_number(buy_zone_context, "left_probe_zone_low")
+    left_high = _first_number(buy_zone_context, "left_probe_zone_high")
+    observe_high = _first_number(buy_zone_context, "observe_zone_high")
+    pullback_high = _first_number(buy_zone_context, "pullback_zone_high")
+    invalid_low = _first_number(buy_zone_context, "invalidation_risk_zone_low")
+    invalid_high = _first_number(buy_zone_context, "invalidation_risk_zone_high")
+    if current is not None:
+        for low, high in ((left_low, left_high), (left_high, observe_high), (observe_high, pullback_high), (invalid_low, invalid_high)):
+            if _price_in_range(current, low, high):
+                return _range_text(low, high)
+    low, high = _batting_zone_bounds(report, buy_zone_context)
+    return _range_text(low, high)
+
+
+def _decision_next_steps(batting: dict[str, str], buy_zone_context: dict[str, Any]) -> list[str]:
+    left_low = _first_number(buy_zone_context, "left_probe_zone_low")
+    left_high = _first_number(buy_zone_context, "left_probe_zone_high")
+    confirm = _first_number(buy_zone_context, "confirmation_price")
+    invalidation = _first_number(buy_zone_context, "invalidation_price")
+    return [
+        f"不新增：{batting.get('entry_condition') or '量价承接未确认'}",
+        f"若回落：观察 {_range_text(left_low, left_high)} 是否承接",
+        f"若上行：站上 {_money(confirm)} 后重新评估" if confirm is not None else "若上行：等待重新评估线补齐",
+        f"若破位：跌破 {_money(invalidation)} 后复核" if invalidation is not None else "若破位：等待失效线补齐",
+    ]
 
 
 def _trade_conclusion(
@@ -1598,20 +1683,22 @@ def _batting_zone_context(
     chase = _first_number(conclusion, "chase_price") or _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     action_code = str(buy_zone_context.get("current_action") or conclusion.get("current_action") or "").upper()
     zone_position = _first_number(buy_zone_context, "zone_position", "zonePosition")
-    if action_code == "DATA_INSUFFICIENT" or (low is None and high is None):
+    if action_code == "DATA_INSUFFICIENT":
         status = "数据不足"
     elif current is None:
         status = "价格暂缺"
     elif chase is not None and current >= chase:
         status = "追高区"
+    elif low is None and high is None:
+        status = "数据不足"
     elif zone_position is not None and zone_position > 0.75 and low is not None and high is not None and low <= current <= high:
         status = "买区上沿"
     elif low is not None and high is not None and low <= current <= high:
         status = "区内"
     elif high is not None and current > high:
-        status = "高于击球区"
+        status = "高于技术回踩带"
     elif low is not None and current < low:
-        status = "低于击球区"
+        status = "低于技术回踩带"
     else:
         status = "等待确认"
     entry_condition = _batting_entry_condition(status, action_code)
@@ -1640,24 +1727,28 @@ def _batting_relative_text(current: float | None, low: float | None, high: float
         return "当前价暂缺"
     price = _money(current)
     if status == "区内":
-        return f"当前价 {price}，在主击球区内"
+        return f"当前价 {price}，在技术回踩带内"
     if status == "买区上沿":
         return f"当前价 {price}，位于买区上沿 / 修复观察区，不是主动买点"
     if status == "追高区":
         return f"当前价 {price}，已进入追高区"
-    if status == "高于击球区":
-        return f"当前价 {price}，高于理想击球区"
-    if status == "低于击球区":
-        return f"当前价 {price}，低于主击球区"
-    return f"当前价 {price}，击球区数据不足"
+    if status == "高于技术回踩带":
+        return f"当前价 {price}，高于技术回踩带"
+    if status == "低于技术回踩带":
+        return f"当前价 {price}，低于技术回踩带"
+    return f"当前价 {price}，技术回踩带数据不足"
 
 
 def _batting_zone_label(status: str) -> str:
     if status == "买区上沿":
-        return "买区上沿 / 修复观察区"
+        return "修复观察区"
     if status == "数据不足":
         return "买区数据"
-    return "主击球区"
+    if status == "追高区":
+        return "追高风险区"
+    if status == "低于技术回踩带":
+        return "结构失效风险区"
+    return "技术回踩带"
 
 
 def _distance_to_level_text(current: float | None, level: float | None) -> str:
@@ -1670,10 +1761,10 @@ def _batting_entry_condition(status: str, action_code: str) -> str:
     if status == "数据不足":
         return "先补齐技术承接数据"
     if status == "追高区":
-        return "等待回到击球区或重新形成低吸结构"
-    if status == "高于击球区":
-        return "跌回击球区后缩量企稳 / 出现承接K线"
-    if status == "低于击球区":
+        return "等待回到技术回踩带或重新形成低吸结构"
+    if status == "高于技术回踩带":
+        return "回到技术回踩带后观察量价承接"
+    if status == "低于技术回踩带":
         return "先确认未跌破失效线并出现承接"
     if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
         return "价格候选区，仍需量价确认"
@@ -1686,12 +1777,12 @@ def _batting_operation(status: str, action_text: str, action_code: str) -> str:
     if status == "数据不足":
         return "先补数据，不给明确买区"
     if status == "追高区":
-        return "不追，等待回到击球区"
+        return "不追，等待回到技术回踩带"
     if action_code in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
         return "低风险观察参考，不能一次打满"
-    if status == "高于击球区":
-        return "不追，等回踩到击球区后观察承接"
-    if status == "低于击球区":
+    if status == "高于技术回踩带":
+        return "不追，等回踩到技术回踩带后观察承接"
+    if status == "低于技术回踩带":
         return "先复核失效线，系统不建议新增"
     return action_text or "等待承接确认"
 
@@ -1940,7 +2031,7 @@ def _batting_zone_card_html(
     buy_zone_context: dict[str, Any] | None = None,
 ) -> str:
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
-    zone_label = str(batting.get("zone_label") or "主击球区")
+    zone_label = str(batting.get("zone_label") or "技术回踩带")
     rows = [
         (zone_label, str(batting.get("zone_range") or "暂缺")),
         ("当前价", str(batting.get("current_price") or "暂缺")),
@@ -1949,13 +2040,13 @@ def _batting_zone_card_html(
         ("状态", str(batting.get("status") or "暂缺")),
         ("量能", str(batting.get("volume_state") or "暂缺")),
         ("承接条件", str(batting.get("entry_condition") or "等待承接确认")),
-        ("当前操作", str(batting.get("operation") or "等待确认")),
+        ("当前建议", str(batting.get("operation") or "等待确认")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in rows)
     return (
         '<aside class="ai-radar-batting-card">'
-        f'<div class="ai-radar-section-title"><span>击球区</span><b>{escape(zone_label)} / 位置 / 操作</b></div>'
-        f'<p>{escape(str(batting.get("relative_text") or "击球区数据不足"))}</p>'
+        f'<div class="ai-radar-section-title"><span>技术回踩带</span><b>{escape(zone_label)} / 位置 / 建议</b></div>'
+        f'<p>{escape(str(batting.get("relative_text") or "技术回踩带数据不足"))}</p>'
         f'<div class="ai-radar-batting-grid">{body}</div>'
         "</aside>"
     )
@@ -2066,7 +2157,7 @@ def _range_chart_html(
     if current is not None:
         values.append(current)
     if not values:
-        return _empty_card_html("买区与承接结构图", "缺少价格和区间数据，暂时无法绘制。")
+        return _empty_card_html("价格行动地图", "缺少价格和区间数据，暂时无法绘制。")
     low = min(values)
     high = max(values)
     padding = max((high - low) * 0.08, 1.0)
@@ -2097,16 +2188,16 @@ def _range_chart_html(
             "</div>"
         )
     batting = _batting_zone_context(report, conclusion, buy_zone_context)
-    reference_text = "、".join(label for label in (conclusion.get("reference_zone_texts") or []) if label != "主击球区 / 回踩击球区") or "暂无"
-    zone_label = str(batting.get("zone_label") or "主击球区")
+    reference_text = "、".join(label for label in (conclusion.get("reference_zone_texts") or []) if label not in {"主击球区 / 回踩击球区", "技术回踩带"}) or "暂无"
+    zone_label = str(batting.get("zone_label") or "技术回踩带")
     explanation = (
         f"{zone_label}：{batting.get('zone_range')}；{batting.get('relative_text')}。"
-        f"观察区只观察，不主动买；重新评估线用于重新判断，不等于直接买入。"
+        f"观察区只观察，不主动新增；重新评估线用于重新判断，不等于直接买入。"
         f"参考区间：{reference_text}。失效线：{batting.get('invalidation_line')}。"
     )
     return (
         '<section class="ai-radar-card ai-radar-range-card">'
-        f'<div class="ai-radar-section-title"><span>买区与承接结构图</span><b>{escape(zone_label)}优先</b></div>'
+        f'<div class="ai-radar-section-title"><span>价格行动地图</span><b>{escape(zone_label)} / 五个核心子区</b></div>'
         f'<div class="ai-radar-range-axis"><span>{escape(_money(low))}</span><span>{escape(_money(high))}</span></div>'
         f'{"".join(rows)}'
         f'<p class="ai-radar-range-explain">{escape(explanation)}</p>'
@@ -2124,40 +2215,32 @@ def _range_chart_items(report: dict[str, Any], buy_zone_context: dict[str, Any] 
     invalidation_risk_low = _first_number(buy_zone_context, "invalidation_risk_zone_low")
     invalidation_risk_high = _first_number(buy_zone_context, "invalidation_risk_zone_high")
     support_low = _first_number(buy_zone_context, "support_zone_low") or _first_number(report, "deep_support_zone_low", "radar_deep_support_zone_low", "invalidation_price", "radar_invalidation_price")
-    support_high = _first_number(buy_zone_context, "support_zone_high") or _first_number(report, "deep_support_zone_high", "radar_deep_support_zone_high", "support_watch_zone_high", "radar_support_watch_zone_high")
-    trend_low = _first_number(report, "trend_critical_zone_low", "radar_trend_critical_zone_low")
-    trend_high = _first_number(report, "trend_critical_zone_high", "radar_trend_critical_zone_high")
-    deep_panic_low = _first_number(report, "deep_panic_zone_low", "radar_deep_panic_zone_low")
-    deep_panic_high = _first_number(report, "deep_panic_zone_high", "radar_deep_panic_zone_high")
     confirmation = _first_number(buy_zone_context, "confirmation_price") or _first_number(report, "confirmation_price", "radar_confirmation_price")
     invalidation = _first_number(buy_zone_context, "invalidation_price") or _first_number(report, "invalidation_price", "radar_invalidation_price")
-    chase = _first_number(buy_zone_context, "chase_price") or _first_number(report, "chase_above_price", "radar_chase_above_price")
     items: list[dict[str, Any]] = []
     if pullback_low is not None and pullback_high is not None and observe_high is not None:
         if left_probe_low is not None and left_probe_high is not None:
-            items.append({"label": "左侧试仓区", "range": (left_probe_low, left_probe_high), "tone": "blue"})
+            items.append({"label": "左侧试仓候选区", "range": (left_probe_low, left_probe_high), "tone": "blue"})
         observation_start = left_probe_high or invalidation_risk_high or pullback_low
         if observation_start is None or observe_high is None or observation_start <= observe_high:
             items.append({"label": "承接观察区", "range": (observation_start, observe_high), "tone": "slate"})
         if observe_high is None or pullback_high is None or observe_high <= pullback_high:
-            items.append({"label": "买区上沿 / 修复观察区", "range": (observe_high, pullback_high), "tone": "amber"})
+            items.append({"label": "修复观察区", "range": (observe_high, pullback_high), "tone": "amber"})
+        if confirmation is not None:
+            items.append({"label": "重评区", "range": (confirmation, None), "tone": "green"})
         if invalidation_risk_low is not None and invalidation_risk_high is not None:
             items.append({"label": "结构失效风险区", "range": (invalidation_risk_low, invalidation_risk_high), "tone": "red"})
     else:
-        items.append({"label": "主击球区 / 回踩击球区", "range": (pullback_low, pullback_high), "tone": "blue"})
-    items.extend([
-        {"label": "近端修复观察区", "range": (_first_number(report, "near_term_repair_zone_low", "radar_near_term_repair_zone_low", "technical_repair_zone_low", "radar_technical_repair_zone_low"), _first_number(report, "near_term_repair_zone_high", "radar_near_term_repair_zone_high", "technical_repair_zone_high", "radar_technical_repair_zone_high")), "tone": "slate"},
-        {"label": "重新评估线", "range": (_first_number(report, "trend_reclaim_zone_low", "radar_trend_reclaim_zone_low"), _first_number(report, "trend_reclaim_zone_high", "radar_trend_reclaim_zone_high") or confirmation), "tone": "green"},
-        {"label": "估值参考区", "range": (_first_number(report, "valuation_reference_zone_low", "radar_valuation_reference_zone_low"), _first_number(report, "valuation_reference_zone_high", "radar_valuation_reference_zone_high")), "tone": "amber"},
-        {"label": "趋势临界 / 二次承接区", "range": (trend_low or support_low or invalidation, trend_high or support_high), "tone": "orange"},
-        {"label": "深度恐慌复核区", "range": (deep_panic_low, deep_panic_high), "tone": "red"},
-        {"label": "追高风险区", "range": (chase, None), "tone": "red"},
-    ])
+        items.append({"label": "技术回踩带", "range": (pullback_low, pullback_high), "tone": "blue"})
+        if confirmation is not None:
+            items.append({"label": "重评区", "range": (confirmation, None), "tone": "green"})
+        if invalidation is not None:
+            items.append({"label": "结构失效风险区", "range": (support_low or invalidation, invalidation), "tone": "red"})
     return items
 
 
 def _range_action_text(label: str) -> str:
-    if "买区上沿" in label:
+    if "修复观察" in label:
         return "持有观察，不主动新增"
     if "左侧试仓" in label:
         return "价格候选区，需量价确认"
@@ -2165,6 +2248,8 @@ def _range_action_text(label: str) -> str:
         return "等承接确认"
     if "结构失效" in label:
         return "跌破后建议复核，不建议新增"
+    if "重评" in label:
+        return "站上后重新评估"
     if "趋势临界" in label:
         return "破位后重新评估"
     if "深度恐慌" in label:
@@ -2228,7 +2313,7 @@ def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | 
         '<div class="ai-radar-section-title"><span>Setup 评分卡</span><b>结构 / 量能 / 盈亏比</b></div>'
         f'<div class="ai-radar-score-grid">{body}</div>'
         f'<p class="ai-radar-setup-explain">{escape(setup_note)}</p>'
-        f'<p class="ai-radar-risk-gate">{escape(core_note)}</p>'
+        f'<span class="ai-radar-core-badge">{escape(core_note)}</span>'
         "</section>"
     )
 
@@ -2249,19 +2334,19 @@ def _score_explanation(report: dict[str, Any]) -> str:
 def _setup_score_note(buy_zone_context: dict[str, Any]) -> str:
     if not buy_zone_context:
         return "Setup 分暂缺；买区应由技术结构、量价承接和风险收益比共同决定。"
-    action = str(buy_zone_context.get("action_text") or "等待确认")
-    zone = str(buy_zone_context.get("primary_zone_text") or "技术结构待确认")
-    return f"Setup {_number_text(buy_zone_context.get('setup_score'))}：{zone}，当前动作【{action}】。"
+    score = _number(buy_zone_context.get("setup_score"))
+    if score is not None and score >= 70:
+        return "观察级 setup，仍需量价确认和账户额度配合。"
+    return "观察级 setup，量价未确认，不建议新增。"
 
 
 def _core_position_notice(report: dict[str, Any], buy_zone_context: dict[str, Any]) -> str:
     if buy_zone_context and buy_zone_context.get("core_position_allowed") is False:
-        reason = str(buy_zone_context.get("core_position_reason") or "综合评分低于70，系统不建议作为核心仓。")
-        return f"核心仓资格：{_localize_report_text(reason)}"
+        return "非核心仓候选：综合分 < 70"
     final_score = _number(report.get("final_score"))
     if final_score is not None and final_score < 70:
-        return "核心仓资格：综合评分低于70，系统不建议作为核心仓；小仓仍看技术承接。"
-    return "核心仓资格：基本面用于仓位上限，买点仍以击球区、量能承接和风险收益比为准。"
+        return "非核心仓候选：综合分 < 70"
+    return "核心仓候选：仍需量价承接和风险收益比确认"
 
 
 def _score_support_and_drag(report: dict[str, Any]) -> tuple[str, str]:
@@ -2482,12 +2567,12 @@ def _volume_price_reason_text(status: str, score: float | None, reason: Any) -> 
 
 def _zones_card_html(report: dict[str, Any]) -> str:
     items = [
-        ("击球区", report.get("buy_zone")),
+        ("技术回踩带", report.get("buy_zone")),
         ("观察区", report.get("watch_zone")),
         ("追高区", report.get("chase_zone")),
     ]
     body = "".join(f"<div><span>{escape(label)}</span><strong>{escape(_zone_text(zone))}</strong></div>" for label, zone in items)
-    return f'<article class="ai-radar-card zones"><h3>击球区 / 观察区 / 追高区</h3>{body}</article>'
+    return f'<article class="ai-radar-card zones"><h3>技术回踩带 / 观察区 / 追高风险区</h3>{body}</article>'
 
 
 def _metric_table_card_html(title: str, rows: list[tuple[str, str]]) -> str:
@@ -2978,7 +3063,7 @@ def _research_watch_points(report: dict[str, Any], row: dict[str, Any]) -> list[
         f"利润率稳定性：当前读数：毛利率 {gross_margin}，净利率 {net_margin}。为什么重要：利润率决定现金流质量。触发条件：若利润率连续下滑或低于同业，复核盈利质量。交易含义：利润率稳定时优先等待价格和量价确认，不因短线波动直接否定。",
         f"估值压力：当前读数：远期市盈率 {forward_pe}，EV/Sales {ev_sales}。为什么重要：估值决定安全垫。触发条件：若进入追高区或历史高估区，不追价。交易含义：估值进入参考区也只代表可复核，不等于自动买入。",
         f"技术承接：当前读数：位于 {zone}，量比 {volume_ratio}，量价状态 {volume_status}。为什么重要：技术承接决定回踩是否成立。触发条件：未放量站上确认线 {confirm} 前，不构成买入确认。交易含义：先看量价读数，再考虑分批。",
-        f"失效条件：当前读数：失效线 {invalid}。为什么重要：失效线用于区分修复和破位。触发条件：若放量跌破支撑或失效线，暂停加仓，进入破位复核。交易含义：失效后不做无确认摊低。",
+        f"失效条件：当前读数：失效线 {invalid}。为什么重要：失效线用于区分修复和破位。触发条件：若放量跌破支撑或失效线，不建议加仓，进入破位复核。交易含义：失效后不做无确认摊低。",
     ]
 
 
@@ -3952,8 +4037,8 @@ def _localize_report_text(text: str) -> str:
         "AVOID": "暂不参与",
         "HOLD_NO_ADD": "仓位偏高，不建议继续加",
         "POSITION_LIMITED": "仓位接近上限，建议控制节奏",
-        "current price is below the discipline buy zone lower bound": "当前价格低于主击球区下沿",
-        "current price is above the discipline buy zone": "当前价格高于主击球区",
+        "current price is below the discipline buy zone lower bound": "当前价格低于技术回踩带下沿",
+        "current price is above the discipline buy zone": "当前价格高于技术回踩带",
         "current price is in or above chase zone": "当前价格已接近或进入追高线",
         "review fundamentals": "重新检查基本面与技术承接",
         "Revenue growth": "收入高增长",
@@ -4228,7 +4313,7 @@ def _data_status_label(value: str) -> str:
         "STALE": "价格可能过期",
         "MISSING_PRICE": "缺价格",
         "MISSING_SCORE": "缺评分",
-        "MISSING_BUY_ZONE": "缺击球区",
+        "MISSING_BUY_ZONE": "缺买区上下文",
     }.get(value, value or "未知")
 
 
@@ -4817,6 +4902,56 @@ def _render_styles() -> None:
             border-color:#D6E0EC;
             box-shadow:0 10px 26px rgba(15, 23, 42, 0.06);
         }
+        .ai-radar-decision-summary-head,
+        .ai-radar-key-price-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:10px;
+            margin-bottom:12px;
+        }
+        .ai-radar-decision-summary-head div,
+        .ai-radar-key-price-grid div {
+            background:#F8FAFC;
+            border:1px solid #E8EEF5;
+            border-radius:8px;
+            padding:10px;
+        }
+        .ai-radar-decision-summary-head span,
+        .ai-radar-key-price-grid span {
+            display:block;
+            color:#64748B;
+            font-size:11px;
+            margin-bottom:4px;
+            font-weight:750;
+        }
+        .ai-radar-decision-summary-head strong,
+        .ai-radar-key-price-grid strong {
+            display:block;
+            color:#0B1F3A;
+            font-size:14px;
+            line-height:1.35;
+            font-weight:860;
+        }
+        .ai-radar-next-step-card {
+            margin-top:12px;
+            background:#F8FBFF;
+            border:1px solid #D6E0EC;
+            border-radius:8px;
+            padding:12px 14px;
+        }
+        .ai-radar-next-step-card b {
+            display:block;
+            color:#0B1F3A;
+            font-size:13px;
+            margin-bottom:6px;
+        }
+        .ai-radar-next-step-card ol {
+            margin:0;
+            padding-left:18px;
+            color:#334155;
+            font-size:13px;
+            line-height:1.65;
+        }
         .ai-radar-thesis {
             margin:0 0 14px;
             color:#0B1F3A;
@@ -4992,6 +5127,30 @@ def _render_styles() -> None:
             border-top:1px solid #E8EEF5;
             padding-top:12px;
         }
+        .ai-radar-folded-section {
+            margin:14px 18px;
+            border:1px solid #E2E8F0;
+            border-radius:10px;
+            background:#FFFFFF;
+            padding:0;
+        }
+        .ai-radar-folded-section summary {
+            cursor:pointer;
+            list-style:none;
+            padding:12px 14px;
+            color:#0B1F3A;
+            font-size:13px;
+            font-weight:850;
+        }
+        .ai-radar-folded-section summary::-webkit-details-marker { display:none; }
+        .ai-radar-folded-section summary::before {
+            content:"+";
+            display:inline-flex;
+            width:18px;
+            color:#64748B;
+            font-weight:900;
+        }
+        .ai-radar-folded-section[open] summary::before { content:"-"; }
         .ai-radar-appendix.lazy {
             border-top:0;
             padding-top:0;
@@ -5146,15 +5305,16 @@ def _render_styles() -> None:
             border-top:1px solid #EEF2F7;
             padding-top:10px;
         }
-        .ai-radar-risk-gate {
-            margin:11px 0 0;
-            color:#7F1D1D;
-            background:#FEF2F2;
-            border:1px solid #FECACA;
-            border-radius:8px;
-            padding:8px 10px;
-            font-size:13px;
-            line-height:1.5;
+        .ai-radar-core-badge {
+            display:inline-flex;
+            margin-top:11px;
+            color:#92400E;
+            background:#FFFBEB;
+            border:1px solid #FDE68A;
+            border-radius:999px;
+            padding:5px 9px;
+            font-size:12px;
+            line-height:1.25;
             font-weight:820;
         }
         .ai-radar-ai-infra-card {

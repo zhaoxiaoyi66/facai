@@ -206,16 +206,11 @@ def test_report_header_uses_localized_investment_conclusion() -> None:
         action_result,
     )
 
-    assert "投资结论" in html
+    assert "投资结论" not in html
     assert "追高风险" in html
-    assert "不主动追买" in html
     assert "追高风险区" in html
-    assert "当前位置" in html
-    assert "当前位置" in html
-    assert "入场条件" in html
-    assert "放量站上 $52.00 后重新判断" in html
-    assert "跌破 $44.00 后系统不建议新增" in html
-    assert "≥ $50.00 追高风险提醒" in html
+    assert "当前区间" in html
+    assert "$55.00" in html
     assert "BLOCK_CHASE" not in html
     assert "OVEREXTENDED_SUPPORT_READ" not in html
 
@@ -267,13 +262,14 @@ def test_report_summary_is_conclusion_first_and_shows_position_actions() -> None
         action_result,
     )
 
-    assert "击球区" in html
-    assert "本页结论：MSFT 当前价 $390.00，在主击球区内" in html
+    assert "决策摘要" in html
+    assert "技术回踩带" in html
+    assert "MSFT 当前价 $390.00，位于技术回踩带" in html
     assert "我的持仓：12 股｜成本 $320.00｜浮盈亏 +$840.00 / +21.9%" in html
     assert "已有持仓动作" in html
     assert "无持仓动作" not in html
-    assert "已有持仓，持有观察，未到加仓确认位。" in html
-    assert html.count("<li>") == 3
+    assert "持有观察，未到加仓确认位" in html
+    assert html.count("<li>") == 4
     assert "若无持仓" not in html
 
 
@@ -309,7 +305,8 @@ def test_report_position_panel_for_no_position_only_shows_no_position_action() -
     assert "我的持仓：未持仓" in html
     assert "无持仓动作" in html
     assert "已有持仓动作" not in html
-    assert "未持仓，不追买，等待回到观察区。" in html
+    assert "追高风险区" in html
+    assert "不追买，等待回到观察区" in html
 
 
 def test_report_data_health_marks_missing_sources_as_temporarily_missing() -> None:
@@ -543,7 +540,7 @@ def test_report_softens_core_position_gate_copy() -> None:
     core_notice = radar_ui._core_position_notice(report, buy_zone_context)
     risk_notice = radar_ui._risk_gate_notice(report)
 
-    assert "系统不建议作为核心仓" in core_notice
+    assert core_notice == "非核心仓候选：综合分 < 70"
     assert "系统不建议作为核心仓" in risk_notice
     assert "禁止核心仓买入" not in core_notice
     assert "禁止核心仓买入" not in risk_notice
@@ -582,10 +579,10 @@ def test_report_range_chart_explains_primary_and_reference_zones() -> None:
     html = radar_ui._range_chart_html(report, conclusion)
 
     assert conclusion["primary_zone_text"] == "近端修复观察区"
-    assert "买区与承接结构图" in html
-    assert "主击球区" in html
+    assert "价格行动地图" in html
+    assert "技术回踩带" in html
     assert "重新评估线用于重新判断，不等于直接买入" in html
-    assert "参考区间：近端修复观察区、估值参考区" in html
+    assert "参考区间：近端修复观察区" in html
 
 
 def test_list_core_status_prefers_unified_buy_zone_context() -> None:
@@ -1014,8 +1011,8 @@ def test_ai_radar_report_html_can_skip_appendix_for_fast_first_paint() -> None:
 
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame(), include_appendix=False)
 
-    assert "投资结论" in html
-    assert "执行摘要" in html
+    assert "投资结论" not in html
+    assert "决策摘要" in html
     assert "附录数据" not in html
     assert "核心财务摘要" not in html
 
@@ -1130,9 +1127,9 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     html = radar_ui._report_html(report, {}, _cached_snapshot(), _cached_technicals(), {}, pd.DataFrame())
 
     assert "AI 股票雷达研究" in html
-    assert "执行摘要" in html
-    assert "击球区" in html
-    assert "买区与承接结构图" in html
+    assert "决策摘要" in html
+    assert "技术回踩带" in html
+    assert "价格行动地图" in html
     assert "Setup 评分卡" in html
     assert "看多逻辑" in html
     assert "核心风险" in html
@@ -1143,7 +1140,8 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
     assert "数据完整度" in html
     assert "后续催化 / 风险事项" in html
     assert "附录" in html
-    assert html.count("执行摘要") == 1
+    assert html.count("决策摘要") == 1
+    assert 'class="ai-radar-folded-section"' in html
     assert "触发条件" in html
     assert "交易含义" in html
     assert "AI Stock Radar Research" not in html
@@ -1286,7 +1284,7 @@ def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone
     assert "买区上沿 / 修复观察区" in card_html
     assert "不是主动买点" in card_html
     assert "主击球区" not in card_html
-    assert "左侧试仓区" in chart_html
+    assert "左侧试仓候选区" in chart_html
     assert "承接观察区" in chart_html
     assert "买区上沿 / 修复观察区" in chart_html
     assert "主击球区：" not in chart_html
@@ -1315,7 +1313,7 @@ def test_ai_radar_range_chart_separates_invalidation_overlap_from_left_probe() -
 
     chart_html = radar_ui._range_chart_html(report, {}, buy_zone_context)
 
-    assert "左侧试仓区" in chart_html
+    assert "左侧试仓候选区" in chart_html
     assert "$97.50 - $99.32" in chart_html
     assert "结构失效风险区" in chart_html
     assert "$94.60 - $97.50" in chart_html
