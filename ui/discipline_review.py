@@ -127,29 +127,33 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
         st.warning(f"最近重复出现：{'、'.join(repeated)}，建议把它写成明确规则。")
 
     with st.form("mistake-review-form", clear_on_submit=True):
-        st.markdown("#### 基本信息")
+        st.markdown("#### 错误档案")
         cols = st.columns([1, 2, 2])
         review_date = cols[0].date_input("日期", value=date.today())
         scene_or_symbol = cols[1].text_input("标的 / 场景", placeholder="例如：SPACX 空单、NOK 清仓、NVDA 追高")
-        loss_impact_text = cols[2].text_input("损失金额 / 影响，可选", placeholder="例如：800U、亏损500美元、卖飞约10%、无实际亏损但操作失控")
+        loss_amount_usd = cols[2].number_input("损失金额", min_value=0.0, value=0.0, step=10.0, format="%.2f")
+        cols[2].caption("单位：USD")
         mistake_tags = st.multiselect("错误类型，多选", MISTAKE_TAG_OPTIONS, placeholder="选择错误类型")
-        st.markdown("#### 复盘正文")
-        trigger_event = st.text_area("事件经过", height=88, placeholder="这件事是怎么发生的？我当时做了什么？造成了什么影响？")
+        st.markdown("#### 错误复盘")
+        trigger_event = st.text_area("事件经过", height=82, placeholder="这次交易错误是怎么发生的？我当时做了什么？")
+        impact_summary = st.text_area("结果 / 影响", height=82, placeholder="这次错误造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？")
         reflection = st.text_area("核心反思", height=82, placeholder="真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？")
-        next_defense = st.text_area("下次防线", height=82, placeholder="下次遇到类似情况，必须执行什么规则？如何防止重复犯错？")
-        if st.form_submit_button("保存这条错题", width="stretch"):
+        st.markdown("#### 纠偏规则")
+        next_defense = st.text_area("下次防线", height=82, placeholder="下次遇到类似情况，必须执行哪条规则？")
+        if st.form_submit_button("归档这条错误", width="stretch"):
             store.save_mistake_review(
                 {
                     "review_date": review_date,
                     "scene_or_symbol": scene_or_symbol,
-                    "loss_impact_text": loss_impact_text,
+                    "loss_amount_usd": loss_amount_usd,
+                    "impact_summary": impact_summary,
                     "trigger_event": trigger_event,
                     "mistake_tags": mistake_tags,
                     "reflection": reflection,
                     "next_defense": next_defense,
                 }
             )
-            st.success("错误复盘已记录。")
+            st.success("错误已归档。")
             st.rerun()
 
     filtered = _filter_mistake_reviews(rows)
@@ -332,7 +336,7 @@ def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tag = cols[0].selectbox("按错误类型筛选", ["全部", *MISTAKE_TAG_OPTIONS], key="mistake-tag-filter")
     status = cols[1].selectbox("按复盘状态筛选", ["全部", *MISTAKE_REVIEW_STATUSES], key="mistake-status-filter")
     recent_only = cols[2].checkbox("只看最近30天", value=False, key="mistake-recent-filter")
-    loss_only = cols[3].checkbox("只看有损失金额 / 影响的记录", value=False, key="mistake-loss-filter")
+    loss_only = cols[3].checkbox("只看有损失金额的记录", value=False, key="mistake-loss-filter")
     current = date.today()
     start = current - timedelta(days=29)
     result = []
@@ -343,7 +347,7 @@ def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if recent_only and not _date_in_range(row.get("review_date"), start, current):
             continue
-        if loss_only and _loss_impact(row) == "-":
+        if loss_only and _loss_amount_value(row) <= 0:
             continue
         result.append(row)
     return result
@@ -459,7 +463,7 @@ def _mistake_summary_html(summary: dict[str, Any]) -> str:
     cards = [
         ("错误记录总数", str(summary.get("total_count") or 0), "全部错题"),
         ("最近30天错误数", str(summary.get("recent_30_count") or 0), "按复盘日期"),
-        ("最近30天损失 / 影响", str(summary.get("recent_30_loss_impact_text") or "暂无记录"), "手动记录口径"),
+        ("最近30天损失金额", str(summary.get("recent_30_loss_amount_text") or "暂无记录"), "USD 统计"),
         ("最常见错误类型", str(summary.get("most_common_mistake_type") or "暂无"), f"{int(summary.get('most_common_mistake_count') or 0)} 次"),
         ("未形成规则", str(summary.get("unruled_count") or 0), "建议继续沉淀"),
     ]
@@ -473,7 +477,7 @@ def _mistake_table_html(rows: list[dict[str, Any]]) -> str:
         "<tr>"
         f"<td>{escape(str(row.get('review_date') or ''))}</td>"
         f"<td>{escape(_scene_or_symbol(row))}</td>"
-        f"<td>{escape(_loss_impact(row))}</td>"
+        f"<td>{escape(_loss_amount_text(row))}</td>"
         f"<td>{escape('、'.join(row.get('mistake_tags') or []))}</td>"
         f"<td>{escape(_one_line(row.get('reflection')))}</td>"
         f"<td>{escape(str(row.get('review_status') or ''))}</td>"
@@ -483,7 +487,7 @@ def _mistake_table_html(rows: list[dict[str, Any]]) -> str:
     )
     return (
         '<div class="discipline-table-wrap"><table class="discipline-table">'
-        "<thead><tr><th>日期</th><th>标的 / 场景</th><th>损失金额 / 影响</th><th>错误类型</th><th>核心反思摘要</th><th>状态</th><th>操作</th></tr></thead>"
+        "<thead><tr><th>日期</th><th>标的 / 场景</th><th>损失金额</th><th>错误类型</th><th>核心反思摘要</th><th>状态</th><th>操作</th></tr></thead>"
         f"<tbody>{body}</tbody></table></div>"
     )
 
@@ -494,8 +498,9 @@ def _mistake_detail_html(row: dict[str, Any]) -> str:
     <section class="mistake-detail-card">
       <h4>{escape(str(row.get('review_date') or ''))} · {escape(_scene_or_symbol(row))}</h4>
       <dl>
-        <dt>损失金额 / 影响</dt><dd>{escape(_loss_impact(row))}</dd>
+        <dt>损失金额</dt><dd>{escape(_loss_amount_text(row))}</dd>
         <dt>事件经过</dt><dd>{_detail_text_html(_mistake_event_summary(row))}</dd>
+        <dt>结果 / 影响</dt><dd>{_detail_text_html(_mistake_impact_summary(row))}</dd>
         <dt>错误类型</dt><dd>{escape(tags)}</dd>
         <dt>核心反思</dt><dd>{_detail_text_html(str(row.get('reflection') or '未记录'))}</dd>
         <dt>下次防线</dt><dd>{_detail_text_html(_mistake_next_defense(row))}</dd>
@@ -515,9 +520,24 @@ def _mistake_event_summary(row: dict[str, Any]) -> str:
     parts = [
         _clean_detail_part(row.get("trigger_event")),
         _clean_detail_part(row.get("action_taken")),
-        _clean_detail_part(row.get("result_text")),
     ]
     clean = [part for part in parts if part]
+    return "\n".join(clean) if clean else "未记录"
+
+
+def _mistake_impact_summary(row: dict[str, Any]) -> str:
+    parts = [
+        _clean_detail_part(row.get("impact_summary")),
+        _clean_detail_part(row.get("loss_impact_text")),
+        _clean_detail_part(row.get("result_text")),
+    ]
+    clean = []
+    seen = set()
+    for part in parts:
+        if not part or part in seen:
+            continue
+        seen.add(part)
+        clean.append(part)
     return "\n".join(clean) if clean else "未记录"
 
 
@@ -1073,11 +1093,16 @@ def _scene_or_symbol(row: dict[str, Any]) -> str:
     return str(row.get("scene_or_symbol") or row.get("symbol") or "未填标的 / 场景").strip()
 
 
-def _loss_impact(row: dict[str, Any]) -> str:
-    text = str(row.get("loss_impact_text") or "").strip()
-    if text:
-        return text
-    return _money(row.get("loss_amount"))
+def _loss_amount_value(row: dict[str, Any]) -> float:
+    try:
+        return float(row.get("loss_amount_usd") if row.get("loss_amount_usd") is not None else row.get("loss_amount") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _loss_amount_text(row: dict[str, Any]) -> str:
+    value = _loss_amount_value(row)
+    return f"${value:,.2f}" if value > 0 else "暂无记录"
 
 
 def _one_line(value: object, limit: int = 32) -> str:

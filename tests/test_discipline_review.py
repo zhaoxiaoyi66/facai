@@ -135,9 +135,33 @@ def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
         assert rows[0]["reflection"] == "这是流程错误。"
         assert "短线想做回落" in discipline_review._mistake_event_summary(rows[0])
         assert "没有设置止盈止损" in discipline_review._mistake_event_summary(rows[0])
-        assert "隔夜后亏损" in discipline_review._mistake_event_summary(rows[0])
+        assert "800U" in discipline_review._mistake_impact_summary(rows[0])
+        assert "隔夜后亏损" in discipline_review._mistake_impact_summary(rows[0])
         assert "睡前检查持仓" in discipline_review._mistake_next_defense(rows[0])
         assert "合约单必须有保护单" in discipline_review._mistake_next_defense(rows[0])
+
+
+def test_mistake_reviews_store_usd_loss_and_impact_summary_separately() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_mistake_review(
+            {
+                "review_date": "2026-06-16",
+                "scene_or_symbol": "NVDA 追高",
+                "loss_amount_usd": 500.25,
+                "impact_summary": "卖飞后上涨约 10%，但金额字段只记录 USD 数字。",
+                "trigger_event": "看到盘中拉升后追入。",
+                "mistake_tags": ["追涨杀跌", "怕错过"],
+                "reflection": "这是怕错过，不是计划交易。",
+                "next_defense": "追高前先等 15 分钟。",
+            }
+        )
+
+        assert saved["loss_amount"] == 500.25
+        assert saved["loss_amount_usd"] == 500.25
+        assert saved["loss_impact_text"] == "卖飞后上涨约 10%，但金额字段只记录 USD 数字。"
+        assert saved["impact_summary"] == "卖飞后上涨约 10%，但金额字段只记录 USD 数字。"
 
 
 def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None:
@@ -145,16 +169,18 @@ def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None
         {"review_date": "2026-06-16", "loss_amount": 100, "mistake_tags": ["没设止损"], "review_status": "已记录"},
         {"review_date": "2026-06-15", "loss_amount": 200, "mistake_tags": ["没设止损"], "review_status": "已形成规则"},
         {"review_date": "2026-06-14", "loss_amount": 300, "mistake_tags": ["没设止损", "隔夜暴露"], "review_status": "已设置防线"},
+        {"review_date": "2026-06-13", "loss_impact_text": "卖飞约10%", "mistake_tags": ["怕错过"], "review_status": "已记录"},
         {"review_date": "2026-05-01", "loss_amount": 500, "mistake_tags": ["怕错过"], "review_status": "已记录"},
     ]
 
     summary = build_mistake_review_summary(rows, current_date="2026-06-16")
 
-    assert summary["total_count"] == 4
-    assert summary["recent_30_count"] == 3
+    assert summary["total_count"] == 5
+    assert summary["recent_30_count"] == 4
     assert summary["recent_30_loss_amount"] == 600
+    assert summary["recent_30_loss_amount_text"] == "$600.00"
     assert summary["most_common_mistake_type"] == "没设止损"
-    assert summary["unruled_count"] == 2
+    assert summary["unruled_count"] == 3
     assert summary["repeated_mistake_types"] == ["没设止损"]
 
 
@@ -416,7 +442,7 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "交易错题本" in source
     assert "周期收益复盘" in source
     assert "保存周期复盘" in source
-    assert "保存这条错题" in source
+    assert "归档这条错误" in source
     assert "读取账户净资产" in source
     assert "保存当前账户快照" in source
     assert "使用上一条复盘期末净资产作为期初净资产" in source
@@ -426,14 +452,22 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "上一条复盘" in source
     assert "当前系统暂无历史账户快照" in source
     assert "标的 / 场景" in source
-    assert "损失金额 / 影响" in source
+    assert "错误档案" in source
+    assert "错误复盘" in source
+    assert "纠偏规则" in source
+    assert "损失金额" in source
+    assert "单位：USD" in source
+    assert "结果 / 影响" in source
+    assert "只看有损失金额的记录" in source
+    assert "最近30天损失金额" in source
     assert "选择错误类型" in source
     assert "事件经过" in source
     assert "核心反思" in source
     assert "下次防线" in source
-    assert "这件事是怎么发生的？我当时做了什么？造成了什么影响？" in source
+    assert "这次交易错误是怎么发生的？我当时做了什么？" in source
+    assert "这次错误造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？" in source
     assert "真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？" in source
-    assert "下次遇到类似情况，必须执行什么规则？如何防止重复犯错？" in source
+    assert "下次遇到类似情况，必须执行哪条规则？" in source
     assert "_render_self_check_questions" not in source
     assert "SELF_CHECK_QUESTIONS" not in source
     assert "交易前纪律提醒" not in source
@@ -441,11 +475,16 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "按市场类型筛选" not in source
     assert "SPACX 示例模板" not in source
     assert "with st.expander(\"SPACX" not in source
+    assert "基本信息" not in source
+    assert "复盘正文" not in source
+    assert "损失金额 / 影响" not in source
+    assert "例如：800U、亏损500美元、卖飞约10%" not in source
     assert "复盘状态\", MISTAKE_REVIEW_STATUSES" not in source
     assert "当时操作\", height" not in source
     assert "结果\", height" not in source
     assert "改进规则\", height" not in source
     assert "添加错误复盘" not in source
+    assert "保存这条错题" not in source
     assert "保存标签" not in source
     assert "选择交易记录" not in source
     assert "交易纪律标签" not in source

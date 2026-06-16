@@ -378,12 +378,10 @@ class DisciplineReviewStore:
         tags = _dedupe([tag for tag in values.get("mistake_tags", []) if tag in MISTAKE_TAG_OPTIONS])
         scene_or_symbol = _clean_text(values.get("scene_or_symbol") or values.get("symbol"))
         symbol = str(values.get("symbol") or scene_or_symbol or "").strip().upper()
-        loss_impact_text = _clean_text(values.get("loss_impact_text"))
-        loss_amount = _optional_number(values.get("loss_amount"))
-        if not loss_impact_text and loss_amount is not None:
-            loss_impact_text = _plain_number(loss_amount)
+        loss_impact_text = _clean_text(values.get("impact_summary") or values.get("loss_impact_text"))
+        loss_amount = _optional_nonnegative_number(values.get("loss_amount_usd"))
         if loss_amount is None:
-            loss_amount = _optional_number(loss_impact_text)
+            loss_amount = _optional_nonnegative_number(values.get("loss_amount"))
         now = _now()
         fields = {
             "review_date": review_date.isoformat(),
@@ -889,14 +887,16 @@ def build_mistake_review_summary(
     recent_tag_counts = _mistake_tag_counts(recent_rows)
     most_common = sorted(all_tag_counts.items(), key=lambda item: (-item[1], item[0]))
     repeated = [tag for tag, count in sorted(recent_tag_counts.items(), key=lambda item: (-item[1], item[0])) if count >= 2]
-    recent_loss = sum(_optional_number(row.get("loss_amount")) or 0.0 for row in recent_rows)
-    recent_loss_impact_count = sum(1 for row in recent_rows if _has_loss_impact(row))
+    recent_loss = sum(_optional_nonnegative_number(row.get("loss_amount")) or 0.0 for row in recent_rows)
+    recent_loss_impact_count = sum(1 for row in recent_rows if _has_loss_amount(row))
+    recent_loss_text = _loss_amount_summary(recent_loss)
     return {
         "total_count": len(rows),
         "recent_30_count": len(recent_rows),
         "recent_30_loss_amount": round(recent_loss, 2),
         "recent_30_loss_impact_count": recent_loss_impact_count,
-        "recent_30_loss_impact_text": _loss_impact_summary(recent_loss, recent_loss_impact_count),
+        "recent_30_loss_amount_text": recent_loss_text,
+        "recent_30_loss_impact_text": recent_loss_text,
         "most_common_mistake_type": most_common[0][0] if most_common else "",
         "most_common_mistake_count": most_common[0][1] if most_common else 0,
         "unruled_count": sum(1 for row in rows if str(row.get("review_status") or "") not in {"已形成规则", "已设置防线"}),
@@ -1256,17 +1256,13 @@ def _plain_number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(round(float(value), 2))
 
 
-def _has_loss_impact(row: dict[str, Any]) -> bool:
-    if _clean_text(row.get("loss_impact_text")):
-        return True
-    return (_optional_number(row.get("loss_amount")) or 0.0) > 0
+def _has_loss_amount(row: dict[str, Any]) -> bool:
+    return (_optional_nonnegative_number(row.get("loss_amount")) or 0.0) > 0
 
 
-def _loss_impact_summary(recent_loss: float, impact_count: int) -> str:
+def _loss_amount_summary(recent_loss: float) -> str:
     if recent_loss > 0:
-        return f"{recent_loss:,.2f}"
-    if impact_count > 0:
-        return f"{impact_count} 条已记录"
+        return f"${recent_loss:,.2f}"
     return "暂无记录"
 
 
@@ -1305,9 +1301,8 @@ def _mistake_row_to_dict(columns: list[str], row: tuple) -> dict[str, Any]:
     data = _row_to_dict(columns, row)
     data["mistake_tags"] = _parse_json_list(data.get("mistake_tags_json"))
     data["scene_or_symbol"] = _clean_text(data.get("scene_or_symbol")) or _clean_text(data.get("symbol"))
-    if not _clean_text(data.get("loss_impact_text")) and data.get("loss_amount") is not None:
-        numeric_loss = _optional_number(data.get("loss_amount"))
-        data["loss_impact_text"] = _plain_number(numeric_loss) if numeric_loss is not None else ""
+    data["loss_amount_usd"] = _optional_nonnegative_number(data.get("loss_amount"))
+    data["impact_summary"] = _clean_text(data.get("loss_impact_text"))
     return data
 
 
