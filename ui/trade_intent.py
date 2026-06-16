@@ -7,8 +7,11 @@ from typing import Any
 import streamlit as st
 
 from data.trade_intent import (
+    BUY_BEHAVIOR_OPTIONS,
     BUY_INTENT_QUESTIONS,
     SELL_INTENT_QUESTIONS,
+    SELL_BEHAVIOR_OPTIONS,
+    STOCK_STAGE_OPTIONS,
     buy_intent_attention_points,
     intent_title,
     sell_intent_attention_points,
@@ -81,6 +84,7 @@ def _render_buy_intent_body(
     action_text = str(action_label or "").strip() or "记录交易"
     st.markdown(f"**交易对象：{symbol_text}｜{action_text}**")
     payload: dict[str, str] = {"intent_side": "buy"}
+    _render_trade_label_section(payload, key_prefix=key_prefix, behavior_options=BUY_BEHAVIOR_OPTIONS, behavior_label="自我判断：本次买入行为类型")
     for index, item in enumerate(BUY_INTENT_QUESTIONS, start=1):
         field = str(item["field"])
         options = list(item["options"])
@@ -117,6 +121,7 @@ def _render_sell_intent_body(
     action_text = str(action_label or "").strip() or "记录交易"
     st.markdown(f"**交易对象：{symbol_text}｜{action_text}**")
     payload: dict[str, str] = {"intent_side": "sell"}
+    _render_trade_label_section(payload, key_prefix=key_prefix, behavior_options=SELL_BEHAVIOR_OPTIONS, behavior_label="自我判断：本次卖出行为类型")
     for index, item in enumerate(SELL_INTENT_QUESTIONS, start=1):
         field = str(item["field"])
         options = list(item["options"])
@@ -141,6 +146,31 @@ def _render_sell_intent_body(
         on_cancel()
 
 
+def _render_trade_label_section(
+    payload: dict[str, str],
+    *,
+    key_prefix: str,
+    behavior_options: list[str],
+    behavior_label: str,
+) -> None:
+    st.markdown("##### 交易标签")
+    payload["stock_stage_self_judgment"] = st.radio(
+        "自我判断：股票当前阶段",
+        STOCK_STAGE_OPTIONS,
+        index=len(STOCK_STAGE_OPTIONS) - 1,
+        horizontal=False,
+        key=f"{key_prefix}-stock-stage-self-judgment",
+    )
+    payload["trade_behavior_self_judgment"] = st.radio(
+        behavior_label,
+        behavior_options,
+        index=len(behavior_options) - 1,
+        horizontal=False,
+        key=f"{key_prefix}-trade-behavior-self-judgment",
+    )
+    st.caption("这些是复盘标签，不参与评分，也不会影响交易保存。")
+
+
 def intent_record_html(intent: dict[str, Any] | None) -> str:
     if not intent:
         return '<div class="trade-intent-empty">这条交易尚未保存交易意图记录。</div>'
@@ -153,10 +183,12 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
             f"<div><span>{escape(label)}</span><strong>{escape(str(value or '未记录'))}</strong></div>"
             for label, value in items
         )
+        label_html = _intent_label_html(intent)
         return (
             '<section class="trade-intent-record">'
             "<h4>交易意图记录</h4>"
             f'<p class="trade-intent-title">{escape(title)}</p>'
+            f"{label_html}"
             f'<div class="trade-intent-grid buy">{body}</div>'
             f"{_attention_html(intent)}"
             f"{_snapshot_html(intent)}"
@@ -169,10 +201,12 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
             f"<div><span>{escape(label)}</span><strong>{escape(str(value or '未记录'))}</strong></div>"
             for label, value in items
         )
+        label_html = _intent_label_html(intent)
         return (
             '<section class="trade-intent-record">'
             "<h4>交易意图记录</h4>"
             f'<p class="trade-intent-title">{escape(title)}</p>'
+            f"{label_html}"
             f'<div class="trade-intent-grid sell">{body}</div>'
             f"{_attention_html(intent)}"
             f"{_snapshot_html(intent)}"
@@ -192,11 +226,27 @@ def intent_record_html(intent: dict[str, Any] | None) -> str:
         '<section class="trade-intent-record">'
         "<h4>交易意图记录</h4>"
         f'<p class="trade-intent-title">{escape(title)}</p>'
+        f"{_intent_label_html(intent)}"
         f'<div class="trade-intent-grid">{body}</div>'
         f"{_attention_html(intent)}"
         f"{_snapshot_html(intent)}"
         "</section>"
     )
+
+
+def _intent_label_html(intent: dict[str, Any]) -> str:
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    stock_stage = intent.get("stock_stage_self_judgment") or payload.get("stock_stage_self_judgment")
+    behavior = intent.get("trade_behavior_self_judgment") or payload.get("trade_behavior_self_judgment")
+    items = [
+        ("股票当前阶段", stock_stage),
+        ("本次交易行为", behavior),
+    ]
+    body = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(str(value or '未记录'))}</strong></div>"
+        for label, value in items
+    )
+    return f'<div class="trade-intent-label-grid">{body}</div>'
 
 
 def _attention_html(intent: dict[str, Any]) -> str:

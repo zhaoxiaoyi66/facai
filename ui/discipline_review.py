@@ -17,7 +17,13 @@ from data.discipline_review import (
 )
 from data.portfolio import PortfolioPositionStore
 from data.prices import CACHE_PATH
-from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
+from data.trade_intent import (
+    BUY_BEHAVIOR_OPTIONS,
+    SELL_BEHAVIOR_OPTIONS,
+    STOCK_STAGE_OPTIONS,
+    TradeIntentStore,
+    build_trade_intent_review_stats,
+)
 from ui.theme import render_page_header, render_section_title
 
 
@@ -136,6 +142,9 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
     intent_seven = intent_stats["seven_days"]
     intent_thirty = intent_stats["thirty_days"]
     flag_counts = intent_thirty["attention_flag_counts"]
+    stock_stage_counts = intent_thirty.get("stock_stage_counts", {})
+    buy_behavior_counts = intent_thirty.get("buy_behavior_counts", {})
+    sell_behavior_counts = intent_thirty.get("sell_behavior_counts", {})
     intent_cards = [
         ("最近 7 天交易次数", str(intent_seven["trade_count"]), "按交易日志"),
         ("最近 30 天交易次数", str(intent_thirty["trade_count"]), "按交易日志"),
@@ -157,6 +166,12 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("量能承接 < 50 仍买入", str(intent_thirty["low_volume_acceptance_buy_count"]), "只做复盘"),
     ]
     st.markdown(_card_grid_html(intent_cards), unsafe_allow_html=True)
+    stage_cards = [(option, str(stock_stage_counts.get(option, 0)), "股票阶段") for option in STOCK_STAGE_OPTIONS]
+    buy_behavior_cards = [(option.split("：", 1)[0], str(buy_behavior_counts.get(option, 0)), "买入行为") for option in BUY_BEHAVIOR_OPTIONS]
+    sell_behavior_cards = [(option.split("：", 1)[0], str(sell_behavior_counts.get(option, 0)), "卖出行为") for option in SELL_BEHAVIOR_OPTIONS]
+    st.markdown(_card_grid_html(stage_cards), unsafe_allow_html=True)
+    st.markdown(_card_grid_html(buy_behavior_cards), unsafe_allow_html=True)
+    st.markdown(_card_grid_html(sell_behavior_cards), unsafe_allow_html=True)
     tag_rows = store.list_trade_tags(days=30)
     stats = build_discipline_review_stats(entries, tag_rows)
     seven = stats["seven_days"]

@@ -28,7 +28,40 @@ SELL_ATTENTION_FLAG_LABELS = [
     "卖出后组合不清晰",
 ]
 
-TRADE_INTENT_ATTENTION_FLAG_LABELS = BUY_ATTENTION_FLAG_LABELS + SELL_ATTENTION_FLAG_LABELS
+STOCK_STAGE_OPTIONS = [
+    "低位修复 / 左侧筑底",
+    "市场重新定价 / 事件催化",
+    "快速重估 / 主升加速",
+    "高位拥挤 / 兑现压力",
+    "破位退潮 / 逻辑受损",
+    "还没想清楚",
+]
+
+BUY_BEHAVIOR_OPTIONS = [
+    "左侧建仓：买在市场完全确认前，主要看赔率",
+    "右侧事件买入：事件确认后，顺着资金重新定价买入",
+    "回调承接加仓：趋势没坏，回踩后承接变好再加",
+    "突破追涨 / 补票参与：主要怕错过上涨",
+    "降低成本 / 摊平仓位：原持仓回撤后补仓",
+    "还没想清楚",
+]
+
+SELL_BEHAVIOR_OPTIONS = [
+    "计划止盈：涨到目标或快速重估后兑现",
+    "风险止错：基本面变差、技术破位或逻辑受损",
+    "仓位再平衡：单票过重，主动降低波动",
+    "调仓换股：换到我认为更好的机会",
+    "情绪减压：短期波动让我不舒服，想先卖掉",
+    "还没想清楚",
+]
+
+TRADE_INTENT_ATTENTION_FLAG_LABELS = BUY_ATTENTION_FLAG_LABELS + SELL_ATTENTION_FLAG_LABELS + [
+    "股票阶段不清",
+    "追涨 / 怕错过风险",
+    "买入行为不清",
+    "情绪卖出风险",
+    "卖出行为不清",
+]
 
 
 BUY_INTENT_FIELDS = {
@@ -271,6 +304,8 @@ class TradeIntentStore:
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL,
                     review_type TEXT NOT NULL,
+                    stock_stage_self_judgment TEXT,
+                    trade_behavior_self_judgment TEXT,
                     question_1_answer TEXT,
                     question_2_answer TEXT,
                     question_3_answer TEXT,
@@ -293,6 +328,14 @@ class TradeIntentStore:
                     UNIQUE(trade_id)
                 )
                 """
+            )
+            _ensure_columns(
+                conn,
+                "trade_intent_reviews",
+                {
+                    "stock_stage_self_judgment": "TEXT",
+                    "trade_behavior_self_judgment": "TEXT",
+                },
             )
             conn.execute(
                 """
@@ -324,6 +367,8 @@ class TradeIntentStore:
         review_type = intent_title(side)
         answers = _review_answers(normalized)
         attention_flags = _attention_flags(normalized)
+        stock_stage = normalized.get("stock_stage_self_judgment")
+        trade_behavior = normalized.get("trade_behavior_self_judgment")
         snapshot_values = _clean_snapshot_values(snapshots or {})
         payload_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         with self.connect() as conn:
@@ -334,6 +379,8 @@ class TradeIntentStore:
                     symbol,
                     side,
                     review_type,
+                    stock_stage_self_judgment,
+                    trade_behavior_self_judgment,
                     question_1_answer,
                     question_2_answer,
                     question_3_answer,
@@ -354,11 +401,13 @@ class TradeIntentStore:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_id) DO UPDATE SET
                     symbol = excluded.symbol,
                     side = excluded.side,
                     review_type = excluded.review_type,
+                    stock_stage_self_judgment = excluded.stock_stage_self_judgment,
+                    trade_behavior_self_judgment = excluded.trade_behavior_self_judgment,
                     question_1_answer = excluded.question_1_answer,
                     question_2_answer = excluded.question_2_answer,
                     question_3_answer = excluded.question_3_answer,
@@ -383,6 +432,8 @@ class TradeIntentStore:
                     ticker,
                     side,
                     review_type,
+                    stock_stage,
+                    trade_behavior,
                     answers[0],
                     answers[1],
                     answers[2],
@@ -478,6 +529,8 @@ def normalize_trade_intent_payload(payload: Any, *, side: str | None = None) -> 
 
 def _normalize_buy_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {"intent_side": "buy"}
+    result["stock_stage_self_judgment"] = _clean_optional_choice(payload.get("stock_stage_self_judgment"), STOCK_STAGE_OPTIONS)
+    result["trade_behavior_self_judgment"] = _clean_optional_choice(payload.get("trade_behavior_self_judgment"), BUY_BEHAVIOR_OPTIONS)
     for item in BUY_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -496,6 +549,13 @@ def _normalize_buy_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
 
 def buy_intent_attention_points(payload: dict[str, Any]) -> list[str]:
     points: list[str] = []
+    if str(payload.get("stock_stage_self_judgment") or "").strip() == "还没想清楚":
+        points.append("股票阶段不清")
+    behavior = str(payload.get("trade_behavior_self_judgment") or "").strip()
+    if behavior == "突破追涨 / 补票参与：主要怕错过上涨":
+        points.append("追涨 / 怕错过风险")
+    elif behavior == "还没想清楚":
+        points.append("买入行为不清")
     for item in BUY_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -508,6 +568,8 @@ def buy_intent_attention_points(payload: dict[str, Any]) -> list[str]:
 
 def _normalize_sell_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {"intent_side": "sell"}
+    result["stock_stage_self_judgment"] = _clean_optional_choice(payload.get("stock_stage_self_judgment"), STOCK_STAGE_OPTIONS)
+    result["trade_behavior_self_judgment"] = _clean_optional_choice(payload.get("trade_behavior_self_judgment"), SELL_BEHAVIOR_OPTIONS)
     for item in SELL_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -526,6 +588,13 @@ def _normalize_sell_intent_payload(payload: dict[str, Any]) -> dict[str, str]:
 
 def sell_intent_attention_points(payload: dict[str, Any]) -> list[str]:
     points: list[str] = []
+    if str(payload.get("stock_stage_self_judgment") or "").strip() == "还没想清楚":
+        points.append("股票阶段不清")
+    behavior = str(payload.get("trade_behavior_self_judgment") or "").strip()
+    if behavior == "情绪减压：短期波动让我不舒服，想先卖掉":
+        points.append("情绪卖出风险")
+    elif behavior == "还没想清楚":
+        points.append("卖出行为不清")
     for item in SELL_INTENT_QUESTIONS:
         field = str(item["field"])
         options = list(item["options"])
@@ -613,6 +682,9 @@ def _period_review_stats(
     period_entries = [entry for entry in entries if _is_trade_entry(entry) and _date_in_range(entry.get("trade_date"), start, current)]
     period_reviews = [review for review in reviews if _date_in_range(review.get("created_at"), start, current)]
     flag_counts = {flag: 0 for flag in TRADE_INTENT_ATTENTION_FLAG_LABELS}
+    stock_stage_counts = {option: 0 for option in STOCK_STAGE_OPTIONS}
+    buy_behavior_counts = {option: 0 for option in BUY_BEHAVIOR_OPTIONS}
+    sell_behavior_counts = {option: 0 for option in SELL_BEHAVIOR_OPTIONS}
     attention_review_count = 0
     buy_review_count = 0
     sell_review_count = 0
@@ -621,8 +693,14 @@ def _period_review_stats(
 
     for review in period_reviews:
         side = str(review.get("intent_side") or review.get("side") or "").strip().lower()
+        stock_stage = str(review.get("stock_stage_self_judgment") or "").strip()
+        trade_behavior = str(review.get("trade_behavior_self_judgment") or "").strip()
+        if stock_stage in stock_stage_counts:
+            stock_stage_counts[stock_stage] += 1
         if side == "buy":
             buy_review_count += 1
+            if trade_behavior in buy_behavior_counts:
+                buy_behavior_counts[trade_behavior] += 1
             setup_score = _number(review.get("setup_score_snapshot"))
             volume_score = _number(review.get("volume_acceptance_score_snapshot"))
             if setup_score is not None and setup_score < 70:
@@ -631,6 +709,8 @@ def _period_review_stats(
                 low_volume_acceptance_buy_count += 1
         elif side == "sell":
             sell_review_count += 1
+            if trade_behavior in sell_behavior_counts:
+                sell_behavior_counts[trade_behavior] += 1
 
         flags = review.get("attention_flags")
         if not isinstance(flags, list):
@@ -651,6 +731,9 @@ def _period_review_stats(
         "low_setup_buy_count": low_setup_buy_count,
         "low_volume_acceptance_buy_count": low_volume_acceptance_buy_count,
         "attention_flag_counts": flag_counts,
+        "stock_stage_counts": stock_stage_counts,
+        "buy_behavior_counts": buy_behavior_counts,
+        "sell_behavior_counts": sell_behavior_counts,
     }
 
 
@@ -697,6 +780,18 @@ def _clean_side(value: object) -> str:
     return ""
 
 
+def _clean_choice(value: object, options: list[str]) -> str:
+    text = str(value or "").strip()
+    return text if text in options else options[-1]
+
+
+def _clean_optional_choice(value: object, options: list[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _clean_choice(text, options)
+
+
 def _hkt_now() -> str:
     return datetime.now(ZoneInfo("Asia/Hong_Kong")).isoformat(timespec="seconds")
 
@@ -729,8 +824,17 @@ def _review_row_to_dict(columns: list[str], row: Any) -> dict[str, Any]:
     result["trade_entry_id"] = result.get("trade_id")
     result["action_type"] = side
     result["intent_side"] = side
+    result["stock_stage_self_judgment"] = result.get("stock_stage_self_judgment") or payload.get("stock_stage_self_judgment")
+    result["trade_behavior_self_judgment"] = result.get("trade_behavior_self_judgment") or payload.get("trade_behavior_self_judgment")
     result["primary_intent"] = payload.get("primary_intent") or result.get("question_1_answer")
     result["position_intent"] = payload.get("position_intent") or result.get("question_3_answer")
     result["timing_intent"] = payload.get("timing_intent") or result.get("question_2_answer")
     result["risk_intent"] = payload.get("risk_intent") or result.get("question_5_answer")
     return result
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")

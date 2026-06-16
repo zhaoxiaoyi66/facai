@@ -7,8 +7,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from data.trade_intent import (
+    BUY_BEHAVIOR_OPTIONS,
     BUY_INTENT_QUESTIONS,
     SELL_INTENT_QUESTIONS,
+    SELL_BEHAVIOR_OPTIONS,
+    STOCK_STAGE_OPTIONS,
     TradeIntentStore,
     build_trade_intent_review_stats,
     normalize_trade_intent_payload,
@@ -27,6 +30,8 @@ def test_trade_intent_store_persists_pre_trade_choices() -> None:
             "buy",
             {
                 "intent_side": "buy",
+                "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[1],
+                "trade_behavior_self_judgment": BUY_BEHAVIOR_OPTIONS[1],
                 "core_direction_intent": "是，在加强核心方向",
                 "objective_reason_intent": "承接变好 / 回到买区 / 赔率合适",
                 "drawdown_plan_intent": "有，已想好持有、加仓或止错计划",
@@ -37,15 +42,19 @@ def test_trade_intent_store_persists_pre_trade_choices() -> None:
 
         assert saved["symbol"] == "NVDA"
         assert saved["intent_side"] == "buy"
+        assert saved["stock_stage_self_judgment"] == "市场重新定价 / 事件催化"
+        assert saved["trade_behavior_self_judgment"] == "右侧事件买入：事件确认后，顺着资金重新定价买入"
         assert saved["primary_intent"] == "是，在加强核心方向"
         assert store.get_intent_for_trade(10)["payload"]["objective_reason_intent"] == "承接变好 / 回到买区 / 赔率合适"
         with closing(sqlite3.connect(path)) as conn:
             row = conn.execute(
-                "SELECT question_1_answer, question_6_answer, attention_flags_json FROM trade_intent_reviews WHERE trade_id = 10"
+                "SELECT question_1_answer, question_6_answer, attention_flags_json, stock_stage_self_judgment, trade_behavior_self_judgment FROM trade_intent_reviews WHERE trade_id = 10"
             ).fetchone()
         assert row[0] == "是，在加强核心方向"
         assert row[1] is None
         assert row[2] == "[]"
+        assert row[3] == "市场重新定价 / 事件催化"
+        assert row[4].startswith("右侧事件买入")
 
 
 def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
@@ -54,6 +63,8 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         store = TradeIntentStore(path)
         buy_payload = {
             "intent_side": "buy",
+            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[-1],
+            "trade_behavior_self_judgment": BUY_BEHAVIOR_OPTIONS[3],
             BUY_INTENT_QUESTIONS[0]["field"]: BUY_INTENT_QUESTIONS[0]["options"][1],
             BUY_INTENT_QUESTIONS[1]["field"]: BUY_INTENT_QUESTIONS[1]["options"][1],
             BUY_INTENT_QUESTIONS[2]["field"]: BUY_INTENT_QUESTIONS[2]["options"][2],
@@ -62,6 +73,8 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         }
         sell_payload = {
             "intent_side": "sell",
+            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[4],
+            "trade_behavior_self_judgment": SELL_BEHAVIOR_OPTIONS[4],
             SELL_INTENT_QUESTIONS[0]["field"]: SELL_INTENT_QUESTIONS[0]["options"][1],
             SELL_INTENT_QUESTIONS[1]["field"]: SELL_INTENT_QUESTIONS[1]["options"][0],
             SELL_INTENT_QUESTIONS[2]["field"]: SELL_INTENT_QUESTIONS[2]["options"][2],
@@ -99,6 +112,9 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         assert thirty["buy_review_count"] == 1
         assert thirty["sell_review_count"] == 1
         assert flags["新增小仓风险"] == 1
+        assert flags["股票阶段不清"] == 1
+        assert flags["追涨 / 怕错过风险"] == 1
+        assert flags["情绪卖出风险"] == 1
         assert flags["怕错过风险"] == 1
         assert flags["无下跌预案"] == 1
         assert flags["临时卖出风险"] == 1
@@ -107,6 +123,10 @@ def test_trade_intent_stats_count_review_attention_and_snapshots() -> None:
         assert flags["无回补预案"] == 1
         assert thirty["low_setup_buy_count"] == 1
         assert thirty["low_volume_acceptance_buy_count"] == 1
+        assert thirty["stock_stage_counts"]["还没想清楚"] == 1
+        assert thirty["stock_stage_counts"]["破位退潮 / 逻辑受损"] == 1
+        assert thirty["buy_behavior_counts"][BUY_BEHAVIOR_OPTIONS[3]] == 1
+        assert thirty["sell_behavior_counts"][SELL_BEHAVIOR_OPTIONS[4]] == 1
 
 
 def test_trade_intent_store_persists_sell_pre_trade_choices() -> None:
@@ -120,6 +140,8 @@ def test_trade_intent_store_persists_sell_pre_trade_choices() -> None:
             "sell",
             {
                 "intent_side": "sell",
+                "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[2],
+                "trade_behavior_self_judgment": SELL_BEHAVIOR_OPTIONS[0],
                 "sell_reason_intent": "计划内止盈 / 止错 / 减仓 / 仓位控制",
                 "sell_basis_intent": "基本面变差 / 技术破位 / 估值极端 / 仓位过重",
                 "sell_size_intent": "只减一部分，保留核心仓或观察仓",
@@ -131,6 +153,8 @@ def test_trade_intent_store_persists_sell_pre_trade_choices() -> None:
 
         assert saved["symbol"] == "ADBE"
         assert saved["intent_side"] == "sell"
+        assert saved["stock_stage_self_judgment"] == "快速重估 / 主升加速"
+        assert saved["trade_behavior_self_judgment"].startswith("计划止盈")
         assert saved["primary_intent"] == "计划内止盈 / 止错 / 减仓 / 仓位控制"
         assert store.get_intent_for_trade(11)["payload"]["rebound_plan_intent"] == "有明确回补条件，或者明确接受不回补"
         with closing(sqlite3.connect(path)) as conn:
@@ -185,14 +209,24 @@ def test_sell_full_exit_is_not_automatically_attention_flagged() -> None:
 
 
 def test_buy_intent_defaults_to_not_clear_and_flags_attention_points() -> None:
-    payload = normalize_trade_intent_payload({"intent_side": "buy"})
+    payload = normalize_trade_intent_payload(
+        {
+            "intent_side": "buy",
+            "stock_stage_self_judgment": STOCK_STAGE_OPTIONS[-1],
+            "trade_behavior_self_judgment": BUY_BEHAVIOR_OPTIONS[-1],
+        }
+    )
 
+    assert payload["stock_stage_self_judgment"] == "还没想清楚"
+    assert payload["trade_behavior_self_judgment"] == "还没想清楚"
     assert payload["core_direction_intent"] == "还没想清楚"
     assert payload["objective_reason_intent"] == "还没想清楚"
     assert payload["drawdown_plan_intent"] == "还没想清楚"
     assert payload["tracking_commitment_intent"] == "还没想清楚"
     assert payload["portfolio_clarity_intent"] == "还没想清楚"
     assert "新增小仓风险" in payload["attention_points"]
+    assert "股票阶段不清" in payload["attention_points"]
+    assert "买入行为不清" in payload["attention_points"]
     assert "怕错过风险" in payload["attention_points"]
     assert "无下跌预案" in payload["attention_points"]
     assert "长期跟踪不足" in payload["attention_points"]
@@ -202,6 +236,7 @@ def test_buy_intent_defaults_to_not_clear_and_flags_attention_points() -> None:
 def test_trade_intent_bodies_use_only_radio_choices_with_not_clear_default() -> None:
     buy_source = inspect.getsource(trade_intent._render_buy_intent_body)
     sell_source = inspect.getsource(trade_intent._render_sell_intent_body)
+    label_source = inspect.getsource(trade_intent._render_trade_label_section)
 
     for source in (buy_source, sell_source):
         assert "st.radio" in source
@@ -211,6 +246,9 @@ def test_trade_intent_bodies_use_only_radio_choices_with_not_clear_default() -> 
         assert "checkbox" not in source
         assert "selectbox" not in source
         assert "multiselect" not in source
+    assert "stock_stage_self_judgment" in label_source
+    assert "trade_behavior_self_judgment" in label_source
+    assert "index=len(STOCK_STAGE_OPTIONS) - 1" in label_source
 
 
 def test_trade_intent_dialog_copy_has_no_gate_or_pass_fail_wording() -> None:
@@ -224,6 +262,9 @@ def test_trade_intent_dialog_copy_has_no_gate_or_pass_fail_wording() -> None:
     assert "本次卖出意图将随交易记录保存，用于日后复盘" in inspect.getsource(trade_intent._render_sell_intent_body)
     assert "本次记录存在复盘关注点" in inspect.getsource(trade_intent._render_buy_intent_body)
     assert "本次记录存在复盘关注点" in inspect.getsource(trade_intent._render_sell_intent_body)
+    assert "自我判断：股票当前阶段" in inspect.getsource(trade_intent._render_trade_label_section)
+    assert "自我判断：本次买入行为类型" in inspect.getsource(trade_intent._render_buy_intent_body)
+    assert "自我判断：本次卖出行为类型" in inspect.getsource(trade_intent._render_sell_intent_body)
     assert "确认并记录" in inspect.getsource(trade_intent._render_buy_intent_body)
     assert "返回修改" in inspect.getsource(trade_intent._render_sell_intent_body)
     forbidden_terms = (
@@ -241,7 +282,11 @@ def test_trade_intent_dialog_copy_has_no_gate_or_pass_fail_wording() -> None:
 def test_trade_intent_record_html_shows_review_snapshots_and_attention_points() -> None:
     intent = {
         "intent_side": "buy",
+        "stock_stage_self_judgment": "市场重新定价 / 事件催化",
+        "trade_behavior_self_judgment": "右侧事件买入：事件确认后，顺着资金重新定价买入",
         "payload": {
+            "stock_stage_self_judgment": "市场重新定价 / 事件催化",
+            "trade_behavior_self_judgment": "右侧事件买入：事件确认后，顺着资金重新定价买入",
             "core_direction_intent": BUY_INTENT_QUESTIONS[0]["options"][1],
             "objective_reason_intent": BUY_INTENT_QUESTIONS[1]["options"][1],
             "drawdown_plan_intent": BUY_INTENT_QUESTIONS[2]["options"][0],
@@ -259,6 +304,10 @@ def test_trade_intent_record_html_shows_review_snapshots_and_attention_points() 
 
     assert "交易意图记录" in html
     assert "买入前记录" in html
+    assert "股票当前阶段" in html
+    assert "市场重新定价 / 事件催化" in html
+    assert "本次交易行为" in html
+    assert "右侧事件买入" in html
     assert "复盘关注点" in html
     assert "新增小仓风险" in html
     assert "当时 Setup 评分" in html
