@@ -569,10 +569,11 @@ def test_portfolio_buy_add_saves_pre_trade_intent_after_successful_sync() -> Non
         values = _base_values(
             pre_trade_intent={
                 "intent_side": "buy",
-                "primary_intent": "计划内买入",
-                "position_intent": "让组合更集中",
-                "timing_intent": "量价承接改善",
-                "risk_intent": "按计划执行",
+                "core_direction_intent": "是，在加强核心方向",
+                "objective_reason_intent": "承接变好 / 回到买区 / 赔率合适",
+                "drawdown_plan_intent": "有，已想好持有、加仓或止错计划",
+                "tracking_commitment_intent": "愿意，后续会持续跟踪和复盘",
+                "portfolio_clarity_intent": "会，更聚焦于核心方向",
             }
         )
 
@@ -583,7 +584,8 @@ def test_portfolio_buy_add_saves_pre_trade_intent_after_successful_sync() -> Non
         assert intent["symbol"] == "NVDA"
         assert intent["action_type"] == "buy"
         assert intent["intent_side"] == "buy"
-        assert intent["primary_intent"] == "计划内买入"
+        assert intent["primary_intent"] == "是，在加强核心方向"
+        assert intent["payload"]["portfolio_clarity_intent"] == "会，更聚焦于核心方向"
 
 
 def test_structure_entry_advisor_snapshot_does_not_block_allowed_buy(monkeypatch: pytest.MonkeyPatch) -> None:

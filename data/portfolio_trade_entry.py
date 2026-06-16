@@ -221,6 +221,20 @@ def submit_portfolio_buy_add(
             action_type,
             pre_trade_intent,
             source="portfolio_trade_entry",
+            snapshots={
+                "setup_score": (buy_zone_context or {}).get("setup_score") if isinstance(buy_zone_context, dict) else None,
+                "technical_structure_score": (buy_zone_context or {}).get("technical_structure_score")
+                if isinstance(buy_zone_context, dict)
+                else None,
+                "volume_acceptance_score": (buy_zone_context or {}).get("volume_acceptance_score")
+                if isinstance(buy_zone_context, dict)
+                else None,
+                "risk_reward_score": (buy_zone_context or {}).get("risk_reward_score") if isinstance(buy_zone_context, dict) else None,
+                "buy_zone_context": buy_zone_context if isinstance(buy_zone_context, dict) else {},
+                "buy_zone_display": report_data.get("buy_zone_display") or report_data.get("buyZoneDisplay") or {},
+                "position_quantity": portfolio_preview.get("afterQuantity"),
+                "position_weight": portfolio_preview.get("afterPositionPct"),
+            },
         )
     completed_plan = _complete_buy_plan_after_success(
         ticker=ticker,

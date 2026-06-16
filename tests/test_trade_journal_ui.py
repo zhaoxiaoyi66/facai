@@ -115,6 +115,22 @@ def test_new_sell_entry_queues_intent_dialog_before_save() -> None:
     assert "_update_entry(store" in source
 
 
+def test_trade_journal_row_shows_intent_review_tags_without_pass_fail_copy() -> None:
+    html = trade_journal._entry_review_tags_html(
+        {
+            "action_type": "buy",
+            "trade_intent_review": {
+                "attention_flags": ["怕错过风险"],
+            },
+        }
+    )
+
+    assert "有交易意图记录" in html
+    assert "有复盘关注点" in html
+    assert "\u901a\u8fc7" not in html
+    assert "\u672a\u901a\u8fc7" not in html
+
+
 def test_new_trade_entry_uses_active_position_dropdown() -> None:
     source = inspect.getsource(trade_journal._render_editor)
 

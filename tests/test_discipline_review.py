@@ -97,20 +97,26 @@ def test_portfolio_discipline_summary_counts_concentration_and_unplanned_trades(
 def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     card = discipline_review.dashboard_discipline_card_html(
         {
-            "principle_first_line": "少而硬：做高信念集中的少量股票。",
-            "portfolio": {
-                "current_holding_count": 4,
-                "target_holding_min": 3,
-                "target_holding_max": 5,
-                "small_position_count": 1,
-                "unplanned_trade_count_this_week": 2,
+            "trade_intent": {
+                "trade_count": 8,
+                "attention_trade_count": 3,
+                "attention_flag_counts": {
+                    "怕错过风险": 2,
+                    "临时卖出风险": 1,
+                    "无回补预案": 1,
+                },
             },
         }
     )
     hint = discipline_review.trade_entry_discipline_hint_html(64)
 
     assert "纪律提醒" in card
-    assert "当前持仓 4 只 / 目标 3-5 只" in card
+    assert "交易前先记录意图" in card
+    assert "最近 30 天交易次数：8" in card
+    assert "有复盘关注点：3" in card
+    assert "怕错过风险：2" in card
+    assert "临时卖出风险：1" in card
+    assert "无回补预案：1" in card
     assert "这笔交易会让组合更集中" in hint
     assert "当前 Setup 不是高质量买点" in hint
     assert "禁止" not in hint

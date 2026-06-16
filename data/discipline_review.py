@@ -10,6 +10,7 @@ from typing import Any, Iterator
 from data.decision_log import TradeJournalStore
 from data.portfolio import PortfolioPositionStore
 from data.prices import CACHE_PATH
+from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 
 
 DEFAULT_PRINCIPLES = (
@@ -320,6 +321,12 @@ def build_dashboard_discipline_snapshot(
     principles = store.get_principles()
     positions = PortfolioPositionStore(path).list_active_positions()
     entries = TradeJournalStore(path).list_entries()
+    intent_reviews = TradeIntentStore(path).list_intents()
+    intent_stats = build_trade_intent_review_stats(
+        entries,
+        intent_reviews,
+        current_date=current_date,
+    )
     summary = build_portfolio_discipline_summary(
         positions,
         entries,
@@ -329,6 +336,7 @@ def build_dashboard_discipline_snapshot(
     return {
         "principle_first_line": principles.splitlines()[0] if principles else "",
         "portfolio": summary,
+        "trade_intent": intent_stats["thirty_days"],
     }
 
 

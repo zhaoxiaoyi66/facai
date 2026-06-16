@@ -4,6 +4,7 @@ import json
 import math
 from datetime import date, datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 
 import streamlit as st
 
@@ -2337,6 +2338,11 @@ def _save_entry(store: TradeJournalStore, symbol: str, values: dict) -> None:
             saved["action_type"],
             values["pre_trade_intent"],
             source="trade_journal",
+            snapshots={
+                "position_quantity": values.get("preTradeQuantity") or values.get("pre_trade_quantity"),
+                "position_weight": values.get("preTradePositionPct") or values.get("pre_trade_position_pct"),
+                "buy_zone_context": values.get("sellContextSnapshot") or values.get("sell_context_snapshot") or {},
+            },
         )
     st.rerun()
 
@@ -2498,8 +2504,32 @@ def _load_entries(store: TradeJournalStore, symbols: list[str]) -> list[dict]:
         unsafe_allow_html=True,
     )
     if selected == "全部股票":
-        return store.list_entries()
-    return store.list_entries(selected)
+        entries = store.list_entries()
+    else:
+        entries = store.list_entries(selected)
+    return _attach_trade_intent_reviews(entries, store.path)
+
+
+def _attach_trade_intent_reviews(entries: list[dict], path: Path) -> list[dict]:
+    if not entries:
+        return entries
+    try:
+        reviews = TradeIntentStore(path).list_intents()
+    except Exception:  # pragma: no cover - journal list should remain readable if intent table is unavailable
+        reviews = []
+    by_trade_id = {
+        int(review.get("trade_id") or review.get("trade_entry_id") or 0): review
+        for review in reviews
+        if int(review.get("trade_id") or review.get("trade_entry_id") or 0) > 0
+    }
+    result: list[dict] = []
+    for entry in entries:
+        copied = dict(entry)
+        entry_id = int(copied.get("id") or 0)
+        if entry_id in by_trade_id:
+            copied["trade_intent_review"] = by_trade_id[entry_id]
+        result.append(copied)
+    return result
 
 
 def _load_trade_performance_summary(store: TradeJournalStore) -> dict:
@@ -4366,13 +4396,21 @@ def _entry_sell_reason_summary(entry: dict) -> str:
 
 def _entry_review_tags_html(entry: dict) -> str:
     action = str(entry.get("action_type") or "").strip().lower()
-    if action not in SELL_DISCIPLINE_ACTIONS:
-        return '<span class="trade-muted-cell">—</span>'
-    review = evaluate_sell_review_flags(entry)
-    label = format_sell_review_label(review)
-    if not label or label == "无":
+    chips: list[str] = []
+    intent = entry.get("trade_intent_review")
+    if isinstance(intent, dict):
+        chips.append("有交易意图记录")
+        flags = intent.get("attention_flags")
+        if isinstance(flags, list) and flags:
+            chips.append("有复盘关注点")
+    if action in SELL_DISCIPLINE_ACTIONS:
+        review = evaluate_sell_review_flags(entry)
+        label = format_sell_review_label(review)
+        if label and label != "无":
+            chips.append(label)
+    if not chips:
         return '<span class="trade-muted-cell">无</span>'
-    return f'<span class="trade-review-compact">{escape(label)}</span>'
+    return "".join(f'<span class="trade-review-compact">{escape(label)}</span>' for label in chips)
 
 
 def _entry_actions_html(entry: dict) -> str:
@@ -5916,6 +5954,12 @@ def _render_styles() -> None:
             font-size: 0.82rem;
             font-weight: 840;
         }
+        .trade-intent-title {
+            margin: -0.18rem 0 0.5rem;
+            color: #475569;
+            font-size: 0.76rem;
+            font-weight: 800;
+        }
         .trade-intent-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5939,6 +5983,60 @@ def _render_styles() -> None:
             color: #0f172a;
             font-size: 0.8rem;
             font-weight: 820;
+        }
+        .trade-intent-attention {
+            margin-top: 0.52rem;
+            padding: 0.48rem 0.55rem;
+            border: 1px solid rgba(245, 158, 11, 0.22);
+            border-radius: 7px;
+            background: rgba(255, 251, 235, 0.74);
+            color: #92400e;
+            font-size: 0.76rem;
+        }
+        .trade-intent-attention.muted {
+            border-color: rgba(148, 163, 184, 0.2);
+            background: rgba(248, 250, 252, 0.72);
+            color: #64748b;
+        }
+        .trade-intent-attention b {
+            display: block;
+            margin-bottom: 0.28rem;
+            color: #78350f;
+        }
+        .trade-intent-attention span {
+            display: inline-flex;
+            margin: 0 0.28rem 0.25rem 0;
+            padding: 0.12rem 0.42rem;
+            border-radius: 999px;
+            background: rgba(245, 158, 11, 0.14);
+            color: #92400e;
+            font-weight: 800;
+        }
+        .trade-intent-snapshot {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.42rem;
+            margin-top: 0.52rem;
+        }
+        .trade-intent-snapshot div {
+            padding: 0.42rem 0.5rem;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 6px;
+            background: rgba(248, 250, 252, 0.74);
+        }
+        .trade-intent-snapshot span,
+        .trade-intent-snapshot strong {
+            display: block;
+        }
+        .trade-intent-snapshot span {
+            color: #64748b;
+            font-size: 0.66rem;
+            font-weight: 760;
+        }
+        .trade-intent-snapshot strong {
+            color: #0f172a;
+            font-size: 0.84rem;
+            margin-top: 0.1rem;
         }
         .trade-intent-empty {
             margin: 0.35rem 0 0.9rem;

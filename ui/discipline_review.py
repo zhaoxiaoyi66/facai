@@ -8,7 +8,6 @@ import streamlit as st
 
 from data.decision_log import TradeJournalStore
 from data.discipline_review import (
-    DEFAULT_PRINCIPLES,
     DISCIPLINE_TAG_LABELS,
     SELF_CHECK_QUESTIONS,
     DisciplineReviewStore,
@@ -18,6 +17,7 @@ from data.discipline_review import (
 )
 from data.portfolio import PortfolioPositionStore
 from data.prices import CACHE_PATH
+from data.trade_intent import TradeIntentStore, build_trade_intent_review_stats
 from ui.theme import render_page_header, render_section_title
 
 
@@ -130,7 +130,33 @@ def _render_trade_tag_editor(store: DisciplineReviewStore, entries: list[dict]) 
 
 
 def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) -> None:
-    render_section_title("纪律复盘统计", "统计只来自交易日志和手动纪律标签。")
+    render_section_title("纪律复盘统计", "统计来自交易日志、交易意图记录和手动纪律标签。")
+    intent_reviews = TradeIntentStore(store.path).list_intents()
+    intent_stats = build_trade_intent_review_stats(entries, intent_reviews)
+    intent_seven = intent_stats["seven_days"]
+    intent_thirty = intent_stats["thirty_days"]
+    flag_counts = intent_thirty["attention_flag_counts"]
+    intent_cards = [
+        ("最近 7 天交易次数", str(intent_seven["trade_count"]), "按交易日志"),
+        ("最近 30 天交易次数", str(intent_thirty["trade_count"]), "按交易日志"),
+        ("有复盘关注点", str(intent_thirty["attention_trade_count"]), "交易意图记录"),
+        ("买入记录次数", str(intent_thirty["buy_review_count"]), "买入前记录"),
+        ("卖出记录次数", str(intent_thirty["sell_review_count"]), "卖出前记录"),
+        ("新增小仓风险", str(flag_counts.get("新增小仓风险", 0)), "最近 30 天"),
+        ("怕错过风险", str(flag_counts.get("怕错过风险", 0)), "最近 30 天"),
+        ("无下跌预案", str(flag_counts.get("无下跌预案", 0)), "最近 30 天"),
+        ("长期跟踪不足", str(flag_counts.get("长期跟踪不足", 0)), "最近 30 天"),
+        ("组合碎片化风险", str(flag_counts.get("组合碎片化风险", 0)), "最近 30 天"),
+        ("临时卖出风险", str(flag_counts.get("临时卖出风险", 0)), "最近 30 天"),
+        ("卖出依据不清", str(flag_counts.get("卖出依据不清", 0)), "最近 30 天"),
+        ("卖出比例未想清楚", str(flag_counts.get("卖出比例未想清楚", 0)), "最近 30 天"),
+        ("资金安排不清", str(flag_counts.get("资金安排不清", 0)), "最近 30 天"),
+        ("无回补预案", str(flag_counts.get("无回补预案", 0)), "最近 30 天"),
+        ("卖出后组合不清晰", str(flag_counts.get("卖出后组合不清晰", 0)), "最近 30 天"),
+        ("买点评分 < 70 仍买入", str(intent_thirty["low_setup_buy_count"]), "只做复盘"),
+        ("量能承接 < 50 仍买入", str(intent_thirty["low_volume_acceptance_buy_count"]), "只做复盘"),
+    ]
+    st.markdown(_card_grid_html(intent_cards), unsafe_allow_html=True)
     tag_rows = store.list_trade_tags(days=30)
     stats = build_discipline_review_stats(entries, tag_rows)
     seven = stats["seven_days"]
@@ -157,23 +183,20 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
 
 
 def dashboard_discipline_card_html(snapshot: dict[str, Any]) -> str:
-    portfolio = dict(snapshot.get("portfolio") or {})
-    principle = str(snapshot.get("principle_first_line") or DEFAULT_PRINCIPLES.splitlines()[0])
-    holding_count = int(portfolio.get("current_holding_count") or 0)
-    target_min = int(portfolio.get("target_holding_min") or 3)
-    target_max = int(portfolio.get("target_holding_max") or 5)
-    small_count = int(portfolio.get("small_position_count") or 0)
-    unplanned = int(portfolio.get("unplanned_trade_count_this_week") or 0)
+    intent = dict(snapshot.get("trade_intent") or {})
+    flag_counts = dict(intent.get("attention_flag_counts") or {})
     return f"""
     <section class="dashboard-discipline-card">
       <div>
         <span>纪律提醒</span>
-        <strong>{escape(principle)}</strong>
+        <strong>交易前先记录意图：我为什么买？为什么卖？后面怎么处理？</strong>
       </div>
       <ul>
-        <li>当前持仓 {holding_count} 只 / 目标 {target_min}-{target_max} 只</li>
-        <li>小仓 {small_count} 只</li>
-        <li>本周计划外交易 {unplanned} 次</li>
+        <li>最近 30 天交易次数：{int(intent.get("trade_count") or 0)}</li>
+        <li>有复盘关注点：{int(intent.get("attention_trade_count") or 0)}</li>
+        <li>怕错过风险：{int(flag_counts.get("怕错过风险") or 0)}</li>
+        <li>临时卖出风险：{int(flag_counts.get("临时卖出风险") or 0)}</li>
+        <li>无回补预案：{int(flag_counts.get("无回补预案") or 0)}</li>
       </ul>
     </section>
     """
