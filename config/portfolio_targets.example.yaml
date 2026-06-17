@@ -1,0 +1,9 @@
+NVDA:
+  role: example_core
+  target_weight: 0.20
+  max_weight: 0.30
+
+MSFT:
+  role: example_core
+  target_weight: 0.10
+  max_weight: 0.15
