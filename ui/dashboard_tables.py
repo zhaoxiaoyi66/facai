@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from html import escape
+import re
 
 import pandas as pd
 
@@ -198,16 +199,16 @@ def _entry_rating_cell_html(row: pd.Series) -> str:
         label, grade, _title = _entry_rating_display_parts(row)
         hint = _entry_rating_chip_text(label, grade)
         reason = hint
-    compact_label, compact_hint = _dashboard_compact_entry_text(display, row)
-    tone = _buy_point_label_tone(compact_label or label)
+    position_label, position_range = _dashboard_price_position_text(display, row)
+    tone = _price_position_tone(position_label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
-    title = "；".join(part for part in (label, hint, reason) if part)
+    title = f"价格位置：{position_label}；区间：{position_range}"
     return (
         '<div class="decision-cell entry-rating-cell">'
         f'<span class="entry-rating-token" title="{escape(title)}" '
         f'style="background:{background};color:{foreground};border:1px solid {border};">'
-        f"<strong>{escape(compact_label or '待确认')}</strong>"
-        f"<em>{escape(compact_hint)}</em>"
+        f"<strong>{escape(position_label)}</strong>"
+        f"<em>{escape(position_range)}</em>"
         "</span></div>"
     )
 
@@ -276,6 +277,175 @@ def _dashboard_buy_zone_context_display(row: pd.Series | dict) -> dict:
         "status_explanation": display.get("status_explanation") or display.get("explanation") or "",
         "buy_zone_display": display,
     }
+
+
+def _dashboard_price_position_text(display: dict, row: pd.Series | dict) -> tuple[str, str]:
+    buy_zone_display = display.get("buy_zone_display") if isinstance(display.get("buy_zone_display"), dict) else display
+    action = str(buy_zone_display.get("action_code") or display.get("entry_context_status") or "").strip().upper()
+    if action == "DATA_INSUFFICIENT" or _text_list(display.get("missing_entry_fields")):
+        return "数据不足", "暂无有效区间"
+
+    current_subzone = str(buy_zone_display.get("current_subzone_display_text") or "").strip()
+    badge_label = str(buy_zone_display.get("badge_label") or display.get("entry_display_label") or "").strip()
+    technical_text = str(buy_zone_display.get("technical_action_text") or display.get("entry_display_reason") or "").strip()
+    label = _normalize_price_position_label(current_subzone or badge_label or technical_text, action)
+    detail = _price_position_range_text(buy_zone_display, action)
+    if label == "买区上方" and detail != "暂无有效区间" and not detail.startswith("等待回踩至"):
+        detail = f"等待回踩至 {detail}"
+    return label, detail
+
+
+def _normalize_price_position_label(raw_label: str, action: str) -> str:
+    text = str(raw_label or "").strip()
+    if not text:
+        if action == "WAIT_PULLBACK":
+            return "买区上方"
+        return "数据不足" if action == "DATA_INSUFFICIENT" else "位置待确认"
+    if "数据" in text or "不给买区" in text or "无买区" in text or "暂无参考买区" in text:
+        return "数据不足"
+    if (
+        "等待回踩" in text
+        or "等待技术回踩" in text
+        or "等回踩" in text
+        or "等待回落" in text
+        or "高于买区" in text
+        or "等突破" in text
+        or "再评估" in text
+    ):
+        return "买区上方"
+    if "买区上沿" in text or ("上沿" in text and "修复观察" in text):
+        return "观察区上沿"
+    if "区内看承接" in text or "区内观察" in text or "承接观察区" in text:
+        return "承接观察区内"
+    if "买区内" in text or "回踩区内" in text:
+        return "承接观察区内"
+    if "修复观察区" in text or "修复观察" in text:
+        return _strip_action_words(text.replace("买区上沿 / ", ""))
+    if "左侧试仓" in text:
+        return "左侧试仓候选区"
+    if "核心左侧" in text:
+        return "核心左侧买区"
+    if "下切观察" in text or "第一层失守" in text:
+        return "下切观察区"
+    if "结构失效" in text or "风控复核" in text or "风险复核" in text or "跌破结构" in text:
+        return "结构失效风险区"
+    if "追高" in text:
+        return "追高风险区"
+    if "低于估值参考" in text or "低于买区" in text:
+        return "低于观察区"
+    if "买区外" in text:
+        return "买区上方"
+    return _strip_action_words(text) or "位置待确认"
+
+
+def _strip_action_words(text: str) -> str:
+    clean = str(text or "").strip()
+    separators = ["，", "；", " / "]
+    for sep in separators:
+        if sep in clean:
+            clean = clean.split(sep, 1)[0].strip()
+    replacements = {
+        "当前价位于": "",
+        "当前属于": "",
+        "但不建议新增": "",
+        "当前不建议新增": "",
+        "不建议新增": "",
+        "仅观察": "",
+        "待复核": "",
+        "可试仓": "",
+        "等待确认": "",
+        "等量价": "",
+        "不追": "",
+    }
+    for source, target in replacements.items():
+        clean = clean.replace(source, target)
+    return clean.strip(" ，；/")
+
+
+def _price_position_range_text(display: dict, action: str) -> str:
+    if action == "DATA_INSUFFICIENT":
+        return "暂无有效区间"
+    if action == "WAIT_PULLBACK":
+        next_range = _dashboard_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+        if next_range != "暂无有效区间":
+            return f"等待回踩至 {next_range}"
+        label_range = _extract_price_range_from_text(display.get("entry_display_label"))
+        if label_range != "暂无有效区间":
+            return f"等待回踩至 {label_range}"
+    current_range = _dashboard_current_zone_range_text(display)
+    if current_range != "暂无有效区间":
+        return current_range
+    next_range = _dashboard_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    if next_range != "暂无有效区间":
+        return next_range
+    label_range = _extract_price_range_from_text(display.get("entry_display_label"))
+    if label_range != "暂无有效区间":
+        return label_range
+    return "暂无有效区间"
+
+
+def _dashboard_current_zone_range_text(display: dict) -> str:
+    current_type = str(display.get("current_layer_type") or "").strip().upper()
+    layers = display.get("left_buy_layers")
+    if current_type and isinstance(layers, list):
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            layer_type = str(layer.get("zone_type") or layer.get("zoneType") or "").strip().upper()
+            if layer_type == current_type:
+                text = _dashboard_range_text(layer.get("price_low"), layer.get("price_high"))
+                if text != "暂无有效区间":
+                    return text
+    text = str(display.get("primary_zone_range_text") or display.get("zone_text") or "").strip()
+    if _looks_like_position_range(text):
+        return text
+    return "暂无有效区间"
+
+
+def _looks_like_position_range(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or any(token in value for token in ("不建议", "仅观察", "待复核", "可试仓", "等待确认")):
+        return False
+    return "$" in value or bool(re.search(r"\d", value) and ("-" in value or "至" in value))
+
+
+def _dashboard_range_text(low_value: object, high_value: object) -> str:
+    low = _number(low_value)
+    high = _number(high_value)
+    if low is None and high is None:
+        return "暂无有效区间"
+    if low is None:
+        return f"低于 ${high:,.2f}"
+    if high is None:
+        return f"高于 ${low:,.2f}"
+    low, high = sorted((low, high))
+    return f"${low:,.2f} - ${high:,.2f}"
+
+
+def _extract_price_range_from_text(value: object) -> str:
+    text = str(value or "")
+    money_values = [float(match.replace(",", "")) for match in re.findall(r"\$([0-9][0-9,]*(?:\.[0-9]+)?)", text)]
+    if len(money_values) >= 2:
+        low, high = sorted(money_values[:2])
+        return f"${low:,.2f} - ${high:,.2f}"
+    if len(money_values) == 1:
+        return f"${money_values[0]:,.2f}"
+    return "暂无有效区间"
+
+
+def _price_position_tone(label: object) -> str:
+    text = str(label or "")
+    if "数据不足" in text or "待确认" in text:
+        return "gray"
+    if "结构失效" in text or "追高" in text:
+        return "red"
+    if "上方" in text or "修复观察" in text:
+        return "blue"
+    if "上沿" in text or "下切" in text:
+        return "yellow"
+    if "承接观察" in text or "左侧" in text or "核心" in text:
+        return "green"
+    return "gray"
 
 
 def _dashboard_compact_entry_text(display: dict, row: pd.Series | dict) -> tuple[str, str]:

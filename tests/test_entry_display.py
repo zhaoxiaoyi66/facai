@@ -50,7 +50,7 @@ def test_entry_display_above_buy_zone_is_consistent() -> None:
     assert result["entry_reference_high"] == 100
     assert result["chase_above_price"] == 120
     assert result["current_vs_entry_pct"] == 10.0
-    assert "追高禁区 >$120.00" in result["entry_display_reason"]
+    assert "追高风险区 >$120.00" in result["entry_display_reason"]
 
 
 def test_entry_display_prefers_technical_pullback_when_value_zone_is_far() -> None:
@@ -332,8 +332,8 @@ def test_chase_zone_still_has_priority_over_technical_pullback_status() -> None:
         buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
-    assert result["entry_display_label"] == "禁止追高，技术回踩参考 $108.00 - $110.00"
-    assert result["entry_action_hint"] == "进入追高区，禁止新增"
+    assert result["entry_display_label"] == "追高风险提醒，技术回踩参考 $108.00 - $110.00"
+    assert result["entry_action_hint"] == "进入追高风险区，系统不建议新增"
     assert result["technical_position"] == "IN_TECHNICAL_PULLBACK_ZONE"
     assert result["entry_context_status"] == "IN_CHASE_ZONE"
     assert result["technical_chase_overlap"] is True
@@ -385,8 +385,8 @@ def test_entry_display_chase_and_below_buy_zone_are_explicit() -> None:
         buy_zone_context=LEGACY_DISPLAY_CONTEXT,
     )
 
-    assert chase["entry_display_label"].startswith("禁止追高")
-    assert chase["entry_action_hint"] == "进入追高区，禁止新增"
+    assert chase["entry_display_label"].startswith("追高风险提醒")
+    assert chase["entry_action_hint"] == "进入追高风险区，系统不建议新增"
     assert below["entry_display_label"] == "低于估值参考 $90.00 - $100.00"
     assert "低于估值参考不等于结构破坏" in below["entry_display_reason"]
     assert below["entry_action_hint"] == "待复核，等结构确认"
@@ -486,7 +486,7 @@ def test_zone_formatters_are_shared() -> None:
     assert format_zone_status("ZONE_MISSING") == "无法判断"
 
 
-def test_dashboard_watchlist_entry_cell_shows_compact_status_and_keeps_price_in_tooltip() -> None:
+def test_dashboard_watchlist_entry_cell_shows_price_position_without_action_text() -> None:
     row = pd.Series(
         {
             "symbol": "NVDA",
@@ -507,10 +507,11 @@ def test_dashboard_watchlist_entry_cell_shows_compact_status_and_keeps_price_in_
 
     html = _entry_rating_cell_html(row)
 
-    assert "<strong>买区外</strong>" in html
-    assert "<em>等回落</em>" in html
-    assert "等待回落 $90.00 - $100.00" in html
-    assert "追高禁区 &gt;$120.00" in html
+    assert "<strong>买区上方</strong>" in html
+    assert "<em>等待回踩至 $90.00 - $100.00</em>" in html
+    assert "等待回落 $90.00 - $100.00" not in html
+    assert "追高禁区 &gt;$120.00" not in html
+    assert "<em>只观察" not in html
 
 
 def test_dashboard_watchlist_entry_cell_uses_two_line_layout() -> None:
@@ -547,23 +548,23 @@ def test_dashboard_watchlist_missing_buy_zone_shows_engine_reason() -> None:
     html = _entry_rating_cell_html(row)
 
     assert "<strong>数据不足</strong>" in html
-    assert "<em>补数据</em>" in html
-    assert "暂无参考买区：缺估值指标" in html
+    assert "<em>暂无有效区间</em>" in html
+    assert "暂无参考买区：缺估值指标" not in html
     assert "暂无专属买区模型" not in html
 
 
-def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
+def test_dashboard_watchlist_entry_cell_simplifies_price_position_statuses() -> None:
     cases = [
-        ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "买区内", "可复核"),
-        ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区外", "等回落"),
-        ("ABOVE_BUY_ZONE", "等待技术回踩 $90.00 - $100.00", "买区外", "等回踩"),
-        ("ABOVE_BUY_ZONE", "回踩区内 $90.00 - $100.00", "回踩区内", "需复核"),
-        ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高区", "禁止新增"),
-        ("BELOW_BUY_ZONE", "低于估值参考 $90.00 - $100.00", "低于估值参考", "待复核"),
-        ("BELOW_BUY_ZONE", "跌破结构区 $90.00 - $100.00", "跌破结构区", "先复核"),
+        ("IN_BUY_ZONE", "买区内 $90.00 - $100.00", "承接观察区内", "$90.00 - $100.00"),
+        ("ABOVE_BUY_ZONE", "等待回落 $90.00 - $100.00", "买区上方", "等待回踩至 $90.00 - $100.00"),
+        ("ABOVE_BUY_ZONE", "等待技术回踩 $90.00 - $100.00", "买区上方", "等待回踩至 $90.00 - $100.00"),
+        ("ABOVE_BUY_ZONE", "回踩区内 $90.00 - $100.00", "承接观察区内", "$90.00 - $100.00"),
+        ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高风险区", "$90.00 - $100.00"),
+        ("BELOW_BUY_ZONE", "低于估值参考 $90.00 - $100.00", "低于观察区", "$90.00 - $100.00"),
+        ("BELOW_BUY_ZONE", "跌破结构区 $90.00 - $100.00", "结构失效风险区", "$90.00 - $100.00"),
     ]
 
-    for price_position, display_label, compact_label, compact_hint in cases:
+    for price_position, display_label, position_label, position_range in cases:
         row = pd.Series(
             {
                 "symbol": "TEST",
@@ -585,8 +586,10 @@ def test_dashboard_watchlist_entry_cell_simplifies_buy_zone_statuses() -> None:
 
         html = _entry_rating_cell_html(row)
 
-        assert f"<strong>{compact_label}</strong>" in html
-        assert f"<em>{compact_hint}</em>" in html
+        assert f"<strong>{position_label}</strong>" in html
+        assert f"<em>{position_range}</em>" in html
+        assert "<em>禁止新增</em>" not in html
+        assert "<em>待复核</em>" not in html
 
 
 def test_dashboard_watchlist_entry_cell_prefers_radar_status_over_legacy_zone() -> None:
@@ -610,7 +613,7 @@ def test_dashboard_watchlist_entry_cell_prefers_radar_status_over_legacy_zone() 
 
     html = _entry_rating_cell_html(row)
 
-    assert "<strong>买区内</strong>" in html
+    assert "<strong>承接观察区内</strong>" in html
     assert "$394.12 - $425.99" in html
     assert "$241.88 - $300.37" not in html
 
@@ -639,38 +642,38 @@ def test_dashboard_watchlist_entry_cell_prefers_unified_buy_zone_context_over_st
 
     assert display["entry_context_status"] == "ALLOW_SMALL_BUY"
     assert display["missing_entry_fields"] == []
-    assert "<strong>击球区内</strong>" in html
-    assert "<em>可小仓</em>" in html
+    assert "<strong>承接观察区内</strong>" in html
+    assert "<em>暂无有效区间</em>" in html
     assert "补数据" not in html
 
 
-def test_dashboard_watchlist_entry_cell_uses_specific_buy_zone_status_language() -> None:
+def test_dashboard_watchlist_entry_cell_uses_specific_price_position_language() -> None:
     cases = [
         (
             "WAIT_PULLBACK",
             {"current_price": 390, "pullback_zone_low": 377, "pullback_zone_high": 384},
-            "等回击球区",
-            "不追",
+            "买区上方",
+            "等待回踩至 $377.00 - $379.10",
         ),
         (
             "WAIT_CONFIRMATION",
             {"current_price": 380, "pullback_zone_low": 377, "pullback_zone_high": 384},
-            "区内看承接",
-            "等量价",
+            "承接观察区内",
+            "$377.00 - $384.00",
         ),
         (
             "WAIT_CONFIRMATION",
             {"current_price": 405, "pullback_zone_low": 377, "pullback_zone_high": 384, "confirmation_price": 413.71},
-            "等突破再评估",
-            "不追",
+            "买区上方",
+            "等待回踩至 $377.00 - $384.00",
         ),
-        ("ALLOW_SMALL_BUY", {"current_price": 380, "pullback_zone_low": 377, "pullback_zone_high": 384}, "击球区内", "可小仓"),
-        ("BLOCK_CHASE", {"current_price": 500, "pullback_zone_low": 377, "pullback_zone_high": 384}, "追高禁区", "禁止追"),
-        ("DATA_INSUFFICIENT", {"missing_fields": ["daily_ohlcv"]}, "数据不足", "不给买区"),
-        ("RISK_REVIEW", {"current_price": 370, "pullback_zone_low": 377, "pullback_zone_high": 384}, "风控复核", "暂停加仓"),
+        ("ALLOW_SMALL_BUY", {"current_price": 380, "pullback_zone_low": 377, "pullback_zone_high": 384}, "承接观察区内", "$377.00 - $384.00"),
+        ("BLOCK_CHASE", {"current_price": 500, "pullback_zone_low": 377, "pullback_zone_high": 384}, "追高风险区", "$377.00 - $384.00"),
+        ("DATA_INSUFFICIENT", {"missing_fields": ["daily_ohlcv"]}, "数据不足", "暂无有效区间"),
+        ("RISK_REVIEW", {"current_price": 370, "pullback_zone_low": 377, "pullback_zone_high": 384}, "结构失效风险区", "$377.00 - $384.00"),
     ]
 
-    for action, context, label, hint in cases:
+    for action, context, label, detail in cases:
         row = pd.Series(
             {
                 "symbol": "TEST",
@@ -687,7 +690,7 @@ def test_dashboard_watchlist_entry_cell_uses_specific_buy_zone_status_language()
         html = _entry_rating_cell_html(row)
 
         assert f"<strong>{label}</strong>" in html
-        assert f"<em>{hint}</em>" in html
+        assert f"<em>{detail}</em>" in html
         assert "<strong>等待确认</strong>" not in html
         assert "<strong>只观察</strong>" not in html
 
@@ -786,5 +789,5 @@ def test_dashboard_row_keeps_generated_buy_zone_for_entry_display(monkeypatch) -
     assert row["entry_reference_low"] == 190
     html = _entry_rating_cell_html(pd.Series(row))
     assert "<strong>数据不足</strong>" in html
-    assert "<em>当前不新增</em>" in html
+    assert "<em>暂无有效区间</em>" in html
     assert "$90.00 - $100.00" not in html
