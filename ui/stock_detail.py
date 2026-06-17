@@ -111,11 +111,14 @@ def render() -> None:
     with record_signal_slot.container():
         _render_record_signal_button(ticker, snapshot, technicals, final_decision, buy_zone_context, buy_zone_display)
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision, buy_zone_display)
+    _render_trade_decision_snapshot(score, effective_buy_zone, plan_suggestion, final_decision, buy_zone_display)
     _render_current_position_summary(portfolio_row)
-    _render_decision_summary(score, effective_buy_zone, plan_suggestion, final_decision, buy_zone_display)
-    _render_price_alert_panel(ticker, effective_buy_zone)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
+    _render_price_action_map(buy_zone_display)
+    _render_setup_score_snapshot(buy_zone_display)
+    _render_price_alert_panel(ticker, effective_buy_zone)
     _render_research_memo(ticker, plan_store, plan)
+    _render_thesis_risk_summary(score, snapshot)
     _render_explanation_cards(score, snapshot, technicals, effective_plan, effective_buy_zone)
     _render_industry_metrics(score.scoring_model, snapshot, score)
     _render_missing_data_notice(ticker, score, snapshot)
@@ -188,7 +191,6 @@ def _render_conclusion_card(
         ("买点状态", buy_point_html, True),
         ("风险评级", score.risk_rating),
         ("数据状态", data_status),
-        ("动能辅助", str(display.get("momentum_note") or "未参与判断")),
         ("最近刷新", refreshed),
     ]
 
@@ -352,43 +354,44 @@ def _first_number(*values) -> float | None:
 
 
 def _render_explanation_cards(score, snapshot: dict, technicals: dict, plan: dict, buy_zone: BuyZoneEstimate | None = None) -> None:
-    render_section_title("评分解释", "为什么是这个结论")
-    columns = st.columns(3)
+    render_section_title("关键监控点 / 量价承接详情", "详细依据默认折叠，先看上方交易动作")
+    with st.expander("展开详细评分依据", expanded=False):
+        columns = st.columns(3)
 
-    with columns[0]:
-        _explain_card(
-            "公司质量解释",
-            score.quality_rating,
-            "主要加分项",
-            score.key_positives or [],
-            "主要扣分项",
-            _quality_penalties(score, snapshot),
-            score.missing_data or [],
-        )
+        with columns[0]:
+            _explain_card(
+                "公司质量解释",
+                score.quality_rating,
+                "主要加分项",
+                score.key_positives or [],
+                "主要扣分项",
+                _quality_penalties(score, snapshot),
+                score.missing_data or [],
+            )
 
-    with columns[1]:
-        buy_reasons = _entry_explanation(score, snapshot, technicals, plan, buy_zone)
-        _explain_card(
-            "买点解释",
-            _buy_point_status_text(score),
-            "当前判断",
-            buy_reasons,
-            "需要等待",
-            _entry_wait_items(score, technicals, plan),
-            score.missing_data or [],
-        )
+        with columns[1]:
+            buy_reasons = _entry_explanation(score, snapshot, technicals, plan, buy_zone)
+            _explain_card(
+                "买点解释",
+                _buy_point_status_text(score),
+                "当前判断",
+                buy_reasons,
+                "需要等待",
+                _entry_wait_items(score, technicals, plan),
+                score.missing_data or [],
+            )
 
-    with columns[2]:
-        risk_reasons = _risk_explanation(score)
-        _explain_card(
-            "风险解释",
-            score.risk_rating,
-            "主要风险",
-            risk_reasons,
-            "风险来源",
-            _risk_source_labels(score),
-            score.missing_data or [],
-        )
+        with columns[2]:
+            risk_reasons = _risk_explanation(score)
+            _explain_card(
+                "风险解释",
+                score.risk_rating,
+                "主要风险",
+                risk_reasons,
+                "风险来源",
+                _risk_source_labels(score),
+                score.missing_data or [],
+            )
 
 
 def _explain_card(
@@ -897,6 +900,420 @@ def _buy_zone_trigger_label(value: str) -> str:
         "下一买入触发价": "第一笔买入价",
         "已低于重仓区": "已进入极端恐慌区",
     }.get(str(value or ""), str(value or ""))
+
+
+def _render_trade_decision_snapshot(
+    score,
+    buy_zone: BuyZoneEstimate,
+    plan_suggestion: PositionPlanSuggestion,
+    final_decision=None,
+    buy_zone_display: dict | None = None,
+) -> None:
+    display = buy_zone_display or {}
+    snapshot = _stock_detail_decision_snapshot(display, score, buy_zone, final_decision, plan_suggestion)
+    tag_html = "".join(
+        f'<div class="decision-tag"><span>{escape(label)}</span><strong>{escape(value)}</strong></div>'
+        for label, value in snapshot["tags"]
+    )
+    card_html = "".join(
+        '<div class="decision-compact-card">'
+        f'<span>{escape(card["title"])}</span>'
+        f'<strong>{escape(card["headline"])}</strong>'
+        + "".join(f'<p>{escape(line)}</p>' for line in card["lines"])
+        + "</div>"
+        for card in snapshot["cards"]
+    )
+    momentum = str(display.get("momentum_note") or "").strip() or "RSI / 布林轨数据不足，未参与判断。"
+    st.markdown(
+        '<section class="research-card decision-snapshot-card">'
+        '<div class="decision-headline-row">'
+        f'<strong>{escape(snapshot["headline"])}</strong>'
+        f'<div class="decision-tags">{tag_html}</div>'
+        '</div>'
+        f'<div class="decision-compact-grid">{card_html}</div>'
+        f'<p class="momentum-one-line">动能辅助：{escape(momentum)}</p>'
+        '</section>',
+        unsafe_allow_html=True,
+    )
+
+
+def _stock_detail_decision_snapshot(
+    display: dict,
+    score,
+    buy_zone: BuyZoneEstimate | None,
+    final_decision=None,
+    plan_suggestion: PositionPlanSuggestion | None = None,
+) -> dict[str, object]:
+    action = _detail_action_text(display, score, final_decision)
+    current_action = str(display.get("current_price_action_text") or "").strip()
+    action_prefix = "当前不新增" if "不新增" in current_action or "不建议新增" in action else action
+    subzone = str(
+        display.get("current_subzone_display_text")
+        or display.get("primary_zone_text")
+        or display.get("technical_action_text")
+        or "当前区间"
+    ).strip()
+    reason = _detail_decision_reason(display)
+    headline = f"{action_prefix}：价格位于{subzone}，{reason}。"
+    next_trigger = _next_trigger_summary(display)
+    left_condition = _left_condition_text(display)
+    right_condition = _right_condition_text(display)
+    risk_condition = _risk_condition_text(display)
+    rr_note = str(display.get("risk_reward_decision_text") or "").strip()
+    current_add = str(display.get("current_price_action_text") or "").strip() or "当前价动作待复核"
+    max_position = _position_limit_text(_final_max_position(score, final_decision, plan_suggestion))
+    return {
+        "headline": headline,
+        "tags": [
+            ("当前动作", action),
+            ("当前价", str(display.get("current_price_text") or format_currency(getattr(buy_zone, "currentPrice", None)))),
+            ("买入质量", _setup_quality_compact_text(display)),
+            ("下一触发", next_trigger),
+        ],
+        "cards": [
+            {
+                "title": "当前动作",
+                "headline": action,
+                "lines": [_truncate(reason, 36), _truncate(current_add, 36)],
+            },
+            {
+                "title": "买入条件",
+                "headline": "先看左侧承接，再看右侧确认",
+                "lines": [left_condition, right_condition],
+            },
+            {
+                "title": "风险条件",
+                "headline": "跌破关键线先复核",
+                "lines": [risk_condition, f"仓位上限：{max_position}"],
+            },
+        ],
+        "rr_note": rr_note,
+    }
+
+
+def _detail_action_text(display: dict, score, final_decision=None) -> str:
+    value = str(display.get("main_action_text") or _final_action_text(score, final_decision) or "").strip()
+    return value or "仅观察"
+
+
+def _detail_decision_reason(display: dict) -> str:
+    volume_score = _first_number(display.get("volume_acceptance_score"))
+    rr_score = _first_number(display.get("risk_reward_score"))
+    acceptance = str(display.get("acceptance_state_text") or "").strip()
+    reasons: list[str] = []
+    if volume_score is not None and volume_score < 60:
+        reasons.append("量价承接不足")
+    elif acceptance:
+        reasons.append(acceptance)
+    if rr_score is not None and rr_score < 60:
+        reasons.append("赔率不够")
+    elif rr_score is not None and rr_score >= 70 and volume_score is not None and volume_score < 60:
+        reasons.append("赔率较好但未确认")
+    if reasons:
+        return "，".join(dict.fromkeys(reasons))
+    rr_text = str(display.get("risk_reward_decision_text") or "").strip()
+    if rr_text:
+        return _truncate(rr_text.rstrip("。"), 36)
+    return "等待关键价格和量价确认"
+
+
+def _setup_quality_compact_text(display: dict) -> str:
+    setup_score = _first_number(display.get("setup_score"))
+    if setup_score is None:
+        return str(display.get("entry_quality_text") or "待确认")
+    if setup_score >= 80:
+        return "高质量"
+    if setup_score >= 70:
+        return "试仓合理"
+    if setup_score >= 60:
+        return "观察级"
+    if setup_score >= 50:
+        return "偏弱"
+    return "高风险"
+
+
+def _next_trigger_summary(display: dict) -> str:
+    next_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    reclaim = _money_text(display.get("reclaim_line"))
+    if next_range != "暂缺" and reclaim != "暂缺":
+        return f"回踩 {next_range} 或站上 {reclaim} 后重评"
+    if next_range != "暂缺":
+        return f"回踩 {next_range} 看承接"
+    if reclaim != "暂缺":
+        return f"站上 {reclaim} 后重评"
+    return str(display.get("next_step_text") or "等待下一触发")
+
+
+def _left_condition_text(display: dict) -> str:
+    next_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    if next_range != "暂缺":
+        return f"左侧：回踩 {next_range} 并出现承接"
+    return "左侧：等待有效观察区和承接信号"
+
+
+def _right_condition_text(display: dict) -> str:
+    reclaim = _money_text(display.get("reclaim_line"))
+    confirmation = _display_range_text(display.get("right_confirmation_low"), display.get("right_confirmation_high"))
+    if reclaim != "暂缺" and confirmation != "暂缺":
+        return f"右侧：站上 {reclaim} 后重评，放量站稳 {confirmation} 才确认"
+    if reclaim != "暂缺":
+        return f"右侧：站上 {reclaim} 后重评，不直接追买"
+    if confirmation != "暂缺":
+        return f"右侧：放量站稳 {confirmation} 才确认"
+    return "右侧：确认线待补，先不追价"
+
+
+def _risk_condition_text(display: dict) -> str:
+    layer_break = _money_text(display.get("layer_break_line"))
+    invalid = _money_text(display.get("structural_invalid_line"))
+    if layer_break != "暂缺" and invalid != "暂缺":
+        return f"跌破 {layer_break} 后复核；跌破 {invalid} 后系统不建议新增"
+    if layer_break != "暂缺":
+        return f"跌破 {layer_break} 后复核"
+    if invalid != "暂缺":
+        return f"跌破 {invalid} 后系统不建议新增"
+    return str(display.get("invalidation_condition_text") or "风险线待补，先按小仓观察")
+
+
+def _render_price_action_map(display: dict | None) -> None:
+    display = display or {}
+    rows = _price_hierarchy_rows(display)
+    if not rows:
+        return
+    render_section_title("价格行动地图", "价格线按左侧、当前、右侧和风险分层")
+    row_html = "".join(_price_hierarchy_row_html(row) for row in rows)
+    st.markdown(
+        '<section class="research-card price-hierarchy-card">'
+        f'<div class="price-hierarchy-grid">{row_html}</div>'
+        f'<p class="price-hierarchy-note">{escape(_price_hierarchy_summary(display))}</p>'
+        '</section>',
+        unsafe_allow_html=True,
+    )
+    more_rows = _additional_price_layers(display)
+    if more_rows:
+        with st.expander("更多价格层级", expanded=False):
+            st.dataframe(pd.DataFrame(more_rows), hide_index=True, width="stretch")
+
+
+def _price_hierarchy_rows(display: dict) -> list[dict[str, str]]:
+    left_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    current_range = _current_zone_range_text(display)
+    repair_line = _money_text(display.get("reclaim_line"))
+    strong_range = _display_range_text(display.get("right_confirmation_low"), display.get("right_confirmation_high"))
+    layer_break = _money_text(display.get("layer_break_line"))
+    invalid = _money_text(display.get("structural_invalid_line"))
+    current_subzone = str(display.get("current_subzone_display_text") or display.get("primary_zone_text") or "当前所在区")
+    rows = [
+        {
+            "title": "左侧观察区",
+            "value": left_range,
+            "note": "回踩这里看承接，不是自动买入。",
+            "tone": "watch",
+        },
+        {
+            "title": "当前所在区",
+            "value": current_range,
+            "note": f"{current_subzone}，不追价。",
+            "tone": "current",
+        },
+        {
+            "title": "右侧修复线",
+            "value": repair_line,
+            "note": "站上后重新评估趋势修复，不等于立即重仓。",
+            "tone": "repair",
+        },
+        {
+            "title": "强确认区",
+            "value": strong_range,
+            "note": "放量站稳后，才考虑右侧确认加仓。",
+            "tone": "confirm",
+        },
+        {
+            "title": "风险线",
+            "value": _risk_line_value(layer_break, invalid),
+            "note": "先风险复核，再看硬失效。",
+            "tone": "risk",
+        },
+    ]
+    return [row for row in rows if row["value"] != "暂缺"]
+
+
+def _price_hierarchy_row_html(row: dict[str, str]) -> str:
+    return (
+        f'<div class="price-hierarchy-row price-hierarchy-{escape(row["tone"])}">'
+        f'<span>{escape(row["title"])}</span>'
+        f'<strong>{escape(row["value"])}</strong>'
+        f'<em>{escape(row["note"])}</em>'
+        "</div>"
+    )
+
+
+def _current_zone_range_text(display: dict) -> str:
+    layers = _display_layers(display)
+    current_type = str(display.get("current_layer_type") or "").upper()
+    layer = _find_layer(layers, current_type)
+    if layer is not None:
+        text = _display_range_text(layer.get("price_low"), layer.get("price_high"))
+        if text != "暂缺":
+            return text
+    text = str(display.get("primary_zone_range_text") or display.get("zone_text") or "").strip()
+    return text if text and text != "暂缺" else str(display.get("current_price_text") or "暂缺")
+
+
+def _risk_line_value(layer_break: str, invalid: str) -> str:
+    parts = []
+    if layer_break != "暂缺":
+        parts.append(f"风险复核：跌破 {layer_break}")
+    if invalid != "暂缺":
+        parts.append(f"硬失效：跌破 {invalid}")
+    return "；".join(parts) if parts else "暂缺"
+
+
+def _price_hierarchy_summary(display: dict) -> str:
+    current = str(display.get("current_subzone_display_text") or "当前区间")
+    next_action = str(display.get("next_buy_action_text") or display.get("next_step_text") or "等待确认")
+    return f"当前位于{current}；{next_action}。"
+
+
+def _additional_price_layers(display: dict) -> list[dict[str, str]]:
+    used = {"OBSERVE_ZONE", "LEFT_PROBE_CANDIDATE", "LEFT_PROBE_CONFIRMED"}
+    current_type = str(display.get("current_layer_type") or "").upper()
+    if current_type:
+        used.add(current_type)
+    rows: list[dict[str, str]] = []
+    for layer in _display_layers(display):
+        zone_type = str(layer.get("zone_type") or layer.get("zoneType") or "").upper()
+        if zone_type in used:
+            continue
+        rows.append(
+            {
+                "层级": _left_layer_label(zone_type),
+                "价格区间": _display_range_text(layer.get("price_low"), layer.get("price_high")),
+                "说明": str(layer.get("note") or "辅助价格层级"),
+            }
+        )
+    return rows
+
+
+def _display_layers(display: dict) -> list[dict]:
+    layers = display.get("left_buy_layers")
+    return [item for item in layers if isinstance(item, dict)] if isinstance(layers, list) else []
+
+
+def _find_layer(layers: list[dict], zone_type: str) -> dict | None:
+    if not zone_type:
+        return None
+    for layer in layers:
+        if str(layer.get("zone_type") or layer.get("zoneType") or "").upper() == zone_type:
+            return layer
+    return None
+
+
+def _left_layer_label(zone_type: str) -> str:
+    return {
+        "OBSERVE_ZONE": "观察区",
+        "LEFT_PROBE_CANDIDATE": "左侧试仓候选区",
+        "LEFT_PROBE_CONFIRMED": "左侧试仓确认区",
+        "CORE_LEFT_ZONE": "核心左侧买区",
+        "LAYER_BREAK": "下切观察区",
+        "DEEP_VALUE_ZONE": "深度击球区",
+        "PANIC_VALUE_ZONE": "恐慌击球区",
+        "STRUCTURAL_INVALID": "结构失效区",
+    }.get(zone_type, "辅助层级")
+
+
+def _render_setup_score_snapshot(display: dict | None) -> None:
+    display = display or {}
+    rows = [
+        ("Setup 综合", _score_display_text(display.get("setup_score"))),
+        ("量价承接", _score_display_text(display.get("volume_acceptance_score"))),
+        ("风险收益", _score_display_text(display.get("risk_reward_score"))),
+        ("结论", str(display.get("setup_quality_note") or display.get("risk_reward_decision_text") or "等待确认")),
+    ]
+    st.markdown(
+        '<section class="research-card setup-snapshot-card">'
+        + "".join(
+            f'<div><span>{escape(label)}</span><strong>{escape(_truncate(value, 42))}</strong></div>'
+            for label, value in rows
+        )
+        + "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _score_display_text(value: object) -> str:
+    number = _first_number(value)
+    if number is None:
+        return "待补"
+    if abs(number - round(number)) < 0.05:
+        return f"{number:.0f}"
+    return f"{number:.1f}"
+
+
+def _display_range_text(low_value: object, high_value: object) -> str:
+    low = _first_number(low_value)
+    high = _first_number(high_value)
+    if low is None and high is None:
+        return "暂缺"
+    if low is None:
+        return f"低于 {format_currency(high)}"
+    if high is None:
+        return f"高于 {format_currency(low)}"
+    low, high = sorted((low, high))
+    return f"{format_currency(low)} - {format_currency(high)}"
+
+
+def _money_text(value: object) -> str:
+    number = _first_number(value)
+    return format_currency(number) if number is not None else "暂缺"
+
+
+def _render_thesis_risk_summary(score, snapshot: dict) -> None:
+    positives = _thesis_points(score, snapshot)
+    risks = _risk_points(score, snapshot)
+    if not positives and not risks:
+        with st.expander("看多逻辑 / 核心风险", expanded=False):
+            st.caption("暂无明确内容，展开后可在研究备忘录里补充。")
+        return
+    left_items = "".join(f"<li>{escape(item)}</li>" for item in positives[:3]) or "<li>暂无明确看多逻辑</li>"
+    right_items = "".join(f"<li>{escape(item)}</li>" for item in risks[:3]) or "<li>暂无明确核心风险</li>"
+    st.markdown(
+        '<section class="research-card thesis-risk-card">'
+        '<div><span>看多逻辑</span><ul>'
+        + left_items
+        + '</ul></div><div><span>核心风险</span><ul>'
+        + right_items
+        + "</ul></div></section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _thesis_points(score, snapshot: dict) -> list[str]:
+    points = [metric_label(item) for item in list(getattr(score, "key_positives", None) or []) if str(item).strip()]
+    if points:
+        return _dedupe(points)[:3]
+    model = str(getattr(score, "scoring_model", "") or snapshot.get("scoring_model") or "").upper()
+    if model == "POWER_GENERATION":
+        return [
+            "电网升级与电力设备需求",
+            "AI 数据中心带来的电力基础设施扩张",
+            "公用事业资本开支周期",
+        ]
+    return []
+
+
+def _risk_points(score, snapshot: dict) -> list[str]:
+    points = _risk_explanation(score)
+    if points and points != ["当前未触发明显高风险旗标"]:
+        return points[:3]
+    model = str(getattr(score, "scoring_model", "") or snapshot.get("scoring_model") or "").upper()
+    if model == "POWER_GENERATION":
+        return [
+            "估值较高，预期过满",
+            "利率上行压制高估值工业股",
+            "订单或利润率不及预期",
+        ]
+    return []
 
 
 def _plan_or_suggestion(plan: dict, field: str, fallback):
@@ -2734,6 +3151,179 @@ def _render_detail_styles() -> None:
             font-size: 0.75rem;
             font-weight: 620;
         }
+        .decision-snapshot-card {
+            padding: 0.82rem 0.9rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid #2563eb;
+        }
+        .decision-headline-row {
+            display: grid;
+            grid-template-columns: minmax(260px, 1.2fr) minmax(420px, 1.8fr);
+            gap: 0.75rem;
+            align-items: start;
+        }
+        .decision-headline-row > strong {
+            color: #0f172a;
+            font-size: 1.04rem;
+            line-height: 1.36;
+            font-weight: 800;
+        }
+        .decision-tags {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.38rem;
+        }
+        .decision-tag {
+            min-height: 2.75rem;
+            padding: 0.36rem 0.45rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.45rem;
+            background: #F8FAFC;
+        }
+        .decision-tag span,
+        .decision-compact-card span,
+        .price-hierarchy-row span,
+        .setup-snapshot-card span,
+        .thesis-risk-card span {
+            display: block;
+            color: #64748b;
+            font-size: 0.7rem;
+            font-weight: 760;
+            line-height: 1.2;
+        }
+        .decision-tag strong {
+            display: block;
+            margin-top: 0.16rem;
+            color: #0f172a;
+            font-size: 0.78rem;
+            line-height: 1.25;
+            font-weight: 780;
+            overflow-wrap: anywhere;
+        }
+        .decision-compact-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin-top: 0.72rem;
+        }
+        .decision-compact-card {
+            min-height: 6.35rem;
+            padding: 0.62rem 0.68rem;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            border-radius: 0.55rem;
+            background: rgba(248, 250, 252, 0.78);
+        }
+        .decision-compact-card strong {
+            display: block;
+            margin-top: 0.2rem;
+            color: #111827;
+            font-size: 0.92rem;
+            line-height: 1.25;
+            font-weight: 800;
+        }
+        .decision-compact-card p {
+            margin: 0.34rem 0 0;
+            color: #475569;
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
+        .momentum-one-line {
+            margin: 0.62rem 0 0;
+            padding: 0.42rem 0.55rem;
+            border-radius: 0.45rem;
+            background: #F8FAFC;
+            color: #52657F;
+            font-size: 0.8rem;
+            line-height: 1.35;
+        }
+        .price-hierarchy-card {
+            padding: 0.78rem 0.86rem;
+            margin-bottom: 0.75rem;
+        }
+        .price-hierarchy-grid {
+            display: grid;
+            gap: 0.36rem;
+        }
+        .price-hierarchy-row {
+            display: grid;
+            grid-template-columns: 130px minmax(150px, 0.8fr) minmax(220px, 1.4fr);
+            gap: 0.6rem;
+            align-items: center;
+            min-height: 2.75rem;
+            padding: 0.42rem 0.58rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.48rem;
+            background: #FBFCFE;
+        }
+        .price-hierarchy-current {
+            border-color: rgba(37, 99, 235, 0.24);
+            background: #F5F8FF;
+        }
+        .price-hierarchy-risk {
+            border-color: rgba(239, 68, 68, 0.18);
+            background: #FFF8F8;
+        }
+        .price-hierarchy-row strong {
+            color: #0f172a;
+            font-size: 0.86rem;
+            line-height: 1.25;
+            font-weight: 780;
+            overflow-wrap: anywhere;
+        }
+        .price-hierarchy-row em {
+            color: #52657F;
+            font-size: 0.78rem;
+            line-height: 1.35;
+            font-style: normal;
+        }
+        .price-hierarchy-note {
+            margin: 0.55rem 0 0;
+            color: #475569;
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }
+        .setup-snapshot-card {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+            padding: 0.72rem 0.78rem;
+            margin-bottom: 0.75rem;
+        }
+        .setup-snapshot-card div {
+            min-height: 3.1rem;
+            padding: 0.45rem 0.52rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.48rem;
+            background: #F8FAFC;
+        }
+        .setup-snapshot-card strong {
+            display: block;
+            margin-top: 0.2rem;
+            color: #0f172a;
+            font-size: 0.84rem;
+            line-height: 1.28;
+            font-weight: 760;
+        }
+        .thesis-risk-card {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.7rem;
+            padding: 0.78rem 0.86rem;
+            margin-bottom: 0.75rem;
+        }
+        .thesis-risk-card div {
+            padding: 0.58rem 0.66rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.5rem;
+            background: #FBFCFE;
+        }
+        .thesis-risk-card ul {
+            margin: 0.35rem 0 0;
+            padding-left: 1.05rem;
+            color: #334155;
+            font-size: 0.82rem;
+            line-height: 1.45;
+        }
         .buy-zone-panel {
             display: grid;
             gap: 0.65rem;
@@ -3015,6 +3605,16 @@ def _render_detail_styles() -> None:
             .memo-grid,
             .missing-summary-grid,
             .missing-gap-groups {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .decision-headline-row,
+            .decision-compact-grid,
+            .price-hierarchy-row,
+            .thesis-risk-card {
+                grid-template-columns: 1fr;
+            }
+            .decision-tags,
+            .setup-snapshot-card {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
             .buy-zone-row {
