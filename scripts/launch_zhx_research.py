@@ -197,7 +197,10 @@ def _is_tcp_port_open(host: str, port: int) -> bool:
 
 
 def _creation_flags() -> int:
-    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    if os.environ.get("ZHX_RESEARCH_NO_WINDOW", "").strip() == "1":
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return flags
 
 
 def _print_log_tail(log_path: Path, max_lines: int = 40) -> None:

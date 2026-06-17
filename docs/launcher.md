@@ -1,80 +1,76 @@
 # ZHX Research Windows Launcher
 
-The recommended one-click launcher is:
+Recommended daily launcher:
 
 ```text
-start_zhx_research.bat
+launch_hidden.pyw
 ```
 
-You can also create a Windows Desktop shortcut named `ZHX Research` that points to this BAT file.
+Double-clicking `launch_hidden.pyw` starts the local Streamlit service in the background and opens:
 
-The launcher starts the local Streamlit app from `C:\dev\facai` by using:
+```text
+http://localhost:8501
+```
+
+It does not show a CMD or PowerShell window.
+
+## Daily Hidden Mode
+
+Use:
+
+```text
+launch_hidden.pyw
+```
+
+Behavior:
+
+1. Uses port `8501`.
+2. If ZHX Research is already running, it opens the browser and does not start another service.
+3. If port `8501` is free, it starts `streamlit run app.py --server.port 8501 --server.headless true`.
+4. Streamlit logs are written to:
+
+```text
+C:\Users\User\AppData\Local\Temp\zhx_research_streamlit.log
+```
+
+The exact temp directory follows Windows `%TEMP%`, which is normally `C:\Users\User\AppData\Local\Temp`.
+
+## Developer Mode
+
+Use developer mode when you want to see Streamlit logs in a console:
+
+```text
+start_dev.bat
+```
+
+This keeps the console visible and runs:
 
 ```powershell
-.\.venv\Scripts\python.exe
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501 --server.headless true
 ```
 
-The Streamlit entry file is:
+Press `Ctrl+C` in that console to stop the developer service.
+
+The older `start_zhx_research.bat` is still available for compatibility, but the default daily launcher is now `launch_hidden.pyw`.
+
+## Stop The Background Service
+
+Use:
 
 ```text
-app.py
+stop_zhx.bat
 ```
 
-## Use the BAT Launcher
+The stop script checks port `8501` and stops the Streamlit/Python process that owns it.
 
-Double-click:
+It prints one of these messages:
 
-```text
-start_zhx_research.bat
-```
+- `已停止 ZHX Research 服务，已释放 8501 端口。`
+- `未发现运行中的 ZHX Research 服务。`
 
-The BAT file will:
+## Notes
 
-1. Enter `C:\dev\facai`.
-2. Run `scripts\launch_zhx_research.py` with `.venv\Scripts\python.exe`.
-3. Open `http://localhost:8501` in the browser.
-
-If `http://localhost:8501` is already responding, the launcher opens the browser directly and does not start another Streamlit process.
-
-## Use a Desktop Shortcut
-
-Create a shortcut with:
-
-```text
-Target: C:\dev\facai\start_zhx_research.bat
-Start in: C:\dev\facai
-```
-
-Double-clicking the shortcut behaves the same as double-clicking the BAT file.
-
-## Important Notes
-
-This is a local launcher, not a full standalone installer.
-
-Keep these in place:
-
-- `C:\dev\facai`
-- `C:\dev\facai\.venv`
-- the project files and local data needed by the app
-
-The launcher does not bundle:
-
-- `.env`
-- SQLite database files
-- local caches
-- the full project directory
-
-No PyInstaller or EXE build is required for the recommended shortcut workflow.
-
-## If Port 8501 Is Occupied
-
-If `http://localhost:8501` is already running, the launcher opens it directly.
-
-If port 8501 is occupied by something that is not responding as a web app, close that process and run the launcher again.
-
-Advanced users can choose another port for the Python launcher by setting:
-
-```powershell
-$env:ZHX_RESEARCH_PORT = "8502"
-.\.venv\Scripts\python.exe scripts\launch_zhx_research.py
-```
+- Hidden mode is local only. It does not bundle the project into an EXE.
+- Keep the project folder and `.venv` in place.
+- Hidden mode does not read or print `.env`; API keys stay local.
+- Repeated double-clicks do not start multiple Streamlit services.
