@@ -130,6 +130,8 @@ def build_dashboard_row(
         buy_zone_context,
         {
             **(portfolio_context or {}),
+            "max_shares": plan.get("max_shares"),
+            "stock_plan": plan,
             "currentAddLimitPercent": current_add_limit,
             "maxPortfolioWeightPercent": max_portfolio_weight,
             "finalDecision": getattr(final_decision, "as_dict", lambda: {})(),

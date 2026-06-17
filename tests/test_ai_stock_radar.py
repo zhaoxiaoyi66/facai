@@ -311,6 +311,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
         "entry_quality": "EDGE_OBSERVE",
         "confirmation_score": 48,
         "volume_acceptance_score": 48,
+        "risk_reward_score": 82,
         "confirmation_price": 105.12,
         "current_add_limit_percent": 0,
     }
@@ -335,11 +336,15 @@ def test_report_summary_surfaces_acceptance_state() -> None:
         buy_zone_context=buy_zone_context,
     )
 
-    assert "承接状态" in html
+    assert "当前动作" in html
+    assert "持仓与额度" in html
+    assert "下一步" in html
     assert "承接不足" in html
     assert "边缘观察" in html
     assert "动能辅助：RSI 74，价格贴近布林上轨，追高风险升高。" in html
-    assert "NOW：承接不足，承接观察区上沿，持有观察 / 当前不建议新增" in html
+    assert "当前价不新增" in html
+    assert "未设置计划上限" in html
+    assert "赔率较好，但承接不足。当前属于高赔率观察，不是立即买入。" in html
     assert html.count("<li>") == 4
     assert "若无持仓" not in html
 
@@ -1642,7 +1647,7 @@ def test_ai_radar_report_only_marks_breakdown_when_price_breaks_invalidation() -
     html = radar_ui._report_html(report, {}, {}, {}, {}, pd.DataFrame())
 
     assert "破位复核区" in html
-    assert "跌破 $196.90 后系统不建议新增" in html
+    assert "跌破 $196.90 后下切复核" in html
     assert "技术承接数据不足" in html
     assert "current price is below" not in html
     assert report["decision"] == "WAIT"
@@ -1822,7 +1827,8 @@ def test_ai_radar_report_position_action_uses_buy_zone_display() -> None:
         include_appendix=False,
     )
 
-    assert "已有 100 股，当前新增额度为 0，系统不建议新增" in html
+    assert "当前价不新增" in html
+    assert "未设置计划上限" in html
     assert "允许回踩复核加仓" not in html
 
 
@@ -2319,8 +2325,9 @@ def test_entry_display_below_buy_zone_does_not_auto_allow_buy() -> None:
 
         assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_display_label == "结构失效风险"
-        assert report.entry_context_status == "PAUSE_BUY"
+        assert report.entry_display_label == "区内看承接"
+        assert report.entry_context_status == "WAIT_CONFIRMATION"
+        assert report.buy_zone_context["current_layer_type"] == "LEFT_PROBE_CANDIDATE"
         assert report.allowed_add_pct == 0
 
 
@@ -3227,7 +3234,8 @@ def test_price_below_discipline_buy_zone_has_block_reason() -> None:
 
         assert report.decision == "WAIT"
         assert report.price_position == "BELOW_BUY_ZONE"
-        assert report.entry_context_status == "PAUSE_BUY"
+        assert report.entry_context_status == "WAIT_CONFIRMATION"
+        assert report.buy_zone_context["current_layer_type"] == "LEFT_PROBE_CANDIDATE"
         assert report.allowed_add_pct == 0
         assert report.block_reasons
         assert "current price is below the discipline buy zone lower bound" in report.block_reasons[0]

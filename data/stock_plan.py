@@ -25,6 +25,7 @@ NUMERIC_PLAN_FIELDS = [
     "tranche_buy_high",
     "heavy_buy_below",
     "max_position_pct",
+    "max_shares",
     "target_sell_price",
     "stop_loss_price",
     "target_alert_price",

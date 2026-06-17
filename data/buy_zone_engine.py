@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 WAIT_PULLBACK = "WAIT_PULLBACK"
@@ -35,6 +37,7 @@ ZONE_TEXT = {
     "PULLBACK_UPPER_WATCH": "买区上沿 / 修复观察区",
     "REPAIR_WATCH": "修复观察区",
     "CONFIRMATION_REVIEW": "确认复核区",
+    "LAYER_BREAK": "第一层失守 / 下切复核区",
     "CHASE_RISK": "追高风险区",
     "INVALIDATION": "失效风控区",
     "DATA_INSUFFICIENT": "技术承接数据不足",
@@ -86,6 +89,8 @@ class BuyZoneContext:
     latest_volume: float | None = None
     avg_volume_20d: float | None = None
     volume_ratio: float | None = None
+    volume_ratio_mode: str = ""
+    volume_ratio_formula: str = ""
     volume_source: str = ""
     technical_data_source: str = ""
     upside_target: float | None = None
@@ -98,6 +103,17 @@ class BuyZoneContext:
     support_clusters: list[dict[str, Any]] = field(default_factory=list)
     selected_support_cluster: dict[str, Any] = field(default_factory=dict)
     support_cluster_score: float = 0.0
+    zone_quality_score: float = 0.0
+    entry_trigger_score: float = 0.0
+    left_buy_layers: list[dict[str, Any]] = field(default_factory=list)
+    current_layer_type: str = ""
+    next_effective_buy_zone_low: float | None = None
+    next_effective_buy_zone_high: float | None = None
+    layer_break_line: float | None = None
+    structural_invalid_line: float | None = None
+    reclaim_line: float | None = None
+    right_confirmation_low: float | None = None
+    right_confirmation_high: float | None = None
     support_score: float = 0.0
     trend_score: float = 0.0
     zone_width: float | None = None
@@ -254,7 +270,15 @@ def build_buy_zone_context(
     confirmation = _normalized_confirmation_price(data, price=price, raw_confirmation=raw_confirmation)
     if confirmation is None:
         confirmation = _first_number(data, "resistance_zone_low")
-    invalidation = _first_number(data, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    raw_invalidation = _first_number(data, "invalidation_price", "radar_invalidation_price", "invalid_line")
+    explicit_layer_break = _first_number(data, "layer_break_line", "layerBreakLine", "first_support_break_line", "firstSupportBreakLine")
+    layer_break_line, structural_invalid_line = _classify_invalidation_lines(
+        raw_invalidation=raw_invalidation,
+        explicit_layer_break=explicit_layer_break,
+        pullback_low=pullback_low,
+        price=price,
+        atr=atr,
+    )
     chase = _first_number(data, "chase_above_price", "radar_chase_above_price", "chase_price")
     breakout_reevaluation = _breakout_reevaluation_price(data, price=price)
     ma20 = _first_number(data, "ma20", "ema20")
@@ -270,9 +294,16 @@ def build_buy_zone_context(
     )
     suspend_new_line = _suspend_new_line(pullback_low, atr)
     buy_zone_failure_line = pullback_low
-    deep_support_break_line = support_low
-    if invalidation is None:
-        invalidation = suspend_new_line if suspend_new_line is not None else support_low
+    structural_invalid_line = _structural_invalid_line(
+        data,
+        layer_break_line=layer_break_line,
+        support_low=support_low,
+        price=price,
+        atr=atr,
+        fallback_structural=structural_invalid_line,
+    )
+    deep_support_break_line = structural_invalid_line or support_low
+    invalidation = structural_invalid_line or layer_break_line or suspend_new_line or support_low
     final_score = _first_number(data, "final_score", "finalScore")
     volume_status = str(
         _value(volume, "volume_price_status", "volumePriceStatus")
@@ -345,7 +376,7 @@ def build_buy_zone_context(
             chase_price=chase,
             breakout_reevaluation_price=breakout_reevaluation,
             add_trigger_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
-            pause_new_condition_text=_pause_new_condition_text(None, invalidation, data),
+            pause_new_condition_text=_pause_new_condition_text(None, invalidation, data, layer_break_line=layer_break_line),
             current_action=DATA_INSUFFICIENT,
             action_text=ACTION_TEXT[DATA_INSUFFICIENT],
             existing_position_action_text="已有持仓：技术承接数据不足，先控制新增买入并人工复核。",
@@ -358,11 +389,24 @@ def build_buy_zone_context(
             latest_volume=_first_number(volume, "latest_volume", "latestVolume") or _first_number(data, "latest_volume", "volume"),
             avg_volume_20d=_first_number(volume, "volume_ma20", "avg_volume_20d", "avgVolume20d") or _first_number(data, "volume_ma20", "avg_volume_20d"),
             volume_ratio=volume_ratio,
+            volume_ratio_mode=str(_value(volume, "volume_ratio_mode", "volumeRatioMode") or _value(data, "volume_ratio_mode", "volumeRatioMode") or ""),
+            volume_ratio_formula=str(_value(volume, "volume_ratio_formula", "volumeRatioFormula") or _value(data, "volume_ratio_formula", "volumeRatioFormula") or ""),
             volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
             technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
             support_clusters=[cluster.to_dict() for cluster in support_clusters],
             selected_support_cluster=selected_cluster.to_dict() if selected_cluster is not None else {},
             support_cluster_score=selected_cluster.score if selected_cluster is not None else 0.0,
+            zone_quality_score=0.0,
+            entry_trigger_score=0.0,
+            left_buy_layers=[],
+            current_layer_type="",
+            next_effective_buy_zone_low=None,
+            next_effective_buy_zone_high=None,
+            layer_break_line=layer_break_line,
+            structural_invalid_line=invalidation,
+            reclaim_line=confirmation,
+            right_confirmation_low=None,
+            right_confirmation_high=None,
             support_score=selected_cluster.score if selected_cluster is not None else 0.0,
             trend_score=_trend_score(price, ma20, ma50, ma200),
             zone_width=zone_width,
@@ -382,7 +426,7 @@ def build_buy_zone_context(
             action_new_cash="数据不足 / 等待补齐",
             action_existing_position="持有观察 / 不建议加仓",
             entry_condition_text=_add_trigger_condition_text(confirmation, breakout_reevaluation),
-            invalidation_condition_text=_pause_new_condition_text(pullback_low, invalidation, data),
+            invalidation_condition_text=_pause_new_condition_text(pullback_low, invalidation, data, layer_break_line=layer_break_line),
             confidence_breakdown={
                 "support_score": selected_cluster.score if selected_cluster is not None else 0.0,
                 "trend_score": _trend_score(price, ma20, ma50, ma200),
@@ -406,15 +450,33 @@ def build_buy_zone_context(
             risk_flags=list(momentum_context.get("risk_flags") or []),
         )
 
-    raw_left_probe_low, raw_left_probe_high, observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
-    left_probe_low, left_probe_high, invalidation_risk_low, invalidation_risk_high = _clip_left_probe_by_invalidation(
-        raw_left_probe_low,
-        raw_left_probe_high,
-        invalidation,
+    raw_left_probe_low, raw_left_probe_high, raw_observe_low, raw_observe_high = _pullback_layers(pullback_low, pullback_high)
+    left_layers = _left_buy_layers(
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        raw_left_probe_low=raw_left_probe_low,
+        raw_left_probe_high=raw_left_probe_high,
+        raw_observe_high=raw_observe_high,
+        layer_break_line=layer_break_line,
+        structural_invalid_line=invalidation,
+        price=price,
+        atr=atr,
+        zone_quality_score=0.0,
+        entry_trigger_score=0.0,
     )
+    candidate_layer = _layer_by_type(left_layers, "LEFT_PROBE_CANDIDATE") or _layer_by_type(left_layers, "LEFT_PROBE_CONFIRMED")
+    observe_layer = _layer_by_type(left_layers, "OBSERVE_ZONE")
+    layer_break_zone = _layer_by_type(left_layers, "LAYER_BREAK")
+    left_probe_low = _first_number(candidate_layer or {}, "price_low")
+    left_probe_high = _first_number(candidate_layer or {}, "price_high")
+    observe_low = _first_number(observe_layer or {}, "price_low") or raw_observe_low
+    observe_high = _first_number(observe_layer or {}, "price_high") or raw_observe_high
+    invalidation_risk_low = _first_number(layer_break_zone or {}, "price_low")
+    invalidation_risk_high = _first_number(layer_break_zone or {}, "price_high")
     zone_position = _zone_position(price, pullback_low, pullback_high)
     left_side_position_pct = _left_side_position_pct(price, left_probe_low, left_probe_high)
     left_probe_label = _left_probe_position_label(left_side_position_pct)
+    initial_current_layer_type = _current_layer_type(price, left_layers)
     primary_zone = _primary_zone(
         price=price,
         support_low=support_low,
@@ -424,9 +486,14 @@ def build_buy_zone_context(
         repair_low=repair_low,
         repair_high=repair_high,
         confirmation=confirmation,
-        invalidation=invalidation,
+        layer_break=layer_break_line,
+        structural_invalid=invalidation,
         chase=chase,
+        left_probe_low=left_probe_low,
+        left_probe_high=left_probe_high,
+        observe_high=observe_high,
     )
+    primary_zone = _primary_zone_from_layer_type(initial_current_layer_type, primary_zone)
     technical_score = _technical_structure_score(primary_zone)
     resistance_low = _first_number(data, "resistance_zone_low", "technical_resistance_price", "recent_breakout_level")
     daily_return = _first_number(data, "daily_return_pct", "day_change_pct", "change_pct", "changePercent")
@@ -460,7 +527,7 @@ def build_buy_zone_context(
         data=data,
         price=price,
         confirmation=confirmation,
-        invalidation=invalidation,
+        invalidation=layer_break_line or invalidation,
         chase=chase,
         primary_zone=primary_zone,
     )
@@ -468,6 +535,45 @@ def build_buy_zone_context(
     support_score = selected_cluster.score if selected_cluster is not None else 0.0
     trend_score = _trend_score(price, ma20, ma50, ma200)
     setup_score = round(technical_score * 0.35 + volume_score * 0.30 + rr_score * 0.20 + support_score * 0.10 + trend_score * 0.05, 1)
+    zone_quality_score = _zone_quality_score(
+        support_score=support_score,
+        rr_score=rr_score,
+        price=price,
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        ma20=ma20,
+        ma50=ma50,
+        ma200=ma200,
+        atr=atr,
+    )
+    entry_trigger_score = _entry_trigger_score(
+        volume_score=volume_score,
+        confirmation_score=confirmation_score,
+        volume_ratio=volume_ratio,
+        daily_return=daily_return,
+        close_position=close_position,
+        momentum_context=momentum_context,
+    )
+    left_layers = _left_buy_layers(
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        raw_left_probe_low=raw_left_probe_low,
+        raw_left_probe_high=raw_left_probe_high,
+        raw_observe_high=raw_observe_high,
+        layer_break_line=layer_break_line,
+        structural_invalid_line=invalidation,
+        price=price,
+        atr=atr,
+        zone_quality_score=zone_quality_score,
+        entry_trigger_score=entry_trigger_score,
+    )
+    current_layer_type = _current_layer_type(price, left_layers)
+    next_effective_low, next_effective_high = _next_effective_buy_zone(price, left_layers)
+    right_confirmation_low, right_confirmation_high = _right_confirmation_zone(
+        confirmation=confirmation,
+        pullback_high=pullback_high,
+        data=data,
+    )
     action = _current_action(
         primary_zone,
         setup_score,
@@ -502,6 +608,31 @@ def build_buy_zone_context(
         daily_return=daily_return,
         close_position=close_position,
     )
+    entry_trigger_score = _entry_trigger_score(
+        volume_score=volume_score,
+        confirmation_score=confirmation_score,
+        volume_ratio=volume_ratio,
+        daily_return=daily_return,
+        close_position=close_position,
+        momentum_context=momentum_context,
+    )
+    left_layers = _left_buy_layers(
+        pullback_low=pullback_low,
+        pullback_high=pullback_high,
+        raw_left_probe_low=raw_left_probe_low,
+        raw_left_probe_high=raw_left_probe_high,
+        raw_observe_high=raw_observe_high,
+        layer_break_line=layer_break_line,
+        structural_invalid_line=invalidation,
+        price=price,
+        atr=atr,
+        zone_quality_score=zone_quality_score,
+        entry_trigger_score=entry_trigger_score,
+    )
+    current_layer_type = _current_layer_type(price, left_layers)
+    next_effective_low, next_effective_high = _next_effective_buy_zone(price, left_layers)
+    if primary_zone == "PULLBACK_BUY":
+        current_subzone = _subzone_from_layer_type(current_layer_type)
     advisory_level, advisory_reasons = _advisory_review(
         action=action,
         primary_zone=primary_zone,
@@ -540,7 +671,7 @@ def build_buy_zone_context(
         target_quality=rr.target_quality,
         rr_score=rr_score,
     )
-    pause_text = _pause_new_condition_text(pullback_low, invalidation, data)
+    pause_text = _pause_new_condition_text(pullback_low, invalidation, data, layer_break_line=layer_break_line)
     add_trigger_text = _add_trigger_condition_text(confirmation, breakout_reevaluation)
     return BuyZoneContext(
         primary_zone=primary_zone,
@@ -577,6 +708,8 @@ def build_buy_zone_context(
         latest_volume=_first_number(volume, "latest_volume", "latestVolume") or _first_number(data, "latest_volume", "volume"),
         avg_volume_20d=_first_number(volume, "volume_ma20", "avg_volume_20d", "avgVolume20d") or _first_number(data, "volume_ma20", "avg_volume_20d"),
         volume_ratio=volume_ratio,
+        volume_ratio_mode=str(_value(volume, "volume_ratio_mode", "volumeRatioMode") or _value(data, "volume_ratio_mode", "volumeRatioMode") or ""),
+        volume_ratio_formula=str(_value(volume, "volume_ratio_formula", "volumeRatioFormula") or _value(data, "volume_ratio_formula", "volumeRatioFormula") or ""),
         volume_source=str(_value(volume, "volume_source", "volumeSource") or _value(data, "volume_source", "volumeSource") or ""),
         technical_data_source=str(_value(data, "technical_data_source", "technicalDataSource") or ""),
         upside_target=rr.upside_target,
@@ -589,6 +722,17 @@ def build_buy_zone_context(
         support_clusters=[cluster.to_dict() for cluster in support_clusters],
         selected_support_cluster=selected_cluster.to_dict() if selected_cluster is not None else {},
         support_cluster_score=support_score,
+        zone_quality_score=zone_quality_score,
+        entry_trigger_score=entry_trigger_score,
+        left_buy_layers=left_layers,
+        current_layer_type=current_layer_type,
+        next_effective_buy_zone_low=next_effective_low,
+        next_effective_buy_zone_high=next_effective_high,
+        layer_break_line=layer_break_line,
+        structural_invalid_line=invalidation,
+        reclaim_line=confirmation,
+        right_confirmation_low=right_confirmation_low,
+        right_confirmation_high=right_confirmation_high,
         support_score=support_score,
         trend_score=trend_score,
         zone_width=zone_width,
@@ -1038,16 +1182,24 @@ def _add_trigger_condition_text(confirmation: float | None, breakout_reevaluatio
     return "加仓触发：等待近端压力位和量价承接补齐。"
 
 
-def _pause_new_condition_text(pullback_low: float | None, invalidation: float | None, data: dict[str, Any]) -> str:
+def _pause_new_condition_text(
+    pullback_low: float | None,
+    invalidation: float | None,
+    data: dict[str, Any],
+    *,
+    layer_break_line: float | None = None,
+) -> str:
     trend_low = _first_number(data, "trend_critical_zone_low", "trendCriticalZoneLow", "support_zone_low", "supportZoneLow")
     trend_high = _first_number(data, "trend_critical_zone_high", "trendCriticalZoneHigh", "support_zone_high", "supportZoneHigh")
     deep_low = _first_number(data, "deep_panic_zone_low", "deepPanicZoneLow", "deep_support_zone_low", "deepSupportZoneLow")
     deep_high = _first_number(data, "deep_panic_zone_high", "deepPanicZoneHigh", "deep_support_zone_high", "deepSupportZoneHigh")
     parts: list[str] = []
+    if layer_break_line is not None:
+        parts.append(f"跌破第一层支撑 {_money(layer_break_line)}：下切到下一层买区复核")
     if pullback_low is not None:
         parts.append(f"跌破买区下沿 {_money(pullback_low)}：暂停新增")
-    if invalidation is not None and (pullback_low is None or abs(invalidation - pullback_low) > max(0.05, pullback_low * 0.005)):
-        parts.append(f"跌破 {_money(invalidation)}：买区失效，重新评估")
+    if invalidation is not None and (layer_break_line is None or abs(invalidation - layer_break_line) > max(0.05, layer_break_line * 0.005)):
+        parts.append(f"放量跌破 {_money(invalidation)}：结构失效，重新评估")
     if trend_low is not None or trend_high is not None:
         parts.append(f"跌破 {_range_money(trend_low, trend_high)}：趋势恶化，系统不建议继续摊低")
     if deep_low is not None or deep_high is not None:
@@ -1081,11 +1233,17 @@ def _primary_zone(
     repair_low: float | None,
     repair_high: float | None,
     confirmation: float,
-    invalidation: float,
+    layer_break: float | None,
+    structural_invalid: float,
     chase: float | None,
+    left_probe_low: float | None,
+    left_probe_high: float | None,
+    observe_high: float | None,
 ) -> str:
-    if price < invalidation:
+    if price < structural_invalid:
         return "INVALIDATION"
+    if layer_break is not None and price < layer_break:
+        return "LAYER_BREAK"
     if chase is not None and price >= chase:
         return "CHASE_RISK"
     if price >= confirmation:
@@ -1093,13 +1251,12 @@ def _primary_zone(
     if _in_range(price, support_low, support_high):
         return "DEEP_ACCEPTANCE"
     if _in_range(price, pullback_low, pullback_high):
-        _left_low, left_probe_high, _observe_low, observe_high = _pullback_layers(pullback_low, pullback_high)
         position = _zone_position(price, pullback_low, pullback_high)
         if position is not None and position > 0.75:
             return "PULLBACK_UPPER_WATCH"
-        if price <= left_probe_high:
+        if _in_range(price, left_probe_low, left_probe_high):
             return "PULLBACK_BUY"
-        if price <= min(observe_high, confirmation):
+        if observe_high is not None and price <= min(observe_high, confirmation):
             return "PULLBACK_WATCH"
         return "REPAIR_WATCH"
     if repair_low is not None and repair_high is not None and _in_range(price, repair_low, repair_high):
@@ -1115,6 +1272,225 @@ def _pullback_layers(pullback_low: float, pullback_high: float) -> tuple[float, 
     left_probe_high = low + width * 0.35
     observe_high = low + width * 0.75
     return low, left_probe_high, left_probe_high, observe_high
+
+
+def _left_buy_layers(
+    *,
+    pullback_low: float,
+    pullback_high: float,
+    raw_left_probe_low: float,
+    raw_left_probe_high: float,
+    raw_observe_high: float,
+    layer_break_line: float | None,
+    structural_invalid_line: float | None,
+    price: float | None,
+    atr: float | None,
+    zone_quality_score: float,
+    entry_trigger_score: float,
+) -> list[dict[str, Any]]:
+    low, high = sorted((pullback_low, pullback_high))
+    layer_width = _layer_zone_width(price, atr)
+    candidate_low = raw_left_probe_low
+    candidate_high = raw_left_probe_high
+    layer_break_low = None
+    layer_break_high = None
+    if layer_break_line is not None and low < layer_break_line <= raw_left_probe_high:
+        layer_break_low = max(low, layer_break_line - layer_width * 0.25)
+        layer_break_high = layer_break_line
+        candidate_low = raw_left_probe_high
+        candidate_high = min(raw_observe_high, raw_left_probe_high + layer_width * 0.9)
+    elif layer_break_line is not None and raw_left_probe_high < layer_break_line < raw_observe_high:
+        layer_break_low = max(low, layer_break_line - layer_width * 0.25)
+        layer_break_high = layer_break_line
+        candidate_low = layer_break_line
+        candidate_high = min(raw_observe_high, layer_break_line + layer_width * 0.9)
+    candidate_low, candidate_high = _sorted_pair(candidate_low, candidate_high)
+    if candidate_high <= candidate_low:
+        candidate_high = min(high, candidate_low + layer_width)
+    observe_low = candidate_high
+    observe_high = raw_observe_high
+    if observe_high <= observe_low:
+        observe_high = high
+    core_high_anchor = min(layer_break_line, candidate_low) if layer_break_line is not None else candidate_low
+    core_high = max(0.0, core_high_anchor - layer_width * 0.20)
+    core_low = max(0.0, core_high_anchor - layer_width * 1.20)
+    deep_high = max(0.0, core_low - layer_width * 1.40)
+    deep_low = max(0.0, core_low - layer_width * 2.40)
+    panic_high = max(0.0, deep_low - layer_width * 2.00)
+    panic_low = max(0.0, deep_low - layer_width * 3.40)
+    transition_high = max(0.0, core_low - layer_width * 0.15)
+    transition_low = max(0.0, deep_high - layer_width * 0.45)
+    confirmed = zone_quality_score >= 65 and entry_trigger_score >= 65
+    candidate_type = "LEFT_PROBE_CONFIRMED" if confirmed else "LEFT_PROBE_CANDIDATE"
+    layers = [
+        _layer("OBSERVE_ZONE", observe_low, observe_high, zone_quality_score, entry_trigger_score, "观察区，不主动买"),
+        _layer(candidate_type, candidate_low, candidate_high, zone_quality_score, entry_trigger_score, "左侧候选，等待承接确认" if not confirmed else "左侧买点确认"),
+        _layer("CORE_LEFT_ZONE", core_low, core_high, zone_quality_score, entry_trigger_score, "核心左侧买区，关注承接确认"),
+        _layer("DEEP_VALUE_ZONE", deep_low, deep_high, zone_quality_score, entry_trigger_score, "深度击球区，需基本面复核"),
+        _layer("PANIC_VALUE_ZONE", panic_low, panic_high, zone_quality_score, entry_trigger_score, "恐慌击球区，基本面没坏才复核"),
+    ]
+    layers.insert(3, _layer("LAYER_BREAK", transition_low, transition_high, zone_quality_score, entry_trigger_score, "下切观察区，不接飞刀，等待下一层买区"))
+    if False and layer_break_low is not None and layer_break_high is not None:
+        layers.append(_layer("LAYER_BREAK", layer_break_low, layer_break_high, zone_quality_score, entry_trigger_score, "第一层失守，切换下一层买区"))
+    if structural_invalid_line is not None:
+        structural_high = min(max(0.0, structural_invalid_line), max(0.0, panic_low - layer_width * 0.20))
+        structural_low = max(0.0, structural_high - layer_width)
+        layers.append(_layer("STRUCTURAL_INVALID", structural_low, structural_high, zone_quality_score, entry_trigger_score, "结构失效，暂停自动买区"))
+    return [item for item in layers if item["price_high"] > item["price_low"]]
+
+
+def _layer(
+    zone_type: str,
+    low: float,
+    high: float,
+    zone_quality_score: float,
+    entry_trigger_score: float,
+    note: str,
+) -> dict[str, Any]:
+    low, high = _sorted_pair(low, high)
+    return {
+        "zone_type": zone_type,
+        "price_low": round(low, 2),
+        "price_high": round(high, 2),
+        "zone_quality_score": round(zone_quality_score, 1),
+        "entry_trigger_score": round(entry_trigger_score, 1),
+        "note": note,
+    }
+
+
+def _layer_by_type(layers: list[dict[str, Any]], zone_type: str) -> dict[str, Any] | None:
+    for layer in layers:
+        if str(layer.get("zone_type") or "") == zone_type:
+            return layer
+    return None
+
+
+def _current_layer_type(price: float | None, layers: list[dict[str, Any]]) -> str:
+    if price is None:
+        return ""
+    for layer in layers:
+        low = _first_number(layer, "price_low")
+        high = _first_number(layer, "price_high")
+        if _in_range(price, low, high):
+            return str(layer.get("zone_type") or "")
+    for layer in layers:
+        if str(layer.get("zone_type") or "").upper() != "STRUCTURAL_INVALID":
+            continue
+        high = _first_number(layer, "price_high")
+        if high is not None and price <= high:
+            return "STRUCTURAL_INVALID"
+    return ""
+
+
+def _primary_zone_from_layer_type(layer_type: str, fallback: str) -> str:
+    if fallback in {"CONFIRMATION_REVIEW", "CHASE_RISK", "INVALIDATION"}:
+        return fallback
+    layer = str(layer_type or "").upper()
+    if layer == "OBSERVE_ZONE":
+        return "PULLBACK_WATCH"
+    if layer in {"LEFT_PROBE_CANDIDATE", "LEFT_PROBE_CONFIRMED", "CORE_LEFT_ZONE", "DEEP_VALUE_ZONE", "PANIC_VALUE_ZONE"}:
+        return "PULLBACK_BUY"
+    if layer == "LAYER_BREAK":
+        return "LAYER_BREAK"
+    if layer == "STRUCTURAL_INVALID":
+        return "INVALIDATION"
+    return fallback
+
+
+def _subzone_from_layer_type(layer_type: str) -> str:
+    layer = str(layer_type or "").upper()
+    return {
+        "LEFT_PROBE_CONFIRMED": "LEFT_PROBE_CONFIRMED",
+        "LEFT_PROBE_CANDIDATE": "LEFT_PROBE_CANDIDATE",
+        "CORE_LEFT_ZONE": "CORE_LEFT_ZONE",
+        "DEEP_VALUE_ZONE": "DEEP_VALUE_ZONE",
+        "PANIC_VALUE_ZONE": "PANIC_VALUE_ZONE",
+    }.get(layer, "LEFT_PROBE_CANDIDATE")
+
+
+def _next_effective_buy_zone(price: float | None, layers: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    candidates = [
+        layer
+        for layer in layers
+        if str(layer.get("zone_type") or "") in {"LEFT_PROBE_CANDIDATE", "LEFT_PROBE_CONFIRMED", "CORE_LEFT_ZONE", "DEEP_VALUE_ZONE", "PANIC_VALUE_ZONE"}
+    ]
+    if price is None:
+        selected = candidates[0] if candidates else None
+    else:
+        selected = next((layer for layer in candidates if (_first_number(layer, "price_high") or 0.0) < price), candidates[0] if candidates else None)
+    if not selected:
+        return None, None
+    return _first_number(selected, "price_low"), _first_number(selected, "price_high")
+
+
+def _layer_zone_width(price: float | None, atr: float | None) -> float:
+    if price is None or price <= 0:
+        return 1.0
+    atr_component = (atr or 0.0) * 0.40
+    return max(price * 0.015, min(max(atr_component, price * 0.018), price * 0.025))
+
+
+def _sorted_pair(low: float, high: float) -> tuple[float, float]:
+    return (low, high) if low <= high else (high, low)
+
+
+def _structural_invalid_line(
+    data: dict[str, Any],
+    *,
+    layer_break_line: float | None,
+    support_low: float | None,
+    price: float | None,
+    atr: float | None,
+    fallback_structural: float | None = None,
+) -> float | None:
+    explicit = _first_number(data, "structural_invalid_line", "structuralInvalidLine", "structural_invalidation_price", "structuralInvalidationPrice")
+    if explicit is not None:
+        return explicit
+    auto_line = _projected_structural_invalid_line(
+        layer_break_line=layer_break_line,
+        support_low=support_low,
+        price=price,
+        atr=atr,
+    )
+    if fallback_structural is not None:
+        if auto_line is None:
+            return fallback_structural
+        return min(fallback_structural, auto_line)
+    deep = _first_number(data, "deep_support_break_line", "deepSupportBreakLine", "deep_support_zone_low", "deepSupportZoneLow")
+    if deep is not None and layer_break_line is not None and deep < layer_break_line * 0.985:
+        return min(deep, auto_line) if auto_line is not None else deep
+    return auto_line
+
+
+def _projected_structural_invalid_line(
+    *,
+    layer_break_line: float | None,
+    support_low: float | None,
+    price: float | None,
+    atr: float | None,
+) -> float | None:
+    anchor = layer_break_line or support_low
+    if anchor is None:
+        return None
+    width = _layer_zone_width(price, atr)
+    return round(max(0.0, anchor - width * 8.2), 2)
+
+
+def _classify_invalidation_lines(
+    *,
+    raw_invalidation: float | None,
+    explicit_layer_break: float | None,
+    pullback_low: float | None,
+    price: float | None,
+    atr: float | None,
+) -> tuple[float | None, float | None]:
+    if explicit_layer_break is not None:
+        return explicit_layer_break, raw_invalidation
+    if raw_invalidation is None:
+        return None, None
+    if pullback_low is None:
+        return raw_invalidation, None
+    return raw_invalidation, None
 
 
 def _clip_left_probe_by_invalidation(
@@ -1207,6 +1583,118 @@ def _trend_score(price: float | None, ma20: float | None, ma50: float | None, ma
     return min(100.0, score)
 
 
+def _zone_quality_score(
+    *,
+    support_score: float,
+    rr_score: float,
+    price: float | None,
+    pullback_low: float | None,
+    pullback_high: float | None,
+    ma20: float | None,
+    ma50: float | None,
+    ma200: float | None,
+    atr: float | None,
+) -> float:
+    support_component = max(0.0, min(100.0, support_score))
+    rr_component = max(0.0, min(100.0, rr_score))
+    mean_reversion = _mean_reversion_score(price, pullback_low, pullback_high, ma20)
+    trend_component = _trend_score(price, ma20, ma50, ma200)
+    volatility_component = _volatility_safety_score(price, atr)
+    return round(
+        support_component * 0.35
+        + rr_component * 0.30
+        + mean_reversion * 0.15
+        + trend_component * 0.10
+        + volatility_component * 0.10,
+        1,
+    )
+
+
+def _mean_reversion_score(price: float | None, low: float | None, high: float | None, ma20: float | None) -> float:
+    if price is None or low is None or high is None:
+        return 40.0
+    low, high = sorted((low, high))
+    width = high - low
+    if width <= 0:
+        return 40.0
+    position = (price - low) / width
+    if position <= 0.25:
+        base = 82.0
+    elif position <= 0.55:
+        base = 68.0
+    elif position <= 0.80:
+        base = 52.0
+    else:
+        base = 38.0
+    if ma20 is not None and ma20 > 0 and price < ma20:
+        base += min(10.0, (ma20 / price - 1.0) * 100.0)
+    return max(0.0, min(100.0, base))
+
+
+def _volatility_safety_score(price: float | None, atr: float | None) -> float:
+    if price is None or price <= 0 or atr is None or atr <= 0:
+        return 50.0
+    atr_pct = atr / price
+    if atr_pct <= 0.025:
+        return 78.0
+    if atr_pct <= 0.045:
+        return 64.0
+    if atr_pct <= 0.07:
+        return 48.0
+    return 35.0
+
+
+def _entry_trigger_score(
+    *,
+    volume_score: float,
+    confirmation_score: float,
+    volume_ratio: float | None,
+    daily_return: float | None,
+    close_position: float | None,
+    momentum_context: dict[str, Any],
+) -> float:
+    score = volume_score * 0.45 + confirmation_score * 0.35
+    if volume_ratio is not None:
+        if volume_ratio < 0.75 and (daily_return is not None and daily_return >= -1.0):
+            score += 8.0
+        elif volume_ratio > 1.5 and (daily_return is not None and daily_return < -1.5):
+            score -= 14.0
+        elif volume_ratio > 1.0 and (daily_return is not None and daily_return >= 0):
+            score += 7.0
+    if close_position is not None:
+        if close_position >= 0.65:
+            score += 8.0
+        elif close_position <= 0.30:
+            score -= 8.0
+    bias = str(momentum_context.get("momentum_bias") or "").upper()
+    if bias in {"OVERSOLD_OBSERVE", "LEFT_OBSERVE_AID", "RECLAIM_LOWER_BAND", "RIGHT_CONFIRMATION_AID"}:
+        score += 6.0
+    if bias in {"CHASE_RISK", "FALLING_KNIFE_RISK"}:
+        score -= 10.0
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _right_confirmation_zone(
+    *,
+    confirmation: float | None,
+    pullback_high: float | None,
+    data: dict[str, Any],
+) -> tuple[float | None, float | None]:
+    explicit_low = _first_number(data, "right_confirmation_low", "rightConfirmationLow")
+    explicit_high = _first_number(data, "right_confirmation_high", "rightConfirmationHigh")
+    if explicit_low is not None or explicit_high is not None:
+        return explicit_low, explicit_high
+    if confirmation is None and pullback_high is None:
+        return None, None
+    candidates = []
+    if confirmation is not None:
+        candidates.append(confirmation * 1.025)
+    if pullback_high is not None:
+        candidates.append(pullback_high)
+    low = max(candidates)
+    return round(low, 2), round(low * 1.02, 2)
+
+
 def _risk_reward_text(raw_rr: float | None) -> str:
     if raw_rr is None:
         return "风险收益比暂缺"
@@ -1227,6 +1715,7 @@ def _technical_structure_score(primary_zone: str) -> float:
         "PULLBACK_UPPER_WATCH": 56.0,
         "REPAIR_WATCH": 58.0,
         "CONFIRMATION_REVIEW": 62.0,
+        "LAYER_BREAK": 38.0,
         "CHASE_RISK": 18.0,
         "INVALIDATION": 5.0,
         "WAIT_PULLBACK": 45.0,
@@ -1607,7 +2096,7 @@ def _acceptance_assessment(
         "REPAIR_WATCH",
     }
 
-    if price < invalidation or primary_zone == "INVALIDATION" or volume_price_gate == "FAILED_ACCEPTANCE":
+    if price < invalidation or primary_zone == "INVALIDATION":
         return {
             "acceptance_state": "STRUCTURE_BROKEN",
             "acceptance_state_text": ACCEPTANCE_STATE_TEXT["STRUCTURE_BROKEN"],
@@ -1702,12 +2191,14 @@ def _entry_quality(
     target_ok = target_quality not in {"CHASE_LINE", "CONFIRMATION_LINE", "MISSING", ""}
     if (
         acceptance_state == "CLEAR_ACCEPTANCE"
-        and (primary_zone == "DEEP_ACCEPTANCE" or left_probe_position_label == "LOWER_EDGE")
+        and (primary_zone == "DEEP_ACCEPTANCE" or current_subzone == "LEFT_PROBE_CONFIRMED" or left_probe_position_label == "LOWER_EDGE")
         and target_ok
         and rr_score >= 65
     ):
         return "GOOD_LEFT_SIDE"
-    if current_subzone in {"LEFT_PROBE_UPPER", "LEFT_PROBE_MID", "ACCEPTANCE_OBSERVATION_ZONE", "REPAIR_OBSERVATION_ZONE"}:
+    if current_subzone == "LAYER_BREAK_ZONE":
+        return "HIGH_RISK"
+    if current_subzone in {"LEFT_PROBE_CANDIDATE", "LEFT_PROBE_UPPER", "LEFT_PROBE_MID", "ACCEPTANCE_OBSERVATION_ZONE", "REPAIR_OBSERVATION_ZONE"}:
         return "EDGE_OBSERVE"
     if acceptance_state in {"FORMING_ACCEPTANCE", "WEAK_ACCEPTANCE"}:
         return "WAIT_CONFIRMATION"
@@ -1748,6 +2239,8 @@ def _current_action(
         return ALLOW_SMALL_BUY
     if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
         return WAIT_CONFIRMATION
+    if primary_zone == "LAYER_BREAK":
+        return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_BUY":
         return WAIT_CONFIRMATION
     if primary_zone == "PULLBACK_WATCH":
@@ -1782,6 +2275,8 @@ def _execution_gate_reason(
         reasons.append("价格在左侧试仓区中上部，先看承接。")
     if primary_zone in {"PULLBACK_WATCH", "PULLBACK_UPPER_WATCH", "REPAIR_WATCH"}:
         reasons.append("价格仍在技术回踩带观察层，不是主动买点。")
+    if primary_zone == "LAYER_BREAK":
+        reasons.append("第一层支撑失守，先下切到下一层买区复核，不按全局失效处理。")
     if confirmation_score < 60:
         reasons.append("量价确认分低于60。")
     if volume_price_gate == "HIGH_VOLUME_UNCONFIRMED":
@@ -1808,6 +2303,8 @@ def _current_subzone(primary_zone: str, left_probe_label: str, zone_position: fl
         return "REPAIR_OBSERVATION_ZONE"
     if primary_zone == "CONFIRMATION_REVIEW":
         return "REEVALUATION_ZONE"
+    if primary_zone == "LAYER_BREAK":
+        return "LAYER_BREAK_ZONE"
     if primary_zone == "INVALIDATION":
         return "INVALIDATION_ZONE"
     if primary_zone == "CHASE_RISK":
@@ -1858,6 +2355,9 @@ def _advisory_review(
     if primary_zone == "CHASE_RISK" or action == BLOCK_CHASE:
         reasons.append("追高风险提醒")
         level = "HIGH_RISK"
+    if primary_zone == "LAYER_BREAK":
+        reasons.append("第一层支撑失守，切换下一层买区复核")
+        level = max(level, "WARNING", key=_advisory_rank)
     if primary_zone == "INVALIDATION" or action == PAUSE_BUY:
         reasons.append("结构失效风险，建议复核")
         level = "HIGH_RISK"
@@ -1944,6 +2444,7 @@ def _zone_reason(primary_zone: str, volume_status: str, rr_score: float, core_re
         "PULLBACK_UPPER_WATCH": "当前价格位于买区上沿 75% 以上，按修复观察区处理，不主动新增。",
         "REPAIR_WATCH": "价格已修复但量能或承接尚未给出确认，先观察。",
         "CONFIRMATION_REVIEW": "价格接近确认复核区，确认线只触发重新评估，不等于直接买入。",
+        "LAYER_BREAK": "第一层支撑失守，先切换下一层买区复核，不直接判定全局失效。",
         "CHASE_RISK": "价格远离承接区或进入追高阈值，盈亏比恶化。",
         "INVALIDATION": "价格跌破失效线，优先进入风控复核。",
         "WAIT_PULLBACK": "价格不在高质量承接区，等待回踩。",
@@ -2027,7 +2528,13 @@ def _enrich_daily_technical_inputs(data: dict[str, Any]) -> dict[str, Any]:
         enriched.setdefault("avg_volume_20d", avg_volume_20d)
         enriched.setdefault("volume_ma20", avg_volume_20d)
     if latest_volume is not None and latest_volume > 0 and avg_volume_20d not in (None, 0):
-        enriched.setdefault("volume_ratio", latest_volume / avg_volume_20d)
+        ratio_payload = _volume_ratio_payload(latest_volume, avg_volume_20d, data=enriched, volume={})
+        if ratio_payload.get("volume_ratio") is not None:
+            enriched.setdefault("volume_ratio", ratio_payload["volume_ratio"])
+            enriched.setdefault("volume_ratio_mode", ratio_payload["volume_ratio_mode"])
+            enriched.setdefault("volume_ratio_formula", ratio_payload["volume_ratio_formula"])
+            if ratio_payload.get("intraday_elapsed_fraction") is not None:
+                enriched.setdefault("intraday_elapsed_fraction", ratio_payload["intraday_elapsed_fraction"])
 
     atr14 = _atr(bars, 14)
     if atr14 is not None:
@@ -2093,11 +2600,97 @@ def _enrich_daily_volume_inputs(volume: dict[str, Any], data: dict[str, Any]) ->
         enriched.setdefault("volume_ma20", avg_volume)
         enriched.setdefault("avg_volume_20d", avg_volume)
     if _first_number(enriched, "volume_ratio", "volumeRatio") is None and latest_volume is not None and avg_volume not in (None, 0):
-        enriched["volume_ratio"] = latest_volume / avg_volume
+        ratio_payload = _volume_ratio_payload(latest_volume, avg_volume, data=data, volume=enriched)
+        if ratio_payload.get("volume_ratio") is not None:
+            enriched["volume_ratio"] = ratio_payload["volume_ratio"]
+            enriched["volume_ratio_mode"] = ratio_payload["volume_ratio_mode"]
+            enriched["volume_ratio_formula"] = ratio_payload["volume_ratio_formula"]
+            if ratio_payload.get("intraday_elapsed_fraction") is not None:
+                enriched["intraday_elapsed_fraction"] = ratio_payload["intraday_elapsed_fraction"]
     ratio = _first_number(enriched, "volume_ratio", "volumeRatio")
     if not str(_value(enriched, "volume_price_status", "volumePriceStatus") or "").strip() and ratio is not None:
         enriched["volume_price_status"] = "FORMING" if ratio <= 1.0 else "UNCONFIRMED"
     return enriched
+
+
+def _volume_ratio_payload(
+    latest_volume: float,
+    avg_volume: float,
+    *,
+    data: dict[str, Any],
+    volume: dict[str, Any],
+) -> dict[str, Any]:
+    if latest_volume <= 0 or avg_volume <= 0:
+        return {"volume_ratio": None, "volume_ratio_mode": "", "volume_ratio_formula": ""}
+    fraction = _intraday_elapsed_fraction(data, volume)
+    if fraction is not None and 0 < fraction < 1:
+        expected = avg_volume * max(fraction, 0.05)
+        return {
+            "volume_ratio": latest_volume / expected if expected > 0 else None,
+            "volume_ratio_mode": "TIME_ADJUSTED",
+            "volume_ratio_formula": "current_volume / expected_volume_at_current_time",
+            "intraday_elapsed_fraction": fraction,
+        }
+    return {
+        "volume_ratio": latest_volume / avg_volume,
+        "volume_ratio_mode": "FULL_DAY",
+        "volume_ratio_formula": "volume / avg_daily_volume",
+    }
+
+
+def _intraday_elapsed_fraction(data: dict[str, Any], volume: dict[str, Any]) -> float | None:
+    explicit = _first_number(
+        volume,
+        "intraday_elapsed_fraction",
+        "intradayElapsedFraction",
+        "market_elapsed_fraction",
+        "marketElapsedFraction",
+    )
+    if explicit is None:
+        explicit = _first_number(
+            data,
+            "intraday_elapsed_fraction",
+            "intradayElapsedFraction",
+            "market_elapsed_fraction",
+            "marketElapsedFraction",
+        )
+    if explicit is not None:
+        return max(0.01, min(1.0, explicit))
+    session = str(
+        _value(volume, "market_session", "marketSession", "session")
+        or _value(data, "market_session", "marketSession", "session")
+        or ""
+    ).strip().upper()
+    is_intraday = bool(_value(volume, "is_intraday", "isIntraday") or _value(data, "is_intraday", "isIntraday"))
+    if session not in {"REGULAR", "INTRADAY", "MARKET_OPEN"} and not is_intraday:
+        return None
+    stamp = _parse_datetime(
+        _value(volume, "quote_updated_at", "updated_at", "updatedAt", "fetchedAt", "as_of", "asOf")
+        or _value(data, "quote_updated_at", "updated_at", "updatedAt", "fetchedAt", "as_of", "asOf")
+    )
+    if stamp is None:
+        stamp = datetime.now(timezone.utc)
+    et = stamp.astimezone(ZoneInfo("America/New_York"))
+    start = et.replace(hour=9, minute=30, second=0, microsecond=0)
+    end = et.replace(hour=16, minute=0, second=0, microsecond=0)
+    if et <= start:
+        return 0.01
+    if et >= end:
+        return None
+    return max(0.01, min(1.0, (et - start).total_seconds() / (end - start).total_seconds()))
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _flatten_zone(data: dict[str, Any], zone_key: str, low_key: str, high_key: str) -> None:

@@ -1194,7 +1194,7 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
         st.markdown('<div class="portfolio-form-section">快捷创建 / 编辑计划</div>', unsafe_allow_html=True)
         tier_label = _position_tier_form_label(plan.get("position_class") or row.get("positionTier"))
         plan_type_label = _plan_type_label(plan.get("plan_type") or _default_buy_plan_type_for_tier(POSITION_TIER_FORM_OPTIONS.get(tier_label, "")))
-        top = st.columns([1, 1, 1, 1])
+        top = st.columns([1, 1, 1, 1, 1])
         top[0].text_input("股票代码", value=symbol, disabled=True)
         target_alert_input = top[1].text_input(
             "目标提醒价",
@@ -1208,6 +1208,14 @@ def _render_buy_plan_form(store: StockPlanStore, symbol: str, plan: dict, row: d
             value=_input_value(calculated_shares if calculated_shares is not None else plan.get("planned_shares")),
             disabled=True,
             help="由计划金额 ÷ 目标提醒价自动计算，保存后会写入计划。",
+        )
+
+        top[4].text_input(
+            "计划上限股数",
+            value=_input_value(plan.get("max_shares")),
+            placeholder="例如：500",
+            help="这只股票完整计划最多持有多少股，用于买区卡显示剩余计划额度；不是下一笔买入股数。",
+            key=f"buy-plan-max-shares:{symbol}",
         )
 
         quick = st.columns([1, 1])
@@ -1341,6 +1349,7 @@ def _save_buy_plan_from_form(store: StockPlanStore, symbol: str, visible_level_c
             st.session_state.get(f"buy-plan-target-alert:{symbol}"),
             st.session_state.get(f"buy-plan-planned-amount:{symbol}"),
         ),
+        "max_shares": st.session_state.get(f"buy-plan-max-shares:{symbol}"),
         "near_threshold_pct": 2,
         "max_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
         "target_position_pct": st.session_state.get(f"buy-plan-max-pct:{symbol}"),
@@ -1372,6 +1381,9 @@ def _validate_buy_plan_form_values(symbol: str, values: dict) -> None:
     max_pct = _number(values.get("max_position_pct"))
     if max_pct is not None and max_pct <= 0:
         raise ValueError("最大仓位必须大于 0。")
+    max_shares = _number(values.get("max_shares"))
+    if max_shares is not None and max_shares <= 0:
+        raise ValueError("计划上限股数必须大于 0。")
     target_alert_price = _number(values.get("target_alert_price"))
     if target_alert_price is None or target_alert_price <= 0:
         raise ValueError("目标提醒价必须大于 0。")

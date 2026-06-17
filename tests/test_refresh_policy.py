@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from data.fundamentals import FundamentalCache
+from data.prices import PriceCache
 from data.refresh_policy import (
     RefreshMode,
     _reset_quote_provider_capabilities,
@@ -412,7 +413,7 @@ def test_daily_technical_refresh_skips_fresh_technical_cache(tmp_path) -> None:
 
 def test_daily_technical_refresh_marks_snapshot_timestamp_after_success(tmp_path) -> None:
     cache = FundamentalCache(tmp_path / "refresh.sqlite")
-    cache.set_snapshot("NVDA", {"ticker": "NVDA", "current_price": 100})
+    cache.set_snapshot("NVDA", {"ticker": "NVDA", "current_price": 95})
     provider = FakeRefreshProvider()
     now = datetime(2026, 6, 11, 12, tzinfo=timezone.utc)
 
@@ -427,10 +428,56 @@ def test_daily_technical_refresh_marks_snapshot_timestamp_after_success(tmp_path
     updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
     assert result["status"] == "success"
     assert updated["current_price"] == 100
+    assert updated["price"] == 100
+    assert updated["current_price_source"] == "LAST_CLOSE"
+    assert updated["price_session"] == "LAST_CLOSE"
+    assert updated["price_as_of"].startswith("2026-06-10")
     assert updated["technical_updated_at"] == now.isoformat()
     assert updated["history_updated_at"] == now.isoformat()
     assert updated["price_history_updated_at"] == now.isoformat()
     assert updated["refresh_mode"] == "DAILY_TECHNICAL"
+
+
+def test_daily_technical_skip_syncs_latest_cached_close_instead_of_old_quote(tmp_path) -> None:
+    path = tmp_path / "refresh.sqlite"
+    cache = FundamentalCache(path)
+    PriceCache(path).set_history(
+        "FMP:NVDA",
+        pd.DataFrame(
+            [
+                {"date": "2026-06-09", "close": 98.0, "open": 97.0, "high": 99.0, "low": 96.0, "volume": 10},
+                {"date": "2026-06-10", "close": 111.5, "open": 110.0, "high": 112.0, "low": 109.0, "volume": 20},
+            ]
+        ),
+    )
+    cache.set_snapshot(
+        "NVDA",
+        {
+            "ticker": "NVDA",
+            "current_price": 95,
+            "technical_updated_at": datetime(2026, 6, 11, 6, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    provider = FakeRefreshProvider()
+
+    result = refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.DAILY_TECHNICAL,
+        provider=provider,
+        cache=cache,
+        now=datetime(2026, 6, 11, 12, tzinfo=timezone.utc),
+    )
+
+    updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
+    assert result["status"] == "success"
+    assert result["skipped_count"] == 1
+    assert result["refreshed_count"] == 0
+    assert result["ticker_results"][0]["status"] == "skipped"
+    assert result["ticker_results"][0]["source"] == "latest_close_sync"
+    assert provider.calls == []
+    assert updated["current_price"] == 111.5
+    assert updated["price"] == 111.5
+    assert updated["current_price_source"] == "LAST_CLOSE"
 
 
 def test_should_refresh_technicals_detects_stale_or_missing_timestamp() -> None:

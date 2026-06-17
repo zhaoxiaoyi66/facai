@@ -626,8 +626,12 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
 def _successful_refresh_symbols(result: dict[str, Any]) -> list[str]:
     symbols: list[str] = []
     seen: set[str] = set()
+    mode = str(result.get("mode") or "").strip().upper()
+    syncable_statuses = {"success"}
+    if mode == RefreshMode.DAILY_TECHNICAL.value:
+        syncable_statuses.add("skipped")
     for item in result.get("ticker_results") or []:
-        if str(item.get("status") or "").strip().lower() != "success":
+        if str(item.get("status") or "").strip().lower() not in syncable_statuses:
             continue
         symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper()
         if symbol and symbol not in seen:

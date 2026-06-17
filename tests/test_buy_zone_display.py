@@ -149,6 +149,61 @@ def test_display_exposes_momentum_context_note() -> None:
     assert display["risk_flags"] == ["MOMENTUM_OVERHEATED"]
 
 
+def test_display_splits_plan_capacity_from_current_price_add_capacity() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "primary_zone": "PULLBACK_UPPER_WATCH",
+            "primary_zone_text": "买区上沿 / 修复观察区",
+            "current_price": 102.37,
+            "left_probe_zone_low": 97.5,
+            "left_probe_zone_high": 99.32,
+            "observe_zone_high": 104.65,
+            "pullback_zone_high": 108.0,
+            "current_subzone": "ACCEPTANCE_OBSERVATION_ZONE",
+            "acceptance_state": "WEAK_ACCEPTANCE",
+            "acceptance_state_text": "承接不足",
+            "entry_quality": "EDGE_OBSERVE",
+            "confirmation_price": 105.12,
+            "invalidation_price": 97.5,
+            "volume_acceptance_score": 48,
+            "risk_reward_score": 82,
+        },
+        {"current_shares": 200, "max_shares": 500, "currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["plan_limit_shares"] == 500
+    assert display["remaining_plan_capacity_shares"] == 300
+    assert display["current_price_add_capacity_shares"] == 0
+    assert display["next_buy_shares"] == 50
+    assert "当前价不新增" in display["trading_headline_text"]
+    assert "剩余计划额度 300 股" in display["position_capacity_text"]
+    assert "当前价可新增 0 股" in display["position_capacity_text"]
+    assert "$99.32 - $101.19" in display["next_buy_action_text"]
+    assert display["repair_observation_line_text"] == "修复观察线：站上 $105.12 后重新评估，不直接追买"
+    assert "右侧确认线：放量站稳 $108.00 - $110.16 后，最多释放 +50 股右侧额度" == display["right_confirmation_line_text"]
+    assert display["risk_reward_decision_text"] == "赔率较好，但承接不足。当前属于高赔率观察，不是立即买入。"
+
+
+def test_display_reads_plan_limit_from_stock_plan_snapshot() -> None:
+    display = build_buy_zone_display(
+        {
+            "current_action": "WAIT_CONFIRMATION",
+            "current_price": 102.37,
+            "left_probe_zone_low": 99.0,
+            "left_probe_zone_high": 101.0,
+            "volume_acceptance_score": 48,
+            "risk_reward_score": 82,
+        },
+        {"current_shares": 200, "stock_plan": {"max_shares": 500}, "currentAddLimitPercent": 0},
+        mode="test",
+    )
+
+    assert display["plan_limit_shares"] == 500
+    assert display["remaining_plan_capacity_shares"] == 300
+
+
 def test_pullback_confirmation_with_zero_add_shows_in_zone_not_pause() -> None:
     display = build_buy_zone_display(
         {

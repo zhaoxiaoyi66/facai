@@ -107,6 +107,19 @@ def test_sync_refreshed_symbols_replaces_existing_rows_without_adding_hidden_pos
     assert table.loc[table["symbol"] == "MSFT", "price"].iloc[0] == "old"
 
 
+def test_daily_technical_skipped_symbols_are_synced_to_dashboard_table() -> None:
+    result = {
+        "mode": "DAILY_TECHNICAL",
+        "ticker_results": [
+            {"ticker": "NOW", "status": "skipped"},
+            {"ticker": "MSFT", "status": "success"},
+            {"ticker": "NVDA", "status": "failed"},
+        ],
+    }
+
+    assert dashboard._successful_refresh_symbols(result) == ["NOW", "MSFT"]
+
+
 def test_dashboard_star_marks_sort_before_unstarred_without_changing_row_fields(tmp_path) -> None:
     store = WatchlistStarStore(tmp_path / "cache.sqlite")
     store.set_star("NVDA", True)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 import json
+import sqlite3
 from time import perf_counter
 from typing import Any, Callable, Iterable
 from urllib.parse import urlencode
@@ -400,18 +401,27 @@ def _refresh_daily_technical(symbol: str, *, provider: Any, cache: FundamentalCa
     started = perf_counter()
     snapshot = cache.get_snapshot(symbol, max_age_hours=24 * 3650) or {}
     if snapshot and not should_refresh_technicals(snapshot, now=now):
-        return _ticker_result(symbol, "skipped", "技术缓存仍新鲜，跳过日线刷新", started)
+        synced = _sync_snapshot_to_latest_close(symbol, snapshot, cache=cache, now=now)
+        message = "技术缓存仍新鲜，已同步最新收盘价" if synced else "技术缓存仍新鲜，跳过日线刷新"
+        return _ticker_result(symbol, "skipped", message, started, source="latest_close_sync" if synced else "")
     try:
         history = provider.get_price_history(symbol, force_refresh=True)
         if _has_history_rows(history):
-            _mark_technical_refreshed(symbol, snapshot, cache=cache, now=now)
+            _mark_technical_refreshed(symbol, snapshot, cache=cache, now=now, history=history)
             return _ticker_result(symbol, "success", "日线和技术指标缓存已更新", started)
         return _ticker_result(symbol, "failed", "日线无有效数据", started)
     except Exception as exc:
         return _ticker_result(symbol, "failed", f"日线刷新失败：{_short_error(exc)}", started)
 
 
-def _mark_technical_refreshed(symbol: str, snapshot: dict, *, cache: FundamentalCache, now: datetime) -> None:
+def _mark_technical_refreshed(
+    symbol: str,
+    snapshot: dict,
+    *,
+    cache: FundamentalCache,
+    now: datetime,
+    history: Any | None = None,
+) -> None:
     merged = dict(snapshot or {})
     merged.setdefault("ticker", symbol)
     merged.setdefault("symbol", symbol)
@@ -420,7 +430,86 @@ def _mark_technical_refreshed(symbol: str, snapshot: dict, *, cache: Fundamental
     merged["history_updated_at"] = refreshed_at
     merged["price_history_updated_at"] = refreshed_at
     merged["refresh_mode"] = RefreshMode.DAILY_TECHNICAL.value
+    _apply_latest_close_to_snapshot(symbol, merged, cache=cache, now=now, history=history)
     cache.set_snapshot(symbol, merged)
+
+
+def _sync_snapshot_to_latest_close(symbol: str, snapshot: dict, *, cache: FundamentalCache, now: datetime) -> bool:
+    merged = dict(snapshot or {})
+    merged.setdefault("ticker", symbol)
+    merged.setdefault("symbol", symbol)
+    if not _apply_latest_close_to_snapshot(symbol, merged, cache=cache, now=now):
+        return False
+    merged["refresh_mode"] = RefreshMode.DAILY_TECHNICAL.value
+    cache.set_snapshot(symbol, merged)
+    return True
+
+
+def _apply_latest_close_to_snapshot(
+    symbol: str,
+    snapshot: dict,
+    *,
+    cache: FundamentalCache,
+    now: datetime,
+    history: Any | None = None,
+) -> bool:
+    latest = _latest_close_from_history(history) or _latest_cached_history_close(cache.path, symbol)
+    latest_close = _number(latest.get("close") if latest else None)
+    if latest_close is None or latest_close <= 0:
+        return False
+    latest_date = str(latest.get("date") or "").strip()
+    synced_at = now.isoformat()
+    snapshot["current_price"] = latest_close
+    snapshot["price"] = latest_close
+    snapshot["latest_close"] = latest_close
+    snapshot["latestClose"] = latest_close
+    snapshot["current_price_source"] = "LAST_CLOSE"
+    snapshot["price_session"] = "LAST_CLOSE"
+    snapshot["last_close_synced_at"] = synced_at
+    snapshot["price_updated_at"] = synced_at
+    if latest_date:
+        snapshot["price_as_of"] = latest_date
+        snapshot["history_latest_date"] = latest_date
+    return True
+
+
+def _latest_close_from_history(history: Any | None) -> dict[str, Any] | None:
+    if not _has_history_rows(history):
+        return None
+    try:
+        frame = history.sort_values("date")
+        row = frame.iloc[-1]
+        return {"date": row.get("date"), "close": row.get("close")}
+    except Exception:
+        try:
+            row = history[-1]
+        except Exception:
+            return None
+        return row if isinstance(row, dict) else None
+
+
+def _latest_cached_history_close(path: Any, symbol: str) -> dict[str, Any] | None:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return None
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute(
+                """
+                SELECT date, close
+                FROM price_history
+                WHERE ticker IN (?, ?)
+                  AND close IS NOT NULL
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (normalized, f"FMP:{normalized}"),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return {"date": row[0], "close": row[1]}
 
 
 def _refresh_fundamentals_if_event(symbol: str, *, provider: Any, cache: FundamentalCache, now: datetime) -> RefreshTickerResult:

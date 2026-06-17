@@ -221,9 +221,24 @@ def test_price_below_invalidation_marks_structure_broken() -> None:
         volume_snapshot=_volume(volume_price_status="FAILED", volume_price_score=20, volume_ratio=1.6),
     )
 
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.current_layer_type == "CORE_LEFT_ZONE"
+    assert context.invalidation_price is not None
+    assert context.invalidation_price < context.layer_break_line
+    assert context.acceptance_state == "WEAK_ACCEPTANCE"
+    assert context.entry_quality == "WAIT_CONFIRMATION"
+    assert context.current_action == PAUSE_BUY
+
+
+def test_price_below_structural_invalid_marks_structure_broken() -> None:
+    context = build_buy_zone_context(
+        _base_source(current_price=79.5, technical_resistance_price=122),
+        volume_snapshot=_volume(volume_price_status="FAILED", volume_price_score=20, volume_ratio=1.6),
+    )
+
     assert context.primary_zone == "INVALIDATION"
+    assert context.current_layer_type == "STRUCTURAL_INVALID"
     assert context.acceptance_state == "STRUCTURE_BROKEN"
-    assert context.acceptance_state_text == "结构破坏"
     assert context.entry_quality == "INVALID"
     assert context.falling_knife_risk == "HIGH"
 
@@ -241,7 +256,8 @@ def test_fast_selloff_near_invalidation_marks_falling_knife_risk() -> None:
         volume_snapshot=_volume(volume_price_status="FORMING", volume_price_score=42, volume_ratio=1.55, confirmation_score=42),
     )
 
-    assert context.primary_zone == "DEEP_ACCEPTANCE"
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.current_layer_type == "LEFT_PROBE_CANDIDATE"
     assert context.acceptance_state == "FALLING_KNIFE_RISK"
     assert context.acceptance_state_text == "飞刀风险"
     assert context.entry_quality == "HIGH_RISK"
@@ -286,12 +302,12 @@ def test_ibm_upper_pullback_zone_is_repair_watch_not_main_batting_area() -> None
     assert "52周高点 $332.46 仅作为突破重估线" not in context.add_trigger_condition_text
     assert "近端确认线 $276.00" in context.add_trigger_condition_text
     assert "跌破买区下沿 $253.17：暂停新增" in context.pause_new_condition_text
-    assert "跌破 $249.00：买区失效" in context.pause_new_condition_text
+    assert "跌破第一层支撑 $249.00：下切到下一层买区复核" in context.pause_new_condition_text
     assert "$242.00 - $250.00：趋势恶化" in context.pause_new_condition_text
     assert "$210.00 - $220.00：极端风险" in context.pause_new_condition_text
 
 
-def test_left_probe_zone_is_clipped_by_invalidation_risk() -> None:
+def test_layer_break_shifts_left_probe_candidate_above_first_support_break() -> None:
     context = build_buy_zone_context(
         _base_source(
             ticker="NOW",
@@ -312,12 +328,68 @@ def test_left_probe_zone_is_clipped_by_invalidation_risk() -> None:
 
     assert context.primary_zone == "PULLBACK_UPPER_WATCH"
     assert context.current_action == WAIT_CONFIRMATION
-    assert context.left_probe_zone_low == 97.50
-    assert round(context.left_probe_zone_high or 0, 2) == 99.32
-    assert context.invalidation_risk_zone_low == 94.60
-    assert context.invalidation_risk_zone_high == 97.50
+    assert context.left_probe_zone_low == 99.32
+    assert context.left_probe_zone_high is not None
+    assert 100.9 <= context.left_probe_zone_high <= 101.2
+    assert context.layer_break_line == 97.50
+    assert context.invalidation_price is not None
+    assert context.invalidation_price < context.layer_break_line
+    assert context.invalidation_risk_zone_high is not None
+    assert context.invalidation_risk_zone_high < context.layer_break_line
     assert context.left_side_position_pct is None
     assert context.left_probe_position_label == "OUTSIDE"
+    assert any(layer["zone_type"] == "LEFT_PROBE_CANDIDATE" for layer in context.left_buy_layers)
+    assert any(layer["zone_type"] == "CORE_LEFT_ZONE" for layer in context.left_buy_layers)
+
+
+def test_now_like_price_in_observe_zone_still_outputs_next_left_candidate_layer() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            ticker="NOW",
+            current_price=102.37,
+            effective_technical_entry_zone_low=94.60,
+            effective_technical_entry_zone_high=108.09,
+            support_zone_low=94.60,
+            support_zone_high=99.32,
+            confirmation_price=105.12,
+            resistance_zone_low=108.0,
+            resistance_zone_high=110.0,
+            recent_swing_high=135.0,
+            target_price=135.0,
+            invalidation_price=97.50,
+            chase_above_price=135.0,
+        ),
+        volume_snapshot=_volume(volume_price_score=48, volume_ratio=0.55, confirmation_score=48),
+    )
+
+    assert context.primary_zone == "PULLBACK_WATCH"
+    assert context.current_subzone == "ACCEPTANCE_OBSERVATION_ZONE"
+    assert context.current_layer_type == "OBSERVE_ZONE"
+    assert context.left_probe_zone_low == 99.32
+    assert round(context.left_probe_zone_high or 0, 2) == 100.98
+    assert context.next_effective_buy_zone_low == 99.32
+    assert round(context.next_effective_buy_zone_high or 0, 2) == 100.98
+    assert context.layer_break_line == 97.50
+    assert context.invalidation_price is not None and context.invalidation_price < 97.50
+    assert round(context.right_confirmation_low or 0, 2) == 108.09
+    assert round(context.right_confirmation_high or 0, 2) == 110.25
+    assert context.risk_reward_score >= 70
+    assert context.entry_trigger_score < 60
+    assert any(layer["zone_type"] == "DEEP_VALUE_ZONE" for layer in context.left_buy_layers)
+    assert any(layer["zone_type"] == "PANIC_VALUE_ZONE" for layer in context.left_buy_layers)
+    layer_types = [layer["zone_type"] for layer in context.left_buy_layers]
+    assert layer_types == [
+        "OBSERVE_ZONE",
+        "LEFT_PROBE_CANDIDATE",
+        "CORE_LEFT_ZONE",
+        "LAYER_BREAK",
+        "DEEP_VALUE_ZONE",
+        "PANIC_VALUE_ZONE",
+        "STRUCTURAL_INVALID",
+    ]
+    panic = next(layer for layer in context.left_buy_layers if layer["zone_type"] == "PANIC_VALUE_ZONE")
+    structural = next(layer for layer in context.left_buy_layers if layer["zone_type"] == "STRUCTURAL_INVALID")
+    assert structural["price_high"] < panic["price_low"]
 
 
 def test_52_week_high_is_breakout_reevaluation_not_buy_confirmation() -> None:
@@ -488,7 +560,8 @@ def test_below_invalidation_enters_risk_review_for_existing_and_no_position() ->
         volume_snapshot=_volume(volume_price_status="FAILED", volume_price_score=20, volume_ratio=1.8),
     )
 
-    assert context.primary_zone == "INVALIDATION"
+    assert context.primary_zone == "PULLBACK_BUY"
+    assert context.current_layer_type == "CORE_LEFT_ZONE"
     assert context.current_action == PAUSE_BUY
     assert context.existing_position_action_text == "已有持仓：暂停新增，复核失效线和放量破位风险。"
     assert context.no_position_action_text == "未持仓：系统不建议新增，等待买区重新生成。"
@@ -816,6 +889,23 @@ def test_daily_ohlcv_volume_fallback_prevents_false_data_insufficient() -> None:
     assert context.volume_ratio is not None
     assert context.volume_source == "daily_ohlcv"
     assert "volume_acceptance" not in context.missing_fields
+
+
+def test_intraday_volume_ratio_uses_time_adjusted_expected_volume() -> None:
+    context = build_buy_zone_context(
+        _base_source(
+            current_price=101,
+            latest_volume=2_000_000,
+            avg_volume_20d=20_000_000,
+            market_session="REGULAR",
+            intraday_elapsed_fraction=0.10,
+        ),
+        volume_snapshot={},
+    )
+
+    assert round(context.volume_ratio or 0, 2) == 1.0
+    assert context.volume_ratio_mode == "TIME_ADJUSTED"
+    assert "expected_volume_at_current_time" in context.volume_ratio_formula
 
 
 def test_daily_ohlcv_derives_uncomputed_ma_atr_rsi_and_zones() -> None:

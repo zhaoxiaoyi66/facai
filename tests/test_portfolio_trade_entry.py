@@ -417,6 +417,7 @@ def test_buy_plan_form_accepts_minimal_ladder_plan_values() -> None:
             "position_class": "B",
             "plan_type": "ladder_buy",
             "max_position_pct": 8,
+            "max_shares": 500,
             "target_alert_price": 15.5,
             "planned_shares": 200,
             "target_sell_price": "",
@@ -425,6 +426,44 @@ def test_buy_plan_form_accepts_minimal_ladder_plan_values() -> None:
             "buy_plan_tranches": [{"label": "第 1 档", "price": 15.5, "shares": 200}],
         },
     )
+
+
+def test_buy_plan_form_rejects_invalid_plan_limit_shares() -> None:
+    from ui.portfolio import _validate_buy_plan_form_values
+
+    with pytest.raises(ValueError, match="计划上限股数必须大于 0"):
+        _validate_buy_plan_form_values(
+            "NOK",
+            {
+                "position_class": "B",
+                "plan_type": "ladder_buy",
+                "max_shares": 0,
+                "target_alert_price": 15.5,
+                "planned_amount": 3000,
+                "thesis": "回到计划区间再买",
+                "buy_plan_tranches": [],
+            },
+        )
+
+
+def test_stock_plan_persists_plan_limit_shares() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "cache.sqlite"
+        saved = StockPlanStore(path).save_plan(
+            "NOW",
+            {
+                "plan_type": "ladder_buy",
+                "target_alert_price": 99,
+                "planned_amount": 5000,
+                "max_shares": 500,
+                "thesis": "回到左侧候选区再分批",
+            },
+        )
+
+        loaded = StockPlanStore(path).get_plan("NOW")
+
+    assert saved["max_shares"] == 500
+    assert loaded["max_shares"] == 500
 
 
 def test_buy_plan_form_accepts_quick_plan_without_ladder_levels() -> None:
