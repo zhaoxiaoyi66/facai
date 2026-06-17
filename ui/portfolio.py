@@ -46,6 +46,7 @@ from formatting import format_currency, format_percent
 from settings import load_watchlist
 from ui.theme import render_page_header, render_section_title
 from ui.discipline_review import trade_entry_discipline_hint_html
+from ui.portfolio_mainline import render_current_mainline_module
 from ui.trade_intent import render_trade_intent_dialog
 
 
@@ -2051,6 +2052,7 @@ def render() -> None:
     render_page_header("组合持仓", "真实持仓、仓位偏离和下一步动作。")
     _consume_portfolio_edit_query()
     _render_portfolio_notice()
+    render_current_mainline_module()
 
     position_store = PortfolioPositionStore()
     settings_store = PortfolioSettingsStore()
