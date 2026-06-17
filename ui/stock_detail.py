@@ -112,7 +112,7 @@ def render() -> None:
         _render_record_signal_button(ticker, snapshot, technicals, final_decision, buy_zone_context, buy_zone_display)
     _render_conclusion_card(ticker, snapshot, technicals, score, refreshed_at, effective_buy_zone, final_decision, buy_zone_display)
     _render_trade_decision_snapshot(score, effective_buy_zone, plan_suggestion, final_decision, buy_zone_display)
-    _render_current_position_summary(portfolio_row)
+    _render_current_position_summary(portfolio_row, buy_zone_display)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_price_action_map(buy_zone_display)
     _render_setup_score_snapshot(buy_zone_display)
@@ -178,17 +178,11 @@ def _render_conclusion_card(
     price = technicals.get("price") or snapshot.get("current_price")
     data_status = _data_status(score, snapshot)
     refreshed = _format_timestamp(refreshed_at)
-    display = buy_zone_display or {}
-    buy_point_html = escape(str(display.get("technical_action_text") or _buy_point_status_text(score, buy_zone)))
     values = [
-        ("操作建议", str(display.get("main_action_text") or _final_action_text(score, final_decision))),
-        ("当前新增", _position_limit_text(_final_current_add(score, final_decision))),
-        ("组合仓位上限", _position_limit_text(_final_max_position(score, final_decision))),
         ("当前价格", format_currency(price)),
         ("市值", format_large_number(snapshot.get("market_cap"))),
         ("行业模型", model_type_label(score.scoring_model)),
         ("质量评级", score.quality_rating),
-        ("买点状态", buy_point_html, True),
         ("风险评级", score.risk_rating),
         ("数据状态", data_status),
         ("最近刷新", refreshed),
@@ -245,8 +239,19 @@ def _portfolio_row_for_ticker(ticker: str, portfolio_view: dict | None = None) -
     return next((row for row in rows if str(row.get("symbol") or "").upper() == symbol), None)
 
 
-def _render_current_position_summary(row: dict | None) -> None:
-    if not row:
+def _render_current_position_summary(row: dict | None, buy_zone_display: dict | None = None) -> None:
+    quantity = _optional_float((row or {}).get("quantity"))
+    if not row or quantity is None or quantity <= 0:
+        display = buy_zone_display or {}
+        plan_limit = _shares_or_unset(display.get("plan_limit_shares"), "未设置计划上限")
+        current_add = str(display.get("current_price_action_text") or "当前不释放新增额度")
+        next_trigger = _compact_next_trigger_text(display)
+        st.markdown(
+            '<section class="flat-position-strip">'
+            f'{escape("未持仓")}｜{escape(plan_limit)}｜{escape(current_add)}｜下一触发：{escape(next_trigger)}'
+            '</section>',
+            unsafe_allow_html=True,
+        )
         return
     items = [
         ("持股数量", _portfolio_quantity_text(row.get("quantity"))),
@@ -268,6 +273,25 @@ def _render_current_position_summary(row: dict | None) -> None:
         + "</div></section>",
         unsafe_allow_html=True,
     )
+
+
+def _shares_or_unset(value: object, unset: str) -> str:
+    number = _optional_float(value)
+    if number is None or number <= 0:
+        return unset
+    return f"计划上限 {number:,.0f} 股"
+
+
+def _compact_next_trigger_text(display: dict) -> str:
+    next_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    repair = _money_text(display.get("reclaim_line"))
+    if next_range != "暂缺" and repair != "暂缺":
+        return f"回踩左侧区或站上 {repair}"
+    if next_range != "暂缺":
+        return f"回踩 {next_range}"
+    if repair != "暂缺":
+        return f"站上 {repair}"
+    return "等待买区或修复线"
 
 
 def _portfolio_pnl_text(row: dict) -> str:
@@ -953,38 +977,42 @@ def _stock_detail_decision_snapshot(
         or display.get("technical_action_text")
         or "当前区间"
     ).strip()
-    reason = _detail_decision_reason(display)
+    reason = _detail_headline_reason(display)
     headline = f"{action_prefix}：价格位于{subzone}，{reason}。"
-    next_trigger = _next_trigger_summary(display)
-    left_condition = _left_condition_text(display)
-    right_condition = _right_condition_text(display)
-    risk_condition = _risk_condition_text(display)
+    next_trigger = _compact_next_trigger_text(display)
+    left_path = _left_path_text(display)
+    current_status = _current_status_path_text(display)
+    right_path = _right_path_text(display)
+    risk_path = _risk_path_text(display)
     rr_note = str(display.get("risk_reward_decision_text") or "").strip()
-    current_add = str(display.get("current_price_action_text") or "").strip() or "当前价动作待复核"
-    max_position = _position_limit_text(_final_max_position(score, final_decision, plan_suggestion))
     return {
         "headline": headline,
         "tags": [
-            ("当前动作", action),
             ("当前价", str(display.get("current_price_text") or format_currency(getattr(buy_zone, "currentPrice", None)))),
             ("买入质量", _setup_quality_compact_text(display)),
+            ("左侧路径", _short_trigger_value(display.get("next_buy_range_low"), display.get("next_buy_range_high"))),
             ("下一触发", next_trigger),
         ],
         "cards": [
             {
-                "title": "当前动作",
-                "headline": action,
-                "lines": [_truncate(reason, 36), _truncate(current_add, 36)],
+                "title": "左侧路径",
+                "headline": _short_trigger_value(display.get("next_buy_range_low"), display.get("next_buy_range_high")),
+                "lines": [left_path],
             },
             {
-                "title": "买入条件",
-                "headline": "先看左侧承接，再看右侧确认",
-                "lines": [left_condition, right_condition],
+                "title": "当前状态",
+                "headline": str(display.get("current_price_text") or "当前价待补"),
+                "lines": [current_status],
             },
             {
-                "title": "风险条件",
-                "headline": "跌破关键线先复核",
-                "lines": [risk_condition, f"仓位上限：{max_position}"],
+                "title": "右侧路径",
+                "headline": _money_text(display.get("reclaim_line")),
+                "lines": [right_path],
+            },
+            {
+                "title": "风险线",
+                "headline": _risk_line_short_value(display),
+                "lines": [risk_path],
             },
         ],
         "rr_note": rr_note,
@@ -1001,12 +1029,16 @@ def _detail_decision_reason(display: dict) -> str:
     rr_score = _first_number(display.get("risk_reward_score"))
     acceptance = str(display.get("acceptance_state_text") or "").strip()
     reasons: list[str] = []
-    if volume_score is not None and volume_score < 60:
-        reasons.append("量价承接不足")
+    if volume_score is not None and volume_score < 50:
+        reasons.append("量能承接不足")
+    elif volume_score is not None and volume_score < 60:
+        reasons.append("承接待确认")
     elif acceptance:
         reasons.append(acceptance)
-    if rr_score is not None and rr_score < 60:
+    if rr_score is not None and rr_score < 45:
         reasons.append("赔率不够")
+    elif rr_score is not None and rr_score < 60:
+        reasons.append("风险收益一般")
     elif rr_score is not None and rr_score >= 70 and volume_score is not None and volume_score < 60:
         reasons.append("赔率较好但未确认")
     if reasons:
@@ -1015,6 +1047,15 @@ def _detail_decision_reason(display: dict) -> str:
     if rr_text:
         return _truncate(rr_text.rstrip("。"), 36)
     return "等待关键价格和量价确认"
+
+
+def _detail_headline_reason(display: dict) -> str:
+    volume_score = _first_number(display.get("volume_acceptance_score"))
+    left_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    repair = _money_text(display.get("reclaim_line"))
+    if volume_score is not None and volume_score < 50 and left_range != "暂缺" and repair != "暂缺":
+        return "量能承接不足，既未回到左侧低吸区，也未站上右侧修复线"
+    return _detail_decision_reason(display)
 
 
 def _setup_quality_compact_text(display: dict) -> str:
@@ -1049,6 +1090,63 @@ def _left_condition_text(display: dict) -> str:
     if next_range != "暂缺":
         return f"左侧：回踩 {next_range} 并出现承接"
     return "左侧：等待有效观察区和承接信号"
+
+
+def _left_path_text(display: dict) -> str:
+    next_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    if next_range != "暂缺":
+        return f"回踩 {next_range}，看承接；有承接才考虑试仓。"
+    return "等待回到左侧低吸观察区，再看承接。"
+
+
+def _current_status_path_text(display: dict) -> str:
+    price = str(display.get("current_price_text") or "当前价待补")
+    current_range = _current_zone_range_text(display)
+    subzone = str(display.get("current_subzone_display_text") or display.get("primary_zone_text") or "当前所在区")
+    if current_range != "暂缺":
+        return f"当前 {price}，位于 {current_range} {subzone}，不追。"
+    return f"当前 {price}，位于{subzone}，不追。"
+
+
+def _right_path_text(display: dict) -> str:
+    repair = _money_text(display.get("reclaim_line"))
+    confirmation = _display_range_text(display.get("right_confirmation_low"), display.get("right_confirmation_high"))
+    if repair != "暂缺" and confirmation != "暂缺":
+        return f"站上 {repair} 后重新评估；放量站稳 {confirmation} 后才考虑右侧确认。"
+    if repair != "暂缺":
+        return f"站上 {repair} 后重新评估，不直接追买。"
+    if confirmation != "暂缺":
+        return f"放量站稳 {confirmation} 后才考虑右侧确认。"
+    return "右侧修复线待补，先不追价。"
+
+
+def _risk_path_text(display: dict) -> str:
+    layer_break = _money_text(display.get("layer_break_line"))
+    invalid = _money_text(display.get("structural_invalid_line"))
+    if layer_break != "暂缺" and invalid != "暂缺":
+        return f"跌破 {layer_break} 后复核；跌破 {invalid} 后系统不建议新增。"
+    if layer_break != "暂缺":
+        return f"跌破 {layer_break} 后复核。"
+    if invalid != "暂缺":
+        return f"跌破 {invalid} 后系统不建议新增。"
+    return "风险复核线待补，先按小仓观察。"
+
+
+def _short_trigger_value(low_value: object, high_value: object) -> str:
+    text = _display_range_text(low_value, high_value)
+    return text if text != "暂缺" else "待补"
+
+
+def _risk_line_short_value(display: dict) -> str:
+    layer_break = _money_text(display.get("layer_break_line"))
+    invalid = _money_text(display.get("structural_invalid_line"))
+    if layer_break != "暂缺" and invalid != "暂缺":
+        return f"{layer_break} / {invalid}"
+    if layer_break != "暂缺":
+        return layer_break
+    if invalid != "暂缺":
+        return invalid
+    return "待补"
 
 
 def _right_condition_text(display: dict) -> str:
@@ -1105,7 +1203,7 @@ def _price_hierarchy_rows(display: dict) -> list[dict[str, str]]:
     current_subzone = str(display.get("current_subzone_display_text") or display.get("primary_zone_text") or "当前所在区")
     rows = [
         {
-            "title": "左侧观察区",
+            "title": "左侧低吸观察区",
             "value": left_range,
             "note": "回踩这里看承接，不是自动买入。",
             "tone": "watch",
@@ -1171,8 +1269,18 @@ def _risk_line_value(layer_break: str, invalid: str) -> str:
 
 def _price_hierarchy_summary(display: dict) -> str:
     current = str(display.get("current_subzone_display_text") or "当前区间")
-    next_action = str(display.get("next_buy_action_text") or display.get("next_step_text") or "等待确认")
-    return f"当前位于{current}；{next_action}。"
+    left_range = _display_range_text(display.get("next_buy_range_low"), display.get("next_buy_range_high"))
+    repair = _money_text(display.get("reclaim_line"))
+    confirmation = _display_range_text(display.get("right_confirmation_low"), display.get("right_confirmation_high"))
+    parts = [f"当前处于{current}"]
+    if left_range != "暂缺":
+        parts.append(f"左侧看 {left_range} 承接")
+    if repair != "暂缺":
+        right = f"右侧看 {repair} 修复"
+        if confirmation != "暂缺":
+            right += f"，放量站稳 {confirmation} 后确认"
+        parts.append(right)
+    return "；".join(parts) + "。"
 
 
 def _additional_price_layers(display: dict) -> list[dict[str, str]]:
@@ -1228,7 +1336,7 @@ def _render_setup_score_snapshot(display: dict | None) -> None:
         ("Setup 综合", _score_display_text(display.get("setup_score"))),
         ("量价承接", _score_display_text(display.get("volume_acceptance_score"))),
         ("风险收益", _score_display_text(display.get("risk_reward_score"))),
-        ("结论", str(display.get("setup_quality_note") or display.get("risk_reward_decision_text") or "等待确认")),
+        ("结论", _setup_quality_decision_text(display)),
     ]
     st.markdown(
         '<section class="research-card setup-snapshot-card">'
@@ -1248,6 +1356,24 @@ def _score_display_text(value: object) -> str:
     if abs(number - round(number)) < 0.05:
         return f"{number:.0f}"
     return f"{number:.1f}"
+
+
+def _setup_quality_decision_text(display: dict) -> str:
+    setup_score = _first_number(display.get("setup_score"))
+    volume_score = _first_number(display.get("volume_acceptance_score"))
+    rr_score = _first_number(display.get("risk_reward_score"))
+    if (
+        setup_score is not None
+        and setup_score < 60
+        and volume_score is not None
+        and volume_score < 50
+        and rr_score is not None
+        and 50 <= rr_score < 60
+    ):
+        return "买入质量偏弱：承接不足是主阻断，风险收益一般，等待确认。"
+    if rr_score is not None and rr_score < 45 and volume_score is not None and volume_score < 60:
+        return "买入质量偏弱：赔率不足且承接未确认。"
+    return str(display.get("setup_quality_note") or display.get("risk_reward_decision_text") or "等待确认")
 
 
 def _display_range_text(low_value: object, high_value: object) -> str:
@@ -3002,6 +3128,18 @@ def _render_detail_styles() -> None:
             font-weight: 780;
             overflow-wrap: anywhere;
         }
+        .flat-position-strip {
+            margin: -0.2rem 0 0.75rem;
+            padding: 0.52rem 0.65rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.5rem;
+            background: #FFFFFF;
+            color: #334155;
+            font-size: 0.82rem;
+            line-height: 1.4;
+            font-weight: 680;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.035);
+        }
         .detail-pill {
             display: inline-flex;
             align-items: center;
@@ -3202,7 +3340,7 @@ def _render_detail_styles() -> None:
         }
         .decision-compact-grid {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 0.5rem;
             margin-top: 0.72rem;
         }

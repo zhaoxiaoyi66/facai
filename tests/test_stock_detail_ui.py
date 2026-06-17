@@ -35,6 +35,7 @@ def test_stock_detail_decision_snapshot_uses_actionable_hierarchy() -> None:
         "risk_reward_score": 55,
         "next_buy_range_low": 955.36,
         "next_buy_range_high": 966.01,
+        "primary_zone_range_text": "$978.19 - $985.80",
         "reclaim_line": 1095.0,
         "right_confirmation_low": 1122.38,
         "right_confirmation_high": 1144.82,
@@ -45,11 +46,14 @@ def test_stock_detail_decision_snapshot_uses_actionable_hierarchy() -> None:
 
     snapshot = stock_detail._stock_detail_decision_snapshot(display, score, None)
 
-    assert snapshot["headline"] == "当前不新增：价格位于修复观察区中段，量价承接不足，赔率不够。"
+    assert snapshot["headline"] == "当前不新增：价格位于修复观察区中段，量能承接不足，既未回到左侧低吸区，也未站上右侧修复线。"
     assert ("买入质量", "偏弱") in snapshot["tags"]
-    assert ("下一触发", "回踩 $955.36 - $966.01 或站上 $1,095.00 后重评") in snapshot["tags"]
-    assert snapshot["cards"][1]["lines"][1] == "右侧：站上 $1,095.00 后重评，放量站稳 $1,122.38 - $1,144.82 才确认"
-    assert snapshot["cards"][2]["lines"][0] == "跌破 $856.01 后复核；跌破 $711.02 后系统不建议新增"
+    assert ("左侧路径", "$955.36 - $966.01") in snapshot["tags"]
+    assert snapshot["cards"][0]["title"] == "左侧路径"
+    assert snapshot["cards"][0]["lines"][0] == "回踩 $955.36 - $966.01，看承接；有承接才考虑试仓。"
+    assert snapshot["cards"][1]["lines"][0] == "当前 $982.35，位于 $978.19 - $985.80 修复观察区中段，不追。"
+    assert snapshot["cards"][2]["lines"][0] == "站上 $1,095.00 后重新评估；放量站稳 $1,122.38 - $1,144.82 后才考虑右侧确认。"
+    assert snapshot["cards"][3]["lines"][0] == "跌破 $856.01 后复核；跌破 $711.02 后系统不建议新增。"
 
 
 def test_stock_detail_price_hierarchy_labels_trigger_lines() -> None:
@@ -67,9 +71,21 @@ def test_stock_detail_price_hierarchy_labels_trigger_lines() -> None:
 
     rows = stock_detail._price_hierarchy_rows(display)
 
-    assert [row["title"] for row in rows] == ["左侧观察区", "当前所在区", "右侧修复线", "强确认区", "风险线"]
+    assert [row["title"] for row in rows] == ["左侧低吸观察区", "当前所在区", "右侧修复线", "强确认区", "风险线"]
     assert rows[0]["value"] == "$955.36 - $966.01"
     assert rows[1]["value"] == "$978.19 - $985.80"
     assert rows[2]["value"] == "$1,095.00"
     assert rows[3]["value"] == "$1,122.38 - $1,144.82"
     assert rows[4]["value"] == "风险复核：跌破 $856.01；硬失效：跌破 $711.02"
+
+
+def test_stock_detail_setup_quality_describes_mid_rr_as_general() -> None:
+    display = {"setup_score": 55, "volume_acceptance_score": 48, "risk_reward_score": 55}
+
+    assert stock_detail._setup_quality_decision_text(display) == "买入质量偏弱：承接不足是主阻断，风险收益一般，等待确认。"
+
+
+def test_stock_detail_setup_quality_calls_rr_insufficient_only_below_45() -> None:
+    display = {"setup_score": 48, "volume_acceptance_score": 48, "risk_reward_score": 42}
+
+    assert stock_detail._setup_quality_decision_text(display) == "买入质量偏弱：赔率不足且承接未确认。"
