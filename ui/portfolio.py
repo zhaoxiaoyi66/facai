@@ -2215,6 +2215,8 @@ def _soften_buy_advisory_text(text: str) -> str:
         "不单独" + "阻止买入": "可手动继续，系统会记录为人工 override",
         "不再" + "硬" + "拦截": "可手动继续",
         "硬" + "拦截": "风险提示",
+        "当前允许新增仓位": "当前参考新增仓位",
+        "允许新增仓位": "参考新增仓位",
     }
     cleaned = text
     for old, new in replacements.items():
@@ -2227,7 +2229,7 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
     for key in ("technical_status", "valuation_status", "discipline_status"):
         value = str(market_status.get(key) or "").strip()
         if value:
-            items.append(value)
+            items.append(_soften_buy_advisory_text(value))
     for note in market_status.get("notes") or []:
         if str(note).strip():
             items.append(str(note).strip())
@@ -2264,7 +2266,7 @@ def _portfolio_buy_gate_actions(
         [
             "可降低买入数量，让仓位更接近参考上限。",
             "也可改为计划买入或价格提醒，先观察再执行。",
-            "重新复核该股票的 Radar 区间、技术回踩区和买入计划。",
+            "重新复核该股票的价格位置、技术回踩区和买入计划。",
         ]
     )
     context_items = [*(plan_reasons or []), *(starter_reasons or [])]
@@ -2282,7 +2284,7 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "quantity_exceeds_level": "买入数量超过计划档位剩余数量。",
         "position_exceeds_plan": "买入后仓位超过计划上限。",
         "mood_blocked": "交易心理不符合计划内执行。",
-        "data_missing": "价格或 Radar 数据缺失 / 过期，无法匹配计划，仅作为提示。",
+        "data_missing": "价格或买区提示数据缺失 / 过期，无法匹配计划，仅作为提示。",
         "price_missing": "缺少当前价格，无法匹配计划。",
         "quantity_missing": "买入数量无效，无法匹配计划档位。",
         "level_filled": "该计划档位已没有剩余可买数量。",

@@ -1851,6 +1851,8 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
     assert "0%" in html
     assert "技术偏热" in html
     assert "估值仍偏高" in html
+    assert "当前参考新增仓位为 0%" in html
+    assert "当前允许新增仓位" not in html
     assert "未找到分批买入计划" in html
     assert "current price is above" not in html
     assert "heavy position is not allowed" not in html
@@ -1923,6 +1925,8 @@ def test_portfolio_buy_gate_notice_shows_post_earnings_drop_without_overheated_c
     assert "财报后大跌" in html
     assert "高波动" in html
     assert "估值仍偏高" in html
+    assert "当前参考新增仓位为 0%" in html
+    assert "当前允许新增仓位" not in html
     assert "大跌不等于进入买区" in html
     assert "技术过热" not in html
     assert "current price is in or above chase zone" not in html
