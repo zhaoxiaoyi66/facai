@@ -733,7 +733,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
         st.markdown(
             '<div class="buy-execution-plan-summary is-empty">'
             "<strong>计划摘要</strong>"
-            f"<span>{escape(missing_text)} Radar / 计划信息只作为风险提示，确认后可入账。</span>"
+            f"<span>{escape(missing_text)} 买区 / 计划信息只作为风险提示，确认后可入账。</span>"
             f'<a href="{escape(href, quote=True)}" target="_self">{escape(create_text)}</a>'
             "</div>",
             unsafe_allow_html=True,

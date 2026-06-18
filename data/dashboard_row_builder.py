@@ -376,7 +376,7 @@ def _radar_entry_display_fields(ticker: str, snapshot: dict, technicals: dict) -
         row = build_entry_display(
             data_status="MISSING_BUY_ZONE",
             price_position="ZONE_MISSING",
-            missing_entry_fields=["Radar 主击球区缺失"],
+            missing_entry_fields=["主击球区缺失"],
         )
         row.update({"buy_zone": {}, "price_position": "ZONE_MISSING", "decision": "DATA_MISSING", "data_status": "MISSING_BUY_ZONE"})
     public_entry_keys = {

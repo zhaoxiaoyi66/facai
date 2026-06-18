@@ -24,8 +24,8 @@ DECISION_MOOD_TYPES = {
     "discipline_check",
 }
 SELL_SYNC_BLOCK_REASON = "卖出基础校验未通过，不能入账。"
-BUY_RADAR_SYNC_BLOCK_REASON = "Radar 买入提示仅作为风险提醒，不阻止入账。"
-BUY_RADAR_MISSING_GATE_REASON = "Radar 买入提示快照缺失；仅记录为人工复核提示。"
+BUY_RADAR_SYNC_BLOCK_REASON = "买区提示仅作为风险提醒，不阻止入账。"
+BUY_RADAR_MISSING_GATE_REASON = "买区提示快照缺失；仅记录为人工复核提示。"
 BUY_TIER_MISSING_REASON = "买入 / 加仓缺少 A/B/C 持仓属性；仅作为风险提示。"
 BUY_PLANNED_LADDER_INVALID_REASON = "计划内加仓快照 / 底仓建仓快照不完整；仅作为买入提示记录。"
 

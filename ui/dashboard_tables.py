@@ -251,7 +251,7 @@ def _dashboard_entry_display(row: pd.Series | dict) -> dict:
     return build_entry_display(
         data_status="MISSING_BUY_ZONE",
         price_position="ZONE_MISSING",
-        missing_entry_fields=["Radar 主击球区缺失"],
+        missing_entry_fields=["主击球区缺失"],
         decision=str(_row_value(row, "finalDecision") or _row_value(row, "decision") or ""),
         final_score=_number(_row_value(row, "finalScore") or _row_value(row, "totalScore")),
         valuation_score=_number(_row_value(row, "valuationScore")),
