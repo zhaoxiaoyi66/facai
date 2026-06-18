@@ -161,7 +161,7 @@ def _discipline_snapshot(entry: dict) -> dict[str, Any]:
         "canSellCore": _bool_or_none(entry.get("can_sell_core")),
         "requiresReentryPlan": _bool_or_none(entry.get("requires_reentry_plan")),
         "disciplineStatus": entry.get("discipline_status"),
-        "blockers": _list(entry.get("blockers")),
+        "blockers": _discipline_blockers(entry),
         "warnings": _list(entry.get("warnings")),
         "reminderText": entry.get("reminder_text"),
     }
@@ -215,3 +215,12 @@ def _list(value: object) -> list:
     if isinstance(value, tuple):
         return list(value)
     return [value]
+
+
+def _discipline_blockers(entry: dict) -> list:
+    explicit = _list(entry.get("blockers"))
+    if explicit:
+        return explicit
+    if str(entry.get("sell_warning_level") or "").strip().upper() != "HIGH_RISK":
+        return []
+    return _list(entry.get("sell_warning_reasons"))
