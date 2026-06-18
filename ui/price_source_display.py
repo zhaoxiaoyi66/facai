@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -88,6 +88,10 @@ def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
         "updatedAt",
         "fetched_at",
         "fetchedAt",
+        "timestamp",
+        "time",
+        "datetime",
+        "regularMarketTime",
     )
     if market_session:
         parts.append(f"刷新时段：{_market_session_label(market_session)}")
@@ -136,6 +140,10 @@ def _compact_price_source_label(label: str, sources: tuple[object, ...]) -> str:
         "updatedAt",
         "fetched_at",
         "fetchedAt",
+        "timestamp",
+        "time",
+        "datetime",
+        "regularMarketTime",
     )
     suffix = _compact_date(as_of) if label in {"昨夜收盘", "收盘价"} and as_of else _compact_datetime(updated_at)
     return f"{label} {suffix}" if suffix else label
@@ -185,6 +193,13 @@ def _parse_datetime(value: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
+    if _looks_like_epoch_timestamp(text):
+        number = float(text)
+        seconds = number / 1000 if abs(number) >= 1_000_000_000_000 else number
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
@@ -192,6 +207,19 @@ def _parse_datetime(value: str) -> datetime | None:
             return datetime.fromisoformat(f"{text}T00:00:00")
         except ValueError:
             return None
+
+
+def _looks_like_epoch_timestamp(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    if normalized.isdigit():
+        return len(normalized) in {10, 13}
+    try:
+        value = float(normalized)
+    except ValueError:
+        return False
+    return abs(value) >= 1_000_000_000
 
 
 def _first_present(sources: tuple[object, ...], *keys: str) -> Any:

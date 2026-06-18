@@ -87,6 +87,18 @@ def test_price_source_label_accepts_snake_case_fetched_at() -> None:
     assert "刷新时间：06/17 21:05 HKT" in detail
 
 
+def test_price_source_label_accepts_epoch_millisecond_timestamp() -> None:
+    label, detail = price_source_label(
+        {
+            "priceSource": "quote_snapshot",
+            "timestamp": "1781730300000",
+        }
+    )
+
+    assert label == "最新报价 06/18 05:05"
+    assert "刷新时间：06/18 05:05 HKT" in detail
+
+
 def test_price_source_label_reads_cached_payload_wrapper() -> None:
     label, detail = price_source_label(
         {
