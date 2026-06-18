@@ -94,7 +94,7 @@ def evaluate_starter_position(
     if _is_large_down_day(radar_report):
         notes.append("财报后大跌 / 高波动：不等同于追高，但仍需遵守底仓上限和失效条件。")
 
-    notes.append(f"A 类底仓建仓通过：买后仓位不超过 {max_pct:.1f}%。")
+    notes.append(f"A 类底仓符合计划约束：买后仓位不超过 {max_pct:.1f}%。")
     return StarterPositionResult(
         starter_position=True,
         can_sync_to_portfolio=True,

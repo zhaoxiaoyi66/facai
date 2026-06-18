@@ -1702,6 +1702,8 @@ def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeyp
         assert "价格位置和买区提示数据缺失" in warning_text
         assert "Radar 买区" not in warning_text
         assert "价格数据过期" in warning_text
+        assert "符合计划约束" in warning_text
+        assert "建仓通过" not in warning_text
         assert "starter sync" not in warning_text
         assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
         assert result["synced"] is True
