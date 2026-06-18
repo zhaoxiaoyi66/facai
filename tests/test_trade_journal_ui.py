@@ -436,6 +436,26 @@ def test_buy_entry_detail_displays_volume_price_snapshot() -> None:
     assert "历史日志未记录量价快照" not in html
 
 
+def test_buy_entry_radar_snapshot_is_localized_for_journal_detail() -> None:
+    html = trade_journal._entry_radar_gate_snapshot_html(
+        {
+            "radar_decision": "DATA_MISSING",
+            "radar_advisory_only": 1,
+            "mood_gate_blocked": 0,
+            "position_gate_blocked": 0,
+            "radar_observation_only": 0,
+            "gate_checked_at": "2026-06-18T01:00:00+00:00",
+            "radar_advisory_warnings": ["买区提示缺失，需人工判断。"],
+        }
+    )
+
+    assert "买区结论" in html
+    assert "数据缺失" in html
+    assert "买区提示" in html
+    assert "Radar" not in html
+    assert "DATA_MISSING" not in html
+
+
 def test_b_class_gate_copy_does_not_use_a_class_core_language() -> None:
     result = SimpleNamespace(
         sellLevel="L3",

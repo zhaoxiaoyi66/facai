@@ -657,13 +657,13 @@ def _render_radar_buy_gate(
 ):
     if action_type not in CLASSIFICATION_ACTIONS:
         return None
-    st.markdown('<div class="trade-discipline-title">买入前 Radar 提示</div>', unsafe_allow_html=True)
+    st.markdown('<div class="trade-discipline-title">买入前买区提示</div>', unsafe_allow_html=True)
     ticker = str(symbol or "").strip().upper()
     if not ticker:
         st.markdown(
             """
             <section class="trade-radar-gate warning">
-              <div class="trade-radar-gate-head"><b>等待股票代码</b><span>填写 ticker 后读取单票 RadarReport，不会批量刷新。</span></div>
+              <div class="trade-radar-gate-head"><b>等待股票代码</b><span>填写 ticker 后读取单票买区快照，不会批量刷新。</span></div>
             </section>
             """,
             unsafe_allow_html=True,
@@ -714,7 +714,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         required_html = f"<div class=\"trade-radar-requirements\"><b>可选补充</b><ul>{required_html}</ul></div>"
     stale_text = "价格数据可能过期" if bool(report.get("is_stale")) else "价格数据正常"
     rows = [
-        ("当前结论", decision),
+        ("当前结论", _radar_decision_text(decision)),
         ("当前价格", _money_text(report.get("current_price"))),
         ("击球区", _radar_zone_text(report.get("buy_zone"))),
         ("观察区", _radar_zone_text(report.get("watch_zone"))),
@@ -725,7 +725,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         ("交易仓上限", _pct_value_text(report.get("trade_max_pct"))),
         ("系统参考", _pct_value_text(report.get("allowed_add_pct"))),
         ("本次用途", bucket_label),
-        ("数据状态", f"{report.get('data_status') or 'MISSING'} / {stale_text}"),
+        ("数据状态", f"{_radar_data_status_text(report.get('data_status'))} / {stale_text}"),
     ]
     metrics_html = "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(str(value))}</strong></div>"
@@ -735,7 +735,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         f"""
         <section class="trade-radar-gate {escape(tone)}">
           <div class="trade-radar-gate-head">
-            <b>Radar 提示：{escape(status)}</b>
+            <b>买区提示：{escape(status)}</b>
             <span>价格提醒不是买入信号；你可以手动继续，偏离建议会记录为人工复核记录。</span>
           </div>
           <div class="trade-radar-gate-grid">{metrics_html}</div>
@@ -750,6 +750,31 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
 def _radar_zone_text(zone: object) -> str:
     text = format_buy_zone(zone)
     return BLANK_TEXT if text == "N/A" else text
+
+
+def _radar_decision_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "ALLOW_BUY": "小仓观察建议",
+        "WAIT": "等待确认",
+        "BLOCK_CHASE": "追高风险提醒",
+        "AVOID": "风险较高",
+        "DATA_MISSING": "数据缺失",
+        "DATA_INSUFFICIENT": "数据不足",
+    }.get(text, "待复核" if not text else text)
+
+
+def _radar_data_status_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "READY": "可用",
+        "OK": "可用",
+        "FRESH": "最新",
+        "MISSING": "数据缺失",
+        "DATA_MISSING": "数据缺失",
+        "DATA_INSUFFICIENT": "数据不足",
+        "STALE": "数据过期",
+    }.get(text, "待复核" if not text else text)
 
 
 def _score_text(value: object) -> str:
@@ -3567,7 +3592,7 @@ def _entry_has_concrete_reentry_plan(entry: dict) -> bool:
 def _entry_radar_gate_snapshot_html(entry: dict) -> str:
     decision = str(entry.get("radar_decision") or "").strip()
     if not decision:
-        return '<div class="trade-entry-discipline-empty">这条买入 / 加仓记录未保存 Radar 提示快照。</div>'
+        return '<div class="trade-entry-discipline-empty">这条买入 / 加仓记录未保存买区提示快照。</div>'
     reasons = [
         str(item)
         for item in (
@@ -3578,8 +3603,8 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
         if str(item).strip()
     ]
     rows = [
-        ("Radar 结论", decision),
-        ("Radar 提示", _yes_no(entry.get("radar_advisory_only"))),
+        ("买区结论", _radar_decision_text(decision)),
+        ("买区提示", _yes_no(entry.get("radar_advisory_only"))),
         ("情绪提示", _yes_no(entry.get("mood_gate_blocked"))),
         ("仓位提示", _yes_no(entry.get("position_gate_blocked"))),
         ("仅观察记录", _yes_no(entry.get("radar_observation_only"))),
@@ -3588,7 +3613,7 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
     reason_html = _discipline_detail_messages_html("买区风险提示", reasons, is_blocker=False) if reasons else ""
     sync_note = ""
     if entry.get("radar_blocked"):
-        sync_note = '<div class="trade-entry-reminder">Radar 旧字段曾标记高风险：请按当时人工决策复盘。</div>'
+        sync_note = '<div class="trade-entry-reminder">历史买区字段曾标记高风险：请按当时人工决策复盘。</div>'
     return f"{_detail_grid_html(rows)}{reason_html}{sync_note}"
 
 
