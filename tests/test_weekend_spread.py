@@ -3678,7 +3678,7 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     assert "$102.15" in frame.iloc[0, 1]
     assert frame.iloc[0, 3] in {"—", "鈥?"}
-    assert "fallback" in frame.iloc[0, 6]
+    assert "回退参考" in frame.iloc[0, 6]
 
 
 def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:
@@ -3719,7 +3719,7 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
     assert frame.loc[0, "价格锚点"] == "盘后 $205.42（已缓存）"
     assert frame.loc[1, "价格锚点"] == "收盘 $102.15｜盘后缺失：盘后缓存日期不匹配"
     assert frame.loc[1, "vs 盘后"] in {"—", "鈥?"}
-    assert "当前使用周五收盘作为 fallback" in frame.loc[1, "风险"]
+    assert "当前使用周五收盘作为回退参考" in frame.loc[1, "风险"]
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:

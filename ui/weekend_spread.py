@@ -257,7 +257,7 @@ def _build_weekend_spread_rows_with_feedback(
             cache_state="REFRESH_FAILED",
             generated_at=str(cached.get("generated_at") or ""),
         )
-        status_slot.warning("Refresh failed; using last successful cache.")
+        status_slot.warning("刷新失败，使用上次成功缓存。")
         cache_status = dict(cached)
         cache_status["cache_state"] = "REFRESH_FAILED"
         cache_status["cache_message"] = error_message
@@ -273,7 +273,7 @@ def _build_weekend_spread_rows_with_feedback(
         )
         if has_successful_price(fallback_rows):
             fallback_rows = annotate_cached_rows(fallback_rows, cache_state="REFRESH_FAILED", generated_at="")
-            status_slot.warning("Refresh failed; using last good Binance price cache.")
+            status_slot.warning("刷新失败，使用上次可用 Binance 价格缓存。")
             return fallback_rows, {
                 "cache_state": "REFRESH_FAILED",
                 "cache_message": error_message,
@@ -1055,7 +1055,7 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
 def _render_weekend_review_table(review_rows: list[dict]) -> None:
     frame = _weekend_review_frame(_ok_weekend_review_rows(review_rows))
     if frame.empty:
-        st.info("暂无可信历史回测表；没有 OK 样本时不会展示旧缓存或 fallback 数据。")
+        st.info("暂无可信历史回测表；没有 OK 样本时不会展示旧缓存或回退数据。")
         return
     st.dataframe(_style_weekend_review_frame(frame), width="stretch", hide_index=True)
 
@@ -1819,7 +1819,7 @@ def _afterhours_anchor_status_text(rows: list[dict], counts: dict[str, int]) -> 
     if cache_count:
         parts.append(f"已缓存 {cache_count}")
     if fallback_count:
-        parts.append(f"fallback {fallback_count}")
+        parts.append(f"收盘回退 {fallback_count}")
     return "｜".join(parts)
 
 
@@ -2548,7 +2548,7 @@ def _afterhours_cache_text(value: object) -> str:
 
 def _afterhours_anchor_badge(row: dict) -> str:
     if _number(row.get("afterhours_reference_price")) is None:
-        return "盘后缺失 fallback"
+        return "盘后缺失，使用收盘回退"
     status = str(row.get("afterhours_anchor_status") or "").strip().upper()
     cache_status = str(row.get("afterhours_cache_status") or "").strip().upper()
     if status in {"FINAL", "PROVISIONAL"}:
@@ -2612,7 +2612,7 @@ def _risk_badge_text(row: dict) -> str:
     if status in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"}:
         risks.append("数据不可用")
     if _number(row.get("afterhours_reference_price")) is None and row.get("binance_symbol"):
-        risks.append(f"缺少盘后参考价：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}，当前使用周五收盘作为 fallback")
+        risks.append(f"缺少盘后参考价：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}，当前使用周五收盘作为回退参考")
     elif str(row.get("afterhours_cache_status") or "") in {"CACHE_HIT", "CACHE_FALLBACK"}:
         risks.append(_afterhours_cache_text(row.get("afterhours_cache_status")))
     liquidity = str(row.get("liquidity_warning") or "")
