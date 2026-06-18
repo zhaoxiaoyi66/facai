@@ -4351,8 +4351,8 @@ class ScoringTests(unittest.TestCase):
         view = build_dashboard_data_health_view_from_summary(summary, ["NVDA", "NOW", "ADBE"])
 
         self.assertEqual(view["tone"], "error")
-        self.assertIn(("不能决策", 1), view["items"])
-        self.assertIn(("精确买点禁用", 3), view["items"])
+        self.assertIn(("需复核", 1), view["items"])
+        self.assertIn(("精确买点待复核", 3), view["items"])
 
     def test_portfolio_tables_do_not_replace_stock_action_plans(self) -> None:
         with TemporaryDirectory() as tmpdir:

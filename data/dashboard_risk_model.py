@@ -139,9 +139,9 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
         ("复盘缺失", summary.get("outcomeMissingCount", 0)),
     ]
     if decision_blocked_count:
-        items.append(("不能决策", decision_blocked_count))
+        items.append(("需复核", decision_blocked_count))
     if precision_blocked_count:
-        items.append(("精确买点禁用", precision_blocked_count))
+        items.append(("精确买点待复核", precision_blocked_count))
     return {
         "tone": tone,
         "statusLabel": status_label,
