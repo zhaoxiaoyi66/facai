@@ -8,6 +8,7 @@ import pandas as pd
 from data.watchlist_stars import WatchlistStarStore
 from data.buy_plan_alerts import BuyPlanAlertStore
 from ui import dashboard
+from ui import dashboard_drawer
 from ui import dashboard_tables
 
 
@@ -214,6 +215,22 @@ def test_dashboard_price_market_cell_shows_price_source_label() -> None:
     assert "$102.37" in html
     assert "昨夜收盘" in html
     assert "参考日：2026-06-16" in html
+
+
+def test_dashboard_drawer_price_source_label_uses_same_snapshot_mapping() -> None:
+    row = pd.Series(
+        {
+            "rawSnapshot": {
+                "refresh_mode": "PRICE_ONLY",
+                "quote_updated_at": "2026-06-17T12:00:00+00:00",
+            },
+        }
+    )
+
+    html = dashboard_drawer._drawer_price_source_html(row)
+
+    assert "最新报价" in html
+    assert "更新时间：2026-06-17T12:00:00+00:00" in html
 
 
 def test_dashboard_watchlist_columns_do_not_include_star_column() -> None:

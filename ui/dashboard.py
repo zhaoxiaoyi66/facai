@@ -5742,6 +5742,19 @@ def _render_dashboard_styles() -> None:
             font-weight: 760;
             font-variant-numeric: tabular-nums;
         }
+        .drawer-price-wrap {
+            display:flex;
+            flex-direction:column;
+            align-items:flex-end;
+            gap:2px;
+        }
+        .drawer-price-source {
+            color:var(--dash-muted);
+            font-size:0.68rem;
+            font-weight:700;
+            line-height:1.2;
+            white-space:nowrap;
+        }
         .drawer-meta-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));

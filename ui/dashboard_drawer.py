@@ -27,6 +27,7 @@ from ui.dashboard_tables import (
     _buy_point_label_tone,
     _entry_rating_chip_text,
     _entry_rating_display_parts,
+    _price_source_label_from_row,
 )
 from ui.metric_labels import model_type_label, resolution_status_label
 
@@ -342,6 +343,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     primary_decision = build_drawer_primary_decision(row)
     current_price = _drawer_current_price(row)
     alert = _drawer_buy_plan_alert(row, symbol, current_price)
+    price_source_html = _drawer_price_source_html(row)
     badges = [
         drawer_deps.badge_span_html("⭐ 星标关注", "yellow") if bool(row.get("isStarred")) else "",
         drawer_deps.badge_span_html(row.get("qualityRating"), drawer_deps.badge_color_for_cell("qualityRating", row.get("qualityRating"), row)),
@@ -361,7 +363,10 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         f'<div class="drawer-symbol">{safe_symbol}</div>'
         f'<div class="drawer-company">{escape(str(row.get("companyName") or "公司名待补充"))}</div>'
         '</div>'
+        '<div class="drawer-price-wrap">'
         f'<div class="drawer-price">{escape(_drawer_money_text(current_price))}</div>'
+        f'{price_source_html}'
+        '</div>'
         '</div>'
         '<div class="drawer-meta-grid">'
         f'<span>模型：{escape(model_type_label(row.get("modelType")))}</span>'
@@ -428,6 +433,11 @@ def _drawer_current_price(row: pd.Series | dict) -> float | None:
         or row.get("currentPrice")
         or row.get("current_price")
     )
+
+
+def _drawer_price_source_html(row: pd.Series | dict) -> str:
+    label, title = _price_source_label_from_row(row)
+    return f'<div class="drawer-price-source" title="{escape(title)}">{escape(label)}</div>'
 
 
 def _drawer_buy_plan_alert(row: pd.Series | dict, symbol: str, current_price: object) -> dict | None:
