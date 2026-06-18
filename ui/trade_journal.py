@@ -3314,7 +3314,7 @@ def _sell_fly_horizon_cell(item: dict | None) -> str:
 
 def _sell_fly_reason_text(row: dict) -> str:
     if row.get("violatedDiscipline"):
-        return "纪律快照含 blocker，且卖出后股价上涨。"
+        return "纪律快照含高风险提醒，且卖出后股价上涨。"
     if row.get("suspectedSellFly"):
         return "卖出后 10 日内最高涨幅超过 8%。"
     reason = str(row.get("reason") or "")
