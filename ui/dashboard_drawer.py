@@ -370,7 +370,7 @@ def drawer_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
         '</div>'
         '<div class="drawer-meta-grid">'
         f'<span>模型：{escape(model_type_label(row.get("modelType")))}</span>'
-        f'<span>市值：{escape(str(row.get("marketCap") or "N/A"))}</span>'
+        f'<span>市值：{escape(_drawer_display_text(row.get("marketCap")))}</span>'
         f'<span>统一买区：{escape(str(primary_decision.get("acceptance_state_text") or primary_decision.get("badge_zone") or "待复核"))}</span>'
         f'<span>数据：{escape(_drawer_data_status_text(row))}</span>'
         '</div>'
@@ -1967,6 +1967,13 @@ def _drawer_clean_text(value: object) -> str:
     text = str(value).strip()
     if text.lower() in {"", "nan", "none", "null", "n/a"}:
         return ""
+    return text
+
+
+def _drawer_display_text(value: object, fallback: str = "待补") -> str:
+    text = _drawer_clean_text(value)
+    if not text or text.upper() in {"N/A", "NA", "NONE", "NULL"}:
+        return fallback
     return text
 
 

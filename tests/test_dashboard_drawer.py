@@ -7,6 +7,24 @@ import pandas as pd
 from ui import dashboard_drawer
 
 
+def _fake_drawer_deps() -> dashboard_drawer.DashboardDrawerDeps:
+    return dashboard_drawer.DashboardDrawerDeps(
+        badge_span_html=lambda value, tone, *args: f"<span>{value}</span>" if value else "",
+        badge_color_for_cell=lambda *_args: "neutral",
+        translated_join=lambda values, limit=4, **_kwargs: "、".join(str(item) for item in (values or [])[:limit]),
+        quality_negative_items=lambda _row: [],
+        risk_items=lambda _row: [],
+        resolution_value_text=lambda item: str(item.get("value") or "待补"),
+        clean_resolution_explanation=lambda text: text,
+        dedupe_text=lambda items: list(dict.fromkeys(items)),
+        metric_resolution_groups=lambda _value: {},
+        drawer_actionable_resolution_row=lambda _item: "",
+        drawer_calculated_resolution_row=lambda _item: "",
+        drawer_low_priority_resolution_row=lambda _item: "",
+        detail_groups=(),
+    )
+
+
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:
     row = pd.Series(
         {
@@ -248,6 +266,24 @@ def test_drawer_prefers_row_buy_zone_display_for_position_sizing_copy() -> None:
     assert decision["action_text"] == "持有观察 / 当前不建议新增"
     assert decision["main_reason"] == "技术回踩带内，可观察"
     assert decision["position_action"] == "已有 100 股，当前新增额度为 0，系统不建议新增"
+
+
+def test_drawer_header_localizes_missing_market_cap() -> None:
+    html = dashboard_drawer.drawer_html(
+        pd.Series(
+            {
+                "symbol": "NOW",
+                "companyName": "ServiceNow",
+                "price": 102.37,
+                "marketCap": "N/A",
+                "buyZoneContext": {"current_action": "WAIT_CONFIRMATION"},
+            }
+        ),
+        _fake_drawer_deps(),
+    )
+
+    assert "市值：待补" in html
+    assert "市值：N/A" not in html
 
 
 def test_drawer_shows_acceptance_state_from_canonical_display() -> None:
