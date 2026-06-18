@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 import json
 import sqlite3
@@ -299,6 +299,8 @@ def should_refresh_fundamentals(
 def should_refresh_technicals(snapshot: dict | None, *, now: datetime | None = None, max_age_hours: int = 24) -> bool:
     data = dict(snapshot or {})
     current = now or datetime.now(timezone.utc)
+    if _cached_close_date_is_stale(data, current):
+        return True
     updated_at = _parse_datetime(
         data.get("technical_updated_at")
         or data.get("technicalUpdatedAt")
@@ -309,6 +311,52 @@ def should_refresh_technicals(snapshot: dict | None, *, now: datetime | None = N
     if updated_at is None:
         return True
     return current.astimezone(timezone.utc) - updated_at > timedelta(hours=max_age_hours)
+
+
+def _cached_close_date_is_stale(snapshot: dict, now: datetime) -> bool:
+    cached_date = _snapshot_close_date(snapshot)
+    if cached_date is None:
+        return False
+    expected_date = _latest_completed_us_regular_date(now)
+    return cached_date < expected_date
+
+
+def _snapshot_close_date(snapshot: dict) -> date | None:
+    for key in ("price_as_of", "history_latest_date", "historyLatestDate", "latest_close_date", "latestCloseDate"):
+        raw = snapshot.get(key)
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+        except ValueError:
+            try:
+                return date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                continue
+    return None
+
+
+def _latest_completed_us_regular_date(now: datetime) -> date:
+    try:
+        from zoneinfo import ZoneInfo
+
+        eastern = now.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        eastern = now.astimezone(timezone.utc) - timedelta(hours=4)
+    candidate = eastern.date()
+    if candidate.weekday() >= 5:
+        return _previous_weekday(candidate)
+    regular_close = time(16, 0)
+    if eastern.time() < regular_close:
+        return _previous_weekday(candidate)
+    return candidate
+
+
+def _previous_weekday(value: date) -> date:
+    current = value - timedelta(days=1)
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
 
 
 def summarize_refresh_result(

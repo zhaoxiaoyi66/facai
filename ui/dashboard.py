@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 import json
 from typing import Any
@@ -870,12 +870,42 @@ def _load_dashboard_row(
 
 def _apply_market_price_to_snapshot(ticker: str, snapshot: dict, technicals: dict) -> None:
     market = build_market_context(ticker)
-    market_price = _first_number(market.get("currentPrice"), technicals.get("price"), snapshot.get("current_price"))
+    market_price = _first_number(
+        _fresh_snapshot_market_price(snapshot),
+        market.get("currentPrice"),
+        technicals.get("price"),
+        snapshot.get("current_price"),
+    )
     if market_price is None:
         return
     snapshot["current_price"] = market_price
     snapshot["price"] = market_price
     technicals["price"] = market_price
+
+
+def _fresh_snapshot_market_price(snapshot: dict) -> float | None:
+    price = _first_number(snapshot.get("current_price"), snapshot.get("currentPrice"), snapshot.get("price"))
+    if price is None:
+        return None
+    refresh_mode = str(snapshot.get("refresh_mode") or "").strip().upper()
+    price_source = str(snapshot.get("current_price_source") or snapshot.get("price_session") or "").strip().upper()
+    if price_source == "LAST_CLOSE":
+        return price
+    if refresh_mode == "PRICE_ONLY" and _recent_quote_timestamp(snapshot.get("quote_updated_at") or snapshot.get("price_updated_at")):
+        return price
+    return None
+
+
+def _recent_quote_timestamp(value: object, *, max_age_hours: float = 24) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - parsed.astimezone(timezone.utc) <= timedelta(hours=max_age_hours)
 
 
 def _first_number(*values: object) -> float | None:

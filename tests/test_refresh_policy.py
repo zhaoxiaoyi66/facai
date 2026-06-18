@@ -411,6 +411,32 @@ def test_daily_technical_refresh_skips_fresh_technical_cache(tmp_path) -> None:
     assert provider.calls == []
 
 
+def test_daily_technical_refreshes_when_fresh_cache_has_stale_close_date(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    cache.set_snapshot(
+        "NVDA",
+        {
+            "ticker": "NVDA",
+            "current_price": 95,
+            "technical_updated_at": datetime(2026, 6, 17, 1, tzinfo=timezone.utc).isoformat(),
+            "price_as_of": "2026-06-15",
+        },
+    )
+    provider = FakeRefreshProvider()
+
+    result = refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.DAILY_TECHNICAL,
+        provider=provider,
+        cache=cache,
+        now=datetime(2026, 6, 17, 4, 30, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "success"
+    assert result["refreshed_count"] == 1
+    assert provider.calls == [("history", "NVDA", True)]
+
+
 def test_daily_technical_refresh_marks_snapshot_timestamp_after_success(tmp_path) -> None:
     cache = FundamentalCache(tmp_path / "refresh.sqlite")
     cache.set_snapshot("NVDA", {"ticker": "NVDA", "current_price": 95})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -22,6 +23,26 @@ def test_dashboard_loaders_use_market_context_for_price_history() -> None:
     assert "provider.get_price_history(ticker, force_refresh=True)" in refresh_source
     assert 'snapshot["current_price"] = market_price' in price_source
     assert "setdefault(\"current_price\"" not in price_source
+
+
+def test_dashboard_market_price_keeps_fresh_price_only_quote(monkeypatch) -> None:
+    monkeypatch.setattr(
+        dashboard,
+        "build_market_context",
+        lambda _ticker: {"currentPrice": 95.0, "priceSource": "price_history"},
+    )
+    snapshot = {
+        "current_price": 123.4,
+        "refresh_mode": "PRICE_ONLY",
+        "quote_updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    technicals = {"price": 95.0}
+
+    dashboard._apply_market_price_to_snapshot("NVDA", snapshot, technicals)
+
+    assert snapshot["current_price"] == 123.4
+    assert snapshot["price"] == 123.4
+    assert technicals["price"] == 123.4
 
 
 def test_dashboard_cached_table_reuses_batch_portfolio_context() -> None:
