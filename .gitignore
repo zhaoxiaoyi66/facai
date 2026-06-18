@@ -29,6 +29,7 @@ config/binance_symbol_mapping.local.json
 *.sqlite3
 *.sqlite3-*
 data/cache/
+data/manual_import/
 data/cache.sqlite
 data/cache.sqlite-*
 data/research.sqlite

@@ -17,6 +17,10 @@ from data.weekend_basis import (
     normalize_broker_overnight_bars,
 )
 from data.weekend_spread import load_binance_symbol_mapping
+from data.tradingview_price_cache import (
+    find_friday_afterhours_close,
+    find_overnight_first_1m_close,
+)
 from settings import PROJECT_ROOT
 
 
@@ -618,6 +622,42 @@ def fetch_friday_afterhours_close(
                 "quality": "OFFICIAL_AFTERHOURS_REFERENCE" if (anchor_source or {}).get("afterhours_reference_time") else "LEGACY_AFTERHOURS_REFERENCE",
                 "reason": "",
             }
+    supplemental = find_friday_afterhours_close(normalized, friday_date)
+    if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+        return {
+            "ok": True,
+            "symbol": normalized,
+            "friday_afterhours_close": supplemental.close,
+            "bar_start_et": supplemental.timestamp_et.isoformat(),
+            "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
+            "provider": supplemental.provider,
+            "venue": "EXTENDED_HOURS",
+            "interval": "1m",
+            "quality": supplemental.quality,
+            "reason": "",
+        }
+    regular_price = _number(
+        (anchor_source or {}).get("regular_close_price")
+        or (anchor_source or {}).get("friday_close")
+        or (anchor_source or {}).get("friday_close_price")
+    )
+    regular_date = str(
+        (anchor_source or {}).get("regular_close_date") or (anchor_source or {}).get("friday_close_date") or ""
+    ).strip()
+    if regular_price is not None and regular_price > 0 and (not regular_date or regular_date == friday_date.isoformat()):
+        regular_time = datetime.combine(friday_date, time(16, 0), ET)
+        return {
+            "ok": True,
+            "symbol": normalized,
+            "friday_afterhours_close": regular_price,
+            "bar_start_et": regular_time.isoformat(),
+            "bar_end_et": (regular_time + timedelta(minutes=1)).isoformat(),
+            "provider": "REGULAR_CLOSE_FALLBACK",
+            "venue": "REGULAR_CLOSE",
+            "interval": "1d",
+            "quality": "REGULAR_CLOSE_FALLBACK",
+            "reason": "常规收盘回退，仅观察",
+        }
     return {
         "ok": False,
         "symbol": normalized,
@@ -700,6 +740,36 @@ def fetch_overnight_first_1m_close(
     requested_end = start_et + timedelta(minutes=2)
     normalized = str(symbol or "").strip().upper()
     if provider is None:
+        supplemental = find_overnight_first_1m_close(normalized, start_et)
+        if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+            return {
+                "ok": True,
+                "symbol": normalized,
+                "overnight_first_1m_close": supplemental.close,
+                "bar_start_et": supplemental.timestamp_et.isoformat(),
+                "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
+                "provider": supplemental.provider,
+                "venue": "OVERNIGHT",
+                "interval": "1m",
+                "quality": supplemental.quality,
+                "reason": "",
+                "display_reason": "",
+                "price": supplemental.close,
+                "timestamp": supplemental.timestamp_et.isoformat(),
+                "bar_size": "1m",
+                "returned_bar_count": 1,
+                "requested_start": start_et.astimezone(timezone.utc).isoformat(),
+                "requested_end": requested_end.astimezone(timezone.utc).isoformat(),
+                "anchor": "overnight",
+                "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
+                "bar": BrokerOvernightBar(
+                    ts=supplemental.timestamp_et.astimezone(timezone.utc),
+                    bid=supplemental.close,
+                    ask=supplemental.close,
+                    close=supplemental.close,
+                    source=supplemental.provider,
+                ),
+            }
         return {
             "ok": False,
             "symbol": normalized,
@@ -756,6 +826,36 @@ def fetch_overnight_first_1m_close(
             "anchor": str(result.get("anchor") or "overnight"),
             "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
             "bar": result.get("bar"),
+        }
+    supplemental = find_overnight_first_1m_close(normalized, start_et)
+    if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+        return {
+            "ok": True,
+            "symbol": normalized,
+            "overnight_first_1m_close": supplemental.close,
+            "bar_start_et": supplemental.timestamp_et.isoformat(),
+            "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
+            "provider": supplemental.provider,
+            "venue": "OVERNIGHT",
+            "interval": "1m",
+            "quality": supplemental.quality,
+            "reason": "",
+            "display_reason": "",
+            "price": supplemental.close,
+            "timestamp": supplemental.timestamp_et.isoformat(),
+            "bar_size": "1m",
+            "returned_bar_count": 1,
+            "requested_start": start_et.astimezone(timezone.utc).isoformat(),
+            "requested_end": requested_end.astimezone(timezone.utc).isoformat(),
+            "anchor": "overnight",
+            "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
+            "bar": BrokerOvernightBar(
+                ts=supplemental.timestamp_et.astimezone(timezone.utc),
+                bid=supplemental.close,
+                ask=supplemental.close,
+                close=supplemental.close,
+                source=supplemental.provider,
+            ),
         }
     quality = str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M")
     if quality == "MISSING_STOCK_FIRST_BAR":
@@ -1048,6 +1148,7 @@ def _basis_backtest_one_window(
         friday_afterhours_close=friday_afterhours_close,
         binance_weekend_max=binance_equivalent_max,
         overnight_first_1m_close=broker_first_close,
+        friday_afterhours_quality=str(friday_afterhours.get("quality") or ""),
         overnight_quality=str(stock_bar.get("quality") or ""),
     )
     result.update(
@@ -1082,7 +1183,7 @@ def _basis_backtest_one_window(
             ),
             "broker_provider": str(stock_bar.get("provider") or ""),
             "broker_interval": str(stock_bar.get("bar_size") or ""),
-            "broker_quality": "OFFICIAL_BROKER_1M" if broker_first_close is not None else str(stock_bar.get("quality") or ""),
+            "broker_quality": str(stock_bar.get("quality") or ("OFFICIAL_BROKER_1M" if broker_first_close is not None else "")),
             "anchor_price": anchor_price,
             "anchor_source": str(anchor.get("anchor_source") or ""),
             "anchor_ts": str(anchor.get("anchor_ts") or ""),
@@ -1113,7 +1214,7 @@ def _basis_backtest_one_window(
             "overnight_provider": str(stock_bar.get("provider") or ""),
             "overnight_venue": "OVERNIGHT",
             "overnight_interval": str(stock_bar.get("bar_size") or ""),
-            "overnight_quality": "OFFICIAL_OVERNIGHT_1M" if broker_first_close is not None else str(stock_bar.get("quality") or ""),
+            "overnight_quality": str(stock_bar.get("quality") or ("OFFICIAL_OVERNIGHT_1M" if broker_first_close is not None else "")),
             "overnight_reason": "" if broker_first_close is not None else str(stock_bar.get("display_reason") or stock_bar.get("reason") or ""),
             "binance_premium_pct": binance_premium_pct,
             "overnight_vs_binance_pct": overnight_vs_binance_pct,
@@ -1900,7 +2001,7 @@ def _fetch_stock_open_bars(
     rows: list[Any] = []
     provider_name = ""
     if broker_provider is not None and hasattr(broker_provider, "get_overnight_bars"):
-        provider_name = "broker"
+        provider_name = str(getattr(broker_provider, "provider_name", "") or "broker")
         rows = list(
             broker_provider.get_overnight_bars(
                 symbol,
@@ -2262,6 +2363,7 @@ def _weekend_chain_quality(
     friday_afterhours_close: float | None,
     binance_weekend_max: float | None,
     overnight_first_1m_close: float | None,
+    friday_afterhours_quality: str = "",
     overnight_quality: str = "",
 ) -> str:
     if str(mapping_confidence or "").strip().lower() != "confirmed":
@@ -2274,7 +2376,28 @@ def _weekend_chain_quality(
         return "OVERNIGHT_PROVIDER_MISSING"
     if overnight_first_1m_close is None or overnight_first_1m_close <= 0:
         return "MISSING_OVERNIGHT_FIRST_1M"
+    if str(friday_afterhours_quality or "").strip().upper() == "REGULAR_CLOSE_FALLBACK":
+        return "REGULAR_CLOSE_FALLBACK"
+    source_quality = _supplemental_sample_quality(friday_afterhours_quality, overnight_quality)
+    if source_quality:
+        return source_quality
     return "OK"
+
+
+def _supplemental_sample_quality(friday_afterhours_quality: str, overnight_quality: str) -> str:
+    qualities = {
+        str(friday_afterhours_quality or "").strip().upper(),
+        str(overnight_quality or "").strip().upper(),
+    }
+    if "MANUAL_BROKER_SAMPLE" in qualities:
+        return "MANUAL_BROKER_SAMPLE"
+    if "TRADINGVIEW_WEBHOOK_SAMPLE" in qualities:
+        return "TRADINGVIEW_WEBHOOK_SAMPLE"
+    if "TRADINGVIEW_CSV_SAMPLE" in qualities:
+        return "TRADINGVIEW_CSV_SAMPLE"
+    if "MANUAL_AFTERHOURS_SAMPLE" in qualities:
+        return "MANUAL_BROKER_SAMPLE"
+    return ""
 
 
 def _anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[str, dict[str, Any]]) -> dict[str, Any]:

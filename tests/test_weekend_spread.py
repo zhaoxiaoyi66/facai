@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, NullAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
@@ -16,6 +17,12 @@ from data.equity_afterhours_provider import (
     PolygonOpenCloseAfterhoursProvider,
     PolygonQuoteMidAfterhoursProvider,
     PolygonTradesAfterhoursProvider,
+)
+from data.overnight_price_provider import (
+    AlpacaBoatsOvernightProvider,
+    JsonFileOvernightProvider,
+    build_overnight_provider_self_check,
+    default_overnight_price_provider,
 )
 from data.weekend_basis import (
     BasisStrategyConfig,
@@ -43,6 +50,15 @@ from data.weekend_spread_backtest import (
     save_backtest_results,
     summarize_backfill_audit_results,
     summarize_backtest_results,
+)
+from data.tradingview_price_cache import (
+    EVENT_FRIDAY_AFTERHOURS_CLOSE,
+    EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+    import_tradingview_csv_file,
+    record_tradingview_webhook,
+    find_friday_afterhours_close,
+    find_overnight_first_1m_close,
+    load_price_cache,
 )
 from data.weekend_spread import (
     build_mapping_diagnostics,
@@ -2609,7 +2625,7 @@ def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars
     assert review_summary["summary_quality"] == "NONE"
     assert review_summary["sample_count"] == 0
     frame = weekend_spread._weekend_review_frame(review_rows)
-    assert frame.iloc[0]["夜盘价格源"] == "美股夜盘数据源未配置"
+    assert frame.iloc[0]["P2 来源"] == "美股夜盘数据源未配置"
     assert "anchor_source" not in frame.to_string()
     assert weekend_spread._display_weekend_review_rows(review_rows)
 
@@ -3798,6 +3814,243 @@ def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
     assert weekend_spread._backtest_frame([]).empty
 
 
+def test_weekend_review_backtest_writes_regular_close_fallback_into_p0() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 102.0, 99.0, 101.0)]
+    overnight_provider = FakeBrokerBarProvider(
+        {"1m": [_broker_bar(window.end_et, 101.4, 101.5, close=101.45)]}
+    )
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        anchors=_anchors(afterhours=None, regular=99.0),
+        provider=FakeKlineProvider(bars),
+        overnight_provider=overnight_provider,
+        weeks=1,
+        now=now,
+    )
+
+    row = rows[0]
+    assert row["friday_afterhours_close"] == 99.0
+    assert row["friday_afterhours_provider"] == "REGULAR_CLOSE_FALLBACK"
+    assert row["friday_afterhours_quality"] == "REGULAR_CLOSE_FALLBACK"
+    assert row["transmission_data_quality"] == "REGULAR_CLOSE_FALLBACK"
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["friday_afterhours_close"] == 99.0
+    assert review["data_quality"] == "REGULAR_CLOSE_FALLBACK"
+    assert review["failure_reason"] == "常规收盘回退，仅观察"
+    assert review["status"] == "仅观察"
+
+
+def test_default_overnight_price_provider_uses_configured_alpaca_boats(monkeypatch) -> None:
+    monkeypatch.setenv("OVERNIGHT_PRICE_PROVIDER", "ALPACA_BOATS")
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret")
+
+    provider = default_overnight_price_provider()
+
+    assert isinstance(provider, AlpacaBoatsOvernightProvider)
+    assert provider.provider_name == "ALPACA_BOATS"
+
+
+def test_default_overnight_price_provider_supports_ibkr_overnight_json(monkeypatch, tmp_path) -> None:
+    bars_path = tmp_path / "ibkr_overnight.json"
+    bars_path.write_text(json.dumps({"NVDA": [{"ts": "2026-06-14T20:00:00-04:00", "close": 101.2}]}))
+    monkeypatch.setenv("OVERNIGHT_PRICE_PROVIDER", "IBKR_OVERNIGHT")
+    monkeypatch.setenv("IBKR_OVERNIGHT_BARS_PATH", str(bars_path))
+
+    provider = default_overnight_price_provider()
+
+    assert isinstance(provider, JsonFileOvernightProvider)
+    assert provider.get_overnight_bars(
+        "NVDA",
+        start_time_ms=0,
+        end_time_ms=2**63 - 1,
+        interval="1m",
+    )[0]["close"] == 101.2
+
+
+def test_overnight_provider_self_check_reports_missing_config(monkeypatch) -> None:
+    monkeypatch.setattr("data.overnight_price_provider.get_secret", lambda _name: "")
+
+    result = build_overnight_provider_self_check(now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc))
+
+    assert result["ok"] is False
+    assert result["provider_display"] == "未配置"
+    assert result["reason"] == "美股夜盘数据源未配置"
+    assert result["returned_bar_count"] == 0
+    assert "None" not in str(result)
+    assert "anchor_source" not in str(result)
+
+
+def test_overnight_provider_self_check_reads_first_minute_close(monkeypatch) -> None:
+    secrets = {
+        "OVERNIGHT_PRICE_PROVIDER": "ALPACA_BOATS",
+        "ALPACA_API_KEY_ID": "key",
+        "ALPACA_API_SECRET_KEY": "secret",
+    }
+    monkeypatch.setattr("data.overnight_price_provider.get_secret", lambda name: secrets.get(name))
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+
+    class NamedFakeBrokerBarProvider(FakeBrokerBarProvider):
+        provider_name = "ALPACA_BOATS"
+
+    provider = NamedFakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 101.1, 101.3, close=101.2)]})
+
+    result = build_overnight_provider_self_check(provider=provider, now=now)
+
+    assert result["ok"] is True
+    assert result["provider_display"] == "ALPACA_BOATS"
+    assert result["provider"] == "ALPACA_BOATS"
+    assert result["returned_bar_count"] == 1
+    assert result["first_bar_close"] == 101.2
+    assert result["requested_start"].startswith("2026-07-06T00:00:00")
+    assert result["requested_end"].startswith("2026-07-06T00:01:00")
+
+
+def test_tradingview_webhook_writes_price_cache(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_SECRET", "secret")
+    cache_path = tmp_path / "tv_cache.json"
+
+    rejected = record_tradingview_webhook(
+        {
+            "secret": "bad",
+            "symbol": "NVDA",
+            "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            "timestamp_et": "2026-06-14 20:01:00",
+            "close": 205.42,
+            "source": "TradingView",
+        },
+        path=cache_path,
+    )
+    assert rejected["ok"] is False
+    assert load_price_cache(cache_path) == []
+
+    result = record_tradingview_webhook(
+        {
+            "secret": "secret",
+            "symbol": "NVDA",
+            "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            "timestamp_et": "2026-06-14 20:01:00",
+            "close": 205.42,
+            "source": "TradingView",
+        },
+        path=cache_path,
+    )
+
+    assert result["ok"] is True
+    records = load_price_cache(cache_path)
+    assert len(records) == 1
+    assert records[0]["provider"] == "TRADINGVIEW_WEBHOOK"
+    assert records[0]["event_type"] == EVENT_OVERNIGHT_FIRST_1M_CLOSE
+
+
+def test_tradingview_cache_matches_overnight_20_00_and_20_01(tmp_path) -> None:
+    from data.tradingview_price_cache import upsert_price_event
+
+    cache_path = tmp_path / "tv_cache.json"
+    for timestamp, close in [("2026-06-14 20:00:00", 208.88), ("2026-06-21 20:01:00", 209.12)]:
+        upsert_price_event(
+            symbol="NVDA",
+            event_type=EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            timestamp_et=timestamp,
+            close=close,
+            provider="TRADINGVIEW_WEBHOOK",
+            source_type="TV_ALERT",
+            path=cache_path,
+        )
+
+    first = find_overnight_first_1m_close(
+        "NVDA",
+        datetime(2026, 6, 14, 20, 0, tzinfo=ZoneInfo("America/New_York")),
+        path=cache_path,
+    )
+    second = find_overnight_first_1m_close(
+        "NVDA",
+        datetime(2026, 6, 21, 20, 0, tzinfo=ZoneInfo("America/New_York")),
+        path=cache_path,
+    )
+
+    assert first.ok is True
+    assert first.close == 208.88
+    assert second.ok is True
+    assert second.close == 209.12
+
+
+def test_tradingview_csv_import_recognizes_nvda_and_writes_1m_bars(tmp_path) -> None:
+    csv_path = tmp_path / "NVDA_1m.csv"
+    csv_path.write_text(
+        "time,open,high,low,close,volume\n"
+        "2026-06-14 20:01:00,204,206,203,205.42,1000\n",
+        encoding="utf-8",
+    )
+    cache_path = tmp_path / "tv_cache.json"
+
+    result = import_tradingview_csv_file(csv_path, cache_path=cache_path)
+
+    assert result["symbol"] == "NVDA"
+    assert result["imported_rows"] == 1
+    records = load_price_cache(cache_path)
+    assert records[0]["provider"] == "TRADINGVIEW_CSV"
+
+
+def test_weekend_basis_backtest_reads_p0_p2_from_tradingview_cache(monkeypatch, tmp_path) -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    cache_path = tmp_path / "tv_cache.json"
+    for payload in [
+        {
+            "symbol": "NVDA",
+            "event_type": EVENT_FRIDAY_AFTERHOURS_CLOSE,
+            "timestamp_et": window.start_et.isoformat(),
+            "close": 100.0,
+            "provider": "TRADINGVIEW_WEBHOOK",
+            "source_type": "TV_ALERT",
+        },
+        {
+            "symbol": "NVDA",
+            "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            "timestamp_et": (window.end_et + timedelta(minutes=1)).isoformat(),
+            "close": 102.0,
+            "provider": "TRADINGVIEW_WEBHOOK",
+            "source_type": "TV_ALERT",
+        },
+    ]:
+        from data.tradingview_price_cache import upsert_price_event
+
+        upsert_price_event(path=cache_path, **payload)
+
+    monkeypatch.setattr(
+        "data.weekend_spread_backtest.find_friday_afterhours_close",
+        lambda symbol, friday_date: find_friday_afterhours_close(symbol, friday_date, path=cache_path),
+    )
+    monkeypatch.setattr(
+        "data.weekend_spread_backtest.find_overnight_first_1m_close",
+        lambda symbol, session_start: find_overnight_first_1m_close(symbol, session_start, path=cache_path),
+    )
+    bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 103.0, 99.0, 101.0)]
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        anchors={},
+        provider=FakeKlineProvider(bars),
+        overnight_provider=None,
+        weeks=1,
+        now=now,
+    )
+
+    row = rows[0]
+    assert row["friday_afterhours_close"] == 100.0
+    assert row["overnight_first_1m_close"] == 102.0
+    assert row["transmission_data_quality"] == "TRADINGVIEW_WEBHOOK_SAMPLE"
+    assert row["binance_premium_pct"] == pytest.approx(3.0)
+    assert row["overnight_vs_binance_pct"] == pytest.approx(-0.9708737864)
+
+
 
 
 def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
@@ -3843,16 +4096,18 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "股票",
         "Binance 合约",
         "周五盘后收盘价",
+        "P0 来源",
         "盘后收盘时间",
         "Binance 周末最高价",
         "Binance 高点时间",
         "美股夜盘首分钟收盘",
+        "P2 来源",
         "夜盘首分钟时间",
-        "夜盘价格源",
         "Binance 周末冲高%",
         "夜盘相对 Binance 高点%",
         "夜盘相对周五盘后%",
         "周末高点兑现率%",
+        "样本状态",
         "状态",
         "失败原因",
     ]

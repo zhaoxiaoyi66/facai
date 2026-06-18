@@ -60,6 +60,16 @@ from data.weekend_spread_log import (
     record_spread_samples,
     update_monday_outcome,
 )
+from data.overnight_price_provider import build_overnight_provider_self_check, default_overnight_price_provider
+from data.tradingview_price_cache import (
+    DEFAULT_TRADINGVIEW_CSV_DIR,
+    EVENT_FRIDAY_AFTERHOURS_CLOSE,
+    EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+    import_tradingview_csv_dir,
+    scan_tradingview_csv_dir,
+    upsert_manual_overnight_price,
+    webhook_status_summary,
+)
 from settings import load_watchlist
 
 
@@ -602,7 +612,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     _render_backtest_preflight(preflight)
     if not preflight.get("can_run"):
         st.warning(_backtest_block_text(str(preflight.get("primary_block_reason") or "")))
-    op_cols = st.columns([2, 1, 2])
+    op_cols = st.columns([2, 1, 1, 2])
     run_clicked = op_cols[0].button(
         "运行近 4 周回测",
         width="stretch",
@@ -610,9 +620,14 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         disabled=not bool(preflight.get("can_run")),
     )
     clear_clicked = op_cols[1].button("清空本次结果", width="stretch", key="weekend_clear_backtest_view")
-    with op_cols[2].expander("查看排除原因", expanded=False):
+    self_check_clicked = op_cols[2].button("夜盘数据源自检", width="stretch", key="weekend_overnight_provider_self_check")
+    with op_cols[3].expander("查看排除原因", expanded=False):
         excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
         st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
+    if self_check_clicked:
+        with st.spinner("正在检查 NVDA 周一夜盘首分钟 1m bar..."):
+            _render_overnight_provider_self_check(build_overnight_provider_self_check("NVDA"))
+    _render_tradingview_backfill_tools()
     if not preflight.get("can_run"):
         st.session_state["weekend_backtest_results"] = []
         st.session_state["weekend_backtest_cache"] = clear_backtest_view_state()
@@ -647,6 +662,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             weeks=weeks,
             open_window_minutes=open_window,
             opening_anchor=opening_anchor,
+            overnight_provider=default_overnight_price_provider(),
             allow_anchor_fallback=False,
             require_exact_broker_open=True,
         )
@@ -756,6 +772,135 @@ def _current_backtest_results(
             continue
         filtered.append(row)
     return filtered
+
+
+def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
+    reason = _clean_self_check_text(result.get("reason"), "自检完成")
+    if result.get("ok"):
+        st.success("夜盘数据源自检通过：已读取 NVDA 周一夜盘首分钟 1m bar。")
+    else:
+        st.error(f"夜盘数据源自检失败：{reason}")
+    rows = [
+        ("OVERNIGHT_PRICE_PROVIDER", _clean_self_check_text(result.get("provider_display"), "未配置")),
+        ("Alpaca 配置", "已配置" if result.get("alpaca_configured") else "缺少 API key"),
+        ("IBKR 配置", _ibkr_self_check_status(result)),
+        ("请求窗口开始", _weekend_review_short_time(result.get("requested_start")) or "未返回"),
+        ("请求窗口结束", _weekend_review_short_time(result.get("requested_end")) or "未返回"),
+        ("返回 bar 数量", str(int(result.get("returned_bar_count") or 0))),
+        ("第一根 bar 时间", _weekend_review_short_time(result.get("first_bar_time")) or "未返回"),
+        (
+            "第一根 bar close",
+            _money_text(result.get("first_bar_close"))
+            if _number(result.get("first_bar_close")) is not None
+            else "未返回",
+        ),
+        ("provider 返回", _clean_self_check_text(result.get("provider"), "未返回")),
+        ("数据质量", _data_quality_text(result.get("quality"))),
+        ("失败原因", "" if result.get("ok") else reason),
+    ]
+    st.dataframe(pd.DataFrame(rows, columns=["检查项", "结果"]), width="stretch", hide_index=True)
+
+
+def _ibkr_self_check_status(result: dict[str, object]) -> str:
+    if result.get("ibkr_configured") and result.get("ibkr_path_exists"):
+        return "已配置"
+    if result.get("ibkr_configured"):
+        return "已配置路径，但文件不存在"
+    return "未配置"
+
+
+def _clean_self_check_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "anchor_source"}:
+        return fallback
+    return text
+
+
+def _render_tradingview_backfill_tools() -> None:
+    with st.expander("TradingView Webhook 自动记录 / CSV 补数 / 手动补 P2", expanded=False):
+        status = webhook_status_summary()
+        st.caption("这些补数只用于周末价差三价模型，不会修改买区、研报或持仓数据。")
+        cols = st.columns(4)
+        cols[0].metric("Webhook secret", "已配置" if status.get("secret_configured") else "未配置")
+        cols[1].metric("最近收到 symbol", status.get("latest_symbol") or "尚未收到")
+        latest_p0 = dict(status.get("latest_p0") or {})
+        latest_p2 = dict(status.get("latest_p2") or {})
+        cols[2].metric("最近 P0", _tradingview_event_metric(latest_p0))
+        cols[3].metric("最近 P2", _tradingview_event_metric(latest_p2))
+        if not status.get("latest_write_ok"):
+            st.info("尚未收到 TradingView 推送。")
+        st.markdown("**TradingView alert message 示例**")
+        example_p0 = {
+            "secret": "你的secret",
+            "symbol": "{{ticker}}",
+            "event_type": EVENT_FRIDAY_AFTERHOURS_CLOSE,
+            "timestamp_et": "{{time}}",
+            "close": "{{close}}",
+            "source": "TradingView",
+        }
+        example_p2 = {
+            "secret": "你的secret",
+            "symbol": "{{ticker}}",
+            "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            "timestamp_et": "{{time}}",
+            "close": "{{close}}",
+            "source": "TradingView",
+        }
+        code_cols = st.columns(2)
+        code_cols[0].code(json.dumps(example_p0, ensure_ascii=False, indent=2), language="json")
+        code_cols[1].code(json.dumps(example_p2, ensure_ascii=False, indent=2), language="json")
+
+        st.markdown("**TradingView CSV 本地导入**")
+        csv_dir = st.text_input(
+            "CSV 目录",
+            value=str(DEFAULT_TRADINGVIEW_CSV_DIR),
+            key="weekend_tradingview_csv_dir",
+        )
+        csv_cols = st.columns([1, 1, 3])
+        if csv_cols[0].button("扫描 CSV", key="weekend_tv_scan_csv"):
+            st.session_state["weekend_tv_csv_scan"] = scan_tradingview_csv_dir(csv_dir)
+        if csv_cols[1].button("导入全部", key="weekend_tv_import_csv"):
+            st.session_state["weekend_tv_csv_import"] = import_tradingview_csv_dir(csv_dir)
+            st.success("CSV 导入完成。重新运行回测后会读取本地补数缓存。")
+        scan_rows = st.session_state.get("weekend_tv_csv_import") or st.session_state.get("weekend_tv_csv_scan")
+        if scan_rows:
+            st.dataframe(pd.DataFrame(scan_rows), width="stretch", hide_index=True)
+
+        st.markdown("**手动补美股夜盘首分钟价格**")
+        manual_cols = st.columns([1, 1, 1, 1])
+        manual_symbol = manual_cols[0].text_input("股票", value="NVDA", key="weekend_manual_p2_symbol")
+        manual_time = manual_cols[1].text_input("时间 ET", value=_latest_overnight_session_text(), key="weekend_manual_p2_time")
+        manual_price = manual_cols[2].number_input("首分钟收盘价", min_value=0.0, value=0.0, step=0.01, key="weekend_manual_p2_price")
+        manual_source = manual_cols[3].selectbox("来源", ["IBKR", "Alpaca", "富途", "老虎", "其他"], key="weekend_manual_p2_source")
+        manual_note = st.text_input("备注，可选", key="weekend_manual_p2_note")
+        if st.button("保存人工券商样本", key="weekend_save_manual_p2"):
+            if not manual_symbol.strip() or manual_price <= 0:
+                st.error("请填写股票和大于 0 的夜盘首分钟收盘价。")
+            else:
+                try:
+                    upsert_manual_overnight_price(
+                        symbol=manual_symbol,
+                        timestamp_et=manual_time,
+                        close=manual_price,
+                        source=manual_source,
+                        note=manual_note,
+                    )
+                    st.success("已保存人工券商样本。重新运行回测后会读取。")
+                except ValueError as exc:
+                    st.error(f"保存失败：{exc}")
+
+
+def _tradingview_event_metric(row: dict[str, object]) -> str:
+    if not row:
+        return "尚未收到"
+    close = _money_text(row.get("close")) if _number(row.get("close")) is not None else "价格缺失"
+    time_text = _weekend_review_short_time(row.get("timestamp_et")) or "时间缺失"
+    return f"{close} / {time_text}"
+
+
+def _latest_overnight_session_text() -> str:
+    window = recent_weekend_windows(weeks=1)[0]
+    return window.end_et.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _render_backtest_preflight(preflight: dict[str, object]) -> None:
@@ -941,8 +1086,13 @@ def _data_quality_text(value: object) -> str:
         "OBSERVE_ONLY": "观察样本，不计入正式胜率",
         "OBSERVE_ANCHOR_ONLY": "锚点观察样本，不计入正式胜率",
         "NO_AFTERHOURS_CLOSE": "缺少周五盘后收盘价",
+        "REGULAR_CLOSE_FALLBACK": "常规收盘回退，仅观察",
         "MISSING_OVERNIGHT_FIRST_1M": "缺少美股夜盘首分钟 1m K 线",
         "OVERNIGHT_PROVIDER_MISSING": "美股夜盘数据源未配置",
+        "TRADINGVIEW_WEBHOOK_SAMPLE": "TradingView Webhook 样本",
+        "TRADINGVIEW_CSV_SAMPLE": "TradingView CSV 样本",
+        "MANUAL_BROKER_SAMPLE": "人工券商样本",
+        "MANUAL_AFTERHOURS_SAMPLE": "人工盘后样本",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
@@ -1169,7 +1319,17 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
         quality = str(row.get("data_quality") or "").strip().upper()
         if quality == "OK":
             counts["ok"] += 1
-        elif quality in {"OBSERVE_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "NO_AFTERHOURS_CLOSE"}:
+        elif quality in {
+            "OBSERVE_ONLY",
+            "MISSING_OVERNIGHT_FIRST_1M",
+            "OVERNIGHT_PROVIDER_MISSING",
+            "REGULAR_CLOSE_FALLBACK",
+            "NO_AFTERHOURS_CLOSE",
+            "TRADINGVIEW_WEBHOOK_SAMPLE",
+            "TRADINGVIEW_CSV_SAMPLE",
+            "MANUAL_BROKER_SAMPLE",
+            "MANUAL_AFTERHOURS_SAMPLE",
+        }:
             counts["observe"] += 1
         elif quality.startswith("DEGRADED"):
             counts["degraded"] += 1
@@ -1196,6 +1356,8 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
             "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
             "但缺少美股夜盘首分钟 1m K 线，不计入正式统计。"
         )
+    if qualities & {"REGULAR_CLOSE_FALLBACK"}:
+        return "当前只有观察样本：部分周次缺少周五盘后收盘价，已用常规收盘价回退，不计入正式统计。"
     if qualities & {"NO_AFTERHOURS_CLOSE"}:
         return "当前没有完整传导链样本。主要原因：缺少周五盘后收盘价。"
     if raw_qualities & {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}:
@@ -1274,6 +1436,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "overnight_vs_afterhours_pct": overnight_vs_afterhours_pct,
             "capture_pct": capture_pct,
             "data_quality": data_quality,
+            "sample_status": _weekend_review_sample_status(data_quality),
             "status": _weekend_review_status(data_quality, capture_pct),
             "failure_reason": _weekend_review_failure_reason(row, data_quality),
             "raw_row": row,
@@ -1336,16 +1499,18 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "股票",
         "Binance 合约",
         "周五盘后收盘价",
+        "P0 来源",
         "盘后收盘时间",
         "Binance 周末最高价",
         "Binance 高点时间",
         "美股夜盘首分钟收盘",
+        "P2 来源",
         "夜盘首分钟时间",
-        "夜盘价格源",
         "Binance 周末冲高%",
         "夜盘相对 Binance 高点%",
         "夜盘相对周五盘后%",
         "周末高点兑现率%",
+        "样本状态",
         "状态",
         "失败原因",
     ]
@@ -1358,16 +1523,18 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "股票": row.get("ticker"),
                 "Binance 合约": row.get("binance_symbol") or "暂无映射",
                 "周五盘后收盘价": row.get("friday_afterhours_close"),
+                "P0 来源": _price_source_text(row.get("friday_afterhours_provider")),
                 "盘后收盘时间": row.get("friday_afterhours_time") or "暂无数据",
                 "Binance 周末最高价": row.get("binance_price"),
                 "Binance 高点时间": row.get("contract_sample_time") or "暂无数据",
                 "美股夜盘首分钟收盘": row.get("broker_open_close"),
+                "P2 来源": _price_source_text(row.get("overnight_provider")),
                 "夜盘首分钟时间": row.get("broker_first_time") or "暂无数据",
-                "夜盘价格源": row.get("overnight_provider") or "未配置",
                 "Binance 周末冲高%": row.get("binance_premium_pct"),
                 "夜盘相对 Binance 高点%": row.get("overnight_vs_binance_pct"),
                 "夜盘相对周五盘后%": row.get("overnight_vs_afterhours_pct"),
                 "周末高点兑现率%": row.get("capture_pct"),
+                "样本状态": row.get("sample_status"),
                 "状态": row.get("status"),
                 "失败原因": row.get("failure_reason") or "",
             }
@@ -1420,7 +1587,17 @@ def _observation_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
         row
         for row in review_rows
         if str(row.get("data_quality") or "").strip().upper()
-        in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}
+        in {
+            "OBSERVE_ONLY",
+            "OBSERVE_ANCHOR_ONLY",
+            "MISSING_OVERNIGHT_FIRST_1M",
+            "OVERNIGHT_PROVIDER_MISSING",
+            "REGULAR_CLOSE_FALLBACK",
+            "TRADINGVIEW_WEBHOOK_SAMPLE",
+            "TRADINGVIEW_CSV_SAMPLE",
+            "MANUAL_BROKER_SAMPLE",
+            "MANUAL_AFTERHOURS_SAMPLE",
+        }
     ]
 
 
@@ -1429,7 +1606,18 @@ def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
         row
         for row in review_rows
         if str(row.get("data_quality") or "").strip().upper()
-        in {"OK", "OBSERVE_ONLY", "NO_AFTERHOURS_CLOSE", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}
+        in {
+            "OK",
+            "OBSERVE_ONLY",
+            "NO_AFTERHOURS_CLOSE",
+            "MISSING_OVERNIGHT_FIRST_1M",
+            "OVERNIGHT_PROVIDER_MISSING",
+            "REGULAR_CLOSE_FALLBACK",
+            "TRADINGVIEW_WEBHOOK_SAMPLE",
+            "TRADINGVIEW_CSV_SAMPLE",
+            "MANUAL_BROKER_SAMPLE",
+            "MANUAL_AFTERHOURS_SAMPLE",
+        }
         or str(row.get("data_quality") or "").strip().upper().startswith("DEGRADED")
     ]
 
@@ -1453,6 +1641,10 @@ def _weekend_review_data_quality(
         return "MAPPING_MISSING"
     if quality == "OVERNIGHT_PROVIDER_MISSING":
         return "OVERNIGHT_PROVIDER_MISSING"
+    if quality == "REGULAR_CLOSE_FALLBACK":
+        return "REGULAR_CLOSE_FALLBACK"
+    if quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
+        return quality
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
     if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"}:
@@ -1475,8 +1667,10 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
         return "仅观察"
     if data_quality == "NO_AFTERHOURS_CLOSE":
         return "缺盘后锚点"
-    if data_quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}:
+    if data_quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "REGULAR_CLOSE_FALLBACK"}:
         return "仅观察"
+    if data_quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
+        return _weekend_review_sample_status(data_quality)
     if str(data_quality or "").startswith("DEGRADED"):
         return "降级观察"
     if data_quality != "OK" or premium_pct is None:
@@ -1484,12 +1678,40 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
     return "正式样本"
 
 
+def _weekend_review_sample_status(data_quality: str) -> str:
+    quality = str(data_quality or "").strip().upper()
+    if quality == "OK":
+        return "自动正式样本"
+    if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
+        return "TradingView Webhook 样本"
+    if quality == "TRADINGVIEW_CSV_SAMPLE":
+        return "TradingView CSV 样本"
+    if quality == "MANUAL_BROKER_SAMPLE":
+        return "人工券商样本"
+    if quality == "MANUAL_AFTERHOURS_SAMPLE":
+        return "人工盘后样本"
+    if quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "REGULAR_CLOSE_FALLBACK", "NO_AFTERHOURS_CLOSE", "OBSERVE_ONLY"}:
+        return "观察样本"
+    if quality.startswith("DEGRADED"):
+        return "降级样本"
+    return "排除样本"
+
+
 def _weekend_review_rank(row: dict) -> tuple[int, float]:
     premium = _number(row.get("capture_pct") or row.get("binance_premium_pct"))
     binance = _number(row.get("binance_price"))
     broker = _number(row.get("broker_open_close"))
     quality = str(row.get("data_quality") or "").strip().upper()
-    quality_rank = {"OK": 3, "OBSERVE_ANCHOR_ONLY": 2, "OBSERVE_ONLY": 2, "DEGRADED": 1}.get(
+    quality_rank = {
+        "OK": 4,
+        "TRADINGVIEW_WEBHOOK_SAMPLE": 3,
+        "TRADINGVIEW_CSV_SAMPLE": 3,
+        "MANUAL_BROKER_SAMPLE": 3,
+        "MANUAL_AFTERHOURS_SAMPLE": 2,
+        "OBSERVE_ANCHOR_ONLY": 2,
+        "OBSERVE_ONLY": 2,
+        "DEGRADED": 1,
+    }.get(
         "DEGRADED" if quality.startswith("DEGRADED") else quality,
         0,
     )
@@ -1569,6 +1791,22 @@ def _weekend_review_overnight_provider(row: dict) -> str:
     return raw
 
 
+def _price_source_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "anchor_source"}:
+        return "未配置"
+    upper = text.upper()
+    return {
+        "TRADINGVIEW_WEBHOOK": "TradingView Webhook",
+        "TRADINGVIEW_CSV": "TradingView CSV",
+        "MANUAL_OVERNIGHT_1M": "人工券商",
+        "MANUAL_AFTERHOURS_1M": "人工盘后",
+        "REGULAR_CLOSE_FALLBACK": "常规收盘回退",
+        "ALPACA_BOATS": "Alpaca BOATS",
+        "IBKR_OVERNIGHT": "IBKR 夜盘",
+    }.get(upper, text)
+
+
 def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     quality = str(data_quality or "").strip().upper()
     if quality == "OK":
@@ -1579,6 +1817,16 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
         return str(row.get("friday_afterhours_reason") or row.get("afterhours_missing_reason") or "缺少周五盘后收盘价")
     if quality == "OVERNIGHT_PROVIDER_MISSING":
         return "美股夜盘数据源未配置"
+    if quality == "REGULAR_CLOSE_FALLBACK":
+        return "常规收盘回退，仅观察"
+    if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
+        return "P0/P2 来自 TradingView Webhook，本地补数样本"
+    if quality == "TRADINGVIEW_CSV_SAMPLE":
+        return "P0/P2 来自 TradingView CSV，本地导入样本"
+    if quality == "MANUAL_BROKER_SAMPLE":
+        return "P2 来自人工录入券商价格"
+    if quality == "MANUAL_AFTERHOURS_SAMPLE":
+        return "P0 来自人工录入盘后价格"
     if quality == "MISSING_OVERNIGHT_FIRST_1M":
         return str(row.get("overnight_reason") or "缺少美股夜盘首分钟 1m K线")
     if quality == "CONTRACT_MISSING":
