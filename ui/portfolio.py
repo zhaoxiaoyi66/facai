@@ -271,11 +271,12 @@ def _portfolio_buy_basic_info_html(ticker: str, current: dict, tier: str) -> str
     is_starred = WatchlistStarStore().is_starred(symbol) if symbol != "未选择" else False
     items = [
         ("交易对象", symbol),
-        ("星标", "⭐ 星标关注" if is_starred else "未星标"),
         ("持仓等级", tier_text),
         ("当前持仓", _share_count_text(shares)),
         ("持仓成本", _money_text(avg_cost)),
     ]
+    if is_starred:
+        items.insert(1, ("星标", "⭐ 星标关注"))
     return _portfolio_buy_mini_grid_html(items, class_name="portfolio-buy-basic-grid")
 
 

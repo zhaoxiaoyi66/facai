@@ -833,6 +833,34 @@ def test_portfolio_buy_entry_keeps_intent_fields_out_of_main_form() -> None:
     assert ':buy_reason"]' not in prefill_source
 
 
+def test_portfolio_buy_basic_info_hides_unstarred_noise(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeStarStore:
+        def is_starred(self, symbol: str) -> bool:
+            return False
+
+    monkeypatch.setattr(portfolio_ui, "WatchlistStarStore", FakeStarStore)
+
+    html = portfolio_ui._portfolio_buy_basic_info_html("NVDA", {"quantity": 10, "average_cost": 100}, "A")
+
+    assert "交易对象" in html
+    assert "NVDA" in html
+    assert "未星标" not in html
+    assert "⭐ 星标关注" not in html
+
+
+def test_portfolio_buy_basic_info_shows_starred_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeStarStore:
+        def is_starred(self, symbol: str) -> bool:
+            return True
+
+    monkeypatch.setattr(portfolio_ui, "WatchlistStarStore", FakeStarStore)
+
+    html = portfolio_ui._portfolio_buy_basic_info_html("NVDA", {"quantity": 10, "average_cost": 100}, "A")
+
+    assert "星标" in html
+    assert "⭐ 星标关注" in html
+
+
 def test_portfolio_buy_decision_panel_prioritizes_structured_summary() -> None:
     context = SimpleNamespace(
         current_price=102.15,
