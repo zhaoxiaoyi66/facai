@@ -319,6 +319,10 @@ def render() -> None:
 def _render_dashboard_header(tickers: list[str], market_session: Any | None = None) -> None:
     market_session = market_session or get_us_market_session_status()
     now_text = datetime.now().strftime("%H:%M")
+    latest_data_label = str(
+        getattr(market_session, "latest_data_display_label", None)
+        or getattr(market_session, "latest_data_label", "最新可用数据")
+    )
     left, right = st.columns([1.15, 2.35], vertical_alignment="bottom")
     with left:
         st.markdown(
@@ -337,7 +341,7 @@ def _render_dashboard_header(tickers: list[str], market_session: Any | None = No
             <div class="terminal-meta">
                 <span>{len(tickers)}只观察</span>
                 <span>{escape(market_session.label)}</span>
-                <span>最新数据：{escape(market_session.latest_data_label)}</span>
+                <span>最新数据：{escape(latest_data_label)}</span>
                 <span>技术数据：{escape(market_session.technical_status_label)}</span>
                 <span>数据源：FMP Starter</span>
                 {f'<span>下次开盘：{escape(market_session.next_regular_open_hkt_text)}</span>' if market_session.next_regular_open_hkt_text else ''}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,6 +56,7 @@ class USMarketSessionStatus:
     technical_status_label: str
     now_et: datetime
     next_regular_open_et: datetime | None = None
+    latest_regular_close_date: date | None = None
 
     @property
     def next_regular_open_hkt(self) -> datetime | None:
@@ -70,6 +71,12 @@ class USMarketSessionStatus:
             return ""
         return value.strftime("%m/%d %H:%M HKT")
 
+    @property
+    def latest_data_display_label(self) -> str:
+        if self.latest_regular_close_date is None:
+            return self.latest_data_label
+        return f"{self.latest_data_label} {self.latest_regular_close_date:%m/%d}"
+
 
 def get_us_market_session_status(now: datetime | None = None, *, calendar: Any | None = None) -> USMarketSessionStatus:
     current = _aware_datetime(now)
@@ -77,13 +84,14 @@ def get_us_market_session_status(now: datetime | None = None, *, calendar: Any |
     try:
         is_trading_day = _is_trading_day(now_et.date(), calendar=calendar)
     except Exception:
-        return _snapshot(USMarketSession.UNKNOWN, now_et, None)
+        return _snapshot(USMarketSession.UNKNOWN, now_et, None, calendar=calendar)
 
     if not is_trading_day:
         return _snapshot(
             USMarketSession.WEEKEND_OR_HOLIDAY,
             now_et,
             _next_regular_open(now_et, calendar=calendar),
+            calendar=calendar,
         )
 
     current_time = now_et.time()
@@ -100,13 +108,15 @@ def get_us_market_session_status(now: datetime | None = None, *, calendar: Any |
         status = USMarketSession.CLOSED_AFTER_SESSION
         start = now_et if current_time < time(4, 0) else now_et + timedelta(days=1)
         next_open = _next_regular_open(start, calendar=calendar, include_current_day=True)
-    return _snapshot(status, now_et, next_open)
+    return _snapshot(status, now_et, next_open, calendar=calendar)
 
 
 def _snapshot(
     status: USMarketSession,
     now_et: datetime,
     next_regular_open_et: datetime | None,
+    *,
+    calendar: Any | None = None,
 ) -> USMarketSessionStatus:
     return USMarketSessionStatus(
         status=status,
@@ -115,6 +125,7 @@ def _snapshot(
         technical_status_label=TECHNICAL_STATUS_LABELS.get(status, "需复核"),
         now_et=now_et,
         next_regular_open_et=next_regular_open_et,
+        latest_regular_close_date=_latest_regular_close_date(status, now_et, calendar=calendar),
     )
 
 
@@ -145,4 +156,27 @@ def _next_regular_open(
         candidate_day = (day_start + timedelta(days=offset)).date()
         if _is_trading_day(candidate_day, calendar=calendar):
             return datetime.combine(candidate_day, time(9, 30), tzinfo=US_EASTERN)
+    return None
+
+
+def _latest_regular_close_date(
+    status: USMarketSession,
+    now_et: datetime,
+    *,
+    calendar: Any | None = None,
+) -> date | None:
+    if status in {USMarketSession.REGULAR, USMarketSession.PRE_MARKET, USMarketSession.AFTER_HOURS}:
+        return now_et.date()
+    if status == USMarketSession.CLOSED_AFTER_SESSION and now_et.time() >= time(20, 0):
+        return now_et.date()
+    if status in {USMarketSession.CLOSED_AFTER_SESSION, USMarketSession.WEEKEND_OR_HOLIDAY}:
+        return _previous_trading_day(now_et.date(), calendar=calendar)
+    return None
+
+
+def _previous_trading_day(start_day: date, *, calendar: Any | None = None) -> date | None:
+    for offset in range(1, 10):
+        candidate = start_day - timedelta(days=offset)
+        if _is_trading_day(candidate, calendar=calendar):
+            return candidate
     return None

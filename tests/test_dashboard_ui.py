@@ -74,6 +74,7 @@ def test_dashboard_header_uses_smart_market_refresh_as_primary_action() -> None:
     assert "重算技术指标" in source
     assert "强制全量刷新" in source
     assert "get_us_market_session_status" in source
+    assert "latest_data_display_label" in source
 
 
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:

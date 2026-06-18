@@ -15,6 +15,7 @@ def test_us_market_session_detects_regular_hours() -> None:
     assert status.status == USMarketSession.REGULAR
     assert status.label == "美股盘中"
     assert status.latest_data_label == "盘中报价"
+    assert status.latest_data_display_label == "盘中报价 06/15"
 
 
 def test_us_market_session_detects_pre_and_after_hours() -> None:
@@ -23,8 +24,10 @@ def test_us_market_session_detects_pre_and_after_hours() -> None:
 
     assert pre.status == USMarketSession.PRE_MARKET
     assert pre.label == "美股盘前"
+    assert pre.latest_data_display_label == "盘前参考 06/15"
     assert after.status == USMarketSession.AFTER_HOURS
     assert after.label == "美股盘后"
+    assert after.latest_data_display_label == "盘后参考 06/15"
 
 
 def test_us_market_session_detects_hkt_daytime_as_closed_after_session() -> None:
@@ -34,6 +37,7 @@ def test_us_market_session_detects_hkt_daytime_as_closed_after_session() -> None
     assert status.status == USMarketSession.CLOSED_AFTER_SESSION
     assert status.label == "美股已收盘"
     assert status.latest_data_label == "昨夜收盘"
+    assert status.latest_data_display_label == "昨夜收盘 06/15"
     assert status.next_regular_open_hkt_text
 
 
@@ -42,3 +46,4 @@ def test_us_market_session_detects_weekend() -> None:
 
     assert status.status == USMarketSession.WEEKEND_OR_HOLIDAY
     assert status.label == "美股休市"
+    assert status.latest_data_display_label == "最新可用收盘 06/12"
