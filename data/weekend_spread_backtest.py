@@ -100,12 +100,73 @@ def _good_friday(year: int) -> date:
     return date(year, month, day) - timedelta(days=2)
 
 
+def _us_market_early_closes(year: int) -> set[date]:
+    thanksgiving = _nth_weekday(year, 11, 3, 4)
+    candidates = {
+        thanksgiving + timedelta(days=1),
+        date(year, 12, 24),
+        date(year, 7, 3),
+    }
+    if date(year, 7, 4).weekday() == 6:
+        candidates.add(date(year, 7, 2))
+    return {day for day in candidates if _is_us_equity_session_date(day)}
+
+
+def _is_us_market_early_close(day: date) -> bool:
+    return day in (_us_market_early_closes(day.year) | _us_market_early_closes(day.year + 1))
+
+
+def _week_start_from_value(value: Any) -> date:
+    if isinstance(value, str) and "-W" in value:
+        year_text, week_text = value.upper().split("-W", 1)
+        return date.fromisocalendar(int(year_text), int(week_text), 1)
+    if isinstance(value, datetime):
+        day = value.astimezone(ET).date()
+    elif hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        day = date(int(value.year), int(value.month), int(value.day))
+    else:
+        day = datetime.fromisoformat(str(value)).date()
+    return day - timedelta(days=day.weekday())
+
+
+def get_last_us_trading_day_of_week(week_id: Any) -> date:
+    """Return the last valid US equity session in the natural/ISO week."""
+
+    week_start = _week_start_from_value(week_id)
+    for offset in range(4, -1, -1):
+        candidate = week_start + timedelta(days=offset)
+        if _is_us_equity_session_date(candidate):
+            return candidate
+    raise ValueError(f"No US equity trading day found for week {week_id!r}")
+
+
+def _next_us_equity_session_date(after_day: date) -> date:
+    for offset in range(1, 12):
+        candidate = after_day + timedelta(days=offset)
+        if _is_us_equity_session_date(candidate):
+            return candidate
+    raise ValueError(f"No next US equity session found after {after_day.isoformat()}")
+
+
+def _overnight_session_start_for_session(session_date: date) -> datetime:
+    return datetime.combine(session_date - timedelta(days=1), time(20, 0), ET)
+
+
 @dataclass(frozen=True)
 class WeekendWindow:
     week_id: str
     start_et: datetime
     end_et: datetime
     end_shanghai: datetime
+    last_trading_day: date | None = None
+    last_trading_day_afterhours_start_et: datetime | None = None
+    last_trading_day_afterhours_end_et: datetime | None = None
+    last_trading_day_close_time_et: datetime | None = None
+    p2_session_start_et: datetime | None = None
+    p2_session_date: date | None = None
+    holiday_shifted_overnight_session: bool = False
+    last_trading_day_is_friday: bool = True
+    last_trading_day_early_close: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,10 +213,7 @@ def build_weekend_backtest_preflight(
         confidence = str(config.get("mapping_confidence") or "").strip().lower()
         row.update({"mapping_status": confidence or "unverified", "symbol": symbol})
         if confidence == "candidate" and _is_auto_candidate(config):
-            if not include_unconfirmed:
-                row["exclusion_reason"] = "AUTO_CANDIDATE_NOT_ALLOWED"
-                excluded.append(row)
-                continue
+            row["mapping_status"] = "auto_available"
         elif confidence != "confirmed" and not include_unconfirmed:
             row["exclusion_reason"] = "UNCONFIRMED_EXCLUDED"
             excluded.append(row)
@@ -180,30 +238,67 @@ def build_weekend_backtest_preflight(
         "can_run": bool(eligible),
         "primary_block_reason": primary_block,
         "include_unconfirmed": bool(include_unconfirmed),
-        "mode": "include candidate" if include_unconfirmed else "confirmed only",
+        "mode": "include candidate" if include_unconfirmed else "auto usable",
     }
 
 
 def recent_weekend_windows(*, weeks: int = 4, now: datetime | None = None) -> list[WeekendWindow]:
     current_et = (now or datetime.now(timezone.utc)).astimezone(ET)
-    sunday = current_et.date() - timedelta(days=(current_et.weekday() - 6) % 7)
-    sunday_close = datetime.combine(sunday, time(20, 0), ET)
-    if sunday_close > current_et:
-        sunday_close -= timedelta(days=7)
+    candidate_sunday = current_et.date() - timedelta(days=(current_et.weekday() - 6) % 7)
+    target_count = max(1, int(weeks or 1))
     windows: list[WeekendWindow] = []
-    for index in range(max(1, int(weeks or 1))):
-        end_et = sunday_close - timedelta(days=index * 7)
-        start_et = datetime.combine(end_et.date() - timedelta(days=2), time(20, 0), ET)
-        iso = end_et.date().isocalendar()
-        windows.append(
-            WeekendWindow(
-                week_id=f"{iso.year}-W{iso.week:02d}",
-                start_et=start_et,
-                end_et=end_et,
-                end_shanghai=end_et.astimezone(SHANGHAI),
-            )
-        )
+    offset = 0
+    while len(windows) < target_count and offset < target_count + 24:
+        sunday = candidate_sunday - timedelta(days=offset * 7)
+        window = _weekend_window_for_sunday(sunday)
+        if window.end_et <= current_et:
+            windows.append(window)
+        offset += 1
     return windows
+
+
+def _weekend_window_for_sunday(sunday: date) -> WeekendWindow:
+    week_start = sunday - timedelta(days=sunday.weekday())
+    last_trading_day = get_last_us_trading_day_of_week(week_start)
+    p0_window_start = datetime.combine(last_trading_day, time(19, 55), ET)
+    p0_window_end = datetime.combine(last_trading_day, time(20, 0), ET)
+    next_session_date = _next_us_equity_session_date(last_trading_day)
+    p2_session_start = _overnight_session_start_for_session(next_session_date)
+    iso = sunday.isocalendar()
+    return WeekendWindow(
+        week_id=f"{iso.year}-W{iso.week:02d}",
+        start_et=p0_window_end,
+        end_et=p2_session_start,
+        end_shanghai=p2_session_start.astimezone(SHANGHAI),
+        last_trading_day=last_trading_day,
+        last_trading_day_afterhours_start_et=p0_window_start,
+        last_trading_day_afterhours_end_et=p0_window_end,
+        last_trading_day_close_time_et=p0_window_end,
+        p2_session_start_et=p2_session_start,
+        p2_session_date=next_session_date,
+        holiday_shifted_overnight_session=p2_session_start.date() != sunday,
+        last_trading_day_is_friday=last_trading_day.weekday() == 4,
+        last_trading_day_early_close=_is_us_market_early_close(last_trading_day),
+    )
+
+
+def _weekend_window_with_start(window: WeekendWindow, start_et: datetime) -> WeekendWindow:
+    effective_start = start_et.astimezone(ET)
+    return WeekendWindow(
+        week_id=window.week_id,
+        start_et=effective_start,
+        end_et=window.end_et,
+        end_shanghai=window.end_et.astimezone(SHANGHAI),
+        last_trading_day=window.last_trading_day,
+        last_trading_day_afterhours_start_et=window.last_trading_day_afterhours_start_et,
+        last_trading_day_afterhours_end_et=window.last_trading_day_afterhours_end_et,
+        last_trading_day_close_time_et=effective_start,
+        p2_session_start_et=window.p2_session_start_et,
+        p2_session_date=window.p2_session_date,
+        holiday_shifted_overnight_session=window.holiday_shifted_overnight_session,
+        last_trading_day_is_friday=window.last_trading_day_is_friday,
+        last_trading_day_early_close=window.last_trading_day_early_close,
+    )
 
 
 def run_weekend_peak_short_backtest(
@@ -561,7 +656,7 @@ def fetch_friday_afterhours_close(
     provider: Any | None = None,
     anchor_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the Friday 19:55-20:00 ET after-hours closing 1m bar close."""
+    """Read the last trading day's 19:55-20:00 ET after-hours closing 1m bar close."""
 
     normalized = str(symbol or "").strip().upper()
     friday_date = _coerce_date(friday_date_et)
@@ -787,9 +882,9 @@ def fetch_friday_afterhours_close(
             selected_volume=None,
             quality="MISSING_AFTERHOURS_CLOSE",
             is_fallback=False,
-            reason="缺少周五盘后收盘价",
+            reason="缺少本周最后交易日盘后收盘价",
         ),
-        "reason": "缺少周五盘后收盘价",
+        "reason": "缺少本周最后交易日盘后收盘价",
     }
 
 
@@ -1106,10 +1201,10 @@ def _overnight_missing_display_reason(quality: str) -> str:
     if normalized == "ALPACA_BOATS_PERMISSION":
         return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
     if normalized == "MISSING_BOATS_FIRST_1M":
-        return "缺少 BOATS 夜盘首分钟 1m K线。"
+        return "缺少下周第一个交易日 BOATS 夜盘首分钟 1m K线。"
     if normalized == "PROVIDER_ERROR":
         return "夜盘 provider 报错。"
-    return "缺少美股夜盘首分钟 1m K线"
+    return "缺少下周第一个交易日美股夜盘首分钟 1m K线"
 
 
 def normalize_klines(payload: Iterable[Any]) -> list[NormalizedKline]:
@@ -1255,6 +1350,36 @@ def _has_weekend_anchor_observation(result: dict[str, Any], anchor_price: float 
     return weekend_price is not None and weekend_price > 0 and weekend_premium is not None
 
 
+def _window_metadata_fields(window: WeekendWindow) -> dict[str, Any]:
+    last_day = window.last_trading_day or window.start_et.astimezone(ET).date()
+    p0_start = window.last_trading_day_afterhours_start_et or datetime.combine(last_day, time(19, 55), ET)
+    p0_end = window.last_trading_day_afterhours_end_et or datetime.combine(last_day, time(20, 0), ET)
+    p2_start = window.p2_session_start_et or window.end_et
+    return {
+        "last_trading_day": last_day.isoformat(),
+        "last_trading_day_is_friday": bool(window.last_trading_day_is_friday),
+        "last_trading_day_early_close": bool(window.last_trading_day_early_close),
+        "last_trading_day_afterhours_start_et": p0_start.isoformat(),
+        "last_trading_day_afterhours_end_et": p0_end.isoformat(),
+        "last_trading_day_close_time_et": (window.last_trading_day_close_time_et or p0_end).isoformat(),
+        "p2_session_start_et": p2_start.isoformat(),
+        "p2_session_date": (window.p2_session_date.isoformat() if window.p2_session_date else ""),
+        "holiday_shifted_overnight_session": bool(window.holiday_shifted_overnight_session),
+    }
+
+
+def _p1_window_start_from_p0(friday_afterhours: dict[str, Any], window: WeekendWindow) -> datetime:
+    quality = str(friday_afterhours.get("quality") or "").strip().upper()
+    if quality in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
+        return window.start_et
+    bar_end = _datetime_from_iso(friday_afterhours.get("bar_end_et"))
+    if bar_end is not None:
+        bar_end_et = bar_end.astimezone(ET)
+        if bar_end_et < window.end_et:
+            return bar_end_et
+    return window.start_et
+
+
 def _basis_backtest_one_window(
     ticker: str,
     config: dict[str, Any],
@@ -1275,17 +1400,22 @@ def _basis_backtest_one_window(
     symbol = str(config.get("binance_symbol") or "").strip().upper()
     market_type = "usdm_futures"
     mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    last_trading_day = window.last_trading_day or window.start_et.date()
     friday_afterhours = fetch_friday_afterhours_close(
         ticker,
-        window.start_et.date(),
+        last_trading_day,
         provider=afterhours_provider,
         anchor_source=anchor_source,
     )
     friday_afterhours_close = _number(friday_afterhours.get("friday_afterhours_close"))
+    p1_window_start = _p1_window_start_from_p0(friday_afterhours, window)
+    binance_window = _weekend_window_with_start(window, p1_window_start)
     anchor_price = friday_afterhours_close
     legacy_anchor_price = _number(anchor.get("anchor_price"))
     regular_close_price = _number(anchor_source.get("regular_close_price") or anchor.get("regular_close_price") or anchor_source.get("friday_close") or anchor_source.get("friday_close_price"))
     regular_close_date = str(anchor_source.get("regular_close_date") or anchor.get("regular_close_date") or anchor_source.get("friday_close_date") or "").strip()
+    if regular_close_date and regular_close_date != last_trading_day.isoformat():
+        regular_close_price = None
     p0_vs_regular_close_pct = _change_pct(friday_afterhours_close, regular_close_price)
     base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
     base.update(
@@ -1308,10 +1438,8 @@ def _basis_backtest_one_window(
         broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
         broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
     holiday_rollover = _is_holiday_rollover_window(window.end_et, broker_first_time)
-    quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
-        window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
-    )
-    binance_max_fields = _missing_binance_weekend_max_fields(symbol, window, reason="BINANCE_KLINE_REQUIRED")
+    quote_end = binance_window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
+    binance_max_fields = _missing_binance_weekend_max_fields(symbol, binance_window, reason="BINANCE_KLINE_REQUIRED")
     multiplier = _number(config.get("unit_multiplier") or config.get("multiplier")) or 1.0
     try:
         if hasattr(provider, "get_klines"):
@@ -1319,19 +1447,19 @@ def _basis_backtest_one_window(
                 provider,
                 symbol,
                 market_type=market_type,
-                window=window,
+                window=binance_window,
                 open_window_minutes=open_window_minutes,
                 end_time=quote_end,
                 cache_path=kline_cache_path,
             )
             quotes = _basis_quotes_from_klines(bars)
-            binance_max_fields = _binance_weekend_max_fields(symbol, market_type, window, bars, multiplier=multiplier)
+            binance_max_fields = _binance_weekend_max_fields(symbol, market_type, binance_window, bars, multiplier=multiplier)
         else:
             quotes, kline_cache_status = _fetch_window_basis_quotes(
                 provider,
                 symbol,
                 market_type=market_type,
-                window=window,
+                window=binance_window,
                 open_window_minutes=open_window_minutes,
                 end_time=quote_end,
                 cache_path=kline_cache_path,
@@ -1348,10 +1476,15 @@ def _basis_backtest_one_window(
                 "friday_afterhours_provider": str(friday_afterhours.get("provider") or ""),
                 "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
                 "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+                "last_trading_day_afterhours_close": friday_afterhours_close,
+                "last_trading_day_afterhours_time": str(friday_afterhours.get("bar_start_et") or ""),
+                "last_trading_day_close_time_et": str(friday_afterhours.get("bar_end_et") or binance_window.start_et.isoformat()),
                 "regular_close_price": regular_close_price,
                 "regular_close_date": regular_close_date,
                 "p0_vs_regular_close_pct": p0_vs_regular_close_pct,
                 **_result_p0_diagnostics(friday_afterhours),
+                **_window_metadata_fields(window),
+                "last_trading_day_close_time_et": str(friday_afterhours.get("bar_end_et") or binance_window.start_et.isoformat()),
                 "overnight_first_1m_close": broker_first_close,
                 "overnight_first_1m_time": broker_first_time,
                 "holiday_rollover": holiday_rollover,
@@ -1369,13 +1502,14 @@ def _basis_backtest_one_window(
         )
         return base
     cfg = strategy_config or BasisStrategyConfig()
+    effective_mapping_confidence = "auto_available" if _is_auto_candidate(config) else mapping_confidence
     broker_bars = [stock_bar["bar"]] if stock_bar.get("ok") and stock_bar.get("bar") is not None else []
     if anchor_price is not None and anchor_price > 0:
         evaluation_quotes = _basis_quotes_for_stock_bar_evaluation(quotes, window, stock_bar, cfg, open_window_minutes)
         result = evaluate_basis_lock_strategy(
             ticker=ticker,
             binance_symbol=symbol,
-            mapping_confidence=mapping_confidence,
+            mapping_confidence=effective_mapping_confidence,
             broker_anchor_price=anchor_price,
             binance_quotes=evaluation_quotes,
             broker_overnight_bars=broker_bars,
@@ -1387,7 +1521,7 @@ def _basis_backtest_one_window(
             {
                 "status": "OBSERVE",
                 "data_quality": "NO_AFTERHOURS_CLOSE",
-                "warning": "缺少周五盘后收盘价，不能计算完整传导链",
+                "warning": "缺少本周最后交易日盘后收盘价，不能计算完整传导链",
                 "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
             }
         )
@@ -1397,7 +1531,7 @@ def _basis_backtest_one_window(
     overnight_vs_afterhours_pct = _change_pct(broker_first_close, friday_afterhours_close)
     capture_pct = _capture_pct(friday_afterhours_close, binance_equivalent_max, broker_first_close)
     transmission_quality = _weekend_chain_quality(
-        mapping_confidence=mapping_confidence,
+        mapping_confidence=effective_mapping_confidence,
         friday_afterhours_close=friday_afterhours_close,
         binance_weekend_max=binance_equivalent_max,
         overnight_first_1m_close=broker_first_close,
@@ -1408,8 +1542,8 @@ def _basis_backtest_one_window(
         {
             "week_id": window.week_id,
             "market_type": market_type,
-            "weekend_window_start": window.start_et.isoformat(),
-            "weekend_window_end": window.end_et.isoformat(),
+            "weekend_window_start": binance_window.start_et.isoformat(),
+            "weekend_window_end": binance_window.end_et.isoformat(),
             "monday_reference_time_et": window.end_et.isoformat(),
             "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
             "binance_symbol": symbol,
@@ -1456,10 +1590,15 @@ def _basis_backtest_one_window(
             "friday_afterhours_interval": str(friday_afterhours.get("interval") or "1m"),
             "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
             "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+            "last_trading_day_afterhours_close": friday_afterhours_close,
+            "last_trading_day_afterhours_time": str(friday_afterhours.get("bar_start_et") or ""),
+            "last_trading_day_close_time_et": str(friday_afterhours.get("bar_end_et") or binance_window.start_et.isoformat()),
             "regular_close_price": regular_close_price,
             "regular_close_date": regular_close_date,
             "p0_vs_regular_close_pct": p0_vs_regular_close_pct,
             **_result_p0_diagnostics(friday_afterhours),
+            **_window_metadata_fields(window),
+            "last_trading_day_close_time_et": str(friday_afterhours.get("bar_end_et") or binance_window.start_et.isoformat()),
             "overnight_first_1m_close": broker_first_close,
             "overnight_first_1m_time": broker_first_time,
             "holiday_rollover": holiday_rollover,
@@ -1490,7 +1629,7 @@ def _basis_backtest_one_window(
                 {
                     "status": "OBSERVE",
                     "data_quality": "OBSERVE_ANCHOR_ONLY",
-                    "warning": "已读取周五盘后/收盘锚点和周末合约价格；缺少美股开盘第一根有效价格，仅作价差观察，不计入正式胜率",
+                    "warning": "已读取最后交易日盘后/收盘锚点和周末合约价格；缺少下周第一个交易日美股夜盘首分钟价格，仅作价差观察，不计入正式胜率",
                     "error_message": str(stock_bar.get("reason") or "MISSING_STOCK_FIRST_BAR"),
                 }
             )
@@ -1504,7 +1643,7 @@ def _basis_backtest_one_window(
             )
     elif stock_bar.get("quality") == "DEGRADED_5M" and result.get("data_quality") == "OK":
         result.update({"data_quality": "DEGRADED_5M", "warning": "使用 5m bar 替代 1m，样本仅作降级观察"})
-    if mapping_confidence != "confirmed" and result.get("data_quality") not in {
+    if mapping_confidence != "confirmed" and not _is_auto_candidate(config) and result.get("data_quality") not in {
         "MISSING_STOCK_FIRST_BAR",
         "BINANCE_KLINE_UNAVAILABLE",
         "NO_PRICE_ANCHOR",
@@ -1550,7 +1689,7 @@ def _basis_backfill_one_window(
         }
     )
     if anchor_price is None or anchor_price <= 0:
-        base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 Friday anchor"})
+        base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少最后交易日价格锚点"})
         return [base]
     try:
         quotes, kline_cache_status = _fetch_window_basis_quotes(
@@ -2555,7 +2694,7 @@ def _vwap(bars: list[NormalizedKline]) -> float | None:
 
 
 def _base_result(ticker: str, symbol: str, market_type: str, mapping_confidence: str, window: WeekendWindow) -> dict[str, Any]:
-    return {
+    result = {
         "week_id": window.week_id,
         "ticker": ticker,
         "binance_symbol": symbol,
@@ -2596,6 +2735,8 @@ def _base_result(ticker: str, symbol: str, market_type: str, mapping_confidence:
         "error_message": "",
         "updated_at": "",
     }
+    result.update(_window_metadata_fields(window))
+    return result
 
 
 def _normalize_kline(item: Any) -> NormalizedKline | None:
@@ -2667,7 +2808,8 @@ def _weekend_chain_quality(
     friday_afterhours_quality: str = "",
     overnight_quality: str = "",
 ) -> str:
-    if str(mapping_confidence or "").strip().lower() != "confirmed":
+    mapping_confidence_text = str(mapping_confidence or "").strip().lower()
+    if mapping_confidence_text != "confirmed" and mapping_confidence_text != "auto_available":
         return "OBSERVE_ONLY"
     if binance_weekend_max is None or binance_weekend_max <= 0:
         return "CONTRACT_MISSING"

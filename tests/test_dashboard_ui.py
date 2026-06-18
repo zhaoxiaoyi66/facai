@@ -204,6 +204,38 @@ def test_sync_refreshed_symbols_replaces_existing_rows_without_adding_hidden_pos
     assert table.loc[table["symbol"] == "MSFT", "price"].iloc[0] == "old"
 
 
+def test_sync_refreshed_symbols_reports_cache_sync_progress() -> None:
+    state = {
+        "dashboard_table_cache": pd.DataFrame(
+            [
+                {"symbol": "NOW", "price": "old"},
+                {"symbol": "MSFT", "price": "old"},
+            ]
+        ),
+    }
+    events = []
+
+    dashboard._sync_refreshed_symbols_to_dashboard_session(
+        ["NOW", "MSFT"],
+        session_state=state,
+        row_loader=lambda symbol: {"symbol": symbol, "price": f"new-{symbol}"},
+        progress_callback=events.append,
+    )
+
+    assert [event["phase"] for event in events] == ["dashboard_cache_sync"] * 4
+    assert [event["index"] for event in events] == [0, 1, 1, 2]
+    assert events[-1]["total"] == 2
+    assert state["dashboard_table_cache"]["price"].tolist() == ["new-NOW", "new-MSFT"]
+
+
+def test_dashboard_refresh_clears_progress_after_cache_sync() -> None:
+    source = inspect.getsource(dashboard._refresh_dashboard_cache_for_mode)
+
+    assert "progress_callback=_render_sync_progress" in source
+    assert "progress_slot.empty()" in source
+    assert "_refresh_done_html(progress_total)" not in source
+
+
 def test_daily_technical_skipped_symbols_are_synced_to_dashboard_table() -> None:
     result = {
         "mode": "DAILY_TECHNICAL",
@@ -215,6 +247,19 @@ def test_daily_technical_skipped_symbols_are_synced_to_dashboard_table() -> None
     }
 
     assert dashboard._successful_refresh_symbols(result) == ["NOW", "MSFT"]
+
+
+def test_dashboard_cache_sync_skips_noop_daily_technical_skips() -> None:
+    result = {
+        "mode": "DAILY_TECHNICAL",
+        "ticker_results": [
+            {"ticker": "NOW", "status": "skipped", "source": ""},
+            {"ticker": "MSFT", "status": "skipped", "source": "latest_close_sync"},
+            {"ticker": "NVDA", "status": "success"},
+        ],
+    }
+
+    assert dashboard._dashboard_cache_sync_symbols(result) == ["MSFT", "NVDA"]
 
 
 def test_dashboard_star_marks_sort_before_unstarred_without_changing_row_fields(tmp_path) -> None:

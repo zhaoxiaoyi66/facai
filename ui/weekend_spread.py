@@ -73,10 +73,7 @@ from data.tradingview_price_cache import (
 from settings import load_watchlist
 
 
-RISK_NOTICE = (
-    "V1 仅用于周末价差观察和历史统计，不构成套利建议。Binance 映射价格不等于真实美股可成交价格；"
-    "价差可能来自流动性、点差、资金费率、映射误差或币种单位差异。"
-)
+RISK_NOTICE = "Binance 映射价格不等于真实美股可成交价格，本页仅用于观察价差，不构成套利建议。"
 LARGE_WEEKEND_PREMIUM_PCT = 1.5
 
 TAB_REALTIME = "实时观察"
@@ -179,7 +176,7 @@ def render() -> None:
           <div>
             <span class="zhx-eyebrow">ZHX RESEARCH</span>
             <h1>周末价差观察台</h1>
-            <p>观察周五盘后收盘价、Binance 周末最高价和周一夜盘首分钟价格之间的传导关系。</p>
+            <p>观察本周最后交易日盘后收盘价、Binance 周末最高价和下周第一个交易日夜盘首分钟价格之间的传导关系。</p>
           </div>
         </section>
         """,
@@ -200,43 +197,71 @@ def render() -> None:
         _render_mapping_tab(rows, mapping, mapping_counts)
 
 
+def _weekend_scope_tickers(watchlist: list[str]) -> list[str]:
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for item in watchlist or []:
+        ticker = str(item or "").strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        tickers.append(ticker)
+        seen.add(ticker)
+    return tickers
+
+
 def _render_realtime_tab(
     watchlist: list[str],
     mapping: dict[str, dict],
 ) -> tuple[list[dict], dict[str, int]]:
     st.subheader("实时观察")
-    refresh_options = _render_realtime_action_bar()
+    st.caption("观察当前 Binance 合约价格相对美股盘后锚点的偏离，不展示后台调试字段。")
+    status_slot = st.empty()
+    deviation_slot = st.empty()
+    action_slot = st.empty()
+    table_slot = st.empty()
+    advanced_slot = st.empty()
+    with action_slot.container():
+        refresh_options = _render_realtime_action_bar()
     rows, cache_status = _build_weekend_spread_rows_with_feedback(watchlist, mapping=mapping, refresh_options=refresh_options)
     st.session_state["weekend_realtime_rows"] = rows
     st.session_state["weekend_realtime_cache_status"] = cache_status
 
     mapping_counts = _mapping_counts(rows, mapping)
 
-    _render_primary_kpis(rows, mapping_counts)
-    _render_data_status_cards(rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH, cache_status)
-    _render_strongest_signal(rows, mapping_counts)
+    with status_slot.container():
+        _render_realtime_status_strip(rows, mapping_counts, cache_status)
+    with deviation_slot.container():
+        _render_largest_deviation(rows, mapping_counts)
 
     main_rows = _default_live_rows(rows)
-    if _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
-        _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
-    elif main_rows:
-        st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
-        _render_row_details(main_rows)
-    else:
-        st.info("当前没有可展示的实时价差。若已有映射，请刷新价格或查看映射状态。")
+    with table_slot.container():
+        st.markdown("#### 实时价差表")
+        if _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
+            _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+        elif main_rows:
+            st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
+            _render_row_details(main_rows)
+        else:
+            st.info("当前没有可展示的实时价差。若已有映射，请刷新实时观察或查看映射状态。")
 
-    _render_paper_trade_area(rows, mapping)
-    _render_no_mapping_expander(rows)
+    with advanced_slot.container():
+        with st.expander("高级设置 / 缓存管理", expanded=False):
+            _render_paper_trade_area(rows, mapping)
+            _render_no_mapping_expander(rows)
     return rows, mapping_counts
 
 
 def _render_realtime_action_bar() -> dict[str, bool]:
-    col_cache, col_refresh, col_anchor, col_force_anchor, col_note = st.columns([1, 1, 1, 1, 3])
-    use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
-    refresh = col_refresh.button("刷新 Binance 价格", width="stretch", key="weekend_spread_refresh")
-    anchor_refresh = col_anchor.button("更新周五盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
-    force_anchor = col_force_anchor.button("强制重建锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
-    col_note.caption("Binance 价格和周五盘后锚点已解耦：刷新 Binance 不会重新请求盘后数据。")
+    col_refresh, col_anchor = st.columns([1, 1])
+    refresh = col_refresh.button("刷新实时观察", width="stretch", type="primary", key="weekend_spread_refresh")
+    anchor_refresh = col_anchor.button("更新盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
+    use_cache = False
+    force_anchor = False
+    with st.expander("数据源与补数工具", expanded=False):
+        col_cache, col_force_anchor = st.columns([1, 1])
+        use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
+        force_anchor = col_force_anchor.button("强制重建锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
+        st.caption("Binance 价格和最后交易日盘后锚点已解耦：刷新实时观察不会强制重建盘后锚点。")
     return {
         "use_cache": bool(use_cache),
         "refresh": bool(refresh),
@@ -280,7 +305,7 @@ def _build_weekend_spread_rows_with_feedback(
         total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
         progress_bar = st.progress(0.0)
         status_slot = st.empty()
-        status_slot.caption(f"Updating Friday afterhours anchors: {total} symbols.")
+        status_slot.caption(f"Updating last trading day afterhours anchors: {total} symbols.")
 
         def update_anchor_progress(completed: int, total_count: int, ticker: str) -> None:
             ratio = completed / max(total_count, 1)
@@ -522,6 +547,53 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
         st.caption(f"{off_universe_note}；local 配置尚未创建。")
 
 
+def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, int], cache_status: dict | None = None) -> None:
+    afterhours_counts = _afterhours_counts(rows)
+    status_counts = _realtime_status_counts(rows)
+    items = [
+        ("可观察标的", f"{mapping_counts['price_row_count']} / {mapping_counts['universe_total']}"),
+        ("异常偏离", str(status_counts["review"] + status_counts["focus"])),
+        ("Binance 数据", _binance_status_text(rows, mapping_counts["universe_mapping_count"])),
+        ("盘后锚点", f"{afterhours_counts['available']} / {afterhours_counts['mapped']} 已缓存"),
+        ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status)),
+    ]
+    text = " ｜ ".join(f"{label}：{value}" for label, value in items)
+    st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
+
+
+def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+    row = _strongest_signal_row(rows)
+    if row is None:
+        if mapping_counts.get("universe_mapping_count", 0) <= 0:
+            st.info("当前没有可拉取 Binance 价格的映射。先配置股票代码到 Binance 合约代码的映射后，系统会自动读取价格。")
+        else:
+            st.info("暂无实时价差。若映射存在但没有价格，请刷新实时观察或查看映射状态。")
+        return
+
+    status_key = _realtime_row_status_key(row)
+    heading = "当前最大异常偏离" if status_key == "review" else "当前最大偏离"
+    spread = _afterhours_spread_text(row.get("spread_vs_afterhours_pct") if row.get("spread_vs_afterhours_pct") is not None else row.get("spread_pct"))
+    status_label = _realtime_row_status_label(row)
+    reason = _realtime_row_status_reason(row)
+    tags = [
+        f"映射：{_mapping_display_label_for_row(row)}",
+        f"锚点：{_anchor_display_label_for_row(row)}",
+        f"数据：{status_label}",
+    ]
+    st.markdown(
+        f"""
+        <section class="zhx-card">
+          <span class="zhx-eyebrow">{escape(heading)}</span>
+          <h3>{escape(str(row.get("ticker") or ""))} &nbsp; {escape(spread)}</h3>
+          <p>Binance 相对盘后锚点</p>
+          <p>{escape(" ｜ ".join(tags))}</p>
+          <p>{escape(reason)}</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     row = _strongest_signal_row(rows)
     if row is None:
@@ -536,9 +608,9 @@ def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -
     st.markdown(
         f"""
         <section class="zhx-card">
-          <span class="zhx-eyebrow">当前最强信号</span>
+          <span class="zhx-eyebrow">当前最大偏离</span>
           <h3>{escape(str(row.get("ticker") or ""))} · {escape(spread)}</h3>
-          <p>{escape(str(row.get("spread_direction") or ""))}｜{escape(str(row.get("alert_level_cn") or ""))}｜映射：{escape(str(row.get("mapping_confidence") or "unknown"))}</p>
+          <p>{escape(str(row.get("spread_direction") or ""))}｜{escape(str(row.get("alert_level_cn") or ""))}｜映射：{escape(_mapping_display_label_for_row(row))}</p>
           <p>{escape(risk)}</p>
         </section>
         """,
@@ -585,7 +657,7 @@ def _render_weekly_peak_cards(log_snapshot: dict) -> None:
 
 
 def _render_monday_tab(log_snapshot: dict) -> None:
-    st.subheader("周一验证")
+    st.subheader("下周首个交易日验证")
     summaries = list(log_snapshot.get("summaries") or [])
     if not summaries:
         st.info("暂无可验证的本周总结。先在“本周记录”里生成 summary。")
@@ -602,7 +674,7 @@ def _render_monday_tab(log_snapshot: dict) -> None:
         key="weekend_monday_reference_type",
     )
     monday_price = cols[1].number_input(
-        "周一验证价（非 Binance 实时价）",
+        "下周首个交易日验证价（非 Binance 实时价）",
         min_value=0.0,
         value=0.0,
         step=0.01,
@@ -618,7 +690,7 @@ def _render_monday_tab(log_snapshot: dict) -> None:
     notes = cols[3].text_input("验证备注", value="", key="weekend_monday_notes")
     if st.button("保存/计算验证结果", width="stretch", key="weekend_save_monday_outcome"):
         if monday_price <= 0:
-            st.warning("请输入有效的周一验证价。")
+            st.warning("请输入有效的下周首个交易日验证价。")
         else:
             updated = update_monday_outcome(
                 str(selected_summary.get("ticker") or ""),
@@ -640,7 +712,7 @@ def _render_history_tab() -> None:
     st.subheader("历史规律")
     stats = build_history_stats()
     if not stats:
-        st.info("暂无历史验证记录。记录周末样本并完成周一验证后，这里会显示命中率和平均捕捉比例。")
+        st.info("暂无历史验证记录。记录周末样本并完成下周首个交易日验证后，这里会显示命中率和平均捕捉比例。")
         return
     st.dataframe(_history_frame(stats), width="stretch", hide_index=True)
 
@@ -648,8 +720,8 @@ def _render_history_tab() -> None:
 def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
     st.subheader("历史回测")
     st.warning(
-        "正式回测口径：周五美股盘后收盘价 → Binance 周末合约最高价 → "
-        "周一美股夜盘首分钟收盘价。系统统计 Binance 周末冲高幅度、"
+        "正式回测口径：本周最后交易日盘后收盘价 → Binance 周末合约最高价 → "
+        "下周第一个交易日美股夜盘首分钟收盘价。系统统计 Binance 周末冲高幅度、"
         "夜盘首分钟兑现程度和最终传导涨幅。"
     )
     include_unconfirmed = st.checkbox(
@@ -671,13 +743,6 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         },
     )
     all_tickers = ["NVDA"]
-    anchors = _backtest_anchor_mapping(all_tickers, weeks=4)
-    preliminary = build_weekend_backtest_preflight(
-        all_tickers,
-        mapping=effective_mapping,
-        anchors=anchors,
-        include_unconfirmed=include_unconfirmed,
-    )
     options = ["NVDA"]
     opening_anchor = "overnight"
     cols = st.columns(4)
@@ -685,7 +750,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
     open_window = 2
     cols[2].markdown("**夜盘窗口**  \n20:00-20:02 ET")
-    cols[3].markdown("**开盘锚点**  \n周一 08:00 HKT / 美股夜盘 20:00 ET")
+    cols[3].markdown("**开盘锚点**  \n下周第一个交易日夜盘 / 美东 20:00 ET")
     run_tickers = [selected]
     anchors = _backtest_anchor_mapping(run_tickers or all_tickers, weeks=weeks)
     preflight = build_weekend_backtest_preflight(
@@ -695,12 +760,18 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         include_unconfirmed=include_unconfirmed,
         ticker_filter=selected,
     )
+    preliminary = build_weekend_backtest_preflight(
+        all_tickers,
+        mapping=effective_mapping,
+        anchors=_backtest_anchor_mapping(all_tickers, weeks=weeks),
+        include_unconfirmed=include_unconfirmed,
+    )
     _render_backtest_preflight(preflight)
     if not preflight.get("can_run"):
         st.warning(_backtest_block_text(str(preflight.get("primary_block_reason") or "")))
     op_cols = st.columns([2, 1, 1, 2])
     run_clicked = op_cols[0].button(
-        "运行近 4 周回测",
+        _backtest_run_button_label(weeks),
         width="stretch",
         key="weekend_run_backtest",
         disabled=not bool(preflight.get("can_run")),
@@ -711,7 +782,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
         st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
     if self_check_clicked:
-        with st.spinner("正在检查 NVDA 周一夜盘首分钟 1m bar..."):
+        with st.spinner("正在检查 NVDA 下周第一个交易日夜盘首分钟 1m bar..."):
             _render_overnight_provider_self_check(build_overnight_provider_self_check("NVDA"))
     _render_tradingview_backfill_tools()
     if not preflight.get("can_run"):
@@ -804,7 +875,10 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         elif cached_result.get("error_message"):
             st.warning(f"上次运行失败：{cached_result.get('error_message')}")
         else:
-            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。当前固定使用周一 08:00 HKT / 美股夜盘 20:00 ET 后第一根有效价格。")
+            st.info(
+                f"尚未运行历史回测。配置映射后点击“{_backtest_run_button_label(weeks)}”。"
+                "当前固定使用下周第一个交易日夜盘 20:00 ET 后第一根有效价格。"
+            )
         _render_backfill_audit_area_v2(watchlist, mapping, anchors)
         _render_backtest_advanced_records()
         return
@@ -831,29 +905,37 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
 def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
     st.subheader("历史回测")
     st.caption(
-        "正式回测口径：周五美股盘后收盘价 → Binance 周末合约最高价 → 周一美股夜盘首分钟收盘价。"
+        "正式回测口径：本周最后交易日盘后收盘价 → Binance 周末合约最高价 → 下周第一个交易日美股夜盘首分钟收盘价。"
         "系统统计 Binance 周末冲高幅度、夜盘首分钟兑现程度和最终传导涨幅。"
     )
 
     effective_mapping = {str(key or "").strip().upper(): dict(value or {}) for key, value in (mapping or {}).items()}
-    effective_mapping.setdefault(
-        "NVDA",
-        {
-            "enabled": True,
-            "binance_symbol": "NVDAUSDT",
-            "market_type": "usdm_futures",
-            "quote_currency": "USDT",
-            "unit_multiplier": 1,
-            "mapping_confidence": "confirmed",
-        },
-    )
-    all_tickers = ["NVDA"]
-    options = ["NVDA"]
+    all_tickers = _weekend_scope_tickers(watchlist)
+    if "NVDA" in all_tickers:
+        effective_mapping.setdefault(
+            "NVDA",
+            {
+                "enabled": True,
+                "binance_symbol": "NVDAUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "confirmed",
+            },
+        )
+    if not all_tickers:
+        st.info("当前观察名单为空。周末价差只读取当前观察名单里的股票；请先在观察池添加标的。")
+        with st.expander("数据源与补数工具", expanded=False):
+            _render_tradingview_backfill_tools()
+        return
+    options = all_tickers
     opening_anchor = "overnight"
     open_window = 2
-    selected_default = str(st.session_state.get("weekend_backtest_ticker") or "NVDA")
-    selected = selected_default if selected_default in options else "NVDA"
-    weeks = int(st.session_state.get("weekend_backtest_weeks") or 4)
+    selected_default = str(st.session_state.get("weekend_backtest_ticker") or options[0]).strip().upper()
+    selected = selected_default if selected_default in options else options[0]
+    if st.session_state.get("weekend_backtest_ticker") not in options:
+        st.session_state["weekend_backtest_ticker"] = selected
+    weeks = _safe_backtest_weeks(st.session_state.get("weekend_backtest_weeks"))
     include_unconfirmed = bool(st.session_state.get("weekend_backtest_include_unconfirmed") or False)
     anchors = _backtest_anchor_mapping([selected], weeks=weeks)
     preflight = build_weekend_backtest_preflight(
@@ -866,7 +948,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     preliminary = build_weekend_backtest_preflight(
         all_tickers,
         mapping=effective_mapping,
-        anchors=_backtest_anchor_mapping(all_tickers, weeks=4),
+        anchors=_backtest_anchor_mapping(all_tickers, weeks=weeks),
         include_unconfirmed=include_unconfirmed,
     )
     run_clicked = False
@@ -883,7 +965,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         selected = cols[0].selectbox("标的", options, key="weekend_backtest_ticker")
         weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=weeks, step=1, key="weekend_backtest_weeks"))
         cols[2].markdown("**夜盘窗口**  \n20:00-20:02 ET")
-        cols[3].markdown("**开盘锚点**  \n周一 08:00 HKT / 美股夜盘 20:00 ET")
+        cols[3].markdown("**开盘锚点**  \n下周第一个交易日夜盘 / 美东 20:00 ET")
         anchors = _backtest_anchor_mapping([selected], weeks=weeks)
         preflight = build_weekend_backtest_preflight(
             [selected],
@@ -897,7 +979,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             st.warning(_backtest_block_text(str(preflight.get("primary_block_reason") or "")))
         op_cols = st.columns([2, 1, 1, 2])
         run_clicked = op_cols[0].button(
-            "运行近 4 周回测",
+            _backtest_run_button_label(weeks),
             width="stretch",
             key="weekend_run_backtest",
             disabled=not bool(preflight.get("can_run")),
@@ -908,8 +990,8 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
             st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
         if self_check_clicked:
-            with st.spinner("正在检查 NVDA 周一夜盘首分钟 1m bar..."):
-                _render_overnight_provider_self_check(build_overnight_provider_self_check("NVDA"))
+            with st.spinner(f"正在检查 {selected} 下周第一个交易日夜盘首分钟 1m bar..."):
+                _render_overnight_provider_self_check(build_overnight_provider_self_check(selected))
 
     if not preflight.get("can_run"):
         st.session_state["weekend_backtest_results"] = []
@@ -1002,7 +1084,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         if cached_result.get("error_message"):
             st.warning(f"上次运行失败：{cached_result.get('error_message')}")
         else:
-            st.info("尚未运行历史回测。展开“回测设置”后点击“运行近 4 周回测”。")
+            st.info(_backtest_empty_prompt(weeks))
         with st.expander("数据源与补数工具", expanded=False):
             _render_tradingview_backfill_tools()
         _render_backfill_audit_area_v2(watchlist, mapping, anchors)
@@ -1017,9 +1099,10 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
 
     review_rows = _weekend_review_rows(results)
     ok_review_rows = _ok_weekend_review_rows(review_rows)
-    _render_weekend_review_core_card(review_rows)
+    display_weeks = _backtest_result_weeks(cached_result, weeks)
+    _render_weekend_review_core_card(review_rows, weeks=display_weeks)
     _render_weekend_review_kpis(review_rows)
-    st.subheader("近 4 周传导明细")
+    st.subheader(_weekend_review_detail_title(display_weeks))
     _render_weekend_review_table(review_rows)
     with st.expander("数据质量 / 排除原因", expanded=False):
         if not ok_review_rows:
@@ -1058,7 +1141,7 @@ def _current_backtest_results(
         if configured_symbol and row_symbol and configured_symbol != row_symbol:
             continue
         confidence = str(config.get("mapping_confidence") or row.get("mapping_confidence") or "").strip().lower()
-        if not include_unconfirmed and confidence != "confirmed":
+        if not include_unconfirmed and confidence != "confirmed" and not _is_auto_mapping_config(config):
             continue
         filtered.append(row)
     return filtered
@@ -1067,7 +1150,7 @@ def _current_backtest_results(
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
     reason = _clean_self_check_text(result.get("reason"), "自检完成")
     if result.get("ok"):
-        st.success("夜盘数据源自检通过：已读取 NVDA 周一夜盘首分钟 1m bar。")
+        st.success("夜盘数据源自检通过：已读取 NVDA 下周第一个交易日夜盘首分钟 1m bar。")
     else:
         st.error(f"夜盘数据源自检失败：{reason}")
     rows = [
@@ -1159,7 +1242,7 @@ def _render_tradingview_backfill_tools() -> None:
         if scan_rows:
             st.dataframe(pd.DataFrame(scan_rows), width="stretch", hide_index=True)
 
-        st.markdown("**手动补美股夜盘首分钟价格**")
+        st.markdown("**手动补下周第一个交易日美股夜盘首分钟价格**")
         manual_cols = st.columns([1, 1, 1, 1])
         manual_symbol = manual_cols[0].text_input("股票", value="NVDA", key="weekend_manual_p2_symbol")
         manual_time = manual_cols[1].text_input("时间 ET", value=_latest_overnight_session_text(), key="weekend_manual_p2_time")
@@ -1194,6 +1277,33 @@ def _tradingview_event_metric(row: dict[str, object]) -> str:
 def _latest_overnight_session_text() -> str:
     window = recent_weekend_windows(weeks=1)[0]
     return window.end_et.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_backtest_weeks(value: object, default: int = 4) -> int:
+    try:
+        weeks = int(value or default)
+    except (TypeError, ValueError):
+        weeks = default
+    return max(1, min(12, weeks))
+
+
+def _backtest_run_button_label(weeks: object) -> str:
+    return f"运行近 {_safe_backtest_weeks(weeks)} 周回测"
+
+
+def _backtest_empty_prompt(weeks: object) -> str:
+    return f"尚未运行历史回测。展开“回测设置”后点击“{_backtest_run_button_label(weeks)}”。"
+
+
+def _weekend_review_detail_title(weeks: object) -> str:
+    return f"近 {_safe_backtest_weeks(weeks)} 周传导明细"
+
+
+def _backtest_result_weeks(cached_result: dict[str, object] | None, selected_weeks: object) -> int:
+    params = (cached_result or {}).get("params")
+    if isinstance(params, dict) and params.get("weeks") is not None:
+        return _safe_backtest_weeks(params.get("weeks"), default=_safe_backtest_weeks(selected_weeks))
+    return _safe_backtest_weeks(selected_weeks)
 
 
 def _render_backtest_preflight(preflight: dict[str, object]) -> None:
@@ -1331,13 +1441,15 @@ def _backtest_block_text(reason: str) -> str:
         "SYMBOL_INVALID": "symbol 无效，请先在映射管理里复核。",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用。",
         "FUTURES_UNAVAILABLE": "Futures 数据源不可用。",
-        "NO_PRICE_ANCHOR": "缺少价格锚点：请先刷新实时观察或更新周五盘后锚点。",
+        "NO_PRICE_ANCHOR": "缺少价格锚点：请先刷新实时观察或更新最后交易日盘后锚点。",
         "PROVIDER_ERROR": "数据源错误，请稍后重试。",
     }.get(reason, reason or "当前没有可回测标的。")
 
 
 def _backtest_mode_text(value: object) -> str:
     text = str(value or "").strip().lower()
+    if text in {"auto usable", "auto_usable", "auto"}:
+        return "自动可用"
     if text in {"include candidate", "include_candidates", "include unconfirmed"}:
         return "包含未确认映射"
     if text in {"confirmed only", "confirmed_only", "confirmed"}:
@@ -1378,9 +1490,9 @@ def _data_quality_text(value: object) -> str:
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
         "OBSERVE_ONLY": "观察样本，不计入正式胜率",
         "OBSERVE_ANCHOR_ONLY": "锚点观察样本，不计入正式胜率",
-        "NO_AFTERHOURS_CLOSE": "缺少周五盘后收盘价",
+        "NO_AFTERHOURS_CLOSE": "缺少本周最后交易日盘后收盘价",
         "REGULAR_CLOSE_FALLBACK": "常规收盘回退，仅观察",
-        "MISSING_OVERNIGHT_FIRST_1M": "缺少美股夜盘首分钟 1m K 线",
+        "MISSING_OVERNIGHT_FIRST_1M": "缺少下周第一个交易日美股夜盘首分钟 1m K 线",
         "OVERNIGHT_PROVIDER_MISSING": "美股夜盘数据源未配置",
         "TRADINGVIEW_WEBHOOK_SAMPLE": "TradingView Webhook 样本",
         "TRADINGVIEW_CSV_SAMPLE": "TradingView CSV 样本",
@@ -1389,7 +1501,7 @@ def _data_quality_text(value: object) -> str:
         "ALPACA_BOATS_SAMPLE": "Alpaca BOATS 样本",
         "BOATS_DELAY_PENDING": "BOATS 历史数据可能延迟",
         "ALPACA_BOATS_PERMISSION": "Alpaca BOATS 权限不足",
-        "MISSING_BOATS_FIRST_1M": "缺少 BOATS 夜盘首分钟 1m K线",
+        "MISSING_BOATS_FIRST_1M": "缺少下周第一个交易日 BOATS 夜盘首分钟 1m K线",
         "PROVIDER_ERROR": "provider 报错",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
@@ -1608,7 +1720,7 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
         f"降级样本 {quality_counts['degraded']}｜排除样本 {quality_counts['excluded']}"
     )
     if summary.get("summary_quality") == "OBSERVE":
-        st.info("当前显示的是观察样本统计：已读取往期周五盘后/收盘锚点和周末合约价格，但缺少美股开盘第一根有效价格，不计入正式胜率。")
+        st.info("当前显示的是观察样本统计：已读取往期最后交易日盘后/收盘锚点和周末合约价格，但缺少下周第一个交易日美股夜盘首分钟价格，不计入正式胜率。")
 
 
 def _latest_weekend_review_row(review_rows: list[dict]) -> dict | None:
@@ -1659,15 +1771,15 @@ def _p2_source_summary(row: dict) -> str:
     return source
 
 
-def _render_weekend_review_core_card(review_rows: list[dict]) -> None:
+def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4) -> None:
     row = _latest_weekend_review_row(review_rows)
     if not row:
-        st.info("还没有可展示的三价样本。展开“回测设置”后运行近 4 周回测。")
+        st.info(f"还没有可展示的三价样本。展开“回测设置”后{_backtest_run_button_label(weeks)}。")
         return
     metrics = [
         ("Binance 周末冲高%", _percent_or_missing(row.get("binance_premium_pct"), row)),
         ("夜盘相对 Binance 高点%", _percent_or_missing(row.get("overnight_vs_binance_pct"), row)),
-        ("夜盘相对周五盘后%", _percent_or_missing(row.get("overnight_vs_afterhours_pct"), row)),
+        ("夜盘相对最后交易日盘后%", _percent_or_missing(row.get("overnight_vs_afterhours_pct"), row)),
         ("周末高点兑现率%", _percent_or_missing(row.get("capture_pct"), row)),
     ]
     metric_html = "".join(
@@ -1683,7 +1795,7 @@ def _render_weekend_review_core_card(review_rows: list[dict]) -> None:
         f"""
         <div class="weekend-core-card">
           <div class="weekend-core-title">{escape(str(row.get("ticker") or ""))} · {escape(str(row.get("week_id") or ""))}</div>
-          <div class="weekend-core-flow-label">周五盘后收盘 → Binance 周末最高 → 周一夜盘首分钟</div>
+          <div class="weekend-core-flow-label">最后交易日盘后收盘 → Binance 周末最高 → 下周第一个交易日夜盘首分钟</div>
           <div class="weekend-core-flow">
             {escape(_money_or_missing(row.get("friday_afterhours_close"), "缺少 P0"))}
             → {escape(_money_or_missing(row.get("binance_price"), "缺少 P1"))}
@@ -1700,7 +1812,7 @@ def _render_weekend_review_core_card(review_rows: list[dict]) -> None:
         unsafe_allow_html=True,
     )
     if _number(row.get("broker_open_close")) is None:
-        st.caption("缺少夜盘首分钟价格，只能观察 Binance 周末冲高。")
+        st.caption("缺少下周第一个交易日夜盘首分钟价格，只能观察 Binance 周末冲高。")
     elif str(row.get("data_quality") or "").strip().upper() == "P0_UNVERIFIED":
         st.caption("P2 已来自 Alpaca BOATS，P0 仍需验证盘后原始 bar。")
 
@@ -1771,33 +1883,33 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
     }
     if qualities & {"OVERNIGHT_PROVIDER_MISSING"}:
         return (
-            "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
+            "当前只有观察样本：已读取最后交易日盘后收盘价和 Binance 周末最高价，"
             "但美股夜盘数据源未配置，不计入正式统计。"
         )
     if qualities & {"MISSING_OVERNIGHT_FIRST_1M"}:
         return (
-            "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
-            "但缺少美股夜盘首分钟 1m K 线，不计入正式统计。"
+            "当前只有观察样本：已读取最后交易日盘后收盘价和 Binance 周末最高价，"
+            "但缺少下周第一个交易日美股夜盘首分钟 1m K 线，不计入正式统计。"
         )
     if qualities & {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
-        return "当前只有观察样本：部分周次缺少周五盘后收盘价，已用常规收盘价回退，不计入正式统计。"
+        return "当前只有观察样本：部分周次缺少最后交易日盘后收盘价，已用常规收盘价回退，不计入正式统计。"
     if qualities & {"P0_UNVERIFIED"}:
         return "当前只有观察样本：P0 盘后价格缺少可验证的 19:55-20:00 ET 原始 1m bar 证据，不计入正式统计。"
     if qualities & {"NO_AFTERHOURS_CLOSE"}:
-        return "当前没有完整传导链样本。主要原因：缺少周五盘后收盘价。"
+        return "当前没有完整传导链样本。主要原因：缺少本周最后交易日盘后收盘价。"
     if raw_qualities & {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}:
         return (
-            "当前没有正式样本。主要原因：缺少券商周一夜盘 20:00 ET 第一根 1m bar。"
-            "请检查 IBKR 夜盘历史 1m 数据权限。"
+            "当前没有正式样本。主要原因：缺少下周第一个交易日夜盘 20:00 ET 第一根 1m bar。"
+            "请检查夜盘历史 1m 数据权限。"
         )
     if raw_qualities & {"HOLIDAY_OR_NO_SESSION"}:
-        return "当前没有正式样本。主要原因：遇到美国假期或没有周一夜盘 session。"
+        return "当前没有正式样本。主要原因：遇到美国假期或没有下周第一个交易日夜盘 session。"
     if qualities == {"MAPPING_MISSING"}:
         return "当前没有正式样本。主要原因：映射未确认或未配置；请先确认 NVDA -> NVDAUSDT。"
     if qualities == {"CONTRACT_MISSING"}:
         return "当前没有正式样本。主要原因：Binance USDT-M 合约周末 1m K 线缺失。"
     if qualities == {"STOCK_MISSING"}:
-        return "当前没有正式样本。主要原因：缺少券商夜盘首分钟价格。"
+        return "当前没有正式样本。主要原因：缺少下周第一个交易日券商夜盘首分钟价格。"
     return "当前没有正式样本。请展开数据质量详情，查看每周请求区间、返回 bar 数量和排除原因。"
 
 
@@ -1820,6 +1932,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
         friday_afterhours_close = _first_number(
             row,
             (
+                "last_trading_day_afterhours_close",
                 "friday_afterhours_close",
                 "afterhours_reference_price",
             ),
@@ -1845,6 +1958,11 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "week_id": week_id,
             "ticker": ticker,
             "binance_symbol": str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper(),
+            "last_trading_day": str(row.get("last_trading_day") or "").strip(),
+            "last_trading_day_is_friday": bool(row.get("last_trading_day_is_friday", True)),
+            "last_trading_day_early_close": bool(row.get("last_trading_day_early_close") or False),
+            "holiday_shifted_overnight_session": bool(row.get("holiday_shifted_overnight_session") or row.get("holiday_rollover") or False),
+            "p2_session_start_et": _weekend_review_short_time(row.get("p2_session_start_et") or row.get("monday_reference_time_et")),
             "friday_afterhours_close": friday_afterhours_close,
             "friday_afterhours_time": _weekend_review_afterhours_time(row),
             "friday_afterhours_provider": str(row.get("friday_afterhours_provider") or row.get("friday_afterhours_source") or ""),
@@ -1875,7 +1993,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "capture_pct": capture_pct,
             "data_quality": data_quality,
             "sample_status": _weekend_review_sample_status(data_quality, row),
-            "status": "假期顺延样本" if bool(row.get("holiday_rollover")) and data_quality == "OK" else _weekend_review_status(data_quality, capture_pct),
+            "status": _weekend_review_status(data_quality, capture_pct),
             "failure_reason": _weekend_review_failure_reason(row, data_quality),
             "raw_row": row,
         }
@@ -1936,8 +2054,9 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "周次",
         "股票",
         "Binance 合约",
+        "本周最后交易日",
         "常规收盘价",
-        "周五盘后收盘价",
+        "最后交易日盘后收盘价",
         "P0较常规%",
         "P0 来源",
         "P0 请求区间",
@@ -1951,12 +2070,12 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "P0失败原因",
         "Binance 周末最高价",
         "Binance 高点时间",
-        "美股夜盘首分钟收盘",
+        "下周首个交易日夜盘首分钟收盘",
         "P2 来源",
-        "夜盘首分钟时间",
+        "下周首个交易日夜盘时间",
         "Binance 周末冲高%",
         "夜盘相对 Binance 高点%",
-        "夜盘相对周五盘后%",
+        "夜盘相对最后交易日盘后%",
         "周末高点兑现率%",
         "样本状态",
         "状态",
@@ -1970,8 +2089,9 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "周次": row.get("week_id"),
                 "股票": row.get("ticker"),
                 "Binance 合约": row.get("binance_symbol") or "暂无映射",
+                "本周最后交易日": row.get("last_trading_day") or "未返回",
                 "常规收盘价": row.get("regular_close_price"),
-                "周五盘后收盘价": row.get("friday_afterhours_close"),
+                "最后交易日盘后收盘价": row.get("friday_afterhours_close"),
                 "P0较常规%": row.get("p0_vs_regular_close_pct"),
                 "P0 来源": _price_source_text(row.get("friday_afterhours_provider")),
                 "P0 请求区间": row.get("p0_request_window") or "暂无数据",
@@ -1985,12 +2105,12 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "P0失败原因": row.get("p0_failure_reason") or "",
                 "Binance 周末最高价": row.get("binance_price"),
                 "Binance 高点时间": row.get("contract_sample_time") or "暂无数据",
-                "美股夜盘首分钟收盘": row.get("broker_open_close"),
+                "下周首个交易日夜盘首分钟收盘": row.get("broker_open_close"),
                 "P2 来源": _price_source_text(row.get("overnight_provider")),
-                "夜盘首分钟时间": row.get("broker_first_time") or "暂无数据",
+                "下周首个交易日夜盘时间": row.get("broker_first_time") or "暂无数据",
                 "Binance 周末冲高%": row.get("binance_premium_pct"),
                 "夜盘相对 Binance 高点%": row.get("overnight_vs_binance_pct"),
-                "夜盘相对周五盘后%": row.get("overnight_vs_afterhours_pct"),
+                "夜盘相对最后交易日盘后%": row.get("overnight_vs_afterhours_pct"),
                 "周末高点兑现率%": row.get("capture_pct"),
                 "样本状态": row.get("sample_status"),
                 "状态": row.get("status"),
@@ -2013,8 +2133,8 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
             return "color: #047857; font-weight: 800;"
         return "color: #64748b; font-weight: 700;"
 
-    money_columns = ["常规收盘价", "周五盘后收盘价", "P0 选中close", "Binance 周末最高价", "美股夜盘首分钟收盘"]
-    percent_columns = ["P0较常规%", "Binance 周末冲高%", "夜盘相对 Binance 高点%", "夜盘相对周五盘后%", "周末高点兑现率%"]
+    money_columns = ["常规收盘价", "最后交易日盘后收盘价", "P0 选中close", "Binance 周末最高价", "下周首个交易日夜盘首分钟收盘"]
+    percent_columns = ["P0较常规%", "Binance 周末冲高%", "夜盘相对 Binance 高点%", "夜盘相对最后交易日盘后%", "周末高点兑现率%"]
     formatters = {
         column: (lambda value: _money_text(value) if _number(value) is not None else "暂无数据")
         for column in money_columns
@@ -2046,9 +2166,10 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
     columns = [
         "周次",
         "股票",
-        "P0 周五盘后",
+        "本周最后交易日",
+        "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 下周首个交易日夜盘",
         "周末冲高%",
         "高点回落%",
         "最终传导%",
@@ -2062,9 +2183,10 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
             {
                 "周次": row.get("week_id"),
                 "股票": row.get("ticker"),
-                "P0 周五盘后": row.get("friday_afterhours_close"),
+                "本周最后交易日": row.get("last_trading_day") or "未返回",
+                "P0 最后交易日盘后": row.get("friday_afterhours_close"),
                 "P1 Binance 高点": row.get("binance_price"),
-                "P2 夜盘首分钟": row.get("broker_open_close"),
+                "P2 下周首个交易日夜盘": row.get("broker_open_close"),
                 "周末冲高%": row.get("binance_premium_pct"),
                 "高点回落%": row.get("overnight_vs_binance_pct"),
                 "最终传导%": row.get("overnight_vs_afterhours_pct"),
@@ -2082,8 +2204,9 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
         "周次",
         "股票",
         "Binance 合约",
+        "本周最后交易日",
         "常规收盘价",
-        "周五盘后收盘价",
+        "最后交易日盘后收盘价",
         "P0较常规%",
         "P0 来源",
         "P0 请求区间",
@@ -2095,11 +2218,13 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
         "P0 quality",
         "P0 fallback",
         "P0失败原因",
+        "P1 窗口",
         "Binance 周末最高价",
         "Binance 高点时间",
-        "美股夜盘首分钟收盘",
+        "下周首个交易日夜盘首分钟收盘",
         "P2 来源",
-        "夜盘首分钟时间",
+        "P2 下周首个交易日夜盘开始",
+        "下周首个交易日夜盘时间",
         "数据质量",
         "状态",
         "失败原因",
@@ -2112,8 +2237,9 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "周次": row.get("week_id"),
                 "股票": row.get("ticker"),
                 "Binance 合约": row.get("binance_symbol") or "暂无映射",
+                "本周最后交易日": row.get("last_trading_day") or "未返回",
                 "常规收盘价": row.get("regular_close_price"),
-                "周五盘后收盘价": row.get("friday_afterhours_close"),
+                "最后交易日盘后收盘价": row.get("friday_afterhours_close"),
                 "P0较常规%": row.get("p0_vs_regular_close_pct"),
                 "P0 来源": _price_source_text(row.get("friday_afterhours_provider")),
                 "P0 请求区间": row.get("p0_request_window") or "未返回",
@@ -2125,11 +2251,13 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "P0 quality": _price_source_text(row.get("p0_quality")),
                 "P0 fallback": "是" if row.get("p0_is_fallback") else "否",
                 "P0失败原因": row.get("p0_failure_reason") or "",
+                "P1 窗口": row.get("binance_window") or "未返回",
                 "Binance 周末最高价": row.get("binance_price"),
                 "Binance 高点时间": row.get("contract_sample_time") or "未返回",
-                "美股夜盘首分钟收盘": row.get("broker_open_close"),
+                "下周首个交易日夜盘首分钟收盘": row.get("broker_open_close"),
                 "P2 来源": _price_source_text(row.get("overnight_provider")),
-                "夜盘首分钟时间": row.get("broker_first_time") or "未返回",
+                "P2 下周首个交易日夜盘开始": row.get("p2_session_start_et") or "未返回",
+                "下周首个交易日夜盘时间": row.get("broker_first_time") or "未返回",
                 "数据质量": _data_quality_text(row.get("data_quality")),
                 "状态": row.get("status"),
                 "失败原因": row.get("failure_reason") or "",
@@ -2166,14 +2294,14 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
         return text if text else "待计算"
 
     money_columns = [
-        "P0 周五盘后",
+        "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 下周首个交易日夜盘",
         "常规收盘价",
-        "周五盘后收盘价",
+        "最后交易日盘后收盘价",
         "P0 选中close",
         "Binance 周末最高价",
-        "美股夜盘首分钟收盘",
+        "下周首个交易日夜盘首分钟收盘",
     ]
     percent_columns = [
         "周末冲高%",
@@ -2183,7 +2311,7 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
         "P0较常规%",
         "Binance 周末冲高%",
         "夜盘相对 Binance 高点%",
-        "夜盘相对周五盘后%",
+        "夜盘相对最后交易日盘后%",
         "周末高点兑现率%",
     ]
     formatters = {column: money_format for column in money_columns if column in frame.columns}
@@ -2209,6 +2337,7 @@ def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
         for row in review_rows
         if str(row.get("data_quality") or "").strip().upper() == "OK"
         and not bool(row.get("holiday_rollover"))
+        and not bool(row.get("holiday_shifted_overnight_session"))
     ]
 
 
@@ -2328,17 +2457,30 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
     return "正式样本"
 
 
+def _weekend_review_row_status(data_quality: str, premium_pct: float | None, row: dict) -> str:
+    labels: list[str] = []
+    if not bool(row.get("last_trading_day_is_friday", True)):
+        labels.append("周五休市，使用本周最后交易日")
+    if bool(row.get("holiday_shifted_overnight_session") or row.get("holiday_rollover")):
+        labels.append("夜盘顺延")
+    base = _weekend_review_status(data_quality, premium_pct)
+    if labels:
+        labels.append(base)
+        return "｜".join(labels)
+    return base
+
+
 def _weekend_review_sample_status(data_quality: str, row: dict | None = None) -> str:
     quality = str(data_quality or "").strip().upper()
+    raw = dict(row or {})
     if quality == "OK":
-        raw = dict(row or {})
-        if bool(raw.get("holiday_rollover")):
-            return "假期顺延样本"
+        if bool(raw.get("holiday_shifted_overnight_session") or raw.get("holiday_rollover")):
+            return _weekend_review_sample_status_with_context("假期顺延样本", raw)
         overnight_provider = str(raw.get("overnight_provider") or raw.get("broker_provider") or raw.get("stock_bar_provider") or "").strip().upper()
         overnight_quality = str(raw.get("overnight_quality") or raw.get("broker_quality") or raw.get("stock_bar_quality") or "").strip().upper()
         if overnight_provider == "ALPACA_BOATS" or overnight_quality == "ALPACA_BOATS_SAMPLE":
-            return "Alpaca BOATS 样本"
-        return "自动正式样本"
+            return _weekend_review_sample_status_with_context("Alpaca BOATS 样本", raw)
+        return _weekend_review_sample_status_with_context("自动正式样本", raw)
     if quality == "ALPACA_BOATS_SAMPLE":
         return "Alpaca BOATS 样本"
     if quality == "P0_UNVERIFIED":
@@ -2352,10 +2494,22 @@ def _weekend_review_sample_status(data_quality: str, row: dict | None = None) ->
     if quality == "MANUAL_AFTERHOURS_SAMPLE":
         return "人工盘后样本"
     if quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE", "P0_UNVERIFIED", "NO_AFTERHOURS_CLOSE", "OBSERVE_ONLY"}:
-        return "观察样本"
+        return _weekend_review_sample_status_with_context("观察样本", raw)
     if quality.startswith("DEGRADED"):
-        return "降级样本"
-    return "排除样本"
+        return _weekend_review_sample_status_with_context("降级样本", raw)
+    return _weekend_review_sample_status_with_context("排除样本", raw)
+
+
+def _weekend_review_sample_status_with_context(base: str, row: dict) -> str:
+    labels: list[str] = []
+    if not bool(row.get("last_trading_day_is_friday", True)):
+        labels.append("周五休市，使用本周最后交易日")
+    if bool(row.get("holiday_shifted_overnight_session") or row.get("holiday_rollover")) and "夜盘顺延" not in base:
+        labels.append("夜盘顺延")
+    if not labels:
+        return base
+    labels.append(base)
+    return "｜".join(labels)
 
 
 def _weekend_review_rank(row: dict) -> tuple[int, float]:
@@ -2429,7 +2583,7 @@ def _weekend_review_contract_sample_time(row: dict) -> str:
 
 
 def _weekend_review_afterhours_time(row: dict) -> str:
-    for key in ("friday_afterhours_bar_start_et", "friday_afterhours_time", "afterhours_reference_time", "anchor_ts"):
+    for key in ("last_trading_day_afterhours_time", "friday_afterhours_bar_start_et", "friday_afterhours_time", "afterhours_reference_time", "anchor_ts"):
         value = str(row.get(key) or "").strip()
         if value:
             return _weekend_review_short_time(value)
@@ -2487,7 +2641,7 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality == "OBSERVE_ONLY":
         return "映射未确认，仅作观察，不计入正式样本"
     if quality == "NO_AFTERHOURS_CLOSE":
-        return str(row.get("friday_afterhours_reason") or row.get("afterhours_missing_reason") or "缺少周五盘后收盘价")
+        return str(row.get("friday_afterhours_reason") or row.get("afterhours_missing_reason") or "缺少本周最后交易日盘后收盘价")
     if quality == "OVERNIGHT_PROVIDER_MISSING":
         return "美股夜盘数据源未配置"
     if quality in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
@@ -2497,7 +2651,7 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality == "ALPACA_BOATS_PERMISSION":
         return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
     if quality == "MISSING_BOATS_FIRST_1M":
-        return "缺少 BOATS 夜盘首分钟 1m K线。"
+        return "缺少下周第一个交易日 BOATS 夜盘首分钟 1m K线。"
     if quality == "PROVIDER_ERROR":
         return str(row.get("overnight_reason") or "夜盘 provider 报错。")
     if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
@@ -2509,11 +2663,11 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality == "MANUAL_AFTERHOURS_SAMPLE":
         return "P0 来自人工录入盘后价格"
     if quality == "MISSING_OVERNIGHT_FIRST_1M":
-        return str(row.get("overnight_reason") or "缺少美股夜盘首分钟 1m K线")
+        return str(row.get("overnight_reason") or "缺少下周第一个交易日美股夜盘首分钟 1m K线")
     if quality == "CONTRACT_MISSING":
         return str(row.get("binance_weekend_max_reason") or row.get("error_message") or "缺少 Binance 周末 1m K 线")
     if quality == "STOCK_MISSING":
-        return str(row.get("stock_bar_reason") or row.get("error_message") or "缺少券商夜盘首分钟价格")
+        return str(row.get("stock_bar_reason") or row.get("error_message") or "缺少下周第一个交易日券商夜盘首分钟价格")
     if quality == "MAPPING_MISSING":
         return "映射未确认或未配置"
     return str(row.get("warning") or row.get("error_message") or row.get("stock_bar_reason") or row.get("binance_weekend_max_reason") or quality)
@@ -2749,7 +2903,7 @@ def _historical_regular_close_anchor(history: pd.DataFrame, window) -> dict[str,
     frame = history.copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
-    target = window.start_et.date()
+    target = getattr(window, "last_trading_day", None) or window.start_et.date()
     lower_bound = target - timedelta(days=7)
     candidates = frame[(frame["date"] <= target) & (frame["date"] >= lower_bound) & (frame["close"] > 0)]
     if candidates.empty:
@@ -2836,7 +2990,7 @@ def _historical_afterhours_anchor_summary_text(anchors: dict[str, dict]) -> str:
                 reason = str(row.get("afterhours_missing_reason") or "未抓取盘后价").strip()
                 reasons[reason] = reasons.get(reason, 0) + 1
     if total <= 0:
-        return "历史盘后锚点：未找到可读取的历史周五收盘记录。"
+        return "历史盘后锚点：未找到可读取的历史最后交易日收盘记录。"
     note = f"历史盘后锚点：已读取 {afterhours}/{total}，其中缓存 {cache}；回退正常收盘 {fallback}。"
     if fallback and reasons:
         primary = sorted(reasons.items(), key=lambda item: item[1], reverse=True)[0]
@@ -2846,7 +3000,7 @@ def _historical_afterhours_anchor_summary_text(anchors: dict[str, dict]) -> str:
 
 def _render_backtest_advanced_records() -> None:
     with st.expander("高级 / 前瞻记录", expanded=False):
-        st.caption("这些记录用于前瞻观察和周一验证，不是历史回测主流程。")
+        st.caption("这些记录用于前瞻观察和下周首个交易日验证，不是历史回测主流程。")
         rows = list(st.session_state.get("weekend_realtime_rows") or [])
         if rows:
             _render_record_buttons(rows, key_prefix="advanced")
@@ -2974,6 +3128,43 @@ def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_coun
     st.dataframe(_mapping_management_frame(rows, mapping), width="stretch", hide_index=True)
     _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
     _render_mapping_audit_area(rows, mapping, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_mapping_diagnostics(mapping)
+
+
+def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
+    st.subheader("映射管理")
+    records = _mapping_management_records(rows, mapping)
+    off_universe_records = _off_universe_mapping_records(rows, mapping)
+    status_counts = _mapping_management_counts(rows, mapping)
+    cols = st.columns(5)
+    cols[0].metric("可用映射", status_counts["usable_count"])
+    cols[1].metric("需处理", status_counts["review_count"])
+    cols[2].metric("无映射", status_counts["no_mapping_count"])
+    cols[3].metric("人工锁定", status_counts["manual_locked_count"])
+    cols[4].metric("观察池覆盖数", status_counts["universe_mapping_count"])
+    st.info(
+        "系统会自动匹配 Binance 合约。价格可用且偏差正常的映射会自动参与回测；只有价格异常或合约无效时才需要人工处理。"
+        f"\n\nlocal 配置路径：{DEFAULT_LOCAL_MAPPING_PATH.as_posix()}，local 不提交 git。"
+    )
+    if off_universe_records:
+        st.caption(
+            f"已隐藏 {len(off_universe_records)} 条不在当前观察名单的本地映射；它们不会参与周末价差回测。"
+        )
+    adoptable = [record for record in records if record.get("state_key") in {"auto_available", "auto_unchecked"}]
+    if st.button("一键采用全部自动可用映射", width="stretch", key="weekend_adopt_all_auto_mappings", disabled=not bool(adoptable)):
+        updated_count = _adopt_mapping_records(adoptable, DEFAULT_LOCAL_MAPPING_PATH)
+        st.success(f"已人工锁定 {updated_count} 条自动可用映射。刷新页面后生效。")
+    show_all = st.checkbox("显示全部映射", value=False, key="weekend_mapping_show_all")
+    visible_records = records if show_all else [record for record in records if record.get("state_group") in {"review", "missing"}]
+    if not visible_records:
+        st.success("当前没有需要人工处理的映射。自动可用和人工锁定映射会直接参与回测。")
+    else:
+        st.dataframe(_mapping_management_frame(visible_records), width="stretch", hide_index=True)
+    _render_mapping_actions(records, DEFAULT_LOCAL_MAPPING_PATH)
+    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    if off_universe_records:
+        with st.expander("查看已移出观察名单的本地映射", expanded=False):
+            st.dataframe(_mapping_management_frame(off_universe_records), width="stretch", hide_index=True)
     _render_mapping_diagnostics(mapping)
 
 
@@ -3183,11 +3374,108 @@ def _paper_week_id(row: dict) -> str:
 
 
 def _default_live_rows(rows: list[dict]) -> list[dict]:
-    return [
+    filtered = [
         row
         for row in rows
         if row.get("binance_symbol") or row.get("spread_pct") is not None or row.get("alert_level") in {"FOCUS", "ABNORMAL"}
     ]
+    return sorted(filtered, key=_realtime_sort_key)
+
+
+def _realtime_sort_key(row: dict) -> tuple[int, float, str]:
+    priority = {"focus": 0, "review": 1, "normal": 2, "unavailable": 3}
+    spread = _number(row.get("spread_vs_afterhours_pct"))
+    if spread is None:
+        spread = _number(row.get("spread_pct"))
+    return (priority.get(_realtime_row_status_key(row), 4), -(abs(spread) if spread is not None else -1), str(row.get("ticker") or ""))
+
+
+def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
+    counts = {"normal": 0, "focus": 0, "review": 0, "unavailable": 0}
+    for row in rows:
+        key = _realtime_row_status_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _realtime_row_status_key(row: dict) -> str:
+    status = str(row.get("status") or "").upper()
+    spread = _number(row.get("spread_vs_afterhours_pct"))
+    if spread is None:
+        spread = _number(row.get("spread_pct"))
+    has_price = _number(row.get("adjusted_binance_price") or row.get("binance_last_price")) is not None
+    has_anchor = _number(row.get("afterhours_reference_price")) is not None
+    if status in {"INVALID_SYMBOL", "BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE", "PRICE_NOT_LOADED"} or not has_price or not has_anchor:
+        return "unavailable"
+    if _row_mapping_needs_review(row) or _row_anchor_needs_review(row):
+        return "review"
+    if spread is not None and abs(spread) >= 8:
+        return "review"
+    if spread is not None and abs(spread) >= 2:
+        return "focus"
+    return "normal"
+
+
+def _realtime_row_status_label(row: dict) -> str:
+    return {
+        "normal": "正常",
+        "focus": "重点关注",
+        "review": "异常复核",
+        "unavailable": "不可用",
+    }.get(_realtime_row_status_key(row), "待复核")
+
+
+def _realtime_row_status_reason(row: dict) -> str:
+    key = _realtime_row_status_key(row)
+    if key == "focus":
+        return "偏离超过观察阈值，数据质量可用，值得优先查看。"
+    if key == "review":
+        if _row_mapping_needs_review(row):
+            return "偏离较大或映射未完全确认，请先复核 Binance 映射。"
+        if _row_anchor_needs_review(row):
+            return "偏离较大或盘后锚点质量不足，请先复核锚点来源。"
+        return "偏离过大，需要确认映射、锚点和行情源。"
+    if key == "unavailable":
+        if _number(row.get("afterhours_reference_price")) is None:
+            return "缺少盘后锚点，暂不能判断相对盘后偏离。"
+        return "Binance 价格不可用或合约无效。"
+    return "映射、锚点和 Binance 价格可用，偏离未超过重点阈值。"
+
+
+def _mapping_display_label_for_row(row: dict) -> str:
+    confidence = str(row.get("mapping_confidence") or "").strip().lower()
+    risk_note = str(row.get("mapping_risk") or row.get("risk_note") or "")
+    if confidence == "confirmed":
+        return "人工锁定"
+    if confidence in {"candidate", "auto_available"}:
+        if "ticker+USDT" in risk_note or "自动生成" in risk_note:
+            return "自动可用"
+        return "自动匹配"
+    if confidence in {"unverified", "verified_ready", "stale"}:
+        return "需复核"
+    if confidence == "rejected":
+        return "无映射"
+    return "自动匹配" if row.get("binance_symbol") else "无映射"
+
+
+def _anchor_display_label_for_row(row: dict) -> str:
+    if _number(row.get("afterhours_reference_price")) is not None:
+        if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
+            return "常规收盘回退"
+        if str(row.get("afterhours_anchor_status") or "") == "FINAL":
+            return "盘后锚点"
+        return "盘后锚点待验证"
+    if row.get("binance_symbol"):
+        return "锚点缺失"
+    return "未请求"
+
+
+def _row_mapping_needs_review(row: dict) -> bool:
+    return _mapping_display_label_for_row(row) in {"需复核", "无映射"}
+
+
+def _row_anchor_needs_review(row: dict) -> bool:
+    return _anchor_display_label_for_row(row) in {"常规收盘回退", "盘后锚点待验证", "锚点缺失"}
 
 
 def _mapping_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
@@ -3238,18 +3526,204 @@ def _afterhours_anchor_status_text(rows: list[dict], counts: dict[str, int]) -> 
     return "｜".join(parts)
 
 
+def _mapping_record_from_row(row: dict, config: dict | None) -> dict:
+    config = config or {}
+    ticker = str(row.get("ticker") or "").upper()
+    symbol = str(row.get("binance_symbol") or config.get("binance_symbol") or "").upper()
+    binance_price = _number(row.get("adjusted_binance_price") or row.get("binance_last_price"))
+    stock_ref = _mapping_stock_reference_price(row)
+    diff_pct = abs(binance_price / stock_ref - 1.0) * 100.0 if binance_price is not None and stock_ref else None
+    state_key, state_label, state_group = _mapping_state_for_row(row, config, symbol, binance_price, stock_ref, diff_pct)
+    return {
+        "ticker": ticker,
+        "binance_symbol": symbol,
+        "binance_price": binance_price,
+        "stock_ref_price": stock_ref,
+        "price_diff_pct": diff_pct,
+        "state_key": state_key,
+        "state_label": state_label,
+        "state_group": state_group,
+        "risk_note": str(row.get("mapping_risk") or config.get("risk_note") or ""),
+        "config": dict(config),
+        "row": dict(row),
+    }
+
+
+def _mapping_record_from_config(ticker: str, config: dict | None) -> dict:
+    config = config or {}
+    symbol = str(config.get("binance_symbol") or "").upper()
+    if not config.get("enabled", True) or str(config.get("mapping_confidence") or "").lower() == "rejected":
+        state_key, state_label, state_group = "missing", "无映射", "missing"
+    elif str(config.get("mapping_confidence") or "").lower() == "confirmed":
+        state_key, state_label, state_group = "manual_locked", "人工锁定", "locked"
+    elif symbol:
+        state_key, state_label, state_group = "needs_review", "需确认", "review"
+    else:
+        state_key, state_label, state_group = "missing", "无映射", "missing"
+    return {
+        "ticker": ticker,
+        "binance_symbol": symbol,
+        "binance_price": None,
+        "stock_ref_price": None,
+        "price_diff_pct": None,
+        "state_key": state_key,
+        "state_label": state_label,
+        "state_group": state_group,
+        "risk_note": str(config.get("risk_note") or ""),
+        "config": dict(config),
+        "row": {},
+    }
+
+
+def _off_universe_mapping_records(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
+    universe_tickers = {str(row.get("ticker") or "").upper() for row in rows if row.get("ticker")}
+    records: list[dict] = []
+    for ticker, config in sorted((mapping or {}).items()):
+        normalized = str(ticker or "").upper()
+        if not normalized or normalized in universe_tickers:
+            continue
+        record = _mapping_record_from_config(normalized, config)
+        record.update(
+            {
+                "state_key": "off_watchlist",
+                "state_label": "已移出观察名单",
+                "state_group": "off_watchlist",
+            }
+        )
+        records.append(record)
+    return records
+
+
+def _mapping_state_for_row(
+    row: dict,
+    config: dict,
+    symbol: str,
+    binance_price: float | None,
+    stock_ref: float | None,
+    diff_pct: float | None,
+) -> tuple[str, str, str]:
+    confidence = str(config.get("mapping_confidence") or row.get("mapping_confidence") or "").strip().lower()
+    if not config.get("enabled", True) or confidence == "rejected":
+        return ("missing", "无映射", "missing")
+    if confidence == "confirmed":
+        return ("manual_locked", "人工锁定", "locked")
+    status = str(row.get("status") or "").upper()
+    if not symbol or status == "NO_MAPPING":
+        return ("missing", "无映射", "missing")
+    if status == "INVALID_SYMBOL" or binance_price is None:
+        return ("missing", "无映射", "missing")
+    if status == "UNIT_UNCONFIRMED":
+        return ("needs_review", "需确认", "review")
+    if stock_ref is None:
+        return ("auto_unchecked", "自动可用，未做价格校验", "usable")
+    if diff_pct is not None and diff_pct <= 30:
+        return ("auto_available", "自动可用", "usable")
+    return ("needs_review", "需确认", "review")
+
+
+def _is_auto_mapping_config(config: dict | None) -> bool:
+    config = config or {}
+    confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    risk_note = str(config.get("risk_note") or "")
+    return confidence == "candidate" and ("ticker+USDT" in risk_note or "自动生成" in risk_note)
+
+
+def _mapping_stock_reference_price(row: dict) -> float | None:
+    return _first_number(
+        row,
+        (
+            "afterhours_reference_price",
+            "regular_close_price",
+            "friday_close",
+            "friday_close_price",
+        ),
+    )
+
+
+def _adopt_mapping_records(records: list[dict], path: Path) -> int:
+    updated = 0
+    for record in records:
+        ticker = str(record.get("ticker") or "").upper()
+        symbol = str(record.get("binance_symbol") or "").upper()
+        if not ticker or not symbol:
+            continue
+        config = dict(record.get("config") or {})
+        upsert_local_binance_symbol_mapping(
+            ticker,
+            symbol,
+            market_type=str(config.get("market_type") or "usdm_futures"),
+            mapping_confidence="confirmed",
+            unit_multiplier=float(_number(config.get("unit_multiplier")) or 1.0),
+            risk_note=str(config.get("risk_note") or "人工锁定映射"),
+            path=path,
+        )
+        updated += 1
+    return updated
+
+
+def _render_mapping_actions(records: list[dict], local_mapping_path: Path) -> None:
+    if not records:
+        return
+    with st.expander("处理映射", expanded=False):
+        labels = [f"{record.get('ticker')} · {record.get('binance_symbol') or '无映射'} · {record.get('state_label')}" for record in records]
+        selected_label = st.selectbox("选择股票", labels, key="weekend_mapping_action_target")
+        selected = records[labels.index(selected_label)]
+        ticker = str(selected.get("ticker") or "").upper()
+        current_symbol = str(selected.get("binance_symbol") or "").upper()
+        cols = st.columns([1, 1, 2])
+        if cols[0].button("采用", key=f"weekend_mapping_adopt_{ticker}", width="stretch", disabled=not bool(current_symbol)):
+            _adopt_mapping_records([selected], local_mapping_path)
+            st.success(f"{ticker} 已设为人工锁定。刷新页面后生效。")
+        if cols[1].button("忽略", key=f"weekend_mapping_ignore_{ticker}", width="stretch"):
+            config = dict(selected.get("config") or {})
+            symbol = current_symbol or f"{ticker}USDT"
+            upsert_local_binance_symbol_mapping(
+                ticker,
+                symbol,
+                market_type=str(config.get("market_type") or "usdm_futures"),
+                mapping_confidence="rejected",
+                unit_multiplier=float(_number(config.get("unit_multiplier")) or 1.0),
+                risk_note="已忽略，不参与周末价差",
+                enabled=False,
+                path=local_mapping_path,
+            )
+            st.warning(f"{ticker} 已标记为不参与周末价差。刷新页面后生效。")
+        new_symbol = cols[2].text_input("修改 Binance symbol", value=current_symbol, key=f"weekend_mapping_edit_symbol_{ticker}")
+        if st.button("保存修改", key=f"weekend_mapping_save_symbol_{ticker}", width="stretch"):
+            if not new_symbol.strip():
+                st.error("请填写 Binance symbol。")
+            else:
+                config = dict(selected.get("config") or {})
+                upsert_local_binance_symbol_mapping(
+                    ticker,
+                    new_symbol,
+                    market_type=str(config.get("market_type") or "usdm_futures"),
+                    mapping_confidence="confirmed",
+                    unit_multiplier=float(_number(config.get("unit_multiplier")) or 1.0),
+                    risk_note=str(config.get("risk_note") or "人工修改并锁定"),
+                    path=local_mapping_path,
+                )
+                st.success(f"{ticker} 已修改并人工锁定为 {new_symbol.strip().upper()}。刷新页面后生效。")
+        risk_note = str(selected.get("risk_note") or "").strip()
+        if risk_note:
+            st.caption(risk_note)
+
+
+def _mapping_management_records(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
+    return [_mapping_record_from_row(row, mapping.get(str(row.get("ticker") or "").upper(), {})) for row in rows]
+
+
 def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> dict[str, int]:
     counts = _mapping_counts(rows, mapping)
-    local_items = [item for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol")]
+    records = _mapping_management_records(rows, mapping)
+    off_universe_records = _off_universe_mapping_records(rows, mapping)
     counts.update(
         {
-            "confirmed_count": sum(1 for item in local_items if item.get("mapping_confidence") == "confirmed"),
-            "candidate_count": sum(
-                1
-                for item in local_items
-                if item.get("mapping_confidence") in {"candidate", "unverified", "verified_ready", "stale"}
-            ),
-            "no_mapping_count": sum(1 for row in rows if not row.get("binance_symbol")),
+            "usable_count": sum(1 for record in records if record.get("state_group") in {"usable", "locked"}),
+            "review_count": sum(1 for record in records if record.get("state_group") == "review"),
+            "manual_locked_count": sum(1 for record in records if record.get("state_group") == "locked"),
+            "no_mapping_count": sum(1 for record in records if record.get("state_group") == "missing"),
+            "off_universe_mapping_count": len(off_universe_records),
         }
     )
     return counts
@@ -3361,6 +3835,82 @@ def _render_mapping_editor(
                 st.caption(f"local mapping 当前共 {len(updated)} 条。")
 
 
+def _render_mapping_editor(
+    mapping: dict[str, dict],
+    rows: list[dict],
+    mapping_counts: dict[str, int],
+    local_mapping_path: Path,
+) -> None:
+    expanded = mapping_counts.get("universe_mapping_count", 0) <= 0
+    with st.expander("添加 / 更新 Binance 映射", expanded=expanded):
+        st.caption("这里只维护股票代码到 Binance 合约代码的映射；价格仍由 Binance API 自动读取。")
+        tickers = [str(row.get("ticker") or "").upper() for row in rows if row.get("ticker")]
+        if not tickers:
+            st.caption("观察池为空，暂无可配置股票。")
+            return
+        if st.button("一键生成观察池合约候选映射", width="stretch", key="weekend_default_mapping"):
+            result = upsert_default_usdm_futures_mappings(tickers, path=local_mapping_path)
+            st.success(
+                f"已新增 {result['created']} 条自动候选映射，跳过已有 {result['skipped']} 条；"
+                "默认格式为 TICKERUSDT，价格由 Binance API 自动读取。"
+            )
+        ticker = st.selectbox("观察池股票", tickers, index=0, key="weekend_mapping_ticker")
+        existing = mapping.get(str(ticker or "").upper(), {})
+        symbol_value = str(existing.get("binance_symbol") or "")
+        market_value = str(existing.get("market_type") or "usdm_futures")
+        confidence_value = str(existing.get("mapping_confidence") or "candidate")
+        state_options = {
+            "自动候选": "candidate",
+            "人工锁定": "confirmed",
+            "需确认": "verified_ready",
+            "忽略": "rejected",
+        }
+        state_label = next((label for label, value in state_options.items() if value == confidence_value), "自动候选")
+        state_labels = list(state_options)
+        symbol = st.text_input("Binance 合约", value=symbol_value, placeholder="例如 NVDAUSDT", key="weekend_mapping_symbol")
+        market_type = st.selectbox(
+            "市场类型",
+            ["usdm_futures"],
+            index=0 if market_value == "usdm_futures" else 0,
+            key="weekend_mapping_market",
+        )
+        selected_state = st.selectbox(
+            "映射处理方式",
+            state_labels,
+            index=state_labels.index(state_label),
+            key="weekend_mapping_confidence_cn",
+        )
+        unit_multiplier = st.number_input(
+            "单位倍数",
+            min_value=0.000001,
+            value=float(existing.get("unit_multiplier") or 1),
+            step=1.0,
+            key="weekend_mapping_multiplier",
+        )
+        risk_note = st.text_input(
+            "备注",
+            value=str(existing.get("risk_note") or "自动生成映射，价格正常即可自动参与回测。"),
+            key="weekend_mapping_risk_note",
+        )
+        if st.button("保存到 local mapping", width="stretch", key="weekend_mapping_save"):
+            try:
+                updated = upsert_local_binance_symbol_mapping(
+                    str(ticker or ""),
+                    symbol,
+                    market_type=market_type,
+                    mapping_confidence=state_options[selected_state],
+                    unit_multiplier=unit_multiplier,
+                    risk_note=risk_note,
+                    enabled=selected_state != "忽略",
+                    path=local_mapping_path,
+                )
+            except ValueError as exc:
+                st.warning(_mapping_editor_error_text(str(exc)))
+            else:
+                st.success(f"已保存 {str(ticker).upper()} -> {symbol.strip().upper()}。刷新页面后生效。")
+                st.caption(f"local mapping 当前共 {len(updated)} 条。")
+
+
 def _mapping_editor_error_text(error_code: str) -> str:
     return {
         "ticker_required": "请选择观察池 ticker。",
@@ -3370,28 +3920,26 @@ def _mapping_editor_error_text(error_code: str) -> str:
 
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
-        "Ticker",
-        "价格锚点",
+        "股票",
+        "美股盘后锚点",
         "Binance 最新",
-        "vs 盘后",
-        "vs 收盘",
+        "相对盘后",
+        "相对收盘",
         "状态",
-        "风险",
         "更新时间",
     ]
     frame = pd.DataFrame(rows)
     if frame.empty:
         return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
-    display["Ticker"] = frame.get("ticker")
-    display["价格锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
+    display["股票"] = frame.get("ticker")
+    display["美股盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
     display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
-    display["vs 盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
-    display["vs 收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
-    display["状态"] = frame.get("alert_level_cn").replace("", "暂缺")
-    display["风险"] = frame.apply(lambda row: _risk_badge_text(row.to_dict()), axis=1)
+    display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
+    display["相对收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
+    display["状态"] = frame.apply(lambda row: _realtime_row_status_label(row.to_dict()), axis=1)
     display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
-    return display
+    return display[columns]
 
 
 def _display_frame(rows: list[dict]) -> pd.DataFrame:
@@ -3692,37 +4240,90 @@ def _mapping_management_frame(rows: list[dict], mapping: dict[str, dict]) -> pd.
     return display
 
 
+def _mapping_management_frame(records: list[dict], mapping: dict[str, dict] | None = None) -> pd.DataFrame:
+    if mapping is not None:
+        records = _mapping_management_records(records, mapping)
+    columns = [
+        "股票",
+        "Binance 合约",
+        "Binance 价格",
+        "股票参考价",
+        "价格差异%",
+        "映射状态",
+        "操作",
+    ]
+    if not records:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(
+        [
+            {
+                "股票": record.get("ticker"),
+                "Binance 合约": record.get("binance_symbol") or "无映射",
+                "Binance 价格": _money_text(record.get("binance_price")) if _number(record.get("binance_price")) is not None else "缺价格",
+                "股票参考价": _money_text(record.get("stock_ref_price")) if _number(record.get("stock_ref_price")) is not None else "未校验",
+                "价格差异%": _percent_text(record.get("price_diff_pct")) if _number(record.get("price_diff_pct")) is not None else "未校验",
+                "映射状态": record.get("state_label"),
+                "操作": _mapping_action_hint(record),
+            }
+            for record in records
+        ],
+        columns=columns,
+    )
+
+
+def _mapping_action_hint(record: dict) -> str:
+    group = str(record.get("state_group") or "")
+    if group == "usable":
+        return "可直接回测；可采用为人工锁定"
+    if group == "locked":
+        return "已人工锁定"
+    if group == "off_watchlist":
+        return "不参与当前周末价差"
+    if group == "missing":
+        return "修改或忽略"
+    return "采用 / 忽略 / 修改"
+
+
 def _render_row_details(rows: list[dict]) -> None:
     if not rows:
         return
     for row in rows:
-        with st.expander(f"{str(row.get('ticker') or '').upper()} 行详情", expanded=False):
-            col_anchor, col_binance, col_risk = st.columns(3)
+        with st.expander(f"{str(row.get('ticker') or '').upper()} 查看详情", expanded=False):
+            col_anchor, col_binance, col_note = st.columns(3)
             with col_anchor:
-                st.markdown("**盘后锚点**")
-                st.caption(f"周五收盘：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
-                st.caption(f"盘后参考价：{_money_text(row.get('afterhours_reference_price'))}")
-                st.caption(f"盘后来源：{_afterhours_source_text(row.get('afterhours_reference_source'))}")
-                st.caption(f"盘后质量：{_data_quality_text(row.get('afterhours_data_quality') or 'MISSING')}")
-                st.caption(f"锚点状态：{_afterhours_anchor_badge(row)}")
-                st.caption(f"抓取时间：{_short_hkt_time(row.get('afterhours_fetched_at'))}")
-                st.caption(f"确认时间：{_short_hkt_time(row.get('afterhours_finalized_at'))}")
+                st.markdown("**美股锚点**")
+                st.caption(f"美股盘后锚点：{_money_text(row.get('afterhours_reference_price'))}")
+                st.caption(f"常规收盘价：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
+                st.caption(f"相对盘后：{_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}")
+                st.caption(f"相对收盘：{_percent_text(row.get('spread_vs_regular_close_pct'))}")
+                st.caption(f"锚点来源：{_afterhours_source_text(row.get('afterhours_reference_source'))}")
+                st.caption(f"锚点时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
+                st.caption(f"锚点状态：{_anchor_display_label_for_row(row)}")
                 st.caption(f"缺失原因：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}")
-                st.caption(f"缓存状态：{_afterhours_cache_text(row.get('afterhours_cache_status'))}")
-                st.caption(f"盘后时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
             with col_binance:
                 st.markdown("**Binance 行情**")
+                st.caption(f"Binance symbol：{str(row.get('binance_symbol') or '无映射')}")
+                st.caption(f"Binance 最新价格：{_money_text(row.get('binance_last_price'))}")
+                st.caption(f"Binance 更新时间：{_short_hkt_time(row.get('updated_at'))}")
                 st.caption(f"bid：{_money_text(row.get('binance_bid'))}")
                 st.caption(f"ask：{_money_text(row.get('binance_ask'))}")
                 st.caption(f"bid-ask spread：{_percent_text(row.get('binance_spread_pct'))}")
                 st.caption(f"24h volume：{_plain_number(row.get('binance_volume_24h'))}")
                 st.caption(f"funding：{_funding_text(row.get('funding_rate'))}")
-            with col_risk:
-                st.markdown("**风险说明**")
-                st.caption(f"mapping_confidence：{str(row.get('mapping_confidence') or 'unknown')}")
-                st.caption(str(row.get("mapping_risk") or ""))
-                st.caption(str(row.get("liquidity_warning") or ""))
-                st.caption(f"raw_error：{str(row.get('error') or '')}")
+            with col_note:
+                st.markdown("**数据备注**")
+                st.caption(f"映射状态：{_mapping_display_label_for_row(row)}")
+                st.caption(f"数据状态：{_realtime_row_status_label(row)}")
+                st.caption(f"状态说明：{_realtime_row_status_reason(row)}")
+                note = str(row.get("mapping_risk") or row.get("risk_note") or "").strip()
+                liquidity = str(row.get("liquidity_warning") or "").strip()
+                error = str(row.get("error") or "").strip()
+                if note:
+                    st.caption(f"完整备注：{note}")
+                if liquidity:
+                    st.caption(f"流动性备注：{liquidity}")
+                if error:
+                    st.caption(f"错误原因：{_localized_realtime_error(error)}")
 
 
 def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
@@ -3764,10 +4365,24 @@ def _diagnostics_frame(rows: list[dict]) -> pd.DataFrame:
         display[label] = frame.get(key)
     for col in ("价格", "买卖盘", "成交量", "资金费率"):
         display[col] = display[col].map(lambda value: "可用" if bool(value) else "暂缺")
+    display["映射置信"] = display["映射置信"].map(_mapping_confidence_label)
     display["候选"] = display["候选"].map(_candidate_text)
     display["配置 symbol"] = display["配置 symbol"].replace("", "暂无映射")
     display["校验时间"] = display["校验时间"].replace("", "未校验")
     return display
+
+
+def _mapping_confidence_label(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "confirmed": "人工锁定",
+        "candidate": "自动候选",
+        "unverified": "需确认",
+        "verified_ready": "需确认",
+        "stale": "需确认",
+        "rejected": "已忽略",
+        "auto_available": "自动可用",
+    }.get(text, "无映射" if not text else text)
 
 
 def _candidate_text(value: object) -> str:
@@ -3796,7 +4411,7 @@ def _strongest_signal_warning(row: dict) -> str:
     if str(row.get("mapping_confidence") or "") != "confirmed":
         return "映射未确认，不能作为正式套利信号。"
     if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
-        return "缺少周五盘后参考价，当前按周五收盘价临时对比。"
+        return "缺少最后交易日盘后参考价，当前按最后交易日收盘价临时对比。"
     risk = _primary_risk_text(row)
     if risk:
         return risk
@@ -3811,7 +4426,7 @@ def _primary_risk_text(row: dict) -> str:
     if str(row.get("mapping_confidence") or "") != "confirmed":
         return "映射未确认，需要人工确认后再作为正式观察样本。"
     if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
-        return "缺少周五盘后参考价，当前价差以周五正常收盘价为基准。"
+        return "缺少最后交易日盘后参考价，当前价差以最后交易日正常收盘价为基准。"
     return "仅用于观察，不构成套利建议。"
 
 
@@ -4046,6 +4661,16 @@ def _risk_badge_text(row: dict) -> str:
     if not risks:
         risks.append("仅观察")
     return "；".join(dict.fromkeys(risks))
+
+
+def _localized_realtime_error(value: object) -> str:
+    text = str(value or "").strip()
+    return {
+        "price_not_loaded": "Binance 价格尚未读取",
+        "invalid_symbol": "Binance 合约无效",
+        "binance_price_missing": "Binance 价格缺失",
+        "NO_MAPPING": "无映射",
+    }.get(text, text or "无")
 
 
 def _short_hkt_time(value: object) -> str:

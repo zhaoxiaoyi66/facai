@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
-from typing import Any
+from typing import Any, Callable
 import pandas as pd
 import streamlit as st
 
@@ -617,13 +617,44 @@ def _refresh_dashboard_cache_for_mode(tickers: list[str], mode: RefreshMode) -> 
             unsafe_allow_html=True,
         )
     else:
-        progress_slot.markdown(_refresh_done_html(progress_total), unsafe_allow_html=True)
         if mode in {RefreshMode.PRICE_ONLY, RefreshMode.DAILY_TECHNICAL}:
-            refreshed_symbols = _successful_refresh_symbols(result)
+            refreshed_symbols = _dashboard_cache_sync_symbols(result)
             if refreshed_symbols:
-                synced = _sync_refreshed_symbols_to_dashboard_session(refreshed_symbols, tickers=tickers)
+                progress_slot.markdown(
+                    _refresh_progress_html(
+                        title="同步仪表盘",
+                        detail="市场数据已更新，正在同步表格缓存。",
+                        current=0,
+                        total=len(refreshed_symbols),
+                        active_symbol="准备同步",
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                def _render_sync_progress(event: dict[str, Any]) -> None:
+                    event_total = int(event.get("total") or len(refreshed_symbols) or 1)
+                    event_index = int(event.get("index") or 0)
+                    active_symbol = str(event.get("symbol") or "同步缓存")
+                    detail = str(event.get("message") or "正在同步表格缓存。")
+                    progress_slot.markdown(
+                        _refresh_progress_html(
+                            title="同步仪表盘",
+                            detail=detail,
+                            current=min(max(event_index, 0), max(event_total, 1)),
+                            total=max(event_total, 1),
+                            active_symbol=active_symbol,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
+                synced = _sync_refreshed_symbols_to_dashboard_session(
+                    refreshed_symbols,
+                    tickers=tickers,
+                    progress_callback=_render_sync_progress,
+                )
                 result["dashboard_cache_synced"] = "dashboard_table_cache" in synced
                 result["dashboard_cache_sync_symbols"] = refreshed_symbols
+        progress_slot.empty()
     st.session_state["dashboard_refresh_mode_last_result"] = result
     return result
 
@@ -637,6 +668,25 @@ def _successful_refresh_symbols(result: dict[str, Any]) -> list[str]:
         syncable_statuses.add("skipped")
     for item in result.get("ticker_results") or []:
         if str(item.get("status") or "").strip().lower() not in syncable_statuses:
+            continue
+        symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+def _dashboard_cache_sync_symbols(result: dict[str, Any]) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    mode = str(result.get("mode") or "").strip().upper()
+    for item in result.get("ticker_results") or []:
+        status = str(item.get("status") or "").strip().lower()
+        source = str(item.get("source") or "").strip()
+        should_sync = status == "success"
+        if mode == RefreshMode.DAILY_TECHNICAL.value and status == "skipped":
+            should_sync = source == "latest_close_sync"
+        if not should_sync:
             continue
         symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper()
         if symbol and symbol not in seen:
@@ -691,7 +741,7 @@ def _refresh_single_dashboard_row(tickers: tuple[str, ...], symbol: str, cache_k
         _store_session_dashboard_table(cache_key, table)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
     st.session_state["dashboard_single_refresh_last_result"] = result
-    progress_slot.markdown(_refresh_done_html(1), unsafe_allow_html=True)
+    progress_slot.empty()
     return table
 
 
@@ -765,9 +815,9 @@ def _load_dashboard_with_progress(tickers: tuple[str, ...], refresh_symbols: set
                 action_fusion_portfolio_context=portfolio_contexts.get(ticker.upper()),
             )
         )
-    progress_slot.markdown(_refresh_done_html(total), unsafe_allow_html=True)
     table = pd.DataFrame(rows)
     st.session_state["dashboard_last_table_loaded_at"] = datetime.now().isoformat()
+    progress_slot.empty()
     return table
 
 
@@ -2194,6 +2244,7 @@ def _sync_refreshed_symbols_to_dashboard_session(
     tickers: list[str] | tuple[str, ...] | None = None,
     session_state=None,
     row_loader=None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[str]:
     normalized_symbols = _unique_symbols(symbols)
     if not normalized_symbols:
@@ -2216,7 +2267,15 @@ def _sync_refreshed_symbols_to_dashboard_session(
     fundamental_cache = FundamentalCache()
     portfolio_contexts = {} if load_row is not None else build_action_fusion_portfolio_contexts(symbols_to_sync)
     refreshed_rows: list[dict] = []
-    for symbol in symbols_to_sync:
+    total = len(symbols_to_sync)
+    for index, symbol in enumerate(symbols_to_sync, start=1):
+        _emit_dashboard_sync_progress(
+            progress_callback,
+            symbol=symbol,
+            index=index - 1,
+            total=total,
+            message="正在同步表格缓存。",
+        )
         try:
             refreshed_row = (
                 load_row(symbol)
@@ -2231,6 +2290,13 @@ def _sync_refreshed_symbols_to_dashboard_session(
             refreshed_row = None
         if isinstance(refreshed_row, dict) and refreshed_row:
             refreshed_rows.append(refreshed_row)
+        _emit_dashboard_sync_progress(
+            progress_callback,
+            symbol=symbol,
+            index=index,
+            total=total,
+            message="表格缓存已同步。",
+        )
     if not refreshed_rows:
         return invalidated
     updated = _replace_dashboard_rows(table, refreshed_rows)
@@ -2246,6 +2312,27 @@ def _sync_refreshed_symbols_to_dashboard_session(
         ]
     )
     return invalidated
+
+
+def _emit_dashboard_sync_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    symbol: str,
+    index: int,
+    total: int,
+    message: str,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(
+        {
+            "phase": "dashboard_cache_sync",
+            "symbol": symbol,
+            "index": index,
+            "total": total,
+            "message": message,
+        }
+    )
 
 
 def _unique_symbols(symbols: list[str] | tuple[str, ...]) -> list[str]:

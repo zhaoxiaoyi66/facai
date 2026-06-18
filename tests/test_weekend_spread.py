@@ -592,7 +592,7 @@ def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
 def _anchors(*, afterhours: float | None = 100.0, regular: float | None = 98.0) -> dict:
     payload = {"afterhours_reference_price": afterhours, "regular_close_price": regular}
     if afterhours is not None:
-        payload["afterhours_reference_time"] = "2026-07-03T19:59:00-04:00"
+        payload["afterhours_reference_time"] = "2026-07-02T19:59:00-04:00"
         payload["afterhours_reference_source"] = "mock_afterhours"
     return {"NVDA": payload}
 
@@ -1233,17 +1233,17 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
         ]
     )
 
-    assert "缺少券商周一夜盘 20:00 ET 第一根 1m bar" in reason
-    assert "IBKR 夜盘历史 1m 数据权限" in reason
+    assert "缺少下周第一个交易日夜盘 20:00 ET 第一根 1m bar" in reason
+    assert "夜盘历史 1m 数据权限" in reason
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
-    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 100.0}]))
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-02", "close": 100.0}]))
     provider = FakeAfterhoursProvider(
         reference_price=102.5,
-        reference_time="2026-07-03T19:58:00-04:00",
+        reference_time="2026-07-02T19:58:00-04:00",
         reference_source="mock_afterhours",
         cache_status="API_LIVE",
     )
@@ -1261,15 +1261,15 @@ def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
     weekly = anchors["NVDA"]["weekly_anchors"][window.week_id]
     assert weekly["regular_close_price"] == 100.0
     assert weekly["afterhours_reference_price"] == 102.5
-    assert weekly["afterhours_reference_time"] == "2026-07-03T19:58:00-04:00"
+    assert weekly["afterhours_reference_time"] == "2026-07-02T19:58:00-04:00"
     assert weekly["anchor_source"] == "HISTORICAL_AFTERHOURS_REFERENCE"
-    assert provider.calls == [("NVDA", "2026-07-03", False)]
+    assert provider.calls == [("NVDA", "2026-07-02", False)]
 
 
 def test_historical_weekly_anchor_falls_back_to_regular_close_when_afterhours_missing() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
-    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 100.0}]))
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-02", "close": 100.0}]))
     provider = FakeAfterhoursProvider(
         reference_price=None,
         data_quality="MISSING",
@@ -1301,9 +1301,9 @@ def test_historical_weekly_anchor_reads_distinct_afterhours_prices_per_friday() 
         pd.DataFrame(
             [
                 {"date": "2026-06-12", "close": 100.0},
-                {"date": "2026-06-19", "close": 110.0},
+                {"date": "2026-06-18", "close": 110.0},
                 {"date": "2026-06-26", "close": 120.0},
-                {"date": "2026-07-03", "close": 130.0},
+                {"date": "2026-07-02", "close": 130.0},
             ]
         )
     )
@@ -1312,7 +1312,7 @@ def test_historical_weekly_anchor_reads_distinct_afterhours_prices_per_friday() 
             AfterhoursReference(
                 symbol="NVDA",
                 reference_price=131.0,
-                reference_time="2026-07-03T19:58:00-04:00",
+                reference_time="2026-07-02T19:58:00-04:00",
                 reference_source="mock_afterhours",
                 data_quality="HIGH",
             ),
@@ -1326,7 +1326,7 @@ def test_historical_weekly_anchor_reads_distinct_afterhours_prices_per_friday() 
             AfterhoursReference(
                 symbol="NVDA",
                 reference_price=111.0,
-                reference_time="2026-06-19T19:58:00-04:00",
+                reference_time="2026-06-18T19:58:00-04:00",
                 reference_source="mock_afterhours",
                 data_quality="HIGH",
             ),
@@ -1355,14 +1355,14 @@ def test_historical_weekly_anchor_reads_distinct_afterhours_prices_per_friday() 
 
     assert prices == {
         "2026-06-12": 101.0,
-        "2026-06-19": 111.0,
+        "2026-06-18": 111.0,
         "2026-06-26": 121.0,
-        "2026-07-03": 131.0,
+        "2026-07-02": 131.0,
     }
     assert provider.calls == [
-        ("NVDA", "2026-07-03", False),
+        ("NVDA", "2026-07-02", False),
         ("NVDA", "2026-06-26", False),
-        ("NVDA", "2026-06-19", False),
+        ("NVDA", "2026-06-18", False),
         ("NVDA", "2026-06-12", False),
     ]
 
@@ -1370,10 +1370,10 @@ def test_historical_weekly_anchor_reads_distinct_afterhours_prices_per_friday() 
 def test_weekend_basis_backtest_uses_historical_afterhours_anchor() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
-    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 99.0}]))
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-02", "close": 99.0}]))
     provider = FakeAfterhoursProvider(
         reference_price=100.0,
-        reference_time="2026-07-03T19:58:00-04:00",
+        reference_time="2026-07-02T19:58:00-04:00",
         reference_source="mock_afterhours",
         cache_status="API_LIVE",
     )
@@ -1410,7 +1410,7 @@ def test_weekend_basis_backtest_uses_historical_afterhours_anchor() -> None:
     assert rows[0]["status"] == "HEDGE_LOCKED"
     assert rows[0]["anchor_price"] == 100.0
     assert rows[0]["anchor_source"] == "HISTORICAL_AFTERHOURS_REFERENCE"
-    assert rows[0]["anchor_ts"] == "2026-07-03T19:58:00-04:00"
+    assert rows[0]["anchor_ts"] == "2026-07-02T19:58:00-04:00"
     assert rows[0]["afterhours_reference_price"] == 100.0
 
 
@@ -2577,13 +2577,21 @@ def test_history_stats_calculates_hit_rate(tmp_path) -> None:
 
 
 def test_recent_weekend_windows_use_sunday_20_et_and_convert_dst_to_shanghai() -> None:
-    windows = recent_weekend_windows(weeks=1, now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc))
+    windows = recent_weekend_windows(weeks=1, now=datetime(2026, 6, 15, 1, tzinfo=timezone.utc))
     window = windows[0]
 
     assert window.start_et.tzinfo == ZoneInfo("America/New_York")
     assert window.start_et.strftime("%A %H:%M") == "Friday 20:00"
     assert window.end_et.strftime("%A %H:%M") == "Sunday 20:00"
     assert window.end_shanghai.strftime("%A %H:%M") == "Monday 08:00"
+
+
+def test_recent_weekend_windows_use_previous_trading_day_when_friday_is_holiday() -> None:
+    window = recent_weekend_windows(weeks=1, now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc))[0]
+
+    assert window.last_trading_day.isoformat() == "2026-07-02"
+    assert window.start_et.strftime("%A %H:%M") == "Thursday 20:00"
+    assert window.end_et.strftime("%A %H:%M") == "Sunday 20:00"
 
 
 def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
@@ -2606,7 +2614,7 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
     anchors = {
         "NVDA": {
             "afterhours_reference_price": 100,
-            "afterhours_reference_time": "2026-07-03T19:59:00-04:00",
+            "afterhours_reference_time": "2026-07-02T19:59:00-04:00",
         }
     }
     broker = FakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 100.8, 100.9)]})
@@ -2945,7 +2953,7 @@ def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
     anchors = {
         "NVDA": {
             "afterhours_reference_price": 100,
-            "afterhours_reference_time": "2026-07-03T19:59:00-04:00",
+            "afterhours_reference_time": "2026-07-02T19:59:00-04:00",
         }
     }
     broker = FakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 100.8, 100.9)]})
@@ -3333,7 +3341,7 @@ def test_weekend_basis_backfill_supports_weekly_anchor_and_low_risk_window() -> 
             "weekly_anchors": {
                 window.week_id: {
                     "regular_close_price": 99,
-                    "regular_close_date": "2026-07-03",
+                    "regular_close_date": "2026-07-02",
                 }
             },
             "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
@@ -3537,7 +3545,7 @@ def test_weekend_spread_paper_opportunity_blocks_unconfirmed_mapping_in_ui_frame
             "binance_bid": 101.65,
             "binance_ask": 101.7,
             "afterhours_reference_price": 100,
-            "friday_close_date": "2026-07-03",
+            "friday_close_date": "2026-07-02",
             "updated_at": "2026-07-05T18:00:00+00:00",
         }
     ]
@@ -3725,8 +3733,9 @@ def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> 
         include_unconfirmed=False,
     )
 
-    assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "AUTO_CANDIDATE_NOT_ALLOWED"
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
+    assert preflight["mode"] == "auto usable"
 
 
 def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
@@ -3871,7 +3880,7 @@ def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
 
 
 def test_weekend_review_backtest_writes_regular_close_fallback_into_p0() -> None:
-    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 15, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 102.0, 99.0, 101.0)]
     overnight_provider = FakeBrokerBarProvider(
@@ -4140,7 +4149,7 @@ def test_overnight_provider_self_check_reports_boats_permission(monkeypatch) -> 
 
 
 def test_weekend_review_marks_alpaca_boats_sample_status() -> None:
-    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 15, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 103.0, 99.0, 101.0)]
 
@@ -4357,17 +4366,17 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "周次",
         "股票",
         "Binance 合约",
-        "周五盘后收盘价",
+        "最后交易日盘后收盘价",
         "P0 来源",
         "盘后收盘时间",
         "Binance 周末最高价",
         "Binance 高点时间",
-        "美股夜盘首分钟收盘",
+        "下周首个交易日夜盘首分钟收盘",
         "P2 来源",
-        "夜盘首分钟时间",
+        "下周首个交易日夜盘时间",
         "Binance 周末冲高%",
         "夜盘相对 Binance 高点%",
-        "夜盘相对周五盘后%",
+        "夜盘相对最后交易日盘后%",
         "周末高点兑现率%",
         "样本状态",
         "状态",
@@ -4377,16 +4386,16 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert "剩余基差" not in frame.columns
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["周五盘后收盘价"] == 100.0
+    assert nvda["最后交易日盘后收盘价"] == 100.0
     assert nvda["盘后收盘时间"] == "2026-06-12 19:59 ET"
-    assert nvda["美股夜盘首分钟收盘"] == 101.5
-    assert nvda["夜盘首分钟时间"] == "2026-06-14 20:00 ET"
+    assert nvda["下周首个交易日夜盘首分钟收盘"] == 101.5
+    assert nvda["下周首个交易日夜盘时间"] == "2026-06-14 20:00 ET"
     assert nvda["Binance 合约"] == "NVDAUSDT"
     assert nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
     assert nvda["Binance 周末最高价"] == 102.0
     assert round(nvda["Binance 周末冲高%"], 2) == 2.0
     assert round(nvda["夜盘相对 Binance 高点%"], 2) == -0.49
-    assert round(nvda["夜盘相对周五盘后%"], 2) == 1.5
+    assert round(nvda["夜盘相对最后交易日盘后%"], 2) == 1.5
     assert nvda["周末高点兑现率%"] == 75.0
     assert nvda["状态"] == "正式样本"
 
@@ -4442,9 +4451,10 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert list(frame.columns) == [
         "周次",
         "股票",
-        "P0 周五盘后",
+        "本周最后交易日",
+        "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 下周首个交易日夜盘",
         "周末冲高%",
         "高点回落%",
         "最终传导%",
@@ -4453,9 +4463,9 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     ]
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["P0 周五盘后"] == 100.0
+    assert nvda["P0 最后交易日盘后"] == 100.0
     assert nvda["P1 Binance 高点"] == 102.0
-    assert nvda["P2 夜盘首分钟"] == 101.5
+    assert nvda["P2 下周首个交易日夜盘"] == 101.5
     assert round(nvda["周末冲高%"], 2) == 2.0
     assert round(nvda["高点回落%"], 2) == -0.49
     assert round(nvda["最终传导%"], 2) == 1.5
@@ -4464,7 +4474,7 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
 
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]
-    assert diagnostic_nvda["周五盘后收盘价"] == 100.0
+    assert diagnostic_nvda["最后交易日盘后收盘价"] == 100.0
     assert diagnostic_nvda["常规收盘价"] == 99.0
     assert diagnostic_nvda["P0 请求区间"] == "2026-06-12 19:55 ET - 2026-06-12 20:00 ET"
     assert diagnostic_nvda["P0 返回bars"] == 4
@@ -4497,7 +4507,7 @@ def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -
 
     review = weekend_spread._weekend_review_rows(rows)[0]
 
-    assert review["sample_status"] == "假期顺延样本"
+    assert review["sample_status"] == "夜盘顺延｜假期顺延样本"
     assert weekend_spread._ok_weekend_review_rows([review]) == []
 
 
@@ -4591,7 +4601,7 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     frame = weekend_spread._weekend_review_frame(review_rows)
 
     assert frame.iloc[0]["样本状态"] == "排除样本"
-    assert frame.iloc[0]["P0 周五盘后"] is None
+    assert frame.iloc[0]["P0 最后交易日盘后"] is None
     assert frame.iloc[0]["P1 Binance 高点"] is None
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     assert diagnostic.iloc[0]["失败原因"] == "缺少 Binance 周末 1m K 线"
@@ -4642,13 +4652,42 @@ def test_backtest_results_do_not_use_cache_when_preflight_has_no_eligible_mappin
     assert rows == []
 
 
+def test_backtest_results_ignore_cached_rows_outside_current_watchlist_scope() -> None:
+    cached = {
+        "rows": [
+            {"week_id": "2026-W24", "ticker": "NVDA", "binance_symbol": "NVDAUSDT", "data_quality": "OK"},
+            {"week_id": "2026-W24", "ticker": "NOW", "binance_symbol": "NOWUSDT", "data_quality": "OK"},
+        ]
+    }
+    mapping = {
+        "NOW": {
+            "enabled": True,
+            "binance_symbol": "NOWUSDT",
+            "market_type": "usdm_futures",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "confirmed",
+        }
+    }
+
+    rows = weekend_spread._current_backtest_results(
+        None,
+        cached,
+        preflight={"can_run": True, "eligible_tickers": ["NOW"]},
+        mapping=mapping,
+        include_unconfirmed=False,
+    )
+
+    assert [row["ticker"] for row in rows] == ["NOW"]
+
+
 def test_backtest_anchor_mapping_uses_distinct_historical_weekly_closes() -> None:
     history = pd.DataFrame(
         [
             {"date": "2026-06-12", "close": 100.0},
-            {"date": "2026-06-19", "close": 110.0},
+                {"date": "2026-06-18", "close": 110.0},
             {"date": "2026-06-26", "close": 120.0},
-            {"date": "2026-07-03", "close": 130.0},
+                {"date": "2026-07-02", "close": 130.0},
         ]
     )
 
@@ -4665,7 +4704,7 @@ def test_backtest_anchor_mapping_uses_distinct_historical_weekly_closes() -> Non
 
     assert len(weekly) == 4
     assert sorted(closes) == [100.0, 110.0, 120.0, 130.0]
-    assert dates == {"2026-06-12", "2026-06-19", "2026-06-26", "2026-07-03"}
+    assert dates == {"2026-06-12", "2026-06-18", "2026-06-26", "2026-07-02"}
 
 
 def test_weekend_spread_log_handles_empty_store(tmp_path) -> None:
@@ -4831,7 +4870,7 @@ def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
     source = inspect.getsource(weekend_spread)
 
     assert "查看实时价差详情" not in source
-    assert "行详情" in source
+    assert "查看详情" in source
 
 
 def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
@@ -4866,22 +4905,22 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
     frame = weekend_spread._live_frame(rows)
 
     assert list(frame.columns) == [
-        "Ticker",
-        "价格锚点",
+        "股票",
+        "美股盘后锚点",
         "Binance 最新",
-        "vs 盘后",
-        "vs 收盘",
+        "相对盘后",
+        "相对收盘",
         "状态",
-        "风险",
         "更新时间",
     ]
-    assert frame.loc[0, "价格锚点"] == "盘后 $102.88（已更新）"
-    assert frame.loc[0, "vs 盘后"] == "+1.65%"
-    assert frame.loc[0, "vs 收盘"] == "+2.38%"
+    assert frame.loc[0, "美股盘后锚点"] == "盘后 $102.88（已更新）"
+    assert frame.loc[0, "相对盘后"] == "+1.65%"
+    assert frame.loc[0, "相对收盘"] == "+2.38%"
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns
     assert "risk_note" not in frame.columns
+    assert "风险" not in frame.columns
 
 
 def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
@@ -4897,7 +4936,7 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     assert "$102.15" in frame.iloc[0, 1]
     assert frame.iloc[0, 3] in {"—", "鈥?"}
-    assert "回退参考" in frame.iloc[0, 6]
+    assert frame.loc[0, "状态"] == "不可用"
 
 
 def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:
@@ -4935,10 +4974,10 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
     frame = weekend_spread._live_frame(rows)
 
     assert "$nan" not in frame.to_string()
-    assert frame.loc[0, "价格锚点"] == "盘后 $205.42（已缓存）"
-    assert frame.loc[1, "价格锚点"] == "收盘 $102.15｜盘后缺失：盘后缓存日期不匹配"
-    assert frame.loc[1, "vs 盘后"] in {"—", "鈥?"}
-    assert "当前使用周五收盘作为回退参考" in frame.loc[1, "风险"]
+    assert frame.loc[0, "美股盘后锚点"] == "盘后 $205.42（已缓存）"
+    assert frame.loc[1, "美股盘后锚点"] == "收盘 $102.15｜盘后缺失：盘后缓存日期不匹配"
+    assert frame.loc[1, "相对盘后"] in {"—", "鈥?"}
+    assert frame.loc[1, "状态"] == "不可用"
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:
@@ -4950,7 +4989,7 @@ def test_live_frame_formats_updated_at_as_short_hkt() -> None:
     assert "T12:" not in frame.loc[0, "更新时间"]
 
 
-def test_candidate_mapping_risk_is_merged_into_risk_column() -> None:
+def test_candidate_mapping_risk_is_not_rendered_in_main_table() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="candidate"),
@@ -4960,17 +4999,38 @@ def test_candidate_mapping_risk_is_merged_into_risk_column() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert "映射未确认，仅观察，不能作为正式交易信号" in frame.loc[0, "风险"]
+    assert "风险" not in frame.columns
+    assert frame.loc[0, "状态"] in {"重点关注", "异常复核", "正常", "不可用"}
+    assert "映射未确认，仅观察，不能作为正式交易信号" not in frame.to_string()
+
+
+def test_large_realtime_deviation_is_review_not_signal() -> None:
+    row = {
+        "ticker": "MRVL",
+        "status": "OK",
+        "binance_symbol": "MRVLUSDT",
+        "binance_last_price": 115.68,
+        "adjusted_binance_price": 115.68,
+        "afterhours_reference_price": 100,
+        "spread_vs_afterhours_pct": 15.68,
+        "spread_pct": 15.68,
+        "mapping_confidence": "candidate",
+        "updated_at": "2026-06-19T00:38:00+08:00",
+    }
+
+    assert weekend_spread._realtime_row_status_label(row) == "异常复核"
+    assert "当前最强信号" not in inspect.getsource(weekend_spread)
+    assert "当前最大偏离" in inspect.getsource(weekend_spread)
 
 
 def test_row_details_are_split_into_three_blocks() -> None:
     source = inspect.getsource(weekend_spread._render_row_details)
 
-    assert "**盘后锚点**" in source
+    assert "**美股锚点**" in source
     assert "**Binance 行情**" in source
-    assert "**风险说明**" in source
-    assert "_data_quality_text(row.get('afterhours_data_quality')" in source
-    assert "确认时间：" in source
+    assert "**数据备注**" in source
+    assert "映射状态：" in source
+    assert "状态说明：" in source
     assert "finalized_at：" not in source
 
 
@@ -5055,10 +5115,48 @@ def test_mapping_management_tab_counts_local_universe_confirmed_and_candidate() 
 
     assert counts["local_mapping_count"] == 2
     assert counts["universe_mapping_count"] == 1
-    assert counts["confirmed_count"] == 1
-    assert counts["candidate_count"] == 1
+    assert counts["usable_count"] == 1
+    assert counts["review_count"] == 0
+    assert counts["manual_locked_count"] == 1
     assert counts["no_mapping_count"] == 1
-    assert "不在观察池" in set(frame["validation_status"])
+    assert counts["off_universe_mapping_count"] == 1
+    assert list(frame.columns) == ["股票", "Binance 合约", "Binance 价格", "股票参考价", "价格差异%", "映射状态", "操作"]
+    assert "ADBE" not in set(frame["股票"])
+    assert "无映射" in set(frame["映射状态"])
+    off_universe = weekend_spread._off_universe_mapping_records(rows, mapping)
+    assert [record["ticker"] for record in off_universe] == ["ADBE"]
+    assert off_universe[0]["state_label"] == "已移出观察名单"
+
+
+def test_mapping_management_marks_price_valid_auto_candidate_usable() -> None:
+    mapping = _mapping(mapping_confidence="candidate", risk_note="候选 symbol 按 ticker+USDT 自动生成")
+    rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
+
+    counts = weekend_spread._mapping_management_counts(rows, mapping)
+    frame = weekend_spread._mapping_management_frame(rows, mapping)
+
+    assert counts["usable_count"] == 1
+    assert counts["review_count"] == 0
+    assert counts["manual_locked_count"] == 0
+    assert frame.loc[0, "映射状态"] == "自动可用"
+
+
+def test_backtest_week_count_text_uses_selected_weeks() -> None:
+    source = inspect.getsource(weekend_spread._render_backtest_tab)
+
+    assert weekend_spread._backtest_run_button_label(6) == "运行近 6 周回测"
+    assert weekend_spread._backtest_empty_prompt(8) == "尚未运行历史回测。展开“回测设置”后点击“运行近 8 周回测”。"
+    assert weekend_spread._weekend_review_detail_title(6) == "近 6 周传导明细"
+    assert weekend_spread._backtest_mode_text("auto usable") == "自动可用"
+    assert "运行近 4 周回测" not in source
+    assert "近 4 周传导明细" not in source
+    assert "_backtest_anchor_mapping(all_tickers, weeks=4)" not in source
+    assert 'all_tickers = ["NVDA"]' not in source
+    assert 'options = ["NVDA"]' not in source
+
+
+def test_weekend_scope_tickers_follow_current_watchlist_only() -> None:
+    assert weekend_spread._weekend_scope_tickers(["NOW", "nvda", "NOW", ""]) == ["NOW", "NVDA"]
 
 
 def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
@@ -5066,4 +5164,4 @@ def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
 
     assert "manual_override_price" not in source
     assert "Binance 手动价格" not in source
-    assert "周一验证价" in source
+    assert "下周首个交易日验证价" in source
