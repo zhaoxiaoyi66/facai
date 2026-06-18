@@ -9,6 +9,7 @@ import pandas as pd
 from data.dashboard_lanes import row_current_add_text, row_final_action
 from data.entry_display import build_entry_display
 from data.buy_zone_display import build_buy_zone_display
+from ui.price_source_display import price_source_label_from_row
 
 
 BADGE_STYLES = {
@@ -89,7 +90,7 @@ def _decision_table_cell_html(
     if key == "priceMarket":
         price = _display_table_text(_safe_table_value("price", row.get("price")), fallback="当前价待补")
         market_cap = _display_table_text(_safe_table_value("marketCap", row.get("marketCap")), fallback="市值待补")
-        price_source, price_source_title = _price_source_label_from_row(row)
+        price_source, price_source_title = price_source_label_from_row(row)
         return (
             '<div class="decision-cell decision-cell-stack price-market-cell">'
             f'<strong>{escape(price)}</strong>'
@@ -151,42 +152,6 @@ def _display_table_text(value: object, fallback: str = "待补") -> str:
     if not text or text.lower() in {"n/a", "none", "nan", "null"}:
         return fallback
     return text
-
-
-def _price_source_label_from_row(row: pd.Series | dict) -> tuple[str, str]:
-    snapshot = _row_value(row, "rawSnapshot")
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    session = str(snapshot.get("price_session") or snapshot.get("current_price_source") or "").strip().upper()
-    refresh_mode = str(snapshot.get("refresh_mode") or "").strip().upper()
-    label = {
-        "REGULAR": "盘中报价",
-        "PRE_MARKET": "盘前参考",
-        "AFTER_HOURS": "盘后参考",
-        "LAST_CLOSE": "昨夜收盘",
-    }.get(session)
-    if not label:
-        if refresh_mode == "PRICE_ONLY":
-            label = "最新报价"
-        elif snapshot.get("quote_updated_at") or snapshot.get("price_updated_at"):
-            label = "报价缓存"
-        elif snapshot.get("price_as_of") or snapshot.get("history_latest_date") or snapshot.get("latest_close"):
-            label = "收盘价"
-        else:
-            label = "价格口径待补"
-    detail = _price_source_detail(label, snapshot)
-    return label, detail
-
-
-def _price_source_detail(label: str, snapshot: dict) -> str:
-    parts = [f"价格口径：{label}"]
-    as_of = snapshot.get("price_as_of") or snapshot.get("history_latest_date") or snapshot.get("latest_close_date")
-    updated_at = snapshot.get("quote_updated_at") or snapshot.get("price_updated_at") or snapshot.get("last_close_synced_at")
-    if as_of:
-        parts.append(f"参考日：{as_of}")
-    if updated_at:
-        parts.append(f"更新时间：{updated_at}")
-    return "｜".join(str(part) for part in parts if part)
 
 
 def _compact_watchlist_badge_text(key: str, value: object) -> str:

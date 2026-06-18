@@ -27,9 +27,9 @@ from ui.dashboard_tables import (
     _buy_point_label_tone,
     _entry_rating_chip_text,
     _entry_rating_display_parts,
-    _price_source_label_from_row,
 )
 from ui.metric_labels import model_type_label, resolution_status_label
+from ui.price_source_display import price_source_label_from_row
 
 
 DRAWER_SYMBOL_SESSION_KEY = "dashboard_drawer_symbol"
@@ -436,7 +436,7 @@ def _drawer_current_price(row: pd.Series | dict) -> float | None:
 
 
 def _drawer_price_source_html(row: pd.Series | dict) -> str:
-    label, title = _price_source_label_from_row(row)
+    label, title = price_source_label_from_row(row)
     return f'<div class="drawer-price-source" title="{escape(title)}">{escape(label)}</div>'
 
 
