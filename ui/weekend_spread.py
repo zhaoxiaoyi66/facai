@@ -783,6 +783,8 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
     rows = [
         ("OVERNIGHT_PRICE_PROVIDER", _clean_self_check_text(result.get("provider_display"), "未配置")),
         ("Alpaca 配置", "已配置" if result.get("alpaca_configured") else "缺少 API key"),
+        ("Alpaca feed", _clean_self_check_text(result.get("feed"), "未返回")),
+        ("timeframe", _clean_self_check_text(result.get("timeframe"), "未返回")),
         ("IBKR 配置", _ibkr_self_check_status(result)),
         ("请求窗口开始", _weekend_review_short_time(result.get("requested_start")) or "未返回"),
         ("请求窗口结束", _weekend_review_short_time(result.get("requested_end")) or "未返回"),
@@ -796,6 +798,7 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
         ),
         ("provider 返回", _clean_self_check_text(result.get("provider"), "未返回")),
         ("数据质量", _data_quality_text(result.get("quality"))),
+        ("疑似 15 分钟延迟", "是" if result.get("boats_delay_suspected") else "否"),
         ("失败原因", "" if result.get("ok") else reason),
     ]
     st.dataframe(pd.DataFrame(rows, columns=["检查项", "结果"]), width="stretch", hide_index=True)
@@ -1093,6 +1096,11 @@ def _data_quality_text(value: object) -> str:
         "TRADINGVIEW_CSV_SAMPLE": "TradingView CSV 样本",
         "MANUAL_BROKER_SAMPLE": "人工券商样本",
         "MANUAL_AFTERHOURS_SAMPLE": "人工盘后样本",
+        "ALPACA_BOATS_SAMPLE": "Alpaca BOATS 样本",
+        "BOATS_DELAY_PENDING": "BOATS 历史数据可能延迟",
+        "ALPACA_BOATS_PERMISSION": "Alpaca BOATS 权限不足",
+        "MISSING_BOATS_FIRST_1M": "缺少 BOATS 夜盘首分钟 1m K线",
+        "PROVIDER_ERROR": "provider 报错",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
@@ -1329,6 +1337,11 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
             "TRADINGVIEW_CSV_SAMPLE",
             "MANUAL_BROKER_SAMPLE",
             "MANUAL_AFTERHOURS_SAMPLE",
+            "ALPACA_BOATS_SAMPLE",
+            "BOATS_DELAY_PENDING",
+            "ALPACA_BOATS_PERMISSION",
+            "MISSING_BOATS_FIRST_1M",
+            "PROVIDER_ERROR",
         }:
             counts["observe"] += 1
         elif quality.startswith("DEGRADED"):
@@ -1436,7 +1449,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "overnight_vs_afterhours_pct": overnight_vs_afterhours_pct,
             "capture_pct": capture_pct,
             "data_quality": data_quality,
-            "sample_status": _weekend_review_sample_status(data_quality),
+            "sample_status": _weekend_review_sample_status(data_quality, row),
             "status": _weekend_review_status(data_quality, capture_pct),
             "failure_reason": _weekend_review_failure_reason(row, data_quality),
             "raw_row": row,
@@ -1597,6 +1610,11 @@ def _observation_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
             "TRADINGVIEW_CSV_SAMPLE",
             "MANUAL_BROKER_SAMPLE",
             "MANUAL_AFTERHOURS_SAMPLE",
+            "ALPACA_BOATS_SAMPLE",
+            "BOATS_DELAY_PENDING",
+            "ALPACA_BOATS_PERMISSION",
+            "MISSING_BOATS_FIRST_1M",
+            "PROVIDER_ERROR",
         }
     ]
 
@@ -1617,6 +1635,11 @@ def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
             "TRADINGVIEW_CSV_SAMPLE",
             "MANUAL_BROKER_SAMPLE",
             "MANUAL_AFTERHOURS_SAMPLE",
+            "ALPACA_BOATS_SAMPLE",
+            "BOATS_DELAY_PENDING",
+            "ALPACA_BOATS_PERMISSION",
+            "MISSING_BOATS_FIRST_1M",
+            "PROVIDER_ERROR",
         }
         or str(row.get("data_quality") or "").strip().upper().startswith("DEGRADED")
     ]
@@ -1645,6 +1668,8 @@ def _weekend_review_data_quality(
         return "REGULAR_CLOSE_FALLBACK"
     if quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
         return quality
+    if quality in {"BOATS_DELAY_PENDING", "ALPACA_BOATS_PERMISSION", "MISSING_BOATS_FIRST_1M", "PROVIDER_ERROR"}:
+        return quality
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
     if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"}:
@@ -1669,6 +1694,8 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
         return "缺盘后锚点"
     if data_quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "REGULAR_CLOSE_FALLBACK"}:
         return "仅观察"
+    if data_quality in {"BOATS_DELAY_PENDING", "ALPACA_BOATS_PERMISSION", "MISSING_BOATS_FIRST_1M", "PROVIDER_ERROR"}:
+        return "仅观察"
     if data_quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
         return _weekend_review_sample_status(data_quality)
     if str(data_quality or "").startswith("DEGRADED"):
@@ -1678,10 +1705,17 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
     return "正式样本"
 
 
-def _weekend_review_sample_status(data_quality: str) -> str:
+def _weekend_review_sample_status(data_quality: str, row: dict | None = None) -> str:
     quality = str(data_quality or "").strip().upper()
     if quality == "OK":
+        raw = dict(row or {})
+        overnight_provider = str(raw.get("overnight_provider") or raw.get("broker_provider") or raw.get("stock_bar_provider") or "").strip().upper()
+        overnight_quality = str(raw.get("overnight_quality") or raw.get("broker_quality") or raw.get("stock_bar_quality") or "").strip().upper()
+        if overnight_provider == "ALPACA_BOATS" or overnight_quality == "ALPACA_BOATS_SAMPLE":
+            return "Alpaca BOATS 样本"
         return "自动正式样本"
+    if quality == "ALPACA_BOATS_SAMPLE":
+        return "Alpaca BOATS 样本"
     if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
         return "TradingView Webhook 样本"
     if quality == "TRADINGVIEW_CSV_SAMPLE":
@@ -1802,6 +1836,13 @@ def _price_source_text(value: object) -> str:
         "MANUAL_OVERNIGHT_1M": "人工券商",
         "MANUAL_AFTERHOURS_1M": "人工盘后",
         "REGULAR_CLOSE_FALLBACK": "常规收盘回退",
+        "FMP": "FMP 盘后",
+        "FMP_AFTERHOURS_TRADE": "FMP 盘后",
+        "FMP_AFTERHOURS_QUOTE_MID": "FMP 盘后",
+        "ALPACA_AFTERHOURS": "Alpaca 盘后",
+        "ALPACA_AFTERHOURS_SIP": "Alpaca SIP 盘后",
+        "ALPACA_AFTERHOURS_BOATS": "Alpaca BOATS 盘后",
+        "ALPACA_AFTERHOURS_IEX": "Alpaca IEX 盘后",
         "ALPACA_BOATS": "Alpaca BOATS",
         "IBKR_OVERNIGHT": "IBKR 夜盘",
     }.get(upper, text)
@@ -1819,6 +1860,14 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
         return "美股夜盘数据源未配置"
     if quality == "REGULAR_CLOSE_FALLBACK":
         return "常规收盘回退，仅观察"
+    if quality == "BOATS_DELAY_PENDING":
+        return "BOATS 历史数据可能延迟，请 15 分钟后重试。"
+    if quality == "ALPACA_BOATS_PERMISSION":
+        return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
+    if quality == "MISSING_BOATS_FIRST_1M":
+        return "缺少 BOATS 夜盘首分钟 1m K线。"
+    if quality == "PROVIDER_ERROR":
+        return str(row.get("overnight_reason") or "夜盘 provider 报错。")
     if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
         return "P0/P2 来自 TradingView Webhook，本地补数样本"
     if quality == "TRADINGVIEW_CSV_SAMPLE":

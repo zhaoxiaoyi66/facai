@@ -97,6 +97,7 @@ Current high-value mappings:
 | `ui/trade_journal.py` | `tests/test_trade_journal_ui.py` |
 | `ui/portfolio.py` | `tests/test_portfolio_trade_entry.py`, `tests/test_portfolio_model.py` |
 | `data/buy_plan.py` | `tests/test_buy_plan.py`, `tests/test_price_alerts.py` |
+| `ui/weekend_spread.py`, `data/weekend_spread_backtest.py` | `tests/test_weekend_spread.py` |
 
 ## Codex Workflow Rules
 

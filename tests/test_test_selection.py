@@ -35,6 +35,18 @@ def test_structure_and_acceptance_changes_do_not_force_trading_workflow_tests() 
     ]
 
 
+def test_weekend_spread_changes_select_weekend_spread_tests() -> None:
+    targets = select_test_targets(
+        [
+            "ui/weekend_spread.py",
+            "data/weekend_spread_backtest.py",
+            "data/overnight_price_provider.py",
+        ]
+    )
+
+    assert targets == [PytestTarget("tests/test_weekend_spread.py")]
+
+
 def test_changed_test_file_selects_itself() -> None:
     assert select_test_targets(["tests/test_refresh_policy.py"]) == [
         PytestTarget("tests/test_refresh_policy.py")

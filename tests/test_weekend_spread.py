@@ -13,6 +13,7 @@ from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvid
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.equity_afterhours_provider import (
     AlphaVantageAfterhoursProvider,
+    AlpacaAfterhoursProvider,
     MultiProviderAfterhoursProvider,
     PolygonOpenCloseAfterhoursProvider,
     PolygonQuoteMidAfterhoursProvider,
@@ -41,6 +42,7 @@ from data.weekend_basis_mapping_audit import (
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
+    fetch_friday_afterhours_close,
     get_first_valid_stock_bar_after_weekend,
     load_backtest_results,
     recent_weekend_windows,
@@ -1076,6 +1078,30 @@ def test_polygon_quote_mid_provider_uses_valid_quote_mid() -> None:
     assert snapshot.reference_source == "POLYGON_QUOTE_MID"
     assert snapshot.bid == 207.8
     assert snapshot.ask == 208.2
+    assert snapshot.data_quality == "HIGH"
+
+
+def test_alpaca_afterhours_provider_tries_sip_feed_for_friday_afterhours_close() -> None:
+    calls: list[str] = []
+    provider = AlpacaAfterhoursProvider(api_key="key", api_secret="secret", feed=None)
+
+    def fake_get_json(_endpoint: str, params: dict[str, str]) -> dict:
+        calls.append(params["feed"])
+        if params["feed"] != "sip":
+            return {"bars": []}
+        return {
+            "bars": [
+                {"t": "2026-06-12T23:59:00Z", "c": 205.42, "v": 7248},
+            ]
+        }
+
+    provider._get_json = fake_get_json  # type: ignore[method-assign]
+
+    snapshot = provider.get_afterhours_reference("NVDA", regular_close_date="2026-06-12")
+
+    assert calls == ["sip"]
+    assert snapshot.reference_price == 205.42
+    assert snapshot.provider_name == "ALPACA_AFTERHOURS_SIP"
     assert snapshot.data_quality == "HIGH"
 
 
@@ -3844,6 +3870,54 @@ def test_weekend_review_backtest_writes_regular_close_fallback_into_p0() -> None
     assert review["status"] == "仅观察"
 
 
+def test_weekend_review_backtest_reads_afterhours_reference_provider_into_p0() -> None:
+    now = datetime(2026, 6, 15, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=8), 205.0, 210.0, 204.0, 208.0)]
+    overnight_provider = FakeBrokerBarProvider(
+        {"1m": [_broker_bar(window.end_et, 209.4, 209.6, close=209.5)]}
+    )
+    afterhours_provider = FakeAfterhoursProvider(
+        reference_price=205.42,
+        reference_time="2026-06-12T19:59:00-04:00",
+        reference_source="ALPACA_AFTERHOURS_BOATS",
+    )
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        provider=FakeKlineProvider(bars),
+        overnight_provider=overnight_provider,
+        afterhours_provider=afterhours_provider,
+        weeks=1,
+        now=now,
+    )
+
+    row = rows[0]
+    assert afterhours_provider.calls == [("NVDA", "2026-06-12", False)]
+    assert row["friday_afterhours_close"] == 205.42
+    assert row["friday_afterhours_provider"] == "ALPACA_AFTERHOURS_BOATS"
+    assert row["friday_afterhours_quality"] == "OFFICIAL_AFTERHOURS_REFERENCE"
+    assert row["transmission_data_quality"] == "OK"
+
+
+def test_fetch_friday_afterhours_close_accepts_cached_millisecond_timestamp() -> None:
+    result = fetch_friday_afterhours_close(
+        "NVDA",
+        "2026-06-12",
+        anchor_source={
+            "afterhours_reference_price": 205.4238,
+            "afterhours_reference_time": "1781308799000",
+            "afterhours_reference_source": "FMP_AFTERHOURS_TRADE",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["friday_afterhours_close"] == 205.4238
+    assert result["bar_start_et"] == "2026-06-12T19:59:59-04:00"
+    assert result["provider"] == "FMP_AFTERHOURS_TRADE"
+
+
 def test_default_overnight_price_provider_uses_configured_alpaca_boats(monkeypatch) -> None:
     monkeypatch.setenv("OVERNIGHT_PRICE_PROVIDER", "ALPACA_BOATS")
     monkeypatch.setenv("ALPACA_API_KEY_ID", "key")
@@ -3853,6 +3927,59 @@ def test_default_overnight_price_provider_uses_configured_alpaca_boats(monkeypat
 
     assert isinstance(provider, AlpacaBoatsOvernightProvider)
     assert provider.provider_name == "ALPACA_BOATS"
+
+
+def test_alpaca_boats_provider_requests_historical_boats_1m() -> None:
+    captured: dict[str, object] = {}
+    start = datetime(2026, 6, 14, 20, 0, tzinfo=ZoneInfo("America/New_York"))
+    end = start + timedelta(minutes=2)
+    provider = AlpacaBoatsOvernightProvider(
+        api_key="key",
+        api_secret="secret",
+        now_provider=lambda: datetime(2026, 6, 14, 20, 20, tzinfo=ZoneInfo("America/New_York")),
+    )
+
+    def fake_get_json(path: str, params: dict[str, str]) -> dict:
+        captured["path"] = path
+        captured["params"] = params
+        return {"bars": [{"t": "2026-06-14T20:00:00-04:00", "c": 208.88, "v": 100}]}
+
+    provider._get_json = fake_get_json  # type: ignore[method-assign]
+    rows = provider.get_overnight_bars(
+        "NVDA",
+        start_time_ms=int(start.timestamp() * 1000),
+        end_time_ms=int(end.timestamp() * 1000),
+        interval="1m",
+    )
+
+    assert captured["path"] == "/v2/stocks/NVDA/bars"
+    assert captured["params"]["feed"] == "boats"
+    assert captured["params"]["timeframe"] == "1Min"
+    assert captured["params"]["start"].startswith("2026-06-15T00:00:00")
+    assert captured["params"]["end"].startswith("2026-06-15T00:02:00")
+    assert rows[0]["close"] == 208.88
+    assert provider.last_delay_suspected is False
+
+
+def test_alpaca_boats_provider_marks_delayed_historical_window() -> None:
+    start = datetime(2026, 6, 14, 20, 0, tzinfo=ZoneInfo("America/New_York"))
+    provider = AlpacaBoatsOvernightProvider(
+        api_key="key",
+        api_secret="secret",
+        now_provider=lambda: datetime(2026, 6, 14, 20, 10, tzinfo=ZoneInfo("America/New_York")),
+    )
+    provider._get_json = lambda _path, _params: {"bars": []}  # type: ignore[method-assign]
+
+    rows = provider.get_overnight_bars(
+        "NVDA",
+        start_time_ms=int(start.timestamp() * 1000),
+        end_time_ms=int((start + timedelta(minutes=2)).timestamp() * 1000),
+        interval="1m",
+    )
+
+    assert rows == []
+    assert provider.last_delay_suspected is True
+    assert provider.last_error_reason == "BOATS_DELAY_PENDING"
 
 
 def test_default_overnight_price_provider_supports_ibkr_overnight_json(monkeypatch, tmp_path) -> None:
@@ -3909,6 +4036,90 @@ def test_overnight_provider_self_check_reads_first_minute_close(monkeypatch) -> 
     assert result["first_bar_close"] == 101.2
     assert result["requested_start"].startswith("2026-07-06T00:00:00")
     assert result["requested_end"].startswith("2026-07-06T00:01:00")
+    assert result["feed"] == "boats"
+
+
+def test_overnight_provider_self_check_reports_boats_delay(monkeypatch) -> None:
+    secrets = {
+        "OVERNIGHT_PRICE_PROVIDER": "ALPACA_BOATS",
+        "ALPACA_API_KEY_ID": "key",
+        "ALPACA_API_SECRET_KEY": "secret",
+    }
+    monkeypatch.setattr("data.overnight_price_provider.get_secret", lambda name: secrets.get(name))
+
+    class DelayedBoatsProvider:
+        provider_name = "ALPACA_BOATS"
+        last_error_reason = ""
+        last_delay_suspected = False
+        last_request_meta = {}
+
+        def get_overnight_bars(self, *_args, **_kwargs):
+            self.last_error_reason = "BOATS_DELAY_PENDING"
+            self.last_delay_suspected = True
+            self.last_request_meta = {"feed": "boats", "timeframe": "1Min", "delay_suspected": True}
+            return []
+
+    result = build_overnight_provider_self_check(
+        provider=DelayedBoatsProvider(),
+        now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["quality"] == "BOATS_DELAY_PENDING"
+    assert result["reason"] == "BOATS 历史数据可能延迟，请 15 分钟后重试。"
+    assert result["boats_delay_suspected"] is True
+
+
+def test_overnight_provider_self_check_reports_boats_permission(monkeypatch) -> None:
+    secrets = {
+        "OVERNIGHT_PRICE_PROVIDER": "ALPACA_BOATS",
+        "ALPACA_API_KEY_ID": "key",
+        "ALPACA_API_SECRET_KEY": "secret",
+    }
+    monkeypatch.setattr("data.overnight_price_provider.get_secret", lambda name: secrets.get(name))
+
+    class PermissionDeniedBoatsProvider:
+        provider_name = "ALPACA_BOATS"
+        last_error_reason = "NO_PERMISSION"
+        last_delay_suspected = False
+        last_request_meta = {"feed": "boats", "timeframe": "1Min", "delay_suspected": False}
+
+        def get_overnight_bars(self, *_args, **_kwargs):
+            return []
+
+    result = build_overnight_provider_self_check(
+        provider=PermissionDeniedBoatsProvider(),
+        now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["ok"] is False
+    assert result["quality"] == "ALPACA_BOATS_PERMISSION"
+    assert result["reason"] == "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
+
+
+def test_weekend_review_marks_alpaca_boats_sample_status() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 103.0, 99.0, 101.0)]
+
+    class AlpacaFakeBrokerBarProvider(FakeBrokerBarProvider):
+        provider_name = "ALPACA_BOATS"
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        anchors=_anchors(afterhours=100.0),
+        provider=FakeKlineProvider(bars),
+        overnight_provider=AlpacaFakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 101.4, 101.5, close=101.45)]}),
+        weeks=1,
+        now=now,
+    )
+
+    assert rows[0]["transmission_data_quality"] == "OK"
+    assert rows[0]["overnight_quality"] == "ALPACA_BOATS_SAMPLE"
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["data_quality"] == "OK"
+    assert review["sample_status"] == "Alpaca BOATS 样本"
 
 
 def test_tradingview_webhook_writes_price_cache(monkeypatch, tmp_path) -> None:
@@ -4127,6 +4338,12 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert round(nvda["夜盘相对周五盘后%"], 2) == 1.5
     assert nvda["周末高点兑现率%"] == 75.0
     assert nvda["状态"] == "正式样本"
+
+def test_weekend_review_price_source_text_localizes_afterhours_providers() -> None:
+    assert weekend_spread._price_source_text("ALPACA_AFTERHOURS_SIP") == "Alpaca SIP 盘后"
+    assert weekend_spread._price_source_text("FMP_AFTERHOURS_TRADE") == "FMP 盘后"
+    assert weekend_spread._price_source_text("anchor_source") == "未配置"
+
 
 def test_weekend_review_summary_uses_latest_four_weeks() -> None:
     rows = [

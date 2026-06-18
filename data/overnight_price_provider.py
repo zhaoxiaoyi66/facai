@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -21,12 +21,16 @@ class AlpacaBoatsOvernightProvider:
         api_secret: str | None = None,
         base_url: str = "https://data.alpaca.markets",
         timeout_seconds: float = 12.0,
+        now_provider: Any | None = None,
     ) -> None:
         self.api_key = api_key or get_secret("ALPACA_API_KEY_ID") or get_secret("ALPACA_API_KEY")
         self.api_secret = api_secret or get_secret("ALPACA_API_SECRET_KEY") or get_secret("ALPACA_SECRET_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.now_provider = now_provider
         self.last_error_reason = ""
+        self.last_request_meta: dict[str, Any] = {}
+        self.last_delay_suspected = False
 
     @property
     def is_configured(self) -> bool:
@@ -43,6 +47,10 @@ class AlpacaBoatsOvernightProvider:
         if not self.is_configured:
             return []
         timeframe = "1Min" if str(interval or "").lower() in {"1m", "1min", "1 min"} else str(interval)
+        start_dt = datetime.fromtimestamp(int(start_time_ms) / 1000, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(int(end_time_ms) / 1000, tz=timezone.utc)
+        now_utc = self._now_utc()
+        self.last_delay_suspected = now_utc < start_dt + timedelta(minutes=15)
         params = {
             "timeframe": timeframe,
             "start": _iso_from_ms(start_time_ms),
@@ -52,8 +60,19 @@ class AlpacaBoatsOvernightProvider:
             "sort": "asc",
             "limit": "10000",
         }
+        self.last_request_meta = {
+            "feed": "boats",
+            "timeframe": timeframe,
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+            "delay_suspected": self.last_delay_suspected,
+        }
         payload = self._get_json(f"/v2/stocks/{str(symbol or '').strip().upper()}/bars", params)
         bars = payload.get("bars") if isinstance(payload, dict) else []
+        if bars:
+            self.last_error_reason = ""
+        elif not self.last_error_reason:
+            self.last_error_reason = "BOATS_DELAY_PENDING" if self.last_delay_suspected else "MISSING_BOATS_FIRST_1M"
         return [_alpaca_bar_to_broker_row(row) for row in bars or [] if isinstance(row, dict)]
 
     def _get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
@@ -76,6 +95,13 @@ class AlpacaBoatsOvernightProvider:
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             self.last_error_reason = f"PROVIDER_ERROR:{type(exc).__name__}"
             return {}
+
+    def _now_utc(self) -> datetime:
+        if self.now_provider is not None:
+            value = self.now_provider()
+            if isinstance(value, datetime):
+                return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
 
 class JsonFileOvernightProvider:
@@ -199,8 +225,12 @@ def build_overnight_provider_self_check(
     if not reason:
         provider_error = str(getattr(selected_provider, "last_error_reason", "") or "")
         quality = str(result.get("quality") or "").strip().upper()
-        if provider_error == "NO_PERMISSION":
-            reason = "无权限"
+        if provider_error == "BOATS_DELAY_PENDING" or quality == "BOATS_DELAY_PENDING":
+            reason = "BOATS 历史数据可能延迟，请 15 分钟后重试。"
+        elif provider_error == "NO_PERMISSION" or quality == "ALPACA_BOATS_PERMISSION":
+            reason = "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
+        elif provider_error == "MISSING_BOATS_FIRST_1M" or quality == "MISSING_BOATS_FIRST_1M":
+            reason = "缺少 BOATS 夜盘首分钟 1m K线。"
         elif provider_error.startswith("PROVIDER_ERROR"):
             reason = "provider 报错"
         elif quality == "OVERNIGHT_PROVIDER_MISSING":
@@ -208,6 +238,8 @@ def build_overnight_provider_self_check(
         elif not result.get("ok"):
             reason = "缺少美股夜盘首分钟 1m K线"
     first_bar_close = result.get("overnight_first_1m_close") or result.get("price")
+    request_meta = dict(getattr(selected_provider, "last_request_meta", {}) or {})
+    delay_suspected = bool(getattr(selected_provider, "last_delay_suspected", False) or request_meta.get("delay_suspected"))
     return {
         "ok": bool(result.get("ok")),
         "symbol": str(symbol or "NVDA").strip().upper(),
@@ -222,6 +254,9 @@ def build_overnight_provider_self_check(
         "first_bar_time": str(result.get("bar_start_et") or result.get("timestamp") or ""),
         "first_bar_close": first_bar_close if first_bar_close is not None else "",
         "provider": str(result.get("provider") or selected or ""),
+        "feed": str(request_meta.get("feed") or ("boats" if selected == "ALPACA_BOATS" else "")),
+        "timeframe": str(request_meta.get("timeframe") or ("1Min" if selected == "ALPACA_BOATS" else "1m")),
+        "boats_delay_suspected": delay_suspected,
         "quality": str(result.get("quality") or ""),
         "reason": reason,
     }

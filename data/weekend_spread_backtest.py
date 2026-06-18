@@ -570,6 +570,7 @@ def fetch_friday_afterhours_close(
     rows: list[Any] = []
     provider_name = ""
     venue = "EXTENDED_HOURS"
+    provider_anchor: dict[str, Any] = {}
     if provider is not None and hasattr(provider, "get_afterhours_bars"):
         provider_name = type(provider).__name__
         rows = list(
@@ -581,6 +582,27 @@ def fetch_friday_afterhours_close(
             )
             or []
         )
+    elif provider is not None and hasattr(provider, "get_afterhours_reference"):
+        provider_name = type(provider).__name__
+        try:
+            snapshot = provider.get_afterhours_reference(
+                normalized,
+                regular_close_date=friday_date.isoformat(),
+                force_refresh=False,
+            )
+        except Exception:
+            snapshot = None
+        if snapshot is not None:
+            reference_source = str(getattr(snapshot, "reference_source", "") or "")
+            provider_display = str(getattr(snapshot, "provider_name", "") or reference_source or provider_name)
+            provider_name = provider_display
+            provider_anchor = {
+                "afterhours_reference_price": getattr(snapshot, "reference_price", None),
+                "afterhours_reference_time": getattr(snapshot, "reference_time", ""),
+                "afterhours_reference_source": provider_display,
+                "afterhours_reference_quality": getattr(snapshot, "data_quality", ""),
+                "afterhours_missing_reason": getattr(snapshot, "missing_reason", ""),
+            }
     elif anchor_source:
         provider_name = str(anchor_source.get("afterhours_reference_source") or "anchor_source")
         rows = list(anchor_source.get("afterhours_bars") or anchor_source.get("afterhours_quotes") or [])
@@ -605,21 +627,23 @@ def fetch_friday_afterhours_close(
             "quality": "OFFICIAL_AFTERHOURS_1M",
             "reason": "",
         }
-    snapshot_price = _number((anchor_source or {}).get("afterhours_reference_price"))
-    snapshot_time = _datetime_from_iso((anchor_source or {}).get("afterhours_reference_time"))
+    snapshot_source = provider_anchor or (anchor_source or {})
+    snapshot_price = _number(snapshot_source.get("afterhours_reference_price"))
+    snapshot_time = _datetime_from_iso(snapshot_source.get("afterhours_reference_time"))
     if snapshot_price is not None and snapshot_price > 0 and snapshot_time is not None:
         snapshot_et = snapshot_time.astimezone(ET)
         if window_start <= snapshot_et < window_end:
+            snapshot_provider = str(snapshot_source.get("afterhours_reference_source") or "")
             return {
                 "ok": True,
                 "symbol": normalized,
                 "friday_afterhours_close": snapshot_price,
                 "bar_start_et": snapshot_et.isoformat(),
                 "bar_end_et": (snapshot_et + timedelta(minutes=1)).isoformat(),
-                "provider": provider_name or str((anchor_source or {}).get("afterhours_reference_source") or "afterhours_provider"),
+                "provider": provider_name or snapshot_provider or "afterhours_provider",
                 "venue": venue,
                 "interval": "1m",
-                "quality": "OFFICIAL_AFTERHOURS_REFERENCE" if (anchor_source or {}).get("afterhours_reference_time") else "LEGACY_AFTERHOURS_REFERENCE",
+                "quality": "OFFICIAL_AFTERHOURS_REFERENCE" if snapshot_source.get("afterhours_reference_time") else "LEGACY_AFTERHOURS_REFERENCE",
                 "reason": "",
             }
     supplemental = find_friday_afterhours_close(normalized, friday_date)
@@ -814,7 +838,7 @@ def fetch_overnight_first_1m_close(
             "provider": str(result.get("provider") or ""),
             "venue": "OVERNIGHT",
             "interval": "1m",
-            "quality": "OFFICIAL_OVERNIGHT_1M",
+            "quality": str(result.get("quality") or "OFFICIAL_OVERNIGHT_1M"),
             "reason": "",
             "display_reason": "",
             "price": result.get("price"),
@@ -860,6 +884,7 @@ def fetch_overnight_first_1m_close(
     quality = str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M")
     if quality == "MISSING_STOCK_FIRST_BAR":
         quality = "MISSING_OVERNIGHT_FIRST_1M"
+    display_reason = _overnight_missing_display_reason(quality)
     return {
         "ok": False,
         "symbol": normalized,
@@ -871,7 +896,7 @@ def fetch_overnight_first_1m_close(
         "interval": "1m",
         "quality": quality,
         "reason": str(result.get("reason") or "MISSING_STOCK_FIRST_BAR"),
-        "display_reason": "缺少美股夜盘首分钟 1m K线",
+        "display_reason": display_reason,
         "price": None,
         "timestamp": "",
         "bar_size": str(result.get("bar_size") or "1m"),
@@ -882,6 +907,19 @@ def fetch_overnight_first_1m_close(
         "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
         "bar": result.get("bar"),
     }
+
+
+def _overnight_missing_display_reason(quality: str) -> str:
+    normalized = str(quality or "").strip().upper()
+    if normalized == "BOATS_DELAY_PENDING":
+        return "BOATS 历史数据可能延迟，请 15 分钟后重试。"
+    if normalized == "ALPACA_BOATS_PERMISSION":
+        return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
+    if normalized == "MISSING_BOATS_FIRST_1M":
+        return "缺少 BOATS 夜盘首分钟 1m K线。"
+    if normalized == "PROVIDER_ERROR":
+        return "夜盘 provider 报错。"
+    return "缺少美股夜盘首分钟 1m K线"
 
 
 def normalize_klines(payload: Iterable[Any]) -> list[NormalizedKline]:
@@ -1071,6 +1109,11 @@ def _basis_backtest_one_window(
         window.end_et,
         provider=broker_provider,
     )
+    broker_first_close = None
+    broker_first_time = ""
+    if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
+        broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
+        broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
     quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
         window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
     )
@@ -1106,6 +1149,22 @@ def _basis_backtest_one_window(
                 "data_quality": "BINANCE_KLINE_UNAVAILABLE",
                 "warning": "Binance K 线不可用",
                 "error_message": f"{type(exc).__name__}: {exc}",
+                "friday_afterhours_close": friday_afterhours_close,
+                "friday_afterhours_time": str(friday_afterhours.get("bar_start_et") or ""),
+                "friday_afterhours_provider": str(friday_afterhours.get("provider") or ""),
+                "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
+                "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+                "overnight_first_1m_close": broker_first_close,
+                "overnight_first_1m_time": broker_first_time,
+                "broker_first_1m_close": broker_first_close,
+                "broker_first_1m_time": broker_first_time,
+                "broker_provider": str(stock_bar.get("provider") or ""),
+                "broker_quality": str(stock_bar.get("quality") or ""),
+                "overnight_provider": str(stock_bar.get("provider") or ""),
+                "overnight_quality": str(stock_bar.get("quality") or ""),
+                "overnight_reason": "" if broker_first_close is not None else str(stock_bar.get("display_reason") or stock_bar.get("reason") or ""),
+                "transmission_data_quality": "CONTRACT_MISSING",
+                **binance_max_fields,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -1133,11 +1192,6 @@ def _basis_backtest_one_window(
                 "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
             }
         )
-    broker_first_close = None
-    broker_first_time = ""
-    if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
-        broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
-        broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
     binance_equivalent_max = _number(binance_max_fields.get("binance_equivalent_max") or binance_max_fields.get("binance_weekend_max"))
     binance_premium_pct = _change_pct(binance_equivalent_max, friday_afterhours_close)
     overnight_vs_binance_pct = _change_pct(broker_first_close, binance_equivalent_max)
@@ -1882,14 +1936,15 @@ def get_first_valid_stock_bar_after_weekend(
                 interval=interval,
             )
             bars = payload["bars"]
+            missing_quality = _stock_open_missing_quality(payload)
             attempt = {
                 "ok": False,
                 "price": None,
                 "timestamp": "",
                 "provider": payload["provider"],
                 "bar_size": interval,
-                "quality": "MISSING_STOCK_FIRST_BAR",
-                "reason": "MISSING_STOCK_FIRST_BAR",
+                "quality": missing_quality,
+                "reason": missing_quality,
                 "returned_bar_count": payload["returned_bar_count"],
                 "requested_start": start.astimezone(timezone.utc).isoformat(),
                 "requested_end": end.astimezone(timezone.utc).isoformat(),
@@ -1902,7 +1957,7 @@ def get_first_valid_stock_bar_after_weekend(
             first = _first_valid_stock_bar(bars, start, end, require_exact_start=require_exact_start)
             if first is None:
                 continue
-            quality = "OK" if interval == "1m" else "DEGRADED_5M"
+            quality = _stock_open_success_quality(payload, interval)
             return {
                 "ok": True,
                 "price": first.close,
@@ -2011,15 +2066,47 @@ def _fetch_stock_open_bars(
             )
             or []
         )
+        provider_error = str(getattr(broker_provider, "last_error_reason", "") or "")
+        delay_suspected = bool(getattr(broker_provider, "last_delay_suspected", False))
     else:
         provider_name = "anchor_source"
         rows = list(anchor_source.get("broker_overnight_bars") or anchor_source.get("broker_overnight_quotes") or [])
+        provider_error = ""
+        delay_suspected = False
     bars = [
         bar
         for bar in normalize_broker_overnight_bars(rows)
         if start.astimezone(timezone.utc) <= bar.ts < end.astimezone(timezone.utc)
     ]
-    return {"bars": bars, "provider": provider_name, "returned_bar_count": len(rows)}
+    return {
+        "bars": bars,
+        "provider": provider_name,
+        "returned_bar_count": len(rows),
+        "provider_error_reason": provider_error,
+        "delay_suspected": delay_suspected,
+    }
+
+
+def _stock_open_missing_quality(payload: dict[str, Any]) -> str:
+    error = str(payload.get("provider_error_reason") or "").strip().upper()
+    if error == "BOATS_DELAY_PENDING":
+        return "BOATS_DELAY_PENDING"
+    if error == "NO_PERMISSION":
+        return "ALPACA_BOATS_PERMISSION"
+    if error == "MISSING_BOATS_FIRST_1M":
+        return "MISSING_BOATS_FIRST_1M"
+    if error.startswith("PROVIDER_ERROR"):
+        return "PROVIDER_ERROR"
+    return "MISSING_STOCK_FIRST_BAR"
+
+
+def _stock_open_success_quality(payload: dict[str, Any], interval: str) -> str:
+    provider = str(payload.get("provider") or "").strip().upper()
+    if str(interval or "") != "1m":
+        return "DEGRADED_5M"
+    if provider == "ALPACA_BOATS":
+        return "ALPACA_BOATS_SAMPLE"
+    return "OK"
 
 
 def _first_valid_stock_bar(
@@ -2060,6 +2147,16 @@ def _datetime_from_iso(value: Any) -> datetime | None:
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     text = str(value or "").strip()
     if not text:
+        return None
+    try:
+        if text.replace(".", "", 1).isdigit():
+            number = float(text)
+            if number > 1_000_000_000_000_000:
+                number /= 1_000_000_000
+            elif number > 1_000_000_000_000:
+                number /= 1_000
+            return datetime.fromtimestamp(number, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
         return None
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -2374,6 +2471,13 @@ def _weekend_chain_quality(
         return "NO_AFTERHOURS_CLOSE"
     if str(overnight_quality or "").strip().upper() == "OVERNIGHT_PROVIDER_MISSING":
         return "OVERNIGHT_PROVIDER_MISSING"
+    if str(overnight_quality or "").strip().upper() in {
+        "BOATS_DELAY_PENDING",
+        "ALPACA_BOATS_PERMISSION",
+        "MISSING_BOATS_FIRST_1M",
+        "PROVIDER_ERROR",
+    }:
+        return str(overnight_quality or "").strip().upper()
     if overnight_first_1m_close is None or overnight_first_1m_close <= 0:
         return "MISSING_OVERNIGHT_FIRST_1M"
     if str(friday_afterhours_quality or "").strip().upper() == "REGULAR_CLOSE_FALLBACK":

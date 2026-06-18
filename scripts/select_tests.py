@@ -130,6 +130,34 @@ TARGETED_MAPPING: tuple[tuple[str, tuple[PytestTarget, ...]], ...] = (
         ),
     ),
     (
+        "ui/weekend_spread.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/weekend_spread.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/weekend_spread_backtest.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/weekend_spread_cache.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/equity_afterhours_provider.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/overnight_price_provider.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
+        "data/tradingview_price_cache.py",
+        (target("tests/test_weekend_spread.py"),),
+    ),
+    (
         "data/price_alerts.py",
         (
             target("tests/test_price_alerts.py"),

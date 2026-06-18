@@ -22,6 +22,7 @@ from data.providers import get_secret
 ET = ZoneInfo("America/New_York")
 POLYGON_BASE_URL = "https://api.polygon.io"
 ALPHAVANTAGE_BASE_URL = "https://www.alphavantage.co/query"
+ALPACA_DATA_BASE_URL = "https://data.alpaca.markets"
 
 
 class PolygonOpenCloseAfterhoursProvider(AfterhoursProvider):
@@ -273,12 +274,104 @@ class AlphaVantageAfterhoursProvider(AfterhoursProvider):
         return payload if isinstance(payload, dict) else {}
 
 
+class AlpacaAfterhoursProvider(AfterhoursProvider):
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        base_url: str = ALPACA_DATA_BASE_URL,
+        feed: str | None = None,
+        timeout_seconds: float = 8.0,
+    ) -> None:
+        self.api_key = api_key or get_secret("ALPACA_API_KEY_ID") or get_secret("ALPACA_API_KEY")
+        self.api_secret = api_secret or get_secret("ALPACA_API_SECRET_KEY") or get_secret("ALPACA_SECRET_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.feeds = _normalize_alpaca_feeds(feed or get_secret("ALPACA_AFTERHOURS_FEED"))
+        self.feed = self.feeds[0]
+        self.timeout_seconds = timeout_seconds
+
+    def get_afterhours_reference(
+        self,
+        symbol: str,
+        *,
+        regular_close_date: str = "",
+        force_refresh: bool = False,
+    ) -> AfterhoursReference:
+        normalized = _normalize_symbol(symbol)
+        if not normalized:
+            return AfterhoursReference(symbol="", error="missing_symbol", missing_reason="FIELD_NOT_PASSED")
+        if not regular_close_date:
+            return AfterhoursReference(symbol=normalized, error="missing_regular_close_date", missing_reason="FIELD_NOT_PASSED")
+        if not self.api_key or not self.api_secret:
+            return AfterhoursReference(symbol=normalized, error="missing_alpaca_api_key", missing_reason="API_KEY_MISSING")
+        start = datetime.fromisoformat(regular_close_date).replace(tzinfo=ET, hour=19, minute=55, second=0, microsecond=0)
+        end = datetime.fromisoformat(regular_close_date).replace(tzinfo=ET, hour=20, minute=0, second=0, microsecond=0)
+        permission_denied = False
+        fetch_errors: list[str] = []
+        for feed in self.feeds:
+            try:
+                payload = self._get_json(
+                    f"v2/stocks/{normalized}/bars",
+                    {
+                        "timeframe": "1Min",
+                        "start": start.astimezone(timezone.utc).isoformat(),
+                        "end": end.astimezone(timezone.utc).isoformat(),
+                        "adjustment": "raw",
+                        "feed": feed,
+                        "sort": "asc",
+                        "limit": "1000",
+                    },
+                )
+            except HTTPError as exc:
+                permission_denied = permission_denied or exc.code in {401, 403}
+                fetch_errors.append(f"{feed}:HTTPError:{exc.code}")
+                continue
+            except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                fetch_errors.append(f"{feed}:{type(exc).__name__}:{exc}")
+                continue
+            rows = _alpaca_bar_candidates(payload.get("bars") if isinstance(payload, dict) else [], regular_close_date)
+            if not rows:
+                continue
+            chosen = rows[-1]
+            quality = "HIGH" if _is_near_afterhours_close(chosen.timestamp, regular_close_date) else "MEDIUM"
+            return AfterhoursReference(
+                symbol=normalized,
+                reference_price=chosen.price,
+                reference_time=chosen.timestamp.isoformat(),
+                reference_source="ALPACA_AFTERHOURS",
+                last_trade=chosen.price,
+                volume=chosen.size,
+                data_quality=quality,
+                provider_name=f"ALPACA_AFTERHOURS_{feed.upper()}",
+            )
+        if permission_denied and len(fetch_errors) == len(self.feeds):
+            return AfterhoursReference(symbol=normalized, error="; ".join(fetch_errors), missing_reason="ALPACA_AFTERHOURS_PERMISSION")
+        if fetch_errors and len(fetch_errors) == len(self.feeds):
+            return AfterhoursReference(symbol=normalized, error="; ".join(fetch_errors), missing_reason="FETCH_FAILED")
+        return AfterhoursReference(symbol=normalized, error="afterhours_reference_missing", missing_reason="NO_ALPACA_AFTERHOURS_BAR")
+
+    def _get_json(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        request = Request(
+            f"{self.base_url}/{endpoint.lstrip('/')}?{urlencode(params)}",
+            headers={
+                "APCA-API-KEY-ID": self.api_key or "",
+                "APCA-API-SECRET-KEY": self.api_secret or "",
+                "User-Agent": "facai-afterhours/1.0",
+            },
+        )
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+        return payload if isinstance(payload, dict) else {}
+
+
 class MultiProviderAfterhoursProvider(AfterhoursProvider):
     def __init__(self, providers: Iterable[AfterhoursProvider] | None = None) -> None:
         self.providers = list(providers) if providers is not None else [
             PolygonOpenCloseAfterhoursProvider(),
             PolygonTradesAfterhoursProvider(),
             PolygonQuoteMidAfterhoursProvider(),
+            AlpacaAfterhoursProvider(),
             FMPAfterhoursProvider(),
             AlphaVantageAfterhoursProvider(),
         ]
@@ -329,6 +422,18 @@ def _polygon_api_key() -> str:
 
 def _normalize_symbol(symbol: Any) -> str:
     return str(symbol or "").strip().upper()
+
+
+def _normalize_alpaca_feeds(value: Any) -> list[str]:
+    raw = str(value or "").strip()
+    candidates = [item.strip().lower() for item in raw.split(",") if item.strip()] if raw else []
+    candidates.extend(["sip", "boats", "iex"])
+    result: list[str] = []
+    for item in candidates:
+        if item not in {"sip", "boats", "iex"} or item in result:
+            continue
+        result.append(item)
+    return result or ["sip"]
 
 
 def _session_start(regular_close_date: str) -> datetime:
@@ -392,6 +497,21 @@ def _alpha_candidates(series: dict[str, Any], regular_close_date: str) -> list[_
             continue
         rows.append(_TradeCandidate(price=price, timestamp=timestamp, size=_first_number(raw.get("5. volume"), raw.get("volume"))))
     return sorted(rows, key=lambda item: item.timestamp, reverse=True)
+
+
+def _alpaca_bar_candidates(raw_rows: Any, regular_close_date: str) -> list[_TradeCandidate]:
+    rows: list[_TradeCandidate] = []
+    if not isinstance(raw_rows, list):
+        return rows
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        price = _first_number(raw.get("c"), raw.get("close"))
+        timestamp = _first_timestamp(raw.get("t"), raw.get("timestamp"))
+        if price is None or timestamp is None or not _is_afterhours_session(timestamp, regular_close_date):
+            continue
+        rows.append(_TradeCandidate(price=price, timestamp=timestamp, size=_first_number(raw.get("v"), raw.get("volume"))))
+    return sorted(rows, key=lambda item: item.timestamp)
 
 
 def _choose_trade(rows: list[_TradeCandidate], regular_close_date: str) -> _TradeCandidate:
