@@ -2067,8 +2067,8 @@ def _industry_metric_rows(model_type: str, snapshot: dict, score) -> list[dict]:
 
 def _raw_fundamental_rows(snapshot: dict) -> list[dict]:
     return [
-        {"指标": "公司", "数值": snapshot.get("company_name") or "N/A"},
-        {"指标": "行业", "数值": snapshot.get("industry") or "N/A"},
+        {"指标": "公司", "数值": snapshot.get("company_name") or "待补"},
+        {"指标": "行业", "数值": snapshot.get("industry") or "待补"},
         {"指标": "Beta", "数值": _format_plain(snapshot.get("beta"))},
         {"指标": "市值", "数值": format_large_number(snapshot.get("market_cap"))},
         {"指标": "企业价值", "数值": format_large_number(snapshot.get("enterprise_value"))},
@@ -2724,7 +2724,7 @@ def _plan_summary_html(rows: list[tuple[str, object]]) -> str:
         '<section class="research-card plan-summary-card">'
         '<div class="plan-summary-grid">'
         + "".join(
-            f'<div><span>{escape(label)}</span><strong>{escape(str(value or "N/A"))}</strong></div>'
+            f'<div><span>{escape(label)}</span><strong>{escape(str(value or "待补"))}</strong></div>'
             for label, value in rows
         )
         + "</div>"
@@ -2750,7 +2750,8 @@ def _data_status(score, snapshot: dict | None = None) -> str:
             return f"{base} / 代理 {confidence_label(score.proxy_confidence)}"
         return base
     if snapshot and snapshot.get("dataConfidence"):
-        return f"{confidence_label(snapshot.get('dataConfidence'))} / {snapshot.get('dataConfidencePct', 'N/A')}%"
+        pct = snapshot.get("dataConfidencePct")
+        return f"{confidence_label(snapshot.get('dataConfidence'))} / {pct if pct is not None else '待补'}%"
     if score.data_insufficient:
         return "数据不足，需复核"
     if score.missing_data:
@@ -2760,7 +2761,7 @@ def _data_status(score, snapshot: dict | None = None) -> str:
 
 def _format_timestamp(value: str | None) -> str:
     if not value:
-        return "N/A"
+        return "待补"
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError:
@@ -2770,7 +2771,7 @@ def _format_timestamp(value: str | None) -> str:
 
 def _position_limit_text(value: float | None) -> str:
     if value is None:
-        return "N/A"
+        return "未设置"
     if value <= 0:
         return "不建议新增"
     return f"≤{value:g}%"
@@ -2780,12 +2781,12 @@ def _format_plan_currency(value: object) -> str:
     try:
         return format_currency(float(value))
     except (TypeError, ValueError):
-        return str(value or "N/A")
+        return str(value or "待补")
 
 
 def _format_plain(value: float | None) -> str:
     if value is None or pd.isna(value):
-        return "N/A"
+        return "待补"
     return f"{value:.1f}"
 
 
@@ -2793,7 +2794,7 @@ def _format_disclosure_value(value: object, unit: object = None) -> str:
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return "N/A"
+        return "待补"
     if unit == "percent":
         return format_percent(number, already_percent=False)
     if unit == "x":
