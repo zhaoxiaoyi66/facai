@@ -536,7 +536,7 @@ def _render_last_confirm_notice(store: ReviewQueueStore) -> None:
 
 
 def _short_time(value: object) -> str:
-    text = str(value or "N/A")
+    text = str(value or "待补")
     return text.replace("T", " ")[:16]
 
 
@@ -545,7 +545,7 @@ def _confirmed_status_label(status: str) -> str:
         return "AI已确认"
     if status == "manually_corrected":
         return "已修正"
-    return STATUS_LABELS.get(status, status or "N/A")
+    return STATUS_LABELS.get(status, status or "未归类")
 
 
 def _confirmed_status_tone(status: str) -> str:
@@ -1064,7 +1064,7 @@ def _cn_status(value: object) -> str:
         "rejected": "已驳回",
         "manually_corrected": "人工修正",
         "stale": "已过期",
-    }.get(str(value or ""), str(value or "N/A"))
+    }.get(str(value or ""), str(value or "未归类"))
 
 
 def _cn_item_type(value: object) -> str:
@@ -1075,7 +1075,7 @@ def _cn_item_type(value: object) -> str:
         "qualitative_risk": "定性风险复核",
         "analyst_estimate_needed": "需要分析师预期",
         "manual_override_needed": "建议人工补充",
-    }.get(str(value or ""), str(value or "N/A"))
+    }.get(str(value or ""), str(value or "未归类"))
 
 
 def _cn_ai_triage(value: object) -> str:
@@ -2415,8 +2415,8 @@ def _review_source_display(row: dict) -> str:
         title = _earnings_release_label(url) or "earnings release"
     elif title:
         title = title.replace("8-K Exhibit 99.1", "Exhibit 99.1")
-    parts = [part for part in (source, title) if part and part != "N/A"]
-    text = " / ".join(parts) if parts else "N/A"
+    parts = [part for part in (source, title) if part and part not in {"N/A", "待补"}]
+    text = " / ".join(parts) if parts else "待补"
     return text if not url else f"{text} · {url}"
 
 
