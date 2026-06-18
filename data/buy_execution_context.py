@@ -45,7 +45,7 @@ STRUCTURE_LABELS = {
 }
 
 STRUCTURE_MESSAGES = {
-    STRUCTURE_OK: "已有关键技术结构，可结合 Radar 和仓位计划判断。",
+    STRUCTURE_OK: "已有关键技术结构，可结合买区提示和仓位计划判断。",
     STRUCTURE_PARTIAL: "已有部分结构信息，但缺少相对强弱 / 量能 / 下跌原因等辅助确认。",
     STRUCTURE_STALE: "沿用最近一次技术结构，建议先更新技术。",
     STRUCTURE_MISSING: "缺少价格 / K线 / 均线 / swing，暂时无法生成结构判断。",
@@ -149,7 +149,7 @@ def build_buy_execution_advisory_context(
     portfolio_structure_status = _portfolio_structure_status(path=path, macro_regime=None)
     technical_freshness = _technical_freshness(report, market, current_time)
     radar_freshness = _radar_freshness(report, market, current_time)
-    data_source_text = f"技术：{technical_freshness}｜Radar：{radar_freshness}｜宏观：{macro_freshness}"
+    data_source_text = f"技术：{technical_freshness}｜买区提示：{radar_freshness}｜宏观：{macro_freshness}"
     return BuyExecutionAdvisoryContext(
         ticker=symbol,
         current_price=current_price,

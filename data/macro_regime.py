@@ -1208,7 +1208,7 @@ def macro_regime_trade_hint_text(snapshot: MacroRegimeSnapshot, *, context: str 
     elif snapshot.regime == REGIME_DATA_GAP:
         hint = "宏观数据不足，先补齐再复核；这只是提示，不改变交易记录与基础校验。"
     else:
-        hint = "按个股 Radar、买入计划和纪律风险提示执行。"
+        hint = "按个股买区提示、买入计划和纪律风险提示执行。"
     return f"大盘环境：{snapshot.regime}｜{prefix}：{hint}"
 
 
@@ -2407,7 +2407,7 @@ def _macro_risk_score(
 def _action_hints(regime: str) -> list[str]:
     return {
         REGIME_RISK_ON: ["按个股纪律执行，不因大盘风险偏好追高。"],
-        REGIME_NEUTRAL: ["按个股 Radar 和买入计划执行。"],
+        REGIME_NEUTRAL: ["按个股买区提示和买入计划执行。"],
         REGIME_RISK_OFF: ["不追涨，A类等回踩。"],
         REGIME_STRESS: ["C类暂停新增，优先复核仓位和现金。"],
         REGIME_PANIC: ["只做计划内核心仓，避免情绪化追涨杀跌。"],

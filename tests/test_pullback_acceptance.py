@@ -230,7 +230,7 @@ def test_acceptance_context_warns_when_price_leaves_observation_zone_or_chase_co
 
     assert snapshot.acceptance_status in {ACCEPTANCE_FORMING, ACCEPTANCE_UNCONFIRMED}
     assert "价格已脱离回踩观察区" in html
-    assert "Radar 仍为追高语境" in html
+    assert "买区提示仍为追高语境" in html
 
 
 def test_acceptance_context_marks_breakdown_review_forming_as_not_trend_repair() -> None:
@@ -273,4 +273,4 @@ def test_dashboard_drawer_adds_acceptance_context_for_chase_price_above_zone() -
     )
 
     assert "价格已脱离回踩观察区" in html
-    assert "Radar 仍为追高语境" in html
+    assert "买区提示仍为追高语境" in html

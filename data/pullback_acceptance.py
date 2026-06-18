@@ -175,7 +175,7 @@ def evaluate_pullback_acceptance(
     if volume_status not in {"缩量守支撑", "放量反包"}:
         steps.append("观察量能是否支持止跌或反包。")
     if not steps:
-        steps.append("承接已较清楚，仍需结合 Radar、仓位计划和基本面复核。")
+        steps.append("承接已较清楚，仍需结合买区提示、仓位计划和基本面复核。")
 
     score = round(max(0.0, min(100.0, score)), 1)
     if failed:
@@ -278,7 +278,7 @@ def pullback_acceptance_context_lines(
         if price is not None and observation_high is not None and price > observation_high:
             lines.append("支撑承接存在，但价格已脱离回踩观察区，不构成低吸确认。")
         if _is_chase_context(source):
-            lines.append("Radar 仍为追高语境，承接读数仅代表支撑状态，不解除追高限制。")
+            lines.append("买区提示仍为追高语境，承接读数仅代表支撑状态，不解除追高限制。")
     if status == ACCEPTANCE_FORMING and _technical_structure_status(source) == "BREAKDOWN_REVIEW":
         lines.append("破位复核结构：支撑暂未失效，不代表趋势修复；需重新站上确认线。")
     return _dedupe(lines)

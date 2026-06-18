@@ -216,7 +216,7 @@ def test_high_vix_and_widening_credit_spread_marks_stress() -> None:
     )
 
     assert snapshot.regime == REGIME_STRESS
-    assert "C类暂停新增" in macro_regime_trade_hint_text(snapshot, context="buy")
+    assert "C类不建议新增" in macro_regime_trade_hint_text(snapshot, context="buy")
 
 
 def test_high_vix_and_extreme_fear_marks_panic() -> None:

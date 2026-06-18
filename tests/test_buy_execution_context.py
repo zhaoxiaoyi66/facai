@@ -55,7 +55,7 @@ def test_buy_execution_context_reuses_radar_technical_structure_snapshot() -> No
     assert "量价承接" in html
     assert "待补数据" not in html
     assert "技术：" in html
-    assert "Radar：" in html
+    assert "买区提示：" in html
     assert "宏观：" in html
 
 
@@ -128,4 +128,4 @@ def test_buy_execution_context_acceptance_warns_when_chase_context_leaves_observ
     html = buy_execution_advisory_context_html(context)
 
     assert "价格已脱离回踩观察区" in html
-    assert "Radar 仍为追高语境" in html
+    assert "买区提示仍为追高语境" in html
