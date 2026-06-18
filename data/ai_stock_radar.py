@@ -984,7 +984,7 @@ def build_technical_entry_zone(technicals: dict[str, Any], *, data_status: str =
         "next_technical_steps": [],
     }
     if data_status != "OK":
-        reason = "技术回踩区暂缺：Radar 数据缺失或 stale，需先更新价格/技术缓存"
+        reason = "技术回踩区暂缺：价格或技术缓存缺失 / 过期，需先刷新市场数据"
         return base | {
             "source": "data_unavailable",
             "reason": reason,

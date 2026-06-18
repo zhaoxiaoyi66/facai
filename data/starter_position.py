@@ -78,7 +78,7 @@ def evaluate_starter_position(
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING":
         notes.append("价格位置和买区提示数据缺失；这是提示，不会阻止底仓同步。")
     if is_stale:
-        notes.append("Radar / 价格数据过期；这是提示，不会阻止底仓同步。")
+        notes.append("买区提示 / 价格数据过期；这是提示，不会阻止底仓同步。")
 
     if reasons:
         return _blocked("starter_blocked", reasons, max_pct, before_pct, after_pct)
