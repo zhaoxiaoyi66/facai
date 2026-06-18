@@ -53,6 +53,21 @@ def test_dashboard_cached_table_reuses_batch_portfolio_context() -> None:
     assert "action_fusion_portfolio_context=portfolio_contexts.get" in source
 
 
+def test_dashboard_quality_negative_items_filters_drawdown_without_garbled_literal() -> None:
+    row = pd.Series(
+        {
+            "keyNegativeDrivers": [
+                "drawdown > 40%",
+                "距高点回撤超过40%",
+                f"{chr(0x9365)}{chr(0x74D2)}40",
+                "估值偏高",
+            ]
+        }
+    )
+
+    assert dashboard._quality_negative_items(row) == ["估值偏高"]
+
+
 def test_price_and_technical_refresh_actions_keep_dashboard_table_cache() -> None:
     source = inspect.getsource(dashboard._render_dashboard_header)
     price_branch = source.split('key="dashboard_refresh_price_only"', 1)[1].split('key="dashboard_refresh_daily_technical"', 1)[0]

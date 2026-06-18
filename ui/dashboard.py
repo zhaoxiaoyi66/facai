@@ -3386,7 +3386,18 @@ def _manual_review_text(row: pd.Series) -> str:
 
 def _quality_negative_items(row: pd.Series) -> list[str]:
     items = _list_value(row.get("keyNegativeDrivers"))
-    return [item for item in items if item != "drawdown > 40%" and "鍥炴挙瓒呰繃40" not in item]
+    return [item for item in items if not _is_drawdown_40_driver(item)]
+
+
+def _is_drawdown_40_driver(value: object) -> bool:
+    text = str(value or "").strip()
+    lower = text.lower()
+    if lower == "drawdown > 40%":
+        return True
+    if "40" in text and "回撤" in text:
+        return True
+    legacy_mojibake_markers = (chr(0x9365), chr(0x74D2))
+    return "40" in text and any(marker in text for marker in legacy_mojibake_markers)
 
 
 def _quality_missing_items(row: pd.Series) -> list[str]:
