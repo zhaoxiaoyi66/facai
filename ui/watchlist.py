@@ -41,7 +41,7 @@ _DATA_STATUS_LABELS = {
 
 
 def render() -> None:
-    render_page_header("观察池", "研究池 / Radar 股票池；添加股票不会生成交易，也不会改变组合持仓。")
+    render_page_header("观察池", "研究池 / AI 雷达观察池；添加股票不会生成交易，也不会改变组合持仓。")
     _render_styles()
 
     entries = load_watchlist_entries(WATCHLIST_PATH, default_symbols=DEFAULT_TICKERS)
@@ -117,7 +117,7 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict], star_st
 
     widths = [0.9, 0.85, 1.05, 0.75, 0.9, 1.75, 0.85, 0.9, 1.2, 0.75, 0.65, 0.65]
     header = st.columns(widths)
-    labels = ["Ticker", "状态", "主题", "持仓", "Radar", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
+    labels = ["代码", "状态", "主题", "持仓", "买区提示", "买点", "数据", "加入时间", "备注", "查看", "编辑", "移除"]
     for col, label in zip(header, labels):
         col.markdown(f'<span class="watchlist-th">{escape(label)}</span>', unsafe_allow_html=True)
 
@@ -141,7 +141,7 @@ def _render_pool(entries: list[dict], active_positions: dict[str, dict], star_st
         row[6].caption(_data_status_label(radar.get("data_status")))
         row[7].caption(_date_text(entry.get("added_at")))
         row[8].caption(str(entry.get("note") or entry.get("added_reason") or ""))
-        row[9].markdown(f"[查看 Radar](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
+        row[9].markdown(f"[查看详情](?page=ai-radar&symbol={quote(ticker)}#radar-report)")
         if row[10].button("编辑", key=f"watchlist-edit:{ticker}"):
             st.session_state["watchlist_edit_symbol"] = ticker
             st.rerun()
