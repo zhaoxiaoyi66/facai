@@ -704,7 +704,7 @@ def get_market_data_provider(provider_name: str = "fmp", full_fundamentals: bool
 
 def _friendly_fmp_http_error(exc: HTTPError) -> str:
     if exc.code == 402:
-        return "FMP 返回 402：免费额度可能已用完，或当前接口需要付费。请稍后再试，或使用本地缓存/N/A 数据。"
+        return "FMP 返回 402：免费额度可能已用完，或当前接口需要付费。请稍后再试，或使用本地缓存/待补数据。"
     if exc.code == 429:
         return "FMP 请求过快：请稍等一会儿再刷新。"
     return f"FMP 请求失败：HTTP {exc.code} {exc.reason}"
