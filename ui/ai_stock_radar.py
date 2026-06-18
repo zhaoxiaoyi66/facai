@@ -1486,8 +1486,9 @@ def _research_header_html(
     volume_text = _volume_display(volume)
     if volume.get("volume_ratio") is not None:
         volume_text = f"{volume_text}｜量比 {_volume_ratio_display(volume.get('volume_ratio'))}"
+    price_source_label, price_source_title = _report_price_source_label(market, snapshot, report)
     stats = [
-        ("最新价", _money(_report_current_price(report))),
+        ("最新价", _money(_report_current_price(report)), price_source_label, price_source_title),
         ("52周区间", _range_text(_first_number(snapshot, technicals, "fifty_two_week_low", "yearLow"), _first_number(snapshot, technicals, "fifty_two_week_high", "yearHigh"))),
         ("市值", _compact_money(_first_number(snapshot, "market_cap", "marketCap"))),
         ("成交量", volume_text),
@@ -1496,7 +1497,7 @@ def _research_header_html(
         ("总分", _number_text(report.get("final_score"))),
     ]
     stat_html = "".join(
-        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in stats
+        _research_header_stat_html(item) for item in stats
     )
     return (
         '<header class="ai-radar-research-header">'
@@ -1509,6 +1510,15 @@ def _research_header_html(
         f'<div class="ai-radar-header-stats">{stat_html}</div>'
         "</header>"
     )
+
+
+def _research_header_stat_html(item: tuple[Any, ...]) -> str:
+    label = str(item[0] if len(item) > 0 else "")
+    value = str(item[1] if len(item) > 1 else "")
+    extra = str(item[2] if len(item) > 2 else "").strip()
+    title = str(item[3] if len(item) > 3 else extra).strip()
+    extra_html = f'<em title="{escape(title)}">{escape(extra)}</em>' if extra else ""
+    return f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong>{extra_html}</div>"
 
 
 def _summary_lines_html(lines: list[str]) -> str:
@@ -3332,6 +3342,69 @@ def _quote_source_text(market: dict[str, Any], snapshot: dict[str, Any], row: di
     if _report_current_price(row) is not None or _first_number(market, "currentPrice", "current_price", "price") is not None:
         return "本地报价缓存"
     return "暂缺"
+
+
+def _report_price_source_label(
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    row: dict[str, Any],
+) -> tuple[str, str]:
+    session = str(
+        _first_present(market, "price_session", "current_price_source", "priceSession", "currentPriceSource")
+        or _first_present(snapshot, "price_session", "current_price_source", "priceSession", "currentPriceSource")
+        or _first_present(row, "price_session", "current_price_source", "priceSession", "currentPriceSource")
+        or ""
+    ).strip().upper()
+    label = {
+        "REGULAR": "盘中报价",
+        "PRE_MARKET": "盘前参考",
+        "AFTER_HOURS": "盘后参考",
+        "LAST_CLOSE": "昨夜收盘",
+    }.get(session)
+    if not label:
+        raw_source = str(
+            _first_present(market, "priceSource", "quote_source", "source")
+            or _first_present(snapshot, "priceSource", "quote_source", "source")
+            or _first_present(row, "priceSource", "quote_source", "source")
+            or ""
+        ).strip().lower()
+        if raw_source in {"price_history", "daily_cache", "last_close", "close"}:
+            label = "收盘价"
+        elif raw_source in {"quote", "quote_snapshot", "fmp", "fmp_cache"}:
+            label = "最新报价"
+        elif _first_present(market, "currentPrice", "current_price", "price") is not None:
+            label = "最新报价"
+        elif _first_present(snapshot, "quote_updated_at", "price_updated_at") is not None:
+            label = "报价缓存"
+        elif _first_present(snapshot, "price_as_of", "history_latest_date", "latest_close") is not None:
+            label = "收盘价"
+        else:
+            label = "价格口径待补"
+    return label, _report_price_source_detail(label, market, snapshot, row)
+
+
+def _report_price_source_detail(
+    label: str,
+    market: dict[str, Any],
+    snapshot: dict[str, Any],
+    row: dict[str, Any],
+) -> str:
+    parts = [f"价格口径：{label}"]
+    as_of = (
+        _first_present(market, "price_as_of", "history_latest_date", "historyLatestDate", "date")
+        or _first_present(snapshot, "price_as_of", "history_latest_date", "historyLatestDate", "latest_close_date")
+        or _first_present(row, "price_as_of", "history_latest_date", "historyLatestDate", "latest_close_date")
+    )
+    updated_at = (
+        _first_present(market, "fetchedAt", "updated_at", "updatedAt", "quote_updated_at")
+        or _first_present(snapshot, "quote_updated_at", "price_updated_at", "last_close_synced_at", "updated_at", "updatedAt")
+        or _first_present(row, "quote_updated_at", "price_updated_at", "last_close_synced_at", "updated_at", "updatedAt")
+    )
+    if as_of:
+        parts.append(f"参考日：{as_of}")
+    if updated_at:
+        parts.append(f"更新时间：{updated_at}")
+    return "｜".join(str(part) for part in parts if part)
 
 
 def _market_cap_source_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str:
@@ -5378,6 +5451,18 @@ def _render_styles() -> None:
             font-size:16px;
             line-height:1.25;
             font-weight:850;
+        }
+        .ai-radar-header-stats em {
+            display:block;
+            margin-top:4px;
+            color:#AFC4DC;
+            font-size:10.5px;
+            font-style:normal;
+            font-weight:760;
+            line-height:1.2;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
         }
         .ai-radar-research-section,
         .ai-radar-research-grid,

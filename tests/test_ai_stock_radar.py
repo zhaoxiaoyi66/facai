@@ -1469,6 +1469,29 @@ def test_ai_radar_report_uses_dashboard_row_price_and_radar_zone_aliases() -> No
     assert report["decision"] == "WAIT"
 
 
+def test_report_header_shows_price_source_label() -> None:
+    html = radar_ui._research_header_html(
+        {
+            "ticker": "NOW",
+            "company_name": "ServiceNow",
+            "current_price": 102.37,
+        },
+        {},
+        {
+            "price_session": "LAST_CLOSE",
+            "price_as_of": "2026-06-16",
+            "last_close_synced_at": "2026-06-17T12:00:00+00:00",
+        },
+        {},
+        "等待确认",
+        pd.DataFrame(),
+    )
+
+    assert "$102.37" in html
+    assert "昨夜收盘" in html
+    assert "参考日：2026-06-16" in html
+
+
 def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone() -> None:
     report = {
         "ticker": "IBM",
