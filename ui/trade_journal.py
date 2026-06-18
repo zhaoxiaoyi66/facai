@@ -2629,7 +2629,7 @@ def _render_trade_performance_stats(store: TradeJournalStore, symbols: list[str]
 def _trade_performance_filters(symbols: list[str]) -> dict:
     cols = st.columns([1.0, 1.0, 0.8, 1.0, 1.0])
     period = cols[0].selectbox("时间范围", ["全部", "近30天", "近90天", "今年"], key="trade-performance-period")
-    ticker = cols[1].selectbox("Ticker", ["全部", *symbols], key="trade-performance-ticker")
+    ticker = cols[1].selectbox("股票代码", ["全部", *symbols], key="trade-performance-ticker")
     tier = cols[2].selectbox("A/B/C", ["全部", "A", "B", "C"], key="trade-performance-tier")
     outcome_label = cols[3].selectbox("盈亏", ["全部", "只看盈利", "只看亏损"], key="trade-performance-outcome")
     issue_only = cols[4].checkbox("只看疑似纪律问题", key="trade-performance-discipline-only")
