@@ -59,6 +59,18 @@ def test_price_source_label_accepts_snake_case_fetched_at() -> None:
     assert "刷新时间：06/17 21:05 HKT" in detail
 
 
+def test_price_source_label_reads_cached_payload_wrapper() -> None:
+    label, detail = price_source_label(
+        {
+            "payload": {"current_price": 102.37},
+            "fetched_at": "2026-06-17T13:05:00+00:00",
+        }
+    )
+
+    assert label == "最新报价 06/17 21:05"
+    assert "刷新时间：06/17 21:05 HKT" in detail
+
+
 def test_price_source_label_from_row_reads_raw_snapshot_first() -> None:
     row = pd.Series(
         {

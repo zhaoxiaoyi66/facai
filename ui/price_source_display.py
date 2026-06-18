@@ -190,7 +190,12 @@ def _first_present(sources: tuple[object, ...], *keys: str) -> Any:
 def _source_value(source: object, key: str) -> Any:
     getter = getattr(source, "get", None)
     if callable(getter):
-        return getter(key)
+        value = getter(key)
+        if value not in (None, ""):
+            return value
+        payload = getter("payload")
+        if _is_source(payload):
+            return _source_value(payload, key)
     return None
 
 
