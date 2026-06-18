@@ -552,8 +552,9 @@ def _render_history_tab() -> None:
 def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
     st.subheader("历史回测")
     st.warning(
-        "这是历史观察回测，不构成套利建议。周末高点未必能成交；"
-        "USDT-M 合约数据不可用时不能计算观察收益；映射未确认时结果仅作观察。"
+        "正式回测口径：周五美股盘后收盘价 → Binance 周末合约最高价 → "
+        "周一美股夜盘首分钟收盘价。系统统计 Binance 周末冲高幅度、"
+        "夜盘首分钟兑现程度和最终传导涨幅。"
     )
     include_unconfirmed = st.checkbox(
         "包含未确认映射",
@@ -561,29 +562,42 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         key="weekend_backtest_include_unconfirmed",
         help="未确认映射仅观察，默认不纳入正式胜率。",
     )
-    all_tickers = [str(ticker or "").upper() for ticker in watchlist if str(ticker or "").strip()]
+    effective_mapping = {str(key or "").strip().upper(): dict(value or {}) for key, value in (mapping or {}).items()}
+    effective_mapping.setdefault(
+        "NVDA",
+        {
+            "enabled": True,
+            "binance_symbol": "NVDAUSDT",
+            "market_type": "usdm_futures",
+            "quote_currency": "USDT",
+            "unit_multiplier": 1,
+            "mapping_confidence": "confirmed",
+        },
+    )
+    all_tickers = ["NVDA"]
     anchors = _backtest_anchor_mapping(all_tickers, weeks=4)
     preliminary = build_weekend_backtest_preflight(
         all_tickers,
-        mapping=mapping,
+        mapping=effective_mapping,
         anchors=anchors,
         include_unconfirmed=include_unconfirmed,
     )
-    options = ["全部已映射"] + list(preliminary.get("eligible_tickers") or [])
+    options = ["NVDA"]
     opening_anchor = "overnight"
     cols = st.columns(4)
     selected = cols[0].selectbox("标的", options, key="weekend_backtest_ticker")
     weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
-    open_window = int(cols[2].selectbox("开盘窗口（分钟）", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
+    open_window = 2
+    cols[2].markdown("**夜盘窗口**  \n20:00-20:02 ET")
     cols[3].markdown("**开盘锚点**  \n周一 08:00 HKT / 美股夜盘 20:00 ET")
-    run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
+    run_tickers = [selected]
     anchors = _backtest_anchor_mapping(run_tickers or all_tickers, weeks=weeks)
     preflight = build_weekend_backtest_preflight(
         run_tickers,
-        mapping=mapping,
+        mapping=effective_mapping,
         anchors=anchors,
         include_unconfirmed=include_unconfirmed,
-        ticker_filter="" if selected == "全部已映射" else selected,
+        ticker_filter=selected,
     )
     _render_backtest_preflight(preflight)
     if not preflight.get("can_run"):
@@ -617,10 +631,10 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         )
         preflight = build_weekend_backtest_preflight(
             tickers,
-            mapping=mapping,
+            mapping=effective_mapping,
             anchors=anchors,
             include_unconfirmed=include_unconfirmed,
-            ticker_filter="" if selected == "全部已映射" else selected,
+            ticker_filter=selected,
         )
         afterhours_anchor_note = _historical_afterhours_anchor_summary_text(anchors)
         progress_bar = st.progress(0.0)
@@ -628,22 +642,26 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         status_slot.caption(f"正在运行历史回测：{len(tickers)} 个标的，{weeks} 周。")
         results = run_weekend_basis_backtest(
             tickers,
-            mapping=mapping,
+            mapping=effective_mapping,
             anchors=anchors,
             weeks=weeks,
             open_window_minutes=open_window,
             opening_anchor=opening_anchor,
             allow_anchor_fallback=False,
+            require_exact_broker_open=True,
         )
         progress_bar.progress(1.0)
         failed = [
             row
             for row in results
-            if str(row.get("data_quality") or "")
+            if str(row.get("transmission_data_quality") or row.get("data_quality") or "")
             in {
                 "BINANCE_KLINE_UNAVAILABLE",
                 "NO_BROKER_OVERNIGHT_BAR",
                 "MISSING_STOCK_FIRST_BAR",
+                "MISSING_OVERNIGHT_FIRST_1M",
+                "NO_AFTERHOURS_CLOSE",
+                "CONTRACT_MISSING",
                 "HOLIDAY_OR_NO_SESSION",
                 "STALE_OR_MISALIGNED",
                 "INVALID",
@@ -674,7 +692,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.session_state.get("weekend_backtest_results"),
         cached_result,
         preflight=preflight,
-        mapping=mapping,
+        mapping=effective_mapping,
         include_unconfirmed=include_unconfirmed,
     )
     if not results:
@@ -921,6 +939,8 @@ def _data_quality_text(value: object) -> str:
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
         "OBSERVE_ONLY": "观察样本，不计入正式胜率",
         "OBSERVE_ANCHOR_ONLY": "锚点观察样本，不计入正式胜率",
+        "NO_AFTERHOURS_CLOSE": "缺少周五盘后收盘价",
+        "MISSING_OVERNIGHT_FIRST_1M": "缺少美股夜盘首分钟 1m K 线",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
@@ -1110,11 +1130,11 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
     quality_counts = _weekend_review_quality_counts(review_rows)
     metrics: list[tuple[str, object, str]] = [
-        ("近4周样本数", int(summary.get("sample_count") or 0), ""),
-        ("平均价差", summary.get("avg_price_diff"), "money_diff"),
-        ("平均溢价%", summary.get("avg_premium_pct"), "percent"),
-        ("最大溢价%", summary.get("max_premium_pct"), "percent"),
-        ("最新一周溢价%", summary.get("latest_week_avg_premium_pct"), "percent"),
+        ("正式样本数", int(summary.get("sample_count") or 0), ""),
+        ("平均周末冲高%", summary.get("avg_binance_premium_pct"), "percent"),
+        ("夜盘相对高点%", summary.get("avg_overnight_vs_binance_pct"), "percent"),
+        ("平均兑现率%", summary.get("avg_capture_pct"), "percent"),
+        ("最新一周兑现率%", summary.get("latest_week_capture_pct"), "percent"),
     ]
     cols = st.columns(len(metrics))
     if not int(summary.get("sample_count") or 0):
@@ -1127,9 +1147,7 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
         st.info(_weekend_review_empty_reason(review_rows))
         return
     for col, (label, value, kind) in zip(cols, metrics):
-        if kind == "money_diff":
-            col.metric(label, _signed_money_text(value, missing="暂无数据"))
-        elif kind == "percent":
+        if kind == "percent":
             col.metric(label, _review_percent_text(value))
         else:
             col.metric(label, value)
@@ -1147,7 +1165,7 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
         quality = str(row.get("data_quality") or "").strip().upper()
         if quality == "OK":
             counts["ok"] += 1
-        elif quality in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}:
+        elif quality in {"OBSERVE_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "NO_AFTERHOURS_CLOSE"}:
             counts["observe"] += 1
         elif quality.startswith("DEGRADED"):
             counts["degraded"] += 1
@@ -1158,31 +1176,33 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
 
 def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
     if not review_rows:
-        return "当前没有可计入正式统计的样本。请先配置有效 mapping 并运行回测。"
+        return "当前没有可计入正式统计的样本。请先确认 NVDA -> NVDAUSDT 映射已确认，并运行回测。"
     qualities = {str(row.get("data_quality") or "").strip().upper() for row in review_rows}
     raw_qualities = {
         str((row.get("raw_row") or {}).get("data_quality") or row.get("data_quality") or "").strip().upper()
         for row in review_rows
     }
-    if qualities & {"OBSERVE_ANCHOR_ONLY"}:
+    if qualities & {"MISSING_OVERNIGHT_FIRST_1M"}:
         return (
-            "当前没有可计入正式统计的样本，但已读取往期周五盘后/收盘锚点和周末合约价格。"
-            "缺少美股开盘第一根有效价格，因此仅作为价差观察，不计入正式胜率。"
+            "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
+            "但缺少美股夜盘首分钟 1m K 线，不计入正式统计。"
         )
+    if qualities & {"NO_AFTERHOURS_CLOSE"}:
+        return "当前没有完整传导链样本。主要原因：缺少周五盘后收盘价。"
     if raw_qualities & {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}:
         return (
-            "当前没有可计入正式统计的样本。主要原因：缺少美股端第一根有效 1m bar。"
-            "当前只使用周一 08:00 HKT / 美股夜盘 20:00 ET 锚点；请尝试扩大开盘窗口，或检查券商夜盘历史数据权限。"
+            "当前没有正式样本。主要原因：缺少券商周一夜盘 20:00 ET 第一根 1m bar。"
+            "请检查 IBKR 夜盘历史 1m 数据权限。"
         )
     if raw_qualities & {"HOLIDAY_OR_NO_SESSION"}:
-        return "当前没有可计入正式统计的样本。主要原因：遇到美国假期或非交易日，请检查交易日历或扩大窗口。"
+        return "当前没有正式样本。主要原因：遇到美国假期或没有周一夜盘 session。"
     if qualities == {"MAPPING_MISSING"}:
-        return "当前没有可计入正式统计的样本。主要原因：映射未确认或未配置；请先在 mapping.local 中确认映射关系。"
+        return "当前没有正式样本。主要原因：映射未确认或未配置；请先确认 NVDA -> NVDAUSDT。"
     if qualities == {"CONTRACT_MISSING"}:
-        return "当前没有可计入正式统计的样本。主要原因：USDT-M 合约历史数据缺失。"
+        return "当前没有正式样本。主要原因：Binance USDT-M 合约周末 1m K 线缺失。"
     if qualities == {"STOCK_MISSING"}:
-        return "当前没有可计入正式统计的样本。主要原因：缺少美股历史锚点或开盘参考价。"
-    return "当前没有可计入正式统计的样本。请展开数据质量详情，查看每周请求区间、返回 bar 数量和排除原因。"
+        return "当前没有正式样本。主要原因：缺少券商夜盘首分钟价格。"
+    return "当前没有正式样本。请展开数据质量详情，查看每周请求区间、返回 bar 数量和排除原因。"
 
 
 def _render_weekend_review_table(review_rows: list[dict]) -> None:
@@ -1201,32 +1221,54 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
         ticker = str(row.get("ticker") or "").strip().upper()
         if not week_id or not ticker:
             continue
-        anchor_price = _first_number(
+        friday_afterhours_close = _first_number(
             row,
             (
-                "friday_anchor_price",
-                "anchor_price",
-                "broker_anchor_price",
-                "regular_close_price",
-                "friday_close_price",
-                "friday_close",
+                "friday_afterhours_close",
+                "afterhours_reference_price",
             ),
         )
-        premium_pct = _weekend_review_premium_pct(row, anchor_price)
-        binance_price = _weekend_review_binance_price(row, anchor_price, premium_pct)
-        price_diff = binance_price - anchor_price if anchor_price is not None and binance_price is not None else None
-        data_quality = _weekend_review_data_quality(row, anchor_price, binance_price, premium_pct)
+        binance_price = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
+        broker_open_close = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close"))
+        if broker_open_close is None and str(row.get("stock_open_anchor") or "").strip().lower() == "overnight" and str(row.get("stock_bar_size") or "") == "1m":
+            broker_open_close = _first_number(row, ("stock_bar_price", "broker_overnight_open_price"))
+        binance_premium_pct = _first_number(row, ("binance_premium_pct",))
+        if binance_premium_pct is None and friday_afterhours_close and binance_price is not None:
+            binance_premium_pct = (binance_price / friday_afterhours_close - 1.0) * 100.0
+        overnight_vs_binance_pct = _first_number(row, ("overnight_vs_binance_pct",))
+        if overnight_vs_binance_pct is None and binance_price and broker_open_close is not None:
+            overnight_vs_binance_pct = (broker_open_close / binance_price - 1.0) * 100.0
+        overnight_vs_afterhours_pct = _first_number(row, ("overnight_vs_afterhours_pct",))
+        if overnight_vs_afterhours_pct is None and friday_afterhours_close and broker_open_close is not None:
+            overnight_vs_afterhours_pct = (broker_open_close / friday_afterhours_close - 1.0) * 100.0
+        capture_pct = _first_number(row, ("capture_pct",))
+        if capture_pct is None and friday_afterhours_close is not None and binance_price is not None and broker_open_close is not None:
+            denominator = binance_price - friday_afterhours_close
+            if denominator:
+                capture_pct = (broker_open_close - friday_afterhours_close) / denominator * 100.0
+        data_quality = _weekend_review_data_quality(row, friday_afterhours_close, binance_price, binance_premium_pct, broker_open_close)
         record = {
             "week_id": week_id,
             "ticker": ticker,
-            "stock_reference_date": _weekend_review_stock_reference_date(row),
-            "stock_price": anchor_price,
+            "binance_symbol": str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper(),
+            "friday_afterhours_close": friday_afterhours_close,
+            "friday_afterhours_time": _weekend_review_afterhours_time(row),
+            "friday_afterhours_provider": str(row.get("friday_afterhours_provider") or row.get("friday_afterhours_source") or ""),
+            "broker_open_close": broker_open_close,
+            "broker_first_time": _weekend_review_broker_first_time(row),
+            "overnight_provider": str(row.get("overnight_provider") or row.get("broker_provider") or row.get("stock_bar_provider") or ""),
             "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
-            "price_diff": price_diff,
-            "premium_pct": premium_pct,
+            "binance_window": _weekend_review_binance_window(row),
+            "binance_quote_count": _first_number(row, ("binance_kline_count", "binance_quote_count", "kline_count", "returned_kline_count")),
+            "binance_provider": str(row.get("binance_provider") or "BINANCE_USDT_M"),
+            "binance_premium_pct": binance_premium_pct,
+            "overnight_vs_binance_pct": overnight_vs_binance_pct,
+            "overnight_vs_afterhours_pct": overnight_vs_afterhours_pct,
+            "capture_pct": capture_pct,
             "data_quality": data_quality,
-            "status": _weekend_review_status(data_quality, premium_pct),
+            "status": _weekend_review_status(data_quality, capture_pct),
+            "failure_reason": _weekend_review_failure_reason(row, data_quality),
             "raw_row": row,
         }
         key = (week_id, ticker)
@@ -1245,37 +1287,61 @@ def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
     source_rows = ok_rows
     summary_quality = "OK"
     if not source_rows:
-        source_rows = _observation_weekend_review_rows(review_rows)
-        summary_quality = "OBSERVE" if source_rows else "NONE"
+        summary_quality = "NONE"
     latest_weeks = set(_latest_week_ids(source_rows, limit=4))
     scoped = [row for row in source_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(source_rows)
-    valid = [row for row in scoped if _number(row.get("price_diff")) is not None and _number(row.get("premium_pct")) is not None]
+    valid = [
+        row
+        for row in scoped
+        if _number(row.get("binance_premium_pct")) is not None
+        and _number(row.get("overnight_vs_binance_pct")) is not None
+    ]
     if not valid:
         return {
             "summary_quality": summary_quality,
             "sample_count": 0,
-            "avg_price_diff": None,
-            "avg_premium_pct": None,
-            "max_premium_pct": None,
-            "latest_week_avg_premium_pct": None,
+            "avg_binance_premium_pct": None,
+            "avg_overnight_vs_binance_pct": None,
+            "avg_capture_pct": None,
+            "latest_week_capture_pct": None,
         }
-    premiums = [float(_number(row.get("premium_pct")) or 0.0) for row in valid]
-    diffs = [float(_number(row.get("price_diff")) or 0.0) for row in valid]
+    premiums = [float(_number(row.get("binance_premium_pct")) or 0.0) for row in valid]
+    overnight_vs_binance = [float(_number(row.get("overnight_vs_binance_pct")) or 0.0) for row in valid]
+    captures = [_number(row.get("capture_pct")) for row in valid]
+    captures = [float(value) for value in captures if value is not None]
     latest_week = _latest_week_ids(valid, limit=1)
     latest_rows = [row for row in valid if latest_week and row.get("week_id") == latest_week[0]]
-    latest_premiums = [float(_number(row.get("premium_pct")) or 0.0) for row in latest_rows]
+    latest_captures = [_number(row.get("capture_pct")) for row in latest_rows]
+    latest_captures = [float(value) for value in latest_captures if value is not None]
     return {
         "summary_quality": summary_quality,
         "sample_count": len(valid),
-        "avg_price_diff": sum(diffs) / len(diffs),
-        "avg_premium_pct": sum(premiums) / len(premiums),
-        "max_premium_pct": max(premiums),
-        "latest_week_avg_premium_pct": sum(latest_premiums) / len(latest_premiums) if latest_premiums else None,
+        "avg_binance_premium_pct": sum(premiums) / len(premiums),
+        "avg_overnight_vs_binance_pct": sum(overnight_vs_binance) / len(overnight_vs_binance),
+        "avg_capture_pct": sum(captures) / len(captures) if captures else None,
+        "latest_week_capture_pct": sum(latest_captures) / len(latest_captures) if latest_captures else None,
     }
 
 
 def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
-    columns = ["周次", "股票", "美股参考日", "美股价格", "合约采样时间", "合约价格", "价差", "溢价%", "数据质量", "状态"]
+    columns = [
+        "周次",
+        "股票",
+        "Binance 合约",
+        "周五盘后收盘价",
+        "盘后收盘时间",
+        "Binance 周末最高价",
+        "Binance 高点时间",
+        "美股夜盘首分钟收盘",
+        "夜盘首分钟时间",
+        "夜盘价格源",
+        "Binance 周末冲高%",
+        "夜盘相对 Binance 高点%",
+        "夜盘相对周五盘后%",
+        "周末高点兑现率%",
+        "状态",
+        "失败原因",
+    ]
     if not review_rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(
@@ -1283,14 +1349,20 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
             {
                 "周次": row.get("week_id"),
                 "股票": row.get("ticker"),
-                "美股参考日": row.get("stock_reference_date") or "暂无数据",
-                "美股价格": row.get("stock_price"),
-                "合约采样时间": row.get("contract_sample_time") or "暂无数据",
-                "合约价格": row.get("binance_price"),
-                "价差": row.get("price_diff"),
-                "溢价%": row.get("premium_pct"),
-                "数据质量": _data_quality_text(row.get("data_quality")),
+                "Binance 合约": row.get("binance_symbol") or "暂无映射",
+                "周五盘后收盘价": row.get("friday_afterhours_close"),
+                "盘后收盘时间": row.get("friday_afterhours_time") or "暂无数据",
+                "Binance 周末最高价": row.get("binance_price"),
+                "Binance 高点时间": row.get("contract_sample_time") or "暂无数据",
+                "美股夜盘首分钟收盘": row.get("broker_open_close"),
+                "夜盘首分钟时间": row.get("broker_first_time") or "暂无数据",
+                "夜盘价格源": row.get("overnight_provider") or "未配置",
+                "Binance 周末冲高%": row.get("binance_premium_pct"),
+                "夜盘相对 Binance 高点%": row.get("overnight_vs_binance_pct"),
+                "夜盘相对周五盘后%": row.get("overnight_vs_afterhours_pct"),
+                "周末高点兑现率%": row.get("capture_pct"),
                 "状态": row.get("status"),
+                "失败原因": row.get("failure_reason") or "",
             }
             for row in review_rows
         ],
@@ -1311,21 +1383,25 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
 
     styler = frame.style.format(
         {
-            "美股价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
-            "合约价格": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
-            "价差": lambda value: _signed_money_text(value, missing="暂无数据"),
-            "溢价%": lambda value: _review_percent_text(value),
+            "周五盘后收盘价": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "Binance 周末最高价": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "美股夜盘首分钟收盘": lambda value: _money_text(value) if _number(value) is not None else "暂无数据",
+            "Binance 周末冲高%": lambda value: _review_percent_text(value),
+            "夜盘相对 Binance 高点%": lambda value: _review_percent_text(value),
+            "夜盘相对周五盘后%": lambda value: _review_percent_text(value),
+            "周末高点兑现率%": lambda value: _review_percent_text(value),
         }
     )
+    color_subset = ["Binance 周末冲高%", "夜盘相对 Binance 高点%", "夜盘相对周五盘后%", "周末高点兑现率%"]
     if hasattr(styler, "map"):
-        return styler.map(color_value, subset=["价差", "溢价%"])
+        return styler.map(color_value, subset=color_subset)
 
     def color_frame(data: pd.DataFrame) -> pd.DataFrame:
         if hasattr(data, "map"):
             return data.map(color_value)
         return data.applymap(color_value)
 
-    return styler.apply(color_frame, subset=["价差", "溢价%"], axis=None)
+    return styler.apply(color_frame, subset=color_subset, axis=None)
 
 
 def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
@@ -1344,7 +1420,8 @@ def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     return [
         row
         for row in review_rows
-        if str(row.get("data_quality") or "").strip().upper() in {"OK", "OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}
+        if str(row.get("data_quality") or "").strip().upper()
+        in {"OK", "OBSERVE_ONLY", "NO_AFTERHOURS_CLOSE", "MISSING_OVERNIGHT_FIRST_1M"}
         or str(row.get("data_quality") or "").strip().upper().startswith("DEGRADED")
     ]
 
@@ -1354,29 +1431,29 @@ def _weekend_review_data_quality(
     anchor_price: float | None,
     binance_price: float | None,
     premium_pct: float | None,
+    broker_open_close: float | None = None,
 ) -> str:
-    quality = str(row.get("data_quality") or "").strip().upper()
+    quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
     status = str(row.get("status") or "").strip().upper()
     mapping_status = str(row.get("mapping_status") or "").strip().upper()
     cache_status = str(row.get("kline_cache_status") or row.get("cache_status") or "").strip().upper()
-    missing_stock_first_bar = quality in {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}
-    if quality == "OBSERVE_ANCHOR_ONLY":
-        return "OBSERVE_ANCHOR_ONLY"
     if quality in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING"} or mapping_status == "CANDIDATE_OBSERVATION":
         return "OBSERVE_ONLY"
     if quality.startswith("DEGRADED"):
         return "DEGRADED"
     if quality in {"BLOCK_MAPPING", "NO_MAPPING", "MAPPING_MISSING"} or status == "BLOCK_MAPPING":
         return "MAPPING_MISSING"
-    if missing_stock_first_bar and anchor_price is not None and anchor_price > 0 and binance_price is not None and binance_price > 0 and premium_pct is not None:
-        return "OBSERVE_ANCHOR_ONLY"
-    if anchor_price is None or anchor_price <= 0 or quality in {"NO_PRICE_ANCHOR", "STOCK_MISSING", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
-        return "STOCK_MISSING"
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
+    if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"}:
+        return "NO_AFTERHOURS_CLOSE"
+    if broker_open_close is None or broker_open_close <= 0 or quality in {"MISSING_OVERNIGHT_FIRST_1M", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
+        return "MISSING_OVERNIGHT_FIRST_1M"
     if cache_status in {"STALE", "STALE_CACHE", "CACHE_FALLBACK"} or quality in {"STALE_CACHE", "STALE_OR_MISALIGNED"}:
         return "STALE_CACHE"
-    if premium_pct is None or quality in {"INVALID", "MISSING", "DATA_INSUFFICIENT", "INVALID_PRICE"}:
+    if quality in {"", "OK", "ESTIMATED_EXECUTION"} and anchor_price is not None and anchor_price > 0 and binance_price is not None and binance_price > 0 and broker_open_close is not None and broker_open_close > 0:
+        return "OK"
+    if quality in {"INVALID", "MISSING", "DATA_INSUFFICIENT", "INVALID_PRICE"}:
         return "INVALID_PRICE"
     if quality in {"", "OK"}:
         return "OK"
@@ -1384,29 +1461,29 @@ def _weekend_review_data_quality(
 
 
 def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
-    if data_quality == "OBSERVE_ANCHOR_ONLY":
-        return "锚点观察"
     if data_quality == "OBSERVE_ONLY":
         return "仅观察"
+    if data_quality == "NO_AFTERHOURS_CLOSE":
+        return "缺盘后锚点"
+    if data_quality == "MISSING_OVERNIGHT_FIRST_1M":
+        return "缺夜盘价格"
     if str(data_quality or "").startswith("DEGRADED"):
         return "降级观察"
     if data_quality != "OK" or premium_pct is None:
-        return "数据不完整"
-    if abs(premium_pct) >= LARGE_WEEKEND_PREMIUM_PCT:
-        return "价差较大"
-    return "可观察"
+        return "排除"
+    return "正式样本"
 
 
 def _weekend_review_rank(row: dict) -> tuple[int, float]:
-    premium = _number(row.get("premium_pct"))
-    anchor = _number(row.get("stock_price"))
+    premium = _number(row.get("capture_pct") or row.get("binance_premium_pct"))
     binance = _number(row.get("binance_price"))
+    broker = _number(row.get("broker_open_close"))
     quality = str(row.get("data_quality") or "").strip().upper()
     quality_rank = {"OK": 3, "OBSERVE_ANCHOR_ONLY": 2, "OBSERVE_ONLY": 2, "DEGRADED": 1}.get(
         "DEGRADED" if quality.startswith("DEGRADED") else quality,
         0,
     )
-    valid = quality_rank if premium is not None and anchor is not None and binance is not None else 0
+    valid = quality_rank if binance is not None and (quality != "OK" or broker is not None) else 0
     return (valid, abs(float(premium or 0.0)))
 
 
@@ -1444,6 +1521,7 @@ def _stock_reference_date_text(value: object) -> str:
 
 def _weekend_review_contract_sample_time(row: dict) -> str:
     for key in (
+        "binance_weekend_max_time",
         "oracle_weekend_high_time",
         "weekend_peak_time",
         "binance_entry_ts",
@@ -1453,8 +1531,84 @@ def _weekend_review_contract_sample_time(row: dict) -> str:
     ):
         value = str(row.get(key) or "").strip()
         if value:
-            return value
+            return _weekend_review_short_time(value)
     return ""
+
+
+def _weekend_review_afterhours_time(row: dict) -> str:
+    for key in ("friday_afterhours_bar_start_et", "friday_afterhours_time", "afterhours_reference_time", "anchor_ts"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return _weekend_review_short_time(value)
+    return ""
+
+
+def _weekend_review_broker_first_time(row: dict) -> str:
+    for key in ("overnight_first_1m_time", "overnight_bar_start_et", "broker_first_1m_time", "broker_bar_start_time", "stock_bar_timestamp", "broker_overnight_open_ts"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return _weekend_review_short_time(value)
+    return ""
+
+
+def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
+    quality = str(data_quality or "").strip().upper()
+    if quality == "OK":
+        return ""
+    if quality == "OBSERVE_ONLY":
+        return "映射未确认，仅作观察，不计入正式样本"
+    if quality == "NO_AFTERHOURS_CLOSE":
+        return str(row.get("friday_afterhours_reason") or row.get("afterhours_missing_reason") or "缺少周五盘后收盘价")
+    if quality == "MISSING_OVERNIGHT_FIRST_1M":
+        return str(row.get("overnight_reason") or row.get("stock_bar_reason") or "缺少美股夜盘首分钟 1m K 线")
+    if quality == "CONTRACT_MISSING":
+        return str(row.get("binance_weekend_max_reason") or row.get("error_message") or "缺少 Binance 周末 1m K 线")
+    if quality == "STOCK_MISSING":
+        return str(row.get("stock_bar_reason") or row.get("error_message") or "缺少券商夜盘首分钟价格")
+    if quality == "MAPPING_MISSING":
+        return "映射未确认或未配置"
+    return str(row.get("warning") or row.get("error_message") or row.get("stock_bar_reason") or row.get("binance_weekend_max_reason") or quality)
+
+
+def _weekend_review_anchor_source(row: dict) -> str:
+    source = str(row.get("anchor_source") or row.get("afterhours_reference_source") or "").strip().upper()
+    if source in {"ANCHOR_REGULAR_CLOSE_ONLY", "REGULAR_CLOSE", "REGULAR_CLOSE_FALLBACK"}:
+        return "常规收盘锚点"
+    if row.get("afterhours_reference_price") is not None or "AFTERHOURS" in source or "AFTERMARKET" in source:
+        return "盘后锚点价"
+    if source:
+        return _data_quality_text(source)
+    return "美股锚点价"
+
+
+def _weekend_review_binance_window(row: dict) -> str:
+    start = _weekend_review_short_time(row.get("binance_window_start_et") or row.get("weekend_window_start"))
+    end = _weekend_review_short_time(row.get("binance_window_end_et") or row.get("weekend_window_end"))
+    if not start and not end:
+        return ""
+    return f"{start} - {end}" if start and end else start or end
+
+
+def _weekend_review_short_time(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        try:
+            timestamp = int(text)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(ET).strftime("%Y-%m-%d %H:%M ET")
+        except (OverflowError, OSError, ValueError):
+            return text[:16]
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text[:16]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ET)
+    return parsed.astimezone(ET).strftime("%Y-%m-%d %H:%M ET")
 
 
 def _weekend_review_premium_pct(row: dict, anchor_price: float | None) -> float | None:
@@ -1469,6 +1623,7 @@ def _weekend_review_premium_pct(row: dict, anchor_price: float | None) -> float 
     binance_price = _first_number(
         row,
         (
+            "binance_weekend_max_price",
             "oracle_weekend_high_bid",
             "weekend_peak_binance_price",
             "weekend_peak_price",

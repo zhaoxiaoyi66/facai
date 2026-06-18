@@ -504,10 +504,12 @@ def _basis_quote(moment: datetime, bid: float, ask: float | None = None, **extra
 
 
 def _broker_bar(moment: datetime, bid: float, ask: float | None = None, **extra) -> dict:
+    effective_ask = ask if ask is not None else bid + 0.02
     return {
         "ts": moment.astimezone(timezone.utc).isoformat(),
         "bid": bid,
-        "ask": ask if ask is not None else bid + 0.02,
+        "ask": effective_ask,
+        "close": extra.pop("close", effective_ask),
         "quote_age_seconds": 10,
         **extra,
     }
@@ -522,7 +524,7 @@ def _audit_broker_history(prices: list[tuple[str, float]]) -> pd.DataFrame:
 def _audit_binance_daily_bars(prices: list[tuple[str, float]]) -> list[list]:
     rows = []
     for date_text, price in prices:
-        ts = int(datetime.fromisoformat(f"{date_text}T20:00:00+00:00").timestamp() * 1000)
+        ts = int(datetime.fromisoformat(f"{date_text}T19:59:00+00:00").timestamp() * 1000)
         rows.append([ts, price, price, price, price, 1000])
     return rows
 
@@ -549,7 +551,11 @@ def _mapping(symbol: str = "NVDAUSDT", **overrides) -> dict:
 
 
 def _anchors(*, afterhours: float | None = 100.0, regular: float | None = 98.0) -> dict:
-    return {"NVDA": {"afterhours_reference_price": afterhours, "regular_close_price": regular}}
+    payload = {"afterhours_reference_price": afterhours, "regular_close_price": regular}
+    if afterhours is not None:
+        payload["afterhours_reference_time"] = "2026-07-03T19:59:00-04:00"
+        payload["afterhours_reference_source"] = "mock_afterhours"
+    return {"NVDA": payload}
 
 
 def _explicit_empty_mapping() -> dict:
@@ -1164,8 +1170,8 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
         ]
     )
 
-    assert "缺少美股端第一根有效 1m bar" in reason
-    assert "周一 08:00 HKT / 美股夜盘 20:00 ET" in reason
+    assert "缺少券商周一夜盘 20:00 ET 第一根 1m bar" in reason
+    assert "IBKR 夜盘历史 1m 数据权限" in reason
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
@@ -2467,6 +2473,7 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
     anchors = {
         "NVDA": {
             "afterhours_reference_price": 100,
+            "afterhours_reference_time": "2026-07-03T19:59:00-04:00",
             "broker_overnight_bars": [_broker_bar(window.end_et, 100.8, 100.9)],
         }
     }
@@ -2495,18 +2502,18 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
 def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars_missing() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
-    quotes = [
-        _basis_quote(window.start_et + timedelta(minutes=1), 100.5),
-        _basis_quote(window.start_et + timedelta(hours=2), 101.0),
-        _basis_quote(window.start_et + timedelta(hours=4), 102.0),
-        _basis_quote(window.start_et + timedelta(hours=5), 101.65),
+    bars = [
+        _kline(window.start_et + timedelta(minutes=1), 100.5, 100.5, 100.5, 100.5),
+        _kline(window.start_et + timedelta(hours=2), 101.0, 101.0, 101.0, 101.0),
+        _kline(window.start_et + timedelta(hours=4), 102.0, 102.0, 102.0, 102.0),
+        _kline(window.start_et + timedelta(hours=5), 101.65, 101.65, 101.65, 101.65),
     ]
 
     rows = run_weekend_basis_backtest(
         ["NVDA"],
         mapping=_mapping(),
         anchors=_anchors(afterhours=100),
-        provider=FakeBasisQuoteProvider(quotes),
+        provider=FakeKlineProvider(bars),
         weeks=1,
         now=now,
     )
@@ -2516,18 +2523,84 @@ def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars
     assert rows[0]["stock_bar_reason"] == "MISSING_STOCK_FIRST_BAR"
     assert rows[0]["stock_bar_returned_count"] == 0
     assert rows[0]["oracle_weekend_high_bid"] == 102.0
+    assert rows[0]["binance_weekend_max_price"] == 102.0
     assert summarize_backtest_results(rows)["sample_weeks"] == 0
     assert summarize_backtest_results(rows)["observe_sample_count"] == 1
 
     review_rows = weekend_spread._weekend_review_rows(rows)
     review_summary = weekend_spread._weekend_review_summary(review_rows)
 
-    assert review_rows[0]["data_quality"] == "OBSERVE_ANCHOR_ONLY"
-    assert review_rows[0]["stock_price"] == 100
+    assert review_rows[0]["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
+    assert review_rows[0]["friday_afterhours_close"] == 100
     assert review_rows[0]["binance_price"] == 102.0
-    assert review_summary["summary_quality"] == "OBSERVE"
-    assert review_summary["sample_count"] == 1
+    assert review_summary["summary_quality"] == "NONE"
+    assert review_summary["sample_count"] == 0
     assert weekend_spread._display_weekend_review_rows(review_rows)
+
+
+def test_weekend_basis_backtest_uses_binance_high_and_broker_first_1m_close() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [
+        _kline(window.start_et + timedelta(minutes=1), 100.0, 101.0, 99.5, 100.2),
+        _kline(window.start_et + timedelta(hours=10), 102.0, 106.0, 101.5, 102.5),
+        _kline(window.end_et, 99.0, 110.0, 98.0, 109.0),
+    ]
+    broker_provider = FakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 105.4, 105.8, close=105.6)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(bars),
+        broker_provider=broker_provider,
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        allow_anchor_fallback=False,
+        require_exact_broker_open=True,
+    )
+
+    row = rows[0]
+    assert row["binance_weekend_max_price"] == 106.0
+    assert row["binance_kline_count"] == 2
+    assert row["broker_first_1m_close"] == 105.6
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert round(review["binance_premium_pct"], 2) == 6.0
+    assert round(review["overnight_vs_binance_pct"], 2) == -0.38
+    assert round(review["overnight_vs_afterhours_pct"], 2) == 5.6
+    assert round(review["capture_pct"], 2) == 93.33
+    assert review["data_quality"] == "OK"
+
+
+def test_weekend_basis_backtest_rejects_non_exact_broker_first_minute_for_formal_sample() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=2), 100.0, 102.0, 99.0, 101.0)]
+    broker_provider = FakeBrokerBarProvider({"1m": [_broker_bar(window.end_et + timedelta(minutes=1), 101.0, 101.2, close=101.1)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeKlineProvider(bars),
+        broker_provider=broker_provider,
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        allow_anchor_fallback=False,
+        require_exact_broker_open=True,
+    )
+
+    row = rows[0]
+    assert row["binance_weekend_max_price"] == 102.0
+    assert row["broker_first_1m_close"] is None
+    assert row["stock_bar_reason"] == "MISSING_STOCK_FIRST_BAR"
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
+    assert review["status"] == "缺夜盘价格"
 
 
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
@@ -2572,6 +2645,56 @@ def test_first_valid_stock_bar_can_disable_anchor_fallback() -> None:
     assert result["ok"] is False
     assert result["anchor"] == "overnight"
     assert result["returned_bar_count"] == 0
+
+
+def test_first_valid_stock_bar_requires_close_for_formal_sample() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    overnight = datetime.combine(window.end_et.date(), datetime.min.time(), window.end_et.tzinfo).replace(hour=20, minute=1)
+    provider = FakeBrokerBarProvider(
+        {
+            "1m": [
+                {
+                    "ts": overnight.astimezone(timezone.utc).isoformat(),
+                    "bid": 100.8,
+                    "ask": 100.9,
+                    "quote_age_seconds": 10,
+                }
+            ]
+        }
+    )
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "NVDA",
+        window.end_et.date() + timedelta(days=1),
+        "overnight",
+        30,
+        broker_provider=provider,
+        allow_anchor_fallback=False,
+    )
+
+    assert result["ok"] is False
+    assert result["returned_bar_count"] == 1
+    assert result["reason"] == "MISSING_STOCK_FIRST_BAR"
+
+
+def test_overnight_anchor_skips_memorial_day_to_next_session() -> None:
+    memorial_day = datetime(2026, 5, 25, tzinfo=ZoneInfo("America/New_York")).date()
+    next_overnight = datetime(2026, 5, 25, 20, 1, tzinfo=ZoneInfo("America/New_York"))
+    provider = FakeBrokerBarProvider({"1m": [_broker_bar(next_overnight, 100.8, 100.9, close=100.85)]})
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "NVDA",
+        memorial_day,
+        "overnight",
+        30,
+        broker_provider=provider,
+        allow_anchor_fallback=False,
+    )
+
+    assert result["ok"] is True
+    assert result["price"] == 100.85
+    assert result["requested_start"] == next_overnight.replace(minute=0).astimezone(timezone.utc).isoformat()
 
 
 def test_weekend_basis_backtest_uses_premarket_fallback_bar() -> None:
@@ -3477,7 +3600,7 @@ def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
     assert preflight["eligible_tickers"] == ["NVDA"]
 
 
-def test_backtest_preflight_blocks_missing_price_anchor() -> None:
+def test_backtest_preflight_allows_missing_price_anchor_for_diagnostics() -> None:
     preflight = build_weekend_backtest_preflight(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="confirmed"),
@@ -3485,8 +3608,8 @@ def test_backtest_preflight_blocks_missing_price_anchor() -> None:
         include_unconfirmed=False,
     )
 
-    assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "NO_PRICE_ANCHOR"
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
 
 
 def test_weekend_peak_short_backtest_normalizes_legacy_spot_mapping_to_usdm_futures() -> None:
@@ -3606,34 +3729,39 @@ def test_backtest_summary_and_empty_ui_frame_do_not_crash() -> None:
     assert weekend_spread._backtest_frame([]).empty
 
 
+
+
 def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     rows = [
         {
             "week_id": "2026-W24",
             "ticker": "NVDA",
-            "friday_anchor_price": 100.0,
-            "regular_close_date": "2026-06-12",
-            "oracle_weekend_high_bid": 102.0,
-            "oracle_weekend_high_time": "2026-06-14 20:05:00",
-            "oracle_weekend_high_premium_bps": 200.0,
-            "entry_price": 101.0,
-            "entry_premium_bps": 100.0,
+            "afterhours_reference_price": 100.0,
+            "afterhours_reference_time": "2026-06-12T19:59:00-04:00",
+            "binance_weekend_max_price": 102.0,
+            "binance_weekend_max_time": "2026-06-14T19:58:00-04:00",
+            "broker_first_1m_close": 101.5,
+            "broker_first_1m_time": "2026-06-14T20:00:00-04:00",
+            "binance_symbol": "NVDAUSDT",
+            "binance_kline_count": 3120,
+            "binance_provider": "BINANCE_USDT_M",
             "data_quality": "OK",
         },
         {
             "week_id": "2026-W24",
             "ticker": "NVDA",
-            "friday_anchor_price": 100.0,
-            "entry_price": 101.0,
-            "entry_premium_bps": 100.0,
+            "afterhours_reference_price": 100.0,
+            "binance_weekend_max_price": 101.0,
             "data_quality": "OK",
         },
         {
             "week_id": "2026-W23",
             "ticker": "ADBE",
-            "friday_anchor_price": 200.0,
-            "oracle_weekend_high_bid": 198.0,
-            "oracle_weekend_high_premium_bps": -100.0,
+            "afterhours_reference_price": 200.0,
+            "binance_weekend_max_price": 198.0,
+            "binance_weekend_max_time": "2026-06-07T19:58:00-04:00",
+            "broker_first_1m_close": 197.5,
+            "broker_first_1m_time": "2026-06-07T20:00:00-04:00",
             "data_quality": "OK",
         },
     ]
@@ -3644,36 +3772,46 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert list(frame.columns) == [
         "周次",
         "股票",
-        "美股参考日",
-        "美股价格",
-        "合约采样时间",
-        "合约价格",
-        "价差",
-        "溢价%",
-        "数据质量",
+        "Binance 合约",
+        "周五盘后收盘价",
+        "盘后收盘时间",
+        "Binance 周末最高价",
+        "Binance 高点时间",
+        "美股夜盘首分钟收盘",
+        "夜盘首分钟时间",
+        "夜盘价格源",
+        "Binance 周末冲高%",
+        "夜盘相对 Binance 高点%",
+        "夜盘相对周五盘后%",
+        "周末高点兑现率%",
         "状态",
+        "失败原因",
     ]
-    assert "锁仓收益" not in frame.columns
+    assert "锁结收益" not in frame.columns
     assert "剩余基差" not in frame.columns
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["美股参考日"] == "2026-06-12"
-    assert nvda["合约采样时间"] == "2026-06-14 20:05:00"
-    assert nvda["合约价格"] == 102.0
-    assert nvda["价差"] == 2.0
-    assert nvda["溢价%"] == 2.0
-    assert nvda["数据质量"] == "可用"
-    assert nvda["状态"] == "价差较大"
-
+    assert nvda["周五盘后收盘价"] == 100.0
+    assert nvda["盘后收盘时间"] == "2026-06-12 19:59 ET"
+    assert nvda["美股夜盘首分钟收盘"] == 101.5
+    assert nvda["夜盘首分钟时间"] == "2026-06-14 20:00 ET"
+    assert nvda["Binance 合约"] == "NVDAUSDT"
+    assert nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
+    assert nvda["Binance 周末最高价"] == 102.0
+    assert round(nvda["Binance 周末冲高%"], 2) == 2.0
+    assert round(nvda["夜盘相对 Binance 高点%"], 2) == -0.49
+    assert round(nvda["夜盘相对周五盘后%"], 2) == 1.5
+    assert nvda["周末高点兑现率%"] == 75.0
+    assert nvda["状态"] == "正式样本"
 
 def test_weekend_review_summary_uses_latest_four_weeks() -> None:
     rows = [
         {
             "week_id": f"2026-W{week:02d}",
             "ticker": "NVDA",
-            "friday_anchor_price": 100.0,
-            "oracle_weekend_high_bid": 100.0 + week,
-            "oracle_weekend_high_premium_bps": float(week * 100),
+            "afterhours_reference_price": 90.0,
+            "binance_weekend_max_price": 100.0,
+            "broker_first_1m_close": 100.0 + week,
             "data_quality": "OK",
         }
         for week in range(20, 25)
@@ -3682,9 +3820,10 @@ def test_weekend_review_summary_uses_latest_four_weeks() -> None:
     summary = weekend_spread._weekend_review_summary(weekend_spread._weekend_review_rows(rows))
 
     assert summary["sample_count"] == 4
-    assert round(summary["avg_premium_pct"], 2) == 22.5
-    assert summary["max_premium_pct"] == 24.0
-    assert summary["latest_week_avg_premium_pct"] == 24.0
+    assert round(summary["avg_binance_premium_pct"], 2) == 11.11
+    assert round(summary["avg_overnight_vs_binance_pct"], 2) == 22.5
+    assert round(summary["latest_week_capture_pct"], 2) == 340.0
+
 
 
 def test_weekend_review_summary_counts_only_ok_samples() -> None:
@@ -3692,17 +3831,16 @@ def test_weekend_review_summary_counts_only_ok_samples() -> None:
         {
             "week_id": "2026-W24",
             "ticker": "NVDA",
-            "friday_anchor_price": 100.0,
-            "oracle_weekend_high_bid": 104.0,
-            "oracle_weekend_high_premium_bps": 400.0,
+            "afterhours_reference_price": 99.0,
+            "binance_weekend_max_price": 100.0,
+            "broker_first_1m_close": 104.0,
             "data_quality": "OK",
         },
         {
             "week_id": "2026-W24",
             "ticker": "NOW",
-            "friday_anchor_price": 100.0,
-            "oracle_weekend_high_bid": 120.0,
-            "oracle_weekend_high_premium_bps": 2000.0,
+            "afterhours_reference_price": 100.0,
+            "binance_weekend_max_price": 120.0,
             "data_quality": "NO_MAPPING",
         },
     ]
@@ -3713,7 +3851,8 @@ def test_weekend_review_summary_counts_only_ok_samples() -> None:
     )
 
     assert summary["sample_count"] == 1
-    assert summary["avg_premium_pct"] == 4.0
+    assert round(summary["avg_binance_premium_pct"], 2) == 1.01
+    assert round(summary["avg_overnight_vs_binance_pct"], 2) == 4.0
     assert list(frame["股票"]) == ["NVDA"]
 
 
@@ -3722,18 +3861,17 @@ def test_weekend_review_formats_epoch_stock_reference_date() -> None:
         {
             "week_id": "2026-W24",
             "ticker": "NVDA",
-            "friday_anchor_price": 205.42,
-            "regular_close_date": "1781308799",
-            "oracle_weekend_high_bid": 209.79,
-            "oracle_weekend_high_time": "2026-06-14T23:58:00+00:00",
-            "oracle_weekend_high_premium_bps": 213.0,
+            "afterhours_reference_price": 205.42,
+            "afterhours_reference_time": "1781308799",
+            "binance_weekend_max_price": 209.79,
+            "binance_weekend_max_time": "2026-06-14T19:58:00-04:00",
             "data_quality": "OBSERVE_ANCHOR_ONLY",
         }
     ]
 
     frame = weekend_spread._weekend_review_frame(weekend_spread._weekend_review_rows(rows))
 
-    assert frame.iloc[0]["美股参考日"] == "2026-06-12"
+    assert frame.iloc[0]["盘后收盘时间"] == "2026-06-12 19:59 ET"
 
 
 def test_weekend_review_marks_missing_price_as_incomplete() -> None:
@@ -3749,11 +3887,10 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     review_rows = weekend_spread._weekend_review_rows(rows)
     frame = weekend_spread._weekend_review_frame(review_rows)
 
-    assert frame.iloc[0]["状态"] == "数据不完整"
-    assert frame.iloc[0]["美股价格"] is None
-    assert frame.iloc[0]["合约价格"] is None
-    assert frame.iloc[0]["数据质量"] == "美股价格缺失"
-
+    assert frame.iloc[0]["状态"] == "排除"
+    assert frame.iloc[0]["周五盘后收盘价"] is None
+    assert frame.iloc[0]["Binance 周末最高价"] is None
+    assert frame.iloc[0]["失败原因"] == "缺少 Binance 周末 1m K 线"
 
 def test_weekend_review_style_renders_with_current_pandas() -> None:
     frame = weekend_spread._weekend_review_frame(
@@ -3761,11 +3898,14 @@ def test_weekend_review_style_renders_with_current_pandas() -> None:
             {
                 "week_id": "2026-W24",
                 "ticker": "NVDA",
-                "stock_price": 100.0,
+                "friday_afterhours_close": 100.0,
                 "binance_price": 102.0,
-                "price_diff": 2.0,
-                "premium_pct": 2.0,
-                "status": "价差较大",
+                "broker_open_close": 104.0,
+                "binance_premium_pct": 2.0,
+                "overnight_vs_binance_pct": 1.96,
+                "overnight_vs_afterhours_pct": 4.0,
+                "capture_pct": 200.0,
+                "status": "????",
             }
         ]
     )
@@ -3773,8 +3913,7 @@ def test_weekend_review_style_renders_with_current_pandas() -> None:
     html = weekend_spread._style_weekend_review_frame(frame).to_html()
 
     assert "NVDA" in html
-    assert "$2.00" in html
-
+    assert "+2.00%" in html
 
 def test_backtest_results_do_not_use_cache_when_preflight_has_no_eligible_mapping() -> None:
     cached = {

@@ -694,6 +694,55 @@ def render_global_styles() -> None:
             font-size: 0.9rem;
         }
 
+        .zhx-side-nav-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.12rem;
+            margin: 0.04rem 0;
+        }
+
+        .zhx-side-nav-group-label {
+            min-height: 32px;
+            border-radius: 8px;
+            padding: 0.32rem 0.58rem 0.32rem 0.66rem;
+            color: #CBD5E1;
+            display: flex;
+            align-items: center;
+            gap: 0.54rem;
+            font-size: 0.8rem;
+            font-weight: 760;
+        }
+
+        a.zhx-side-nav-group-label {
+            text-decoration: none !important;
+            color: #CBD5E1 !important;
+            transition: background 140ms ease, color 140ms ease;
+        }
+
+        a.zhx-side-nav-group-label:hover {
+            background: rgba(148, 163, 184, 0.08);
+            color: #E2E8F0 !important;
+        }
+
+        .zhx-side-nav-group.active .zhx-side-nav-group-label {
+            color: #F8FAFC;
+        }
+
+        .zhx-side-nav-children {
+            display: flex;
+            flex-direction: column;
+            gap: 0.12rem;
+            margin-left: 0.52rem;
+            padding-left: 0.38rem;
+            border-left: 1px solid rgba(148, 163, 184, 0.18);
+        }
+
+        .zhx-side-nav-item.child {
+            min-height: 32px;
+            padding-left: 0.52rem;
+            font-size: 0.78rem;
+        }
+
         .zhx-side-footer {
             margin-top: auto;
             padding-top: 0.72rem;

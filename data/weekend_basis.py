@@ -72,6 +72,7 @@ class BrokerOvernightBar:
     ts: datetime
     bid: float
     ask: float
+    close: float | None = None
     quote_age_seconds: float = 0.0
     volume: float | None = None
     source: str = ""
@@ -747,6 +748,7 @@ def _broker_bar_from_row(row: Any) -> BrokerOvernightBar | None:
         ts=ts,
         bid=bid,
         ask=ask,
+        close=_number(row.get("close") or row.get("close_price") or row.get("closePrice") or row.get("last") or row.get("last_price") or row.get("lastPrice")),
         quote_age_seconds=float(_number(row.get("quote_age_seconds") or row.get("quoteAgeSeconds")) or 0.0),
         volume=_number(row.get("volume")),
         source=str(row.get("source") or ""),

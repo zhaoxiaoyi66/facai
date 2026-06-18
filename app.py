@@ -56,15 +56,26 @@ st.set_page_config(
 
 PAGES = {
     PAGE_DASHBOARD: dashboard.render,
-    PAGE_STOCK_DETAIL: stock_detail.render,
     PAGE_PORTFOLIO: portfolio.render,
-    PAGE_TRADE_JOURNAL: trade_journal.render,
     PAGE_DISCIPLINE_REVIEW: discipline_review.render,
-    PAGE_WATCHLIST: watchlist.render,
-    PAGE_MANUAL_REVIEW: manual_review.render,
+    PAGE_TRADE_JOURNAL: trade_journal.render,
+    PAGE_STOCK_DETAIL: stock_detail.render,
     PAGE_AI_RADAR: ai_stock_radar.render,
+    PAGE_MANUAL_REVIEW: manual_review.render,
     PAGE_WEEKEND_SPREAD: weekend_spread.render,
+    PAGE_WATCHLIST: watchlist.render,
 }
+
+NAV_STRUCTURE = [
+    PAGE_DASHBOARD,
+    PAGE_PORTFOLIO,
+    PAGE_DISCIPLINE_REVIEW,
+    PAGE_TRADE_JOURNAL,
+    PAGE_STOCK_DETAIL,
+    PAGE_AI_RADAR,
+    {"label": "数据复核", "icon": "◆", "page": PAGE_MANUAL_REVIEW, "children": [PAGE_WEEKEND_SPREAD]},
+    PAGE_WATCHLIST,
+]
 
 
 def main() -> None:
@@ -108,7 +119,7 @@ def _resolve_current_page() -> str:
 
 def _render_fixed_sidebar(active_page: str) -> None:
     queue_stats = get_fmp_request_queue().stats()
-    nav_items = "\n".join(_nav_link(page, active_page) for page in PAGES)
+    nav_items = _nav_items_markup(active_page)
     sidebar_html = [
         '<aside class="zhx-fixed-sidebar">',
         '<div class="zhx-side-brand">',
@@ -161,13 +172,52 @@ def _render_fixed_sidebar(active_page: str) -> None:
     )
 
 
-def _nav_link(page_name: str, active_page: str) -> str:
+def _nav_items_markup(active_page: str) -> str:
+    items: list[str] = []
+    for entry in NAV_STRUCTURE:
+        if isinstance(entry, dict):
+            label = str(entry.get("label") or "")
+            icon = str(entry.get("icon") or "•")
+            group_page = str(entry.get("page") or "")
+            children = [page for page in entry.get("children", []) if page in PAGES]
+            active_pages = set(children)
+            if group_page in PAGES:
+                active_pages.add(group_page)
+            active_class = " active" if active_page in active_pages else ""
+            if group_page in PAGES:
+                query_value = PAGE_TO_QUERY_VALUE.get(group_page, "dashboard")
+                group_label = (
+                    f'<a class="zhx-side-nav-group-label" href="?page={escape(query_value)}" target="_self">'
+                    f'<span class="zhx-side-nav-icon">{escape(icon)}</span>'
+                    f"<span>{escape(label)}</span>"
+                    "</a>"
+                )
+            else:
+                group_label = (
+                    f'<div class="zhx-side-nav-group-label">'
+                    f'<span class="zhx-side-nav-icon">{escape(icon)}</span>'
+                    f"<span>{escape(label)}</span>"
+                    "</div>"
+                )
+            items.append(
+                f'<div class="zhx-side-nav-group{active_class}">'
+                f"{group_label}"
+                f'<div class="zhx-side-nav-children">{"".join(_nav_link(child, active_page, child=True) for child in children)}</div>'
+                "</div>"
+            )
+        elif entry in PAGES:
+            items.append(_nav_link(str(entry), active_page))
+    return "\n".join(items)
+
+
+def _nav_link(page_name: str, active_page: str, *, child: bool = False) -> str:
     query_value = PAGE_TO_QUERY_VALUE.get(page_name, "dashboard")
     label = _nav_label(page_name)
     icon = _nav_icon(page_name)
     active_class = " active" if page_name == active_page else ""
+    child_class = " child" if child else ""
     return (
-        f'<a class="zhx-side-nav-item{active_class}" href="?page={escape(query_value)}" target="_self">'
+        f'<a class="zhx-side-nav-item{child_class}{active_class}" href="?page={escape(query_value)}" target="_self">'
         f'<span class="zhx-side-nav-icon">{escape(icon)}</span>'
         f"<span>{escape(label)}</span>"
         "</a>"
@@ -180,8 +230,11 @@ def _nav_label(page_name: str) -> str:
         PAGE_STOCK_DETAIL: "个股研究",
         PAGE_PORTFOLIO: "组合持仓",
         PAGE_TRADE_JOURNAL: "交易日志",
+        PAGE_DISCIPLINE_REVIEW: "交易错题本",
         PAGE_WATCHLIST: "观察池",
         PAGE_MANUAL_REVIEW: "数据复核",
+        PAGE_AI_RADAR: "价格位置",
+        PAGE_WEEKEND_SPREAD: "周末价差",
     }
     return labels.get(page_name, page_name)
 
@@ -192,8 +245,11 @@ def _nav_icon(page_name: str) -> str:
         PAGE_STOCK_DETAIL: "⌕",
         PAGE_PORTFOLIO: "▣",
         PAGE_TRADE_JOURNAL: "▤",
+        PAGE_DISCIPLINE_REVIEW: "!",
         PAGE_WATCHLIST: "≡",
         PAGE_MANUAL_REVIEW: "◆",
+        PAGE_AI_RADAR: "⌖",
+        PAGE_WEEKEND_SPREAD: "↕",
     }
     return icons.get(page_name, "•")
 

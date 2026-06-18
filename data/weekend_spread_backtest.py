@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Iterable
@@ -32,6 +32,68 @@ STOCK_OPEN_ANCHOR_LABELS = {
     "premarket": "盘前",
     "regular_open": "正式开盘",
 }
+
+
+def _is_us_equity_session_date(day: date) -> bool:
+    if day.weekday() >= 5:
+        return False
+    holidays = _us_market_holidays(day.year) | _us_market_holidays(day.year + 1)
+    return day not in holidays
+
+
+def _us_market_holidays(year: int) -> set[date]:
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _good_friday(year),
+        _last_weekday(year, 5, 0),
+        _observed_fixed_holiday(year, 6, 19),
+        _observed_fixed_holiday(year, 7, 4),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed_fixed_holiday(year, 12, 25),
+    }
+    return holidays
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    actual = date(year, month, day)
+    if actual.weekday() == 5:
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    current = date(year, month, 1)
+    offset = (weekday - current.weekday()) % 7
+    return current + timedelta(days=offset + 7 * (nth - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    next_month = date(year + int(month == 12), 1 if month == 12 else month + 1, 1)
+    current = next_month - timedelta(days=1)
+    return current - timedelta(days=(current.weekday() - weekday) % 7)
+
+
+def _good_friday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day) - timedelta(days=2)
 
 
 @dataclass(frozen=True)
@@ -98,10 +160,6 @@ def build_weekend_backtest_preflight(
             row["exclusion_reason"] = "NO_MAPPING"
             excluded.append(row)
             continue
-        if _anchor_for_ticker(ticker, config, effective_anchors).get("anchor_price") is None:
-            row["exclusion_reason"] = "NO_PRICE_ANCHOR"
-            excluded.append(row)
-            continue
         row["can_run"] = True
         eligible.append(row)
     primary_block = ""
@@ -131,7 +189,7 @@ def recent_weekend_windows(*, weeks: int = 4, now: datetime | None = None) -> li
     windows: list[WeekendWindow] = []
     for index in range(max(1, int(weeks or 1))):
         end_et = sunday_close - timedelta(days=index * 7)
-        start_et = end_et - timedelta(days=2)
+        start_et = datetime.combine(end_et.date() - timedelta(days=2), time(20, 0), ET)
         iso = end_et.date().isocalendar()
         windows.append(
             WeekendWindow(
@@ -191,10 +249,13 @@ def run_weekend_basis_backtest(
     anchors: dict[str, Any] | None = None,
     provider: Any | None = None,
     broker_provider: Any | None = None,
+    afterhours_provider: Any | None = None,
+    overnight_provider: Any | None = None,
     weeks: int = 4,
     open_window_minutes: int = 5,
     opening_anchor: str = "overnight",
     allow_anchor_fallback: bool = True,
+    require_exact_broker_open: bool = False,
     kline_cache_path: Path | None = None,
     strategy_config: BasisStrategyConfig | None = None,
     now: datetime | None = None,
@@ -221,10 +282,12 @@ def run_weekend_basis_backtest(
                     anchor=_audit_anchor_for_ticker(ticker, config, effective_anchors, window),
                     anchor_source=dict(effective_anchors.get(ticker) or config),
                     provider=price_provider,
-                    broker_provider=broker_provider,
+                    broker_provider=overnight_provider or broker_provider,
+                    afterhours_provider=afterhours_provider,
                     open_window_minutes=open_window_minutes,
                     opening_anchor=opening_anchor,
                     allow_anchor_fallback=allow_anchor_fallback,
+                    require_exact_broker_open=require_exact_broker_open,
                     kline_cache_path=effective_kline_cache_path,
                     strategy_config=strategy_config,
                 )
@@ -487,6 +550,194 @@ def clear_backtest_view_state() -> dict[str, Any]:
     }
 
 
+def fetch_friday_afterhours_close(
+    symbol: str,
+    friday_date_et: Any,
+    *,
+    provider: Any | None = None,
+    anchor_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read the Friday 19:55-20:00 ET after-hours closing 1m bar close."""
+
+    normalized = str(symbol or "").strip().upper()
+    friday_date = _coerce_date(friday_date_et)
+    window_start = datetime.combine(friday_date, time(19, 55), ET)
+    window_end = datetime.combine(friday_date, time(20, 0), ET)
+    rows: list[Any] = []
+    provider_name = ""
+    venue = "EXTENDED_HOURS"
+    if provider is not None and hasattr(provider, "get_afterhours_bars"):
+        provider_name = type(provider).__name__
+        rows = list(
+            provider.get_afterhours_bars(
+                normalized,
+                start_time_ms=_to_ms(window_start),
+                end_time_ms=_to_ms(window_end),
+                interval="1m",
+            )
+            or []
+        )
+    elif anchor_source:
+        provider_name = str(anchor_source.get("afterhours_reference_source") or "anchor_source")
+        rows = list(anchor_source.get("afterhours_bars") or anchor_source.get("afterhours_quotes") or [])
+    bars = [
+        bar
+        for bar in normalize_broker_overnight_bars(rows)
+        if window_start.astimezone(timezone.utc) <= bar.ts < window_end.astimezone(timezone.utc)
+        and bar.close is not None
+        and bar.close > 0
+    ]
+    if bars:
+        chosen = sorted(bars, key=lambda item: item.ts)[-1]
+        return {
+            "ok": True,
+            "symbol": normalized,
+            "friday_afterhours_close": chosen.close,
+            "bar_start_et": chosen.ts.astimezone(ET).isoformat(),
+            "bar_end_et": (chosen.ts + timedelta(minutes=1)).astimezone(ET).isoformat(),
+            "provider": provider_name or "afterhours_provider",
+            "venue": venue,
+            "interval": "1m",
+            "quality": "OFFICIAL_AFTERHOURS_1M",
+            "reason": "",
+        }
+    snapshot_price = _number((anchor_source or {}).get("afterhours_reference_price"))
+    snapshot_time = _datetime_from_iso((anchor_source or {}).get("afterhours_reference_time"))
+    if snapshot_price is not None and snapshot_price > 0 and snapshot_time is None:
+        snapshot_time = datetime.combine(friday_date, time(19, 59), ET)
+    if snapshot_price is not None and snapshot_price > 0 and snapshot_time is not None:
+        snapshot_et = snapshot_time.astimezone(ET)
+        if window_start <= snapshot_et < window_end:
+            return {
+                "ok": True,
+                "symbol": normalized,
+                "friday_afterhours_close": snapshot_price,
+                "bar_start_et": snapshot_et.isoformat(),
+                "bar_end_et": (snapshot_et + timedelta(minutes=1)).isoformat(),
+                "provider": provider_name or str((anchor_source or {}).get("afterhours_reference_source") or "afterhours_provider"),
+                "venue": venue,
+                "interval": "1m",
+                "quality": "OFFICIAL_AFTERHOURS_REFERENCE" if (anchor_source or {}).get("afterhours_reference_time") else "LEGACY_AFTERHOURS_REFERENCE",
+                "reason": "",
+            }
+    return {
+        "ok": False,
+        "symbol": normalized,
+        "friday_afterhours_close": None,
+        "bar_start_et": "",
+        "bar_end_et": "",
+        "provider": provider_name or "",
+        "venue": venue,
+        "interval": "1m",
+        "quality": "MISSING_AFTERHOURS_CLOSE",
+        "reason": "缺少周五盘后收盘价",
+    }
+
+
+def fetch_binance_weekend_max(
+    stock_symbol: str,
+    binance_symbol: str,
+    window_start_et: datetime,
+    window_end_et: datetime,
+    multiplier: float = 1.0,
+    *,
+    provider: Any,
+    market_type: str = "usdm_futures",
+    cache_path: Path | None = None,
+) -> dict[str, Any]:
+    end_et = window_end_et.astimezone(ET)
+    window = WeekendWindow(
+        week_id=f"{end_et.date().isocalendar().year}-W{end_et.date().isocalendar().week:02d}",
+        start_et=window_start_et.astimezone(ET),
+        end_et=end_et,
+        end_shanghai=end_et.astimezone(SHANGHAI),
+    )
+    try:
+        bars, _cache_status = _fetch_window_klines(
+            provider,
+            binance_symbol,
+            market_type=market_type,
+            window=window,
+            open_window_minutes=1,
+            end_time=window.end_et,
+            cache_path=cache_path,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "stock_symbol": str(stock_symbol or "").strip().upper(),
+            "binance_symbol": str(binance_symbol or "").strip().upper(),
+            "binance_weekend_max": None,
+            "binance_equivalent_max": None,
+            "binance_max_time": "",
+            "kline_count": 0,
+            "provider": "BINANCE_USDT_M",
+            "interval": "1m",
+            "reason": f"数据源错误: {type(exc).__name__}: {exc}",
+        }
+    fields = _binance_weekend_max_fields(binance_symbol, market_type, window, bars, multiplier=multiplier)
+    price = _number(fields.get("binance_weekend_max"))
+    return {
+        "ok": price is not None and price > 0,
+        "stock_symbol": str(stock_symbol or "").strip().upper(),
+        "binance_symbol": str(binance_symbol or "").strip().upper(),
+        "binance_weekend_max": fields.get("binance_weekend_max"),
+        "binance_equivalent_max": fields.get("binance_equivalent_max"),
+        "binance_max_time": fields.get("binance_max_time") or "",
+        "kline_count": fields.get("kline_count") or 0,
+        "provider": "BINANCE_USDT_M",
+        "interval": "1m",
+        "reason": "" if price is not None and price > 0 else "缺少 Binance 周末 1m K 线",
+    }
+
+
+def fetch_overnight_first_1m_close(
+    symbol: str,
+    session_start_et: datetime,
+    *,
+    provider: Any | None = None,
+    anchor_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    start_et = session_start_et.astimezone(ET)
+    session_date = (start_et + timedelta(days=1)).date()
+    result = get_first_valid_stock_bar_after_weekend(
+        symbol,
+        session_date,
+        "overnight",
+        2,
+        broker_provider=provider,
+        anchor_source=anchor_source or {},
+        allow_anchor_fallback=False,
+        require_exact_start=True,
+    )
+    if result.get("ok"):
+        timestamp = _datetime_from_iso(result.get("timestamp"))
+        return {
+            "ok": True,
+            "symbol": str(symbol or "").strip().upper(),
+            "overnight_first_1m_close": result.get("price"),
+            "bar_start_et": timestamp.astimezone(ET).isoformat() if timestamp is not None else "",
+            "bar_end_et": (timestamp + timedelta(minutes=1)).astimezone(ET).isoformat() if timestamp is not None else "",
+            "provider": str(result.get("provider") or ""),
+            "venue": "OVERNIGHT",
+            "interval": "1m",
+            "quality": "OFFICIAL_OVERNIGHT_1M",
+            "reason": "",
+        }
+    return {
+        "ok": False,
+        "symbol": str(symbol or "").strip().upper(),
+        "overnight_first_1m_close": None,
+        "bar_start_et": "",
+        "bar_end_et": "",
+        "provider": str(result.get("provider") or ""),
+        "venue": "OVERNIGHT",
+        "interval": "1m",
+        "quality": str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M"),
+        "reason": "缺少美股夜盘首分钟 1m K 线",
+    }
+
+
 def normalize_klines(payload: Iterable[Any]) -> list[NormalizedKline]:
     bars: list[NormalizedKline] = []
     for item in payload:
@@ -618,6 +869,7 @@ def _has_weekend_anchor_observation(result: dict[str, Any], anchor_price: float 
         return False
     weekend_price = _number(
         result.get("oracle_weekend_high_bid")
+        or result.get("binance_weekend_max_price")
         or result.get("weekend_peak_binance_price")
         or result.get("weekend_peak_binance_mid")
     )
@@ -638,28 +890,36 @@ def _basis_backtest_one_window(
     anchor_source: dict[str, Any],
     provider: Any,
     broker_provider: Any | None,
+    afterhours_provider: Any | None,
     open_window_minutes: int,
     opening_anchor: str,
     allow_anchor_fallback: bool,
+    require_exact_broker_open: bool,
     kline_cache_path: Path | None,
     strategy_config: BasisStrategyConfig | None,
 ) -> dict[str, Any]:
     symbol = str(config.get("binance_symbol") or "").strip().upper()
     market_type = "usdm_futures"
     mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
-    anchor_price = _number(anchor.get("anchor_price"))
+    friday_afterhours = fetch_friday_afterhours_close(
+        ticker,
+        window.start_et.date(),
+        provider=afterhours_provider,
+        anchor_source=anchor_source,
+    )
+    friday_afterhours_close = _number(friday_afterhours.get("friday_afterhours_close"))
+    anchor_price = friday_afterhours_close
+    legacy_anchor_price = _number(anchor.get("anchor_price"))
     base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
     base.update(
         {
             "broker_anchor_price": anchor_price,
             "anchor_price": anchor_price,
+            "legacy_anchor_price": legacy_anchor_price,
             "anchor_source": str(anchor.get("anchor_source") or ""),
             "anchor_ts": str(anchor.get("anchor_ts") or ""),
         }
     )
-    if anchor_price is None or anchor_price <= 0:
-        base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price", "error_message": "missing broker anchor price"})
-        return base
     stock_bar = get_first_valid_stock_bar_after_weekend(
         ticker,
         window.end_et.date() + timedelta(days=1),
@@ -668,20 +928,36 @@ def _basis_backtest_one_window(
         broker_provider=broker_provider,
         anchor_source=anchor_source,
         allow_anchor_fallback=allow_anchor_fallback,
+        require_exact_start=require_exact_broker_open,
     )
     quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
         window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
     )
+    binance_max_fields = _missing_binance_weekend_max_fields(symbol, window, reason="BINANCE_KLINE_REQUIRED")
+    multiplier = _number(config.get("unit_multiplier") or config.get("multiplier")) or 1.0
     try:
-        quotes, kline_cache_status = _fetch_window_basis_quotes(
-            provider,
-            symbol,
-            market_type=market_type,
-            window=window,
-            open_window_minutes=open_window_minutes,
-            end_time=quote_end,
-            cache_path=kline_cache_path,
-        )
+        if hasattr(provider, "get_klines"):
+            bars, kline_cache_status = _fetch_window_klines(
+                provider,
+                symbol,
+                market_type=market_type,
+                window=window,
+                open_window_minutes=open_window_minutes,
+                end_time=quote_end,
+                cache_path=kline_cache_path,
+            )
+            quotes = _basis_quotes_from_klines(bars)
+            binance_max_fields = _binance_weekend_max_fields(symbol, market_type, window, bars, multiplier=multiplier)
+        else:
+            quotes, kline_cache_status = _fetch_window_basis_quotes(
+                provider,
+                symbol,
+                market_type=market_type,
+                window=window,
+                open_window_minutes=open_window_minutes,
+                end_time=quote_end,
+                cache_path=kline_cache_path,
+            )
     except Exception as exc:
         base.update(
             {
@@ -695,15 +971,42 @@ def _basis_backtest_one_window(
         return base
     cfg = strategy_config or BasisStrategyConfig()
     broker_bars = [stock_bar["bar"]] if stock_bar.get("ok") and stock_bar.get("bar") is not None else []
-    evaluation_quotes = _basis_quotes_for_stock_bar_evaluation(quotes, window, stock_bar, cfg, open_window_minutes)
-    result = evaluate_basis_lock_strategy(
-        ticker=ticker,
-        binance_symbol=symbol,
+    if anchor_price is not None and anchor_price > 0:
+        evaluation_quotes = _basis_quotes_for_stock_bar_evaluation(quotes, window, stock_bar, cfg, open_window_minutes)
+        result = evaluate_basis_lock_strategy(
+            ticker=ticker,
+            binance_symbol=symbol,
+            mapping_confidence=mapping_confidence,
+            broker_anchor_price=anchor_price,
+            binance_quotes=evaluation_quotes,
+            broker_overnight_bars=broker_bars,
+            config=cfg,
+        )
+    else:
+        result = dict(base)
+        result.update(
+            {
+                "status": "OBSERVE",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "warning": "缺少周五盘后收盘价，不能计算完整传导链",
+                "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
+            }
+        )
+    broker_first_close = None
+    broker_first_time = ""
+    if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
+        broker_first_close = stock_bar.get("price")
+        broker_first_time = str(stock_bar.get("timestamp") or "")
+    binance_equivalent_max = _number(binance_max_fields.get("binance_equivalent_max") or binance_max_fields.get("binance_weekend_max"))
+    binance_premium_pct = _change_pct(binance_equivalent_max, friday_afterhours_close)
+    overnight_vs_binance_pct = _change_pct(broker_first_close, binance_equivalent_max)
+    overnight_vs_afterhours_pct = _change_pct(broker_first_close, friday_afterhours_close)
+    capture_pct = _capture_pct(friday_afterhours_close, binance_equivalent_max, broker_first_close)
+    transmission_quality = _weekend_chain_quality(
         mapping_confidence=mapping_confidence,
-        broker_anchor_price=anchor_price,
-        binance_quotes=evaluation_quotes,
-        broker_overnight_bars=broker_bars,
-        config=cfg,
+        friday_afterhours_close=friday_afterhours_close,
+        binance_weekend_max=binance_equivalent_max,
+        overnight_first_1m_close=broker_first_close,
     )
     result.update(
         {
@@ -713,6 +1016,9 @@ def _basis_backtest_one_window(
             "weekend_window_end": window.end_et.isoformat(),
             "monday_reference_time_et": window.end_et.isoformat(),
             "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
+            "binance_symbol": symbol,
+            "binance_provider": "BINANCE_USDT_M",
+            "binance_quote_count": len(quotes),
             "stock_open_anchor": str(stock_bar.get("anchor") or opening_anchor),
             "stock_open_anchor_label": str(stock_bar.get("anchor_label") or ""),
             "stock_bar_price": stock_bar.get("price"),
@@ -724,6 +1030,17 @@ def _basis_backtest_one_window(
             "stock_bar_returned_count": int(stock_bar.get("returned_bar_count") or 0),
             "stock_bar_requested_start": str(stock_bar.get("requested_start") or ""),
             "stock_bar_requested_end": str(stock_bar.get("requested_end") or ""),
+            "broker_first_1m_close": broker_first_close,
+            "broker_first_1m_time": broker_first_time,
+            "broker_bar_start_time": broker_first_time,
+            "broker_bar_end_time": (
+                (_datetime_from_iso(broker_first_time) + timedelta(minutes=1)).isoformat()
+                if broker_first_time and _datetime_from_iso(broker_first_time) is not None
+                else ""
+            ),
+            "broker_provider": str(stock_bar.get("provider") or ""),
+            "broker_interval": str(stock_bar.get("bar_size") or ""),
+            "broker_quality": "OFFICIAL_BROKER_1M" if broker_first_close is not None else str(stock_bar.get("quality") or ""),
             "anchor_price": anchor_price,
             "anchor_source": str(anchor.get("anchor_source") or ""),
             "anchor_ts": str(anchor.get("anchor_ts") or ""),
@@ -733,8 +1050,37 @@ def _basis_backtest_one_window(
             "afterhours_data_quality": str(anchor.get("afterhours_data_quality") or ""),
             "afterhours_cache_status": str(anchor.get("afterhours_cache_status") or ""),
             "afterhours_missing_reason": str(anchor.get("afterhours_missing_reason") or ""),
+            "friday_afterhours_close": friday_afterhours_close,
+            "friday_afterhours_time": str(friday_afterhours.get("bar_start_et") or ""),
+            "friday_afterhours_bar_start_et": str(friday_afterhours.get("bar_start_et") or ""),
+            "friday_afterhours_bar_end_et": str(friday_afterhours.get("bar_end_et") or ""),
+            "friday_afterhours_source": str(friday_afterhours.get("provider") or ""),
+            "friday_afterhours_provider": str(friday_afterhours.get("provider") or ""),
+            "friday_afterhours_venue": str(friday_afterhours.get("venue") or ""),
+            "friday_afterhours_interval": str(friday_afterhours.get("interval") or "1m"),
+            "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
+            "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+            "overnight_first_1m_close": broker_first_close,
+            "overnight_first_1m_time": broker_first_time,
+            "overnight_bar_start_et": broker_first_time,
+            "overnight_bar_end_et": (
+                (_datetime_from_iso(broker_first_time) + timedelta(minutes=1)).isoformat()
+                if broker_first_time and _datetime_from_iso(broker_first_time) is not None
+                else ""
+            ),
+            "overnight_provider": str(stock_bar.get("provider") or ""),
+            "overnight_venue": "OVERNIGHT",
+            "overnight_interval": str(stock_bar.get("bar_size") or ""),
+            "overnight_quality": "OFFICIAL_OVERNIGHT_1M" if broker_first_close is not None else str(stock_bar.get("quality") or ""),
+            "overnight_reason": "" if broker_first_close is not None else str(stock_bar.get("reason") or ""),
+            "binance_premium_pct": binance_premium_pct,
+            "overnight_vs_binance_pct": overnight_vs_binance_pct,
+            "overnight_vs_afterhours_pct": overnight_vs_afterhours_pct,
+            "capture_pct": capture_pct,
+            "transmission_data_quality": transmission_quality,
             "kline_cache_status": kline_cache_status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            **binance_max_fields,
         }
     )
     if not stock_bar.get("ok") and result.get("data_quality") == "NO_BROKER_OVERNIGHT_BAR":
@@ -1242,6 +1588,61 @@ def _basis_quotes_from_klines(bars: list[NormalizedKline]) -> list[BasisQuote]:
     return normalize_basis_quotes(rows, estimated=True, source="binance_kline_estimated")
 
 
+def _binance_weekend_max_fields(
+    symbol: str,
+    market_type: str,
+    window: WeekendWindow,
+    bars: list[NormalizedKline],
+    *,
+    multiplier: float = 1.0,
+) -> dict[str, Any]:
+    window_start = window.start_et.astimezone(timezone.utc)
+    window_end = window.end_et.astimezone(timezone.utc)
+    weekend_bars = [bar for bar in bars if window_start <= bar.open_time < window_end]
+    if not weekend_bars:
+        return _missing_binance_weekend_max_fields(symbol, window, reason="BINANCE_KLINE_UNAVAILABLE")
+    peak = max(weekend_bars, key=lambda bar: bar.high)
+    effective_multiplier = float(multiplier or 1.0)
+    equivalent = peak.high * effective_multiplier
+    return {
+        "binance_symbol": str(symbol or "").strip().upper(),
+        "binance_provider": "BINANCE_USDT_M",
+        "binance_interval": "1m",
+        "binance_window_start_et": window.start_et.isoformat(),
+        "binance_window_end_et": window.end_et.isoformat(),
+        "binance_weekend_max": peak.high,
+        "binance_weekend_max_price": peak.high,
+        "binance_equivalent_max": equivalent,
+        "binance_max_time": peak.open_time.astimezone(ET).isoformat(),
+        "binance_weekend_max_time": peak.open_time.astimezone(ET).isoformat(),
+        "kline_count": len(weekend_bars),
+        "binance_kline_count": len(weekend_bars),
+        "binance_multiplier": effective_multiplier,
+        "binance_market_type": normalize_market_type(market_type),
+        "binance_weekend_max_reason": "",
+    }
+
+
+def _missing_binance_weekend_max_fields(symbol: str, window: WeekendWindow, *, reason: str) -> dict[str, Any]:
+    return {
+        "binance_symbol": str(symbol or "").strip().upper(),
+        "binance_provider": "BINANCE_USDT_M",
+        "binance_interval": "1m",
+        "binance_window_start_et": window.start_et.isoformat(),
+        "binance_window_end_et": window.end_et.isoformat(),
+        "binance_weekend_max": None,
+        "binance_weekend_max_price": None,
+        "binance_equivalent_max": None,
+        "binance_max_time": "",
+        "binance_weekend_max_time": "",
+        "kline_count": 0,
+        "binance_kline_count": 0,
+        "binance_multiplier": 1.0,
+        "binance_market_type": "usdm_futures",
+        "binance_weekend_max_reason": reason,
+    }
+
+
 def _broker_overnight_bars_for_window(
     ticker: str,
     *,
@@ -1296,6 +1697,7 @@ def get_first_valid_stock_bar_after_weekend(
     broker_provider: Any | None = None,
     anchor_source: dict[str, Any] | None = None,
     allow_anchor_fallback: bool = True,
+    require_exact_start: bool = False,
 ) -> dict[str, Any]:
     """Find the first reliable US stock bar after the weekend.
 
@@ -1307,8 +1709,25 @@ def get_first_valid_stock_bar_after_weekend(
     start_date = _coerce_date(session_date)
     window = max(1, int(window_minutes or 5))
     attempts = _stock_open_attempts(start_date, requested_anchor, allow_fallback=allow_anchor_fallback)
+    if not attempts:
+        return {
+            "ok": False,
+            "price": None,
+            "timestamp": "",
+            "provider": "",
+            "bar_size": "1m",
+            "quality": "HOLIDAY_OR_NO_SESSION",
+            "reason": "HOLIDAY_OR_NO_SESSION",
+            "returned_bar_count": 0,
+            "requested_start": "",
+            "requested_end": "",
+            "anchor": requested_anchor,
+            "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(requested_anchor, requested_anchor),
+            "bar": None,
+        }
     last_attempt: dict[str, Any] | None = None
-    for interval in ("1m", "5m"):
+    intervals = ("1m",) if require_exact_start else ("1m", "5m")
+    for interval in intervals:
         for anchor_name, day in attempts:
             start, end = _stock_open_window(day, anchor_name, window)
             payload = _fetch_stock_open_bars(
@@ -1320,7 +1739,7 @@ def get_first_valid_stock_bar_after_weekend(
                 interval=interval,
             )
             bars = payload["bars"]
-            last_attempt = {
+            attempt = {
                 "ok": False,
                 "price": None,
                 "timestamp": "",
@@ -1335,13 +1754,15 @@ def get_first_valid_stock_bar_after_weekend(
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
                 "bar": None,
             }
-            first = _first_valid_stock_bar(bars, start, end)
+            if last_attempt is None or int(attempt.get("returned_bar_count") or 0) >= int(last_attempt.get("returned_bar_count") or 0):
+                last_attempt = attempt
+            first = _first_valid_stock_bar(bars, start, end, require_exact_start=require_exact_start)
             if first is None:
                 continue
             quality = "OK" if interval == "1m" else "DEGRADED_5M"
             return {
                 "ok": True,
-                "price": first.ask,
+                "price": first.close,
                 "timestamp": first.ts.astimezone(timezone.utc).isoformat(),
                 "provider": payload["provider"],
                 "bar_size": interval,
@@ -1393,7 +1814,11 @@ def _basis_quotes_for_stock_bar_evaluation(
 
 def _stock_open_attempts(session_date, requested_anchor: str, *, allow_fallback: bool = True) -> list[tuple[str, Any]]:
     if not allow_fallback:
-        return [(requested_anchor, session_date)]
+        for offset in range(0, 6):
+            day = session_date + timedelta(days=offset)
+            if _is_us_equity_session_date(day):
+                return [(requested_anchor, day)]
+        return []
     anchor_order = {
         "overnight": ["overnight", "premarket", "regular_open"],
         "premarket": ["premarket", "regular_open"],
@@ -1402,7 +1827,7 @@ def _stock_open_attempts(session_date, requested_anchor: str, *, allow_fallback:
     attempts: list[tuple[str, Any]] = []
     for offset in range(0, 6):
         day = session_date + timedelta(days=offset)
-        if day.weekday() >= 5:
+        if not _is_us_equity_session_date(day):
             continue
         for anchor_name in anchor_order:
             attempts.append((anchor_name, day))
@@ -1454,11 +1879,19 @@ def _fetch_stock_open_bars(
     return {"bars": bars, "provider": provider_name, "returned_bar_count": len(rows)}
 
 
-def _first_valid_stock_bar(bars: list[BrokerOvernightBar], start: datetime, end: datetime) -> BrokerOvernightBar | None:
+def _first_valid_stock_bar(
+    bars: list[BrokerOvernightBar],
+    start: datetime,
+    end: datetime,
+    *,
+    require_exact_start: bool = False,
+) -> BrokerOvernightBar | None:
     start_utc = start.astimezone(timezone.utc)
     end_utc = end.astimezone(timezone.utc)
     for bar in sorted(bars, key=lambda item: item.ts):
-        if start_utc <= bar.ts < end_utc and bar.bid > 0 and bar.ask > 0 and bar.ask >= bar.bid:
+        if require_exact_start and bar.ts != start_utc:
+            continue
+        if start_utc <= bar.ts < end_utc and bar.bid > 0 and bar.ask > 0 and bar.ask >= bar.bid and bar.close is not None and bar.close > 0:
             return bar
     return None
 
@@ -1764,6 +2197,39 @@ def _premium_pct(price: float | None, anchor_price: float | None) -> float | Non
     if price is None or anchor_price is None or anchor_price <= 0:
         return None
     return (price - anchor_price) / anchor_price * 100.0
+
+
+def _change_pct(price: float | None, base_price: float | None) -> float | None:
+    if price is None or base_price is None or base_price <= 0:
+        return None
+    return (price / base_price - 1.0) * 100.0
+
+
+def _capture_pct(afterhours_close: float | None, weekend_max: float | None, overnight_close: float | None) -> float | None:
+    if afterhours_close is None or weekend_max is None or overnight_close is None:
+        return None
+    denominator = weekend_max - afterhours_close
+    if denominator == 0:
+        return None
+    return (overnight_close - afterhours_close) / denominator * 100.0
+
+
+def _weekend_chain_quality(
+    *,
+    mapping_confidence: str,
+    friday_afterhours_close: float | None,
+    binance_weekend_max: float | None,
+    overnight_first_1m_close: float | None,
+) -> str:
+    if str(mapping_confidence or "").strip().lower() != "confirmed":
+        return "OBSERVE_ONLY"
+    if binance_weekend_max is None or binance_weekend_max <= 0:
+        return "CONTRACT_MISSING"
+    if friday_afterhours_close is None or friday_afterhours_close <= 0:
+        return "NO_AFTERHOURS_CLOSE"
+    if overnight_first_1m_close is None or overnight_first_1m_close <= 0:
+        return "MISSING_OVERNIGHT_FIRST_1M"
+    return "OK"
 
 
 def _anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[str, dict[str, Any]]) -> dict[str, Any]:
