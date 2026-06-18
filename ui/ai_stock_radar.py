@@ -163,12 +163,12 @@ def _render_list(tickers: list[str], selected: str, source: str) -> None:
         (
             f"{summary_html}"
             '<section class="ai-radar-list-card">'
-            f'<div class="ai-radar-section-head"><strong>Radar 研究入口</strong><span>{len(visible_rows)}/{len(filtered_rows)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
+            f'<div class="ai-radar-section-head"><strong>买区研究入口</strong><span>{len(visible_rows)}/{len(filtered_rows)} 只｜来源：{escape(source)}｜只读缓存，不自动刷新</span></div>'
             '<p class="ai-radar-list-note">研究入口按接近买区、等待确认、等待回落和数据质量排序；完整评分、区间判断和风险依据请进入单股研报页。</p>'
             '<div class="ai-radar-table-wrap">'
             '<table class="ai-radar-table">'
             "<thead><tr>"
-            "<th>Ticker</th><th>当前价</th><th>Radar 状态</th><th>研究优先级</th><th>距买区</th><th>下一触发</th><th>买区置信度</th><th>数据质量</th><th>更新时间</th><th>查看</th>"
+            "<th>股票</th><th>当前价</th><th>买区状态</th><th>研究优先级</th><th>距买区</th><th>下一触发</th><th>买区置信度</th><th>数据质量</th><th>更新时间</th><th>查看</th>"
             "</tr></thead>"
             f"<tbody>{body}</tbody>"
             "</table>"
@@ -262,7 +262,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     perf.add("action_fusion / trade_conclusion 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     stage_start = time.perf_counter()
     portfolio_context = _portfolio_context(report, row or {}, action_result, buy_zone_context)
-    perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用 Action Fusion snapshot")
+    perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用旧融合提示快照")
     buy_zone_display = build_buy_zone_display(
         buy_zone_context,
         {

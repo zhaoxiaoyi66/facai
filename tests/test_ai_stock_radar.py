@@ -1212,8 +1212,8 @@ def test_ai_radar_list_page_is_research_entry_not_backend_table() -> None:
     row_source = inspect.getsource(radar_ui._list_row_html)
     href_source = inspect.getsource(radar_ui._report_view_href)
 
-    assert "Radar 研究入口" in source
-    assert "Radar" in source
+    assert "买区研究入口" in source
+    assert "买区状态" in source
     assert "研究优先级" in source
     assert "距买区" in source
     assert "下一触发" in source
