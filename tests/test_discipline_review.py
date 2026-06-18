@@ -18,8 +18,11 @@ from data.discipline_review import (
     DisciplineReviewStore,
     build_discipline_review_stats,
     build_mistake_review_summary,
+    build_period_mistake_review_summary,
     build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
+    build_rule_library_from_mistakes,
+    build_trade_review_conclusion,
     default_period_dates,
     get_current_account_nav,
 )
@@ -203,6 +206,67 @@ def test_mistake_reviews_store_usd_loss_and_impact_summary_separately() -> None:
         assert saved["impact_summary"] == "卖飞后上涨约 10%，但金额字段只记录 USD 数字。"
 
 
+def test_quick_mistake_tags_are_supported_by_store() -> None:
+    assert set(discipline_review.QUICK_MISTAKE_TAG_OPTIONS).issubset(set(discipline_review.MISTAKE_TAG_OPTIONS))
+
+
+def test_mistake_review_allows_zero_loss_and_quick_fields() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        saved = store.save_mistake_review(
+            {
+                "review_date": "2026-06-18",
+                "scene_or_symbol": "NOW 买早",
+                "loss_amount_usd": 0,
+                "mistake_tags": ["买早", "小仓乱买"],
+                "reflection": "没等承接确认就动手。",
+                "next_defense": "进入候选区也要等承接信号。",
+            }
+        )
+
+        assert saved["loss_amount"] == 0
+        assert saved["mistake_tags"] == ["买早", "小仓乱买"]
+        assert saved["reflection"] == "没等承接确认就动手。"
+        assert saved["next_defense"] == "进入候选区也要等承接信号。"
+
+
+def test_recent_mistake_rows_only_returns_latest_five() -> None:
+    rows = [
+        {"id": index, "review_date": f"2026-06-{10 + index:02d}", "scene_or_symbol": f"错误 {index}"}
+        for index in range(1, 7)
+    ]
+
+    recent = discipline_review._recent_mistake_rows(rows, limit=5)
+
+    assert [row["id"] for row in recent] == [6, 5, 4, 3, 2]
+
+
+def test_old_spacex_mistake_renders_as_card_and_next_defense() -> None:
+    row = {
+        "id": 1,
+        "review_date": "2026-06-16",
+        "scene_or_symbol": "SPACEX 空单",
+        "loss_amount": 800,
+        "mistake_tags": ["没设止损", "没设止盈", "忘记持仓", "隔夜暴露"],
+        "reflection": "空强势股票太弱智了，明知道他强，还空，不是找爹我吗",
+        "next_defense": "不能空强势标的",
+        "review_status": "已记录",
+    }
+
+    card_html = discipline_review._mistake_card_html(row)
+    rules = discipline_review._next_defense_rules([row], limit=5)
+    rules_html = discipline_review._next_defense_cards_html(rules)
+
+    assert "2026-06-16 · SPACEX 空单" in card_html
+    assert "$800.00" in card_html
+    assert "没设止盈" in card_html
+    assert "空强势股票太弱智了" in card_html
+    assert "不能空强势标的" in card_html
+    assert rules[0]["rule_text"] == "不能空强势标的"
+    assert "来源：2026-06-16 · SPACEX 空单" in rules_html
+
+
 def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None:
     rows = [
         {"review_date": "2026-06-16", "loss_amount": 100, "mistake_tags": ["没设止损"], "review_status": "已记录"},
@@ -221,6 +285,41 @@ def test_mistake_review_summary_counts_recent_loss_and_repeated_errors() -> None
     assert summary["most_common_mistake_type"] == "没设止损"
     assert summary["unruled_count"] == 3
     assert summary["repeated_mistake_types"] == ["没设止损"]
+
+
+def test_trade_review_period_summary_conclusion_and_rule_library() -> None:
+    rows = [
+        {
+            "review_date": "2026-06-16",
+            "scene_or_symbol": "SPACEX空单",
+            "loss_amount": 800,
+            "mistake_tags": ["没设止损", "忘记持仓"],
+            "review_status": "已记录",
+            "next_defense": "不能空强势标的",
+        },
+        {
+            "review_date": "2026-06-01",
+            "scene_or_symbol": "旧记录",
+            "loss_amount": 200,
+            "mistake_tags": ["怕错过"],
+            "review_status": "已形成规则",
+            "improvement_rule": "追高前先等回踩",
+        },
+    ]
+
+    summary = build_period_mistake_review_summary(rows, start_date="2026-06-10", end_date="2026-06-17")
+    conclusion = build_trade_review_conclusion(profit_amount=-1200, return_rate=-0.01, mistake_summary=summary)
+    rules = build_rule_library_from_mistakes(rows)
+
+    assert summary["mistake_count"] == 1
+    assert summary["loss_amount"] == 800
+    assert summary["most_common_mistake_type"] == "忘记持仓"
+    assert summary["unclosed_rule_count"] == 1
+    assert "本期亏损 $1,200.00" in conclusion["summary"]
+    assert "下次防线：不能空强势标的" in conclusion["summary"]
+    assert rules[0]["rule_text"] == "不能空强势标的"
+    assert rules[1]["rule_text"] == "追高前先等回踩"
+    assert rules[0]["status"] == "待验证"
 
 
 def test_periodic_return_reviews_calculate_profit_and_return_rate() -> None:
@@ -527,44 +626,40 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
 
     assert "交易错题本" in source
-    assert "周期收益复盘" in source
-    assert "编辑原则" in source
-    assert "新增原则" in source
-    assert "principle-rule-card" in source
-    assert "个人纪律备忘，不参与评分，也不阻止交易。" in source
-    assert "归档这条错误" in source
+    assert "记录每一次犯错，把亏损变成下一次防线。" in source
+    assert "错题总数" in source
+    assert "最近 30 天错题" in source
+    assert "最近 30 天损失" in source
+    assert "未闭环防线" in source
+    assert "快速记录一次错误" in source
+    assert "收进错题本" in source
+    assert "犯错行为" in source
+    assert "一句话反思" in source
+    assert "补充详细复盘" in source
+    assert "当时情绪" in source
+    assert "是否违反原计划" in source
+    assert "是否需要交易前提醒" in source
+    assert "更多错误类型" in source
+    assert "最近错题" in source
+    assert "默认只显示最近 5 条" in source
+    assert "下次防线" in source
+    assert "高级统计 / 月度复盘" in source
     assert "周期与数据源" in source
     assert "收益结算" in source
-    assert "交易复盘" in source
-    assert "历史记录" in source
+    assert "周期收益结算" in source
+    assert "本期复盘结论" in source
+    assert "当前原则：" in source
     assert "保存本期复盘" in source
-    assert "读取账户净资产" in source
-    assert "保存当前快照" in source
-    assert "用上期末值作为期初" in source
-    assert "未找到账户净资产。请保存当前快照，或手动填写期初和期末。" in source
-    assert "periodic-status" in source
-    assert "periodic-settlement-bar" in source
-    assert "待计算" in source
-    assert "已读取账户净资产" in source
-    assert "当前持仓汇总" in source
-    assert "上一条复盘" in source
     assert "标的 / 场景" in source
-    assert "错误档案" in source
-    assert "错误复盘" in source
-    assert "纠偏规则" in source
     assert "损失金额" in source
     assert "单位：USD" in source
     assert "结果 / 影响" in source
-    assert "只看有损失金额的记录" in source
-    assert "最近30天损失金额" in source
-    assert "选择错误类型" in source
     assert "事件经过" in source
-    assert "核心反思" in source
     assert "下次防线" in source
-    assert "这次交易错误是怎么发生的？我当时做了什么？" in source
-    assert "这次错误造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？" in source
-    assert "真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？" in source
-    assert "下次遇到类似情况，必须执行哪条规则？" in source
+    assert "已收进错题本。重点不是责备自己，而是下次别重复。" in source
+    assert "这次错误已经沉淀为下次防线。" in source
+    assert "还没有错题。不是为了证明自己没错，而是把每次失误都留成证据。" in source
+    assert "记录错题后，系统会从你的反思里沉淀下次防线。" in source
     assert "_render_self_check_questions" not in source
     assert "SELF_CHECK_QUESTIONS" not in source
     assert "交易前纪律提醒" not in source
@@ -583,28 +678,31 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "损失金额 / 影响" not in source
     assert "原则文本" not in source
     assert "例如：800U、亏损500美元、卖飞约10%" not in source
-    assert "复盘状态\", MISTAKE_REVIEW_STATUSES" not in source
-    assert "当时操作\", height" not in source
-    assert "结果\", height" not in source
-    assert "改进规则\", height" not in source
     assert "添加错误复盘" not in source
     assert "保存这条错题" not in source
+    assert "归档这条错误" not in source
     assert "保存标签" not in source
     assert "选择交易记录" not in source
     assert "交易纪律标签" not in source
     assert "通过 / 未通过" not in source
     assert "门禁" not in source
 
-    render_body = source[source.index("def render(") : source.index("def _render_principles_card")]
-    assert render_body.index("_render_principles_card") < render_body.index("_render_mistake_reviews")
-    assert render_body.index("_render_mistake_reviews") < render_body.index("_render_periodic_return_reviews")
-    assert render_body.index("_render_periodic_return_reviews") < render_body.index("_render_portfolio_discipline")
+    render_body = source[source.index("def render(") : source.index("def _render_mistake_overview_strip")]
+    assert render_body.index("_render_mistake_overview_strip") < render_body.index("_render_quick_mistake_capture")
+    assert render_body.index("_render_quick_mistake_capture") < render_body.index("_render_recent_mistakes")
+    assert render_body.index("_render_recent_mistakes") < render_body.index("_render_next_defenses")
+    assert render_body.index("高级统计 / 月度复盘") < render_body.index("_render_periodic_return_reviews")
+    assert render_body.index("_render_periodic_return_reviews") < render_body.index("_render_periodic_review_conclusion")
+    assert render_body.index("_render_periodic_review_conclusion") < render_body.index("_render_rule_library")
+    assert render_body.index("_render_rule_library") < render_body.index("_render_portfolio_discipline")
     assert render_body.index("_render_portfolio_discipline") < render_body.index("_render_discipline_stats")
+    assert render_body.index("_render_discipline_stats") < render_body.index("_render_principles_card")
 
 
 def test_app_registers_discipline_review_page() -> None:
     source = Path("app.py").read_text(encoding="utf-8")
 
     assert "PAGE_DISCIPLINE_REVIEW" in source
+    assert 'PAGE_DISCIPLINE_REVIEW = "交易错题本"' in source
     assert '"discipline-review"' in source
     assert "discipline_review.render" in source

@@ -21,8 +21,11 @@ from data.discipline_review import (
     PERIODIC_RETURN_TYPES,
     DisciplineReviewStore,
     build_mistake_review_summary,
+    build_period_mistake_review_summary,
     build_periodic_return_review_summary,
     build_portfolio_discipline_summary,
+    build_rule_library_from_mistakes,
+    build_trade_review_conclusion,
     default_period_dates,
 )
 from data.portfolio import PortfolioPositionStore
@@ -37,22 +40,321 @@ from data.trade_intent import (
 from ui.theme import render_page_header, render_section_title
 
 
+MISTAKE_TAG_GROUPS = {
+    "交易纪律类": ["未设止损", "忘记持仓", "隔夜暴露", "计划外交易", "情绪交易"],
+    "仓位管理类": ["仓位过大", "加仓过急", "没有分批", "核心仓卖飞", "战术仓失控"],
+    "技术执行类": ["追高", "买早", "卖早", "破位未止损", "未等确认"],
+    "认知偏差类": ["FOMO", "锚定成本", "过度自信", "亏损不认错", "看错逻辑"],
+}
+
+QUICK_MISTAKE_TAG_OPTIONS = [
+    "追高",
+    "买早",
+    "卖飞",
+    "忘记持仓",
+    "没设止损",
+    "仓位过大",
+    "加仓太急",
+    "计划外交易",
+    "FOMO",
+    "空强势标的",
+    "没按计划执行",
+    "小仓乱买",
+]
+
+
 def render(path: Path = CACHE_PATH) -> None:
     _render_styles()
-    render_page_header("纪律复盘", "记录投资原则、组合纪律和交易错误复盘。")
+    render_page_header("交易错题本", "记录每一次犯错，把亏损变成下一次防线。")
     discipline_store = DisciplineReviewStore(path)
-    trade_store = TradeJournalStore(path)
-    position_store = PortfolioPositionStore(path)
-    entries = trade_store.list_entries()
-    positions = position_store.list_active_positions()
-    discipline_store.capture_current_account_equity_snapshot()
+    mistake_rows = discipline_store.list_mistake_reviews()
+    _render_mistake_overview_strip(mistake_rows)
+    _render_quick_mistake_capture(discipline_store)
+    _render_recent_mistakes(mistake_rows)
+    _render_next_defenses(mistake_rows)
 
-    _render_principles_card(discipline_store)
-    _render_mistake_reviews(discipline_store)
-    _render_periodic_return_reviews(discipline_store)
-    with st.expander("组合纪律体检", expanded=False):
-        _render_portfolio_discipline(discipline_store, positions, entries)
-    _render_discipline_stats(discipline_store, entries)
+    with st.expander("高级统计 / 月度复盘", expanded=False):
+        trade_store = TradeJournalStore(path)
+        position_store = PortfolioPositionStore(path)
+        entries = trade_store.list_entries()
+        positions = position_store.list_active_positions()
+        discipline_store.capture_current_account_equity_snapshot()
+        periodic_rows = discipline_store.list_periodic_return_reviews()
+        periodic_context = _build_periodic_return_context(discipline_store, periodic_rows)
+        _render_trade_review_overview(mistake_rows, periodic_context)
+        _render_periodic_return_reviews(discipline_store, periodic_rows, mistake_rows, periodic_context)
+        _render_periodic_review_conclusion(mistake_rows, periodic_context)
+        _render_rule_library(mistake_rows)
+        with st.expander("组合纪律体检", expanded=False):
+            _render_portfolio_discipline(discipline_store, positions, entries)
+        _render_discipline_stats(discipline_store, entries)
+        st.markdown(
+            '<div class="principle-summary-line"><strong>当前原则：</strong>不做空｜只买高信念股｜最多 6 只核心｜现金也是仓位｜不参与感受型小仓</div>',
+            unsafe_allow_html=True,
+        )
+        with st.expander("投资原则", expanded=False):
+            _render_principles_card(discipline_store)
+
+
+def _render_mistake_overview_strip(rows: list[dict[str, Any]]) -> None:
+    summary = build_mistake_review_summary(rows)
+    total = int(summary.get("total_count") or 0)
+    recent = int(summary.get("recent_30_count") or 0)
+    recent_loss = float(summary.get("recent_30_loss_amount") or 0)
+    unclosed = int(summary.get("unruled_count") or 0)
+    items = [
+        ("错题总数", str(total)),
+        ("最近 30 天错题", str(recent)),
+        ("最近 30 天损失", f"${recent_loss:,.2f}" if recent_loss > 0 else "无损失记录"),
+        ("未闭环防线", str(unclosed)),
+    ]
+    st.markdown(_mistake_overview_strip_html(items), unsafe_allow_html=True)
+
+
+def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
+    render_section_title("快速记录一次错误", "30 秒把错误收进错题本，重点是写下下一次怎么防。")
+    with st.form("mistake-review-form", clear_on_submit=True):
+        cols = st.columns([1, 2.4, 1.2])
+        review_date = cols[0].date_input("日期", value=date.today())
+        scene_or_symbol = cols[1].text_input(
+            "标的 / 场景",
+            placeholder="例如：SPACEX 空单、NOW 买早、NVDA 卖飞",
+        )
+        loss_amount_usd = cols[2].number_input("损失金额", min_value=0.0, value=0.0, step=10.0, format="%.2f")
+        cols[2].caption("单位：USD，可填 0")
+        mistake_tags = _render_quick_mistake_tag_inputs()
+        reflection = st.text_area(
+            "一句话反思",
+            height=72,
+            placeholder="这次真正的问题是什么？",
+        )
+        next_defense = st.text_area(
+            "下次防线",
+            height=72,
+            placeholder="下次遇到类似情况，我必须怎么做？",
+        )
+        trigger_event = ""
+        impact_summary = ""
+        result_text = ""
+        with st.expander("补充详细复盘", expanded=False):
+            trigger_event = st.text_area("事件经过", height=82, placeholder="这件事是怎么发生的？我当时做了什么？")
+            impact_summary = st.text_area("结果 / 影响", height=82, placeholder="造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？")
+            emotion = st.text_input("当时情绪", placeholder="例如：怕错过、急着证明、想扳回")
+            violated_plan = st.checkbox("是否违反原计划", value=False)
+            needs_reminder = st.checkbox("是否需要交易前提醒", value=False)
+            detail_parts = []
+            if emotion.strip():
+                detail_parts.append(f"当时情绪：{emotion.strip()}")
+            detail_parts.append(f"是否违反原计划：{'是' if violated_plan else '否'}")
+            detail_parts.append(f"是否需要交易前提醒：{'是' if needs_reminder else '否'}")
+            result_text = "\n".join(detail_parts)
+
+        submitted = st.form_submit_button("收进错题本", type="primary", width="stretch")
+    if not submitted:
+        return
+    if not str(scene_or_symbol or "").strip():
+        st.error("请先填写标的 / 场景。")
+        return
+    if not str(reflection or "").strip():
+        st.error("请写一句话反思。")
+        return
+    if not str(next_defense or "").strip():
+        st.error("请写下次防线。")
+        return
+    store.save_mistake_review(
+        {
+            "review_date": review_date,
+            "scene_or_symbol": scene_or_symbol,
+            "loss_amount_usd": loss_amount_usd,
+            "impact_summary": impact_summary,
+            "trigger_event": trigger_event,
+            "result_text": result_text,
+            "mistake_tags": mistake_tags,
+            "reflection": reflection,
+            "next_defense": next_defense,
+            "review_status": "已记录",
+        }
+    )
+    st.success("已收进错题本。重点不是责备自己，而是下次别重复。")
+    st.info("这次错误已经沉淀为下次防线。")
+    st.rerun()
+
+
+def _render_quick_mistake_tag_inputs() -> list[str]:
+    quick_options = [tag for tag in QUICK_MISTAKE_TAG_OPTIONS if tag in MISTAKE_TAG_OPTIONS]
+    selected = st.multiselect(
+        "犯错行为",
+        quick_options,
+        placeholder="选择常用错误标签",
+        key="quick-mistake-tags",
+    )
+    more_options = [tag for tag in MISTAKE_TAG_OPTIONS if tag not in quick_options]
+    with st.expander("更多错误类型", expanded=False):
+        selected.extend(
+            st.multiselect(
+                "其他错误类型",
+                more_options,
+                placeholder="选择更多错误类型",
+                key="more-mistake-tags",
+            )
+        )
+    return _dedupe_text(selected)
+
+
+def _render_recent_mistakes(rows: list[dict[str, Any]]) -> None:
+    render_section_title("最近错题", "默认只显示最近 5 条，详情按需展开。")
+    recent = _recent_mistake_rows(rows, limit=5)
+    if not recent:
+        st.info("还没有错题。不是为了证明自己没错，而是把每次失误都留成证据。")
+        return
+    for row in recent:
+        st.markdown(_mistake_card_html(row), unsafe_allow_html=True)
+        with st.expander(f"查看详情 · {_scene_or_symbol(row)}", expanded=False):
+            st.markdown(_mistake_detail_html(row), unsafe_allow_html=True)
+
+
+def _render_next_defenses(rows: list[dict[str, Any]]) -> None:
+    render_section_title("下次防线", "从错题里的下次防线提取，先做复盘提醒，不接入交易拦截。")
+    rules = _next_defense_rules(rows, limit=5)
+    if not rules:
+        st.info("记录错题后，系统会从你的反思里沉淀下次防线。")
+        return
+    st.markdown(_next_defense_cards_html(rules), unsafe_allow_html=True)
+
+
+def _recent_mistake_rows(rows: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("review_date") or ""),
+            str(row.get("created_at") or ""),
+            int(row.get("id") or 0),
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def _next_defense_rules(rows: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    return build_rule_library_from_mistakes(_recent_mistake_rows(rows, limit=max(limit * 3, limit)))[:limit]
+
+
+def _mistake_overview_strip_html(items: list[tuple[str, str]]) -> str:
+    body = "".join(
+        f'<div class="mistake-strip-item"><span>{escape(label)}</span><strong>{escape(value)}</strong></div>'
+        for label, value in items
+    )
+    return f'<section class="mistake-overview-strip">{body}</section>'
+
+
+def _mistake_card_html(row: dict[str, Any]) -> str:
+    tags = " / ".join(row.get("mistake_tags") or []) or "未填写"
+    return f"""
+    <section class="mistake-card">
+      <div class="mistake-card-head">{escape(str(row.get('review_date') or ''))} · {escape(_scene_or_symbol(row))}</div>
+      <div class="mistake-card-meta">错因：{escape(tags)}</div>
+      <div class="mistake-card-meta">损失：{escape(_loss_amount_text(row))}</div>
+      <p><strong>一句话反思：</strong>{escape(str(row.get('reflection') or '未记录'))}</p>
+      <p><strong>下次防线：</strong>{escape(_mistake_next_defense(row))}</p>
+    </section>
+    """
+
+
+def _next_defense_cards_html(rules: list[dict[str, Any]]) -> str:
+    body = "".join(
+        f"""
+        <article class="next-defense-card">
+          <div class="next-defense-label">规则</div>
+          <strong>{escape(str(rule.get('rule_text') or rule.get('action') or '未记录'))}</strong>
+          <p>来源：{escape(str(rule.get('source') or '历史错题'))}</p>
+          <p>最近触发：{escape(str(rule.get('last_trigger_date') or '未记录'))}</p>
+          <span>{escape(str(rule.get('status') or '待验证'))}</span>
+        </article>
+        """
+        for rule in rules
+    )
+    return f'<section class="next-defense-grid">{body}</section>'
+
+
+def _build_periodic_return_context(store: DisciplineReviewStore, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    editing_id = st.session_state.get("periodic-return-edit-id")
+    editing_row = store.get_periodic_return_review(int(editing_id)) if editing_id else None
+    state = _prepare_periodic_return_form_state(store, rows, editing_row)
+    meta = dict(state["meta"])
+    start_date = _date_value(st.session_state.get(state["start_date_key"]), date.today())
+    end_date = _date_value(st.session_state.get(state["end_date_key"]), start_date)
+    starting_equity = _parse_amount_text(st.session_state.get(state["starting_equity_key"]))
+    ending_equity = _parse_amount_text(st.session_state.get(state["ending_equity_key"]))
+    deposit_amount = _parse_amount_text(st.session_state.get(state["deposit_key"]), default=0.0)
+    withdrawal_amount = _parse_amount_text(st.session_state.get(state["withdrawal_key"]), default=0.0)
+    profit = None if starting_equity is None or ending_equity is None else ending_equity - starting_equity - deposit_amount + withdrawal_amount
+    return_rate = None if profit is None or starting_equity is None or starting_equity <= 0 else profit / starting_equity
+    return {
+        "editing_row": editing_row,
+        "state": state,
+        "meta": meta,
+        "period_type": st.session_state.get(state["period_type_key"]) or PERIODIC_RETURN_TYPES[0],
+        "start_date": start_date,
+        "end_date": end_date,
+        "starting_equity": starting_equity,
+        "ending_equity": ending_equity,
+        "deposit_amount": deposit_amount,
+        "withdrawal_amount": withdrawal_amount,
+        "profit": round(profit, 2) if profit is not None else None,
+        "return_rate": return_rate,
+    }
+
+
+def _render_trade_review_overview(mistake_rows: list[dict[str, Any]], context: dict[str, Any]) -> None:
+    start_date = context["start_date"]
+    end_date = context["end_date"]
+    mistake_summary = build_period_mistake_review_summary(mistake_rows, start_date=start_date, end_date=end_date)
+    starting_equity = context.get("starting_equity")
+    ending_equity = context.get("ending_equity")
+    profit = context.get("profit")
+    return_rate = context.get("return_rate")
+    cards = [
+        ("期初净资产", _money(starting_equity) if starting_equity is not None else "缺期初快照", _field_source_caption(context["meta"], "starting")),
+        ("期末净资产", _money(ending_equity) if ending_equity is not None else "缺期末净资产", _field_source_caption(context["meta"], "ending")),
+        ("本期收益", _profit_text(profit) if profit is not None else "待结算", _calculation_blocker_text(starting_equity, ending_equity)),
+        ("本期收益率", _return_rate_text(return_rate) if return_rate is not None else "待结算", "按期初净资产计算"),
+        (
+            "本期错误损失",
+            _loss_amount_summary_text(mistake_summary.get("loss_amount")),
+            f"{int(mistake_summary.get('mistake_count') or 0)} 次错误",
+        ),
+        ("未闭环规则", str(int(mistake_summary.get("unclosed_rule_count") or 0)), "待形成防线"),
+    ]
+    render_section_title("本期交易复盘总览", f"{context['period_type']}｜{start_date.isoformat()} 至 {end_date.isoformat()}")
+    st.markdown(_card_grid_html(cards), unsafe_allow_html=True)
+
+
+def _render_periodic_review_conclusion(mistake_rows: list[dict[str, Any]], context: dict[str, Any]) -> None:
+    mistake_summary = build_period_mistake_review_summary(
+        mistake_rows,
+        start_date=context["start_date"],
+        end_date=context["end_date"],
+    )
+    conclusion = build_trade_review_conclusion(
+        profit_amount=context.get("profit"),
+        return_rate=context.get("return_rate"),
+        mistake_summary=mistake_summary,
+    )
+    render_section_title("本期复盘结论", "自动汇总当前周期内的收益、错误和下一条防线。")
+    st.markdown(_review_conclusion_html(conclusion, mistake_summary), unsafe_allow_html=True)
+
+
+def _render_rule_library(rows: list[dict[str, Any]]) -> None:
+    render_section_title("规则库 / 下次防线", "从错题本里的下次防线提取，先做复盘提醒，不接入交易拦截。")
+    rules = build_rule_library_from_mistakes(rows)
+    st.markdown(_rule_library_html(rules), unsafe_allow_html=True)
+
+
+def _calculation_blocker_text(starting_equity: float | None, ending_equity: float | None) -> str:
+    if starting_equity is None:
+        return "缺期初快照"
+    if ending_equity is None:
+        return "缺期末净资产"
+    return "已可计算"
 
 
 def _render_principles_card(store: DisciplineReviewStore) -> None:
@@ -175,12 +477,11 @@ def _render_portfolio_discipline(store: DisciplineReviewStore, positions: list[d
                 st.rerun()
 
 
-def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
+def _render_mistake_reviews(store: DisciplineReviewStore, rows: list[dict[str, Any]]) -> None:
     render_section_title(
-        "交易错题本",
+        "本期错误归因 / 交易错题本",
         "记录每一次不该发生的交易错误。重点不是责备自己，而是把错误沉淀成下一次的防线。",
     )
-    rows = store.list_mistake_reviews()
     summary = build_mistake_review_summary(rows)
     st.markdown(_mistake_summary_html(summary), unsafe_allow_html=True)
     repeated = summary.get("repeated_mistake_types") or []
@@ -188,20 +489,30 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
         st.warning(f"最近重复出现：{'、'.join(repeated)}，建议把它写成明确规则。")
 
     with st.form("mistake-review-form", clear_on_submit=True):
-        st.markdown("#### 错误档案")
-        cols = st.columns([1, 2, 2])
+        st.markdown("#### 快速记录一次错误")
+        cols = st.columns([1, 2.2, 1.4])
         review_date = cols[0].date_input("日期", value=date.today())
         scene_or_symbol = cols[1].text_input("标的 / 场景", placeholder="例如：SPACX 空单、NOK 清仓、NVDA 追高")
         loss_amount_usd = cols[2].number_input("损失金额", min_value=0.0, value=0.0, step=10.0, format="%.2f")
         cols[2].caption("单位：USD")
-        mistake_tags = st.multiselect("错误类型，多选", MISTAKE_TAG_OPTIONS, placeholder="选择错误类型")
-        st.markdown("#### 错误复盘")
-        trigger_event = st.text_area("事件经过", height=82, placeholder="这次交易错误是怎么发生的？我当时做了什么？")
-        impact_summary = st.text_area("结果 / 影响", height=82, placeholder="这次错误造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？")
-        reflection = st.text_area("核心反思", height=82, placeholder="真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？")
-        st.markdown("#### 纠偏规则")
-        next_defense = st.text_area("下次防线", height=82, placeholder="下次遇到类似情况，必须执行哪条规则？")
-        if st.form_submit_button("归档这条错误", width="stretch"):
+        mistake_tags = _render_mistake_tag_inputs()
+        quick_reflection = st.text_area(
+            "一句话反思",
+            height=68,
+            placeholder="用一句话写清楚真正的问题，例如：不能空强势标的。",
+        )
+        trigger_event = ""
+        impact_summary = ""
+        detailed_reflection = ""
+        next_defense = ""
+        archive_as_rule = False
+        with st.expander("展开详细复盘", expanded=False):
+            trigger_event = st.text_area("事件经过", height=82, placeholder="这次交易错误是怎么发生的？我当时做了什么？")
+            impact_summary = st.text_area("结果 / 影响", height=82, placeholder="这次错误造成了什么结果？亏损、卖飞、错过机会，还是破坏了纪律？")
+            detailed_reflection = st.text_area("核心反思", height=82, placeholder="真正的问题是什么？是判断错了，还是流程、纪律、仓位、情绪出了问题？")
+            next_defense = st.text_area("下次防线", height=82, placeholder="下次遇到类似情况，必须执行哪条规则？")
+            archive_as_rule = st.checkbox("是否归档为规则", value=False)
+        if st.form_submit_button("记录这次错误", width="stretch"):
             store.save_mistake_review(
                 {
                     "review_date": review_date,
@@ -210,43 +521,49 @@ def _render_mistake_reviews(store: DisciplineReviewStore) -> None:
                     "impact_summary": impact_summary,
                     "trigger_event": trigger_event,
                     "mistake_tags": mistake_tags,
-                    "reflection": reflection,
+                    "reflection": detailed_reflection or quick_reflection,
                     "next_defense": next_defense,
+                    "review_status": "已形成规则" if archive_as_rule else "已记录",
                 }
             )
-            st.success("错误已归档。")
+            st.success("错误已记录。")
             st.rerun()
 
+    st.markdown("#### 错题本列表")
     filtered = _filter_mistake_reviews(rows)
     st.markdown(_mistake_table_html(filtered), unsafe_allow_html=True)
     if filtered:
-        options = [int(row["id"]) for row in filtered]
-        selected_id = st.selectbox("查看记录详情", options, format_func=lambda value: _mistake_option_label(filtered, value))
-        detail = next((row for row in filtered if int(row.get("id") or 0) == int(selected_id)), None)
-        if detail:
-            st.markdown(_mistake_detail_html(detail), unsafe_allow_html=True)
+        with st.expander("查看错题详情", expanded=False):
+            options = [int(row["id"]) for row in filtered]
+            selected_id = st.selectbox("选择错误记录", options, format_func=lambda value: _mistake_option_label(filtered, value))
+            detail = next((row for row in filtered if int(row.get("id") or 0) == int(selected_id)), None)
+            if detail:
+                st.markdown(_mistake_detail_html(detail), unsafe_allow_html=True)
 
 
-def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
+def _render_periodic_return_reviews(
+    store: DisciplineReviewStore,
+    rows: list[dict[str, Any]],
+    mistake_rows: list[dict[str, Any]],
+    context: dict[str, Any],
+) -> None:
     render_section_title(
-        "周期收益复盘",
+        "周期收益结算",
         "每周末或每月末记录一次账户表现，把收益、错误和下期规则沉淀下来。",
     )
-    rows = store.list_periodic_return_reviews()
     summary = build_periodic_return_review_summary(rows)
     st.markdown(_periodic_summary_html(summary), unsafe_allow_html=True)
 
-    editing_id = st.session_state.get("periodic-return-edit-id")
-    editing_row = store.get_periodic_return_review(int(editing_id)) if editing_id else None
-    state = _prepare_periodic_return_form_state(store, rows, editing_row)
-    meta = dict(state["meta"])
+    editing_row = context["editing_row"]
+    state = context["state"]
+    meta = dict(context["meta"])
 
     st.markdown("#### 1. 周期与数据源")
     control_cols = st.columns([1.1, 1, 1])
     control_cols[0].selectbox("复盘类型", PERIODIC_RETURN_TYPES, key=state["period_type_key"])
     control_cols[1].date_input("开始日期", key=state["start_date_key"])
     control_cols[2].date_input("结束日期", key=state["end_date_key"])
-    action_cols = st.columns([1.15, 1.2, 1, 2.65])
+    action_cols = st.columns([1.2, 1.2, 1.2, 1.2, 2.2])
     if action_cols[0].button("读取账户净资产", type="primary", key=f"{state['prefix']}-reload", width="stretch"):
         _apply_periodic_return_prefill(store, state, rows, editing_row)
         st.rerun()
@@ -284,9 +601,13 @@ def _render_periodic_return_reviews(store: DisciplineReviewStore) -> None:
                 "text": "未找到组合持仓净资产，也未找到账户快照。请先在组合持仓页确认账户净资产是否已保存。",
             }
         st.rerun()
+    if action_cols[3].button("一键生成本期复盘", key=f"{state['prefix']}-auto-review", width="stretch"):
+        _apply_periodic_auto_review(store, state, rows, editing_row, mistake_rows)
+        st.rerun()
 
     if not _render_periodic_feedback(state):
         st.markdown(_periodic_status_html(_periodic_source_note(meta), "muted"), unsafe_allow_html=True)
+    st.caption("收益公式：本期收益 = 期末净资产 - 期初净资产 - 本期入金 + 本期出金")
 
     st.markdown("#### 2. 收益结算")
     equity_cols = st.columns(4)
@@ -440,6 +761,43 @@ def _filter_mistake_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _render_mistake_tag_inputs() -> list[str]:
+    selected: list[str] = []
+    cols = st.columns(2)
+    for index, (group_name, options) in enumerate(MISTAKE_TAG_GROUPS.items()):
+        with cols[index % 2]:
+            values = st.multiselect(
+                group_name,
+                options,
+                placeholder="选择错误类型",
+                key=f"mistake-tags-{group_name}",
+            )
+            selected.extend(values)
+    legacy_options = [option for option in MISTAKE_TAG_OPTIONS if option not in {item for group in MISTAKE_TAG_GROUPS.values() for item in group}]
+    with st.expander("旧标签兼容", expanded=False):
+        selected.extend(
+            st.multiselect(
+                "旧错误类型",
+                legacy_options,
+                placeholder="选择旧记录标签",
+                key="mistake-tags-legacy",
+            )
+        )
+    return _dedupe_text(selected)
+
+
+def _dedupe_text(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) -> None:
     render_section_title("纪律统计", "统计来自交易日志和交易意图记录；不要求手动给交易打标签。")
     periodic_summary = build_periodic_return_review_summary(store.list_periodic_return_reviews())
@@ -448,8 +806,8 @@ def _render_discipline_stats(store: DisciplineReviewStore, entries: list[dict]) 
         ("月复盘记录数", str(periodic_summary.get("monthly_count") or 0), "手动记录"),
         ("最近4周累计收益", _profit_text(periodic_summary.get("recent_4_week_profit")), "周复盘口径"),
         ("最近3个月累计收益", _profit_text(periodic_summary.get("recent_3_month_profit")), "月复盘口径"),
-        ("最大单周亏损", _profit_text(periodic_summary.get("max_weekly_loss")), "暂无记录则不显示亏损"),
-        ("最大单月亏损", _profit_text(periodic_summary.get("max_monthly_loss")), "暂无记录则不显示亏损"),
+        ("最大单周亏损", _profit_text(periodic_summary.get("max_weekly_loss")), "没有亏损记录则不显示亏损"),
+        ("最大单月亏损", _profit_text(periodic_summary.get("max_monthly_loss")), "没有亏损记录则不显示亏损"),
     ]
     st.markdown(_card_grid_html(periodic_cards), unsafe_allow_html=True)
     intent_reviews = TradeIntentStore(store.path).list_intents()
@@ -568,12 +926,52 @@ def _card_grid_html(cards: list[tuple[str, str, str]]) -> str:
     return f'<section class="discipline-card-grid">{body}</section>'
 
 
+def _review_conclusion_html(conclusion: dict[str, str], mistake_summary: dict[str, Any]) -> str:
+    items = [
+        ("本期错误次数", f"{int(mistake_summary.get('mistake_count') or 0)} 次"),
+        ("错误损失金额", _loss_amount_summary_text(mistake_summary.get("loss_amount"))),
+        ("最大错误类型", str(mistake_summary.get("most_common_mistake_type") or "本期无错误记录")),
+        ("未闭环规则", f"{int(mistake_summary.get('unclosed_rule_count') or 0)} 条"),
+    ]
+    metrics = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in items
+    )
+    return f"""
+    <section class="review-conclusion-card">
+      <p>{escape(str(conclusion.get("summary") or ""))}</p>
+      <div>{metrics}</div>
+    </section>
+    """
+
+
+def _rule_library_html(rules: list[dict[str, Any]]) -> str:
+    if not rules:
+        return '<div class="discipline-empty">当前还没有可提取的下次防线。记录错误时写下“下次防线”后，会自动汇总到这里。</div>'
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(_one_line(rule.get('rule_text'), 42))}</td>"
+        f"<td>{escape(str(rule.get('trigger') or '交易错误复盘'))}</td>"
+        f"<td>{escape(_one_line(rule.get('action'), 42))}</td>"
+        f"<td>{escape(str(rule.get('source') or '历史错误记录'))}</td>"
+        f"<td>{escape(str(rule.get('status') or '待验证'))}</td>"
+        f"<td>{escape(str(rule.get('last_trigger_date') or '未记录'))}</td>"
+        "</tr>"
+        for rule in rules[:80]
+    )
+    return (
+        '<div class="discipline-table-wrap"><table class="discipline-table">'
+        "<thead><tr><th>规则</th><th>触发条件</th><th>执行动作</th><th>来源错误</th><th>状态</th><th>最近触发</th></tr></thead>"
+        f"<tbody>{body}</tbody></table></div>"
+    )
+
+
 def _mistake_summary_html(summary: dict[str, Any]) -> str:
     cards = [
         ("错误记录总数", str(summary.get("total_count") or 0), "全部错题"),
         ("最近30天错误数", str(summary.get("recent_30_count") or 0), "按复盘日期"),
-        ("最近30天损失金额", str(summary.get("recent_30_loss_amount_text") or "暂无记录"), "USD 统计"),
-        ("最常见错误类型", str(summary.get("most_common_mistake_type") or "暂无"), f"{int(summary.get('most_common_mistake_count') or 0)} 次"),
+        ("最近30天损失金额", str(summary.get("recent_30_loss_amount_text") or "最近30天无损失金额"), "USD 统计"),
+        ("最常见错误类型", str(summary.get("most_common_mistake_type") or "本期无错误记录"), f"{int(summary.get('most_common_mistake_count') or 0)} 次"),
         ("未形成规则", str(summary.get("unruled_count") or 0), "建议继续沉淀"),
     ]
     return _card_grid_html(cards)
@@ -581,7 +979,7 @@ def _mistake_summary_html(summary: dict[str, Any]) -> str:
 
 def _mistake_table_html(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<div class="discipline-empty">暂无符合条件的错误复盘记录。</div>'
+        return '<div class="discipline-empty">当前筛选下没有错误复盘记录。</div>'
     body = "".join(
         "<tr>"
         f"<td>{escape(str(row.get('review_date') or ''))}</td>"
@@ -675,13 +1073,13 @@ def _periodic_summary_html(summary: dict[str, Any]) -> str:
         ("本周收益", _profit_with_return(summary.get("current_week_profit"), summary.get("current_week_return")), "周复盘"),
         ("本月收益", _profit_with_return(summary.get("current_month_profit"), summary.get("current_month_return")), "月复盘"),
         ("最近4周累计收益", _profit_text(summary.get("recent_4_week_profit")), "按最近4条周复盘"),
-        ("最近4周最大亏损", _profit_text(summary.get("recent_4_week_max_loss")), "暂无记录则不显示亏损"),
+        ("最近4周最大亏损", _profit_text(summary.get("recent_4_week_max_loss")), "没有亏损记录则不显示亏损"),
     ]
     return _card_grid_html(cards)
 
 
 def _filter_periodic_return_reviews(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    options = ["全部", "周复盘", "月复盘"]
+    options = ["全部", "周复盘", "月复盘", "自定义"]
     selected = st.selectbox("历史记录筛选", options, key="periodic-return-filter")
     if selected == "全部":
         return rows
@@ -689,12 +1087,14 @@ def _filter_periodic_return_reviews(rows: list[dict[str, Any]]) -> list[dict[str
         return [row for row in rows if row.get("period_type") == "周复盘"]
     if selected == "月复盘":
         return [row for row in rows if row.get("period_type") == "月复盘"]
+    if selected == "自定义":
+        return [row for row in rows if row.get("period_type") == "自定义"]
     return rows
 
 
 def _periodic_table_html(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return '<div class="discipline-empty">暂无周期收益复盘记录。保存本期复盘后会显示在这里。</div>'
+        return '<div class="discipline-empty">尚未保存周期收益复盘。保存本期复盘后会显示在这里。</div>'
     body = "".join(
         "<tr>"
         f"<td>{escape(str(row.get('period_type') or ''))}</td>"
@@ -887,6 +1287,46 @@ def _apply_periodic_return_prefill(
     )
     st.session_state[state["reload_key"]] = False
     st.session_state[state["feedback_key"]] = _periodic_reload_feedback(prefill)
+
+
+def _apply_periodic_auto_review(
+    store: DisciplineReviewStore,
+    state: dict[str, Any],
+    rows: list[dict[str, Any]],
+    editing_row: dict[str, Any] | None,
+    mistake_rows: list[dict[str, Any]],
+) -> None:
+    _apply_periodic_return_prefill(store, state, rows, editing_row)
+    start_date = _date_value(st.session_state.get(state["start_date_key"]), date.today())
+    end_date = _date_value(st.session_state.get(state["end_date_key"]), start_date)
+    starting_equity = _parse_amount_text(st.session_state.get(state["starting_equity_key"]))
+    ending_equity = _parse_amount_text(st.session_state.get(state["ending_equity_key"]))
+    deposit_amount = _parse_amount_text(st.session_state.get(state["deposit_key"]), default=0.0)
+    withdrawal_amount = _parse_amount_text(st.session_state.get(state["withdrawal_key"]), default=0.0)
+    profit = None if starting_equity is None or ending_equity is None else ending_equity - starting_equity - deposit_amount + withdrawal_amount
+    return_rate = None if profit is None or starting_equity is None or starting_equity <= 0 else profit / starting_equity
+    mistake_summary = build_period_mistake_review_summary(mistake_rows, start_date=start_date, end_date=end_date)
+    conclusion = build_trade_review_conclusion(
+        profit_amount=round(profit, 2) if profit is not None else None,
+        return_rate=return_rate,
+        mistake_summary=mistake_summary,
+    )
+    if not str(st.session_state.get(state["what_went_wrong_key"]) or "").strip():
+        st.session_state[state["what_went_wrong_key"]] = conclusion["mistake_summary"]
+    if not str(st.session_state.get(state["next_period_rule_key"]) or "").strip():
+        st.session_state[state["next_period_rule_key"]] = conclusion["next_defense"]
+    if not str(st.session_state.get(state["notes_key"]) or "").strip():
+        st.session_state[state["notes_key"]] = conclusion["summary"]
+    if starting_equity is None or ending_equity is None:
+        st.session_state[state["feedback_key"]] = {
+            "level": "warning",
+            "text": f"已生成本期复盘草稿，但{_calculation_blocker_text(starting_equity, ending_equity)}，收益暂时待结算。",
+        }
+        return
+    st.session_state[state["feedback_key"]] = {
+        "level": "success",
+        "text": "已读取账户净资产、汇总本期错误，并生成本期复盘草稿。",
+    }
 
 
 def _periodic_reload_feedback(prefill: dict[str, Any]) -> dict[str, str]:
@@ -1173,11 +1613,11 @@ def _money(value: object) -> str:
 
 def _profit_text(value: object) -> str:
     if value is None or value == "":
-        return "暂无记录"
+        return "未结算"
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return "暂无记录"
+        return "未结算"
     sign = "+" if number > 0 else ""
     return f"{sign}{number:,.2f}"
 
@@ -1194,7 +1634,7 @@ def _return_rate_text(value: object) -> str:
 
 def _profit_with_return(profit: object, return_rate: object) -> str:
     if profit is None:
-        return "暂无记录"
+        return "未结算"
     return f"{_profit_text(profit)} / {_return_rate_text(return_rate)}"
 
 
@@ -1232,7 +1672,15 @@ def _loss_amount_value(row: dict[str, Any]) -> float:
 
 def _loss_amount_text(row: dict[str, Any]) -> str:
     value = _loss_amount_value(row)
-    return f"${value:,.2f}" if value > 0 else "暂无记录"
+    return f"${value:,.2f}" if value > 0 else "未填写"
+
+
+def _loss_amount_summary_text(value: object) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        number = 0.0
+    return f"${number:,.2f}" if number > 0 else "本期无错误记录"
 
 
 def _one_line(value: object, limit: int = 32) -> str:
@@ -1251,6 +1699,7 @@ def _render_styles() -> None:
         .principle-rule-card,
         .dashboard-discipline-card,
         .trade-entry-discipline-hint,
+        .review-conclusion-card,
         .mistake-detail-card {
             border: 1px solid rgba(148,163,184,.24);
             border-radius: 8px;
@@ -1295,6 +1744,17 @@ def _render_styles() -> None:
         .discipline-table th, .discipline-table td { padding: .5rem .58rem; border-bottom: 1px solid rgba(148,163,184,.16); text-align: left; vertical-align: top; }
         .discipline-table th { color: #64748b; background: #f8fafc; }
         .discipline-empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: .9rem; color: #64748b; background: #f8fafc; margin: .7rem 0; }
+        .principle-summary-line {
+            margin: .8rem 0 .4rem; padding: .6rem .75rem; border-radius: 8px;
+            background: #f8fafc; border: 1px solid rgba(148,163,184,.22); color: #475569; font-size: .86rem;
+        }
+        .principle-summary-line strong { color: #0f172a; }
+        .review-conclusion-card { padding: .85rem 1rem; margin: .5rem 0 .9rem; }
+        .review-conclusion-card p { margin: 0 0 .65rem; color: #0f172a; font-weight: 700; line-height: 1.55; }
+        .review-conclusion-card > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+        .review-conclusion-card > div > div { border: 1px solid rgba(148,163,184,.18); border-radius: 8px; padding: .55rem .62rem; background: #f8fafc; }
+        .review-conclusion-card span { display: block; color: #64748b; font-size: .75rem; }
+        .review-conclusion-card strong { display: block; color: #0f172a; margin-top: .1rem; font-size: .95rem; }
         .periodic-status {
             margin: .45rem 0 .75rem; padding: .46rem .65rem; border-radius: 6px;
             font-size: .82rem; color: #475569; background: #f8fafc; border: 1px solid rgba(148,163,184,.22);
@@ -1309,6 +1769,39 @@ def _render_styles() -> None:
         }
         .periodic-settlement-bar strong { color: #0f172a; font-weight: 800; }
         .periodic-settlement-bar em { display: block; color: #64748b; font-size: .76rem; font-style: normal; margin-top: .1rem; }
+        .mistake-overview-strip {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: .5rem; margin: .35rem 0 .85rem;
+        }
+        .mistake-strip-item {
+            border: 1px solid rgba(148,163,184,.22); border-radius: 8px;
+            background: #fff; padding: .58rem .7rem;
+        }
+        .mistake-strip-item span { display:block; color:#64748b; font-size:.76rem; }
+        .mistake-strip-item strong { display:block; color:#0f172a; font-size:1.02rem; margin-top:.08rem; }
+        .mistake-card {
+            border: 1px solid rgba(148,163,184,.22); border-radius: 8px;
+            background: #fff; padding: .78rem .9rem; margin: .58rem 0;
+            box-shadow: 0 10px 22px rgba(15,23,42,.04);
+        }
+        .mistake-card-head { color:#0f172a; font-weight:900; margin-bottom:.28rem; }
+        .mistake-card-meta { color:#64748b; font-size:.82rem; margin:.12rem 0; }
+        .mistake-card p { color:#334155; font-size:.86rem; line-height:1.5; margin:.38rem 0 0; }
+        .next-defense-grid {
+            display:grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap:.62rem; margin:.5rem 0 .9rem;
+        }
+        .next-defense-card {
+            border: 1px solid rgba(59,130,246,.22); border-radius: 8px;
+            background:#f8fbff; padding:.75rem .82rem;
+        }
+        .next-defense-card .next-defense-label { color:#2563eb; font-size:.72rem; font-weight:900; margin-bottom:.22rem; }
+        .next-defense-card strong { display:block; color:#0f172a; line-height:1.45; }
+        .next-defense-card p { margin:.35rem 0 0; color:#64748b; font-size:.8rem; }
+        .next-defense-card span {
+            display:inline-block; margin-top:.45rem; padding:.12rem .42rem; border-radius:999px;
+            color:#1d4ed8; background:#dbeafe; font-size:.72rem; font-weight:800;
+        }
         .mistake-detail-card { padding: .9rem 1rem; margin: .8rem 0; }
         .mistake-detail-card h4 { margin: 0 0 .55rem; color: #0f172a; }
         .mistake-detail-card dl { margin: 0; display: grid; grid-template-columns: 7rem 1fr; gap: .45rem .75rem; }
@@ -1326,8 +1819,11 @@ def _render_styles() -> None:
         @media (max-width: 900px) {
             .principle-rule-grid { grid-template-columns: 1fr; }
             .discipline-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .review-conclusion-card > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .dashboard-discipline-card { display: block; }
             .mistake-detail-card dl { grid-template-columns: 1fr; }
+            .mistake-overview-strip,
+            .next-defense-grid { grid-template-columns: 1fr; }
         }
         </style>
         """,

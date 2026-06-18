@@ -75,13 +75,34 @@ DEFAULT_SETTINGS = {
 MISTAKE_MARKET_TYPES = ["美股", "港股", "币安现货", "币安合约", "其他"]
 
 MISTAKE_TAG_OPTIONS = [
+    "未设止损",
     "没设止损",
     "没设止盈",
     "忘记持仓",
     "隔夜暴露",
+    "计划外交易",
     "无计划开仓",
     "仓位过大",
+    "加仓过急",
+    "加仓太急",
+    "没有分批",
+    "核心仓卖飞",
+    "战术仓失控",
     "情绪交易",
+    "追高",
+    "买早",
+    "卖飞",
+    "卖早",
+    "破位未止损",
+    "未等确认",
+    "FOMO",
+    "空强势标的",
+    "没按计划执行",
+    "小仓乱买",
+    "锚定成本",
+    "过度自信",
+    "亏损不认错",
+    "看错逻辑",
     "怕错过",
     "追涨杀跌",
     "听别人观点交易",
@@ -91,7 +112,7 @@ MISTAKE_TAG_OPTIONS = [
 
 MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
 
-PERIODIC_RETURN_TYPES = ["周复盘", "月复盘"]
+PERIODIC_RETURN_TYPES = ["周复盘", "月复盘", "自定义"]
 
 EQUITY_SOURCE_PORTFOLIO = "当前持仓汇总"
 EQUITY_SOURCE_LEGACY_PORTFOLIO = "持仓记录"
@@ -1034,6 +1055,120 @@ def build_mistake_review_summary(
     }
 
 
+def build_period_mistake_review_summary(
+    rows: list[dict[str, Any]],
+    *,
+    start_date: date | str | None,
+    end_date: date | str | None,
+) -> dict[str, Any]:
+    start = _parse_date(start_date)
+    end = _parse_date(end_date)
+    if start and end and end < start:
+        start, end = end, start
+    period_rows = [
+        row
+        for row in rows
+        if (start is None or (_parse_date(row.get("review_date")) or date.min) >= start)
+        and (end is None or (_parse_date(row.get("review_date")) or date.max) <= end)
+    ]
+    tag_counts = _mistake_tag_counts(period_rows)
+    most_common = sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))
+    loss_amount = sum(_optional_nonnegative_number(row.get("loss_amount")) or 0.0 for row in period_rows)
+    unclosed_count = sum(
+        1 for row in period_rows if str(row.get("review_status") or "") not in {"已形成规则", "已设置防线"}
+    )
+    next_defenses = [
+        _clean_text(row.get("next_defense") or row.get("improvement_rule"))
+        for row in period_rows
+        if _clean_text(row.get("next_defense") or row.get("improvement_rule"))
+    ]
+    return {
+        "rows": period_rows,
+        "mistake_count": len(period_rows),
+        "loss_amount": round(loss_amount, 2),
+        "loss_amount_text": _loss_amount_summary(loss_amount),
+        "most_common_mistake_type": most_common[0][0] if most_common else "",
+        "most_common_mistake_count": most_common[0][1] if most_common else 0,
+        "unclosed_rule_count": unclosed_count,
+        "next_defense": next_defenses[0] if next_defenses else "",
+        "tag_counts": tag_counts,
+    }
+
+
+def build_trade_review_conclusion(
+    *,
+    profit_amount: float | None,
+    return_rate: float | None,
+    mistake_summary: dict[str, Any],
+) -> dict[str, str]:
+    mistake_count = int(mistake_summary.get("mistake_count") or 0)
+    loss_amount = _optional_nonnegative_number(mistake_summary.get("loss_amount")) or 0.0
+    most_common = str(mistake_summary.get("most_common_mistake_type") or "").strip()
+    next_defense = str(mistake_summary.get("next_defense") or "").strip()
+    unclosed_count = int(mistake_summary.get("unclosed_rule_count") or 0)
+
+    if profit_amount is None:
+        profit_text = "本期收益待结算"
+    elif profit_amount > 0:
+        profit_text = f"本期盈利 ${profit_amount:,.2f}"
+    elif profit_amount < 0:
+        profit_text = f"本期亏损 ${abs(profit_amount):,.2f}"
+    else:
+        profit_text = "本期收益持平"
+    if return_rate is not None:
+        profit_text = f"{profit_text}，收益率 {return_rate * 100:+.2f}%"
+
+    if mistake_count <= 0:
+        summary = f"{profit_text}。本期暂未记录交易错误。请确认是否已经完成本期交易复盘。"
+        return {
+            "summary": summary,
+            "mistake_summary": "本期无错误记录。",
+            "next_defense": "继续按计划记录收益、错误和下期规则。",
+        }
+
+    loss_text = f"${loss_amount:,.2f}" if loss_amount > 0 else "未记录明确损失金额"
+    issue_text = f"主要问题是 {most_common}" if most_common else "主要问题待归因"
+    rule_text = f"仍有 {unclosed_count} 条规则未闭环。" if unclosed_count > 0 else "本期错误已形成规则或防线。"
+    defense_text = next_defense or "把本期最大错误写成一条可执行防线。"
+    summary = (
+        f"{profit_text}。本期已记录 {mistake_count} 次交易错误，错误损失 {loss_text}，"
+        f"{issue_text}。{rule_text}下次防线：{defense_text}"
+    )
+    return {
+        "summary": summary,
+        "mistake_summary": f"本期 {mistake_count} 次错误，{issue_text}，错误损失 {loss_text}。",
+        "next_defense": defense_text,
+    }
+
+
+def build_rule_library_from_mistakes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rules: list[dict[str, Any]] = []
+    for row in rows:
+        rule_text = _clean_text(row.get("next_defense") or row.get("improvement_rule"))
+        if not rule_text:
+            continue
+        tags = _parse_json_list(row.get("mistake_tags_json") or row.get("mistake_tags"))
+        source = " · ".join(
+            part
+            for part in [
+                str(row.get("review_date") or "").strip(),
+                str(row.get("scene_or_symbol") or row.get("symbol") or "").strip(),
+            ]
+            if part
+        )
+        rules.append(
+            {
+                "rule_text": rule_text,
+                "trigger": "、".join(tags) if tags else "交易错误复盘",
+                "action": rule_text,
+                "source": source or "历史错误记录",
+                "status": "待验证",
+                "last_trigger_date": str(row.get("review_date") or ""),
+            }
+        )
+    return rules
+
+
 def build_periodic_return_review_summary(
     rows: list[dict[str, Any]],
     *,
@@ -1269,6 +1404,9 @@ def default_period_dates(period_type: str, *, today: date | str | None = None) -
         month_end = current.replace(day=1) - timedelta(days=1)
         month_start = month_end.replace(day=1)
         return month_start, month_end
+    if str(period_type or "") == "自定义":
+        current_week_start = current - timedelta(days=current.weekday())
+        return current_week_start, current
     current_week_start = current - timedelta(days=current.weekday())
     week_end = current_week_start - timedelta(days=1)
     week_start = week_end - timedelta(days=6)
@@ -1429,7 +1567,7 @@ def _has_loss_amount(row: dict[str, Any]) -> bool:
 def _loss_amount_summary(recent_loss: float) -> str:
     if recent_loss > 0:
         return f"${recent_loss:,.2f}"
-    return "暂无记录"
+    return "未填写损失金额"
 
 
 def _dedupe(items: list[str]) -> list[str]:
