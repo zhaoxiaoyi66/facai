@@ -606,7 +606,7 @@ def _render_manual_override_form(ticker: str, snapshot: dict, score, technicals:
                 parsed["manualNarrativeNotes"] = notes.strip() or None
                 FundamentalCache().set_manual_overrides(ticker, **parsed)
                 st.session_state[f"stock_detail_refresh_token_{ticker}"] = datetime.now().isoformat()
-                st.success("已保存补充数据，评分会使用新的 manual override。")
+                st.success("已保存补充数据，评分会使用新的人工补充值。")
                 st.rerun()
 
 
