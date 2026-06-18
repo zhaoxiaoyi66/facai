@@ -76,7 +76,7 @@ def evaluate_starter_position(
     if not str(invalidation_condition or "").strip():
         reasons.append("缺少失效条件。")
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING":
-        notes.append("Radar 买区数据缺失；这是提示，不会阻止底仓同步。")
+        notes.append("价格位置和买区提示数据缺失；这是提示，不会阻止底仓同步。")
     if is_stale:
         notes.append("Radar / 价格数据过期；这是提示，不会阻止底仓同步。")
 
@@ -84,7 +84,7 @@ def evaluate_starter_position(
         return _blocked("starter_blocked", reasons, max_pct, before_pct, after_pct)
 
     if (decision == "BLOCK_CHASE" or _has_chase_reason(radar_report)) and not _is_large_down_day(radar_report):
-        notes.append("当前价进入追高区，属于 Radar 买区提示；需复核后再买，但不单独阻止底仓同步。")
+        notes.append("当前价进入追高区，属于价格位置提示；需复核后再买，但不单独阻止底仓同步。")
 
     if valuation_score is not None and valuation_score < 40:
         notes.append("估值评分低于 40：只允许作为 A 类小底仓，并保留估值风险提示。")

@@ -2235,7 +2235,7 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
         allowed_add_pct = _number(gate.get("allowed_add_pct"))
         if allowed_add_pct is not None and allowed_add_pct <= 0:
             items.append("系统参考新增仓位为 0%，仅作风险提示。")
-        items.append("Radar 买区是判断辅助；可手动继续，偏离建议会记录为人工 override。")
+        items.append("价格位置和买区提示是判断辅助；可手动继续，偏离建议会记录为人工 override。")
     return _dedupe_text(items)
 
 
@@ -2246,7 +2246,7 @@ def _portfolio_buy_gate_actions(
     tier: object = "",
 ) -> list[str]:
     clean_tier = str(tier or "").strip().upper()
-    actions = ["复核 Radar 买区提示；最终买入由你决定，偏离建议会记录为人工 override。"]
+    actions = ["复核价格位置和买区提示；最终买入由你决定，偏离建议会记录为人工 override。"]
     if clean_tier == "A":
         actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
     elif clean_tier == "B":
