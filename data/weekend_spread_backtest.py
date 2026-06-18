@@ -193,7 +193,8 @@ def run_weekend_basis_backtest(
     broker_provider: Any | None = None,
     weeks: int = 4,
     open_window_minutes: int = 5,
-    opening_anchor: str = "premarket",
+    opening_anchor: str = "overnight",
+    allow_anchor_fallback: bool = True,
     kline_cache_path: Path | None = None,
     strategy_config: BasisStrategyConfig | None = None,
     now: datetime | None = None,
@@ -223,6 +224,7 @@ def run_weekend_basis_backtest(
                     broker_provider=broker_provider,
                     open_window_minutes=open_window_minutes,
                     opening_anchor=opening_anchor,
+                    allow_anchor_fallback=allow_anchor_fallback,
                     kline_cache_path=effective_kline_cache_path,
                     strategy_config=strategy_config,
                 )
@@ -369,7 +371,7 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
     observe = [
         row
         for row in rows
-        if str(row.get("data_quality") or "").upper() in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING"}
+        if str(row.get("data_quality") or "").upper() in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING", "OBSERVE_ANCHOR_ONLY"}
     ]
     degraded = [
         row
@@ -380,7 +382,7 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row
         for row in rows
         if str(row.get("data_quality") or "").upper()
-        not in {"OK", "OBSERVE_ONLY", "UNCONFIRMED_MAPPING"}
+        not in {"OK", "OBSERVE_ONLY", "UNCONFIRMED_MAPPING", "OBSERVE_ANCHOR_ONLY"}
         and not str(row.get("data_quality") or "").upper().startswith("DEGRADED")
     ]
     returns_bps = [_number(row.get("net_locked_bps")) for row in valid]
@@ -611,6 +613,22 @@ def _backtest_one_window(
     return base
 
 
+def _has_weekend_anchor_observation(result: dict[str, Any], anchor_price: float | None) -> bool:
+    if anchor_price is None or anchor_price <= 0:
+        return False
+    weekend_price = _number(
+        result.get("oracle_weekend_high_bid")
+        or result.get("weekend_peak_binance_price")
+        or result.get("weekend_peak_binance_mid")
+    )
+    weekend_premium = _number(
+        result.get("oracle_weekend_high_premium_bps")
+        or result.get("weekend_peak_premium_bps")
+        or result.get("weekend_peak_premium_pct")
+    )
+    return weekend_price is not None and weekend_price > 0 and weekend_premium is not None
+
+
 def _basis_backtest_one_window(
     ticker: str,
     config: dict[str, Any],
@@ -622,6 +640,7 @@ def _basis_backtest_one_window(
     broker_provider: Any | None,
     open_window_minutes: int,
     opening_anchor: str,
+    allow_anchor_fallback: bool,
     kline_cache_path: Path | None,
     strategy_config: BasisStrategyConfig | None,
 ) -> dict[str, Any]:
@@ -648,6 +667,7 @@ def _basis_backtest_one_window(
         open_window_minutes,
         broker_provider=broker_provider,
         anchor_source=anchor_source,
+        allow_anchor_fallback=allow_anchor_fallback,
     )
     quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
         window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
@@ -718,13 +738,23 @@ def _basis_backtest_one_window(
         }
     )
     if not stock_bar.get("ok") and result.get("data_quality") == "NO_BROKER_OVERNIGHT_BAR":
-        result.update(
-            {
-                "data_quality": str(stock_bar.get("quality") or "MISSING_STOCK_FIRST_BAR"),
-                "warning": str(stock_bar.get("reason") or "缺少美股端第一根有效价格"),
-                "error_message": str(stock_bar.get("reason") or "MISSING_STOCK_FIRST_BAR"),
-            }
-        )
+        if _has_weekend_anchor_observation(result, anchor_price):
+            result.update(
+                {
+                    "status": "OBSERVE",
+                    "data_quality": "OBSERVE_ANCHOR_ONLY",
+                    "warning": "已读取周五盘后/收盘锚点和周末合约价格；缺少美股开盘第一根有效价格，仅作价差观察，不计入正式胜率",
+                    "error_message": str(stock_bar.get("reason") or "MISSING_STOCK_FIRST_BAR"),
+                }
+            )
+        else:
+            result.update(
+                {
+                    "data_quality": str(stock_bar.get("quality") or "MISSING_STOCK_FIRST_BAR"),
+                    "warning": str(stock_bar.get("reason") or "缺少美股端第一根有效价格"),
+                    "error_message": str(stock_bar.get("reason") or "MISSING_STOCK_FIRST_BAR"),
+                }
+            )
     elif stock_bar.get("quality") == "DEGRADED_5M" and result.get("data_quality") == "OK":
         result.update({"data_quality": "DEGRADED_5M", "warning": "使用 5m bar 替代 1m，样本仅作降级观察"})
     if mapping_confidence != "confirmed" and result.get("data_quality") not in {
@@ -1265,6 +1295,7 @@ def get_first_valid_stock_bar_after_weekend(
     *,
     broker_provider: Any | None = None,
     anchor_source: dict[str, Any] | None = None,
+    allow_anchor_fallback: bool = True,
 ) -> dict[str, Any]:
     """Find the first reliable US stock bar after the weekend.
 
@@ -1275,7 +1306,7 @@ def get_first_valid_stock_bar_after_weekend(
     requested_anchor = _normalize_stock_open_anchor(anchor)
     start_date = _coerce_date(session_date)
     window = max(1, int(window_minutes or 5))
-    attempts = _stock_open_attempts(start_date, requested_anchor)
+    attempts = _stock_open_attempts(start_date, requested_anchor, allow_fallback=allow_anchor_fallback)
     last_attempt: dict[str, Any] | None = None
     for interval in ("1m", "5m"):
         for anchor_name, day in attempts:
@@ -1360,7 +1391,9 @@ def _basis_quotes_for_stock_bar_evaluation(
     return [deduped[key] for key in sorted(deduped)]
 
 
-def _stock_open_attempts(session_date, requested_anchor: str) -> list[tuple[str, Any]]:
+def _stock_open_attempts(session_date, requested_anchor: str, *, allow_fallback: bool = True) -> list[tuple[str, Any]]:
+    if not allow_fallback:
+        return [(requested_anchor, session_date)]
     anchor_order = {
         "overnight": ["overnight", "premarket", "regular_open"],
         "premarket": ["premarket", "regular_open"],

@@ -763,6 +763,39 @@ def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp
     assert cached.cache_status == "CACHE_HIT"
 
 
+def test_afterhours_cache_write_permission_error_does_not_break_live_reference(tmp_path, monkeypatch) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    live_provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                data_quality="HIGH",
+            )
+        ]
+    )
+    path_type = type(cache_path)
+    original_replace = path_type.replace
+
+    def locked_replace(self, target):
+        if str(self).endswith(".tmp"):
+            raise PermissionError("[WinError 5] 拒绝访问")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(path_type, "replace", locked_replace)
+
+    snapshot = CachedAfterhoursProvider(live_provider, cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+
+    assert snapshot.reference_price == 208
+    assert snapshot.cache_status == "API_LIVE"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_afterhours_corrupt_cache_reports_cache_corrupt(tmp_path) -> None:
     cache_path = tmp_path / "afterhours_reference_cache.json"
     cache_path.write_text("not valid json", encoding="utf-8")
@@ -1132,7 +1165,7 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
     )
 
     assert "缺少美股端第一根有效 1m bar" in reason
-    assert "切换开盘锚点" in reason
+    assert "周一 08:00 HKT / 美股夜盘 20:00 ET" in reason
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
@@ -2459,7 +2492,7 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
     assert row["oracle_note"] == "事后高点，不可交易"
 
 
-def test_weekend_basis_backtest_excludes_when_all_stock_opening_bars_missing() -> None:
+def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars_missing() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     quotes = [
@@ -2478,10 +2511,23 @@ def test_weekend_basis_backtest_excludes_when_all_stock_opening_bars_missing() -
         now=now,
     )
 
-    assert rows[0]["status"] == "WAIT_BROKER_OPEN"
-    assert rows[0]["data_quality"] == "MISSING_STOCK_FIRST_BAR"
+    assert rows[0]["status"] == "OBSERVE"
+    assert rows[0]["data_quality"] == "OBSERVE_ANCHOR_ONLY"
     assert rows[0]["stock_bar_reason"] == "MISSING_STOCK_FIRST_BAR"
     assert rows[0]["stock_bar_returned_count"] == 0
+    assert rows[0]["oracle_weekend_high_bid"] == 102.0
+    assert summarize_backtest_results(rows)["sample_weeks"] == 0
+    assert summarize_backtest_results(rows)["observe_sample_count"] == 1
+
+    review_rows = weekend_spread._weekend_review_rows(rows)
+    review_summary = weekend_spread._weekend_review_summary(review_rows)
+
+    assert review_rows[0]["data_quality"] == "OBSERVE_ANCHOR_ONLY"
+    assert review_rows[0]["stock_price"] == 100
+    assert review_rows[0]["binance_price"] == 102.0
+    assert review_summary["summary_quality"] == "OBSERVE"
+    assert review_summary["sample_count"] == 1
+    assert weekend_spread._display_weekend_review_rows(review_rows)
 
 
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
@@ -2505,6 +2551,27 @@ def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
     assert result["quality"] == "OK"
     assert result["provider"] == "broker"
     assert result["bar_size"] == "1m"
+
+
+def test_first_valid_stock_bar_can_disable_anchor_fallback() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    premarket = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    premarket = premarket.replace(hour=4, minute=3)
+    provider = FakeBrokerBarProvider({"1m": [_broker_bar(premarket, 100.8, 100.9)]})
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "NVDA",
+        window.end_et.date() + timedelta(days=1),
+        "overnight",
+        30,
+        broker_provider=provider,
+        allow_anchor_fallback=False,
+    )
+
+    assert result["ok"] is False
+    assert result["anchor"] == "overnight"
+    assert result["returned_bar_count"] == 0
 
 
 def test_weekend_basis_backtest_uses_premarket_fallback_bar() -> None:
@@ -3648,6 +3715,25 @@ def test_weekend_review_summary_counts_only_ok_samples() -> None:
     assert summary["sample_count"] == 1
     assert summary["avg_premium_pct"] == 4.0
     assert list(frame["股票"]) == ["NVDA"]
+
+
+def test_weekend_review_formats_epoch_stock_reference_date() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "friday_anchor_price": 205.42,
+            "regular_close_date": "1781308799",
+            "oracle_weekend_high_bid": 209.79,
+            "oracle_weekend_high_time": "2026-06-14T23:58:00+00:00",
+            "oracle_weekend_high_premium_bps": 213.0,
+            "data_quality": "OBSERVE_ANCHOR_ONLY",
+        }
+    ]
+
+    frame = weekend_spread._weekend_review_frame(weekend_spread._weekend_review_rows(rows))
+
+    assert frame.iloc[0]["美股参考日"] == "2026-06-12"
 
 
 def test_weekend_review_marks_missing_price_as_incomplete() -> None:

@@ -73,6 +73,7 @@ TAB_REALTIME = "实时观察"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 HKT = ZoneInfo("Asia/Hong_Kong")
+ET = ZoneInfo("America/New_York")
 
 
 def render() -> None:
@@ -569,19 +570,12 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         include_unconfirmed=include_unconfirmed,
     )
     options = ["全部已映射"] + list(preliminary.get("eligible_tickers") or [])
-    anchor_options = {
-        "premarket": "盘前 04:00 ET",
-        "regular_open": "正式开盘 09:30 ET",
-        "overnight": "券商夜盘 20:00 ET",
-    }
-    anchor_labels = list(anchor_options.values())
-    anchor_by_label = {label: key for key, label in anchor_options.items()}
+    opening_anchor = "overnight"
     cols = st.columns(4)
     selected = cols[0].selectbox("标的", options, key="weekend_backtest_ticker")
     weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
     open_window = int(cols[2].selectbox("开盘窗口（分钟）", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
-    selected_anchor_label = cols[3].selectbox("开盘锚点", anchor_labels, index=0, key="weekend_backtest_open_anchor")
-    opening_anchor = anchor_by_label.get(selected_anchor_label, "premarket")
+    cols[3].markdown("**开盘锚点**  \n周一 08:00 HKT / 美股夜盘 20:00 ET")
     run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
     anchors = _backtest_anchor_mapping(run_tickers or all_tickers, weeks=weeks)
     preflight = build_weekend_backtest_preflight(
@@ -639,6 +633,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             weeks=weeks,
             open_window_minutes=open_window,
             opening_anchor=opening_anchor,
+            allow_anchor_fallback=False,
         )
         progress_bar.progress(1.0)
         failed = [
@@ -688,7 +683,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         elif cached_result.get("error_message"):
             st.warning(f"上次运行失败：{cached_result.get('error_message')}")
         else:
-            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。默认使用盘前 04:00 ET 后第一根有效价格；也可以切换为正式开盘或券商夜盘。")
+            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。当前固定使用周一 08:00 HKT / 美股夜盘 20:00 ET 后第一根有效价格。")
         _render_backfill_audit_area_v2(watchlist, mapping, anchors)
         _render_backtest_advanced_records()
         return
@@ -925,6 +920,7 @@ def _data_quality_text(value: object) -> str:
         "INVALID_PRICE": "价格无效",
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
         "OBSERVE_ONLY": "观察样本，不计入正式胜率",
+        "OBSERVE_ANCHOR_ONLY": "锚点观察样本，不计入正式胜率",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
@@ -1141,6 +1137,8 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
         f"正式有效样本 {quality_counts['ok']}｜观察样本 {quality_counts['observe']}｜"
         f"降级样本 {quality_counts['degraded']}｜排除样本 {quality_counts['excluded']}"
     )
+    if summary.get("summary_quality") == "OBSERVE":
+        st.info("当前显示的是观察样本统计：已读取往期周五盘后/收盘锚点和周末合约价格，但缺少美股开盘第一根有效价格，不计入正式胜率。")
 
 
 def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
@@ -1149,7 +1147,7 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
         quality = str(row.get("data_quality") or "").strip().upper()
         if quality == "OK":
             counts["ok"] += 1
-        elif quality == "OBSERVE_ONLY":
+        elif quality in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}:
             counts["observe"] += 1
         elif quality.startswith("DEGRADED"):
             counts["degraded"] += 1
@@ -1166,10 +1164,15 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
         str((row.get("raw_row") or {}).get("data_quality") or row.get("data_quality") or "").strip().upper()
         for row in review_rows
     }
+    if qualities & {"OBSERVE_ANCHOR_ONLY"}:
+        return (
+            "当前没有可计入正式统计的样本，但已读取往期周五盘后/收盘锚点和周末合约价格。"
+            "缺少美股开盘第一根有效价格，因此仅作为价差观察，不计入正式胜率。"
+        )
     if raw_qualities & {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}:
         return (
             "当前没有可计入正式统计的样本。主要原因：缺少美股端第一根有效 1m bar。"
-            "请尝试扩大开盘窗口、切换开盘锚点为 premarket/regular_open，或检查券商历史数据权限。"
+            "当前只使用周一 08:00 HKT / 美股夜盘 20:00 ET 锚点；请尝试扩大开盘窗口，或检查券商夜盘历史数据权限。"
         )
     if raw_qualities & {"HOLIDAY_OR_NO_SESSION"}:
         return "当前没有可计入正式统计的样本。主要原因：遇到美国假期或非交易日，请检查交易日历或扩大窗口。"
@@ -1183,7 +1186,7 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
 
 
 def _render_weekend_review_table(review_rows: list[dict]) -> None:
-    frame = _weekend_review_frame(_ok_weekend_review_rows(review_rows))
+    frame = _weekend_review_frame(_display_weekend_review_rows(review_rows))
     if frame.empty:
         st.info("暂无可信历史回测表；没有 OK 样本时不会展示旧缓存或回退数据。")
         return
@@ -1239,11 +1242,17 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
 
 def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
     ok_rows = _ok_weekend_review_rows(review_rows)
-    latest_weeks = set(_latest_week_ids(ok_rows, limit=4))
-    scoped = [row for row in ok_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(ok_rows)
+    source_rows = ok_rows
+    summary_quality = "OK"
+    if not source_rows:
+        source_rows = _observation_weekend_review_rows(review_rows)
+        summary_quality = "OBSERVE" if source_rows else "NONE"
+    latest_weeks = set(_latest_week_ids(source_rows, limit=4))
+    scoped = [row for row in source_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(source_rows)
     valid = [row for row in scoped if _number(row.get("price_diff")) is not None and _number(row.get("premium_pct")) is not None]
     if not valid:
         return {
+            "summary_quality": summary_quality,
             "sample_count": 0,
             "avg_price_diff": None,
             "avg_premium_pct": None,
@@ -1256,6 +1265,7 @@ def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
     latest_rows = [row for row in valid if latest_week and row.get("week_id") == latest_week[0]]
     latest_premiums = [float(_number(row.get("premium_pct")) or 0.0) for row in latest_rows]
     return {
+        "summary_quality": summary_quality,
         "sample_count": len(valid),
         "avg_price_diff": sum(diffs) / len(diffs),
         "avg_premium_pct": sum(premiums) / len(premiums),
@@ -1322,6 +1332,23 @@ def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     return [row for row in review_rows if str(row.get("data_quality") or "").strip().upper() == "OK"]
 
 
+def _observation_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in review_rows
+        if str(row.get("data_quality") or "").strip().upper() in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}
+    ]
+
+
+def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in review_rows
+        if str(row.get("data_quality") or "").strip().upper() in {"OK", "OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}
+        or str(row.get("data_quality") or "").strip().upper().startswith("DEGRADED")
+    ]
+
+
 def _weekend_review_data_quality(
     row: dict,
     anchor_price: float | None,
@@ -1332,12 +1359,17 @@ def _weekend_review_data_quality(
     status = str(row.get("status") or "").strip().upper()
     mapping_status = str(row.get("mapping_status") or "").strip().upper()
     cache_status = str(row.get("kline_cache_status") or row.get("cache_status") or "").strip().upper()
+    missing_stock_first_bar = quality in {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}
+    if quality == "OBSERVE_ANCHOR_ONLY":
+        return "OBSERVE_ANCHOR_ONLY"
     if quality in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING"} or mapping_status == "CANDIDATE_OBSERVATION":
         return "OBSERVE_ONLY"
     if quality.startswith("DEGRADED"):
         return "DEGRADED"
     if quality in {"BLOCK_MAPPING", "NO_MAPPING", "MAPPING_MISSING"} or status == "BLOCK_MAPPING":
         return "MAPPING_MISSING"
+    if missing_stock_first_bar and anchor_price is not None and anchor_price > 0 and binance_price is not None and binance_price > 0 and premium_pct is not None:
+        return "OBSERVE_ANCHOR_ONLY"
     if anchor_price is None or anchor_price <= 0 or quality in {"NO_PRICE_ANCHOR", "STOCK_MISSING", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
         return "STOCK_MISSING"
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
@@ -1352,6 +1384,12 @@ def _weekend_review_data_quality(
 
 
 def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
+    if data_quality == "OBSERVE_ANCHOR_ONLY":
+        return "锚点观察"
+    if data_quality == "OBSERVE_ONLY":
+        return "仅观察"
+    if str(data_quality or "").startswith("DEGRADED"):
+        return "降级观察"
     if data_quality != "OK" or premium_pct is None:
         return "数据不完整"
     if abs(premium_pct) >= LARGE_WEEKEND_PREMIUM_PCT:
@@ -1363,7 +1401,12 @@ def _weekend_review_rank(row: dict) -> tuple[int, float]:
     premium = _number(row.get("premium_pct"))
     anchor = _number(row.get("stock_price"))
     binance = _number(row.get("binance_price"))
-    valid = 1 if row.get("data_quality") == "OK" and premium is not None and anchor is not None and binance is not None else 0
+    quality = str(row.get("data_quality") or "").strip().upper()
+    quality_rank = {"OK": 3, "OBSERVE_ANCHOR_ONLY": 2, "OBSERVE_ONLY": 2, "DEGRADED": 1}.get(
+        "DEGRADED" if quality.startswith("DEGRADED") else quality,
+        0,
+    )
+    valid = quality_rank if premium is not None and anchor is not None and binance is not None else 0
     return (valid, abs(float(premium or 0.0)))
 
 
@@ -1371,8 +1414,32 @@ def _weekend_review_stock_reference_date(row: dict) -> str:
     for key in ("regular_close_date", "friday_close_date", "anchor_ts", "weekend_window_start"):
         value = str(row.get(key) or "").strip()
         if value:
-            return value[:10]
+            return _stock_reference_date_text(value)
     return ""
+
+
+def _stock_reference_date_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text[:10]
+    if text.isdigit():
+        try:
+            timestamp = int(text)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(ET).date().isoformat()
+        except (OverflowError, OSError, ValueError):
+            return text[:10]
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text[:10]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ET)
+    return parsed.astimezone(ET).date().isoformat()
 
 
 def _weekend_review_contract_sample_time(row: dict) -> str:

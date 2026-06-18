@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time, timezone
 import json
 from pathlib import Path
+from time import sleep
 from typing import Any
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
@@ -169,8 +170,11 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         payload[cache_key] = asdict(snapshot)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.cache_path.with_name(f".{self.cache_path.name}.{uuid4().hex}.tmp")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(self.cache_path)
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _replace_cache_file(tmp_path, self.cache_path)
+        except OSError:
+            _unlink_quietly(tmp_path)
 
 
 class FMPAfterhoursProvider(AfterhoursProvider):
@@ -216,6 +220,25 @@ class FMPAfterhoursProvider(AfterhoursProvider):
 
 def default_afterhours_provider() -> AfterhoursProvider:
     return CachedAfterhoursProvider()
+
+
+def _replace_cache_file(tmp_path: Path, target_path: Path) -> None:
+    delays = (0.05, 0.15, 0.35)
+    for attempt in range(len(delays) + 1):
+        try:
+            tmp_path.replace(target_path)
+            return
+        except PermissionError:
+            if attempt >= len(delays):
+                raise
+            sleep(delays[attempt])
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def resolve_afterhours_reference(
