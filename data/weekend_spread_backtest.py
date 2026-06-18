@@ -567,6 +567,8 @@ def fetch_friday_afterhours_close(
     friday_date = _coerce_date(friday_date_et)
     window_start = datetime.combine(friday_date, time(19, 55), ET)
     window_end = datetime.combine(friday_date, time(20, 0), ET)
+    request_start_text = window_start.isoformat()
+    request_end_text = window_end.isoformat()
     rows: list[Any] = []
     provider_name = ""
     venue = "EXTENDED_HOURS"
@@ -602,6 +604,14 @@ def fetch_friday_afterhours_close(
                 "afterhours_reference_source": provider_display,
                 "afterhours_reference_quality": getattr(snapshot, "data_quality", ""),
                 "afterhours_missing_reason": getattr(snapshot, "missing_reason", ""),
+                "p0_request_start": getattr(snapshot, "request_start", "") or request_start_text,
+                "p0_request_end": getattr(snapshot, "request_end", "") or request_end_text,
+                "p0_endpoint": getattr(snapshot, "endpoint", ""),
+                "p0_returned_bar_count": getattr(snapshot, "returned_bar_count", 0),
+                "p0_selected_bar_time": getattr(snapshot, "selected_bar_time", "") or getattr(snapshot, "reference_time", ""),
+                "p0_selected_bar_close": getattr(snapshot, "selected_bar_close", None) or getattr(snapshot, "reference_price", None),
+                "p0_selected_bar_volume": getattr(snapshot, "selected_bar_volume", None) or getattr(snapshot, "volume", None),
+                "p0_is_fallback": bool(getattr(snapshot, "is_fallback", False)),
             }
     elif anchor_source:
         provider_name = str(anchor_source.get("afterhours_reference_source") or "anchor_source")
@@ -615,17 +625,35 @@ def fetch_friday_afterhours_close(
     ]
     if bars:
         chosen = sorted(bars, key=lambda item: item.ts)[-1]
+        selected_time = chosen.ts.astimezone(ET).isoformat()
+        selected_close = chosen.close
+        selected_volume = getattr(chosen, "volume", None) or getattr(chosen, "size", None)
+        quality = _p0_quality(provider_name or "afterhours_provider", "", has_verified_bar=True)
         return {
             "ok": True,
             "symbol": normalized,
-            "friday_afterhours_close": chosen.close,
-            "bar_start_et": chosen.ts.astimezone(ET).isoformat(),
+            "friday_afterhours_close": selected_close,
+            "bar_start_et": selected_time,
             "bar_end_et": (chosen.ts + timedelta(minutes=1)).astimezone(ET).isoformat(),
             "provider": provider_name or "afterhours_provider",
             "venue": venue,
             "interval": "1m",
-            "quality": "OFFICIAL_AFTERHOURS_1M",
+            "quality": quality,
             "reason": "",
+            **_p0_diagnostics(
+                symbol=normalized,
+                request_start=request_start_text,
+                request_end=request_end_text,
+                provider=provider_name or "afterhours_provider",
+                endpoint=_p0_endpoint(provider),
+                returned_bar_count=len(bars),
+                selected_time=selected_time,
+                selected_close=selected_close,
+                selected_volume=selected_volume,
+                quality=quality,
+                is_fallback=False,
+                reason="",
+            ),
         }
     snapshot_source = provider_anchor or (anchor_source or {})
     snapshot_price = _number(snapshot_source.get("afterhours_reference_price"))
@@ -634,6 +662,17 @@ def fetch_friday_afterhours_close(
         snapshot_et = snapshot_time.astimezone(ET)
         if window_start <= snapshot_et < window_end:
             snapshot_provider = str(snapshot_source.get("afterhours_reference_source") or "")
+            returned_count = int(_number(snapshot_source.get("p0_returned_bar_count")) or 0)
+            if returned_count == 0 and "FMP_AFTERHOURS" in snapshot_provider.upper():
+                returned_count = 1
+            quality = _p0_quality(
+                provider_name or snapshot_provider or "afterhours_provider",
+                str(snapshot_source.get("afterhours_reference_quality") or snapshot_source.get("afterhours_reference_source") or ""),
+                has_verified_bar=returned_count > 0 and bool(snapshot_source.get("p0_endpoint")),
+            )
+            selected_time = str(snapshot_source.get("p0_selected_bar_time") or snapshot_et.isoformat())
+            selected_close = _number(snapshot_source.get("p0_selected_bar_close")) or snapshot_price
+            selected_volume = _number(snapshot_source.get("p0_selected_bar_volume"))
             return {
                 "ok": True,
                 "symbol": normalized,
@@ -643,22 +682,52 @@ def fetch_friday_afterhours_close(
                 "provider": provider_name or snapshot_provider or "afterhours_provider",
                 "venue": venue,
                 "interval": "1m",
-                "quality": "OFFICIAL_AFTERHOURS_REFERENCE" if snapshot_source.get("afterhours_reference_time") else "LEGACY_AFTERHOURS_REFERENCE",
+                "quality": quality,
                 "reason": "",
+                **_p0_diagnostics(
+                    symbol=normalized,
+                    request_start=str(snapshot_source.get("p0_request_start") or request_start_text),
+                    request_end=str(snapshot_source.get("p0_request_end") or request_end_text),
+                    provider=provider_name or snapshot_provider or "afterhours_provider",
+                    endpoint=str(snapshot_source.get("p0_endpoint") or _p0_endpoint(provider)),
+                    returned_bar_count=returned_count,
+                    selected_time=selected_time,
+                    selected_close=selected_close,
+                    selected_volume=selected_volume,
+                    quality=quality,
+                    is_fallback=bool(snapshot_source.get("p0_is_fallback") or False),
+                    reason="",
+                ),
             }
     supplemental = find_friday_afterhours_close(normalized, friday_date)
     if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+        quality = _p0_quality(supplemental.provider, supplemental.quality, has_verified_bar=True)
+        selected_time = supplemental.timestamp_et.isoformat()
         return {
             "ok": True,
             "symbol": normalized,
             "friday_afterhours_close": supplemental.close,
-            "bar_start_et": supplemental.timestamp_et.isoformat(),
+            "bar_start_et": selected_time,
             "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
             "provider": supplemental.provider,
             "venue": "EXTENDED_HOURS",
             "interval": "1m",
-            "quality": supplemental.quality,
+            "quality": quality,
             "reason": "",
+            **_p0_diagnostics(
+                symbol=normalized,
+                request_start=request_start_text,
+                request_end=request_end_text,
+                provider=supplemental.provider,
+                endpoint="tradingview_price_cache",
+                returned_bar_count=1,
+                selected_time=selected_time,
+                selected_close=supplemental.close,
+                selected_volume=None,
+                quality=quality,
+                is_fallback=False,
+                reason="",
+            ),
         }
     regular_price = _number(
         (anchor_source or {}).get("regular_close_price")
@@ -679,7 +748,21 @@ def fetch_friday_afterhours_close(
             "provider": "REGULAR_CLOSE_FALLBACK",
             "venue": "REGULAR_CLOSE",
             "interval": "1d",
-            "quality": "REGULAR_CLOSE_FALLBACK",
+            "quality": "FALLBACK_REGULAR_CLOSE",
+            **_p0_diagnostics(
+                symbol=normalized,
+                request_start=request_start_text,
+                request_end=request_end_text,
+                provider="REGULAR_CLOSE_FALLBACK",
+                endpoint="regular_close_anchor",
+                returned_bar_count=0,
+                selected_time=regular_time.isoformat(),
+                selected_close=regular_price,
+                selected_volume=None,
+                quality="FALLBACK_REGULAR_CLOSE",
+                is_fallback=True,
+                reason="常规收盘回退，仅观察",
+            ),
             "reason": "常规收盘回退，仅观察",
         }
     return {
@@ -692,8 +775,115 @@ def fetch_friday_afterhours_close(
         "venue": venue,
         "interval": "1m",
         "quality": "MISSING_AFTERHOURS_CLOSE",
+        **_p0_diagnostics(
+            symbol=normalized,
+            request_start=request_start_text,
+            request_end=request_end_text,
+            provider=provider_name or "",
+            endpoint=_p0_endpoint(provider),
+            returned_bar_count=0,
+            selected_time="",
+            selected_close=None,
+            selected_volume=None,
+            quality="MISSING_AFTERHOURS_CLOSE",
+            is_fallback=False,
+            reason="缺少周五盘后收盘价",
+        ),
         "reason": "缺少周五盘后收盘价",
     }
+
+
+def _p0_diagnostics(
+    *,
+    symbol: str,
+    request_start: str,
+    request_end: str,
+    provider: str,
+    endpoint: str,
+    returned_bar_count: int,
+    selected_time: str,
+    selected_close: float | None,
+    selected_volume: float | None,
+    quality: str,
+    is_fallback: bool,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "p0_symbol": str(symbol or "").strip().upper(),
+        "p0_request_start_et": request_start,
+        "p0_request_end_et": request_end,
+        "p0_provider": str(provider or ""),
+        "p0_endpoint": str(endpoint or ""),
+        "p0_returned_bar_count": int(returned_bar_count or 0),
+        "p0_selected_bar_time": str(selected_time or ""),
+        "p0_selected_bar_close": selected_close,
+        "p0_selected_bar_volume": selected_volume,
+        "p0_quality": str(quality or ""),
+        "p0_is_fallback": bool(is_fallback),
+        "p0_failure_reason": str(reason or ""),
+    }
+
+
+def _p0_endpoint(provider: Any | None) -> str:
+    if provider is None:
+        return ""
+    provider_name = type(provider).__name__
+    if provider_name == "AlpacaAfterhoursProvider":
+        return "v2/stocks/{symbol}/bars"
+    if provider_name == "FMPAfterhoursProvider":
+        return "stable/aftermarket-trade or stable/aftermarket-quote"
+    return provider_name
+
+
+def _p0_quality(provider: str, source_quality: str, *, has_verified_bar: bool) -> str:
+    provider_upper = str(provider or "").strip().upper()
+    source_upper = str(source_quality or "").strip().upper()
+    combined = f"{provider_upper} {source_upper}"
+    if "REGULAR_CLOSE_FALLBACK" in combined or "FALLBACK_REGULAR_CLOSE" in combined:
+        return "FALLBACK_REGULAR_CLOSE"
+    if "FMP_AFTERHOURS_TRADE" in combined:
+        return "FMP_AFTERHOURS_TRADE"
+    if "FMP_AFTERHOURS_QUOTE" in combined or "QUOTE_MID" in combined:
+        return "FMP_AFTERHOURS_QUOTE_ANCHOR"
+    if "FMP" in combined and has_verified_bar:
+        return "FMP_AFTERHOURS_1M_BAR"
+    if "ALPACA_AFTERHOURS" in combined and has_verified_bar:
+        return "ALPACA_AFTERHOURS_1M_BAR"
+    if "TRADINGVIEW_WEBHOOK" in combined:
+        return "TRADINGVIEW_WEBHOOK_SAMPLE"
+    if "TRADINGVIEW_CSV" in combined:
+        return "TRADINGVIEW_CSV_SAMPLE"
+    if "MANUAL" in combined:
+        return "MANUAL_AFTERHOURS_SAMPLE"
+    if has_verified_bar:
+        return "OFFICIAL_AFTERHOURS_1M"
+    return "P0_UNVERIFIED"
+
+
+def _result_p0_diagnostics(friday_afterhours: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "p0_symbol": str(friday_afterhours.get("p0_symbol") or friday_afterhours.get("symbol") or ""),
+        "p0_request_start_et": str(friday_afterhours.get("p0_request_start_et") or ""),
+        "p0_request_end_et": str(friday_afterhours.get("p0_request_end_et") or ""),
+        "p0_provider": str(friday_afterhours.get("p0_provider") or friday_afterhours.get("provider") or ""),
+        "p0_endpoint": str(friday_afterhours.get("p0_endpoint") or ""),
+        "p0_returned_bar_count": int(_number(friday_afterhours.get("p0_returned_bar_count")) or 0),
+        "p0_selected_bar_time": str(friday_afterhours.get("p0_selected_bar_time") or friday_afterhours.get("bar_start_et") or ""),
+        "p0_selected_bar_close": _number(friday_afterhours.get("p0_selected_bar_close") or friday_afterhours.get("friday_afterhours_close")),
+        "p0_selected_bar_volume": _number(friday_afterhours.get("p0_selected_bar_volume")),
+        "p0_quality": str(friday_afterhours.get("p0_quality") or friday_afterhours.get("quality") or ""),
+        "p0_is_fallback": bool(friday_afterhours.get("p0_is_fallback") or False),
+        "p0_failure_reason": str(friday_afterhours.get("p0_failure_reason") or friday_afterhours.get("reason") or ""),
+    }
+
+
+def _is_holiday_rollover_window(expected_start_et: datetime, actual_bar_time: str) -> bool:
+    actual = _datetime_from_iso(actual_bar_time)
+    if actual is None:
+        return False
+    expected = expected_start_et.astimezone(ET).replace(second=0, microsecond=0)
+    actual_et = actual.astimezone(ET).replace(second=0, microsecond=0)
+    return actual_et != expected
 
 
 def fetch_binance_weekend_max(
@@ -1094,6 +1284,9 @@ def _basis_backtest_one_window(
     friday_afterhours_close = _number(friday_afterhours.get("friday_afterhours_close"))
     anchor_price = friday_afterhours_close
     legacy_anchor_price = _number(anchor.get("anchor_price"))
+    regular_close_price = _number(anchor_source.get("regular_close_price") or anchor.get("regular_close_price") or anchor_source.get("friday_close") or anchor_source.get("friday_close_price"))
+    regular_close_date = str(anchor_source.get("regular_close_date") or anchor.get("regular_close_date") or anchor_source.get("friday_close_date") or "").strip()
+    p0_vs_regular_close_pct = _change_pct(friday_afterhours_close, regular_close_price)
     base = _base_result(ticker, symbol, market_type, mapping_confidence, window)
     base.update(
         {
@@ -1114,6 +1307,7 @@ def _basis_backtest_one_window(
     if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
         broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
         broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
+    holiday_rollover = _is_holiday_rollover_window(window.end_et, broker_first_time)
     quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
         window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
     )
@@ -1154,8 +1348,13 @@ def _basis_backtest_one_window(
                 "friday_afterhours_provider": str(friday_afterhours.get("provider") or ""),
                 "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
                 "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+                "regular_close_price": regular_close_price,
+                "regular_close_date": regular_close_date,
+                "p0_vs_regular_close_pct": p0_vs_regular_close_pct,
+                **_result_p0_diagnostics(friday_afterhours),
                 "overnight_first_1m_close": broker_first_close,
                 "overnight_first_1m_time": broker_first_time,
+                "holiday_rollover": holiday_rollover,
                 "broker_first_1m_close": broker_first_close,
                 "broker_first_1m_time": broker_first_time,
                 "broker_provider": str(stock_bar.get("provider") or ""),
@@ -1257,8 +1456,13 @@ def _basis_backtest_one_window(
             "friday_afterhours_interval": str(friday_afterhours.get("interval") or "1m"),
             "friday_afterhours_quality": str(friday_afterhours.get("quality") or ""),
             "friday_afterhours_reason": str(friday_afterhours.get("reason") or ""),
+            "regular_close_price": regular_close_price,
+            "regular_close_date": regular_close_date,
+            "p0_vs_regular_close_pct": p0_vs_regular_close_pct,
+            **_result_p0_diagnostics(friday_afterhours),
             "overnight_first_1m_close": broker_first_close,
             "overnight_first_1m_time": broker_first_time,
+            "holiday_rollover": holiday_rollover,
             "overnight_bar_start_et": broker_first_time,
             "overnight_bar_end_et": (
                 (_datetime_from_iso(broker_first_time) + timedelta(minutes=1)).isoformat()
@@ -2480,8 +2684,11 @@ def _weekend_chain_quality(
         return str(overnight_quality or "").strip().upper()
     if overnight_first_1m_close is None or overnight_first_1m_close <= 0:
         return "MISSING_OVERNIGHT_FIRST_1M"
-    if str(friday_afterhours_quality or "").strip().upper() == "REGULAR_CLOSE_FALLBACK":
-        return "REGULAR_CLOSE_FALLBACK"
+    normalized_p0_quality = str(friday_afterhours_quality or "").strip().upper()
+    if normalized_p0_quality in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
+        return "FALLBACK_REGULAR_CLOSE"
+    if normalized_p0_quality == "P0_UNVERIFIED":
+        return "P0_UNVERIFIED"
     source_quality = _supplemental_sample_quality(friday_afterhours_quality, overnight_quality)
     if source_quality:
         return source_quality
@@ -2525,6 +2732,8 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
     if not isinstance(source, dict):
         source = root
     afterhours = _number(source.get("afterhours_reference_price"))
+    regular = _number(source.get("regular_close_price") or source.get("friday_close") or source.get("friday_close_price"))
+    regular_date = str(source.get("regular_close_date") or source.get("friday_close_date") or "")
     if afterhours is not None and afterhours > 0:
         return {
             "anchor_price": afterhours,
@@ -2536,8 +2745,9 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
             "afterhours_data_quality": str(source.get("afterhours_data_quality") or ""),
             "afterhours_cache_status": str(source.get("afterhours_cache_status") or ""),
             "afterhours_missing_reason": str(source.get("afterhours_missing_reason") or ""),
+            "regular_close_price": regular,
+            "regular_close_date": regular_date,
         }
-    regular = _number(source.get("regular_close_price") or source.get("friday_close") or source.get("friday_close_price"))
     if regular is not None and regular > 0:
         regular_source = str(source.get("anchor_source") or "ANCHOR_REGULAR_CLOSE_ONLY")
         return {
@@ -2550,6 +2760,8 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
             "afterhours_data_quality": str(source.get("afterhours_data_quality") or ""),
             "afterhours_cache_status": str(source.get("afterhours_cache_status") or ""),
             "afterhours_missing_reason": str(source.get("afterhours_missing_reason") or ""),
+            "regular_close_price": regular,
+            "regular_close_date": regular_date,
         }
     return {"anchor_price": None, "anchor_source": "MISSING", "anchor_ts": ""}
 

@@ -190,6 +190,13 @@ class FakeAfterhoursProvider:
         missing_reason: str = "",
         cache_status: str = "API_LIVE",
         error: str = "",
+        request_start: str = "2026-06-12T19:55:00-04:00",
+        request_end: str = "2026-06-12T20:00:00-04:00",
+        endpoint: str = "v2/stocks/NVDA/bars?feed=boats",
+        returned_bar_count: int = 5,
+        selected_bar_time: str = "2026-06-12T19:59:00-04:00",
+        selected_bar_close: float | None = None,
+        selected_bar_volume: float | None = None,
     ) -> None:
         self.snapshot = AfterhoursReference(
             symbol="",
@@ -205,6 +212,13 @@ class FakeAfterhoursProvider:
             error=error,
             missing_reason=missing_reason,
             cache_status=cache_status,
+            request_start=request_start,
+            request_end=request_end,
+            endpoint=endpoint,
+            returned_bar_count=returned_bar_count,
+            selected_bar_time=selected_bar_time,
+            selected_bar_close=selected_bar_close if selected_bar_close is not None else reference_price,
+            selected_bar_volume=selected_bar_volume if selected_bar_volume is not None else volume,
         )
         self.calls: list[tuple[str, str, bool]] = []
 
@@ -231,6 +245,13 @@ class FakeAfterhoursProvider:
             error=snapshot.error,
             missing_reason=snapshot.missing_reason,
             cache_status=snapshot.cache_status,
+            request_start=snapshot.request_start,
+            request_end=snapshot.request_end,
+            endpoint=snapshot.endpoint,
+            returned_bar_count=snapshot.returned_bar_count,
+            selected_bar_time=snapshot.selected_bar_time,
+            selected_bar_close=snapshot.selected_bar_close,
+            selected_bar_volume=snapshot.selected_bar_volume,
         )
 
 
@@ -2650,7 +2671,7 @@ def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars
     assert review_rows[0]["overnight_provider"] == "美股夜盘数据源未配置"
     assert review_summary["summary_quality"] == "NONE"
     assert review_summary["sample_count"] == 0
-    frame = weekend_spread._weekend_review_frame(review_rows)
+    frame = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     assert frame.iloc[0]["P2 来源"] == "美股夜盘数据源未配置"
     assert "anchor_source" not in frame.to_string()
     assert weekend_spread._display_weekend_review_rows(review_rows)
@@ -2672,6 +2693,15 @@ def test_weekend_basis_backtest_uses_binance_high_and_broker_first_1m_close() ->
         anchors=_anchors(afterhours=100),
         provider=FakeKlineProvider(bars),
         broker_provider=broker_provider,
+        afterhours_provider=FakeAfterhoursProvider(
+            reference_price=100.0,
+            reference_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            reference_source="ALPACA_AFTERHOURS_BOATS",
+            request_start=(window.start_et - timedelta(minutes=5)).isoformat(),
+            request_end=window.start_et.isoformat(),
+            selected_bar_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            selected_bar_close=100.0,
+        ),
         weeks=1,
         now=now,
         opening_anchor="overnight",
@@ -3861,11 +3891,13 @@ def test_weekend_review_backtest_writes_regular_close_fallback_into_p0() -> None
     row = rows[0]
     assert row["friday_afterhours_close"] == 99.0
     assert row["friday_afterhours_provider"] == "REGULAR_CLOSE_FALLBACK"
-    assert row["friday_afterhours_quality"] == "REGULAR_CLOSE_FALLBACK"
-    assert row["transmission_data_quality"] == "REGULAR_CLOSE_FALLBACK"
+    assert row["friday_afterhours_quality"] == "FALLBACK_REGULAR_CLOSE"
+    assert row["transmission_data_quality"] == "FALLBACK_REGULAR_CLOSE"
+    assert row["p0_is_fallback"] is True
+    assert row["p0_quality"] == "FALLBACK_REGULAR_CLOSE"
     review = weekend_spread._weekend_review_rows(rows)[0]
     assert review["friday_afterhours_close"] == 99.0
-    assert review["data_quality"] == "REGULAR_CLOSE_FALLBACK"
+    assert review["data_quality"] == "FALLBACK_REGULAR_CLOSE"
     assert review["failure_reason"] == "常规收盘回退，仅观察"
     assert review["status"] == "仅观察"
 
@@ -3897,7 +3929,13 @@ def test_weekend_review_backtest_reads_afterhours_reference_provider_into_p0() -
     assert afterhours_provider.calls == [("NVDA", "2026-06-12", False)]
     assert row["friday_afterhours_close"] == 205.42
     assert row["friday_afterhours_provider"] == "ALPACA_AFTERHOURS_BOATS"
-    assert row["friday_afterhours_quality"] == "OFFICIAL_AFTERHOURS_REFERENCE"
+    assert row["friday_afterhours_quality"] == "ALPACA_AFTERHOURS_1M_BAR"
+    assert row["p0_request_start_et"] == "2026-06-12T19:55:00-04:00"
+    assert row["p0_request_end_et"] == "2026-06-12T20:00:00-04:00"
+    assert row["p0_endpoint"] == "v2/stocks/NVDA/bars?feed=boats"
+    assert row["p0_returned_bar_count"] == 5
+    assert row["p0_selected_bar_time"] == "2026-06-12T19:59:00-04:00"
+    assert row["p0_selected_bar_close"] == 205.42
     assert row["transmission_data_quality"] == "OK"
 
 
@@ -3916,6 +3954,10 @@ def test_fetch_friday_afterhours_close_accepts_cached_millisecond_timestamp() ->
     assert result["friday_afterhours_close"] == 205.4238
     assert result["bar_start_et"] == "2026-06-12T19:59:59-04:00"
     assert result["provider"] == "FMP_AFTERHOURS_TRADE"
+    assert result["quality"] == "FMP_AFTERHOURS_TRADE"
+    assert result["p0_request_start_et"] == "2026-06-12T19:55:00-04:00"
+    assert result["p0_request_end_et"] == "2026-06-12T20:00:00-04:00"
+    assert result["p0_returned_bar_count"] == 1
 
 
 def test_default_overnight_price_provider_uses_configured_alpaca_boats(monkeypatch) -> None:
@@ -4111,6 +4153,15 @@ def test_weekend_review_marks_alpaca_boats_sample_status() -> None:
         anchors=_anchors(afterhours=100.0),
         provider=FakeKlineProvider(bars),
         overnight_provider=AlpacaFakeBrokerBarProvider({"1m": [_broker_bar(window.end_et, 101.4, 101.5, close=101.45)]}),
+        afterhours_provider=FakeAfterhoursProvider(
+            reference_price=100.0,
+            reference_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            reference_source="ALPACA_AFTERHOURS_BOATS",
+            request_start=(window.start_et - timedelta(minutes=5)).isoformat(),
+            request_end=window.start_et.isoformat(),
+            selected_bar_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            selected_bar_close=100.0,
+        ),
         weeks=1,
         now=now,
     )
@@ -4339,6 +4390,117 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert nvda["周末高点兑现率%"] == 75.0
     assert nvda["状态"] == "正式样本"
 
+def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "friday_afterhours_close": 100.0,
+            "friday_afterhours_time": "2026-06-12T19:59:00-04:00",
+            "friday_afterhours_provider": "ALPACA_AFTERHOURS_SIP",
+            "regular_close_price": 99.0,
+            "p0_vs_regular_close_pct": 1.0101,
+            "p0_request_start_et": "2026-06-12T19:55:00-04:00",
+            "p0_request_end_et": "2026-06-12T20:00:00-04:00",
+            "p0_endpoint": "v2/stocks/NVDA/bars?feed=sip",
+            "p0_returned_bar_count": 4,
+            "p0_selected_bar_time": "2026-06-12T19:59:00-04:00",
+            "p0_selected_bar_close": 100.0,
+            "p0_selected_bar_volume": 2500,
+            "p0_quality": "ALPACA_AFTERHOURS_1M_BAR",
+            "binance_weekend_max_price": 102.0,
+            "binance_weekend_max_time": "2026-06-14T19:58:00-04:00",
+            "broker_first_1m_close": 101.5,
+            "broker_first_1m_time": "2026-06-14T20:00:00-04:00",
+            "binance_symbol": "NVDAUSDT",
+            "binance_kline_count": 3120,
+            "binance_provider": "BINANCE_USDT_M",
+            "data_quality": "OK",
+        },
+        {
+            "week_id": "2026-W24",
+            "ticker": "NVDA",
+            "afterhours_reference_price": 100.0,
+            "binance_weekend_max_price": 101.0,
+            "data_quality": "OK",
+        },
+        {
+            "week_id": "2026-W23",
+            "ticker": "ADBE",
+            "afterhours_reference_price": 200.0,
+            "binance_weekend_max_price": 198.0,
+            "binance_weekend_max_time": "2026-06-07T19:58:00-04:00",
+            "broker_first_1m_close": 197.5,
+            "broker_first_1m_time": "2026-06-07T20:00:00-04:00",
+            "data_quality": "OK",
+        },
+    ]
+
+    review_rows = weekend_spread._weekend_review_rows(rows)
+    frame = weekend_spread._weekend_review_frame(review_rows)
+
+    assert list(frame.columns) == [
+        "周次",
+        "股票",
+        "P0 周五盘后",
+        "P1 Binance 高点",
+        "P2 夜盘首分钟",
+        "周末冲高%",
+        "高点回落%",
+        "最终传导%",
+        "兑现率%",
+        "样本状态",
+    ]
+    assert len(frame) == 2
+    nvda = frame[frame["股票"] == "NVDA"].iloc[0]
+    assert nvda["P0 周五盘后"] == 100.0
+    assert nvda["P1 Binance 高点"] == 102.0
+    assert nvda["P2 夜盘首分钟"] == 101.5
+    assert round(nvda["周末冲高%"], 2) == 2.0
+    assert round(nvda["高点回落%"], 2) == -0.49
+    assert round(nvda["最终传导%"], 2) == 1.5
+    assert nvda["兑现率%"] == 75.0
+    assert nvda["样本状态"] == "自动正式样本"
+
+    diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
+    diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]
+    assert diagnostic_nvda["周五盘后收盘价"] == 100.0
+    assert diagnostic_nvda["常规收盘价"] == 99.0
+    assert diagnostic_nvda["P0 请求区间"] == "2026-06-12 19:55 ET - 2026-06-12 20:00 ET"
+    assert diagnostic_nvda["P0 返回bars"] == 4
+    assert diagnostic_nvda["P0 选中时间"] == "2026-06-12 19:59 ET"
+    assert diagnostic_nvda["P0 选中close"] == 100.0
+    assert diagnostic_nvda["P0 volume"] == 2500
+    assert diagnostic_nvda["P0 fallback"] == "否"
+    assert diagnostic_nvda["Binance 合约"] == "NVDAUSDT"
+    assert diagnostic_nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
+    assert "None" not in frame.to_string()
+    assert "anchor_source" not in frame.to_string()
+
+
+def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -> None:
+    rows = [
+        {
+            "week_id": "2026-W21",
+            "ticker": "NVDA",
+            "friday_afterhours_close": 214.28,
+            "binance_weekend_max_price": 220.89,
+            "broker_first_1m_close": 216.9,
+            "broker_first_1m_time": "2026-05-25T20:00:00-04:00",
+            "binance_symbol": "NVDAUSDT",
+            "transmission_data_quality": "OK",
+            "overnight_provider": "ALPACA_BOATS",
+            "overnight_quality": "ALPACA_BOATS_SAMPLE",
+            "holiday_rollover": True,
+        }
+    ]
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+
+    assert review["sample_status"] == "假期顺延样本"
+    assert weekend_spread._ok_weekend_review_rows([review]) == []
+
+
 def test_weekend_review_price_source_text_localizes_afterhours_providers() -> None:
     assert weekend_spread._price_source_text("ALPACA_AFTERHOURS_SIP") == "Alpaca SIP 盘后"
     assert weekend_spread._price_source_text("FMP_AFTERHOURS_TRADE") == "FMP 盘后"
@@ -4410,9 +4572,9 @@ def test_weekend_review_formats_epoch_stock_reference_date() -> None:
         }
     ]
 
-    frame = weekend_spread._weekend_review_frame(weekend_spread._weekend_review_rows(rows))
+    frame = weekend_spread._weekend_review_diagnostic_frame(weekend_spread._weekend_review_rows(rows))
 
-    assert frame.iloc[0]["盘后收盘时间"] == "2026-06-12 19:59 ET"
+    assert frame.iloc[0]["P0 选中时间"] == "2026-06-12 19:59 ET"
 
 
 def test_weekend_review_marks_missing_price_as_incomplete() -> None:
@@ -4428,10 +4590,11 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     review_rows = weekend_spread._weekend_review_rows(rows)
     frame = weekend_spread._weekend_review_frame(review_rows)
 
-    assert frame.iloc[0]["状态"] == "排除"
-    assert frame.iloc[0]["周五盘后收盘价"] is None
-    assert frame.iloc[0]["Binance 周末最高价"] is None
-    assert frame.iloc[0]["失败原因"] == "缺少 Binance 周末 1m K 线"
+    assert frame.iloc[0]["样本状态"] == "排除样本"
+    assert frame.iloc[0]["P0 周五盘后"] is None
+    assert frame.iloc[0]["P1 Binance 高点"] is None
+    diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
+    assert diagnostic.iloc[0]["失败原因"] == "缺少 Binance 周末 1m K 线"
 
 def test_weekend_review_style_renders_with_current_pandas() -> None:
     frame = weekend_spread._weekend_review_frame(

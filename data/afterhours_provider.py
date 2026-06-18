@@ -42,6 +42,14 @@ class AfterhoursReference:
     provider_name: str = ""
     anchor_status: str = ""
     error_message: str = ""
+    request_start: str = ""
+    request_end: str = ""
+    endpoint: str = ""
+    returned_bar_count: int = 0
+    selected_bar_time: str = ""
+    selected_bar_close: float | None = None
+    selected_bar_volume: float | None = None
+    is_fallback: bool = False
 
 
 class AfterhoursProvider:
@@ -217,20 +225,48 @@ class FMPAfterhoursProvider(AfterhoursProvider):
         if not self.api_key:
             return AfterhoursReference(symbol=normalized, error="missing_fmp_api_key", missing_reason="API_KEY_MISSING")
         try:
-            trade = self._first_row("aftermarket-trade", {"symbol": normalized})
-            quote = self._first_row("aftermarket-quote", {"symbol": normalized})
+            trade, trade_count = self._first_row_with_count("aftermarket-trade", {"symbol": normalized})
+            quote, quote_count = self._first_row_with_count("aftermarket-quote", {"symbol": normalized})
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             return AfterhoursReference(symbol=normalized, error=f"{type(exc).__name__}: {exc}", missing_reason="FETCH_FAILED")
-        return resolve_afterhours_reference(normalized, trade=trade, quote=quote, regular_close_date=regular_close_date)
+        snapshot = resolve_afterhours_reference(normalized, trade=trade, quote=quote, regular_close_date=regular_close_date)
+        if snapshot.reference_price is None:
+            return snapshot
+        source = str(snapshot.reference_source or "").upper()
+        if "QUOTE" in source:
+            endpoint = "stable/aftermarket-quote"
+            returned_count = quote_count
+        else:
+            endpoint = "stable/aftermarket-trade"
+            returned_count = trade_count
+        return replace(
+            snapshot,
+            request_start=datetime.combine(datetime.fromisoformat(regular_close_date).date(), time(19, 55), ET).isoformat()
+            if regular_close_date
+            else "",
+            request_end=datetime.combine(datetime.fromisoformat(regular_close_date).date(), time(20, 0), ET).isoformat()
+            if regular_close_date
+            else "",
+            endpoint=endpoint,
+            returned_bar_count=returned_count,
+            selected_bar_time=snapshot.reference_time,
+            selected_bar_close=snapshot.reference_price,
+            selected_bar_volume=snapshot.volume,
+        )
 
     def _first_row(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        row, _count = self._first_row_with_count(endpoint, params)
+        return row
+
+    def _first_row_with_count(self, endpoint: str, params: dict[str, str]) -> tuple[dict[str, Any], int]:
         query = urlencode({**params, "apikey": self.api_key or ""})
         request = Request(f"{self.base_url}/{endpoint}?{query}", headers={"User-Agent": "facai-afterhours/1.0"})
         with urlopen(request, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
         if isinstance(payload, list):
-            return next((row for row in payload if isinstance(row, dict)), {})
-        return payload if isinstance(payload, dict) else {}
+            rows = [row for row in payload if isinstance(row, dict)]
+            return (rows[0] if rows else {}, len(rows))
+        return (payload, 1) if isinstance(payload, dict) and payload else ({}, 0)
 
 
 def default_afterhours_provider() -> AfterhoursProvider:
@@ -388,6 +424,14 @@ def _reference_from_dict(raw: dict[str, Any]) -> AfterhoursReference:
         provider_name=str(raw.get("provider_name") or ""),
         anchor_status=str(raw.get("anchor_status") or ""),
         error_message=str(raw.get("error_message") or raw.get("error") or ""),
+        request_start=str(raw.get("request_start") or ""),
+        request_end=str(raw.get("request_end") or ""),
+        endpoint=str(raw.get("endpoint") or ""),
+        returned_bar_count=int(_number(raw.get("returned_bar_count")) or 0),
+        selected_bar_time=str(raw.get("selected_bar_time") or ""),
+        selected_bar_close=_number(raw.get("selected_bar_close")),
+        selected_bar_volume=_number(raw.get("selected_bar_volume")),
+        is_fallback=bool(raw.get("is_fallback") or False),
     )
 
 

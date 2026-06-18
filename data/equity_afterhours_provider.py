@@ -344,6 +344,13 @@ class AlpacaAfterhoursProvider(AfterhoursProvider):
                 volume=chosen.size,
                 data_quality=quality,
                 provider_name=f"ALPACA_AFTERHOURS_{feed.upper()}",
+                request_start=start.isoformat(),
+                request_end=end.isoformat(),
+                endpoint=f"v2/stocks/{normalized}/bars?feed={feed}",
+                returned_bar_count=len(rows),
+                selected_bar_time=chosen.timestamp.isoformat(),
+                selected_bar_close=chosen.price,
+                selected_bar_volume=chosen.size,
             )
         if permission_denied and len(fetch_errors) == len(self.feeds):
             return AfterhoursReference(symbol=normalized, error="; ".join(fetch_errors), missing_reason="ALPACA_AFTERHOURS_PERMISSION")
