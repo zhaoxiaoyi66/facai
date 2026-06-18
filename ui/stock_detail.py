@@ -1716,7 +1716,7 @@ def _render_price_alert_panel(ticker: str, active_zone: BuyZoneEstimate) -> None
         is_active = st.checkbox("启用提醒", value=True, key=f"price-alert-active-{ticker}")
         note = st.text_input(
             "备注",
-            placeholder="到价后先复核 finalDecision、buyZone、technicalEntry、combinedEntry、数据健康和交易纪律。",
+            placeholder="到价后先复核主结论、买区、技术结构、历史入口字段、数据健康和交易纪律。",
             key=f"price-alert-note-{ticker}",
         )
         submitted = st.form_submit_button("保存价格提醒", width="stretch")

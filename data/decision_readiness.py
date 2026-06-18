@@ -82,7 +82,7 @@ def _data_health_reasons(symbol: str, summary: dict[str, Any]) -> tuple[list[dic
 
 def _final_decision_reasons(final_decision: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if final_decision is None:
-        return [_reason("final_decision_missing", "", "缺少 finalDecision，不能作为当前操作依据。")], []
+        return [_reason("final_decision_missing", "", "缺少主结论，不能作为当前操作依据。")], []
     blockers = [
         _reason(str(item), "", _final_reason_message(str(item), blocking=True))
         for item in legacy_block_reason_list(final_decision)
@@ -174,13 +174,13 @@ def _buy_zone_validation_message(reason: str) -> str:
 
 def _final_reason_message(reason: str, *, blocking: bool) -> str:
     messages = {
-        "buy_zone": "finalDecision 触发买区风险提示。",
-        "data_confidence": "finalDecision 触发数据置信度风险提示。",
+        "buy_zone": "主结论触发买区风险提示。",
+        "data_confidence": "主结论触发数据置信度风险提示。",
         "quality": "质量或评分条件需要复核。",
     }
     if reason in messages:
         return messages[reason]
-    return f"finalDecision {'风险提示' if blocking else '要求复核'}：{reason}"
+    return f"主结论{'风险提示' if blocking else '要求复核'}：{reason}"
 
 
 def _list_value(source: Any, *names: str) -> list[Any]:

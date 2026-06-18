@@ -81,7 +81,7 @@ def build_data_health_summary(
         if not _final_decision_ready(final_decision):
             summary["finalDecisionErrorCount"] += 1
             symbol_issues += 1
-            symbol_issue_items.append(_add_issue(summary, "final_decision_error", symbol, "finalDecision 无法用本地数据生成"))
+            symbol_issue_items.append(_add_issue(summary, "final_decision_error", symbol, "决策结论无法用本地数据生成"))
         _record_decision_readiness(
             summary,
             symbol,

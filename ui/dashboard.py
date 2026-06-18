@@ -2094,7 +2094,7 @@ def _render_data_health_detail_groups(issues: list[object]) -> None:
     groups = [
         ("价格缺失 / 过期", {"missing_price", "stale_quote"}, "刷新该股票"),
         ("历史缺失 / 过期", {"missing_history", "stale_history"}, "刷新该股票"),
-        ("finalDecision 异常", {"final_decision_error"}, "查看评分"),
+        ("决策结论异常", {"final_decision_error"}, "查看评分"),
         ("持仓缺价", {"portfolio_missing_price"}, "查看持仓"),
         ("复盘结果缺失", {"outcome_missing"}, "进入交易日志"),
     ]
@@ -2328,7 +2328,7 @@ def _data_health_category_label(category: str) -> str:
         "stale_quote": "价格过期",
         "missing_history": "历史缺失",
         "stale_history": "历史过期",
-        "final_decision_error": "finalDecision 异常",
+        "final_decision_error": "决策结论异常",
         "portfolio_missing_price": "持仓缺价",
         "outcome_missing": "复盘结果缺失",
     }.get(category, "数据问题")
@@ -2347,7 +2347,7 @@ def _data_health_detail_groups_html(issues: list[object]) -> str:
     groups = [
         ("价格缺失", ("价格缺失", "价格过期", "缓存缺失"), "查看股票", "stock"),
         ("历史缺失", ("历史缺失",), "查看数据状态", "stock_data"),
-        ("finalDecision 异常", ("finalDecision",), "查看评分", "stock_score"),
+        ("决策结论异常", ("finalDecision",), "查看评分", "stock_score"),
         ("持仓缺价", ("持仓缺价",), "查看持仓", "portfolio"),
         ("复盘结果缺失", ("复盘", "outcome"), "进入交易日志", "journal"),
     ]

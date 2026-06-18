@@ -167,7 +167,7 @@ def data_health_issue_text(issue: object) -> str:
         "stale_quote": "价格过期",
         "missing_history": "历史缺失",
         "stale_history": "历史过期",
-        "final_decision_error": "finalDecision 异常",
+        "final_decision_error": "决策结论异常",
         "portfolio_missing_price": "持仓缺价",
         "outcome_missing": "复盘结果缺失",
     }
