@@ -3628,7 +3628,7 @@ def _entry_volume_price_snapshot_html(entry: dict) -> str:
         ("分数", _number_text(entry.get("volume_price_score"))),
         ("量比", _ratio_text(entry.get("volume_ratio"))),
         ("量能标签", _text(entry.get("volume_regime_cn"))),
-        ("区间来源", _volume_price_zone_source_text(entry.get("volume_price_zone_source"))),
+        ("买区来源", _volume_price_zone_source_text(entry.get("volume_price_zone_source"))),
         ("K线", _text(entry.get("candle_signal_cn"))),
         ("量能", _text(entry.get("volume_signal_cn"))),
         ("支撑", _text(entry.get("support_signal_cn"))),
@@ -3646,8 +3646,8 @@ def _entry_volume_price_snapshot_html(entry: dict) -> str:
 
 def _volume_price_zone_source_text(value: object) -> str:
     return {
-        "radar": "雷达区间",
-        "upstream": "雷达区间",
+        "radar": "买区快照",
+        "upstream": "买区快照",
         "fallback": "本地回退区间",
         "missing": "缺失",
     }.get(str(value or "").strip(), _text(value))

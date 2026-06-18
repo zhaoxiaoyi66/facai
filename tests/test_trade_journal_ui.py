@@ -432,7 +432,7 @@ def test_buy_entry_detail_displays_volume_price_snapshot() -> None:
     )
 
     assert "量价承接快照" in html
-    assert "雷达区间" in html
+    assert "买区快照" in html
     assert "历史日志未记录量价快照" not in html
 
 
