@@ -429,7 +429,7 @@ def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -
     row = _strongest_signal_row(rows)
     if row is None:
         if mapping_counts.get("universe_mapping_count", 0) <= 0:
-            st.info("当前没有可拉取 Binance 价格的映射。先配置 ticker -> binance_symbol 后，系统会自动读取价格。")
+            st.info("当前没有可拉取 Binance 价格的映射。先配置股票代码到 Binance 合约代码的映射后，系统会自动读取价格。")
         else:
             st.info("暂无实时价差信号。若映射存在但没有价格，请查看映射状态或刷新 Binance 价格。")
         return
@@ -1553,7 +1553,7 @@ def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_coun
     cols[3].metric("candidate", status_counts["candidate_count"])
     cols[4].metric("无 mapping", status_counts["no_mapping_count"])
     st.info(
-        "价格由 Binance API 自动读取；用户只维护 ticker -> binance_symbol mapping。"
+        "价格由 Binance API 自动读取；用户只维护股票代码到 Binance 合约代码的映射。"
         f"local 配置路径：{DEFAULT_LOCAL_MAPPING_PATH.as_posix()}，local 不提交 git，candidate 不等于 confirmed。"
     )
     st.dataframe(_mapping_management_frame(rows, mapping), width="stretch", hide_index=True)
@@ -1847,7 +1847,7 @@ def _should_show_empty_mapping_state(mapping_counts: dict[str, int], scope: str)
 def _empty_mapping_message(mapping_counts: dict[str, int], local_mapping_path: Path) -> str:
     lines = [
         "当前观察池暂无 Binance 映射。",
-        "Binance 价格可通过 API 自动读取，但需要先配置 ticker -> binance_symbol。",
+        "Binance 价格可通过 API 自动读取，但需要先配置股票代码到 Binance 合约代码的映射。",
         f"本地配置文件：{local_mapping_path.as_posix()}",
         "示例：NVDA -> NVDAUSDT / usdm_futures / candidate",
     ]

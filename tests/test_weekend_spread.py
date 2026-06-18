@@ -2024,7 +2024,7 @@ def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping
 
     assert "当前观察池暂无 Binance 映射" in message
     assert "Binance 价格可通过 API 自动读取" in message
-    assert "ticker -> binance_symbol" in message
+    assert "股票代码到 Binance 合约代码" in message
     assert "binance_symbol_mapping.local.json" in message
     assert "NVDA -> NVDAUSDT / usdm_futures / candidate" in message
     assert "不属于当前观察池" not in message
