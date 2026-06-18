@@ -1612,7 +1612,7 @@ def _render_discipline_gate_explanation(result, context: dict) -> None:
         ("计划股数", _quantity_text(context["plannedSellQty"])),
         ("计划卖后", _quantity_text(context["plannedAfterQty"])),
         ("差异", _pct_point_text(context["plannedActualDiffPct"], suffix="pct")),
-        ("卖出等级", str(getattr(result, "sellLevel", "") or "N/A")),
+        ("卖出等级", str(getattr(result, "sellLevel", "") or "未记录")),
         ("等级上限", _pct_point_text(max_allowed_pct)),
         ("最多可卖", _quantity_text(max_allowed_qty)),
     ]
@@ -1704,7 +1704,7 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
         else:
             safe_text = "未打穿核心仓" if position_class == "A" else "未低于 B 类持仓底线" if position_class == "B" else "未低于持仓底线"
             reasons.append(f"按计划比例测算，约卖 {_quantity_text(context['plannedSellQty'])} 股，卖后剩 {_quantity_text(context['plannedAfterQty'])} 股，{safe_text}。")
-    sell_level = str(getattr(result, "sellLevel", "") or "N/A")
+    sell_level = str(getattr(result, "sellLevel", "") or "未记录")
     max_allowed_pct = float(getattr(result, "maxAllowedSellPct", 0) or 0)
     if context["actualSellPct"] > max_allowed_pct + 1e-9:
         reasons.append(
@@ -2085,8 +2085,8 @@ def _render_trading_discipline_result(result) -> None:
     status = str(result.disciplineStatus or "")
     tone = _discipline_status_tone(status)
     metrics = [
-        ("纪律状态", DISCIPLINE_STATUS_LABELS.get(status, status or "N/A")),
-        ("卖出等级", str(result.sellLevel or "N/A")),
+        ("纪律状态", DISCIPLINE_STATUS_LABELS.get(status, status or "未记录")),
+        ("卖出等级", str(result.sellLevel or "未记录")),
         ("上限比例", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
         ("核心仓卖出提示", "可作为参考" if result.canSellCore else "系统不建议动核心仓"),
         ("需要回补计划", _yes_no(result.requiresReentryPlan)),
@@ -2101,7 +2101,7 @@ def _render_trading_discipline_result(result) -> None:
         f"""
         <section class="trade-discipline-card {escape(tone)}">
           <div class="trade-discipline-head">
-            <strong>{escape(DISCIPLINE_STATUS_LABELS.get(status, status or "N/A"))}</strong>
+            <strong>{escape(DISCIPLINE_STATUS_LABELS.get(status, status or "未记录"))}</strong>
             <span>{escape(str(result.reminderText or ""))}</span>
           </div>
           <div class="trade-discipline-grid">{metric_html}</div>
@@ -2126,7 +2126,7 @@ def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bo
 
 def _discipline_message_text(item: object) -> str:
     text = str(item or "").strip()
-    return DISCIPLINE_BLOCKER_LABELS.get(text, text or "N/A")
+    return DISCIPLINE_BLOCKER_LABELS.get(text, text or "未记录")
 
 
 def _discipline_status_tone(status: str) -> str:
