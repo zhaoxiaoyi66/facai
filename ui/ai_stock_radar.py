@@ -4729,11 +4729,11 @@ def _list_view_href() -> str:
 def select_radar_symbols(watchlist: list[str], sample_symbols: list[str] | None = None) -> tuple[list[str], str]:
     real = _normalize_symbols(watchlist)
     if real:
-        return real, "watchlist"
+        return real, "观察名单"
     sample = _normalize_symbols(sample_symbols or [])
     if sample:
-        return sample, "sample fallback"
-    return [], "empty watchlist"
+        return sample, "示例样本"
+    return [], "观察名单为空"
 
 
 def _normalize_symbols(values: list[str] | tuple[str, ...]) -> list[str]:

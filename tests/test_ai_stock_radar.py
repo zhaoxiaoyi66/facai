@@ -3337,9 +3337,9 @@ def test_low_final_score_cannot_get_core_position() -> None:
 
 
 def test_watchlist_empty_and_sample_fallback_do_not_override_real_symbols() -> None:
-    assert select_radar_symbols([]) == ([], "empty watchlist")
-    assert select_radar_symbols([], ["nvda"]) == (["NVDA"], "sample fallback")
-    assert select_radar_symbols(["msft"], ["nvda"]) == (["MSFT"], "watchlist")
+    assert select_radar_symbols([]) == ([], "观察名单为空")
+    assert select_radar_symbols([], ["nvda"]) == (["NVDA"], "示例样本")
+    assert select_radar_symbols(["msft"], ["nvda"]) == (["MSFT"], "观察名单")
 
 
 def test_missing_buy_gate_result_defaults_to_advisory_entry_fields() -> None:
