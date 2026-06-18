@@ -134,7 +134,7 @@ def build_dashboard_data_health_view_from_summary(summary: dict, symbols: list[s
         ("价格缺失", summary.get("missingPriceCount", 0)),
         ("历史缺失", summary.get("missingHistoryCount", 0)),
         ("历史过期", summary.get("staleHistoryCount", 0)),
-        ("finalDecision 异常", summary.get("finalDecisionErrorCount", 0)),
+        ("决策结论异常", summary.get("finalDecisionErrorCount", 0)),
         ("持仓缺价", summary.get("portfolioMissingPriceCount", 0)),
         ("复盘缺失", summary.get("outcomeMissingCount", 0)),
     ]
