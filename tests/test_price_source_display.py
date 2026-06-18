@@ -47,6 +47,18 @@ def test_price_source_label_uses_price_only_refresh_mode() -> None:
     assert "刷新时间：06/17 20:00 HKT" in detail
 
 
+def test_price_source_label_accepts_snake_case_fetched_at() -> None:
+    label, detail = price_source_label(
+        {
+            "priceSource": "quote_snapshot",
+            "fetched_at": "2026-06-17T13:05:00+00:00",
+        }
+    )
+
+    assert label == "最新报价 06/17 21:05"
+    assert "刷新时间：06/17 21:05 HKT" in detail
+
+
 def test_price_source_label_from_row_reads_raw_snapshot_first() -> None:
     row = pd.Series(
         {

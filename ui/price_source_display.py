@@ -38,7 +38,7 @@ def price_source_label(*sources: object) -> tuple[str, str]:
             label = "最新报价"
         elif _first_present(sources, "currentPrice", "current_price", "price") is not None:
             label = "最新报价"
-        elif _first_present(sources, "quote_updated_at", "price_updated_at", "fetchedAt") is not None:
+        elif _first_present(sources, "quote_updated_at", "price_updated_at", "fetched_at", "fetchedAt") is not None:
             label = "报价缓存"
         elif _first_present(sources, "price_as_of", "history_latest_date", "historyLatestDate", "latest_close") is not None:
             label = "收盘价"
@@ -70,6 +70,7 @@ def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
         "last_close_synced_at",
         "updated_at",
         "updatedAt",
+        "fetched_at",
         "fetchedAt",
     )
     if market_session:
@@ -111,6 +112,7 @@ def _compact_price_source_label(label: str, sources: tuple[object, ...]) -> str:
         "last_close_synced_at",
         "updated_at",
         "updatedAt",
+        "fetched_at",
         "fetchedAt",
     )
     suffix = _compact_date(as_of) if label in {"昨夜收盘", "收盘价"} and as_of else _compact_datetime(updated_at)
