@@ -74,3 +74,20 @@ def test_price_source_label_from_row_reads_raw_snapshot_first() -> None:
 
     assert label == "盘前参考 06/17 19:00"
     assert "刷新时间：06/17 19:00 HKT" in detail
+
+
+def test_price_source_label_from_row_reads_snake_case_row_source() -> None:
+    row = pd.Series(
+        {
+            "current_price": 102.37,
+            "price_source": "price_history",
+            "history_latest_date": "2026-06-16",
+            "data_updated_at": "2026-06-17T02:15:00+00:00",
+        }
+    )
+
+    label, detail = price_source_label_from_row(row)
+
+    assert label == "收盘价 06/16"
+    assert "数据日期：2026-06-16" in detail
+    assert "刷新时间：06/17 10:15 HKT" in detail

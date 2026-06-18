@@ -28,7 +28,7 @@ def price_source_label(*sources: object) -> tuple[str, str]:
     if not label:
         refresh_mode = str(_first_present(sources, "refresh_mode", "refreshMode") or "").strip().upper()
         raw_source = str(
-            _first_present(sources, "priceSource", "quote_source", "quoteSource", "source") or ""
+            _first_present(sources, "price_source", "priceSource", "quote_source", "quoteSource", "source") or ""
         ).strip().lower()
         if refresh_mode == "PRICE_ONLY":
             label = "最新报价"
@@ -68,6 +68,8 @@ def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
         "quote_updated_at",
         "price_updated_at",
         "last_close_synced_at",
+        "data_updated_at",
+        "dataUpdatedAt",
         "updated_at",
         "updatedAt",
         "fetched_at",
@@ -110,6 +112,8 @@ def _compact_price_source_label(label: str, sources: tuple[object, ...]) -> str:
         "quote_updated_at",
         "price_updated_at",
         "last_close_synced_at",
+        "data_updated_at",
+        "dataUpdatedAt",
         "updated_at",
         "updatedAt",
         "fetched_at",
