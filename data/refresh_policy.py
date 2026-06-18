@@ -14,6 +14,7 @@ from urllib.request import Request
 from data.fundamentals import FundamentalCache
 from data.macro_regime import MACRO_FORCE_OFFICIAL_REFRESH, refresh_macro_indicators
 from data.prices import CACHE_PATH
+from data.us_market_session import USMarketSession, get_us_market_session_status
 
 
 class RefreshMode(str, Enum):
@@ -790,11 +791,59 @@ def _merge_quote_snapshot(
         previous_close = price - change if price is not None and change is not None else None
         if previous_close not in (None, 0):
             merged["price_change_pct"] = round((change / previous_close) * 100, 4)
+    market_session = _market_session_at_refresh(now)
+    if market_session:
+        merged["market_session_at_refresh"] = market_session
+    quote_session = _quote_price_session(quote)
+    if quote_session:
+        merged["price_session"] = quote_session
+        merged["current_price_source"] = quote_session
+    elif market_session == USMarketSession.REGULAR.value:
+        merged["price_session"] = USMarketSession.REGULAR.value
+        merged["current_price_source"] = USMarketSession.REGULAR.value
     merged["quote_updated_at"] = now.isoformat()
     merged["price_updated_at"] = now.isoformat()
     merged["refresh_mode"] = RefreshMode.PRICE_ONLY.value
     merged["cache_note"] = "仅价格已更新；基本面沿用缓存。"
     return merged
+
+
+def _market_session_at_refresh(now: datetime) -> str:
+    try:
+        return get_us_market_session_status(now).status.value
+    except Exception:
+        return USMarketSession.UNKNOWN.value
+
+
+def _quote_price_session(quote: dict) -> str:
+    raw = _first_present(
+        quote,
+        "price_session",
+        "priceSession",
+        "current_price_source",
+        "currentPriceSource",
+        "market_session",
+        "marketSession",
+        "session",
+        "marketState",
+    )
+    text = str(raw or "").strip().upper().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "REGULAR": USMarketSession.REGULAR.value,
+        "REGULAR_MARKET": USMarketSession.REGULAR.value,
+        "OPEN": USMarketSession.REGULAR.value,
+        "PREMARKET": USMarketSession.PRE_MARKET.value,
+        "PRE_MARKET": USMarketSession.PRE_MARKET.value,
+        "PRE": USMarketSession.PRE_MARKET.value,
+        "AFTERHOURS": USMarketSession.AFTER_HOURS.value,
+        "AFTER_HOURS": USMarketSession.AFTER_HOURS.value,
+        "POSTMARKET": USMarketSession.AFTER_HOURS.value,
+        "POST_MARKET": USMarketSession.AFTER_HOURS.value,
+        "LAST_CLOSE": "LAST_CLOSE",
+        "CLOSE": "LAST_CLOSE",
+        "CLOSED": "LAST_CLOSE",
+    }
+    return mapping.get(text, "")
 
 
 def _quote_symbol(row: dict) -> str:

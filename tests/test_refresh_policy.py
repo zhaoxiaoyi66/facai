@@ -189,6 +189,41 @@ def test_price_only_updates_quote_cache_without_fundamentals(tmp_path) -> None:
     assert updated["fundamental_updated_at"]
 
 
+def test_price_only_marks_regular_session_price_source(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeFmpQuoteOnlyProvider()
+
+    refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.PRICE_ONLY,
+        provider=provider,
+        cache=cache,
+        now=datetime(2026, 6, 11, 14, tzinfo=timezone.utc),
+    )
+
+    updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
+    assert updated["market_session_at_refresh"] == "REGULAR"
+    assert updated["price_session"] == "REGULAR"
+    assert updated["current_price_source"] == "REGULAR"
+
+
+def test_price_only_records_afterhours_refresh_without_overstating_quote_session(tmp_path) -> None:
+    cache = FundamentalCache(tmp_path / "refresh.sqlite")
+    provider = FakeFmpQuoteOnlyProvider()
+
+    refresh_symbols_by_mode(
+        ["NVDA"],
+        RefreshMode.PRICE_ONLY,
+        provider=provider,
+        cache=cache,
+        now=datetime(2026, 6, 11, 21, tzinfo=timezone.utc),
+    )
+
+    updated = cache.get_snapshot("NVDA", max_age_hours=24 * 3650)
+    assert updated["market_session_at_refresh"] == "AFTER_HOURS"
+    assert updated.get("price_session") != "AFTER_HOURS"
+
+
 def test_price_only_emits_refresh_progress_events(tmp_path) -> None:
     cache = FundamentalCache(tmp_path / "refresh.sqlite")
     provider = FakeFmpQuoteOnlyProvider()

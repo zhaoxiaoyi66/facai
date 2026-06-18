@@ -49,6 +49,7 @@ def price_source_label_from_row(row: object) -> tuple[str, str]:
 
 def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
     parts = [f"价格口径：{label}"]
+    market_session = _first_present(sources, "market_session_at_refresh", "marketSessionAtRefresh")
     as_of = _first_present(
         sources,
         "price_as_of",
@@ -66,11 +67,25 @@ def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
         "updatedAt",
         "fetchedAt",
     )
+    if market_session:
+        parts.append(f"刷新时段：{_market_session_label(market_session)}")
     if as_of:
         parts.append(f"参考日：{as_of}")
     if updated_at:
         parts.append(f"更新时间：{updated_at}")
     return "｜".join(str(part) for part in parts if part)
+
+
+def _market_session_label(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "REGULAR": "美股盘中",
+        "PRE_MARKET": "美股盘前",
+        "AFTER_HOURS": "美股盘后",
+        "CLOSED_AFTER_SESSION": "美股已收盘",
+        "WEEKEND_OR_HOLIDAY": "美股休市",
+        "UNKNOWN": "市场状态未知",
+    }.get(text, "市场状态未知")
 
 
 def _first_present(sources: tuple[object, ...], *keys: str) -> Any:

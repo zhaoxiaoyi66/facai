@@ -20,9 +20,16 @@ def test_price_source_label_uses_explicit_last_close_session() -> None:
 
 
 def test_price_source_label_uses_price_only_refresh_mode() -> None:
-    label, detail = price_source_label({"refresh_mode": "PRICE_ONLY", "quote_updated_at": "2026-06-17T12:00:00+00:00"})
+    label, detail = price_source_label(
+        {
+            "refresh_mode": "PRICE_ONLY",
+            "quote_updated_at": "2026-06-17T12:00:00+00:00",
+            "market_session_at_refresh": "AFTER_HOURS",
+        }
+    )
 
     assert label == "最新报价"
+    assert "刷新时段：美股盘后" in detail
     assert "更新时间：2026-06-17T12:00:00+00:00" in detail
 
 
