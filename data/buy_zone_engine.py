@@ -509,6 +509,14 @@ def build_buy_zone_context(
         daily_return=daily_return,
         close_position=close_position,
     )
+    confirmed_layer_break = _confirmed_layer_break(
+        price=price,
+        layer_break_line=layer_break_line,
+        volume_score=volume_score,
+    )
+    if confirmed_layer_break:
+        primary_zone = "INVALIDATION"
+        technical_score = _technical_structure_score(primary_zone)
     confirmation_score = _confirmation_score(data, volume, volume_score)
     volume_price_gate = _volume_price_gate(
         primary_zone=primary_zone,
@@ -568,6 +576,8 @@ def build_buy_zone_context(
         entry_trigger_score=entry_trigger_score,
     )
     current_layer_type = _current_layer_type(price, left_layers)
+    if confirmed_layer_break:
+        current_layer_type = "STRUCTURAL_INVALID"
     next_effective_low, next_effective_high = _next_effective_buy_zone(price, left_layers)
     right_confirmation_low, right_confirmation_high = _right_confirmation_zone(
         confirmation=confirmation,
@@ -630,6 +640,8 @@ def build_buy_zone_context(
         entry_trigger_score=entry_trigger_score,
     )
     current_layer_type = _current_layer_type(price, left_layers)
+    if confirmed_layer_break:
+        current_layer_type = "STRUCTURAL_INVALID"
     next_effective_low, next_effective_high = _next_effective_buy_zone(price, left_layers)
     if primary_zone == "PULLBACK_BUY":
         current_subzone = _subzone_from_layer_type(current_layer_type)
@@ -1264,6 +1276,19 @@ def _primary_zone(
     if price > pullback_high:
         return "REPAIR_WATCH"
     return "WAIT_PULLBACK"
+
+
+def _confirmed_layer_break(
+    *,
+    price: float | None,
+    layer_break_line: float | None,
+    volume_score: float | None,
+) -> bool:
+    if price is None or layer_break_line is None:
+        return False
+    if price >= layer_break_line:
+        return False
+    return (volume_score or 0.0) >= 65.0
 
 
 def _pullback_layers(pullback_low: float, pullback_high: float) -> tuple[float, float, float, float]:
