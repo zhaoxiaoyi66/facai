@@ -98,7 +98,7 @@ def build_dashboard_data_health_error_view(exc: Exception) -> DataHealthView:
         "tone": "warning",
         "statusLabel": "检查失败",
         "subtitle": "本地缓存体检",
-        "items": [("健康项", "N/A")],
+        "items": [("健康项", "暂无记录")],
         "issues": [str(exc)],
         "issueSummary": "主要问题 1 项",
     }
