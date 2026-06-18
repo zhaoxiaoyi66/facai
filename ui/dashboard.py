@@ -313,7 +313,7 @@ def render() -> None:
     _render_dashboard_system_status(data_health_context, risk_items, table, macro_regime)
     _render_client_stock_detail_drawers(table)
 
-    st.caption("缺失财务数据显示为 N/A；评分不会用模型补造财务数字。")
+    st.caption("缺失财务数据显示为“待补”；评分不会用模型补造财务数字。")
 
 
 def _render_dashboard_header(tickers: list[str], market_session: Any | None = None) -> None:
