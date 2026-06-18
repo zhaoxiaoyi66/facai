@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +10,7 @@ import pandas as pd
 
 from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
+from data.price_history_selection import select_latest_history_key
 
 
 def build_market_context(
@@ -159,16 +160,7 @@ def _select_history_key(conn: sqlite3.Connection, symbol: str) -> str | None:
     ).fetchall()
     if not rows:
         return None
-    ranked = sorted(
-        rows,
-        key=lambda row: (
-            _parse_datetime(row[2]),
-            _parse_datetime(row[1]),
-            1 if str(row[0] or "").upper() == symbol else 0,
-        ),
-        reverse=True,
-    )
-    return str(ranked[0][0]) if ranked[0][0] else None
+    return select_latest_history_key(rows, symbol)
 
 
 def _quote_price(quote: dict[str, Any] | None) -> float | None:
@@ -232,18 +224,6 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 
 def _empty_history_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-
-
-def _parse_datetime(value: object) -> datetime:
-    if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _first_number(*values: object) -> float | None:

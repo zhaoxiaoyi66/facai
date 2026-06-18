@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from data.prices import CACHE_PATH
+from data.price_history_selection import select_latest_history_key
 
 
 class CacheReadModel:
@@ -151,16 +152,7 @@ class CacheReadModel:
         if not rows:
             return None
         plain_key = _normalize_symbol(symbol)
-        ranked = sorted(
-            rows,
-            key=lambda row: (
-                _parse_datetime(row[2]),
-                _parse_datetime(row[1]),
-                1 if str(row[0] or "").upper() == plain_key else 0,
-            ),
-            reverse=True,
-        )
-        return str(ranked[0][0]) if ranked[0][0] else None
+        return select_latest_history_key(rows, plain_key)
 
     def _is_stale(self, fetched_at: object, max_age_hours: float | None = None) -> bool:
         ttl_hours = self.quote_max_age_hours if max_age_hours is None else max_age_hours
@@ -196,18 +188,6 @@ def _history_keys(symbol: object) -> tuple[str, str]:
 
 def _history_key_placeholders() -> str:
     return "?, ?"
-
-
-def _parse_datetime(value: object) -> datetime:
-    if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _first_number(*values: object) -> float | None:
