@@ -603,8 +603,6 @@ def fetch_friday_afterhours_close(
         }
     snapshot_price = _number((anchor_source or {}).get("afterhours_reference_price"))
     snapshot_time = _datetime_from_iso((anchor_source or {}).get("afterhours_reference_time"))
-    if snapshot_price is not None and snapshot_price > 0 and snapshot_time is None:
-        snapshot_time = datetime.combine(friday_date, time(19, 59), ET)
     if snapshot_price is not None and snapshot_price > 0 and snapshot_time is not None:
         snapshot_et = snapshot_time.astimezone(ET)
         if window_start <= snapshot_et < window_end:
@@ -699,6 +697,31 @@ def fetch_overnight_first_1m_close(
     anchor_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start_et = session_start_et.astimezone(ET)
+    requested_end = start_et + timedelta(minutes=2)
+    normalized = str(symbol or "").strip().upper()
+    if provider is None:
+        return {
+            "ok": False,
+            "symbol": normalized,
+            "overnight_first_1m_close": None,
+            "bar_start_et": "",
+            "bar_end_et": "",
+            "provider": "",
+            "venue": "OVERNIGHT",
+            "interval": "1m",
+            "quality": "OVERNIGHT_PROVIDER_MISSING",
+            "reason": "OVERNIGHT_PROVIDER_MISSING",
+            "display_reason": "美股夜盘数据源未配置",
+            "price": None,
+            "timestamp": "",
+            "bar_size": "1m",
+            "returned_bar_count": 0,
+            "requested_start": start_et.astimezone(timezone.utc).isoformat(),
+            "requested_end": requested_end.astimezone(timezone.utc).isoformat(),
+            "anchor": "overnight",
+            "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
+            "bar": None,
+        }
     session_date = (start_et + timedelta(days=1)).date()
     result = get_first_valid_stock_bar_after_weekend(
         symbol,
@@ -706,7 +729,7 @@ def fetch_overnight_first_1m_close(
         "overnight",
         2,
         broker_provider=provider,
-        anchor_source=anchor_source or {},
+        anchor_source={},
         allow_anchor_fallback=False,
         require_exact_start=True,
     )
@@ -714,7 +737,7 @@ def fetch_overnight_first_1m_close(
         timestamp = _datetime_from_iso(result.get("timestamp"))
         return {
             "ok": True,
-            "symbol": str(symbol or "").strip().upper(),
+            "symbol": normalized,
             "overnight_first_1m_close": result.get("price"),
             "bar_start_et": timestamp.astimezone(ET).isoformat() if timestamp is not None else "",
             "bar_end_et": (timestamp + timedelta(minutes=1)).astimezone(ET).isoformat() if timestamp is not None else "",
@@ -723,18 +746,41 @@ def fetch_overnight_first_1m_close(
             "interval": "1m",
             "quality": "OFFICIAL_OVERNIGHT_1M",
             "reason": "",
+            "display_reason": "",
+            "price": result.get("price"),
+            "timestamp": str(result.get("timestamp") or ""),
+            "bar_size": str(result.get("bar_size") or "1m"),
+            "returned_bar_count": int(result.get("returned_bar_count") or 0),
+            "requested_start": str(result.get("requested_start") or ""),
+            "requested_end": str(result.get("requested_end") or ""),
+            "anchor": str(result.get("anchor") or "overnight"),
+            "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
+            "bar": result.get("bar"),
         }
+    quality = str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M")
+    if quality == "MISSING_STOCK_FIRST_BAR":
+        quality = "MISSING_OVERNIGHT_FIRST_1M"
     return {
         "ok": False,
-        "symbol": str(symbol or "").strip().upper(),
+        "symbol": normalized,
         "overnight_first_1m_close": None,
         "bar_start_et": "",
         "bar_end_et": "",
         "provider": str(result.get("provider") or ""),
         "venue": "OVERNIGHT",
         "interval": "1m",
-        "quality": str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M"),
-        "reason": "缺少美股夜盘首分钟 1m K 线",
+        "quality": quality,
+        "reason": str(result.get("reason") or "MISSING_STOCK_FIRST_BAR"),
+        "display_reason": "缺少美股夜盘首分钟 1m K线",
+        "price": None,
+        "timestamp": "",
+        "bar_size": str(result.get("bar_size") or "1m"),
+        "returned_bar_count": int(result.get("returned_bar_count") or 0),
+        "requested_start": str(result.get("requested_start") or start_et.astimezone(timezone.utc).isoformat()),
+        "requested_end": str(result.get("requested_end") or requested_end.astimezone(timezone.utc).isoformat()),
+        "anchor": str(result.get("anchor") or "overnight"),
+        "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
+        "bar": result.get("bar"),
     }
 
 
@@ -920,15 +966,10 @@ def _basis_backtest_one_window(
             "anchor_ts": str(anchor.get("anchor_ts") or ""),
         }
     )
-    stock_bar = get_first_valid_stock_bar_after_weekend(
+    stock_bar = fetch_overnight_first_1m_close(
         ticker,
-        window.end_et.date() + timedelta(days=1),
-        opening_anchor,
-        open_window_minutes,
-        broker_provider=broker_provider,
-        anchor_source=anchor_source,
-        allow_anchor_fallback=allow_anchor_fallback,
-        require_exact_start=require_exact_broker_open,
+        window.end_et,
+        provider=broker_provider,
     )
     quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
         window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
@@ -995,8 +1036,8 @@ def _basis_backtest_one_window(
     broker_first_close = None
     broker_first_time = ""
     if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
-        broker_first_close = stock_bar.get("price")
-        broker_first_time = str(stock_bar.get("timestamp") or "")
+        broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
+        broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
     binance_equivalent_max = _number(binance_max_fields.get("binance_equivalent_max") or binance_max_fields.get("binance_weekend_max"))
     binance_premium_pct = _change_pct(binance_equivalent_max, friday_afterhours_close)
     overnight_vs_binance_pct = _change_pct(broker_first_close, binance_equivalent_max)
@@ -1007,6 +1048,7 @@ def _basis_backtest_one_window(
         friday_afterhours_close=friday_afterhours_close,
         binance_weekend_max=binance_equivalent_max,
         overnight_first_1m_close=broker_first_close,
+        overnight_quality=str(stock_bar.get("quality") or ""),
     )
     result.update(
         {
@@ -1072,7 +1114,7 @@ def _basis_backtest_one_window(
             "overnight_venue": "OVERNIGHT",
             "overnight_interval": str(stock_bar.get("bar_size") or ""),
             "overnight_quality": "OFFICIAL_OVERNIGHT_1M" if broker_first_close is not None else str(stock_bar.get("quality") or ""),
-            "overnight_reason": "" if broker_first_close is not None else str(stock_bar.get("reason") or ""),
+            "overnight_reason": "" if broker_first_close is not None else str(stock_bar.get("display_reason") or stock_bar.get("reason") or ""),
             "binance_premium_pct": binance_premium_pct,
             "overnight_vs_binance_pct": overnight_vs_binance_pct,
             "overnight_vs_afterhours_pct": overnight_vs_afterhours_pct,
@@ -2220,6 +2262,7 @@ def _weekend_chain_quality(
     friday_afterhours_close: float | None,
     binance_weekend_max: float | None,
     overnight_first_1m_close: float | None,
+    overnight_quality: str = "",
 ) -> str:
     if str(mapping_confidence or "").strip().lower() != "confirmed":
         return "OBSERVE_ONLY"
@@ -2227,6 +2270,8 @@ def _weekend_chain_quality(
         return "CONTRACT_MISSING"
     if friday_afterhours_close is None or friday_afterhours_close <= 0:
         return "NO_AFTERHOURS_CLOSE"
+    if str(overnight_quality or "").strip().upper() == "OVERNIGHT_PROVIDER_MISSING":
+        return "OVERNIGHT_PROVIDER_MISSING"
     if overnight_first_1m_close is None or overnight_first_1m_close <= 0:
         return "MISSING_OVERNIGHT_FIRST_1M"
     return "OK"

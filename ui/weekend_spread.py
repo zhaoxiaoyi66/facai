@@ -660,6 +660,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
                 "NO_BROKER_OVERNIGHT_BAR",
                 "MISSING_STOCK_FIRST_BAR",
                 "MISSING_OVERNIGHT_FIRST_1M",
+                "OVERNIGHT_PROVIDER_MISSING",
                 "NO_AFTERHOURS_CLOSE",
                 "CONTRACT_MISSING",
                 "HOLIDAY_OR_NO_SESSION",
@@ -941,6 +942,7 @@ def _data_quality_text(value: object) -> str:
         "OBSERVE_ANCHOR_ONLY": "锚点观察样本，不计入正式胜率",
         "NO_AFTERHOURS_CLOSE": "缺少周五盘后收盘价",
         "MISSING_OVERNIGHT_FIRST_1M": "缺少美股夜盘首分钟 1m K 线",
+        "OVERNIGHT_PROVIDER_MISSING": "美股夜盘数据源未配置",
         "DEGRADED": "降级样本",
         "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
@@ -1034,7 +1036,9 @@ def _backtest_error_message(rows: list[dict]) -> str:
         ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
         quality = str(row.get("data_quality") or "").strip().upper()
         raw_error = str(row.get("error_message") or "")
-        if quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR"}:
+        if quality == "OVERNIGHT_PROVIDER_MISSING":
+            reason = "美股夜盘数据源未配置"
+        elif quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR", "MISSING_OVERNIGHT_FIRST_1M"}:
             reason = "缺少美股端第一根有效 1m bar"
         elif quality == "HOLIDAY_OR_NO_SESSION":
             reason = "遇到美国假期或无有效交易时段"
@@ -1165,7 +1169,7 @@ def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
         quality = str(row.get("data_quality") or "").strip().upper()
         if quality == "OK":
             counts["ok"] += 1
-        elif quality in {"OBSERVE_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "NO_AFTERHOURS_CLOSE"}:
+        elif quality in {"OBSERVE_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING", "NO_AFTERHOURS_CLOSE"}:
             counts["observe"] += 1
         elif quality.startswith("DEGRADED"):
             counts["degraded"] += 1
@@ -1182,6 +1186,11 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
         str((row.get("raw_row") or {}).get("data_quality") or row.get("data_quality") or "").strip().upper()
         for row in review_rows
     }
+    if qualities & {"OVERNIGHT_PROVIDER_MISSING"}:
+        return (
+            "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
+            "但美股夜盘数据源未配置，不计入正式统计。"
+        )
     if qualities & {"MISSING_OVERNIGHT_FIRST_1M"}:
         return (
             "当前只有观察样本：已读取周五盘后收盘价和 Binance 周末最高价，"
@@ -1230,8 +1239,6 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
         )
         binance_price = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
         broker_open_close = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close"))
-        if broker_open_close is None and str(row.get("stock_open_anchor") or "").strip().lower() == "overnight" and str(row.get("stock_bar_size") or "") == "1m":
-            broker_open_close = _first_number(row, ("stock_bar_price", "broker_overnight_open_price"))
         binance_premium_pct = _first_number(row, ("binance_premium_pct",))
         if binance_premium_pct is None and friday_afterhours_close and binance_price is not None:
             binance_premium_pct = (binance_price / friday_afterhours_close - 1.0) * 100.0
@@ -1256,7 +1263,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "friday_afterhours_provider": str(row.get("friday_afterhours_provider") or row.get("friday_afterhours_source") or ""),
             "broker_open_close": broker_open_close,
             "broker_first_time": _weekend_review_broker_first_time(row),
-            "overnight_provider": str(row.get("overnight_provider") or row.get("broker_provider") or row.get("stock_bar_provider") or ""),
+            "overnight_provider": _weekend_review_overnight_provider(row),
             "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
             "binance_window": _weekend_review_binance_window(row),
@@ -1412,7 +1419,8 @@ def _observation_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     return [
         row
         for row in review_rows
-        if str(row.get("data_quality") or "").strip().upper() in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY"}
+        if str(row.get("data_quality") or "").strip().upper()
+        in {"OBSERVE_ONLY", "OBSERVE_ANCHOR_ONLY", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}
     ]
 
 
@@ -1421,7 +1429,7 @@ def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
         row
         for row in review_rows
         if str(row.get("data_quality") or "").strip().upper()
-        in {"OK", "OBSERVE_ONLY", "NO_AFTERHOURS_CLOSE", "MISSING_OVERNIGHT_FIRST_1M"}
+        in {"OK", "OBSERVE_ONLY", "NO_AFTERHOURS_CLOSE", "MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}
         or str(row.get("data_quality") or "").strip().upper().startswith("DEGRADED")
     ]
 
@@ -1443,6 +1451,8 @@ def _weekend_review_data_quality(
         return "DEGRADED"
     if quality in {"BLOCK_MAPPING", "NO_MAPPING", "MAPPING_MISSING"} or status == "BLOCK_MAPPING":
         return "MAPPING_MISSING"
+    if quality == "OVERNIGHT_PROVIDER_MISSING":
+        return "OVERNIGHT_PROVIDER_MISSING"
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
     if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"}:
@@ -1465,8 +1475,8 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
         return "仅观察"
     if data_quality == "NO_AFTERHOURS_CLOSE":
         return "缺盘后锚点"
-    if data_quality == "MISSING_OVERNIGHT_FIRST_1M":
-        return "缺夜盘价格"
+    if data_quality in {"MISSING_OVERNIGHT_FIRST_1M", "OVERNIGHT_PROVIDER_MISSING"}:
+        return "仅观察"
     if str(data_quality or "").startswith("DEGRADED"):
         return "降级观察"
     if data_quality != "OK" or premium_pct is None:
@@ -1551,6 +1561,14 @@ def _weekend_review_broker_first_time(row: dict) -> str:
     return ""
 
 
+def _weekend_review_overnight_provider(row: dict) -> str:
+    quality = str(row.get("transmission_data_quality") or row.get("overnight_quality") or row.get("data_quality") or "").strip().upper()
+    raw = str(row.get("overnight_provider") or row.get("broker_provider") or row.get("stock_bar_provider") or "").strip()
+    if quality == "OVERNIGHT_PROVIDER_MISSING" or not raw or raw.lower() in {"none", "anchor_source"}:
+        return "美股夜盘数据源未配置"
+    return raw
+
+
 def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     quality = str(data_quality or "").strip().upper()
     if quality == "OK":
@@ -1559,8 +1577,10 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
         return "映射未确认，仅作观察，不计入正式样本"
     if quality == "NO_AFTERHOURS_CLOSE":
         return str(row.get("friday_afterhours_reason") or row.get("afterhours_missing_reason") or "缺少周五盘后收盘价")
+    if quality == "OVERNIGHT_PROVIDER_MISSING":
+        return "美股夜盘数据源未配置"
     if quality == "MISSING_OVERNIGHT_FIRST_1M":
-        return str(row.get("overnight_reason") or row.get("stock_bar_reason") or "缺少美股夜盘首分钟 1m K 线")
+        return str(row.get("overnight_reason") or "缺少美股夜盘首分钟 1m K线")
     if quality == "CONTRACT_MISSING":
         return str(row.get("binance_weekend_max_reason") or row.get("error_message") or "缺少 Binance 周末 1m K 线")
     if quality == "STOCK_MISSING":

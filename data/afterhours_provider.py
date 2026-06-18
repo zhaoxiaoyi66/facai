@@ -89,12 +89,27 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         force_refresh: bool = False,
     ) -> AfterhoursReference:
         normalized = str(symbol or "").strip().upper()
-        cache_key = _anchor_cache_key(normalized, regular_close_date)
-        legacy_cache_key = f"{normalized}:{regular_close_date or 'latest'}"
+        provider_name = _cache_provider_name(self.provider)
+        cache_key = _anchor_cache_key(
+            normalized,
+            regular_close_date,
+            anchor_type="friday_afterhours_close",
+            provider_name=provider_name,
+        )
+        legacy_cache_keys = [
+            _legacy_anchor_cache_key(normalized, regular_close_date),
+            f"{normalized}:{regular_close_date or 'latest'}",
+        ]
         cache_error = _read_json_error(self.cache_path)
         primary_cached = self._read(cache_key)
-        legacy_cached = self._read(legacy_cache_key)
-        cached = _valid_cached_reference(primary_cached, regular_close_date) or _valid_cached_reference(legacy_cached, regular_close_date)
+        legacy_snapshots = [snapshot for key in legacy_cache_keys if (snapshot := self._read(key)) is not None]
+        legacy_cached = next(
+            (snapshot for snapshot in legacy_snapshots if _valid_cached_reference(snapshot, regular_close_date) is not None),
+            legacy_snapshots[0] if legacy_snapshots else None,
+        )
+        cached = _valid_cached_reference(primary_cached, regular_close_date) or _valid_cached_reference(
+            legacy_cached, regular_close_date
+        )
         cache_date_mismatch = (primary_cached is not None or legacy_cached is not None) and cached is None
         if not force_refresh and cached is not None:
             cached_snapshot = _decorate_snapshot(cached, regular_close_date=regular_close_date, cache_status="CACHE_HIT")
@@ -386,10 +401,30 @@ def _valid_cached_reference(snapshot: AfterhoursReference | None, regular_close_
     return snapshot
 
 
-def _anchor_cache_key(symbol: str, regular_close_date: str) -> str:
+def _anchor_cache_key(
+    symbol: str,
+    regular_close_date: str,
+    *,
+    anchor_type: str = "friday_afterhours_close",
+    provider_name: str = "",
+) -> str:
+    date_text = regular_close_date or "latest"
+    week_id = _week_id(regular_close_date) if regular_close_date else "latest"
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_anchor = str(anchor_type or "friday_afterhours_close").strip().lower()
+    normalized_provider = str(provider_name or "unknown_provider").strip().lower()
+    return f"{week_id}:{date_text}:{normalized_anchor}:{normalized_provider}:{normalized_symbol}"
+
+
+def _legacy_anchor_cache_key(symbol: str, regular_close_date: str) -> str:
     date_text = regular_close_date or "latest"
     week_id = _week_id(regular_close_date) if regular_close_date else "latest"
     return f"{week_id}:{date_text}:{symbol}"
+
+
+def _cache_provider_name(provider: Any) -> str:
+    name = str(getattr(provider, "provider_name", "") or type(provider).__name__ or "unknown_provider")
+    return name.replace(" ", "_")
 
 
 def _decorate_snapshot(snapshot: AfterhoursReference, *, regular_close_date: str, cache_status: str) -> AfterhoursReference:
