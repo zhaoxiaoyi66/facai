@@ -2301,6 +2301,8 @@ def _normalize_data_health_issue(issue: object) -> dict[str, str]:
     symbol = parts[0] if parts and parts[0].replace(".", "").replace("-", "").isalnum() and parts[0].upper() == parts[0] else ""
     reason = parts[1] if symbol and len(parts) > 1 else text
     category = _data_health_category_from_text(text)
+    if category == "final_decision_error" and "finalDecision" in reason:
+        reason = _data_health_category_label(category)
     return {"category": category, "symbol": symbol, "reason": reason or _data_health_category_label(category)}
 
 
@@ -2359,17 +2361,17 @@ def _refresh_part_status_label(status: object) -> str:
 
 def _data_health_detail_groups_html(issues: list[object]) -> str:
     groups = [
-        ("价格缺失", ("价格缺失", "价格过期", "缓存缺失"), "查看股票", "stock"),
-        ("历史缺失", ("历史缺失",), "查看数据状态", "stock_data"),
-        ("决策结论异常", ("finalDecision",), "查看评分", "stock_score"),
-        ("持仓缺价", ("持仓缺价",), "查看持仓", "portfolio"),
-        ("复盘结果缺失", ("复盘", "outcome"), "进入交易日志", "journal"),
+        ("价格缺失", {"missing_price", "stale_quote"}, "查看股票", "stock"),
+        ("历史缺失", {"missing_history", "stale_history"}, "查看数据状态", "stock_data"),
+        ("决策结论异常", {"final_decision_error"}, "查看评分", "stock_score"),
+        ("持仓缺价", {"portfolio_missing_price"}, "查看持仓", "portfolio"),
+        ("复盘结果缺失", {"outcome_missing"}, "进入交易日志", "journal"),
     ]
-    issue_texts = [str(issue) for issue in issues if str(issue).strip()]
+    normalized = [_normalize_data_health_issue(issue) for issue in issues if str(issue).strip()]
     cards: list[str] = []
-    for title, tokens, action, target in groups:
-        matched = [text for text in issue_texts if any(token in text for token in tokens)]
-        rows = "".join(_data_health_issue_row_html(text, action, target) for text in matched)
+    for title, categories, action, target in groups:
+        matched = [issue for issue in normalized if issue["category"] in categories]
+        rows = "".join(_data_health_issue_row_html(issue, action, target) for issue in matched)
         if not rows:
             rows = '<div class="data-health-detail-empty">暂无</div>'
         cards.append(
@@ -2383,10 +2385,9 @@ def _data_health_detail_groups_html(issues: list[object]) -> str:
     return f'<div class="data-health-detail-panel">{"".join(cards)}</div>'
 
 
-def _data_health_issue_row_html(issue: str, action: str, target: str) -> str:
-    parts = issue.split(maxsplit=1)
-    ticker = parts[0] if parts and parts[0].replace(".", "").replace("-", "").isalnum() and parts[0].upper() == parts[0] else "全局"
-    reason = parts[1] if ticker != "全局" and len(parts) > 1 else issue
+def _data_health_issue_row_html(issue: dict[str, str], action: str, target: str) -> str:
+    ticker = issue.get("symbol") or "全局"
+    reason = issue.get("reason") or _data_health_category_label(issue.get("category") or "") or "数据问题"
     action_html = _data_health_issue_action_html(action, target, ticker)
     return (
         '<div class="data-health-detail-row">'

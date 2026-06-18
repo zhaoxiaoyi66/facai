@@ -136,6 +136,14 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert dashboard._refresh_part_status_label(None) == "待补"
 
 
+def test_data_health_detail_groups_localize_final_decision_issue() -> None:
+    html = dashboard._data_health_detail_groups_html(["NVDA finalDecision failed to build"])
+
+    assert "NVDA" in html
+    assert "决策结论异常" in html
+    assert "finalDecision" not in html
+
+
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
     source = inspect.getsource(dashboard._refresh_single_dashboard_row)
 
