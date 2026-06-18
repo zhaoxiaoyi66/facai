@@ -3750,6 +3750,9 @@ def test_row_details_are_split_into_three_blocks() -> None:
     assert "**盘后锚点**" in source
     assert "**Binance 行情**" in source
     assert "**风险说明**" in source
+    assert "_data_quality_text(row.get('afterhours_data_quality')" in source
+    assert "确认时间：" in source
+    assert "finalized_at：" not in source
 
 
 def test_no_mapping_frame_only_shows_minimal_columns() -> None:
