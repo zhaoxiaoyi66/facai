@@ -124,6 +124,18 @@ def test_smart_refresh_skip_feedback_uses_latest_available_date(monkeypatch) -> 
     assert message == "美股休市中，已使用最新可用收盘 06/12。"
 
 
+def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
+    source = inspect.getsource(dashboard._render_data_health_refresh_result)
+
+    assert "价格状态：" in source
+    assert "日线状态：" in source
+    assert "quoteStatus:" not in source
+    assert "historyStatus:" not in source
+    assert dashboard._refresh_part_status_label("refreshed") == "已更新"
+    assert dashboard._refresh_part_status_label("not_run") == "未执行"
+    assert dashboard._refresh_part_status_label(None) == "待补"
+
+
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
     source = inspect.getsource(dashboard._refresh_single_dashboard_row)
 

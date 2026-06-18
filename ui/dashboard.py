@@ -1800,9 +1800,9 @@ def _render_data_health_refresh_result() -> None:
         (
             f'<div class="data-health-refresh-result {escape(tone)}">'
             f'<strong>{escape(str(result.get("symbol") or ""))} 刷新{escape(_refresh_status_label(status))}</strong>'
-            f'<span>quoteStatus: {escape(str(result.get("quoteStatus") or "N/A"))} · '
-            f'historyStatus: {escape(str(result.get("historyStatus") or "N/A"))} · '
-            f'{escape(" · ".join(refreshed_bits))} · cache: {escape(cache_text)} · error: {escape(error)}</span>'
+            f'<span>价格状态：{escape(_refresh_part_status_label(result.get("quoteStatus")))} · '
+            f'日线状态：{escape(_refresh_part_status_label(result.get("historyStatus")))} · '
+            f'{escape(" · ".join(refreshed_bits))} · 缓存：{escape(cache_text)} · 错误：{escape(error)}</span>'
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -2341,6 +2341,20 @@ def _refresh_status_label(status: str) -> str:
         "failed": "失败",
         "skipped": "跳过",
     }.get(status, "完成")
+
+
+def _refresh_part_status_label(status: object) -> str:
+    text = str(status or "").strip()
+    return {
+        "refreshed": "已更新",
+        "success": "已更新",
+        "skipped": "跳过",
+        "failed": "失败",
+        "missing": "缺失",
+        "stale": "过期",
+        "not_run": "未执行",
+        "unknown": "未知",
+    }.get(text, text or "待补")
 
 
 def _data_health_detail_groups_html(issues: list[object]) -> str:
