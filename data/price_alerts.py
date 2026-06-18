@@ -586,7 +586,7 @@ def _alert_message(alert: dict[str, Any], current_price: float | None, price_sta
     if alert["status"] == "triggered":
         return (
             f"{symbol} 已到达你设置的价格提醒 {trigger}。{stale}"
-            "请检查 buyZone、technicalEntry、combinedEntry、数据健康和交易纪律；价格到达不代表自动可以买。"
+            "请检查买区、技术结构、历史入口字段、数据健康和交易纪律；价格到达不代表自动可以买。"
         )
     if current_price is None:
         return f"{symbol} 暂无可用价格，提醒未触发。"

@@ -74,9 +74,9 @@ def test_below_price_alert_triggers_once() -> None:
 
         assert first[0]["status"] == "triggered"
         assert first[0]["triggeredNow"] is True
-        assert "buyZone" in first[0]["message"]
-        assert "technicalEntry" in first[0]["message"]
-        assert "combinedEntry" in first[0]["message"]
+        assert "买区" in first[0]["message"]
+        assert "技术结构" in first[0]["message"]
+        assert "历史入口字段" in first[0]["message"]
         assert "数据健康" in first[0]["message"]
         assert "交易纪律" in first[0]["message"]
         assert "价格到达不代表自动可以买" in first[0]["message"]
