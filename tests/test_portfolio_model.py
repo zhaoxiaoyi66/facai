@@ -17,7 +17,7 @@ from data.portfolio import (
     format_position_tier_label,
 )
 from data.decision_log import TradeJournalStore
-from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_OBSERVATION, ROLE_SATELLITE, ROLE_STRONG_CORE
+from data.portfolio_roles import ROLE_FIRST_CORE, ROLE_OBSERVATION, ROLE_SATELLITE, ROLE_STRONG_CORE, ROLE_UNDEFINED
 from data.portfolio_view_model import build_portfolio_view_model
 import data.portfolio_view_model as portfolio_view_model_module
 from scoring.final_decision import BUY_ACTIONS
@@ -134,6 +134,23 @@ class PortfolioModelTests(unittest.TestCase):
             self.assertEqual(updated["role"], ROLE_FIRST_CORE)
             self.assertEqual(updated["quantity"], 2)
             self.assertEqual(updated["average_cost"], 100)
+
+    def test_legacy_undefined_role_is_normalized_to_observation(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "portfolio.sqlite"
+            store = PortfolioPositionStore(db_path)
+            store.save_position("LEGACY", {"quantity": 2, "average_cost": 100, "role": ROLE_UNDEFINED})
+
+            view = build_portfolio_view_model(db_path, {"LEGACY": 120})
+            row = view["rows"][0]
+            structure = view["summary"]["roleStructure"]
+
+            self.assertEqual(row["holdingRole"], ROLE_OBSERVATION)
+            self.assertEqual(row["roleLabel"], "观察仓")
+            self.assertEqual(row["roleShortLabel"], "观察")
+            self.assertEqual(structure["counts"][ROLE_OBSERVATION], 1)
+            self.assertEqual(structure["undefinedCount"], 0)
+            self.assertNotIn("未定义", " ".join(structure["warnings"]))
 
     def test_portfolio_view_model_counts_roles_and_sorts_by_role_priority(self) -> None:
         with TemporaryDirectory() as tmpdir:
