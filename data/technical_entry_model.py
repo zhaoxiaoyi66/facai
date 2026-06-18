@@ -367,7 +367,7 @@ def _technical_reasons(
         reasons.append("极端恐慌区仍以买区模型输出为估值压力情景，技术层不替代估值买点。")
     if final_decision_blocked:
         action = _first_value(final_decision, "finalAction", "displayCategory", default="") or ""
-        reasons.append(f"最终结论提示高风险或需复核（{action}），技术面只能辅助解释，不能直接变成入场信号。")
+        reasons.append(f"最终结论已阻断（{action}），技术面只能辅助解释，不能直接变成入场信号。")
     return reasons[:8]
 
 
