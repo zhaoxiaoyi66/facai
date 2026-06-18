@@ -2419,7 +2419,7 @@ def _render_risk_radar_summary_strip(items: list[dict[str, object]], table: pd.D
         ("需要核验", _risk_item_symbol_count(items, "review")),
         ("低置信", _risk_item_symbol_count(items, "lowConfidence")),
         ("不可新增", _risk_item_symbol_count(items, "noAdd")),
-        ("blocker", _dashboard_blocker_count(table)),
+        ("阻断项", _dashboard_blocker_count(table)),
     ]
     item_html = "".join(
         f'<span>{escape(label)} <strong>{escape(str(value))}</strong></span>'

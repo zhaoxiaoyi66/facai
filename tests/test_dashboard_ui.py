@@ -144,6 +144,13 @@ def test_data_health_detail_groups_localize_final_decision_issue() -> None:
     assert "finalDecision" not in html
 
 
+def test_risk_summary_strip_uses_chinese_blocker_label() -> None:
+    source = inspect.getsource(dashboard._render_risk_radar_summary_strip)
+
+    assert '"阻断项"' in source
+    assert '"blocker"' not in source
+
+
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
     source = inspect.getsource(dashboard._refresh_single_dashboard_row)
 
