@@ -182,7 +182,7 @@ def _unified_buy_zone_primary_zone(buy_zone: Any) -> str | None:
 
 def _final_action_from_unified_buy_zone(unified_action: str, fallback_action: str) -> str:
     if unified_action in UNIFIED_SMALL_BUY_ACTIONS:
-        return "小仓观察建议"
+        return "可小仓分批"
     if unified_action == "BLOCK_CHASE":
         return "追高风险提醒"
     if unified_action == "RISK_REVIEW":
