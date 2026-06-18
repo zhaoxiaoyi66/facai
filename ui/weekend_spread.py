@@ -2499,7 +2499,7 @@ def _refresh_error_text(rows: list[dict]) -> str:
         value = str(row.get("error") or "").strip()
         if value:
             return value
-    return "Binance refresh failed"
+    return "Binance 刷新失败"
 
 
 def _afterhours_reason_text(value: object) -> str:

@@ -3755,6 +3755,10 @@ def test_row_details_are_split_into_three_blocks() -> None:
     assert "finalized_at：" not in source
 
 
+def test_refresh_error_fallback_is_localized() -> None:
+    assert weekend_spread._refresh_error_text([{}]) == "Binance 刷新失败"
+
+
 def test_no_mapping_frame_only_shows_minimal_columns() -> None:
     rows = build_weekend_spread_rows(["MSFT"], mapping=_explicit_empty_mapping(), provider=FakeProvider(), cache=FakeCache())
 
