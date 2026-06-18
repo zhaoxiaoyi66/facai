@@ -562,6 +562,7 @@ def test_dashboard_watchlist_entry_cell_simplifies_price_position_statuses() -> 
         ("IN_CHASE_ZONE", "禁止追高，参考买区 $90.00 - $100.00", "追高风险区", "$90.00 - $100.00"),
         ("BELOW_BUY_ZONE", "低于估值参考 $90.00 - $100.00", "低于观察区", "$90.00 - $100.00"),
         ("BELOW_BUY_ZONE", "跌破结构区 $90.00 - $100.00", "结构失效风险区", "$90.00 - $100.00"),
+        ("ABOVE_BUY_ZONE", "观察区上沿｜当前价不新增", "观察区上沿", "暂无有效区间"),
     ]
 
     for price_position, display_label, position_label, position_range in cases:

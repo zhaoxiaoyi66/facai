@@ -343,13 +343,14 @@ def _normalize_price_position_label(raw_label: str, action: str) -> str:
 
 def _strip_action_words(text: str) -> str:
     clean = str(text or "").strip()
-    separators = ["，", "；", " / "]
+    separators = ["｜", "|", "，", "；", " / "]
     for sep in separators:
         if sep in clean:
             clean = clean.split(sep, 1)[0].strip()
     replacements = {
         "当前价位于": "",
         "当前属于": "",
+        "当前价不新增": "",
         "但不建议新增": "",
         "当前不建议新增": "",
         "不建议新增": "",
