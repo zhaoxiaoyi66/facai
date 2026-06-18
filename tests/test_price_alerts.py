@@ -288,7 +288,7 @@ def test_radar_pullback_buy_plan_alert_can_trigger_from_entry_context() -> None:
         )
 
         assert alerts[0]["status"] == "triggered"
-        assert alerts[0]["alertReason"] == "计划买入：进入 Radar 回踩区提醒"
+        assert alerts[0]["alertReason"] == "计划买入：进入买区回踩区提醒"
 
 
 def test_paused_buy_plan_sync_disables_alert() -> None:

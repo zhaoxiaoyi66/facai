@@ -107,7 +107,7 @@ BUY_PLAN_TYPE_OPTIONS = {
 BUY_PLAN_ALERT_MODE_OPTIONS = {
     "跌到目标价提醒": "price_below",
     "接近目标价提醒": "price_near",
-    "进入 Radar 回踩区提醒": "radar_pullback",
+    "进入买区回踩区提醒": "radar_pullback",
 }
 BUY_PLAN_INVALIDATION_OPTIONS = [
     "财报证伪",

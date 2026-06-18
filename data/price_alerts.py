@@ -442,14 +442,14 @@ def sync_buy_plan_price_alert(
     active = plan_status not in {"paused", "cancelled", "completed", "expired"} if is_active is None else bool(is_active)
     reason = {
         "price_near": "计划买入：接近目标价提醒",
-        "radar_pullback": "计划买入：进入 Radar 回踩区提醒",
+        "radar_pullback": "计划买入：进入买区回踩区提醒",
     }.get(mode, "计划买入：跌到目标价提醒")
     note_parts = [
         f"plan_status={plan_status or 'active'}",
         f"alert_mode={mode or 'price_below'}",
     ]
     if mode == "radar_pullback":
-        note_parts.append("Radar 回踩区触发依赖刷新后的 entry context；价格提醒保留目标价兜底。")
+        note_parts.append("买区回踩区触发依赖刷新后的买区状态；价格提醒保留目标价兜底。")
     return PriceAlertStore(path).upsert_source_alert(
         symbol,
         alertType="BUY_PLAN_TRIGGER",
@@ -502,7 +502,7 @@ def _is_radar_pullback_alert(alert: dict[str, Any]) -> bool:
         str(alert.get(key) or "")
         for key in ("alertReason", "note", "triggerDirection")
     )
-    return "Radar 回踩区" in text or "radar_pullback" in text
+    return "买区回踩区" in text or "Radar 回踩区" in text or "radar_pullback" in text
 
 
 def _entry_context_in_pullback(entry_context: dict[str, Any]) -> bool:
