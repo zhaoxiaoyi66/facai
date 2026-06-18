@@ -231,7 +231,7 @@ def render_buy_plan_editor(
 
 def _compact_grid_html(rows: list[tuple[str, str]], class_name: str) -> str:
     items = "".join(
-        f"<div><span>{escape(label)}</span><strong>{escape(str(value or 'N/A'))}</strong></div>"
+        f"<div><span>{escape(label)}</span><strong>{escape(str(value or '待补'))}</strong></div>"
         for label, value in rows
     )
     return f'<section class="research-card {escape(class_name)}"><div class="plan-editor-grid">{items}</div></section>'
@@ -441,22 +441,26 @@ def _display_value(value: Any, is_percent: bool) -> str:
 def _money(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "待补"
     return format_currency(number)
 
 
 def _percent(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "待补"
     return format_percent(number)
 
 
 def _range_money(low: Any, high: Any) -> str:
     low_text = _money(low)
     high_text = _money(high)
-    if low_text == "N/A" and high_text == "N/A":
-        return "N/A"
+    if low_text == "待补" and high_text == "待补":
+        return "待补"
+    if low_text == "待补":
+        return f"不高于 {high_text}"
+    if high_text == "待补":
+        return f"不低于 {low_text}"
     return f"{low_text} - {high_text}"
 
 
@@ -532,7 +536,7 @@ def _tranche_auto_hint(price: Any, shares: Any, amount: Any, row: dict[str, Any]
 def _shares_text(value: Any) -> str:
     number = _number(value)
     if number is None:
-        return "N/A"
+        return "待补"
     return f"{number:g} 股"
 
 
