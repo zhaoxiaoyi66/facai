@@ -34,6 +34,7 @@ from data.weekend_basis_mapping_audit import (
 from data.weekend_spread_backtest import (
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
+    get_first_valid_stock_bar_after_weekend,
     load_backtest_results,
     recent_weekend_windows,
     run_weekend_basis_backfill_audit,
@@ -393,6 +394,37 @@ class FakeBasisQuoteProvider:
             quote
             for quote in self.quotes
             if start <= int(datetime.fromisoformat(str(quote["ts"]).replace("Z", "+00:00")).timestamp() * 1000) < end
+        ]
+
+
+class FakeBrokerBarProvider:
+    def __init__(self, bars: dict[str, list[dict]] | None = None) -> None:
+        self.bars = bars or {}
+        self.calls: list[dict] = []
+
+    def get_overnight_bars(
+        self,
+        symbol: str,
+        *,
+        start_time_ms: int,
+        end_time_ms: int,
+        interval: str = "1m",
+    ) -> list[dict]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "interval": interval,
+            }
+        )
+        rows = self.bars.get(interval, [])
+        return [
+            row
+            for row in rows
+            if start_time_ms
+            <= int(datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00")).timestamp() * 1000)
+            < end_time_ms
         ]
 
 
@@ -1073,6 +1105,141 @@ def test_ui_maps_afterhours_source_and_quality_text() -> None:
     assert weekend_spread._afterhours_cache_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_reason_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
     assert weekend_spread._afterhours_cache_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
+
+
+def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
+    rows = [
+        {"ticker": "NVDA", "data_quality": "MISSING_STOCK_FIRST_BAR", "error_message": "MISSING_STOCK_FIRST_BAR"},
+        {"ticker": "NVDA", "data_quality": "MISSING_STOCK_FIRST_BAR", "error_message": "MISSING_STOCK_FIRST_BAR"},
+        {"ticker": "NVDA", "data_quality": "MISSING_STOCK_FIRST_BAR", "error_message": "MISSING_STOCK_FIRST_BAR"},
+        {"ticker": "NVDA", "data_quality": "MISSING_STOCK_FIRST_BAR", "error_message": "MISSING_STOCK_FIRST_BAR"},
+    ]
+
+    message = weekend_spread._backtest_error_message(rows)
+
+    assert "NVDA：近 4 周均缺少美股端第一根有效 1m bar，已排除 4 个样本" in message
+
+
+def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
+    reason = weekend_spread._weekend_review_empty_reason(
+        [
+            {
+                "ticker": "NVDA",
+                "data_quality": "STOCK_MISSING",
+                "raw_row": {"data_quality": "MISSING_STOCK_FIRST_BAR"},
+            }
+        ]
+    )
+
+    assert "缺少美股端第一根有效 1m bar" in reason
+    assert "切换开盘锚点" in reason
+
+
+def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 100.0}]))
+    provider = FakeAfterhoursProvider(
+        reference_price=102.5,
+        reference_time="2026-07-03T19:58:00-04:00",
+        reference_source="mock_afterhours",
+        cache_status="API_LIVE",
+    )
+    anchors: dict[str, dict] = {}
+
+    weekend_spread._merge_historical_weekly_anchors(
+        anchors,
+        ["NVDA"],
+        weeks=1,
+        cache=cache,
+        afterhours_provider=provider,
+        now=now,
+    )
+
+    weekly = anchors["NVDA"]["weekly_anchors"][window.week_id]
+    assert weekly["regular_close_price"] == 100.0
+    assert weekly["afterhours_reference_price"] == 102.5
+    assert weekly["afterhours_reference_time"] == "2026-07-03T19:58:00-04:00"
+    assert weekly["anchor_source"] == "HISTORICAL_AFTERHOURS_REFERENCE"
+    assert provider.calls == [("NVDA", "2026-07-03", False)]
+
+
+def test_historical_weekly_anchor_falls_back_to_regular_close_when_afterhours_missing() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 100.0}]))
+    provider = FakeAfterhoursProvider(
+        reference_price=None,
+        data_quality="MISSING",
+        missing_reason="NO_AFTERHOURS_TRADE",
+        cache_status="CACHE_MISSING",
+    )
+    anchors: dict[str, dict] = {}
+
+    weekend_spread._merge_historical_weekly_anchors(
+        anchors,
+        ["NVDA"],
+        weeks=1,
+        cache=cache,
+        afterhours_provider=provider,
+        now=now,
+    )
+
+    weekly = anchors["NVDA"]["weekly_anchors"][window.week_id]
+    assert weekly["regular_close_price"] == 100.0
+    assert weekly["afterhours_reference_price"] is None
+    assert weekly["afterhours_missing_reason"] == "NO_AFTERHOURS_TRADE"
+    assert weekly["afterhours_cache_status"] == "CACHE_MISSING"
+    assert weekly["anchor_source"] == "HISTORICAL_REGULAR_CLOSE"
+
+
+def test_weekend_basis_backtest_uses_historical_afterhours_anchor() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    premarket = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    premarket = premarket.replace(hour=4, minute=3)
+    cache = FakeCache(pd.DataFrame([{"date": "2026-07-03", "close": 99.0}]))
+    provider = FakeAfterhoursProvider(
+        reference_price=100.0,
+        reference_time="2026-07-03T19:58:00-04:00",
+        reference_source="mock_afterhours",
+        cache_status="API_LIVE",
+    )
+    anchors: dict[str, dict] = {}
+    weekend_spread._merge_historical_weekly_anchors(
+        anchors,
+        ["NVDA"],
+        weeks=1,
+        cache=cache,
+        afterhours_provider=provider,
+        now=now,
+    )
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5, 100.55),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0, 101.05),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0, 102.05),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65, 101.7),
+        _basis_quote(premarket, 101.1, 101.2),
+    ]
+    broker = FakeBrokerBarProvider({"1m": [_broker_bar(premarket, 100.8, 100.9)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=anchors,
+        provider=FakeBasisQuoteProvider(quotes),
+        broker_provider=broker,
+        weeks=1,
+        now=now,
+        opening_anchor="premarket",
+        open_window_minutes=30,
+    )
+
+    assert rows[0]["status"] == "HEDGE_LOCKED"
+    assert rows[0]["anchor_price"] == 100.0
+    assert rows[0]["anchor_source"] == "HISTORICAL_AFTERHOURS_REFERENCE"
+    assert rows[0]["anchor_ts"] == "2026-07-03T19:58:00-04:00"
+    assert rows[0]["afterhours_reference_price"] == 100.0
 
 
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
@@ -2278,6 +2445,7 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
         provider=FakeBasisQuoteProvider(quotes),
         weeks=1,
         now=now,
+        opening_anchor="overnight",
     )
 
     row = rows[0]
@@ -2291,7 +2459,7 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
     assert row["oracle_note"] == "事后高点，不可交易"
 
 
-def test_weekend_basis_backtest_requires_broker_overnight_bar() -> None:
+def test_weekend_basis_backtest_excludes_when_all_stock_opening_bars_missing() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     quotes = [
@@ -2311,7 +2479,128 @@ def test_weekend_basis_backtest_requires_broker_overnight_bar() -> None:
     )
 
     assert rows[0]["status"] == "WAIT_BROKER_OPEN"
-    assert rows[0]["data_quality"] == "NO_BROKER_OVERNIGHT_BAR"
+    assert rows[0]["data_quality"] == "MISSING_STOCK_FIRST_BAR"
+    assert rows[0]["stock_bar_reason"] == "MISSING_STOCK_FIRST_BAR"
+    assert rows[0]["stock_bar_returned_count"] == 0
+
+
+def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    premarket = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    premarket = premarket.replace(hour=4, minute=3)
+    provider = FakeBrokerBarProvider({"1m": [_broker_bar(premarket, 100.8, 100.9)]})
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "NVDA",
+        window.end_et.date() + timedelta(days=1),
+        "overnight",
+        30,
+        broker_provider=provider,
+    )
+
+    assert result["ok"] is True
+    assert result["price"] == 100.9
+    assert result["anchor"] == "premarket"
+    assert result["quality"] == "OK"
+    assert result["provider"] == "broker"
+    assert result["bar_size"] == "1m"
+
+
+def test_weekend_basis_backtest_uses_premarket_fallback_bar() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    premarket = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    premarket = premarket.replace(hour=4, minute=3)
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5, 100.55),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0, 101.05),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0, 102.05),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65, 101.7),
+        _basis_quote(premarket, 101.1, 101.2),
+    ]
+    broker = FakeBrokerBarProvider({"1m": [_broker_bar(premarket, 100.8, 100.9)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeBasisQuoteProvider(quotes),
+        broker_provider=broker,
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        open_window_minutes=30,
+    )
+
+    assert rows[0]["status"] == "HEDGE_LOCKED"
+    assert rows[0]["data_quality"] == "OK"
+    assert rows[0]["stock_open_anchor"] == "premarket"
+    assert rows[0]["stock_bar_timestamp"] == premarket.astimezone(timezone.utc).isoformat()
+
+
+def test_weekend_basis_backtest_marks_5m_stock_bar_as_degraded() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    regular_open = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    regular_open = regular_open.replace(hour=9, minute=31)
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5, 100.55),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0, 101.05),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0, 102.05),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65, 101.7),
+        _basis_quote(regular_open, 101.1, 101.2),
+    ]
+    broker = FakeBrokerBarProvider({"5m": [_broker_bar(regular_open, 100.8, 100.9)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(),
+        anchors=_anchors(afterhours=100),
+        provider=FakeBasisQuoteProvider(quotes),
+        broker_provider=broker,
+        weeks=1,
+        now=now,
+        opening_anchor="regular_open",
+        open_window_minutes=30,
+    )
+
+    assert rows[0]["status"] == "HEDGE_LOCKED"
+    assert rows[0]["data_quality"] == "DEGRADED_5M"
+    assert rows[0]["stock_bar_quality"] == "DEGRADED_5M"
+    assert summarize_backtest_results(rows)["sample_weeks"] == 0
+
+
+def test_weekend_basis_backtest_marks_unconfirmed_mapping_observe_only() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    regular_open = datetime.combine(window.end_et.date() + timedelta(days=1), datetime.min.time(), window.end_et.tzinfo)
+    regular_open = regular_open.replace(hour=9, minute=31)
+    quotes = [
+        _basis_quote(window.start_et + timedelta(minutes=1), 100.5, 100.55),
+        _basis_quote(window.start_et + timedelta(hours=2), 101.0, 101.05),
+        _basis_quote(window.start_et + timedelta(hours=4), 102.0, 102.05),
+        _basis_quote(window.start_et + timedelta(hours=5), 101.65, 101.7),
+        _basis_quote(regular_open, 101.1, 101.2),
+    ]
+    broker = FakeBrokerBarProvider({"1m": [_broker_bar(regular_open, 100.8, 100.9)]})
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="candidate"),
+        anchors=_anchors(afterhours=100),
+        provider=FakeBasisQuoteProvider(quotes),
+        broker_provider=broker,
+        weeks=1,
+        now=now,
+        opening_anchor="regular_open",
+        open_window_minutes=30,
+    )
+
+    assert rows[0]["status"] == "HEDGE_LOCKED"
+    assert rows[0]["data_quality"] == "OBSERVE_ONLY"
+    assert rows[0]["mapping_status"] == "CANDIDATE_OBSERVATION"
+    assert summarize_backtest_results(rows)["sample_weeks"] == 0
 
 
 def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
@@ -2338,6 +2627,7 @@ def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
         provider=FakeKlineProvider(bars),
         weeks=1,
         now=now,
+        opening_anchor="overnight",
     )
 
     assert rows[0]["status"] == "HEDGE_LOCKED"

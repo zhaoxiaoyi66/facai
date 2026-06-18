@@ -569,10 +569,19 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         include_unconfirmed=include_unconfirmed,
     )
     options = ["全部已映射"] + list(preliminary.get("eligible_tickers") or [])
-    cols = st.columns(3)
+    anchor_options = {
+        "premarket": "盘前 04:00 ET",
+        "regular_open": "正式开盘 09:30 ET",
+        "overnight": "券商夜盘 20:00 ET",
+    }
+    anchor_labels = list(anchor_options.values())
+    anchor_by_label = {label: key for key, label in anchor_options.items()}
+    cols = st.columns(4)
     selected = cols[0].selectbox("标的", options, key="weekend_backtest_ticker")
     weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=4, step=1, key="weekend_backtest_weeks"))
     open_window = int(cols[2].selectbox("开盘窗口（分钟）", [5, 15, 30], index=0, key="weekend_backtest_open_window"))
+    selected_anchor_label = cols[3].selectbox("开盘锚点", anchor_labels, index=0, key="weekend_backtest_open_anchor")
+    opening_anchor = anchor_by_label.get(selected_anchor_label, "premarket")
     run_tickers = list(preliminary.get("eligible_tickers") or []) if selected == "全部已映射" else [selected]
     anchors = _backtest_anchor_mapping(run_tickers or all_tickers, weeks=weeks)
     preflight = build_weekend_backtest_preflight(
@@ -607,6 +616,19 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.info("已清空本次页面结果；不会删除已保存的历史回测缓存。")
     if run_clicked:
         tickers = list(preflight.get("eligible_tickers") or [])
+        anchors = _backtest_anchor_mapping(
+            tickers,
+            weeks=weeks,
+            afterhours_provider=default_afterhours_provider(),
+        )
+        preflight = build_weekend_backtest_preflight(
+            tickers,
+            mapping=mapping,
+            anchors=anchors,
+            include_unconfirmed=include_unconfirmed,
+            ticker_filter="" if selected == "全部已映射" else selected,
+        )
+        afterhours_anchor_note = _historical_afterhours_anchor_summary_text(anchors)
         progress_bar = st.progress(0.0)
         status_slot = st.empty()
         status_slot.caption(f"正在运行历史回测：{len(tickers)} 个标的，{weeks} 周。")
@@ -616,9 +638,23 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             anchors=anchors,
             weeks=weeks,
             open_window_minutes=open_window,
+            opening_anchor=opening_anchor,
         )
         progress_bar.progress(1.0)
-        failed = [row for row in results if str(row.get("data_quality") or "") in {"BINANCE_KLINE_UNAVAILABLE", "NO_BROKER_OVERNIGHT_BAR", "STALE_OR_MISALIGNED", "INVALID", "NO_PRICE_ANCHOR"}]
+        failed = [
+            row
+            for row in results
+            if str(row.get("data_quality") or "")
+            in {
+                "BINANCE_KLINE_UNAVAILABLE",
+                "NO_BROKER_OVERNIGHT_BAR",
+                "MISSING_STOCK_FIRST_BAR",
+                "HOLIDAY_OR_NO_SESSION",
+                "STALE_OR_MISALIGNED",
+                "INVALID",
+                "NO_PRICE_ANCHOR",
+            }
+        ]
         error_message = _backtest_error_message(failed)
         saved = save_backtest_results(
             results,
@@ -627,6 +663,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
                 "ticker": selected,
                 "weeks": weeks,
                 "open_window": open_window,
+                "opening_anchor": opening_anchor,
                 "include_unconfirmed": include_unconfirmed,
             },
             error_message=error_message,
@@ -634,9 +671,9 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.session_state["weekend_backtest_results"] = results
         st.session_state["weekend_backtest_cache"] = saved
         if error_message:
-            status_slot.warning(error_message)
+            status_slot.warning(f"{error_message}\n\n{afterhours_anchor_note}")
         else:
-            status_slot.success(f"回测完成：{len(results)} 条结果。")
+            status_slot.success(f"回测完成：{len(results)} 条结果。{afterhours_anchor_note}")
     cached_result = dict(st.session_state.get("weekend_backtest_cache") or load_backtest_results())
     results = _current_backtest_results(
         st.session_state.get("weekend_backtest_results"),
@@ -651,7 +688,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         elif cached_result.get("error_message"):
             st.warning(f"上次运行失败：{cached_result.get('error_message')}")
         else:
-            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。美股夜盘开盘参考使用 Sunday 20:00 ET。")
+            st.info("尚未运行历史回测。配置映射后点击“运行近 4 周回测”。默认使用盘前 04:00 ET 后第一根有效价格；也可以切换为正式开盘或券商夜盘。")
         _render_backfill_audit_area_v2(watchlist, mapping, anchors)
         _render_backtest_advanced_records()
         return
@@ -669,7 +706,8 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             _render_backtest_kpis(results)
             st.dataframe(_backtest_frame(results), width="stretch", hide_index=True)
         else:
-            st.info("本次没有 OK 样本，不展示历史回测表；请先检查 mapping、历史美股收盘价和合约 K 线。")
+            st.info(_weekend_review_empty_reason(review_rows))
+            st.dataframe(_backtest_diagnostic_frame(results), width="stretch", hide_index=True)
     _render_backfill_audit_area_v2(watchlist, mapping, anchors)
     _render_backtest_advanced_records()
 
@@ -886,8 +924,13 @@ def _data_quality_text(value: object) -> str:
         "STALE_CACHE": "缓存过期",
         "INVALID_PRICE": "价格无效",
         "UNCONFIRMED_MAPPING": "未确认映射，仅观察",
+        "OBSERVE_ONLY": "观察样本，不计入正式胜率",
+        "DEGRADED": "降级样本",
+        "DEGRADED_5M": "5m 降级样本",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K 线不可用",
         "NO_BROKER_OVERNIGHT_BAR": "缺少券商 overnight bar",
+        "MISSING_STOCK_FIRST_BAR": "缺少美股端第一根有效价格",
+        "HOLIDAY_OR_NO_SESSION": "假期或无有效交易时段",
         "STALE_OR_MISALIGNED": "时间未对齐",
         "WIDE_SPREAD": "价差过宽",
         "LOW_DEPTH": "深度不足",
@@ -970,22 +1013,61 @@ def _backtest_exclusion_frame(rows: list[dict]) -> pd.DataFrame:
 def _backtest_error_message(rows: list[dict]) -> str:
     if not rows:
         return ""
-    reasons = []
+    grouped: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        quality = str(row.get("data_quality") or "")
+        ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
+        quality = str(row.get("data_quality") or "").strip().upper()
         raw_error = str(row.get("error_message") or "")
-        if quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
-            detail = f"：{raw_error}" if raw_error else ""
-            reasons.append(f"{row.get('ticker')}：Binance K 线不可用{detail}")
-        elif quality == "NO_BROKER_OVERNIGHT_BAR":
-            reasons.append(f"{row.get('ticker')}：缺少券商 overnight 第一根有效 1m bar")
+        if quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR"}:
+            reason = "缺少美股端第一根有效 1m bar"
+        elif quality == "HOLIDAY_OR_NO_SESSION":
+            reason = "遇到美国假期或无有效交易时段"
+        elif quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
+            reason = f"Binance K 线不可用{f'：{raw_error}' if raw_error else ''}"
         elif quality == "STALE_OR_MISALIGNED":
-            reasons.append(f"{row.get('ticker')}：Binance 与券商时间未对齐")
+            reason = "Binance 与券商时间未对齐"
         elif quality == "INVALID":
-            reasons.append(f"{row.get('ticker')}：{raw_error or '无效样本'}")
-        elif raw_error:
-            reasons.append(f"{row.get('ticker')}：{raw_error}")
+            reason = raw_error or "无效样本"
+        else:
+            reason = raw_error or _data_quality_text(quality)
+        grouped.setdefault((ticker, reason), []).append(row)
+    reasons = []
+    for (ticker, reason), items in grouped.items():
+        if len(items) > 1:
+            reasons.append(f"{ticker}：近 {len(items)} 周均{reason}，已排除 {len(items)} 个样本")
+        else:
+            reasons.append(f"{ticker}：{reason}")
     return "；".join(reasons[:5])
+
+
+def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        ("week_id", "周期日期"),
+        ("ticker", "标的"),
+        ("stock_bar_requested_start", "请求开始"),
+        ("stock_bar_requested_end", "请求结束"),
+        ("stock_open_anchor_label", "开盘锚点"),
+        ("stock_bar_provider", "数据源"),
+        ("stock_bar_size", "bar 大小"),
+        ("stock_bar_returned_count", "返回 bar 数量"),
+        ("stock_bar_timestamp", "第一根 bar 时间"),
+        ("data_quality", "数据质量"),
+        ("warning", "排除原因"),
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=[label for _, label in columns])
+    display = pd.DataFrame()
+    for key, label in columns:
+        if key == "warning":
+            display[label] = frame.apply(lambda row: _backtest_row_warning(row.to_dict()), axis=1)
+        else:
+            display[label] = frame.get(key)
+    for time_col in ("请求开始", "请求结束", "第一根 bar 时间"):
+        display[time_col] = display[time_col].map(_short_hkt_time)
+    display["数据质量"] = display["数据质量"].map(_data_quality_text)
+    display["返回 bar 数量"] = display["返回 bar 数量"].fillna(0).astype(int)
+    return display
 
 
 def _render_backtest_kpis(rows: list[dict]) -> None:
@@ -1030,6 +1112,7 @@ def _render_backfill_kpis(rows: list[dict]) -> None:
 
 def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
+    quality_counts = _weekend_review_quality_counts(review_rows)
     metrics: list[tuple[str, object, str]] = [
         ("近4周样本数", int(summary.get("sample_count") or 0), ""),
         ("平均价差", summary.get("avg_price_diff"), "money_diff"),
@@ -1041,7 +1124,11 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     if not int(summary.get("sample_count") or 0):
         for col, (label, _, _) in zip(cols, metrics):
             col.metric(label, "暂无数据")
-        st.info("暂无可信价差样本；请先配置有效 mapping 并运行回测。")
+        st.caption(
+            f"正式有效样本 {quality_counts['ok']}｜观察样本 {quality_counts['observe']}｜"
+            f"降级样本 {quality_counts['degraded']}｜排除样本 {quality_counts['excluded']}"
+        )
+        st.info(_weekend_review_empty_reason(review_rows))
         return
     for col, (label, value, kind) in zip(cols, metrics):
         if kind == "money_diff":
@@ -1050,6 +1137,49 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
             col.metric(label, _review_percent_text(value))
         else:
             col.metric(label, value)
+    st.caption(
+        f"正式有效样本 {quality_counts['ok']}｜观察样本 {quality_counts['observe']}｜"
+        f"降级样本 {quality_counts['degraded']}｜排除样本 {quality_counts['excluded']}"
+    )
+
+
+def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
+    counts = {"ok": 0, "observe": 0, "degraded": 0, "excluded": 0}
+    for row in review_rows:
+        quality = str(row.get("data_quality") or "").strip().upper()
+        if quality == "OK":
+            counts["ok"] += 1
+        elif quality == "OBSERVE_ONLY":
+            counts["observe"] += 1
+        elif quality.startswith("DEGRADED"):
+            counts["degraded"] += 1
+        else:
+            counts["excluded"] += 1
+    return counts
+
+
+def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
+    if not review_rows:
+        return "当前没有可计入正式统计的样本。请先配置有效 mapping 并运行回测。"
+    qualities = {str(row.get("data_quality") or "").strip().upper() for row in review_rows}
+    raw_qualities = {
+        str((row.get("raw_row") or {}).get("data_quality") or row.get("data_quality") or "").strip().upper()
+        for row in review_rows
+    }
+    if raw_qualities & {"MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR"}:
+        return (
+            "当前没有可计入正式统计的样本。主要原因：缺少美股端第一根有效 1m bar。"
+            "请尝试扩大开盘窗口、切换开盘锚点为 premarket/regular_open，或检查券商历史数据权限。"
+        )
+    if raw_qualities & {"HOLIDAY_OR_NO_SESSION"}:
+        return "当前没有可计入正式统计的样本。主要原因：遇到美国假期或非交易日，请检查交易日历或扩大窗口。"
+    if qualities == {"MAPPING_MISSING"}:
+        return "当前没有可计入正式统计的样本。主要原因：映射未确认或未配置；请先在 mapping.local 中确认映射关系。"
+    if qualities == {"CONTRACT_MISSING"}:
+        return "当前没有可计入正式统计的样本。主要原因：USDT-M 合约历史数据缺失。"
+    if qualities == {"STOCK_MISSING"}:
+        return "当前没有可计入正式统计的样本。主要原因：缺少美股历史锚点或开盘参考价。"
+    return "当前没有可计入正式统计的样本。请展开数据质量详情，查看每周请求区间、返回 bar 数量和排除原因。"
 
 
 def _render_weekend_review_table(review_rows: list[dict]) -> None:
@@ -1202,11 +1332,13 @@ def _weekend_review_data_quality(
     status = str(row.get("status") or "").strip().upper()
     mapping_status = str(row.get("mapping_status") or "").strip().upper()
     cache_status = str(row.get("kline_cache_status") or row.get("cache_status") or "").strip().upper()
+    if quality in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING"} or mapping_status == "CANDIDATE_OBSERVATION":
+        return "OBSERVE_ONLY"
+    if quality.startswith("DEGRADED"):
+        return "DEGRADED"
     if quality in {"BLOCK_MAPPING", "NO_MAPPING", "MAPPING_MISSING"} or status == "BLOCK_MAPPING":
         return "MAPPING_MISSING"
-    if mapping_status == "CANDIDATE_OBSERVATION":
-        return "MAPPING_MISSING"
-    if anchor_price is None or anchor_price <= 0 or quality in {"NO_PRICE_ANCHOR", "STOCK_MISSING"}:
+    if anchor_price is None or anchor_price <= 0 or quality in {"NO_PRICE_ANCHOR", "STOCK_MISSING", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
         return "STOCK_MISSING"
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
@@ -1350,6 +1482,7 @@ def _backtest_anchor_mapping(
     *,
     weeks: int = 4,
     cache: CacheReadModel | None = None,
+    afterhours_provider=None,
     now: datetime | None = None,
 ) -> dict[str, dict]:
     rows = list(st.session_state.get("weekend_realtime_rows") or [])
@@ -1365,7 +1498,14 @@ def _backtest_anchor_mapping(
             "friday_close": row.get("friday_close"),
             "friday_close_date": row.get("friday_close_date"),
         }
-    _merge_historical_weekly_anchors(result, tickers or list(result), weeks=weeks, cache=cache, now=now)
+    _merge_historical_weekly_anchors(
+        result,
+        tickers or list(result),
+        weeks=weeks,
+        cache=cache,
+        afterhours_provider=afterhours_provider,
+        now=now,
+    )
     return result
 
 
@@ -1375,11 +1515,13 @@ def _merge_historical_weekly_anchors(
     *,
     weeks: int,
     cache: CacheReadModel | None = None,
+    afterhours_provider=None,
     now: datetime | None = None,
 ) -> None:
     if not tickers:
         return
     read_model = cache or CacheReadModel()
+    afterhours_data_provider = afterhours_provider or CachedAfterhoursProvider(NullAfterhoursProvider())
     windows = recent_weekend_windows(weeks=max(1, int(weeks or 1)), now=now)
     for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
         try:
@@ -1390,6 +1532,7 @@ def _merge_historical_weekly_anchors(
         for window in windows:
             anchor = _historical_regular_close_anchor(history, window)
             if anchor:
+                _merge_historical_afterhours_anchor(ticker, anchor, afterhours_data_provider)
                 weekly[window.week_id] = anchor
         if not weekly:
             continue
@@ -1401,6 +1544,24 @@ def _merge_historical_weekly_anchors(
             current["regular_close_price"] = latest.get("regular_close_price")
             current["regular_close_date"] = latest.get("regular_close_date")
             current["anchor_source"] = latest.get("anchor_source")
+            for key in (
+                "afterhours_reference_price",
+                "afterhours_reference_time",
+                "afterhours_reference_source",
+                "afterhours_bid",
+                "afterhours_ask",
+                "afterhours_mid",
+                "afterhours_last_trade",
+                "afterhours_volume",
+                "afterhours_data_quality",
+                "afterhours_missing_reason",
+                "afterhours_cache_status",
+                "afterhours_provider_name",
+                "afterhours_anchor_status",
+                "afterhours_error",
+            ):
+                if key in latest:
+                    current[key] = latest.get(key)
 
 
 def _historical_regular_close_anchor(history: pd.DataFrame, window) -> dict[str, object] | None:
@@ -1427,6 +1588,81 @@ def _historical_regular_close_anchor(history: pd.DataFrame, window) -> dict[str,
         "friday_close_date": close_date_text,
         "anchor_source": "HISTORICAL_REGULAR_CLOSE",
     }
+
+
+def _merge_historical_afterhours_anchor(ticker: str, anchor: dict[str, object], afterhours_provider) -> None:
+    regular_close_date = str(anchor.get("regular_close_date") or anchor.get("friday_close_date") or "").strip()
+    if not ticker or not regular_close_date or afterhours_provider is None:
+        return
+    try:
+        snapshot = afterhours_provider.get_afterhours_reference(
+            ticker,
+            regular_close_date=regular_close_date,
+            force_refresh=False,
+        )
+    except Exception as exc:
+        anchor.update(
+            {
+                "afterhours_reference_price": None,
+                "afterhours_missing_reason": "FETCH_FAILED",
+                "afterhours_error": f"{type(exc).__name__}: {exc}",
+                "afterhours_cache_status": "FETCH_FAILED",
+                "anchor_source": "HISTORICAL_REGULAR_CLOSE",
+            }
+        )
+        return
+    afterhours_price = _number(getattr(snapshot, "reference_price", None))
+    anchor.update(
+        {
+            "afterhours_reference_price": afterhours_price,
+            "afterhours_reference_time": getattr(snapshot, "reference_time", "") or "",
+            "afterhours_reference_source": getattr(snapshot, "reference_source", "") or "",
+            "afterhours_bid": getattr(snapshot, "bid", None),
+            "afterhours_ask": getattr(snapshot, "ask", None),
+            "afterhours_mid": getattr(snapshot, "mid", None),
+            "afterhours_last_trade": getattr(snapshot, "last_trade", None),
+            "afterhours_volume": getattr(snapshot, "volume", None),
+            "afterhours_data_quality": getattr(snapshot, "data_quality", "") or "MISSING",
+            "afterhours_missing_reason": getattr(snapshot, "missing_reason", "") or "",
+            "afterhours_cache_status": getattr(snapshot, "cache_status", "") or "",
+            "afterhours_provider_name": getattr(snapshot, "provider_name", "") or "",
+            "afterhours_anchor_status": getattr(snapshot, "anchor_status", "") or "",
+            "afterhours_error": getattr(snapshot, "error_message", "") or getattr(snapshot, "error", "") or "",
+        }
+    )
+    if afterhours_price is not None and afterhours_price > 0:
+        anchor["anchor_source"] = "HISTORICAL_AFTERHOURS_REFERENCE"
+
+
+def _historical_afterhours_anchor_summary_text(anchors: dict[str, dict]) -> str:
+    total = 0
+    afterhours = 0
+    cache = 0
+    fallback = 0
+    reasons: dict[str, int] = {}
+    for root in anchors.values():
+        weekly = root.get("weekly_anchors") if isinstance(root, dict) else None
+        if not isinstance(weekly, dict):
+            continue
+        for row in weekly.values():
+            if not isinstance(row, dict):
+                continue
+            total += 1
+            if _number(row.get("afterhours_reference_price")) is not None:
+                afterhours += 1
+                if str(row.get("afterhours_cache_status") or "").strip().upper() in {"CACHE_HIT", "CACHE_FALLBACK"}:
+                    cache += 1
+            else:
+                fallback += 1
+                reason = str(row.get("afterhours_missing_reason") or "未抓取盘后价").strip()
+                reasons[reason] = reasons.get(reason, 0) + 1
+    if total <= 0:
+        return "历史盘后锚点：未找到可读取的历史周五收盘记录。"
+    note = f"历史盘后锚点：已读取 {afterhours}/{total}，其中缓存 {cache}；回退正常收盘 {fallback}。"
+    if fallback and reasons:
+        primary = sorted(reasons.items(), key=lambda item: item[1], reverse=True)[0]
+        note += f"主要回退原因：{_afterhours_reason_text(primary[0])}（{primary[1]} 周）。"
+    return note
 
 
 def _render_backtest_advanced_records() -> None:
@@ -2204,8 +2440,16 @@ def _backtest_row_warning(row: dict) -> str:
     warning = str(row.get("warning") or "")
     if quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
         return f"Binance K 线不可用：{error}" if error else "Binance K 线不可用"
-    if quality == "NO_BROKER_OVERNIGHT_BAR":
-        return warning or "缺少券商 overnight 第一根有效 1m bar"
+    if quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR"}:
+        anchor = str(row.get("stock_open_anchor_label") or "开盘")
+        start = _short_hkt_time(row.get("stock_bar_requested_start"))
+        end = _short_hkt_time(row.get("stock_bar_requested_end"))
+        returned = int(_number(row.get("stock_bar_returned_count")) or 0)
+        return warning or f"缺少美股端第一根有效 1m bar；锚点：{anchor}；请求区间：{start} - {end}；返回 {returned} 根"
+    if quality == "HOLIDAY_OR_NO_SESSION":
+        return warning or "遇到美国假期或无有效交易时段"
+    if quality == "DEGRADED_5M":
+        return warning or "使用 5m bar 替代 1m，样本仅作降级观察"
     if quality == "STALE_OR_MISALIGNED":
         return warning or "Binance 与 broker 报价时间未对齐"
     if quality == "ESTIMATED_EXECUTION":
@@ -2214,7 +2458,7 @@ def _backtest_row_warning(row: dict) -> str:
         return warning or _data_quality_text(quality)
     if quality == "INVALID":
         return error or "无效样本"
-    if quality == "UNCONFIRMED_MAPPING":
+    if quality in {"UNCONFIRMED_MAPPING", "OBSERVE_ONLY"}:
         return warning or note or "未确认映射，仅观察"
     return warning or note
 

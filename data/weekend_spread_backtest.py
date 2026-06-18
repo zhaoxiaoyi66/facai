@@ -26,6 +26,12 @@ DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backt
 DEFAULT_BACKTEST_KLINE_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_klines.json"
 BACKFILL_THRESHOLDS_BPS = (80.0, 100.0, 120.0, 150.0)
 BACKFILL_RELATIVE_WINDOWS_HOURS = (6, 12)
+STOCK_OPEN_ANCHORS = ("overnight", "premarket", "regular_open")
+STOCK_OPEN_ANCHOR_LABELS = {
+    "overnight": "券商夜盘",
+    "premarket": "盘前",
+    "regular_open": "正式开盘",
+}
 
 
 @dataclass(frozen=True)
@@ -187,6 +193,7 @@ def run_weekend_basis_backtest(
     broker_provider: Any | None = None,
     weeks: int = 4,
     open_window_minutes: int = 5,
+    opening_anchor: str = "premarket",
     kline_cache_path: Path | None = None,
     strategy_config: BasisStrategyConfig | None = None,
     now: datetime | None = None,
@@ -215,6 +222,7 @@ def run_weekend_basis_backtest(
                     provider=price_provider,
                     broker_provider=broker_provider,
                     open_window_minutes=open_window_minutes,
+                    opening_anchor=opening_anchor,
                     kline_cache_path=effective_kline_cache_path,
                     strategy_config=strategy_config,
                 )
@@ -358,6 +366,23 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if _number(row.get("net_locked_bps")) is not None
         and str(row.get("data_quality") or "") == "OK"
     ]
+    observe = [
+        row
+        for row in rows
+        if str(row.get("data_quality") or "").upper() in {"OBSERVE_ONLY", "UNCONFIRMED_MAPPING"}
+    ]
+    degraded = [
+        row
+        for row in rows
+        if str(row.get("data_quality") or "").upper().startswith("DEGRADED")
+    ]
+    excluded = [
+        row
+        for row in rows
+        if str(row.get("data_quality") or "").upper()
+        not in {"OK", "OBSERVE_ONLY", "UNCONFIRMED_MAPPING"}
+        and not str(row.get("data_quality") or "").upper().startswith("DEGRADED")
+    ]
     returns_bps = [_number(row.get("net_locked_bps")) for row in valid]
     returns_bps = [value for value in returns_bps if value is not None]
     returns = [value / 100.0 for value in returns_bps]
@@ -372,6 +397,10 @@ def summarize_backtest_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
     remaining = [value for value in remaining if value is not None]
     return {
         "sample_weeks": len(valid),
+        "formal_sample_count": len(valid),
+        "observe_sample_count": len(observe),
+        "degraded_sample_count": len(degraded),
+        "excluded_sample_count": len(excluded),
         "avg_premium_decay_ratio": _average(decay_ratios),
         "avg_theoretical_short_return_pct": _average(theoretical),
         "avg_net_return_pct": _average(returns),
@@ -592,6 +621,7 @@ def _basis_backtest_one_window(
     provider: Any,
     broker_provider: Any | None,
     open_window_minutes: int,
+    opening_anchor: str,
     kline_cache_path: Path | None,
     strategy_config: BasisStrategyConfig | None,
 ) -> dict[str, Any]:
@@ -611,6 +641,17 @@ def _basis_backtest_one_window(
     if anchor_price is None or anchor_price <= 0:
         base.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price", "error_message": "missing broker anchor price"})
         return base
+    stock_bar = get_first_valid_stock_bar_after_weekend(
+        ticker,
+        window.end_et.date() + timedelta(days=1),
+        opening_anchor,
+        open_window_minutes,
+        broker_provider=broker_provider,
+        anchor_source=anchor_source,
+    )
+    quote_end = _datetime_from_iso(stock_bar.get("requested_end")) or (
+        window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
+    )
     try:
         quotes, kline_cache_status = _fetch_window_basis_quotes(
             provider,
@@ -618,6 +659,7 @@ def _basis_backtest_one_window(
             market_type=market_type,
             window=window,
             open_window_minutes=open_window_minutes,
+            end_time=quote_end,
             cache_path=kline_cache_path,
         )
     except Exception as exc:
@@ -631,21 +673,17 @@ def _basis_backtest_one_window(
             }
         )
         return base
-    broker_bars = _broker_overnight_bars_for_window(
-        ticker,
-        broker_provider=broker_provider,
-        anchor_source=anchor_source,
-        window=window,
-        open_window_minutes=open_window_minutes,
-    )
+    cfg = strategy_config or BasisStrategyConfig()
+    broker_bars = [stock_bar["bar"]] if stock_bar.get("ok") and stock_bar.get("bar") is not None else []
+    evaluation_quotes = _basis_quotes_for_stock_bar_evaluation(quotes, window, stock_bar, cfg, open_window_minutes)
     result = evaluate_basis_lock_strategy(
         ticker=ticker,
         binance_symbol=symbol,
         mapping_confidence=mapping_confidence,
         broker_anchor_price=anchor_price,
-        binance_quotes=quotes,
+        binance_quotes=evaluation_quotes,
         broker_overnight_bars=broker_bars,
-        config=strategy_config,
+        config=cfg,
     )
     result.update(
         {
@@ -655,13 +693,53 @@ def _basis_backtest_one_window(
             "weekend_window_end": window.end_et.isoformat(),
             "monday_reference_time_et": window.end_et.isoformat(),
             "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
+            "stock_open_anchor": str(stock_bar.get("anchor") or opening_anchor),
+            "stock_open_anchor_label": str(stock_bar.get("anchor_label") or ""),
+            "stock_bar_price": stock_bar.get("price"),
+            "stock_bar_timestamp": str(stock_bar.get("timestamp") or ""),
+            "stock_bar_provider": str(stock_bar.get("provider") or ""),
+            "stock_bar_size": str(stock_bar.get("bar_size") or ""),
+            "stock_bar_quality": str(stock_bar.get("quality") or ""),
+            "stock_bar_reason": str(stock_bar.get("reason") or ""),
+            "stock_bar_returned_count": int(stock_bar.get("returned_bar_count") or 0),
+            "stock_bar_requested_start": str(stock_bar.get("requested_start") or ""),
+            "stock_bar_requested_end": str(stock_bar.get("requested_end") or ""),
             "anchor_price": anchor_price,
             "anchor_source": str(anchor.get("anchor_source") or ""),
             "anchor_ts": str(anchor.get("anchor_ts") or ""),
+            "afterhours_reference_price": anchor.get("afterhours_reference_price"),
+            "afterhours_reference_time": str(anchor.get("afterhours_reference_time") or ""),
+            "afterhours_reference_source": str(anchor.get("afterhours_reference_source") or ""),
+            "afterhours_data_quality": str(anchor.get("afterhours_data_quality") or ""),
+            "afterhours_cache_status": str(anchor.get("afterhours_cache_status") or ""),
+            "afterhours_missing_reason": str(anchor.get("afterhours_missing_reason") or ""),
             "kline_cache_status": kline_cache_status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     )
+    if not stock_bar.get("ok") and result.get("data_quality") == "NO_BROKER_OVERNIGHT_BAR":
+        result.update(
+            {
+                "data_quality": str(stock_bar.get("quality") or "MISSING_STOCK_FIRST_BAR"),
+                "warning": str(stock_bar.get("reason") or "缺少美股端第一根有效价格"),
+                "error_message": str(stock_bar.get("reason") or "MISSING_STOCK_FIRST_BAR"),
+            }
+        )
+    elif stock_bar.get("quality") == "DEGRADED_5M" and result.get("data_quality") == "OK":
+        result.update({"data_quality": "DEGRADED_5M", "warning": "使用 5m bar 替代 1m，样本仅作降级观察"})
+    if mapping_confidence != "confirmed" and result.get("data_quality") not in {
+        "MISSING_STOCK_FIRST_BAR",
+        "BINANCE_KLINE_UNAVAILABLE",
+        "NO_PRICE_ANCHOR",
+        "STALE_OR_MISALIGNED",
+    }:
+        result.update(
+            {
+                "data_quality": "OBSERVE_ONLY",
+                "mapping_status": "CANDIDATE_OBSERVATION",
+                "warning": _append_warning(result.get("warning"), "当前包含未确认映射，结果仅作观察，不计入正式胜率"),
+            }
+        )
     _apply_basis_compat_fields(result)
     return result
 
@@ -1096,14 +1174,16 @@ def _fetch_window_basis_quotes(
     market_type: str,
     window: WeekendWindow,
     open_window_minutes: int,
-    cache_path: Path | None,
+    end_time: datetime | None = None,
+    cache_path: Path | None = None,
 ) -> tuple[list[BasisQuote], str]:
+    effective_end = end_time or window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
     if hasattr(provider, "get_basis_quotes"):
         payload = provider.get_basis_quotes(
             symbol,
             market_type=market_type,
             start_time_ms=_to_ms(window.start_et),
-            end_time_ms=_to_ms(window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))),
+            end_time_ms=_to_ms(effective_end),
         )
         return normalize_basis_quotes(payload, estimated=False, source="basis_quotes"), "API_LIVE"
     bars, cache_status = _fetch_window_klines(
@@ -1112,6 +1192,7 @@ def _fetch_window_basis_quotes(
         market_type=market_type,
         window=window,
         open_window_minutes=open_window_minutes,
+        end_time=effective_end,
         cache_path=cache_path,
     )
     return _basis_quotes_from_klines(bars), cache_status
@@ -1176,6 +1257,210 @@ def _apply_basis_compat_fields(row: dict[str, Any]) -> None:
         row["premium_decay_ratio"] = None
 
 
+def get_first_valid_stock_bar_after_weekend(
+    symbol: str,
+    session_date: Any,
+    anchor: str,
+    window_minutes: int,
+    *,
+    broker_provider: Any | None = None,
+    anchor_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Find the first reliable US stock bar after the weekend.
+
+    The function is intentionally diagnostic-heavy because this page must never
+    silently reuse current prices or stale cache as historical execution data.
+    """
+
+    requested_anchor = _normalize_stock_open_anchor(anchor)
+    start_date = _coerce_date(session_date)
+    window = max(1, int(window_minutes or 5))
+    attempts = _stock_open_attempts(start_date, requested_anchor)
+    last_attempt: dict[str, Any] | None = None
+    for interval in ("1m", "5m"):
+        for anchor_name, day in attempts:
+            start, end = _stock_open_window(day, anchor_name, window)
+            payload = _fetch_stock_open_bars(
+                symbol,
+                broker_provider=broker_provider,
+                anchor_source=anchor_source or {},
+                start=start,
+                end=end,
+                interval=interval,
+            )
+            bars = payload["bars"]
+            last_attempt = {
+                "ok": False,
+                "price": None,
+                "timestamp": "",
+                "provider": payload["provider"],
+                "bar_size": interval,
+                "quality": "MISSING_STOCK_FIRST_BAR",
+                "reason": "MISSING_STOCK_FIRST_BAR",
+                "returned_bar_count": payload["returned_bar_count"],
+                "requested_start": start.astimezone(timezone.utc).isoformat(),
+                "requested_end": end.astimezone(timezone.utc).isoformat(),
+                "anchor": anchor_name,
+                "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
+                "bar": None,
+            }
+            first = _first_valid_stock_bar(bars, start, end)
+            if first is None:
+                continue
+            quality = "OK" if interval == "1m" else "DEGRADED_5M"
+            return {
+                "ok": True,
+                "price": first.ask,
+                "timestamp": first.ts.astimezone(timezone.utc).isoformat(),
+                "provider": payload["provider"],
+                "bar_size": interval,
+                "quality": quality,
+                "reason": "",
+                "returned_bar_count": payload["returned_bar_count"],
+                "requested_start": start.astimezone(timezone.utc).isoformat(),
+                "requested_end": end.astimezone(timezone.utc).isoformat(),
+                "anchor": anchor_name,
+                "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
+                "bar": first,
+            }
+    return last_attempt or {
+        "ok": False,
+        "price": None,
+        "timestamp": "",
+        "provider": "",
+        "bar_size": "1m",
+        "quality": "MISSING_STOCK_FIRST_BAR",
+        "reason": "MISSING_STOCK_FIRST_BAR",
+        "returned_bar_count": 0,
+        "requested_start": "",
+        "requested_end": "",
+        "anchor": requested_anchor,
+        "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(requested_anchor, requested_anchor),
+        "bar": None,
+    }
+
+
+def _basis_quotes_for_stock_bar_evaluation(
+    quotes: list[BasisQuote],
+    window: WeekendWindow,
+    stock_bar: dict[str, Any],
+    cfg: BasisStrategyConfig,
+    open_window_minutes: int,
+) -> list[BasisQuote]:
+    if not quotes:
+        return []
+    entry_end = window.end_et.astimezone(timezone.utc) + timedelta(minutes=max(1, int(open_window_minutes or 5)))
+    selected: list[BasisQuote] = [quote for quote in quotes if quote.ts <= entry_end]
+    bar = stock_bar.get("bar")
+    if isinstance(bar, BrokerOvernightBar):
+        aligned_start = bar.ts - timedelta(seconds=cfg.max_alignment_seconds)
+        aligned_end = bar.ts + timedelta(seconds=cfg.max_alignment_seconds)
+        selected.extend([quote for quote in quotes if aligned_start <= quote.ts <= aligned_end])
+    deduped: dict[datetime, BasisQuote] = {quote.ts: quote for quote in selected}
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def _stock_open_attempts(session_date, requested_anchor: str) -> list[tuple[str, Any]]:
+    anchor_order = {
+        "overnight": ["overnight", "premarket", "regular_open"],
+        "premarket": ["premarket", "regular_open"],
+        "regular_open": ["regular_open"],
+    }.get(requested_anchor, ["premarket", "regular_open"])
+    attempts: list[tuple[str, Any]] = []
+    for offset in range(0, 6):
+        day = session_date + timedelta(days=offset)
+        if day.weekday() >= 5:
+            continue
+        for anchor_name in anchor_order:
+            attempts.append((anchor_name, day))
+        if attempts and day != session_date:
+            break
+    return attempts
+
+
+def _stock_open_window(session_date, anchor_name: str, window_minutes: int) -> tuple[datetime, datetime]:
+    if anchor_name == "overnight":
+        start = datetime.combine(session_date - timedelta(days=1), time(20, 0), ET)
+    elif anchor_name == "regular_open":
+        start = datetime.combine(session_date, time(9, 30), ET)
+    else:
+        start = datetime.combine(session_date, time(4, 0), ET)
+    return start, start + timedelta(minutes=max(1, int(window_minutes or 5)))
+
+
+def _fetch_stock_open_bars(
+    symbol: str,
+    *,
+    broker_provider: Any | None,
+    anchor_source: dict[str, Any],
+    start: datetime,
+    end: datetime,
+    interval: str,
+) -> dict[str, Any]:
+    rows: list[Any] = []
+    provider_name = ""
+    if broker_provider is not None and hasattr(broker_provider, "get_overnight_bars"):
+        provider_name = "broker"
+        rows = list(
+            broker_provider.get_overnight_bars(
+                symbol,
+                start_time_ms=_to_ms(start),
+                end_time_ms=_to_ms(end),
+                interval=interval,
+            )
+            or []
+        )
+    else:
+        provider_name = "anchor_source"
+        rows = list(anchor_source.get("broker_overnight_bars") or anchor_source.get("broker_overnight_quotes") or [])
+    bars = [
+        bar
+        for bar in normalize_broker_overnight_bars(rows)
+        if start.astimezone(timezone.utc) <= bar.ts < end.astimezone(timezone.utc)
+    ]
+    return {"bars": bars, "provider": provider_name, "returned_bar_count": len(rows)}
+
+
+def _first_valid_stock_bar(bars: list[BrokerOvernightBar], start: datetime, end: datetime) -> BrokerOvernightBar | None:
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    for bar in sorted(bars, key=lambda item: item.ts):
+        if start_utc <= bar.ts < end_utc and bar.bid > 0 and bar.ask > 0 and bar.ask >= bar.bid:
+            return bar
+    return None
+
+
+def _normalize_stock_open_anchor(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in STOCK_OPEN_ANCHORS else "premarket"
+
+
+def _coerce_date(value: Any):
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day") and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.astimezone(ET).date()
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return datetime.now(ET).date()
+
+
+def _datetime_from_iso(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _fetch_window_klines(
     provider: Any,
     symbol: str,
@@ -1183,10 +1468,12 @@ def _fetch_window_klines(
     market_type: str,
     window: WeekendWindow,
     open_window_minutes: int,
+    end_time: datetime | None = None,
     cache_path: Path | None = DEFAULT_BACKTEST_KLINE_CACHE_PATH,
 ) -> tuple[list[NormalizedKline], str]:
     start_ms = _to_ms(window.start_et)
-    end_ms = _to_ms(window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5))))
+    effective_end = end_time or window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
+    end_ms = _to_ms(effective_end)
     cursor = start_ms
     all_payload: list[Any] = []
     cache_key = _kline_cache_key(symbol, market_type, start_ms, end_ms)
@@ -1470,8 +1757,14 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
     if afterhours is not None and afterhours > 0:
         return {
             "anchor_price": afterhours,
-            "anchor_source": "AFTERHOURS_REFERENCE",
+            "anchor_source": str(source.get("anchor_source") or "AFTERHOURS_REFERENCE"),
             "anchor_ts": str(source.get("afterhours_reference_time") or ""),
+            "afterhours_reference_price": afterhours,
+            "afterhours_reference_time": str(source.get("afterhours_reference_time") or ""),
+            "afterhours_reference_source": str(source.get("afterhours_reference_source") or ""),
+            "afterhours_data_quality": str(source.get("afterhours_data_quality") or ""),
+            "afterhours_cache_status": str(source.get("afterhours_cache_status") or ""),
+            "afterhours_missing_reason": str(source.get("afterhours_missing_reason") or ""),
         }
     regular = _number(source.get("regular_close_price") or source.get("friday_close") or source.get("friday_close_price"))
     if regular is not None and regular > 0:
@@ -1480,6 +1773,12 @@ def _audit_anchor_for_ticker(ticker: str, config: dict[str, Any], anchors: dict[
             "anchor_price": regular,
             "anchor_source": regular_source,
             "anchor_ts": str(source.get("regular_close_date") or source.get("friday_close_date") or ""),
+            "afterhours_reference_price": source.get("afterhours_reference_price"),
+            "afterhours_reference_time": str(source.get("afterhours_reference_time") or ""),
+            "afterhours_reference_source": str(source.get("afterhours_reference_source") or ""),
+            "afterhours_data_quality": str(source.get("afterhours_data_quality") or ""),
+            "afterhours_cache_status": str(source.get("afterhours_cache_status") or ""),
+            "afterhours_missing_reason": str(source.get("afterhours_missing_reason") or ""),
         }
     return {"anchor_price": None, "anchor_source": "MISSING", "anchor_ts": ""}
 
