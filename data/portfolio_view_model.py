@@ -336,10 +336,13 @@ def _system_ref_from_local_cache(
 
 
 def _system_ref_from_bundle(bundle, buy_zone_status: str | None) -> dict[str, Any]:
+    system_action = _portfolio_system_action_label(bundle)
+    final_decision = bundle.as_dict()
+    final_decision["finalAction"] = system_action
     return {
         "executionSource": bundle.executionSource,
-        "finalDecision": bundle.as_dict(),
-        "systemAction": bundle.finalAction,
+        "finalDecision": final_decision,
+        "systemAction": system_action,
         "systemMaxPosition": bundle.maxPortfolioWeightPercent,
         "systemCurrentAdd": bundle.currentAddLimitPercent,
         "buyZoneStatus": bundle.buyZoneStatus or buy_zone_status,
@@ -358,6 +361,16 @@ def _system_ref_from_bundle(bundle, buy_zone_status: str | None) -> dict[str, An
         "maxPortfolioWeightPercent": bundle.maxPortfolioWeightPercent,
         "systemStatus": bundle.decisionLane,
     }
+
+
+def _portfolio_system_action_label(bundle: Any) -> str:
+    buy_zone_action = str(getattr(bundle, "buyZoneAction", "") or "")
+    if buy_zone_action in {"ALLOW_SMALL_BUY", "ALLOW_ADD_ON_PULLBACK"}:
+        return "小仓观察建议"
+    final_action = str(getattr(bundle, "finalAction", "") or "")
+    if final_action == "可小仓分批":
+        return "小仓观察建议"
+    return final_action
 
 
 def _empty_system_ref() -> dict[str, Any]:
