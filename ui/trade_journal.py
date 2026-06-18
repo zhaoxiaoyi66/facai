@@ -723,7 +723,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         ("估值评分", _score_text(report.get("valuation_score"))),
         ("核心仓上限", _pct_value_text(report.get("core_max_pct"))),
         ("交易仓上限", _pct_value_text(report.get("trade_max_pct"))),
-        ("系统参考", _pct_value_text(report.get("allowed_add_pct"))),
+        ("当时可新增参考", _pct_value_text(report.get("allowed_add_pct"))),
         ("本次用途", bucket_label),
         ("数据状态", f"{_radar_data_status_text(report.get('data_status'))} / {stale_text}"),
     ]
