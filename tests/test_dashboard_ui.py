@@ -196,6 +196,26 @@ def test_dashboard_symbol_cell_shows_buy_alert_label_without_extra_column() -> N
     assert "☆" not in html
 
 
+def test_dashboard_price_market_cell_shows_price_source_label() -> None:
+    row = pd.Series(
+        {
+            "price": "$102.37",
+            "marketCap": "10.4B",
+            "rawSnapshot": {
+                "price_session": "LAST_CLOSE",
+                "price_as_of": "2026-06-16",
+                "last_close_synced_at": "2026-06-17T12:00:00+00:00",
+            },
+        }
+    )
+
+    html = dashboard_tables._decision_table_cell_html(row, {"key": "priceMarket"}, "NOW")
+
+    assert "$102.37" in html
+    assert "昨夜收盘" in html
+    assert "参考日：2026-06-16" in html
+
+
 def test_dashboard_watchlist_columns_do_not_include_star_column() -> None:
     labels = [column["label"] for column in dashboard.WATCHLIST_COLUMNS]
 

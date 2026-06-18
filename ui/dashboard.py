@@ -7592,6 +7592,15 @@ def _render_dashboard_styles() -> None:
             color:var(--dash-muted);
             font-weight:560;
         }
+        .price-market-cell .price-source-label {
+            color:var(--dash-muted);
+            font-size:10px;
+            font-style:normal;
+            font-weight:620;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
         .decision-cell-stack strong,
         .action-cell strong {
             max-width:100%;
@@ -8126,6 +8135,12 @@ def _render_dashboard_styles() -> None:
         .price-market-cell span {
             color:#94A3B8;
             font-size:10.8px;
+        }
+        .price-market-cell .price-source-label {
+            color:#94A3B8;
+            font-size:10px;
+            font-style:normal;
+            font-weight:680;
         }
         .decision-badge {
             height:21px;
