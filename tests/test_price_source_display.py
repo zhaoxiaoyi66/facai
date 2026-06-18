@@ -15,8 +15,8 @@ def test_price_source_label_uses_explicit_last_close_session() -> None:
     )
 
     assert label == "昨夜收盘 06/16"
-    assert "参考日：2026-06-16" in detail
-    assert "更新时间：2026-06-17T12:00:00+00:00" in detail
+    assert "数据日期：2026-06-16" in detail
+    assert "刷新时间：06/17 20:00 HKT" in detail
 
 
 def test_price_source_label_uses_price_only_refresh_mode() -> None:
@@ -30,7 +30,7 @@ def test_price_source_label_uses_price_only_refresh_mode() -> None:
 
     assert label == "最新报价 06/17 20:00"
     assert "刷新时段：美股盘后" in detail
-    assert "更新时间：2026-06-17T12:00:00+00:00" in detail
+    assert "刷新时间：06/17 20:00 HKT" in detail
 
 
 def test_price_source_label_from_row_reads_raw_snapshot_first() -> None:
@@ -47,4 +47,4 @@ def test_price_source_label_from_row_reads_raw_snapshot_first() -> None:
     label, detail = price_source_label_from_row(row)
 
     assert label == "盘前参考 06/17 19:00"
-    assert "更新时间：2026-06-17T11:00:00+00:00" in detail
+    assert "刷新时间：06/17 19:00 HKT" in detail

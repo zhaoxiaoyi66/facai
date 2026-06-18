@@ -1489,7 +1489,8 @@ def test_report_header_shows_price_source_label() -> None:
 
     assert "$102.37" in html
     assert "昨夜收盘" in html
-    assert "参考日：2026-06-16" in html
+    assert "数据日期：2026-06-16" in html
+    assert "刷新时间：06/17 20:00 HKT" in html
 
 
 def test_ai_radar_upper_pullback_zone_copy_is_repair_watch_not_main_batting_zone() -> None:

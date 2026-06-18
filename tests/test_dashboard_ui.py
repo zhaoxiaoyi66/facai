@@ -214,7 +214,8 @@ def test_dashboard_price_market_cell_shows_price_source_label() -> None:
 
     assert "$102.37" in html
     assert "昨夜收盘" in html
-    assert "参考日：2026-06-16" in html
+    assert "数据日期：2026-06-16" in html
+    assert "刷新时间：06/17 20:00 HKT" in html
 
 
 def test_dashboard_drawer_price_source_label_uses_same_snapshot_mapping() -> None:
@@ -230,7 +231,7 @@ def test_dashboard_drawer_price_source_label_uses_same_snapshot_mapping() -> Non
     html = dashboard_drawer._drawer_price_source_html(row)
 
     assert "最新报价" in html
-    assert "更新时间：2026-06-17T12:00:00+00:00" in html
+    assert "刷新时间：06/17 20:00 HKT" in html
 
 
 def test_dashboard_watchlist_columns_do_not_include_star_column() -> None:

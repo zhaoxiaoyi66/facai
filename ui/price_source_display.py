@@ -75,9 +75,9 @@ def _price_source_detail(label: str, sources: tuple[object, ...]) -> str:
     if market_session:
         parts.append(f"刷新时段：{_market_session_label(market_session)}")
     if as_of:
-        parts.append(f"参考日：{as_of}")
+        parts.append(f"数据日期：{_detail_date(as_of)}")
     if updated_at:
-        parts.append(f"更新时间：{updated_at}")
+        parts.append(f"刷新时间：{_detail_datetime(updated_at)}")
     return "｜".join(str(part) for part in parts if part)
 
 
@@ -129,6 +129,16 @@ def _compact_date(value: object) -> str:
     return text[:10]
 
 
+def _detail_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "待补"
+    parsed = _parse_datetime(text)
+    if parsed is not None:
+        return parsed.strftime("%Y-%m-%d")
+    return text
+
+
 def _compact_datetime(value: object) -> str:
     parsed = _parse_datetime(str(value or "").strip())
     if parsed is None:
@@ -136,6 +146,15 @@ def _compact_datetime(value: object) -> str:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(HONG_KONG)
     return parsed.strftime("%m/%d %H:%M")
+
+
+def _detail_datetime(value: object) -> str:
+    parsed = _parse_datetime(str(value or "").strip())
+    if parsed is None:
+        return "待补"
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(HONG_KONG)
+    return f"{parsed:%m/%d %H:%M} HKT"
 
 
 def _parse_datetime(value: str) -> datetime | None:
