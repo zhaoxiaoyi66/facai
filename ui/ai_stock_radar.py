@@ -3375,6 +3375,9 @@ def _financial_period_text(snapshot: dict[str, Any], row: dict[str, Any]) -> str
 
 
 def _price_type_text(market: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    label, _detail = price_source_label(market, snapshot)
+    if label and label != "价格口径待补":
+        return label
     raw = str(
         _first_present(market, "price_is_close_or_intraday", "priceIsCloseOrIntraday", "price_type", "priceType")
         or _first_present(snapshot, "price_is_close_or_intraday", "priceIsCloseOrIntraday", "price_type", "priceType")

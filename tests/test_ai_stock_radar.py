@@ -435,6 +435,26 @@ def test_report_data_health_filters_gaps_already_resolved_on_page() -> None:
     assert data_health["portfolio_updated_at"] == "2026-06-12T17:09:22+00:00"
 
 
+def test_report_data_health_uses_unified_price_source_label() -> None:
+    data_health = radar_ui._data_health_context(
+        {"ticker": "NOW", "current_price": 102.37, "final_score": 64.1},
+        {
+            "currentPrice": 102.37,
+            "price_session": "LAST_CLOSE",
+            "price_as_of": "2026-06-16",
+            "last_close_synced_at": "2026-06-17T12:00:00+00:00",
+        },
+        {},
+        {},
+        {"has_position": False},
+    )
+    html = radar_ui._data_health_card_html(data_health)
+
+    assert data_health["price_is_close_or_intraday"] == "昨夜收盘 06/16"
+    assert "价格口径" in html
+    assert "昨夜收盘 06/16" in html
+
+
 def test_report_data_health_classifies_critical_optional_and_not_applicable_fields() -> None:
     report = {
         "ticker": "MSFT",
