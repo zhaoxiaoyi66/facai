@@ -471,10 +471,11 @@ def test_b_class_gate_copy_does_not_use_a_class_core_language() -> None:
 
 
 def test_discipline_gate_conclusion_labels_are_chinese() -> None:
-    assert trade_journal._discipline_gate_conclusion_label("PASS") == "通过"
+    assert trade_journal._discipline_gate_conclusion_label("PASS") == "风险较低"
     assert trade_journal._discipline_gate_conclusion_label("WARN") == "需要复核"
     assert trade_journal._discipline_gate_conclusion_label("FIX_REQUIRED") == "卖出前复核"
     assert trade_journal._discipline_gate_conclusion_label("BLOCK") == "高风险提醒"
+    assert "通过" not in trade_journal._discipline_gate_conclusion_label("PASS")
 
 
 def test_decision_mood_warning_uses_chinese_label() -> None:

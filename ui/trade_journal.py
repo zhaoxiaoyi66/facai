@@ -171,7 +171,7 @@ DISCIPLINE_STATUS_LABELS = {
     "hold": "无需卖出",
 }
 DISCIPLINE_STATUS_COMPACT_LABELS = {
-    "allowed": "通过",
+    "allowed": "风险较低",
     "warning": "警告",
     "blocked": "高风险",
     "hold": "无",
@@ -1638,7 +1638,7 @@ def _discipline_gate_metric_html(rows: list[tuple[str, str]]) -> str:
 
 def _discipline_gate_summary(conclusion: str) -> str:
     return {
-        "PASS": "可以确认入账，但仍按计划执行。",
+        "PASS": "当前风险较低，可以记录入账，但仍按计划执行。",
         "WARN": "入账前继续复核，避免情绪驱动。",
         "FIX_REQUIRED": "卖出前建议先修正比例、数量或回补计划；如仍继续，将记录为人工确认。",
         "BLOCK": "高风险卖出提醒；系统不建议，但你可以继续。",
@@ -1647,7 +1647,7 @@ def _discipline_gate_summary(conclusion: str) -> str:
 
 def _discipline_gate_conclusion_label(conclusion: str) -> str:
     return {
-        "PASS": "通过",
+        "PASS": "风险较低",
         "WARN": "需要复核",
         "FIX_REQUIRED": "卖出前复核",
         "BLOCK": "高风险提醒",
@@ -1712,7 +1712,7 @@ def _discipline_gate_reasons(result, context: dict, max_allowed_qty: int) -> lis
         text = _discipline_message_text(warning)
         if text not in reasons:
             reasons.append(text)
-    return reasons or ["当前交易纪律检查通过。"]
+    return reasons or ["当前交易纪律未发现主要风险。"]
 
 
 def _normalized_core_gate_context(context: dict) -> dict:
