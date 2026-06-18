@@ -77,6 +77,38 @@ def test_dashboard_header_uses_smart_market_refresh_as_primary_action() -> None:
     assert "latest_data_display_label" in source
 
 
+def test_smart_refresh_feedback_uses_display_data_label(monkeypatch) -> None:
+    monkeypatch.setattr(dashboard.st, "session_state", {})
+
+    message, tone = dashboard._smart_refresh_feedback_message(
+        {
+            "session_status": "CLOSED_AFTER_SESSION",
+            "session_label": "美股已收盘",
+            "latest_data_display_label": "昨夜收盘 06/15",
+            "result": {"refreshed_count": 28, "skipped_count": 0, "failed_count": 0},
+        }
+    )
+
+    assert tone == "success"
+    assert message.startswith("已同步昨夜收盘 06/15。")
+
+
+def test_smart_refresh_skip_feedback_uses_latest_available_date(monkeypatch) -> None:
+    monkeypatch.setattr(dashboard.st, "session_state", {})
+
+    message, tone = dashboard._smart_refresh_feedback_message(
+        {
+            "session_status": "WEEKEND_OR_HOLIDAY",
+            "session_label": "美股休市",
+            "latest_data_display_label": "最新可用收盘 06/12",
+            "result": {"mode": "SMART_SKIP"},
+        }
+    )
+
+    assert tone == "info"
+    assert message == "美股休市中，已使用最新可用收盘 06/12。"
+
+
 def test_single_dashboard_row_refresh_uses_quote_only_fast_path() -> None:
     source = inspect.getsource(dashboard._refresh_single_dashboard_row)
 

@@ -529,6 +529,7 @@ def _smart_refresh_dashboard_market_data(tickers: list[str], market_session: Any
         "session_status": session.status.value if isinstance(session.status, USMarketSession) else str(session.status),
         "session_label": session.label,
         "latest_data_label": session.latest_data_label,
+        "latest_data_display_label": getattr(session, "latest_data_display_label", session.latest_data_label),
         "result": result,
     }
 
@@ -2803,23 +2804,24 @@ def _smart_refresh_feedback_message(payload: dict[str, Any]) -> tuple[str, str]:
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     session_status = str(payload.get("session_status") or "")
     session_label = str(payload.get("session_label") or "市场状态")
+    latest_data_label = str(payload.get("latest_data_display_label") or payload.get("latest_data_label") or "最新可用数据")
     refreshed = int(result.get("refreshed_count") or 0)
     skipped = int(result.get("skipped_count") or 0)
     failed = int(result.get("failed_count") or 0)
     triggered_symbols = st.session_state.pop("dashboard_smart_refresh_alert_triggers", [])
     triggered_count = len(triggered_symbols) if isinstance(triggered_symbols, list) else 0
     if result.get("mode") == "SMART_SKIP":
-        return "美股休市中，已使用最新可用收盘数据。", "info"
+        return f"美股休市中，已使用{latest_data_label}。", "info"
     if failed and not refreshed and not skipped:
         return f"{session_label}刷新失败：{_refresh_failure_reason(result)}", "error"
     if session_status == USMarketSession.CLOSED_AFTER_SESSION.value and refreshed == 0 and skipped and not failed:
-        return "当前已是最新收盘数据，无需重复刷新。", "info"
+        return f"当前已是{latest_data_label}，无需重复刷新。", "info"
     if session_status == USMarketSession.PRE_MARKET.value:
         prefix = "盘前数据已刷新。盘前价格仅作参考，正式买入建议等待开盘确认。"
     elif session_status == USMarketSession.AFTER_HOURS.value:
         prefix = "盘后数据已刷新。盘后价格仅作参考，建议次日开盘确认。"
     elif session_status == USMarketSession.CLOSED_AFTER_SESSION.value:
-        prefix = "已同步昨夜收盘。"
+        prefix = f"已同步{latest_data_label}。"
     elif session_status == USMarketSession.REGULAR.value:
         prefix = "盘中数据已刷新。"
     else:
