@@ -126,6 +126,20 @@ def test_latest_history_chooses_newer_symbol_or_fmp_key() -> None:
         assert context["historyLatestDate"] == "2026-05-29"
 
 
+def test_latest_history_prefers_newer_trade_date_over_newer_fetch_time() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        _insert_history(path, "ORCL", [("2026-06-16", 190)], "2026-06-17T02:00:00+00:00")
+        _insert_history(path, "FMP:ORCL", [("2026-06-14", 184)], "2026-06-18T12:00:00+00:00")
+
+        context = build_market_context("ORCL", path=path, now=NOW)
+
+        assert context["currentPrice"] == 190
+        assert context["latestClose"] == 190
+        assert context["historyTickerKey"] == "ORCL"
+        assert context["historyLatestDate"] == "2026-06-16"
+
+
 def test_missing_quote_and_history_returns_safe_missing_context() -> None:
     with TemporaryDirectory() as tmpdir:
         context = build_market_context("NBIS", path=_db(tmpdir), now=NOW)

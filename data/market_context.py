@@ -162,8 +162,8 @@ def _select_history_key(conn: sqlite3.Connection, symbol: str) -> str | None:
     ranked = sorted(
         rows,
         key=lambda row: (
+            _parse_datetime(row[2]),
             _parse_datetime(row[1]),
-            str(row[2] or ""),
             1 if str(row[0] or "").upper() == symbol else 0,
         ),
         reverse=True,
