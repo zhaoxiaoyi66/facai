@@ -509,9 +509,9 @@ def _after_buy_metrics(
     cash_balance = _number((portfolio_context or {}).get("cashBalance"))
     return {
         "totalShares": total_shares,
-        "marketValueText": _money(total_market_value) if total_market_value > 0 else "N/A",
-        "weightText": _percent(total_market_value / total_portfolio_value * 100) if total_portfolio_value and total_portfolio_value > 0 else "N/A",
-        "cashText": f"现金余量 {_money(cash_balance - cumulative_amount)}" if cash_balance is not None else "现金 N/A",
+        "marketValueText": _money(total_market_value) if total_market_value > 0 else "待补",
+        "weightText": _percent(total_market_value / total_portfolio_value * 100) if total_portfolio_value and total_portfolio_value > 0 else "待补",
+        "cashText": f"现金余量 {_money(cash_balance - cumulative_amount)}" if cash_balance is not None else "现金待补",
     }
 
 
