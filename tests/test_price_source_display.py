@@ -47,6 +47,20 @@ def test_price_source_label_accepts_latest_close_date_alias() -> None:
     assert "刷新时间：06/17 10:15 HKT" in detail
 
 
+def test_price_source_label_accepts_as_of_date_alias() -> None:
+    label, detail = price_source_label(
+        {
+            "priceSource": "close",
+            "asOf": "2026-06-16",
+            "updatedAt": "2026-06-17T02:15:00+00:00",
+        }
+    )
+
+    assert label == "收盘价 06/16"
+    assert "数据日期：2026-06-16" in detail
+    assert "刷新时间：06/17 10:15 HKT" in detail
+
+
 def test_price_source_label_uses_price_only_refresh_mode() -> None:
     label, detail = price_source_label(
         {
