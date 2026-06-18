@@ -344,6 +344,7 @@ def test_report_summary_surfaces_acceptance_state() -> None:
     assert "动能辅助：RSI 74，价格贴近布林上轨，追高风险升高。" in html
     assert "当前价不新增" in html
     assert "未设置计划上限" in html
+    assert "组合持仓页可设置" in html
     assert "赔率较好，但承接不足。当前属于高赔率观察，不是立即买入。" in html
     assert html.count("<li>") == 4
     assert "若无持仓" not in html
@@ -1873,6 +1874,7 @@ def test_ai_radar_report_position_action_uses_buy_zone_display() -> None:
 
     assert "当前价不新增" in html
     assert "未设置计划上限" in html
+    assert "组合持仓页可设置" in html
     assert "允许回踩复核加仓" not in html
 
 

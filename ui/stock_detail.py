@@ -243,7 +243,7 @@ def _render_current_position_summary(row: dict | None, buy_zone_display: dict | 
     quantity = _optional_float((row or {}).get("quantity"))
     if not row or quantity is None or quantity <= 0:
         display = buy_zone_display or {}
-        plan_limit = _shares_or_unset(display.get("plan_limit_shares"), "未设置计划上限")
+        plan_limit = _shares_or_unset(display.get("plan_limit_shares"), "未设置计划上限（组合持仓页可设置）")
         current_add = str(display.get("current_price_action_text") or "当前不释放新增额度")
         next_trigger = _compact_next_trigger_text(display)
         st.markdown(

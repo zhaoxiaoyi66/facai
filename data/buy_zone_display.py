@@ -534,7 +534,7 @@ def _position_capacity_text(
     current = _shares_text(shares) if shares is not None else "未持仓"
     if plan_limit is None:
         current_add = _shares_text(current_price_add_capacity) if current_price_add_capacity is not None else "待确认"
-        return f"当前持仓 {current}；未设置计划上限；当前价可新增 {current_add}"
+        return f"当前持仓 {current}；未设置计划上限（组合持仓页可设置）；当前价可新增 {current_add}"
     remaining = _shares_text(remaining_plan_capacity)
     current_add = _shares_text(current_price_add_capacity)
     return f"当前持仓 {current}；计划上限 {_shares_text(plan_limit)}；剩余计划额度 {remaining}；当前价可新增 {current_add}"
@@ -555,7 +555,8 @@ def _trading_summary_text(
         f"量价承接 {volume_acceptance_score:.0f}" if volume_acceptance_score is not None else "量价承接待补"
     )
     if plan_limit is None:
-        holding = f"已有 {_shares_text(shares)}，未设置计划上限" if shares is not None and shares > 0 else "未设置计划上限"
+        missing_limit = "未设置计划上限（组合持仓页可设置）"
+        holding = f"已有 {_shares_text(shares)}，{missing_limit}" if shares is not None and shares > 0 else missing_limit
     else:
         current = _shares_text(shares) if shares is not None else "未持仓"
         prefix = f"已有 {current}" if shares is not None and shares > 0 else current

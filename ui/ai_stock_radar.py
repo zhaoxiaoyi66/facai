@@ -1601,7 +1601,7 @@ def _executive_summary_card_html(
         '<div class="ai-radar-section-title"><span>决策摘要</span><b>当前建议 / 关键价格 / 下一步</b></div>'
         '<div class="ai-radar-decision-summary-head">'
         f'<div><span>当前动作</span><strong>{escape(main_headline)}</strong><em>{escape(current_action_text)}</em></div>'
-        f'<div><span>持仓与额度</span><strong>{escape(position_capacity_text or "未设置计划上限")}</strong>'
+        f'<div><span>持仓与额度</span><strong>{escape(position_capacity_text or "未设置计划上限（组合持仓页可设置）")}</strong>'
         f'<em>{escape(acceptance_text or "承接待确认")} / {escape(entry_quality_text or "等确认")}</em></div>'
         f'<div><span>下一步</span><strong>{escape(next_trading_step)}</strong></div>'
         "</div>"
@@ -2385,7 +2385,7 @@ def _position_capacity_panel_html(context: dict[str, Any], buy_zone_display: dic
         headline = "我的持仓：未持仓"
     rows = [
         ("当前持仓", _share_count_text(display.get("current_shares")) if display.get("current_shares") is not None else ("未持仓" if not context.get("has_position") else _share_count_text(context.get("shares")))),
-        ("计划上限", _share_count_text(display.get("plan_limit_shares")) if display.get("plan_limit_shares") is not None else "未设置计划上限"),
+        ("计划上限", _share_count_text(display.get("plan_limit_shares")) if display.get("plan_limit_shares") is not None else "未设置计划上限（组合持仓页可设置）"),
         ("剩余计划额度", _share_count_text(display.get("remaining_plan_capacity_shares")) if display.get("remaining_plan_capacity_shares") is not None else "待设置"),
         ("当前价可新增", _share_count_text(display.get("current_price_add_capacity_shares")) if display.get("current_price_add_capacity_shares") is not None else "待确认"),
         ("下一笔触发", str(display.get("next_buy_action_text") or "等待下一买点")),
