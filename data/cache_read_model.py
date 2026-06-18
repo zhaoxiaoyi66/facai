@@ -154,8 +154,8 @@ class CacheReadModel:
         ranked = sorted(
             rows,
             key=lambda row: (
+                _parse_datetime(row[2]),
                 _parse_datetime(row[1]),
-                str(row[2] or ""),
                 1 if str(row[0] or "").upper() == plain_key else 0,
             ),
             reverse=True,

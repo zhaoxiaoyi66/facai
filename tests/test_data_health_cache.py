@@ -148,6 +148,27 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertEqual(cache.get_history_status("msft"), "available")
             self.assertEqual(cache.get_price_history("msft")["close"].tolist(), [425, 430])
 
+    def test_cache_read_model_prefers_newer_trade_date_over_newer_fetch_time(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cache.sqlite"
+            self._insert_price_history(
+                db_path,
+                "ORCL",
+                [("2026-06-16", 190)],
+                "2026-06-17T02:00:00+00:00",
+            )
+            self._insert_price_history(
+                db_path,
+                "FMP:ORCL",
+                [("2026-06-14", 184)],
+                "2026-06-18T12:00:00+00:00",
+            )
+
+            cache = CacheReadModel(db_path)
+
+            self.assertEqual(cache.get_latest_close("orcl"), 190)
+            self.assertEqual(cache.get_price_history("orcl")["close"].tolist(), [190])
+
     def test_data_health_summary_uses_fresh_fmp_history_before_reporting_stale_history(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cache.sqlite"
