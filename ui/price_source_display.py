@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+
+HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 
 
 def price_source_label(*sources: object) -> tuple[str, str]:
@@ -39,7 +44,7 @@ def price_source_label(*sources: object) -> tuple[str, str]:
             label = "收盘价"
         else:
             label = "价格口径待补"
-    return label, _price_source_detail(label, sources)
+    return _compact_price_source_label(label, sources), _price_source_detail(label, sources)
 
 
 def price_source_label_from_row(row: object) -> tuple[str, str]:
@@ -86,6 +91,64 @@ def _market_session_label(value: object) -> str:
         "WEEKEND_OR_HOLIDAY": "美股休市",
         "UNKNOWN": "市场状态未知",
     }.get(text, "市场状态未知")
+
+
+def _compact_price_source_label(label: str, sources: tuple[object, ...]) -> str:
+    if label in {"价格口径待补"}:
+        return label
+    as_of = _first_present(
+        sources,
+        "price_as_of",
+        "history_latest_date",
+        "historyLatestDate",
+        "latest_close_date",
+        "date",
+    )
+    updated_at = _first_present(
+        sources,
+        "quote_updated_at",
+        "price_updated_at",
+        "last_close_synced_at",
+        "updated_at",
+        "updatedAt",
+        "fetchedAt",
+    )
+    suffix = _compact_date(as_of) if label in {"昨夜收盘", "收盘价"} and as_of else _compact_datetime(updated_at)
+    return f"{label} {suffix}" if suffix else label
+
+
+def _compact_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = _parse_datetime(text)
+    if parsed is not None:
+        return parsed.strftime("%m/%d")
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return f"{text[5:7]}/{text[8:10]}"
+    return text[:10]
+
+
+def _compact_datetime(value: object) -> str:
+    parsed = _parse_datetime(str(value or "").strip())
+    if parsed is None:
+        return ""
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(HONG_KONG)
+    return parsed.strftime("%m/%d %H:%M")
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.fromisoformat(f"{text}T00:00:00")
+        except ValueError:
+            return None
 
 
 def _first_present(sources: tuple[object, ...], *keys: str) -> Any:
