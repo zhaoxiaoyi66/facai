@@ -151,7 +151,7 @@ def test_missing_buy_gate_fields_use_ledger_language() -> None:
     assert fields["radarBlocked"] is False
     assert fields["gateHardBlocked"] is False
     assert fields["radarBlockReasons"] == []
-    assert fields["radarAdvisoryWarnings"] == ["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"]
+    assert fields["radarAdvisoryWarnings"] == ["买区提示缺失，需人工判断；可手动继续，系统会记录为人工复核记录。"]
     assert fields["warningLevel"] == "warning"
 
 
@@ -168,7 +168,7 @@ def test_buy_gate_advisory_warnings_do_not_show_raw_decision_codes(decision: str
     fields = buy_gate_entry_fields(gate, action_type="buy")
     text = " ".join(fields["radarAdvisoryWarnings"])
 
-    assert "人工 override" in text
+    assert "人工复核记录" in text
     assert f"结论为 {decision}" not in text
     assert not any(token in text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
 
@@ -1823,7 +1823,7 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
                     "current price is in or above chase zone",
                     "valuation score below 40; heavy position is not allowed",
                     "final score below 70; core position is not allowed",
-                    "当前买入偏离系统建议：买入后仓位 5.6% 高于 Radar 交易仓参考上限 0.0%；"
+                    "当前买入偏离系统建议：买入后仓位 5.6% 高于交易仓参考上限 0.0%；"
                     "系统不" + "阻止买入，会记录用于复盘。",
                 ],
             },
@@ -1845,7 +1845,7 @@ def test_portfolio_buy_gate_notice_translates_raw_reasons_to_chinese() -> None:
     assert "当前市场状态" in html
     assert "\u5f53\u524d\u4ef7\u9ad8\u4e8e\u4e3b\u51fb\u7403\u533a" in html
     assert "可手动继续" in html
-    assert "人工 override" in html
+    assert "人工复核记录" in html
     assert "估值评分低于 40" in html
     assert "综合评分低于 70" in html
     assert "0%" in html

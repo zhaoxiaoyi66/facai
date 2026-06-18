@@ -10,7 +10,7 @@ from data.buy_zone_engine import build_buy_zone_context
 
 
 BUY_MOOD_BLOCKERS = {"fomo", "anxiety", "bottom_fishing_impulse", "revenge_trade", "regret_chase"}
-MISSING_BUY_GATE_REASON = "Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"
+MISSING_BUY_GATE_REASON = "买区提示缺失，需人工判断；可手动继续，系统会记录为人工复核记录。"
 
 
 @dataclass(frozen=True)
@@ -204,11 +204,11 @@ def evaluate_position_limit(data: dict[str, Any], position_bucket: str, planned_
         limit = _number(data.get("trade_max_pct"))
         label = "交易仓"
     else:
-        return ["未选择核心仓/交易仓，无法判断买入后是否偏离 Radar 仓位参考。"]
+        return ["未选择核心仓/交易仓，无法判断买入后是否偏离仓位参考。"]
     if limit is None or limit <= 0:
         return []
     if after_pct > limit:
-        return [f"当前买入偏离系统建议：买入后仓位 {after_pct:.1f}% 高于 Radar {label}参考上限 {limit:.1f}%；可手动继续，系统会记录为人工 override。"]
+        return [f"当前买入偏离系统建议：买入后仓位 {after_pct:.1f}% 高于{label}参考上限 {limit:.1f}%；可手动继续，系统会记录为人工复核记录。"]
     return []
 
 
@@ -224,18 +224,18 @@ def evaluate_position_advisory(data: dict[str, Any], position_bucket: str, plann
         limit = _number(data.get("trade_max_pct"))
         label = "交易仓"
     else:
-        return ["未选择核心仓/交易仓，无法给出 Radar 仓位参考。"]
+        return ["未选择核心仓/交易仓，无法给出仓位参考。"]
     if limit is None:
-        return [f"缺少 Radar {label}参考上限，需人工判断仓位。"]
+        return [f"缺少{label}参考上限，需人工判断仓位。"]
     if limit <= 0:
-        return [f"Radar {label}参考上限为 0%，这是风险提示；可手动继续，系统会记录为人工 override。"]
+        return [f"{label}参考上限为 0%，这是风险提示；可手动继续，系统会记录为人工复核记录。"]
     return []
 
 
 def evaluate_mood_gate(mood: str) -> list[str]:
     text = str(mood or "").strip().lower()
     if text in BUY_MOOD_BLOCKERS:
-        return ["买入风险提示：当前存在 FOMO / 焦虑 / 抄底冲动 / 复仇交易倾向。可手动继续，系统会记录为人工 override。"]
+        return ["买入风险提示：当前存在 FOMO / 焦虑 / 抄底冲动 / 复仇交易倾向。可手动继续，系统会记录为人工复核记录。"]
     return []
 
 
@@ -354,19 +354,19 @@ def _advisory_text(level: str, reasons: list[str]) -> str:
 def _decision_advisory_warnings(data: dict[str, Any], decision: str, observation_only: bool) -> list[str]:
     block_reasons = [str(item) for item in (data.get("block_reasons") or []) if str(item).strip()]
     if decision == "DATA_MISSING":
-        return block_reasons or ["Radar / 买区数据不足，需人工判断；可手动继续，系统会记录为人工 override。"]
+        return block_reasons or ["买区提示 / 价格数据不足，需人工判断；可手动继续，系统会记录为人工复核记录。"]
     if decision == "BLOCK_CHASE":
-        return block_reasons or ["当前处于追高风险区，系统不建议追高；如仍继续，将记录为人工 override。"]
+        return block_reasons or ["当前处于追高风险区，系统不建议追高；如仍继续，将记录为人工复核记录。"]
     if decision == "AVOID":
-        return block_reasons or ["Radar 风险提示较高，需人工复核；如仍继续，将记录为人工 override。"]
+        return block_reasons or ["买区风险提示较高，需人工复核；如仍继续，将记录为人工复核记录。"]
     if decision == "WAIT":
-        reason = "Radar 建议等待或复核；如仍继续，将记录为人工 override。"
+        reason = "买区提示建议等待或复核；如仍继续，将记录为人工复核记录。"
         if observation_only:
             reason = "当前仅为观察记录，不是一笔真实买入；请用计划买入或价格提醒记录。"
         return [reason]
     if decision == "ALLOW_BUY":
         return []
-    return ["Radar 提示状态未知，需人工判断；如仍继续，将记录为人工 override。"]
+    return ["买区提示状态未知，需人工判断；如仍继续，将记录为人工复核记录。"]
 
 
 def _buy_zone_context(data: dict[str, Any]) -> dict[str, Any]:
@@ -439,7 +439,7 @@ def _buy_zone_context_warnings(context: dict[str, Any]) -> list[str]:
         warning = str(context.get("core_position_reason") or "").strip()
         return [warning] if warning else []
     if action == "BLOCK_CHASE":
-        return [f"统一买区：{zone_text or '追高风险区'}，{action_text or '追高风险提醒'}；如仍继续，将记录为人工 override。"]
+        return [f"统一买区：{zone_text or '追高风险区'}，{action_text or '追高风险提醒'}；如仍继续，将记录为人工复核记录。"]
     if action == "RISK_REVIEW":
         return [f"统一买区：{zone_text or '失效风控区'}，{action_text or '进入风控复核'}；{reason or '跌破失效线，暂停新增买入。'}"]
     if action == "DATA_INSUFFICIENT":
@@ -448,7 +448,7 @@ def _buy_zone_context_warnings(context: dict[str, Any]) -> list[str]:
         suffix = f"暂缺：{missing_text}" if missing_text else "技术承接数据不足"
         return [f"统一买区：技术承接数据不足，不给明确买入区；{suffix}。"]
     if action in {"WAIT_CONFIRMATION", "WAIT_PULLBACK"}:
-        return [f"统一买区：{zone_text or action_text}，{action_text or '等待确认'}；可手动继续，系统会记录为人工 override。"]
+        return [f"统一买区：{zone_text or action_text}，{action_text or '等待确认'}；可手动继续，系统会记录为人工复核记录。"]
     return []
 
 

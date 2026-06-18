@@ -736,7 +736,7 @@ def _render_radar_buy_gate_card(report: dict, result: dict, *, bucket_label: str
         <section class="trade-radar-gate {escape(tone)}">
           <div class="trade-radar-gate-head">
             <b>Radar 提示：{escape(status)}</b>
-            <span>价格提醒不是买入信号；你可以手动继续，偏离建议会记录为人工 override。</span>
+            <span>价格提醒不是买入信号；你可以手动继续，偏离建议会记录为人工复核记录。</span>
           </div>
           <div class="trade-radar-gate-grid">{metrics_html}</div>
           <div class="trade-radar-reasons"><b>提示原因</b><ul>{reason_html}</ul></div>
@@ -3585,7 +3585,7 @@ def _entry_radar_gate_snapshot_html(entry: dict) -> str:
         ("仅观察记录", _yes_no(entry.get("radar_observation_only"))),
         ("检查时间", _text(entry.get("gate_checked_at"))),
     ]
-    reason_html = _discipline_detail_messages_html("Radar 风险提示", reasons, is_blocker=False) if reasons else ""
+    reason_html = _discipline_detail_messages_html("买区风险提示", reasons, is_blocker=False) if reasons else ""
     sync_note = ""
     if entry.get("radar_blocked"):
         sync_note = '<div class="trade-entry-reminder">Radar 旧字段曾标记高风险：请按当时人工决策复盘。</div>'

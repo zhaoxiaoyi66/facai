@@ -496,7 +496,7 @@ def _action_fusion_advisory_notes(action_fusion: Any) -> list[str]:
     action_code = str(getattr(action_fusion, "action_code", "") or "").strip().upper()
     action_cn = str(getattr(action_fusion, "action_cn", "") or "").strip()
     if action_code in {"BLOCK_CHASE", "EVENT_REVIEW", "DATA_INSUFFICIENT", "WAIT_CONFIRMATION", "HOLD_NO_ADD", "BREAKDOWN_REVIEW"} and action_cn:
-        notes.append(f"Action Fusion：{action_cn}；可手动继续，系统会记录为人工 override。")
+        notes.append(f"系统提示：{action_cn}；可手动继续，系统会记录为人工复核记录。")
     return _dedupe_text(notes)
 
 

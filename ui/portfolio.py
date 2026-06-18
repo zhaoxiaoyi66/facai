@@ -766,7 +766,7 @@ def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "
         '<div class="buy-execution-plan-summary">'
         "<strong>计划摘要</strong>"
         f"{html}"
-        "<small>计划只提供执行依据；Radar / 计划 / 结构提示会保存为复盘快照，偏离建议会记录为人工 override。</small>"
+        "<small>计划只提供执行依据；买区 / 计划 / 结构提示会保存为复盘快照，偏离建议会记录为人工复核记录。</small>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2163,7 +2163,7 @@ def _portfolio_buy_gate_notice_html(payload: object) -> str:
         '<section class="portfolio-gate-notice">'
         '<div class="portfolio-gate-notice-head">'
         f"<strong>{escape(symbol)} 买入风险提示</strong>"
-        "<span>系统只提供风险提醒；可手动继续，继续操作会记录为人工 override。</span>"
+        "<span>系统只提供风险提醒；可手动继续，继续操作会记录为人工复核记录。</span>"
         "</div>"
         '<div class="portfolio-gate-notice-grid">'
         f"<div><b>{escape(primary_title)}</b><ul>{reason_html}</ul></div>"
@@ -2189,8 +2189,8 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
     text = str(value or "").strip()
     lower = text.lower()
     mappings = [
-        ("current price is above the discipline buy zone", "当前价高于主击球区，系统建议等待回踩；如仍继续，将记录为人工 override。"),
-        ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩；如仍继续，将记录为人工 override。"),
+        ("current price is above the discipline buy zone", "当前价高于主击球区，系统建议等待回踩；如仍继续，将记录为人工复核记录。"),
+        ("current price is in or above chase zone", "当前存在追高风险，系统建议等待回踩；如仍继续，将记录为人工复核记录。"),
         ("valuation score below 40", "估值评分低于 40，系统建议降低仓位。"),
         ("final score below 70", "公司综合评分低于 70；买入时机仍以 setup_score 和量价承接复核。"),
         ("core position is not allowed", "买入时机仍以 setup_score 和量价承接复核。"),
@@ -2210,9 +2210,9 @@ def _portfolio_buy_gate_reason_text(value: object) -> str:
 
 def _soften_buy_advisory_text(text: str) -> str:
     replacements = {
-        "系统不" + "阻止买入，会记录用于复盘": "可手动继续，系统会记录为人工 override",
-        "不作为买入" + "硬" + "拦截": "可手动继续，系统会记录为人工 override",
-        "不单独" + "阻止买入": "可手动继续，系统会记录为人工 override",
+        "系统不" + "阻止买入，会记录用于复盘": "可手动继续，系统会记录为人工复核记录",
+        "不作为买入" + "硬" + "拦截": "可手动继续，系统会记录为人工复核记录",
+        "不单独" + "阻止买入": "可手动继续，系统会记录为人工复核记录",
         "不再" + "硬" + "拦截": "可手动继续",
         "硬" + "拦截": "风险提示",
         "当前允许新增仓位": "当前参考新增仓位",
@@ -2237,7 +2237,7 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
         allowed_add_pct = _number(gate.get("allowed_add_pct"))
         if allowed_add_pct is not None and allowed_add_pct <= 0:
             items.append("系统参考新增仓位为 0%，仅作风险提示。")
-        items.append("价格位置和买区提示是判断辅助；可手动继续，偏离建议会记录为人工 override。")
+        items.append("价格位置和买区提示是判断辅助；可手动继续，偏离建议会记录为人工复核记录。")
     return _dedupe_text(items)
 
 
@@ -2248,7 +2248,7 @@ def _portfolio_buy_gate_actions(
     tier: object = "",
 ) -> list[str]:
     clean_tier = str(tier or "").strip().upper()
-    actions = ["复核价格位置和买区提示；最终买入由你决定，偏离建议会记录为人工 override。"]
+    actions = ["复核价格位置和买区提示；最终买入由你决定，偏离建议会记录为人工复核记录。"]
     if clean_tier == "A":
         actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
     elif clean_tier == "B":

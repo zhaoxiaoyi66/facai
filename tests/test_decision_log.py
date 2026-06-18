@@ -398,7 +398,7 @@ class DecisionLogTests(unittest.TestCase):
             )
 
             self.assertEqual(saved["radar_block_reasons"], [])
-            self.assertEqual(saved["radar_advisory_warnings"], ["Radar 买入提示缺失，需人工判断；可手动继续，系统会记录为人工 override。"])
+            self.assertEqual(saved["radar_advisory_warnings"], ["买区提示缺失，需人工判断；可手动继续，系统会记录为人工复核记录。"])
 
     def test_trade_journal_store_saves_advisory_override_snapshot(self) -> None:
         with TemporaryDirectory() as tmpdir:
