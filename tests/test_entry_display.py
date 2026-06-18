@@ -53,6 +53,25 @@ def test_entry_display_above_buy_zone_is_consistent() -> None:
     assert "追高风险区 >$120.00" in result["entry_display_reason"]
 
 
+def test_entry_display_stale_data_reason_is_chinese() -> None:
+    result = build_entry_display(
+        current_price=95,
+        buy_zone=BUY_ZONE,
+        chase_zone=CHASE_ZONE,
+        data_status="STALE",
+        price_position="IN_BUY_ZONE",
+        decision="WAIT",
+        final_score=70,
+        valuation_score=60,
+        risk_score=70,
+        buy_zone_context=LEGACY_DISPLAY_CONTEXT,
+    )
+
+    assert result["missing_entry_fields"] == ["数据过期"]
+    assert "数据过期" in result["entry_display_reason"]
+    assert "stale" not in result["entry_display_reason"].lower()
+
+
 def test_entry_display_prefers_technical_pullback_when_value_zone_is_far() -> None:
     result = build_entry_display(
         current_price=120,

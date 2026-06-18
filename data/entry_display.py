@@ -490,7 +490,7 @@ def explain_missing_entry_fields(
 ) -> list[str]:
     status = str(data_status or "").strip().upper()
     if status == "STALE":
-        return ["数据 stale"]
+        return ["数据过期"]
     if status == "MISSING_PRICE":
         return ["缺当前价格"]
     if status == "MISSING_VALUATION":
@@ -728,8 +728,8 @@ def _effective_technical_high(technical_high: float | None, chase_above: float |
 def _missing_reason_text(fields: list[str]) -> str:
     if not fields:
         return "无法生成主击球区"
-    if "数据 stale" in fields:
-        return "数据 stale"
+    if "数据过期" in fields or "数据 stale" in fields:
+        return "数据过期"
     if "缺当前价格" in fields:
         return "缺当前价格"
     if "缺估值指标" in fields:
