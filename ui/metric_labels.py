@@ -452,7 +452,7 @@ ACTION_DISPLAY_MAP: dict[str, str] = {
 def metric_label(value: Any, *, debug: bool = False) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
-        return "N/A"
+        return "待补"
     key = _normalize(text)
     snake_key = _normalize(_camel_to_words(text))
     if key in INTERNAL_DEBUG_FIELDS or snake_key in INTERNAL_DEBUG_FIELDS:
@@ -480,28 +480,28 @@ def resolution_status_label(value: Any) -> str:
 def source_type_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
-        return "N/A"
+        return "待补"
     return SOURCE_TYPE_DISPLAY_MAP.get(text, SOURCE_TYPE_DISPLAY_MAP.get(text.lower(), f"未映射来源：{text}"))
 
 
 def confidence_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
-        return "N/A"
+        return "待补"
     return CONFIDENCE_DISPLAY_MAP.get(text, CONFIDENCE_DISPLAY_MAP.get(text.lower(), f"未映射置信度：{text}"))
 
 
 def model_type_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
-        return "N/A"
+        return "待补"
     return MODEL_TYPE_DISPLAY_MAP.get(text, MODEL_TYPE_DISPLAY_MAP.get(text.upper(), f"未映射模型：{text}"))
 
 
 def action_label(value: Any) -> str:
     text = _clean(value)
     if not text or text.upper() == "N/A":
-        return "N/A"
+        return "待补"
     if text in ACTION_DISPLAY_MAP:
         return ACTION_DISPLAY_MAP[text]
     lowered = text.lower()

@@ -177,7 +177,16 @@ from ui.dashboard import (
     _valuation_status,
 )
 from ui import manual_review, stock_detail
-from ui.metric_labels import is_internal_metric_field, metric_label, model_type_label, resolution_status_label, unmapped_metric_labels
+from ui.metric_labels import (
+    action_label,
+    confidence_label,
+    is_internal_metric_field,
+    metric_label,
+    model_type_label,
+    resolution_status_label,
+    source_type_label,
+    unmapped_metric_labels,
+)
 
 
 def _metric_resolution_by_key(result, metric_key: str) -> dict:
@@ -1833,6 +1842,11 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertEqual(len(groups["低优先级 / 仅解释项"]), 2)
 
     def test_ui_metric_labels_hide_backend_enums(self) -> None:
+        self.assertEqual(metric_label(None), "待补")
+        self.assertEqual(source_type_label("N/A"), "待补")
+        self.assertEqual(confidence_label(""), "待补")
+        self.assertEqual(model_type_label(None), "待补")
+        self.assertEqual(action_label("N/A"), "待补")
         self.assertEqual(model_type_label("MEGA_CAP_PLATFORM"), "平台型科技巨头")
         self.assertEqual(resolution_status_label("manual_override_required"), "建议人工复核")
         self.assertEqual(metric_label("Segment strength"), "分部业务强度")
