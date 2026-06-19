@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 import json
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -11,6 +12,9 @@ from ui import ai_stock_radar, dashboard, discipline_review, manual_review, port
 from ui.display_labels import display_label
 from ui.theme import render_global_styles
 
+
+APP_ICON_PATH = Path(__file__).with_name("zhx_research.ico")
+APP_ICON_FALLBACK_PATH = Path(__file__).with_name("nunu_old_champion_icon_120.png")
 
 PAGE_DASHBOARD = "决策总览"
 PAGE_STOCK_DETAIL = "个股研究"
@@ -50,6 +54,7 @@ LEGACY_PAGE_ALIASES = {
 
 st.set_page_config(
     page_title="ZHX Research",
+    page_icon=APP_ICON_PATH if APP_ICON_PATH.is_file() else (APP_ICON_FALLBACK_PATH if APP_ICON_FALLBACK_PATH.is_file() else ":chart_with_upwards_trend:"),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
