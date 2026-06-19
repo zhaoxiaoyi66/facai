@@ -105,6 +105,14 @@ from data.weekend_spread_log import (
     record_spread_samples,
     update_monday_outcome,
 )
+from data.weekend_spread_monitor import (
+    append_monitor_run,
+    build_monitor_top,
+    latest_monitor_run,
+    monitor_history_rows,
+    read_monitor_state,
+    run_monitor_scan,
+)
 from scripts import smoke_binance_provider
 from ui import weekend_spread
 
@@ -5413,6 +5421,188 @@ def test_mapping_batch_save_rejects_invalid_contract(tmp_path) -> None:
     assert summary["count"] == 0
     assert "Binance 合约格式异常" in summary["failures"][0]
     assert not mapping_path.exists()
+
+
+def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "afterhours_reference_price": 100.0,
+            "afterhours_reference_time": "2026-06-19T23:59:00-04:00",
+            "is_watchlist": True,
+        }
+    ]
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+
+    row = run["rows"][0]
+    assert row["premium_pct"] == pytest.approx(4.0)
+    assert row["binance_15m_change_pct"] is None
+    assert row["premium_15m_change_pct"] is None
+    assert weekend_spread._monitor_frame(run["rows"]).loc[0, "较上一轮 Binance 涨跌%"] == "等待下一轮比较"
+    assert latest_monitor_run(path)["run_id"] == run["run_id"]
+
+
+def test_weekend_monitor_second_scan_calculates_15m_changes(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+    run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 106.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 15, tzinfo=timezone.utc))
+
+    row = run["rows"][0]
+    assert row["binance_15m_change_pct"] == pytest.approx(106.0 / 104.0 * 100 - 100)
+    assert row["premium_15m_change_pct"] == pytest.approx(2.0)
+    assert row["elapsed_minutes"] == pytest.approx(15.0)
+    assert weekend_spread._monitor_delta_label(run["rows"]) == "近15分钟"
+    assert row["status"] == "快速扩大"
+
+
+def test_weekend_monitor_non_15m_interval_uses_previous_round_label(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+    run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 105.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 6, tzinfo=timezone.utc))
+
+    frame = weekend_spread._monitor_frame(run["rows"])
+    assert weekend_spread._monitor_delta_label(run["rows"]) == "较上一轮"
+    assert "较上一轮 Binance 涨跌%" in frame.columns
+    assert "近15分钟 Binance 涨跌%" not in frame.columns
+
+
+def test_weekend_monitor_snapshot_corruption_is_reported(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    path.write_text("{broken", encoding="utf-8")
+
+    state = read_monitor_state(path)
+
+    assert state["corrupted"] is True
+    assert state["message"] == "监控快照损坏，请重新扫描。"
+    assert latest_monitor_run(path) is None
+
+
+def test_weekend_monitor_snapshot_retains_recent_200_runs(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+
+    for index in range(205):
+        append_monitor_run({"run_id": str(index), "scan_time": f"2026-06-20T00:{index % 60:02d}:00+00:00", "rows": []}, path)
+
+    state = read_monitor_state(path)
+    assert len(state["runs"]) == 200
+    assert state["runs"][0]["run_id"] == "5"
+    assert state["runs"][-1]["run_id"] == "204"
+
+
+def test_weekend_monitor_skips_ignored_and_missing_anchor(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0},
+        {"ticker": "WDC", "binance_symbol": "WDCUSDT", "afterhours_reference_price": 754.0, "ignored": True},
+        {"ticker": "IBM", "binance_symbol": "IBMUSDT", "afterhours_reference_price": None},
+    ]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0, "WDCUSDT": 733.0, "IBMUSDT": 240.0},
+        snapshot_path=path,
+    )
+
+    assert [row["ticker"] for row in run["rows"]] == ["NVDA"]
+    assert run["summary"]["ignored_count"] == 1
+    assert run["summary"]["anchor_missing_count"] == 1
+
+
+def test_weekend_monitor_top_rankings_are_correct(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {"ticker": "A", "binance_symbol": "AUSDT", "afterhours_reference_price": 100.0},
+        {"ticker": "B", "binance_symbol": "BUSDT", "afterhours_reference_price": 100.0},
+        {"ticker": "C", "binance_symbol": "CUSDT", "afterhours_reference_price": 100.0},
+    ]
+    run_monitor_scan(rows, price_map={"AUSDT": 100.0, "BUSDT": 100.0, "CUSDT": 100.0}, snapshot_path=path)
+    run = run_monitor_scan(rows, price_map={"AUSDT": 110.0, "BUSDT": 95.0, "CUSDT": 103.0}, snapshot_path=path)
+
+    top = build_monitor_top(run["rows"])
+
+    assert top["max_premium"]["ticker"] == "A"
+    assert top["max_discount"]["ticker"] == "B"
+    assert top["max_binance_change"]["ticker"] == "A"
+    assert top["fastest_premium_expand"]["ticker"] == "A"
+    assert top["fastest_premium_converge"]["ticker"] == "B"
+    assert monitor_history_rows([run])[0]["max_premium"].startswith("A ")
+
+
+def test_weekend_monitor_tab_source_mentions_no_trade_system_writes() -> None:
+    source = inspect.getsource(weekend_spread._render_monitor_tab)
+
+    assert "run_monitor_scan" in source
+    assert "record_trade" not in source
+    assert "signal_performance" not in source
+
+
+def test_weekend_monitor_safe_wrapper_does_not_crash_when_renderer_missing(monkeypatch) -> None:
+    warnings: list[str] = []
+    renderer = weekend_spread._render_monitor_tab
+    monkeypatch.delattr(weekend_spread, "_render_monitor_tab")
+    monkeypatch.setattr(weekend_spread.st, "warning", lambda text: warnings.append(str(text)))
+
+    weekend_spread._render_monitor_tab_safe([], {})
+
+    assert warnings == ["周末监控模块正在加载。请刷新页面后重试。"]
+    monkeypatch.setattr(weekend_spread, "_render_monitor_tab", renderer, raising=False)
+
+
+def test_weekend_monitor_does_not_start_duplicate_process(monkeypatch, tmp_path) -> None:
+    process_path = tmp_path / "weekend_spread_monitor_process.json"
+    process_path.write_text(
+        json.dumps(
+            {
+                "pid": 12345,
+                "status": "running",
+                "started_at": "2026-06-20T00:00:00+00:00",
+                "interval_minutes": 15,
+                "command": "python tools/weekend_spread_monitor.py --interval-minutes 15 --all",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(weekend_spread, "MONITOR_PROCESS_PATH", process_path)
+    monkeypatch.setattr(weekend_spread, "_is_process_running", lambda pid: True)
+
+    result = weekend_spread._start_monitor_process()
+
+    assert result["ok"] is True
+    assert result["already_running"] is True
+    assert result["message"] == "监控已在运行。"
+
+
+def test_weekend_monitor_marks_stale_running_pid_as_exited(monkeypatch, tmp_path) -> None:
+    process_path = tmp_path / "weekend_spread_monitor_process.json"
+    process_path.write_text(
+        json.dumps(
+            {
+                "pid": 12345,
+                "status": "running",
+                "started_at": "2026-06-20T00:00:00+00:00",
+                "interval_minutes": 15,
+                "command": "python tools/weekend_spread_monitor.py --interval-minutes 15 --all",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(weekend_spread, "MONITOR_PROCESS_PATH", process_path)
+    monkeypatch.setattr(weekend_spread, "_is_process_running", lambda pid: False)
+
+    state = weekend_spread._monitor_process_state()
+    saved = json.loads(process_path.read_text(encoding="utf-8"))
+
+    assert state["running"] is False
+    assert state["status"] == "exited"
+    assert state["status_label"] == "进程已退出"
+    assert saved["status"] == "exited"
 
 
 def test_backtest_week_count_text_uses_selected_weeks() -> None:

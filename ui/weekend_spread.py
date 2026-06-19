@@ -4,7 +4,10 @@ from datetime import datetime, time, timedelta, timezone
 from html import escape
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -80,6 +83,15 @@ from data.weekend_spread_log import (
     record_spread_samples,
     update_monday_outcome,
 )
+from data.weekend_spread_monitor import (
+    DEFAULT_MONITOR_INTERVAL_MINUTES,
+    DEFAULT_MONITOR_SNAPSHOT_PATH,
+    latest_monitor_run,
+    monitor_history_rows,
+    read_monitor_state,
+    recent_monitor_runs,
+    run_monitor_scan,
+)
 from data.overnight_price_provider import build_overnight_provider_self_check, default_overnight_price_provider
 from data.tradingview_price_cache import (
     DEFAULT_TRADINGVIEW_CSV_DIR,
@@ -97,10 +109,13 @@ RISK_NOTICE = "Binance 映射价格不等于真实美股可成交价格，本页
 LARGE_WEEKEND_PREMIUM_PCT = 1.5
 
 TAB_REALTIME = "实时观察"
+TAB_MONITOR = "周末监控"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 HKT = ZoneInfo("Asia/Hong_Kong")
 ET = ZoneInfo("America/New_York")
+MONITOR_PROCESS_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "weekend_spread_monitor_process.json"
+MONITOR_LOG_PATH = Path(__file__).resolve().parents[1] / ".cache" / "weekend_spread_monitor.log"
 VERIFIED_MAPPING_LABELS = {MAPPING_AVAILABLE, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}
 PENDING_MAPPING_LABELS = {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, MAPPING_ANCHOR_MISSING, "自动可用，价格校验不足", "锚点缺失"}
 REVIEW_MAPPING_LABELS = {MAPPING_REVIEW, "需确认", "异常复核"}
@@ -196,6 +211,14 @@ def _apply_weekend_spread_layout_css() -> None:
     )
 
 
+def _render_monitor_tab_safe(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
+    renderer = globals().get("_render_monitor_tab")
+    if callable(renderer):
+        renderer(rows, ignored)
+        return
+    st.warning("周末监控模块正在加载。请刷新页面后重试。")
+
+
 def render() -> None:
     _apply_weekend_spread_layout_css()
     st.markdown(
@@ -217,10 +240,12 @@ def render() -> None:
     active_mapping = _filter_ignored_mapping(mapping, ignored)
     watchlist = load_watchlist()
 
-    realtime_tab, backtest_tab, mapping_tab = st.tabs([TAB_REALTIME, TAB_BACKTEST, TAB_MAPPING])
+    realtime_tab, monitor_tab, backtest_tab, mapping_tab = st.tabs([TAB_REALTIME, TAB_MONITOR, TAB_BACKTEST, TAB_MAPPING])
 
     with realtime_tab:
         rows, mapping_counts = _render_realtime_tab(watchlist, active_mapping, ignored)
+    with monitor_tab:
+        _render_monitor_tab_safe(rows, ignored)
     with backtest_tab:
         _render_backtest_tab(watchlist, active_mapping)
     with mapping_tab:
@@ -1012,6 +1037,380 @@ def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) 
 
 def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     _render_largest_deviation(rows, mapping_counts)
+
+
+def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
+    st.subheader("周末价差监控")
+    st.caption("每 15 分钟扫描 Binance 美股映射价格，观察其相对美股最后交易日盘后锚点的偏离，以及近 15 分钟价差变化。本页仅用于休市期间观察，不构成交易建议。")
+    candidate_rows = _monitor_candidate_rows(rows, ignored)
+    source_rows = [row for row in candidate_rows if _row_has_afterhours_anchor(row)]
+    latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
+    snapshot_state = read_monitor_state(DEFAULT_MONITOR_SNAPSHOT_PATH)
+    if snapshot_state.get("corrupted"):
+        st.warning(str(snapshot_state.get("message") or "监控快照损坏，请重新扫描。"))
+    process_state = _monitor_process_state()
+    scan_clicked = False
+    start_clicked = False
+    stop_clicked = False
+
+    cols = st.columns(3)
+    scan_clicked = cols[0].button("立即扫描一次", key="weekend_spread_monitor_scan_once", width="stretch")
+    start_clicked = cols[1].button("启动 15 分钟监控", key="weekend_spread_monitor_start", width="stretch", disabled=process_state["running"])
+    stop_clicked = cols[2].button("停止监控", key="weekend_spread_monitor_stop", width="stretch", disabled=not process_state["running"])
+
+    if scan_clicked:
+        if not candidate_rows:
+            st.warning("当前没有可监控标的：需要 Binance 合约、盘后锚点，并且未被忽略。")
+        else:
+            with st.spinner("正在扫描 Binance 美股映射价格..."):
+                latest_run = run_monitor_scan(
+                    candidate_rows,
+                    price_provider=CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=45),
+                    snapshot_path=DEFAULT_MONITOR_SNAPSHOT_PATH,
+                )
+            st.success(f"已完成本轮扫描：有效标的 {latest_run.get('summary', {}).get('valid_count', 0)} 个。")
+    if start_clicked:
+        result = _start_monitor_process()
+        if result.get("ok"):
+            st.success(str(result.get("message") or "已启动 15 分钟周末价差监控。"))
+            st.rerun()
+        else:
+            st.warning(str(result.get("message") or "监控启动失败"))
+    if stop_clicked:
+        result = _stop_monitor_process()
+        if result.get("ok"):
+            st.success("已停止周末价差监控。")
+            st.rerun()
+        else:
+            st.warning(str(result.get("message") or "未发现运行中的监控服务"))
+
+    latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
+    _render_monitor_status_strip(latest_run, candidate_rows, ignored or {}, process_state=_monitor_process_state())
+    if latest_run is None:
+        st.info("尚未启动周末监控。可以点击“立即扫描一次”查看当前价差，或启动 15 分钟监控。")
+        return
+    monitor_rows = list(latest_run.get("rows") or [])
+    if not monitor_rows:
+        st.info("最近一次扫描没有有效样本。请确认映射未被忽略，并且已有盘后锚点。")
+        return
+    _render_monitor_top_cards(monitor_rows)
+    selected_scope = _render_monitor_filters(monitor_rows)
+    filtered_rows = _filter_monitor_rows(monitor_rows, selected_scope)
+    st.dataframe(_monitor_frame(filtered_rows), width="stretch", hide_index=True)
+    _render_monitor_history()
+
+
+def _monitor_source_rows(rows: list[dict], ignored: dict[str, dict] | None = None) -> list[dict]:
+    return [row for row in _monitor_candidate_rows(rows, ignored) if _is_realtime_main_row(row)]
+
+
+def _monitor_candidate_rows(rows: list[dict], ignored: dict[str, dict] | None = None) -> list[dict]:
+    ignored = ignored or {}
+    source: list[dict] = []
+    for row in rows or []:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        symbol = str(row.get("binance_symbol") or "").strip().upper()
+        if not ticker or not symbol:
+            continue
+        if is_binance_symbol_ignored(ticker, symbol, ignored):
+            continue
+        source.append(dict(row))
+    return source
+
+
+def _render_monitor_status_strip(latest_run: dict | None, source_rows: list[dict], ignored: dict[str, dict], *, process_state: dict[str, object]) -> None:
+    summary = dict((latest_run or {}).get("summary") or {})
+    scan_time = str((latest_run or {}).get("scan_time") or "")
+    next_scan = _next_monitor_scan_text(scan_time)
+    status = str(process_state.get("status_label") or "")
+    if not status:
+        status = "最近一次扫描" if latest_run else "未启动"
+    items = [
+        ("监控状态", status),
+        ("监控间隔", f"{DEFAULT_MONITOR_INTERVAL_MINUTES} 分钟"),
+        ("最近扫描", _short_hkt_time(scan_time) if scan_time else "暂无"),
+        ("下次预计", next_scan),
+        ("本轮有效标的", str(summary.get("valid_count") or len([row for row in source_rows if _row_has_afterhours_anchor(row)]))),
+        ("锚点缺失", str(summary.get("anchor_missing_count") or len([row for row in source_rows if not _row_has_afterhours_anchor(row)]))),
+        ("已忽略", str(len(ignored))),
+    ]
+    text = " ｜ ".join(f"{label}：{value}" for label, value in items)
+    st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
+
+
+def _render_monitor_top_cards(rows: list[dict]) -> None:
+    top = build_monitor_top_for_ui(rows)
+    delta_label = _monitor_delta_label(rows)
+    cards = [
+        ("当前最大溢价", top.get("max_premium"), "premium_pct", "相对盘后锚点"),
+        ("当前最大折价", top.get("max_discount"), "premium_pct", "相对盘后锚点"),
+        (f"{delta_label}涨幅最大", top.get("max_binance_change"), "binance_15m_change_pct", "Binance 价格变化"),
+        (f"{delta_label}价差扩大最快", top.get("fastest_premium_expand"), "premium_15m_change_pct", "溢价扩大"),
+        (f"{delta_label}价差收敛最快", top.get("fastest_premium_converge"), "premium_15m_change_pct", "溢价收敛"),
+    ]
+    cols = st.columns(len(cards))
+    for col, (title, row, metric_key, caption) in zip(cols, cards):
+        ticker = str((row or {}).get("ticker") or "暂无")
+        metric = _monitor_metric_text((row or {}).get(metric_key))
+        col.metric(title, f"{ticker} {metric}")
+        col.caption(caption if row else "等待下一轮比较")
+
+
+def build_monitor_top_for_ui(rows: list[dict]) -> dict[str, dict | None]:
+    from data.weekend_spread_monitor import build_monitor_top
+
+    return build_monitor_top(rows)
+
+
+def _render_monitor_filters(rows: list[dict]) -> str:
+    delta_label = _monitor_delta_label(rows)
+    options = ["全部可监控", "我的观察池", "我的持仓", "核心仓", "溢价超过 2%", "溢价超过 5%", "折价超过 2%", f"{delta_label}变化超过 1%"]
+    labels = [f"{option} {_monitor_filter_count(rows, option)}" for option in options]
+    selected = st.radio("监控筛选", labels, horizontal=True, label_visibility="collapsed", key="weekend_spread_monitor_filter")
+    return options[labels.index(selected)]
+
+
+def _monitor_filter_count(rows: list[dict], scope: str) -> int:
+    return len(_filter_monitor_rows(rows, scope))
+
+
+def _filter_monitor_rows(rows: list[dict], scope: str) -> list[dict]:
+    if scope == "我的观察池":
+        selected = [row for row in rows if row.get("is_watchlist")]
+    elif scope == "我的持仓":
+        selected = [row for row in rows if row.get("is_position")]
+    elif scope == "核心仓":
+        selected = [row for row in rows if row.get("is_core")]
+    elif scope == "溢价超过 2%":
+        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) >= 2]
+    elif scope == "溢价超过 5%":
+        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) >= 5]
+    elif scope == "折价超过 2%":
+        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) <= -2]
+    elif scope.endswith("变化超过 1%"):
+        selected = [row for row in rows if abs(_number(row.get("binance_15m_change_pct")) or 0) >= 1]
+    else:
+        selected = list(rows)
+    return sorted(selected, key=lambda row: (-abs(_number(row.get("premium_pct")) or 0), -abs(_number(row.get("binance_15m_change_pct")) or 0), str(row.get("ticker") or "")))
+
+
+def _monitor_frame(rows: list[dict]) -> pd.DataFrame:
+    delta_label = _monitor_delta_label(rows)
+    change_col = f"{delta_label} Binance 涨跌%"
+    spread_change_col = f"{delta_label}价差变化"
+    columns = ["股票", "Binance 合约", "盘后锚点", "Binance 当前价", "当前价差%", change_col, spread_change_col, "状态", "更新时间"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    records = []
+    for row in rows:
+        records.append(
+            {
+                "股票": row.get("ticker"),
+                "Binance 合约": row.get("binance_symbol"),
+                "盘后锚点": _money_text(row.get("anchor_price")),
+                "Binance 当前价": _money_text(row.get("binance_price")),
+                "当前价差%": _percent_text(row.get("premium_pct")),
+                change_col: _monitor_metric_text(row.get("binance_15m_change_pct")),
+                spread_change_col: _monitor_pct_point_text(row.get("premium_15m_change_pct")),
+                "状态": row.get("status") or "正常",
+                "更新时间": _short_hkt_time(row.get("scan_time")),
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _render_monitor_history() -> None:
+    with st.expander("监控历史", expanded=False):
+        history = monitor_history_rows(recent_monitor_runs(DEFAULT_MONITOR_SNAPSHOT_PATH, limit=10))
+        if not history:
+            st.caption("暂无监控历史。")
+            return
+        display = pd.DataFrame(history)
+        display = display.rename(
+            columns={
+                "scan_time": "扫描时间",
+                "valid_count": "有效标的数",
+                "max_premium": "最大溢价",
+                "max_discount": "最大折价",
+                "max_15m_change": "最大较上一轮涨幅",
+                "max_premium_expand": "最大较上一轮价差扩大",
+                "attention_count": "异常数量",
+            }
+        )
+        if "扫描时间" in display:
+            display["扫描时间"] = display["扫描时间"].map(_short_hkt_time)
+        st.dataframe(display, width="stretch", hide_index=True)
+
+
+def _monitor_process_state() -> dict[str, object]:
+    payload = _read_json_file(MONITOR_PROCESS_PATH)
+    pid = int(payload.get("pid") or 0) if isinstance(payload, dict) else 0
+    running = _is_process_running(pid)
+    raw_status = str(payload.get("status") or "").strip() if isinstance(payload, dict) else ""
+    if raw_status == "running" and pid and not running:
+        payload = dict(payload)
+        payload["status"] = "exited"
+        payload["exited_at"] = datetime.now(timezone.utc).isoformat()
+        _write_json_file(MONITOR_PROCESS_PATH, payload)
+        raw_status = "exited"
+    status = "running" if running else (raw_status or "not_started")
+    status_label = {
+        "running": "运行中",
+        "stopped": "已停止",
+        "exited": "进程已退出",
+        "not_started": "未启动",
+    }.get(status, "未启动")
+    return {
+        "pid": pid,
+        "running": running,
+        "status": status,
+        "status_label": status_label,
+        "started_at": str(payload.get("started_at") or "") if isinstance(payload, dict) else "",
+        "interval_minutes": int(payload.get("interval_minutes") or DEFAULT_MONITOR_INTERVAL_MINUTES) if isinstance(payload, dict) else DEFAULT_MONITOR_INTERVAL_MINUTES,
+        "command": str(payload.get("command") or "") if isinstance(payload, dict) else "",
+    }
+
+
+def _start_monitor_process() -> dict[str, object]:
+    current = _monitor_process_state()
+    if current.get("running"):
+        return {"ok": True, "already_running": True, "message": "监控已在运行。"}
+    script = Path(__file__).resolve().parents[1] / "tools" / "weekend_spread_monitor.py"
+    if not script.exists():
+        return {"ok": False, "message": "未找到监控脚本"}
+    MONITOR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = MONITOR_LOG_PATH.open("a", encoding="utf-8")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        command = [sys.executable, str(script), "--interval-minutes", str(DEFAULT_MONITOR_INTERVAL_MINUTES), "--all"]
+        process = subprocess.Popen(
+            command,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=log_handle,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        log_handle.close()
+        return {"ok": False, "message": f"监控启动失败：{exc}"}
+    log_handle.close()
+    _write_json_file(
+        MONITOR_PROCESS_PATH,
+        {
+            "pid": process.pid,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "interval_minutes": DEFAULT_MONITOR_INTERVAL_MINUTES,
+            "command": " ".join(command),
+            "status": "running",
+            "log_path": str(MONITOR_LOG_PATH),
+        },
+    )
+    return {"ok": True, "pid": process.pid, "message": "已启动 15 分钟周末价差监控。"}
+
+
+def _stop_monitor_process() -> dict[str, object]:
+    state = _monitor_process_state()
+    pid = int(state.get("pid") or 0)
+    if not pid or not state.get("running"):
+        _write_json_file(
+            MONITOR_PROCESS_PATH,
+            {
+                "pid": pid,
+                "started_at": str(state.get("started_at") or ""),
+                "interval_minutes": state.get("interval_minutes") or DEFAULT_MONITOR_INTERVAL_MINUTES,
+                "command": str(state.get("command") or ""),
+                "status": "stopped" if state.get("status") != "exited" else "exited",
+                "stopped_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {"ok": False, "message": "未发现运行中的监控服务"}
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=10)
+        else:
+            os.kill(pid, 15)
+    except Exception as exc:
+        return {"ok": False, "message": f"停止失败：{exc}"}
+    _write_json_file(
+        MONITOR_PROCESS_PATH,
+        {
+            "pid": pid,
+            "started_at": str(state.get("started_at") or ""),
+            "interval_minutes": state.get("interval_minutes") or DEFAULT_MONITOR_INTERVAL_MINUTES,
+            "command": str(state.get("command") or ""),
+            "status": "stopped",
+            "stopped_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"ok": True}
+
+
+def _is_process_running(pid: int) -> bool:
+    if not pid:
+        return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return False
+        return f'"{pid}"' in result.stdout or f",{pid}," in result.stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _next_monitor_scan_text(scan_time: object) -> str:
+    parsed = _parse_utc_time(scan_time)
+    if parsed is None:
+        return "暂无"
+    return _short_hkt_time((parsed + timedelta(minutes=DEFAULT_MONITOR_INTERVAL_MINUTES)).isoformat())
+
+
+def _monitor_metric_text(value: object) -> str:
+    number = _number(value)
+    return "等待下一轮比较" if number is None else f"{number:+.2f}%"
+
+
+def _monitor_pct_point_text(value: object) -> str:
+    number = _number(value)
+    return "等待下一轮比较" if number is None else f"{number:+.2f} pct"
+
+
+def _monitor_delta_label(rows: list[dict]) -> str:
+    elapsed_values = [
+        elapsed
+        for elapsed in (_number(row.get("elapsed_minutes")) for row in rows or [])
+        if elapsed is not None and elapsed > 0
+    ]
+    if not elapsed_values:
+        return "较上一轮"
+    average_elapsed = sum(elapsed_values) / len(elapsed_values)
+    return "近15分钟" if 13 <= average_elapsed <= 17 else "较上一轮"
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_json_file(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temp_path, path)
 
 
 def _afterhours_counts(rows: list[dict]) -> dict[str, int]:
