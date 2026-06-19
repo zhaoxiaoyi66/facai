@@ -146,9 +146,9 @@ def render() -> None:
         """
         <div class="review-toolbar">
           <div>
-            <div class="review-kicker">Review Workbench</div>
-            <h1>复核工作台</h1>
-            <p>优先处理会影响评分和需要人工判断的数据项；证据、原文和 AI 解释默认收起。</p>
+            <div class="review-kicker">DATA REVIEW</div>
+            <h1>数据复核</h1>
+            <p>验证系统信号、数据质量和历史表现。</p>
           </div>
         </div>
         """,

@@ -20,7 +20,7 @@ from ui.theme import render_page_header
 
 def render() -> None:
     _render_styles()
-    render_page_header("信号表现", "记录系统和手动信号，追踪后验收益、最大回撤和有效性。")
+    render_page_header("信号表现", "追踪系统信号后的真实收益表现。")
     store = SignalPerformanceStore()
 
     _render_manual_signal_form(store)

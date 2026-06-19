@@ -228,7 +228,7 @@ def render() -> None:
           <div>
             <span class="zhx-eyebrow">ZHX RESEARCH</span>
             <h1>周末价差观察台</h1>
-            <p>观察本周最后交易日盘后收盘价、Binance 周末最高价和下周第一个交易日夜盘首分钟价格之间的传导关系。</p>
+            <p>观察 Binance 美股映射价格与美股盘后锚点、夜盘价格之间的差异。</p>
           </div>
         </section>
         """,

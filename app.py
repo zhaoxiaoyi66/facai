@@ -98,7 +98,9 @@ NAV_STRUCTURE = [
     PAGE_TRADE_JOURNAL,
     PAGE_STOCK_DETAIL,
     PAGE_AI_RADAR,
-    {"label": "数据复核", "icon": "\u25C6", "page": PAGE_MANUAL_REVIEW, "children": [PAGE_WEEKEND_SPREAD, PAGE_NEWS_RADAR, PAGE_SIGNAL_PERFORMANCE]},
+    PAGE_WEEKEND_SPREAD,
+    PAGE_NEWS_RADAR,
+    {"label": "数据复核", "icon": "\u25C6", "page": PAGE_MANUAL_REVIEW, "children": [PAGE_SIGNAL_PERFORMANCE]},
     PAGE_WATCHLIST,
 ]
 

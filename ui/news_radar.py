@@ -33,7 +33,7 @@ RANGE_OPTIONS = {"最近 1 天": 1, "最近 7 天": 7, "最近 30 天": 30}
 
 def render() -> None:
     _render_styles()
-    render_page_header("新闻雷达", "把 FMP 新闻变成持仓、观察池和交易前后的复核材料。")
+    render_page_header("新闻雷达", "追踪持仓和观察池的重大新闻，辅助复核交易逻辑。")
     store = NewsRadarStore()
     symbol_groups = available_news_symbols()
     selected_scope_label, selected_scope, selected_symbols = _render_filters(symbol_groups)
