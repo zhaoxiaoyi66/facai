@@ -2161,8 +2161,10 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         cols = st.columns(4)
         selected = cols[0].selectbox("标的", options, key="weekend_spread_backtest_ticker")
         weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=weeks, step=1, key="weekend_spread_backtest_weeks"))
-        cols[2].markdown("**夜盘窗口**  \\n20:00-20:02 ET")
-        cols[3].markdown("**开盘锚点**  \\n下周第一个交易日夜盘 / 美东 20:00 ET")
+        cols[2].markdown("**夜盘窗口**")
+        cols[2].caption("20:00-20:02 ET")
+        cols[3].markdown("**开盘锚点**")
+        cols[3].caption("下周第一个交易日夜盘 / 美东 20:00 ET")
         anchors = _backtest_anchor_mapping([selected], weeks=weeks)
         preflight = build_weekend_backtest_preflight(
             [selected],
@@ -2214,7 +2216,6 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             include_unconfirmed=include_unconfirmed,
             ticker_filter=selected,
         )
-        afterhours_anchor_note = _historical_afterhours_anchor_summary_text(anchors)
         progress_bar = st.progress(0.0)
         status_slot = st.empty()
         status_slot.caption(f"正在运行历史回测：{len(tickers)} 只标的，近 {weeks} 周")
@@ -2263,10 +2264,11 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         )
         st.session_state["weekend_spread_backtest_results"] = results
         st.session_state["weekend_spread_backtest_cache"] = saved
+        afterhours_result_note = _historical_afterhours_result_summary_text(results)
         if error_message:
-            status_slot.warning(f"{error_message}\n\n{afterhours_anchor_note}")
+            status_slot.warning(f"{error_message}\n\n{afterhours_result_note}")
         else:
-            status_slot.success(f"回测完成：{len(results)} 条结果。{afterhours_anchor_note}")
+            status_slot.success(f"回测完成：{len(results)} 条结果。{afterhours_result_note}")
 
     cached_result = dict(st.session_state.get("weekend_spread_backtest_cache") or load_backtest_results())
     results = _current_backtest_results(
@@ -2710,13 +2712,17 @@ def _backtest_error_message(rows: list[dict]) -> str:
     grouped: dict[tuple[str, str], int] = {}
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
-        quality = str(row.get("data_quality") or row.get("transmission_data_quality") or "").strip().upper()
+        quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
         raw_error = str(row.get("error_message") or "").strip().upper()
         if quality == "OVERNIGHT_PROVIDER_MISSING":
             reason = "\u7f8e\u80a1\u591c\u76d8\u6570\u636e\u6e90\u672a\u914d\u7f6e"
-        elif quality == "NO_AFTERHOURS_CLOSE" or raw_error == "MISSING_FRIDAY_AFTERHOURS_CLOSE":
+        elif quality == "NO_AFTERHOURS_CLOSE" or raw_error in {"MISSING_FRIDAY_AFTERHOURS_CLOSE", "NO_AFTERHOURS_CLOSE"}:
             reason = "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u6536\u76d8\u4ef7"
-        elif quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR", "MISSING_OVERNIGHT_FIRST_1M"}:
+        elif quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR", "MISSING_OVERNIGHT_FIRST_1M"} or raw_error in {
+            "NO_BROKER_OVERNIGHT_BAR",
+            "MISSING_STOCK_FIRST_BAR",
+            "MISSING_OVERNIGHT_FIRST_1M",
+        }:
             reason = "\u7f3a\u5c11\u7f8e\u80a1\u591c\u76d8\u9996\u5206\u949f 1m K\u7ebf"
         elif quality == "HOLIDAY_OR_NO_SESSION":
             reason = "\u975e\u6b63\u5e38\u4ea4\u6613\u65e5 / \u65e0\u591c\u76d8 session"
@@ -2833,6 +2839,14 @@ def _p1_source_summary(row: dict) -> str:
 
 
 def _p2_source_summary(row: dict) -> str:
+    if _number(row.get("broker_open_close")) is None:
+        reason = str(row.get("failure_reason") or "").strip()
+        if reason and reason.upper() not in {"NONE", "ANCHOR_SOURCE"}:
+            return reason
+        quality = str(row.get("data_quality") or (row.get("raw_row") or {}).get("transmission_data_quality") or "").strip().upper()
+        if quality == "OVERNIGHT_PROVIDER_MISSING":
+            return "美股夜盘数据源未配置"
+        return "缺少夜盘首分钟价格"
     source = _price_source_text(row.get("overnight_provider"))
     if not source or source == "未知":
         return _data_quality_text(row.get("data_quality"))
@@ -3818,6 +3832,57 @@ def _historical_afterhours_anchor_summary_text(anchors: dict[str, dict]) -> str:
     if fallback and reasons:
         primary = sorted(reasons.items(), key=lambda item: item[1], reverse=True)[0]
         note += f" 主要回退原因：{_afterhours_reason_text(primary[0])}（{primary[1]} 条）。"
+    return note
+
+
+def _historical_afterhours_result_summary_text(rows: list[dict]) -> str:
+    total = len(rows)
+    if total <= 0:
+        return "盘后锚点：本次回测无样本。"
+    available = 0
+    cache = 0
+    fallback = 0
+    missing_reasons: dict[str, int] = {}
+    for row in rows:
+        p0 = _first_number(
+            row,
+            (
+                "last_trading_day_afterhours_close",
+                "friday_afterhours_close",
+                "afterhours_reference_price",
+                "p0_selected_bar_close",
+            ),
+        )
+        if p0 is not None:
+            available += 1
+            cache_status = str(row.get("afterhours_cache_status") or row.get("cache_status") or "").strip().upper()
+            if cache_status in {"CACHE_HIT", "CACHE_FALLBACK"}:
+                cache += 1
+            quality = str(row.get("p0_quality") or row.get("data_quality") or row.get("transmission_data_quality") or "").strip().upper()
+            source = str(row.get("anchor_source") or row.get("afterhours_reference_source") or "").strip().upper()
+            if quality in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"} or "REGULAR_CLOSE" in source or row.get("p0_is_fallback"):
+                fallback += 1
+            continue
+        reason = str(
+            row.get("friday_afterhours_reason")
+            or row.get("p0_failure_reason")
+            or row.get("afterhours_missing_reason")
+            or row.get("error_message")
+            or "盘后锚点缺失"
+        ).strip()
+        missing_reasons[reason] = missing_reasons.get(reason, 0) + 1
+    missing = total - available
+    parts = [f"盘后锚点：实际用于回测 {available}/{total}"]
+    if cache:
+        parts.append(f"缓存 {cache}")
+    if fallback:
+        parts.append(f"常规收盘回退 {fallback}")
+    if missing:
+        parts.append(f"缺失 {missing}")
+    note = "；".join(parts) + "。"
+    if missing and missing_reasons:
+        primary = sorted(missing_reasons.items(), key=lambda item: item[1], reverse=True)[0]
+        note += f" 主要缺失原因：{_afterhours_reason_text(primary[0])}（{primary[1]} 条）。"
     return note
 
 

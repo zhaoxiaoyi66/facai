@@ -1336,6 +1336,22 @@ def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
     assert "NVDA：缺少美股夜盘首分钟 1m K线，已排除 4 个样本" in message
 
 
+def test_backtest_error_message_prefers_transmission_quality_over_observe_status() -> None:
+    rows = [
+        {
+            "ticker": "GLW",
+            "data_quality": "OBSERVE_ANCHOR_ONLY",
+            "transmission_data_quality": "MISSING_STOCK_FIRST_BAR",
+            "error_message": "MISSING_STOCK_FIRST_BAR",
+        }
+    ]
+
+    message = weekend_spread._backtest_error_message(rows)
+
+    assert "MISSING_STOCK_FIRST_BAR" not in message
+    assert "GLW：缺少美股夜盘首分钟 1m K线，已排除 1 个样本" in message
+
+
 def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
     reason = weekend_spread._weekend_review_empty_reason(
         [
@@ -1348,6 +1364,17 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
     )
 
     assert "缺少夜盘首分钟 1m K线" in reason
+
+
+def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
+    row = {
+        "broker_open_close": None,
+        "overnight_provider": "ALPACA_BOATS",
+        "data_quality": "MISSING_OVERNIGHT_FIRST_1M",
+        "failure_reason": "缺少夜盘首分钟 1m K线",
+    }
+
+    assert weekend_spread._p2_source_summary(row) == "缺少夜盘首分钟 1m K线"
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
@@ -6550,3 +6577,30 @@ def test_afterhours_anchor_summary_localizes_alpaca_missing_reason() -> None:
 
     assert "NO_ALPACA_AFTERHOURS_BAR" not in message
     assert "缺少 Alpaca 盘后 1m bar" in message
+
+
+def test_afterhours_result_summary_uses_actual_backtest_rows() -> None:
+    message = weekend_spread._historical_afterhours_result_summary_text(
+        [
+            {
+                "ticker": "GLW",
+                "last_trading_day_afterhours_close": 180.0,
+                "afterhours_cache_status": "CACHE_HIT",
+            },
+            {"ticker": "GLW", "friday_afterhours_reason": "NO_ALPACA_AFTERHOURS_BAR"},
+            {"ticker": "GLW", "friday_afterhours_reason": "NO_ALPACA_AFTERHOURS_BAR"},
+            {"ticker": "GLW", "friday_afterhours_reason": "NO_ALPACA_AFTERHOURS_BAR"},
+        ]
+    )
+
+    assert "实际用于回测 1/4" in message
+    assert "缺失 3" in message
+    assert "缺少 Alpaca 盘后 1m bar" in message
+
+
+def test_backtest_settings_labels_do_not_render_literal_newline() -> None:
+    source = inspect.getsource(weekend_spread._render_backtest_tab)
+
+    assert "\\n20:00-20:02 ET" not in source
+    assert "\\n下周第一个交易日夜盘" not in source
+    assert 'caption("20:00-20:02 ET")' in source
