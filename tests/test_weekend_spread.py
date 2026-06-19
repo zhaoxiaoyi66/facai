@@ -4796,6 +4796,16 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
     assert "刷新完成" in source
 
 
+def test_binance_mapping_sync_button_lives_in_mapping_tab_not_realtime() -> None:
+    realtime_source = inspect.getsource(weekend_spread._render_realtime_action_bar)
+    mapping_source = inspect.getsource(weekend_spread._render_mapping_tab)
+
+    assert "一键同步 Binance 美股映射" not in realtime_source
+    assert "weekend_spread_scan_binance_equities" not in realtime_source
+    assert "一键同步 Binance 美股映射" in mapping_source
+    assert "weekend_spread_scan_binance_equities" in mapping_source
+
+
 def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
     source = inspect.getsource(weekend_spread._build_weekend_spread_rows_with_feedback)
 
@@ -5075,11 +5085,11 @@ def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current
     assert wdc["spread_vs_afterhours_pct"] is None
     assert wdc["spread_vs_regular_close_pct"] is None
     assert weekend_spread._is_realtime_main_row(wdc) is False
-    assert weekend_spread._realtime_row_status_label(wdc) == "不可用"
+    assert weekend_spread._realtime_row_status_label(wdc) == "锚点缺失"
 
     frame = weekend_spread._live_frame([wdc])
     assert frame.loc[0, "类型"] == "锚点缺失"
-    assert frame.loc[0, "状态"] == "不可用"
+    assert frame.loc[0, "状态"] == "锚点缺失"
 
 
 def test_realtime_afterhours_counts_support_status_strip_summary() -> None:
@@ -5159,6 +5169,85 @@ def test_realtime_status_strip_does_not_require_removed_focus_state(monkeypatch)
     assert "异常偏离：1" in captured[0]
 
 
+def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "status": "OK",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 104.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 4.0,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "IBM",
+            "status": "OK",
+            "binance_symbol": "IBMUSDT",
+            "binance_last_price": 240.0,
+            "afterhours_reference_price": None,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "WDC",
+            "status": "PRICE_NOT_LOADED",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": None,
+            "afterhours_reference_price": 754.0,
+            "error": "price_not_loaded",
+            "mapping_quality": "映射可用",
+        },
+    ]
+
+    counts = weekend_spread._realtime_observation_counts(rows, ignored_count=2)
+
+    assert counts["binance_total"] == 3
+    assert counts["binance_price_available"] == 2
+    assert counts["anchor_available"] == 2
+    assert counts["computable"] == 1
+    assert counts["anchor_missing"] == 1
+    assert counts["unavailable"] == 1
+    assert counts["ignored"] == 2
+    assert weekend_spread._realtime_row_status_label(rows[1]) == "锚点缺失"
+    assert weekend_spread._realtime_row_status_label(rows[2]) == "Binance 价格失败"
+
+
+def test_realtime_default_filter_prefers_non_empty_scope() -> None:
+    assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 3, "价格可用但锚点缺失": 4}) == "全部可计算"
+    assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 0, "价格可用但锚点缺失": 4}) == "价格可用但锚点缺失"
+    assert weekend_spread._scope_from_realtime_filter_label("异常偏离 0", ["全部可计算", "异常偏离"]) == "异常偏离"
+    assert weekend_spread._scope_from_realtime_filter_label("全部 Binance 美股映射 0", ["全部可计算"]) == "全部可计算"
+
+
+def test_refresh_diagnostics_distinguish_anchor_missing_from_binance_failure() -> None:
+    rows = [
+        {
+            "ticker": "IBM",
+            "status": "OK",
+            "binance_symbol": "IBMUSDT",
+            "binance_last_price": 240.0,
+            "afterhours_reference_price": None,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "WDC",
+            "status": "PRICE_NOT_LOADED",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": None,
+            "afterhours_reference_price": 754.0,
+            "error": "price_not_loaded",
+            "mapping_quality": "映射可用",
+        },
+    ]
+
+    frame = weekend_spread._refresh_diagnostics_frame(rows)
+
+    assert frame.loc[0, "失败原因"] == "价格可用但锚点缺失"
+    assert frame.loc[1, "失败原因"] == "Binance 未返回该合约价格"
+    assert "None" not in frame.to_string()
+    assert "anchor_source" not in frame.to_string()
+
+
 def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     frame = weekend_spread._live_frame(
         [
@@ -5181,6 +5270,33 @@ def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     )
 
     assert "FINAL" not in frame.to_string()
+
+
+def test_refresh_price_preserves_afterhours_anchor_from_snapshot_rows() -> None:
+    cached_rows = [
+        {
+            "ticker": "NVDA",
+            "regular_close_date": "2026-06-12",
+            "afterhours_reference_price": 101.25,
+            "afterhours_reference_time": "2026-06-13T19:59:00-04:00",
+            "afterhours_reference_source": "ALPACA_AFTERHOURS",
+            "afterhours_cache_status": "CACHE_HIT",
+            "afterhours_anchor_status": "FINAL",
+        }
+    ]
+
+    rows = build_weekend_spread_rows(
+        ["NVDA"],
+        mapping=_mapping(),
+        provider=FakeProvider(price=104.0),
+        afterhours_provider=weekend_spread._CachedRowAfterhoursProvider(cached_rows),
+        cache=FakeCache(_history(close=100.0)),
+        force_refresh=True,
+        afterhours_force_refresh=False,
+    )
+
+    assert rows[0]["afterhours_reference_price"] == 101.25
+    assert rows[0]["spread_vs_afterhours_pct"] == pytest.approx((104.0 / 101.25 - 1) * 100)
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:

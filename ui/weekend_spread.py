@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from data.afterhours_provider import AfterhoursReference
 from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.binance_equity_scan import (
     DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH,
@@ -249,7 +250,7 @@ def render() -> None:
     with backtest_tab:
         _render_backtest_tab(watchlist, active_mapping)
     with mapping_tab:
-        _render_mapping_tab(rows, mapping, mapping_counts, ignored)
+        _render_mapping_tab(rows, mapping, mapping_counts, ignored, watchlist=watchlist)
 
 
 def _filter_ignored_mapping(mapping: dict[str, dict], ignored: dict[str, dict] | None = None) -> dict[str, dict]:
@@ -310,6 +311,7 @@ def _render_realtime_tab(
     advanced_slot = st.empty()
     with action_slot.container():
         refresh_options = _render_realtime_action_bar()
+    refresh_options["ignored_count"] = len(ignored)
     scan_records, scan_status = _load_realtime_scan_records(watchlist, mapping, ignored, refresh_options=refresh_options)
     scan_mapping = scan_records_to_mapping(scan_records, mapping)
     scan_tickers = [str(record.get("ticker") or "").strip().upper() for record in scan_records if record.get("ticker")]
@@ -325,6 +327,7 @@ def _render_realtime_tab(
             "scan_record_count": len(scan_records),
             "scan_cache_state": str(scan_status.get("cache_state") or ""),
             "scan_generated_at": str(scan_status.get("generated_at") or ""),
+            "ignored_count": len(ignored),
         }
     )
 
@@ -344,17 +347,17 @@ def _render_realtime_tab(
             st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
             _render_row_details(main_rows)
         else:
-            st.info("当前筛选下没有可展示的实时价差。可以切换筛选，或点击“一键同步 Binance 美股映射”。")
+            st.info(_realtime_empty_state_text(rows, visible_scope))
 
     with advanced_slot.container():
         with st.expander("高级设置 / 缓存管理", expanded=False):
             _render_no_mapping_expander(rows)
+            _render_refresh_diagnostics(rows, ignored)
     return rows, mapping_counts
 
 
 def _render_realtime_action_bar() -> dict[str, bool]:
-    col_scan, col_refresh, col_anchor = st.columns([1.4, 1, 1])
-    scan = col_scan.button("一键同步 Binance 美股映射", width="stretch", type="primary", key="weekend_spread_scan_binance_equities")
+    col_refresh, col_anchor = st.columns(2)
     refresh = col_refresh.button("刷新实时价格", width="stretch", key="weekend_spread_refresh")
     anchor_refresh = col_anchor.button("更新美股盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
     use_cache = False
@@ -383,7 +386,7 @@ def _render_realtime_action_bar() -> dict[str, bool]:
         )
         st.caption("Binance 价格和最后交易日盘后锚点已解耦：刷新实时观察不会强制重建盘后锚点。")
     return {
-        "scan": bool(scan),
+        "scan": False,
         "use_cache": bool(use_cache),
         "refresh": bool(refresh),
         "anchor_refresh": bool(anchor_refresh),
@@ -582,35 +585,98 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
 
 
 def _render_realtime_filters(rows: list[dict]) -> str:
-    options = ["异常偏离", "全部 Binance 美股映射", "我的观察池", "我的持仓", "核心仓", "锚点缺失"]
+    options = ["全部可计算", "异常偏离", "价格可用但锚点缺失", "Binance 价格失败", "我的观察池", "我的持仓", "核心仓", "已忽略"]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
-        "全部 Binance 美股映射": len(main_rows),
+        "全部可计算": len(main_rows),
         "我的观察池": len([row for row in main_rows if row.get("is_watchlist")]),
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
         "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) == "review"]),
-        "锚点缺失": len([row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]),
+        "价格可用但锚点缺失": len([row for row in rows if _realtime_row_status_key(row) == "anchor_missing"]),
+        "Binance 价格失败": len([row for row in rows if _realtime_row_status_key(row) == "binance_failed"]),
+        "已忽略": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL]),
     }
     labels = [f"{option} {counts.get(option, 0)}" for option in options]
-    selected = st.radio("筛选", labels, horizontal=True, label_visibility="collapsed", key="weekend_spread_realtime_filter_scope")
+    label_by_scope = dict(zip(options, labels))
+    scope_by_label = dict(zip(labels, options))
+    preferred_scope = _default_realtime_filter_scope(counts)
+    widget_key = "weekend_spread_realtime_filter_scope"
+    current_label = st.session_state.get(widget_key)
+    current_scope = scope_by_label.get(current_label)
+    if current_scope is None:
+        current_scope = _scope_from_realtime_filter_label(current_label, options)
+    if not current_scope or (counts.get(current_scope, 0) <= 0 and counts.get(preferred_scope, 0) > 0):
+        st.session_state[widget_key] = label_by_scope[preferred_scope]
+    selected = st.radio(
+        "筛选",
+        labels,
+        horizontal=True,
+        label_visibility="collapsed",
+        key=widget_key,
+        index=labels.index(st.session_state.get(widget_key)) if st.session_state.get(widget_key) in labels else labels.index(label_by_scope[preferred_scope]),
+    )
     return options[labels.index(selected)]
 
 
 def _filter_live_rows_by_scope(rows: list[dict], scope: str) -> list[dict]:
     if scope == "全部 Binance 美股映射":
+        scope = "全部可计算"
+    if scope == "全部可计算":
         selected = [row for row in rows if _is_realtime_main_row(row)]
+    elif scope == "价格可用但锚点缺失":
+        selected = [row for row in rows if _realtime_row_status_key(row) == "anchor_missing"]
+    elif scope == "Binance 价格失败":
+        selected = [row for row in rows if _realtime_row_status_key(row) == "binance_failed"]
+    elif scope == "已忽略":
+        selected = [row for row in rows if _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL]
     elif scope == "我的观察池":
         selected = [row for row in rows if row.get("is_watchlist") and _is_realtime_main_row(row)]
     elif scope == "我的持仓":
         selected = [row for row in rows if row.get("is_position") and _is_realtime_main_row(row)]
     elif scope == "核心仓":
         selected = [row for row in rows if (row.get("is_core") or row.get("is_core_position")) and _is_realtime_main_row(row)]
-    elif scope == "锚点缺失":
-        selected = [row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]
     else:
         selected = [row for row in rows if _is_realtime_main_row(row) and _realtime_row_status_key(row) == "review"]
     return sorted(selected, key=_realtime_sort_key)
+
+
+def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
+    counts = _realtime_observation_counts(rows)
+    if counts.get("binance_price_available", 0) > 0 and counts.get("computable", 0) <= 0 and counts.get("anchor_missing", 0) > 0:
+        return "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新美股盘后锚点”。"
+    if counts.get("binance_price_available", 0) <= 0 and counts.get("binance_total", 0) > 0:
+        return "Binance 价格读取失败，请查看刷新诊断。"
+    if counts.get("computable", 0) > 0 and scope != "全部可计算":
+        return "当前筛选没有结果。可以切换到“全部可计算”。"
+    if counts.get("anchor_missing", 0) > 0 and scope != "价格可用但锚点缺失":
+        return "当前筛选没有结果。可以切换到“价格可用但锚点缺失”。"
+    return "当前筛选下没有可展示的实时价差。可以切换筛选，或到“映射管理”里点击“一键同步 Binance 美股映射”。"
+
+
+def _default_realtime_filter_scope(counts: dict[str, int]) -> str:
+    if counts.get("异常偏离", 0) > 0:
+        return "异常偏离"
+    if counts.get("全部可计算", 0) > 0:
+        return "全部可计算"
+    if counts.get("价格可用但锚点缺失", 0) > 0:
+        return "价格可用但锚点缺失"
+    if counts.get("Binance 价格失败", 0) > 0:
+        return "Binance 价格失败"
+    return "全部可计算"
+
+
+def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
+    text = str(label or "")
+    for option in options:
+        if text.startswith(option):
+            return option
+    # Compatibility for old persisted radio labels.
+    if text.startswith("全部 Binance 美股映射"):
+        return "全部可计算"
+    if text.startswith("锚点缺失"):
+        return "价格可用但锚点缺失"
+    return ""
 
 
 def _expected_realtime_anchor_date(now: datetime | None = None) -> str:
@@ -788,19 +854,21 @@ def _build_weekend_spread_rows_with_feedback(
     rows = build_weekend_spread_rows(
         watchlist,
         mapping=mapping,
-        afterhours_provider=default_afterhours_provider() if cached.get("cache_state") == "ANCHOR_DATE_STALE" else CachedAfterhoursProvider(NullAfterhoursProvider()),
+        afterhours_provider=default_afterhours_provider() if cached.get("cache_state") == "ANCHOR_DATE_STALE" else _CachedRowAfterhoursProvider(cached_rows),
         force_refresh=True,
         afterhours_force_refresh=False,
         progress_callback=update_progress,
     )
-    ok_count = sum(1 for row in rows if row.get("status") == "OK")
-    mapped_count = sum(1 for row in rows if row.get("binance_symbol"))
+    refresh_counts = _refresh_attempt_counts(rows, skipped_ignored=skipped_ignored)
+    refresh_message = _refresh_summary_text(refresh_counts)
+    if not refresh_message.startswith("刷新完成"):
+        refresh_message = f"刷新完成：{refresh_message}"
     generated_at = datetime.now(timezone.utc).isoformat()
     progress_bar.progress(1.0)
     if has_successful_price(rows):
         write_weekend_spread_snapshot(rows, mapping=mapping, tickers=watchlist, generated_at=datetime.now(timezone.utc))
         live_rows = annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at)
-        status_slot.success(f"刷新完成：{ok_count}/{mapped_count} 个映射有可用价格，共 {len(rows)} 行。")
+        status_slot.success(refresh_message)
         return live_rows, {
             "cache_state": "API_LIVE",
             "cache_message": "refreshed from Binance API",
@@ -841,7 +909,7 @@ def _build_weekend_spread_rows_with_feedback(
                 "generated_at": "",
                 "last_failure": {"error_message": error_message},
             }
-    status_slot.warning(f"刷新完成：{ok_count}/{mapped_count} 个映射有可用价格，共 {len(rows)} 行。")
+    status_slot.warning(refresh_message)
     return annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at), {
         "cache_state": "API_LIVE",
         "cache_message": "refreshed without successful price",
@@ -928,6 +996,56 @@ class _CacheOnlyBinanceProvider:
         }
 
 
+class _CachedRowAfterhoursProvider:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = [dict(row) for row in rows or []]
+
+    def get_afterhours_reference(
+        self,
+        symbol: str,
+        *,
+        regular_close_date: str = "",
+        force_refresh: bool = False,
+    ) -> AfterhoursReference:
+        normalized_symbol = str(symbol or "").strip().upper()
+        row = next(
+            (
+                item
+                for item in self.rows
+                if str(item.get("ticker") or "").strip().upper() == normalized_symbol
+                and (not regular_close_date or str(item.get("regular_close_date") or item.get("friday_close_date") or "").strip()[:10] == regular_close_date)
+            ),
+            {},
+        )
+        price = _number(row.get("afterhours_reference_price"))
+        if price is None:
+            return AfterhoursReference(
+                symbol=normalized_symbol,
+                data_quality="MISSING",
+                missing_reason=str(row.get("afterhours_missing_reason") or "NO_AFTERHOURS_CACHE"),
+                cache_status=str(row.get("afterhours_cache_status") or "CACHE_MISSING"),
+            )
+        return AfterhoursReference(
+            symbol=normalized_symbol,
+            reference_price=price,
+            reference_time=str(row.get("afterhours_reference_time") or ""),
+            reference_source=str(row.get("afterhours_reference_source") or "weekend_spread_snapshot"),
+            bid=_number(row.get("afterhours_bid")),
+            ask=_number(row.get("afterhours_ask")),
+            mid=_number(row.get("afterhours_mid")),
+            last_trade=_number(row.get("afterhours_last_trade")),
+            volume=_number(row.get("afterhours_volume")),
+            data_quality=str(row.get("afterhours_data_quality") or "CACHE"),
+            missing_reason=str(row.get("afterhours_missing_reason") or ""),
+            cache_status=str(row.get("afterhours_cache_status") or "CACHE_HIT"),
+            week_id=str(row.get("afterhours_week_id") or ""),
+            friday_date=str(row.get("regular_close_date") or row.get("friday_close_date") or regular_close_date or ""),
+            provider_name=str(row.get("afterhours_provider_name") or "weekend_spread_snapshot"),
+            anchor_status=str(row.get("afterhours_anchor_status") or ""),
+            error_message=str(row.get("afterhours_error_message") or row.get("afterhours_error") or ""),
+        )
+
+
 class _CachedRowBinanceProvider:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = [dict(row) for row in rows or []]
@@ -986,16 +1104,15 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
 
 
 def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, int], cache_status: dict | None = None) -> None:
-    afterhours_counts = _afterhours_counts(rows)
-    status_counts = _realtime_status_counts(rows)
-    main_rows = [row for row in rows if _is_realtime_main_row(row)]
-    unavailable_count = sum(1 for row in rows if _mapping_display_label_for_row(row) == MAPPING_UNAVAILABLE_LABEL)
-    anchor_available = sum(1 for row in rows if row.get("binance_symbol") and _row_has_afterhours_anchor(row))
+    counts = _realtime_observation_counts(rows, ignored_count=int(mapping_counts.get("ignored_count") or 0))
     items = [
-        ("可观察美股映射", str(len(main_rows))),
-        ("异常偏离", str(status_counts.get("review", 0))),
-        ("锚点可用", f"{anchor_available}/{afterhours_counts['total']}"),
-        ("不可用", str(unavailable_count)),
+        ("Binance 价格可用", f"{counts['binance_price_available']} / {counts['binance_total']}"),
+        ("锚点可用", f"{counts['anchor_available']} / {counts['anchor_total']}"),
+        ("可计算价差", str(counts["computable"])),
+        ("异常偏离", str(counts["review"])),
+        ("锚点缺失", str(counts["anchor_missing"])),
+        ("已忽略", str(counts["ignored"])),
+        ("不可用", str(counts["unavailable"])),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status)),
     ]
     text = " ｜ ".join(f"{label}：{value}" for label, value in items)
@@ -1006,9 +1123,13 @@ def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) 
     row = _strongest_signal_row(rows)
     if row is None:
         if mapping_counts.get("universe_mapping_count", 0) <= 0:
-            st.info("尚未同步 Binance 美股映射。点击“一键同步 Binance 美股映射”后再观察。")
+            st.info("尚未同步 Binance 美股映射。请到“映射管理”里点击“一键同步 Binance 美股映射”后再观察。")
+        elif _realtime_observation_counts(rows).get("anchor_missing", 0) > 0:
+            st.info("Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新美股盘后锚点”。")
+        elif _realtime_observation_counts(rows).get("binance_price_available", 0) <= 0:
+            st.info("Binance 价格读取失败，请查看刷新诊断。")
         else:
-            st.info("当前没有可展示的价差偏离。")
+            st.info("当前筛选没有结果。可以切换到“价格可用但锚点缺失”或“全部可计算”。")
         return
 
     status_key = _realtime_row_status_key(row)
@@ -1465,8 +1586,63 @@ def _afterhours_anchor_status_text(rows: list[dict], afterhours_counts: dict[str
     return "，".join(parts)
 
 
+def _realtime_observation_counts(rows: list[dict], *, ignored_count: int = 0) -> dict[str, int]:
+    active_rows = [row for row in rows or [] if str(row.get("binance_symbol") or "").strip()]
+    counts = {
+        "binance_total": len(active_rows),
+        "binance_price_available": 0,
+        "anchor_total": len(active_rows),
+        "anchor_available": 0,
+        "computable": 0,
+        "anchor_missing": 0,
+        "ignored": ignored_count,
+        "unavailable": 0,
+        "review": 0,
+    }
+    for row in active_rows:
+        has_price = _row_has_binance_price(row)
+        has_anchor = _row_has_afterhours_anchor(row)
+        if has_price:
+            counts["binance_price_available"] += 1
+        if has_anchor:
+            counts["anchor_available"] += 1
+        key = _realtime_row_status_key(row)
+        if key == "anchor_missing":
+            counts["anchor_missing"] += 1
+        elif key == "binance_failed":
+            counts["unavailable"] += 1
+        elif key == "review":
+            counts["review"] += 1
+        elif key == "normal":
+            counts["computable"] += 1
+        elif key == "unavailable":
+            counts["unavailable"] += 1
+        if _is_realtime_main_row(row):
+            counts["computable"] += 0 if key == "normal" else 1
+    return counts
+
+
+def _refresh_attempt_counts(rows: list[dict], *, skipped_ignored: int = 0) -> dict[str, int]:
+    attempted_rows = [row for row in rows or [] if str(row.get("binance_symbol") or "").strip()]
+    success = sum(1 for row in attempted_rows if _row_has_binance_price(row))
+    return {
+        "attempted": len(attempted_rows),
+        "success": success,
+        "failed": max(len(attempted_rows) - success, 0),
+        "skipped_ignored": skipped_ignored,
+    }
+
+
+def _refresh_summary_text(counts: dict[str, int]) -> str:
+    return (
+        "刷新完成：本次刷新尝试 "
+        f"{counts.get('attempted', 0)} 个 Binance 合约，成功 {counts.get('success', 0)} 个，"
+        f"失败 {counts.get('failed', 0)} 个，跳过已忽略 {counts.get('skipped_ignored', 0)} 个。"
+    )
+
+
 def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
-    counts = {"normal": 0, "review": 0, "unavailable": 0}
+    counts = {"normal": 0, "review": 0, "anchor_missing": 0, "binance_failed": 0, "unavailable": 0}
     for row in rows:
         key = _realtime_row_status_key(row)
         counts[key] = counts.get(key, 0) + 1
@@ -1484,12 +1660,14 @@ def _realtime_sort_key(row: dict) -> tuple[int, float, str]:
 def _realtime_row_status_key(row: dict) -> str:
     status = str(row.get("status") or "").upper()
     if status in {"NO_MAPPING", "BINANCE_UNAVAILABLE", "INVALID_SYMBOL", "PRICE_NOT_LOADED"}:
-        return "unavailable"
+        return "binance_failed" if str(row.get("binance_symbol") or "").strip() else "unavailable"
     label = _mapping_display_label_for_row(row)
     if label in {MAPPING_IGNORED_LABEL, MAPPING_UNAVAILABLE_LABEL, MAPPING_INVALID, "无映射"}:
         return "unavailable"
+    if not _row_has_binance_price(row):
+        return "binance_failed" if str(row.get("binance_symbol") or "").strip() else "unavailable"
     if not _row_has_afterhours_anchor(row):
-        return "unavailable"
+        return "anchor_missing"
     if status == "UNIT_UNCONFIRMED":
         return "review"
     if label in {MAPPING_ANOMALY_LABEL, MAPPING_REVIEW, "异常复核"}:
@@ -1506,6 +1684,8 @@ def _realtime_row_status_label(row: dict) -> str:
     return {
         "normal": "映射可用",
         "review": "价格异常",
+        "anchor_missing": "锚点缺失",
+        "binance_failed": "Binance 价格失败",
         "unavailable": "不可用",
     }.get(_realtime_row_status_key(row), "不可用")
 
@@ -1514,8 +1694,12 @@ def _realtime_row_status_reason(row: dict) -> str:
     key = _realtime_row_status_key(row)
     if key == "review":
         return "相对盘后锚点偏离过大，先按价格异常处理。"
+    if key == "anchor_missing":
+        return "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。"
+    if key == "binance_failed":
+        return _refresh_diagnostic_reason(row)
     if key == "unavailable":
-        return "缺少 Binance 价格、映射或盘后锚点，暂不可用于实时价差观察。"
+        return "映射不可用、已忽略，或缺少 Binance 合约。"
     return "Binance 价格读取成功，映射可用于价差观察。"
 
 
@@ -3348,10 +3532,29 @@ def _render_backtest_advanced_records() -> None:
         st.caption("前瞻记录只作为周末价差观察数据，不会写入交易日志、错题本或信号表现。")
 
 
-def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int], ignored: dict[str, dict] | None = None) -> None:
+def _render_mapping_tab(
+    rows: list[dict],
+    mapping: dict[str, dict],
+    mapping_counts: dict[str, int],
+    ignored: dict[str, dict] | None = None,
+    *,
+    watchlist: list[str] | None = None,
+) -> None:
     st.subheader("Binance 美股 / TradFi 映射管理")
     st.caption("Binance 合约价格读取成功即视为映射可用；不想看的标的可以忽略，忽略后不再进入刷新、实时观察和历史回测。")
     ignored = ignored or load_binance_symbol_ignore()
+    action_cols = st.columns([1.25, 1, 1])
+    if action_cols[0].button(
+        "一键同步 Binance 美股映射",
+        width="stretch",
+        type="primary",
+        key="weekend_spread_scan_binance_equities",
+        help="低频操作：从 Binance exchangeInfo 重新同步美股 / TradFi 映射。",
+    ):
+        _load_realtime_scan_records(watchlist or [], mapping, ignored, refresh_options={"scan": True})
+        st.rerun()
+    action_cols[1].caption("同步会更新本模块 mapping 缓存，不影响主系统观察池或持仓。")
+    action_cols[2].caption("实时页只保留高频刷新价格和更新锚点。")
     records = _mapping_management_records(rows, mapping) + _ignored_mapping_records(ignored)
     state_counts = _mapping_state_counts(records)
     cols = st.columns(5)
@@ -3371,7 +3574,7 @@ def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_coun
     elif records:
         st.success("当前筛选下没有需要处理的映射。打开“显示全部映射”可以查看全量扫描结果。")
     else:
-        st.info("当前还没有 Binance 美股映射。请先在实时观察页点击“一键同步 Binance 美股映射”。")
+        st.info("当前还没有 Binance 美股映射。请点击上方“一键同步 Binance 美股映射”。")
 
     _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH, ignored)
     _render_mapping_diagnostics(_filter_ignored_mapping(mapping, ignored))
@@ -3876,6 +4079,62 @@ def _mapping_editor_error_text(error_code: str) -> str:
         "ticker_required": "请填写股票代码",
         "binance_symbol_required": "请填写 Binance 合约，例如 NVDAUSDT",
     }.get(error_code, "映射保存失败，请检查输入")
+
+
+def _render_refresh_diagnostics(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
+    st.markdown("**刷新诊断**")
+    frame = _refresh_diagnostics_frame(rows, ignored or {})
+    if frame.empty:
+        st.caption("暂无刷新诊断。")
+        return
+    st.dataframe(frame, width="stretch", hide_index=True)
+
+
+def _refresh_diagnostics_frame(rows: list[dict], ignored: dict[str, dict] | None = None) -> pd.DataFrame:
+    columns = ["股票", "Binance 合约", "尝试刷新", "Binance 返回价格", "Binance 最新价", "盘后锚点", "是否忽略", "状态", "失败原因"]
+    records: list[dict[str, object]] = []
+    ignored = ignored or {}
+    for row in rows or []:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        symbol = str(row.get("binance_symbol") or "").strip().upper()
+        is_ignored = is_binance_symbol_ignored(ticker, symbol, ignored) or _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL
+        has_price = _row_has_binance_price(row)
+        has_anchor = _row_has_afterhours_anchor(row)
+        records.append(
+            {
+                "股票": ticker or "未识别",
+                "Binance 合约": symbol or "缺少 Binance 合约",
+                "尝试刷新": "否" if is_ignored or not symbol else "是",
+                "Binance 返回价格": "是" if has_price else "否",
+                "Binance 最新价": _money_text(row.get("adjusted_binance_price") or row.get("binance_last_price")),
+                "盘后锚点": _money_text(row.get("afterhours_reference_price")) if has_anchor else "缺失",
+                "是否忽略": "是" if is_ignored else "否",
+                "状态": _realtime_row_status_label(row),
+                "失败原因": _refresh_diagnostic_reason(row, ignored=ignored),
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _refresh_diagnostic_reason(row: dict, *, ignored: dict[str, dict] | None = None) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    symbol = str(row.get("binance_symbol") or "").strip().upper()
+    if ignored and is_binance_symbol_ignored(ticker, symbol, ignored):
+        return "已忽略，跳过"
+    if _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL:
+        return "已忽略，跳过"
+    if not symbol:
+        return "缺少 Binance 合约"
+    if not _row_has_binance_price(row):
+        error = str(row.get("error") or row.get("error_message") or "").strip()
+        if error == "price_not_loaded":
+            return "Binance 未返回该合约价格"
+        if error:
+            return _localized_realtime_error(error)
+        return "Binance 价格为空"
+    if not _row_has_afterhours_anchor(row):
+        return "价格可用但锚点缺失"
+    return "可计算价差"
 
 
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
@@ -4508,3 +4767,4 @@ def _number(value: object) -> float | None:
     if not math.isfinite(number):
         return None
     return number
+    skipped_ignored = int(options.get("ignored_count") or 0)
