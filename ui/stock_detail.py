@@ -1221,14 +1221,19 @@ def _render_drawdown_profile(ticker: str) -> None:
         st.info(drawdown_profile_summary_text(profile))
         return
 
-    summary = drawdown_profile_summary_text(profile)
     data_quality = str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")
+    status = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
     st.markdown(
         '<section class="research-card drawdown-profile-card">'
-        f'<div class="drawdown-profile-head"><strong>{escape(str(profile.get("drawdown_state") or "数据不足"))}</strong>'
-        f'<span>{escape(summary)}</span></div>'
-        f'<div class="drawdown-profile-grid">{_drawdown_metric_items_html(profile)}</div>'
-        '<p class="drawdown-profile-note">最大有效回撤表示历史上跌完后仍能重新新高的案例，不代表本次一定安全。</p>'
+        f'<div class="drawdown-profile-head"><strong>{escape(status)}</strong>'
+        f'<span>{escape(_drawdown_human_conclusion(profile))}</span></div>'
+        f'<div class="drawdown-profile-grid">{_drawdown_core_metric_items_html(profile)}</div>'
+        f'{_drawdown_position_bar_html(profile)}'
+        '<div class="drawdown-profile-help">'
+        '<p>最大修复跌幅的意思是：历史上曾经跌到这个幅度，但后来又重新创出新高。</p>'
+        '<p>它不是安全线，只是历史参考。</p>'
+        '<p>当前跌幅超过近 6 个月修复范围时，说明这次回调已经不是普通小波动。</p>'
+        '</div>'
         f'<p class="drawdown-profile-note">行情口径：{escape(data_quality)}</p>'
         "</section>",
         unsafe_allow_html=True,
@@ -1245,7 +1250,7 @@ def _render_drawdown_profile(ticker: str) -> None:
                 price_source="历史回撤档案",
                 confidence_score=None,
                 position_context=str(profile.get("current_drawdown_rank") or ""),
-                note=summary,
+                note=_drawdown_human_conclusion(profile),
             )
             st.success("已记录当前回撤信号，并加入后验验证。")
         else:
@@ -1265,27 +1270,86 @@ def _render_drawdown_profile(ticker: str) -> None:
     else:
         st.caption("近 2 年没有识别到超过 3% 的回撤段。")
 
+    with st.expander("详细回撤数据", expanded=False):
+        st.dataframe(_drawdown_detail_metric_frame(profile), hide_index=True, width="stretch")
+
     similar_cases = list(profile.get("similar_drawdown_cases") or [])
     if similar_cases:
         with st.expander("相似回撤案例", expanded=False):
             st.dataframe(_similar_drawdown_frame(similar_cases), hide_index=True, width="stretch")
 
 
-def _drawdown_metric_items_html(profile: dict) -> str:
-    recovery_stats = profile.get("recovery_stats") or {}
+def _drawdown_core_metric_items_html(profile: dict) -> str:
     items = [
-        ("当前回撤", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
-        ("近 2 年最大回撤", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
-        ("近 2 年最大有效回撤，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
-        ("本轮主升最大有效回撤", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
-        ("近 6 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
-        ("近 12 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
-        ("回撤分位", str(profile.get("current_drawdown_rank") or "数据不足")),
-        ("预计修复时间参考", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
+        ("当前离高点跌幅", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
+        ("本轮主升浪最大修复跌幅", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
+        ("近 6 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
     ]
     return "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
         for label, value in items
+    )
+
+
+def _drawdown_detail_metric_frame(profile: dict) -> pd.DataFrame:
+    recovery_stats = profile.get("recovery_stats") or {}
+    stats = profile.get("new_high_pullback_stats") or {}
+    pullback_text = " / ".join(
+        f"{threshold}%：{_drawdown_days_text(stats.get(f'median_days_to_{threshold}pct_pullback'))}"
+        for threshold in ("5", "10", "15", "20")
+    )
+    rows = [
+        ("近 2 年最深跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 2 年跌完还能新高的最大跌幅，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("近 12 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
+        ("当前跌幅在历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("中位修复天数", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
+        ("新高后回调节奏", pullback_text),
+        ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
+    ]
+    return pd.DataFrame([{"项目": label, "数值": value} for label, value in rows])
+
+
+def _drawdown_human_conclusion(profile: dict) -> str:
+    state = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
+    current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
+    current_number = _first_number(profile.get("current_drawdown_pct"))
+    recent_6m = _first_number(profile.get("recent_6m_max_recovered_drawdown_pct"))
+    regime = _first_number(profile.get("current_regime_max_recovered_drawdown_pct"))
+
+    pieces = [f"当前离高点 {current}，属于{state}"]
+    if current_number is not None and recent_6m is not None:
+        if abs(current_number) > abs(recent_6m):
+            pieces.append("已经超过近 6 个月常见修复范围")
+        else:
+            pieces.append("仍在近 6 个月常见修复范围内")
+    if current_number is not None and regime is not None:
+        regime_text = _drawdown_percent_text(regime)
+        if abs(current_number) > abs(regime):
+            pieces.append(f"并已超过本轮主升浪最大修复跌幅 {regime_text}，需要趋势重评")
+        else:
+            pieces.append(f"但尚未超过本轮主升浪最大修复跌幅 {regime_text}")
+    return "；".join(pieces) + "。"
+
+
+def _drawdown_state_display(value: str) -> str:
+    mapping = {
+        "深度洗盘": "偏深洗盘",
+        "极限洗盘": "极限洗盘观察",
+    }
+    return mapping.get(value, value or "数据不足")
+
+
+def _drawdown_position_bar_html(profile: dict) -> str:
+    current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
+    regime = _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))
+    return (
+        '<div class="drawdown-profile-scale">'
+        '<div class="scale-row"><span>0%</span><span>-5%</span><span>-10%</span>'
+        f'<span>{escape(regime)}</span><span>超过</span></div>'
+        '<div class="scale-row muted"><span>浅回调</span><span>正常洗盘</span><span>偏深洗盘</span><span>极限区</span><span>趋势重评</span></div>'
+        f'<strong>当前：{escape(current)}</strong>'
+        '</div>'
     )
 
 
@@ -3623,6 +3687,47 @@ def _render_detail_styles() -> None:
             color: #475569;
             font-size: 0.84rem;
             line-height: 1.45;
+        }
+        .drawdown-profile-help {
+            margin-top: 0.62rem;
+            padding: 0.58rem 0.66rem;
+            border: 1px solid rgba(37, 99, 235, 0.12);
+            border-radius: 0.5rem;
+            background: #F8FAFC;
+        }
+        .drawdown-profile-help p {
+            margin: 0.14rem 0;
+            color: #475569;
+            font-size: 0.8rem;
+            line-height: 1.45;
+        }
+        .drawdown-profile-scale {
+            margin-top: 0.62rem;
+            padding: 0.58rem 0.66rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.5rem;
+            background: linear-gradient(90deg, #F0FDF4 0%, #F8FAFC 38%, #FFF7ED 72%, #FEF2F2 100%);
+        }
+        .drawdown-profile-scale .scale-row {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.32rem;
+            color: #0f172a;
+            font-size: 0.76rem;
+            font-weight: 780;
+        }
+        .drawdown-profile-scale .scale-row.muted {
+            margin-top: 0.2rem;
+            color: #64748b;
+            font-size: 0.7rem;
+            font-weight: 680;
+        }
+        .drawdown-profile-scale strong {
+            display: block;
+            margin-top: 0.45rem;
+            color: #0f172a;
+            font-size: 0.82rem;
+            font-weight: 840;
         }
         .drawdown-profile-grid {
             display: grid;

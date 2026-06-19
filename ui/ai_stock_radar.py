@@ -2767,30 +2767,102 @@ def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | 
 def _drawdown_profile_card_html(profile: dict[str, Any]) -> str:
     if not profile:
         return ""
-    summary = drawdown_profile_summary_text(profile)
-    status = str(profile.get("drawdown_state") or "数据不足")
-    items = [
-        ("当前回撤", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
-        ("近 2 年最大回撤", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
-        ("近 2 年最大有效回撤，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
-        ("本轮主升最大有效回撤", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
-        ("近 6 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
-        ("近 12 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
-        ("回撤分位", str(profile.get("current_drawdown_rank") or "数据不足")),
-        ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
-    ]
-    body = "".join(
-        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
-        for label, value in items
-    )
+    status = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
+    body = _drawdown_core_items_html(profile)
+    details = _drawdown_detail_items_html(profile)
     return (
         '<section class="ai-radar-card ai-radar-drawdown-card">'
         '<div class="ai-radar-section-title"><span>历史回撤档案｜近 2 年</span><b>辅助判断回调性质</b></div>'
-        f'<div class="ai-radar-score-grid">{body}</div>'
-        f'<p class="ai-radar-setup-explain">{escape(summary)}</p>'
-        '<p class="ai-radar-setup-explain">最大有效回撤表示历史上跌完后仍能重新新高的案例，不代表本次一定安全。</p>'
+        f'<p class="ai-radar-drawdown-conclusion">{escape(_drawdown_human_conclusion(profile))}</p>'
         f'<span class="ai-radar-core-badge">{escape(status)}</span>'
+        f'<div class="ai-radar-score-grid">{body}</div>'
+        f'{_drawdown_position_bar_html(profile, class_prefix="ai-radar")}'
+        '<div class="ai-radar-drawdown-help">'
+        '<p>最大修复跌幅的意思是：历史上曾经跌到这个幅度，但后来又重新创出新高。</p>'
+        '<p>它不是安全线，只是历史参考。</p>'
+        '<p>当前跌幅超过近 6 个月修复范围时，说明这次回调已经不是普通小波动。</p>'
+        '</div>'
+        '<details class="ai-radar-drawdown-details"><summary>详细回撤数据</summary>'
+        f'<div class="ai-radar-score-grid">{details}</div>'
+        '</details>'
         "</section>"
+    )
+
+
+def _drawdown_core_items_html(profile: dict[str, Any]) -> str:
+    items = [
+        ("当前离高点跌幅", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
+        ("本轮主升浪最大修复跌幅", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
+        ("近 6 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
+    ]
+    return "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in items
+    )
+
+
+def _drawdown_detail_items_html(profile: dict[str, Any]) -> str:
+    recovery_stats = profile.get("recovery_stats") or {}
+    pullback_stats = profile.get("new_high_pullback_stats") or {}
+    pullback_text = " / ".join(
+        f"{threshold}%：{_drawdown_days_text(pullback_stats.get(f'median_days_to_{threshold}pct_pullback'))}"
+        for threshold in ("5", "10", "15", "20")
+    )
+    items = [
+        ("近 2 年最深跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 2 年跌完还能新高的最大跌幅，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("近 12 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
+        ("当前跌幅在历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("中位修复天数", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
+        ("新高后回调节奏", pullback_text),
+        ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
+    ]
+    return "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in items
+    )
+
+
+def _drawdown_human_conclusion(profile: dict[str, Any]) -> str:
+    state = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
+    current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
+    recent_6m = _number(profile.get("recent_6m_max_recovered_drawdown_pct"))
+    regime = _number(profile.get("current_regime_max_recovered_drawdown_pct"))
+    current_number = _number(profile.get("current_drawdown_pct"))
+
+    pieces = [f"当前离高点 {current}，属于{state}"]
+    if current_number is not None and recent_6m is not None:
+        if abs(current_number) > abs(recent_6m):
+            pieces.append("已经超过近 6 个月常见修复范围")
+        else:
+            pieces.append("仍在近 6 个月常见修复范围内")
+    if current_number is not None and regime is not None:
+        regime_text = _drawdown_percent_text(regime)
+        if abs(current_number) > abs(regime):
+            pieces.append(f"并已超过本轮主升浪最大修复跌幅 {regime_text}，需要趋势重评")
+        else:
+            pieces.append(f"但尚未超过本轮主升浪最大修复跌幅 {regime_text}")
+    return "；".join(pieces) + "。"
+
+
+def _drawdown_state_display(value: str) -> str:
+    mapping = {
+        "深度洗盘": "偏深洗盘",
+        "极限洗盘": "极限洗盘观察",
+    }
+    return mapping.get(value, value or "数据不足")
+
+
+def _drawdown_position_bar_html(profile: dict[str, Any], *, class_prefix: str) -> str:
+    current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
+    regime = _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))
+    return (
+        f'<div class="{class_prefix}-drawdown-scale">'
+        '<div class="scale-row"><span>0%</span><span>-5%</span><span>-10%</span>'
+        f'<span>{escape(regime)}</span><span>超过</span></div>'
+        '<div class="scale-row muted"><span>浅回调</span><span>正常洗盘</span><span>偏深洗盘</span><span>极限区</span><span>趋势重评</span></div>'
+        f'<strong>当前：{escape(current)}</strong>'
+        '</div>'
     )
 
 
@@ -5902,6 +5974,66 @@ def _render_styles() -> None:
             font-size:12px;
             line-height:1.25;
             font-weight:820;
+        }
+        .ai-radar-drawdown-conclusion {
+            margin:0 0 10px;
+            color:#0B1F3A;
+            font-size:14px;
+            line-height:1.6;
+            font-weight:760;
+        }
+        .ai-radar-drawdown-help {
+            margin-top:10px;
+            padding:9px 10px;
+            border:1px solid rgba(37, 99, 235, 0.12);
+            border-radius:8px;
+            background:#F8FAFC;
+        }
+        .ai-radar-drawdown-help p {
+            margin:2px 0;
+            color:#475569;
+            font-size:12px;
+            line-height:1.55;
+        }
+        .ai-radar-drawdown-scale {
+            margin-top:10px;
+            padding:9px 10px;
+            border:1px solid rgba(15, 23, 42, 0.08);
+            border-radius:8px;
+            background:linear-gradient(90deg, #F0FDF4 0%, #F8FAFC 38%, #FFF7ED 72%, #FEF2F2 100%);
+        }
+        .ai-radar-drawdown-scale .scale-row {
+            display:grid;
+            grid-template-columns:repeat(5, minmax(0, 1fr));
+            gap:5px;
+            color:#0B1F3A;
+            font-size:11px;
+            font-weight:780;
+        }
+        .ai-radar-drawdown-scale .scale-row.muted {
+            margin-top:3px;
+            color:#64748B;
+            font-size:10px;
+            font-weight:680;
+        }
+        .ai-radar-drawdown-scale strong {
+            display:block;
+            margin-top:7px;
+            color:#0B1F3A;
+            font-size:12px;
+            font-weight:850;
+        }
+        .ai-radar-drawdown-details {
+            margin-top:10px;
+            border-top:1px solid #EEF2F7;
+            padding-top:8px;
+        }
+        .ai-radar-drawdown-details summary {
+            cursor:pointer;
+            color:#0B1F3A;
+            font-size:12px;
+            font-weight:800;
+            list-style:none;
         }
         .ai-radar-ai-infra-card {
             margin:0 18px 16px;
