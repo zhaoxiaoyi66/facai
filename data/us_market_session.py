@@ -142,7 +142,9 @@ def _is_trading_day(day: object, *, calendar: Any | None = None) -> bool:
             return bool(calendar.is_session(day))
         if hasattr(calendar, "valid_days"):
             return bool(calendar.valid_days(day, day))
-    return getattr(day, "weekday")() < 5
+    if not isinstance(day, date):
+        return getattr(day, "weekday")() < 5
+    return day.weekday() < 5 and day not in _us_market_holidays(day.year)
 
 
 def _next_regular_open(
@@ -180,3 +182,67 @@ def _previous_trading_day(start_day: date, *, calendar: Any | None = None) -> da
         if _is_trading_day(candidate, calendar=calendar):
             return candidate
     return None
+
+
+def _us_market_holidays(year: int) -> set[date]:
+    holidays: set[date] = {
+        _nth_weekday(year, 1, 0, 3),  # Martin Luther King Jr. Day
+        _nth_weekday(year, 2, 0, 3),  # Washington's Birthday
+        _good_friday(year),
+        _last_weekday(year, 5, 0),  # Memorial Day
+        _nth_weekday(year, 9, 0, 1),  # Labor Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving Day
+    }
+
+    for month, day in ((1, 1), (6, 19), (7, 4), (12, 25)):
+        observed = _observed_fixed_holiday(year, month, day)
+        if observed.year == year:
+            holidays.add(observed)
+
+    next_new_year_observed = _observed_fixed_holiday(year + 1, 1, 1)
+    if next_new_year_observed.year == year:
+        holidays.add(next_new_year_observed)
+
+    return holidays
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    value = date(year, month, day)
+    if value.weekday() == 5:
+        return value - timedelta(days=1)
+    if value.weekday() == 6:
+        return value + timedelta(days=1)
+    return value
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    value = date(year, month, 1)
+    days_until_weekday = (weekday - value.weekday()) % 7
+    return value + timedelta(days=days_until_weekday + 7 * (nth - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        value = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        value = date(year, month + 1, 1) - timedelta(days=1)
+    return value - timedelta(days=(value.weekday() - weekday) % 7)
+
+
+def _good_friday(year: int) -> date:
+    # Anonymous Gregorian algorithm; Good Friday is two days before Easter Sunday.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day) - timedelta(days=2)

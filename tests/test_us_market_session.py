@@ -47,3 +47,12 @@ def test_us_market_session_detects_weekend() -> None:
     assert status.status == USMarketSession.WEEKEND_OR_HOLIDAY
     assert status.label == "美股休市"
     assert status.latest_data_display_label == "最新可用收盘 06/12"
+
+
+def test_us_market_session_skips_juneteenth_holiday() -> None:
+    status = get_us_market_session_status(datetime(2026, 6, 19, 20, 39, tzinfo=ZoneInfo("Asia/Hong_Kong")))
+
+    assert status.status == USMarketSession.WEEKEND_OR_HOLIDAY
+    assert status.label == "美股休市"
+    assert status.latest_data_display_label == "最新可用收盘 06/18"
+    assert status.next_regular_open_hkt_text == "06/22 21:30 HKT"
