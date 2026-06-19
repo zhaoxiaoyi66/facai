@@ -188,6 +188,12 @@ def build_overnight_provider_self_check(
         selected_provider = None
         reason = "provider 报错：不支持的夜盘数据源"
     if selected_provider is None:
+        if not selected or selected == "IBKR_OVERNIGHT":
+            reason = "美股夜盘数据源未配置"
+        elif selected == "ALPACA_BOATS":
+            reason = "API key 缺失"
+        else:
+            reason = "provider 报错：不支持的夜盘数据源"
         result = {
             "ok": False,
             "requested_start": session_start_et.isoformat(),
@@ -237,7 +243,17 @@ def build_overnight_provider_self_check(
             reason = "美股夜盘数据源未配置"
         elif not result.get("ok"):
             reason = "缺少美股夜盘首分钟 1m K线"
+    raw_first_bar_time = str(result.get("raw_first_bar_time") or "")
+    raw_first_bar_close = result.get("raw_first_bar_close")
+    selected_bar_time = str(result.get("bar_start_et") or result.get("timestamp") or "")
     first_bar_close = result.get("overnight_first_1m_close") or result.get("price")
+    first_minute_hit = bool(result.get("ok"))
+    if not first_minute_hit and raw_first_bar_time:
+        reason = "未命中夜盘首分钟，不可作为 P2"
+    elif not first_minute_hit and any(marker in str(reason) for marker in ("鏈", "缂", "鎶", "閰", "锛", "€")):
+        reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+    elif not first_minute_hit and not reason:
+        reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     request_meta = dict(getattr(selected_provider, "last_request_meta", {}) or {})
     delay_suspected = bool(getattr(selected_provider, "last_delay_suspected", False) or request_meta.get("delay_suspected"))
     return {
@@ -251,8 +267,16 @@ def build_overnight_provider_self_check(
         "requested_start": str(result.get("requested_start") or session_start_et.isoformat()),
         "requested_end": str(result.get("requested_end") or ""),
         "returned_bar_count": int(result.get("returned_bar_count") or 0),
-        "first_bar_time": str(result.get("bar_start_et") or result.get("timestamp") or ""),
-        "first_bar_close": first_bar_close if first_bar_close is not None else "",
+        "first_bar_time": selected_bar_time if first_minute_hit else raw_first_bar_time,
+        "first_bar_close": first_bar_close if first_bar_close is not None else (raw_first_bar_close if raw_first_bar_close is not None else ""),
+        "raw_first_bar_time": raw_first_bar_time,
+        "raw_first_bar_close": raw_first_bar_close if raw_first_bar_close is not None else "",
+        "first_minute_hit": first_minute_hit,
+        "strict_p2_conclusion": (
+            "命中夜盘首分钟，可作为 P2"
+            if first_minute_hit
+            else ("未命中夜盘首分钟，不可作为 P2" if int(result.get("returned_bar_count") or 0) else reason)
+        ),
         "provider": str(result.get("provider") or selected or ""),
         "feed": str(request_meta.get("feed") or ("boats" if selected == "ALPACA_BOATS" else "")),
         "timeframe": str(request_meta.get("timeframe") or ("1Min" if selected == "ALPACA_BOATS" else "1m")),

@@ -1080,7 +1080,7 @@ def fetch_overnight_first_1m_close(
     anchor_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start_et = session_start_et.astimezone(ET)
-    requested_end = start_et + timedelta(minutes=2)
+    requested_end = start_et + timedelta(minutes=1)
     normalized = str(symbol or "").strip().upper()
     if provider is None:
         supplemental = find_overnight_first_1m_close(normalized, start_et)
@@ -1113,6 +1113,13 @@ def fetch_overnight_first_1m_close(
                     source=supplemental.provider,
                 ),
             }
+        strict_supplemental_miss = str(supplemental.reason or "").strip().upper() == "STRICT_OVERNIGHT_FIRST_MINUTE_MISSING"
+        quality = "MISSING_OVERNIGHT_FIRST_1M" if strict_supplemental_miss else "OVERNIGHT_PROVIDER_MISSING"
+        display_reason = (
+            "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+            if strict_supplemental_miss
+            else "美股夜盘数据源未配置"
+        )
         return {
             "ok": False,
             "symbol": normalized,
@@ -1122,9 +1129,9 @@ def fetch_overnight_first_1m_close(
             "provider": "",
             "venue": "OVERNIGHT",
             "interval": "1m",
-            "quality": "OVERNIGHT_PROVIDER_MISSING",
-            "reason": "OVERNIGHT_PROVIDER_MISSING",
-            "display_reason": "美股夜盘数据源未配置",
+            "quality": quality,
+            "reason": quality,
+            "display_reason": display_reason,
             "price": None,
             "timestamp": "",
             "bar_size": "1m",
@@ -1140,7 +1147,7 @@ def fetch_overnight_first_1m_close(
         symbol,
         session_date,
         "overnight",
-        2,
+        1,
         broker_provider=provider,
         anchor_source={},
         allow_anchor_fallback=False,
@@ -1166,6 +1173,8 @@ def fetch_overnight_first_1m_close(
             "returned_bar_count": int(result.get("returned_bar_count") or 0),
             "requested_start": str(result.get("requested_start") or ""),
             "requested_end": str(result.get("requested_end") or ""),
+            "raw_first_bar_time": str(result.get("raw_first_bar_time") or ""),
+            "raw_first_bar_close": result.get("raw_first_bar_close"),
             "anchor": str(result.get("anchor") or "overnight"),
             "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
             "bar": result.get("bar"),
@@ -1203,7 +1212,7 @@ def fetch_overnight_first_1m_close(
     quality = str(result.get("quality") or "MISSING_OVERNIGHT_FIRST_1M")
     if quality == "MISSING_STOCK_FIRST_BAR":
         quality = "MISSING_OVERNIGHT_FIRST_1M"
-    display_reason = _overnight_missing_display_reason(quality)
+    display_reason = _strict_overnight_missing_display_reason(quality)
     return {
         "ok": False,
         "symbol": normalized,
@@ -1222,6 +1231,8 @@ def fetch_overnight_first_1m_close(
         "returned_bar_count": int(result.get("returned_bar_count") or 0),
         "requested_start": str(result.get("requested_start") or start_et.astimezone(timezone.utc).isoformat()),
         "requested_end": str(result.get("requested_end") or requested_end.astimezone(timezone.utc).isoformat()),
+        "raw_first_bar_time": str(result.get("raw_first_bar_time") or ""),
+        "raw_first_bar_close": result.get("raw_first_bar_close"),
         "anchor": str(result.get("anchor") or "overnight"),
         "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
         "bar": result.get("bar"),
@@ -1239,6 +1250,17 @@ def _overnight_missing_display_reason(quality: str) -> str:
     if normalized == "PROVIDER_ERROR":
         return "夜盘 provider 报错。"
     return "缺少下周第一个交易日美股夜盘首分钟 1m K线"
+
+
+def _strict_overnight_missing_display_reason(quality: str) -> str:
+    normalized = str(quality or "").strip().upper()
+    if normalized == "BOATS_DELAY_PENDING":
+        return "BOATS 历史数据可能延迟，请稍后重试"
+    if normalized == "ALPACA_BOATS_PERMISSION":
+        return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus"
+    if normalized == "PROVIDER_ERROR":
+        return "夜盘 provider 报错"
+    return "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
 
 
 def normalize_klines(payload: Iterable[Any]) -> list[NormalizedKline]:
@@ -1595,6 +1617,8 @@ def _basis_backtest_one_window(
             "stock_bar_returned_count": int(stock_bar.get("returned_bar_count") or 0),
             "stock_bar_requested_start": str(stock_bar.get("requested_start") or ""),
             "stock_bar_requested_end": str(stock_bar.get("requested_end") or ""),
+            "stock_bar_raw_first_time": str(stock_bar.get("raw_first_bar_time") or ""),
+            "stock_bar_raw_first_close": stock_bar.get("raw_first_bar_close"),
             "broker_first_1m_close": broker_first_close,
             "broker_first_1m_time": broker_first_time,
             "broker_bar_start_time": broker_first_time,
@@ -2329,6 +2353,8 @@ def get_first_valid_stock_bar_after_weekend(
                 "returned_bar_count": payload["returned_bar_count"],
                 "requested_start": start.astimezone(timezone.utc).isoformat(),
                 "requested_end": end.astimezone(timezone.utc).isoformat(),
+                "raw_first_bar_time": payload.get("raw_first_bar_time", ""),
+                "raw_first_bar_close": payload.get("raw_first_bar_close"),
                 "anchor": anchor_name,
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
                 "bar": None,
@@ -2350,6 +2376,8 @@ def get_first_valid_stock_bar_after_weekend(
                 "returned_bar_count": payload["returned_bar_count"],
                 "requested_start": start.astimezone(timezone.utc).isoformat(),
                 "requested_end": end.astimezone(timezone.utc).isoformat(),
+                "raw_first_bar_time": payload.get("raw_first_bar_time", ""),
+                "raw_first_bar_close": payload.get("raw_first_bar_close"),
                 "anchor": anchor_name,
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
                 "bar": first,
@@ -2454,15 +2482,19 @@ def _fetch_stock_open_bars(
         rows = list(anchor_source.get("broker_overnight_bars") or anchor_source.get("broker_overnight_quotes") or [])
         provider_error = ""
         delay_suspected = False
+    all_bars = normalize_broker_overnight_bars(rows)
+    first_raw_bar = sorted(all_bars, key=lambda bar: bar.ts)[0] if all_bars else None
     bars = [
         bar
-        for bar in normalize_broker_overnight_bars(rows)
+        for bar in all_bars
         if start.astimezone(timezone.utc) <= bar.ts < end.astimezone(timezone.utc)
     ]
     return {
         "bars": bars,
         "provider": provider_name,
         "returned_bar_count": len(rows),
+        "raw_first_bar_time": first_raw_bar.ts.astimezone(timezone.utc).isoformat() if first_raw_bar is not None else "",
+        "raw_first_bar_close": first_raw_bar.close if first_raw_bar is not None else None,
         "provider_error_reason": provider_error,
         "delay_suspected": delay_suspected,
     }

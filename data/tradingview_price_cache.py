@@ -230,17 +230,45 @@ def find_overnight_first_1m_close(
 ) -> SupplementalPrice:
     normalized = _normalize_symbol(symbol)
     start = session_start_et.astimezone(ET)
-    # TradingView alerts often timestamp a completed 20:00-20:01 bar at 20:01.
     end = start + timedelta(minutes=1)
-    return _find_supplemental_price(
+    result = _find_supplemental_price(
         normalized,
         EVENT_OVERNIGHT_FIRST_1M_CLOSE,
         start,
         end,
-        include_end=True,
+        include_end=False,
         path=path,
         missing_reason="缺少美股夜盘首分钟价格",
     )
+    if not result.ok and _has_delayed_overnight_supplemental_record(normalized, start, path=path):
+        return SupplementalPrice(
+            ok=False,
+            symbol=normalized,
+            event_type=EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+            close=None,
+            timestamp_et=None,
+            provider="",
+            source_type="",
+            quality="MISSING_SUPPLEMENTAL_PRICE",
+            reason="STRICT_OVERNIGHT_FIRST_MINUTE_MISSING",
+        )
+    return result
+
+
+def _has_delayed_overnight_supplemental_record(symbol: str, start: datetime, *, path: Path) -> bool:
+    end = start + timedelta(minutes=30)
+    for row in load_price_cache(path):
+        if _normalize_symbol(row.get("symbol")) != symbol:
+            continue
+        if str(row.get("event_type") or "").strip().upper() not in {EVENT_OVERNIGHT_FIRST_1M_CLOSE, EVENT_TRADINGVIEW_1M_BAR}:
+            continue
+        timestamp = parse_et_datetime(row.get("timestamp_et"))
+        close = _number(row.get("close"))
+        if timestamp is None or close is None or close <= 0:
+            continue
+        if start + timedelta(minutes=1) <= timestamp < end:
+            return True
+    return False
 
 
 def upsert_manual_overnight_price(

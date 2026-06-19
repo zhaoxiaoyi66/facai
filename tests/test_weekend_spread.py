@@ -1333,7 +1333,7 @@ def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
 
     message = weekend_spread._backtest_error_message(rows)
 
-    assert "NVDA：缺少美股夜盘首分钟 1m K线，已排除 4 个样本" in message
+    assert "NVDA：夜盘首分钟无有效 1m K线，不适合开盘第一时间平单，已排除 4 个样本" in message
 
 
 def test_backtest_error_message_prefers_transmission_quality_over_observe_status() -> None:
@@ -1349,7 +1349,7 @@ def test_backtest_error_message_prefers_transmission_quality_over_observe_status
     message = weekend_spread._backtest_error_message(rows)
 
     assert "MISSING_STOCK_FIRST_BAR" not in message
-    assert "GLW：缺少美股夜盘首分钟 1m K线，已排除 1 个样本" in message
+    assert "GLW：夜盘首分钟无有效 1m K线，不适合开盘第一时间平单，已排除 1 个样本" in message
 
 
 def test_backtest_error_message_prioritizes_missing_afterhours_before_binance_gap() -> None:
@@ -1385,7 +1385,7 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
         ]
     )
 
-    assert "缺少夜盘首分钟 1m K线" in reason
+    assert "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单" in reason
 
 
 def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
@@ -1396,7 +1396,7 @@ def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
         "failure_reason": "缺少夜盘首分钟 1m K线",
     }
 
-    assert weekend_spread._p2_source_summary(row) == "缺少夜盘首分钟 1m K线"
+    assert weekend_spread._p2_source_summary(row) == "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
 
 
 def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
@@ -1426,8 +1426,8 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     text = frame.to_string()
     assert "MISSING_STOCK_FIRST_BAR" not in text
     assert "None" not in text
-    assert frame.iloc[0]["失败原因"] == "缺少美股夜盘首分钟 1m K线"
-    assert frame.iloc[0]["P2 夜盘首分钟"] == "缺 P2"
+    assert frame.iloc[0]["失败原因"] == "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+    assert frame.iloc[0]["P2 夜盘首分钟"] == "无首分钟价格"
 
 
 def test_backtest_diagnostic_frame_does_not_count_reference_price_when_p0_missing() -> None:
@@ -4422,6 +4422,36 @@ def test_overnight_provider_self_check_reads_first_minute_close(monkeypatch) -> 
     assert result["requested_start"].startswith("2026-07-06T00:00:00")
     assert result["requested_end"].startswith("2026-07-06T00:01:00")
     assert result["feed"] == "boats"
+    assert result["first_minute_hit"] is True
+    assert result["strict_p2_conclusion"] == "命中夜盘首分钟，可作为 P2"
+
+
+def test_overnight_provider_self_check_rejects_delayed_raw_bar(monkeypatch) -> None:
+    secrets = {
+        "OVERNIGHT_PRICE_PROVIDER": "ALPACA_BOATS",
+        "ALPACA_API_KEY_ID": "key",
+        "ALPACA_API_SECRET_KEY": "secret",
+    }
+    monkeypatch.setattr("data.overnight_price_provider.get_secret", lambda name: secrets.get(name))
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+
+    class DelayedRawProvider:
+        provider_name = "ALPACA_BOATS"
+        last_error_reason = ""
+        last_delay_suspected = False
+        last_request_meta = {}
+
+        def get_overnight_bars(self, symbol: str, *, start_time_ms: int, end_time_ms: int, interval: str = "1m") -> list[dict]:
+            return [_broker_bar(window.end_et + timedelta(minutes=5), 101.1, 101.3, close=101.2)]
+
+    result = build_overnight_provider_self_check(provider=DelayedRawProvider(), now=now)
+
+    assert result["ok"] is False
+    assert result["returned_bar_count"] == 1
+    assert result["first_minute_hit"] is False
+    assert result["first_bar_close"] == 101.2
+    assert result["strict_p2_conclusion"] == "未命中夜盘首分钟，不可作为 P2"
 
 
 def test_overnight_provider_self_check_reports_boats_delay(monkeypatch) -> None:
@@ -4551,7 +4581,7 @@ def test_tradingview_webhook_writes_price_cache(monkeypatch, tmp_path) -> None:
     assert records[0]["event_type"] == EVENT_OVERNIGHT_FIRST_1M_CLOSE
 
 
-def test_tradingview_cache_matches_overnight_20_00_and_20_01(tmp_path) -> None:
+def test_tradingview_cache_requires_exact_overnight_20_00(tmp_path) -> None:
     from data.tradingview_price_cache import upsert_price_event
 
     cache_path = tmp_path / "tv_cache.json"
@@ -4579,8 +4609,8 @@ def test_tradingview_cache_matches_overnight_20_00_and_20_01(tmp_path) -> None:
 
     assert first.ok is True
     assert first.close == 208.88
-    assert second.ok is True
-    assert second.close == 209.12
+    assert second.ok is False
+    assert second.close is None
 
 
 def test_tradingview_csv_import_recognizes_nvda_and_writes_1m_bars(tmp_path) -> None:
@@ -4616,7 +4646,7 @@ def test_weekend_basis_backtest_reads_p0_p2_from_tradingview_cache(monkeypatch, 
         {
             "symbol": "NVDA",
             "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
-            "timestamp_et": (window.end_et + timedelta(minutes=1)).isoformat(),
+            "timestamp_et": window.end_et.isoformat(),
             "close": 102.0,
             "provider": "TRADINGVIEW_WEBHOOK",
             "source_type": "TV_ALERT",
@@ -4652,6 +4682,57 @@ def test_weekend_basis_backtest_reads_p0_p2_from_tradingview_cache(monkeypatch, 
     assert row["transmission_data_quality"] == "TRADINGVIEW_WEBHOOK_SAMPLE"
     assert row["binance_premium_pct"] == pytest.approx(3.0)
     assert row["overnight_vs_binance_pct"] == pytest.approx(-0.9708737864)
+
+
+def test_weekend_basis_backtest_rejects_tradingview_20_01_as_formal_p2(monkeypatch, tmp_path) -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    cache_path = tmp_path / "tv_cache.json"
+    from data.tradingview_price_cache import upsert_price_event
+
+    upsert_price_event(
+        path=cache_path,
+        symbol="NVDA",
+        event_type=EVENT_FRIDAY_AFTERHOURS_CLOSE,
+        timestamp_et=window.start_et.isoformat(),
+        close=100.0,
+        provider="TRADINGVIEW_WEBHOOK",
+        source_type="TV_ALERT",
+    )
+    upsert_price_event(
+        path=cache_path,
+        symbol="NVDA",
+        event_type=EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+        timestamp_et=(window.end_et + timedelta(minutes=1)).isoformat(),
+        close=102.0,
+        provider="TRADINGVIEW_WEBHOOK",
+        source_type="TV_ALERT",
+    )
+    monkeypatch.setattr(
+        "data.weekend_spread_backtest.find_friday_afterhours_close",
+        lambda symbol, friday_date: find_friday_afterhours_close(symbol, friday_date, path=cache_path),
+    )
+    monkeypatch.setattr(
+        "data.weekend_spread_backtest.find_overnight_first_1m_close",
+        lambda symbol, session_start: find_overnight_first_1m_close(symbol, session_start, path=cache_path),
+    )
+    bars = [_kline(window.start_et + timedelta(hours=8), 100.0, 103.0, 99.0, 101.0)]
+
+    rows = run_weekend_basis_backtest(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="confirmed"),
+        anchors={},
+        provider=FakeKlineProvider(bars),
+        overnight_provider=None,
+        weeks=1,
+        now=now,
+    )
+
+    row = rows[0]
+    assert row["friday_afterhours_close"] == 100.0
+    assert row["overnight_first_1m_close"] is None
+    assert row["transmission_data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
+    assert row["capture_pct"] is None
 
 
 
@@ -6722,6 +6803,6 @@ def test_afterhours_result_summary_ignores_reference_price_for_missing_p0_rows()
 def test_backtest_settings_labels_do_not_render_literal_newline() -> None:
     source = inspect.getsource(weekend_spread._render_backtest_tab)
 
-    assert "\\n20:00-20:02 ET" not in source
+    assert "\\n20:00-20:01 ET" not in source
     assert "\\n下周第一个交易日夜盘" not in source
-    assert 'caption("20:00-20:02 ET")' in source
+    assert 'caption("20:00-20:01 ET")' in source
