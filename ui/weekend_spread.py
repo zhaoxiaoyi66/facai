@@ -109,6 +109,7 @@ from settings import load_watchlist
 RISK_NOTICE = "Binance 映射价格不等于真实美股可成交价格，本页仅用于观察价差，不构成套利建议。"
 LARGE_WEEKEND_PREMIUM_PCT = 1.5
 STRICT_P2_MISSING_TEXT = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+OPENING_WINDOW_P2_MISSING_TEXT = "夜盘开盘窗口内无有效 1m K线"
 STRICT_P2_FLOW_TEXT = "无首分钟价格"
 STRICT_P2_STRATEGY_TEXT = "该标的夜盘开盘首分钟无成交 / 无 1m bar，本策略不可用。"
 
@@ -1812,7 +1813,15 @@ def _write_json_file(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(temp_path, path)
+    try:
+        os.replace(temp_path, path)
+    except PermissionError:
+        # Windows can briefly lock the target while Streamlit/tests read it.
+        path.write_text(temp_path.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
 
 
 def _afterhours_counts(rows: list[dict]) -> dict[str, int]:
@@ -2089,7 +2098,7 @@ def _render_history_tab() -> None:
 
 def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
     st.subheader("历史回测")
-    st.caption("正式回测路径：本周最后交易日盘后收盘价 → Binance 周末合约最高价 → 下周第一个交易日美股夜盘首分钟收盘价。系统统计 Binance 周末冲高幅度、夜盘首分钟兑现程度和最终传导涨幅。")
+    st.caption("正式回测路径：本周最后交易日盘后收盘价 → Binance 周末合约最高价 → 下周第一个交易日美股夜盘开盘窗口内首个有效价。系统统计 Binance 周末冲高幅度、夜盘兑现程度和最终传导涨幅。")
 
 
 
@@ -2113,7 +2122,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         _render_tradingview_backfill_tools()
         return
     opening_anchor = "overnight"
-    open_window = 2
+    open_window = 15
     weeks = _safe_backtest_weeks(st.session_state.get("weekend_spread_backtest_weeks"))
     include_unconfirmed = bool(st.session_state.get("weekend_spread_backtest_include_unconfirmed") or False)
     preliminary = build_weekend_backtest_preflight(
@@ -2164,19 +2173,20 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         cols = st.columns([1.2, 1, 1.35, 1, 1.4])
         selected = cols[0].selectbox("标的", options, key="weekend_spread_backtest_ticker")
         weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=weeks, step=1, key="weekend_spread_backtest_weeks"))
-        backtest_mode = cols[2].selectbox(
-            "回测模式",
-            ["开盘平单模式", "研究观察模式"],
-            index=0,
-            key="weekend_spread_backtest_execution_mode",
-            help="开盘平单模式只接受 20:00-20:01 首分钟 1m K线。研究观察模式仅用于查看延迟 raw bar，不计入正式统计。",
+        window_label = cols[2].selectbox(
+            "夜盘开盘窗口",
+            ["严格 1 分钟", "2 分钟", "5 分钟", "15 分钟", "30 分钟"],
+            index=3,
+            key="weekend_spread_backtest_open_window_label",
+            help="窗口越大，样本越多；延迟成交样本不能等同于首分钟平单价格。",
         )
+        open_window = 1 if window_label == "严格 1 分钟" else int(window_label.split(" ")[0])
+        require_exact_p2 = window_label == "严格 1 分钟"
         cols[3].markdown("**夜盘窗口**")
-        cols[3].caption("20:00-20:01 ET")
+        cols[3].caption("20:00-20:01 ET" if require_exact_p2 else f"20:00-20:{open_window:02d} ET")
         cols[4].markdown("**开盘锚点**")
         cols[4].caption("下周第一个交易日夜盘 / 美东 20:00 ET")
-        if backtest_mode == "研究观察模式":
-            st.info("研究观察模式只用于诊断延迟成交 raw bar；正式统计仍只接受夜盘开盘首分钟 P2。")
+        st.caption("窗口越大，样本越多，但延迟成交样本不能等同于首分钟平单价格。")
         anchors = _backtest_anchor_mapping([selected], weeks=weeks)
         preflight = build_weekend_backtest_preflight(
             [selected],
@@ -2240,7 +2250,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             opening_anchor=opening_anchor,
             overnight_provider=default_overnight_price_provider(),
             allow_anchor_fallback=False,
-            require_exact_broker_open=True,
+            require_exact_broker_open=require_exact_p2,
         )
         progress_bar.progress(1.0)
         failed = [
@@ -2270,7 +2280,8 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
                 "weeks": weeks,
                 "open_window": open_window,
                 "opening_anchor": opening_anchor,
-                "backtest_mode": st.session_state.get("weekend_spread_backtest_execution_mode", "开盘平单模式"),
+                "backtest_mode": "严格首分钟" if require_exact_p2 else "首个有效夜盘价",
+                "p2_open_window_label": window_label,
                 "include_unconfirmed": include_unconfirmed,
             },
             error_message=error_message,
@@ -2381,7 +2392,7 @@ def _is_auto_mapping_config(config: dict | None) -> bool:
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
     reason = _clean_self_check_text(result.get("reason"), "未返回原因")
     if result.get("ok"):
-        st.success("夜盘数据源可用，已读取首分钟 1m bar。")
+        st.success("夜盘数据源可用，已读取开盘窗口内首个有效 1m bar。")
     else:
         st.error(f"夜盘数据源自检失败：{reason}")
     rows = [
@@ -2408,6 +2419,9 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
             else "暂无",
         ),
         ("是否命中首分钟", "是" if result.get("first_minute_hit") else "否"),
+        ("是否命中开盘窗口", "是" if result.get("opening_window_hit") or result.get("hit_opening_window") else "否"),
+        ("延迟分钟", "暂无" if _number(result.get("p2_delay_minutes")) is None else str(int(_number(result.get("p2_delay_minutes")) or 0))),
+        ("样本质量", _p2_sample_quality_text(result.get("p2_sample_quality"))),
         ("自检结论", _clean_self_check_text(result.get("strict_p2_conclusion"), reason)),
         ("provider 返回", _clean_self_check_text(result.get("provider"), "未配置")),
         ("数据质量", _data_quality_text(result.get("quality"))),
@@ -2608,6 +2622,9 @@ def _data_quality_text(value: object) -> str:
         "REGULAR_CLOSE_FALLBACK": "常规收盘回退",
         "FALLBACK_REGULAR_CLOSE": "常规收盘回退",
         "P0_UNVERIFIED": "P0 待验证",
+        "DELAYED_OVERNIGHT_FIRST_VALID": "延迟成交样本",
+        "NO_OPENING_WINDOW_BAR": "夜盘流动性不足",
+        "NO_FIRST_MINUTE_BAR": "首分钟缺失",
         "MISSING_OVERNIGHT_FIRST_1M": "首分钟缺失",
         "OVERNIGHT_PROVIDER_MISSING": "美股夜盘数据源未配置",
         "TRADINGVIEW_WEBHOOK_SAMPLE": "TradingView Webhook 样本",
@@ -2757,7 +2774,7 @@ def _backtest_row_failure_reason(row: dict) -> str:
         "MISSING_STOCK_FIRST_BAR",
         "MISSING_OVERNIGHT_FIRST_1M",
     }:
-        return STRICT_P2_MISSING_TEXT
+        return OPENING_WINDOW_P2_MISSING_TEXT
     if transmission_quality == "HOLIDAY_OR_NO_SESSION" or data_quality == "HOLIDAY_OR_NO_SESSION":
         return "\u975e\u6b63\u5e38\u4ea4\u6613\u65e5 / \u65e0\u591c\u76d8 session"
     if transmission_quality in {"CONTRACT_MISSING", "DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE", "MISSING_BINANCE_WEEKEND_MAX"} or data_quality in {
@@ -2802,39 +2819,46 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
     quality_counts = _weekend_review_quality_counts(review_rows)
     liquidity_label, liquidity_detail = _p2_first_minute_liquidity_label(review_rows)
+    window_label, window_detail = _p2_opening_window_liquidity_label(review_rows)
+    p2_stats = _weekend_review_p2_stats(review_rows)
     metrics: list[tuple[str, object, str]] = [
-        ("样本数", int(summary.get("sample_count") or 0), "number"),
-        ("周末冲高%", summary.get("avg_binance_premium_pct"), "percent"),
-        ("夜盘相对高点%", summary.get("avg_overnight_vs_binance_pct"), "percent"),
+        ("总样本数", int(p2_stats.get("eligible_count") or 0), "number"),
+        ("首分钟样本", int(p2_stats.get("first_minute_count") or 0), "number"),
+        ("延迟成交样本", int(p2_stats.get("delayed_count") or 0), "number"),
+        ("流动性不足", int(p2_stats.get("no_window_count") or 0), "number"),
+        ("平均延迟分钟", p2_stats.get("avg_delay_minutes"), "delay"),
         ("平均兑现率%", summary.get("avg_capture_pct"), "percent"),
-        ("最新一周兑现率%", summary.get("latest_week_capture_pct"), "percent"),
     ]
     cols = st.columns(len(metrics))
     if not int(summary.get("sample_count") or 0):
         for col, (label, _, _) in zip(cols, metrics):
             col.metric(label, "暂无")
         st.caption(
-            f"严格正式样本 {quality_counts['ok']} 条｜首分钟缺失样本 {quality_counts['missing_p2']} 条｜"
+            f"首分钟样本 {quality_counts['ok']} 条｜延迟成交样本 {quality_counts['delayed']} 条｜首分钟/窗口缺失样本 {quality_counts['missing_p2']} 条｜"
             f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条｜"
-            f"首分钟流动性：{liquidity_label}（{liquidity_detail}）"
+            f"首分钟流动性：{liquidity_label}（{liquidity_detail}）｜开盘窗口成交率：{window_label}（{window_detail}）"
         )
         st.info(_weekend_review_empty_reason(review_rows))
         return
     for col, (label, value, kind) in zip(cols, metrics):
         if kind == "percent":
             if value is None and summary.get("summary_quality") == "OBSERVE" and label in {"夜盘相对高点%", "平均兑现率%", "最新一周兑现率%"}:
-                col.metric(label, "无首分钟")
+                col.metric(label, "无开盘窗口价")
             else:
                 col.metric(label, _review_percent_text(value))
+        elif kind == "delay":
+            col.metric(label, "暂无" if value is None else f"{float(value):.1f}")
         else:
             col.metric(label, value)
     st.caption(
-        f"严格正式样本 {quality_counts['ok']} 条｜首分钟缺失样本 {quality_counts['missing_p2']} 条｜"
+        f"首分钟样本 {quality_counts['ok']} 条｜延迟成交样本 {quality_counts['delayed']} 条｜首分钟/窗口缺失样本 {quality_counts['missing_p2']} 条｜"
         f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条｜"
-        f"首分钟流动性：{liquidity_label}（{liquidity_detail}）"
+        f"首分钟流动性：{liquidity_label}（{liquidity_detail}）｜开盘窗口成交率：{window_label}（{window_detail}）｜"
+        f"首分钟样本兑现率：{_review_percent_text(p2_stats.get('first_minute_capture_pct'))}｜"
+        f"全部可成交样本兑现率：{_review_percent_text(summary.get('avg_capture_pct'))}"
     )
     if summary.get("summary_quality") == "OBSERVE":
-        st.info("当前显示观察样本统计：可观察 Binance 周末冲高，但缺少严格夜盘首分钟价格，不计入开盘平单回测。")
+        st.info("当前显示观察样本统计：可观察 Binance 周末冲高，但缺少夜盘开盘窗口内首个有效价。")
 
 
 def _latest_weekend_review_row(review_rows: list[dict]) -> dict | None:
@@ -2843,6 +2867,25 @@ def _latest_weekend_review_row(review_rows: list[dict]) -> dict | None:
 
 
 def _p2_first_minute_liquidity_label(review_rows: list[dict]) -> tuple[str, str]:
+    eligible = [
+        row
+        for row in review_rows
+        if _number(row.get("friday_afterhours_close")) is not None and _number(row.get("binance_price")) is not None
+    ]
+    if len(eligible) < 2:
+        return "数据不足", f"{len(eligible)} 周可比"
+    hit_count = sum(1 for row in eligible if _number(row.get("p2_delay_minutes")) == 0)
+    hit_rate = hit_count / len(eligible)
+    if hit_rate >= 0.8:
+        label = "良好"
+    elif hit_rate >= 0.4:
+        label = "一般"
+    else:
+        label = "较差"
+    return label, f"{hit_count}/{len(eligible)} 周命中"
+
+
+def _p2_opening_window_liquidity_label(review_rows: list[dict]) -> tuple[str, str]:
     eligible = [
         row
         for row in review_rows
@@ -2861,6 +2904,32 @@ def _p2_first_minute_liquidity_label(review_rows: list[dict]) -> tuple[str, str]
     return label, f"{hit_count}/{len(eligible)} 周命中"
 
 
+def _weekend_review_p2_stats(review_rows: list[dict]) -> dict[str, object]:
+    eligible = [
+        row
+        for row in review_rows
+        if _number(row.get("friday_afterhours_close")) is not None and _number(row.get("binance_price")) is not None
+    ]
+    first_minute_rows = [row for row in eligible if _number(row.get("p2_delay_minutes")) == 0]
+    delayed_rows = [
+        row
+        for row in eligible
+        if _number(row.get("p2_delay_minutes")) is not None and float(_number(row.get("p2_delay_minutes")) or 0) > 0
+    ]
+    no_window_rows = [row for row in eligible if _number(row.get("broker_open_close")) is None]
+    delays = [float(_number(row.get("p2_delay_minutes")) or 0.0) for row in first_minute_rows + delayed_rows]
+    first_captures = [_number(row.get("capture_pct")) for row in first_minute_rows]
+    first_captures = [float(value) for value in first_captures if value is not None]
+    return {
+        "eligible_count": len(eligible),
+        "first_minute_count": len(first_minute_rows),
+        "delayed_count": len(delayed_rows),
+        "no_window_count": len(no_window_rows),
+        "avg_delay_minutes": sum(delays) / len(delays) if delays else None,
+        "first_minute_capture_pct": sum(first_captures) / len(first_captures) if first_captures else None,
+    }
+
+
 def _money_or_missing(value: object, fallback: str) -> str:
     return _money_text(value) if _number(value) is not None else fallback
 
@@ -2872,7 +2941,7 @@ def _percent_or_missing(value: object, row: dict) -> str:
     if _number(row.get("friday_afterhours_close")) is None:
         missing.append("P0")
     if _number(row.get("broker_open_close")) is None:
-        missing.append("首分钟价格")
+        missing.append("P2")
     if missing:
         return "缺 " + " / ".join(missing)
     return "无法计算"
@@ -2928,16 +2997,53 @@ def _p2_source_summary(row: dict) -> str:
         reason = str(row.get("failure_reason") or "").strip()
         if reason and reason.upper() not in {"NONE", "ANCHOR_SOURCE"}:
             if "首分钟" in reason:
-                return STRICT_P2_MISSING_TEXT
+                return OPENING_WINDOW_P2_MISSING_TEXT
             return reason
         quality = str(row.get("data_quality") or (row.get("raw_row") or {}).get("transmission_data_quality") or "").strip().upper()
         if quality == "OVERNIGHT_PROVIDER_MISSING":
             return "美股夜盘数据源未配置"
-        return STRICT_P2_MISSING_TEXT
+        return OPENING_WINDOW_P2_MISSING_TEXT
     source = _price_source_text(row.get("overnight_provider"))
     if not source or source == "未知":
         return _data_quality_text(row.get("data_quality"))
     return source
+
+
+def _p2_flow_text(row: dict) -> str:
+    if _number(row.get("broker_open_close")) is not None:
+        return _money_text(row.get("broker_open_close"))
+    return "无开盘窗口成交"
+
+
+def _p2_detail_text(row: dict) -> str:
+    if _number(row.get("broker_open_close")) is None:
+        return "无开盘窗口成交｜样本：夜盘流动性不足"
+    time_text = row.get("p2_first_valid_time") or row.get("broker_first_time") or row.get("p2_selected_bar_time")
+    delay = _number(row.get("p2_delay_minutes"))
+    short_time = _weekend_review_short_time(time_text) or "时间待确认"
+    if delay is None:
+        return f"{short_time}｜样本：夜盘首个有效价"
+    if int(delay) == 0:
+        return f"{short_time}，首分钟样本"
+    return f"{short_time}，开盘后 +{int(delay)} 分钟｜样本：延迟成交样本"
+
+
+def _p2_delay_text(row: dict) -> str:
+    delay = _number(row.get("p2_delay_minutes"))
+    if delay is None:
+        return "无 P2"
+    delay_int = int(delay)
+    return "0" if delay_int == 0 else f"+{delay_int}"
+
+
+def _p2_sample_quality_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return {
+        "FIRST_MINUTE": "首分钟样本",
+        "DELAYED_FIRST_VALID": "延迟成交样本",
+        "NO_OPENING_WINDOW_BAR": "夜盘流动性不足",
+        "NO_FIRST_MINUTE_BAR": "首分钟缺失",
+    }.get(text, "数据不足" if not text else _data_quality_text(text))
 
 
 def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4) -> None:
@@ -2965,17 +3071,17 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
         f"""
         <div class="weekend-core-card">
           <div class="weekend-core-title">{escape(str(row.get("ticker") or ""))} · {escape(str(row.get("week_id") or ""))}</div>
-          <div class="weekend-core-flow-label">最后交易日盘后 → Binance 周末最高 → 下周首个交易日夜盘首分钟</div>
+          <div class="weekend-core-flow-label">最后交易日盘后 → Binance 周末最高 → 下周首个交易日夜盘首个有效价</div>
           <div class="weekend-core-flow">
             {escape(_money_or_missing(row.get("friday_afterhours_close"), "缺 P0"))}
             → {escape(_money_or_missing(row.get("binance_price"), "缺 P1"))}
-            → {escape(_money_or_missing(row.get("broker_open_close"), STRICT_P2_FLOW_TEXT))}
+            → {escape(_p2_flow_text(row))}
           </div>
           <div class="weekend-core-metrics">{metric_html}</div>
           <div class="weekend-core-sources">
             P0 来源：{escape(_p0_source_summary(row))}｜
             P1 来源：{escape(_p1_source_summary(row))}｜
-            P2 来源：{escape(_p2_source_summary(row))}｜
+            P2：{escape(_p2_detail_text(row))}｜
             首分钟流动性：{escape(liquidity_label)}（{escape(liquidity_detail)}）
           </div>
         </div>
@@ -2983,24 +3089,28 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
         unsafe_allow_html=True,
     )
     if _number(row.get("broker_open_close")) is None:
-        st.caption(STRICT_P2_STRATEGY_TEXT)
+        st.caption("夜盘开盘窗口内无有效 1m K线，本策略不可用。")
         raw_time = str(row.get("p2_first_raw_bar_time_et") or row.get("p2_first_raw_bar_time") or "").strip()
         raw_close = _number(row.get("p2_first_raw_bar_close"))
         if raw_time and raw_close is not None:
-            st.caption(f"Provider 返回了后续 raw bar：{raw_time}，close {_money_text(raw_close)}；未命中 20:00 ET 首分钟，不可作为 P2。")
+            st.caption(f"Provider 返回 raw bar：{raw_time}，close {_money_text(raw_close)}；未命中当前开盘窗口。")
+    elif _number(row.get("p2_delay_minutes")) and float(_number(row.get("p2_delay_minutes")) or 0) > 0:
+        st.caption(f"非首分钟样本，开盘后 +{int(float(_number(row.get('p2_delay_minutes')) or 0))} 分钟才出现有效 1m K 线。")
     elif str(row.get("data_quality") or "").strip().upper() in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
         st.caption("P0 使用常规收盘回退，仅作为观察样本。")
 
 
 
 def _weekend_review_quality_counts(review_rows: list[dict]) -> dict[str, int]:
-    counts = {"ok": 0, "missing_p2": 0, "observe": 0, "degraded": 0, "excluded": 0}
+    counts = {"ok": 0, "delayed": 0, "missing_p2": 0, "observe": 0, "degraded": 0, "excluded": 0}
     for row in review_rows:
         quality = str(row.get("data_quality") or "").strip().upper()
         if quality == "OK" and not bool(row.get("holiday_rollover")):
             counts["ok"] += 1
         elif quality == "OK" and bool(row.get("holiday_rollover")):
             counts["observe"] += 1
+        elif quality == "DELAYED_OVERNIGHT_FIRST_VALID":
+            counts["delayed"] += 1
         elif quality in {
             "MISSING_OVERNIGHT_FIRST_1M",
             "OVERNIGHT_PROVIDER_MISSING",
@@ -3043,7 +3153,7 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
     if qualities & {"OVERNIGHT_PROVIDER_MISSING"}:
         return "\u7f3a\u5c11\u7f8e\u80a1\u591c\u76d8\u6570\u636e\u6e90\uff0c\u53ea\u80fd\u89c2\u5bdf Binance \u5468\u672b\u51b2\u9ad8"
     if qualities & {"MISSING_OVERNIGHT_FIRST_1M", "NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR"}:
-        return STRICT_P2_MISSING_TEXT
+        return "夜盘开盘窗口内无有效 1m K线"
     if qualities & {"NO_AFTERHOURS_CLOSE", "MISSING_FRIDAY_AFTERHOURS_CLOSE", "MISSING_P0"}:
         return "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u951a\u70b9"
     if qualities & {"MISSING_BINANCE_WEEKEND_MAX", "CONTRACT_MISSING", "BINANCE_KLINE_UNAVAILABLE"}:
@@ -3065,7 +3175,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             continue
         friday_afterhours_close = _actual_afterhours_close(row)
         binance_price = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
-        broker_open_close = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close"))
+        broker_open_close = _first_number(row, ("p2_first_valid_close", "overnight_first_1m_close", "broker_first_1m_close"))
         binance_premium_pct = _first_number(row, ("binance_premium_pct",))
         if binance_premium_pct is None and friday_afterhours_close and binance_price is not None:
             binance_premium_pct = (binance_price / friday_afterhours_close - 1.0) * 100.0
@@ -3081,6 +3191,15 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             if denominator:
                 capture_pct = (broker_open_close - friday_afterhours_close) / denominator * 100.0
         data_quality = _weekend_review_data_quality(row, friday_afterhours_close, binance_price, binance_premium_pct, broker_open_close)
+        p2_delay_minutes = _p2_delay_minutes_from_row(row, broker_open_close)
+        p2_sample_quality = str(row.get("p2_sample_quality") or "").strip().upper()
+        if not p2_sample_quality:
+            if broker_open_close is None:
+                p2_sample_quality = "NO_OPENING_WINDOW_BAR"
+            elif p2_delay_minutes == 0:
+                p2_sample_quality = "FIRST_MINUTE"
+            else:
+                p2_sample_quality = "DELAYED_FIRST_VALID"
         record = {
             "week_id": week_id,
             "ticker": ticker,
@@ -3114,7 +3233,14 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "p2_first_raw_bar_close": _first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")),
             "p2_selected_bar_time": _weekend_review_short_time(row.get("stock_bar_selected_time")),
             "p2_selected_bar_close": _first_number(row, ("stock_bar_selected_close",)),
-            "p2_hit_first_minute": bool(row.get("stock_bar_hit_first_minute") or broker_open_close is not None),
+            "p2_strict_first_minute_close": _first_number(row, ("p2_strict_first_minute_close",)),
+            "p2_first_valid_close": _first_number(row, ("p2_first_valid_close", "overnight_first_1m_close", "broker_first_1m_close")),
+            "p2_first_valid_time": _weekend_review_short_time(row.get("p2_first_valid_time") or row.get("broker_first_1m_time") or row.get("overnight_first_1m_time")),
+            "p2_delay_minutes": p2_delay_minutes,
+            "p2_sample_quality": p2_sample_quality,
+            "p2_opening_window_minutes": _first_number(row, ("p2_opening_window_minutes",)),
+            "p2_hit_first_minute": bool(row.get("stock_bar_hit_first_minute") or p2_sample_quality == "FIRST_MINUTE" or p2_delay_minutes == 0),
+            "p2_hit_opening_window": bool(row.get("stock_bar_hit_opening_window") or broker_open_close is not None),
             "overnight_provider": _weekend_review_overnight_provider(row),
             "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
@@ -3143,7 +3269,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
 
 
 def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
-    ok_rows = _ok_weekend_review_rows(review_rows)
+    ok_rows = _tradable_weekend_review_rows(review_rows)
     source_rows = ok_rows
     summary_quality = "OK"
     if not source_rows:
@@ -3202,6 +3328,9 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
     display["数据质量"] = frame.get("data_quality").map(_data_quality_text)
     display["P2 来源"] = frame.apply(lambda row: _weekend_review_overnight_provider(row.to_dict()), axis=1)
     display["失败原因"] = frame.apply(lambda row: _weekend_review_failure_reason(row.to_dict(), str(row.get("data_quality") or "")), axis=1)
+    display["P2 选中时间"] = frame.get("p2_first_valid_time")
+    display["P2 延迟分钟"] = frame.get("p2_delay_minutes")
+    display["P2 样本质量"] = frame.get("sample_status")
     display["P0 请求区间"] = frame.get("p0_request_window")
     display["P0 返回bars"] = frame.get("p0_returned_bar_count")
     display["P0 选中时间"] = frame.get("p0_selected_bar_time")
@@ -3220,13 +3349,17 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
         "失败原因",
         "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 首个有效夜盘价",
         "P0 请求区间",
         "P0 返回bars",
         "P2 请求区间",
         "P2 返回bars",
         "P2 第一根raw时间",
         "P2 第一根raw close",
+        "P2 选中时间",
+        "P2 选中close",
+        "P2 延迟分钟",
+        "P2 样本质量",
         "Binance 窗口",
         "Binance 合约",
     ]
@@ -3237,6 +3370,7 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
         p0 = _actual_afterhours_close(row)
         p1 = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
         p2 = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close", "broker_open_close"))
+        p2_delay = _first_number(row, ("p2_delay_minutes",))
         data_quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
         p2_window = _weekend_review_time_range(
             row.get("stock_bar_requested_start") or row.get("overnight_bar_start_et") or row.get("p2_session_start_et"),
@@ -3250,13 +3384,17 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
                 "失败原因": _backtest_row_failure_reason(row),
                 "P0 最后交易日盘后": _money_or_missing(p0, "缺 P0"),
                 "P1 Binance 高点": _money_or_missing(p1, "缺 P1"),
-                "P2 夜盘首分钟": _money_or_missing(p2, STRICT_P2_FLOW_TEXT),
+                "P2 首个有效夜盘价": _money_or_missing(p2, "无 P2"),
                 "P0 请求区间": _weekend_review_time_range(row.get("p0_request_start_et"), row.get("p0_request_end_et")),
                 "P0 返回bars": int(_first_number(row, ("p0_returned_bar_count",)) or 0),
                 "P2 请求区间": p2_window,
                 "P2 返回bars": int(_first_number(row, ("stock_bar_raw_returned_count", "stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
                 "P2 第一根raw时间": _weekend_review_short_time(row.get("stock_bar_first_raw_time_et") or row.get("stock_bar_first_raw_time") or row.get("stock_bar_raw_first_time")) or "",
                 "P2 第一根raw close": _money_or_missing(_first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")), ""),
+                "P2 选中时间": _weekend_review_short_time(row.get("p2_first_valid_time") or row.get("stock_bar_selected_time") or row.get("broker_first_1m_time")) or "",
+                "P2 选中close": _money_or_missing(_first_number(row, ("p2_first_valid_close", "stock_bar_selected_close", "broker_first_1m_close")), ""),
+                "P2 延迟分钟": "" if p2_delay is None else int(p2_delay),
+                "P2 样本质量": _data_quality_text(data_quality),
                 "Binance 窗口": _weekend_review_time_range(row.get("binance_window_start_et"), row.get("binance_window_end_et")),
                 "Binance 合约": str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper(),
             }
@@ -3270,7 +3408,10 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "股票",
         "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 首个有效夜盘价",
+        "P2 时间",
+        "延迟分钟",
+        "样本质量",
         "周末冲高%",
         "高点回落%",
         "最终传导%",
@@ -3287,7 +3428,10 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "股票": row.get("ticker"),
                 "P0 最后交易日盘后": _money_or_missing(row.get("friday_afterhours_close"), "缺 P0"),
                 "P1 Binance 高点": _money_or_missing(row.get("binance_price"), "缺 P1"),
-                "P2 夜盘首分钟": _money_or_missing(row.get("broker_open_close"), STRICT_P2_FLOW_TEXT),
+                "P2 首个有效夜盘价": _money_or_missing(row.get("broker_open_close"), "无 P2"),
+                "P2 时间": row.get("p2_first_valid_time") or row.get("broker_first_time") or "",
+                "延迟分钟": _p2_delay_text(row),
+                "样本质量": _weekend_review_sample_status(str(row.get("data_quality") or ""), row),
                 "周末冲高%": _percent_or_missing(row.get("binance_premium_pct"), row),
                 "高点回落%": _percent_or_missing(row.get("overnight_vs_binance_pct"), row),
                 "最终传导%": _percent_or_missing(row.get("overnight_vs_afterhours_pct"), row),
@@ -3339,6 +3483,16 @@ def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     ]
 
 
+def _tradable_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in review_rows
+        if str(row.get("data_quality") or "").strip().upper() in {"OK", "DELAYED_OVERNIGHT_FIRST_VALID"}
+        and not bool(row.get("holiday_rollover"))
+        and not bool(row.get("holiday_shifted_overnight_session"))
+    ]
+
+
 def _observation_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     return [
         row
@@ -3372,6 +3526,7 @@ def _display_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
         if str(row.get("data_quality") or "").strip().upper()
         in {
             "OK",
+            "DELAYED_OVERNIGHT_FIRST_VALID",
             "OBSERVE_ONLY",
             "NO_AFTERHOURS_CLOSE",
             "MISSING_OVERNIGHT_FIRST_1M",
@@ -3417,6 +3572,8 @@ def _weekend_review_data_quality(
         return "FALLBACK_REGULAR_CLOSE"
     if quality == "P0_UNVERIFIED":
         return "P0_UNVERIFIED"
+    if quality == "DELAYED_OVERNIGHT_FIRST_VALID":
+        return "DELAYED_OVERNIGHT_FIRST_VALID"
     if quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
         return quality
     if quality in {"BOATS_DELAY_PENDING", "ALPACA_BOATS_PERMISSION", "MISSING_BOATS_FIRST_1M", "PROVIDER_ERROR"}:
@@ -3434,7 +3591,9 @@ def _weekend_review_data_quality(
         return "MISSING_OVERNIGHT_FIRST_1M"
     if cache_status in {"STALE", "STALE_CACHE", "CACHE_FALLBACK"} or quality in {"STALE_CACHE", "STALE_OR_MISALIGNED"}:
         return "STALE_CACHE"
-    if quality in {"", "OK", "ESTIMATED_EXECUTION"} and anchor_price is not None and anchor_price > 0 and binance_price is not None and binance_price > 0 and broker_open_close is not None and broker_open_close > 0:
+    if quality in {"", "OK", "ESTIMATED_EXECUTION", "DELAYED_OVERNIGHT_FIRST_VALID"} and anchor_price is not None and anchor_price > 0 and binance_price is not None and binance_price > 0 and broker_open_close is not None and broker_open_close > 0:
+        if quality == "DELAYED_OVERNIGHT_FIRST_VALID":
+            return "DELAYED_OVERNIGHT_FIRST_VALID"
         return "OK"
     if quality in {"INVALID", "MISSING", "DATA_INSUFFICIENT", "INVALID_PRICE"}:
         return "INVALID_PRICE"
@@ -3456,6 +3615,8 @@ def _weekend_review_status(data_quality: str, premium_pct: float | None) -> str:
         return "仅观察"
     if data_quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
         return _weekend_review_sample_status(data_quality)
+    if data_quality == "DELAYED_OVERNIGHT_FIRST_VALID":
+        return "延迟成交样本"
     if str(data_quality or "").startswith("DEGRADED"):
         return "降级样本"
     if data_quality != "OK" or premium_pct is None:
@@ -3489,6 +3650,10 @@ def _weekend_review_sample_status(data_quality: str, row: dict | None = None) ->
         return _weekend_review_sample_status_with_context("严格正式样本", raw)
     if quality == "ALPACA_BOATS_SAMPLE":
         return "Alpaca BOATS 样本"
+    if quality == "DELAYED_OVERNIGHT_FIRST_VALID":
+        delay = _number(raw.get("p2_delay_minutes"))
+        label = f"延迟成交样本（+{int(delay)} 分钟）" if delay is not None else "延迟成交样本"
+        return _weekend_review_sample_status_with_context(label, raw)
     if quality == "P0_UNVERIFIED":
         return "P0 待验证样本"
     if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
@@ -3527,6 +3692,7 @@ def _weekend_review_rank(row: dict) -> tuple[int, float]:
     quality = str(row.get("data_quality") or "").strip().upper()
     quality_rank = {
         "OK": 4,
+        "DELAYED_OVERNIGHT_FIRST_VALID": 3,
         "TRADINGVIEW_WEBHOOK_SAMPLE": 3,
         "TRADINGVIEW_CSV_SAMPLE": 3,
         "MANUAL_BROKER_SAMPLE": 3,
@@ -3599,11 +3765,55 @@ def _weekend_review_afterhours_time(row: dict) -> str:
 
 
 def _weekend_review_broker_first_time(row: dict) -> str:
-    for key in ("overnight_first_1m_time", "overnight_bar_start_et", "broker_first_1m_time", "broker_bar_start_time", "stock_bar_timestamp", "broker_overnight_open_ts"):
+    for key in ("p2_first_valid_time", "overnight_first_1m_time", "overnight_bar_start_et", "broker_first_1m_time", "broker_bar_start_time", "stock_bar_timestamp", "broker_overnight_open_ts"):
         value = str(row.get(key) or "").strip()
         if value:
             return _weekend_review_short_time(value)
     return ""
+
+
+def _parse_et_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            timestamp = int(text)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(ET)
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ET)
+    return parsed.astimezone(ET)
+
+
+def _p2_delay_minutes_from_row(row: dict, broker_open_close: float | None) -> float | None:
+    explicit = _first_number(row, ("p2_delay_minutes",))
+    if explicit is not None:
+        return explicit
+    if broker_open_close is None:
+        return None
+    bar_time = None
+    for key in ("p2_first_valid_time", "overnight_first_1m_time", "overnight_bar_start_et", "broker_first_1m_time", "broker_bar_start_time", "stock_bar_timestamp", "broker_overnight_open_ts"):
+        bar_time = _parse_et_datetime(row.get(key))
+        if bar_time is not None:
+            break
+    session_time = None
+    for key in ("p2_session_start_et", "monday_reference_time_et", "stock_bar_requested_start", "overnight_bar_start_et"):
+        session_time = _parse_et_datetime(row.get(key))
+        if session_time is not None:
+            break
+    if bar_time is not None and session_time is not None:
+        return max(0, int((bar_time - session_time).total_seconds() // 60))
+    if bar_time is not None and bar_time.hour == 20:
+        return max(0, int(bar_time.minute))
+    return 0
 
 
 def _weekend_review_overnight_provider(row: dict) -> str:
@@ -3660,7 +3870,7 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality == "ALPACA_BOATS_PERMISSION":
         return "Alpaca BOATS 权限不足"
     if quality == "MISSING_BOATS_FIRST_1M":
-        return STRICT_P2_MISSING_TEXT
+        return "夜盘开盘窗口内无有效 1m K线"
     if quality == "PROVIDER_ERROR":
         return str(row.get("overnight_reason") or "夜盘数据源报错")
     if quality == "TRADINGVIEW_WEBHOOK_SAMPLE":
@@ -3672,7 +3882,7 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality == "MANUAL_AFTERHOURS_SAMPLE":
         return "P0 来自手动补数"
     if quality == "MISSING_OVERNIGHT_FIRST_1M":
-        return str(row.get("overnight_reason") or STRICT_P2_MISSING_TEXT)
+        return str(row.get("overnight_reason") or "夜盘开盘窗口内无有效 1m K线")
     if quality in {"CONTRACT_MISSING", "BINANCE_KLINE_UNAVAILABLE", "MISSING_BINANCE_WEEKEND_MAX"}:
         return "缺少 Binance 周末 1m K线"
     if quality == "HOLIDAY_OR_NO_SESSION":

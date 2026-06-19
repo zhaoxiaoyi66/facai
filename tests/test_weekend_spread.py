@@ -1369,7 +1369,7 @@ def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
 
     message = weekend_spread._backtest_error_message(rows)
 
-    assert "NVDA：夜盘首分钟无有效 1m K线，不适合开盘第一时间平单，已排除 4 个样本" in message
+    assert "NVDA：夜盘开盘窗口内无有效 1m K线，已排除 4 个样本" in message
 
 
 def test_backtest_error_message_prefers_transmission_quality_over_observe_status() -> None:
@@ -1385,7 +1385,7 @@ def test_backtest_error_message_prefers_transmission_quality_over_observe_status
     message = weekend_spread._backtest_error_message(rows)
 
     assert "MISSING_STOCK_FIRST_BAR" not in message
-    assert "GLW：夜盘首分钟无有效 1m K线，不适合开盘第一时间平单，已排除 1 个样本" in message
+    assert "GLW：夜盘开盘窗口内无有效 1m K线，已排除 1 个样本" in message
 
 
 def test_backtest_error_message_prioritizes_missing_afterhours_before_binance_gap() -> None:
@@ -1421,7 +1421,7 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
         ]
     )
 
-    assert "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单" in reason
+    assert "夜盘开盘窗口内无有效 1m K线" in reason
 
 
 def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
@@ -1432,7 +1432,7 @@ def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
         "failure_reason": "缺少夜盘首分钟 1m K线",
     }
 
-    assert weekend_spread._p2_source_summary(row) == "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+    assert weekend_spread._p2_source_summary(row) == "夜盘开盘窗口内无有效 1m K线"
 
 
 def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
@@ -1462,8 +1462,8 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     text = frame.to_string()
     assert "MISSING_STOCK_FIRST_BAR" not in text
     assert "None" not in text
-    assert frame.iloc[0]["失败原因"] == "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
-    assert frame.iloc[0]["P2 夜盘首分钟"] == "无首分钟价格"
+    assert frame.iloc[0]["失败原因"] == "夜盘开盘窗口内无有效 1m K线"
+    assert frame.iloc[0]["P2 首个有效夜盘价"] == "无 P2"
 
 
 def test_backtest_diagnostic_frame_does_not_count_reference_price_when_p0_missing() -> None:
@@ -3245,6 +3245,15 @@ def test_strict_p2_rejects_20_05_bar_and_backtest_does_not_calculate_capture() -
             }
         },
         provider=FakeKlineProvider(bars),
+        afterhours_provider=FakeAfterhoursProvider(
+            reference_price=180.0,
+            reference_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            reference_source="ALPACA_AFTERHOURS_BOATS",
+            request_start=(window.start_et - timedelta(minutes=5)).isoformat(),
+            request_end=window.start_et.isoformat(),
+            selected_bar_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            selected_bar_close=180.0,
+        ),
         broker_provider=provider,
         weeks=1,
         now=now,
@@ -3266,6 +3275,62 @@ def test_strict_p2_rejects_20_05_bar_and_backtest_does_not_calculate_capture() -
     assert review["p2_first_raw_bar_close"] == 101.2
     assert review["p2_first_raw_bar_time_et"] == "2026-07-05 20:05 ET"
     assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
+
+
+def test_default_p2_uses_first_valid_20_01_bar_as_delayed_sample() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=2), 180.0, 185.88, 179.0, 184.0)]
+    provider = ObjectBrokerBarProvider([FakeSdkBar(window.end_et.astimezone(timezone.utc) + timedelta(minutes=1), 184.01, 42)])
+
+    rows = run_weekend_basis_backtest(
+        ["GLW"],
+        mapping={"GLW": {"enabled": True, "binance_symbol": "GLWUSDT", "mapping_confidence": "confirmed"}},
+        anchors={
+            "GLW": {
+                "afterhours_reference_price": 180.0,
+                "regular_close_price": 178.0,
+                "afterhours_reference_time": "2026-07-02T19:59:00-04:00",
+                "afterhours_reference_source": "mock_afterhours",
+            }
+        },
+        provider=FakeKlineProvider(bars),
+        afterhours_provider=FakeAfterhoursProvider(
+            reference_price=180.0,
+            reference_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            reference_source="ALPACA_AFTERHOURS_BOATS",
+            request_start=(window.start_et - timedelta(minutes=5)).isoformat(),
+            request_end=window.start_et.isoformat(),
+            selected_bar_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            selected_bar_close=180.0,
+        ),
+        broker_provider=provider,
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        allow_anchor_fallback=False,
+        open_window_minutes=15,
+    )
+
+    row = rows[0]
+    assert row["broker_first_1m_close"] == 184.01
+    assert row["p2_first_valid_close"] == 184.01
+    assert row["p2_strict_first_minute_close"] is None
+    assert row["p2_delay_minutes"] == 1
+    assert row["p2_sample_quality"] == "DELAYED_FIRST_VALID"
+    assert row["transmission_data_quality"] == "DELAYED_OVERNIGHT_FIRST_VALID"
+    assert row["capture_pct"] == pytest.approx((184.01 - 180.0) / (185.88 - 180.0) * 100.0)
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["broker_open_close"] == 184.01
+    assert review["p2_delay_minutes"] == 1
+    assert review["data_quality"] == "DELAYED_OVERNIGHT_FIRST_VALID"
+    assert "延迟成交样本（+1 分钟）" in review["sample_status"]
+
+    frame = weekend_spread._weekend_review_frame([review])
+    assert frame.iloc[0]["P2 首个有效夜盘价"] == "$184.01"
+    assert frame.iloc[0]["延迟分钟"] == "+1"
+    assert "延迟成交样本" in frame.iloc[0]["样本质量"]
 
 
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
@@ -4629,7 +4694,7 @@ def test_overnight_provider_self_check_reads_first_minute_close(monkeypatch) -> 
     assert result["returned_bar_count"] == 1
     assert result["first_bar_close"] == 101.2
     assert result["requested_start"].startswith("2026-07-06T00:00:00")
-    assert result["requested_end"].startswith("2026-07-06T00:01:00")
+    assert result["requested_end"].startswith("2026-07-06T00:15:00")
     assert result["feed"] == "boats"
     assert result["first_minute_hit"] is True
     assert result["strict_p2_conclusion"] == "命中夜盘首分钟，可作为 P2"
@@ -4656,17 +4721,18 @@ def test_overnight_provider_self_check_rejects_delayed_raw_bar(monkeypatch) -> N
 
     result = build_overnight_provider_self_check(provider=DelayedRawProvider(), now=now)
 
-    assert result["ok"] is False
+    assert result["ok"] is True
     assert result["returned_bar_count"] == 1
     assert result["raw_returned_bar_count"] == 1
     assert result["first_minute_hit"] is False
+    assert result["hit_opening_window"] is True
+    assert result["p2_delay_minutes"] == 5
     assert result["first_bar_close"] == 101.2
     assert result["first_raw_bar_close"] == 101.2
     assert result["first_raw_bar_time_et"].endswith("20:05:00-04:00")
-    assert result["selected_bar_time"] == ""
-    assert result["selected_bar_close"] == ""
-    assert result["strict_p2_conclusion"] == "未命中夜盘首分钟，不可作为 P2"
-    assert result["reason"] == "返回了后续 bar，但未命中夜盘首分钟"
+    assert result["selected_bar_time"]
+    assert result["selected_bar_close"] == 101.2
+    assert result["reason"] == "已读取夜盘开盘窗口内首个有效价，但不是 20:00 首分钟"
 
 
 def test_overnight_provider_self_check_reports_boats_delay(monkeypatch) -> None:
@@ -5005,7 +5071,10 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "股票",
         "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 夜盘首分钟",
+        "P2 首个有效夜盘价",
+        "P2 时间",
+        "延迟分钟",
+        "样本质量",
         "周末冲高%",
         "高点回落%",
         "最终传导%",
@@ -5016,7 +5085,8 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
     assert nvda["P0 最后交易日盘后"] == "$100.00"
     assert nvda["P1 Binance 高点"] == "$102.00"
-    assert nvda["P2 夜盘首分钟"] == "$101.50"
+    assert nvda["P2 首个有效夜盘价"] == "$101.50"
+    assert nvda["延迟分钟"] == "0"
     assert nvda["周末冲高%"] == "+2.00%"
     assert nvda["高点回落%"] == "-0.49%"
 
@@ -7040,4 +7110,5 @@ def test_backtest_settings_labels_do_not_render_literal_newline() -> None:
 
     assert "\\n20:00-20:01 ET" not in source
     assert "\\n下周第一个交易日夜盘" not in source
-    assert 'caption("20:00-20:01 ET")' in source
+    assert "20:00-20:01 ET" in source
+    assert "20:00-20:{open_window:02d} ET" in source

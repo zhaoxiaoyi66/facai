@@ -1078,17 +1078,27 @@ def fetch_overnight_first_1m_close(
     *,
     provider: Any | None = None,
     anchor_source: dict[str, Any] | None = None,
+    window_minutes: int = 15,
+    strict_first_minute_only: bool = False,
 ) -> dict[str, Any]:
     start_et = session_start_et.astimezone(ET)
-    requested_end = start_et + timedelta(minutes=1)
+    window = max(1, int(window_minutes or 15))
+    requested_end = start_et + timedelta(minutes=window)
     normalized = str(symbol or "").strip().upper()
     if provider is None:
         supplemental = find_overnight_first_1m_close(normalized, start_et)
         if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+            delay_minutes = _p2_delay_minutes(supplemental.timestamp_et, start_et)
+            hit_first_minute = delay_minutes == 0
             return {
                 "ok": True,
                 "symbol": normalized,
                 "overnight_first_1m_close": supplemental.close,
+                "p2_strict_first_minute_close": supplemental.close if hit_first_minute else None,
+                "p2_first_valid_close": supplemental.close,
+                "p2_first_valid_time": supplemental.timestamp_et.astimezone(ET).isoformat(),
+                "p2_delay_minutes": delay_minutes,
+                "p2_sample_quality": "FIRST_MINUTE" if hit_first_minute else "DELAYED_FIRST_VALID",
                 "bar_start_et": supplemental.timestamp_et.isoformat(),
                 "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
                 "provider": supplemental.provider,
@@ -1111,7 +1121,8 @@ def fetch_overnight_first_1m_close(
                 "first_raw_bar_time_et": supplemental.timestamp_et.astimezone(ET).isoformat(),
                 "selected_bar_time": supplemental.timestamp_et.astimezone(timezone.utc).isoformat(),
                 "selected_bar_close": supplemental.close,
-                "hit_first_minute": True,
+                "hit_first_minute": hit_first_minute,
+                "hit_opening_window": True,
                 "anchor": "overnight",
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
                 "bar": BrokerOvernightBar(
@@ -1133,6 +1144,11 @@ def fetch_overnight_first_1m_close(
             "ok": False,
             "symbol": normalized,
             "overnight_first_1m_close": None,
+            "p2_strict_first_minute_close": None,
+            "p2_first_valid_close": None,
+            "p2_first_valid_time": "",
+            "p2_delay_minutes": None,
+            "p2_sample_quality": "NO_FIRST_MINUTE_BAR" if strict_first_minute_only else "NO_OPENING_WINDOW_BAR",
             "bar_start_et": "",
             "bar_end_et": "",
             "provider": "",
@@ -1156,6 +1172,7 @@ def fetch_overnight_first_1m_close(
             "selected_bar_time": "",
             "selected_bar_close": None,
             "hit_first_minute": False,
+            "hit_opening_window": False,
             "anchor": "overnight",
             "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
             "bar": None,
@@ -1165,18 +1182,25 @@ def fetch_overnight_first_1m_close(
         symbol,
         session_date,
         "overnight",
-        1,
+        window,
         broker_provider=provider,
         anchor_source={},
         allow_anchor_fallback=False,
-        require_exact_start=True,
+        require_exact_start=strict_first_minute_only,
     )
     if result.get("ok"):
         timestamp = _datetime_from_iso(result.get("timestamp"))
+        delay_minutes = _p2_delay_minutes(timestamp, start_et)
+        hit_first_minute = delay_minutes == 0
         return {
             "ok": True,
             "symbol": normalized,
             "overnight_first_1m_close": result.get("price"),
+            "p2_strict_first_minute_close": result.get("price") if hit_first_minute else None,
+            "p2_first_valid_close": result.get("price"),
+            "p2_first_valid_time": timestamp.astimezone(ET).isoformat() if timestamp is not None else "",
+            "p2_delay_minutes": delay_minutes,
+            "p2_sample_quality": "FIRST_MINUTE" if hit_first_minute else "DELAYED_FIRST_VALID",
             "bar_start_et": timestamp.astimezone(ET).isoformat() if timestamp is not None else "",
             "bar_end_et": (timestamp + timedelta(minutes=1)).astimezone(ET).isoformat() if timestamp is not None else "",
             "provider": str(result.get("provider") or ""),
@@ -1199,17 +1223,25 @@ def fetch_overnight_first_1m_close(
             "first_raw_bar_time_et": str(result.get("first_raw_bar_time_et") or ""),
             "selected_bar_time": str(result.get("selected_bar_time") or result.get("timestamp") or ""),
             "selected_bar_close": result.get("selected_bar_close", result.get("price")),
-            "hit_first_minute": bool(result.get("hit_first_minute") or False),
+            "hit_first_minute": hit_first_minute,
+            "hit_opening_window": True,
             "anchor": str(result.get("anchor") or "overnight"),
             "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
             "bar": result.get("bar"),
         }
     supplemental = find_overnight_first_1m_close(normalized, start_et)
-    if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
+    if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None and not strict_first_minute_only:
+        delay_minutes = _p2_delay_minutes(supplemental.timestamp_et, start_et)
+        hit_first_minute = delay_minutes == 0
         return {
             "ok": True,
             "symbol": normalized,
             "overnight_first_1m_close": supplemental.close,
+            "p2_strict_first_minute_close": supplemental.close if hit_first_minute else None,
+            "p2_first_valid_close": supplemental.close,
+            "p2_first_valid_time": supplemental.timestamp_et.astimezone(ET).isoformat(),
+            "p2_delay_minutes": delay_minutes,
+            "p2_sample_quality": "FIRST_MINUTE" if hit_first_minute else "DELAYED_FIRST_VALID",
             "bar_start_et": supplemental.timestamp_et.isoformat(),
             "bar_end_et": (supplemental.timestamp_et + timedelta(minutes=1)).isoformat(),
             "provider": supplemental.provider,
@@ -1232,7 +1264,8 @@ def fetch_overnight_first_1m_close(
             "first_raw_bar_time_et": supplemental.timestamp_et.astimezone(ET).isoformat(),
             "selected_bar_time": supplemental.timestamp_et.astimezone(timezone.utc).isoformat(),
             "selected_bar_close": supplemental.close,
-            "hit_first_minute": True,
+            "hit_first_minute": hit_first_minute,
+            "hit_opening_window": True,
             "anchor": "overnight",
             "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight"),
             "bar": BrokerOvernightBar(
@@ -1247,11 +1280,21 @@ def fetch_overnight_first_1m_close(
     if quality == "MISSING_STOCK_FIRST_BAR":
         quality = "MISSING_OVERNIGHT_FIRST_1M"
     raw_reason = str(result.get("reason") or "")
-    display_reason = raw_reason if "未命中夜盘首分钟" in raw_reason else _strict_overnight_missing_display_reason(quality)
+    if not strict_first_minute_only and quality == "MISSING_OVERNIGHT_FIRST_1M":
+        display_reason = "夜盘开盘窗口内无有效 1m K线"
+    elif "未命中" in raw_reason or "后续" in raw_reason:
+        display_reason = raw_reason
+    else:
+        display_reason = _strict_overnight_missing_display_reason(quality)
     return {
         "ok": False,
         "symbol": normalized,
         "overnight_first_1m_close": None,
+        "p2_strict_first_minute_close": None,
+        "p2_first_valid_close": None,
+        "p2_first_valid_time": "",
+        "p2_delay_minutes": None,
+        "p2_sample_quality": "NO_FIRST_MINUTE_BAR" if strict_first_minute_only else "NO_OPENING_WINDOW_BAR",
         "bar_start_et": "",
         "bar_end_et": "",
         "provider": str(result.get("provider") or ""),
@@ -1275,10 +1318,22 @@ def fetch_overnight_first_1m_close(
         "selected_bar_time": str(result.get("selected_bar_time") or ""),
         "selected_bar_close": result.get("selected_bar_close"),
         "hit_first_minute": bool(result.get("hit_first_minute") or False),
+        "hit_opening_window": False,
         "anchor": str(result.get("anchor") or "overnight"),
         "anchor_label": str(result.get("anchor_label") or STOCK_OPEN_ANCHOR_LABELS.get("overnight", "overnight")),
         "bar": result.get("bar"),
     }
+
+
+def _p2_delay_minutes(selected_time: datetime | None, session_start_et: datetime) -> int | None:
+    if selected_time is None:
+        return None
+    selected_utc = selected_time.astimezone(timezone.utc)
+    start_utc = session_start_et.astimezone(timezone.utc)
+    seconds = (selected_utc - start_utc).total_seconds()
+    if seconds < 0:
+        return None
+    return int(seconds // 60)
 
 
 def _overnight_missing_display_reason(quality: str) -> str:
@@ -1532,11 +1587,13 @@ def _basis_backtest_one_window(
         ticker,
         window.end_et,
         provider=broker_provider,
+        window_minutes=open_window_minutes,
+        strict_first_minute_only=require_exact_broker_open,
     )
     broker_first_close = None
     broker_first_time = ""
     if stock_bar.get("ok") and str(stock_bar.get("anchor") or "") == "overnight" and str(stock_bar.get("bar_size") or "") == "1m":
-        broker_first_close = stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
+        broker_first_close = stock_bar.get("p2_first_valid_close") or stock_bar.get("overnight_first_1m_close") or stock_bar.get("price")
         broker_first_time = str(stock_bar.get("bar_start_et") or stock_bar.get("timestamp") or "")
     holiday_rollover = _is_holiday_rollover_window(window.end_et, broker_first_time)
     quote_end = binance_window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
@@ -1639,6 +1696,9 @@ def _basis_backtest_one_window(
         friday_afterhours_quality=str(friday_afterhours.get("quality") or ""),
         overnight_quality=str(stock_bar.get("quality") or ""),
     )
+    p2_delay_minutes = stock_bar.get("p2_delay_minutes")
+    if transmission_quality == "OK" and _number(p2_delay_minutes) is not None and float(_number(p2_delay_minutes) or 0) > 0:
+        transmission_quality = "DELAYED_OVERNIGHT_FIRST_VALID"
     result.update(
         {
             "week_id": window.week_id,
@@ -1669,7 +1729,15 @@ def _basis_backtest_one_window(
             "stock_bar_first_raw_close": stock_bar.get("first_raw_bar_close", stock_bar.get("raw_first_bar_close")),
             "stock_bar_selected_time": str(stock_bar.get("selected_bar_time") or ""),
             "stock_bar_selected_close": stock_bar.get("selected_bar_close"),
-            "stock_bar_hit_first_minute": bool(stock_bar.get("hit_first_minute") or stock_bar.get("ok") or False),
+            "stock_bar_hit_first_minute": bool(stock_bar.get("hit_first_minute") or False),
+            "stock_bar_hit_opening_window": bool(stock_bar.get("hit_opening_window") or stock_bar.get("ok") or False),
+            "p2_strict_first_minute_close": stock_bar.get("p2_strict_first_minute_close"),
+            "p2_first_valid_close": stock_bar.get("p2_first_valid_close") or broker_first_close,
+            "p2_first_valid_time": str(stock_bar.get("p2_first_valid_time") or broker_first_time),
+            "p2_delay_minutes": p2_delay_minutes,
+            "p2_sample_quality": str(stock_bar.get("p2_sample_quality") or ("FIRST_MINUTE" if broker_first_close is not None else "NO_OPENING_WINDOW_BAR")),
+            "p2_opening_window_minutes": max(1, int(open_window_minutes or 1)),
+            "p2_requires_exact_first_minute": bool(require_exact_broker_open),
             "broker_first_1m_close": broker_first_close,
             "broker_first_1m_time": broker_first_time,
             "broker_bar_start_time": broker_first_time,
@@ -2381,12 +2449,15 @@ def get_first_valid_stock_bar_after_weekend(
             "selected_bar_time": "",
             "selected_bar_close": None,
             "hit_first_minute": False,
+            "hit_opening_window": False,
+            "p2_delay_minutes": None,
+            "p2_sample_quality": "NO_OPENING_WINDOW_BAR",
             "anchor": requested_anchor,
             "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(requested_anchor, requested_anchor),
             "bar": None,
         }
     last_attempt: dict[str, Any] | None = None
-    intervals = ("1m",) if require_exact_start else ("1m", "5m")
+    intervals = ("1m",) if require_exact_start or (requested_anchor == "overnight" and not allow_anchor_fallback) else ("1m", "5m")
     for interval in intervals:
         for anchor_name, day in attempts:
             start, end = _stock_open_window(day, anchor_name, window)
@@ -2424,6 +2495,9 @@ def get_first_valid_stock_bar_after_weekend(
                 "selected_bar_time": "",
                 "selected_bar_close": None,
                 "hit_first_minute": False,
+                "hit_opening_window": False,
+                "p2_delay_minutes": None,
+                "p2_sample_quality": "NO_FIRST_MINUTE_BAR" if require_exact_start else "NO_OPENING_WINDOW_BAR",
                 "anchor": anchor_name,
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
                 "bar": None,
@@ -2434,6 +2508,8 @@ def get_first_valid_stock_bar_after_weekend(
             if first is None:
                 continue
             quality = _stock_open_success_quality(payload, interval)
+            delay_minutes = _p2_delay_minutes(first.ts, start)
+            hit_first_minute = delay_minutes == 0
             return {
                 "ok": True,
                 "price": first.close,
@@ -2453,7 +2529,10 @@ def get_first_valid_stock_bar_after_weekend(
                 "first_raw_bar_time_et": payload.get("first_raw_bar_time_et", ""),
                 "selected_bar_time": first.ts.astimezone(timezone.utc).isoformat(),
                 "selected_bar_close": first.close,
-                "hit_first_minute": True,
+                "hit_first_minute": hit_first_minute,
+                "hit_opening_window": True,
+                "p2_delay_minutes": delay_minutes,
+                "p2_sample_quality": "FIRST_MINUTE" if hit_first_minute else "DELAYED_FIRST_VALID",
                 "anchor": anchor_name,
                 "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(anchor_name, anchor_name),
                 "bar": first,
@@ -2476,6 +2555,9 @@ def get_first_valid_stock_bar_after_weekend(
         "selected_bar_time": "",
         "selected_bar_close": None,
         "hit_first_minute": False,
+        "hit_opening_window": False,
+        "p2_delay_minutes": None,
+        "p2_sample_quality": "NO_OPENING_WINDOW_BAR",
         "anchor": requested_anchor,
         "anchor_label": STOCK_OPEN_ANCHOR_LABELS.get(requested_anchor, requested_anchor),
         "bar": None,
