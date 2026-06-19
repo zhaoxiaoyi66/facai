@@ -5076,6 +5076,42 @@ def test_realtime_afterhours_counts_support_status_strip_summary() -> None:
     assert "缺失 2" in summary
 
 
+def test_realtime_status_strip_does_not_require_removed_focus_state(monkeypatch) -> None:
+    captured: list[str] = []
+    monkeypatch.setattr(
+        weekend_spread.st,
+        "markdown",
+        lambda text, unsafe_allow_html=False: captured.append(str(text)),
+    )
+    rows = [
+        {
+            "ticker": "NVDA",
+            "status": "OK",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 104.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 4.0,
+            "mapping_quality": "映射可用",
+            "updated_at": "2026-06-19T12:00:00+08:00",
+        },
+        {
+            "ticker": "WDC",
+            "status": "OK",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": 733.0,
+            "afterhours_reference_price": 458.5,
+            "spread_vs_afterhours_pct": 59.98,
+            "mapping_quality": "映射可用",
+            "updated_at": "2026-06-19T12:00:00+08:00",
+        },
+    ]
+
+    weekend_spread._render_realtime_status_strip(rows, mapping_counts={}, cache_status={})
+
+    assert captured
+    assert "异常偏离：1" in captured[0]
+
+
 def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     frame = weekend_spread._live_frame(
         [

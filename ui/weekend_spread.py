@@ -968,7 +968,7 @@ def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, in
     anchor_available = sum(1 for row in rows if row.get("binance_symbol") and _row_has_afterhours_anchor(row))
     items = [
         ("可观察美股映射", str(len(main_rows))),
-        ("异常偏离", str(status_counts["review"] + status_counts["focus"])),
+        ("异常偏离", str(status_counts.get("review", 0))),
         ("锚点可用", f"{anchor_available}/{afterhours_counts['total']}"),
         ("不可用", str(unavailable_count)),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status)),
