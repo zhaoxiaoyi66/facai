@@ -138,6 +138,7 @@ def _audit_one_mapping(
 
     weekend_ok = _recent_weekend_data_ok(provider, symbol=symbol, market_type=market_type, now=now)
     row["weekend_data_ok"] = weekend_ok
+    row["weekend_spread_data_ok"] = weekend_ok
     if not weekend_ok:
         warnings.append("NO_RECENT_WEEKEND_BINANCE_DATA")
 
@@ -178,6 +179,7 @@ def _base_row(
         "max_abs_deviation_bps": None,
         "sample_count": 0,
         "weekend_data_ok": False,
+        "weekend_spread_data_ok": False,
         "liquidity_status": "UNKNOWN",
         "warning": "",
         "action": "运行 Mapping Audit",

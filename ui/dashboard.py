@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.signal_performance import SignalPerformanceStore, infer_price_position_signal_label
 from data.dashboard_row_builder import (
     build_dashboard_row as _build_dashboard_row,
     derive_dashboard_final_decision as _derive_dashboard_final_decision,
@@ -2756,15 +2757,40 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
     matches = table[table["symbol"].astype(str).str.upper() == symbol]
     if not matches.empty:
         row = matches.iloc[0]
+        price = _signal_price_from_dashboard_row(row)
+        buy_zone_context = row.get("buyZoneContext") if isinstance(row.get("buyZoneContext"), dict) else {}
+        buy_zone_display = row.get("buyZoneDisplay") if isinstance(row.get("buyZoneDisplay"), dict) else {}
         save_decision_snapshot_from_bundle(
             symbol,
-            _signal_price_from_dashboard_row(row),
+            price,
             _decision_bundle_from_row(row),
             "dashboard",
-            buy_zone_context=row.get("buyZoneContext") if isinstance(row.get("buyZoneContext"), dict) else {},
-            buy_zone_display=row.get("buyZoneDisplay") if isinstance(row.get("buyZoneDisplay"), dict) else {},
+            buy_zone_context=buy_zone_context,
+            buy_zone_display=buy_zone_display,
         )
-        st.session_state["dashboard_record_signal_notice"] = "已记录系统信号。"
+        if price:
+            SignalPerformanceStore().save_signal(
+                symbol=symbol,
+                signal_date=datetime.now().date(),
+                signal_type="价格位置",
+                signal_label=infer_price_position_signal_label(buy_zone_display),
+                signal_price=price,
+                price_source="决策总览",
+                confidence_score=_first_number(
+                    row.get("setup_score"),
+                    row.get("setupScore"),
+                    buy_zone_display.get("setup_score"),
+                    buy_zone_context.get("setup_score"),
+                ),
+                position_context=str(
+                    buy_zone_display.get("current_subzone_display_text")
+                    or buy_zone_display.get("primary_zone_text")
+                    or row.get("price_position")
+                    or ""
+                ),
+                note="从决策总览记录的当前系统信号",
+            )
+        st.session_state["dashboard_record_signal_notice"] = "已记录系统信号，并加入后验验证。"
     else:
         st.session_state["dashboard_record_signal_notice"] = "未找到要记录的系统信号。"
     if "recordSignal" in st.query_params:
@@ -2858,7 +2884,7 @@ def _render_record_signal_notice() -> None:
     if star_message:
         st.info(star_message)
     message = st.session_state.pop("dashboard_record_signal_notice", "")
-    if message == "已记录系统信号。":
+    if message.startswith("已记录系统信号"):
         st.success(message)
     elif message:
         st.warning(message)
@@ -6305,9 +6331,9 @@ def _render_dashboard_styles() -> None:
         }
         div.block-container {
             max-width: var(--dash-shell-width);
-            width: 100%;
-            margin-left: auto !important;
-            margin-right: auto !important;
+            width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px));
+            margin-left: calc(var(--dash-sidebar-width) + 12px) !important;
+            margin-right: 20px !important;
             padding-left: clamp(1rem, 1.6vw, 1.5rem);
             padding-right: clamp(1rem, 1.6vw, 1.5rem);
             box-sizing: border-box;

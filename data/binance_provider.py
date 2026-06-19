@@ -77,6 +77,14 @@ class BinanceCandidateSearchResult:
 
 
 class BinancePriceProvider:
+    def list_exchange_symbols(
+        self,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
     def get_last_price(
         self,
         symbol: str,
@@ -157,6 +165,14 @@ class CachedBinancePriceProvider(BinancePriceProvider):
         if not snapshot.error:
             self._write_cached(cache_key, snapshot)
         return snapshot
+
+    def list_exchange_symbols(
+        self,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        return self.provider.list_exchange_symbols(market_type=market_type, force_refresh=force_refresh)
 
     def validate_symbol(self, symbol: str, *, market_type: str = "usdm_futures") -> BinanceSymbolValidation:
         return self.provider.validate_symbol(symbol, market_type=market_type)
@@ -258,6 +274,17 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             return _error_snapshot(normalized, f"HTTPError: {exc}", market_type=normalized_market)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             return _error_snapshot(normalized, f"{type(exc).__name__}: {exc}", market_type=normalized_market)
+
+    def list_exchange_symbols(
+        self,
+        *,
+        market_type: str = "usdm_futures",
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        normalized_market = normalize_market_type(market_type)
+        payload = self._exchange_info(normalized_market, None, force_refresh=force_refresh)
+        symbols = payload.get("symbols") if isinstance(payload, dict) else None
+        return [dict(item) for item in symbols if isinstance(item, dict)] if isinstance(symbols, list) else []
 
     def get_klines(
         self,
@@ -516,10 +543,10 @@ class BinanceHTTPPriceProvider(BinancePriceProvider):
             return payload
         return None
 
-    def _exchange_info(self, market_type: str, symbol: str | None) -> dict[str, Any]:
+    def _exchange_info(self, market_type: str, symbol: str | None, *, force_refresh: bool = False) -> dict[str, Any]:
         params = {"symbol": symbol} if symbol else {}
         cache_key = self._exchange_info_cache_key(market_type, symbol)
-        cached = self._read_exchange_info_cache(cache_key)
+        cached = None if force_refresh else self._read_exchange_info_cache(cache_key)
         if cached is not None:
             return cached
         try:

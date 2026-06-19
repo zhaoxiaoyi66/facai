@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -41,6 +41,7 @@ def read_weekend_spread_snapshot(
     tickers: Iterable[str],
     path: Path = DEFAULT_WEEKEND_SPREAD_SNAPSHOT_PATH,
     now: datetime | None = None,
+    expected_afterhours_date: str = "",
 ) -> dict[str, Any]:
     payload = _read_payload(path)
     if not payload:
@@ -59,6 +60,9 @@ def read_weekend_spread_snapshot(
     elif str(payload.get("universe_hash") or "") != expected_universe_hash:
         state = "UNIVERSE_CHANGED"
         message = "watchlist changed"
+    elif _has_stale_afterhours_anchor(rows, expected_afterhours_date):
+        state = "ANCHOR_DATE_STALE"
+        message = "afterhours anchor date is older than current last trading day"
     elif _is_stale(generated_at, now=now):
         state = "STALE"
         message = "snapshot cache is stale"
@@ -132,6 +136,7 @@ def cache_source_text(cache_state: str) -> str:
     return {
         "FRESH": "缓存",
         "STALE": "过期缓存",
+        "ANCHOR_DATE_STALE": "盘后锚点过期",
         "MAPPING_CHANGED": "映射已变化",
         "UNIVERSE_CHANGED": "观察池已变化",
         "REFRESH_FAILED": "刷新失败，使用上次成功缓存",
@@ -185,6 +190,48 @@ def _is_stale(generated_at: str, *, now: datetime | None = None) -> bool:
         return True
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return current - parsed > SNAPSHOT_TTL
+
+
+def _has_stale_afterhours_anchor(rows: list[dict[str, Any]], expected_afterhours_date: str) -> bool:
+    expected = _parse_date(expected_afterhours_date)
+    if expected is None:
+        return False
+    row_dates = [_row_anchor_date(row) for row in rows or [] if _row_has_price_context(row)]
+    valid_dates = [item for item in row_dates if item is not None]
+    if not valid_dates:
+        return False
+    return max(valid_dates) < expected
+
+
+def _row_has_price_context(row: dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("binance_symbol") or row.get("afterhours_reference_price") is not None:
+        return True
+    return row.get("regular_close_price") is not None or row.get("friday_close") is not None
+
+
+def _row_anchor_date(row: dict[str, Any]) -> date | None:
+    for key in ("regular_close_date", "friday_close_date", "last_trading_day"):
+        parsed = _parse_date(str(row.get(key) or ""))
+        if parsed is not None:
+            return parsed
+    return _parse_datetime_date(str(row.get("afterhours_reference_time") or ""))
+
+
+def _parse_datetime_date(value: str) -> date | None:
+    parsed = _parse_datetime(value)
+    return parsed.date() if parsed is not None else None
+
+
+def _parse_date(value: str) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date()
+    except ValueError:
+        return None
 
 
 def _parse_datetime(value: str) -> datetime | None:

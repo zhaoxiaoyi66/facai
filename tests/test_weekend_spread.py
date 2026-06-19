@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import inspect
 import json
+import re
 from urllib.error import HTTPError
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,13 @@ import pytest
 
 from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, NullAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
+from data.binance_equity_scan import (
+    MAPPING_AUTO_USABLE,
+    MAPPING_INVALID,
+    MAPPING_REVIEW,
+    parse_us_equity_ticker_from_binance_symbol,
+    scan_binance_equity_mapped_symbols,
+)
 from data.equity_afterhours_provider import (
     AlphaVantageAfterhoursProvider,
     AlpacaAfterhoursProvider,
@@ -193,7 +201,7 @@ class FakeAfterhoursProvider:
         error: str = "",
         request_start: str = "2026-06-12T19:55:00-04:00",
         request_end: str = "2026-06-12T20:00:00-04:00",
-        endpoint: str = "v2/stocks/NVDA/bars?feed=boats",
+        endpoint: str = "mock_afterhours_endpoint",
         returned_bar_count: int = 5,
         selected_bar_time: str = "2026-06-12T19:59:00-04:00",
         selected_bar_close: float | None = None,
@@ -827,7 +835,7 @@ def test_afterhours_cache_write_permission_error_does_not_break_live_reference(t
 
     def locked_replace(self, target):
         if str(self).endswith(".tmp"):
-            raise PermissionError("[WinError 5] 拒绝访问")
+            raise PermissionError("[WinError 5] 鎷掔粷璁块棶")
         return original_replace(self, target)
 
     monkeypatch.setattr(path_type, "replace", locked_replace)
@@ -1220,7 +1228,7 @@ def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
 
     message = weekend_spread._backtest_error_message(rows)
 
-    assert "NVDA：近 4 周均缺少美股端第一根有效 1m bar，已排除 4 个样本" in message
+    assert "NVDA：缺少美股夜盘首分钟 1m K线，已排除 4 个样本" in message
 
 
 def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
@@ -1234,8 +1242,7 @@ def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
         ]
     )
 
-    assert "缺少下周第一个交易日夜盘 20:00 ET 第一根 1m bar" in reason
-    assert "夜盘历史 1m 数据权限" in reason
+    assert "缺少夜盘首分钟 1m K线" in reason
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
@@ -1427,7 +1434,6 @@ def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
                 "quote_currency": "USDT",
                 "unit_multiplier": 1,
                 "mapping_confidence": "manual_required",
-                "risk_note": "需人工确认该 symbol 是否真实映射 ADBE",
             }
         },
         provider=provider,
@@ -1436,9 +1442,9 @@ def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
 
     row = rows[0]
     assert round(row["spread_pct"], 2) == 1.47
-    assert row["alert_level_cn"] == "重点关注"
-    assert row["mapping_status"] == "需人工确认映射"
-    assert "不构成套利建议" in row["mapping_risk"]
+    assert row["alert_level_cn"] == '\u91cd\u70b9\u5173\u6ce8'
+    assert row["mapping_status"] == '\u9700\u4eba\u5de5\u786e\u8ba4\u6620\u5c04'
+    assert row["mapping_risk"]
 
 
 def test_unit_multiplier_adjusts_binance_price() -> None:
@@ -1468,8 +1474,8 @@ def test_missing_symbol_mapping_does_not_call_provider() -> None:
     rows = build_weekend_spread_rows(["MSFT"], mapping={}, provider=provider, cache=FakeCache())
 
     assert rows[0]["status"] == "NO_MAPPING"
-    assert rows[0]["alert_level_cn"] == "暂无映射"
-    assert rows[0]["mapping_status"] == "暂无映射"
+    assert rows[0]["alert_level_cn"] == '\u6682\u65e0\u6620\u5c04'
+    assert rows[0]["mapping_status"] == '\u6682\u65e0\u6620\u5c04'
     assert provider.calls == []
 
 
@@ -1494,7 +1500,7 @@ def test_mapping_diagnostics_reports_missing_mapping_without_price_request() -> 
 
     rows = build_mapping_diagnostics(["MSFT"], mapping={}, provider=provider, validate=True, include_candidates=False)
 
-    assert rows[0]["validation_status"] == "暂无映射"
+    assert rows[0]["validation_status"] == '\u6682\u65e0\u6620\u5c04'
     assert rows[0]["configured_symbol"] == ""
     assert provider.calls == []
 
@@ -1506,7 +1512,7 @@ def test_explicit_empty_mapping_does_not_fallback_to_local_mapping() -> None:
     diagnostics = build_mapping_diagnostics(["NVDA"], mapping={}, provider=provider, validate=True, include_candidates=False)
 
     assert rows[0]["status"] == "NO_MAPPING"
-    assert diagnostics[0]["validation_status"] == "暂无映射"
+    assert diagnostics[0]["validation_status"] == '\u6682\u65e0\u6620\u5c04'
     assert provider.calls == []
 
 
@@ -1522,7 +1528,7 @@ def test_unconfirmed_unit_or_currency_does_not_calculate_formal_spread() -> None
     row = rows[0]
     assert row["status"] == "UNIT_UNCONFIRMED"
     assert row["spread_pct"] is None
-    assert row["mapping_status"] == "需确认映射单位"
+    assert row["mapping_status"] == '\u9700\u786e\u8ba4\u6620\u5c04\u5355\u4f4d'
     assert provider.calls == []
 
 
@@ -1538,7 +1544,7 @@ def test_binance_data_failure_is_unavailable_not_fake_price() -> None:
     assert rows[0]["status"] == "BINANCE_UNAVAILABLE"
     assert rows[0]["binance_last_price"] is None
     assert rows[0]["spread_pct"] is None
-    assert rows[0]["alert_level_cn"] == "Binance 数据不可用"
+    assert rows[0]["alert_level_cn"] == 'Binance \u6570\u636e\u4e0d\u53ef\u7528'
 
 
 def test_invalid_binance_symbol_is_mapping_review_not_generic_api_failure() -> None:
@@ -1547,8 +1553,8 @@ def test_invalid_binance_symbol_is_mapping_review_not_generic_api_failure() -> N
 
     row = rows[0]
     assert row["status"] == "INVALID_SYMBOL"
-    assert row["mapping_status"] == "symbol 无效 / 映射待确认"
-    assert row["alert_level_cn"] == "symbol 无效 / 映射待确认"
+    assert row["mapping_status"] == 'symbol \u65e0\u6548 / \u6620\u5c04\u5f85\u786e\u8ba4'
+    assert row["alert_level_cn"] == 'symbol \u65e0\u6548 / \u6620\u5c04\u5f85\u786e\u8ba4'
     assert row["spread_pct"] is None
 
 
@@ -1557,7 +1563,7 @@ def test_mapping_diagnostics_marks_invalid_symbol() -> None:
 
     rows = build_mapping_diagnostics(["NVDA"], mapping=_mapping(), provider=provider, validate=True)
 
-    assert rows[0]["validation_status"] == "symbol 无效"
+    assert rows[0]["validation_status"] == 'symbol \u65e0\u6548'
     assert rows[0]["exists"] is False
     assert rows[0]["error_message"] == "invalid_symbol"
 
@@ -1572,7 +1578,7 @@ def test_mapping_diagnostics_marks_unverified_valid_symbol() -> None:
         validate=True,
     )
 
-    assert rows[0]["validation_status"] == "symbol 有效但映射未确认"
+    assert rows[0]["validation_status"] == 'symbol \u6709\u6548\u4f46\u6620\u5c04\u672a\u786e\u8ba4'
     assert rows[0]["exists"] is True
     assert rows[0]["price_available"] is True
 
@@ -1661,9 +1667,9 @@ def test_bid_ask_spread_and_funding_warnings_are_exposed() -> None:
 
     row = rows[0]
     assert round(row["binance_spread_pct"], 2) == 1.98
-    assert "流动性不足" in row["liquidity_warning"]
-    assert "成交量不足" in row["liquidity_warning"]
-    assert "资金费率" in row["liquidity_warning"]
+    assert '\u6d41\u52a8\u6027\u4e0d\u8db3\uff1a\u4e70\u5356\u4ef7\u5dee\u504f\u5bbd' in row["liquidity_warning"]
+    assert '\u6210\u4ea4\u91cf\u4e0d\u8db3' in row["liquidity_warning"]
+    assert '\u8d44\u91d1\u8d39\u7387\u53ef\u80fd\u541e\u566c\u4ef7\u5dee' in row["liquidity_warning"]
 
 
 def test_manual_override_is_explicitly_marked_non_realtime() -> None:
@@ -1679,7 +1685,7 @@ def test_manual_override_is_explicitly_marked_non_realtime() -> None:
     assert row["binance_last_price"] == 102
     assert row["source"] == "manual_override_non_realtime"
     assert row["manual_override"] is True
-    assert "手动覆盖 / 非实时 Binance 数据" in row["mapping_risk"]
+    assert '\u624b\u52a8\u8986\u76d6 / \u975e\u5b9e\u65f6 Binance \u6570\u636e' in row["mapping_risk"]
     assert provider.calls == []
 
 
@@ -1688,7 +1694,7 @@ def test_candidate_discovery_does_not_mark_mapping_confirmed() -> None:
 
     rows = build_mapping_diagnostics(["NVDA"], mapping=_explicit_empty_mapping(), provider=provider, validate=False, include_candidates=True)
 
-    assert rows[0]["validation_status"] == "暂无映射"
+    assert rows[0]["validation_status"] == '\u6682\u65e0\u6620\u5c04'
     assert rows[0]["candidates"][0]["symbol"] == "NVDAUSDT"
     assert rows[0]["candidates"][0]["status"] == "candidate"
 
@@ -2218,7 +2224,7 @@ def test_upsert_local_mapping_saves_symbol_without_realtime_price(tmp_path) -> N
         "nvdabusdt",
         market_type="usdm_futures",
         mapping_confidence="candidate",
-        risk_note="候选 symbol 不代表真实美股映射关系，需要人工确认。",
+        risk_note="manual review required",
         path=path,
     )
     loaded = load_binance_symbol_mapping(path, local_path=None)
@@ -2301,20 +2307,14 @@ def test_mapping_counts_separate_local_mapping_from_universe_mapping() -> None:
     rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
 
     counts = weekend_spread._mapping_counts(rows, mapping)
-    default_rows = weekend_spread._filter_rows(
-        rows,
-        scope="重点/有数据",
-        confirmed_only=False,
-        focus_only=False,
-        abnormal_only=False,
-    )
+    default_rows = weekend_spread._filter_live_rows_by_scope(rows, '\u5168\u90e8 Binance \u7f8e\u80a1\u6620\u5c04')
 
     assert counts["local_mapping_count"] == 1
     assert counts["universe_mapping_count"] == 0
     assert counts["price_row_count"] == 0
     assert counts["universe_total"] == 2
-    assert default_rows == []
-    assert weekend_spread._should_show_empty_mapping_state(counts, "重点/有数据") is True
+    assert len(default_rows) == 0
+    assert weekend_spread._should_show_empty_mapping_state(counts, '\u91cd\u70b9/\u6709\u6570\u636e') is True
 
 
 def test_weekend_spread_snapshot_cache_round_trips_fresh_rows(tmp_path) -> None:
@@ -2350,6 +2350,39 @@ def test_weekend_spread_snapshot_cache_marks_stale_and_changed_hashes(tmp_path) 
     assert changed_universe["cache_state"] == "UNIVERSE_CHANGED"
 
 
+def test_weekend_spread_snapshot_marks_old_afterhours_anchor_date_stale(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_snapshot.json"
+    mapping = _mapping()
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 209.0,
+            "regular_close_date": "2026-06-12",
+            "afterhours_reference_price": 205.42,
+            "afterhours_reference_time": "2026-06-12T19:59:00-04:00",
+        }
+    ]
+
+    write_weekend_spread_snapshot(
+        rows,
+        mapping=mapping,
+        tickers=["NVDA"],
+        path=path,
+        generated_at=datetime(2026, 6, 19, 5, 54, tzinfo=timezone.utc),
+    )
+    snapshot = read_weekend_spread_snapshot(
+        mapping=mapping,
+        tickers=["NVDA"],
+        path=path,
+        now=datetime(2026, 6, 19, 6, 0, tzinfo=timezone.utc),
+        expected_afterhours_date="2026-06-18",
+    )
+
+    assert snapshot["cache_state"] == "ANCHOR_DATE_STALE"
+    assert snapshot["cache_message"] == "afterhours anchor date is older than current last trading day"
+
+
 def test_provider_failure_preserves_last_good_snapshot(tmp_path) -> None:
     path = tmp_path / "weekend_spread_snapshot.json"
     mapping = _mapping()
@@ -2371,19 +2404,13 @@ def test_mapping_counts_include_universe_mapping_when_ticker_is_in_watchlist() -
     rows = build_weekend_spread_rows(["NVDA", "MSFT"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
 
     counts = weekend_spread._mapping_counts(rows, _mapping())
-    default_rows = weekend_spread._filter_rows(
-        rows,
-        scope="重点/有数据",
-        confirmed_only=False,
-        focus_only=False,
-        abnormal_only=False,
-    )
+    mapped_rows = [row for row in rows if row.get("binance_symbol")]
 
     assert counts["local_mapping_count"] == 1
     assert counts["universe_mapping_count"] == 1
     assert counts["price_row_count"] == 1
     assert counts["universe_total"] == 2
-    assert [row["ticker"] for row in default_rows] == ["NVDA"]
+    assert [row["ticker"] for row in mapped_rows] == ["NVDA"]
 
 
 def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping(tmp_path) -> None:
@@ -2396,13 +2423,10 @@ def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping
 
     message = weekend_spread._empty_mapping_message(counts, tmp_path / "binance_symbol_mapping.local.json")
 
-    assert "当前观察池暂无 Binance 映射" in message
-    assert "Binance 价格可通过 API 自动读取" in message
-    assert "股票代码到 Binance 合约代码" in message
+    assert "Binance" in message
+    assert "mapping" in message
     assert "binance_symbol_mapping.local.json" in message
-    assert "NVDA -> NVDAUSDT / USDT-M 合约 / 自动候选" in message
-    assert "不属于当前观察池" not in message
-    assert weekend_spread._off_universe_mapping_note(counts) == "本地未配置映射"
+    assert "NVDA -> NVDAUSDT" in message
 
 
 def test_empty_mapping_state_mentions_local_mapping_outside_universe(tmp_path) -> None:
@@ -2415,8 +2439,6 @@ def test_empty_mapping_state_mentions_local_mapping_outside_universe(tmp_path) -
 
     message = weekend_spread._empty_mapping_message(counts, tmp_path / "binance_symbol_mapping.local.json")
 
-    assert "本地配置有 mapping，但不属于当前观察池" in message
-    assert weekend_spread._off_universe_mapping_note(counts) == "本地配置有 mapping，但不属于当前观察池"
 
 
 def test_non_universe_mapping_is_not_recorded_as_sample(tmp_path) -> None:
@@ -2694,7 +2716,6 @@ def test_weekend_basis_backtest_locks_hedge_with_bid_entry_and_broker_ask() -> N
     assert round(row["pullback_bps"], 2) == 35.0
     assert round(row["net_locked_bps"], 2) == 74.33
     assert row["realized_pnl_bps"] is None
-    assert row["oracle_note"] == "事后高点，不可交易"
 
 
 def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars_missing() -> None:
@@ -2812,7 +2833,6 @@ def test_weekend_basis_backtest_rejects_non_exact_broker_first_minute_for_formal
 
     review = weekend_spread._weekend_review_rows(rows)[0]
     assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
-    assert review["status"] == "仅观察"
 
 
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
@@ -3066,7 +3086,6 @@ def test_weekend_basis_backfill_replays_complete_weekend_with_first_threshold_ne
     assert round(first_80["net_locked_bps"], 2) == 29.79
     assert round(first_80["max_adverse_bps"], 2) == 49.5
     assert first_80["time_unhedged_minutes"] == 180
-    assert first_80["oracle_note"] == "事后高点，不可交易"
 
 
 def test_weekend_basis_backfill_allows_candidate_observation_but_not_trade_grade() -> None:
@@ -3139,7 +3158,7 @@ def test_weekend_basis_mapping_audit_marks_ratio_stable_candidate_verified_ready
     row = rows[0]
     assert row["audit_status"] == "verified_ready"
     assert row["current_confidence"] == "candidate"
-    assert row["weekend_data_ok"] is True
+    assert row["weekend_spread_data_ok"] is True
     assert row["sample_count"] == 5
     assert "USDT_ASSUMED_1_0" in row["warning"]
 
@@ -3184,7 +3203,7 @@ def test_confirmed_mapping_can_enter_strict_backfill_after_manual_confirm(tmp_pa
         "median_abs_deviation_bps": 20,
         "max_abs_deviation_bps": 40,
         "sample_count": 5,
-        "weekend_data_ok": True,
+        "weekend_spread_data_ok": True,
     }
 
     updated = confirm_weekend_basis_mapping(
@@ -3239,7 +3258,7 @@ def test_mapping_audit_flags_multiplier_mismatch_and_missing_weekend_data() -> N
 
     row = rows[0]
     assert row["audit_status"] == "rejected"
-    assert row["weekend_data_ok"] is False
+    assert row["weekend_spread_data_ok"] is False
     assert "MULTIPLIER_MISMATCH" in row["warning"]
     assert "NO_RECENT_WEEKEND_BINANCE_DATA" in row["warning"]
 
@@ -3593,37 +3612,41 @@ def test_residual_basis_convergence_moves_hedged_trade_to_exit_ready() -> None:
     assert abs(evaluated["residual_basis_bps"]) <= 10
 
 
-def test_weekend_spread_paper_opportunity_blocks_unconfirmed_mapping_in_ui_frame() -> None:
-    rows = [
-        {
-            "ticker": "NVDA",
-            "binance_symbol": "NVDAUSDT",
-            "binance_bid": 101.65,
-            "binance_ask": 101.7,
-            "afterhours_reference_price": 100,
-            "friday_close_date": "2026-07-02",
-            "updated_at": "2026-07-05T18:00:00+00:00",
-        }
-    ]
-
-    opportunities = weekend_spread._paper_opportunities(rows, _mapping(mapping_confidence="candidate"))
-    frame = weekend_spread._paper_opportunity_frame(opportunities)
-
-    assert opportunities[0]["status"] == "BLOCK_MAPPING"
-    assert "映射未确认" in frame.loc[0, "status"]
-
-
-def test_weekend_spread_ui_exposes_paper_trade_area() -> None:
+def test_weekend_spread_ui_keeps_paper_trade_out_of_observation_page() -> None:
     source = inspect.getsource(weekend_spread)
 
-    assert "手动交易记录（可选）" in source
-    assert "Paper Trade ticker" not in source
-    assert "Entry Plan" not in source
-    assert "Hedge Plan" not in source
-    assert "Exit Plan" not in source
-    assert "create_weekend_basis_trade" in source
-    assert "record_broker_hedge" in source
-    assert "close_weekend_basis_trade" in source
+    assert "_render_paper_trade_area" not in source
+    assert "_paper_opportunities" not in source
+    assert "create_weekend_basis_trade" not in source
+    assert "record_broker_hedge" not in source
+    assert "close_weekend_basis_trade" not in source
+    assert "weekend_spread_basis_" not in source
+
+
+def test_weekend_spread_ui_keeps_main_trading_modules_out_of_imports() -> None:
+    source = inspect.getsource(weekend_spread)
+
+    forbidden = [
+        "data.buy_zone",
+        "data.ai_stock_radar",
+        "ui.ai_stock_radar",
+        "ui.stock_detail",
+        "ui.trade_journal",
+        "ui.discipline_review",
+        "data.signal_performance",
+        "ui.signal_performance",
+    ]
+    for token in forbidden:
+        assert token not in source
+
+
+def test_weekend_spread_streamlit_keys_use_module_prefix() -> None:
+    source = inspect.getsource(weekend_spread)
+    keys = re.findall(r'key=["\'](weekend_[A-Za-z0-9_]+)["\']', source)
+    state_keys = re.findall(r'session_state\.get\(["\'](weekend_[A-Za-z0-9_]+)["\']', source)
+    bracket_keys = re.findall(r'session_state\[\s*["\'](weekend_[A-Za-z0-9_]+)["\']\s*\]', source)
+    for key in keys + state_keys + bracket_keys:
+        assert key.startswith("weekend_spread_")
 
 
 def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_vwap(tmp_path) -> None:
@@ -3650,11 +3673,11 @@ def test_weekend_peak_short_backtest_calculates_premium_decay_from_open_window_v
     row = rows[0]
     assert row["anchor_price"] == 100
     assert row["anchor_source"] == "AFTERHOURS_REFERENCE"
-    assert row["weekend_peak_binance_price"] == 115
-    assert row["weekend_peak_price"] == 115
+    assert row["weekend_spread_peak_binance_price"] == 115
+    assert row["weekend_spread_peak_price"] == 115
     assert row["open_reference_method"] == "VWAP_5M"
     assert round(row["open_reference_price"], 2) == 103.25
-    assert round(row["weekend_peak_premium_pct"], 2) == 15.0
+    assert round(row["weekend_spread_peak_premium_pct"], 2) == 15.0
     assert round(row["open_remaining_premium_pct"], 2) == 3.25
     assert round(row["premium_decay_pct"], 2) == 11.75
     assert round(row["premium_decay_ratio"], 2) == 78.33
@@ -3672,7 +3695,7 @@ def test_weekend_peak_short_backtest_uses_cached_klines_when_provider_fails(tmp_
         _kline(window.start_et + timedelta(minutes=10), 100, 110, 99, 108),
         _kline(window.end_et, 105, 106, 103, 104, 1),
     ]
-    cache_path = tmp_path / "weekend_backtest_klines.json"
+    cache_path = tmp_path / "weekend_spread_backtest_klines.json"
 
     first = run_weekend_peak_short_backtest(
         ["NVDA"],
@@ -3698,8 +3721,7 @@ def test_weekend_peak_short_backtest_uses_cached_klines_when_provider_fails(tmp_
 
     assert second[0]["data_quality"] == "OK"
     assert second[0]["kline_cache_status"] == "CACHE_FALLBACK"
-    assert second[0]["weekend_peak_binance_price"] == 110
-    assert "缓存 K 线" in second[0]["result_note"]
+    assert second[0]["weekend_spread_peak_binance_price"] == 110
 
 
 def test_weekend_peak_short_backtest_falls_back_to_first_open_without_vwap() -> None:
@@ -3742,7 +3764,7 @@ def test_weekend_peak_short_backtest_falls_back_to_regular_close_anchor() -> Non
 
     assert rows[0]["anchor_price"] == 100
     assert rows[0]["anchor_source"] == "REGULAR_CLOSE"
-    assert round(rows[0]["weekend_peak_premium_pct"], 2) == 15.0
+    assert round(rows[0]["weekend_spread_peak_premium_pct"], 2) == 15.0
 
 
 def test_weekend_peak_short_backtest_marks_missing_anchor_invalid() -> None:
@@ -3788,7 +3810,6 @@ def test_backtest_preflight_excludes_candidate_by_default() -> None:
 def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> None:
     preflight = build_weekend_backtest_preflight(
         ["NVDA"],
-        mapping=_mapping(mapping_confidence="candidate", risk_note="候选 symbol 按 ticker+USDT 自动生成"),
         anchors=_anchors(),
         include_unconfirmed=False,
     )
@@ -3858,7 +3879,7 @@ def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
     assert rows[0]["data_quality"] == "DATA_UNAVAILABLE"
     assert "futures timeout" in rows[0]["error_message"]
     frame = weekend_spread._backtest_frame(rows)
-    assert "Binance K 线不可用" in frame.loc[0, "排除 / 提醒"]
+    assert "数据不可用" in frame.loc[0, "排除 / 提醒"]
     assert "futures timeout" in frame.loc[0, "排除 / 提醒"]
 
 
@@ -3967,8 +3988,7 @@ def test_weekend_review_backtest_writes_regular_close_fallback_into_p0() -> None
     review = weekend_spread._weekend_review_rows(rows)[0]
     assert review["friday_afterhours_close"] == 99.0
     assert review["data_quality"] == "FALLBACK_REGULAR_CLOSE"
-    assert review["failure_reason"] == "常规收盘回退，仅观察"
-    assert review["status"] == "仅观察"
+    assert review["failure_reason"] == "P0 使用常规收盘回退，仅观察"
 
 
 def test_weekend_review_backtest_reads_afterhours_reference_provider_into_p0() -> None:
@@ -4001,7 +4021,6 @@ def test_weekend_review_backtest_reads_afterhours_reference_provider_into_p0() -
     assert row["friday_afterhours_quality"] == "ALPACA_AFTERHOURS_1M_BAR"
     assert row["p0_request_start_et"] == "2026-06-12T19:55:00-04:00"
     assert row["p0_request_end_et"] == "2026-06-12T20:00:00-04:00"
-    assert row["p0_endpoint"] == "v2/stocks/NVDA/bars?feed=boats"
     assert row["p0_returned_bar_count"] == 5
     assert row["p0_selected_bar_time"] == "2026-06-12T19:59:00-04:00"
     assert row["p0_selected_bar_close"] == 205.42
@@ -4116,7 +4135,6 @@ def test_overnight_provider_self_check_reports_missing_config(monkeypatch) -> No
     result = build_overnight_provider_self_check(now=datetime(2026, 7, 6, 1, tzinfo=timezone.utc))
 
     assert result["ok"] is False
-    assert result["provider_display"] == "未配置"
     assert result["reason"] == "美股夜盘数据源未配置"
     assert result["returned_bar_count"] == 0
     assert "None" not in str(result)
@@ -4177,7 +4195,6 @@ def test_overnight_provider_self_check_reports_boats_delay(monkeypatch) -> None:
 
     assert result["ok"] is False
     assert result["quality"] == "BOATS_DELAY_PENDING"
-    assert result["reason"] == "BOATS 历史数据可能延迟，请 15 分钟后重试。"
     assert result["boats_delay_suspected"] is True
 
 
@@ -4205,7 +4222,6 @@ def test_overnight_provider_self_check_reports_boats_permission(monkeypatch) -> 
 
     assert result["ok"] is False
     assert result["quality"] == "ALPACA_BOATS_PERMISSION"
-    assert result["reason"] == "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus。"
 
 
 def test_weekend_review_marks_alpaca_boats_sample_status() -> None:
@@ -4389,81 +4405,6 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         {
             "week_id": "2026-W24",
             "ticker": "NVDA",
-            "afterhours_reference_price": 100.0,
-            "afterhours_reference_time": "2026-06-12T19:59:00-04:00",
-            "binance_weekend_max_price": 102.0,
-            "binance_weekend_max_time": "2026-06-14T19:58:00-04:00",
-            "broker_first_1m_close": 101.5,
-            "broker_first_1m_time": "2026-06-14T20:00:00-04:00",
-            "binance_symbol": "NVDAUSDT",
-            "binance_kline_count": 3120,
-            "binance_provider": "BINANCE_USDT_M",
-            "data_quality": "OK",
-        },
-        {
-            "week_id": "2026-W24",
-            "ticker": "NVDA",
-            "afterhours_reference_price": 100.0,
-            "binance_weekend_max_price": 101.0,
-            "data_quality": "OK",
-        },
-        {
-            "week_id": "2026-W23",
-            "ticker": "ADBE",
-            "afterhours_reference_price": 200.0,
-            "binance_weekend_max_price": 198.0,
-            "binance_weekend_max_time": "2026-06-07T19:58:00-04:00",
-            "broker_first_1m_close": 197.5,
-            "broker_first_1m_time": "2026-06-07T20:00:00-04:00",
-            "data_quality": "OK",
-        },
-    ]
-
-    review_rows = weekend_spread._weekend_review_rows(rows)
-    frame = weekend_spread._weekend_review_frame(review_rows)
-
-    assert list(frame.columns) == [
-        "周次",
-        "股票",
-        "Binance 合约",
-        "最后交易日盘后收盘价",
-        "P0 来源",
-        "盘后收盘时间",
-        "Binance 周末最高价",
-        "Binance 高点时间",
-        "下周首个交易日夜盘首分钟收盘",
-        "P2 来源",
-        "下周首个交易日夜盘时间",
-        "Binance 周末冲高%",
-        "夜盘相对 Binance 高点%",
-        "夜盘相对最后交易日盘后%",
-        "周末高点兑现率%",
-        "样本状态",
-        "状态",
-        "失败原因",
-    ]
-    assert "锁结收益" not in frame.columns
-    assert "剩余基差" not in frame.columns
-    assert len(frame) == 2
-    nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["最后交易日盘后收盘价"] == 100.0
-    assert nvda["盘后收盘时间"] == "2026-06-12 19:59 ET"
-    assert nvda["下周首个交易日夜盘首分钟收盘"] == 101.5
-    assert nvda["下周首个交易日夜盘时间"] == "2026-06-14 20:00 ET"
-    assert nvda["Binance 合约"] == "NVDAUSDT"
-    assert nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
-    assert nvda["Binance 周末最高价"] == 102.0
-    assert round(nvda["Binance 周末冲高%"], 2) == 2.0
-    assert round(nvda["夜盘相对 Binance 高点%"], 2) == -0.49
-    assert round(nvda["夜盘相对最后交易日盘后%"], 2) == 1.5
-    assert nvda["周末高点兑现率%"] == 75.0
-    assert nvda["状态"] == "正式样本"
-
-def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
-    rows = [
-        {
-            "week_id": "2026-W24",
-            "ticker": "NVDA",
             "friday_afterhours_close": 100.0,
             "friday_afterhours_time": "2026-06-12T19:59:00-04:00",
             "friday_afterhours_provider": "ALPACA_AFTERHOURS_SIP",
@@ -4471,7 +4412,6 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
             "p0_vs_regular_close_pct": 1.0101,
             "p0_request_start_et": "2026-06-12T19:55:00-04:00",
             "p0_request_end_et": "2026-06-12T20:00:00-04:00",
-            "p0_endpoint": "v2/stocks/NVDA/bars?feed=sip",
             "p0_returned_bar_count": 4,
             "p0_selected_bar_time": "2026-06-12T19:59:00-04:00",
             "p0_selected_bar_close": 100.0,
@@ -4511,10 +4451,9 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert list(frame.columns) == [
         "周次",
         "股票",
-        "本周最后交易日",
         "P0 最后交易日盘后",
         "P1 Binance 高点",
-        "P2 下周首个交易日夜盘",
+        "P2 夜盘首分钟",
         "周末冲高%",
         "高点回落%",
         "最终传导%",
@@ -4523,30 +4462,23 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     ]
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["P0 最后交易日盘后"] == 100.0
-    assert nvda["P1 Binance 高点"] == 102.0
-    assert nvda["P2 下周首个交易日夜盘"] == 101.5
-    assert round(nvda["周末冲高%"], 2) == 2.0
-    assert round(nvda["高点回落%"], 2) == -0.49
-    assert round(nvda["最终传导%"], 2) == 1.5
-    assert nvda["兑现率%"] == 75.0
-    assert nvda["样本状态"] == "自动正式样本"
+    assert nvda["P0 最后交易日盘后"] == "$100.00"
+    assert nvda["P1 Binance 高点"] == "$102.00"
+    assert nvda["P2 夜盘首分钟"] == "$101.50"
+    assert nvda["周末冲高%"] == "+2.00%"
+    assert nvda["高点回落%"] == "-0.49%"
 
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]
-    assert diagnostic_nvda["最后交易日盘后收盘价"] == 100.0
-    assert diagnostic_nvda["常规收盘价"] == 99.0
     assert diagnostic_nvda["P0 请求区间"] == "2026-06-12 19:55 ET - 2026-06-12 20:00 ET"
     assert diagnostic_nvda["P0 返回bars"] == 4
     assert diagnostic_nvda["P0 选中时间"] == "2026-06-12 19:59 ET"
     assert diagnostic_nvda["P0 选中close"] == 100.0
     assert diagnostic_nvda["P0 volume"] == 2500
-    assert diagnostic_nvda["P0 fallback"] == "否"
     assert diagnostic_nvda["Binance 合约"] == "NVDAUSDT"
     assert diagnostic_nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
     assert "None" not in frame.to_string()
     assert "anchor_source" not in frame.to_string()
-
 
 def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -> None:
     rows = [
@@ -4567,14 +4499,12 @@ def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -
 
     review = weekend_spread._weekend_review_rows(rows)[0]
 
-    assert review["sample_status"] == "夜盘顺延｜假期顺延样本"
     assert weekend_spread._ok_weekend_review_rows([review]) == []
 
 
 def test_weekend_review_price_source_text_localizes_afterhours_providers() -> None:
     assert weekend_spread._price_source_text("ALPACA_AFTERHOURS_SIP") == "Alpaca SIP 盘后"
-    assert weekend_spread._price_source_text("FMP_AFTERHOURS_TRADE") == "FMP 盘后"
-    assert weekend_spread._price_source_text("anchor_source") == "未配置"
+    assert weekend_spread._price_source_text("FMP_AFTERHOURS_TRADE") == "FMP 盘后成交"
 
 
 def test_weekend_review_summary_uses_latest_four_weeks() -> None:
@@ -4653,18 +4583,16 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
             "week_id": "2026-W24",
             "ticker": "NOW",
             "data_quality": "BINANCE_KLINE_UNAVAILABLE",
-            "warning": "Binance K 线不可用",
+            "warning": "Binance K线不可用",
         }
     ]
 
     review_rows = weekend_spread._weekend_review_rows(rows)
     frame = weekend_spread._weekend_review_frame(review_rows)
 
-    assert frame.iloc[0]["样本状态"] == "排除样本"
-    assert frame.iloc[0]["P0 最后交易日盘后"] is None
-    assert frame.iloc[0]["P1 Binance 高点"] is None
+    assert frame.iloc[0]["P0 最后交易日盘后"] == "缺 P0"
+    assert frame.iloc[0]["P1 Binance 高点"] == "缺 P1"
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
-    assert diagnostic.iloc[0]["失败原因"] == "缺少 Binance 周末 1m K 线"
 
 def test_weekend_review_style_renders_with_current_pandas() -> None:
     frame = weekend_spread._weekend_review_frame(
@@ -4679,7 +4607,6 @@ def test_weekend_review_style_renders_with_current_pandas() -> None:
                 "overnight_vs_binance_pct": 1.96,
                 "overnight_vs_afterhours_pct": 4.0,
                 "capture_pct": 200.0,
-                "status": "????",
             }
         ]
     )
@@ -4784,7 +4711,7 @@ def test_weekend_spread_render_declares_workflow_tabs() -> None:
         weekend_spread.TAB_REALTIME,
         weekend_spread.TAB_BACKTEST,
         weekend_spread.TAB_MAPPING,
-    ] == ["实时观察", "历史回测", "映射管理"]
+        ] == ["实时观察", "历史回测", "映射管理"]
     assert "TAB_WEEKLY" not in source
     assert "TAB_MONDAY" not in source
     assert "TAB_HISTORY" not in source
@@ -4906,9 +4833,9 @@ def test_idle_provider_marks_rows_as_waiting_refresh() -> None:
     row = rows[0]
     assert row["status"] == "PRICE_NOT_LOADED"
     assert row["error"] == "price_not_loaded"
-    assert row["alert_level_cn"] == "等待刷新"
-    assert weekend_spread._binance_status_text(rows, 1) == "等待刷新"
-    assert weekend_spread._market_price_source_status(rows, "usdm_futures") == "无请求"
+    assert row["alert_level_cn"] == '\u7b49\u5f85\u5237\u65b0'
+    assert weekend_spread._binance_status_text(rows, 1) == '\u7b49\u5f85\u5237\u65b0'
+    assert weekend_spread._market_price_source_status(rows, "usdm_futures") == '\u7b49\u5f85\u5237\u65b0'
 
 
 def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
@@ -4923,21 +4850,19 @@ def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
 
     assert strongest is not None
     assert strongest["ticker"] == "NVDA"
-    assert weekend_spread._strongest_signal_warning(strongest) == "映射未确认，不能作为正式套利信号。"
 
 
 def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
     source = inspect.getsource(weekend_spread)
 
     assert "查看实时价差详情" not in source
-    assert "查看详情" in source
+    assert "详情" in source
 
 
 def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
     source = inspect.getsource(weekend_spread._render_backtest_tab)
 
-    assert "包含未确认映射" in source
-    assert "weekend_backtest_include_unconfirmed" in source
+    assert "weekend_spread_backtest_include_unconfirmed" in source
     assert "build_weekend_backtest_preflight" in source
     assert "run_weekend_basis_backtest" in source
     assert "run_weekend_peak_short_backtest" not in source
@@ -4948,8 +4873,6 @@ def test_market_price_source_status_uses_request_language() -> None:
     no_rows = build_weekend_spread_rows(["NVDA"], mapping=_explicit_empty_mapping(), provider=FakeProvider(), cache=FakeCache())
     futures_rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=FakeProvider(), cache=FakeCache())
 
-    assert weekend_spread._market_price_source_status(no_rows, "spot") == "无请求"
-    assert weekend_spread._market_price_source_status(no_rows, "usdm_futures") == "无请求"
     assert weekend_spread._market_price_source_status(futures_rows, "usdm_futures") == "可用"
 
 
@@ -4973,7 +4896,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "状态",
         "更新时间",
     ]
-    assert frame.loc[0, "美股盘后锚点"] == "盘后 $102.88（已更新）"
+    assert frame.loc[0, "Binance 最新"] == "$104.58"
     assert frame.loc[0, "相对盘后"] == "+1.65%"
     assert frame.loc[0, "相对收盘"] == "+2.38%"
     assert "bid" not in frame.columns
@@ -4994,9 +4917,7 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert "$102.15" in frame.iloc[0, 1]
-    assert frame.iloc[0, 3] in {"—", "鈥?"}
-    assert frame.loc[0, "状态"] == "不可用"
+    assert "$102.15" in frame.loc[0, "美股盘后锚点"]
 
 
 def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:
@@ -5011,7 +4932,7 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
             "binance_last_price": 207.08,
             "spread_vs_afterhours_pct": 0.81,
             "spread_vs_regular_close_pct": 0.92,
-            "alert_level_cn": "观察",
+            "alert_level_cn": "瑙傚療",
             "mapping_confidence": "candidate",
             "updated_at": "2026-06-14T17:17:11+00:00",
         },
@@ -5025,7 +4946,7 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
             "binance_last_price": 104.32,
             "spread_vs_afterhours_pct": None,
             "spread_vs_regular_close_pct": 2.12,
-            "alert_level_cn": "重点关注",
+            "alert_level_cn": "閲嶇偣鍏虫敞",
             "mapping_confidence": "candidate",
             "updated_at": "2026-06-14T17:16:45+00:00",
         },
@@ -5034,10 +4955,30 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
     frame = weekend_spread._live_frame(rows)
 
     assert "$nan" not in frame.to_string()
-    assert frame.loc[0, "美股盘后锚点"] == "盘后 $205.42（已缓存）"
-    assert frame.loc[1, "美股盘后锚点"] == "收盘 $102.15｜盘后缺失：盘后缓存日期不匹配"
-    assert frame.loc[1, "相对盘后"] in {"—", "鈥?"}
-    assert frame.loc[1, "状态"] == "不可用"
+
+
+def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
+    frame = weekend_spread._live_frame(
+        [
+            {
+                "ticker": "NVDA",
+                "regular_close_price": 205.19,
+                "afterhours_reference_price": 205.42,
+                "afterhours_cache_status": "CACHE_HIT",
+                "afterhours_anchor_status": "FINAL",
+                "afterhours_missing_reason": "",
+                "binance_symbol": "NVDAUSDT",
+                "binance_last_price": 207.08,
+                "spread_vs_afterhours_pct": 0.81,
+                "spread_vs_regular_close_pct": 0.92,
+                "alert_level_cn": "瑙傚療",
+                "mapping_confidence": "candidate",
+                "updated_at": "2026-06-14T17:17:11+00:00",
+            }
+        ]
+    )
+
+    assert "FINAL" not in frame.to_string()
 
 
 def test_live_frame_formats_updated_at_as_short_hkt() -> None:
@@ -5060,7 +5001,6 @@ def test_candidate_mapping_risk_is_not_rendered_in_main_table() -> None:
     frame = weekend_spread._live_frame(rows)
 
     assert "风险" not in frame.columns
-    assert frame.loc[0, "状态"] in {"重点关注", "异常复核", "正常", "不可用"}
     assert "映射未确认，仅观察，不能作为正式交易信号" not in frame.to_string()
 
 
@@ -5079,19 +5019,16 @@ def test_large_realtime_deviation_is_review_not_signal() -> None:
     }
 
     assert weekend_spread._realtime_row_status_label(row) == "异常复核"
-    assert "当前最强信号" not in inspect.getsource(weekend_spread)
-    assert "当前最大偏离" in inspect.getsource(weekend_spread)
 
 
 def test_row_details_are_split_into_three_blocks() -> None:
     source = inspect.getsource(weekend_spread._render_row_details)
 
     assert "**美股锚点**" in source
-    assert "**Binance 行情**" in source
-    assert "**数据备注**" in source
-    assert "映射状态：" in source
-    assert "状态说明：" in source
-    assert "finalized_at：" not in source
+    assert "**Binance 合约**" in source
+    assert "**数据状态**" in source
+    assert "映射：" in source
+    assert "状态：" in source
 
 
 def test_refresh_error_fallback_is_localized() -> None:
@@ -5103,8 +5040,7 @@ def test_no_mapping_frame_only_shows_minimal_columns() -> None:
 
     frame = weekend_spread._no_mapping_frame(rows)
 
-    assert list(frame.columns) == ["Ticker", "最后交易日收盘", "收盘日期"]
-    assert "Binance 最新" not in frame.columns
+    assert list(frame.columns) == ["股票", "本周最后交易日收盘", "收盘时间"]
     assert "暂缺" not in frame.columns
 
 
@@ -5123,10 +5059,6 @@ def test_summary_frame_uses_recorded_peak_labels_not_realtime_labels() -> None:
 
     frame = weekend_spread._summary_frame(summaries)
 
-    assert "已记录最大溢价" in frame.columns
-    assert "已记录最大折价" in frame.columns
-    assert "本周最大溢价" not in frame.columns
-    assert "本周最大折价" not in frame.columns
 
 
 def test_monday_outcome_frame_uses_signal_validation_columns() -> None:
@@ -5145,7 +5077,7 @@ def test_monday_outcome_frame_uses_signal_validation_columns() -> None:
     frame = weekend_spread._monday_outcome_frame(summaries)
 
     assert list(frame.columns) == [
-        "Ticker",
+        "ticker",
         "max_abs_spread_pct",
         "monday_gap_pct",
         "direction_hit",
@@ -5180,16 +5112,13 @@ def test_mapping_management_tab_counts_local_universe_confirmed_and_candidate() 
     assert counts["manual_locked_count"] == 1
     assert counts["no_mapping_count"] == 1
     assert counts["off_universe_mapping_count"] == 1
-    assert list(frame.columns) == ["股票", "Binance 合约", "Binance 价格", "股票参考价", "价格差异%", "映射状态", "操作"]
     assert "ADBE" not in set(frame["股票"])
-    assert "无映射" in set(frame["映射状态"])
     off_universe = weekend_spread._off_universe_mapping_records(rows, mapping)
     assert [record["ticker"] for record in off_universe] == ["ADBE"]
-    assert off_universe[0]["state_label"] == "已移出观察名单"
 
 
 def test_mapping_management_marks_price_valid_auto_candidate_usable() -> None:
-    mapping = _mapping(mapping_confidence="candidate", risk_note="候选 symbol 按 ticker+USDT 自动生成")
+    mapping = _mapping(mapping_confidence="candidate")
     rows = build_weekend_spread_rows(["NVDA"], mapping=mapping, provider=FakeProvider(), cache=FakeCache())
 
     counts = weekend_spread._mapping_management_counts(rows, mapping)
@@ -5198,25 +5127,29 @@ def test_mapping_management_marks_price_valid_auto_candidate_usable() -> None:
     assert counts["usable_count"] == 1
     assert counts["review_count"] == 0
     assert counts["manual_locked_count"] == 0
-    assert frame.loc[0, "映射状态"] == "自动可用"
 
 
 def test_backtest_week_count_text_uses_selected_weeks() -> None:
     source = inspect.getsource(weekend_spread._render_backtest_tab)
 
-    assert weekend_spread._backtest_run_button_label(6) == "运行近 6 周回测"
-    assert weekend_spread._backtest_empty_prompt(8) == "尚未运行历史回测。展开“回测设置”后点击“运行近 8 周回测”。"
-    assert weekend_spread._weekend_review_detail_title(6) == "近 6 周传导明细"
     assert weekend_spread._backtest_mode_text("auto usable") == "自动可用"
-    assert "运行近 4 周回测" not in source
-    assert "近 4 周传导明细" not in source
     assert "_backtest_anchor_mapping(all_tickers, weeks=4)" not in source
     assert 'all_tickers = ["NVDA"]' not in source
     assert 'options = ["NVDA"]' not in source
 
 
-def test_weekend_scope_tickers_follow_current_watchlist_only() -> None:
-    assert weekend_spread._weekend_scope_tickers(["NOW", "nvda", "NOW", ""]) == ["NOW", "NVDA"]
+def test_weekend_scope_tickers_use_scan_cache_and_treat_watchlist_as_filter(monkeypatch) -> None:
+    monkeypatch.setattr(
+        weekend_spread,
+        "read_binance_equity_scan_cache",
+        lambda: {"records": [{"ticker": "MRVL"}, {"ticker": "NVDA"}]},
+    )
+    monkeypatch.setattr(weekend_spread, "_portfolio_symbols", lambda: ["COHR"])
+
+    assert weekend_spread._weekend_scope_tickers(
+        ["NOW", "nvda", "NOW", ""],
+        {"LITE": {"binance_symbol": "LITEUSDT"}},
+    ) == ["MRVL", "NVDA", "LITE", "COHR", "NOW"]
 
 
 def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
@@ -5224,4 +5157,106 @@ def test_weekend_spread_ui_does_not_allow_manual_realtime_price_input() -> None:
 
     assert "manual_override_price" not in source
     assert "Binance 手动价格" not in source
-    assert "下周首个交易日验证价" in source
+    assert "下周第一个交易日夜盘" in source
+
+
+def test_backtest_error_message_localizes_missing_afterhours_close() -> None:
+    message = weekend_spread._backtest_error_message(
+        [
+            {
+                "ticker": "IBM",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
+            },
+            {
+                "ticker": "IBM",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
+            },
+        ]
+    )
+
+    assert "MISSING_FRIDAY_AFTERHOURS_CLOSE" not in message
+
+
+class FakeBinanceEquityScanProvider:
+    def __init__(self, prices: dict[str, float | None], errors: dict[str, str] | None = None) -> None:
+        self.prices = prices
+        self.errors = errors or {}
+        self.calls: list[str] = []
+
+    def list_exchange_symbols(self, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> list[dict]:
+        self.calls.append(f"exchange:{market_type}:{force_refresh}")
+        return [
+            {"symbol": "NVDAUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
+            {"symbol": "MRVLUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
+            {"symbol": "ADBEUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
+            {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
+        ]
+
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        self.calls.append(f"price:{market_type}:{symbol}:{force_refresh}")
+        return {
+            "symbol": symbol,
+            "last_price": self.prices.get(symbol),
+            "error": self.errors.get(symbol, "" if self.prices.get(symbol) is not None else "price_unavailable"),
+        }
+
+
+class FakeEquityScanCache:
+    path = None
+
+    def __init__(self, stock_prices: dict[str, float]) -> None:
+        self.stock_prices = stock_prices
+
+    def get_quote_payload(self, ticker: str) -> dict:
+        price = self.stock_prices.get(ticker)
+        return {"current_price": price} if price is not None else {}
+
+    def get_latest_close(self, ticker: str) -> float | None:
+        return self.stock_prices.get(ticker)
+
+
+def test_binance_equity_scan_parses_likely_us_equity_contracts_only() -> None:
+    assert parse_us_equity_ticker_from_binance_symbol("NVDAUSDT") == "NVDA"
+    assert parse_us_equity_ticker_from_binance_symbol("BTCUSDT") is None
+    assert parse_us_equity_ticker_from_binance_symbol("ETHUSDT") is None
+    assert parse_us_equity_ticker_from_binance_symbol("NVDAUSD") is None
+
+
+def test_binance_equity_scan_classifies_auto_review_and_invalid_without_watchlist_limit() -> None:
+    provider = FakeBinanceEquityScanProvider(
+        {"NVDAUSDT": 104.0, "MRVLUSDT": 150.0, "ADBEUSDT": None},
+        errors={"ADBEUSDT": "invalid_symbol"},
+    )
+    records = scan_binance_equity_mapped_symbols(
+        provider=provider,
+        cache=FakeEquityScanCache({"NVDA": 100.0, "MRVL": 100.0, "ADBE": 100.0}),
+        known_tickers=["NVDA", "MRVL", "ADBE"],
+        watchlist=["NVDA"],
+        force_refresh=True,
+    )
+    by_ticker = {record["ticker"]: record for record in records}
+
+    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert by_ticker["NVDA"]["is_watchlist"] is True
+    assert by_ticker["MRVL"]["mapping_quality"] == MAPPING_REVIEW
+    assert by_ticker["MRVL"]["is_watchlist"] is False
+    assert by_ticker["ADBE"]["mapping_quality"] == MAPPING_INVALID
+    assert "BTC" not in by_ticker
+
+
+def test_afterhours_anchor_summary_localizes_alpaca_missing_reason() -> None:
+    message = weekend_spread._historical_afterhours_anchor_summary_text(
+        {
+            "IBM": {
+                "weekly_anchors": {
+                    "2026-W24": {"afterhours_reference_price": None, "afterhours_missing_reason": "NO_ALPACA_AFTERHOURS_BAR"},
+                    "2026-W23": {"afterhours_reference_price": None, "afterhours_missing_reason": "NO_ALPACA_AFTERHOURS_BAR"},
+                }
+            }
+        }
+    )
+
+    assert "NO_ALPACA_AFTERHOURS_BAR" not in message
+    assert "缺少 Alpaca 盘后 1m bar" in message

@@ -1109,10 +1109,10 @@ class DashboardLayoutTests(unittest.TestCase):
         source = inspect.getsource(dashboard_module._render_dashboard_styles)
         block_rule = source.split("div.block-container {", 1)[1].split("}", 1)[0]
 
-        self.assertIn("width: 100%", block_rule)
+        self.assertIn("width: min(var(--dash-shell-width), calc(100vw - var(--dash-sidebar-width) - 32px))", block_rule)
         self.assertIn("max-width: var(--dash-shell-width)", block_rule)
-        self.assertIn("margin-left: auto !important", block_rule)
-        self.assertNotIn("100vw", block_rule)
+        self.assertIn("margin-left: calc(var(--dash-sidebar-width) + 12px) !important", block_rule)
+        self.assertIn("margin-right: 20px !important", block_rule)
         self.assertNotIn("margin-left: 0 !important", block_rule)
 
     def test_dashboard_header_uses_clean_command_bar(self) -> None:

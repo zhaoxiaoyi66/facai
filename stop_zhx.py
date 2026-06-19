@@ -41,8 +41,15 @@ exit 1
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         text=True,
+        creationflags=_creation_flags(),
     )
     return int(completed.returncode)
+
+
+def _creation_flags() -> int:
+    if sys.platform != "win32":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 if __name__ == "__main__":

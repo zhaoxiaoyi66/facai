@@ -1306,6 +1306,10 @@ def _backtest_one_window(
             "weekend_peak_price": peak,
             "weekend_peak_time": peak_bar.open_time.isoformat(),
             "weekend_peak_premium_pct": weekend_peak_premium,
+            "weekend_spread_peak_binance_price": peak,
+            "weekend_spread_peak_price": peak,
+            "weekend_spread_peak_time": peak_bar.open_time.isoformat(),
+            "weekend_spread_peak_premium_pct": weekend_peak_premium,
             "open_reference_time": open_reference["time"],
             "open_reference_price": open_reference_price,
             "open_reference_method": open_reference["method"],
@@ -1522,7 +1526,7 @@ def _basis_backtest_one_window(
                 "status": "OBSERVE",
                 "data_quality": "NO_AFTERHOURS_CLOSE",
                 "warning": "缺少本周最后交易日盘后收盘价，不能计算完整传导链",
-                "error_message": "MISSING_FRIDAY_AFTERHOURS_CLOSE",
+                "error_message": "缺少本周最后交易日盘后收盘价",
             }
         )
     binance_equivalent_max = _number(binance_max_fields.get("binance_equivalent_max") or binance_max_fields.get("binance_weekend_max"))
@@ -2218,6 +2222,9 @@ def _apply_basis_compat_fields(row: dict[str, Any]) -> None:
     row["weekend_peak_binance_price"] = row.get("oracle_weekend_high_bid")
     row["weekend_peak_price"] = row.get("oracle_weekend_high_bid")
     row["weekend_peak_time"] = row.get("oracle_weekend_high_time") or ""
+    row["weekend_spread_peak_premium_pct"] = row["weekend_peak_premium_pct"]
+    row["weekend_spread_peak_binance_price"] = row["weekend_peak_binance_price"]
+    row["weekend_spread_peak_time"] = row["weekend_peak_time"]
     row["open_remaining_premium_pct"] = residual / 100.0 if residual is not None else None
     if oracle is not None and residual is not None:
         premium_decay_bps = oracle - residual
@@ -2711,6 +2718,10 @@ def _base_result(ticker: str, symbol: str, market_type: str, mapping_confidence:
         "weekend_peak_price": None,
         "weekend_peak_time": "",
         "weekend_peak_premium_pct": None,
+        "weekend_spread_peak_binance_price": None,
+        "weekend_spread_peak_price": None,
+        "weekend_spread_peak_time": "",
+        "weekend_spread_peak_premium_pct": None,
         "open_reference_time": "",
         "open_reference_price": None,
         "open_reference_method": "",
