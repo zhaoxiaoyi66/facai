@@ -5569,8 +5569,8 @@ def _afterhours_source_text(value: object) -> str:
         "POLYGON_TRADES_1955_2000": "Polygon/Massive 19:55-20:00 trade",
         "POLYGON_AFTERHOURS_LAST_TRADE": "Polygon/Massive afterhours last trade",
         "POLYGON_QUOTE_MID": "Polygon/Massive quote mid",
-        "FMP_AFTERHOURS_TRADE": "FMP aftermarket trade",
-        "FMP_AFTERHOURS_QUOTE_MID": "FMP aftermarket quote mid",
+        "FMP_AFTERHOURS_TRADE": "FMP 盘后成交",
+        "FMP_AFTERHOURS_QUOTE_MID": "FMP 盘后报价中间价",
         "ALPHAVANTAGE_INTRADAY_EXTENDED": "Alpha Vantage extended-hours intraday",
     }.get(code, code or "盘后锚点来源缺失")
 
