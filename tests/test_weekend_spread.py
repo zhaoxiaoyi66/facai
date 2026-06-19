@@ -3096,8 +3096,10 @@ def test_weekend_basis_backtest_keeps_anchor_observation_when_stock_opening_bars
     assert review_rows[0]["friday_afterhours_close"] == 100
     assert review_rows[0]["binance_price"] == 102.0
     assert review_rows[0]["overnight_provider"] == "美股夜盘数据源未配置"
-    assert review_summary["summary_quality"] == "NONE"
-    assert review_summary["sample_count"] == 0
+    assert review_summary["summary_quality"] == "OBSERVE"
+    assert review_summary["sample_count"] == 1
+    assert round(review_summary["avg_binance_premium_pct"], 2) == 2.0
+    assert review_summary["avg_overnight_vs_binance_pct"] is None
     frame = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     assert frame.iloc[0]["P2 来源"] == "美股夜盘数据源未配置"
     assert "anchor_source" not in frame.to_string()
@@ -5131,6 +5133,26 @@ def test_weekend_review_summary_counts_only_ok_samples() -> None:
     assert round(summary["avg_binance_premium_pct"], 2) == 1.01
     assert round(summary["avg_overnight_vs_binance_pct"], 2) == 4.0
     assert list(frame["股票"]) == ["NVDA"]
+
+
+def test_weekend_review_summary_falls_back_to_observable_premium_when_no_strict_p2() -> None:
+    rows = [
+        {
+            "week_id": "2026-W24",
+            "ticker": "GLW",
+            "afterhours_reference_price": 180.0,
+            "binance_weekend_max_price": 185.88,
+            "data_quality": "MISSING_OVERNIGHT_FIRST_1M",
+        }
+    ]
+
+    summary = weekend_spread._weekend_review_summary(weekend_spread._weekend_review_rows(rows))
+
+    assert summary["summary_quality"] == "OBSERVE"
+    assert summary["sample_count"] == 1
+    assert round(summary["avg_binance_premium_pct"], 2) == 3.27
+    assert summary["avg_overnight_vs_binance_pct"] is None
+    assert summary["avg_capture_pct"] is None
 
 
 def test_weekend_review_formats_epoch_stock_reference_date() -> None:

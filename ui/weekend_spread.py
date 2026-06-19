@@ -2822,7 +2822,10 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
         return
     for col, (label, value, kind) in zip(cols, metrics):
         if kind == "percent":
-            col.metric(label, _review_percent_text(value))
+            if value is None and summary.get("summary_quality") == "OBSERVE" and label in {"夜盘相对高点%", "平均兑现率%", "最新一周兑现率%"}:
+                col.metric(label, "无首分钟")
+            else:
+                col.metric(label, _review_percent_text(value))
         else:
             col.metric(label, value)
     st.caption(
@@ -2831,7 +2834,7 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
         f"首分钟流动性：{liquidity_label}（{liquidity_detail}）"
     )
     if summary.get("summary_quality") == "OBSERVE":
-        st.info("当前显示观察样本统计：已读取部分 P0/P2，但不计入正式胜率。")
+        st.info("当前显示观察样本统计：可观察 Binance 周末冲高，但缺少严格夜盘首分钟价格，不计入开盘平单回测。")
 
 
 def _latest_weekend_review_row(review_rows: list[dict]) -> dict | None:
@@ -2981,6 +2984,10 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
     )
     if _number(row.get("broker_open_close")) is None:
         st.caption(STRICT_P2_STRATEGY_TEXT)
+        raw_time = str(row.get("p2_first_raw_bar_time_et") or row.get("p2_first_raw_bar_time") or "").strip()
+        raw_close = _number(row.get("p2_first_raw_bar_close"))
+        if raw_time and raw_close is not None:
+            st.caption(f"Provider 返回了后续 raw bar：{raw_time}，close {_money_text(raw_close)}；未命中 20:00 ET 首分钟，不可作为 P2。")
     elif str(row.get("data_quality") or "").strip().upper() in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
         st.caption("P0 使用常规收盘回退，仅作为观察样本。")
 
@@ -3140,16 +3147,20 @@ def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
     source_rows = ok_rows
     summary_quality = "OK"
     if not source_rows:
-        summary_quality = "NONE"
+        source_rows = [
+            row
+            for row in _display_weekend_review_rows(review_rows)
+            if _number(row.get("friday_afterhours_close")) is not None and _number(row.get("binance_price")) is not None
+        ]
+        summary_quality = "OBSERVE" if source_rows else "NONE"
     latest_weeks = set(_latest_week_ids(source_rows, limit=4))
     scoped = [row for row in source_rows if row.get("week_id") in latest_weeks] if latest_weeks else list(source_rows)
-    valid = [
+    premium_rows = [
         row
         for row in scoped
         if _number(row.get("binance_premium_pct")) is not None
-        and _number(row.get("overnight_vs_binance_pct")) is not None
     ]
-    if not valid:
+    if not premium_rows:
         return {
             "summary_quality": summary_quality,
             "sample_count": 0,
@@ -3158,19 +3169,24 @@ def _weekend_review_summary(review_rows: list[dict]) -> dict[str, object]:
             "avg_capture_pct": None,
             "latest_week_capture_pct": None,
         }
-    premiums = [float(_number(row.get("binance_premium_pct")) or 0.0) for row in valid]
-    overnight_vs_binance = [float(_number(row.get("overnight_vs_binance_pct")) or 0.0) for row in valid]
-    captures = [_number(row.get("capture_pct")) for row in valid]
+    overnight_rows = [
+        row
+        for row in premium_rows
+        if _number(row.get("overnight_vs_binance_pct")) is not None
+    ]
+    premiums = [float(_number(row.get("binance_premium_pct")) or 0.0) for row in premium_rows]
+    overnight_vs_binance = [float(_number(row.get("overnight_vs_binance_pct")) or 0.0) for row in overnight_rows]
+    captures = [_number(row.get("capture_pct")) for row in overnight_rows]
     captures = [float(value) for value in captures if value is not None]
-    latest_week = _latest_week_ids(valid, limit=1)
-    latest_rows = [row for row in valid if latest_week and row.get("week_id") == latest_week[0]]
+    latest_week = _latest_week_ids(premium_rows, limit=1)
+    latest_rows = [row for row in overnight_rows if latest_week and row.get("week_id") == latest_week[0]]
     latest_captures = [_number(row.get("capture_pct")) for row in latest_rows]
     latest_captures = [float(value) for value in latest_captures if value is not None]
     return {
         "summary_quality": summary_quality,
-        "sample_count": len(valid),
+        "sample_count": len(premium_rows),
         "avg_binance_premium_pct": sum(premiums) / len(premiums),
-        "avg_overnight_vs_binance_pct": sum(overnight_vs_binance) / len(overnight_vs_binance),
+        "avg_overnight_vs_binance_pct": sum(overnight_vs_binance) / len(overnight_vs_binance) if overnight_vs_binance else None,
         "avg_capture_pct": sum(captures) / len(captures) if captures else None,
         "latest_week_capture_pct": sum(latest_captures) / len(latest_captures) if latest_captures else None,
     }
