@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider, BinancePriceProvider
+from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
 from data.cache_read_model import CacheReadModel
 from settings import PROJECT_ROOT
 
@@ -16,12 +16,22 @@ DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "bina
 SCAN_CACHE_TTL = timedelta(hours=24)
 
 MAPPING_AUTO_USABLE = "自动可用"
+MAPPING_PRICE_UNVERIFIED = "自动可用，价格校验不足"
 MAPPING_REVIEW = "异常复核"
 MAPPING_ANCHOR_MISSING = "锚点缺失"
 MAPPING_INVALID = "无效映射"
 MAPPING_MANUAL_LOCKED = "人工锁定"
 
 _USDT_SUFFIX = "USDT"
+_TRADFI_KEYWORDS = {
+    "EQUITY",
+    "STOCK",
+    "TRADFI",
+    "TRADITIONAL",
+    "ETF",
+    "INDEX",
+    "RWA",
+}
 _CRYPTO_BASE_DENYLIST = {
     "AAVE",
     "ADA",
@@ -68,13 +78,18 @@ class BinanceEquityScanRecord:
     ticker: str
     binance_symbol: str
     market_type: str = "usdm_futures"
+    source: str = "binance_exchange_info"
+    detected_by: str = "binance_internal_category"
+    underlying_type: str = ""
+    underlying_sub_type: str = ""
+    binance_category: str = ""
     binance_status: str = ""
-    detected_by: str = "auto_scan"
     mapping_quality: str = MAPPING_INVALID
     reason: str = ""
     binance_price: float | None = None
     stock_ref_price: float | None = None
     price_diff_pct: float | None = None
+    manually_locked: bool = False
     is_watchlist: bool = False
     is_position: bool = False
     updated_at: str = ""
@@ -161,32 +176,44 @@ def scan_binance_equity_mapped_symbols(
     manual_mapping = {str(key or "").strip().upper(): dict(value or {}) for key, value in (manual_mapping or {}).items()}
     watchlist_set = _normalize_set(watchlist)
     position_set = _normalize_set(position_symbols)
-    local_universe = _normalize_set(known_tickers) | _local_equity_universe(read_model) | set(manual_mapping) | watchlist_set | position_set
+    validation_universe = (
+        _normalize_set(known_tickers)
+        | _local_equity_universe(read_model)
+        | set(manual_mapping)
+        | watchlist_set
+        | position_set
+    )
     now = datetime.now(timezone.utc).isoformat()
 
     raw_symbols = list(exchange_symbols) if exchange_symbols is not None else price_provider.list_exchange_symbols(
         market_type="usdm_futures",
         force_refresh=force_refresh,
     )
+    bulk_prices = _bulk_usdm_price_map(price_provider)
     records: list[dict[str, Any]] = []
     seen_tickers: set[str] = set()
     for raw in raw_symbols:
-        if not isinstance(raw, dict):
-            continue
-        if not _eligible_usdm_contract(raw):
+        if not isinstance(raw, dict) or not _eligible_usdm_contract(raw):
             continue
         binance_symbol = str(raw.get("symbol") or "").strip().upper()
         ticker = parse_us_equity_ticker_from_binance_symbol(binance_symbol)
-        if not ticker or ticker not in local_universe:
+        if not ticker:
+            continue
+        is_binance_tradfi = _is_internal_tradfi_contract(raw)
+        if not is_binance_tradfi and ticker not in validation_universe:
             continue
         if ticker in seen_tickers:
             continue
+        detected_by = "binance_internal_category" if is_binance_tradfi else "local_universe_fallback"
         record = _scan_one_symbol(
             ticker,
             binance_symbol,
             price_provider=price_provider,
             cache=read_model,
             manual_config=manual_mapping.get(ticker),
+            exchange_record=raw,
+            detected_by=detected_by,
+            bulk_prices=bulk_prices,
             watchlist_set=watchlist_set,
             position_set=position_set,
             updated_at=now,
@@ -210,6 +237,9 @@ def scan_binance_equity_mapped_symbols(
                 price_provider=price_provider,
                 cache=read_model,
                 manual_config=config,
+                exchange_record=None,
+                detected_by="manual_mapping",
+                bulk_prices=bulk_prices,
                 watchlist_set=watchlist_set,
                 position_set=position_set,
                 updated_at=now,
@@ -220,28 +250,44 @@ def scan_binance_equity_mapped_symbols(
 
 
 def scan_records_to_mapping(records: Iterable[dict[str, Any]], manual_mapping: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
     manual_mapping = {str(key or "").strip().upper(): dict(value or {}) for key, value in (manual_mapping or {}).items()}
+    result: dict[str, dict[str, Any]] = {ticker: dict(config) for ticker, config in manual_mapping.items()}
     for record in records:
         ticker = str(record.get("ticker") or "").strip().upper()
         symbol = str(record.get("binance_symbol") or "").strip().upper()
         if not ticker or not symbol:
             continue
         manual_config = manual_mapping.get(ticker, {})
-        confidence = str(manual_config.get("mapping_confidence") or "").strip().lower()
-        if confidence == "confirmed":
-            result[ticker] = dict(manual_config)
-            result[ticker]["binance_symbol"] = str(manual_config.get("binance_symbol") or symbol).strip().upper()
-            result[ticker]["market_type"] = "usdm_futures"
+        if _is_manual_locked(manual_config):
+            locked = dict(manual_config)
+            locked["binance_symbol"] = str(locked.get("binance_symbol") or symbol).strip().upper()
+            locked["market_type"] = "usdm_futures"
+            locked["manually_locked"] = True
+            locked["mapping_status"] = MAPPING_MANUAL_LOCKED
+            result[ticker] = locked
             continue
+        quality = str(record.get("mapping_quality") or MAPPING_INVALID).strip()
         result[ticker] = {
-            "enabled": record.get("mapping_quality") != MAPPING_INVALID,
+            **manual_config,
+            "enabled": quality != MAPPING_INVALID,
             "binance_symbol": symbol,
             "market_type": "usdm_futures",
             "quote_currency": "USDT",
             "unit_multiplier": 1,
-            "mapping_confidence": "candidate",
-            "risk_note": "Binance 全市场自动扫描，价格正常即可用于观察；异常映射需人工复核。",
+            "mapping_confidence": "auto_available" if quality in {MAPPING_AUTO_USABLE, MAPPING_PRICE_UNVERIFIED} else "manual_required",
+            "mapping_status": quality,
+            "source": record.get("source") or "binance_exchange_info",
+            "detected_by": record.get("detected_by") or "binance_internal_category",
+            "underlying_type": record.get("underlying_type") or "",
+            "underlying_sub_type": record.get("underlying_sub_type") or "",
+            "binance_category": record.get("binance_category") or "",
+            "binance_status": record.get("binance_status") or "",
+            "binance_price": record.get("binance_price"),
+            "stock_ref_price": record.get("stock_ref_price"),
+            "diff_pct": record.get("price_diff_pct"),
+            "updated_at": record.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+            "manually_locked": False,
+            "risk_note": "Binance 官方合约信息自动识别；价格异常或校验不足时请复核。",
         }
     return result
 
@@ -253,15 +299,22 @@ def _scan_one_symbol(
     price_provider: BinancePriceProvider,
     cache: CacheReadModel,
     manual_config: dict[str, Any] | None,
+    exchange_record: dict[str, Any] | None,
+    detected_by: str,
+    bulk_prices: dict[str, float],
     watchlist_set: set[str],
     position_set: set[str],
     updated_at: str,
     force_refresh: bool,
 ) -> dict[str, Any]:
     manual_config = manual_config or {}
-    snapshot = price_provider.get_last_price(binance_symbol, market_type="usdm_futures", force_refresh=force_refresh)
-    binance_price = _number(getattr(snapshot, "last_price", None) if not isinstance(snapshot, dict) else snapshot.get("last_price"))
-    binance_status = str(getattr(snapshot, "error", "") if not isinstance(snapshot, dict) else snapshot.get("error") or "")
+    if binance_symbol in bulk_prices:
+        binance_price = bulk_prices.get(binance_symbol)
+        binance_status = "OK"
+    else:
+        snapshot = price_provider.get_last_price(binance_symbol, market_type="usdm_futures", force_refresh=force_refresh)
+        binance_price = _number(getattr(snapshot, "last_price", None) if not isinstance(snapshot, dict) else snapshot.get("last_price"))
+        binance_status = str(getattr(snapshot, "error", "") if not isinstance(snapshot, dict) else snapshot.get("error") or "")
     stock_ref = _stock_reference_price(cache, ticker)
     diff_pct = abs(binance_price / stock_ref - 1.0) * 100.0 if binance_price is not None and stock_ref else None
     quality, reason = _mapping_quality(
@@ -271,17 +324,25 @@ def _scan_one_symbol(
         diff_pct=diff_pct,
         binance_status=binance_status,
     )
+    raw = exchange_record or {}
+    underlying_type = _field_text(raw.get("underlyingType") or raw.get("underlying_type"))
+    underlying_sub_type = _field_text(raw.get("underlyingSubType") or raw.get("underlying_sub_type"))
     return record_to_dict(
         BinanceEquityScanRecord(
             ticker=ticker,
             binance_symbol=binance_symbol,
-            binance_status=binance_status or "OK",
-            detected_by="manual_mapping" if manual_config else "auto_scan",
+            source="binance_exchange_info" if raw else "local_mapping",
+            detected_by=detected_by,
+            underlying_type=underlying_type,
+            underlying_sub_type=underlying_sub_type,
+            binance_category=_binance_category(raw),
+            binance_status=binance_status or str(raw.get("status") or "OK"),
             mapping_quality=quality,
             reason=reason,
             binance_price=binance_price,
             stock_ref_price=stock_ref,
             price_diff_pct=diff_pct,
+            manually_locked=_is_manual_locked(manual_config),
             is_watchlist=ticker in watchlist_set,
             is_position=ticker in position_set,
             updated_at=updated_at,
@@ -300,30 +361,58 @@ def _mapping_quality(
     confidence = str(manual_config.get("mapping_confidence") or "").strip().lower()
     if not manual_config.get("enabled", True) or confidence == "rejected":
         return MAPPING_INVALID, "已忽略或未启用"
-    if confidence == "confirmed":
+    if _is_manual_locked(manual_config):
         if binance_price is None:
             return MAPPING_INVALID, _price_error_text(binance_status)
         return MAPPING_MANUAL_LOCKED, "人工锁定映射"
     if binance_price is None:
         return MAPPING_INVALID, _price_error_text(binance_status)
     if stock_ref is None:
-        return MAPPING_ANCHOR_MISSING, "缺少股票参考价，暂不能做价格校验"
+        return MAPPING_PRICE_UNVERIFIED, "Binance 价格可用，暂时没有美股参考价，价格校验不足"
     if diff_pct is not None and diff_pct <= 30:
-        return MAPPING_AUTO_USABLE, "Binance 价格可用，且与股票参考价偏差正常"
-    return MAPPING_REVIEW, "Binance 价格与股票参考价偏差过大"
+        return MAPPING_AUTO_USABLE, "Binance 价格可用，且与美股参考价偏差正常"
+    return MAPPING_REVIEW, "Binance 价格与美股参考价偏差过大"
 
 
 def _price_error_text(error: str) -> str:
     text = str(error or "").strip()
     if text == "invalid_symbol":
         return "Binance 合约无效"
-    if not text:
-        return "Binance 价格不可用"
     return "Binance 价格不可用"
+
+
+def _bulk_usdm_price_map(provider: BinancePriceProvider) -> dict[str, float]:
+    providers = [provider]
+    wrapped = getattr(provider, "provider", None)
+    if wrapped is not None:
+        providers.append(wrapped)
+    for candidate in providers:
+        getter = getattr(candidate, "_get_market_payload", None)
+        if not callable(getter):
+            continue
+        try:
+            payload = getter("usdm_futures", "price", {})
+        except Exception:
+            continue
+        if not isinstance(payload, list):
+            continue
+        result: dict[str, float] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            price = _number(item.get("price"))
+            if symbol and price is not None:
+                result[symbol] = price
+        if result:
+            return result
+    return {}
 
 
 def _eligible_usdm_contract(raw: dict[str, Any]) -> bool:
     symbol = str(raw.get("symbol") or "").strip().upper()
+    if not symbol.endswith(_USDT_SUFFIX):
+        return False
     if not parse_us_equity_ticker_from_binance_symbol(symbol):
         return False
     quote = str(raw.get("quoteAsset") or raw.get("quote_asset") or "").strip().upper()
@@ -333,9 +422,37 @@ def _eligible_usdm_contract(raw: dict[str, Any]) -> bool:
         return False
     if status and status != "TRADING":
         return False
-    if contract_type and contract_type != "PERPETUAL":
+    if contract_type and "PERPETUAL" not in contract_type:
         return False
     return True
+
+
+def _is_internal_tradfi_contract(raw: dict[str, Any]) -> bool:
+    combined = f"{_field_text(raw.get('underlyingType') or raw.get('underlying_type'))} {_field_text(raw.get('underlyingSubType') or raw.get('underlying_sub_type'))}"
+    return any(keyword in combined.upper() for keyword in _TRADFI_KEYWORDS)
+
+
+def _binance_category(raw: dict[str, Any]) -> str:
+    combined = f"{_field_text(raw.get('underlyingType') or raw.get('underlying_type'))} {_field_text(raw.get('underlyingSubType') or raw.get('underlying_sub_type'))}".upper()
+    if not any(keyword in combined for keyword in _TRADFI_KEYWORDS):
+        return ""
+    if "ETF" in combined:
+        return "ETF"
+    if "INDEX" in combined:
+        return "指数 / 其他 TradFi"
+    if "EQUITY" in combined or "STOCK" in combined:
+        return "美股"
+    if "COMMODITY" in combined:
+        return "商品 / 其他 TradFi"
+    if "RWA" in combined:
+        return "RWA / 其他 TradFi"
+    return "其他 TradFi"
+
+
+def _field_text(value: object) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return " / ".join(str(item or "").strip().upper() for item in value if str(item or "").strip())
+    return str(value or "").strip().upper()
 
 
 def _stock_reference_price(cache: CacheReadModel, ticker: str) -> float | None:
@@ -376,11 +493,19 @@ def _normalize_set(values: Iterable[str] | None) -> set[str]:
     return {str(value or "").strip().upper() for value in values or [] if str(value or "").strip()}
 
 
+def _is_manual_locked(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    return confidence == "confirmed" or bool(config.get("manually_locked"))
+
+
 def _scan_sort_key(record: dict[str, Any]) -> tuple[int, str]:
     quality = str(record.get("mapping_quality") or "")
     priority = {
         MAPPING_REVIEW: 0,
         MAPPING_AUTO_USABLE: 1,
+        MAPPING_PRICE_UNVERIFIED: 1,
         MAPPING_MANUAL_LOCKED: 1,
         MAPPING_ANCHOR_MISSING: 2,
         MAPPING_INVALID: 3,

@@ -15,9 +15,11 @@ from data.binance_provider import BinanceHTTPPriceProvider
 from data.binance_equity_scan import (
     MAPPING_AUTO_USABLE,
     MAPPING_INVALID,
+    MAPPING_PRICE_UNVERIFIED,
     MAPPING_REVIEW,
     parse_us_equity_ticker_from_binance_symbol,
     scan_binance_equity_mapped_symbols,
+    scan_records_to_mapping,
 )
 from data.equity_afterhours_provider import (
     AlphaVantageAfterhoursProvider,
@@ -3819,6 +3821,19 @@ def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> 
     assert preflight["mode"] == "auto usable"
 
 
+def test_backtest_preflight_allows_auto_available_mapping_without_manual_confirmation() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="auto_available", mapping_status="自动可用"),
+        anchors=_anchors(),
+        include_unconfirmed=False,
+    )
+
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
+    assert preflight["eligible"][0]["mapping_status"] == "auto_available"
+
+
 def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
     preflight = build_weekend_backtest_preflight(
         ["NVDA"],
@@ -5072,6 +5087,23 @@ def test_row_details_are_split_into_three_blocks() -> None:
     assert "状态：" in source
 
 
+def test_row_membership_text_is_localized_for_realtime_details() -> None:
+    assert weekend_spread._row_membership_text({"binance_symbol": ""}) == "未映射"
+    assert weekend_spread._row_membership_text({"binance_symbol": "NVDAUSDT"}) == "全市场扫描"
+    assert weekend_spread._row_membership_text({"binance_symbol": "NVDAUSDT", "is_watchlist": True}) == "观察池"
+    assert (
+        weekend_spread._row_membership_text(
+            {
+                "binance_symbol": "NVDAUSDT",
+                "is_watchlist": True,
+                "is_position": True,
+                "is_core": True,
+            }
+        )
+        == "观察池 / 持仓 / 核心仓"
+    )
+
+
 def test_refresh_error_fallback_is_localized() -> None:
     assert weekend_spread._refresh_error_text([{}]) == "Binance 刷新失败"
 
@@ -5229,10 +5261,31 @@ class FakeBinanceEquityScanProvider:
     def list_exchange_symbols(self, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> list[dict]:
         self.calls.append(f"exchange:{market_type}:{force_refresh}")
         return [
-            {"symbol": "NVDAUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
-            {"symbol": "MRVLUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
-            {"symbol": "ADBEUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
-            {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
+            {
+                "symbol": "NVDAUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+            {
+                "symbol": "MRVLUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+                "underlyingType": "TRADFI",
+                "underlyingSubType": ["EQUITY"],
+            },
+            {
+                "symbol": "ADBEUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+            {"symbol": "BTCUSDT", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
         ]
 
     def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
@@ -5273,7 +5326,6 @@ def test_binance_equity_scan_classifies_auto_review_and_invalid_without_watchlis
     records = scan_binance_equity_mapped_symbols(
         provider=provider,
         cache=FakeEquityScanCache({"NVDA": 100.0, "MRVL": 100.0, "ADBE": 100.0}),
-        known_tickers=["NVDA", "MRVL", "ADBE"],
         watchlist=["NVDA"],
         force_refresh=True,
     )
@@ -5285,6 +5337,50 @@ def test_binance_equity_scan_classifies_auto_review_and_invalid_without_watchlis
     assert by_ticker["MRVL"]["is_watchlist"] is False
     assert by_ticker["ADBE"]["mapping_quality"] == MAPPING_INVALID
     assert "BTC" not in by_ticker
+    assert by_ticker["NVDA"]["detected_by"] == "binance_internal_category"
+    assert by_ticker["NVDA"]["underlying_type"] == "EQUITY"
+
+
+def test_binance_equity_scan_marks_price_unverified_when_stock_reference_missing() -> None:
+    provider = FakeBinanceEquityScanProvider({"NVDAUSDT": 104.0})
+    records = scan_binance_equity_mapped_symbols(
+        provider=provider,
+        cache=FakeEquityScanCache({}),
+        force_refresh=True,
+    )
+    by_ticker = {record["ticker"]: record for record in records}
+
+    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_PRICE_UNVERIFIED
+    assert "价格校验不足" in by_ticker["NVDA"]["reason"]
+
+
+def test_binance_equity_scan_preserves_manual_locked_mapping() -> None:
+    records = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "mapping_quality": MAPPING_AUTO_USABLE,
+            "binance_price": 104.0,
+            "stock_ref_price": 100.0,
+            "price_diff_pct": 4.0,
+        }
+    ]
+    mapping = scan_records_to_mapping(
+        records,
+        {
+            "NVDA": {
+                "enabled": True,
+                "binance_symbol": "MANUALNVDAUSDT",
+                "market_type": "usdm_futures",
+                "mapping_confidence": "confirmed",
+                "manually_locked": True,
+            }
+        },
+    )
+
+    assert mapping["NVDA"]["binance_symbol"] == "MANUALNVDAUSDT"
+    assert mapping["NVDA"]["mapping_status"] == "人工锁定"
+    assert mapping["NVDA"]["manually_locked"] is True
 
 
 def test_afterhours_anchor_summary_localizes_alpaca_missing_reason() -> None:

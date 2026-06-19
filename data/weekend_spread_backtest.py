@@ -212,7 +212,7 @@ def build_weekend_backtest_preflight(
         symbol = str(config.get("binance_symbol") or "").strip().upper()
         confidence = str(config.get("mapping_confidence") or "").strip().lower()
         row.update({"mapping_status": confidence or "unverified", "symbol": symbol})
-        if confidence == "candidate" and _is_auto_candidate(config):
+        if confidence == "auto_available" or (confidence == "candidate" and _is_auto_candidate(config)):
             row["mapping_status"] = "auto_available"
         elif confidence != "confirmed" and not include_unconfirmed:
             row["exclusion_reason"] = "UNCONFIRMED_EXCLUDED"
