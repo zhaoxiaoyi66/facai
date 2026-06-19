@@ -4957,6 +4957,47 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
     assert "$nan" not in frame.to_string()
 
 
+def test_realtime_afterhours_counts_support_status_strip_summary() -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "afterhours_reference_price": 205.42,
+            "afterhours_cache_status": "CACHE_HIT",
+            "afterhours_anchor_status": "FINAL",
+        },
+        {
+            "ticker": "MSFT",
+            "binance_symbol": "MSFTUSDT",
+            "afterhours_reference_price": None,
+            "regular_close_price": 390.7,
+        },
+        {
+            "ticker": "NOW",
+            "binance_symbol": "NOWUSDT",
+            "afterhours_reference_price": None,
+            "regular_close_price": None,
+        },
+        {
+            "ticker": "NO_MAPPING",
+            "binance_symbol": "",
+            "afterhours_reference_price": None,
+        },
+    ]
+
+    counts = weekend_spread._afterhours_counts(rows)
+    summary = weekend_spread._afterhours_anchor_status_text(rows, counts)
+
+    assert counts["total"] == 3
+    assert counts["available"] == 1
+    assert counts["cache"] == 1
+    assert counts["fallback"] == 1
+    assert counts["missing"] == 2
+    assert "1/3" in summary
+    assert "回退 1" in summary
+    assert "缺失 2" in summary
+
+
 def test_live_frame_does_not_leak_internal_final_anchor_status() -> None:
     frame = weekend_spread._live_frame(
         [

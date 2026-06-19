@@ -881,6 +881,56 @@ def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -
     _render_largest_deviation(rows, mapping_counts)
 
 
+def _afterhours_counts(rows: list[dict]) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        "available": 0,
+        "cache": 0,
+        "fallback": 0,
+        "missing": 0,
+        "provisional": 0,
+    }
+    for row in rows or []:
+        if not str(row.get("binance_symbol") or "").strip():
+            continue
+        counts["total"] += 1
+        afterhours_price = _number(row.get("afterhours_reference_price"))
+        regular_close = _number(row.get("regular_close_price") or row.get("friday_close"))
+        if afterhours_price is not None:
+            counts["available"] += 1
+            cache_status = str(row.get("afterhours_cache_status") or "").strip().upper()
+            if cache_status in {"CACHE_HIT", "CACHE_FALLBACK"}:
+                counts["cache"] += 1
+            anchor_status = str(row.get("afterhours_anchor_status") or "").strip().upper()
+            if anchor_status == "PROVISIONAL":
+                counts["provisional"] += 1
+            continue
+        if regular_close is not None:
+            counts["fallback"] += 1
+        counts["missing"] += 1
+    return counts
+
+
+def _afterhours_anchor_status_text(rows: list[dict], afterhours_counts: dict[str, int]) -> str:
+    total = int(afterhours_counts.get("total") or 0)
+    if total <= 0:
+        return "无映射标的"
+    available = int(afterhours_counts.get("available") or 0)
+    fallback = int(afterhours_counts.get("fallback") or 0)
+    missing = int(afterhours_counts.get("missing") or 0)
+    if available == total:
+        cache = int(afterhours_counts.get("cache") or 0)
+        if cache:
+            return f"{available}/{total} 已缓存"
+        return f"{available}/{total} 已读取"
+    parts = [f"{available}/{total} 已读取"]
+    if fallback:
+        parts.append(f"回退 {fallback}")
+    if missing:
+        parts.append(f"缺失 {missing}")
+    return "，".join(parts)
+
+
 def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
     counts = {"normal": 0, "focus": 0, "review": 0, "unavailable": 0}
     for row in rows:
