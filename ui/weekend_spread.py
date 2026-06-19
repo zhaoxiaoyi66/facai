@@ -198,12 +198,58 @@ def _apply_weekend_spread_layout_css() -> None:
           margin: 6px 0 16px;
           background: #f8fafc;
         }
+        .weekend-realtime-summary {
+          display: grid;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          gap: 10px;
+          margin: 8px 0 12px;
+        }
+        .weekend-realtime-kpi {
+          border: 1px solid #e2e8f0;
+          border-radius: 10px;
+          padding: 12px 14px;
+          background: #ffffff;
+          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+        }
+        .weekend-realtime-kpi-label {
+          color: #64748b;
+          font-size: 12px;
+          margin-bottom: 5px;
+        }
+        .weekend-realtime-kpi-value {
+          color: #0f172a;
+          font-size: 22px;
+          line-height: 1.15;
+          font-weight: 850;
+          letter-spacing: 0;
+        }
+        .weekend-core-observation {
+          border: 1px solid #dbeafe;
+          border-left: 4px solid #2563eb;
+          border-radius: 12px;
+          padding: 14px 16px;
+          margin: 6px 0 10px;
+          background: #f8fbff;
+        }
+        .weekend-core-observation strong {
+          color: #0f172a;
+        }
+        .weekend-detail-card {
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          padding: 14px 16px;
+          margin-top: 10px;
+          background: #ffffff;
+        }
         @media (max-width: 860px) {
           .weekend-core-metrics {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
           .weekend-core-flow {
             font-size: 23px;
+          }
+          .weekend-realtime-summary {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
         </style>
@@ -301,13 +347,15 @@ def _render_realtime_tab(
     ignored: dict[str, dict] | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     st.subheader("Binance 美股映射全市场扫描")
-    st.caption("Binance 合约价格读取成功即视为映射可用；不想看的标的可在映射管理里忽略。")
+    st.caption("观察 Binance 美股映射价格相对最近美股盘后锚点的偏离。")
     ignored = ignored or {}
-    status_slot = st.empty()
-    deviation_slot = st.empty()
     action_slot = st.empty()
+    summary_slot = st.empty()
+    observation_slot = st.empty()
+    status_slot = st.empty()
     filter_slot = st.empty()
     table_slot = st.empty()
+    detail_slot = st.empty()
     advanced_slot = st.empty()
     with action_slot.container():
         refresh_options = _render_realtime_action_bar()
@@ -335,10 +383,12 @@ def _render_realtime_tab(
         }
     )
 
+    with summary_slot.container():
+        _render_realtime_summary_cards(rows, mapping_counts, cache_status)
+    with observation_slot.container():
+        _render_core_observation(rows, mapping_counts)
     with status_slot.container():
         _render_realtime_status_strip(rows, mapping_counts, cache_status)
-    with deviation_slot.container():
-        _render_largest_deviation(rows, mapping_counts)
     with filter_slot.container():
         visible_scope = _render_realtime_filters(rows)
 
@@ -349,9 +399,11 @@ def _render_realtime_tab(
             _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
         elif main_rows:
             st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
-            _render_row_details(main_rows, all_rows=rows, mapping=scan_mapping, tickers=scan_tickers)
         else:
             st.info(_realtime_empty_state_text(rows, visible_scope))
+    with detail_slot.container():
+        if main_rows:
+            _render_row_details(main_rows, all_rows=rows, mapping=scan_mapping, tickers=scan_tickers)
 
     with advanced_slot.container():
         with st.expander("高级设置 / 缓存管理", expanded=False):
@@ -589,7 +641,8 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
 
 
 def _render_realtime_filters(rows: list[dict]) -> str:
-    options = ["全部可计算", "异常偏离", "价格可用但锚点缺失", "Binance 价格失败", "我的观察池", "我的持仓", "核心仓", "已忽略"]
+    range_options = ["全部可计算", "我的观察池", "我的持仓", "核心仓"]
+    status_options = ["全部状态", "异常偏离", "锚点缺失", "Binance 价格失败", "已忽略"]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
         "全部可计算": len(main_rows),
@@ -597,33 +650,54 @@ def _render_realtime_filters(rows: list[dict]) -> str:
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
         "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) == "review"]),
-        "价格可用但锚点缺失": len([row for row in rows if _realtime_row_status_key(row) == "anchor_missing"]),
+        "锚点缺失": len([row for row in rows if _realtime_row_status_key(row) == "anchor_missing"]),
         "Binance 价格失败": len([row for row in rows if _realtime_row_status_key(row) == "binance_failed"]),
         "已忽略": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL]),
     }
-    labels = [f"{option} {counts.get(option, 0)}" for option in options]
-    label_by_scope = dict(zip(options, labels))
-    scope_by_label = dict(zip(labels, options))
-    preferred_scope = _default_realtime_filter_scope(counts)
-    widget_key = "weekend_spread_realtime_filter_scope"
-    current_label = st.session_state.get(widget_key)
-    current_scope = scope_by_label.get(current_label)
-    if current_scope is None:
-        current_scope = _scope_from_realtime_filter_label(current_label, options)
-    if not current_scope or (counts.get(current_scope, 0) <= 0 and counts.get(preferred_scope, 0) > 0):
-        st.session_state[widget_key] = label_by_scope[preferred_scope]
-    selected = st.radio(
-        "筛选",
-        labels,
+    preferred_range, preferred_status = _default_realtime_filter_pair(counts)
+    range_key = "weekend_spread_realtime_range_filter"
+    status_key = "weekend_spread_realtime_status_filter"
+    _sync_realtime_filter_state(range_key, range_options, preferred_range, counts)
+    _sync_realtime_filter_state(status_key, status_options, preferred_status, counts)
+    range_labels = [f"{option} {counts.get(option, 0)}" for option in range_options]
+    status_labels = [f"{option} {counts.get(option, counts.get('全部可计算', 0))}" for option in status_options]
+    selected_range = st.radio(
+        "范围筛选",
+        range_labels,
         horizontal=True,
-        label_visibility="collapsed",
-        key=widget_key,
-        index=labels.index(st.session_state.get(widget_key)) if st.session_state.get(widget_key) in labels else labels.index(label_by_scope[preferred_scope]),
+        label_visibility="visible",
+        key=range_key,
+        index=_label_index(range_labels, st.session_state.get(range_key), f"{preferred_range} {counts.get(preferred_range, 0)}"),
     )
-    return options[labels.index(selected)]
+    selected_status = st.radio(
+        "状态筛选",
+        status_labels,
+        horizontal=True,
+        label_visibility="visible",
+        key=status_key,
+        index=_label_index(status_labels, st.session_state.get(status_key), f"{preferred_status} {counts.get(preferred_status, counts.get('全部可计算', 0))}"),
+    )
+    return f"{_scope_from_realtime_filter_label(selected_range, range_options)}|{_scope_from_realtime_filter_label(selected_status, status_options)}"
+
+
+def _sync_realtime_filter_state(widget_key: str, options: list[str], preferred: str, counts: dict[str, int]) -> None:
+    current_scope = _scope_from_realtime_filter_label(st.session_state.get(widget_key), options)
+    current_count = counts.get(current_scope, counts.get("全部可计算", 0) if current_scope == "全部状态" else 0)
+    preferred_count = counts.get(preferred, counts.get("全部可计算", 0) if preferred == "全部状态" else 0)
+    if not current_scope or (current_scope != preferred and current_count <= 0 and preferred_count > 0):
+        st.session_state[widget_key] = f"{preferred} {counts.get(preferred, counts.get('全部可计算', 0))}"
 
 
 def _filter_live_rows_by_scope(rows: list[dict], scope: str) -> list[dict]:
+    if "|" in str(scope or ""):
+        range_scope, status_scope = str(scope).split("|", 1)
+        selected = [
+            row
+            for row in rows
+            if _row_matches_realtime_range(row, range_scope)
+            and _row_matches_realtime_status(row, status_scope)
+        ]
+        return sorted(selected, key=_realtime_sort_key)
     if scope == "全部 Binance 美股映射":
         scope = "全部可计算"
     if scope == "全部可计算":
@@ -645,8 +719,41 @@ def _filter_live_rows_by_scope(rows: list[dict], scope: str) -> list[dict]:
     return sorted(selected, key=_realtime_sort_key)
 
 
+def _row_matches_realtime_range(row: dict, scope: str) -> bool:
+    if scope in {"", "全部可计算"}:
+        return True
+    if scope == "我的观察池":
+        return bool(row.get("is_watchlist"))
+    if scope == "我的持仓":
+        return bool(row.get("is_position"))
+    if scope == "核心仓":
+        return bool(row.get("is_core") or row.get("is_core_position"))
+    return True
+
+
+def _row_matches_realtime_status(row: dict, scope: str) -> bool:
+    if scope in {"", "全部状态"}:
+        return _is_realtime_main_row(row)
+    if scope == "异常偏离":
+        return _is_realtime_main_row(row) and _realtime_row_status_key(row) == "review"
+    if scope in {"锚点缺失", "价格可用但锚点缺失"}:
+        return _realtime_row_status_key(row) == "anchor_missing"
+    if scope == "Binance 价格失败":
+        return _realtime_row_status_key(row) == "binance_failed"
+    if scope == "已忽略":
+        return _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL
+    return _is_realtime_main_row(row)
+
+
 def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
     counts = _realtime_observation_counts(rows)
+    status_scope = str(scope or "").split("|", 1)[1] if "|" in str(scope or "") else str(scope or "")
+    if status_scope == "异常偏离" and counts.get("review", 0) <= 0:
+        return "当前没有异常偏离，可切换到“全部状态”查看全部可计算价差。"
+    if status_scope in {"锚点缺失", "价格可用但锚点缺失"} and counts.get("anchor_missing", 0) <= 0:
+        return "当前没有锚点缺失标的。"
+    if status_scope == "Binance 价格失败" and counts.get("unavailable", 0) <= 0:
+        return "当前没有 Binance 价格失败标的。"
     if counts.get("binance_price_available", 0) > 0 and counts.get("computable", 0) <= 0 and counts.get("anchor_missing", 0) > 0:
         return "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新美股盘后锚点”。"
     if counts.get("binance_price_available", 0) <= 0 and counts.get("binance_total", 0) > 0:
@@ -663,11 +770,17 @@ def _default_realtime_filter_scope(counts: dict[str, int]) -> str:
         return "异常偏离"
     if counts.get("全部可计算", 0) > 0:
         return "全部可计算"
-    if counts.get("价格可用但锚点缺失", 0) > 0:
-        return "价格可用但锚点缺失"
+    if counts.get("锚点缺失", counts.get("价格可用但锚点缺失", 0)) > 0:
+        return "锚点缺失"
     if counts.get("Binance 价格失败", 0) > 0:
         return "Binance 价格失败"
     return "全部可计算"
+
+
+def _default_realtime_filter_pair(counts: dict[str, int]) -> tuple[str, str]:
+    if counts.get("异常偏离", 0) > 0:
+        return "全部可计算", "异常偏离"
+    return "全部可计算", "全部状态"
 
 
 def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
@@ -678,9 +791,20 @@ def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
     # Compatibility for old persisted radio labels.
     if text.startswith("全部 Binance 美股映射"):
         return "全部可计算"
+    if text.startswith("价格可用但锚点缺失"):
+        return "锚点缺失"
     if text.startswith("锚点缺失"):
-        return "价格可用但锚点缺失"
+        return "锚点缺失"
     return ""
+
+
+def _label_index(labels: list[str], current_label: object, fallback_label: str) -> int:
+    current = str(current_label or "")
+    if current in labels:
+        return labels.index(current)
+    if fallback_label in labels:
+        return labels.index(fallback_label)
+    return 0
 
 
 def _expected_realtime_anchor_date(now: datetime | None = None) -> str:
@@ -1233,41 +1357,86 @@ def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, in
     st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
 
 
-def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+def _render_realtime_summary_cards(rows: list[dict], mapping_counts: dict[str, int], cache_status: dict | None = None) -> None:
+    counts = _realtime_observation_counts(rows, ignored_count=int(mapping_counts.get("ignored_count") or 0))
+    max_premium = _realtime_extreme_row(rows, direction="premium")
+    max_discount = _realtime_extreme_row(rows, direction="discount")
+    values = [
+        ("当前最大溢价", _summary_deviation_text(max_premium)),
+        ("当前最大折价", _summary_deviation_text(max_discount)),
+        ("可计算价差", str(counts.get("computable", 0))),
+        ("异常偏离", str(counts.get("review", 0))),
+        ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status) or "暂无"),
+    ]
+    cards = "".join(
+        f"""
+        <div class="weekend-realtime-kpi">
+          <div class="weekend-realtime-kpi-label">{escape(label)}</div>
+          <div class="weekend-realtime-kpi-value">{escape(value)}</div>
+        </div>
+        """
+        for label, value in values
+    )
+    st.markdown(f'<section class="weekend-realtime-summary">{cards}</section>', unsafe_allow_html=True)
+
+
+def _summary_deviation_text(row: dict | None) -> str:
+    if row is None:
+        return "暂无"
+    ticker = str(row.get("ticker") or "").strip().upper() or "未识别"
+    return f"{ticker} {_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}"
+
+
+def _realtime_extreme_row(rows: list[dict], *, direction: str) -> dict | None:
+    candidates = [
+        row
+        for row in rows or []
+        if _is_realtime_main_row(row) and _number(row.get("spread_vs_afterhours_pct")) is not None
+    ]
+    if not candidates:
+        return None
+    if direction == "discount":
+        negatives = [row for row in candidates if float(_number(row.get("spread_vs_afterhours_pct")) or 0) < 0]
+        return min(negatives or candidates, key=lambda row: float(_number(row.get("spread_vs_afterhours_pct")) or 0))
+    positives = [row for row in candidates if float(_number(row.get("spread_vs_afterhours_pct")) or 0) > 0]
+    return max(positives or candidates, key=lambda row: float(_number(row.get("spread_vs_afterhours_pct")) or 0))
+
+
+def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     row = _strongest_signal_row(rows)
     if row is None:
         if mapping_counts.get("universe_mapping_count", 0) <= 0:
-            st.info("尚未同步 Binance 美股映射。请到“映射管理”里点击“一键同步 Binance 美股映射”后再观察。")
+            message = "尚未同步 Binance 美股映射。请到“映射管理”里点击“一键同步 Binance 美股映射”后再观察。"
         elif _realtime_observation_counts(rows).get("anchor_missing", 0) > 0:
-            st.info("Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新美股盘后锚点”。")
+            message = "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新盘后锚点”。"
         elif _realtime_observation_counts(rows).get("binance_price_available", 0) <= 0:
-            st.info("Binance 价格读取失败，请查看刷新诊断。")
+            message = "Binance 价格读取失败，请查看刷新诊断。"
         else:
-            st.info("当前筛选没有结果。可以切换到“价格可用但锚点缺失”或“全部可计算”。")
+            message = "当前没有显著异常偏离。可关注全部可计算价差表。"
+        st.markdown(
+            f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
+            unsafe_allow_html=True,
+        )
         return
 
-    status_key = _realtime_row_status_key(row)
-    heading = "当前最大异常偏离" if status_key == "review" else "当前最大偏离"
-    spread = _afterhours_spread_text(row.get("spread_vs_afterhours_pct") if row.get("spread_vs_afterhours_pct") is not None else row.get("spread_pct"))
+    ticker = str(row.get("ticker") or "").strip().upper()
+    spread_text = _afterhours_spread_text(row.get("spread_vs_afterhours_pct"))
     status_label = _realtime_row_status_label(row)
-    reason = _realtime_row_status_reason(row)
-    tags = [
-        f"映射：{_mapping_display_label_for_row(row)}",
-        f"锚点：{_anchor_display_label_for_row(row)}",
-        f"数据：{status_label}",
-    ]
+    if _realtime_row_status_key(row) == "review":
+        message = (
+            f"{ticker} 当前相对盘后锚点 {spread_text}，属于{status_label}。"
+            "优先复核：Binance 映射、盘后锚点、是否为真实可参考价差。"
+        )
+    else:
+        message = f"{ticker} 当前相对盘后锚点 {spread_text}，是当前最大偏离。继续观察价差是否扩大或收敛。"
     st.markdown(
-        f"""
-        <section class="zhx-card">
-          <span class="zhx-eyebrow">{escape(heading)}</span>
-          <h3>{escape(str(row.get("ticker") or ""))} &nbsp; {escape(spread)}</h3>
-          <p>Binance 相对盘后锚点</p>
-          <p>{escape(" ｜ ".join(tags))}</p>
-          <p>{escape(reason)}</p>
-        </section>
-        """,
+        f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
         unsafe_allow_html=True,
     )
+
+
+def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+    _render_core_observation(rows, mapping_counts)
 
 
 def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -> None:
@@ -1780,12 +1949,13 @@ def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _realtime_sort_key(row: dict) -> tuple[int, float, str]:
+def _realtime_sort_key(row: dict) -> tuple[int, float, int, str]:
     priority = {"review": 0, "normal": 1, "unavailable": 2}
     key = _realtime_row_status_key(row)
     spread = _number(row.get("spread_vs_afterhours_pct"))
     spread_abs = abs(spread) if spread is not None else -1.0
-    return (priority.get(key, 9), -spread_abs, str(row.get("ticker") or ""))
+    relation_rank = 0 if row.get("is_position") else 1 if row.get("is_watchlist") else 2
+    return (priority.get(key, 9), -spread_abs, relation_rank, str(row.get("ticker") or ""))
 
 
 def _realtime_row_status_key(row: dict) -> str:
@@ -4271,12 +4441,12 @@ def _refresh_diagnostic_reason(row: dict, *, ignored: dict[str, dict] | None = N
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
-        "类型",
         "美股盘后锚点",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
         "状态",
+        "标签",
         "更新时间",
     ]
     frame = pd.DataFrame(rows)
@@ -4284,14 +4454,33 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
     display["股票"] = frame.get("ticker")
-    display["类型"] = frame.apply(lambda row: _live_type_label(row.to_dict()), axis=1)
     display["美股盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
     display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
     display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
     display["相对收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
     display["状态"] = frame.apply(lambda row: _realtime_row_status_label(row.to_dict()), axis=1)
+    display["标签"] = frame.apply(lambda row: _realtime_row_tags_text(row.to_dict()), axis=1)
     display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
     return display[columns]
+
+
+def _realtime_row_tags_text(row: dict) -> str:
+    tags: list[str] = []
+    if row.get("is_watchlist"):
+        tags.append("观察池")
+    if row.get("is_position"):
+        tags.append("持仓")
+    if row.get("is_core") or row.get("is_core_position"):
+        tags.append("核心")
+    if _is_manual_locked_mapping(row):
+        tags.append("人工锁定")
+    label = _mapping_display_label_for_row(row)
+    if label in {MAPPING_AVAILABLE_LABEL, MAPPING_ANOMALY_LABEL, MAPPING_IGNORED_LABEL}:
+        tags.append(label)
+    status = _realtime_row_status_label(row)
+    if status == "价格异常" and status not in tags:
+        tags.append(status)
+    return " / ".join(dict.fromkeys([tag for tag in tags if tag])) or "映射可用"
 
 
 def _live_type_label(row: dict) -> str:
@@ -4496,49 +4685,51 @@ def _render_row_details(
 ) -> None:
     if not rows:
         return
-    for row in rows:
-        ticker = str(row.get("ticker") or "").upper()
-        with st.expander(f"{ticker} 详情", expanded=False):
-            if mapping is not None:
-                _render_single_row_refresh_actions(row, all_rows=all_rows or rows, mapping=mapping, tickers=tickers)
-            col_anchor, col_binance, col_note = st.columns(3)
-            with col_anchor:
-                st.markdown("**美股锚点**")
-                st.caption(f"盘后锚点：{_money_text(row.get('afterhours_reference_price'))}")
-                st.caption(f"常规收盘：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
-                st.caption(f"相对盘后：{_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}")
-                st.caption(f"相对收盘：{_percent_text(row.get('spread_vs_regular_close_pct'))}")
-                st.caption(f"来源：{_afterhours_source_text(row.get('afterhours_reference_source'))}")
-                st.caption(f"时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
-                st.caption(f"锚点状态：{_anchor_display_label_for_row(row)}")
-                missing_reason = _afterhours_reason_text(row.get('afterhours_missing_reason'))
-                if missing_reason:
-                    st.caption(f"原因：{missing_reason}")
-            with col_binance:
-                st.markdown("**Binance 合约**")
-                st.caption(f"Binance symbol：{str(row.get('binance_symbol') or '未配置')}")
-                st.caption(f"最新价：{_money_text(row.get('binance_last_price'))}")
-                st.caption(f"更新：{_short_hkt_time(row.get('updated_at'))}")
-                st.caption(f"bid：{_money_text(row.get('binance_bid'))}")
-                st.caption(f"ask：{_money_text(row.get('binance_ask'))}")
-                st.caption(f"bid-ask spread：{_percent_text(row.get('binance_spread_pct'))}")
-                st.caption(f"24h volume：{_plain_number(row.get('binance_volume_24h'))}")
-                st.caption(f"funding：{_funding_text(row.get('funding_rate'))}")
-            with col_note:
-                st.markdown("**数据状态**")
-                st.caption(f"映射：{_mapping_display_label_for_row(row)}")
-                st.caption(f"范围：{_row_membership_text(row)}")
-                detected_by = _scan_detected_by_text(row.get("scan_detected_by"))
-                if detected_by:
-                    st.caption(f"识别来源：{detected_by}")
-                quality_reason = str(row.get("mapping_quality_reason") or "").strip()
-                if quality_reason:
-                    st.caption(f"质量说明：{quality_reason}")
-                st.caption(f"状态：{_realtime_row_status_label(row)}")
-                st.caption(f"原因：{_realtime_row_status_reason(row)}")
-                error = str(row.get("error") or "").strip()
-                if error:
-                    st.caption(f"错误：{_localized_realtime_error(error)}")
+    labels = [_detail_select_label(row) for row in rows]
+    selected_label = st.selectbox(
+        "查看单只详情",
+        labels,
+        key="weekend_spread_realtime_detail_symbol",
+    )
+    selected_index = labels.index(selected_label) if selected_label in labels else 0
+    row = rows[selected_index]
+    ticker = str(row.get("ticker") or "").upper()
+    st.markdown(f'<section class="weekend-detail-card"><strong>{escape(ticker)} 价差详情</strong></section>', unsafe_allow_html=True)
+    if mapping is not None:
+        _render_single_row_refresh_actions(row, all_rows=all_rows or rows, mapping=mapping, tickers=tickers)
+    col_price, col_quality, col_tags = st.columns(3)
+    with col_price:
+        st.markdown("**价格**")
+        st.caption(f"盘后锚点：{_money_text(row.get('afterhours_reference_price'))}")
+        st.caption(f"Binance 最新：{_money_text(row.get('binance_last_price'))}")
+        st.caption(f"相对盘后：{_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}")
+        st.caption(f"相对收盘：{_percent_text(row.get('spread_vs_regular_close_pct'))}")
+    with col_quality:
+        st.markdown("**数据质量**")
+        st.caption(f"映射状态：{_mapping_display_label_for_row(row)}")
+        st.caption(f"锚点状态：{_anchor_display_label_for_row(row)}")
+        st.caption(f"Binance 状态：{_realtime_row_status_label(row)}")
+        st.caption(f"更新时间：{_short_hkt_time(row.get('updated_at'))}")
+        st.caption(f"锚点时间：{_short_hkt_time(row.get('afterhours_reference_time'))}")
+    with col_tags:
+        st.markdown("**关系标签**")
+        st.caption(_realtime_row_tags_text(row))
+        reason = _realtime_row_status_reason(row)
+        if reason:
+            st.caption(f"原因：{reason}")
+        error = str(row.get("error") or "").strip()
+        if error:
+            st.caption(f"失败原因：{_localized_realtime_error(error)}")
+        quality_reason = str(row.get("mapping_quality_reason") or "").strip()
+        if quality_reason:
+            st.caption(f"备注：{quality_reason}")
+
+
+def _detail_select_label(row: dict) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper() or "未识别"
+    spread = _afterhours_spread_text(row.get("spread_vs_afterhours_pct"))
+    status = _realtime_row_status_label(row)
+    return f"{ticker} ｜ {spread} ｜ {status}"
 
 
 def _render_single_row_refresh_actions(

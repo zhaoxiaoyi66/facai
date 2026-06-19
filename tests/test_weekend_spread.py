@@ -5145,10 +5145,11 @@ def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
 
 
 def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
-    source = inspect.getsource(weekend_spread)
+    source = inspect.getsource(weekend_spread._render_row_details)
 
-    assert "查看实时价差详情" not in source
-    assert "详情" in source
+    assert "查看单只详情" in source
+    assert "with st.expander" not in source
+    assert "for row in rows:" not in source
 
 
 def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
@@ -5181,12 +5182,12 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
-        "类型",
         "美股盘后锚点",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
         "状态",
+        "标签",
         "更新时间",
     ]
     assert frame.loc[0, "Binance 最新"] == "$104.58"
@@ -5301,8 +5302,8 @@ def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current
     assert weekend_spread._realtime_row_status_label(wdc) == "锚点缺失"
 
     frame = weekend_spread._live_frame([wdc])
-    assert frame.loc[0, "类型"] == "锚点缺失"
     assert frame.loc[0, "状态"] == "锚点缺失"
+    assert "映射可用" in frame.loc[0, "标签"]
 
 
 def test_realtime_afterhours_counts_support_status_strip_summary() -> None:
@@ -5427,9 +5428,47 @@ def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
 
 def test_realtime_default_filter_prefers_non_empty_scope() -> None:
     assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 3, "价格可用但锚点缺失": 4}) == "全部可计算"
-    assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 0, "价格可用但锚点缺失": 4}) == "价格可用但锚点缺失"
+    assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 0, "锚点缺失": 4}) == "锚点缺失"
+    assert weekend_spread._default_realtime_filter_pair({"异常偏离": 2, "全部可计算": 3}) == ("全部可计算", "异常偏离")
+    assert weekend_spread._default_realtime_filter_pair({"异常偏离": 0, "全部可计算": 3}) == ("全部可计算", "全部状态")
     assert weekend_spread._scope_from_realtime_filter_label("异常偏离 0", ["全部可计算", "异常偏离"]) == "异常偏离"
     assert weekend_spread._scope_from_realtime_filter_label("全部 Binance 美股映射 0", ["全部可计算"]) == "全部可计算"
+
+
+def test_realtime_combined_filters_select_status_without_batch_details() -> None:
+    rows = [
+        {
+            "ticker": "NBIS",
+            "binance_symbol": "NBISUSDT",
+            "binance_last_price": 282,
+            "afterhours_reference_price": 260,
+            "spread_vs_afterhours_pct": 8.4,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "CRM",
+            "binance_symbol": "CRMUSDT",
+            "binance_last_price": 240,
+            "afterhours_reference_price": 250,
+            "spread_vs_afterhours_pct": -4.0,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "NOW",
+            "binance_symbol": "NOWUSDT",
+            "binance_last_price": 100,
+            "afterhours_reference_price": None,
+            "mapping_quality": "映射可用",
+        },
+    ]
+
+    all_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|全部状态")
+    review_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|异常偏离")
+    missing_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|锚点缺失")
+
+    assert [row["ticker"] for row in all_rows] == ["NBIS", "CRM"]
+    assert [row["ticker"] for row in review_rows] == ["NBIS"]
+    assert [row["ticker"] for row in missing_rows] == ["NOW"]
 
 
 def test_refresh_diagnostics_distinguish_anchor_missing_from_binance_failure() -> None:
@@ -5555,13 +5594,13 @@ def test_large_realtime_deviation_is_review_not_signal() -> None:
 def test_row_details_are_split_into_three_blocks() -> None:
     source = inspect.getsource(weekend_spread._render_row_details)
 
-    assert "**美股锚点**" in source
-    assert "**Binance 合约**" in source
-    assert "**数据状态**" in source
+    assert "**价格**" in source
+    assert "**数据质量**" in source
+    assert "**关系标签**" in source
     assert "只刷新 Binance 价格" in source or "只刷新 Binance 价格" in inspect.getsource(weekend_spread._render_single_row_refresh_actions)
     assert "只重抓盘后锚点" in source or "只重抓盘后锚点" in inspect.getsource(weekend_spread._render_single_row_refresh_actions)
-    assert "映射：" in source
-    assert "状态：" in source
+    assert "映射状态：" in source
+    assert "Binance 状态：" in source
 
 
 def test_single_realtime_refresh_updates_only_selected_symbol(monkeypatch) -> None:
