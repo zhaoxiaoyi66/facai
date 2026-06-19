@@ -5383,6 +5383,15 @@ def test_realtime_status_strip_does_not_require_removed_focus_state(monkeypatch)
     assert "异常偏离：1" in captured[0]
 
 
+def test_realtime_summary_cards_do_not_render_raw_html_blocks() -> None:
+    source = inspect.getsource(weekend_spread._render_realtime_summary_cards)
+
+    assert "st.columns" in source
+    assert ".metric(" in source
+    assert "unsafe_allow_html" not in source
+    assert "weekend-realtime-summary" not in source
+
+
 def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
     rows = [
         {

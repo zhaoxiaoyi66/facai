@@ -1368,16 +1368,9 @@ def _render_realtime_summary_cards(rows: list[dict], mapping_counts: dict[str, i
         ("异常偏离", str(counts.get("review", 0))),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status) or "暂无"),
     ]
-    cards = "".join(
-        f"""
-        <div class="weekend-realtime-kpi">
-          <div class="weekend-realtime-kpi-label">{escape(label)}</div>
-          <div class="weekend-realtime-kpi-value">{escape(value)}</div>
-        </div>
-        """
-        for label, value in values
-    )
-    st.markdown(f'<section class="weekend-realtime-summary">{cards}</section>', unsafe_allow_html=True)
+    columns = st.columns(len(values))
+    for column, (label, value) in zip(columns, values):
+        column.metric(label, value)
 
 
 def _summary_deviation_text(row: dict | None) -> str:
