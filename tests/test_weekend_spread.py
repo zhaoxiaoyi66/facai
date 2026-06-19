@@ -1463,7 +1463,7 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     assert "MISSING_STOCK_FIRST_BAR" not in text
     assert "None" not in text
     assert frame.iloc[0]["失败原因"] == "夜盘开盘窗口内无有效 1m K线"
-    assert frame.iloc[0]["P2 首个有效夜盘价"] == "无 P2"
+    assert frame.iloc[0]["P2 夜盘价格"] == "无 P2"
 
 
 def test_backtest_diagnostic_frame_does_not_count_reference_price_when_p0_missing() -> None:
@@ -1481,7 +1481,7 @@ def test_backtest_diagnostic_frame_does_not_count_reference_price_when_p0_missin
         ]
     )
 
-    assert frame.iloc[0]["P0 最后交易日盘后"] == "缺 P0"
+    assert frame.iloc[0]["P0 盘后锚点"] == "缺 P0"
     assert frame.iloc[0]["失败原因"] == "缺少本周最后交易日盘后收盘价"
 
 
@@ -3330,9 +3330,8 @@ def test_default_p2_uses_first_valid_20_01_bar_as_delayed_sample() -> None:
     assert "延迟成交样本（+1 分钟）" in review["sample_status"]
 
     frame = weekend_spread._weekend_review_frame([review])
-    assert frame.iloc[0]["P2 首个有效夜盘价"] == "$184.01"
-    assert frame.iloc[0]["延迟分钟"] == "+1"
-    assert "延迟成交样本" in frame.iloc[0]["样本质量"]
+    assert frame.iloc[0]["P2 夜盘价格"] == "$184.01"
+    assert frame.iloc[0]["样本质量"] == "延迟成交"
 
 
 def test_backtest_marks_binance_contract_not_listed_yet_before_onboard() -> None:
@@ -5114,26 +5113,22 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert list(frame.columns) == [
         "周次",
         "股票",
-        "P0 最后交易日盘后",
-        "P1 Binance 高点",
-        "P2 首个有效夜盘价",
-        "P2 时间",
-        "延迟分钟",
+        "P0 盘后锚点",
+        "P1 周末高点",
+        "P2 夜盘价格",
+        "周末冲高",
+        "高点回落",
+        "最终传导",
+        "高点兑现率",
         "样本质量",
-        "周末冲高%",
-        "高点回落%",
-        "最终传导%",
-        "兑现率%",
-        "样本状态",
     ]
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
-    assert nvda["P0 最后交易日盘后"] == "$100.00"
-    assert nvda["P1 Binance 高点"] == "$102.00"
-    assert nvda["P2 首个有效夜盘价"] == "$101.50"
-    assert nvda["延迟分钟"] == "0"
-    assert nvda["周末冲高%"] == "+2.00%"
-    assert nvda["高点回落%"] == "-0.49%"
+    assert nvda["P0 盘后锚点"] == "$100.00"
+    assert nvda["P1 周末高点"] == "$102.00"
+    assert nvda["P2 夜盘价格"] == "$101.50"
+    assert nvda["周末冲高"] == "+2.00%"
+    assert nvda["高点回落"] == "-0.49%"
 
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]
@@ -5202,6 +5197,50 @@ def test_weekend_review_kpis_do_not_crash_when_opening_window_helper_is_missing(
 
     assert metrics
     assert any("开盘窗口成交率" in text for text in captions)
+
+
+def test_weekend_backtest_layout_renders_results_before_settings() -> None:
+    source = inspect.getsource(weekend_spread._render_backtest_tab)
+
+    assert source.index("_render_backtest_result_sections(") < source.index('st.expander("回测设置"')
+    assert 'st.expander("回测设置", expanded=False)' in source
+    assert 'st.expander("数据质量 / 排除原因", expanded=False)' in inspect.getsource(
+        weekend_spread._render_backtest_result_sections
+    )
+
+
+def test_weekend_review_kpis_use_observation_values_without_large_empty_metrics(monkeypatch) -> None:
+    metrics: list[tuple[str, object]] = []
+    captions: list[str] = []
+
+    class FakeColumn:
+        def metric(self, label, value):
+            metrics.append((str(label), value))
+
+    monkeypatch.setattr(weekend_spread.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+    monkeypatch.setattr(weekend_spread.st, "caption", lambda text: captions.append(str(text)))
+    monkeypatch.setattr(weekend_spread.st, "info", lambda _text: None)
+
+    review_rows = weekend_spread._weekend_review_rows(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "GLW",
+                "afterhours_reference_price": 180.0,
+                "binance_weekend_max_price": 185.88,
+                "data_quality": "MISSING_OVERNIGHT_FIRST_1M",
+            }
+        ]
+    )
+
+    weekend_spread._render_weekend_review_kpis(review_rows)
+
+    metric_values = dict(metrics)
+    assert metric_values["样本数"] == 1
+    assert metric_values["平均周末冲高"] == "+3.27%"
+    assert metric_values["平均最终传导"] == "无法计算"
+    assert all(value != "暂无" for _, value in metrics)
+    assert any("仅作为观察统计" in text for text in captions)
 
 
 def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -> None:
@@ -5334,8 +5373,8 @@ def test_weekend_review_marks_missing_price_as_incomplete() -> None:
     review_rows = weekend_spread._weekend_review_rows(rows)
     frame = weekend_spread._weekend_review_frame(review_rows)
 
-    assert frame.iloc[0]["P0 最后交易日盘后"] == "缺 P0"
-    assert frame.iloc[0]["P1 Binance 高点"] == "缺 P1"
+    assert frame.iloc[0]["P0 盘后锚点"] == "缺 P0"
+    assert frame.iloc[0]["P1 周末高点"] == "缺 P1"
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
 
 def test_weekend_review_style_renders_with_current_pandas() -> None:
