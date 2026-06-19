@@ -747,6 +747,7 @@ def _build_weekend_spread_rows_with_feedback(
     force_refresh = bool(options.get("refresh"))
     anchor_refresh = bool(options.get("anchor_refresh") or options.get("force_anchor_refresh"))
     force_anchor_refresh = bool(options.get("force_anchor_refresh"))
+    skipped_ignored = int(options.get("ignored_count") or 0)
     expected_anchor_date = _expected_realtime_anchor_date()
     cached = read_weekend_spread_snapshot(
         mapping=mapping,
@@ -4767,4 +4768,3 @@ def _number(value: object) -> float | None:
     if not math.isfinite(number):
         return None
     return number
-    skipped_ignored = int(options.get("ignored_count") or 0)

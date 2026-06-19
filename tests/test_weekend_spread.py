@@ -4796,6 +4796,50 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
     assert "刷新完成" in source
 
 
+def test_realtime_refresh_path_accepts_ignored_count(monkeypatch) -> None:
+    class FakeProgress:
+        def progress(self, value):
+            self.value = value
+
+    class FakeStatus:
+        def caption(self, value):
+            self.value = value
+
+        def success(self, value):
+            self.value = value
+
+        def warning(self, value):
+            self.value = value
+
+    monkeypatch.setattr(weekend_spread.st, "progress", lambda value: FakeProgress())
+    monkeypatch.setattr(weekend_spread.st, "empty", lambda: FakeStatus())
+    monkeypatch.setattr(weekend_spread, "read_weekend_spread_snapshot", lambda **kwargs: {"cache_state": "MISSING", "rows": []})
+    monkeypatch.setattr(weekend_spread, "_expected_realtime_anchor_date", lambda: "2026-06-18")
+    monkeypatch.setattr(weekend_spread, "write_weekend_spread_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        weekend_spread,
+        "build_weekend_spread_rows",
+        lambda *args, **kwargs: [
+            {
+                "ticker": "NVDA",
+                "status": "OK",
+                "binance_symbol": "NVDAUSDT",
+                "binance_last_price": 104.0,
+                "afterhours_reference_price": 100.0,
+            }
+        ],
+    )
+
+    rows, cache_status = weekend_spread._build_weekend_spread_rows_with_feedback(
+        ["NVDA"],
+        mapping={"NVDA": {"binance_symbol": "NVDAUSDT"}},
+        refresh_options={"refresh": True, "ignored_count": 3},
+    )
+
+    assert rows[0]["ticker"] == "NVDA"
+    assert cache_status["cache_state"] == "API_LIVE"
+
+
 def test_binance_mapping_sync_button_lives_in_mapping_tab_not_realtime() -> None:
     realtime_source = inspect.getsource(weekend_spread._render_realtime_action_bar)
     mapping_source = inspect.getsource(weekend_spread._render_mapping_tab)
