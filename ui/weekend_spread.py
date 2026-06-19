@@ -2828,6 +2828,32 @@ def _percent_or_missing(value: object, row: dict) -> str:
     return "无法计算"
 
 
+def _row_is_missing_afterhours_close(row: dict) -> bool:
+    data_quality = str(row.get("data_quality") or "").strip().upper()
+    p0_quality = str(row.get("p0_quality") or row.get("friday_afterhours_quality") or "").strip().upper()
+    raw_error = str(row.get("error_message") or row.get("friday_afterhours_reason") or row.get("p0_failure_reason") or "").strip().upper()
+    return (
+        data_quality in {"NO_AFTERHOURS_CLOSE", "MISSING_FRIDAY_AFTERHOURS_CLOSE", "MISSING_P0"}
+        or p0_quality in {"MISSING_AFTERHOURS_CLOSE", "NO_AFTERHOURS_CLOSE", "MISSING_P0"}
+        or raw_error in {"NO_AFTERHOURS_CLOSE", "MISSING_FRIDAY_AFTERHOURS_CLOSE"}
+        or "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u6536\u76d8\u4ef7" in raw_error
+    )
+
+
+def _actual_afterhours_close(row: dict) -> float | None:
+    if _row_is_missing_afterhours_close(row):
+        return None
+    return _first_number(
+        row,
+        (
+            "last_trading_day_afterhours_close",
+            "friday_afterhours_close",
+            "p0_selected_bar_close",
+            "afterhours_reference_price",
+        ),
+    )
+
+
 def _p0_source_summary(row: dict) -> str:
     quality = str(row.get("p0_quality") or row.get("data_quality") or "").upper()
     source = _price_source_text(row.get("friday_afterhours_provider") or row.get("p0_provider"))
@@ -2974,14 +3000,7 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
         ticker = str(row.get("ticker") or "").strip().upper()
         if not week_id or not ticker:
             continue
-        friday_afterhours_close = _first_number(
-            row,
-            (
-                "last_trading_day_afterhours_close",
-                "friday_afterhours_close",
-                "afterhours_reference_price",
-            ),
-        )
+        friday_afterhours_close = _actual_afterhours_close(row)
         binance_price = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
         broker_open_close = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close"))
         binance_premium_pct = _first_number(row, ("binance_premium_pct",))
@@ -3134,15 +3153,7 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     records: list[dict[str, object]] = []
     for row in rows:
-        p0 = _first_number(
-            row,
-            (
-                "last_trading_day_afterhours_close",
-                "friday_afterhours_close",
-                "afterhours_reference_price",
-                "p0_selected_bar_close",
-            ),
-        )
+        p0 = _actual_afterhours_close(row)
         p1 = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
         p2 = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close", "broker_open_close"))
         data_quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
@@ -3307,6 +3318,7 @@ def _weekend_review_data_quality(
     broker_open_close: float | None = None,
 ) -> str:
     quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
+    raw_data_quality = str(row.get("data_quality") or "").strip().upper()
     status = str(row.get("status") or "").strip().upper()
     mapping_status = str(row.get("mapping_status") or "").strip().upper()
     cache_status = str(row.get("kline_cache_status") or row.get("cache_status") or "").strip().upper()
@@ -3326,10 +3338,10 @@ def _weekend_review_data_quality(
         return quality
     if quality in {"BOATS_DELAY_PENDING", "ALPACA_BOATS_PERMISSION", "MISSING_BOATS_FIRST_1M", "PROVIDER_ERROR"}:
         return quality
+    if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"} or raw_data_quality == "NO_AFTERHOURS_CLOSE":
+        return "NO_AFTERHOURS_CLOSE"
     if binance_price is None or binance_price <= 0 or quality in {"BINANCE_KLINE_UNAVAILABLE", "CONTRACT_MISSING", "DATA_UNAVAILABLE"}:
         return "CONTRACT_MISSING"
-    if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"}:
-        return "NO_AFTERHOURS_CLOSE"
     if broker_open_close is None or broker_open_close <= 0 or quality in {"MISSING_OVERNIGHT_FIRST_1M", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
         return "MISSING_OVERNIGHT_FIRST_1M"
     if cache_status in {"STALE", "STALE_CACHE", "CACHE_FALLBACK"} or quality in {"STALE_CACHE", "STALE_OR_MISALIGNED"}:
@@ -3917,15 +3929,7 @@ def _historical_afterhours_result_summary_text(rows: list[dict]) -> str:
     fallback = 0
     missing_reasons: dict[str, int] = {}
     for row in rows:
-        p0 = _first_number(
-            row,
-            (
-                "last_trading_day_afterhours_close",
-                "friday_afterhours_close",
-                "afterhours_reference_price",
-                "p0_selected_bar_close",
-            ),
-        )
+        p0 = _actual_afterhours_close(row)
         if p0 is not None:
             available += 1
             cache_status = str(row.get("afterhours_cache_status") or row.get("cache_status") or "").strip().upper()

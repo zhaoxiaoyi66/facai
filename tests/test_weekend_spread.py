@@ -1430,6 +1430,25 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     assert frame.iloc[0]["P2 夜盘首分钟"] == "缺 P2"
 
 
+def test_backtest_diagnostic_frame_does_not_count_reference_price_when_p0_missing() -> None:
+    frame = weekend_spread._backtest_diagnostic_frame(
+        [
+            {
+                "week_id": "2026-W23",
+                "ticker": "GLW",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "transmission_data_quality": "CONTRACT_MISSING",
+                "error_message": "缺少本周最后交易日盘后收盘价",
+                "afterhours_reference_price": 175.2014,
+                "afterhours_cache_status": "CACHE_HIT",
+            }
+        ]
+    )
+
+    assert frame.iloc[0]["P0 最后交易日盘后"] == "缺 P0"
+    assert frame.iloc[0]["失败原因"] == "缺少本周最后交易日盘后收盘价"
+
+
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
@@ -6673,6 +6692,31 @@ def test_afterhours_result_summary_uses_actual_backtest_rows() -> None:
     assert "实际用于回测 1/4" in message
     assert "缺失 3" in message
     assert "缺少 Alpaca 盘后 1m bar" in message
+
+
+def test_afterhours_result_summary_ignores_reference_price_for_missing_p0_rows() -> None:
+    message = weekend_spread._historical_afterhours_result_summary_text(
+        [
+            {"ticker": "GLW", "last_trading_day_afterhours_close": 180.0, "afterhours_cache_status": "CACHE_HIT"},
+            {
+                "ticker": "GLW",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "error_message": "缺少本周最后交易日盘后收盘价",
+                "afterhours_reference_price": 175.2014,
+                "afterhours_cache_status": "CACHE_HIT",
+            },
+            {
+                "ticker": "GLW",
+                "data_quality": "NO_AFTERHOURS_CLOSE",
+                "error_message": "缺少本周最后交易日盘后收盘价",
+                "afterhours_reference_price": 180.7,
+                "afterhours_cache_status": "CACHE_HIT",
+            },
+        ]
+    )
+
+    assert "实际用于回测 1/3" in message
+    assert "缺失 2" in message
 
 
 def test_backtest_settings_labels_do_not_render_literal_newline() -> None:
