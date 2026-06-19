@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 import sys
 import time
 from pathlib import Path
@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider
 from data.portfolio import PortfolioPositionStore
 from data.weekend_spread import is_binance_symbol_ignored, load_binance_symbol_ignore, load_binance_symbol_mapping
+from data.weekend_spread_backtest import ET, get_last_us_trading_day_of_week
 from data.weekend_spread_cache import read_weekend_spread_snapshot
 from data.weekend_spread_monitor import DEFAULT_MONITOR_SNAPSHOT_PATH, run_monitor_scan
 from settings import load_watchlist
@@ -40,9 +41,19 @@ def _run_once(args) -> dict:
         if ticker in tickers
         and str(config.get("binance_symbol") or "").strip()
         and not is_binance_symbol_ignored(ticker, config.get("binance_symbol"), ignored)
+        and _is_monitorable_mapping(config)
     }
-    snapshot = read_weekend_spread_snapshot(mapping=active_mapping, tickers=tickers)
-    rows = [row for row in snapshot.get("rows") or [] if str(row.get("ticker") or "").strip().upper() in tickers]
+    active_tickers = set(active_mapping)
+    snapshot = read_weekend_spread_snapshot(
+        mapping=active_mapping,
+        tickers=active_tickers,
+        expected_afterhours_date=_expected_afterhours_date(),
+    )
+    rows = [
+        row
+        for row in snapshot.get("rows") or []
+        if str(row.get("ticker") or "").strip().upper() in active_tickers and _is_monitorable_mapping(row)
+    ]
     provider = CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=45)
     return run_monitor_scan(
         rows,
@@ -66,6 +77,43 @@ def _selected_tickers(args, mapping: dict[str, dict]) -> set[str]:
             if str(position.get("symbol") or "").strip()
         }
     return tickers
+
+
+def _expected_afterhours_date(now: datetime | None = None) -> str:
+    current_et = (now or datetime.now(timezone.utc)).astimezone(ET)
+    week_start = current_et.date() - timedelta(days=current_et.weekday())
+    try:
+        last_trading_day = get_last_us_trading_day_of_week(week_start)
+    except Exception:
+        return ""
+    final_cutoff = datetime.combine(last_trading_day, dt_time(20, 5), ET)
+    if current_et >= final_cutoff:
+        return last_trading_day.isoformat()
+    try:
+        return get_last_us_trading_day_of_week(week_start - timedelta(days=7)).isoformat()
+    except Exception:
+        return ""
+
+
+def _is_monitorable_mapping(config: dict) -> bool:
+    if not isinstance(config, dict):
+        return False
+    if config.get("manually_locked"):
+        return True
+    quality = str(config.get("mapping_status") or config.get("mapping_quality") or "").strip()
+    bucket = str(config.get("tradfi_bucket") or "").strip().upper()
+    underlying = str(config.get("underlying_type") or "").strip().upper()
+    category = str(config.get("binance_category") or "").strip().upper()
+    note = str(config.get("mapping_risk") or config.get("risk_note") or config.get("reason") or "").upper()
+    if quality == "其他 TradFi" or bucket == "OTHER_TRADFI":
+        return False
+    if underlying in {"COIN", "COMMODITY", "KR_EQUITY", "INDEX", "PREMARKET"}:
+        return False
+    if any(token in category for token in ("其他 TRADFI", "商品", "指数", "RWA", "KR EQUITY")):
+        return False
+    if any(token in note for token in ("其他 TRADFI", "非美股", "商品", "指数", "RWA", "KR EQUITY")):
+        return False
+    return True
 
 
 def _print_run_summary(run: dict) -> None:

@@ -1114,6 +1114,8 @@ def _monitor_candidate_rows(rows: list[dict], ignored: dict[str, dict] | None = 
             continue
         if is_binance_symbol_ignored(ticker, symbol, ignored):
             continue
+        if _is_other_tradfi_mapping(row) and not _is_manual_locked_mapping(row):
+            continue
         source.append(dict(row))
     return source
 
@@ -1526,17 +1528,17 @@ def _mapping_display_label_for_row(row: dict) -> str:
     quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
     if quality in {MAPPING_IGNORED, MAPPING_IGNORED_LABEL, "ignored"}:
         return MAPPING_IGNORED_LABEL
+    if _is_manual_locked_mapping(row):
+        return "人工锁定"
+    if _is_other_tradfi_mapping(row):
+        return MAPPING_UNAVAILABLE_LABEL
     if quality in {MAPPING_AVAILABLE, MAPPING_AVAILABLE_LABEL, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}:
         return MAPPING_AVAILABLE_LABEL
     if quality in {MAPPING_PRICE_ANOMALY, MAPPING_ANOMALY_LABEL, MAPPING_REVIEW, "异常复核", "需确认"}:
         return MAPPING_ANOMALY_LABEL
     if quality in {MAPPING_UNAVAILABLE, MAPPING_UNAVAILABLE_LABEL, MAPPING_INVALID, "无效映射"}:
         return MAPPING_UNAVAILABLE_LABEL
-    if quality in {MAPPING_MANUAL_LOCKED, "人工锁定"}:
-        return "人工锁定"
     if quality in {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, "自动可用，价格校验不足", MAPPING_ANCHOR_MISSING, "锚点缺失"}:
-        return MAPPING_AVAILABLE_LABEL if _row_has_binance_price(row) else MAPPING_UNAVAILABLE_LABEL
-    if quality in {MAPPING_OTHER_TRADFI, "其他 TradFi"}:
         return MAPPING_AVAILABLE_LABEL if _row_has_binance_price(row) else MAPPING_UNAVAILABLE_LABEL
     confidence = str(row.get("mapping_confidence") or row.get("mapping_status") or "").strip().lower()
     if confidence == "confirmed" or confidence == "人工锁定":
@@ -1554,6 +1556,27 @@ def _row_has_afterhours_anchor(row: dict) -> bool:
 
 def _row_has_binance_price(row: dict) -> bool:
     return _number(row.get("adjusted_binance_price") or row.get("binance_last_price")) is not None
+
+
+def _is_manual_locked_mapping(row: dict) -> bool:
+    quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
+    confidence = str(row.get("mapping_confidence") or row.get("mapping_status") or "").strip().lower()
+    return bool(row.get("manually_locked")) or quality in {MAPPING_MANUAL_LOCKED, "人工锁定"} or confidence in {"confirmed", "人工锁定"}
+
+
+def _is_other_tradfi_mapping(row: dict) -> bool:
+    quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
+    bucket = str(row.get("tradfi_bucket") or "").strip().upper()
+    underlying = str(row.get("underlying_type") or "").strip().upper()
+    category = str(row.get("binance_category") or "").strip().upper()
+    note = str(row.get("mapping_risk") or row.get("risk_note") or row.get("mapping_quality_reason") or row.get("reason") or "").upper()
+    return (
+        quality in {MAPPING_OTHER_TRADFI, "其他 TradFi"}
+        or bucket == "OTHER_TRADFI"
+        or underlying in {"COIN", "COMMODITY", "KR_EQUITY", "INDEX", "PREMARKET"}
+        or any(token in category for token in ("其他 TRADFI", "商品", "指数", "RWA", "KR EQUITY"))
+        or any(token in note for token in ("其他 TRADFI", "非美股", "商品", "指数", "RWA", "KR EQUITY"))
+    )
 
 
 def _is_realtime_main_row(row: dict) -> bool:
@@ -1652,7 +1675,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
 
     with st.expander("回测设置", expanded=False):
         include_unconfirmed = st.checkbox(
-            "显示未确认映射排除原因",
+            "显示不可用映射排除原因",
             value=include_unconfirmed,
             key="weekend_spread_backtest_include_unconfirmed",
             help="已忽略和不可用映射不会进入正式回测，只在排除原因中展示。",
@@ -1845,15 +1868,21 @@ def _is_auto_mapping_config(config: dict | None) -> bool:
         return False
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
     status = str(config.get("mapping_status") or "").strip()
-    return confidence == "auto_available" and status in {
-        "",
-        MAPPING_AVAILABLE,
-        MAPPING_PRICE_ANOMALY,
-        MAPPING_US_EQUITY_VERIFIED,
-        MAPPING_ETF_VERIFIED,
-        MAPPING_REVIEW,
-        "自动可用",
-    }
+    if status in {MAPPING_UNAVAILABLE, MAPPING_INVALID, MAPPING_IGNORED, MAPPING_IGNORED_LABEL, "不可用", "已忽略"}:
+        return False
+    return bool(str(config.get("binance_symbol") or "").strip()) or (
+        confidence == "auto_available"
+        and status
+        in {
+            "",
+            MAPPING_AVAILABLE,
+            MAPPING_PRICE_ANOMALY,
+            MAPPING_US_EQUITY_VERIFIED,
+            MAPPING_ETF_VERIFIED,
+            MAPPING_REVIEW,
+            "自动可用",
+        }
+    )
 
 
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
@@ -2054,7 +2083,7 @@ def _mapping_status_text(value: object) -> str:
         "us_equity_verified": "映射可用",
         "etf_verified": "映射可用",
         "pending_verification": "映射可用",
-        "other_tradfi": "映射可用",
+        "other_tradfi": "其他 TradFi",
     }.get(text, str(value or "未知"))
 
 
@@ -2068,7 +2097,7 @@ def _data_quality_text(value: object) -> str:
         "STALE_CACHE": "缓存过期",
         "INVALID_PRICE": "价格无效",
         "DATA_UNAVAILABLE": "数据不可用",
-        "UNCONFIRMED_MAPPING": "映射未确认",
+        "UNCONFIRMED_MAPPING": "旧观察样本",
         "OBSERVE_ONLY": "仅观察",
         "OBSERVE_ANCHOR_ONLY": "仅观察锚点",
         "NO_AFTERHOURS_CLOSE": "缺少最后交易日盘后价格",
@@ -2114,7 +2143,7 @@ def _basis_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
     overrides = {
         "ALLOW_SHORT": "允许观察",
-        "BLOCK_MAPPING": "映射待处理",
+        "BLOCK_MAPPING": "映射不可用",
         "BLOCK_LIQUIDITY": "流动性不足",
         "BLOCK_DATA": "数据不足",
     }
@@ -2138,7 +2167,7 @@ def _exclusion_reason_text(value: object) -> str:
     return {
         "NO_MAPPING": "无映射",
         "AUTO_CANDIDATE_NOT_ALLOWED": "自动候选未纳入",
-        "UNCONFIRMED_EXCLUDED": "未确认映射已排除",
+        "UNCONFIRMED_EXCLUDED": "不可用映射已排除",
         "MAPPING_NOT_VERIFIED": "映射不可用或已忽略",
         "OTHER_TRADFI_EXCLUDED": "映射不可用或已忽略",
         "NO_AFTERHOURS_ANCHOR": "缺少盘后锚点",
@@ -4343,6 +4372,14 @@ def _parse_utc_time(value: object) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
+    if text.isdigit():
+        try:
+            timestamp = int(text)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
@@ -4398,6 +4435,9 @@ def _short_hkt_time(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return "暂缺"
+    if text.isdigit():
+        parsed = _parse_utc_time(text)
+        return parsed.astimezone(HKT).strftime("%m-%d %H:%M HKT") if parsed is not None else text[:16]
     normalized = text.replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(normalized)

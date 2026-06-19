@@ -124,9 +124,6 @@ def evaluate_basis_lock_strategy(
         result.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price"})
         return result
     result["broker_anchor_price"] = anchor
-    if str(mapping_confidence or "").lower() != "confirmed":
-        data_quality = "UNCONFIRMED_MAPPING"
-        warnings.append("映射未确认，仅观察，不能作为正式交易信号")
     if not quotes:
         result.update({"status": "FAILED", "data_quality": "BINANCE_KLINE_UNAVAILABLE", "warning": "缺少 Binance bid/ask 报价"})
         return result
@@ -263,9 +260,6 @@ def build_basis_opportunity(
     anchor = _number(broker_anchor_price)
     result["broker_anchor_price"] = anchor
     result["min_binance_short_price"] = _min_binance_short_price(anchor, cfg)
-    if not normalized_mapping.is_confirmed:
-        result.update({"status": "BLOCK_MAPPING", "data_quality": "UNCONFIRMED_MAPPING", "warning": "映射未确认，仅观察，不能作为正式交易信号"})
-        return result
     if anchor is None or anchor <= 0:
         result.update({"status": "BLOCK_DATA", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price"})
         return result

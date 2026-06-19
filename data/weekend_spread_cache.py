@@ -70,7 +70,7 @@ def read_weekend_spread_snapshot(
     return {
         "cache_state": state,
         "cache_message": message,
-        "rows": rows,
+        "rows": _mask_stale_afterhours_rows(rows, expected_afterhours_date=expected_afterhours_date),
         "generated_at": generated_at,
         "data_status": str(payload.get("data_status") or "OK"),
         "mapping_hash": str(payload.get("mapping_hash") or ""),
@@ -200,7 +200,35 @@ def _has_stale_afterhours_anchor(rows: list[dict[str, Any]], expected_afterhours
     valid_dates = [item for item in row_dates if item is not None]
     if not valid_dates:
         return False
-    return max(valid_dates) < expected
+    return any(item < expected for item in valid_dates)
+
+
+def _mask_stale_afterhours_rows(rows: list[dict[str, Any]], *, expected_afterhours_date: str) -> list[dict[str, Any]]:
+    expected = _parse_date(expected_afterhours_date)
+    if expected is None:
+        return rows
+    masked: list[dict[str, Any]] = []
+    for row in rows or []:
+        item = dict(row)
+        row_date = _row_anchor_date(item)
+        if row_date is not None and row_date < expected:
+            item["regular_close_price"] = None
+            item["regular_close_date"] = ""
+            item["friday_close"] = None
+            item["friday_close_date"] = ""
+            item["afterhours_reference_price"] = None
+            item["afterhours_reference_time"] = ""
+            item["afterhours_reference_source"] = ""
+            item["afterhours_data_quality"] = "MISSING"
+            item["afterhours_cache_status"] = "CACHE_DATE_MISMATCH"
+            item["afterhours_anchor_status"] = ""
+            item["afterhours_missing_reason"] = "CACHE_DATE_MISMATCH"
+            item["spread_vs_afterhours_pct"] = None
+            item["spread_vs_regular_close_pct"] = None
+            item["primary_spread_pct"] = None
+            item["primary_spread_anchor"] = "STALE_AFTERHOURS_REFERENCE"
+        masked.append(item)
+    return masked
 
 
 def _row_has_price_context(row: dict[str, Any]) -> bool:

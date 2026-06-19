@@ -2399,6 +2399,48 @@ def test_weekend_spread_snapshot_marks_old_afterhours_anchor_date_stale(tmp_path
 
     assert snapshot["cache_state"] == "ANCHOR_DATE_STALE"
     assert snapshot["cache_message"] == "afterhours anchor date is older than current last trading day"
+    assert snapshot["rows"][0]["afterhours_reference_price"] is None
+    assert snapshot["rows"][0]["afterhours_cache_status"] == "CACHE_DATE_MISMATCH"
+
+
+def test_weekend_spread_snapshot_masks_mixed_stale_afterhours_rows(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_snapshot.json"
+    mapping = {
+        "NVDA": _mapping()["NVDA"],
+        "WDC": _mapping(symbol="WDCUSDT")["NVDA"],
+    }
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 209.0,
+            "regular_close_date": "2026-06-18",
+            "afterhours_reference_price": 210.33,
+            "afterhours_reference_time": "2026-06-18T19:59:00-04:00",
+        },
+        {
+            "ticker": "WDC",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": 733.0,
+            "regular_close_date": "2026-05-20",
+            "afterhours_reference_price": 458.5,
+            "afterhours_reference_time": "2026-05-20T19:59:00-04:00",
+        },
+    ]
+    write_weekend_spread_snapshot(rows, mapping=mapping, tickers=["NVDA", "WDC"], path=path)
+
+    snapshot = read_weekend_spread_snapshot(
+        mapping=mapping,
+        tickers=["NVDA", "WDC"],
+        path=path,
+        expected_afterhours_date="2026-06-18",
+    )
+    by_ticker = {row["ticker"]: row for row in snapshot["rows"]}
+
+    assert snapshot["cache_state"] == "ANCHOR_DATE_STALE"
+    assert by_ticker["NVDA"]["afterhours_reference_price"] == 210.33
+    assert by_ticker["WDC"]["afterhours_reference_price"] is None
+    assert by_ticker["WDC"]["afterhours_cache_status"] == "CACHE_DATE_MISMATCH"
 
 
 def test_provider_failure_preserves_last_good_snapshot(tmp_path) -> None:
@@ -3004,7 +3046,7 @@ def test_weekend_basis_backtest_does_not_use_5m_or_regular_open_as_formal_p2() -
     assert summarize_backtest_results(rows)["sample_weeks"] == 0
 
 
-def test_weekend_basis_backtest_marks_unconfirmed_mapping_observe_only() -> None:
+def test_weekend_basis_backtest_uses_data_quality_not_mapping_confirmation() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     quotes = [
@@ -3029,9 +3071,8 @@ def test_weekend_basis_backtest_marks_unconfirmed_mapping_observe_only() -> None
     )
 
     assert rows[0]["status"] == "HEDGE_LOCKED"
-    assert rows[0]["data_quality"] == "OBSERVE_ONLY"
-    assert rows[0]["mapping_status"] == "CANDIDATE_OBSERVATION"
-    assert summarize_backtest_results(rows)["sample_weeks"] == 0
+    assert rows[0]["data_quality"] == "OK"
+    assert summarize_backtest_results(rows)["sample_weeks"] == 1
 
 
 def test_weekend_basis_backtest_marks_kline_execution_as_estimated() -> None:
@@ -3459,7 +3500,7 @@ def test_weekend_basis_backfill_supports_weekly_anchor_and_low_risk_window() -> 
     assert summarize_backfill_audit_results(rows)["strict_sample_count"] > 0
 
 
-def test_basis_opportunity_blocks_unconfirmed_mapping() -> None:
+def test_basis_opportunity_allows_candidate_mapping_when_prices_exist() -> None:
     now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
     opportunity = build_basis_opportunity(
         ticker="NVDA",
@@ -3469,8 +3510,8 @@ def test_basis_opportunity_blocks_unconfirmed_mapping() -> None:
         now=now,
     )
 
-    assert opportunity["status"] == "BLOCK_MAPPING"
-    assert opportunity["data_quality"] == "UNCONFIRMED_MAPPING"
+    assert opportunity["status"] == "ENTRY_CANDIDATE"
+    assert opportunity["data_quality"] == "OK"
 
 
 def test_basis_opportunity_allows_short_only_when_signal_liquidity_and_mapping_pass() -> None:
@@ -3812,7 +3853,7 @@ def test_backtest_preflight_blocks_no_mapping() -> None:
     assert preflight["excluded"][0]["exclusion_reason"] == "NO_MAPPING"
 
 
-def test_backtest_preflight_excludes_candidate_by_default() -> None:
+def test_backtest_preflight_allows_candidate_by_default() -> None:
     preflight = build_weekend_backtest_preflight(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="candidate", risk_note="manual candidate"),
@@ -3820,9 +3861,8 @@ def test_backtest_preflight_excludes_candidate_by_default() -> None:
         include_unconfirmed=False,
     )
 
-    assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
-    assert preflight["excluded"][0]["symbol"] == "NVDAUSDT"
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
 
 
 def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> None:
@@ -3858,8 +3898,8 @@ def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
         include_unconfirmed=True,
     )
 
-    assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
 
 
 def test_backtest_preflight_allows_missing_price_anchor_for_diagnostics() -> None:
@@ -3914,7 +3954,7 @@ def test_weekend_peak_short_backtest_handles_futures_timeout() -> None:
     assert "futures timeout" in frame.loc[0, "排除 / 提醒"]
 
 
-def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
+def test_weekend_peak_short_backtest_does_not_downgrade_candidate_mapping() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
     bars = [
@@ -3931,8 +3971,7 @@ def test_weekend_peak_short_backtest_marks_unconfirmed_mapping() -> None:
         now=now,
     )
 
-    assert rows[0]["data_quality"] == "UNCONFIRMED_MAPPING"
-    assert "仅作观察" in rows[0]["result_note"]
+    assert rows[0]["data_quality"] == "OK"
 
 
 def test_backtest_summary_excludes_unconfirmed_mapping_from_formal_win_rate() -> None:
@@ -5445,6 +5484,23 @@ def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
     assert latest_monitor_run(path)["run_id"] == run["run_id"]
 
 
+def test_weekend_monitor_normalizes_epoch_anchor_time(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {
+            "ticker": "GME",
+            "binance_symbol": "GMEUSDT",
+            "afterhours_reference_price": 21.48,
+            "afterhours_reference_time": "1781827182000",
+        }
+    ]
+
+    run = run_monitor_scan(rows, price_map={"GMEUSDT": 20.71}, snapshot_path=path)
+
+    assert run["rows"][0]["anchor_time"].startswith("2026-")
+    assert "HKT" in weekend_spread._short_hkt_time("1781827182000")
+
+
 def test_weekend_monitor_second_scan_calculates_15m_changes(tmp_path) -> None:
     path = tmp_path / "weekend_spread_monitor_snapshots.json"
     rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
@@ -5513,6 +5569,27 @@ def test_weekend_monitor_skips_ignored_and_missing_anchor(tmp_path) -> None:
     assert [row["ticker"] for row in run["rows"]] == ["NVDA"]
     assert run["summary"]["ignored_count"] == 1
     assert run["summary"]["anchor_missing_count"] == 1
+
+
+def test_weekend_monitor_skips_other_tradfi_without_manual_lock(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0, "mapping_quality": MAPPING_US_EQUITY_VERIFIED},
+        {
+            "ticker": "STX",
+            "binance_symbol": "STXUSDT",
+            "afterhours_reference_price": 750.0,
+            "mapping_quality": MAPPING_OTHER_TRADFI,
+            "underlying_type": "COIN",
+            "tradfi_bucket": "OTHER_TRADFI",
+        },
+    ]
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0, "STXUSDT": 0.18}, snapshot_path=path)
+
+    assert [row["ticker"] for row in run["rows"]] == ["NVDA"]
+    assert run["summary"]["valid_count"] == 1
+    assert run["summary"]["top"]["max_discount"]["ticker"] == "NVDA"
 
 
 def test_weekend_monitor_top_rankings_are_correct(tmp_path) -> None:
@@ -5855,10 +5932,10 @@ def test_price_available_mappings_enter_default_realtime_table() -> None:
     ]
 
     main_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部 Binance 美股映射")
-    assert [row["ticker"] for row in main_rows] == ["NVDA", "GOLD"]
+    assert [row["ticker"] for row in main_rows] == ["NVDA"]
 
 
-def test_pending_mapping_is_excluded_from_formal_backtest_even_when_requested() -> None:
+def test_pending_mapping_enters_backtest_when_binance_symbol_exists() -> None:
     preflight = build_weekend_backtest_preflight(
         ["NVDA"],
         mapping=_mapping(mapping_confidence="manual_required", mapping_status=MAPPING_PENDING_VERIFICATION),
@@ -5866,8 +5943,8 @@ def test_pending_mapping_is_excluded_from_formal_backtest_even_when_requested() 
         include_unconfirmed=True,
     )
 
-    assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
+    assert preflight["can_run"] is True
+    assert preflight["eligible_tickers"] == ["NVDA"]
 
 
 def test_binance_equity_scan_preserves_manual_locked_mapping() -> None:

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -47,6 +48,9 @@ def run_monitor_scan(
     for row in rows:
         if row["ignored"]:
             skipped["ignored"] += 1
+            continue
+        if row["excluded"]:
+            skipped["unavailable"] += 1
             continue
         if not row["ticker"] or not row["binance_symbol"]:
             skipped["unavailable"] += 1
@@ -275,16 +279,40 @@ def _monitor_status(
 
 
 def _normalize_source_row(row: dict[str, Any]) -> dict[str, Any]:
+    other_tradfi = _is_other_tradfi_source(row)
+    manual_locked = _is_manual_locked_source(row)
     return {
         "ticker": str(row.get("ticker") or "").strip().upper(),
         "binance_symbol": str(row.get("binance_symbol") or "").strip().upper(),
         "anchor_price": _number(row.get("afterhours_reference_price") or row.get("anchor_price")),
-        "anchor_time": str(row.get("afterhours_reference_time") or row.get("anchor_time") or ""),
+        "anchor_time": _normalize_time_text(row.get("afterhours_reference_time") or row.get("anchor_time") or ""),
         "ignored": bool(row.get("ignored")),
+        "excluded": other_tradfi and not manual_locked,
         "is_watchlist": bool(row.get("is_watchlist")),
         "is_position": bool(row.get("is_position")),
         "is_core": bool(row.get("is_core") or row.get("is_core_position")),
     }
+
+
+def _is_manual_locked_source(row: dict[str, Any]) -> bool:
+    quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
+    confidence = str(row.get("mapping_confidence") or row.get("mapping_status") or "").strip().lower()
+    return bool(row.get("manually_locked")) or quality == "人工锁定" or confidence in {"confirmed", "人工锁定"}
+
+
+def _is_other_tradfi_source(row: dict[str, Any]) -> bool:
+    quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
+    bucket = str(row.get("tradfi_bucket") or "").strip().upper()
+    underlying = str(row.get("underlying_type") or "").strip().upper()
+    category = str(row.get("binance_category") or "").strip().upper()
+    note = str(row.get("mapping_risk") or row.get("risk_note") or row.get("mapping_quality_reason") or row.get("reason") or "").upper()
+    return (
+        quality == "其他 TradFi"
+        or bucket == "OTHER_TRADFI"
+        or underlying in {"COIN", "COMMODITY", "KR_EQUITY", "INDEX", "PREMARKET"}
+        or any(token in category for token in ("其他 TRADFI", "商品", "指数", "RWA", "KR EQUITY"))
+        or any(token in note for token in ("其他 TRADFI", "非美股", "商品", "指数", "RWA", "KR EQUITY"))
+    )
 
 
 def _latest_rows_by_ticker(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -298,7 +326,16 @@ def _latest_rows_by_ticker(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     temp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(temp_path, path)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            os.replace(temp_path, path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.05 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def _parse_utc_time(value: Any) -> datetime | None:
@@ -308,6 +345,14 @@ def _parse_utc_time(value: Any) -> datetime | None:
         text = str(value or "").strip()
         if not text:
             return None
+        if text.isdigit():
+            try:
+                timestamp = int(text)
+                if timestamp > 10_000_000_000:
+                    timestamp = timestamp / 1000
+                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
@@ -315,6 +360,11 @@ def _parse_utc_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _normalize_time_text(value: Any) -> str:
+    parsed = _parse_utc_time(value)
+    return parsed.isoformat() if parsed is not None else str(value or "")
 
 
 def _top_label(row: Any, metric_key: str) -> str:

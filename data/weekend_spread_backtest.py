@@ -14,7 +14,6 @@ from data.binance_equity_scan import (
     MAPPING_IGNORED,
     MAPPING_INVALID,
     MAPPING_MANUAL_LOCKED,
-    MAPPING_OTHER_TRADFI,
     MAPPING_PENDING_VERIFICATION,
     MAPPING_PRICE_ANOMALY,
     MAPPING_REVIEW,
@@ -247,10 +246,8 @@ def build_weekend_backtest_preflight(
             row["mapping_status"] = mapping_status
         elif _number(config.get("binance_price")) is not None:
             row["mapping_status"] = mapping_status or MAPPING_AVAILABLE
-        elif confidence != "confirmed":
-            row["exclusion_reason"] = "MAPPING_NOT_VERIFIED"
-            excluded.append(row)
-            continue
+        else:
+            row["mapping_status"] = mapping_status or MAPPING_AVAILABLE
         if anchor_price is None or anchor_price <= 0:
             row["exclusion_reason"] = "NO_AFTERHOURS_ANCHOR"
             excluded.append(row)
@@ -1332,9 +1329,6 @@ def _backtest_one_window(
             premium_decay_ratio = premium_decay / weekend_peak_premium * 100.0
     quality = "OK"
     note = "历史观察回测，不构成套利建议。"
-    if mapping_confidence != "confirmed":
-        quality = "UNCONFIRMED_MAPPING"
-        note = "映射未人工锁定，结果仅作观察。"
     if kline_cache_status == "CACHE_FALLBACK":
         note = f"{note} 使用缓存 K 线。"
     base.update(
@@ -1684,7 +1678,7 @@ def _basis_backtest_one_window(
             )
     elif stock_bar.get("quality") == "DEGRADED_5M" and result.get("data_quality") == "OK":
         result.update({"data_quality": "DEGRADED_5M", "warning": "使用 5m bar 替代 1m，样本仅作降级观察"})
-    if mapping_confidence != "confirmed" and not _is_verified_mapping_config(config) and result.get("data_quality") not in {
+    if not _is_verified_mapping_config(config) and result.get("data_quality") not in {
         "MISSING_STOCK_FIRST_BAR",
         "BINANCE_KLINE_UNAVAILABLE",
         "NO_PRICE_ANCHOR",
@@ -1694,7 +1688,7 @@ def _basis_backtest_one_window(
             {
                 "data_quality": "OBSERVE_ONLY",
                 "mapping_status": "CANDIDATE_OBSERVATION",
-                "warning": _append_warning(result.get("warning"), "当前包含未确认映射，结果仅作观察，不计入正式胜率"),
+                "warning": _append_warning(result.get("warning"), "该映射不可用或缺少 Binance 合约，结果仅作观察，不计入正式胜率"),
             }
         )
     _apply_basis_compat_fields(result)
@@ -1871,7 +1865,7 @@ def _backfill_block_rows(ticker: str, mapping_config: dict[str, Any], windows: l
                 "status": "BLOCK_MAPPING" if reason == "BLOCK_MAPPING" else "BLOCK_DATA",
                 "data_mode": "OBSERVATION",
                 "data_quality": reason,
-                "warning": "映射未确认，仅观察，不能进入正式收益统计" if reason == "BLOCK_MAPPING" else "暂无 confirmed mapping",
+                "warning": "映射不可用，仅观察，不能进入正式收益统计" if reason == "BLOCK_MAPPING" else "暂无可用映射",
             }
         )
         rows.append(row)
@@ -2991,7 +2985,11 @@ def _normalized_mapping_status(config: dict[str, Any]) -> str:
 def _is_verified_mapping_config(config: dict[str, Any]) -> bool:
     status = _normalized_mapping_status(config)
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
-    return confidence == "auto_available" and status in BACKTEST_VERIFIED_MAPPING_STATUSES
+    if status in BACKTEST_BLOCKED_MAPPING_STATUSES:
+        return False
+    return bool(str(config.get("binance_symbol") or "").strip()) or (
+        confidence == "auto_available" and status in BACKTEST_VERIFIED_MAPPING_STATUSES
+    )
 
 
 def _normalize_tickers(tickers: Iterable[str]) -> list[str]:
