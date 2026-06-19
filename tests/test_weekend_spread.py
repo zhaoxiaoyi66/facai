@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import inspect
 import json
 from urllib.error import HTTPError
@@ -63,6 +63,7 @@ from data.tradingview_price_cache import (
     load_price_cache,
 )
 from data.weekend_spread import (
+    _friday_close,
     build_mapping_diagnostics,
     build_weekend_spread_rows,
     classify_spread,
@@ -1617,6 +1618,40 @@ def test_friday_holiday_uses_previous_trading_day_close() -> None:
     assert rows[0]["friday_close_date"] == "2026-06-11"
     assert rows[0]["close_source"] == "previous_trading_day_before_friday"
     assert provider.calls == ["usdm_futures:NVDAUSDT"]
+
+
+def test_realtime_reference_prefers_latest_week_trading_day_over_older_friday() -> None:
+    cache = FakeCache(
+        pd.DataFrame(
+            [
+                {"date": "2026-06-12", "close": 205.19},
+                {"date": "2026-06-18", "close": 201.55},
+            ]
+        )
+    )
+
+    close, close_date, close_source = _friday_close(cache, "NVDA", today=date(2026, 6, 19))
+
+    assert close == 201.55
+    assert close_date == "2026-06-18"
+    assert close_source == "previous_trading_day_before_friday"
+
+
+def test_realtime_reference_uses_friday_when_available() -> None:
+    cache = FakeCache(
+        pd.DataFrame(
+            [
+                {"date": "2026-06-18", "close": 201.55},
+                {"date": "2026-06-19", "close": 206.25},
+            ]
+        )
+    )
+
+    close, close_date, close_source = _friday_close(cache, "NVDA", today=date(2026, 6, 19))
+
+    assert close == 206.25
+    assert close_date == "2026-06-19"
+    assert close_source == "friday_close"
 
 
 def test_bid_ask_spread_and_funding_warnings_are_exposed() -> None:

@@ -635,7 +635,7 @@ def _spread_fields(adjusted_binance_price: float | None, regular_close_price: fl
     }
 
 
-def _friday_close(cache: CacheReadModel, ticker: str) -> tuple[float | None, str, str]:
+def _friday_close(cache: CacheReadModel, ticker: str, *, today: date | None = None) -> tuple[float | None, str, str]:
     history = cache.get_price_history(ticker)
     if history is None or history.empty or "date" not in history or "close" not in history:
         return None, "", "missing_history"
@@ -645,16 +645,14 @@ def _friday_close(cache: CacheReadModel, ticker: str) -> tuple[float | None, str
     frame = frame.dropna(subset=["date", "close"]).sort_values("date")
     if frame.empty:
         return None, "", "missing_history"
-    target_friday = _latest_reference_friday()
-    eligible = frame[frame["date"].dt.date <= target_friday]
+    target_friday = _latest_reference_friday(today)
+    eligible = frame[(frame["date"].dt.date <= target_friday) & (frame["date"].dt.weekday < 5)]
     if eligible.empty:
         return None, "", "missing_friday_close"
-    fridays = eligible[eligible["date"].dt.weekday == 4]
-    if not fridays.empty:
-        latest = fridays.iloc[-1]
-        return float(latest["close"]), latest["date"].date().isoformat(), "friday_close"
     latest = eligible.iloc[-1]
-    return float(latest["close"]), latest["date"].date().isoformat(), "previous_trading_day_before_friday"
+    latest_date = latest["date"].date()
+    close_source = "friday_close" if latest_date.weekday() == 4 else "previous_trading_day_before_friday"
+    return float(latest["close"]), latest_date.isoformat(), close_source
 
 
 def _latest_reference_friday(today: date | None = None) -> date:
