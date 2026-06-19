@@ -9,12 +9,16 @@ from zoneinfo import ZoneInfo
 
 from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.binance_equity_scan import (
+    MAPPING_AVAILABLE,
     MAPPING_ETF_VERIFIED,
+    MAPPING_IGNORED,
     MAPPING_INVALID,
     MAPPING_MANUAL_LOCKED,
     MAPPING_OTHER_TRADFI,
     MAPPING_PENDING_VERIFICATION,
+    MAPPING_PRICE_ANOMALY,
     MAPPING_REVIEW,
+    MAPPING_UNAVAILABLE,
     MAPPING_US_EQUITY_VERIFIED,
 )
 from data.weekend_basis import (
@@ -39,8 +43,15 @@ DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backt
 DEFAULT_BACKTEST_KLINE_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_klines.json"
 BACKFILL_THRESHOLDS_BPS = (80.0, 100.0, 120.0, 150.0)
 BACKFILL_RELATIVE_WINDOWS_HOURS = (6, 12)
-BACKTEST_VERIFIED_MAPPING_STATUSES = {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}
-BACKTEST_BLOCKED_MAPPING_STATUSES = {MAPPING_PENDING_VERIFICATION, MAPPING_OTHER_TRADFI, MAPPING_INVALID}
+BACKTEST_VERIFIED_MAPPING_STATUSES = {
+    MAPPING_AVAILABLE,
+    MAPPING_PRICE_ANOMALY,
+    MAPPING_US_EQUITY_VERIFIED,
+    MAPPING_ETF_VERIFIED,
+    MAPPING_REVIEW,
+    "自动可用",
+}
+BACKTEST_BLOCKED_MAPPING_STATUSES = {MAPPING_INVALID, MAPPING_UNAVAILABLE, MAPPING_IGNORED}
 STOCK_OPEN_ANCHORS = ("overnight", "premarket", "regular_open")
 STOCK_OPEN_ANCHOR_LABELS = {
     "overnight": "券商夜盘",
@@ -226,11 +237,7 @@ def build_weekend_backtest_preflight(
         row.update({"mapping_status": mapping_status or confidence or "unverified", "symbol": symbol})
         anchor = effective_anchors.get(ticker) or {}
         anchor_price = _number(anchor.get("afterhours_reference_price") or anchor.get("anchor_price"))
-        if mapping_status in {MAPPING_OTHER_TRADFI}:
-            row["exclusion_reason"] = "OTHER_TRADFI_EXCLUDED"
-            excluded.append(row)
-            continue
-        if mapping_status in BACKTEST_BLOCKED_MAPPING_STATUSES or confidence in {"candidate", "unverified", "manual_required"}:
+        if mapping_status in BACKTEST_BLOCKED_MAPPING_STATUSES:
             row["exclusion_reason"] = "MAPPING_NOT_VERIFIED"
             excluded.append(row)
             continue
@@ -238,6 +245,8 @@ def build_weekend_backtest_preflight(
             row["mapping_status"] = MAPPING_MANUAL_LOCKED
         elif confidence == "auto_available" and mapping_status in BACKTEST_VERIFIED_MAPPING_STATUSES:
             row["mapping_status"] = mapping_status
+        elif _number(config.get("binance_price")) is not None:
+            row["mapping_status"] = mapping_status or MAPPING_AVAILABLE
         elif confidence != "confirmed":
             row["exclusion_reason"] = "MAPPING_NOT_VERIFIED"
             excluded.append(row)
@@ -2956,7 +2965,15 @@ def _is_auto_candidate(config: dict[str, Any]) -> bool:
 def _normalized_mapping_status(config: dict[str, Any]) -> str:
     status = str(config.get("mapping_status") or "").strip()
     if status == "自动可用":
-        return MAPPING_US_EQUITY_VERIFIED
+        return MAPPING_AVAILABLE
+    if status == MAPPING_AVAILABLE:
+        return MAPPING_AVAILABLE
+    if status == MAPPING_PRICE_ANOMALY:
+        return MAPPING_PRICE_ANOMALY
+    if status == MAPPING_IGNORED:
+        return MAPPING_IGNORED
+    if status == MAPPING_UNAVAILABLE:
+        return MAPPING_UNAVAILABLE
     if status == "自动可用，价格校验不足":
         return MAPPING_PENDING_VERIFICATION
     if status:
@@ -2965,7 +2982,7 @@ def _normalized_mapping_status(config: dict[str, Any]) -> str:
     if confidence == "confirmed" or bool(config.get("manually_locked")):
         return MAPPING_MANUAL_LOCKED
     if confidence == "auto_available":
-        return MAPPING_US_EQUITY_VERIFIED
+        return MAPPING_AVAILABLE
     if confidence in {"candidate", "unverified", "manual_required"}:
         return MAPPING_PENDING_VERIFICATION
     return ""

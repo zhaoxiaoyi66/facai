@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
 from data.cache_read_model import CacheReadModel
+from data.weekend_spread import is_binance_symbol_ignored
 from settings import PROJECT_ROOT
 
 
@@ -19,7 +20,11 @@ MAPPING_US_EQUITY_VERIFIED = "美股已验证"
 MAPPING_ETF_VERIFIED = "ETF 已验证"
 MAPPING_PENDING_VERIFICATION = "待校验映射"
 MAPPING_OTHER_TRADFI = "其他 TradFi"
-MAPPING_AUTO_USABLE = MAPPING_US_EQUITY_VERIFIED
+MAPPING_AVAILABLE = "映射可用"
+MAPPING_PRICE_ANOMALY = "价格异常"
+MAPPING_UNAVAILABLE = "不可用"
+MAPPING_IGNORED = "已忽略"
+MAPPING_AUTO_USABLE = MAPPING_AVAILABLE
 MAPPING_PRICE_UNVERIFIED = MAPPING_PENDING_VERIFICATION
 MAPPING_REVIEW = "异常复核"
 MAPPING_ANCHOR_MISSING = "锚点缺失"
@@ -181,12 +186,14 @@ def scan_binance_equity_mapped_symbols(
     watchlist: Iterable[str] | None = None,
     position_symbols: Iterable[str] | None = None,
     manual_mapping: dict[str, dict[str, Any]] | None = None,
+    ignored_mappings: dict[str, dict[str, Any]] | None = None,
     force_refresh: bool = False,
     max_symbols: int | None = None,
 ) -> list[dict[str, Any]]:
     price_provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=60)
     read_model = cache or CacheReadModel()
     manual_mapping = {str(key or "").strip().upper(): dict(value or {}) for key, value in (manual_mapping or {}).items()}
+    ignored_mappings = {str(key or "").strip().upper(): dict(value or {}) for key, value in (ignored_mappings or {}).items()}
     watchlist_set = _normalize_set(watchlist)
     position_set = _normalize_set(position_symbols)
     validation_universe = (
@@ -211,6 +218,8 @@ def scan_binance_equity_mapped_symbols(
         binance_symbol = str(raw.get("symbol") or "").strip().upper()
         ticker = parse_us_equity_ticker_from_binance_symbol(binance_symbol)
         if not ticker:
+            continue
+        if is_binance_symbol_ignored(ticker, binance_symbol, ignored_mappings):
             continue
         is_binance_tradfi = _is_internal_tradfi_contract(raw)
         if not is_binance_tradfi and ticker not in validation_universe:
@@ -242,6 +251,8 @@ def scan_binance_equity_mapped_symbols(
             continue
         symbol = str(config.get("binance_symbol") or f"{ticker}USDT").strip().upper()
         if not symbol:
+            continue
+        if is_binance_symbol_ignored(ticker, symbol, ignored_mappings):
             continue
         records.append(
             _scan_one_symbol(
@@ -280,7 +291,7 @@ def scan_records_to_mapping(records: Iterable[dict[str, Any]], manual_mapping: d
             result[ticker] = locked
             continue
         quality = str(record.get("mapping_quality") or MAPPING_INVALID).strip()
-        confidence = "auto_available" if quality in {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED} else "manual_required"
+        confidence = "auto_available" if quality in {MAPPING_AVAILABLE, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED} else "manual_required"
         result[ticker] = {
             **manual_config,
             "enabled": quality != MAPPING_INVALID,
@@ -386,15 +397,7 @@ def _mapping_quality(
         return MAPPING_MANUAL_LOCKED, "人工锁定映射"
     if binance_price is None:
         return MAPPING_INVALID, _price_error_text(binance_status)
-    if tradfi_bucket == TRADFI_BUCKET_OTHER:
-        return MAPPING_OTHER_TRADFI, "Binance 分类属于指数、商品、KR Equity、RWA、Pre-market 等非美股普通股/ETF映射"
-    if stock_ref is None:
-        return MAPPING_PENDING_VERIFICATION, "Binance 价格可用，但尚未完成美股价格 / 盘后锚点校验"
-    if diff_pct is not None and diff_pct <= 30:
-        if tradfi_bucket == TRADFI_BUCKET_ETF:
-            return MAPPING_ETF_VERIFIED, "Binance 价格可用，ETF 参考价校验正常"
-        return MAPPING_US_EQUITY_VERIFIED, "Binance 价格可用，且与美股参考价偏差正常"
-    return MAPPING_REVIEW, "Binance 价格与美股参考价偏差过大"
+    return MAPPING_AVAILABLE, "Binance 合约价格读取成功，映射可用"
 
 
 def _price_error_text(error: str) -> str:
@@ -499,8 +502,8 @@ def _binance_category(raw: dict[str, Any]) -> str:
 
 
 def _mapping_note(quality: str) -> str:
-    if quality in {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}:
-        return "Binance 官方分类识别，并通过美股参考价校验。"
+    if quality in {MAPPING_AVAILABLE, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}:
+        return "Binance 合约价格读取成功，映射可用。"
     if quality == MAPPING_PENDING_VERIFICATION:
         return "Binance 价格可用，但尚未完成美股价格 / 盘后锚点校验。"
     if quality == MAPPING_OTHER_TRADFI:

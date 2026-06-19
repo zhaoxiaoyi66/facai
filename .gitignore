@@ -17,6 +17,7 @@ config/*.local.json
 config/*.local.yaml
 config/*.local.yml
 config/binance_symbol_mapping.local.json
+config/binance_symbol_ignore.local.json
 !config/*.example.json
 !config/*.example.yaml
 !config/*.example.yml

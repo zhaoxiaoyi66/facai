@@ -15,13 +15,17 @@ from data.binance_equity_scan import (
     DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH,
     MAPPING_ANCHOR_MISSING,
     MAPPING_AUTO_USABLE,
+    MAPPING_AVAILABLE,
     MAPPING_ETF_VERIFIED,
+    MAPPING_IGNORED,
     MAPPING_INVALID,
     MAPPING_MANUAL_LOCKED,
     MAPPING_OTHER_TRADFI,
     MAPPING_PENDING_VERIFICATION,
+    MAPPING_PRICE_ANOMALY,
     MAPPING_PRICE_UNVERIFIED,
     MAPPING_REVIEW,
+    MAPPING_UNAVAILABLE,
     MAPPING_US_EQUITY_VERIFIED,
     read_binance_equity_scan_cache,
     scan_binance_equity_mapped_symbols,
@@ -49,10 +53,15 @@ from data.weekend_spread_backtest import (
     summarize_backtest_results,
 )
 from data.weekend_spread import (
+    DEFAULT_IGNORE_PATH,
     DEFAULT_LOCAL_MAPPING_PATH,
     build_mapping_diagnostics,
     build_weekend_spread_rows,
+    ignore_binance_symbol,
+    is_binance_symbol_ignored,
     load_binance_symbol_mapping,
+    load_binance_symbol_ignore,
+    restore_ignored_binance_symbol,
     upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
@@ -92,10 +101,14 @@ TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 HKT = ZoneInfo("Asia/Hong_Kong")
 ET = ZoneInfo("America/New_York")
-VERIFIED_MAPPING_LABELS = {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}
+VERIFIED_MAPPING_LABELS = {MAPPING_AVAILABLE, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}
 PENDING_MAPPING_LABELS = {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, MAPPING_ANCHOR_MISSING, "自动可用，价格校验不足", "锚点缺失"}
 REVIEW_MAPPING_LABELS = {MAPPING_REVIEW, "需确认", "异常复核"}
 INVALID_MAPPING_LABELS = {MAPPING_INVALID, "无效映射", "无映射"}
+MAPPING_AVAILABLE_LABEL = "映射可用"
+MAPPING_ANOMALY_LABEL = "价格异常"
+MAPPING_UNAVAILABLE_LABEL = "不可用"
+MAPPING_IGNORED_LABEL = "已忽略"
 
 
 def _apply_weekend_spread_layout_css() -> None:
@@ -200,24 +213,51 @@ def render() -> None:
     st.warning(RISK_NOTICE)
 
     mapping = load_binance_symbol_mapping()
+    ignored = load_binance_symbol_ignore()
+    active_mapping = _filter_ignored_mapping(mapping, ignored)
     watchlist = load_watchlist()
 
     realtime_tab, backtest_tab, mapping_tab = st.tabs([TAB_REALTIME, TAB_BACKTEST, TAB_MAPPING])
 
     with realtime_tab:
-        rows, mapping_counts = _render_realtime_tab(watchlist, mapping)
+        rows, mapping_counts = _render_realtime_tab(watchlist, active_mapping, ignored)
     with backtest_tab:
-        _render_backtest_tab(watchlist, mapping)
+        _render_backtest_tab(watchlist, active_mapping)
     with mapping_tab:
-        _render_mapping_tab(rows, mapping, mapping_counts)
+        _render_mapping_tab(rows, mapping, mapping_counts, ignored)
+
+
+def _filter_ignored_mapping(mapping: dict[str, dict], ignored: dict[str, dict] | None = None) -> dict[str, dict]:
+    ignored = ignored or {}
+    result: dict[str, dict] = {}
+    for ticker, config in (mapping or {}).items():
+        symbol = str((config or {}).get("binance_symbol") or "").strip().upper()
+        if is_binance_symbol_ignored(ticker, symbol, ignored):
+            continue
+        result[str(ticker or "").strip().upper()] = dict(config or {})
+    return result
+
+
+def _filter_ignored_records(records: list[dict], ignored: dict[str, dict] | None = None) -> list[dict]:
+    ignored = ignored or {}
+    return [
+        dict(record)
+        for record in records or []
+        if not is_binance_symbol_ignored(record.get("ticker"), record.get("binance_symbol"), ignored)
+    ]
 
 
 def _weekend_scope_tickers(watchlist: list[str], mapping: dict[str, dict] | None = None) -> list[str]:
     tickers: list[str] = []
     seen: set[str] = set()
     scan_cache = read_binance_equity_scan_cache()
+    ignored = load_binance_symbol_ignore()
     sources: list[object] = []
-    sources.extend(str(record.get("ticker") or "") for record in scan_cache.get("records") or [] if isinstance(record, dict))
+    sources.extend(
+        str(record.get("ticker") or "")
+        for record in scan_cache.get("records") or []
+        if isinstance(record, dict) and not is_binance_symbol_ignored(record.get("ticker"), record.get("binance_symbol"), ignored)
+    )
     sources.extend((mapping or {}).keys())
     sources.extend(_portfolio_symbols())
     sources.extend(watchlist or [])
@@ -232,9 +272,11 @@ def _weekend_scope_tickers(watchlist: list[str], mapping: dict[str, dict] | None
 def _render_realtime_tab(
     watchlist: list[str],
     mapping: dict[str, dict],
+    ignored: dict[str, dict] | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     st.subheader("Binance 美股映射全市场扫描")
-    st.caption("仅展示已校验的美股 / ETF 映射价差；其他 TradFi 合约放入待校验列表。")
+    st.caption("Binance 合约价格读取成功即视为映射可用；不想看的标的可在映射管理里忽略。")
+    ignored = ignored or {}
     status_slot = st.empty()
     deviation_slot = st.empty()
     action_slot = st.empty()
@@ -243,7 +285,7 @@ def _render_realtime_tab(
     advanced_slot = st.empty()
     with action_slot.container():
         refresh_options = _render_realtime_action_bar()
-    scan_records, scan_status = _load_realtime_scan_records(watchlist, mapping, refresh_options=refresh_options)
+    scan_records, scan_status = _load_realtime_scan_records(watchlist, mapping, ignored, refresh_options=refresh_options)
     scan_mapping = scan_records_to_mapping(scan_records, mapping)
     scan_tickers = [str(record.get("ticker") or "").strip().upper() for record in scan_records if record.get("ticker")]
     rows, cache_status = _build_weekend_spread_rows_with_feedback(scan_tickers, mapping=scan_mapping, refresh_options=refresh_options)
@@ -328,19 +370,21 @@ def _render_realtime_action_bar() -> dict[str, bool]:
 def _load_realtime_scan_records(
     watchlist: list[str],
     mapping: dict[str, dict],
+    ignored: dict[str, dict] | None = None,
     *,
     refresh_options: dict[str, bool] | None = None,
 ) -> tuple[list[dict], dict[str, object]]:
     options = refresh_options or {}
+    ignored = ignored or {}
     force_scan = bool(options.get("scan"))
     use_cache = bool(options.get("use_cache"))
     cached = read_binance_equity_scan_cache()
     if not force_scan and cached.get("records") and (use_cache or cached.get("cache_state") == "FRESH"):
-        return _tag_scan_records(list(cached.get("records") or []), watchlist), cached
+        return _tag_scan_records(_filter_ignored_records(list(cached.get("records") or []), ignored), watchlist), cached
     if not force_scan and cached.get("records"):
-        return _tag_scan_records(list(cached.get("records") or []), watchlist), cached
+        return _tag_scan_records(_filter_ignored_records(list(cached.get("records") or []), ignored), watchlist), cached
     if not force_scan:
-        records = _fallback_scan_records_from_mapping(watchlist, mapping)
+        records = _filter_ignored_records(_fallback_scan_records_from_mapping(watchlist, mapping), ignored)
         return records, {"cache_state": "LOCAL_FALLBACK", "records": records, "generated_at": ""}
     provider = CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=60)
     records = scan_binance_equity_mapped_symbols(
@@ -349,8 +393,10 @@ def _load_realtime_scan_records(
         watchlist=watchlist,
         position_symbols=_portfolio_symbols(),
         manual_mapping=mapping,
+        ignored_mappings=ignored,
         force_refresh=True,
     )
+    records = _filter_ignored_records(records, ignored)
     payload = write_binance_equity_scan_cache(records)
     scan_mapping = scan_records_to_mapping(records, mapping)
     if records:
@@ -360,9 +406,8 @@ def _load_realtime_scan_records(
         st.success(
             "已从 Binance 官方合约信息识别 "
             f"{summary['total']} 个美股 / TradFi 映射，新增 {summary['added']} 个，"
-            f"更新 {summary['updated']} 个，美股已验证 {summary['us_equity_verified']} 个，"
-            f"ETF 已验证 {summary['etf_verified']} 个，待校验 {summary['pending']} 个，"
-            f"其他 TradFi {summary['other_tradfi']} 个，需复核 {summary['review']} 个。"
+            f"更新 {summary['updated']} 个，映射可用 {summary['available']} 个，"
+            f"价格异常 {summary['anomaly']} 个，不可用 {summary['unavailable']} 个。"
         )
     else:
         st.warning("扫描完成，但没有识别到可用的 Binance 美股映射。请检查 Binance 数据源或本地股票缓存。")
@@ -387,26 +432,20 @@ def _scan_sync_summary(records: list[dict], previous_mapping: dict[str, dict]) -
     total = len(records)
     added = 0
     updated = 0
-    review = 0
-    us_equity_verified = 0
-    etf_verified = 0
-    pending = 0
-    other_tradfi = 0
+    available = 0
+    anomaly = 0
+    unavailable = 0
     for record in records:
         ticker = str(record.get("ticker") or "").strip().upper()
         if not ticker:
             continue
         quality = str(record.get("mapping_quality") or "")
-        if quality == MAPPING_US_EQUITY_VERIFIED:
-            us_equity_verified += 1
-        elif quality == MAPPING_ETF_VERIFIED:
-            etf_verified += 1
-        elif quality in PENDING_MAPPING_LABELS:
-            pending += 1
-        elif quality == MAPPING_OTHER_TRADFI:
-            other_tradfi += 1
-        if quality in {MAPPING_REVIEW, MAPPING_INVALID}:
-            review += 1
+        if quality in {MAPPING_AVAILABLE, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}:
+            available += 1
+        elif quality in {MAPPING_REVIEW, MAPPING_PRICE_ANOMALY}:
+            anomaly += 1
+        elif quality in {MAPPING_INVALID, MAPPING_UNAVAILABLE}:
+            unavailable += 1
         old = previous.get(ticker)
         if old is None:
             added += 1
@@ -420,11 +459,9 @@ def _scan_sync_summary(records: list[dict], previous_mapping: dict[str, dict]) -
         "total": total,
         "added": added,
         "updated": updated,
-        "review": review,
-        "us_equity_verified": us_equity_verified,
-        "etf_verified": etf_verified,
-        "pending": pending,
-        "other_tradfi": other_tradfi,
+        "available": available,
+        "anomaly": anomaly,
+        "unavailable": unavailable,
     }
 
 
@@ -442,6 +479,8 @@ def _fallback_scan_records_from_mapping(watchlist: list[str], mapping: dict[str,
         if confidence == "confirmed" or (config or {}).get("manually_locked"):
             quality = MAPPING_MANUAL_LOCKED
         elif quality not in {
+            MAPPING_AVAILABLE,
+            MAPPING_PRICE_ANOMALY,
             MAPPING_US_EQUITY_VERIFIED,
             MAPPING_ETF_VERIFIED,
             MAPPING_PENDING_VERIFICATION,
@@ -449,7 +488,7 @@ def _fallback_scan_records_from_mapping(watchlist: list[str], mapping: dict[str,
             MAPPING_REVIEW,
             MAPPING_INVALID,
         }:
-            quality = MAPPING_US_EQUITY_VERIFIED if confidence == "auto_available" else MAPPING_PENDING_VERIFICATION
+            quality = MAPPING_AVAILABLE if confidence == "auto_available" else MAPPING_INVALID
         records.append(
             {
                 "ticker": str(ticker or "").strip().upper(),
@@ -518,17 +557,15 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
 
 
 def _render_realtime_filters(rows: list[dict]) -> str:
-    options = ["异常偏离", "全部 Binance 美股映射", "我的观察池", "我的持仓", "核心仓", "锚点缺失", "待校验映射", "其他 TradFi"]
+    options = ["异常偏离", "全部 Binance 美股映射", "我的观察池", "我的持仓", "核心仓", "锚点缺失"]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
         "全部 Binance 美股映射": len(main_rows),
         "我的观察池": len([row for row in main_rows if row.get("is_watchlist")]),
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
-        "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) in {"focus", "review"}]),
+        "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) == "review"]),
         "锚点缺失": len([row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]),
-        "待校验映射": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION]),
-        "其他 TradFi": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_OTHER_TRADFI]),
     }
     labels = [f"{option} {counts.get(option, 0)}" for option in options]
     selected = st.radio("筛选", labels, horizontal=True, label_visibility="collapsed", key="weekend_spread_realtime_filter_scope")
@@ -546,12 +583,8 @@ def _filter_live_rows_by_scope(rows: list[dict], scope: str) -> list[dict]:
         selected = [row for row in rows if (row.get("is_core") or row.get("is_core_position")) and _is_realtime_main_row(row)]
     elif scope == "锚点缺失":
         selected = [row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]
-    elif scope == "待校验映射":
-        selected = [row for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION]
-    elif scope == "其他 TradFi":
-        selected = [row for row in rows if _mapping_display_label_for_row(row) == MAPPING_OTHER_TRADFI]
     else:
-        selected = [row for row in rows if _is_realtime_main_row(row) and _realtime_row_status_key(row) in {"focus", "review"}]
+        selected = [row for row in rows if _is_realtime_main_row(row) and _realtime_row_status_key(row) == "review"]
     return sorted(selected, key=_realtime_sort_key)
 
 
@@ -931,13 +964,13 @@ def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, in
     afterhours_counts = _afterhours_counts(rows)
     status_counts = _realtime_status_counts(rows)
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
-    pending_count = sum(1 for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION)
+    unavailable_count = sum(1 for row in rows if _mapping_display_label_for_row(row) == MAPPING_UNAVAILABLE_LABEL)
     anchor_available = sum(1 for row in rows if row.get("binance_symbol") and _row_has_afterhours_anchor(row))
     items = [
         ("可观察美股映射", str(len(main_rows))),
         ("异常偏离", str(status_counts["review"] + status_counts["focus"])),
         ("锚点可用", f"{anchor_available}/{afterhours_counts['total']}"),
-        ("待校验映射", str(pending_count)),
+        ("不可用", str(unavailable_count)),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status)),
     ]
     text = " ｜ ".join(f"{label}：{value}" for label, value in items)
@@ -1032,7 +1065,7 @@ def _afterhours_anchor_status_text(rows: list[dict], afterhours_counts: dict[str
 
 
 def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
-    counts = {"normal": 0, "focus": 0, "review": 0, "unavailable": 0}
+    counts = {"normal": 0, "review": 0, "unavailable": 0}
     for row in rows:
         key = _realtime_row_status_key(row)
         counts[key] = counts.get(key, 0) + 1
@@ -1040,7 +1073,7 @@ def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
 
 
 def _realtime_sort_key(row: dict) -> tuple[int, float, str]:
-    priority = {"review": 0, "focus": 1, "normal": 2, "unavailable": 3}
+    priority = {"review": 0, "normal": 1, "unavailable": 2}
     key = _realtime_row_status_key(row)
     spread = _number(row.get("spread_vs_afterhours_pct"))
     spread_abs = abs(spread) if spread is not None else -1.0
@@ -1052,31 +1085,26 @@ def _realtime_row_status_key(row: dict) -> str:
     if status in {"NO_MAPPING", "BINANCE_UNAVAILABLE", "INVALID_SYMBOL", "PRICE_NOT_LOADED"}:
         return "unavailable"
     label = _mapping_display_label_for_row(row)
-    if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
-        return "review"
-    if label in {MAPPING_PENDING_VERIFICATION, MAPPING_OTHER_TRADFI, MAPPING_INVALID, "无映射"}:
+    if label in {MAPPING_IGNORED_LABEL, MAPPING_UNAVAILABLE_LABEL, MAPPING_INVALID, "无映射"}:
         return "unavailable"
     if not _row_has_afterhours_anchor(row):
         return "unavailable"
     if status == "UNIT_UNCONFIRMED":
         return "review"
-    if label in REVIEW_MAPPING_LABELS:
+    if label in {MAPPING_ANOMALY_LABEL, MAPPING_REVIEW, "异常复核"}:
         return "review"
     spread = _number(row.get("spread_vs_afterhours_pct"))
     if spread is None:
         return "unavailable"
     if abs(spread) >= 8:
         return "review"
-    if abs(spread) >= 2:
-        return "focus"
     return "normal"
 
 
 def _realtime_row_status_label(row: dict) -> str:
     return {
-        "normal": "正常",
-        "focus": "重点关注",
-        "review": "异常复核",
+        "normal": "映射可用",
+        "review": "价格异常",
         "unavailable": "不可用",
     }.get(_realtime_row_status_key(row), "不可用")
 
@@ -1084,12 +1112,10 @@ def _realtime_row_status_label(row: dict) -> str:
 def _realtime_row_status_reason(row: dict) -> str:
     key = _realtime_row_status_key(row)
     if key == "review":
-        return "偏离较大或映射、锚点质量不足，需要复核后再参考。"
-    if key == "focus":
-        return "偏离超过观察阈值，数据质量可用时可重点关注。"
+        return "相对盘后锚点偏离过大，先按价格异常处理。"
     if key == "unavailable":
         return "缺少 Binance 价格、映射或盘后锚点，暂不可用于实时价差观察。"
-    return "映射、价格与盘后锚点可用，当前偏离不大。"
+    return "Binance 价格读取成功，映射可用于价差观察。"
 
 
 def _mapping_display_label_for_row(row: dict) -> str:
@@ -1097,31 +1123,30 @@ def _mapping_display_label_for_row(row: dict) -> str:
     if status == "NO_MAPPING" or not str(row.get("binance_symbol") or "").strip():
         return "无映射"
     if status in {"INVALID_SYMBOL", "UNIT_UNCONFIRMED"}:
-        return "异常复核"
+        return MAPPING_UNAVAILABLE_LABEL if status == "INVALID_SYMBOL" else MAPPING_ANOMALY_LABEL
     quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
+    if quality in {MAPPING_IGNORED, MAPPING_IGNORED_LABEL, "ignored"}:
+        return MAPPING_IGNORED_LABEL
+    if quality in {MAPPING_AVAILABLE, MAPPING_AVAILABLE_LABEL, MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}:
+        return MAPPING_AVAILABLE_LABEL
+    if quality in {MAPPING_PRICE_ANOMALY, MAPPING_ANOMALY_LABEL, MAPPING_REVIEW, "异常复核", "需确认"}:
+        return MAPPING_ANOMALY_LABEL
+    if quality in {MAPPING_UNAVAILABLE, MAPPING_UNAVAILABLE_LABEL, MAPPING_INVALID, "无效映射"}:
+        return MAPPING_UNAVAILABLE_LABEL
     if quality in {MAPPING_MANUAL_LOCKED, "人工锁定"}:
         return "人工锁定"
-    if quality in {MAPPING_ETF_VERIFIED, "ETF 已验证"}:
-        return MAPPING_ETF_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
-    if quality in {MAPPING_US_EQUITY_VERIFIED, "美股已验证", "自动可用"}:
-        return MAPPING_US_EQUITY_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
     if quality in {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, "自动可用，价格校验不足", MAPPING_ANCHOR_MISSING, "锚点缺失"}:
-        return MAPPING_PENDING_VERIFICATION
+        return MAPPING_AVAILABLE_LABEL if _row_has_binance_price(row) else MAPPING_UNAVAILABLE_LABEL
     if quality in {MAPPING_OTHER_TRADFI, "其他 TradFi"}:
-        return MAPPING_OTHER_TRADFI
-    if quality in {MAPPING_REVIEW, "异常复核", "需确认"}:
-        return "异常复核"
-    if quality in {MAPPING_INVALID, "无效映射"}:
-        return "无效映射"
+        return MAPPING_AVAILABLE_LABEL if _row_has_binance_price(row) else MAPPING_UNAVAILABLE_LABEL
     confidence = str(row.get("mapping_confidence") or row.get("mapping_status") or "").strip().lower()
     if confidence == "confirmed" or confidence == "人工锁定":
         return "人工锁定"
     if confidence == "auto_available":
-        category = str(row.get("binance_category") or "").strip()
-        if "ETF" in category:
-            return MAPPING_ETF_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
-        return MAPPING_US_EQUITY_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
-    return MAPPING_PENDING_VERIFICATION
+        return MAPPING_AVAILABLE_LABEL
+    if _row_has_binance_price(row):
+        return MAPPING_AVAILABLE_LABEL
+    return MAPPING_UNAVAILABLE_LABEL
 
 
 def _row_has_afterhours_anchor(row: dict) -> bool:
@@ -1134,12 +1159,8 @@ def _row_has_binance_price(row: dict) -> bool:
 
 def _is_realtime_main_row(row: dict) -> bool:
     label = _mapping_display_label_for_row(row)
-    if label in VERIFIED_MAPPING_LABELS | {MAPPING_MANUAL_LOCKED}:
+    if label in {MAPPING_AVAILABLE_LABEL, MAPPING_ANOMALY_LABEL, MAPPING_MANUAL_LOCKED}:
         return _row_has_binance_price(row) and _row_has_afterhours_anchor(row)
-    if label == MAPPING_REVIEW:
-        return _row_has_binance_price(row) and _row_has_afterhours_anchor(row)
-    if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
-        return True
     return False
 
 
@@ -1235,7 +1256,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             "显示未确认映射排除原因",
             value=include_unconfirmed,
             key="weekend_spread_backtest_include_unconfirmed",
-            help="待校验映射、其他 TradFi 和无效映射不会进入正式回测，只在排除原因中展示。",
+            help="已忽略和不可用映射不会进入正式回测，只在排除原因中展示。",
         )
         cols = st.columns(4)
         selected = cols[0].selectbox("标的", options, key="weekend_spread_backtest_ticker")
@@ -1369,7 +1390,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     if last_run_at:
         st.caption(f"上次运行：{_short_hkt_time(last_run_at)}")
     if include_unconfirmed:
-        st.caption("待校验映射不会进入正式回测；如需使用，请先完成美股价格和盘后锚点校验。")
+        st.caption("已忽略和不可用映射不会进入正式回测。")
 
     review_rows = _weekend_review_rows(results)
     ok_review_rows = _ok_weekend_review_rows(review_rows)
@@ -1425,7 +1446,15 @@ def _is_auto_mapping_config(config: dict | None) -> bool:
         return False
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
     status = str(config.get("mapping_status") or "").strip()
-    return confidence == "auto_available" and status in {"", MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}
+    return confidence == "auto_available" and status in {
+        "",
+        MAPPING_AVAILABLE,
+        MAPPING_PRICE_ANOMALY,
+        MAPPING_US_EQUITY_VERIFIED,
+        MAPPING_ETF_VERIFIED,
+        MAPPING_REVIEW,
+        "自动可用",
+    }
 
 
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
@@ -1617,16 +1646,16 @@ def _mapping_status_text(value: object) -> str:
     text = str(value or "").strip().lower()
     return {
         "confirmed": "人工锁定",
-        "candidate": "待校验映射",
-        "unverified": "待校验映射",
+        "candidate": "映射可用",
+        "unverified": "映射可用",
         "no_mapping": "无映射",
         "missing": "无映射",
-        "invalid": "无效",
-        "auto_available": "美股已验证",
-        "us_equity_verified": "美股已验证",
-        "etf_verified": "ETF 已验证",
-        "pending_verification": "待校验映射",
-        "other_tradfi": "其他 TradFi",
+        "invalid": "不可用",
+        "auto_available": "映射可用",
+        "us_equity_verified": "映射可用",
+        "etf_verified": "映射可用",
+        "pending_verification": "映射可用",
+        "other_tradfi": "映射可用",
     }.get(text, str(value or "未知"))
 
 
@@ -1678,7 +1707,7 @@ def _backfill_mapping_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
     return {
         "CONFIRMED_TRADE_GRADE": "人工锁定 / 可回测",
-        "CANDIDATE_OBSERVATION": "待校验映射 / 观察",
+        "CANDIDATE_OBSERVATION": "映射可用 / 观察",
     }.get(text, str(value or "未知"))
 
 
@@ -1711,8 +1740,8 @@ def _exclusion_reason_text(value: object) -> str:
         "NO_MAPPING": "无映射",
         "AUTO_CANDIDATE_NOT_ALLOWED": "自动候选未纳入",
         "UNCONFIRMED_EXCLUDED": "未确认映射已排除",
-        "MAPPING_NOT_VERIFIED": "映射尚未完成美股价格和盘后锚点校验",
-        "OTHER_TRADFI_EXCLUDED": "其他 TradFi 不进入美股价差回测",
+        "MAPPING_NOT_VERIFIED": "映射不可用或已忽略",
+        "OTHER_TRADFI_EXCLUDED": "映射不可用或已忽略",
         "NO_AFTERHOURS_ANCHOR": "缺少盘后锚点",
         "SYMBOL_INVALID": "合约无效",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K线不可用",
@@ -1728,9 +1757,9 @@ def _backtest_block_text(value: object) -> str:
         return "当前没有可进入回测的标的"
     return {
         "NO_MAPPING": "当前没有可用于回测的 Binance 美股映射，请先同步或配置本模块映射。",
-        "MAPPING_NOT_VERIFIED": "该映射尚未完成美股价格和盘后锚点校验，不能进入正式回测。",
+        "MAPPING_NOT_VERIFIED": "该映射不可用或已忽略，不能进入正式回测。",
         "NO_AFTERHOURS_ANCHOR": "缺少本周最后交易日盘后锚点，请先更新盘后锚点或补数。",
-        "OTHER_TRADFI_EXCLUDED": "其他 TradFi 合约不进入美股价差正式回测。",
+        "OTHER_TRADFI_EXCLUDED": "该映射不可用或已忽略，不能进入正式回测。",
         "BINANCE_KLINE_UNAVAILABLE": "缺少 Binance 周末 1m K 线，暂时不能运行回测。",
         "FUTURES_UNAVAILABLE": "USDT-M 合约不可用，暂时不能运行回测。",
         "NO_PRICE_ANCHOR": "缺少价格锚点，暂时不能运行回测。",
@@ -2891,35 +2920,34 @@ def _render_backtest_advanced_records() -> None:
         st.caption("前瞻记录只作为周末价差观察数据，不会写入交易日志、错题本或信号表现。")
 
 
-def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
+def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int], ignored: dict[str, dict] | None = None) -> None:
     st.subheader("Binance 美股 / TradFi 映射管理")
-    st.caption("系统会自动同步 Binance TradFi 合约；只有已校验的美股 / ETF 映射进入价差主表，其他 TradFi 和待校验项留在这里复核。")
-    records = _mapping_management_records(rows, mapping)
+    st.caption("Binance 合约价格读取成功即视为映射可用；不想看的标的可以忽略，忽略后不再进入刷新、实时观察和历史回测。")
+    ignored = ignored or load_binance_symbol_ignore()
+    records = _mapping_management_records(rows, mapping) + _ignored_mapping_records(ignored)
     state_counts = _mapping_state_counts(records)
-    cols = st.columns(4)
-    cols[0].metric("Binance TradFi 候选总数", len(records))
-    cols[1].metric("美股已验证", state_counts.get("us_equity_verified", 0))
-    cols[2].metric("ETF 已验证", state_counts.get("etf_verified", 0))
-    cols[3].metric("待校验映射", state_counts.get("pending", 0))
-    cols = st.columns(4)
-    cols[0].metric("其他 TradFi", state_counts.get("other_tradfi", 0))
-    cols[1].metric("异常复核", state_counts.get("review", 0))
-    cols[2].metric("无效映射", state_counts.get("invalid", 0) + state_counts.get("missing", 0))
-    cols[3].metric("人工锁定", state_counts.get("locked", 0))
+    cols = st.columns(5)
+    cols[0].metric("Binance 映射总数", len([record for record in records if record.get("state_group") != "ignored"]))
+    cols[1].metric("映射可用", state_counts.get("available", 0) + state_counts.get("locked", 0))
+    cols[2].metric("价格异常", state_counts.get("anomaly", 0))
+    cols[3].metric("不可用", state_counts.get("unavailable", 0) + state_counts.get("missing", 0))
+    cols[4].metric("已忽略", state_counts.get("ignored", 0))
 
-    filter_options = ["待处理", "美股已验证", "ETF 已验证", "待校验映射", "其他 TradFi", "全部"]
+    filter_options = ["全部", "映射可用", "价格异常", "不可用", "已忽略"]
     selected_filter = st.selectbox("映射筛选", filter_options, key="weekend_spread_mapping_filter")
     show_all = st.toggle("显示全部映射", value=False, key="weekend_spread_mapping_show_all")
     display_records = records if show_all else _filter_mapping_records(records, selected_filter)
     if display_records:
-        st.dataframe(_mapping_management_frame(display_records), width="stretch", hide_index=True)
+        edited_frame = _render_mapping_operation_table(display_records, selected_filter)
+        _render_mapping_batch_actions(edited_frame, display_records, selected_filter, DEFAULT_LOCAL_MAPPING_PATH)
     elif records:
         st.success("当前筛选下没有需要处理的映射。打开“显示全部映射”可以查看全量扫描结果。")
     else:
         st.info("当前还没有 Binance 美股映射。请先在实时观察页点击“一键同步 Binance 美股映射”。")
 
-    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
-    _render_mapping_diagnostics(mapping)
+    _render_mapping_editor(mapping, rows, mapping_counts, DEFAULT_LOCAL_MAPPING_PATH, ignored)
+    _render_mapping_diagnostics(_filter_ignored_mapping(mapping, ignored))
+    _render_ignore_list(ignored)
 
 
 def _mapping_record_from_row(row: dict, config: dict | None = None) -> dict:
@@ -2938,30 +2966,18 @@ def _mapping_record_from_row(row: dict, config: dict | None = None) -> dict:
     elif display_label == "人工锁定":
         group = "locked"
         label = "人工锁定"
-    elif display_label in REVIEW_MAPPING_LABELS:
-        group = "review"
-        label = "异常复核"
-    elif display_label == "无效映射":
-        group = "invalid"
-        label = "无效映射"
-    elif display_label == MAPPING_PENDING_VERIFICATION:
-        group = "pending"
-        label = MAPPING_PENDING_VERIFICATION
-    elif display_label == MAPPING_OTHER_TRADFI:
-        group = "other_tradfi"
-        label = MAPPING_OTHER_TRADFI
-    elif display_label == MAPPING_ETF_VERIFIED:
-        group = "etf_verified"
-        label = MAPPING_ETF_VERIFIED
-    elif price_diff_pct is not None and abs(price_diff_pct) > 30:
-        group = "review"
-        label = "异常复核"
-    elif display_label == MAPPING_US_EQUITY_VERIFIED:
-        group = "us_equity_verified"
-        label = MAPPING_US_EQUITY_VERIFIED
+    elif display_label == MAPPING_ANOMALY_LABEL or (price_diff_pct is not None and abs(price_diff_pct) >= 8):
+        group = "anomaly"
+        label = MAPPING_ANOMALY_LABEL
+    elif display_label == MAPPING_UNAVAILABLE_LABEL:
+        group = "unavailable"
+        label = MAPPING_UNAVAILABLE_LABEL
+    elif display_label == MAPPING_AVAILABLE_LABEL:
+        group = "available"
+        label = MAPPING_AVAILABLE_LABEL
     else:
-        group = "pending"
-        label = MAPPING_PENDING_VERIFICATION
+        group = "available" if binance_price is not None else "unavailable"
+        label = MAPPING_AVAILABLE_LABEL if binance_price is not None else MAPPING_UNAVAILABLE_LABEL
     return {
         "ticker": ticker,
         "binance_symbol": binance_symbol,
@@ -2973,25 +2989,51 @@ def _mapping_record_from_row(row: dict, config: dict | None = None) -> dict:
         "price_diff_pct": price_diff_pct,
         "state_group": group,
         "state_label": label,
+        "market_type": row.get("market_type") or config.get("market_type") or "usdm_futures",
+        "updated_at": row.get("updated_at") or config.get("updated_at") or "",
         "risk_note": str(config.get("risk_note") or row.get("mapping_risk") or ""),
     }
 
 
 def _mapping_display_label_for_record(record: dict) -> str:
     return str(record.get("state_label") or {
-        "us_equity_verified": MAPPING_US_EQUITY_VERIFIED,
-        "etf_verified": MAPPING_ETF_VERIFIED,
-        "pending": MAPPING_PENDING_VERIFICATION,
-        "other_tradfi": MAPPING_OTHER_TRADFI,
+        "available": MAPPING_AVAILABLE_LABEL,
+        "anomaly": MAPPING_ANOMALY_LABEL,
+        "unavailable": MAPPING_UNAVAILABLE_LABEL,
+        "ignored": MAPPING_IGNORED_LABEL,
         "locked": "人工锁定",
-        "review": "异常复核",
-        "invalid": "无效映射",
+        "review": MAPPING_ANOMALY_LABEL,
+        "invalid": MAPPING_UNAVAILABLE_LABEL,
         "missing": "无映射",
-    }.get(str(record.get("state_group") or ""), "异常复核"))
+    }.get(str(record.get("state_group") or ""), MAPPING_UNAVAILABLE_LABEL))
 
 
 def _mapping_management_records(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
     return [_mapping_record_from_row(row, mapping.get(str(row.get("ticker") or "").upper(), {})) for row in rows]
+
+
+def _ignored_mapping_records(ignored: dict[str, dict] | None = None) -> list[dict]:
+    records: list[dict] = []
+    for ticker, config in sorted((ignored or {}).items()):
+        records.append(
+            {
+                "ticker": str(config.get("ticker") or ticker).strip().upper(),
+                "binance_symbol": str(config.get("binance_symbol") or "").strip().upper(),
+                "binance_category": "",
+                "underlying_type": "",
+                "underlying_sub_type": "",
+                "binance_price": None,
+                "stock_ref_price": None,
+                "price_diff_pct": None,
+                "state_group": "ignored",
+                "state_label": MAPPING_IGNORED_LABEL,
+                "market_type": "usdm_futures",
+                "updated_at": str(config.get("ignored_at") or ""),
+                "ignore_reason": str(config.get("ignore_reason") or ""),
+                "ignored_at": str(config.get("ignored_at") or ""),
+            }
+        )
+    return records
 
 
 def _mapping_state_counts(records: list[dict]) -> dict[str, int]:
@@ -3004,14 +3046,13 @@ def _mapping_state_counts(records: list[dict]) -> dict[str, int]:
 
 def _filter_mapping_records(records: list[dict], selected_filter: str) -> list[dict]:
     group_map = {
-        "美股已验证": {"us_equity_verified"},
-        "ETF 已验证": {"etf_verified"},
-        "待校验映射": {"pending"},
-        "其他 TradFi": {"other_tradfi"},
-        "全部": {"us_equity_verified", "etf_verified", "pending", "other_tradfi", "review", "invalid", "missing", "locked"},
-        "待处理": {"pending", "review", "invalid", "missing"},
+        "映射可用": {"available", "locked"},
+        "价格异常": {"anomaly", "review"},
+        "不可用": {"unavailable", "invalid", "missing"},
+        "已忽略": {"ignored"},
+        "全部": {"available", "locked", "anomaly", "review", "unavailable", "invalid", "missing", "ignored"},
     }
-    allowed = group_map.get(selected_filter, group_map["待处理"])
+    allowed = group_map.get(selected_filter, group_map["全部"])
     return [record for record in records if str(record.get("state_group") or "") in allowed]
 
 
@@ -3061,15 +3102,15 @@ def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> di
     state_counts = _mapping_state_counts(records)
     counts.update(
         {
-            "usable_count": state_counts.get("us_equity_verified", 0) + state_counts.get("etf_verified", 0) + state_counts.get("locked", 0),
-            "review_count": state_counts.get("pending", 0) + state_counts.get("review", 0) + state_counts.get("invalid", 0),
+            "usable_count": state_counts.get("available", 0) + state_counts.get("locked", 0),
+            "review_count": state_counts.get("anomaly", 0) + state_counts.get("review", 0) + state_counts.get("invalid", 0) + state_counts.get("unavailable", 0),
             "manual_locked_count": state_counts.get("locked", 0),
-            "invalid_count": state_counts.get("invalid", 0),
+            "invalid_count": state_counts.get("invalid", 0) + state_counts.get("unavailable", 0),
             "no_mapping_count": state_counts.get("missing", 0),
-            "pending_count": state_counts.get("pending", 0),
-            "other_tradfi_count": state_counts.get("other_tradfi", 0),
-            "us_equity_verified_count": state_counts.get("us_equity_verified", 0),
-            "etf_verified_count": state_counts.get("etf_verified", 0),
+            "pending_count": 0,
+            "other_tradfi_count": 0,
+            "us_equity_verified_count": 0,
+            "etf_verified_count": 0,
             "off_universe_mapping_count": len(off_universe_records),
         }
     )
@@ -3112,33 +3153,294 @@ def _render_no_mapping_expander(rows: list[dict]) -> None:
         st.dataframe(_no_mapping_frame(no_mapping_rows), width="stretch", hide_index=True)
 
 
+def _render_mapping_operation_table(records: list[dict], selected_filter: str) -> pd.DataFrame:
+    frame = _mapping_management_frame(records)
+    editor_key = f"weekend_spread_mapping_editor_{_state_key_text(selected_filter)}_{st.session_state.get('weekend_spread_mapping_editor_nonce', 0)}"
+    column_config = {
+        "选择": st.column_config.CheckboxColumn("选择", help="勾选后可批量忽略、恢复或保存合约修改。"),
+        "Binance 合约": st.column_config.TextColumn("Binance 合约", help="可直接修改，例如 NVDAUSDT。保存后会写入本模块本地 mapping，并标记为人工锁定。"),
+        "是否忽略": st.column_config.CheckboxColumn("是否忽略", help="改为勾选后点“忽略选中”，取消勾选后点“恢复选中”。"),
+        "操作状态": st.column_config.TextColumn("操作状态"),
+    }
+    return st.data_editor(
+        frame,
+        width="stretch",
+        hide_index=True,
+        key=editor_key,
+        disabled=["股票", "Binance 最新价", "盘后锚点", "相对盘后%", "状态", "更新时间", "操作状态"],
+        column_config=column_config,
+    )
+
+
+def _render_mapping_batch_actions(
+    edited_frame: pd.DataFrame,
+    records: list[dict],
+    selected_filter: str,
+    local_mapping_path: Path,
+) -> None:
+    operations = _mapping_operation_rows(edited_frame, records)
+    selected_count = len([row for row in operations if row.get("selected")])
+    ignore_count = len(_pending_ignore_operations(operations))
+    restore_count = len(_pending_restore_operations(operations))
+    change_count = len(_pending_contract_changes(operations))
+    if selected_count or ignore_count or restore_count or change_count:
+        st.caption(
+            f"已选 {selected_count} 个；待忽略 {ignore_count} 个；待恢复 {restore_count} 个；合约修改 {change_count} 个。"
+        )
+
+    col_ignore, col_restore, col_save, col_clear = st.columns(4)
+    if col_ignore.button("忽略选中", key="weekend_spread_batch_ignore", width="stretch"):
+        summary = _apply_ignore_operations(_pending_ignore_operations(operations), path=DEFAULT_IGNORE_PATH)
+        _show_batch_operation_summary(summary, success_text="已忽略 {count} 个映射。")
+    if col_restore.button("恢复选中", key="weekend_spread_batch_restore", width="stretch"):
+        summary = _apply_restore_operations(_pending_restore_operations(operations), path=DEFAULT_IGNORE_PATH)
+        _show_batch_operation_summary(summary, success_text="已恢复 {count} 个映射。")
+    if col_save.button("保存合约修改", key="weekend_spread_batch_save_mapping", width="stretch"):
+        summary = _apply_contract_changes(_pending_contract_changes(operations), path=local_mapping_path)
+        _show_batch_operation_summary(summary, success_text="已保存 {count} 个合约修改，并标记为人工锁定。")
+    if col_clear.button("清空选择", key="weekend_spread_batch_clear_selection", width="stretch"):
+        st.session_state["weekend_spread_mapping_editor_nonce"] = int(st.session_state.get("weekend_spread_mapping_editor_nonce", 0)) + 1
+        st.rerun()
+
+    if selected_filter not in {"全部", "已忽略"} and records:
+        candidates = [record for record in records if str(record.get("state_group") or "") != "ignored"]
+        with st.expander("批量忽略当前筛选结果", expanded=False):
+            st.caption(
+                f"将忽略当前筛选下的 {len(candidates)} 个映射。它们不会再出现在实时观察和回测候选中，但可以在忽略清单中恢复。"
+            )
+            confirmed = st.checkbox("确认忽略当前筛选结果", key=f"weekend_spread_confirm_ignore_filter_{_state_key_text(selected_filter)}")
+            if st.button("忽略当前筛选结果", key=f"weekend_spread_ignore_filter_{_state_key_text(selected_filter)}", disabled=not confirmed, width="stretch"):
+                summary = _apply_ignore_operations(_records_to_operations(candidates), path=DEFAULT_IGNORE_PATH)
+                _show_batch_operation_summary(summary, success_text="已忽略当前筛选下的 {count} 个映射。")
+
+
+def _mapping_operation_rows(edited_frame: pd.DataFrame, records: list[dict]) -> list[dict]:
+    if edited_frame is None or edited_frame.empty:
+        return []
+    original_by_ticker = {str(record.get("ticker") or "").strip().upper(): record for record in records}
+    operations: list[dict] = []
+    for _, row in edited_frame.iterrows():
+        ticker = str(row.get("股票") or "").strip().upper()
+        if not ticker:
+            continue
+        original = original_by_ticker.get(ticker, {})
+        original_symbol = str(original.get("binance_symbol") or "").strip().upper()
+        edited_symbol = str(row.get("Binance 合约") or "").strip().upper()
+        was_ignored = str(original.get("state_group") or "") == "ignored"
+        ignored_requested = bool(row.get("是否忽略"))
+        operations.append(
+            {
+                "ticker": ticker,
+                "original_symbol": original_symbol,
+                "edited_symbol": edited_symbol,
+                "selected": bool(row.get("选择")),
+                "was_ignored": was_ignored,
+                "ignored_requested": ignored_requested,
+                "state_group": str(original.get("state_group") or ""),
+                "market_type": str(original.get("market_type") or "usdm_futures"),
+            }
+        )
+    return operations
+
+
+def _records_to_operations(records: list[dict]) -> list[dict]:
+    return [
+        {
+            "ticker": str(record.get("ticker") or "").strip().upper(),
+            "original_symbol": str(record.get("binance_symbol") or "").strip().upper(),
+            "edited_symbol": str(record.get("binance_symbol") or "").strip().upper(),
+            "selected": True,
+            "was_ignored": str(record.get("state_group") or "") == "ignored",
+            "ignored_requested": True,
+            "state_group": str(record.get("state_group") or ""),
+            "market_type": str(record.get("market_type") or "usdm_futures"),
+        }
+        for record in records
+        if str(record.get("ticker") or "").strip()
+    ]
+
+
+def _pending_ignore_operations(operations: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in operations
+        if not row.get("was_ignored")
+        and (row.get("selected") or row.get("ignored_requested"))
+        and str(row.get("ticker") or "").strip()
+        and str(row.get("edited_symbol") or row.get("original_symbol") or "").strip()
+    ]
+
+
+def _pending_restore_operations(operations: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in operations
+        if row.get("was_ignored")
+        and (row.get("selected") or not row.get("ignored_requested"))
+        and str(row.get("ticker") or "").strip()
+    ]
+
+
+def _pending_contract_changes(operations: list[dict]) -> list[dict]:
+    return [
+        row
+        for row in operations
+        if str(row.get("edited_symbol") or "").strip().upper()
+        and str(row.get("edited_symbol") or "").strip().upper() != str(row.get("original_symbol") or "").strip().upper()
+    ]
+
+
+def _apply_ignore_operations(operations: list[dict], *, path: Path) -> dict[str, object]:
+    summary = {"count": 0, "failures": []}
+    for row in operations:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        symbol = str(row.get("edited_symbol") or row.get("original_symbol") or "").strip().upper()
+        if not ticker or not symbol:
+            summary["failures"].append(f"{ticker or '未知'}：缺少 Binance 合约")
+            continue
+        try:
+            ignore_binance_symbol(ticker, symbol, ignore_reason="用户批量忽略", path=path)
+        except Exception as exc:
+            summary["failures"].append(f"{ticker}：{_mapping_editor_error_text(str(exc))}")
+        else:
+            summary["count"] = int(summary["count"]) + 1
+    return summary
+
+
+def _apply_restore_operations(operations: list[dict], *, path: Path) -> dict[str, object]:
+    summary = {"count": 0, "failures": []}
+    for row in operations:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker:
+            summary["failures"].append("未知：缺少股票代码")
+            continue
+        try:
+            restore_ignored_binance_symbol(ticker, path=path)
+        except Exception as exc:
+            summary["failures"].append(f"{ticker}：{_mapping_editor_error_text(str(exc))}")
+        else:
+            summary["count"] = int(summary["count"]) + 1
+    return summary
+
+
+def _apply_contract_changes(operations: list[dict], *, path: Path, ignore_path: Path = DEFAULT_IGNORE_PATH) -> dict[str, object]:
+    summary = {"count": 0, "failures": []}
+    for row in operations:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        symbol = str(row.get("edited_symbol") or "").strip().upper()
+        if not ticker:
+            summary["failures"].append("未知：缺少股票代码")
+            continue
+        if not _is_valid_usdt_contract(symbol):
+            summary["failures"].append(f"{ticker}：Binance 合约格式异常，请检查。")
+            continue
+        try:
+            upsert_local_binance_symbol_mapping(
+                ticker,
+                symbol,
+                market_type="usdm_futures",
+                mapping_confidence="confirmed",
+                risk_note="用户在映射管理中手动锁定。",
+                path=path,
+            )
+            restore_ignored_binance_symbol(ticker, path=ignore_path)
+        except Exception as exc:
+            summary["failures"].append(f"{ticker}：{_mapping_editor_error_text(str(exc))}")
+        else:
+            summary["count"] = int(summary["count"]) + 1
+    return summary
+
+
+def _show_batch_operation_summary(summary: dict[str, object], *, success_text: str) -> None:
+    count = int(summary.get("count") or 0)
+    failures = [str(item) for item in summary.get("failures") or [] if str(item).strip()]
+    if count:
+        st.success(success_text.format(count=count))
+    if failures:
+        st.warning(f"失败 {len(failures)} 个：" + "；".join(failures[:5]))
+    if count:
+        st.rerun()
+    if not count and not failures:
+        st.info("没有可执行的映射操作。")
+
+
+def _is_valid_usdt_contract(symbol: str) -> bool:
+    text = str(symbol or "").strip().upper()
+    return bool(text) and text.endswith("USDT") and text.isalnum()
+
+
+def _state_key_text(value: object) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in str(value or "all"))
+
+
 def _render_mapping_editor(
     mapping: dict[str, dict],
     rows: list[dict],
     mapping_counts: dict[str, int],
     local_mapping_path: Path,
+    ignored: dict[str, dict] | None = None,
 ) -> None:
-    expanded = mapping_counts.get("usable_count", 0) <= 0 and mapping_counts.get("review_count", 0) > 0
-    with st.expander("映射操作", expanded=expanded):
-        st.caption("已验证的美股 / ETF 映射可以参与观察；人工锁定只是固定周末价差本地 mapping，不会修改主系统观察池或持仓。")
-        auto_rows = [row for row in rows if _mapping_display_label_for_row(row) in VERIFIED_MAPPING_LABELS]
-        if auto_rows and st.button("一键采用全部已验证美股/ETF映射", key="weekend_spread_lock_auto_mappings", width="stretch"):
-            changed = 0
-            for row in auto_rows:
-                ticker = str(row.get("ticker") or "").strip().upper()
-                symbol = str(row.get("binance_symbol") or "").strip().upper()
-                if not ticker or not symbol:
-                    continue
-                upsert_local_binance_symbol_mapping(
-                    ticker,
-                    symbol,
-                    market_type=str(row.get("market_type") or "usdm_futures"),
-                    mapping_confidence="confirmed",
-                    path=local_mapping_path,
-                )
-                changed += 1
-            st.success(f"已人工锁定 {changed} 条映射")
+    with st.expander("高级单项操作", expanded=False):
+        st.caption("主操作请直接在上方表格勾选或修改合约；这里保留单项兜底操作。忽略只影响周末价差模块，不会修改主系统观察池、持仓或交易记录。")
+        ignored = ignored or {}
+        candidates = [
+            row
+            for row in rows
+            if str(row.get("ticker") or "").strip().upper()
+            and str(row.get("binance_symbol") or "").strip().upper()
+        ]
+        labels = [f"{row.get('ticker')} · {row.get('binance_symbol')} · {_mapping_display_label_for_row(row)}" for row in candidates]
+        selected_index = 0
+        if labels:
+            selected_label = st.selectbox("选择映射", labels, key="weekend_spread_mapping_action_select")
+            selected_index = labels.index(selected_label)
+            selected_row = candidates[selected_index]
+            ticker = str(selected_row.get("ticker") or "").strip().upper()
+            symbol = str(selected_row.get("binance_symbol") or "").strip().upper()
+            reason = st.text_input("忽略原因，可选", value="", key="weekend_spread_ignore_reason")
+            col_ignore, col_restore, col_modify = st.columns(3)
+            if col_ignore.button("忽略", key="weekend_spread_ignore_selected", width="stretch"):
+                ignore_binance_symbol(ticker, symbol, ignore_reason=reason or "用户忽略", path=DEFAULT_IGNORE_PATH)
+                st.success(f"已忽略 {ticker}，后续不再纳入周末价差观察。")
+                st.rerun()
+            if col_restore.button("恢复", key="weekend_spread_restore_selected", width="stretch"):
+                restore_ignored_binance_symbol(ticker, path=DEFAULT_IGNORE_PATH)
+                st.success(f"已恢复 {ticker}，重新纳入周末价差观察。")
+                st.rerun()
+            new_symbol = st.text_input("修改 Binance 合约", value=symbol, key="weekend_spread_modify_symbol").strip().upper()
+            if col_modify.button("保存合约", key="weekend_spread_modify_selected", width="stretch"):
+                try:
+                    upsert_local_binance_symbol_mapping(
+                        ticker,
+                        new_symbol,
+                        market_type=str(selected_row.get("market_type") or "usdm_futures"),
+                        mapping_confidence="auto_available",
+                        path=local_mapping_path,
+                    )
+                except ValueError as exc:
+                    st.warning(_mapping_editor_error_text(str(exc)))
+                else:
+                    st.success(f"已更新 {ticker} -> {new_symbol}")
+                    st.rerun()
+        else:
+            st.info("当前没有可操作的映射。")
         st.caption(f"仅写入周末价差本地 mapping：{local_mapping_path.as_posix()}")
+
+
+def _render_ignore_list(ignored: dict[str, dict] | None = None) -> None:
+    ignored = ignored or {}
+    with st.expander("忽略清单", expanded=False):
+        records = _ignored_mapping_records(ignored)
+        if not records:
+            st.caption("暂无已忽略标的。")
+            return
+        st.dataframe(_mapping_management_frame(records), width="stretch", hide_index=True)
+        tickers = [str(record.get("ticker") or "").strip().upper() for record in records if str(record.get("ticker") or "").strip()]
+        selected = st.selectbox("选择要恢复的标的", tickers, key="weekend_spread_restore_ignored_select")
+        if st.button("恢复选中标的", key="weekend_spread_restore_ignored_button", width="stretch"):
+            restore_ignored_binance_symbol(selected, path=DEFAULT_IGNORE_PATH)
+            st.success(f"已恢复 {selected}，重新纳入周末价差观察。")
+            st.rerun()
 
 
 def _mapping_editor_error_text(error_code: str) -> str:
@@ -3178,14 +3480,12 @@ def _live_type_label(row: dict) -> str:
     if not _row_has_afterhours_anchor(row):
         return "锚点缺失"
     label = _mapping_display_label_for_row(row)
-    if label == MAPPING_US_EQUITY_VERIFIED:
-        return "美股"
-    if label == MAPPING_ETF_VERIFIED:
-        return "ETF"
+    if label == MAPPING_AVAILABLE_LABEL:
+        return MAPPING_AVAILABLE_LABEL
+    if label == MAPPING_ANOMALY_LABEL:
+        return MAPPING_ANOMALY_LABEL
     if label == MAPPING_MANUAL_LOCKED:
         return "人工锁定"
-    if label == MAPPING_REVIEW:
-        return "异常复核"
     return label
 
 
@@ -3240,21 +3540,24 @@ def _backtest_frame(rows: list[dict]) -> pd.DataFrame:
 def _mapping_management_frame(records: list[dict], mapping: dict[str, dict] | None = None) -> pd.DataFrame:
     if mapping is not None:
         records = _mapping_management_records(records, mapping)
-    columns = ["股票", "Binance 合约", "Binance 分类", "Binance 最新价", "股票参考价", "价格差异%", "映射状态", "操作"]
+    columns = ["选择", "股票", "Binance 合约", "Binance 最新价", "盘后锚点", "相对盘后%", "状态", "是否忽略", "更新时间", "操作状态"]
     if not records:
         return pd.DataFrame(columns=columns)
     table_rows: list[dict] = []
     for record in records:
+        is_ignored = str(record.get("state_group") or "") == "ignored"
         table_rows.append(
             {
+                "选择": False,
                 "股票": str(record.get("ticker") or "").upper(),
-                "Binance 合约": str(record.get("binance_symbol") or "未配置"),
-                "Binance 分类": _binance_category_text(record),
+                "Binance 合约": str(record.get("binance_symbol") or "").upper(),
                 "Binance 最新价": _money_text(record.get("binance_price")),
-                "股票参考价": _money_text(record.get("stock_ref_price")),
-                "价格差异%": _percent_text(record.get("price_diff_pct")),
-                "映射状态": str(record.get("state_label") or _mapping_display_label_for_record(record)),
-                "操作": _mapping_action_hint(record),
+                "盘后锚点": _money_text(record.get("stock_ref_price")),
+                "相对盘后%": _percent_text(record.get("price_diff_pct")),
+                "状态": str(record.get("state_label") or _mapping_display_label_for_record(record)),
+                "是否忽略": is_ignored,
+                "更新时间": _short_hkt_time(record.get("updated_at")),
+                "操作状态": "已忽略" if is_ignored else "未修改",
             }
         )
     return pd.DataFrame(table_rows, columns=columns)
@@ -3268,21 +3571,6 @@ def _binance_category_text(record: dict) -> str:
     underlying_sub_type = str(record.get("underlying_sub_type") or "").strip()
     combined = " / ".join(part for part in (underlying_type, underlying_sub_type) if part)
     return combined or "未标注"
-
-
-def _mapping_action_hint(record: dict) -> str:
-    group = str(record.get("state_group") or "")
-    if group == "usable":
-        return "可直接观察；可选人工锁定"
-    if group == "locked":
-        return "已人工锁定"
-    if group == "invalid":
-        return "检查合约或忽略"
-    if group == "off_watchlist":
-        return "不在当前筛选范围"
-    if group == "missing":
-        return "补充 Binance 合约"
-    return "采用 / 忽略 / 修改"
 
 
 def _render_row_details(rows: list[dict]) -> None:
@@ -3404,12 +3692,12 @@ def _mapping_confidence_label(value: object) -> str:
     text = str(value or "").strip().lower()
     return {
         "confirmed": "人工锁定",
-        "candidate": "待校验映射",
-        "unverified": "待校验映射",
-        "verified_ready": "待校验映射",
-        "stale": "待校验映射",
+        "candidate": "映射可用",
+        "unverified": "映射可用",
+        "verified_ready": "映射可用",
+        "stale": "映射可用",
         "rejected": "已忽略",
-        "auto_available": "美股已验证",
+        "auto_available": "映射可用",
     }.get(text, "无映射" if not text else text)
 
 

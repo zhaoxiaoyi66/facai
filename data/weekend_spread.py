@@ -16,6 +16,7 @@ from settings import CONFIG_DIR
 
 DEFAULT_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.example.json"
 DEFAULT_LOCAL_MAPPING_PATH = CONFIG_DIR / "binance_symbol_mapping.local.json"
+DEFAULT_IGNORE_PATH = CONFIG_DIR / "binance_symbol_ignore.local.json"
 RISK_TEXT = "Binance 映射价格不等于真实美股可成交价格；V1 仅用于观察，不构成套利建议。"
 NO_MAPPING_TEXT = "暂无映射"
 MAPPING_REVIEW_TEXT = "需人工确认映射"
@@ -32,6 +33,98 @@ def load_binance_symbol_mapping(
     if local_path is not None and local_path.exists():
         return _load_mapping_file(local_path)
     return _load_mapping_file(path)
+
+
+def load_binance_symbol_ignore(path: Path = DEFAULT_IGNORE_PATH) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw = payload.get("ignored") if isinstance(payload, dict) else {}
+    if raw is None and isinstance(payload, dict):
+        raw = payload
+    if not isinstance(raw, dict):
+        return {}
+    ignored: dict[str, dict[str, Any]] = {}
+    for ticker, config in raw.items():
+        normalized_ticker = str(ticker or "").strip().upper()
+        if not normalized_ticker or not isinstance(config, dict):
+            continue
+        symbol = str(config.get("binance_symbol") or f"{normalized_ticker}USDT").strip().upper()
+        ignored[normalized_ticker] = {
+            "ticker": normalized_ticker,
+            "binance_symbol": symbol,
+            "ignore_reason": str(config.get("ignore_reason") or config.get("reason") or "用户忽略").strip(),
+            "ignored_at": str(config.get("ignored_at") or ""),
+            "ignored_by": str(config.get("ignored_by") or "user"),
+        }
+    return ignored
+
+
+def ignore_binance_symbol(
+    ticker: str,
+    binance_symbol: str,
+    *,
+    ignore_reason: str = "用户忽略",
+    path: Path = DEFAULT_IGNORE_PATH,
+) -> dict[str, dict[str, Any]]:
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_symbol = str(binance_symbol or f"{normalized_ticker}USDT").strip().upper()
+    if not normalized_ticker:
+        raise ValueError("ticker_required")
+    ignored = load_binance_symbol_ignore(path)
+    ignored[normalized_ticker] = {
+        "ticker": normalized_ticker,
+        "binance_symbol": normalized_symbol,
+        "ignore_reason": str(ignore_reason or "用户忽略").strip(),
+        "ignored_at": datetime.now(timezone.utc).isoformat(),
+        "ignored_by": "user",
+    }
+    _write_ignore_file(ignored, path)
+    return ignored
+
+
+def restore_ignored_binance_symbol(ticker: str, *, path: Path = DEFAULT_IGNORE_PATH) -> dict[str, dict[str, Any]]:
+    normalized_ticker = str(ticker or "").strip().upper()
+    ignored = load_binance_symbol_ignore(path)
+    ignored.pop(normalized_ticker, None)
+    _write_ignore_file(ignored, path)
+    return ignored
+
+
+def is_binance_symbol_ignored(
+    ticker: object,
+    binance_symbol: object = "",
+    ignored: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    ignored = ignored if ignored is not None else load_binance_symbol_ignore()
+    normalized_ticker = str(ticker or "").strip().upper()
+    if normalized_ticker and normalized_ticker in ignored:
+        return True
+    normalized_symbol = str(binance_symbol or "").strip().upper()
+    if not normalized_symbol:
+        return False
+    return any(str(record.get("binance_symbol") or "").strip().upper() == normalized_symbol for record in ignored.values())
+
+
+def _write_ignore_file(ignored: dict[str, dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ignored": {
+            str(ticker or "").strip().upper(): {
+                "ticker": str(config.get("ticker") or ticker).strip().upper(),
+                "binance_symbol": str(config.get("binance_symbol") or "").strip().upper(),
+                "ignore_reason": str(config.get("ignore_reason") or "用户忽略"),
+                "ignored_at": str(config.get("ignored_at") or ""),
+                "ignored_by": str(config.get("ignored_by") or "user"),
+            }
+            for ticker, config in sorted((ignored or {}).items())
+            if str(ticker or "").strip()
+        }
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _load_mapping_file(path: Path) -> dict[str, dict[str, Any]]:

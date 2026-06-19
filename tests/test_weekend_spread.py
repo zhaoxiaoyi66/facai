@@ -82,7 +82,11 @@ from data.weekend_spread import (
     build_weekend_spread_rows,
     classify_spread,
     discover_binance_symbol_candidates,
+    ignore_binance_symbol,
+    is_binance_symbol_ignored,
+    load_binance_symbol_ignore,
     load_binance_symbol_mapping,
+    restore_ignored_binance_symbol,
     upsert_default_usdm_futures_mappings,
     upsert_local_binance_symbol_mapping,
 )
@@ -3835,7 +3839,7 @@ def test_backtest_preflight_allows_auto_available_mapping_without_manual_confirm
 
     assert preflight["can_run"] is True
     assert preflight["eligible_tickers"] == ["NVDA"]
-    assert preflight["eligible"][0]["mapping_status"] == "美股已验证"
+    assert preflight["eligible"][0]["mapping_status"] == "映射可用"
 
 
 def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
@@ -5133,7 +5137,7 @@ def test_large_realtime_deviation_is_review_not_signal() -> None:
         "updated_at": "2026-06-19T00:38:00+08:00",
     }
 
-    assert weekend_spread._realtime_row_status_label(row) == "异常复核"
+    assert weekend_spread._realtime_row_status_label(row) == "价格异常"
 
 
 def test_row_details_are_split_into_three_blocks() -> None:
@@ -5183,7 +5187,7 @@ def test_backtest_exclusion_frame_localizes_market_type() -> None:
     )
 
     assert frame.iloc[0]["市场类型"] == "USDT-M 合约"
-    assert frame.iloc[0]["排除原因"] == "映射尚未完成美股价格和盘后锚点校验"
+    assert frame.iloc[0]["排除原因"] == "映射不可用或已忽略"
 
 
 def test_refresh_error_fallback_is_localized() -> None:
@@ -5279,10 +5283,100 @@ def test_mapping_management_marks_price_valid_auto_candidate_usable() -> None:
     counts = weekend_spread._mapping_management_counts(rows, mapping)
     frame = weekend_spread._mapping_management_frame(rows, mapping)
 
-    assert counts["usable_count"] == 0
-    assert counts["pending_count"] == 1
-    assert counts["review_count"] == 1
+    assert counts["usable_count"] == 1
+    assert counts["pending_count"] == 0
+    assert counts["review_count"] == 0
     assert counts["manual_locked_count"] == 0
+
+
+def test_mapping_management_frame_is_editable_batch_table() -> None:
+    records = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "binance_price": 104.0,
+            "stock_ref_price": 100.0,
+            "price_diff_pct": 4.0,
+            "state_group": "available",
+            "state_label": "映射可用",
+            "updated_at": "2026-06-19T12:00:00+08:00",
+        }
+    ]
+
+    frame = weekend_spread._mapping_management_frame(records)
+
+    assert list(frame.columns) == ["选择", "股票", "Binance 合约", "Binance 最新价", "盘后锚点", "相对盘后%", "状态", "是否忽略", "更新时间", "操作状态"]
+    assert "操作" not in frame.columns
+    assert frame.loc[0, "选择"] == False
+    assert frame.loc[0, "是否忽略"] == False
+    assert frame.loc[0, "操作状态"] == "未修改"
+
+
+def test_mapping_batch_ignore_restore_and_contract_save(tmp_path) -> None:
+    ignore_path = tmp_path / "binance_symbol_ignore.local.json"
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+    records = [
+        {
+            "ticker": "WDC",
+            "binance_symbol": "WDCUSDT",
+            "state_group": "available",
+            "state_label": "映射可用",
+        }
+    ]
+    edited = weekend_spread._mapping_management_frame(records)
+    edited.loc[0, "选择"] = True
+
+    operations = weekend_spread._mapping_operation_rows(edited, records)
+    ignore_summary = weekend_spread._apply_ignore_operations(
+        weekend_spread._pending_ignore_operations(operations),
+        path=ignore_path,
+    )
+
+    assert ignore_summary["count"] == 1
+    assert is_binance_symbol_ignored("WDC", "WDCUSDT", load_binance_symbol_ignore(ignore_path))
+
+    ignored_records = weekend_spread._ignored_mapping_records(load_binance_symbol_ignore(ignore_path))
+    ignored_frame = weekend_spread._mapping_management_frame(ignored_records)
+    ignored_frame.loc[0, "选择"] = True
+    restore_ops = weekend_spread._mapping_operation_rows(ignored_frame, ignored_records)
+    restore_summary = weekend_spread._apply_restore_operations(
+        weekend_spread._pending_restore_operations(restore_ops),
+        path=ignore_path,
+    )
+
+    assert restore_summary["count"] == 1
+    assert not load_binance_symbol_ignore(ignore_path)
+
+    edited.loc[0, "Binance 合约"] = "WDC2USDT"
+    change_ops = weekend_spread._mapping_operation_rows(edited, records)
+    save_summary = weekend_spread._apply_contract_changes(
+        weekend_spread._pending_contract_changes(change_ops),
+        path=mapping_path,
+        ignore_path=ignore_path,
+    )
+    saved = load_binance_symbol_mapping(mapping_path, local_path=None)
+
+    assert save_summary["count"] == 1
+    assert saved["WDC"]["binance_symbol"] == "WDC2USDT"
+    assert saved["WDC"]["mapping_confidence"] == "confirmed"
+
+
+def test_mapping_batch_save_rejects_invalid_contract(tmp_path) -> None:
+    mapping_path = tmp_path / "binance_symbol_mapping.local.json"
+    records = [{"ticker": "WDC", "binance_symbol": "WDCUSDT", "state_group": "available", "state_label": "映射可用"}]
+    edited = weekend_spread._mapping_management_frame(records)
+    edited.loc[0, "Binance 合约"] = "WDC"
+    operations = weekend_spread._mapping_operation_rows(edited, records)
+
+    summary = weekend_spread._apply_contract_changes(
+        weekend_spread._pending_contract_changes(operations),
+        path=mapping_path,
+        ignore_path=tmp_path / "ignore.json",
+    )
+
+    assert summary["count"] == 0
+    assert "Binance 合约格式异常" in summary["failures"][0]
+    assert not mapping_path.exists()
 
 
 def test_backtest_week_count_text_uses_selected_weeks() -> None:
@@ -5416,7 +5510,7 @@ def test_binance_equity_scan_classifies_auto_review_and_invalid_without_watchlis
 
     assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_AUTO_USABLE
     assert by_ticker["NVDA"]["is_watchlist"] is True
-    assert by_ticker["MRVL"]["mapping_quality"] == MAPPING_REVIEW
+    assert by_ticker["MRVL"]["mapping_quality"] == MAPPING_AUTO_USABLE
     assert by_ticker["MRVL"]["is_watchlist"] is False
     assert by_ticker["ADBE"]["mapping_quality"] == MAPPING_INVALID
     assert "BTC" not in by_ticker
@@ -5433,8 +5527,8 @@ def test_binance_equity_scan_marks_price_unverified_when_stock_reference_missing
     )
     by_ticker = {record["ticker"]: record for record in records}
 
-    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_PRICE_UNVERIFIED
-    assert "尚未完成" in by_ticker["NVDA"]["reason"]
+    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert "价格读取成功" in by_ticker["NVDA"]["reason"]
 
 
 def test_binance_equity_scan_separates_etf_pending_and_other_tradfi() -> None:
@@ -5496,14 +5590,14 @@ def test_binance_equity_scan_separates_etf_pending_and_other_tradfi() -> None:
     )
     by_ticker = {record["ticker"]: record for record in records}
 
-    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_US_EQUITY_VERIFIED
-    assert by_ticker["SPY"]["mapping_quality"] == MAPPING_ETF_VERIFIED
-    assert by_ticker["IBM"]["mapping_quality"] == MAPPING_PENDING_VERIFICATION
-    assert by_ticker["GOLD"]["mapping_quality"] == MAPPING_OTHER_TRADFI
-    assert by_ticker["KOSPI"]["mapping_quality"] == MAPPING_OTHER_TRADFI
+    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert by_ticker["SPY"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert by_ticker["IBM"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert by_ticker["GOLD"]["mapping_quality"] == MAPPING_AUTO_USABLE
+    assert by_ticker["KOSPI"]["mapping_quality"] == MAPPING_AUTO_USABLE
 
 
-def test_pending_and_other_tradfi_do_not_enter_default_realtime_table() -> None:
+def test_price_available_mappings_enter_default_realtime_table() -> None:
     rows = [
         {
             "ticker": "NVDA",
@@ -5535,12 +5629,7 @@ def test_pending_and_other_tradfi_do_not_enter_default_realtime_table() -> None:
     ]
 
     main_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部 Binance 美股映射")
-    pending_rows = weekend_spread._filter_live_rows_by_scope(rows, "待校验映射")
-    other_rows = weekend_spread._filter_live_rows_by_scope(rows, "其他 TradFi")
-
-    assert [row["ticker"] for row in main_rows] == ["NVDA"]
-    assert [row["ticker"] for row in pending_rows] == ["IBM"]
-    assert [row["ticker"] for row in other_rows] == ["GOLD"]
+    assert [row["ticker"] for row in main_rows] == ["NVDA", "GOLD"]
 
 
 def test_pending_mapping_is_excluded_from_formal_backtest_even_when_requested() -> None:
@@ -5582,6 +5671,103 @@ def test_binance_equity_scan_preserves_manual_locked_mapping() -> None:
     assert mapping["NVDA"]["binance_symbol"] == "MANUALNVDAUSDT"
     assert mapping["NVDA"]["mapping_status"] == "人工锁定"
     assert mapping["NVDA"]["manually_locked"] is True
+
+
+def test_ignored_mapping_is_persisted_and_restored(tmp_path) -> None:
+    path = tmp_path / "binance_symbol_ignore.local.json"
+
+    ignored = ignore_binance_symbol("WDC", "WDCUSDT", ignore_reason="noise", path=path)
+    assert ignored["WDC"]["binance_symbol"] == "WDCUSDT"
+    assert load_binance_symbol_ignore(path)["WDC"]["ignore_reason"] == "noise"
+    assert is_binance_symbol_ignored("WDC", "WDC2USDT", ignored)
+    assert is_binance_symbol_ignored("OTHER", "WDCUSDT", ignored)
+
+    restored = restore_ignored_binance_symbol("WDC", path=path)
+    assert "WDC" not in restored
+    assert "WDC" not in load_binance_symbol_ignore(path)
+
+
+def test_binance_equity_scan_skips_ignored_symbols() -> None:
+    provider = FakeBinanceEquityScanProvider({"NVDAUSDT": 104.0, "WDCUSDT": 733.0})
+    records = scan_binance_equity_mapped_symbols(
+        provider=provider,
+        cache=FakeEquityScanCache({"NVDA": 100.0, "WDC": 754.0}),
+        exchange_symbols=[
+            {
+                "symbol": "NVDAUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+            {
+                "symbol": "WDCUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+        ],
+        ignored_mappings={"WDC": {"binance_symbol": "WDCUSDT"}},
+        force_refresh=True,
+    )
+
+    assert [record["ticker"] for record in records] == ["NVDA"]
+
+
+def test_ignored_mapping_is_excluded_from_realtime_and_backtest() -> None:
+    mapping = {
+        "NVDA": {
+            "enabled": True,
+            "binance_symbol": "NVDAUSDT",
+            "mapping_confidence": "auto_available",
+            "mapping_status": "映射可用",
+            "binance_price": 104.0,
+        },
+        "WDC": {
+            "enabled": True,
+            "binance_symbol": "WDCUSDT",
+            "mapping_confidence": "auto_available",
+            "mapping_status": "映射可用",
+            "binance_price": 733.0,
+        },
+    }
+    ignored = {"WDC": {"binance_symbol": "WDCUSDT"}}
+    active = weekend_spread._filter_ignored_mapping(mapping, ignored)
+    assert sorted(active) == ["NVDA"]
+
+    rows = [
+        {
+            "ticker": "NVDA",
+            "status": "OK",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 104.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 4.0,
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "WDC",
+            "status": "OK",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": 733.0,
+            "afterhours_reference_price": 754.0,
+            "spread_vs_afterhours_pct": -2.8,
+            "mapping_quality": "映射可用",
+        },
+    ]
+    filtered_rows = weekend_spread._filter_ignored_records(rows, ignored)
+    assert [row["ticker"] for row in weekend_spread._filter_live_rows_by_scope(filtered_rows, "全部 Binance 美股映射")] == ["NVDA"]
+
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA", "WDC"],
+        mapping=active,
+        anchors={"NVDA": {"afterhours_reference_price": 100.0}, "WDC": {"afterhours_reference_price": 754.0}},
+    )
+    assert preflight["eligible_tickers"] == ["NVDA"]
+    assert "WDC" in preflight["excluded_tickers"]
 
 
 def test_afterhours_anchor_summary_localizes_alpaca_missing_reason() -> None:
