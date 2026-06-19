@@ -767,6 +767,7 @@ def _build_weekend_spread_rows_with_feedback(
             afterhours_provider=default_afterhours_provider(),
             force_refresh=False,
             afterhours_force_refresh=False,
+            expected_close_date=expected_anchor_date,
         )
         generated_at = datetime.now(timezone.utc).isoformat()
         if has_successful_price(rows) and _rows_match_expected_anchor_date(rows, expected_anchor_date):
@@ -806,6 +807,7 @@ def _build_weekend_spread_rows_with_feedback(
                 provider=_CacheOnlyBinanceProvider(),
                 afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
                 force_refresh=False,
+                expected_close_date=expected_anchor_date,
             ),
             cached,
         )
@@ -828,6 +830,7 @@ def _build_weekend_spread_rows_with_feedback(
             force_refresh=False,
             afterhours_force_refresh=force_anchor_refresh,
             progress_callback=update_anchor_progress,
+            expected_close_date=expected_anchor_date,
         )
         generated_at = datetime.now(timezone.utc).isoformat()
         progress_bar.progress(1.0)
@@ -871,6 +874,7 @@ def _build_weekend_spread_rows_with_feedback(
         force_refresh=True,
         afterhours_force_refresh=False,
         progress_callback=update_progress,
+        expected_close_date=expected_anchor_date,
     )
     refresh_counts = _refresh_attempt_counts(rows, skipped_ignored=skipped_ignored)
     refresh_message = _refresh_summary_text(refresh_counts)
@@ -911,6 +915,7 @@ def _build_weekend_spread_rows_with_feedback(
             provider=_CacheOnlyBinanceProvider(allow_stale=True),
             afterhours_provider=CachedAfterhoursProvider(NullAfterhoursProvider()),
             force_refresh=False,
+            expected_close_date=expected_anchor_date,
         )
         if has_successful_price(fallback_rows):
             fallback_rows = annotate_cached_rows(fallback_rows, cache_state="REFRESH_FAILED", generated_at="")
@@ -4415,6 +4420,7 @@ def _refresh_single_realtime_row(
         afterhours_provider=afterhours_provider,
         force_refresh=refresh_price,
         afterhours_force_refresh=refresh_anchor,
+        expected_close_date=_expected_realtime_anchor_date(),
     )
     if not refreshed_rows:
         return current_rows, old_row, f"{normalized_ticker} 没有生成刷新结果。"

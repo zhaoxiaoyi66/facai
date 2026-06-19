@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -11,6 +11,7 @@ import pandas as pd
 from data.equity_afterhours_provider import AfterhoursProvider, NullAfterhoursProvider
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.cache_read_model import CacheReadModel
+from data.us_market_session import get_us_market_session_status
 from settings import CONFIG_DIR
 
 
@@ -241,6 +242,7 @@ def build_weekend_spread_rows(
     force_refresh: bool = False,
     afterhours_force_refresh: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    expected_close_date: date | str | None = None,
 ) -> list[dict[str, Any]]:
     normalized = _normalize_tickers(tickers)
     effective_mapping = _normalize_mapping(load_binance_symbol_mapping() if mapping is None else mapping)
@@ -250,7 +252,11 @@ def build_weekend_spread_rows(
     rows: list[dict[str, Any]] = []
     total = len(normalized)
     for index, ticker in enumerate(normalized, start=1):
-        friday_close, friday_date, close_source = _friday_close(read_model, ticker)
+        friday_close, friday_date, close_source = _friday_close(
+            read_model,
+            ticker,
+            expected_close_date=expected_close_date,
+        )
         quote = read_model.get_quote_payload(ticker) or {}
         stock_name = str(quote.get("companyName") or quote.get("company_name") or quote.get("name") or ticker)
         mapping_config = effective_mapping.get(ticker)
@@ -280,7 +286,8 @@ def build_weekend_spread_rows(
             _notify_progress(progress_callback, index, total, ticker)
             continue
         binance_symbol = str(mapping_config.get("binance_symbol") or "").strip().upper()
-        if friday_close is None:
+        afterhours_price = _number(afterhours_fields.get("afterhours_reference_price"))
+        if friday_close is None and afterhours_price is None:
             row = _base_row(
                 ticker,
                 stock_name,
@@ -728,24 +735,60 @@ def _spread_fields(adjusted_binance_price: float | None, regular_close_price: fl
     }
 
 
-def _friday_close(cache: CacheReadModel, ticker: str, *, today: date | None = None) -> tuple[float | None, str, str]:
+def _friday_close(
+    cache: CacheReadModel,
+    ticker: str,
+    *,
+    today: date | None = None,
+    expected_close_date: date | str | None = None,
+) -> tuple[float | None, str, str]:
     history = cache.get_price_history(ticker)
     if history is None or history.empty or "date" not in history or "close" not in history:
-        return None, "", "missing_history"
+        target_date = _coerce_date(expected_close_date) or _expected_regular_close_date(today)
+        return None, target_date.isoformat() if target_date else "", "missing_history"
     frame = history.copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame = frame.dropna(subset=["date", "close"]).sort_values("date")
     if frame.empty:
-        return None, "", "missing_history"
-    target_friday = _latest_reference_friday(today)
-    eligible = frame[(frame["date"].dt.date <= target_friday) & (frame["date"].dt.weekday < 5)]
+        target_date = _coerce_date(expected_close_date) or _expected_regular_close_date(today)
+        return None, target_date.isoformat() if target_date else "", "missing_history"
+    strict_expected_date = _coerce_date(expected_close_date)
+    target_date = strict_expected_date or _latest_reference_friday(today)
+    eligible = frame[(frame["date"].dt.date <= target_date) & (frame["date"].dt.weekday < 5)]
     if eligible.empty:
-        return None, "", "missing_friday_close"
+        return None, target_date.isoformat(), "missing_expected_close" if strict_expected_date else "missing_friday_close"
     latest = eligible.iloc[-1]
     latest_date = latest["date"].date()
+    if strict_expected_date and latest_date < target_date:
+        return None, target_date.isoformat(), "stale_price_history"
     close_source = "friday_close" if latest_date.weekday() == 4 else "previous_trading_day_before_friday"
     return float(latest["close"]), latest_date.isoformat(), close_source
+
+
+def _coerce_date(value: date | str | None) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _expected_regular_close_date(today: date | None = None) -> date:
+    if today is None:
+        status = get_us_market_session_status()
+    else:
+        probe = datetime.combine(today, time(21, 0), tzinfo=timezone.utc)
+        status = get_us_market_session_status(probe)
+    if status.latest_regular_close_date is not None:
+        return status.latest_regular_close_date
+    return _latest_reference_friday(today)
 
 
 def _latest_reference_friday(today: date | None = None) -> date:

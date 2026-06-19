@@ -676,6 +676,60 @@ def test_primary_spread_uses_afterhours_reference_when_available() -> None:
     assert afterhours_provider.calls == [("NVDA", "2026-06-12", False)]
 
 
+def test_expected_close_date_does_not_reuse_stale_price_history() -> None:
+    stale_history = pd.DataFrame([{"date": "2026-06-15", "close": 250.48}])
+    close, close_date, close_source = _friday_close(
+        FakeCache(stale_history),
+        "NBIS",
+        expected_close_date="2026-06-18",
+    )
+
+    assert close is None
+    assert close_date == "2026-06-18"
+    assert close_source == "stale_price_history"
+
+
+def test_build_rows_uses_current_afterhours_anchor_when_regular_close_cache_is_stale() -> None:
+    stale_history = pd.DataFrame([{"date": "2026-06-15", "close": 250.48}])
+    afterhours_provider = FakeAfterhoursProvider(
+        reference_price=274.0,
+        reference_time="2026-06-18T19:59:00-04:00",
+        request_start="2026-06-18T19:55:00-04:00",
+        request_end="2026-06-18T20:00:00-04:00",
+        selected_bar_time="2026-06-18T19:59:00-04:00",
+    )
+
+    rows = build_weekend_spread_rows(
+        ["NBIS"],
+        mapping={
+            "NBIS": {
+                "enabled": True,
+                "binance_symbol": "NBISUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "confirmed",
+            }
+        },
+        provider=FakeProvider(price=282.5),
+        afterhours_provider=afterhours_provider,
+        cache=FakeCache(stale_history),
+        expected_close_date="2026-06-18",
+    )
+
+    row = rows[0]
+    assert row["regular_close_price"] is None
+    assert row["regular_close_date"] == "2026-06-18"
+    assert row["close_source"] == "stale_price_history"
+    assert row["afterhours_reference_price"] == 274.0
+    assert row["afterhours_reference_time"] == "2026-06-18T19:59:00-04:00"
+    assert row["binance_last_price"] == 282.5
+    assert row["spread_vs_regular_close_pct"] is None
+    assert round(row["spread_vs_afterhours_pct"], 2) == 3.1
+    assert row["primary_spread_anchor"] == "AFTERHOURS_REFERENCE"
+    assert afterhours_provider.calls == [("NBIS", "2026-06-18", False)]
+
+
 def test_primary_spread_falls_back_to_regular_close_when_afterhours_missing() -> None:
     provider = FakeProvider(price=210, bid=209.8, ask=210.2)
     afterhours_provider = FakeAfterhoursProvider(reference_price=None, data_quality="MISSING")
