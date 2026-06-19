@@ -2623,6 +2623,7 @@ def _data_quality_text(value: object) -> str:
         "FALLBACK_REGULAR_CLOSE": "常规收盘回退",
         "P0_UNVERIFIED": "P0 待验证",
         "DELAYED_OVERNIGHT_FIRST_VALID": "延迟成交样本",
+        "BINANCE_CONTRACT_NOT_LISTED_YET": "Binance 合约当周未上线",
         "NO_OPENING_WINDOW_BAR": "夜盘流动性不足",
         "NO_FIRST_MINUTE_BAR": "首分钟缺失",
         "MISSING_OVERNIGHT_FIRST_1M": "首分钟缺失",
@@ -2777,6 +2778,8 @@ def _backtest_row_failure_reason(row: dict) -> str:
         return OPENING_WINDOW_P2_MISSING_TEXT
     if transmission_quality == "HOLIDAY_OR_NO_SESSION" or data_quality == "HOLIDAY_OR_NO_SESSION":
         return "\u975e\u6b63\u5e38\u4ea4\u6613\u65e5 / \u65e0\u591c\u76d8 session"
+    if transmission_quality == "BINANCE_CONTRACT_NOT_LISTED_YET" or data_quality == "BINANCE_CONTRACT_NOT_LISTED_YET":
+        return "Binance 合约当周尚未上线"
     if transmission_quality in {"CONTRACT_MISSING", "DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE", "MISSING_BINANCE_WEEKEND_MAX"} or data_quality in {
         "CONTRACT_MISSING",
         "DATA_UNAVAILABLE",
@@ -3156,6 +3159,8 @@ def _weekend_review_empty_reason(review_rows: list[dict]) -> str:
         return "夜盘开盘窗口内无有效 1m K线"
     if qualities & {"NO_AFTERHOURS_CLOSE", "MISSING_FRIDAY_AFTERHOURS_CLOSE", "MISSING_P0"}:
         return "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u951a\u70b9"
+    if qualities & {"BINANCE_CONTRACT_NOT_LISTED_YET"}:
+        return "Binance 合约当周尚未上线，不能计算周末高点"
     if qualities & {"MISSING_BINANCE_WEEKEND_MAX", "CONTRACT_MISSING", "BINANCE_KLINE_UNAVAILABLE"}:
         return "缺少 Binance 周末 1m K线，不能计算周末高点"
     if qualities & {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
@@ -3576,17 +3581,20 @@ def _weekend_review_data_quality(
         return "DELAYED_OVERNIGHT_FIRST_VALID"
     if quality in {"TRADINGVIEW_WEBHOOK_SAMPLE", "TRADINGVIEW_CSV_SAMPLE", "MANUAL_BROKER_SAMPLE", "MANUAL_AFTERHOURS_SAMPLE"}:
         return quality
+    if quality == "BINANCE_CONTRACT_NOT_LISTED_YET":
+        return "BINANCE_CONTRACT_NOT_LISTED_YET"
     if quality in {"BOATS_DELAY_PENDING", "ALPACA_BOATS_PERMISSION", "MISSING_BOATS_FIRST_1M", "PROVIDER_ERROR"}:
         return quality
     if anchor_price is None or anchor_price <= 0 or quality in {"NO_AFTERHOURS_CLOSE", "NO_PRICE_ANCHOR"} or raw_data_quality == "NO_AFTERHOURS_CLOSE":
         return "NO_AFTERHOURS_CLOSE"
     if binance_price is None or binance_price <= 0 or quality in {
         "BINANCE_KLINE_UNAVAILABLE",
+        "BINANCE_CONTRACT_NOT_LISTED_YET",
         "CONTRACT_MISSING",
         "DATA_UNAVAILABLE",
         "MISSING_BINANCE_WEEKEND_MAX",
     }:
-        return "MISSING_BINANCE_WEEKEND_MAX"
+        return "BINANCE_CONTRACT_NOT_LISTED_YET" if quality == "BINANCE_CONTRACT_NOT_LISTED_YET" else "MISSING_BINANCE_WEEKEND_MAX"
     if broker_open_close is None or broker_open_close <= 0 or quality in {"MISSING_OVERNIGHT_FIRST_1M", "MISSING_STOCK_FIRST_BAR", "NO_BROKER_OVERNIGHT_BAR", "HOLIDAY_OR_NO_SESSION"}:
         return "MISSING_OVERNIGHT_FIRST_1M"
     if cache_status in {"STALE", "STALE_CACHE", "CACHE_FALLBACK"} or quality in {"STALE_CACHE", "STALE_OR_MISALIGNED"}:
@@ -3883,6 +3891,9 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
         return "P0 来自手动补数"
     if quality == "MISSING_OVERNIGHT_FIRST_1M":
         return str(row.get("overnight_reason") or "夜盘开盘窗口内无有效 1m K线")
+    if quality == "BINANCE_CONTRACT_NOT_LISTED_YET":
+        onboard = str(row.get("binance_contract_onboard_time_et") or "").strip()
+        return f"Binance 合约当周尚未上线（上线时间：{_weekend_review_short_time(onboard)}）" if onboard else "Binance 合约当周尚未上线"
     if quality in {"CONTRACT_MISSING", "BINANCE_KLINE_UNAVAILABLE", "MISSING_BINANCE_WEEKEND_MAX"}:
         return "缺少 Binance 周末 1m K线"
     if quality == "HOLIDAY_OR_NO_SESSION":

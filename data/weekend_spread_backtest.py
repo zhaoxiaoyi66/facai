@@ -385,7 +385,7 @@ def run_weekend_basis_backtest(
     afterhours_provider: Any | None = None,
     overnight_provider: Any | None = None,
     weeks: int = 4,
-    open_window_minutes: int = 5,
+    open_window_minutes: int = 15,
     opening_anchor: str = "overnight",
     allow_anchor_fallback: bool = True,
     require_exact_broker_open: bool = False,
@@ -1012,7 +1012,7 @@ def _is_holiday_rollover_window(expected_start_et: datetime, actual_bar_time: st
         return False
     expected = expected_start_et.astimezone(ET).replace(second=0, microsecond=0)
     actual_et = actual.astimezone(ET).replace(second=0, microsecond=0)
-    return actual_et != expected
+    return actual_et.date() != expected.date()
 
 
 def fetch_binance_weekend_max(
@@ -1598,9 +1598,17 @@ def _basis_backtest_one_window(
     holiday_rollover = _is_holiday_rollover_window(window.end_et, broker_first_time)
     quote_end = binance_window.end_et + timedelta(minutes=max(1, int(open_window_minutes or 5)))
     binance_max_fields = _missing_binance_weekend_max_fields(symbol, binance_window, reason="BINANCE_KLINE_REQUIRED")
+    contract_onboard_time = _binance_contract_onboard_time(config, provider, symbol, market_type)
+    contract_not_listed_yet = contract_onboard_time is not None and contract_onboard_time > binance_window.end_et.astimezone(timezone.utc)
+    if contract_not_listed_yet:
+        binance_max_fields = _missing_binance_weekend_max_fields(symbol, binance_window, reason="BINANCE_CONTRACT_NOT_LISTED_YET")
     multiplier = _number(config.get("unit_multiplier") or config.get("multiplier")) or 1.0
     try:
-        if hasattr(provider, "get_klines"):
+        if contract_not_listed_yet:
+            bars = []
+            quotes = []
+            kline_cache_status = "CONTRACT_NOT_LISTED_YET"
+        elif hasattr(provider, "get_klines"):
             bars, kline_cache_status = _fetch_window_klines(
                 provider,
                 symbol,
@@ -1699,6 +1707,8 @@ def _basis_backtest_one_window(
     p2_delay_minutes = stock_bar.get("p2_delay_minutes")
     if transmission_quality == "OK" and _number(p2_delay_minutes) is not None and float(_number(p2_delay_minutes) or 0) > 0:
         transmission_quality = "DELAYED_OVERNIGHT_FIRST_VALID"
+    if str(binance_max_fields.get("binance_weekend_max_reason") or "").upper() == "BINANCE_CONTRACT_NOT_LISTED_YET":
+        transmission_quality = "BINANCE_CONTRACT_NOT_LISTED_YET"
     result.update(
         {
             "week_id": window.week_id,
@@ -1708,6 +1718,8 @@ def _basis_backtest_one_window(
             "monday_reference_time_et": window.end_et.isoformat(),
             "monday_reference_time_shanghai": window.end_shanghai.isoformat(),
             "binance_symbol": symbol,
+            "binance_contract_onboard_time": contract_onboard_time.isoformat() if contract_onboard_time is not None else "",
+            "binance_contract_onboard_time_et": contract_onboard_time.astimezone(ET).isoformat() if contract_onboard_time is not None else "",
             "binance_provider": "BINANCE_USDT_M",
             "binance_quote_count": len(quotes),
             "stock_open_anchor": str(stock_bar.get("anchor") or opening_anchor),
@@ -2472,7 +2484,7 @@ def get_first_valid_stock_bar_after_weekend(
             bars = payload["bars"]
             missing_quality = _stock_open_missing_quality(payload)
             reason = missing_quality
-            if require_exact_start and int(payload.get("raw_returned_bar_count") or 0) > 0 and not bars:
+            if require_exact_start and int(payload.get("raw_returned_bar_count") or 0) > 0 and payload.get("first_raw_bar_time"):
                 missing_quality = "MISSING_OVERNIGHT_FIRST_1M"
                 reason = "返回了后续 bar，但未命中夜盘首分钟"
             attempt = {
@@ -3009,6 +3021,34 @@ def _datetime_from_ms(value: Any) -> datetime | None:
     if number is None:
         return None
     return datetime.fromtimestamp(number / 1000.0, timezone.utc)
+
+
+def _binance_contract_onboard_time(config: dict[str, Any], provider: Any, symbol: str, market_type: str) -> datetime | None:
+    for key in ("onboardDate", "onboard_date", "binance_onboard_date", "binance_onboard_time", "binance_contract_onboard_time"):
+        value = config.get(key)
+        parsed = _datetime_from_ms(value)
+        if parsed is not None:
+            return parsed
+        parsed = _datetime_from_iso(value)
+        if parsed is not None:
+            return parsed
+    if not symbol or not hasattr(provider, "list_exchange_symbols"):
+        return None
+    try:
+        records = provider.list_exchange_symbols(market_type=market_type)
+    except Exception:
+        return None
+    normalized = str(symbol or "").strip().upper()
+    for item in records or []:
+        if str(item.get("symbol") or "").strip().upper() != normalized:
+            continue
+        parsed = _datetime_from_ms(item.get("onboardDate") or item.get("onboard_date"))
+        if parsed is not None:
+            return parsed
+        parsed = _datetime_from_iso(item.get("onboardTime") or item.get("onboard_time"))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _to_ms(value: datetime) -> int:

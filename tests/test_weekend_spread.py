@@ -3173,7 +3173,7 @@ def test_weekend_basis_backtest_rejects_non_exact_broker_first_minute_for_formal
     row = rows[0]
     assert row["binance_weekend_max_price"] == 102.0
     assert row["broker_first_1m_close"] is None
-    assert row["stock_bar_reason"] == "MISSING_STOCK_FIRST_BAR"
+    assert row["stock_bar_reason"] == "返回了后续 bar，但未命中夜盘首分钟"
 
     review = weekend_spread._weekend_review_rows(rows)[0]
     assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
@@ -3260,6 +3260,7 @@ def test_strict_p2_rejects_20_05_bar_and_backtest_does_not_calculate_capture() -
         opening_anchor="overnight",
         allow_anchor_fallback=False,
         require_exact_broker_open=True,
+        open_window_minutes=15,
     )
 
     row = rows[0]
@@ -3318,6 +3319,7 @@ def test_default_p2_uses_first_valid_20_01_bar_as_delayed_sample() -> None:
     assert row["p2_strict_first_minute_close"] is None
     assert row["p2_delay_minutes"] == 1
     assert row["p2_sample_quality"] == "DELAYED_FIRST_VALID"
+    assert row["holiday_rollover"] is False
     assert row["transmission_data_quality"] == "DELAYED_OVERNIGHT_FIRST_VALID"
     assert row["capture_pct"] == pytest.approx((184.01 - 180.0) / (185.88 - 180.0) * 100.0)
 
@@ -3331,6 +3333,49 @@ def test_default_p2_uses_first_valid_20_01_bar_as_delayed_sample() -> None:
     assert frame.iloc[0]["P2 首个有效夜盘价"] == "$184.01"
     assert frame.iloc[0]["延迟分钟"] == "+1"
     assert "延迟成交样本" in frame.iloc[0]["样本质量"]
+
+
+def test_backtest_marks_binance_contract_not_listed_yet_before_onboard() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+
+    class NotYetListedProvider(FakeKlineProvider):
+        def list_exchange_symbols(self, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> list[dict]:
+            return [{"symbol": "GLWUSDT", "onboardDate": int((window.end_et + timedelta(days=1)).timestamp() * 1000)}]
+
+    provider = NotYetListedProvider([_kline(window.start_et + timedelta(hours=2), 180.0, 185.88, 179.0, 184.0)])
+    rows = run_weekend_basis_backtest(
+        ["GLW"],
+        mapping={"GLW": {"enabled": True, "binance_symbol": "GLWUSDT", "mapping_confidence": "confirmed"}},
+        anchors={},
+        provider=provider,
+        afterhours_provider=FakeAfterhoursProvider(
+            reference_price=180.0,
+            reference_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            reference_source="ALPACA_AFTERHOURS_BOATS",
+            request_start=(window.start_et - timedelta(minutes=5)).isoformat(),
+            request_end=window.start_et.isoformat(),
+            selected_bar_time=(window.start_et - timedelta(minutes=1)).isoformat(),
+            selected_bar_close=180.0,
+        ),
+        broker_provider=ObjectBrokerBarProvider([FakeSdkBar(window.end_et.astimezone(timezone.utc), 184.01, 42)]),
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        allow_anchor_fallback=False,
+        open_window_minutes=15,
+    )
+
+    row = rows[0]
+    assert provider.calls == []
+    assert row["binance_weekend_max_price"] is None
+    assert row["binance_weekend_max_reason"] == "BINANCE_CONTRACT_NOT_LISTED_YET"
+    assert row["transmission_data_quality"] == "BINANCE_CONTRACT_NOT_LISTED_YET"
+    assert row["binance_contract_onboard_time_et"]
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["data_quality"] == "BINANCE_CONTRACT_NOT_LISTED_YET"
+    assert "Binance 合约当周尚未上线" in review["failure_reason"]
 
 
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
