@@ -18,10 +18,12 @@ from buy_zone_engine import (
 )
 from data.advisory_compat import advisory_reason_list, review_reason_list
 from data.decision_log import save_decision_snapshot_from_bundle
+from data.signal_performance import SignalPerformanceStore, infer_price_position_signal_label
 from data.buy_zone_engine import build_buy_zone_context as build_unified_buy_zone_context
 from data.buy_zone_display import build_buy_zone_display
 from data.fundamentals import FundamentalCache
 from data.disclosure_pipeline import DisclosurePipeline
+from data.drawdown_profile import build_drawdown_profile, drawdown_profile_summary_text
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_view_model import build_portfolio_view_model
 from data.price_alerts import PriceAlertStore, evaluate_price_alerts
@@ -115,6 +117,7 @@ def render() -> None:
     _render_current_position_summary(portfolio_row, buy_zone_display)
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_price_action_map(buy_zone_display)
+    _render_drawdown_profile(ticker)
     _render_setup_score_snapshot(buy_zone_display)
     _render_price_alert_panel(ticker, effective_buy_zone)
     _render_research_memo(ticker, plan_store, plan)
@@ -213,15 +216,33 @@ def _render_record_signal_button(
 ) -> None:
     if st.button("记录当前信号", key=f"stock-detail-record-signal-{ticker}", width="stretch"):
         price = _first_number(technicals.get("price"), snapshot.get("current_price"), snapshot.get("price"))
+        display = buy_zone_display if isinstance(buy_zone_display, dict) else {}
+        context = buy_zone_context if isinstance(buy_zone_context, dict) else {}
         save_decision_snapshot_from_bundle(
             ticker,
             price,
             final_decision,
             "stock_detail",
-            buy_zone_context=buy_zone_context,
-            buy_zone_display=buy_zone_display,
+            buy_zone_context=context,
+            buy_zone_display=display,
         )
-        st.success("已记录系统信号。")
+        if price:
+            SignalPerformanceStore().save_signal(
+                symbol=ticker,
+                signal_date=datetime.now().date(),
+                signal_type="价格位置",
+                signal_label=infer_price_position_signal_label(display),
+                signal_price=price,
+                price_source="个股研究",
+                confidence_score=_first_number(display.get("setup_score"), context.get("setup_score")),
+                position_context=str(
+                    display.get("current_subzone_display_text")
+                    or display.get("primary_zone_text")
+                    or ""
+                ),
+                note="从个股研究记录的当前系统信号",
+            )
+        st.success("已记录系统信号，并加入后验验证。")
 
 
 def _portfolio_view() -> dict:
@@ -1191,6 +1212,166 @@ def _render_price_action_map(display: dict | None) -> None:
     if more_rows:
         with st.expander("更多价格层级", expanded=False):
             st.dataframe(pd.DataFrame(more_rows), hide_index=True, width="stretch")
+
+
+def _render_drawdown_profile(ticker: str) -> None:
+    profile = build_drawdown_profile(ticker, years=2)
+    render_section_title("回撤规律", "历史回撤档案｜近 2 年")
+    if str(profile.get("data_status") or "") != "OK":
+        st.info(drawdown_profile_summary_text(profile))
+        return
+
+    summary = drawdown_profile_summary_text(profile)
+    data_quality = str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")
+    st.markdown(
+        '<section class="research-card drawdown-profile-card">'
+        f'<div class="drawdown-profile-head"><strong>{escape(str(profile.get("drawdown_state") or "数据不足"))}</strong>'
+        f'<span>{escape(summary)}</span></div>'
+        f'<div class="drawdown-profile-grid">{_drawdown_metric_items_html(profile)}</div>'
+        '<p class="drawdown-profile-note">最大有效回撤表示历史上跌完后仍能重新新高的案例，不代表本次一定安全。</p>'
+        f'<p class="drawdown-profile-note">行情口径：{escape(data_quality)}</p>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    if st.button("记录当前回撤信号", key=f"record-drawdown-signal-{ticker}"):
+        latest_close = _first_number(profile.get("latest_close"))
+        if latest_close:
+            SignalPerformanceStore().save_signal(
+                symbol=ticker,
+                signal_date=profile.get("latest_data_date") or datetime.now().date(),
+                signal_type="历史回撤档案",
+                signal_label=str(profile.get("drawdown_state") or "数据不足"),
+                signal_price=latest_close,
+                price_source="历史回撤档案",
+                confidence_score=None,
+                position_context=str(profile.get("current_drawdown_rank") or ""),
+                note=summary,
+            )
+            st.success("已记录当前回撤信号，并加入后验验证。")
+        else:
+            st.warning("当前回撤数据不足，暂时无法记录信号。")
+
+    st.markdown("**新高后回调节奏**")
+    st.dataframe(_new_high_pullback_frame(profile), hide_index=True, width="stretch")
+
+    episodes = list(profile.get("episodes") or [])
+    if episodes:
+        recent = list(reversed(episodes))[:10]
+        st.markdown("**最近回撤段**")
+        st.dataframe(_drawdown_episode_frame(recent), hide_index=True, width="stretch")
+        if len(episodes) > len(recent):
+            with st.expander("完整回撤段列表", expanded=False):
+                st.dataframe(_drawdown_episode_frame(list(reversed(episodes))), hide_index=True, width="stretch")
+    else:
+        st.caption("近 2 年没有识别到超过 3% 的回撤段。")
+
+    similar_cases = list(profile.get("similar_drawdown_cases") or [])
+    if similar_cases:
+        with st.expander("相似回撤案例", expanded=False):
+            st.dataframe(_similar_drawdown_frame(similar_cases), hide_index=True, width="stretch")
+
+
+def _drawdown_metric_items_html(profile: dict) -> str:
+    recovery_stats = profile.get("recovery_stats") or {}
+    items = [
+        ("当前回撤", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
+        ("近 2 年最大回撤", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 2 年最大有效回撤，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("本轮主升最大有效回撤", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
+        ("近 6 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
+        ("近 12 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
+        ("回撤分位", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("预计修复时间参考", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
+    ]
+    return "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in items
+    )
+
+
+def _new_high_pullback_frame(profile: dict) -> pd.DataFrame:
+    stats = profile.get("new_high_pullback_stats") or {}
+    rows = []
+    for threshold in ("5", "10", "15", "20"):
+        rows.append(
+            {
+                "回调幅度": f"{threshold}%",
+                "历史次数": _integer_text(stats.get(f"count_{threshold}pct_pullback")),
+                "中位出现天数": _drawdown_days_text(stats.get(f"median_days_to_{threshold}pct_pullback")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _drawdown_episode_frame(episodes: list[dict]) -> pd.DataFrame:
+    rows = []
+    for item in episodes:
+        rows.append(
+            {
+                "高点日期": _date_text(item.get("peak_date")),
+                "高点价格": _drawdown_money_text(item.get("peak_price")),
+                "低点日期": _date_text(item.get("trough_date")),
+                "低点价格": _drawdown_money_text(item.get("trough_price")),
+                "回撤%": _drawdown_percent_text(item.get("drawdown_pct")),
+                "下跌天数": _integer_text(item.get("days_to_trough")),
+                "是否修复": "已修复" if item.get("recovered") else "未修复",
+                "修复日期": _date_text(item.get("recovery_date")),
+                "修复天数": _integer_text(item.get("days_to_recover")),
+                "当时趋势状态": str(item.get("regime_at_peak") or "数据不足"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _similar_drawdown_frame(cases: list[dict]) -> pd.DataFrame:
+    rows = []
+    for item in cases:
+        rows.append(
+            {
+                "发生日期": _date_text(item.get("date")),
+                "当时回撤": _drawdown_percent_text(item.get("drawdown_pct")),
+                "后 10 日收益": _drawdown_percent_text(item.get("return_10d_pct")),
+                "后 20 日收益": _drawdown_percent_text(item.get("return_20d_pct")),
+                "后 60 日收益": _drawdown_percent_text(item.get("return_60d_pct")),
+                "是否创新高": "是" if item.get("made_new_high") else "否",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _drawdown_percent_text(value: object) -> str:
+    number = _first_number(value)
+    if number is None:
+        return "数据不足"
+    return f"{number:+.1f}%"
+
+
+def _drawdown_money_text(value: object) -> str:
+    number = _first_number(value)
+    return format_currency(number) if number is not None else "数据不足"
+
+
+def _drawdown_days_text(value: object) -> str:
+    number = _first_number(value)
+    if number is None:
+        return "数据不足"
+    return f"{number:.0f} 天"
+
+
+def _integer_text(value: object) -> str:
+    number = _first_number(value)
+    if number is None:
+        return "数据不足"
+    return f"{number:.0f}"
+
+
+def _date_text(value: object) -> str:
+    if value in (None, ""):
+        return "未修复"
+    try:
+        return pd.to_datetime(value).strftime("%Y-%m-%d")
+    except Exception:
+        return str(value)
 
 
 def _price_hierarchy_rows(display: dict) -> list[dict[str, str]]:
@@ -3421,6 +3602,56 @@ def _render_detail_styles() -> None:
             font-size: 0.82rem;
             line-height: 1.4;
         }
+        .drawdown-profile-card {
+            padding: 0.78rem 0.86rem;
+            margin-bottom: 0.75rem;
+        }
+        .drawdown-profile-head {
+            display: grid;
+            grid-template-columns: 140px minmax(0, 1fr);
+            gap: 0.65rem;
+            align-items: center;
+            padding-bottom: 0.62rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+        }
+        .drawdown-profile-head strong {
+            color: #0f172a;
+            font-size: 0.96rem;
+            font-weight: 820;
+        }
+        .drawdown-profile-head span {
+            color: #475569;
+            font-size: 0.84rem;
+            line-height: 1.45;
+        }
+        .drawdown-profile-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.48rem;
+            margin-top: 0.62rem;
+        }
+        .drawdown-profile-grid div {
+            min-height: 3.1rem;
+            padding: 0.45rem 0.52rem;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            border-radius: 0.48rem;
+            background: #F8FAFC;
+        }
+        .drawdown-profile-grid span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .drawdown-profile-grid strong {
+            display: block;
+            margin-top: 0.2rem;
+            color: #0f172a;
+            font-size: 0.86rem;
+            line-height: 1.28;
+            font-weight: 780;
+        }
         .setup-snapshot-card {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3749,11 +3980,13 @@ def _render_detail_styles() -> None:
             .decision-headline-row,
             .decision-compact-grid,
             .price-hierarchy-row,
+            .drawdown-profile-head,
             .thesis-risk-card {
                 grid-template-columns: 1fr;
             }
             .decision-tags,
-            .setup-snapshot-card {
+            .setup-snapshot-card,
+            .drawdown-profile-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
             .buy-zone-row {

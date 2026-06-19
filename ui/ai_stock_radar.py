@@ -13,6 +13,7 @@ from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stoc
 from data.buy_setup_quality import setup_quality_note, setup_quality_status, setup_quality_text
 from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
+from data.drawdown_profile import build_drawdown_profile, drawdown_profile_summary_text
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
 from data.portfolio_targets import build_action_fusion_portfolio_context
@@ -119,6 +120,7 @@ class StockReportContext:
     conclusion: dict[str, Any]
     portfolio_context: dict[str, Any]
     data_health: dict[str, Any]
+    drawdown_profile: dict[str, Any]
     performance: PerfProbe
     history_loaded: bool = False
 
@@ -210,6 +212,7 @@ def _render_report(symbol: str, perf: PerfProbe | None = None) -> None:
             buy_zone_context=context.buy_zone_context,
             buy_zone_display=context.buy_zone_display,
             data_health=context.data_health,
+            drawdown_profile=context.drawdown_profile,
             include_appendix=False,
             perf=context.performance,
         ),
@@ -278,6 +281,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     stage_start = time.perf_counter()
     data_health = _data_health_context(report, market, snapshot, row or {}, portfolio_context, buy_zone_context)
     perf.add("data_health 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
+    drawdown_profile = _cached_drawdown_profile(symbol, perf)
     return StockReportContext(
         symbol=symbol,
         row=row or {},
@@ -292,6 +296,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
         conclusion=conclusion,
         portfolio_context=portfolio_context,
         data_health=data_health,
+        drawdown_profile=drawdown_profile,
         performance=perf,
         history_loaded=load_history,
     )
@@ -358,6 +363,16 @@ def _cached_market_history(symbol: str, perf: PerfProbe) -> pd.DataFrame:
         lambda: build_market_history(symbol),
         perf,
         "历史 K 线读取",
+    )
+
+
+def _cached_drawdown_profile(symbol: str, perf: PerfProbe) -> dict[str, Any]:
+    return _runtime_cached(
+        ("drawdown_profile", symbol),
+        HISTORY_TTL_SECONDS,
+        lambda: build_drawdown_profile(symbol, years=2),
+        perf,
+        "历史回撤档案",
     )
 
 
@@ -1309,6 +1324,7 @@ def _report_html(
     buy_zone_context: dict[str, Any] | None = None,
     buy_zone_display: dict[str, Any] | None = None,
     data_health: dict[str, Any] | None = None,
+    drawdown_profile: dict[str, Any] | None = None,
     include_appendix: bool = True,
     perf: PerfProbe | None = None,
 ) -> str:
@@ -1343,6 +1359,7 @@ def _report_html(
         f"{range_html}"
         f"{_score_card_html(report, buy_zone_context)}"
         "</section>"
+        f"{_drawdown_profile_card_html(drawdown_profile or {})}"
         f"{_ai_cloud_infra_card_html(row, snapshot, report)}"
         '<details class="ai-radar-folded-section">'
         '<summary>看多逻辑 / 核心风险</summary>'
@@ -2745,6 +2762,50 @@ def _score_card_html(report: dict[str, Any], buy_zone_context: dict[str, Any] | 
         f'<span class="ai-radar-core-badge">{escape(setup_quality)}</span>'
         "</section>"
     )
+
+
+def _drawdown_profile_card_html(profile: dict[str, Any]) -> str:
+    if not profile:
+        return ""
+    summary = drawdown_profile_summary_text(profile)
+    status = str(profile.get("drawdown_state") or "数据不足")
+    items = [
+        ("当前回撤", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
+        ("近 2 年最大回撤", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 2 年最大有效回撤，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("本轮主升最大有效回撤", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
+        ("近 6 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
+        ("近 12 个月最大有效回撤", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
+        ("回撤分位", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
+    ]
+    body = "".join(
+        f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        for label, value in items
+    )
+    return (
+        '<section class="ai-radar-card ai-radar-drawdown-card">'
+        '<div class="ai-radar-section-title"><span>历史回撤档案｜近 2 年</span><b>辅助判断回调性质</b></div>'
+        f'<div class="ai-radar-score-grid">{body}</div>'
+        f'<p class="ai-radar-setup-explain">{escape(summary)}</p>'
+        '<p class="ai-radar-setup-explain">最大有效回撤表示历史上跌完后仍能重新新高的案例，不代表本次一定安全。</p>'
+        f'<span class="ai-radar-core-badge">{escape(status)}</span>'
+        "</section>"
+    )
+
+
+def _drawdown_percent_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "数据不足"
+    return f"{number:+.1f}%"
+
+
+def _drawdown_days_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "数据不足"
+    return f"{number:.0f} 天"
 
 
 def _risk_reward_action_note_for_scores(buy_zone_context: dict[str, Any]) -> str:
