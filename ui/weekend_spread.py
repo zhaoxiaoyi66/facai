@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from data.afterhours_provider import AfterhoursReference
-from data.equity_afterhours_provider import CachedAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
+from data.equity_afterhours_provider import CachedAfterhoursProvider, MultiProviderAfterhoursProvider, NullAfterhoursProvider, default_afterhours_provider
 from data.binance_equity_scan import (
     DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH,
     MAPPING_ANCHOR_MISSING,
@@ -366,7 +366,7 @@ def _render_realtime_action_bar() -> dict[str, bool]:
     with st.expander("数据源与补数工具", expanded=False):
         col_cache, col_force_anchor, col_clear = st.columns([1, 1, 1])
         use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
-        force_anchor = col_force_anchor.button("强制重建锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
+        force_anchor = col_force_anchor.button("重新抓取锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
         clear_scan_cache = col_clear.button("清空扫描缓存", width="stretch", key="weekend_spread_clear_binance_equity_scan_cache")
         if clear_scan_cache:
             try:
@@ -746,7 +746,7 @@ def _build_weekend_spread_rows_with_feedback(
     options = refresh_options or {}
     force_refresh = bool(options.get("refresh"))
     anchor_refresh = bool(options.get("anchor_refresh") or options.get("force_anchor_refresh"))
-    force_anchor_refresh = bool(options.get("force_anchor_refresh"))
+    force_anchor_refresh = anchor_refresh
     skipped_ignored = int(options.get("ignored_count") or 0)
     expected_anchor_date = _expected_realtime_anchor_date()
     cached = read_weekend_spread_snapshot(
@@ -820,7 +820,7 @@ def _build_weekend_spread_rows_with_feedback(
             watchlist,
             mapping=mapping,
             provider=_CachedRowBinanceProvider(cached_rows),
-            afterhours_provider=default_afterhours_provider(),
+            afterhours_provider=_fresh_afterhours_provider(),
             force_refresh=False,
             afterhours_force_refresh=force_anchor_refresh,
             progress_callback=update_anchor_progress,
@@ -830,7 +830,14 @@ def _build_weekend_spread_rows_with_feedback(
         if has_successful_price(rows):
             write_weekend_spread_snapshot(rows, mapping=mapping, tickers=watchlist, generated_at=datetime.now(timezone.utc))
         live_rows = annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at)
-        status_slot.success("盘后锚点更新完成。")
+        anchor_counts = _afterhours_counts(rows)
+        anchor_message = _anchor_refresh_summary_text(anchor_counts)
+        if int(anchor_counts.get("available") or 0) > 0 and int(anchor_counts.get("missing") or 0) <= 0:
+            status_slot.success(anchor_message)
+        elif int(anchor_counts.get("available") or 0) > 0:
+            status_slot.warning(anchor_message)
+        else:
+            status_slot.warning(anchor_message)
         return live_rows, {
             "cache_state": "API_LIVE",
             "cache_message": "afterhours anchors updated",
@@ -855,6 +862,7 @@ def _build_weekend_spread_rows_with_feedback(
     rows = build_weekend_spread_rows(
         watchlist,
         mapping=mapping,
+        provider=_BulkRefreshBinanceProvider(),
         afterhours_provider=default_afterhours_provider() if cached.get("cache_state") == "ANCHOR_DATE_STALE" else _CachedRowAfterhoursProvider(cached_rows),
         force_refresh=True,
         afterhours_force_refresh=False,
@@ -995,6 +1003,98 @@ class _CacheOnlyBinanceProvider:
             "source": "stale_binance_price_cache" if is_stale else str(raw.get("source") or "binance_price_cache"),
             "cache_status": "STALE" if is_stale else "FRESH",
         }
+
+
+class _BulkRefreshBinanceProvider:
+    def __init__(self, provider: object | None = None) -> None:
+        self.provider = provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=60)
+        self._price_map: dict[str, float] | None = None
+        self._load_error = ""
+        self._loaded_at = ""
+
+    def get_last_price(self, symbol: str, *, market_type: str = "usdm_futures", force_refresh: bool = False) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_market = normalize_market_type(market_type)
+        if not normalized_symbol:
+            return self._missing_snapshot(normalized_symbol, normalized_market, "missing_symbol")
+        if normalized_market != "usdm_futures":
+            return self._missing_snapshot(normalized_symbol, normalized_market, "unsupported_market")
+        price_map = self._load_price_map()
+        price = price_map.get(normalized_symbol)
+        if price is None:
+            return self._missing_snapshot(normalized_symbol, normalized_market, "price_not_loaded")
+        return {
+            "symbol": normalized_symbol,
+            "last_price": price,
+            "bid": None,
+            "ask": None,
+            "volume_24h": None,
+            "funding_rate": None,
+            "updated_at": self._loaded_at,
+            "source": "binance_usdm_futures_bulk",
+            "market_type": normalized_market,
+            "error": "",
+        }
+
+    def _load_price_map(self) -> dict[str, float]:
+        if self._price_map is not None:
+            return self._price_map
+        self._loaded_at = datetime.now(timezone.utc).isoformat()
+        self._price_map = {}
+        for candidate in self._provider_candidates():
+            getter = getattr(candidate, "_get_market_payload", None)
+            if not callable(getter):
+                continue
+            try:
+                payload = getter("usdm_futures", "price", {})
+            except Exception as exc:
+                self._load_error = f"{type(exc).__name__}: {exc}"
+                continue
+            parsed = self._parse_price_payload(payload)
+            if parsed:
+                self._price_map = parsed
+                self._load_error = ""
+                return self._price_map
+        return self._price_map
+
+    def _provider_candidates(self) -> list[object]:
+        candidates = [self.provider]
+        wrapped = getattr(self.provider, "provider", None)
+        if wrapped is not None:
+            candidates.append(wrapped)
+        return candidates
+
+    @staticmethod
+    def _parse_price_payload(payload: object) -> dict[str, float]:
+        if not isinstance(payload, list):
+            return {}
+        result: dict[str, float] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            price = _number(item.get("price"))
+            if symbol and price is not None:
+                result[symbol] = price
+        return result
+
+    def _missing_snapshot(self, symbol: str, market_type: str, error: str) -> dict:
+        return {
+            "symbol": symbol,
+            "last_price": None,
+            "bid": None,
+            "ask": None,
+            "volume_24h": None,
+            "funding_rate": None,
+            "updated_at": self._loaded_at,
+            "source": "binance_usdm_futures_bulk",
+            "market_type": market_type,
+            "error": self._load_error or error,
+        }
+
+
+def _fresh_afterhours_provider() -> CachedAfterhoursProvider:
+    return CachedAfterhoursProvider(MultiProviderAfterhoursProvider(), fallback_on_error=False)
 
 
 class _CachedRowAfterhoursProvider:
@@ -1584,6 +1684,23 @@ def _afterhours_anchor_status_text(rows: list[dict], afterhours_counts: dict[str
         parts.append(f"回退 {fallback}")
     if missing:
         parts.append(f"缺失 {missing}")
+    return "，".join(parts)
+
+
+def _anchor_refresh_summary_text(afterhours_counts: dict[str, int]) -> str:
+    total = int(afterhours_counts.get("total") or 0)
+    available = int(afterhours_counts.get("available") or 0)
+    missing = int(afterhours_counts.get("missing") or 0)
+    fallback = int(afterhours_counts.get("fallback") or 0)
+    if total <= 0:
+        return "没有需要更新盘后锚点的映射。"
+    parts = [f"盘后锚点更新完成：成功 {available}/{total}"]
+    if missing:
+        parts.append(f"缺失 {missing}")
+    if fallback:
+        parts.append(f"常规收盘回退 {fallback}")
+    if available <= 0:
+        parts.append("未读取到新的盘后锚点，请查看刷新诊断。")
     return "，".join(parts)
 
 

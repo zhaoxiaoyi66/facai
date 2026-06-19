@@ -85,9 +85,11 @@ class CachedAfterhoursProvider(AfterhoursProvider):
         provider: AfterhoursProvider | None = None,
         *,
         cache_path: Path = DEFAULT_AFTERHOURS_CACHE_PATH,
+        fallback_on_error: bool = True,
     ) -> None:
         self.provider = provider or FMPAfterhoursProvider()
         self.cache_path = cache_path
+        self.fallback_on_error = fallback_on_error
 
     def get_afterhours_reference(
         self,
@@ -162,7 +164,7 @@ class CachedAfterhoursProvider(AfterhoursProvider):
             live_snapshot = _decorate_snapshot(snapshot, regular_close_date=regular_close_date, cache_status="API_LIVE")
             self._write(cache_key, live_snapshot)
             return live_snapshot
-        if cached is not None:
+        if cached is not None and self.fallback_on_error:
             cached_snapshot = replace(
                 cached,
                 cache_status="CACHE_FALLBACK",

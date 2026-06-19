@@ -810,6 +810,39 @@ def test_afterhours_provider_failure_uses_cached_reference(tmp_path) -> None:
     assert second.error == "timeout"
 
 
+def test_afterhours_provider_can_disable_cache_fallback_for_live_rebuild(tmp_path) -> None:
+    cache_path = tmp_path / "afterhours_reference_cache.json"
+    seed_provider = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(
+                symbol="NVDA",
+                reference_price=208,
+                reference_time="2026-06-12T19:58:00-04:00",
+                reference_source="FMP_AFTERHOURS_TRADE",
+                last_trade=208,
+                data_quality="HIGH",
+            )
+        ]
+    )
+    CachedAfterhoursProvider(seed_provider, cache_path=cache_path).get_afterhours_reference(
+        "NVDA",
+        regular_close_date="2026-06-12",
+    )
+    failing_provider = SequenceAfterhoursProvider(
+        [AfterhoursReference(symbol="NVDA", data_quality="MISSING", error="timeout", missing_reason="FETCH_FAILED")]
+    )
+
+    snapshot = CachedAfterhoursProvider(
+        failing_provider,
+        cache_path=cache_path,
+        fallback_on_error=False,
+    ).get_afterhours_reference("NVDA", regular_close_date="2026-06-12", force_refresh=True)
+
+    assert snapshot.reference_price is None
+    assert snapshot.cache_status != "CACHE_FALLBACK"
+    assert snapshot.error == "timeout"
+
+
 def test_afterhours_cache_only_provider_reads_cached_reference_without_fetch(tmp_path) -> None:
     cache_path = tmp_path / "afterhours_reference_cache.json"
     live_provider = SequenceAfterhoursProvider(
@@ -4838,6 +4871,88 @@ def test_realtime_refresh_path_accepts_ignored_count(monkeypatch) -> None:
 
     assert rows[0]["ticker"] == "NVDA"
     assert cache_status["cache_state"] == "API_LIVE"
+
+
+def test_bulk_refresh_provider_uses_one_price_payload_without_per_symbol_calls() -> None:
+    class BulkOnlyProvider:
+        def __init__(self) -> None:
+            self.payload_calls = 0
+            self.single_calls = 0
+
+        def _get_market_payload(self, market_type, endpoint, params):
+            self.payload_calls += 1
+            assert market_type == "usdm_futures"
+            assert endpoint == "price"
+            assert params == {}
+            return [
+                {"symbol": "NVDAUSDT", "price": "210.5"},
+                {"symbol": "ORCLUSDT", "price": "182.1"},
+            ]
+
+        def get_last_price(self, symbol, *, market_type="usdm_futures", force_refresh=False):
+            self.single_calls += 1
+            raise AssertionError("refresh should not request single-symbol Binance prices")
+
+    provider = BulkOnlyProvider()
+    refresh_provider = weekend_spread._BulkRefreshBinanceProvider(provider)
+
+    nvda = refresh_provider.get_last_price("nVdAuSdT", force_refresh=True)
+    missing = refresh_provider.get_last_price("MSFTUSDT", force_refresh=True)
+
+    assert nvda["last_price"] == 210.5
+    assert nvda["source"] == "binance_usdm_futures_bulk"
+    assert missing["last_price"] is None
+    assert missing["error"] == "price_not_loaded"
+    assert provider.payload_calls == 1
+    assert provider.single_calls == 0
+
+
+def test_anchor_refresh_button_forces_afterhours_rebuild(monkeypatch) -> None:
+    class FakeProgress:
+        def progress(self, value):
+            self.value = value
+
+    class FakeStatus:
+        def caption(self, value):
+            self.value = value
+
+        def success(self, value):
+            self.value = value
+
+        def warning(self, value):
+            self.value = value
+
+    captured: dict[str, object] = {}
+
+    def fake_build_rows(*args, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "ticker": "NVDA",
+                "status": "OK",
+                "binance_symbol": "NVDAUSDT",
+                "binance_last_price": 104.0,
+                "afterhours_reference_price": 100.0,
+            }
+        ]
+
+    monkeypatch.setattr(weekend_spread.st, "progress", lambda value: FakeProgress())
+    monkeypatch.setattr(weekend_spread.st, "empty", lambda: FakeStatus())
+    monkeypatch.setattr(weekend_spread, "read_weekend_spread_snapshot", lambda **kwargs: {"cache_state": "FRESH", "rows": []})
+    monkeypatch.setattr(weekend_spread, "_expected_realtime_anchor_date", lambda: "2026-06-18")
+    monkeypatch.setattr(weekend_spread, "write_weekend_spread_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_rows", fake_build_rows)
+
+    rows, cache_status = weekend_spread._build_weekend_spread_rows_with_feedback(
+        ["NVDA"],
+        mapping={"NVDA": {"binance_symbol": "NVDAUSDT"}},
+        refresh_options={"anchor_refresh": True},
+    )
+
+    assert rows[0]["ticker"] == "NVDA"
+    assert cache_status["cache_state"] == "API_LIVE"
+    assert captured["afterhours_force_refresh"] is True
+    assert getattr(captured["afterhours_provider"], "fallback_on_error", True) is False
 
 
 def test_binance_mapping_sync_button_lives_in_mapping_tab_not_realtime() -> None:
