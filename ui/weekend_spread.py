@@ -2712,33 +2712,42 @@ def _backtest_error_message(rows: list[dict]) -> str:
     grouped: dict[tuple[str, str], int] = {}
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
-        quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
-        raw_error = str(row.get("error_message") or "").strip().upper()
-        if quality == "OVERNIGHT_PROVIDER_MISSING":
-            reason = "\u7f8e\u80a1\u591c\u76d8\u6570\u636e\u6e90\u672a\u914d\u7f6e"
-        elif quality == "NO_AFTERHOURS_CLOSE" or raw_error in {"MISSING_FRIDAY_AFTERHOURS_CLOSE", "NO_AFTERHOURS_CLOSE"}:
-            reason = "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u6536\u76d8\u4ef7"
-        elif quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR", "MISSING_OVERNIGHT_FIRST_1M"} or raw_error in {
-            "NO_BROKER_OVERNIGHT_BAR",
-            "MISSING_STOCK_FIRST_BAR",
-            "MISSING_OVERNIGHT_FIRST_1M",
-        }:
-            reason = "\u7f3a\u5c11\u7f8e\u80a1\u591c\u76d8\u9996\u5206\u949f 1m K\u7ebf"
-        elif quality == "HOLIDAY_OR_NO_SESSION":
-            reason = "\u975e\u6b63\u5e38\u4ea4\u6613\u65e5 / \u65e0\u591c\u76d8 session"
-        elif quality in {"DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"}:
-            reason = "\u7f3a\u5c11 Binance \u5468\u672b 1m K\u7ebf"
-        elif quality == "STALE_OR_MISALIGNED":
-            reason = "Binance \u6570\u636e\u8fc7\u671f\u6216\u65f6\u95f4\u4e0d\u5bf9"
-        elif quality == "INVALID":
-            reason = raw_error or "\u6570\u636e\u65e0\u6548"
-        else:
-            reason = _weekend_review_failure_reason(row, quality)
+        reason = _backtest_row_failure_reason(row)
         grouped[(ticker, reason)] = grouped.get((ticker, reason), 0) + 1
     return "\uff1b".join(
         f"{ticker}\uff1a{reason}\uff0c\u5df2\u6392\u9664 {count} \u4e2a\u6837\u672c"
         for (ticker, reason), count in sorted(grouped.items())
     )
+
+
+def _backtest_row_failure_reason(row: dict) -> str:
+    data_quality = str(row.get("data_quality") or "").strip().upper()
+    transmission_quality = str(row.get("transmission_data_quality") or "").strip().upper()
+    raw_error = str(row.get("error_message") or "").strip().upper()
+    if data_quality == "NO_AFTERHOURS_CLOSE" or raw_error in {"MISSING_FRIDAY_AFTERHOURS_CLOSE", "NO_AFTERHOURS_CLOSE"}:
+        return "\u7f3a\u5c11\u672c\u5468\u6700\u540e\u4ea4\u6613\u65e5\u76d8\u540e\u6536\u76d8\u4ef7"
+    if transmission_quality == "OVERNIGHT_PROVIDER_MISSING" or data_quality == "OVERNIGHT_PROVIDER_MISSING":
+        return "\u7f8e\u80a1\u591c\u76d8\u6570\u636e\u6e90\u672a\u914d\u7f6e"
+    if transmission_quality in {"NO_BROKER_OVERNIGHT_BAR", "MISSING_STOCK_FIRST_BAR", "MISSING_OVERNIGHT_FIRST_1M"} or raw_error in {
+        "NO_BROKER_OVERNIGHT_BAR",
+        "MISSING_STOCK_FIRST_BAR",
+        "MISSING_OVERNIGHT_FIRST_1M",
+    }:
+        return "\u7f3a\u5c11\u7f8e\u80a1\u591c\u76d8\u9996\u5206\u949f 1m K\u7ebf"
+    if transmission_quality == "HOLIDAY_OR_NO_SESSION" or data_quality == "HOLIDAY_OR_NO_SESSION":
+        return "\u975e\u6b63\u5e38\u4ea4\u6613\u65e5 / \u65e0\u591c\u76d8 session"
+    if transmission_quality in {"CONTRACT_MISSING", "DATA_UNAVAILABLE", "BINANCE_KLINE_UNAVAILABLE"} or data_quality in {
+        "CONTRACT_MISSING",
+        "DATA_UNAVAILABLE",
+        "BINANCE_KLINE_UNAVAILABLE",
+    }:
+        return "\u7f3a\u5c11 Binance \u5468\u672b 1m K\u7ebf"
+    if transmission_quality == "STALE_OR_MISALIGNED" or data_quality == "STALE_OR_MISALIGNED":
+        return "Binance \u6570\u636e\u8fc7\u671f\u6216\u65f6\u95f4\u4e0d\u5bf9"
+    if transmission_quality == "INVALID" or data_quality == "INVALID":
+        return _data_quality_text(raw_error) if raw_error else "\u6570\u636e\u65e0\u6548"
+    quality = transmission_quality or data_quality
+    return _weekend_review_failure_reason(row, quality)
 
 
 def _render_backtest_kpis(rows: list[dict]) -> None:
@@ -3103,6 +3112,62 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
     display["Binance 合约"] = frame.get("binance_symbol")
     display["Binance 高点时间"] = frame.get("contract_sample_time")
     return display
+
+
+def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        "周次",
+        "股票",
+        "数据质量",
+        "失败原因",
+        "P0 最后交易日盘后",
+        "P1 Binance 高点",
+        "P2 夜盘首分钟",
+        "P0 请求区间",
+        "P0 返回bars",
+        "P2 请求区间",
+        "P2 返回bars",
+        "Binance 窗口",
+        "Binance 合约",
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    records: list[dict[str, object]] = []
+    for row in rows:
+        p0 = _first_number(
+            row,
+            (
+                "last_trading_day_afterhours_close",
+                "friday_afterhours_close",
+                "afterhours_reference_price",
+                "p0_selected_bar_close",
+            ),
+        )
+        p1 = _first_number(row, ("binance_equivalent_max", "binance_weekend_max", "binance_weekend_max_price"))
+        p2 = _first_number(row, ("overnight_first_1m_close", "broker_first_1m_close", "broker_open_close"))
+        data_quality = str(row.get("transmission_data_quality") or row.get("data_quality") or "").strip().upper()
+        p2_window = _weekend_review_time_range(
+            row.get("stock_bar_requested_start") or row.get("overnight_bar_start_et") or row.get("p2_session_start_et"),
+            row.get("stock_bar_requested_end") or row.get("overnight_bar_end_et"),
+        )
+        records.append(
+            {
+                "周次": str(row.get("week_id") or ""),
+                "股票": str(row.get("ticker") or "").strip().upper(),
+                "数据质量": _data_quality_text(data_quality),
+                "失败原因": _backtest_row_failure_reason(row),
+                "P0 最后交易日盘后": _money_or_missing(p0, "缺 P0"),
+                "P1 Binance 高点": _money_or_missing(p1, "缺 P1"),
+                "P2 夜盘首分钟": _money_or_missing(p2, "缺 P2"),
+                "P0 请求区间": _weekend_review_time_range(row.get("p0_request_start_et"), row.get("p0_request_end_et")),
+                "P0 返回bars": int(_first_number(row, ("p0_returned_bar_count",)) or 0),
+                "P2 请求区间": p2_window,
+                "P2 返回bars": int(_first_number(row, ("stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
+                "Binance 窗口": _weekend_review_time_range(row.get("binance_window_start_et"), row.get("binance_window_end_et")),
+                "Binance 合约": str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper(),
+            }
+        )
+    return pd.DataFrame(records, columns=columns).fillna("")
 
 
 def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:

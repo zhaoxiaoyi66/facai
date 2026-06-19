@@ -1352,6 +1352,28 @@ def test_backtest_error_message_prefers_transmission_quality_over_observe_status
     assert "GLW：缺少美股夜盘首分钟 1m K线，已排除 1 个样本" in message
 
 
+def test_backtest_error_message_prioritizes_missing_afterhours_before_binance_gap() -> None:
+    rows = [
+        {
+            "ticker": "GLW",
+            "data_quality": "NO_AFTERHOURS_CLOSE",
+            "transmission_data_quality": "CONTRACT_MISSING",
+            "error_message": "缺少本周最后交易日盘后收盘价",
+        },
+        {
+            "ticker": "GLW",
+            "data_quality": "NO_AFTERHOURS_CLOSE",
+            "transmission_data_quality": "CONTRACT_MISSING",
+            "error_message": "缺少本周最后交易日盘后收盘价",
+        },
+    ]
+
+    message = weekend_spread._backtest_error_message(rows)
+
+    assert "GLW：缺少本周最后交易日盘后收盘价，已排除 2 个样本" in message
+    assert "缺少 Binance 周末 1m K线" not in message
+
+
 def test_weekend_review_empty_reason_names_missing_stock_first_bar() -> None:
     reason = weekend_spread._weekend_review_empty_reason(
         [
@@ -1375,6 +1397,37 @@ def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
     }
 
     assert weekend_spread._p2_source_summary(row) == "缺少夜盘首分钟 1m K线"
+
+
+def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
+    frame = weekend_spread._backtest_diagnostic_frame(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "GLW",
+                "data_quality": "OBSERVE_ANCHOR_ONLY",
+                "transmission_data_quality": "MISSING_OVERNIGHT_FIRST_1M",
+                "error_message": "MISSING_STOCK_FIRST_BAR",
+                "last_trading_day_afterhours_close": 180.0,
+                "binance_weekend_max": 185.88,
+                "p0_request_start_et": "2026-06-12T19:55:00-04:00",
+                "p0_request_end_et": "2026-06-12T20:00:00-04:00",
+                "p0_returned_bar_count": 1,
+                "stock_bar_requested_start": "2026-06-14T20:00:00-04:00",
+                "stock_bar_requested_end": "2026-06-14T20:02:00-04:00",
+                "stock_bar_returned_count": 0,
+                "binance_window_start_et": "2026-06-12T20:00:00-04:00",
+                "binance_window_end_et": "2026-06-14T20:00:00-04:00",
+                "binance_symbol": "GLWUSDT",
+            }
+        ]
+    )
+
+    text = frame.to_string()
+    assert "MISSING_STOCK_FIRST_BAR" not in text
+    assert "None" not in text
+    assert frame.iloc[0]["失败原因"] == "缺少美股夜盘首分钟 1m K线"
+    assert frame.iloc[0]["P2 夜盘首分钟"] == "缺 P2"
 
 
 def test_historical_weekly_anchor_uses_afterhours_reference() -> None:
