@@ -784,50 +784,50 @@ def fetch_friday_afterhours_close(
                 reason="",
             ),
         }
-    snapshot_source = provider_anchor or (anchor_source or {})
-    snapshot_price = _number(snapshot_source.get("afterhours_reference_price"))
-    snapshot_time = _datetime_from_iso(snapshot_source.get("afterhours_reference_time"))
-    if snapshot_price is not None and snapshot_price > 0 and snapshot_time is not None:
-        snapshot_et = snapshot_time.astimezone(ET)
-        if window_start <= snapshot_et < window_end:
-            snapshot_provider = str(snapshot_source.get("afterhours_reference_source") or "")
-            returned_count = int(_number(snapshot_source.get("p0_returned_bar_count")) or 0)
-            if returned_count == 0 and "FMP_AFTERHOURS" in snapshot_provider.upper():
-                returned_count = 1
-            quality = _p0_quality(
-                provider_name or snapshot_provider or "afterhours_provider",
-                str(snapshot_source.get("afterhours_reference_quality") or snapshot_source.get("afterhours_reference_source") or ""),
-                has_verified_bar=returned_count > 0 and bool(snapshot_source.get("p0_endpoint")),
-            )
-            selected_time = str(snapshot_source.get("p0_selected_bar_time") or snapshot_et.isoformat())
-            selected_close = _number(snapshot_source.get("p0_selected_bar_close")) or snapshot_price
-            selected_volume = _number(snapshot_source.get("p0_selected_bar_volume"))
-            return {
-                "ok": True,
-                "symbol": normalized,
-                "friday_afterhours_close": snapshot_price,
-                "bar_start_et": snapshot_et.isoformat(),
-                "bar_end_et": (snapshot_et + timedelta(minutes=1)).isoformat(),
-                "provider": provider_name or snapshot_provider or "afterhours_provider",
-                "venue": venue,
-                "interval": "1m",
-                "quality": quality,
-                "reason": "",
-                **_p0_diagnostics(
-                    symbol=normalized,
-                    request_start=str(snapshot_source.get("p0_request_start") or request_start_text),
-                    request_end=str(snapshot_source.get("p0_request_end") or request_end_text),
-                    provider=provider_name or snapshot_provider or "afterhours_provider",
-                    endpoint=str(snapshot_source.get("p0_endpoint") or _p0_endpoint(provider)),
-                    returned_bar_count=returned_count,
-                    selected_time=selected_time,
-                    selected_close=selected_close,
-                    selected_volume=selected_volume,
-                    quality=quality,
-                    is_fallback=bool(snapshot_source.get("p0_is_fallback") or False),
-                    reason="",
-                ),
-            }
+    for snapshot_source in (provider_anchor, anchor_source or {}):
+        snapshot_price = _number(snapshot_source.get("afterhours_reference_price"))
+        snapshot_time = _datetime_from_iso(snapshot_source.get("afterhours_reference_time"))
+        if snapshot_price is not None and snapshot_price > 0 and snapshot_time is not None:
+            snapshot_et = snapshot_time.astimezone(ET)
+            if window_start <= snapshot_et < window_end:
+                snapshot_provider = str(snapshot_source.get("afterhours_reference_source") or "")
+                returned_count = int(_number(snapshot_source.get("p0_returned_bar_count")) or 0)
+                if returned_count == 0 and "FMP_AFTERHOURS" in snapshot_provider.upper():
+                    returned_count = 1
+                quality = _p0_quality(
+                    provider_name or snapshot_provider or "afterhours_provider",
+                    str(snapshot_source.get("afterhours_reference_quality") or snapshot_source.get("afterhours_reference_source") or ""),
+                    has_verified_bar=returned_count > 0 and bool(snapshot_source.get("p0_endpoint")),
+                )
+                selected_time = str(snapshot_source.get("p0_selected_bar_time") or snapshot_et.isoformat())
+                selected_close = _number(snapshot_source.get("p0_selected_bar_close")) or snapshot_price
+                selected_volume = _number(snapshot_source.get("p0_selected_bar_volume"))
+                return {
+                    "ok": True,
+                    "symbol": normalized,
+                    "friday_afterhours_close": snapshot_price,
+                    "bar_start_et": snapshot_et.isoformat(),
+                    "bar_end_et": (snapshot_et + timedelta(minutes=1)).isoformat(),
+                    "provider": provider_name or snapshot_provider or "afterhours_provider",
+                    "venue": venue,
+                    "interval": "1m",
+                    "quality": quality,
+                    "reason": "",
+                    **_p0_diagnostics(
+                        symbol=normalized,
+                        request_start=str(snapshot_source.get("p0_request_start") or request_start_text),
+                        request_end=str(snapshot_source.get("p0_request_end") or request_end_text),
+                        provider=provider_name or snapshot_provider or "afterhours_provider",
+                        endpoint=str(snapshot_source.get("p0_endpoint") or _p0_endpoint(provider)),
+                        returned_bar_count=returned_count,
+                        selected_time=selected_time,
+                        selected_close=selected_close,
+                        selected_volume=selected_volume,
+                        quality=quality,
+                        is_fallback=bool(snapshot_source.get("p0_is_fallback") or False),
+                        reason="",
+                    ),
+                }
     supplemental = find_friday_afterhours_close(normalized, friday_date)
     if supplemental.ok and supplemental.close is not None and supplemental.timestamp_et is not None:
         quality = _p0_quality(supplemental.provider, supplemental.quality, has_verified_bar=True)
@@ -1500,11 +1500,13 @@ def _basis_backtest_one_window(
     market_type = "usdm_futures"
     mapping_confidence = str(config.get("mapping_confidence") or "").strip().lower()
     last_trading_day = window.last_trading_day or window.start_et.date()
+    window_anchor_source = dict(anchor_source or {})
+    window_anchor_source.update(dict(anchor or {}))
     friday_afterhours = fetch_friday_afterhours_close(
         ticker,
         last_trading_day,
         provider=afterhours_provider,
-        anchor_source=anchor_source,
+        anchor_source=window_anchor_source,
     )
     friday_afterhours_close = _number(friday_afterhours.get("friday_afterhours_close"))
     p1_window_start = _p1_window_start_from_p0(friday_afterhours, window)
@@ -2971,7 +2973,7 @@ def _weekend_chain_quality(
     if mapping_confidence_text != "confirmed" and mapping_confidence_text != "auto_available":
         return "OBSERVE_ONLY"
     if binance_weekend_max is None or binance_weekend_max <= 0:
-        return "CONTRACT_MISSING"
+        return "MISSING_BINANCE_WEEKEND_MAX"
     if friday_afterhours_close is None or friday_afterhours_close <= 0:
         return "NO_AFTERHOURS_CLOSE"
     if str(overnight_quality or "").strip().upper() == "OVERNIGHT_PROVIDER_MISSING":

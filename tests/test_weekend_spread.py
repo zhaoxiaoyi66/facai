@@ -1662,6 +1662,66 @@ def test_weekend_basis_backtest_uses_historical_afterhours_anchor() -> None:
     assert rows[0]["afterhours_reference_price"] == 100.0
 
 
+def test_weekend_basis_backtest_uses_weekly_anchor_when_live_afterhours_missing() -> None:
+    now = datetime(2026, 6, 20, 12, tzinfo=timezone.utc)
+    windows = recent_weekend_windows(weeks=2, now=now)
+    weekly_anchors: dict[str, dict] = {}
+    quotes: list[dict] = []
+    broker_bars: list[dict] = []
+    for index, window in enumerate(windows):
+        last_day = window.last_trading_day or window.start_et.date()
+        afterhours_price = 180.0 - index
+        weekly_anchors[window.week_id] = {
+            "regular_close_price": afterhours_price - 1,
+            "regular_close_date": last_day.isoformat(),
+            "afterhours_reference_price": afterhours_price,
+            "afterhours_reference_time": datetime.combine(last_day, datetime.min.time(), ZoneInfo("America/New_York"))
+            .replace(hour=19, minute=59)
+            .isoformat(),
+            "afterhours_reference_source": "ALPACA_AFTERHOURS",
+            "afterhours_data_quality": "HIGH",
+            "afterhours_cache_status": "CACHE_HIT",
+        }
+        quotes.append(_basis_quote(window.start_et + timedelta(hours=1), afterhours_price + 2, afterhours_price + 2.1))
+        quotes.append(_basis_quote(window.end_et, afterhours_price + 1, afterhours_price + 1.1))
+        broker_bars.append(_broker_bar(window.end_et, afterhours_price + 0.5, afterhours_price + 0.6, close=afterhours_price + 0.55))
+    live_afterhours = SequenceAfterhoursProvider(
+        [
+            AfterhoursReference(symbol="GLW", data_quality="MISSING", missing_reason="NO_ALPACA_AFTERHOURS_BAR"),
+            AfterhoursReference(symbol="GLW", data_quality="MISSING", missing_reason="NO_ALPACA_AFTERHOURS_BAR"),
+        ]
+    )
+
+    rows = run_weekend_basis_backtest(
+        ["GLW"],
+        mapping={
+            "GLW": {
+                "enabled": True,
+                "binance_symbol": "GLWUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "confirmed",
+            }
+        },
+        anchors={"GLW": {"weekly_anchors": weekly_anchors}},
+        provider=FakeBasisQuoteProvider(quotes),
+        broker_provider=FakeBrokerBarProvider({"1m": broker_bars}),
+        afterhours_provider=live_afterhours,
+        weeks=2,
+        now=now,
+        opening_anchor="overnight",
+        open_window_minutes=2,
+        require_exact_broker_open=True,
+    )
+
+    by_week = {row["week_id"]: row for row in rows}
+    assert by_week[windows[0].week_id]["friday_afterhours_close"] == 180.0
+    assert by_week[windows[1].week_id]["friday_afterhours_close"] == 179.0
+    assert all(row["data_quality"] != "NO_AFTERHOURS_CLOSE" for row in rows)
+    assert all(row["friday_afterhours_reason"] == "" for row in rows)
+
+
 def test_adbe_mock_focus_sample_keeps_observation_risk_notice() -> None:
     provider = FakeProvider(price=207, bid=206.8, ask=207.2)
     rows = build_weekend_spread_rows(
