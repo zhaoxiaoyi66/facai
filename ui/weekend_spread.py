@@ -594,6 +594,10 @@ def _mask_stale_afterhours_rows(rows: list[dict], *, expected_anchor_date: str) 
         item = dict(row)
         row_date = _row_anchor_date(item)
         if row_date and expected_anchor_date and row_date < expected_anchor_date:
+            item["regular_close_price"] = None
+            item["regular_close_date"] = ""
+            item["friday_close"] = None
+            item["friday_close_date"] = ""
             item["afterhours_reference_price"] = None
             item["afterhours_reference_time"] = ""
             item["afterhours_reference_source"] = ""
@@ -602,7 +606,8 @@ def _mask_stale_afterhours_rows(rows: list[dict], *, expected_anchor_date: str) 
             item["afterhours_anchor_status"] = ""
             item["afterhours_missing_reason"] = "CACHE_DATE_MISMATCH"
             item["spread_vs_afterhours_pct"] = None
-            item["primary_spread_pct"] = item.get("spread_vs_regular_close_pct")
+            item["spread_vs_regular_close_pct"] = None
+            item["primary_spread_pct"] = None
             item["primary_spread_anchor"] = "STALE_AFTERHOURS_REFERENCE"
         masked.append(item)
     return masked
@@ -655,9 +660,10 @@ def _build_weekend_spread_rows_with_feedback(
             cached,
         )
     if not force_refresh and not anchor_refresh and cached.get("rows"):
+        masked_rows = _mask_stale_afterhours_rows(cached_rows, expected_anchor_date=expected_anchor_date)
         return (
             annotate_cached_rows(
-                cached_rows,
+                masked_rows,
                 cache_state=str(cached.get("cache_state") or "FRESH"),
                 generated_at=str(cached.get("generated_at") or ""),
             ),
@@ -747,11 +753,7 @@ def _build_weekend_spread_rows_with_feedback(
     if is_provider_failure(rows) and cached.get("rows"):
         error_message = _refresh_error_text(rows)
         write_weekend_spread_failure(error_message=error_message)
-        stale_cached_rows = (
-            _mask_stale_afterhours_rows(cached_rows, expected_anchor_date=expected_anchor_date)
-            if cached.get("cache_state") == "ANCHOR_DATE_STALE"
-            else cached_rows
-        )
+        stale_cached_rows = _mask_stale_afterhours_rows(cached_rows, expected_anchor_date=expected_anchor_date)
         fallback_rows = annotate_cached_rows(
             stale_cached_rows,
             cache_state="REFRESH_FAILED",
@@ -1049,17 +1051,17 @@ def _realtime_row_status_key(row: dict) -> str:
     status = str(row.get("status") or "").upper()
     if status in {"NO_MAPPING", "BINANCE_UNAVAILABLE", "INVALID_SYMBOL", "PRICE_NOT_LOADED"}:
         return "unavailable"
-    if status == "UNIT_UNCONFIRMED":
-        return "review"
     label = _mapping_display_label_for_row(row)
     if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
         return "review"
     if label in {MAPPING_PENDING_VERIFICATION, MAPPING_OTHER_TRADFI, MAPPING_INVALID, "无映射"}:
         return "unavailable"
+    if not _row_has_afterhours_anchor(row):
+        return "unavailable"
+    if status == "UNIT_UNCONFIRMED":
+        return "review"
     if label in REVIEW_MAPPING_LABELS:
         return "review"
-    if label in VERIFIED_MAPPING_LABELS | {MAPPING_MANUAL_LOCKED} and not _row_has_afterhours_anchor(row):
-        return "unavailable"
     spread = _number(row.get("spread_vs_afterhours_pct"))
     if spread is None:
         return "unavailable"
@@ -1135,7 +1137,7 @@ def _is_realtime_main_row(row: dict) -> bool:
     if label in VERIFIED_MAPPING_LABELS | {MAPPING_MANUAL_LOCKED}:
         return _row_has_binance_price(row) and _row_has_afterhours_anchor(row)
     if label == MAPPING_REVIEW:
-        return _row_has_binance_price(row)
+        return _row_has_binance_price(row) and _row_has_afterhours_anchor(row)
     if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
         return True
     return False
@@ -3173,6 +3175,8 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
 
 
 def _live_type_label(row: dict) -> str:
+    if not _row_has_afterhours_anchor(row):
+        return "锚点缺失"
     label = _mapping_display_label_for_row(row)
     if label == MAPPING_US_EQUITY_VERIFIED:
         return "美股"

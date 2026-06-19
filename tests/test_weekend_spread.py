@@ -4976,6 +4976,61 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
     assert "$nan" not in frame.to_string()
 
 
+def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current(monkeypatch) -> None:
+    cached_rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "regular_close_date": "2026-06-18",
+            "afterhours_reference_price": 205.42,
+            "afterhours_reference_time": "2026-06-18T19:59:00-04:00",
+            "afterhours_cache_status": "CACHE_HIT",
+            "spread_vs_afterhours_pct": 1.0,
+        },
+        {
+            "ticker": "WDC",
+            "binance_symbol": "WDCUSDT",
+            "binance_last_price": 733.63,
+            "regular_close_date": "2026-05-20",
+            "afterhours_reference_price": 458.50,
+            "afterhours_reference_time": "2026-05-20T19:59:00-04:00",
+            "afterhours_cache_status": "CACHE_HIT",
+            "spread_vs_afterhours_pct": 60.0,
+            "spread_vs_regular_close_pct": 59.6,
+            "updated_at": "2026-06-19T11:03:00+00:00",
+        },
+    ]
+
+    monkeypatch.setattr(
+        weekend_spread,
+        "read_weekend_spread_snapshot",
+        lambda **_: {"cache_state": "FRESH", "generated_at": "2026-06-19T11:03:00+00:00", "rows": cached_rows},
+    )
+    monkeypatch.setattr(weekend_spread, "_expected_realtime_anchor_date", lambda: "2026-06-18")
+
+    rows, _ = weekend_spread._build_weekend_spread_rows_with_feedback(
+        ["NVDA", "WDC"],
+        mapping={
+            "NVDA": {"enabled": True, "binance_symbol": "NVDAUSDT"},
+            "WDC": {"enabled": True, "binance_symbol": "WDCUSDT"},
+        },
+        refresh_options={},
+    )
+
+    wdc = next(row for row in rows if row["ticker"] == "WDC")
+    assert wdc["afterhours_reference_price"] is None
+    assert wdc["regular_close_price"] is None
+    assert wdc["afterhours_cache_status"] == "CACHE_DATE_MISMATCH"
+    assert wdc["spread_vs_afterhours_pct"] is None
+    assert wdc["spread_vs_regular_close_pct"] is None
+    assert weekend_spread._is_realtime_main_row(wdc) is False
+    assert weekend_spread._realtime_row_status_label(wdc) == "不可用"
+
+    frame = weekend_spread._live_frame([wdc])
+    assert frame.loc[0, "类型"] == "锚点缺失"
+    assert frame.loc[0, "状态"] == "不可用"
+
+
 def test_realtime_afterhours_counts_support_status_strip_summary() -> None:
     rows = [
         {
