@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from html import escape
 from pathlib import Path
+import re
 from typing import Any
 
 import streamlit as st
@@ -29,6 +30,7 @@ from data.discipline_review import (
     default_period_dates,
 )
 from data.portfolio import PortfolioPositionStore
+from data.news_radar import trade_news_check
 from data.prices import CACHE_PATH
 from data.trade_intent import (
     BUY_BEHAVIOR_OPTIONS,
@@ -142,6 +144,7 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
             emotion = st.text_input("当时情绪", placeholder="例如：怕错过、急着证明、想扳回")
             violated_plan = st.checkbox("是否违反原计划", value=False)
             needs_reminder = st.checkbox("是否需要交易前提醒", value=False)
+            attach_news_summary = st.checkbox("附加交易前 7 天相关新闻摘要", value=False)
             detail_parts = []
             if emotion.strip():
                 detail_parts.append(f"当时情绪：{emotion.strip()}")
@@ -161,6 +164,10 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
     if not str(next_defense or "").strip():
         st.error("请写下次防线。")
         return
+    if attach_news_summary:
+        news_summary = _trade_news_summary_for_mistake(scene_or_symbol)
+        if news_summary:
+            impact_summary = "\n".join(part for part in [impact_summary, news_summary] if str(part or "").strip())
     store.save_mistake_review(
         {
             "review_date": review_date,
@@ -178,6 +185,33 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
     st.success("已收进错题本。重点不是责备自己，而是下次别重复。")
     st.info("这次错误已经沉淀为下次防线。")
     st.rerun()
+
+
+def _trade_news_summary_for_mistake(scene_or_symbol: object) -> str:
+    symbol = _extract_symbol_from_scene(scene_or_symbol)
+    if not symbol:
+        return ""
+    try:
+        context = trade_news_check(symbol)
+    except Exception:
+        return f"交易前新闻摘要（{symbol}）：新闻缓存暂不可用。"
+    headlines = [str(item) for item in (context.get("headlines") or []) if str(item).strip()]
+    headline_text = "；".join(headlines[:3]) if headlines else "无关键标题"
+    return (
+        f"交易前新闻摘要（{symbol}）：7 天重大新闻 {int(context.get('major_news_7d') or 0)} 条，"
+        f"重大正面 {int(context.get('positive_major_7d') or 0)} 条，"
+        f"重大负面 {int(context.get('negative_major_7d') or 0)} 条，"
+        f"一致性：{context.get('news_price_match_label') or '数据不足'}。"
+        f"关键标题：{headline_text}"
+    )
+
+
+def _extract_symbol_from_scene(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    match = re.search(r"\b[A-Z][A-Z0-9.\-]{0,9}\b", text)
+    return match.group(0) if match else ""
 
 
 def _render_quick_mistake_tag_inputs() -> list[str]:

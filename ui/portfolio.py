@@ -37,6 +37,7 @@ from data.portfolio_trade_entry import submit_portfolio_buy_add
 from data.portfolio_view_model import build_portfolio_view_model
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
 from data.buy_plan_alerts import BuyPlanAlertStore, buy_plan_alert_table_label
+from data.news_radar import portfolio_news_badge, trade_news_check
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
 from data.buy_execution_context import build_buy_execution_advisory_context
@@ -201,6 +202,7 @@ def _render_portfolio_buy_add_form(position_store: PortfolioPositionStore, rows:
         st.markdown('<div class="portfolio-buy-block-title">3. 买入策略</div>', unsafe_allow_html=True)
         st.markdown(_portfolio_buy_strategy_panel_html(advisory_context, current), unsafe_allow_html=True)
         st.markdown(trade_entry_discipline_hint_html(_trade_entry_setup_score(advisory_context)), unsafe_allow_html=True)
+        _render_portfolio_news_check(effective_ticker)
         with st.expander("4. 证据面板", expanded=False):
             st.markdown(_portfolio_buy_evidence_panel_html(advisory_context), unsafe_allow_html=True)
             _render_macro_regime_buy_hint()
@@ -228,6 +230,30 @@ def _safe_buy_execution_context(ticker: str):
         return build_buy_execution_advisory_context(symbol)
     except Exception:
         return None
+
+
+def _render_portfolio_news_check(symbol: str) -> None:
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return
+    with st.expander("买入前新闻检查", expanded=False):
+        try:
+            context = trade_news_check(clean)
+        except Exception:
+            st.info("新闻缓存暂不可用，暂不影响交易记录。")
+            return
+        cols = st.columns(4)
+        cols[0].metric("7 天重大新闻", int(context.get("major_news_7d") or 0))
+        cols[1].metric("30 天重大新闻", int(context.get("major_news_30d") or 0))
+        cols[2].metric("重大负面", int(context.get("negative_major_7d") or 0))
+        cols[3].metric("一致性", str(context.get("news_price_match_label") or "数据不足"))
+        if context.get("has_major_negative_7d"):
+            st.warning("过去 7 天存在重大负面新闻，建议先复核。")
+        else:
+            st.success("过去 7 天无重大负面新闻。")
+        headlines = [str(item) for item in (context.get("headlines") or []) if str(item).strip()]
+        if headlines:
+            st.caption("关键标题：" + "；".join(headlines[:3]))
 
 
 def _trade_entry_setup_score(context) -> float | None:
@@ -2503,12 +2529,14 @@ def _symbol_cell_html(row: dict) -> str:
     symbol = str(row.get("symbol") or "")
     tier = row.get("positionTier")
     buy_alert = _portfolio_buy_alert_badge_html(row)
+    news_badge = _portfolio_news_badge_html(symbol)
     return (
         '<div class="portfolio-symbol-stack">'
         f"<b>{escape(symbol)}</b>"
         f"<small>{escape(_row_status_text(row))}</small>"
         f"{_position_tier_badge_html(tier)}"
         f"{buy_alert}"
+        f"{news_badge}"
         "</div>"
     )
 
@@ -2527,6 +2555,22 @@ def _portfolio_buy_alert_badge_html(row: dict) -> str:
     status = str((alert or {}).get("status") or "").strip().upper()
     status_class = " is-triggered" if status == "TRIGGERED" else ""
     return f'<em class="portfolio-buy-alert-badge{status_class}">{escape(label)}</em>'
+
+
+def _portfolio_news_badge_html(symbol: str) -> str:
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return ""
+    try:
+        label = portfolio_news_badge(clean)
+    except Exception:
+        label = "待复核"
+    tone = {
+        "重大负面": " is-negative",
+        "正面催化": " is-positive",
+        "待复核": " is-pending",
+    }.get(label, "")
+    return f'<em class="portfolio-news-badge{tone}">{escape(label)}</em>'
 
 
 def _role_cell_html(row: dict) -> str:
@@ -3434,6 +3478,40 @@ def _render_final_portfolio_styles() -> None:
             white-space:nowrap;
         }
         .portfolio-buy-alert-badge.is-triggered {
+            border-color:rgba(245, 158, 11, 0.28);
+            background:#FFF7ED;
+            color:#B45309;
+        }
+        .portfolio-news-badge {
+            display:inline-flex;
+            align-items:center;
+            width:max-content;
+            max-width:100%;
+            margin-top:2px;
+            padding:2px 6px;
+            border:1px solid rgba(100, 116, 139, 0.16);
+            border-radius:999px;
+            background:#F8FAFC;
+            color:#475569;
+            font-size:0.58rem;
+            font-style:normal;
+            font-weight:760;
+            line-height:1.15;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .portfolio-news-badge.is-positive {
+            border-color:rgba(22, 163, 74, 0.18);
+            background:#F0FDF4;
+            color:#15803D;
+        }
+        .portfolio-news-badge.is-negative {
+            border-color:rgba(220, 38, 38, 0.2);
+            background:#FEF2F2;
+            color:#B91C1C;
+        }
+        .portfolio-news-badge.is-pending {
             border-color:rgba(245, 158, 11, 0.28);
             background:#FFF7ED;
             color:#B45309;

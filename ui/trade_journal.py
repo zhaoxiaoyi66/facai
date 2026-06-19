@@ -20,6 +20,7 @@ from data.decision_log import (
 from data.discipline_review import DISCIPLINE_TAG_LABELS, DisciplineReviewStore, label_for_tag
 from data.entry_display import format_buy_zone, format_zone_status
 from data.macro_regime import load_macro_regime, macro_regime_trade_hint_text
+from data.news_radar import trade_news_check
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from data.portfolio_trade_sync import (
     POSITION_AFFECTING_ACTIONS,
@@ -560,6 +561,7 @@ def _render_editor(store: TradeJournalStore) -> None:
         st.markdown("### 系统摘要")
         if editing_entry is None and selected_position:
             _render_sell_reference_card(symbol, selected_position, context=sell_reference_context, after_quantity=after_quantity)
+            _render_sell_news_check(symbol)
 
         if action_type in CLASSIFICATION_ACTIONS:
             radar_gate_result = _render_radar_buy_gate(
@@ -1025,6 +1027,30 @@ def _render_sell_reference_card(symbol: str, position_row: dict, *, context: dic
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_sell_news_check(symbol: str) -> None:
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return
+    with st.expander("卖出前新闻检查", expanded=False):
+        try:
+            context = trade_news_check(clean)
+        except Exception:
+            st.info("新闻缓存暂不可用，暂不影响交易记录。")
+            return
+        cols = st.columns(4)
+        cols[0].metric("7 天重大新闻", int(context.get("major_news_7d") or 0))
+        cols[1].metric("30 天重大新闻", int(context.get("major_news_30d") or 0))
+        cols[2].metric("重大负面", int(context.get("negative_major_7d") or 0))
+        cols[3].metric("一致性", str(context.get("news_price_match_label") or "数据不足"))
+        if context.get("has_major_negative_7d"):
+            st.warning("存在重大负面新闻，建议复核原投资逻辑。")
+        else:
+            st.info("未发现重大负面新闻；若价格下跌，可能更多来自技术或板块因素。")
+        headlines = [str(item) for item in (context.get("headlines") or []) if str(item).strip()]
+        if headlines:
+            st.caption("关键标题：" + "；".join(headlines[:3]))
 
 
 def _render_macro_regime_sell_hint() -> None:

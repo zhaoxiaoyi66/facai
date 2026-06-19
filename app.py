@@ -13,6 +13,7 @@ from ui import (
     dashboard,
     discipline_review,
     manual_review,
+    news_radar,
     portfolio,
     signal_performance,
     stock_detail,
@@ -34,6 +35,7 @@ PAGE_STOCK_DETAIL = "个股研究"
 PAGE_AI_RADAR = "价格位置"
 PAGE_MANUAL_REVIEW = "数据复核"
 PAGE_WEEKEND_SPREAD = "周末价差"
+PAGE_NEWS_RADAR = "新闻雷达"
 PAGE_SIGNAL_PERFORMANCE = "信号表现"
 PAGE_WATCHLIST = "观察池"
 
@@ -47,6 +49,7 @@ PAGE_QUERY_VALUES = {
     "watchlist": PAGE_WATCHLIST,
     "manual-review": PAGE_MANUAL_REVIEW,
     "weekend-spread": PAGE_WEEKEND_SPREAD,
+    "news-radar": PAGE_NEWS_RADAR,
     "signal-performance": PAGE_SIGNAL_PERFORMANCE,
     "ai-radar": PAGE_AI_RADAR,
 }
@@ -83,6 +86,7 @@ PAGES = {
     PAGE_AI_RADAR: ai_stock_radar.render,
     PAGE_MANUAL_REVIEW: manual_review.render,
     PAGE_WEEKEND_SPREAD: weekend_spread.render,
+    PAGE_NEWS_RADAR: news_radar.render,
     PAGE_SIGNAL_PERFORMANCE: signal_performance.render,
     PAGE_WATCHLIST: watchlist.render,
 }
@@ -94,7 +98,7 @@ NAV_STRUCTURE = [
     PAGE_TRADE_JOURNAL,
     PAGE_STOCK_DETAIL,
     PAGE_AI_RADAR,
-    {"label": "数据复核", "icon": "\u25C6", "page": PAGE_MANUAL_REVIEW, "children": [PAGE_WEEKEND_SPREAD, PAGE_SIGNAL_PERFORMANCE]},
+    {"label": "数据复核", "icon": "\u25C6", "page": PAGE_MANUAL_REVIEW, "children": [PAGE_WEEKEND_SPREAD, PAGE_NEWS_RADAR, PAGE_SIGNAL_PERFORMANCE]},
     PAGE_WATCHLIST,
 ]
 
@@ -261,6 +265,7 @@ def _nav_label(page_name: str) -> str:
         PAGE_MANUAL_REVIEW: "数据复核",
         PAGE_AI_RADAR: "价格位置",
         PAGE_WEEKEND_SPREAD: "周末价差",
+        PAGE_NEWS_RADAR: "新闻雷达",
         PAGE_SIGNAL_PERFORMANCE: "信号表现",
     }
     return labels.get(page_name, page_name)
@@ -277,6 +282,7 @@ def _nav_icon(page_name: str) -> str:
         PAGE_MANUAL_REVIEW: "◆",
         PAGE_AI_RADAR: "⌁",
         PAGE_WEEKEND_SPREAD: "↔",
+        PAGE_NEWS_RADAR: "◈",
         PAGE_SIGNAL_PERFORMANCE: "↗",
     }
     return icons.get(page_name, "•")
