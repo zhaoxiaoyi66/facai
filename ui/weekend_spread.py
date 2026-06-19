@@ -2822,7 +2822,11 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
     quality_counts = _weekend_review_quality_counts(review_rows)
     liquidity_label, liquidity_detail = _p2_first_minute_liquidity_label(review_rows)
-    window_label, window_detail = _p2_opening_window_liquidity_label(review_rows)
+    window_liquidity_fn = globals().get("_p2_opening_window_liquidity_label")
+    if callable(window_liquidity_fn):
+        window_label, window_detail = window_liquidity_fn(review_rows)
+    else:
+        window_label, window_detail = liquidity_label, liquidity_detail
     p2_stats = _weekend_review_p2_stats(review_rows)
     metrics: list[tuple[str, object, str]] = [
         ("总样本数", int(p2_stats.get("eligible_count") or 0), "number"),

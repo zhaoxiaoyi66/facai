@@ -5171,6 +5171,39 @@ def test_render_weekend_review_table_exists_and_uses_detail_frame(monkeypatch) -
     assert calls[0][1]["hide_index"] is True
 
 
+def test_weekend_review_kpis_do_not_crash_when_opening_window_helper_is_missing(monkeypatch) -> None:
+    metrics: list[tuple[str, object]] = []
+    captions: list[str] = []
+
+    class FakeColumn:
+        def metric(self, label, value):
+            metrics.append((str(label), value))
+
+    monkeypatch.delattr(weekend_spread, "_p2_opening_window_liquidity_label", raising=False)
+    monkeypatch.setattr(weekend_spread.st, "columns", lambda count: [FakeColumn() for _ in range(count)])
+    monkeypatch.setattr(weekend_spread.st, "caption", lambda text: captions.append(str(text)))
+    monkeypatch.setattr(weekend_spread.st, "info", lambda _text: None)
+
+    review_rows = weekend_spread._weekend_review_rows(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "GLW",
+                "afterhours_reference_price": 180.0,
+                "binance_weekend_max_price": 185.88,
+                "broker_first_1m_close": 184.01,
+                "p2_delay_minutes": 1,
+                "data_quality": "DELAYED_OVERNIGHT_FIRST_VALID",
+            }
+        ]
+    )
+
+    weekend_spread._render_weekend_review_kpis(review_rows)
+
+    assert metrics
+    assert any("开盘窗口成交率" in text for text in captions)
+
+
 def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -> None:
     rows = [
         {
