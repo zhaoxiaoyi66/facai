@@ -1,12 +1,15 @@
+"""Streamlit page for the News Radar module."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from html import escape
+from typing import Any, Iterable
 
 import pandas as pd
 import streamlit as st
 
 from data.news_radar import (
+    MISSING_URL_TEXT,
     NewsRadarStore,
     available_news_symbols,
     build_news_price_context,
@@ -14,11 +17,10 @@ from data.news_radar import (
     price_context_display_rows,
     refresh_general_market_news,
     refresh_symbols_news,
+    source_link_text,
     trade_news_check,
     weekend_news_review,
 )
-from ui.theme import render_page_header, render_section_title
-
 
 SCOPE_OPTIONS = {
     "持仓": "portfolio",
@@ -32,290 +34,407 @@ RANGE_OPTIONS = {"最近 1 天": 1, "最近 7 天": 7, "最近 30 天": 30}
 
 
 def render() -> None:
-    _render_styles()
-    render_page_header("新闻雷达", "追踪持仓和观察池的重大新闻，辅助复核交易逻辑。")
     store = NewsRadarStore()
     symbol_groups = available_news_symbols()
-    selected_scope_label, selected_scope, selected_symbols = _render_filters(symbol_groups)
+    st.caption("ZHX RESEARCH")
+    st.title("新闻雷达")
+    st.write("追踪持仓和观察池的重大新闻，辅助复核交易逻辑。")
 
-    if not selected_symbols:
-        st.info("当前范围没有可检查股票。请先补充观察池或持仓。")
-        return
+    scope_label, impact_filter, sentiment_filter, range_label = _render_filters()
+    scope_key = SCOPE_OPTIONS[scope_label]
+    symbols = sorted(symbol_groups.get(scope_key, set()) if scope_key != "all" else symbol_groups.get("all", set()))
+    since = datetime.now(timezone.utc) - timedelta(days=RANGE_OPTIONS[range_label])
+    items = _filtered_news(
+        store,
+        symbols=symbols if scope_key != "all" else None,
+        since=since,
+        impact_filter=impact_filter,
+        sentiment_filter=sentiment_filter,
+    )
 
-    _render_refresh_bar(selected_scope_label, selected_scope, selected_symbols, store)
-    filtered_news = _filtered_news(store, selected_symbols)
-    _render_top_stats(store, symbol_groups)
-    _render_major_event_cards(filtered_news)
-    _render_price_context(selected_symbols, store)
-    _render_trade_check_tool(selected_symbols, store)
-    _render_weekend_review(selected_symbols, store)
+    _render_action_bar(store, symbols=symbols, scope_key=scope_key, items=items)
+    _render_stats(store, items, symbol_groups)
+
+    major_items = [item for item in items if item.get("impact_level") == "重大"]
+    if not major_items:
+        st.info("当前筛选范围内没有重大新闻。")
+    else:
+        st.subheader("重大事件")
+        for item in major_items[:12]:
+            _render_news_card(item, store=store, symbol_groups=symbol_groups)
+
+    _render_price_context(symbols, store=store)
+    _render_trade_check(symbols, store=store)
+    _render_regular_news(items)
+    _render_weekend_review(symbols, store=store)
     _render_market_news(store)
-    _render_regular_news(filtered_news)
 
 
-def _render_filters(symbol_groups: dict[str, list[str]]) -> tuple[str, str, list[str]]:
-    cols = st.columns([1, 1, 1, 1.2])
-    scope_label = cols[0].selectbox("范围", list(SCOPE_OPTIONS), index=0, key="news-radar-scope")
-    impact_label = cols[1].selectbox("影响等级", IMPACT_OPTIONS, index=0, key="news-radar-impact")
-    sentiment_label = cols[2].selectbox("情绪", SENTIMENT_OPTIONS, index=0, key="news-radar-sentiment")
-    range_label = cols[3].selectbox("时间范围", list(RANGE_OPTIONS), index=1, key="news-radar-range")
-    st.session_state["news_radar_impact"] = impact_label
-    st.session_state["news_radar_sentiment"] = sentiment_label
-    st.session_state["news_radar_days"] = RANGE_OPTIONS[range_label]
-    scope = SCOPE_OPTIONS[scope_label]
-    symbols = symbol_groups.get(scope) or []
-    return scope_label, scope, symbols
+def _render_filters() -> tuple[str, str, str, str]:
+    cols = st.columns([1, 1, 1, 1])
+    with cols[0]:
+        scope_label = st.selectbox("范围", list(SCOPE_OPTIONS.keys()), index=0)
+    with cols[1]:
+        impact_filter = st.selectbox("影响等级", IMPACT_OPTIONS, index=0)
+    with cols[2]:
+        sentiment_filter = st.selectbox("情绪", SENTIMENT_OPTIONS, index=0)
+    with cols[3]:
+        range_label = st.selectbox("时间范围", list(RANGE_OPTIONS.keys()), index=1)
+    return scope_label, impact_filter, sentiment_filter, range_label
 
 
-def _render_refresh_bar(scope_label: str, scope: str, symbols: list[str], store: NewsRadarStore) -> None:
-    cols = st.columns([1.2, 1, 1])
-    cols[0].caption(f"当前范围：{scope_label} · {len(symbols)} 只股票。页面默认读取缓存，点击按钮才请求 FMP。")
-    if cols[1].button("刷新新闻", type="primary", width="stretch"):
-        result = refresh_symbols_news(symbols, store=store, scope=scope, force=True, limit=50)
-        if result.get("unavailable"):
-            st.warning(
-                f"已请求 {result['requested']} 只股票；{result['unavailable']} 只返回当前套餐不可用，"
-                f"新增 {result['inserted']} 条，更新 {result['updated']} 条。"
-            )
-        elif result.get("error"):
-            st.warning(
-                f"已请求 {result['requested']} 只股票；{result['error']} 只请求失败，"
-                f"新增 {result['inserted']} 条，更新 {result['updated']} 条。"
-            )
-        else:
-            st.success(f"新闻刷新完成：新增 {result['inserted']} 条，更新 {result['updated']} 条。")
-    if cols[2].button("只读缓存", width="stretch"):
-        st.info("当前页面已使用本地新闻缓存，没有发起新的 FMP 请求。")
-
-
-def _filtered_news(store: NewsRadarStore, symbols: list[str]) -> list[dict]:
-    days = int(st.session_state.get("news_radar_days") or 7)
-    impact = str(st.session_state.get("news_radar_impact") or "全部")
-    sentiment = str(st.session_state.get("news_radar_sentiment") or "全部")
+def _filtered_news(
+    store: NewsRadarStore,
+    *,
+    symbols: Iterable[str] | None,
+    since: datetime,
+    impact_filter: str,
+    sentiment_filter: str,
+) -> list[dict[str, Any]]:
+    impacts = [] if impact_filter == "全部" else [impact_filter]
+    sentiments = [] if sentiment_filter == "全部" else [sentiment_filter]
     return store.list_news(
         symbols=symbols,
-        since=datetime.now(timezone.utc) - timedelta(days=days),
-        impact_levels=None if impact == "全部" else [impact],
-        sentiment_labels=None if sentiment == "全部" else [sentiment],
-        limit=200,
+        since=since,
+        impact_levels=impacts,
+        sentiment_labels=sentiments,
+        limit=500,
     )
 
 
-def _render_top_stats(store: NewsRadarStore, symbol_groups: dict[str, list[str]]) -> None:
+def _render_action_bar(
+    store: NewsRadarStore,
+    *,
+    symbols: list[str],
+    scope_key: str,
+    items: list[dict[str, Any]],
+) -> None:
+    cols = st.columns([1.2, 1.2, 1.2, 2])
+    with cols[0]:
+        if st.button("刷新新闻", use_container_width=True):
+            if not symbols:
+                st.warning("当前范围没有可刷新的股票。")
+            else:
+                results = refresh_symbols_news(symbols, scope=scope_key, store=store, force=True, limit=20)
+                ok = sum(1 for item in results if item.get("status") == "ok")
+                unavailable = sum(1 for item in results if item.get("status") == "unavailable")
+                failed = sum(1 for item in results if item.get("status") == "error")
+                st.success(f"刷新完成：成功 {ok} 个，套餐不可用 {unavailable} 个，失败 {failed} 个。")
+    with cols[1]:
+        if st.button("补全中文翻译", use_container_width=True):
+            result = store.fill_missing_translations(items)
+            st.success(
+                f"已补全 {result['title']} 条中文标题，"
+                f"{result['summary']} 条中文摘要，失败 {result['failed']} 条。"
+            )
+    with cols[2]:
+        if st.button("刷新市场新闻", use_container_width=True):
+            result = refresh_general_market_news(store=store, force=True, limit=30)
+            status = result.get("message") or "已完成"
+            if result.get("status") in {"ok", "cache"}:
+                st.success(status)
+            else:
+                st.warning(status)
+    with cols[3]:
+        st.caption("页面默认读取缓存；只有点击刷新新闻才请求 FMP，点击补全中文翻译才写入翻译缓存。")
+
+
+def _render_stats(store: NewsRadarStore, items: list[dict[str, Any]], symbol_groups: dict[str, set[str]]) -> None:
     now = datetime.now(timezone.utc)
-    portfolio_major = store.list_news(
-        symbols=symbol_groups.get("portfolio") or [],
-        since=now - timedelta(days=7),
-        impact_levels=["重大"],
-    )
-    watchlist_major = store.list_news(
-        symbols=symbol_groups.get("watchlist") or [],
-        since=now - timedelta(days=7),
-        impact_levels=["重大"],
-    )
-    pending = [item for item in [*portfolio_major, *watchlist_major] if item.get("sentiment_label") == "待判断"]
-    latest_24h = store.list_news(symbols=symbol_groups.get("all") or [], since=now - timedelta(days=1))
-    cols = st.columns(4)
-    cols[0].metric("持仓重大新闻", len(portfolio_major))
-    cols[1].metric("观察池重大新闻", len(watchlist_major))
-    cols[2].metric("待复核事件", len(pending))
-    cols[3].metric("过去 24 小时新闻", len(latest_24h))
+    recent_24h = [
+        item
+        for item in items
+        if _parse_datetime(item.get("published_at")) and now - _parse_datetime(item.get("published_at")) <= timedelta(days=1)
+    ]
+    portfolio = symbol_groups.get("portfolio", set())
+    watchlist = symbol_groups.get("watchlist", set())
+    portfolio_major = [
+        item for item in items if item.get("impact_level") == "重大" and str(item.get("symbol")) in portfolio
+    ]
+    watchlist_major = [
+        item for item in items if item.get("impact_level") == "重大" and str(item.get("symbol")) in watchlist
+    ]
+    pending = [item for item in items if item.get("sentiment_label") == "待判断" or item.get("impact_level") == "重大"]
+    missing_translation = [
+        item for item in items if not _clean(item.get("title_zh")) or not _clean(item.get("summary_zh"))
+    ]
+    cards = [
+        ("持仓重大新闻", len(portfolio_major)),
+        ("观察池重大新闻", len(watchlist_major)),
+        ("待复核事件", len(pending)),
+        ("过去 24 小时新闻", len(recent_24h)),
+        ("缺中文翻译", len(missing_translation)),
+    ]
+    cols = st.columns(len(cards))
+    for col, (label, value) in zip(cols, cards):
+        with col:
+            st.metric(label, value)
 
 
-def _render_major_event_cards(news: list[dict]) -> None:
-    major = [item for item in news if item.get("impact_level") == "重大"]
-    render_section_title("重大事件", "只展示需要复核的高影响新闻，普通新闻默认折叠。")
-    if not major:
-        st.info("当前筛选范围内没有重大新闻。")
+def _render_news_card(item: dict[str, Any], *, store: NewsRadarStore, symbol_groups: dict[str, set[str]]) -> None:
+    symbol = _clean(item.get("symbol")) or "--"
+    event_type = _clean(item.get("event_type")) or "待判断"
+    sentiment = _clean(item.get("sentiment_label")) or "待判断"
+    impact = _clean(item.get("impact_level")) or "低"
+    title_zh, original_title, translation_note = _title_parts(item)
+    summary = _summary_text(item)
+    relevance = _relevance_reason(item, symbol_groups)
+    price_context = build_news_price_context(symbol, store=store) if symbol and symbol != "MARKET" else None
+    price_line = _price_reaction_line(price_context)
+    tone = _card_tone(item, symbol_groups)
+
+    with st.container(border=True):
+        st.markdown(f"**{symbol}｜{event_type}｜{sentiment}｜{impact}**")
+        st.markdown(f"### {title_zh}")
+        if translation_note:
+            st.caption(translation_note)
+        if original_title and original_title != title_zh:
+            st.caption(f"原文：{original_title}")
+        st.write(f"摘要：{summary}")
+        st.write(f"为什么重要：{relevance}")
+        if price_line:
+            st.write(f"价格反应：{price_line}")
+        st.caption(_source_line(item))
+        _render_news_details(item, relevance=relevance, price_context=price_context, tone=tone)
+
+
+def _render_news_details(
+    item: dict[str, Any],
+    *,
+    relevance: str,
+    price_context: dict[str, Any] | None,
+    tone: str,
+) -> None:
+    title = _clean(item.get("original_title") or item.get("title")) or "原文标题缺失"
+    with st.expander("展开详情", expanded=False):
+        details = _news_detail_rows(item, relevance=relevance, price_context=price_context, tone=tone)
+        for label, value in details:
+            st.write(f"**{label}：** {value}")
+
+
+def _render_price_context(symbols: list[str], *, store: NewsRadarStore) -> None:
+    st.subheader("新闻-价格一致性")
+    if not symbols:
+        st.info("当前范围没有股票可计算新闻-价格一致性。")
         return
-    for item in major[:8]:
-        tone = _event_tone(item)
-        st.markdown(
-            f"""
-            <section class="news-event-card {tone}">
-              <div class="news-event-meta">
-                <b>{escape(str(item.get('symbol') or ''))}</b>
-                <span>{escape(str(item.get('event_type') or '待复核'))}</span>
-                <span>{escape(str(item.get('sentiment_label') or '待判断'))}</span>
-                <span>{escape(str(item.get('impact_level') or '中等'))}</span>
-              </div>
-              <h4>{escape(str(item.get('title') or '标题待确认'))}</h4>
-              <p>{escape(_event_reason(item))}</p>
-              <small>{escape(str(item.get('source') or '来源待确认'))} · {escape(_time_text(item.get('published_at')))}</small>
-            </section>
-            """,
-            unsafe_allow_html=True,
-        )
+    contexts = [build_news_price_context(symbol, store=store) for symbol in symbols[:40]]
+    st.dataframe(pd.DataFrame(price_context_display_rows(contexts)), use_container_width=True, hide_index=True)
 
 
-def _render_price_context(symbols: list[str], store: NewsRadarStore) -> None:
-    render_section_title("新闻与价格一致性", "观察新闻方向和过去价格表现是否互相印证。")
-    contexts = [build_news_price_context(symbol, store=store, lookback_days=7) for symbol in symbols[:30]]
-    rows = price_context_display_rows(contexts)
-    if rows:
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-    else:
-        st.info("暂无可展示的新闻与价格关系。")
-
-
-def _render_trade_check_tool(symbols: list[str], store: NewsRadarStore) -> None:
+def _render_trade_check(symbols: list[str], *, store: NewsRadarStore) -> None:
     with st.expander("买入 / 卖出前新闻检查", expanded=False):
-        symbol = st.selectbox("股票", symbols, key="news-radar-trade-check-symbol")
-        context = trade_news_check(symbol, store=store)
-        cols = st.columns(4)
-        cols[0].metric("7 天重大新闻", int(context.get("major_news_7d") or 0))
-        cols[1].metric("30 天重大新闻", int(context.get("major_news_30d") or 0))
-        cols[2].metric("重大负面", int(context.get("negative_major_7d") or 0))
-        cols[3].metric("一致性", str(context.get("news_price_match_label") or "数据不足"))
-        if context.get("has_major_negative_7d"):
-            st.warning("过去 7 天存在重大负面新闻，建议先复核原投资逻辑。")
-        else:
-            st.success("过去 7 天无重大负面新闻。")
-        headlines = [headline for headline in context.get("headlines") or [] if headline]
-        if headlines:
-            st.caption("关键标题：" + "；".join(headlines[:3]))
+        if not symbols:
+            st.info("当前范围没有可检查的股票。")
+            return
+        selected = st.selectbox("选择股票", symbols, key="news_radar_trade_check_symbol")
+        check = trade_news_check(selected, store=store)
+        st.write(check["summary"])
+        st.write(f"新闻-价格一致性：{check.get('news_price_match_label') or '数据不足'}")
+        if check.get("headlines"):
+            st.write("关键标题：")
+            for headline in check["headlines"]:
+                st.write(f"- {headline}")
 
 
-def _render_weekend_review(symbols: list[str], store: NewsRadarStore) -> None:
-    with st.expander("周末新闻复盘", expanded=False):
-        review = weekend_news_review(symbols, store=store)
-        major = news_display_rows(review.get("major_news") or [])
-        if major:
-            st.markdown("**本周重大新闻**")
-            st.dataframe(pd.DataFrame(major), width="stretch", hide_index=True)
-        else:
-            st.info("本周暂无缓存中的重大新闻。")
-        focus_rows = _focus_rows(review)
-        if focus_rows:
-            st.markdown("**正负催化集中度**")
-            st.dataframe(pd.DataFrame(focus_rows), width="stretch", hide_index=True)
-        unexplained = review.get("unexplained_price_moves") or []
-        if unexplained:
-            st.caption("价格波动无明确新闻解释：" + "、".join(str(item) for item in unexplained[:12]))
-
-
-def _render_regular_news(news: list[dict]) -> None:
+def _render_regular_news(items: list[dict[str, Any]]) -> None:
+    regular = [item for item in items if item.get("impact_level") != "重大"]
     with st.expander("普通新闻列表", expanded=False):
-        rows = news_display_rows(news)
-        if rows:
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        else:
-            st.info("当前筛选范围内没有缓存新闻。")
+        if not regular:
+            st.info("当前筛选范围内没有普通新闻。")
+            return
+        for item in regular[:80]:
+            title_zh, original_title, note = _title_parts(item)
+            line = _source_line(item)
+            st.markdown(f"**{_clean(item.get('symbol')) or '--'}｜{title_zh}**")
+            if note:
+                st.caption(note)
+            if original_title and original_title != title_zh:
+                st.caption(f"原文：{original_title}")
+            st.caption(line)
+
+
+def _render_weekend_review(symbols: list[str], *, store: NewsRadarStore) -> None:
+    with st.expander("周末新闻复盘", expanded=False):
+        if not symbols:
+            st.info("当前范围没有可复盘的股票。")
+            return
+        review = weekend_news_review(symbols, store=store)
+        major = review.get("major_news", [])
+        st.write(f"本周重大新闻：{len(major)} 条")
+        if major:
+            for item in major[:8]:
+                title_zh, original_title, _ = _title_parts(item)
+                st.markdown(f"- **{item.get('symbol')}**｜{title_zh} · {source_link_text(item)}")
+        unexplained = review.get("unexplained_price_moves", [])
+        if unexplained:
+            st.write(f"价格波动无明确新闻解释：{', '.join(unexplained[:20])}")
+        negative = [(symbol, count) for symbol, count in review.get("negative_concentration", []) if count]
+        positive = [(symbol, count) for symbol, count in review.get("positive_concentration", []) if count]
+        if negative:
+            st.write("负面新闻集中： " + "，".join(f"{symbol} {count} 条" for symbol, count in negative[:5]))
+        if positive:
+            st.write("正面催化集中： " + "，".join(f"{symbol} {count} 条" for symbol, count in positive[:5]))
 
 
 def _render_market_news(store: NewsRadarStore) -> None:
-    with st.expander("宏观 / 市场新闻", expanded=False):
-        cols = st.columns([1, 2])
-        if cols[0].button("刷新市场新闻", width="stretch"):
-            result = refresh_general_market_news(store=store, force=True, limit=50)
-            if result.get("status") == "ok":
-                st.success(f"市场新闻刷新完成：新增 {result['inserted']} 条，更新 {result['updated']} 条。")
-            elif result.get("status") == "unavailable":
-                st.warning("当前套餐不可用，已保留本地缓存。")
-            else:
-                st.warning(str(result.get("message") or "市场新闻刷新失败。"))
-        cols[1].caption("默认只读本地缓存；点击刷新才请求 FMP General Market News。")
-        rows = news_display_rows(
-            store.list_news(symbols=["MARKET"], since=datetime.now(timezone.utc) - timedelta(days=7), limit=30)
-        )
-        if rows:
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        else:
-            st.info("暂无缓存中的宏观 / 市场新闻。")
+    with st.expander("市场新闻", expanded=False):
+        items = store.list_news(symbols=["MARKET"], limit=50)
+        if not items:
+            st.info("尚无市场新闻缓存。点击“刷新市场新闻”后再查看。")
+            return
+        for item in items[:30]:
+            title_zh, original_title, note = _title_parts(item)
+            st.markdown(f"**{title_zh}**")
+            if note:
+                st.caption(note)
+            if original_title and original_title != title_zh:
+                st.caption(f"原文：{original_title}")
+            st.caption(_source_line(item))
 
 
-def _focus_rows(review: dict) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for symbol, count in (review.get("positive_focus") or [])[:5]:
-        rows.append({"股票": symbol, "方向": "正面催化", "数量": count})
-    for symbol, count in (review.get("negative_focus") or [])[:5]:
-        rows.append({"股票": symbol, "方向": "负面新闻", "数量": count})
-    return rows
+def _news_detail_rows(
+    item: dict[str, Any],
+    *,
+    relevance: str | None = None,
+    price_context: dict[str, Any] | None = None,
+    tone: str | None = None,
+) -> list[tuple[str, str]]:
+    keywords = _keywords_text(item)
+    price_line = _price_reaction_line(price_context)
+    original_summary = _clean(item.get("summary") or item.get("raw_text") or item.get("original_text")) or "原始摘要缺失"
+    return [
+        ("原文标题", _clean(item.get("original_title") or item.get("title")) or "原文标题缺失"),
+        ("原文链接", source_link_text(item)),
+        ("原始来源", _clean(item.get("source") or item.get("site")) or "未知来源"),
+        ("发布时间", _format_time(item.get("published_at"))),
+        ("事件类型", _clean(item.get("event_type")) or "待判断"),
+        ("情绪判断", _clean(item.get("sentiment_label")) or "待判断"),
+        ("影响等级", _clean(item.get("impact_level")) or "低"),
+        ("关键词命中", keywords or "未命中明显关键词"),
+        ("中文摘要", _summary_text(item)),
+        ("为什么重要", relevance or _clean(item.get("relevance_reason_zh")) or "需要人工复核影响。"),
+        ("新闻-价格一致性", price_line or "数据不足"),
+        ("原始新闻摘要", original_summary),
+    ]
 
 
-def _event_reason(item: dict) -> str:
-    sentiment = str(item.get("sentiment_label") or "待判断")
-    impact = str(item.get("impact_level") or "中等")
-    if impact == "重大" and sentiment == "负面":
-        return "可能影响交易逻辑，需要复核是否破坏原假设。"
-    if impact == "重大" and sentiment == "正面":
-        return "可能形成正面催化，需要结合价格是否兑现。"
-    return "事件方向不够明确，先作为待复核材料。"
+def _title_parts(item: dict[str, Any]) -> tuple[str, str, str]:
+    original_title = _clean(item.get("original_title") or item.get("title"))
+    title_zh = _clean(item.get("title_zh"))
+    if title_zh:
+        return title_zh, original_title, ""
+    return original_title or "待翻译", original_title, "待翻译"
 
 
-def _event_tone(item: dict) -> str:
-    sentiment = str(item.get("sentiment_label") or "")
-    if sentiment == "负面":
-        return "is-negative"
-    if sentiment == "正面":
-        return "is-positive"
-    return "is-neutral"
+def _summary_text(item: dict[str, Any]) -> str:
+    summary = _clean(item.get("summary_zh"))
+    if summary:
+        return summary
+    original = _clean(item.get("summary") or item.get("raw_text") or item.get("original_text"))
+    if original and _has_chinese(original):
+        return original[:80]
+    return "待生成摘要。"
 
 
-def _time_text(value: object) -> str:
+def _relevance_reason(item: dict[str, Any], symbol_groups: dict[str, set[str]]) -> str:
+    symbol = _clean(item.get("symbol"))
+    title = f"{item.get('original_title') or item.get('title') or ''} {item.get('summary') or ''}".lower()
+    if symbol == "NVDA" and any(word in title for word in ("custom chip", "in-house chip", "google", "tpu", "asic")):
+        return "属于客户自研芯片风险，需要区分长期竞争和短期需求。"
+    if symbol == "NOW" and any(word in title for word in ("ai", "saas", "automation", "agent")):
+        return "属于企业 AI 对 SaaS 护城河的复核项。"
+    if symbol in symbol_groups.get("core", set()):
+        return "这是你的核心仓，需要重点复核是否影响长期假设。"
+    if symbol in symbol_groups.get("portfolio", set()):
+        return "这是你的持仓，可能影响持仓逻辑。"
+    if symbol in symbol_groups.get("watchlist", set()):
+        return "这是观察池标的，可能影响买入等待逻辑。"
+    return _clean(item.get("relevance_reason_zh")) or "需要人工复核影响。"
+
+
+def _source_line(item: dict[str, Any]) -> str:
+    source = _clean(item.get("source") or item.get("site")) or "未知来源"
+    return f"{source} · {_format_time(item.get('published_at'))} · {source_link_text(item)}"
+
+
+def _price_reaction_line(context: dict[str, Any] | None) -> str:
+    if not context:
+        return "数据不足"
+    label = _clean(context.get("news_price_match_label")) or "数据不足"
+    p1 = _fmt_pct(context.get("price_change_1d"))
+    p5 = _fmt_pct(context.get("price_change_5d"))
+    explanation = _clean(context.get("explanation")) or "数据不足"
+    return f"{label}；过去 1 日 {p1}，过去 5 日 {p5}。{explanation}"
+
+
+def _card_tone(item: dict[str, Any], symbol_groups: dict[str, set[str]]) -> str:
+    symbol = _clean(item.get("symbol"))
+    sentiment = _clean(item.get("sentiment_label"))
+    impact = _clean(item.get("impact_level"))
+    event_type = _clean(item.get("event_type"))
+    title = f"{item.get('original_title') or item.get('title') or ''} {item.get('summary') or ''}".lower()
+    is_owned = symbol in symbol_groups.get("portfolio", set()) or symbol in symbol_groups.get("core", set())
+    factual_negative = any(word in title for word in ("downgrade", "cut guidance", "lawsuit", "investigation", "sec", "doj"))
+    if event_type == "观点文章" and not factual_negative:
+        return "观点文章"
+    if sentiment == "负面" and impact == "重大" and is_owned:
+        return "重大负面"
+    if sentiment == "正面" and impact == "重大":
+        return "重大正面"
+    if sentiment == "待判断":
+        return "待判断"
+    return "普通"
+
+
+def _keywords_text(item: dict[str, Any]) -> str:
+    raw = item.get("keywords_hit")
+    if isinstance(raw, list):
+        values = [str(x) for x in raw if str(x)]
+    else:
+        try:
+            values = json_values = __import__("json").loads(raw or "[]")
+            if not isinstance(json_values, list):
+                values = []
+        except Exception:
+            values = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return "、".join(dict.fromkeys(values))
+
+
+def _parse_datetime(value: Any) -> datetime | None:
     if not value:
-        return "时间待确认"
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(text)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except ValueError:
-        return str(value)
-    return parsed.astimezone(timezone(timedelta(hours=8))).strftime("%m-%d %H:%M HKT")
+        return None
 
 
-def _render_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        .news-event-card {
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            border-radius: 8px;
-            background: #FFFFFF;
-            padding: 0.85rem 0.95rem;
-            margin: 0.55rem 0;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-        }
-        .news-event-card.is-positive {
-            border-color: rgba(22, 163, 74, 0.22);
-            background: #F7FEFA;
-        }
-        .news-event-card.is-negative {
-            border-color: rgba(220, 38, 38, 0.22);
-            background: #FFF7F7;
-        }
-        .news-event-card h4 {
-            margin: 0.45rem 0 0.35rem;
-            font-size: 1rem;
-            line-height: 1.35;
-        }
-        .news-event-card p {
-            margin: 0 0 0.42rem;
-            color: #475569;
-            font-size: 0.86rem;
-        }
-        .news-event-card small {
-            color: #64748B;
-            font-size: 0.75rem;
-        }
-        .news-event-meta {
-            display: flex;
-            gap: 0.38rem;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .news-event-meta b,
-        .news-event-meta span {
-            display: inline-flex;
-            align-items: center;
-            min-height: 22px;
-            padding: 0 0.48rem;
-            border-radius: 999px;
-            border: 1px solid rgba(100, 116, 139, 0.16);
-            background: #F8FAFC;
-            color: #334155;
-            font-size: 0.72rem;
-            font-weight: 760;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def _format_time(value: Any) -> str:
+    dt = _parse_datetime(value)
+    if not dt:
+        return "时间缺失"
+    hkt = timezone(timedelta(hours=8))
+    return dt.astimezone(hkt).strftime("%m-%d %H:%M HKT")
+
+
+def _fmt_pct(value: Any) -> str:
+    if value is None:
+        return "数据不足"
+    try:
+        return f"{float(value) * 100:+.2f}%"
+    except Exception:
+        return "数据不足"
+
+
+def _clean(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _has_chinese(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)

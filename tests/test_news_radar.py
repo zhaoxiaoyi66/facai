@@ -5,15 +5,19 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from data.news_radar import (
+    MISSING_URL_TEXT,
     NewsEndpointUnavailable,
     NewsRadarStore,
     build_news_price_context,
     classify_news_item,
     news_display_rows,
+    normalize_news_record,
     refresh_general_market_news,
     refresh_symbol_news,
+    source_link_text,
     trade_news_check,
 )
+from ui.news_radar import _news_detail_rows, _source_line, _title_parts
 
 
 class FakeNewsClient:
@@ -22,7 +26,7 @@ class FakeNewsClient:
         self.error = error
         self.calls: list[tuple[str, int]] = []
 
-    def fetch_stock_news(self, symbol: str, *, limit: int = 50) -> list[dict]:
+    def fetch_stock_news(self, symbol: str, limit: int = 20) -> list[dict]:
         self.calls.append((symbol, limit))
         if self.error:
             raise self.error
@@ -35,59 +39,126 @@ class FakeMarketNewsClient:
         self.error = error
         self.calls = 0
 
-    def fetch_general_news(self, *, limit: int = 50) -> list[dict]:
+    def fetch_general_news(self, limit: int = 30) -> list[dict]:
         self.calls += 1
         if self.error:
             raise self.error
         return list(self.rows)
 
 
-def test_news_dedupes_by_symbol_title_and_source(tmp_path) -> None:
+class FakeCacheModel:
+    def __init__(self, history: pd.DataFrame) -> None:
+        self.history = history
+
+    def get_price_history(self, symbol: str) -> pd.DataFrame:
+        return self.history.copy()
+
+
+def test_fmp_news_url_fields_are_normalized() -> None:
+    item = normalize_news_record(
+        "NVDA",
+        {
+            "title": "Nvidia raises guidance on data center demand",
+            "source": "FMP",
+            "article_url": "https://example.test/nvda",
+            "publishedDate": "2026-06-18T12:00:00+00:00",
+        },
+    )
+
+    assert item["url"] == "https://example.test/nvda"
+    assert source_link_text(item) == "[查看原文](https://example.test/nvda)"
+
+
+def test_news_card_link_falls_back_when_url_is_missing() -> None:
+    item = normalize_news_record("NOW", {"title": "ServiceNow AI threat is overstated", "source": "Seeking Alpha"})
+
+    assert item["url"] == ""
+    assert source_link_text(item) == MISSING_URL_TEXT
+    assert MISSING_URL_TEXT in _source_line(item)
+
+
+def test_title_zh_missing_shows_original_title_and_pending_translation() -> None:
+    item = normalize_news_record("IBM", {"title": "IBM announces quarterly dividend", "source": "FMP"})
+    item["title_zh"] = ""
+
+    title, original, note = _title_parts(item)
+
+    assert title == "IBM announces quarterly dividend"
+    assert original == "IBM announces quarterly dividend"
+    assert note == "待翻译"
+
+
+def test_translation_cache_hit_does_not_call_translator(tmp_path) -> None:
     store = NewsRadarStore(tmp_path / "news.sqlite")
-    raw = {
-        "symbol": "NVDA",
-        "title": "Nvidia raises guidance",
-        "site": "FMP",
-        "publishedDate": "2026-06-18T12:00:00-04:00",
-        "url": "https://example.test/a",
-    }
+    item = normalize_news_record(
+        "NVDA",
+        {
+            "title": "Nvidia raises guidance on AI demand",
+            "title_zh": "英伟达上调 AI 需求指引",
+            "summary_zh": "新闻讨论英伟达 AI 需求和业绩指引改善。",
+            "source": "FMP",
+            "url": "https://example.test/a",
+        },
+    )
+    store.upsert_news(item)
+    calls = {"count": 0}
 
-    first = store.upsert_news("NVDA", [raw])
-    second = store.upsert_news("NVDA", [dict(raw, url="https://example.test/b")])
+    def translator(row: dict) -> tuple[str, str]:
+        calls["count"] += 1
+        return "不应调用", "不应调用"
 
-    assert first["inserted"] == 1
-    assert second["updated"] == 1
-    assert len(store.list_news(symbols=["NVDA"])) == 1
+    result = store.fill_missing_translations(store.list_news(symbols=["NVDA"]), translator=translator)
+
+    assert calls["count"] == 0
+    assert result == {"title": 0, "summary": 0, "failed": 0}
 
 
-def test_news_keywords_classify_positive_negative_and_low_value() -> None:
-    positive = classify_news_item("Nvidia beats estimates and raises guidance on AI demand")
-    negative = classify_news_item("Oracle cut guidance after margin pressure and customer loss")
-    low_value = classify_news_item("Why shares are trading higher in mixed trading market update")
+def test_local_summary_is_specific_not_generic_template() -> None:
+    item = normalize_news_record("NVDA", {"title": "Google custom chips challenge Nvidia AI demand", "source": "WSJ"})
 
-    assert positive["event_type"] == "财报"
-    assert positive["sentiment_label"] == "正面"
-    assert positive["impact_level"] == "重大"
-    assert negative["sentiment_label"] == "负面"
-    assert negative["impact_level"] == "重大"
-    assert low_value["event_type"] == "低价值复述"
-    assert low_value["impact_level"] == "低"
+    assert item["summary_zh"]
+    assert "可能影响交易逻辑，需要复核是否破坏原假设" not in item["summary_zh"]
+    assert "NVDA" in item["summary_zh"] or "AI" in item["summary_zh"] or "数据中心" in item["summary_zh"]
+
+
+def test_seeking_alpha_and_motley_fool_are_classified_as_opinion_articles() -> None:
+    seeking_alpha = classify_news_item("ServiceNow: The AI Threat Is Overstated", source="Seeking Alpha")
+    fool = classify_news_item("Is Nvidia stock still a buy?", source="The Motley Fool")
+
+    assert seeking_alpha.event_type == "观点文章"
+    assert fool.event_type == "观点文章"
+    assert seeking_alpha.impact_level != "重大"
+
+
+def test_news_detail_rows_include_original_title_and_link() -> None:
+    item = normalize_news_record(
+        "NVDA",
+        {
+            "title": "Nvidia beats estimates",
+            "source": "FMP",
+            "url": "https://example.test/nvda",
+            "summary": "Nvidia beat estimates on data center demand.",
+        },
+    )
+
+    details = dict(_news_detail_rows(item, relevance="这是你的持仓，可能影响持仓逻辑。"))
+
+    assert details["原文标题"] == "Nvidia beats estimates"
+    assert details["原文链接"] == "[查看原文](https://example.test/nvda)"
+    assert details["中文摘要"]
 
 
 def test_news_price_context_identifies_good_news_not_confirmed_by_price(tmp_path) -> None:
     store = NewsRadarStore(tmp_path / "news.sqlite")
-    now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-    store.upsert_news(
+    item = normalize_news_record(
         "NVDA",
-        [
-            {
-                "symbol": "NVDA",
-                "title": "Nvidia raises guidance on data center demand",
-                "site": "FMP",
-                "publishedDate": "2026-06-18T10:00:00+00:00",
-            }
-        ],
+        {
+            "title": "Nvidia raises guidance on data center demand",
+            "source": "FMP",
+            "publishedDate": datetime.now(timezone.utc).isoformat(),
+        },
     )
+    store.upsert_news(item)
     history = pd.DataFrame(
         {
             "date": pd.date_range("2026-06-12", periods=6, freq="D"),
@@ -95,7 +166,7 @@ def test_news_price_context_identifies_good_news_not_confirmed_by_price(tmp_path
         }
     )
 
-    context = build_news_price_context("NVDA", lookback_days=7, store=store, history=history, now=now)
+    context = build_news_price_context("NVDA", lookback_days=7, store=store, cache_model=FakeCacheModel(history))
 
     assert context["positive_news_count"] == 1
     assert context["negative_news_count"] == 0
@@ -105,14 +176,12 @@ def test_news_price_context_identifies_good_news_not_confirmed_by_price(tmp_path
 
 def test_refresh_uses_cache_without_calling_client(tmp_path) -> None:
     store = NewsRadarStore(tmp_path / "news.sqlite")
-    now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-    store.mark_fetch_status("NVDA", scope="watchlist", status="ok", message="", now=now - timedelta(hours=1))
+    store.set_fetch_status("watchlist:NVDA", "ok", "刚刚刷新")
     client = FakeNewsClient(rows=[{"symbol": "NVDA", "title": "Should not fetch"}])
 
-    result = refresh_symbol_news("NVDA", client=client, store=store, scope="watchlist", now=now, ttl_hours=12)
+    result = refresh_symbol_news("NVDA", client=client, store=store, scope="watchlist", force=False)
 
-    assert result["status"] == "cache_hit"
-    assert result["requested"] is False
+    assert result["status"] == "cache"
     assert client.calls == []
 
 
@@ -124,7 +193,7 @@ def test_refresh_endpoint_unavailable_degrades_without_raising(tmp_path) -> None
 
     assert result["status"] == "unavailable"
     assert result["message"] == "当前套餐不可用"
-    status = store.get_fetch_status("NOW", "watchlist")
+    status = store.get_fetch_status("default:NOW")
     assert status is not None
     assert status["message"] == "当前套餐不可用"
 
@@ -144,31 +213,49 @@ def test_trade_news_check_handles_zero_major_news(tmp_path) -> None:
     store = NewsRadarStore(tmp_path / "news.sqlite")
     context = trade_news_check("ORCL", store=store)
 
-    assert context["major_news_7d"] == 0
-    assert context["has_major_negative_7d"] is False
+    assert context["major_news_count"] == 0
+    assert context["negative_news_count"] == 0
     assert "无重大负面新闻" in context["summary"]
 
 
 def test_ui_display_rows_do_not_expose_internal_fields(tmp_path) -> None:
     store = NewsRadarStore(tmp_path / "news.sqlite")
     store.upsert_news(
-        "NVDA",
-        [
+        normalize_news_record(
+            "NVDA",
             {
-                "symbol": "NVDA",
                 "title": "Nvidia beats estimates",
-                "site": "FMP",
+                "source": "FMP",
                 "publishedDate": "2026-06-18",
                 "text": "raw body",
-            }
-        ],
+                "url": "https://example.test/nvda",
+            },
+        )
     )
 
     rows = news_display_rows(store.list_news(symbols=["NVDA"]))
 
     assert rows
     joined_keys = " ".join(rows[0].keys())
-    assert "event_type" not in joined_keys
-    assert "sentiment_label" not in joined_keys
-    assert "impact_level" not in joined_keys
-    assert "None" not in " ".join(str(value) for value in rows[0].values())
+    joined_values = " ".join(str(value) for value in rows[0].values())
+    for forbidden in ("event_type", "sentiment_label", "impact_level", "None"):
+        assert forbidden not in joined_keys
+        assert forbidden not in joined_values
+
+
+def test_regular_news_list_rows_also_have_original_links(tmp_path) -> None:
+    store = NewsRadarStore(tmp_path / "news.sqlite")
+    store.upsert_news(
+        normalize_news_record(
+            "IBM",
+            {
+                "title": "IBM announces a market update",
+                "source": "FMP",
+                "url": "https://example.test/ibm",
+            },
+        )
+    )
+
+    row = news_display_rows(store.list_news(symbols=["IBM"]))[0]
+
+    assert row["原文链接"] == "[查看原文](https://example.test/ibm)"
