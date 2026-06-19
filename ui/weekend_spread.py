@@ -15,10 +15,14 @@ from data.binance_equity_scan import (
     DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH,
     MAPPING_ANCHOR_MISSING,
     MAPPING_AUTO_USABLE,
+    MAPPING_ETF_VERIFIED,
     MAPPING_INVALID,
     MAPPING_MANUAL_LOCKED,
+    MAPPING_OTHER_TRADFI,
+    MAPPING_PENDING_VERIFICATION,
     MAPPING_PRICE_UNVERIFIED,
     MAPPING_REVIEW,
+    MAPPING_US_EQUITY_VERIFIED,
     read_binance_equity_scan_cache,
     scan_binance_equity_mapped_symbols,
     scan_records_to_mapping,
@@ -88,6 +92,10 @@ TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 HKT = ZoneInfo("Asia/Hong_Kong")
 ET = ZoneInfo("America/New_York")
+VERIFIED_MAPPING_LABELS = {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}
+PENDING_MAPPING_LABELS = {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, MAPPING_ANCHOR_MISSING, "自动可用，价格校验不足", "锚点缺失"}
+REVIEW_MAPPING_LABELS = {MAPPING_REVIEW, "需确认", "异常复核"}
+INVALID_MAPPING_LABELS = {MAPPING_INVALID, "无效映射", "无映射"}
 
 
 def _apply_weekend_spread_layout_css() -> None:
@@ -226,7 +234,7 @@ def _render_realtime_tab(
     mapping: dict[str, dict],
 ) -> tuple[list[dict], dict[str, int]]:
     st.subheader("Binance 美股映射全市场扫描")
-    st.caption("扫描 Binance USDT-M 合约里可能映射美股的标的，观察当前合约价格相对美股盘后锚点的偏离。")
+    st.caption("仅展示已校验的美股 / ETF 映射价差；其他 TradFi 合约放入待校验列表。")
     status_slot = st.empty()
     deviation_slot = st.empty()
     action_slot = st.empty()
@@ -352,7 +360,9 @@ def _load_realtime_scan_records(
         st.success(
             "已从 Binance 官方合约信息识别 "
             f"{summary['total']} 个美股 / TradFi 映射，新增 {summary['added']} 个，"
-            f"更新 {summary['updated']} 个，需复核 {summary['review']} 个。"
+            f"更新 {summary['updated']} 个，美股已验证 {summary['us_equity_verified']} 个，"
+            f"ETF 已验证 {summary['etf_verified']} 个，待校验 {summary['pending']} 个，"
+            f"其他 TradFi {summary['other_tradfi']} 个，需复核 {summary['review']} 个。"
         )
     else:
         st.warning("扫描完成，但没有识别到可用的 Binance 美股映射。请检查 Binance 数据源或本地股票缓存。")
@@ -378,11 +388,23 @@ def _scan_sync_summary(records: list[dict], previous_mapping: dict[str, dict]) -
     added = 0
     updated = 0
     review = 0
+    us_equity_verified = 0
+    etf_verified = 0
+    pending = 0
+    other_tradfi = 0
     for record in records:
         ticker = str(record.get("ticker") or "").strip().upper()
         if not ticker:
             continue
         quality = str(record.get("mapping_quality") or "")
+        if quality == MAPPING_US_EQUITY_VERIFIED:
+            us_equity_verified += 1
+        elif quality == MAPPING_ETF_VERIFIED:
+            etf_verified += 1
+        elif quality in PENDING_MAPPING_LABELS:
+            pending += 1
+        elif quality == MAPPING_OTHER_TRADFI:
+            other_tradfi += 1
         if quality in {MAPPING_REVIEW, MAPPING_INVALID}:
             review += 1
         old = previous.get(ticker)
@@ -394,7 +416,16 @@ def _scan_sync_summary(records: list[dict], previous_mapping: dict[str, dict]) -
         old_status = str(old.get("mapping_status") or old.get("mapping_confidence") or "")
         if old_symbol != new_symbol or old_status != quality:
             updated += 1
-    return {"total": total, "added": added, "updated": updated, "review": review}
+    return {
+        "total": total,
+        "added": added,
+        "updated": updated,
+        "review": review,
+        "us_equity_verified": us_equity_verified,
+        "etf_verified": etf_verified,
+        "pending": pending,
+        "other_tradfi": other_tradfi,
+    }
 
 
 def _fallback_scan_records_from_mapping(watchlist: list[str], mapping: dict[str, dict]) -> list[dict]:
@@ -410,8 +441,15 @@ def _fallback_scan_records_from_mapping(watchlist: list[str], mapping: dict[str,
         quality = str((config or {}).get("mapping_status") or "").strip()
         if confidence == "confirmed" or (config or {}).get("manually_locked"):
             quality = MAPPING_MANUAL_LOCKED
-        elif quality not in {MAPPING_AUTO_USABLE, MAPPING_PRICE_UNVERIFIED, MAPPING_REVIEW, MAPPING_INVALID}:
-            quality = MAPPING_AUTO_USABLE if confidence == "auto_available" else MAPPING_PRICE_UNVERIFIED
+        elif quality not in {
+            MAPPING_US_EQUITY_VERIFIED,
+            MAPPING_ETF_VERIFIED,
+            MAPPING_PENDING_VERIFICATION,
+            MAPPING_OTHER_TRADFI,
+            MAPPING_REVIEW,
+            MAPPING_INVALID,
+        }:
+            quality = MAPPING_US_EQUITY_VERIFIED if confidence == "auto_available" else MAPPING_PENDING_VERIFICATION
         records.append(
             {
                 "ticker": str(ticker or "").strip().upper(),
@@ -421,6 +459,7 @@ def _fallback_scan_records_from_mapping(watchlist: list[str], mapping: dict[str,
                 "underlying_type": (config or {}).get("underlying_type", ""),
                 "underlying_sub_type": (config or {}).get("underlying_sub_type", ""),
                 "binance_category": (config or {}).get("binance_category", ""),
+                "tradfi_bucket": (config or {}).get("tradfi_bucket", ""),
                 "mapping_quality": quality,
                 "reason": "来自本地映射缓存；点击扫描可刷新 Binance 全市场候选。",
                 "is_watchlist": str(ticker or "").strip().upper() in watchlist_set,
@@ -479,16 +518,17 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
 
 
 def _render_realtime_filters(rows: list[dict]) -> str:
-    options = ["异常偏离", "全部 Binance 美股映射", "我的观察池", "我的持仓", "核心仓", "锚点缺失", "映射待核"]
-    review_labels = {"异常复核", "需确认", "无效映射", "无映射"}
+    options = ["异常偏离", "全部 Binance 美股映射", "我的观察池", "我的持仓", "核心仓", "锚点缺失", "待校验映射", "其他 TradFi"]
+    main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
-        "全部 Binance 美股映射": len([row for row in rows if row.get("binance_symbol")]),
-        "我的观察池": len([row for row in rows if row.get("is_watchlist")]),
-        "我的持仓": len([row for row in rows if row.get("is_position")]),
-        "核心仓": len([row for row in rows if row.get("is_core") or row.get("is_core_position")]),
-        "异常偏离": len([row for row in rows if _realtime_row_status_key(row) in {"focus", "review"}]),
+        "全部 Binance 美股映射": len(main_rows),
+        "我的观察池": len([row for row in main_rows if row.get("is_watchlist")]),
+        "我的持仓": len([row for row in main_rows if row.get("is_position")]),
+        "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
+        "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) in {"focus", "review"}]),
         "锚点缺失": len([row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]),
-        "映射待核": len([row for row in rows if _mapping_display_label_for_row(row) in review_labels]),
+        "待校验映射": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION]),
+        "其他 TradFi": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_OTHER_TRADFI]),
     }
     labels = [f"{option} {counts.get(option, 0)}" for option in options]
     selected = st.radio("筛选", labels, horizontal=True, label_visibility="collapsed", key="weekend_spread_realtime_filter_scope")
@@ -497,19 +537,21 @@ def _render_realtime_filters(rows: list[dict]) -> str:
 
 def _filter_live_rows_by_scope(rows: list[dict], scope: str) -> list[dict]:
     if scope == "全部 Binance 美股映射":
-        selected = [row for row in rows if row.get("binance_symbol")]
+        selected = [row for row in rows if _is_realtime_main_row(row)]
     elif scope == "我的观察池":
-        selected = [row for row in rows if row.get("is_watchlist")]
+        selected = [row for row in rows if row.get("is_watchlist") and _is_realtime_main_row(row)]
     elif scope == "我的持仓":
-        selected = [row for row in rows if row.get("is_position")]
+        selected = [row for row in rows if row.get("is_position") and _is_realtime_main_row(row)]
     elif scope == "核心仓":
-        selected = [row for row in rows if row.get("is_core") or row.get("is_core_position")]
+        selected = [row for row in rows if (row.get("is_core") or row.get("is_core_position")) and _is_realtime_main_row(row)]
     elif scope == "锚点缺失":
         selected = [row for row in rows if row.get("binance_symbol") and _number(row.get("afterhours_reference_price")) is None]
-    elif scope == "映射待核":
-        selected = [row for row in rows if _mapping_display_label_for_row(row) in {"异常复核", "需确认", "无效映射", "无映射"}]
+    elif scope == "待校验映射":
+        selected = [row for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION]
+    elif scope == "其他 TradFi":
+        selected = [row for row in rows if _mapping_display_label_for_row(row) == MAPPING_OTHER_TRADFI]
     else:
-        selected = [row for row in rows if _realtime_row_status_key(row) in {"focus", "review"}]
+        selected = [row for row in rows if _is_realtime_main_row(row) and _realtime_row_status_key(row) in {"focus", "review"}]
     return sorted(selected, key=_realtime_sort_key)
 
 
@@ -886,17 +928,14 @@ def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], 
 def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, int], cache_status: dict | None = None) -> None:
     afterhours_counts = _afterhours_counts(rows)
     status_counts = _realtime_status_counts(rows)
-    price_available = sum(
-        1
-        for row in rows
-        if row.get("binance_symbol") and _number(row.get("adjusted_binance_price") or row.get("binance_last_price")) is not None
-    )
+    main_rows = [row for row in rows if _is_realtime_main_row(row)]
+    pending_count = sum(1 for row in rows if _mapping_display_label_for_row(row) == MAPPING_PENDING_VERIFICATION)
+    anchor_available = sum(1 for row in rows if row.get("binance_symbol") and _row_has_afterhours_anchor(row))
     items = [
-        ("扫描候选", str(mapping_counts.get("scan_record_count") or mapping_counts.get("universe_total") or 0)),
-        ("可识别映射", str(mapping_counts.get("identified_equity_count") or mapping_counts.get("universe_mapping_count") or 0)),
-        ("价格可用", str(price_available)),
+        ("可观察美股映射", str(len(main_rows))),
         ("异常偏离", str(status_counts["review"] + status_counts["focus"])),
-        ("锚点缺失", str(afterhours_counts["missing"])),
+        ("锚点可用", f"{anchor_available}/{afterhours_counts['total']}"),
+        ("待校验映射", str(pending_count)),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status)),
     ]
     text = " ｜ ".join(f"{label}：{value}" for label, value in items)
@@ -1012,8 +1051,15 @@ def _realtime_row_status_key(row: dict) -> str:
         return "unavailable"
     if status == "UNIT_UNCONFIRMED":
         return "review"
-    if _mapping_display_label_for_row(row) in {"异常复核", "需确认", "无效映射", "无映射"}:
+    label = _mapping_display_label_for_row(row)
+    if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
         return "review"
+    if label in {MAPPING_PENDING_VERIFICATION, MAPPING_OTHER_TRADFI, MAPPING_INVALID, "无映射"}:
+        return "unavailable"
+    if label in REVIEW_MAPPING_LABELS:
+        return "review"
+    if label in VERIFIED_MAPPING_LABELS | {MAPPING_MANUAL_LOCKED} and not _row_has_afterhours_anchor(row):
+        return "unavailable"
     spread = _number(row.get("spread_vs_afterhours_pct"))
     if spread is None:
         return "unavailable"
@@ -1053,10 +1099,14 @@ def _mapping_display_label_for_row(row: dict) -> str:
     quality = str(row.get("mapping_quality") or row.get("mapping_status") or "").strip()
     if quality in {MAPPING_MANUAL_LOCKED, "人工锁定"}:
         return "人工锁定"
-    if quality in {MAPPING_AUTO_USABLE, "自动可用"}:
-        return "自动可用"
-    if quality in {MAPPING_PRICE_UNVERIFIED, "自动可用，价格校验不足", MAPPING_ANCHOR_MISSING, "锚点缺失"}:
-        return "自动可用，价格校验不足"
+    if quality in {MAPPING_ETF_VERIFIED, "ETF 已验证"}:
+        return MAPPING_ETF_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
+    if quality in {MAPPING_US_EQUITY_VERIFIED, "美股已验证", "自动可用"}:
+        return MAPPING_US_EQUITY_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
+    if quality in {MAPPING_PENDING_VERIFICATION, MAPPING_PRICE_UNVERIFIED, "自动可用，价格校验不足", MAPPING_ANCHOR_MISSING, "锚点缺失"}:
+        return MAPPING_PENDING_VERIFICATION
+    if quality in {MAPPING_OTHER_TRADFI, "其他 TradFi"}:
+        return MAPPING_OTHER_TRADFI
     if quality in {MAPPING_REVIEW, "异常复核", "需确认"}:
         return "异常复核"
     if quality in {MAPPING_INVALID, "无效映射"}:
@@ -1065,8 +1115,37 @@ def _mapping_display_label_for_row(row: dict) -> str:
     if confidence == "confirmed" or confidence == "人工锁定":
         return "人工锁定"
     if confidence == "auto_available":
-        return "自动可用"
-    return "自动可用"
+        category = str(row.get("binance_category") or "").strip()
+        if "ETF" in category:
+            return MAPPING_ETF_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
+        return MAPPING_US_EQUITY_VERIFIED if _row_has_afterhours_anchor(row) else MAPPING_PENDING_VERIFICATION
+    return MAPPING_PENDING_VERIFICATION
+
+
+def _row_has_afterhours_anchor(row: dict) -> bool:
+    return _number(row.get("afterhours_reference_price")) is not None
+
+
+def _row_has_binance_price(row: dict) -> bool:
+    return _number(row.get("adjusted_binance_price") or row.get("binance_last_price")) is not None
+
+
+def _is_realtime_main_row(row: dict) -> bool:
+    label = _mapping_display_label_for_row(row)
+    if label in VERIFIED_MAPPING_LABELS | {MAPPING_MANUAL_LOCKED}:
+        return _row_has_binance_price(row) and _row_has_afterhours_anchor(row)
+    if label == MAPPING_REVIEW:
+        return _row_has_binance_price(row)
+    if label == MAPPING_PENDING_VERIFICATION and _is_pending_anomaly_row(row):
+        return True
+    return False
+
+
+def _is_pending_anomaly_row(row: dict) -> bool:
+    if not (_row_has_binance_price(row) and _row_has_afterhours_anchor(row)):
+        return False
+    spread = _number(row.get("spread_vs_afterhours_pct") if row.get("spread_vs_afterhours_pct") is not None else row.get("spread_pct"))
+    return spread is not None and abs(spread) >= 8
 
 
 def _anchor_display_label_for_row(row: dict) -> str:
@@ -1107,15 +1186,37 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.info("当前没有可用于周末价差的 Binance 美股映射。请先扫描 Binance 映射或配置本模块映射缓存。")
         _render_tradingview_backfill_tools()
         return
-    options = all_tickers
     opening_anchor = "overnight"
     open_window = 2
-    selected_default = str(st.session_state.get("weekend_spread_backtest_ticker") or options[0]).strip().upper()
+    weeks = _safe_backtest_weeks(st.session_state.get("weekend_spread_backtest_weeks"))
+    include_unconfirmed = bool(st.session_state.get("weekend_spread_backtest_include_unconfirmed") or False)
+    preliminary = build_weekend_backtest_preflight(
+        all_tickers,
+        mapping=effective_mapping,
+        anchors=_backtest_anchor_mapping(all_tickers, weeks=weeks),
+        include_unconfirmed=include_unconfirmed,
+    )
+    options = [str(ticker or "").strip().upper() for ticker in preliminary.get("eligible_tickers") or []]
+    selected_default = str(st.session_state.get("weekend_spread_backtest_ticker") or (options[0] if options else "")).strip().upper()
+    forced_blocked_selection = selected_default if selected_default and selected_default in all_tickers and selected_default not in options else ""
+    if not options:
+        st.info(f"当前无法运行回测：{_backtest_block_text(str(preliminary.get('primary_block_reason') or 'NO_MAPPING'))}")
+        if forced_blocked_selection:
+            forced_preflight = build_weekend_backtest_preflight(
+                [forced_blocked_selection],
+                mapping=effective_mapping,
+                anchors=_backtest_anchor_mapping([forced_blocked_selection], weeks=weeks),
+                include_unconfirmed=include_unconfirmed,
+                ticker_filter=forced_blocked_selection,
+            )
+            st.warning(_backtest_block_text(str(forced_preflight.get("primary_block_reason") or "MAPPING_NOT_VERIFIED")))
+        with st.expander("查看排除原因", expanded=False):
+            st.dataframe(_backtest_exclusion_frame(list(preliminary.get("excluded") or [])), width="stretch", hide_index=True)
+        _render_tradingview_backfill_tools()
+        return
     selected = selected_default if selected_default in options else options[0]
     if st.session_state.get("weekend_spread_backtest_ticker") not in options:
         st.session_state["weekend_spread_backtest_ticker"] = selected
-    weeks = _safe_backtest_weeks(st.session_state.get("weekend_spread_backtest_weeks"))
-    include_unconfirmed = bool(st.session_state.get("weekend_spread_backtest_include_unconfirmed") or False)
     anchors = _backtest_anchor_mapping([selected], weeks=weeks)
     preflight = build_weekend_backtest_preflight(
         [selected],
@@ -1124,21 +1225,15 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         include_unconfirmed=include_unconfirmed,
         ticker_filter=selected,
     )
-    preliminary = build_weekend_backtest_preflight(
-        all_tickers,
-        mapping=effective_mapping,
-        anchors=_backtest_anchor_mapping(all_tickers, weeks=weeks),
-        include_unconfirmed=include_unconfirmed,
-    )
     run_clicked = False
     clear_clicked = False
 
     with st.expander("回测设置", expanded=False):
         include_unconfirmed = st.checkbox(
-            "包含未确认映射",
+            "显示未确认映射排除原因",
             value=include_unconfirmed,
             key="weekend_spread_backtest_include_unconfirmed",
-            help="未确认映射只用于观察，不计入正式统计。",
+            help="待校验映射、其他 TradFi 和无效映射不会进入正式回测，只在排除原因中展示。",
         )
         cols = st.columns(4)
         selected = cols[0].selectbox("标的", options, key="weekend_spread_backtest_ticker")
@@ -1272,7 +1367,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
     if last_run_at:
         st.caption(f"上次运行：{_short_hkt_time(last_run_at)}")
     if include_unconfirmed:
-        st.caption("观察回测包含未确认映射，结果不计入正式统计。")
+        st.caption("待校验映射不会进入正式回测；如需使用，请先完成美股价格和盘后锚点校验。")
 
     review_rows = _weekend_review_rows(results)
     ok_review_rows = _ok_weekend_review_rows(review_rows)
@@ -1328,7 +1423,7 @@ def _is_auto_mapping_config(config: dict | None) -> bool:
         return False
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
     status = str(config.get("mapping_status") or "").strip()
-    return confidence == "auto_available" or status in {MAPPING_AUTO_USABLE, MAPPING_PRICE_UNVERIFIED}
+    return confidence == "auto_available" and status in {"", MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}
 
 
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
@@ -1469,10 +1564,11 @@ def _safe_backtest_weeks(value: object, default: int = 4) -> int:
 
 
 def _backtest_mode_text(value: object) -> str:
-    text = str(value or "").strip().lower()
+    text = str(value or "").strip().lower().replace(" ", "_")
     return {
-        "auto usable": "\u81ea\u52a8\u53ef\u7528",
-        "auto_usable": "\u81ea\u52a8\u53ef\u7528",
+        "auto_usable": "已验证映射",
+        "verified mapping": "已验证映射",
+        "verified_mapping": "已验证映射",
         "confirmed": "\u4eba\u5de5\u9501\u5b9a",
         "manual_locked": "\u4eba\u5de5\u9501\u5b9a",
     }.get(text, str(value or ""))
@@ -1519,11 +1615,16 @@ def _mapping_status_text(value: object) -> str:
     text = str(value or "").strip().lower()
     return {
         "confirmed": "人工锁定",
-        "candidate": "自动匹配",
-        "unverified": "需确认",
+        "candidate": "待校验映射",
+        "unverified": "待校验映射",
         "no_mapping": "无映射",
         "missing": "无映射",
         "invalid": "无效",
+        "auto_available": "美股已验证",
+        "us_equity_verified": "美股已验证",
+        "etf_verified": "ETF 已验证",
+        "pending_verification": "待校验映射",
+        "other_tradfi": "其他 TradFi",
     }.get(text, str(value or "未知"))
 
 
@@ -1575,7 +1676,7 @@ def _backfill_mapping_status_text(value: object) -> str:
     text = str(value or "").strip().upper()
     return {
         "CONFIRMED_TRADE_GRADE": "人工锁定 / 可回测",
-        "CANDIDATE_OBSERVATION": "自动可用 / 观察",
+        "CANDIDATE_OBSERVATION": "待校验映射 / 观察",
     }.get(text, str(value or "未知"))
 
 
@@ -1608,11 +1709,41 @@ def _exclusion_reason_text(value: object) -> str:
         "NO_MAPPING": "无映射",
         "AUTO_CANDIDATE_NOT_ALLOWED": "自动候选未纳入",
         "UNCONFIRMED_EXCLUDED": "未确认映射已排除",
+        "MAPPING_NOT_VERIFIED": "映射尚未完成美股价格和盘后锚点校验",
+        "OTHER_TRADFI_EXCLUDED": "其他 TradFi 不进入美股价差回测",
+        "NO_AFTERHOURS_ANCHOR": "缺少盘后锚点",
         "SYMBOL_INVALID": "合约无效",
         "BINANCE_KLINE_UNAVAILABLE": "Binance K线不可用",
         "FUTURES_UNAVAILABLE": "USDT-M 合约不可用",
         "NO_PRICE_ANCHOR": "缺少价格锚点",
         "PROVIDER_ERROR": "数据源错误",
+    }.get(text, str(value or "未知"))
+
+
+def _backtest_block_text(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return "当前没有可进入回测的标的"
+    return {
+        "NO_MAPPING": "当前没有可用于回测的 Binance 美股映射，请先同步或配置本模块映射。",
+        "MAPPING_NOT_VERIFIED": "该映射尚未完成美股价格和盘后锚点校验，不能进入正式回测。",
+        "NO_AFTERHOURS_ANCHOR": "缺少本周最后交易日盘后锚点，请先更新盘后锚点或补数。",
+        "OTHER_TRADFI_EXCLUDED": "其他 TradFi 合约不进入美股价差正式回测。",
+        "BINANCE_KLINE_UNAVAILABLE": "缺少 Binance 周末 1m K 线，暂时不能运行回测。",
+        "FUTURES_UNAVAILABLE": "USDT-M 合约不可用，暂时不能运行回测。",
+        "NO_PRICE_ANCHOR": "缺少价格锚点，暂时不能运行回测。",
+        "PROVIDER_ERROR": "数据源返回错误，请稍后重试或查看排除原因。",
+    }.get(text, _exclusion_reason_text(text))
+
+
+def _market_type_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "usdm_futures": "USDT-M 合约",
+        "usd_m_futures": "USDT-M 合约",
+        "um_futures": "USDT-M 合约",
+        "futures": "USDT-M 合约",
+        "spot": "现货",
     }.get(text, str(value or "未知"))
 
 
@@ -2760,28 +2891,28 @@ def _render_backtest_advanced_records() -> None:
 
 def _render_mapping_tab(rows: list[dict], mapping: dict[str, dict], mapping_counts: dict[str, int]) -> None:
     st.subheader("Binance 美股 / TradFi 映射管理")
-    st.caption("系统会自动匹配 Binance 合约。价格可用且偏差正常的映射会自动参与观察；只有价格异常或合约无效时才需要人工处理。")
+    st.caption("系统会自动同步 Binance TradFi 合约；只有已校验的美股 / ETF 映射进入价差主表，其他 TradFi 和待校验项留在这里复核。")
     records = _mapping_management_records(rows, mapping)
-    usable = sum(1 for record in records if record.get("state_group") in {"usable", "locked"})
-    review = sum(1 for record in records if record.get("state_group") == "review")
-    invalid = sum(1 for record in records if record.get("state_group") in {"invalid", "missing"})
-    locked = sum(1 for record in records if record.get("state_group") == "locked")
-    watchlist_covered = sum(1 for row in rows if row.get("is_watchlist") and row.get("binance_symbol"))
-    cols = st.columns(5)
-    cols[0].metric("可用映射", usable)
-    cols[1].metric("需处理", review)
-    cols[2].metric("无效映射", invalid)
-    cols[3].metric("人工锁定", locked)
-    cols[4].metric("观察池覆盖数", watchlist_covered)
+    state_counts = _mapping_state_counts(records)
+    cols = st.columns(4)
+    cols[0].metric("Binance TradFi 候选总数", len(records))
+    cols[1].metric("美股已验证", state_counts.get("us_equity_verified", 0))
+    cols[2].metric("ETF 已验证", state_counts.get("etf_verified", 0))
+    cols[3].metric("待校验映射", state_counts.get("pending", 0))
+    cols = st.columns(4)
+    cols[0].metric("其他 TradFi", state_counts.get("other_tradfi", 0))
+    cols[1].metric("异常复核", state_counts.get("review", 0))
+    cols[2].metric("无效映射", state_counts.get("invalid", 0) + state_counts.get("missing", 0))
+    cols[3].metric("人工锁定", state_counts.get("locked", 0))
 
+    filter_options = ["待处理", "美股已验证", "ETF 已验证", "待校验映射", "其他 TradFi", "全部"]
+    selected_filter = st.selectbox("映射筛选", filter_options, key="weekend_spread_mapping_filter")
     show_all = st.toggle("显示全部映射", value=False, key="weekend_spread_mapping_show_all")
-    display_records = records if show_all else [
-        record for record in records if record.get("state_group") in {"review", "invalid", "missing"}
-    ]
+    display_records = records if show_all else _filter_mapping_records(records, selected_filter)
     if display_records:
         st.dataframe(_mapping_management_frame(display_records), width="stretch", hide_index=True)
     elif records:
-        st.success("当前没有需要处理的异常映射。打开“显示全部映射”可以查看自动可用项目。")
+        st.success("当前筛选下没有需要处理的映射。打开“显示全部映射”可以查看全量扫描结果。")
     else:
         st.info("当前还没有 Binance 美股映射。请先在实时观察页点击“一键同步 Binance 美股映射”。")
 
@@ -2805,18 +2936,30 @@ def _mapping_record_from_row(row: dict, config: dict | None = None) -> dict:
     elif display_label == "人工锁定":
         group = "locked"
         label = "人工锁定"
-    elif display_label in {"异常复核", "需确认"}:
+    elif display_label in REVIEW_MAPPING_LABELS:
         group = "review"
         label = "异常复核"
     elif display_label == "无效映射":
         group = "invalid"
         label = "无效映射"
+    elif display_label == MAPPING_PENDING_VERIFICATION:
+        group = "pending"
+        label = MAPPING_PENDING_VERIFICATION
+    elif display_label == MAPPING_OTHER_TRADFI:
+        group = "other_tradfi"
+        label = MAPPING_OTHER_TRADFI
+    elif display_label == MAPPING_ETF_VERIFIED:
+        group = "etf_verified"
+        label = MAPPING_ETF_VERIFIED
     elif price_diff_pct is not None and abs(price_diff_pct) > 30:
         group = "review"
         label = "异常复核"
+    elif display_label == MAPPING_US_EQUITY_VERIFIED:
+        group = "us_equity_verified"
+        label = MAPPING_US_EQUITY_VERIFIED
     else:
-        group = "usable"
-        label = display_label if display_label.startswith("自动可用") else "自动可用"
+        group = "pending"
+        label = MAPPING_PENDING_VERIFICATION
     return {
         "ticker": ticker,
         "binance_symbol": binance_symbol,
@@ -2834,7 +2977,10 @@ def _mapping_record_from_row(row: dict, config: dict | None = None) -> dict:
 
 def _mapping_display_label_for_record(record: dict) -> str:
     return str(record.get("state_label") or {
-        "usable": "自动可用",
+        "us_equity_verified": MAPPING_US_EQUITY_VERIFIED,
+        "etf_verified": MAPPING_ETF_VERIFIED,
+        "pending": MAPPING_PENDING_VERIFICATION,
+        "other_tradfi": MAPPING_OTHER_TRADFI,
         "locked": "人工锁定",
         "review": "异常复核",
         "invalid": "无效映射",
@@ -2844,6 +2990,27 @@ def _mapping_display_label_for_record(record: dict) -> str:
 
 def _mapping_management_records(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
     return [_mapping_record_from_row(row, mapping.get(str(row.get("ticker") or "").upper(), {})) for row in rows]
+
+
+def _mapping_state_counts(records: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        group = str(record.get("state_group") or "unknown")
+        counts[group] = counts.get(group, 0) + 1
+    return counts
+
+
+def _filter_mapping_records(records: list[dict], selected_filter: str) -> list[dict]:
+    group_map = {
+        "美股已验证": {"us_equity_verified"},
+        "ETF 已验证": {"etf_verified"},
+        "待校验映射": {"pending"},
+        "其他 TradFi": {"other_tradfi"},
+        "全部": {"us_equity_verified", "etf_verified", "pending", "other_tradfi", "review", "invalid", "missing", "locked"},
+        "待处理": {"pending", "review", "invalid", "missing"},
+    }
+    allowed = group_map.get(selected_filter, group_map["待处理"])
+    return [record for record in records if str(record.get("state_group") or "") in allowed]
 
 
 def _off_universe_mapping_records(rows: list[dict], mapping: dict[str, dict]) -> list[dict]:
@@ -2889,13 +3056,18 @@ def _mapping_management_counts(rows: list[dict], mapping: dict[str, dict]) -> di
     counts = _mapping_counts(rows, mapping)
     records = _mapping_management_records(rows, mapping)
     off_universe_records = _off_universe_mapping_records(rows, mapping)
+    state_counts = _mapping_state_counts(records)
     counts.update(
         {
-            "usable_count": sum(1 for record in records if record.get("state_group") in {"usable", "locked"}),
-            "review_count": sum(1 for record in records if record.get("state_group") in {"review", "invalid"}),
-            "manual_locked_count": sum(1 for record in records if record.get("state_group") == "locked"),
-            "invalid_count": sum(1 for record in records if record.get("state_group") == "invalid"),
-            "no_mapping_count": sum(1 for record in records if record.get("state_group") == "missing"),
+            "usable_count": state_counts.get("us_equity_verified", 0) + state_counts.get("etf_verified", 0) + state_counts.get("locked", 0),
+            "review_count": state_counts.get("pending", 0) + state_counts.get("review", 0) + state_counts.get("invalid", 0),
+            "manual_locked_count": state_counts.get("locked", 0),
+            "invalid_count": state_counts.get("invalid", 0),
+            "no_mapping_count": state_counts.get("missing", 0),
+            "pending_count": state_counts.get("pending", 0),
+            "other_tradfi_count": state_counts.get("other_tradfi", 0),
+            "us_equity_verified_count": state_counts.get("us_equity_verified", 0),
+            "etf_verified_count": state_counts.get("etf_verified", 0),
             "off_universe_mapping_count": len(off_universe_records),
         }
     )
@@ -2946,9 +3118,9 @@ def _render_mapping_editor(
 ) -> None:
     expanded = mapping_counts.get("usable_count", 0) <= 0 and mapping_counts.get("review_count", 0) > 0
     with st.expander("映射操作", expanded=expanded):
-        st.caption("自动可用映射已经可以参与观察；人工锁定只是把本模块的本地 mapping 固定下来，不会修改主系统观察池或持仓。")
-        auto_rows = [row for row in rows if _mapping_display_label_for_row(row).startswith("自动可用")]
-        if auto_rows and st.button("一键采用全部自动可用映射", key="weekend_spread_lock_auto_mappings", width="stretch"):
+        st.caption("已验证的美股 / ETF 映射可以参与观察；人工锁定只是固定周末价差本地 mapping，不会修改主系统观察池或持仓。")
+        auto_rows = [row for row in rows if _mapping_display_label_for_row(row) in VERIFIED_MAPPING_LABELS]
+        if auto_rows and st.button("一键采用全部已验证美股/ETF映射", key="weekend_spread_lock_auto_mappings", width="stretch"):
             changed = 0
             for row in auto_rows:
                 ticker = str(row.get("ticker") or "").strip().upper()
@@ -2977,6 +3149,7 @@ def _mapping_editor_error_text(error_code: str) -> str:
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
+        "类型",
         "美股盘后锚点",
         "Binance 最新",
         "相对盘后",
@@ -2989,6 +3162,7 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
     display["股票"] = frame.get("ticker")
+    display["类型"] = frame.apply(lambda row: _live_type_label(row.to_dict()), axis=1)
     display["美股盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
     display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
     display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
@@ -2996,6 +3170,19 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display["状态"] = frame.apply(lambda row: _realtime_row_status_label(row.to_dict()), axis=1)
     display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
     return display[columns]
+
+
+def _live_type_label(row: dict) -> str:
+    label = _mapping_display_label_for_row(row)
+    if label == MAPPING_US_EQUITY_VERIFIED:
+        return "美股"
+    if label == MAPPING_ETF_VERIFIED:
+        return "ETF"
+    if label == MAPPING_MANUAL_LOCKED:
+        return "人工锁定"
+    if label == MAPPING_REVIEW:
+        return "异常复核"
+    return label
 
 
 def _display_frame(rows: list[dict]) -> pd.DataFrame:
@@ -3213,12 +3400,12 @@ def _mapping_confidence_label(value: object) -> str:
     text = str(value or "").strip().lower()
     return {
         "confirmed": "人工锁定",
-        "candidate": "自动匹配",
-        "unverified": "需确认",
-        "verified_ready": "需确认",
-        "stale": "需确认",
+        "candidate": "待校验映射",
+        "unverified": "待校验映射",
+        "verified_ready": "待校验映射",
+        "stale": "待校验映射",
         "rejected": "已忽略",
-        "auto_available": "自动可用",
+        "auto_available": "美股已验证",
     }.get(text, "无映射" if not text else text)
 
 
@@ -3238,9 +3425,10 @@ def _candidate_text(value: object) -> str:
 
 
 def _strongest_signal_row(rows: list[dict]) -> dict | None:
-    priced = [row for row in rows if _number(row.get("spread_vs_afterhours_pct")) is not None]
+    eligible = [row for row in rows if _is_realtime_main_row(row)]
+    priced = [row for row in eligible if _number(row.get("spread_vs_afterhours_pct")) is not None]
     if not priced:
-        priced = [row for row in rows if _number(row.get("spread_pct")) is not None]
+        priced = [row for row in eligible if _number(row.get("spread_pct")) is not None]
     if not priced:
         return None
     return max(

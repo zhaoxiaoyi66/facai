@@ -8,6 +8,15 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from data.binance_provider import BinanceHTTPPriceProvider, CachedBinancePriceProvider, normalize_market_type
+from data.binance_equity_scan import (
+    MAPPING_ETF_VERIFIED,
+    MAPPING_INVALID,
+    MAPPING_MANUAL_LOCKED,
+    MAPPING_OTHER_TRADFI,
+    MAPPING_PENDING_VERIFICATION,
+    MAPPING_REVIEW,
+    MAPPING_US_EQUITY_VERIFIED,
+)
 from data.weekend_basis import (
     BasisQuote,
     BasisStrategyConfig,
@@ -30,6 +39,8 @@ DEFAULT_BACKTEST_RESULTS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backt
 DEFAULT_BACKTEST_KLINE_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_backtest_klines.json"
 BACKFILL_THRESHOLDS_BPS = (80.0, 100.0, 120.0, 150.0)
 BACKFILL_RELATIVE_WINDOWS_HOURS = (6, 12)
+BACKTEST_VERIFIED_MAPPING_STATUSES = {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED, "自动可用"}
+BACKTEST_BLOCKED_MAPPING_STATUSES = {MAPPING_PENDING_VERIFICATION, MAPPING_OTHER_TRADFI, MAPPING_INVALID}
 STOCK_OPEN_ANCHORS = ("overnight", "premarket", "regular_open")
 STOCK_OPEN_ANCHOR_LABELS = {
     "overnight": "券商夜盘",
@@ -211,11 +222,28 @@ def build_weekend_backtest_preflight(
             continue
         symbol = str(config.get("binance_symbol") or "").strip().upper()
         confidence = str(config.get("mapping_confidence") or "").strip().lower()
-        row.update({"mapping_status": confidence or "unverified", "symbol": symbol})
-        if confidence == "auto_available" or (confidence == "candidate" and _is_auto_candidate(config)):
-            row["mapping_status"] = "auto_available"
-        elif confidence != "confirmed" and not include_unconfirmed:
-            row["exclusion_reason"] = "UNCONFIRMED_EXCLUDED"
+        mapping_status = _normalized_mapping_status(config)
+        row.update({"mapping_status": mapping_status or confidence or "unverified", "symbol": symbol})
+        anchor = effective_anchors.get(ticker) or {}
+        anchor_price = _number(anchor.get("afterhours_reference_price") or anchor.get("anchor_price"))
+        if mapping_status in {MAPPING_OTHER_TRADFI}:
+            row["exclusion_reason"] = "OTHER_TRADFI_EXCLUDED"
+            excluded.append(row)
+            continue
+        if mapping_status in BACKTEST_BLOCKED_MAPPING_STATUSES or confidence in {"candidate", "unverified", "manual_required"}:
+            row["exclusion_reason"] = "MAPPING_NOT_VERIFIED"
+            excluded.append(row)
+            continue
+        if confidence == "confirmed" or mapping_status == MAPPING_MANUAL_LOCKED:
+            row["mapping_status"] = MAPPING_MANUAL_LOCKED
+        elif confidence == "auto_available" and mapping_status in BACKTEST_VERIFIED_MAPPING_STATUSES:
+            row["mapping_status"] = mapping_status
+        elif confidence != "confirmed":
+            row["exclusion_reason"] = "MAPPING_NOT_VERIFIED"
+            excluded.append(row)
+            continue
+        if anchor_price is None or anchor_price <= 0:
+            row["exclusion_reason"] = "NO_AFTERHOURS_ANCHOR"
             excluded.append(row)
             continue
         if not symbol:
@@ -238,7 +266,7 @@ def build_weekend_backtest_preflight(
         "can_run": bool(eligible),
         "primary_block_reason": primary_block,
         "include_unconfirmed": bool(include_unconfirmed),
-        "mode": "include candidate" if include_unconfirmed else "auto usable",
+        "mode": "verified mapping",
     }
 
 
@@ -1297,7 +1325,7 @@ def _backtest_one_window(
     note = "历史观察回测，不构成套利建议。"
     if mapping_confidence != "confirmed":
         quality = "UNCONFIRMED_MAPPING"
-        note = "mapping 未 confirmed，结果仅作观察。"
+        note = "映射未人工锁定，结果仅作观察。"
     if kline_cache_status == "CACHE_FALLBACK":
         note = f"{note} 使用缓存 K 线。"
     base.update(
@@ -1506,7 +1534,7 @@ def _basis_backtest_one_window(
         )
         return base
     cfg = strategy_config or BasisStrategyConfig()
-    effective_mapping_confidence = "auto_available" if _is_auto_candidate(config) else mapping_confidence
+    effective_mapping_confidence = "auto_available" if _is_verified_mapping_config(config) else mapping_confidence
     broker_bars = [stock_bar["bar"]] if stock_bar.get("ok") and stock_bar.get("bar") is not None else []
     if anchor_price is not None and anchor_price > 0:
         evaluation_quotes = _basis_quotes_for_stock_bar_evaluation(quotes, window, stock_bar, cfg, open_window_minutes)
@@ -1647,7 +1675,7 @@ def _basis_backtest_one_window(
             )
     elif stock_bar.get("quality") == "DEGRADED_5M" and result.get("data_quality") == "OK":
         result.update({"data_quality": "DEGRADED_5M", "warning": "使用 5m bar 替代 1m，样本仅作降级观察"})
-    if mapping_confidence != "confirmed" and not _is_auto_candidate(config) and result.get("data_quality") not in {
+    if mapping_confidence != "confirmed" and not _is_verified_mapping_config(config) and result.get("data_quality") not in {
         "MISSING_STOCK_FIRST_BAR",
         "BINANCE_KLINE_UNAVAILABLE",
         "NO_PRICE_ANCHOR",
@@ -2923,6 +2951,30 @@ def _is_auto_candidate(config: dict[str, Any]) -> bool:
     risk_note = str(config.get("risk_note") or "")
     confidence = str(config.get("mapping_confidence") or "").strip().lower()
     return confidence == "candidate" and ("ticker+USDT" in risk_note or "自动生成" in risk_note)
+
+
+def _normalized_mapping_status(config: dict[str, Any]) -> str:
+    status = str(config.get("mapping_status") or "").strip()
+    if status == "自动可用":
+        return MAPPING_US_EQUITY_VERIFIED
+    if status == "自动可用，价格校验不足":
+        return MAPPING_PENDING_VERIFICATION
+    if status:
+        return status
+    confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    if confidence == "confirmed" or bool(config.get("manually_locked")):
+        return MAPPING_MANUAL_LOCKED
+    if confidence == "auto_available":
+        return MAPPING_US_EQUITY_VERIFIED
+    if confidence in {"candidate", "unverified", "manual_required"}:
+        return MAPPING_PENDING_VERIFICATION
+    return ""
+
+
+def _is_verified_mapping_config(config: dict[str, Any]) -> bool:
+    status = _normalized_mapping_status(config)
+    confidence = str(config.get("mapping_confidence") or "").strip().lower()
+    return confidence == "auto_available" and status in BACKTEST_VERIFIED_MAPPING_STATUSES
 
 
 def _normalize_tickers(tickers: Iterable[str]) -> list[str]:

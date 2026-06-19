@@ -22,6 +22,7 @@ from data.stock_plan import StockPlanStore
 from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
 from ui.display_labels import replace_display_terms
+from ui.indicator_validation_panel import render_indicator_validation_expander
 from ui.price_source_display import price_source_label
 from ui.theme import render_page_header
 
@@ -219,6 +220,7 @@ def _render_report(symbol: str, perf: PerfProbe | None = None) -> None:
         unsafe_allow_html=True,
     )
     _render_report_appendix_section(context)
+    render_indicator_validation_expander(symbol)
     with st.expander("评分依据 / 数据诊断", expanded=False):
         st.markdown(_debug_html(context.report.get("debug") or {}, context.report), unsafe_allow_html=True)
     with st.expander("性能诊断", expanded=False):

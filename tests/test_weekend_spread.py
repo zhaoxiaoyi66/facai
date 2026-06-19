@@ -14,9 +14,13 @@ from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvid
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.binance_equity_scan import (
     MAPPING_AUTO_USABLE,
+    MAPPING_ETF_VERIFIED,
     MAPPING_INVALID,
+    MAPPING_OTHER_TRADFI,
+    MAPPING_PENDING_VERIFICATION,
     MAPPING_PRICE_UNVERIFIED,
     MAPPING_REVIEW,
+    MAPPING_US_EQUITY_VERIFIED,
     parse_us_equity_ticker_from_binance_symbol,
     scan_binance_equity_mapped_symbols,
     scan_records_to_mapping,
@@ -3805,7 +3809,7 @@ def test_backtest_preflight_excludes_candidate_by_default() -> None:
     )
 
     assert preflight["can_run"] is False
-    assert preflight["primary_block_reason"] == "UNCONFIRMED_EXCLUDED"
+    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
     assert preflight["excluded"][0]["symbol"] == "NVDAUSDT"
 
 
@@ -3818,7 +3822,7 @@ def test_backtest_preflight_excludes_auto_candidate_until_observation_mode() -> 
 
     assert preflight["can_run"] is True
     assert preflight["eligible_tickers"] == ["NVDA"]
-    assert preflight["mode"] == "auto usable"
+    assert preflight["mode"] == "verified mapping"
 
 
 def test_backtest_preflight_allows_auto_available_mapping_without_manual_confirmation() -> None:
@@ -3831,7 +3835,7 @@ def test_backtest_preflight_allows_auto_available_mapping_without_manual_confirm
 
     assert preflight["can_run"] is True
     assert preflight["eligible_tickers"] == ["NVDA"]
-    assert preflight["eligible"][0]["mapping_status"] == "auto_available"
+    assert preflight["eligible"][0]["mapping_status"] == "美股已验证"
 
 
 def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
@@ -3842,8 +3846,8 @@ def test_backtest_preflight_allows_candidate_when_include_unconfirmed() -> None:
         include_unconfirmed=True,
     )
 
-    assert preflight["can_run"] is True
-    assert preflight["eligible_tickers"] == ["NVDA"]
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
 
 
 def test_backtest_preflight_allows_missing_price_anchor_for_diagnostics() -> None:
@@ -3854,8 +3858,8 @@ def test_backtest_preflight_allows_missing_price_anchor_for_diagnostics() -> Non
         include_unconfirmed=False,
     )
 
-    assert preflight["can_run"] is True
-    assert preflight["eligible_tickers"] == ["NVDA"]
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "NO_AFTERHOURS_ANCHOR"
 
 
 def test_weekend_peak_short_backtest_normalizes_legacy_spot_mapping_to_usdm_futures() -> None:
@@ -4863,8 +4867,7 @@ def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
 
     strongest = weekend_spread._strongest_signal_row(rows)
 
-    assert strongest is not None
-    assert strongest["ticker"] == "NVDA"
+    assert strongest is None
 
 
 def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
@@ -4904,6 +4907,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
+        "类型",
         "美股盘后锚点",
         "Binance 最新",
         "相对盘后",
@@ -5104,6 +5108,29 @@ def test_row_membership_text_is_localized_for_realtime_details() -> None:
     )
 
 
+def test_backtest_block_text_is_localized_for_preflight_errors() -> None:
+    assert "Binance 美股映射" in weekend_spread._backtest_block_text("NO_MAPPING")
+    assert "盘后锚点" in weekend_spread._backtest_block_text("NO_AFTERHOURS_ANCHOR")
+    assert "不能进入正式回测" in weekend_spread._backtest_block_text("MAPPING_NOT_VERIFIED")
+
+
+def test_backtest_exclusion_frame_localizes_market_type() -> None:
+    frame = weekend_spread._backtest_exclusion_frame(
+        [
+            {
+                "ticker": "NVDA",
+                "symbol": "NVDAUSDT",
+                "market_type": "usdm_futures",
+                "mapping_status": "待校验映射",
+                "exclusion_reason": "MAPPING_NOT_VERIFIED",
+            }
+        ]
+    )
+
+    assert frame.iloc[0]["市场类型"] == "USDT-M 合约"
+    assert frame.iloc[0]["排除原因"] == "映射尚未完成美股价格和盘后锚点校验"
+
+
 def test_refresh_error_fallback_is_localized() -> None:
     assert weekend_spread._refresh_error_text([{}]) == "Binance 刷新失败"
 
@@ -5197,15 +5224,16 @@ def test_mapping_management_marks_price_valid_auto_candidate_usable() -> None:
     counts = weekend_spread._mapping_management_counts(rows, mapping)
     frame = weekend_spread._mapping_management_frame(rows, mapping)
 
-    assert counts["usable_count"] == 1
-    assert counts["review_count"] == 0
+    assert counts["usable_count"] == 0
+    assert counts["pending_count"] == 1
+    assert counts["review_count"] == 1
     assert counts["manual_locked_count"] == 0
 
 
 def test_backtest_week_count_text_uses_selected_weeks() -> None:
     source = inspect.getsource(weekend_spread._render_backtest_tab)
 
-    assert weekend_spread._backtest_mode_text("auto usable") == "自动可用"
+    assert weekend_spread._backtest_mode_text("auto usable") == "已验证映射"
     assert "_backtest_anchor_mapping(all_tickers, weeks=4)" not in source
     assert 'all_tickers = ["NVDA"]' not in source
     assert 'options = ["NVDA"]' not in source
@@ -5351,7 +5379,125 @@ def test_binance_equity_scan_marks_price_unverified_when_stock_reference_missing
     by_ticker = {record["ticker"]: record for record in records}
 
     assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_PRICE_UNVERIFIED
-    assert "价格校验不足" in by_ticker["NVDA"]["reason"]
+    assert "尚未完成" in by_ticker["NVDA"]["reason"]
+
+
+def test_binance_equity_scan_separates_etf_pending_and_other_tradfi() -> None:
+    provider = FakeBinanceEquityScanProvider(
+        {
+            "NVDAUSDT": 104.0,
+            "SPYUSDT": 550.0,
+            "IBMUSDT": 281.0,
+            "GOLDUSDT": 3400.0,
+            "KOSPIUSDT": 410.0,
+        }
+    )
+    records = scan_binance_equity_mapped_symbols(
+        provider=provider,
+        cache=FakeEquityScanCache({"NVDA": 100.0, "SPY": 548.0}),
+        exchange_symbols=[
+            {
+                "symbol": "NVDAUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+            {
+                "symbol": "SPYUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["ETF"],
+            },
+            {
+                "symbol": "IBMUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+                "underlyingSubType": ["STOCK"],
+            },
+            {
+                "symbol": "GOLDUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "COMMODITY",
+                "underlyingSubType": ["TRADFI"],
+            },
+            {
+                "symbol": "KOSPIUSDT",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "KR_EQUITY",
+                "underlyingSubType": ["TRADFI"],
+            },
+        ],
+        force_refresh=True,
+    )
+    by_ticker = {record["ticker"]: record for record in records}
+
+    assert by_ticker["NVDA"]["mapping_quality"] == MAPPING_US_EQUITY_VERIFIED
+    assert by_ticker["SPY"]["mapping_quality"] == MAPPING_ETF_VERIFIED
+    assert by_ticker["IBM"]["mapping_quality"] == MAPPING_PENDING_VERIFICATION
+    assert by_ticker["GOLD"]["mapping_quality"] == MAPPING_OTHER_TRADFI
+    assert by_ticker["KOSPI"]["mapping_quality"] == MAPPING_OTHER_TRADFI
+
+
+def test_pending_and_other_tradfi_do_not_enter_default_realtime_table() -> None:
+    rows = [
+        {
+            "ticker": "NVDA",
+            "status": "OK",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 104.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 4.0,
+            "mapping_quality": MAPPING_US_EQUITY_VERIFIED,
+        },
+        {
+            "ticker": "IBM",
+            "status": "OK",
+            "binance_symbol": "IBMUSDT",
+            "binance_last_price": 281.0,
+            "afterhours_reference_price": None,
+            "spread_vs_afterhours_pct": None,
+            "mapping_quality": MAPPING_PENDING_VERIFICATION,
+        },
+        {
+            "ticker": "GOLD",
+            "status": "OK",
+            "binance_symbol": "GOLDUSDT",
+            "binance_last_price": 3400.0,
+            "afterhours_reference_price": 3300.0,
+            "spread_vs_afterhours_pct": 3.0,
+            "mapping_quality": MAPPING_OTHER_TRADFI,
+        },
+    ]
+
+    main_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部 Binance 美股映射")
+    pending_rows = weekend_spread._filter_live_rows_by_scope(rows, "待校验映射")
+    other_rows = weekend_spread._filter_live_rows_by_scope(rows, "其他 TradFi")
+
+    assert [row["ticker"] for row in main_rows] == ["NVDA"]
+    assert [row["ticker"] for row in pending_rows] == ["IBM"]
+    assert [row["ticker"] for row in other_rows] == ["GOLD"]
+
+
+def test_pending_mapping_is_excluded_from_formal_backtest_even_when_requested() -> None:
+    preflight = build_weekend_backtest_preflight(
+        ["NVDA"],
+        mapping=_mapping(mapping_confidence="manual_required", mapping_status=MAPPING_PENDING_VERIFICATION),
+        anchors=_anchors(),
+        include_unconfirmed=True,
+    )
+
+    assert preflight["can_run"] is False
+    assert preflight["primary_block_reason"] == "MAPPING_NOT_VERIFIED"
 
 
 def test_binance_equity_scan_preserves_manual_locked_mapping() -> None:

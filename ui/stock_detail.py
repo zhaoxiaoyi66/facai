@@ -38,6 +38,7 @@ from scoring.total_score import calculate_total_score
 from settings import load_watchlist
 from ui import dashboard as dashboard_ui
 from ui.action_plan_editor import build_plan_portfolio_context, render_buy_plan_editor, render_plan_preview_card, render_plan_reference_card
+from ui.indicator_validation_panel import render_indicator_validation_expander
 from ui.metric_labels import (
     action_label,
     confidence_label,
@@ -118,6 +119,7 @@ def render() -> None:
     _render_action_plan_form(ticker, plan_store, plan, plan_suggestion, effective_buy_zone, final_decision, portfolio_context)
     _render_price_action_map(buy_zone_display)
     _render_drawdown_profile(ticker)
+    render_indicator_validation_expander(ticker)
     _render_setup_score_snapshot(buy_zone_display)
     _render_price_alert_panel(ticker, effective_buy_zone)
     _render_research_memo(ticker, plan_store, plan)

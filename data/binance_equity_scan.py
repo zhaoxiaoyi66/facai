@@ -15,12 +15,19 @@ from settings import PROJECT_ROOT
 DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "binance_equity_scan_cache.json"
 SCAN_CACHE_TTL = timedelta(hours=24)
 
-MAPPING_AUTO_USABLE = "自动可用"
-MAPPING_PRICE_UNVERIFIED = "自动可用，价格校验不足"
+MAPPING_US_EQUITY_VERIFIED = "美股已验证"
+MAPPING_ETF_VERIFIED = "ETF 已验证"
+MAPPING_PENDING_VERIFICATION = "待校验映射"
+MAPPING_OTHER_TRADFI = "其他 TradFi"
+MAPPING_AUTO_USABLE = MAPPING_US_EQUITY_VERIFIED
+MAPPING_PRICE_UNVERIFIED = MAPPING_PENDING_VERIFICATION
 MAPPING_REVIEW = "异常复核"
 MAPPING_ANCHOR_MISSING = "锚点缺失"
 MAPPING_INVALID = "无效映射"
 MAPPING_MANUAL_LOCKED = "人工锁定"
+TRADFI_BUCKET_US_EQUITY = "US_EQUITY"
+TRADFI_BUCKET_ETF = "ETF"
+TRADFI_BUCKET_OTHER = "OTHER_TRADFI"
 
 _USDT_SUFFIX = "USDT"
 _TRADFI_KEYWORDS = {
@@ -31,6 +38,11 @@ _TRADFI_KEYWORDS = {
     "ETF",
     "INDEX",
     "RWA",
+    "COMMODITY",
+    "KR_EQUITY",
+    "PREMARKET",
+    "PRE-IPO",
+    "PREIPO",
 }
 _CRYPTO_BASE_DENYLIST = {
     "AAVE",
@@ -83,6 +95,7 @@ class BinanceEquityScanRecord:
     underlying_type: str = ""
     underlying_sub_type: str = ""
     binance_category: str = ""
+    tradfi_bucket: str = ""
     binance_status: str = ""
     mapping_quality: str = MAPPING_INVALID
     reason: str = ""
@@ -267,6 +280,7 @@ def scan_records_to_mapping(records: Iterable[dict[str, Any]], manual_mapping: d
             result[ticker] = locked
             continue
         quality = str(record.get("mapping_quality") or MAPPING_INVALID).strip()
+        confidence = "auto_available" if quality in {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED} else "manual_required"
         result[ticker] = {
             **manual_config,
             "enabled": quality != MAPPING_INVALID,
@@ -274,20 +288,21 @@ def scan_records_to_mapping(records: Iterable[dict[str, Any]], manual_mapping: d
             "market_type": "usdm_futures",
             "quote_currency": "USDT",
             "unit_multiplier": 1,
-            "mapping_confidence": "auto_available" if quality in {MAPPING_AUTO_USABLE, MAPPING_PRICE_UNVERIFIED} else "manual_required",
+            "mapping_confidence": confidence,
             "mapping_status": quality,
             "source": record.get("source") or "binance_exchange_info",
             "detected_by": record.get("detected_by") or "binance_internal_category",
             "underlying_type": record.get("underlying_type") or "",
             "underlying_sub_type": record.get("underlying_sub_type") or "",
             "binance_category": record.get("binance_category") or "",
+            "tradfi_bucket": record.get("tradfi_bucket") or "",
             "binance_status": record.get("binance_status") or "",
             "binance_price": record.get("binance_price"),
             "stock_ref_price": record.get("stock_ref_price"),
             "diff_pct": record.get("price_diff_pct"),
             "updated_at": record.get("updated_at") or datetime.now(timezone.utc).isoformat(),
             "manually_locked": False,
-            "risk_note": "Binance 官方合约信息自动识别；价格异常或校验不足时请复核。",
+            "risk_note": _mapping_note(quality),
         }
     return result
 
@@ -317,16 +332,18 @@ def _scan_one_symbol(
         binance_status = str(getattr(snapshot, "error", "") if not isinstance(snapshot, dict) else snapshot.get("error") or "")
     stock_ref = _stock_reference_price(cache, ticker)
     diff_pct = abs(binance_price / stock_ref - 1.0) * 100.0 if binance_price is not None and stock_ref else None
+    raw = exchange_record or {}
+    underlying_type = _field_text(raw.get("underlyingType") or raw.get("underlying_type"))
+    underlying_sub_type = _field_text(raw.get("underlyingSubType") or raw.get("underlying_sub_type"))
+    tradfi_bucket = _tradfi_bucket(raw, manual_config)
     quality, reason = _mapping_quality(
         manual_config=manual_config,
         binance_price=binance_price,
         stock_ref=stock_ref,
         diff_pct=diff_pct,
         binance_status=binance_status,
+        tradfi_bucket=tradfi_bucket,
     )
-    raw = exchange_record or {}
-    underlying_type = _field_text(raw.get("underlyingType") or raw.get("underlying_type"))
-    underlying_sub_type = _field_text(raw.get("underlyingSubType") or raw.get("underlying_sub_type"))
     return record_to_dict(
         BinanceEquityScanRecord(
             ticker=ticker,
@@ -336,6 +353,7 @@ def _scan_one_symbol(
             underlying_type=underlying_type,
             underlying_sub_type=underlying_sub_type,
             binance_category=_binance_category(raw),
+            tradfi_bucket=tradfi_bucket,
             binance_status=binance_status or str(raw.get("status") or "OK"),
             mapping_quality=quality,
             reason=reason,
@@ -357,6 +375,7 @@ def _mapping_quality(
     stock_ref: float | None,
     diff_pct: float | None,
     binance_status: str,
+    tradfi_bucket: str,
 ) -> tuple[str, str]:
     confidence = str(manual_config.get("mapping_confidence") or "").strip().lower()
     if not manual_config.get("enabled", True) or confidence == "rejected":
@@ -367,10 +386,14 @@ def _mapping_quality(
         return MAPPING_MANUAL_LOCKED, "人工锁定映射"
     if binance_price is None:
         return MAPPING_INVALID, _price_error_text(binance_status)
+    if tradfi_bucket == TRADFI_BUCKET_OTHER:
+        return MAPPING_OTHER_TRADFI, "Binance 分类属于指数、商品、KR Equity、RWA、Pre-market 等非美股普通股/ETF映射"
     if stock_ref is None:
-        return MAPPING_PRICE_UNVERIFIED, "Binance 价格可用，暂时没有美股参考价，价格校验不足"
+        return MAPPING_PENDING_VERIFICATION, "Binance 价格可用，但尚未完成美股价格 / 盘后锚点校验"
     if diff_pct is not None and diff_pct <= 30:
-        return MAPPING_AUTO_USABLE, "Binance 价格可用，且与美股参考价偏差正常"
+        if tradfi_bucket == TRADFI_BUCKET_ETF:
+            return MAPPING_ETF_VERIFIED, "Binance 价格可用，ETF 参考价校验正常"
+        return MAPPING_US_EQUITY_VERIFIED, "Binance 价格可用，且与美股参考价偏差正常"
     return MAPPING_REVIEW, "Binance 价格与美股参考价偏差过大"
 
 
@@ -432,21 +455,61 @@ def _is_internal_tradfi_contract(raw: dict[str, Any]) -> bool:
     return any(keyword in combined.upper() for keyword in _TRADFI_KEYWORDS)
 
 
+def _tradfi_bucket(raw: dict[str, Any], manual_config: dict[str, Any] | None = None) -> str:
+    manual_config = manual_config or {}
+    configured = str(manual_config.get("tradfi_bucket") or "").strip().upper()
+    if configured in {TRADFI_BUCKET_US_EQUITY, TRADFI_BUCKET_ETF, TRADFI_BUCKET_OTHER}:
+        return configured
+    combined = f"{_field_text(raw.get('underlyingType') or raw.get('underlying_type'))} {_field_text(raw.get('underlyingSubType') or raw.get('underlying_sub_type'))}".upper()
+    if not combined.strip():
+        category = str(manual_config.get("binance_category") or "").upper()
+        if "ETF" in category:
+            return TRADFI_BUCKET_ETF
+        if category and any(text in category for text in ("指数", "商品", "RWA", "其他")):
+            return TRADFI_BUCKET_OTHER
+        return TRADFI_BUCKET_US_EQUITY
+    if any(keyword in combined for keyword in ("INDEX", "COMMODITY", "KR_EQUITY", "COIN", "RWA", "PREMARKET", "PRE-IPO", "PREIPO")):
+        return TRADFI_BUCKET_OTHER
+    if "ETF" in combined:
+        return TRADFI_BUCKET_ETF
+    if any(keyword in combined for keyword in ("EQUITY", "STOCK", "TRADFI", "TRADITIONAL")):
+        return TRADFI_BUCKET_US_EQUITY
+    return ""
+
+
 def _binance_category(raw: dict[str, Any]) -> str:
     combined = f"{_field_text(raw.get('underlyingType') or raw.get('underlying_type'))} {_field_text(raw.get('underlyingSubType') or raw.get('underlying_sub_type'))}".upper()
     if not any(keyword in combined for keyword in _TRADFI_KEYWORDS):
         return ""
+    if "KR_EQUITY" in combined:
+        return "KR Equity / 其他 TradFi"
+    if "PREMARKET" in combined or "PRE-IPO" in combined or "PREIPO" in combined:
+        return "Pre-market / 其他 TradFi"
     if "ETF" in combined:
         return "ETF"
     if "INDEX" in combined:
         return "指数 / 其他 TradFi"
-    if "EQUITY" in combined or "STOCK" in combined:
-        return "美股"
     if "COMMODITY" in combined:
         return "商品 / 其他 TradFi"
-    if "RWA" in combined:
+    if "COIN" in combined or "RWA" in combined:
         return "RWA / 其他 TradFi"
+    if "EQUITY" in combined or "STOCK" in combined:
+        return "美股"
     return "其他 TradFi"
+
+
+def _mapping_note(quality: str) -> str:
+    if quality in {MAPPING_US_EQUITY_VERIFIED, MAPPING_ETF_VERIFIED}:
+        return "Binance 官方分类识别，并通过美股参考价校验。"
+    if quality == MAPPING_PENDING_VERIFICATION:
+        return "Binance 价格可用，但尚未完成美股价格 / 盘后锚点校验。"
+    if quality == MAPPING_OTHER_TRADFI:
+        return "属于其他 TradFi 合约，不进入美股价差主表。"
+    if quality == MAPPING_REVIEW:
+        return "价格偏差过大或映射可能错配，需要复核。"
+    if quality == MAPPING_INVALID:
+        return "Binance 价格不可用或合约无效。"
+    return "周末价差模块本地映射。"
 
 
 def _field_text(value: object) -> str:
@@ -504,11 +567,13 @@ def _scan_sort_key(record: dict[str, Any]) -> tuple[int, str]:
     quality = str(record.get("mapping_quality") or "")
     priority = {
         MAPPING_REVIEW: 0,
-        MAPPING_AUTO_USABLE: 1,
-        MAPPING_PRICE_UNVERIFIED: 1,
+        MAPPING_US_EQUITY_VERIFIED: 1,
+        MAPPING_ETF_VERIFIED: 1,
         MAPPING_MANUAL_LOCKED: 1,
-        MAPPING_ANCHOR_MISSING: 2,
-        MAPPING_INVALID: 3,
+        MAPPING_PENDING_VERIFICATION: 2,
+        MAPPING_OTHER_TRADFI: 3,
+        MAPPING_ANCHOR_MISSING: 4,
+        MAPPING_INVALID: 5,
     }.get(quality, 4)
     return priority, str(record.get("ticker") or "")
 
