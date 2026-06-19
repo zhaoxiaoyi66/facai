@@ -4664,6 +4664,30 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert "None" not in frame.to_string()
     assert "anchor_source" not in frame.to_string()
 
+
+def test_render_weekend_review_table_exists_and_uses_detail_frame(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(weekend_spread.st, "dataframe", lambda frame, **kwargs: calls.append((frame, kwargs)))
+    monkeypatch.setattr(weekend_spread.st, "info", lambda message: calls.append(("info", message)))
+
+    weekend_spread._render_weekend_review_table(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "GLW",
+                "friday_afterhours_close": 180.0,
+                "binance_price": 185.88,
+                "broker_open_close": None,
+                "binance_premium_pct": 3.27,
+                "data_quality": "MISSING_OVERNIGHT_FIRST_1M",
+            }
+        ]
+    )
+
+    assert calls
+    assert calls[0][1]["hide_index"] is True
+
+
 def test_weekend_review_marks_holiday_rollover_sample_outside_formal_summary() -> None:
     rows = [
         {

@@ -3162,6 +3162,14 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
     return styler.applymap(color_value, subset=color_subset)
 
 
+def _render_weekend_review_table(review_rows: list[dict]) -> None:
+    frame = _weekend_review_frame(_display_weekend_review_rows(review_rows))
+    if frame.empty:
+        st.info("当前没有可展示的传导明细。")
+        return
+    st.dataframe(_style_weekend_review_frame(frame), width="stretch", hide_index=True)
+
+
 def _ok_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     return [
         row
