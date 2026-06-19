@@ -93,7 +93,11 @@ class CacheReadModel:
             if history_key is None:
                 return _empty_history_frame()
             columns = _table_columns(conn, "price_history")
-            selected = [column for column in ("date", "open", "high", "low", "close", "volume") if column in columns]
+            selected = [
+                column
+                for column in ("date", "open", "high", "low", "close", "adjusted_close", "adj_close", "adjClose", "adjustedClose", "volume")
+                if column in columns
+            ]
             if "date" not in selected or "close" not in selected:
                 return _empty_history_frame()
             frame = pd.read_sql_query(

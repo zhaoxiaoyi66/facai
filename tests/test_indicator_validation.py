@@ -92,8 +92,32 @@ def test_validation_falls_back_to_close_and_marks_unadjusted_price() -> None:
 
     assert result["price_column_used"] == "close"
     assert result["uses_unadjusted_price"] is True
-    assert result["data_quality_status"] == "待复核"
-    assert "未发现 adjusted close" in "；".join(result["quality_notes"])
+    assert result["technical_quality_status"] == "正常"
+    assert result["drawdown_quality_status"] == "close 口径可用"
+    assert result["data_quality_status"] == "close 口径可用"
+    assert "未发现明显拆股异常" in "；".join(result["quality_notes"])
+
+
+def test_validation_flags_unadjusted_split_like_jump_for_drawdown_only() -> None:
+    closes = [100 + index * 0.2 for index in range(80)]
+    closes.extend([value / 10 for value in [116 + index * 0.2 for index in range(80)]])
+    result = validate_local_indicators("NVDA", history=_history(closes))
+
+    assert result["technical_quality_status"] == "正常"
+    assert result["drawdown_quality_status"] == "回撤口径待复核"
+    assert result["data_quality_status"] == "回撤口径待复核"
+    assert result["suspected_split"] is True
+
+
+def test_validation_with_adjusted_close_marks_drawdown_normal() -> None:
+    history = _history([100 + index for index in range(130)])
+    history["adjusted_close"] = [100 + index for index in range(130)]
+
+    result = validate_local_indicators("NVDA", history=history)
+
+    assert result["technical_quality_status"] == "正常"
+    assert result["drawdown_quality_status"] == "正常"
+    assert result["data_quality_status"] == "正常"
 
 
 def test_validation_returns_data_insufficient_without_error() -> None:
@@ -115,4 +139,5 @@ def test_indicator_display_rows_do_not_expose_none_or_internal_fields() -> None:
     assert "None" not in text
     assert "current_drawdown_pct" not in text
     assert "adjusted_close" not in text
+    assert "data_quality_status" not in text
     assert "数据不足" in text

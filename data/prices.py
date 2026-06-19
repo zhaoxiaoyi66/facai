@@ -63,13 +63,19 @@ class PriceCache:
             if not fetched_at or not _is_fresh(fetched_at, max_age_hours):
                 return None
 
+            columns = _table_columns(conn, "price_history")
+            selected = [
+                column
+                for column in ("date", "open", "high", "low", "close", "adjusted_close", "volume")
+                if column in columns
+            ]
             df = pd.read_sql_query(
                 """
-                SELECT date, open, high, low, close, volume
+                SELECT {columns}
                 FROM price_history
                 WHERE ticker = ?
                 ORDER BY date
-                """,
+                """.format(columns=", ".join(selected)),
                 conn,
                 params=(ticker.upper(),),
             )
@@ -84,33 +90,43 @@ class PriceCache:
             return
 
         fetched_at = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            columns = _table_columns(conn, "price_history")
+
+        has_adjusted_close_column = "adjusted_close" in columns and "adjusted_close" in history.columns
         records = []
         for row in history.itertuples(index=False):
-            records.append(
-                (
-                    ticker.upper(),
-                    pd.to_datetime(row.date).date().isoformat(),
-                    _clean_number(row.open),
-                    _clean_number(row.high),
-                    _clean_number(row.low),
-                    _clean_number(row.close),
-                    _clean_number(row.volume),
-                    fetched_at,
-                )
-            )
+            base = [
+                ticker.upper(),
+                pd.to_datetime(row.date).date().isoformat(),
+                _clean_number(row.open),
+                _clean_number(row.high),
+                _clean_number(row.low),
+                _clean_number(row.close),
+            ]
+            if has_adjusted_close_column:
+                base.append(_clean_number(getattr(row, "adjusted_close", None)))
+            base.extend([_clean_number(row.volume), fetched_at])
+            records.append(tuple(base))
 
         with self.connect() as conn:
+            insert_columns = ["ticker", "date", "open", "high", "low", "close"]
+            placeholders = ["?", "?", "?", "?", "?", "?"]
+            update_columns = ["open", "high", "low", "close"]
+            if has_adjusted_close_column:
+                insert_columns.append("adjusted_close")
+                placeholders.append("?")
+                update_columns.append("adjusted_close")
+            insert_columns.extend(["volume", "fetched_at"])
+            placeholders.extend(["?", "?"])
+            update_columns.extend(["volume", "fetched_at"])
+            update_sql = ",\n                    ".join(f"{column} = excluded.{column}" for column in update_columns)
             conn.executemany(
-                """
-                INSERT INTO price_history (ticker, date, open, high, low, close, volume, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                f"""
+                INSERT INTO price_history ({", ".join(insert_columns)})
+                VALUES ({", ".join(placeholders)})
                 ON CONFLICT(ticker, date) DO UPDATE SET
-                    open = excluded.open,
-                    high = excluded.high,
-                    low = excluded.low,
-                    close = excluded.close,
-                    volume = excluded.volume,
-                    fetched_at = excluded.fetched_at
+                    {update_sql}
                 """,
                 records,
             )
@@ -140,12 +156,16 @@ def normalize_price_history(raw: pd.DataFrame) -> pd.DataFrame:
         "High": "high",
         "Low": "low",
         "Close": "close",
+        "Adj Close": "adjusted_close",
+        "Adjusted Close": "adjusted_close",
+        "adjClose": "adjusted_close",
+        "adjustedClose": "adjusted_close",
         "Volume": "volume",
     }
     df = df.rename(columns=rename_map)
-    keep = ["date", "open", "high", "low", "close", "volume"]
+    keep = ["date", "open", "high", "low", "close", "adjusted_close", "volume"]
     df = df[[column for column in keep if column in df.columns]].copy()
-    for column in ["open", "high", "low", "close", "volume"]:
+    for column in ["open", "high", "low", "close", "adjusted_close", "volume"]:
         if column not in df.columns:
             df[column] = None
         df[column] = pd.to_numeric(df[column], errors="coerce")
@@ -158,6 +178,10 @@ def _is_fresh(fetched_at: str, max_age_hours: float) -> bool:
     if fetched_dt.tzinfo is None:
         fetched_dt = fetched_dt.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - fetched_dt <= timedelta(hours=max_age_hours)
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
 def _clean_number(value: object) -> float | None:

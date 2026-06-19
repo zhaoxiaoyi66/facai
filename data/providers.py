@@ -760,12 +760,16 @@ def normalize_fmp_price_history(raw: list | dict) -> pd.DataFrame:
             "high": "high",
             "low": "low",
             "close": "close",
+            "adjClose": "adjusted_close",
+            "adjustedClose": "adjusted_close",
+            "adj_close": "adjusted_close",
+            "adjusted_close": "adjusted_close",
             "volume": "volume",
         }
     )
-    keep = ["date", "open", "high", "low", "close", "volume"]
+    keep = ["date", "open", "high", "low", "close", "adjusted_close", "volume"]
     df = df[[column for column in keep if column in df.columns]].copy()
-    for column in ["open", "high", "low", "close", "volume"]:
+    for column in ["open", "high", "low", "close", "adjusted_close", "volume"]:
         if column not in df.columns:
             df[column] = None
         df[column] = pd.to_numeric(df[column], errors="coerce")

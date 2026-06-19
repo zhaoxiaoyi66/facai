@@ -97,27 +97,31 @@ def calculate_wilder_rsi(prices: pd.Series, period: int = RSI_PERIOD) -> pd.Seri
 
 def indicator_validation_display_rows(result: dict[str, Any]) -> list[dict[str, str]]:
     price_column = str(result.get("price_column_used") or "close")
-    price_label = "复权收盘价" if price_column == "adjusted close" else "未复权收盘价"
+    drawdown_price_label = "adjusted close 口径" if price_column == "adjusted close" else "close 口径"
     return [
         {
             "项目": "RSI",
-            "口径": "本地 Wilder RSI 14，至少 100 根日线预热",
+            "口径": "Wilder RSI 14，close 口径",
             "当前值": _number_text(result.get("rsi14"), digits=1),
+            "状态": str(result.get("technical_quality_status") or "数据不足"),
         },
         {
             "项目": "EMA",
-            "口径": "本地日线 EMA，alpha = 2 / (周期 + 1)",
+            "口径": "EMA20 / EMA50 / EMA200，close 口径",
             "当前值": _ema_summary(result),
+            "状态": str(result.get("technical_quality_status") or "数据不足"),
         },
         {
             "项目": "回撤",
-            "口径": f"近 3 年 {price_label}",
+            "口径": f"近 3 年 {drawdown_price_label}",
             "当前值": _drawdown_summary(result),
+            "状态": str(result.get("drawdown_quality_status") or "数据不足"),
         },
         {
-            "项目": "数据质量",
+            "项目": "复权检查",
             "口径": _quality_basis_text(result),
-            "当前值": str(result.get("data_quality_status") or "数据不足"),
+            "当前值": _adjustment_check_text(result),
+            "状态": str(result.get("data_quality_status") or "数据不足"),
         },
     ]
 
@@ -159,6 +163,13 @@ def _base_result(
         "daily_count": len(frame),
         "missing_trading_days": quality["missing_trading_days"],
         "suspected_split": quality["suspected_split"],
+        "suspected_split_reason": quality["suspected_split_reason"],
+        "has_adjusted_close": not uses_unadjusted,
+        "technical_quality_status": quality["technical_quality_status"],
+        "technical_price_basis": quality["technical_price_basis"],
+        "drawdown_quality_status": quality["drawdown_quality_status"],
+        "drawdown_price_basis": quality["drawdown_price_basis"],
+        "adjustment_check_status": quality["adjustment_check_status"],
         "data_quality_status": quality["data_quality_status"],
         "quality_notes": quality["quality_notes"],
     }
@@ -176,11 +187,18 @@ def _insufficient_result(symbol: str, *, price_column: str, daily_count: int) ->
         "data_quality_status": "数据不足",
         "price_column_used": price_column,
         "uses_unadjusted_price": price_column == "close",
+        "has_adjusted_close": price_column != "close",
         "daily_count": daily_count,
         "latest_data_date": "",
         "latest_close_used": None,
         "missing_trading_days": False,
         "suspected_split": False,
+        "suspected_split_reason": "",
+        "technical_quality_status": "数据不足",
+        "technical_price_basis": "close 口径",
+        "drawdown_quality_status": "数据不足",
+        "drawdown_price_basis": "close 口径" if price_column == "close" else "adjusted close 口径",
+        "adjustment_check_status": "数据不足",
         "quality_notes": ["日线数据不足"],
     }
 
@@ -188,23 +206,48 @@ def _insufficient_result(symbol: str, *, price_column: str, daily_count: int) ->
 def _data_quality(frame: pd.DataFrame, *, price_column: str, uses_unadjusted: bool) -> dict[str, Any]:
     notes: list[str] = []
     missing_trading_days = _has_missing_trading_days(frame)
-    suspected_split = _has_suspicious_split(frame["indicator_price"])
+    suspected_split, suspected_split_reason = _suspicious_split_check(frame["indicator_price"])
+    enough_daily = len(frame) >= RSI_WARMUP_BARS
     if uses_unadjusted:
-        notes.append("当前使用 close，未发现 adjusted close")
+        notes.append("回撤暂用 close 口径")
     if missing_trading_days:
         notes.append("交易日序列存在明显缺口")
     if suspected_split:
-        notes.append("价格序列存在疑似拆股或倍率跳变")
+        notes.append(suspected_split_reason or "价格序列存在疑似拆股或倍率跳变")
 
-    status = "正常"
-    if len(frame) < RSI_WARMUP_BARS:
+    technical_status = "正常" if enough_daily else "数据不足"
+    technical_basis = "close 口径，正常" if enough_daily else "close 口径，数据不足"
+    drawdown_basis = "close 口径" if uses_unadjusted else "adjusted close 口径"
+
+    if not enough_daily:
+        drawdown_status = "数据不足"
+        adjustment_status = "数据不足"
         status = "数据不足"
-    elif uses_unadjusted or missing_trading_days or suspected_split:
-        status = "待复核"
+    elif not uses_unadjusted:
+        drawdown_status = "正常"
+        adjustment_status = "正常"
+        status = "正常"
+    elif suspected_split or missing_trading_days:
+        drawdown_status = "回撤口径待复核"
+        adjustment_status = "疑似拆股影响，需复核" if suspected_split else "交易日缺口较多，需复核"
+        status = "回撤口径待复核"
+    else:
+        drawdown_status = "close 口径可用"
+        adjustment_status = "未发现明显拆股异常"
+        status = "close 口径可用"
+
+    if uses_unadjusted and not suspected_split and enough_daily:
+        notes.append("未发现明显拆股异常")
     return {
         "data_quality_status": status,
+        "technical_quality_status": technical_status,
+        "technical_price_basis": technical_basis,
+        "drawdown_quality_status": drawdown_status,
+        "drawdown_price_basis": drawdown_basis,
+        "adjustment_check_status": adjustment_status,
         "missing_trading_days": missing_trading_days,
         "suspected_split": suspected_split,
+        "suspected_split_reason": suspected_split_reason,
         "quality_notes": notes or ["本地日线口径可用"],
     }
 
@@ -221,13 +264,34 @@ def _has_missing_trading_days(frame: pd.DataFrame) -> bool:
     return missing_ratio > 0.12
 
 
-def _has_suspicious_split(prices: pd.Series) -> bool:
+def _suspicious_split_check(prices: pd.Series) -> tuple[bool, str]:
     numeric = pd.to_numeric(prices, errors="coerce").dropna()
     if len(numeric) < 2:
-        return False
+        return False, ""
     ratios = numeric / numeric.shift(1)
     ratios = ratios.replace([np.inf, -np.inf], np.nan).dropna()
-    return bool(((ratios >= 1.8) | (ratios <= 0.55)).any())
+    if ratios.empty:
+        return False, ""
+    common_ratios = (2.0, 3.0, 4.0, 5.0, 10.0)
+    for ratio in ratios:
+        value = float(ratio)
+        inverse = 1.0 / value if value else np.nan
+        for split_ratio in common_ratios:
+            if _near_ratio(value, split_ratio) or _near_ratio(inverse, split_ratio):
+                return True, f"价格跳变接近 {split_ratio:g}:1 拆股比例"
+    large_jump = ratios[(ratios >= 1.5) | (ratios <= 0.67)]
+    if not large_jump.empty:
+        return True, "单日价格跳变超过 50%，需复核拆股或倍率异常"
+    medium_jump = ratios[(ratios >= 1.35) | (ratios <= 0.74)]
+    if not medium_jump.empty:
+        return True, "单日价格跳变超过 35%，需复核拆股或异常行情"
+    return False, ""
+
+
+def _near_ratio(value: float, target: float) -> bool:
+    if value is None or np.isnan(value) or target <= 0:
+        return False
+    return abs(value - target) / target <= 0.08
 
 
 def _current_drawdown_pct(frame: pd.DataFrame, *, years: int) -> float | None:
@@ -289,6 +353,17 @@ def _quality_basis_text(result: dict[str, Any]) -> str:
     if not notes:
         return "本地缓存日线可用"
     return "；".join(notes[:3])
+
+
+def _adjustment_check_text(result: dict[str, Any]) -> str:
+    status = str(result.get("adjustment_check_status") or "").strip()
+    if status:
+        return status
+    if result.get("price_column_used") == "adjusted close":
+        return "正常"
+    if result.get("suspected_split"):
+        return "疑似拆股影响，需复核"
+    return "未发现明显拆股异常"
 
 
 def _number_text(value: object, *, digits: int = 2) -> str:
