@@ -2400,7 +2400,7 @@ def test_empty_mapping_state_explains_configuration_when_universe_has_no_mapping
     assert "Binance 价格可通过 API 自动读取" in message
     assert "股票代码到 Binance 合约代码" in message
     assert "binance_symbol_mapping.local.json" in message
-    assert "NVDA -> NVDAUSDT / usdm_futures / candidate" in message
+    assert "NVDA -> NVDAUSDT / USDT-M 合约 / 自动候选" in message
     assert "不属于当前观察池" not in message
     assert weekend_spread._off_universe_mapping_note(counts) == "本地未配置映射"
 
@@ -2627,6 +2627,27 @@ def test_recent_weekend_windows_use_previous_trading_day_when_friday_is_holiday(
     assert window.last_trading_day.isoformat() == "2026-07-02"
     assert window.start_et.strftime("%A %H:%M") == "Thursday 20:00"
     assert window.end_et.strftime("%A %H:%M") == "Sunday 20:00"
+
+
+def test_recent_weekend_windows_use_juneteenth_previous_trading_day() -> None:
+    window = recent_weekend_windows(weeks=1, now=datetime(2026, 6, 22, 1, tzinfo=timezone.utc))[0]
+
+    assert window.week_id == "2026-W25"
+    assert window.last_trading_day.isoformat() == "2026-06-18"
+    assert window.start_et.strftime("%Y-%m-%d %A %H:%M") == "2026-06-18 Thursday 20:00"
+    assert window.end_et.strftime("%Y-%m-%d %A %H:%M") == "2026-06-21 Sunday 20:00"
+    assert window.last_trading_day_is_friday is False
+
+
+def test_recent_weekend_windows_shift_overnight_for_memorial_day() -> None:
+    window = recent_weekend_windows(weeks=1, now=datetime(2026, 5, 27, 1, tzinfo=timezone.utc))[0]
+
+    assert window.week_id == "2026-W21"
+    assert window.last_trading_day.isoformat() == "2026-05-22"
+    assert window.p2_session_date is not None
+    assert window.p2_session_date.isoformat() == "2026-05-26"
+    assert window.end_et.strftime("%Y-%m-%d %A %H:%M") == "2026-05-25 Monday 20:00"
+    assert window.holiday_shifted_overnight_session is True
 
 
 def test_recent_weekend_windows_convert_winter_to_shanghai_09() -> None:
@@ -3595,7 +3616,11 @@ def test_weekend_spread_paper_opportunity_blocks_unconfirmed_mapping_in_ui_frame
 def test_weekend_spread_ui_exposes_paper_trade_area() -> None:
     source = inspect.getsource(weekend_spread)
 
-    assert "手动交易记录（可选） / Paper Trade" in source
+    assert "手动交易记录（可选）" in source
+    assert "Paper Trade ticker" not in source
+    assert "Entry Plan" not in source
+    assert "Hedge Plan" not in source
+    assert "Exit Plan" not in source
     assert "create_weekend_basis_trade" in source
     assert "record_broker_hedge" in source
     assert "close_weekend_basis_trade" in source
@@ -4770,8 +4795,8 @@ def test_weekend_spread_refresh_path_shows_progress_feedback() -> None:
 
     assert "st.progress" in source
     assert "progress_callback" in source
-    assert "Refreshing Binance data" in source
-    assert "Refresh complete" in source
+    assert "正在刷新 Binance 价格" in source
+    assert "刷新完成" in source
 
 
 def test_weekend_spread_initial_load_does_not_request_live_prices() -> None:
@@ -5078,7 +5103,7 @@ def test_no_mapping_frame_only_shows_minimal_columns() -> None:
 
     frame = weekend_spread._no_mapping_frame(rows)
 
-    assert list(frame.columns) == ["Ticker", "周五收盘", "收盘日期"]
+    assert list(frame.columns) == ["Ticker", "最后交易日收盘", "收盘日期"]
     assert "Binance 最新" not in frame.columns
     assert "暂缺" not in frame.columns
 

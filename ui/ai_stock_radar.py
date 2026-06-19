@@ -20,6 +20,7 @@ from data.sector_localization import format_company_track, get_ticker_research_t
 from data.stock_plan import StockPlanStore
 from data.volume_price_acceptance import evaluate_volume_price_acceptance
 from settings import load_watchlist
+from ui.display_labels import replace_display_terms
 from ui.price_source_display import price_source_label
 from ui.theme import render_page_header
 
@@ -126,7 +127,7 @@ def render() -> None:
     perf = PerfProbe()
     stage_start = time.perf_counter()
     _render_styles()
-    render_page_header("AI Stock Radar", "只读本地缓存，生成单票纪律雷达；价格到达和评分通过都不是自动交易信号。")
+    render_page_header("价格位置", "只读本地缓存，生成单票价格位置判断；价格到达和评分通过都不是自动交易信号。")
     perf.add("页面基础渲染", (time.perf_counter() - stage_start) * 1000, cache_hit=None, external_api=False)
     stage_start = time.perf_counter()
     tickers, source = select_radar_symbols(load_watchlist())
@@ -669,7 +670,7 @@ def _empty_history_frame() -> pd.DataFrame:
 def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
     return (
         '<section class="ai-radar-report-toolbar">'
-        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回 Radar 列表</a>'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回价格位置</a>'
         '<div>'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(company)}｜更新时间 {escape(updated)}</span>'
@@ -682,7 +683,7 @@ def _report_not_found_html(symbol: str) -> str:
     text = symbol or "UNKNOWN"
     return (
         '<section class="ai-radar-report-missing">'
-        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回 Radar 列表</a>'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回价格位置</a>'
         f"<strong>未找到 {escape(text)} 的股票研报</strong>"
         "<span>请返回列表选择观察池中的股票。</span>"
         "</section>"
@@ -695,7 +696,7 @@ def _report_loading_shell_html(symbol: str) -> str:
         '<article class="ai-radar-research-report loading">'
         '<header class="ai-radar-research-header skeleton">'
         '<div class="ai-radar-title-block">'
-        '<span>AI 股票雷达研究</span>'
+        '<span>价格位置研究</span>'
         f"<h1>{ticker}</h1>"
         "<p>正在读取本地缓存</p>"
         "<em>先展示研报框架，重数据稍后加载。</em>"
@@ -1503,7 +1504,7 @@ def _research_header_html(
     return (
         '<header class="ai-radar-research-header">'
         '<div class="ai-radar-title-block">'
-        f"<span>AI 股票雷达研究</span>"
+        f"<span>价格位置研究</span>"
         f"<h1>{escape(ticker)}</h1>"
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
@@ -2494,27 +2495,12 @@ def _research_summary_lines(report: dict[str, Any], snapshot: dict[str, Any], ma
     summary = _localized_report_summary(report)
     return [
         summary
-        or f"{company} 当前处于“{status}”语境，Radar 总分 {score}；列表只给入口，单股页用于复核区间、风险和重新评估线。",
+        or f"{company} 当前处于“{status}”语境，价格位置总分 {score}；列表只给入口，单股页用于复核区间、风险和重新评估线。",
         f"价格位置：{_entry_sentence(report)}",
         f"核心判断：{_decision_to_sentence(report)}",
         f"下一步重点：{_next_step_sentence(report)}",
         f"数据完整度：{data_confidence}；缺失字段放在报告末尾，不让辅助数据主导结论。",
     ]
-
-    ticker = str(report.get("ticker") or "该股票")
-    company = str(report.get("company_name") or ticker)
-    status = _core_status(report)
-    score = _number_text(report.get("final_score"))
-    data_confidence = _data_confidence(report)
-    summary = str(report.get("summary") or "").strip()
-    lines = [
-        summary if summary else f"{company} 当前处于“{status}”语境，Radar 总分 {score}，适合先按研究清单复核而不是看状态码交易。",
-        f"价格位置：{_entry_sentence(report)}",
-        f"核心判断：{_decision_to_sentence(report)}",
-        f"下一步重点：{_next_step_sentence(report)}",
-        f"数据完整度：{data_confidence}；缺失项放在报告末尾，不让内部缺数据状态主导结论。",
-    ]
-    return [line for line in lines if line]
 
 
 def _range_chart_html(
@@ -4553,7 +4539,7 @@ def _field_list_display(value: Any, row: dict[str, Any] | None = None) -> str:
 
 def _localize_report_text(text: str) -> str:
     replacements = {
-        "AI Stock Radar Research": "AI 股票雷达研究",
+        "AI Stock Radar Research": "价格位置研究",
         "Research notes": "研究依据",
         "wait": "等待",
         "WAIT_CONFIRMATION": "等待确认",
@@ -4620,7 +4606,7 @@ def _localize_report_text(text: str) -> str:
     result = str(text or "")
     for source, target in replacements.items():
         result = result.replace(source, target)
-    return result
+    return replace_display_terms(result)
 
 
 def _display_value(value: Any) -> str:

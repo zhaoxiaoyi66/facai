@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 
 from data.fmp_queue import get_fmp_request_queue
 from ui import ai_stock_radar, dashboard, discipline_review, manual_review, portfolio, stock_detail, trade_journal, watchlist, weekend_spread
+from ui.display_labels import display_label
 from ui.theme import render_global_styles
 
 
@@ -124,7 +125,7 @@ def _render_fixed_sidebar(active_page: str) -> None:
         '<aside class="zhx-fixed-sidebar">',
         '<div class="zhx-side-brand">',
         '<div class="zhx-side-title">ZHX Research</div>',
-        '<div class="zhx-side-subtitle">Equity Decision Terminal</div>',
+        '<div class="zhx-side-subtitle">股票决策终端</div>',
         "</div>",
         '<div class="zhx-side-section">DATA</div>',
         '<div class="zhx-side-data-card">',
@@ -233,7 +234,7 @@ def _nav_label(page_name: str) -> str:
         PAGE_DISCIPLINE_REVIEW: "交易错题本",
         PAGE_WATCHLIST: "观察池",
         PAGE_MANUAL_REVIEW: "数据复核",
-        PAGE_AI_RADAR: "价格位置",
+        PAGE_AI_RADAR: display_label(PAGE_AI_RADAR),
         PAGE_WEEKEND_SPREAD: "周末价差",
     }
     return labels.get(page_name, page_name)

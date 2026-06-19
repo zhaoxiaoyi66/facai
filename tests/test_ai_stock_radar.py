@@ -1320,12 +1320,14 @@ def test_ai_radar_report_view_has_return_link_and_missing_state() -> None:
     toolbar = radar_ui._report_view_toolbar_html("MSFT", "Microsoft Corporation", "刚刚")
     missing = radar_ui._report_not_found_html("ZZZZ")
 
-    assert "返回 Radar 列表" in toolbar
+    assert "返回价格位置" in toolbar
+    assert "返回 Radar 列表" not in toolbar
     assert "view=list" in toolbar
     assert "MSFT" in toolbar
     assert "Microsoft Corporation" in toolbar
     assert "未找到 ZZZZ 的股票研报" in missing
-    assert "返回 Radar 列表" in missing
+    assert "返回价格位置" in missing
+    assert "返回 Radar 列表" not in missing
 
 
 def test_ai_radar_query_params_support_deep_link_and_list_return() -> None:
@@ -1362,7 +1364,8 @@ def test_ai_radar_report_html_uses_research_report_sections() -> None:
 
     html = radar_ui._report_html(report, {}, _cached_snapshot(), _cached_technicals(), {}, pd.DataFrame())
 
-    assert "AI 股票雷达研究" in html
+    assert "价格位置研究" in html
+    assert "AI 股票雷达研究" not in html
     assert "决策摘要" in html
     assert "技术回踩带" in html
     assert "价格行动地图" in html
