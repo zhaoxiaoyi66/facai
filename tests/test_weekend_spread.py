@@ -494,6 +494,42 @@ class FakeBrokerBarProvider:
         ]
 
 
+class FakeSdkBar:
+    def __init__(self, timestamp: datetime, close: float, volume: float = 1000) -> None:
+        self.timestamp = timestamp
+        self.close = close
+        self.volume = volume
+
+
+class ObjectBrokerBarProvider:
+    provider_name = "ALPACA_BOATS"
+
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+        self.calls: list[dict] = []
+        self.last_error_reason = ""
+        self.last_delay_suspected = False
+        self.last_request_meta: dict[str, object] = {"feed": "boats", "timeframe": "1Min"}
+
+    def get_overnight_bars(
+        self,
+        symbol: str,
+        *,
+        start_time_ms: int,
+        end_time_ms: int,
+        interval: str = "1m",
+    ) -> list[object]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "interval": interval,
+            }
+        )
+        return list(self.rows)
+
+
 class CandidateStatusProvider:
     def __init__(self, *, status: str = "OK", candidates: list[dict] | None = None, message: str = "") -> None:
         self.status = status
@@ -3081,6 +3117,95 @@ def test_weekend_basis_backtest_rejects_non_exact_broker_first_minute_for_formal
     assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
 
 
+def test_strict_p2_accepts_utc_midnight_as_et_20_00() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    provider = ObjectBrokerBarProvider([FakeSdkBar(window.end_et.astimezone(timezone.utc), 101.2, 42)])
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "GLW",
+        window.end_et.date() + timedelta(days=1),
+        "overnight",
+        1,
+        broker_provider=provider,
+        allow_anchor_fallback=False,
+        require_exact_start=True,
+    )
+
+    assert result["ok"] is True
+    assert result["price"] == 101.2
+    assert result["hit_first_minute"] is True
+    assert result["first_raw_bar_time_et"].endswith("20:00:00-04:00")
+    assert result["first_raw_bar_close"] == 101.2
+
+
+def test_strict_p2_rejects_20_01_but_keeps_raw_bar_details() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    provider = ObjectBrokerBarProvider([FakeSdkBar(window.end_et.astimezone(timezone.utc) + timedelta(minutes=1), 101.2, 42)])
+
+    result = get_first_valid_stock_bar_after_weekend(
+        "GLW",
+        window.end_et.date() + timedelta(days=1),
+        "overnight",
+        1,
+        broker_provider=provider,
+        allow_anchor_fallback=False,
+        require_exact_start=True,
+    )
+
+    assert result["ok"] is False
+    assert result["returned_bar_count"] == 1
+    assert result["raw_returned_bar_count"] == 1
+    assert result["reason"] == "返回了后续 bar，但未命中夜盘首分钟"
+    assert result["first_raw_bar_time_et"].endswith("20:01:00-04:00")
+    assert result["first_raw_bar_close"] == 101.2
+    assert result["selected_bar_time"] == ""
+    assert result["selected_bar_close"] is None
+    assert result["hit_first_minute"] is False
+
+
+def test_strict_p2_rejects_20_05_bar_and_backtest_does_not_calculate_capture() -> None:
+    now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
+    window = recent_weekend_windows(weeks=1, now=now)[0]
+    bars = [_kline(window.start_et + timedelta(hours=2), 100.0, 102.0, 99.0, 101.0)]
+    provider = ObjectBrokerBarProvider([FakeSdkBar(window.end_et.astimezone(timezone.utc) + timedelta(minutes=5), 101.2, 42)])
+
+    rows = run_weekend_basis_backtest(
+        ["GLW"],
+        mapping={"GLW": {"enabled": True, "binance_symbol": "GLWUSDT", "mapping_confidence": "confirmed"}},
+        anchors={
+            "GLW": {
+                "afterhours_reference_price": 100,
+                "regular_close_price": 98,
+                "afterhours_reference_time": "2026-07-02T19:59:00-04:00",
+                "afterhours_reference_source": "mock_afterhours",
+            }
+        },
+        provider=FakeKlineProvider(bars),
+        broker_provider=provider,
+        weeks=1,
+        now=now,
+        opening_anchor="overnight",
+        allow_anchor_fallback=False,
+        require_exact_broker_open=True,
+    )
+
+    row = rows[0]
+    assert row["broker_first_1m_close"] is None
+    assert row["capture_pct"] is None
+    assert row["stock_bar_reason"] == "返回了后续 bar，但未命中夜盘首分钟"
+    assert row["stock_bar_first_raw_close"] == 101.2
+    assert "20:05:00-04:00" in row["stock_bar_first_raw_time_et"]
+
+    review = weekend_spread._weekend_review_rows(rows)[0]
+    assert review["broker_open_close"] is None
+    assert review["capture_pct"] is None
+    assert review["p2_first_raw_bar_close"] == 101.2
+    assert review["p2_first_raw_bar_time_et"] == "2026-07-05 20:05 ET"
+    assert review["data_quality"] == "MISSING_OVERNIGHT_FIRST_1M"
+
+
 def test_first_valid_stock_bar_falls_back_from_overnight_to_premarket() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
@@ -4347,6 +4472,28 @@ def test_alpaca_boats_provider_requests_historical_boats_1m() -> None:
     assert provider.last_delay_suspected is False
 
 
+def test_alpaca_boats_provider_parses_sdk_bar_object() -> None:
+    timestamp = datetime(2026, 6, 15, 0, 0, tzinfo=timezone.utc)
+    provider = AlpacaBoatsOvernightProvider(
+        api_key="key",
+        api_secret="secret",
+        now_provider=lambda: datetime(2026, 6, 15, 0, 20, tzinfo=timezone.utc),
+    )
+    provider._get_json = lambda _path, _params: {"bars": [FakeSdkBar(timestamp, 208.88, 88)]}  # type: ignore[method-assign]
+
+    rows = provider.get_overnight_bars(
+        "NVDA",
+        start_time_ms=int(timestamp.timestamp() * 1000),
+        end_time_ms=int((timestamp + timedelta(minutes=1)).timestamp() * 1000),
+        interval="1m",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ts"] == timestamp
+    assert rows[0]["close"] == 208.88
+    assert rows[0]["volume"] == 88
+
+
 def test_alpaca_boats_provider_marks_delayed_historical_window() -> None:
     start = datetime(2026, 6, 14, 20, 0, tzinfo=ZoneInfo("America/New_York"))
     provider = AlpacaBoatsOvernightProvider(
@@ -4449,9 +4596,15 @@ def test_overnight_provider_self_check_rejects_delayed_raw_bar(monkeypatch) -> N
 
     assert result["ok"] is False
     assert result["returned_bar_count"] == 1
+    assert result["raw_returned_bar_count"] == 1
     assert result["first_minute_hit"] is False
     assert result["first_bar_close"] == 101.2
+    assert result["first_raw_bar_close"] == 101.2
+    assert result["first_raw_bar_time_et"].endswith("20:05:00-04:00")
+    assert result["selected_bar_time"] == ""
+    assert result["selected_bar_close"] == ""
     assert result["strict_p2_conclusion"] == "未命中夜盘首分钟，不可作为 P2"
+    assert result["reason"] == "返回了后续 bar，但未命中夜盘首分钟"
 
 
 def test_overnight_provider_self_check_reports_boats_delay(monkeypatch) -> None:

@@ -2392,12 +2392,19 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
         ("IBKR 配置", _ibkr_self_check_status(result)),
         ("请求开始", _weekend_review_short_time(result.get("requested_start")) or "暂无"),
         ("请求结束", _weekend_review_short_time(result.get("requested_end")) or "暂无"),
-        ("返回 bar 数量", str(int(result.get("returned_bar_count") or 0))),
-        ("第一根 bar 时间", _weekend_review_short_time(result.get("first_bar_time")) or "暂无"),
+        ("返回 bar 数量", str(int(result.get("raw_returned_bar_count") or result.get("returned_bar_count") or 0))),
+        ("第一根 raw bar 时间", _weekend_review_short_time(result.get("first_raw_bar_time_et") or result.get("first_raw_bar_time") or result.get("raw_first_bar_time")) or "暂无"),
         (
-            "第一根 bar close",
-            _money_text(result.get("first_bar_close"))
-            if _number(result.get("first_bar_close")) is not None
+            "第一根 raw bar close",
+            _money_text(result.get("first_raw_bar_close") or result.get("raw_first_bar_close"))
+            if _number(result.get("first_raw_bar_close") or result.get("raw_first_bar_close")) is not None
+            else "暂无",
+        ),
+        ("选中 P2 时间", _weekend_review_short_time(result.get("selected_bar_time")) or "暂无"),
+        (
+            "选中 P2 close",
+            _money_text(result.get("selected_bar_close"))
+            if _number(result.get("selected_bar_close")) is not None
             else "暂无",
         ),
         ("是否命中首分钟", "是" if result.get("first_minute_hit") else "否"),
@@ -2793,6 +2800,7 @@ def _render_backfill_kpis(rows: list[dict]) -> None:
 def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
     summary = _weekend_review_summary(review_rows)
     quality_counts = _weekend_review_quality_counts(review_rows)
+    liquidity_label, liquidity_detail = _p2_first_minute_liquidity_label(review_rows)
     metrics: list[tuple[str, object, str]] = [
         ("样本数", int(summary.get("sample_count") or 0), "number"),
         ("周末冲高%", summary.get("avg_binance_premium_pct"), "percent"),
@@ -2806,7 +2814,8 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
             col.metric(label, "暂无")
         st.caption(
             f"严格正式样本 {quality_counts['ok']} 条｜首分钟缺失样本 {quality_counts['missing_p2']} 条｜"
-            f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条"
+            f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条｜"
+            f"首分钟流动性：{liquidity_label}（{liquidity_detail}）"
         )
         st.info(_weekend_review_empty_reason(review_rows))
         return
@@ -2817,7 +2826,8 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
             col.metric(label, value)
     st.caption(
         f"严格正式样本 {quality_counts['ok']} 条｜首分钟缺失样本 {quality_counts['missing_p2']} 条｜"
-        f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条"
+        f"仅观察样本 {quality_counts['observe']} 条｜排除样本 {quality_counts['excluded']} 条｜"
+        f"首分钟流动性：{liquidity_label}（{liquidity_detail}）"
     )
     if summary.get("summary_quality") == "OBSERVE":
         st.info("当前显示观察样本统计：已读取部分 P0/P2，但不计入正式胜率。")
@@ -2826,6 +2836,25 @@ def _render_weekend_review_kpis(review_rows: list[dict]) -> None:
 def _latest_weekend_review_row(review_rows: list[dict]) -> dict | None:
     display_rows = _display_weekend_review_rows(review_rows)
     return display_rows[0] if display_rows else None
+
+
+def _p2_first_minute_liquidity_label(review_rows: list[dict]) -> tuple[str, str]:
+    eligible = [
+        row
+        for row in review_rows
+        if _number(row.get("friday_afterhours_close")) is not None and _number(row.get("binance_price")) is not None
+    ]
+    if len(eligible) < 2:
+        return "数据不足", f"{len(eligible)} 周可比"
+    hit_count = sum(1 for row in eligible if _number(row.get("broker_open_close")) is not None)
+    hit_rate = hit_count / len(eligible)
+    if hit_rate >= 0.8:
+        label = "良好"
+    elif hit_rate >= 0.4:
+        label = "一般"
+    else:
+        label = "较差"
+    return label, f"{hit_count}/{len(eligible)} 周命中"
 
 
 def _money_or_missing(value: object, fallback: str) -> str:
@@ -2912,6 +2941,7 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
     if not row:
         st.info(f"尚未运行历史回测。展开“回测设置”后点击“{_backtest_run_button_label(weeks)}”。")
         return
+    liquidity_label, liquidity_detail = _p2_first_minute_liquidity_label(review_rows)
     metrics = [
         ("Binance 周末冲高%", _percent_or_missing(row.get("binance_premium_pct"), row)),
         ("夜盘相对 Binance 高点%", _percent_or_missing(row.get("overnight_vs_binance_pct"), row)),
@@ -2941,7 +2971,8 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
           <div class="weekend-core-sources">
             P0 来源：{escape(_p0_source_summary(row))}｜
             P1 来源：{escape(_p1_source_summary(row))}｜
-            P2 来源：{escape(_p2_source_summary(row))}
+            P2 来源：{escape(_p2_source_summary(row))}｜
+            首分钟流动性：{escape(liquidity_label)}（{escape(liquidity_detail)}）
           </div>
         </div>
         """,
@@ -3067,6 +3098,13 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "holiday_rollover": bool(row.get("holiday_rollover") or False),
             "broker_open_close": broker_open_close,
             "broker_first_time": _weekend_review_broker_first_time(row),
+            "p2_raw_returned_bar_count": int(_first_number(row, ("stock_bar_raw_returned_count", "stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
+            "p2_first_raw_bar_time": _weekend_review_short_time(row.get("stock_bar_first_raw_time") or row.get("stock_bar_raw_first_time")),
+            "p2_first_raw_bar_time_et": _weekend_review_short_time(row.get("stock_bar_first_raw_time_et")),
+            "p2_first_raw_bar_close": _first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")),
+            "p2_selected_bar_time": _weekend_review_short_time(row.get("stock_bar_selected_time")),
+            "p2_selected_bar_close": _first_number(row, ("stock_bar_selected_close",)),
+            "p2_hit_first_minute": bool(row.get("stock_bar_hit_first_minute") or broker_open_close is not None),
             "overnight_provider": _weekend_review_overnight_provider(row),
             "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
@@ -3168,6 +3206,8 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
         "P0 返回bars",
         "P2 请求区间",
         "P2 返回bars",
+        "P2 第一根raw时间",
+        "P2 第一根raw close",
         "Binance 窗口",
         "Binance 合约",
     ]
@@ -3195,7 +3235,9 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
                 "P0 请求区间": _weekend_review_time_range(row.get("p0_request_start_et"), row.get("p0_request_end_et")),
                 "P0 返回bars": int(_first_number(row, ("p0_returned_bar_count",)) or 0),
                 "P2 请求区间": p2_window,
-                "P2 返回bars": int(_first_number(row, ("stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
+                "P2 返回bars": int(_first_number(row, ("stock_bar_raw_returned_count", "stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
+                "P2 第一根raw时间": _weekend_review_short_time(row.get("stock_bar_first_raw_time_et") or row.get("stock_bar_first_raw_time") or row.get("stock_bar_raw_first_time")) or "",
+                "P2 第一根raw close": _money_or_missing(_first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")), ""),
                 "Binance 窗口": _weekend_review_time_range(row.get("binance_window_start_et"), row.get("binance_window_end_et")),
                 "Binance 合约": str(row.get("binance_symbol") or row.get("symbol") or "").strip().upper(),
             }

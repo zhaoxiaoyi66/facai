@@ -731,22 +731,38 @@ def _basis_quote_from_row(row: Any, *, estimated: bool, source: str) -> BasisQuo
 def _broker_bar_from_row(row: Any) -> BrokerOvernightBar | None:
     if isinstance(row, BrokerOvernightBar):
         return row
-    if not isinstance(row, dict):
+    if row is None:
         return None
-    ts = _parse_time(row.get("ts") or row.get("timestamp") or row.get("time") or row.get("open_time"))
-    bid = _number(row.get("bid") or row.get("bid_price") or row.get("bidPrice"))
-    ask = _number(row.get("ask") or row.get("ask_price") or row.get("askPrice"))
+    ts = _parse_time(_row_field(row, "ts", "timestamp", "time", "open_time"))
+    close = _number(_row_field(row, "close", "close_price", "closePrice", "last", "last_price", "lastPrice", "c"))
+    bid = _number(_row_field(row, "bid", "bid_price", "bidPrice"))
+    ask = _number(_row_field(row, "ask", "ask_price", "askPrice"))
+    if close is not None:
+        bid = bid if bid is not None else close
+        ask = ask if ask is not None else close
     if ts is None or bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
         return None
     return BrokerOvernightBar(
         ts=ts,
         bid=bid,
         ask=ask,
-        close=_number(row.get("close") or row.get("close_price") or row.get("closePrice") or row.get("last") or row.get("last_price") or row.get("lastPrice")),
-        quote_age_seconds=float(_number(row.get("quote_age_seconds") or row.get("quoteAgeSeconds")) or 0.0),
-        volume=_number(row.get("volume")),
-        source=str(row.get("source") or ""),
+        close=close,
+        quote_age_seconds=float(_number(_row_field(row, "quote_age_seconds", "quoteAgeSeconds")) or 0.0),
+        volume=_number(_row_field(row, "volume", "v")),
+        source=str(_row_field(row, "source") or ""),
     )
+
+
+def _row_field(row: Any, *names: str) -> Any:
+    if isinstance(row, dict):
+        for name in names:
+            if name in row:
+                return row.get(name)
+        return None
+    for name in names:
+        if hasattr(row, name):
+            return getattr(row, name)
+    return None
 
 
 def _quote_liquidity_pass(quote: BasisQuote, cfg: BasisStrategyConfig) -> bool:

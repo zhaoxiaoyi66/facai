@@ -73,7 +73,7 @@ class AlpacaBoatsOvernightProvider:
             self.last_error_reason = ""
         elif not self.last_error_reason:
             self.last_error_reason = "BOATS_DELAY_PENDING" if self.last_delay_suspected else "MISSING_BOATS_FIRST_1M"
-        return [_alpaca_bar_to_broker_row(row) for row in bars or [] if isinstance(row, dict)]
+        return [_alpaca_bar_to_broker_row(row) for row in bars or []]
 
     def _get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
         query = urlencode(params)
@@ -243,9 +243,12 @@ def build_overnight_provider_self_check(
             reason = "美股夜盘数据源未配置"
         elif not result.get("ok"):
             reason = "缺少美股夜盘首分钟 1m K线"
-    raw_first_bar_time = str(result.get("raw_first_bar_time") or "")
-    raw_first_bar_close = result.get("raw_first_bar_close")
-    selected_bar_time = str(result.get("bar_start_et") or result.get("timestamp") or "")
+    raw_returned_bar_count = int(result.get("raw_returned_bar_count") or result.get("returned_bar_count") or 0)
+    raw_first_bar_time = str(result.get("first_raw_bar_time") or result.get("raw_first_bar_time") or "")
+    raw_first_bar_close = result.get("first_raw_bar_close", result.get("raw_first_bar_close"))
+    raw_first_bar_time_et = str(result.get("first_raw_bar_time_et") or "")
+    selected_bar_time = str(result.get("selected_bar_time") or result.get("bar_start_et") or result.get("timestamp") or "")
+    selected_bar_close = result.get("selected_bar_close", result.get("price"))
     first_bar_close = result.get("overnight_first_1m_close") or result.get("price")
     first_minute_hit = bool(result.get("ok"))
     if not first_minute_hit and raw_first_bar_time:
@@ -254,8 +257,20 @@ def build_overnight_provider_self_check(
         reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     elif not first_minute_hit and not reason:
         reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+    if not first_minute_hit:
+        if raw_first_bar_time:
+            reason = "返回了后续 bar，但未命中夜盘首分钟"
+        elif any(marker in str(reason) for marker in ("閺", "缂", "閹", "闁", "閿", "鈧", "锛", "€")):
+            reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
+        elif not reason:
+            reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     request_meta = dict(getattr(selected_provider, "last_request_meta", {}) or {})
     delay_suspected = bool(getattr(selected_provider, "last_delay_suspected", False) or request_meta.get("delay_suspected"))
+    strict_p2_conclusion = (
+        "命中夜盘首分钟，可作为 P2"
+        if first_minute_hit
+        else ("未命中夜盘首分钟，不可作为 P2" if raw_returned_bar_count else reason)
+    )
     return {
         "ok": bool(result.get("ok")),
         "symbol": str(symbol or "NVDA").strip().upper(),
@@ -266,17 +281,25 @@ def build_overnight_provider_self_check(
         "ibkr_path_exists": bool(config.get("ibkr_path_exists")),
         "requested_start": str(result.get("requested_start") or session_start_et.isoformat()),
         "requested_end": str(result.get("requested_end") or ""),
-        "returned_bar_count": int(result.get("returned_bar_count") or 0),
+        "returned_bar_count": raw_returned_bar_count,
+        "raw_returned_bar_count": raw_returned_bar_count,
         "first_bar_time": selected_bar_time if first_minute_hit else raw_first_bar_time,
         "first_bar_close": first_bar_close if first_bar_close is not None else (raw_first_bar_close if raw_first_bar_close is not None else ""),
         "raw_first_bar_time": raw_first_bar_time,
         "raw_first_bar_close": raw_first_bar_close if raw_first_bar_close is not None else "",
+        "first_raw_bar_time": raw_first_bar_time,
+        "first_raw_bar_close": raw_first_bar_close if raw_first_bar_close is not None else "",
+        "first_raw_bar_time_et": raw_first_bar_time_et,
+        "selected_bar_time": selected_bar_time if first_minute_hit else "",
+        "selected_bar_close": selected_bar_close if first_minute_hit else "",
+        "hit_first_minute": first_minute_hit,
         "first_minute_hit": first_minute_hit,
         "strict_p2_conclusion": (
             "命中夜盘首分钟，可作为 P2"
             if first_minute_hit
             else ("未命中夜盘首分钟，不可作为 P2" if int(result.get("returned_bar_count") or 0) else reason)
         ),
+        "strict_p2_conclusion": strict_p2_conclusion,
         "provider": str(result.get("provider") or selected or ""),
         "feed": str(request_meta.get("feed") or ("boats" if selected == "ALPACA_BOATS" else "")),
         "timeframe": str(request_meta.get("timeframe") or ("1Min" if selected == "ALPACA_BOATS" else "1m")),
@@ -292,14 +315,26 @@ def _iso_from_ms(value: int) -> str:
     return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).isoformat()
 
 
-def _alpaca_bar_to_broker_row(row: dict[str, Any]) -> dict[str, Any]:
-    close = row.get("c") or row.get("close")
+def _alpaca_field(row: Any, *names: str) -> Any:
+    if isinstance(row, dict):
+        for name in names:
+            if name in row:
+                return row.get(name)
+        return None
+    for name in names:
+        if hasattr(row, name):
+            return getattr(row, name)
+    return None
+
+
+def _alpaca_bar_to_broker_row(row: Any) -> dict[str, Any]:
+    close = _alpaca_field(row, "c", "close")
     return {
-        "ts": row.get("t") or row.get("timestamp") or row.get("time"),
+        "ts": _alpaca_field(row, "t", "timestamp", "time"),
         "bid": close,
         "ask": close,
         "close": close,
-        "volume": row.get("v") or row.get("volume"),
+        "volume": _alpaca_field(row, "v", "volume"),
         "quote_age_seconds": 0,
         "source": "ALPACA_BOATS",
     }
