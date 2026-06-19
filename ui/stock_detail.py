@@ -1215,8 +1215,8 @@ def _render_price_action_map(display: dict | None) -> None:
 
 
 def _render_drawdown_profile(ticker: str) -> None:
-    profile = build_drawdown_profile(ticker, years=2)
-    render_section_title("回撤规律", "历史回撤档案｜近 2 年")
+    profile = build_drawdown_profile(ticker, years=3)
+    render_section_title("回撤规律", "历史回撤档案｜近 3 年")
     if str(profile.get("data_status") or "") != "OK":
         st.info(drawdown_profile_summary_text(profile))
         return
@@ -1232,7 +1232,7 @@ def _render_drawdown_profile(ticker: str) -> None:
         '<div class="drawdown-profile-help">'
         '<p>最大修复跌幅的意思是：历史上曾经跌到这个幅度，但后来又重新创出新高。</p>'
         '<p>它不是安全线，只是历史参考。</p>'
-        '<p>当前跌幅超过近 6 个月修复范围时，说明这次回调已经不是普通小波动。</p>'
+        '<p>最大修复跌幅只说明过去曾经修复过，不代表这次一定安全。</p>'
         '</div>'
         f'<p class="drawdown-profile-note">行情口径：{escape(data_quality)}</p>'
         "</section>",
@@ -1268,9 +1268,9 @@ def _render_drawdown_profile(ticker: str) -> None:
             with st.expander("完整回撤段列表", expanded=False):
                 st.dataframe(_drawdown_episode_frame(list(reversed(episodes))), hide_index=True, width="stretch")
     else:
-        st.caption("近 2 年没有识别到超过 3% 的回撤段。")
+        st.caption("近 3 年没有识别到超过 3% 的回撤段。")
 
-    with st.expander("详细回撤数据", expanded=False):
+    with st.expander("查看近 3 年回撤明细", expanded=False):
         st.dataframe(_drawdown_detail_metric_frame(profile), hide_index=True, width="stretch")
 
     similar_cases = list(profile.get("similar_drawdown_cases") or [])
@@ -1283,7 +1283,7 @@ def _drawdown_core_metric_items_html(profile: dict) -> str:
     items = [
         ("当前离高点跌幅", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
         ("本轮主升浪最大修复跌幅", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
-        ("近 6 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
+        ("近 3 年跌完还能新高的最大跌幅", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
     ]
     return "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
@@ -1299,10 +1299,9 @@ def _drawdown_detail_metric_frame(profile: dict) -> pd.DataFrame:
         for threshold in ("5", "10", "15", "20")
     )
     rows = [
-        ("近 2 年最深跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
-        ("近 2 年跌完还能新高的最大跌幅，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
-        ("近 12 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
-        ("当前跌幅在历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("近 3 年最大跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 3 年跌完还能新高的最大跌幅", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("当前跌幅在近 3 年历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
         ("中位修复天数", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
         ("新高后回调节奏", pullback_text),
         ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
@@ -1314,15 +1313,16 @@ def _drawdown_human_conclusion(profile: dict) -> str:
     state = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
     current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
     current_number = _first_number(profile.get("current_drawdown_pct"))
-    recent_6m = _first_number(profile.get("recent_6m_max_recovered_drawdown_pct"))
+    three_year_recovered = _first_number(profile.get("max_recovered_drawdown_pct"))
     regime = _first_number(profile.get("current_regime_max_recovered_drawdown_pct"))
 
     pieces = [f"当前离高点 {current}，属于{state}"]
-    if current_number is not None and recent_6m is not None:
-        if abs(current_number) > abs(recent_6m):
-            pieces.append("已经超过近 6 个月常见修复范围")
+    if current_number is not None and three_year_recovered is not None:
+        three_year_text = _drawdown_percent_text(three_year_recovered)
+        if abs(current_number) > abs(three_year_recovered):
+            pieces.append(f"已经超过近 3 年跌完还能新高的最大跌幅 {three_year_text}")
         else:
-            pieces.append("仍在近 6 个月常见修复范围内")
+            pieces.append(f"仍未超过近 3 年跌完还能新高的最大跌幅 {three_year_text}")
     if current_number is not None and regime is not None:
         regime_text = _drawdown_percent_text(regime)
         if abs(current_number) > abs(regime):

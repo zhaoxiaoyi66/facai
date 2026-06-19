@@ -36,6 +36,15 @@ def test_drawdown_profile_calculates_current_max_and_recovered_drawdowns() -> No
     assert profile["episodes"][1]["recovered"] is False
 
 
+def test_drawdown_profile_defaults_to_three_year_window() -> None:
+    profile = build_drawdown_profile(
+        "NVDA",
+        history=_history([100, 90, 105]),
+    )
+
+    assert profile["years"] == 3
+
+
 def test_unrecovered_episode_does_not_count_as_max_effective_drawdown() -> None:
     profile = build_drawdown_profile(
         "NVDA",

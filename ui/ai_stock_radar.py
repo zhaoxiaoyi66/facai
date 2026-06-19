@@ -370,7 +370,7 @@ def _cached_drawdown_profile(symbol: str, perf: PerfProbe) -> dict[str, Any]:
     return _runtime_cached(
         ("drawdown_profile", symbol),
         HISTORY_TTL_SECONDS,
-        lambda: build_drawdown_profile(symbol, years=2),
+        lambda: build_drawdown_profile(symbol, years=3),
         perf,
         "历史回撤档案",
     )
@@ -2772,7 +2772,7 @@ def _drawdown_profile_card_html(profile: dict[str, Any]) -> str:
     details = _drawdown_detail_items_html(profile)
     return (
         '<section class="ai-radar-card ai-radar-drawdown-card">'
-        '<div class="ai-radar-section-title"><span>历史回撤档案｜近 2 年</span><b>辅助判断回调性质</b></div>'
+        '<div class="ai-radar-section-title"><span>历史回撤档案｜近 3 年</span><b>辅助判断回调性质</b></div>'
         f'<p class="ai-radar-drawdown-conclusion">{escape(_drawdown_human_conclusion(profile))}</p>'
         f'<span class="ai-radar-core-badge">{escape(status)}</span>'
         f'<div class="ai-radar-score-grid">{body}</div>'
@@ -2780,9 +2780,9 @@ def _drawdown_profile_card_html(profile: dict[str, Any]) -> str:
         '<div class="ai-radar-drawdown-help">'
         '<p>最大修复跌幅的意思是：历史上曾经跌到这个幅度，但后来又重新创出新高。</p>'
         '<p>它不是安全线，只是历史参考。</p>'
-        '<p>当前跌幅超过近 6 个月修复范围时，说明这次回调已经不是普通小波动。</p>'
+        '<p>最大修复跌幅只说明过去曾经修复过，不代表这次一定安全。</p>'
         '</div>'
-        '<details class="ai-radar-drawdown-details"><summary>详细回撤数据</summary>'
+        '<details class="ai-radar-drawdown-details"><summary>查看近 3 年回撤明细</summary>'
         f'<div class="ai-radar-score-grid">{details}</div>'
         '</details>'
         "</section>"
@@ -2793,7 +2793,7 @@ def _drawdown_core_items_html(profile: dict[str, Any]) -> str:
     items = [
         ("当前离高点跌幅", _drawdown_percent_text(profile.get("current_drawdown_pct"))),
         ("本轮主升浪最大修复跌幅", _drawdown_percent_text(profile.get("current_regime_max_recovered_drawdown_pct"))),
-        ("近 6 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_6m_max_recovered_drawdown_pct"))),
+        ("近 3 年跌完还能新高的最大跌幅", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
     ]
     return "".join(
         f"<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
@@ -2809,10 +2809,9 @@ def _drawdown_detail_items_html(profile: dict[str, Any]) -> str:
         for threshold in ("5", "10", "15", "20")
     )
     items = [
-        ("近 2 年最深跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
-        ("近 2 年跌完还能新高的最大跌幅，背景参考", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
-        ("近 12 个月最大修复跌幅", _drawdown_percent_text(profile.get("recent_12m_max_recovered_drawdown_pct"))),
-        ("当前跌幅在历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
+        ("近 3 年最大跌幅", _drawdown_percent_text(profile.get("max_drawdown_2y_pct"))),
+        ("近 3 年跌完还能新高的最大跌幅", _drawdown_percent_text(profile.get("max_recovered_drawdown_pct"))),
+        ("当前跌幅在近 3 年历史里有多深", str(profile.get("current_drawdown_rank") or "数据不足")),
         ("中位修复天数", _drawdown_days_text(recovery_stats.get("median_recovery_days"))),
         ("新高后回调节奏", pullback_text),
         ("数据质量", str((profile.get("data_quality") or {}).get("data_quality_status") or "数据不足")),
@@ -2826,16 +2825,17 @@ def _drawdown_detail_items_html(profile: dict[str, Any]) -> str:
 def _drawdown_human_conclusion(profile: dict[str, Any]) -> str:
     state = _drawdown_state_display(str(profile.get("drawdown_state") or "数据不足"))
     current = _drawdown_percent_text(profile.get("current_drawdown_pct"))
-    recent_6m = _number(profile.get("recent_6m_max_recovered_drawdown_pct"))
+    three_year_recovered = _number(profile.get("max_recovered_drawdown_pct"))
     regime = _number(profile.get("current_regime_max_recovered_drawdown_pct"))
     current_number = _number(profile.get("current_drawdown_pct"))
 
     pieces = [f"当前离高点 {current}，属于{state}"]
-    if current_number is not None and recent_6m is not None:
-        if abs(current_number) > abs(recent_6m):
-            pieces.append("已经超过近 6 个月常见修复范围")
+    if current_number is not None and three_year_recovered is not None:
+        three_year_text = _drawdown_percent_text(three_year_recovered)
+        if abs(current_number) > abs(three_year_recovered):
+            pieces.append(f"已经超过近 3 年跌完还能新高的最大跌幅 {three_year_text}")
         else:
-            pieces.append("仍在近 6 个月常见修复范围内")
+            pieces.append(f"仍未超过近 3 年跌完还能新高的最大跌幅 {three_year_text}")
     if current_number is not None and regime is not None:
         regime_text = _drawdown_percent_text(regime)
         if abs(current_number) > abs(regime):

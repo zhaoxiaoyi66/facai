@@ -34,7 +34,7 @@ class DrawdownEpisode:
 def build_drawdown_profile(
     symbol: str,
     *,
-    years: int = 2,
+    years: int = 3,
     history: pd.DataFrame | None = None,
     now: datetime | None = None,
     use_cache: bool = True,
@@ -45,13 +45,13 @@ def build_drawdown_profile(
     frame = _normalize_history(raw_history)
     frame = _limit_years(frame, years=years, now=now)
     latest_date = _latest_date_text(frame)
-    cache_key = (normalized, int(years or 2), latest_date)
+    cache_key = (normalized, int(years or 3), latest_date)
     if history is None and use_cache:
         cached = _PROFILE_CACHE.get(cache_key)
         if cached and not _cache_expired(cached[0], now=now):
             return dict(cached[1])
 
-    profile = _build_profile(normalized, frame, years=int(years or 2), market_context=market_context)
+    profile = _build_profile(normalized, frame, years=int(years or 3), market_context=market_context)
     if history is None and use_cache:
         _PROFILE_CACHE[cache_key] = ((now or datetime.now(timezone.utc)).astimezone(timezone.utc), dict(profile))
     return profile
@@ -74,7 +74,7 @@ def drawdown_profile_summary_text(profile: dict[str, Any]) -> str:
 
 def _build_profile(symbol: str, frame: pd.DataFrame, *, years: int, market_context: dict[str, Any] | None = None) -> dict[str, Any]:
     if frame.empty or len(frame) < MIN_OBSERVATIONS:
-        return _insufficient_profile(symbol, years, "近 2 年日线数据不足")
+        return _insufficient_profile(symbol, years, f"近 {years} 年日线数据不足")
     close = frame["price"].astype(float)
     running_peak = close.cummax()
     drawdowns = close / running_peak - 1.0
@@ -105,6 +105,7 @@ def _build_profile(symbol: str, frame: pd.DataFrame, *, years: int, market_conte
         recovered_drawdown_p90=recovered_p90,
         latest_close=float(close.iloc[-1]),
         latest_ema200=_number(frame["ema200"].iloc[-1]) if "ema200" in frame else None,
+        years=years,
     )
     if str(data_quality.get("data_quality_status") or "正常") != "正常":
         state = "行情口径待复核"
@@ -193,7 +194,7 @@ def _limit_years(frame: pd.DataFrame, *, years: int, now: datetime | None) -> pd
     if frame.empty:
         return frame
     end = (now.date() if now else frame["date"].max().date())
-    start = pd.Timestamp(end - timedelta(days=max(1, int(years or 2)) * 365))
+    start = pd.Timestamp(end - timedelta(days=max(1, int(years or 3)) * 365))
     return frame[frame["date"] >= start].reset_index(drop=True)
 
 
@@ -450,6 +451,7 @@ def _classify_current_drawdown(
     recovered_drawdown_p90: float | None = None,
     latest_close: float,
     latest_ema200: float | None,
+    years: int = 3,
 ) -> tuple[str, str, str]:
     if latest_ema200 is not None and latest_close < latest_ema200:
         return "趋势重评", "当前价格跌破长期趋势线，需要重新评估趋势。", "超过 95%"
@@ -459,17 +461,17 @@ def _classify_current_drawdown(
     p95 = percentiles.get("p95_drawdown_pct")
     active_thresholds = [
         ("本轮主升最大有效回撤", current_regime_max_recovered),
-        ("近 6 个月最大有效回撤", recent_6m_max_recovered),
-        ("近 12 个月最大有效回撤", recent_12m_max_recovered),
+        ("近期最大有效回撤", recent_6m_max_recovered),
+        ("近期最大有效回撤", recent_12m_max_recovered),
         ("有效回撤 90% 分位", recovered_drawdown_p90),
     ]
     breached = [label for label, value in active_thresholds if value is not None and current < value]
     if breached and p95 is not None and current <= p95:
         return "趋势重评", f"当前回撤超过{breached[0]}，且进入历史 95% 极端区间。", "超过 95%"
     if breached:
-        return "极限洗盘", f"当前回撤超过{breached[0]}，近 2 年最大有效回撤仅作背景参考。", "90%-95%"
+        return "极限洗盘", f"当前回撤超过{breached[0]}，近 {years} 年最大有效回撤仅作背景参考。", "90%-95%"
     if max_recovered is not None and current < max_recovered:
-        return "极限洗盘", "当前回撤已经超过近 2 年最大有效回撤；该指标仅作背景参考，需重点复核。", "90%-95%"
+        return "极限洗盘", f"当前回撤已经超过近 {years} 年最大有效回撤；该指标仅作背景参考，需重点复核。", "90%-95%"
     if p95 is not None and current <= p95:
         return "趋势重评", "当前回撤超过历史 95% 分位，需要重新评估趋势。", "超过 95%"
     if p90 is not None and current <= p90:
