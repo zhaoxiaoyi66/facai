@@ -321,6 +321,10 @@ def _render_realtime_tab(
     st.session_state["weekend_spread_realtime_cache_status"] = cache_status
     st.session_state["weekend_spread_realtime_scan_status"] = scan_status
 
+    flash_message = st.session_state.pop("weekend_spread_realtime_flash", "")
+    if flash_message:
+        st.info(str(flash_message))
+
     mapping_counts = _mapping_counts(rows, scan_mapping)
     mapping_counts.update(
         {
@@ -345,7 +349,7 @@ def _render_realtime_tab(
             _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
         elif main_rows:
             st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
-            _render_row_details(main_rows)
+            _render_row_details(main_rows, all_rows=rows, mapping=scan_mapping, tickers=scan_tickers)
         else:
             st.info(_realtime_empty_state_text(rows, visible_scope))
 
@@ -1095,6 +1099,10 @@ class _BulkRefreshBinanceProvider:
 
 def _fresh_afterhours_provider() -> CachedAfterhoursProvider:
     return CachedAfterhoursProvider(MultiProviderAfterhoursProvider(), fallback_on_error=False)
+
+
+def _single_symbol_binance_provider() -> CachedBinancePriceProvider:
+    return CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=0)
 
 
 class _CachedRowAfterhoursProvider:
@@ -4378,12 +4386,115 @@ def _binance_category_text(record: dict) -> str:
     return combined or "未标注"
 
 
-def _render_row_details(rows: list[dict]) -> None:
+def _refresh_single_realtime_row(
+    ticker: str,
+    rows: list[dict],
+    *,
+    mapping: dict[str, dict],
+    action: str,
+    tickers: list[str] | None = None,
+    persist: bool = True,
+) -> tuple[list[dict], dict, str]:
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_action = str(action or "").strip().lower()
+    current_rows = [dict(row) for row in rows or []]
+    old_row = next((row for row in current_rows if str(row.get("ticker") or "").strip().upper() == normalized_ticker), {})
+    if not normalized_ticker:
+        return current_rows, {}, "缺少股票代码，无法刷新。"
+    if normalized_action not in {"price", "anchor", "both"}:
+        return current_rows, old_row, "未知刷新动作。"
+
+    refresh_price = normalized_action in {"price", "both"}
+    refresh_anchor = normalized_action in {"anchor", "both"}
+    provider = _single_symbol_binance_provider() if refresh_price else _CachedRowBinanceProvider(current_rows)
+    afterhours_provider = _fresh_afterhours_provider() if refresh_anchor else _CachedRowAfterhoursProvider(current_rows)
+    refreshed_rows = build_weekend_spread_rows(
+        [normalized_ticker],
+        mapping=mapping,
+        provider=provider,
+        afterhours_provider=afterhours_provider,
+        force_refresh=refresh_price,
+        afterhours_force_refresh=refresh_anchor,
+    )
+    if not refreshed_rows:
+        return current_rows, old_row, f"{normalized_ticker} 没有生成刷新结果。"
+
+    refreshed = _preserve_single_realtime_context(old_row, refreshed_rows[0])
+    updated_rows: list[dict] = []
+    replaced = False
+    for row in current_rows:
+        if str(row.get("ticker") or "").strip().upper() == normalized_ticker:
+            updated_rows.append(refreshed)
+            replaced = True
+        else:
+            updated_rows.append(dict(row))
+    if not replaced:
+        updated_rows.append(refreshed)
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    updated_rows = annotate_cached_rows(updated_rows, cache_state="API_LIVE", generated_at=generated_at)
+    if persist:
+        write_weekend_spread_snapshot(
+            updated_rows,
+            mapping=mapping,
+            tickers=tickers or [str(row.get("ticker") or "").strip().upper() for row in updated_rows if str(row.get("ticker") or "").strip()],
+            generated_at=datetime.now(timezone.utc),
+        )
+    return updated_rows, refreshed, _single_refresh_message(normalized_ticker, refreshed, normalized_action)
+
+
+def _preserve_single_realtime_context(old_row: dict, refreshed_row: dict) -> dict:
+    item = dict(refreshed_row or {})
+    for key in (
+        "scan_detected_by",
+        "underlying_type",
+        "underlying_sub_type",
+        "binance_category",
+        "mapping_quality",
+        "mapping_quality_reason",
+        "is_watchlist",
+        "is_position",
+        "is_core",
+        "is_core_position",
+        "mapping_price_diff_pct",
+    ):
+        if key in old_row and (key not in item or item.get(key) in {None, ""}):
+            item[key] = old_row.get(key)
+    return item
+
+
+def _single_refresh_message(ticker: str, row: dict, action: str) -> str:
+    price = _number(row.get("binance_last_price"))
+    anchor = _number(row.get("afterhours_reference_price"))
+    if action == "price":
+        if price is None:
+            return f"{ticker} Binance 价格刷新失败：{_localized_realtime_error(row.get('error') or 'price_not_loaded')}"
+        return f"{ticker} Binance 价格已刷新：{_money_text(price)}。"
+    if action == "anchor":
+        if anchor is None:
+            reason = _afterhours_reason_text(row.get("afterhours_missing_reason")) or "未读取到盘后锚点"
+            return f"{ticker} 盘后锚点仍缺失：{reason}。"
+        return f"{ticker} 盘后锚点已重抓：{_money_text(anchor)}。"
+    parts: list[str] = []
+    parts.append(f"Binance {_money_text(price)}" if price is not None else "Binance 价格缺失")
+    parts.append(f"盘后锚点 {_money_text(anchor)}" if anchor is not None else "盘后锚点缺失")
+    return f"{ticker} 已完成单标的刷新：" + "，".join(parts) + "。"
+
+
+def _render_row_details(
+    rows: list[dict],
+    *,
+    all_rows: list[dict] | None = None,
+    mapping: dict[str, dict] | None = None,
+    tickers: list[str] | None = None,
+) -> None:
     if not rows:
         return
     for row in rows:
         ticker = str(row.get("ticker") or "").upper()
         with st.expander(f"{ticker} 详情", expanded=False):
+            if mapping is not None:
+                _render_single_row_refresh_actions(row, all_rows=all_rows or rows, mapping=mapping, tickers=tickers)
             col_anchor, col_binance, col_note = st.columns(3)
             with col_anchor:
                 st.markdown("**美股锚点**")
@@ -4422,6 +4533,37 @@ def _render_row_details(rows: list[dict]) -> None:
                 error = str(row.get("error") or "").strip()
                 if error:
                     st.caption(f"错误：{_localized_realtime_error(error)}")
+
+
+def _render_single_row_refresh_actions(
+    row: dict,
+    *,
+    all_rows: list[dict],
+    mapping: dict[str, dict],
+    tickers: list[str] | None = None,
+) -> None:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    if not ticker:
+        return
+    st.caption("单标的刷新：用于排查单个价格或锚点异常，不会刷新全市场。")
+    col_price, col_anchor, col_both = st.columns(3)
+    actions = [
+        (col_price, "只刷新 Binance 价格", "price"),
+        (col_anchor, "只重抓盘后锚点", "anchor"),
+        (col_both, "价格和锚点都刷新", "both"),
+    ]
+    for column, label, action in actions:
+        if column.button(label, key=f"weekend_spread_single_{action}_{ticker}", width="stretch"):
+            updated_rows, _, message = _refresh_single_realtime_row(
+                ticker,
+                all_rows,
+                mapping=mapping,
+                action=action,
+                tickers=tickers,
+            )
+            st.session_state["weekend_spread_realtime_rows"] = updated_rows
+            st.session_state["weekend_spread_realtime_flash"] = message
+            st.rerun()
 
 
 def _row_membership_text(row: dict) -> str:

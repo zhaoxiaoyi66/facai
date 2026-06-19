@@ -5504,8 +5504,94 @@ def test_row_details_are_split_into_three_blocks() -> None:
     assert "**美股锚点**" in source
     assert "**Binance 合约**" in source
     assert "**数据状态**" in source
+    assert "只刷新 Binance 价格" in source or "只刷新 Binance 价格" in inspect.getsource(weekend_spread._render_single_row_refresh_actions)
+    assert "只重抓盘后锚点" in source or "只重抓盘后锚点" in inspect.getsource(weekend_spread._render_single_row_refresh_actions)
     assert "映射：" in source
     assert "状态：" in source
+
+
+def test_single_realtime_refresh_updates_only_selected_symbol(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_rows(tickers, **kwargs):
+        captured["tickers"] = list(tickers)
+        captured["force_refresh"] = kwargs.get("force_refresh")
+        captured["afterhours_force_refresh"] = kwargs.get("afterhours_force_refresh")
+        return [
+            {
+                "ticker": "NBIS",
+                "binance_symbol": "NBISUSDT",
+                "binance_last_price": 281.94,
+                "afterhours_reference_price": 260.0,
+                "regular_close_price": 250.48,
+                "spread_vs_afterhours_pct": 8.44,
+                "updated_at": "2026-06-19T13:47:00+00:00",
+            }
+        ]
+
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_rows", fake_build_rows)
+    rows = [
+        {
+            "ticker": "NBIS",
+            "binance_symbol": "NBISUSDT",
+            "binance_last_price": 270.0,
+            "afterhours_reference_price": 260.0,
+            "is_watchlist": True,
+            "scan_detected_by": "binance_internal_category",
+        },
+        {"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "binance_last_price": 209.5},
+    ]
+
+    updated, refreshed, message = weekend_spread._refresh_single_realtime_row(
+        "NBIS",
+        rows,
+        mapping={"NBIS": {"binance_symbol": "NBISUSDT", "market_type": "usdm_futures"}},
+        action="price",
+        persist=False,
+    )
+
+    assert captured["tickers"] == ["NBIS"]
+    assert captured["force_refresh"] is True
+    assert captured["afterhours_force_refresh"] is False
+    assert refreshed["binance_last_price"] == 281.94
+    assert refreshed["is_watchlist"] is True
+    assert refreshed["scan_detected_by"] == "binance_internal_category"
+    assert next(row for row in updated if row["ticker"] == "NVDA")["binance_last_price"] == 209.5
+    assert "NBIS Binance 价格已刷新" in message
+
+
+def test_single_realtime_anchor_refresh_forces_only_anchor(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_rows(tickers, **kwargs):
+        captured["tickers"] = list(tickers)
+        captured["force_refresh"] = kwargs.get("force_refresh")
+        captured["afterhours_force_refresh"] = kwargs.get("afterhours_force_refresh")
+        return [
+            {
+                "ticker": "NBIS",
+                "binance_symbol": "NBISUSDT",
+                "binance_last_price": 281.94,
+                "afterhours_reference_price": 274.0,
+                "afterhours_reference_source": "ALPACA_AFTERHOURS",
+            }
+        ]
+
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_rows", fake_build_rows)
+
+    _, refreshed, message = weekend_spread._refresh_single_realtime_row(
+        "NBIS",
+        [{"ticker": "NBIS", "binance_symbol": "NBISUSDT", "binance_last_price": 281.94}],
+        mapping={"NBIS": {"binance_symbol": "NBISUSDT", "market_type": "usdm_futures"}},
+        action="anchor",
+        persist=False,
+    )
+
+    assert captured["tickers"] == ["NBIS"]
+    assert captured["force_refresh"] is False
+    assert captured["afterhours_force_refresh"] is True
+    assert refreshed["afterhours_reference_price"] == 274.0
+    assert "盘后锚点已重抓" in message
 
 
 def test_row_membership_text_is_localized_for_realtime_details() -> None:
