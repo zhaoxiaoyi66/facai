@@ -2084,7 +2084,7 @@ def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bo
 
 def _discipline_message_text(item: object) -> str:
     text = str(item or "").strip()
-    return DISCIPLINE_BLOCKER_LABELS.get(text, text or "未记录")
+    return DISCIPLINE_BLOCKER_LABELS.get(text, _trade_unknown_display_text(text, "未记录"))
 
 
 def _discipline_status_tone(status: str) -> str:
@@ -4418,18 +4418,24 @@ def _discipline_snapshot_badge(entry: dict) -> str:
     if status != "blocked" and event_status == "needs_review":
         return '<span class="trade-discipline-pill warning">需复盘</span>'
     tone = _discipline_status_tone(status)
-    label = DISCIPLINE_STATUS_COMPACT_LABELS.get(status, DISCIPLINE_STATUS_LABELS.get(status, status))
+    label = DISCIPLINE_STATUS_COMPACT_LABELS.get(
+        status,
+        DISCIPLINE_STATUS_LABELS.get(status, _trade_unknown_display_text(status, BLANK_TEXT)),
+    )
     return f'<span class="trade-discipline-pill {escape(tone)}">{escape(label)}</span>'
 
 
 def _discipline_status_text(value: object) -> str:
     status = str(value or "").strip().lower()
-    return DISCIPLINE_STATUS_COMPACT_LABELS.get(status, DISCIPLINE_STATUS_LABELS.get(status, status or BLANK_TEXT))
+    return DISCIPLINE_STATUS_COMPACT_LABELS.get(
+        status,
+        DISCIPLINE_STATUS_LABELS.get(status, _trade_unknown_display_text(status, BLANK_TEXT)),
+    )
 
 
 def _sell_reason_text(value: object) -> str:
     reason = str(value or "").strip().lower()
-    return SELL_REASON_LABELS.get(reason, reason or BLANK_TEXT)
+    return SELL_REASON_LABELS.get(reason, _trade_unknown_display_text(reason, BLANK_TEXT))
 
 
 def _decision_mood_text(value: object) -> str:
