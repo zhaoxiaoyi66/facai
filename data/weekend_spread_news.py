@@ -656,22 +656,22 @@ def _news_status_payload(
 
 def _is_major_news(item: dict[str, Any]) -> bool:
     text = str(item.get("impact_level") or "")
-    return text in {"重大", "閲嶅ぇ"}
+    return text == "重大"
 
 
 def _is_positive_news(item: dict[str, Any]) -> bool:
     text = str(item.get("sentiment_label") or "")
-    return text in {"正面", "姝ｉ潰"}
+    return text == "正面"
 
 
 def _is_negative_news(item: dict[str, Any]) -> bool:
     text = str(item.get("sentiment_label") or "")
-    return text in {"负面", "璐熼潰"}
+    return text == "负面"
 
 
 def _is_opinion_news(item: dict[str, Any]) -> bool:
     text = str(item.get("event_type") or "")
-    return text in {"观点文章", "瑙傜偣鏂囩珷"}
+    return text == "观点文章"
 
 
 def _latest_news_time(items: list[dict[str, Any]]) -> str:
