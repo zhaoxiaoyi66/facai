@@ -17,12 +17,11 @@ def render_current_mainline_module(store: PortfolioNarrativeStore | None = None)
         _render_mainline_editor(store, narrative, edit_key)
         return
 
-    header_cols = st.columns([1, 0.14])
+    header_cols = st.columns([8, 1])
     with header_cols[0]:
         st.markdown(_mainline_card_html(narrative), unsafe_allow_html=True)
     with header_cols[1]:
-        st.write("")
-        if st.button("编辑主线", key="portfolio-mainline-edit", width="stretch"):
+        if st.button("编辑主线", key="portfolio-mainline-edit"):
             st.session_state[edit_key] = True
             st.rerun()
 
@@ -100,15 +99,15 @@ def _render_mainline_editor(store: PortfolioNarrativeStore, narrative: dict[str,
 
 def _mainline_card_html(narrative: dict[str, str]) -> str:
     return (
-        '<section class="portfolio-mainline-card">'
+        '<section class="portfolio-mainline-card compact">'
         '<div class="portfolio-mainline-head">'
         "<strong>当前主线</strong>"
         "<span>用于提醒当前投资主叙事，不参与评分，不直接影响交易动作。</span>"
         "</div>"
         f'<div class="portfolio-mainline-thesis">{escape(narrative.get("main_thesis") or "")}</div>'
         '<div class="portfolio-mainline-grid">'
-        f'<article><b>{escape(narrative.get("first_half_title") or "")}</b><p>{escape(narrative.get("first_half_body") or "")}</p></article>'
-        f'<article><b>{escape(narrative.get("second_half_title") or "")}</b><p>{escape(narrative.get("second_half_body") or "")}</p></article>'
+        f'<span><b>{escape(narrative.get("first_half_title") or "")}</b>{escape(narrative.get("first_half_body") or "")}</span>'
+        f'<span><b>{escape(narrative.get("second_half_title") or "")}</b>{escape(narrative.get("second_half_body") or "")}</span>'
         "</div>"
         '<div class="portfolio-mainline-mapping">'
         "<b>组合映射</b>"
@@ -123,8 +122,8 @@ def _render_mainline_styles() -> None:
         """
         <style>
         .portfolio-mainline-card {
-            margin: 0.35rem 0 0.75rem;
-            padding: 0.82rem 0.92rem;
+            margin: 0.25rem 0 0.55rem;
+            padding: 0.58rem 0.72rem;
             border: 1px solid rgba(15, 23, 42, 0.08);
             border-radius: 9px;
             background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
@@ -136,7 +135,7 @@ def _render_mainline_styles() -> None:
             align-items: baseline;
             justify-content: space-between;
             gap: 0.8rem;
-            margin-bottom: 0.56rem;
+            margin-bottom: 0.34rem;
         }
         .portfolio-mainline-head strong,
         .portfolio-mainline-edit-head strong {
@@ -150,32 +149,35 @@ def _render_mainline_styles() -> None:
             font-size: 0.68rem;
         }
         .portfolio-mainline-thesis {
-            margin-bottom: 0.72rem;
+            margin-bottom: 0.4rem;
             color: #10233F;
-            font-size: 1.02rem;
+            font-size: 0.95rem;
             font-weight: 820;
-            line-height: 1.45;
+            line-height: 1.35;
         }
         .portfolio-mainline-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.55rem;
-            margin-bottom: 0.62rem;
+            gap: 0.36rem;
+            margin-bottom: 0.42rem;
         }
-        .portfolio-mainline-grid article {
-            min-height: 86px;
-            padding: 0.58rem 0.66rem;
+        .portfolio-mainline-grid span {
+            min-height: 34px;
+            padding: 0.34rem 0.46rem;
             border: 1px solid rgba(15, 23, 42, 0.07);
             border-radius: 8px;
             background: rgba(255, 255, 255, 0.75);
+            color: #64748b;
+            font-size: 0.68rem;
+            line-height: 1.35;
         }
         .portfolio-mainline-grid b,
         .portfolio-mainline-mapping b {
-            display: block;
+            display: inline;
             color: #0f172a;
-            font-size: 0.8rem;
+            font-size: 0.7rem;
             font-weight: 820;
-            margin-bottom: 0.22rem;
+            margin-right: 0.32rem;
         }
         .portfolio-mainline-grid p,
         .portfolio-mainline-mapping span {
@@ -188,7 +190,7 @@ def _render_mainline_styles() -> None:
             display: flex;
             align-items: baseline;
             gap: 0.55rem;
-            padding: 0.48rem 0.58rem;
+            padding: 0.34rem 0.48rem;
             border: 1px solid rgba(37, 99, 235, 0.1);
             border-radius: 8px;
             background: rgba(37, 99, 235, 0.045);

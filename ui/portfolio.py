@@ -2088,7 +2088,7 @@ def _trim_prices_text(row: dict) -> str:
 def render() -> None:
     _render_styles()
     _render_final_portfolio_styles()
-    render_page_header("组合持仓", "真实持仓、仓位偏离和下一步动作。")
+    render_page_header("组合持仓", "查看真实持仓、仓位偏离、组合风险和下一步动作。")
     _consume_portfolio_edit_query()
     _render_portfolio_notice()
     render_current_mainline_module()
@@ -2108,10 +2108,13 @@ def render() -> None:
     rows = [_attach_reconciliation(row, reconciliation_by_symbol) for row in rows]
 
     _render_overview_strip(view["summary"])
-    _render_role_structure_card(view["summary"].get("roleStructure") or build_portfolio_role_structure(rows))
-    _render_reconciliation_strip(reconciliation_rows)
-    _render_action_panel(view["actionGroups"])
+    _render_portfolio_alerts(view["summary"], view["actionGroups"], reconciliation_rows)
     _render_positions_table(rows, position_store, plan_store)
+    _render_role_structure_card(view["summary"].get("roleStructure") or build_portfolio_role_structure(rows))
+    with st.expander(_risk_radar_expander_label(view["actionGroups"]), expanded=False):
+        _render_action_panel(view["actionGroups"])
+    with st.expander(_reconciliation_expander_label(reconciliation_rows), expanded=False):
+        _render_reconciliation_strip(reconciliation_rows)
     _render_editor(position_store, settings_store, rows, settings)
 
 
@@ -2354,13 +2357,13 @@ def _dedupe_text(items: list[str]) -> list[str]:
 
 def _render_overview_strip(summary: dict) -> None:
     items = [
-        ("持仓数", str(summary.get("positionCount", 0)), "active"),
-        ("总市值", _money_or_dash(summary.get("marketValue"), zero_dash=True), "market value"),
-        ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "cost basis"),
-        ("浮动盈亏", _money_or_dash(summary.get("unrealizedPnl")), _percent_or_dash(summary.get("unrealizedPnlPct"))),
-        ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "manual total"),
         ("账户净值", _money_or_dash(summary.get("accountNav")), "市值 + 现金"),
+        ("总市值", _money_or_dash(summary.get("marketValue"), zero_dash=True), "market value"),
+        ("浮动盈亏", _money_or_dash(summary.get("unrealizedPnl")), _percent_or_dash(summary.get("unrealizedPnlPct"))),
         ("现金", _money_or_dash(summary.get("cashBalance")), _cash_source_text(summary.get("cashBalanceSource"))),
+        ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "cost basis"),
+        ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "manual total"),
+        ("持仓数", str(summary.get("positionCount", 0)), "active"),
     ]
     html = "".join(
         '<div class="portfolio-stat compact">'
@@ -2380,6 +2383,76 @@ def _cash_source_text(source: object) -> str:
     if value == "basis_realized":
         return "本金/成本/已实现盈亏推导"
     return "现金待补"
+
+
+def _render_portfolio_alerts(summary: dict, action_groups: list[dict], reconciliation_rows: list[dict]) -> None:
+    review_group = _action_group_by_key(action_groups, "review")
+    overweight_group = _action_group_by_key(action_groups, "overweight")
+    addable_group = _action_group_by_key(action_groups, "addable")
+    reconciliation = _reconciliation_summary(reconciliation_rows)
+    alert_items: list[str] = []
+    review_count = int(review_group.get("count") or 0)
+    if review_count > 0:
+        alert_items.append(f"{review_count} 只持仓需要复核：{_symbol_preview(review_group.get('symbols') or [])}")
+    if int(overweight_group.get("count") or 0) > 0:
+        alert_items.append(f"{int(overweight_group.get('count') or 0)} 只持仓超过计划上限：{_symbol_preview(overweight_group.get('symbols') or [])}")
+    if int(reconciliation.get("problemCount") or 0) > 0:
+        parts = [
+            f"旧未入账 {reconciliation['unsynced']}",
+            f"数量不一致 {reconciliation['quantityMismatch']}",
+            f"成本不一致 {reconciliation['costMismatch']}",
+        ]
+        alert_items.append("账务核对存在问题：" + "｜".join(parts))
+    if int(addable_group.get("count") or 0) <= 0 and int(summary.get("positionCount") or 0) > 0:
+        alert_items.append("当前无可加仓标的")
+
+    if not alert_items:
+        message = "当前无高优先级组合风险。"
+        tone = "neutral"
+    else:
+        message = "；".join(alert_items[:3])
+        tone = "warning"
+    st.markdown(
+        f'<section class="portfolio-alert-strip {escape(tone)}">'
+        "<strong>组合提醒</strong>"
+        f"<span>{escape(message)}</span>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _action_group_by_key(action_groups: list[dict], key: str) -> dict:
+    for item in action_groups or []:
+        if str(item.get("key") or "") == key:
+            return item
+    return {"key": key, "count": 0, "symbols": []}
+
+
+def _symbol_preview(symbols: list[object], *, limit: int = 4) -> str:
+    cleaned = [str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()]
+    if not cleaned:
+        return "暂无"
+    suffix = "…" if len(cleaned) > limit else ""
+    return "、".join(cleaned[:limit]) + suffix
+
+
+def _risk_radar_expander_label(action_groups: list[dict]) -> str:
+    review = int(_action_group_by_key(action_groups, "review").get("count") or 0)
+    overweight = int(_action_group_by_key(action_groups, "overweight").get("count") or 0)
+    near_trim = int(_action_group_by_key(action_groups, "nearTrim").get("count") or 0)
+    addable = int(_action_group_by_key(action_groups, "addable").get("count") or 0)
+    return f"组合风险雷达｜需复核 {review}｜超仓 {overweight}｜接近满仓 {near_trim}｜可加仓 {addable}"
+
+
+def _reconciliation_expander_label(items: list[dict]) -> str:
+    summary = _reconciliation_summary(items)
+    return (
+        "账务核对"
+        f"｜一致 {summary['ok']}"
+        f"｜旧未入账 {summary['unsynced']}"
+        f"｜数量不一致 {summary['quantityMismatch']}"
+        f"｜成本不一致 {summary['costMismatch']}"
+    )
 
 
 def _render_role_structure_card(structure: dict) -> None:
@@ -2984,27 +3057,25 @@ def _render_final_portfolio_styles() -> None:
     st.markdown(
         """
         <style>
+        .block-container {
+            max-width: 1280px;
+        }
         .portfolio-overview.compact {
             display: grid;
-            grid-template-columns: repeat(6, minmax(0, 1fr));
-            gap: 0;
-            margin: 0.35rem 0 0.75rem;
-            padding: 0.34rem;
-            border: 1px solid rgba(15, 23, 42, 0.07);
-            border-radius: 8px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.5rem;
+            margin: 0.35rem 0 0.55rem;
+            padding: 0;
+            border: 0;
+            background: transparent;
         }
         .portfolio-stat.compact {
-            min-height: 58px;
-            padding: 0.48rem 0.68rem;
-            border: 0;
-            border-right: 1px solid rgba(15, 23, 42, 0.06);
-            border-radius: 0;
-            background: transparent;
-            box-shadow: none;
-        }
-        .portfolio-stat.compact:last-child {
-            border-right: 0;
+            min-height: 64px;
+            padding: 0.52rem 0.68rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 8px;
+            background: #FFFFFF;
+            box-shadow: 0 8px 18px rgba(15,23,42,.035);
         }
         .portfolio-stat.compact span {
             color: #64748b;
@@ -3023,9 +3094,35 @@ def _render_final_portfolio_styles() -> None:
             opacity: 1;
             font-size: 0.62rem;
         }
+        .portfolio-alert-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            margin: 0.15rem 0 0.55rem;
+            padding: 0.48rem 0.62rem;
+            border-radius: 8px;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            background: #F8FAFC;
+        }
+        .portfolio-alert-strip strong {
+            flex: 0 0 auto;
+            color: #0f172a;
+            font-size: 0.76rem;
+            font-weight: 860;
+        }
+        .portfolio-alert-strip span {
+            min-width: 0;
+            color: #475569;
+            font-size: 0.74rem;
+            line-height: 1.35;
+        }
+        .portfolio-alert-strip.warning {
+            border-color: rgba(245, 158, 11, 0.22);
+            background: #FFFBEB;
+        }
         .portfolio-role-structure-card {
-            margin: 0.15rem 0 0.8rem;
-            padding: 0.68rem 0.78rem;
+            margin: 0.45rem 0 0.75rem;
+            padding: 0.56rem 0.66rem;
             border: 1px solid rgba(15, 23, 42, 0.08);
             border-radius: 8px;
             background: #FFFFFF;
@@ -3048,7 +3145,7 @@ def _render_final_portfolio_styles() -> None:
         }
         .portfolio-role-card-grid {
             display: grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: 0.45rem;
         }
         .portfolio-role-card-item {
@@ -3778,10 +3875,22 @@ def _render_final_portfolio_styles() -> None:
             .portfolio-lanes {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
+            .portfolio-table th:nth-child(6),
+            .portfolio-table td:nth-child(6),
+            .portfolio-table th:nth-child(7),
+            .portfolio-table td:nth-child(7) {
+                display: none;
+            }
+            .portfolio-mainline-head span {
+                display: none;
+            }
         }
         @media (max-width: 720px) {
             .portfolio-lanes {
                 grid-template-columns: 1fr;
+            }
+            .portfolio-alert-strip {
+                display: block;
             }
         }
         </style>
