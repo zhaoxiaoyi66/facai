@@ -16,3 +16,10 @@ def test_manual_review_missing_placeholders_are_localized() -> None:
     assert manual_review._review_has_display_text("N/A") is False
     assert manual_review._review_row_source_meta({}) == "待补 · 待补"
     assert manual_review._review_source_display({}) == "待补"
+
+
+def test_manual_review_header_uses_chinese_kicker() -> None:
+    source = inspect.getsource(manual_review.render)
+
+    assert "DATA REVIEW" not in source
+    assert "系统后验验证" in source

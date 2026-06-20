@@ -146,7 +146,7 @@ def render() -> None:
         """
         <div class="review-toolbar">
           <div>
-            <div class="review-kicker">DATA REVIEW</div>
+            <div class="review-kicker">系统后验验证</div>
             <h1>数据复核</h1>
             <p>验证系统信号、历史表现和数据质量。</p>
           </div>
