@@ -24,6 +24,12 @@ from settings import PROJECT_ROOT
 
 
 FMP_CACHE_SCHEMA_VERSION = 5
+FMP_MISSING_KEY_MESSAGE = "缺少 FMP 接口密钥。请先在本地环境中配置 FMP 数据源。"
+
+
+def _is_missing_fmp_key_error(exc: RuntimeError) -> bool:
+    text = str(exc)
+    return "FMP" in text and "接口密钥" in text
 
 
 class MarketDataProvider(ABC):
@@ -115,7 +121,7 @@ class FMPProvider(PlaceholderProvider):
                 force_refresh=force_refresh,
             )
         except RuntimeError as exc:
-            if "缺少 FMP_API_KEY" in str(exc):
+            if _is_missing_fmp_key_error(exc):
                 raise
             stale = self.price_cache.get_history(cache_key, max_age_hours=24 * 30, min_rows=20)
             if stale is not None:
@@ -147,7 +153,7 @@ class FMPProvider(PlaceholderProvider):
                 self._get_json("quote", {"symbol": ticker}, force_refresh=force_refresh)
             )
         except RuntimeError as exc:
-            if "缺少 FMP_API_KEY" in str(exc):
+            if _is_missing_fmp_key_error(exc):
                 raise
             stale = self.fundamental_cache.get_snapshot(ticker, max_age_hours=24 * 30)
             if stale and stale.get("data_source") == "FMP" and stale.get("current_price") is not None:
@@ -522,7 +528,7 @@ class FMPProvider(PlaceholderProvider):
         force_refresh: bool = False,
     ) -> list | dict:
         if not self.api_key:
-            raise RuntimeError("缺少 FMP_API_KEY。请在环境变量或 .env 文件中配置后再使用 FMP 数据源。")
+            raise RuntimeError(FMP_MISSING_KEY_MESSAGE)
 
         if not force_refresh:
             cached = self.response_cache.get(endpoint, params)

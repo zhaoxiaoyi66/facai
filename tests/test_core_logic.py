@@ -115,6 +115,7 @@ from data.normalize_metric_value import (
 )
 from data.providers import (
     FMPProvider,
+    FMP_MISSING_KEY_MESSAGE,
     MarketDataProvider,
     PolygonProvider,
     SECEdgarProvider,
@@ -358,8 +359,10 @@ class ProviderTests(unittest.TestCase):
     def test_fmp_provider_requires_api_key(self) -> None:
         provider = FMPProvider(api_key=None)
         provider.api_key = None
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError) as ctx:
             provider.get_quote("MSFT", force_refresh=True)
+        self.assertEqual(str(ctx.exception), FMP_MISSING_KEY_MESSAGE)
+        self.assertNotIn("FMP_API_KEY", str(ctx.exception))
 
     def test_qwen_health_check_missing_key_is_safe(self) -> None:
         client = QwenClient(
