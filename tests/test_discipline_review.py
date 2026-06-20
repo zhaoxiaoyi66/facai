@@ -801,6 +801,11 @@ def test_investment_notes_page_is_lightweight_learning_notebook() -> None:
         "管理认知锚点",
         "原则库",
         "_render_investment_principles_reminder",
+        "discipline-checklist",
+        "principle-rule-card",
+        "principle-rule-grid",
+        "principle-summary-line",
+        "mistake-principle-reminder",
     ]:
         assert old_label not in source
 

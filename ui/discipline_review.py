@@ -1455,9 +1455,7 @@ def _render_styles() -> None:
     st.markdown(
         """
         <style>
-        .discipline-checklist,
         .discipline-card-grid,
-        .principle-rule-card,
         .dashboard-discipline-card,
         .trade-entry-discipline-hint,
         .review-conclusion-card,
@@ -1466,35 +1464,6 @@ def _render_styles() -> None:
             border-radius: 8px;
             background: #fff;
             box-shadow: 0 14px 28px rgba(15,23,42,.05);
-        }
-        .mistake-principle-reminder {
-            margin:.42rem 0 .6rem; padding:.48rem .6rem; border-radius:8px;
-            background:#fff7ed; border:1px solid rgba(251,146,60,.25); color:#9a3412; font-size:.84rem; font-weight:750;
-        }
-        .discipline-checklist { padding: .8rem 1rem; margin-bottom: .9rem; }
-        .discipline-checklist ol { margin: 0; padding: 0; list-style: none; display: grid; gap: .45rem; }
-        .discipline-checklist li { display: flex; gap: .55rem; color: #334155; font-size: .9rem; }
-        .discipline-checklist li span {
-            display: inline-flex; align-items: center; justify-content: center;
-            width: 1.35rem; height: 1.35rem; border-radius: 999px; background: #eef2ff; color: #3730a3; font-weight: 800;
-        }
-        .principle-rule-grid {
-            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: .68rem; margin: .45rem 0 .75rem;
-        }
-        .principle-rule-card { padding: .82rem .92rem; min-height: 6rem; }
-        .principle-rule-number {
-            display: inline-flex; align-items: center; justify-content: center;
-            min-width: 2.2rem; height: 1.45rem; border-radius: 999px;
-            background: #eef2ff; color: #3730a3; font-size: .72rem; font-weight: 900; letter-spacing: .04em;
-            margin-bottom: .42rem;
-        }
-        .principle-rule-card strong { display: block; color: #0f172a; font-size: .98rem; margin-bottom: .24rem; }
-        .principle-rule-card p { margin: 0; color: #64748b; font-size: .84rem; line-height: 1.45; }
-        .principle-edit-number {
-            display: inline-flex; align-items: center; justify-content: center;
-            width: 2rem; height: 2rem; border-radius: 999px; background: #f1f5f9;
-            color: #334155; font-size: .78rem; font-weight: 900; margin-top: .18rem;
         }
         .discipline-card-grid {
             display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1509,11 +1478,6 @@ def _render_styles() -> None:
         .discipline-table th, .discipline-table td { padding: .5rem .58rem; border-bottom: 1px solid rgba(148,163,184,.16); text-align: left; vertical-align: top; }
         .discipline-table th { color: #64748b; background: #f8fafc; }
         .discipline-empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: .9rem; color: #64748b; background: #f8fafc; margin: .7rem 0; }
-        .principle-summary-line {
-            margin: .8rem 0 .4rem; padding: .6rem .75rem; border-radius: 8px;
-            background: #f8fafc; border: 1px solid rgba(148,163,184,.22); color: #475569; font-size: .86rem;
-        }
-        .principle-summary-line strong { color: #0f172a; }
         .review-conclusion-card { padding: .85rem 1rem; margin: .5rem 0 .9rem; }
         .review-conclusion-card p { margin: 0 0 .65rem; color: #0f172a; font-weight: 700; line-height: 1.55; }
         .review-conclusion-card > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
@@ -1582,7 +1546,6 @@ def _render_styles() -> None:
         .trade-entry-discipline-hint strong { display: block; color: #0f172a; }
         .trade-entry-discipline-hint span { display: block; color: #475569; font-size: .85rem; margin-top: .1rem; }
         @media (max-width: 900px) {
-            .principle-rule-grid { grid-template-columns: 1fr; }
             .discipline-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .review-conclusion-card > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .dashboard-discipline-card { display: block; }
