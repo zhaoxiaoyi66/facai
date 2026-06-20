@@ -11,31 +11,35 @@ RUNTIME_ROOTS = [
     Path("scripts"),
 ]
 
-MOJIBAKE_TOKENS = (
-    "瑙傜偣",
-    "閲嶅ぇ",
-    "姝ｉ潰",
-    "璐熼潰",
-    "鏈",
-    "缂",
-    "鎶",
-    "閰",
-    "閺",
-    "閹",
-    "閿",
-    "鐎佃壈",
-    "閹垫挸",
-    "缂囧氦",
-    "娑撳秷",
-    "閸忓懓",
-    "鏉堝啫",
-    "閺冨爼",
-    "鐟欏倸",
-    "闁插秶",
-    "鈥",
-    "鈼",
-    "锟",
-    "\ufffd",
+MOJIBAKE_TOKEN_ESCAPES = (
+    r"\u7459\u509c\u5063",
+    r"\u95b2\u5d85\u3047",
+    r"\u59dd\uff49\u6f70",
+    r"\u7490\u71bc\u6f70",
+    r"\u93c8",
+    r"\u7f02",
+    r"\u93b6",
+    r"\u95b0",
+    r"\u95ba",
+    r"\u95b9",
+    r"\u95bf",
+    r"\u940e\u4f43\u58c8",
+    r"\u95b9\u57ab\u6338",
+    r"\u7f02\u56e7\u6c26",
+    r"\u5a11\u64b3\u79f7",
+    r"\u95b8\u5fd3\u61d3",
+    r"\u93c9\u581d\u556b",
+    r"\u95ba\u51a8\u723c",
+    r"\u941f\u6b0f\u5038",
+    r"\u95c1\u63d2\u79f6",
+    r"\u9225",
+    r"\u923c",
+    r"\u951f",
+    r"\ufffd",
+)
+
+MOJIBAKE_TOKENS = tuple(
+    token.encode("ascii").decode("unicode_escape") for token in MOJIBAKE_TOKEN_ESCAPES
 )
 
 
