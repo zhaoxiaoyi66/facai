@@ -6,6 +6,7 @@ import pytest
 
 from data.weekend_spread_research import (
     append_monitor_ticks,
+    build_generation_report,
     build_premium_events,
     build_research_samples,
     build_weekend_spread_research_samples,
@@ -13,6 +14,7 @@ from data.weekend_spread_research import (
     list_monitor_ticks,
     list_premium_events,
     list_research_samples,
+    monitor_recording_health,
     research_summary,
 )
 
@@ -69,7 +71,7 @@ def test_continuous_premium_ticks_are_compressed_into_one_event() -> None:
     assert event["max_premium_pct"] == pytest.approx(3.0)
     assert event["minutes_above_2pct"] == pytest.approx(6.0)
     assert event["converged_before_open"] == 1
-    assert event["event_quality"] == "高质量事件"
+    assert event["event_quality"] == "待新闻确认"
 
 
 def test_single_tick_spike_is_marked_as_instant_spike() -> None:
@@ -98,9 +100,54 @@ def test_research_sample_calculates_weekend_metrics() -> None:
 def test_no_news_extreme_spread_sample_is_marked() -> None:
     ticks = [_tick("MU", 0, 5.5, ratio=2.2), _tick("MU", 3, 4.0, ratio=1.8)]
 
-    sample = build_research_samples(ticks)[0]
+    sample = build_research_samples(
+        ticks,
+        backtest_rows=[{"week_id": "2026-W25", "ticker": "MU", "broker_open_close": 104.0, "p2_delay_minutes": 0}],
+        now=datetime(2026, 6, 22, 1, 0, tzinfo=timezone.utc),
+        news_contexts={("2026-W25", "MU"): {"news_status": "无重大新闻"}},
+    )[0]
 
     assert sample["sample_quality"] == "无新闻极端价差"
+
+
+def test_research_sample_waits_for_overnight_validation_before_open() -> None:
+    ticks = [_tick("MU", 0, 5.5, ratio=2.2), _tick("MU", 3, 4.0, ratio=1.8)]
+
+    sample = build_research_samples(ticks, now=datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc))[0]
+
+    assert sample["p2_status"] == "未到夜盘时间"
+    assert sample["sample_quality"] == "等待夜盘验证"
+
+
+def test_research_sample_marks_liquidity_missing_after_open_without_p2() -> None:
+    ticks = [_tick("MU", 0, 5.5, ratio=2.2), _tick("MU", 3, 4.0, ratio=1.8)]
+
+    sample = build_research_samples(ticks, now=datetime(2026, 6, 22, 1, 0, tzinfo=timezone.utc))[0]
+
+    assert sample["p2_status"] == "夜盘窗口无有效价格"
+    assert sample["sample_quality"] == "夜盘流动性不足"
+
+
+def test_generation_report_and_recording_health_surface_quality_counts() -> None:
+    ticks = [
+        _tick("GLW", 0, 2.5, ratio=1.2),
+        _tick("GLW", 3, 2.8, ratio=1.4),
+        _tick("NOW", 9, 3.2, ratio=None),
+    ]
+    ticks[-1]["avg_range_20d_pct"] = None
+    events = build_premium_events(ticks)
+    samples = build_research_samples(ticks, now=datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc))
+
+    report = build_generation_report(ticks, events, samples)
+    health = monitor_recording_health(ticks=ticks, now=datetime(2026, 6, 20, 0, 12, tzinfo=timezone.utc))
+
+    assert report["raw_tick_count"] == 3
+    assert report["ticker_count"] == 2
+    assert report["pending_p2_count"] == 2
+    assert report["downgraded_volatility_missing_count"] == 1
+    assert health["coverage_pct"] < 100
+    assert health["max_gap_minutes"] == pytest.approx(6.0)
+    assert health["volatility_missing_count"] == 1
 
 
 def test_build_research_samples_persists_events_and_samples(tmp_path) -> None:

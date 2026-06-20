@@ -7626,6 +7626,9 @@ def test_weekend_monitor_research_tab_generates_only_on_button_click() -> None:
     source = inspect.getsource(weekend_spread._render_monitor_research_tab)
 
     assert "生成本轮监控复盘" in source
+    assert "检查本轮价差事件新闻" in source
+    assert "数据记录健康" in inspect.getsource(weekend_spread._render_monitor_recording_health)
+    assert "本次生成报告" in inspect.getsource(weekend_spread._render_monitor_generation_report)
     assert "build_weekend_spread_research_samples" in source
     assert "if generate_clicked" in source
     assert "record_trade" not in source
@@ -7644,7 +7647,9 @@ def test_weekend_monitor_research_frames_hide_internal_fields() -> None:
             "duration_minutes": 9.0,
             "converged_before_open": 1,
             "news_label": "无新闻解释",
+            "news_status": "无重大新闻",
             "event_quality": "高质量事件",
+            "review_reason": "价差强度和持续时间都较高。",
             "event_id": "internal",
         }
     ]
@@ -7658,10 +7663,13 @@ def test_weekend_monitor_research_frames_hide_internal_fields() -> None:
             "max_spread_atr_ratio": 1.8,
             "premium_duration_minutes": 9.0,
             "news_label": "无新闻解释",
+            "news_status": "无重大新闻",
             "p2_time_et": "2026-06-21T20:00:00-04:00",
+            "p2_status": "首分钟样本",
             "p2_delay_minutes": 0,
             "capture_pct": 50.0,
             "sample_quality": "首分钟样本",
+            "data_health_label": "记录完整",
             "sample_id": "internal",
         }
     ]
@@ -7671,6 +7679,10 @@ def test_weekend_monitor_research_frames_hide_internal_fields() -> None:
 
     assert "event_id" not in event_frame.columns
     assert "sample_id" not in sample_frame.columns
+    assert "为什么值得看" in event_frame.columns
+    assert "新闻状态" in sample_frame.columns
+    assert "P2 状态" in sample_frame.columns
+    assert "数据记录健康" in sample_frame.columns
     assert "None" not in event_frame.to_string()
     assert "None" not in sample_frame.to_string()
 
