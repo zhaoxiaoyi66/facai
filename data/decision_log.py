@@ -1913,7 +1913,7 @@ def _buy_advisory_warnings_from_values(values: dict) -> list[str]:
     if _clean_bool(_value(values, "radarBlocked", "radar_blocked")) and not warnings:
         warnings.append("买区提示需人工复核；可手动继续，系统会记录为人工复核记录。")
     if _clean_bool(_value(values, "gateHardBlocked", "gate_hard_blocked")) and not warnings:
-        warnings.append("旧买入风险标记已按提示保存；可手动继续，系统会记录为人工复核记录。")
+        warnings.append("历史买入风险标记已按提示保存；可手动继续，系统会记录为人工复核记录。")
     if _clean_bool(_value(values, "moodGateBlocked", "mood_gate_blocked")):
         warnings.append("买入情绪提示：请确认这不是 FOMO / 焦虑 / 复仇交易。")
     if _clean_bool(_value(values, "positionGateBlocked", "position_gate_blocked")):

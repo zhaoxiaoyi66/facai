@@ -1014,7 +1014,7 @@ def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_r
         guard_key = f"review-set-current-guard-{metric_id}"
         if not st.session_state.get(guard_key):
             st.session_state[guard_key] = True
-            st.warning("这是旧期间数据。设为当前值后可能进入当前评分，请再次点击确认。")
+            st.warning("这是历史期间数据。设为当前值后可能进入当前评分，请再次点击确认。")
             return
         store.mark_item_current_value(metric_id)
         st.session_state.pop(guard_key, None)

@@ -5473,7 +5473,7 @@ def _data_quality_text(value: object) -> str:
         "STALE_CACHE": "缓存过期",
         "INVALID_PRICE": "价格无效",
         "DATA_UNAVAILABLE": "数据不可用",
-        "UNCONFIRMED_MAPPING": "旧观察样本",
+        "UNCONFIRMED_MAPPING": "历史观察样本",
         "OBSERVE_ONLY": "仅观察",
         "OBSERVE_ANCHOR_ONLY": "仅观察锚点",
         "NO_AFTERHOURS_CLOSE": "缺少最后交易日盘后价格",
