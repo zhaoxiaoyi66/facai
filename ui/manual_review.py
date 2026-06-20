@@ -168,267 +168,24 @@ def render() -> None:
     _render_rows(store, rows, ai_store, view_rows)
 
 
-def _render_sync_controls(store: ReviewQueueStore) -> None:
-    cols = st.columns([1.45, 1.0, 1.0, 1.0, 2.2], vertical_alignment="center")
-    if cols[0].button("同步当前观察池复核队列", width="stretch", key="review-sync-watchlist"):
-        result = ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist(load_watchlist())
-        st.session_state["review_queue_sync_result"] = result
-        st.toast(f"已同步 {len(result.symbols)} 只股票")
-        st.rerun()
-    st.session_state["review-filter-only-extracted"] = cols[1].checkbox("仅显示有值待确认", key="review-only-extracted")
-    st.session_state["review-filter-only-needs-data"] = cols[2].checkbox("仅显示需要补齐", key="review-only-needs-data")
-    st.session_state["review-filter-affects-scoring"] = cols[3].checkbox("仅显示影响评分", key="review-only-affects-scoring")
-
-    result = st.session_state.get("review_queue_sync_result")
-    if result:
-        counts = "、".join(f"{ITEM_TYPE_LABELS.get(key, key)} {value}" for key, value in result.item_type_counts.items())
-        cols[4].caption(f"上次同步：{len(result.symbols)}只股票，{result.total}项；{counts or '暂无项目'}")
-    else:
-        cols[4].caption("同步只读取本地缓存和评分缺口，不会批量抓 SEC / IR。")
 
 
-def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
-    cards = [
-        ("涉及股票", summary.get("symbols", 0), "blue"),
-        ("待确认数据", summary.get("pending_review", 0), "yellow"),
-        ("需要补齐", summary.get("needs_data", 0), "orange"),
-        ("需要补证据", summary.get("needs_evidence", 0), "orange"),
-        ("低置信度推导", summary.get("derived_low_confidence", 0), "gray"),
-        ("定性风险复核", summary.get("qualitative_risk", 0), "orange"),
-        ("已确认", summary.get("approved", 0), "green"),
-        ("已驳回", summary.get("rejected", 0), "red"),
-    ]
-    html = "".join(
-        f'<div class="review-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
-        for label, value, tone in cards
-    )
-    st.markdown(f'<div class="review-summary-strip">{html}</div>', unsafe_allow_html=True)
-    if ai_summary:
-        ai_cards = [
-            ("AI已预审", ai_summary.get("total", 0), "blue"),
-            ("AI建议确认", ai_summary.get("recommend_approve", 0), "green"),
-            ("AI建议驳回", ai_summary.get("recommend_reject", 0), "red"),
-            ("AI建议修正", ai_summary.get("recommend_correct", 0), "orange"),
-            ("AI要求人工判断", ai_summary.get("needs_human_review", 0), "yellow"),
-            ("证据不足", ai_summary.get("not_enough_evidence", 0), "gray"),
-            ("幻觉风险", ai_summary.get("hallucination_risk", 0), "red"),
-        ]
-        ai_html = "".join(
-            f'<div class="review-ai-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
-            for label, value, tone in ai_cards
-        )
-        st.markdown(f'<div class="review-ai-summary-strip">{ai_html}</div>', unsafe_allow_html=True)
-        triage_cards = [
-            ("AI已预审", ai_summary.get("total", 0), "blue"),
-            ("AI自动确认", summary.get("auto_approved_by_ai", ai_summary.get("auto_approved_by_ai", 0)), "green"),
-            ("AI建议确认", summary.get("ai_recommend_approve", ai_summary.get("ai_recommend_approve", 0)), "blue"),
-            ("AI建议修正", summary.get("ai_recommend_correct", ai_summary.get("ai_recommend_correct", 0)), "orange"),
-            ("AI建议驳回", summary.get("ai_recommend_reject", ai_summary.get("ai_recommend_reject", 0)), "red"),
-            ("证据不足", summary.get("ai_not_enough_evidence", ai_summary.get("ai_not_enough_evidence", 0)), "gray"),
-            ("AI要求人工判断", summary.get("ai_needs_human_review", ai_summary.get("ai_needs_human_review", 0)), "yellow"),
-        ]
-        triage_html = "".join(
-            f'<div class="review-ai-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
-            for label, value, tone in triage_cards
-        )
-        st.markdown(f'<div class="review-ai-summary-strip">{triage_html}</div>', unsafe_allow_html=True)
 
 
-def _render_filters(store: ReviewQueueStore) -> dict:
-    rows = store.list_items()
-    symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
-    metric_keys = sorted({str(row.get("metricKey") or "") for row in rows if row.get("metricKey")})
-    item_types = sorted({str(row.get("itemType") or "") for row in rows if row.get("itemType")})
-    source_types = sorted({str(row.get("sourceType") or "") for row in rows if row.get("sourceType")})
-    model_types = sorted({str(row.get("modelType") or _model_type_for_symbol(str(row.get("symbol") or ""))) for row in rows if row.get("symbol")})
-
-    query_symbol = str(st.query_params.get("review_symbol") or st.query_params.get("symbol") or "").upper()
-    symbol_options = ["全部", *symbols]
-    symbol_index = symbol_options.index(query_symbol) if query_symbol in symbol_options else 0
-
-    with st.container(border=True):
-        cols = st.columns([0.9, 1.2, 1.15, 1.1, 0.95, 1.05, 1.1])
-        symbol = cols[0].selectbox("股票", symbol_options, index=symbol_index, key="review-filter-symbol")
-        metric_key = cols[1].selectbox("指标", ["全部", *metric_keys], format_func=lambda value: "全部" if value == "全部" else metric_label(value), key="review-filter-metric")
-        item_type = cols[2].selectbox("类型", ["全部", *item_types], format_func=lambda value: "全部" if value == "全部" else ITEM_TYPE_LABELS.get(value, value), key="review-filter-item-type")
-        source_type = cols[3].selectbox("来源", ["全部", *source_types], format_func=lambda value: "全部" if value == "全部" else source_type_label(value), key="review-filter-source")
-        confidence = cols[4].selectbox("置信度", ["全部", "high", "medium", "low"], format_func=lambda value: "全部" if value == "全部" else confidence_label(value), key="review-filter-confidence")
-        review_status = cols[5].selectbox("复核状态", ["全部", *STATUS_LABELS.keys()], format_func=lambda value: "全部" if value == "全部" else STATUS_LABELS.get(value, value), key="review-filter-status")
-        model_type = cols[6].selectbox("模型", ["全部", *model_types], format_func=lambda value: "全部" if value == "全部" else model_type_label(value), key="review-filter-model")
-    return {
-        "symbol": None if symbol == "全部" else symbol,
-        "metric_key": None if metric_key == "全部" else metric_key,
-        "item_type": None if item_type == "全部" else item_type,
-        "source_type": None if source_type == "全部" else source_type,
-        "confidence": None if confidence == "全部" else confidence,
-        "review_status": None if review_status == "全部" else review_status,
-        "model_type": None if model_type == "全部" else model_type,
-        "affects_scoring": bool(st.session_state.get("review-filter-affects-scoring")),
-    }
 
 
-def _filtered_rows(store: ReviewQueueStore, filters: dict) -> list[dict]:
-    review_status = filters["review_status"]
-    item_type = filters["item_type"]
-    if st.session_state.get("review-filter-only-extracted"):
-        item_type = "extracted_value"
-    if st.session_state.get("review-filter-only-needs-data"):
-        review_status = "needs_data"
-    return store.list_items(
-        symbol=filters["symbol"],
-        metric_key=filters["metric_key"],
-        item_type=item_type,
-        source_type=filters["source_type"],
-        confidence=filters["confidence"],
-        review_status=review_status,
-        model_type=filters["model_type"],
-        affects_scoring=filters["affects_scoring"],
-    )
 
 
-def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
-    view_item = row.pop("__review_view_item", None)
-    metric_id = int(row["id"])
-    status = str(row.get("reviewStatus") or "pending_review")
-    confidence = str(row.get("confidence") or "")
-    with st.container(border=True):
-        cols = st.columns([0.6, 1.35, 1.05, 0.9, 0.9, 0.95, 1.0, 1.0, 1.7])
-        cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
-        cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
-            f"<div class='metric-sub'>{escape(_metric_row_subtitle(row))}</div>",
-            unsafe_allow_html=True,
-        )
-        item_type = str(row.get("itemType") or "")
-        cols[2].markdown(_badge(ITEM_TYPE_LABELS.get(item_type, item_type), ITEM_TYPE_TONES.get(item_type, "gray")), unsafe_allow_html=True)
-        cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
-        cols[4].markdown(escape(source_type_label(row.get("sourceType"))))
-        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
-        cols[6].markdown(escape(_affects_label(row.get("affects"))))
-        cols[7].markdown(_badge(STATUS_LABELS.get(status, status), STATUS_TONES.get(status, "gray")), unsafe_allow_html=True)
-        with cols[8]:
-            action_cols = st.columns(3)
-            approve_disabled = status in {"approved", "needs_data"}
-            if action_cols[0].button("确认", key=f"review-approve-v2-{metric_id}", disabled=approve_disabled, width="stretch"):
-                store.update_review_status(metric_id, "approved")
-                st.toast("已确认使用")
-                st.rerun()
-            if action_cols[1].button("驳回", key=f"review-reject-v2-{metric_id}", disabled=status == "rejected", width="stretch"):
-                store.update_review_status(metric_id, "rejected")
-                st.toast("已驳回")
-                st.rerun()
-            _render_correction_popover(store, row, action_cols[2])
-
-        detail_cols = st.columns([3.2, 1.2])
-        snippet = _truncate(str(row.get("extractedText") or row.get("explanation") or ""), 360)
-        detail_cols[0].markdown(
-            f"<div class='source-snippet'><b>{escape(_detail_title(row))}</b><br>{escape(snippet or '暂无说明')}</div>"
-            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(_review_display_text(row.get('updatedAt'), '未记录'))}</div>",
-            unsafe_allow_html=True,
-        )
-        url = row.get("sourceUrl")
-        if url:
-            detail_cols[1].link_button("打开来源", str(url), width="stretch")
-        else:
-            detail_cols[1].caption("暂无来源链接")
-        if ai_result:
-            _render_ai_action_controls(store, row, ai_result)
-            st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
 
 
-def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filters: dict, rows: list[dict]) -> None:
-    assistant = QwenReviewService(queue_store=store, ai_store=ai_store)
-    candidates = qwen_review_candidates(rows)
-    with st.container(border=True):
-        cols = st.columns([1.25, 1.0, 1.0, 1.0, 1.45], vertical_alignment="center")
-        if not assistant.configured:
-            cols[4].caption("未配置 Qwen 复核，仍可手动复核。")
-        else:
-            cols[4].caption(f"本次最多预审 {min(len(candidates), assistant.max_items)} 条；跳过已确认、已驳回、FMP 和已计算项。")
-        if cols[0].button("仅运行 Qwen 证据复核", key="qwen-review-filtered", width="stretch"):
-            result = assistant.review_rows(rows)
-            _show_ai_run_result(result)
-            st.rerun()
-        st.session_state["review-filter-ai-reject"] = cols[1].checkbox("AI建议驳回", key="review-ai-reject")
-        st.session_state["review-filter-ai-correct"] = cols[2].checkbox("AI建议修正", key="review-ai-correct")
-        st.session_state["review-filter-ai-human"] = cols[3].checkbox("AI要求人工判断", key="review-ai-human")
 
 
-def _show_ai_run_result(result) -> None:
-    st.session_state["qwen_review_last_result"] = {
-        "reviewed": int(getattr(result, "reviewed", 0) or 0),
-        "skipped": int(getattr(result, "skipped", 0) or 0),
-        "auto_approved": int(getattr(result, "auto_approved", 0) or 0),
-        "needs_human": int(getattr(result, "needs_human", 0) or 0),
-        "not_configured": bool(getattr(result, "not_configured", False)),
-        "errors": list(getattr(result, "errors", None) or []),
-    }
-    if getattr(result, "not_configured", False):
-        st.toast("未配置 Qwen 复核，仍可手动复核。")
-        return
-    errors = getattr(result, "errors", None) or []
-    if errors:
-        st.toast(f"Qwen预审完成 {result.reviewed} 条，{len(errors)} 条失败")
-    else:
-        st.toast(f"Qwen预审完成 {result.reviewed} 条；自动确认 {result.auto_approved} 条")
 
 
-def _render_last_qwen_result() -> None:
-    result = st.session_state.get("qwen_review_last_result")
-    if not isinstance(result, dict):
-        return
-    if result.get("not_configured"):
-        st.warning("Qwen 未配置：请检查 .env 中的 QWEN_API_KEY。")
-        return
-    errors = result.get("errors") or []
-    message = (
-        f"Qwen预审完成：处理 {result.get('reviewed', 0)} 条，"
-        f"跳过 {result.get('skipped', 0)} 条，"
-        f"AI自动确认 {result.get('auto_approved', 0)} 条，"
-        f"需要人工判断 {result.get('needs_human', 0)} 条。"
-    )
-    if errors:
-        st.warning(message + f" 失败 {len(errors)} 条。")
-        with st.expander("查看失败原因", expanded=False):
-            for error in errors[:10]:
-                st.caption(str(error))
-    else:
-        st.success(message)
 
 
-        if not candidates:
-            st.info("当前筛选结果里没有可交给 Qwen 预审的项目。请先同步复核队列，或取消过窄的筛选条件。")
-        _render_last_qwen_result()
 
 
-def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
-    latest = ai_store.latest_for_items([int(row["id"]) for row in rows])
-    filtered = []
-    for row in rows:
-        ai_result = latest.get(int(row["id"]))
-        if st.session_state.get("review-filter-ai-reject") and not _is_ai_reject(ai_result):
-            continue
-        if st.session_state.get("review-filter-ai-correct") and not _is_ai_correct(ai_result):
-            continue
-        if st.session_state.get("review-filter-ai-human") and not _is_ai_human(ai_result):
-            continue
-        filtered.append(row)
-    return sorted(filtered, key=lambda row: _ai_sort_key(row, latest.get(int(row["id"]))))
-
-
-def _render_rows(store: ReviewQueueStore, rows: list[dict], ai_store: AIReviewStore | None = None) -> None:
-    if _active_review_tab() == RECENT_CONFIRMED_TAB:
-        _render_recent_confirmed_rows(store, rows)
-        return
-
-    if not rows:
-        st.info("当前工作台视图没有待处理项。可以切换 tab 或同步观察池复核队列。")
-        return
-
-    ai_results = ai_store.latest_for_items([int(row["id"]) for row in rows]) if ai_store else {}
-    st.markdown('<div class="review-list-title">高优先级待处理</div>', unsafe_allow_html=True)
-    for row in rows:
-        _render_metric_row(store, row, ai_results.get(int(row["id"])))
 
 
 def _render_recent_confirmed_rows(store: ReviewQueueStore, rows: list[dict]) -> None:
@@ -570,53 +327,6 @@ def _confirmed_actor_label(row: dict) -> str:
     return str(row.get("approvedBy") or row.get("reviewedBy") or "用户")
 
 
-def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
-    view_item = row.pop("__review_view_item", None)
-    metric_id = int(row["id"])
-    status = str(row.get("reviewStatus") or "pending_review")
-    confidence = str(row.get("confidence") or "")
-    with st.container(border=True):
-        cols = st.columns([0.6, 1.35, 1.05, 0.9, 0.9, 0.95, 1.0, 1.0, 1.7])
-        cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
-        cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
-            f"<div class='metric-sub'>{escape(model_type_label(row.get('modelType')))}</div>",
-            unsafe_allow_html=True,
-        )
-        item_type = str(row.get("itemType") or "")
-        cols[2].markdown(_badge(ITEM_TYPE_LABELS.get(item_type, item_type), ITEM_TYPE_TONES.get(item_type, "gray")), unsafe_allow_html=True)
-        cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
-        cols[4].markdown(escape(source_type_label(row.get("sourceType"))))
-        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
-        cols[6].markdown(escape(_affects_label(row.get("affects"))))
-        cols[7].markdown(_badge(STATUS_LABELS.get(status, status), STATUS_TONES.get(status, "gray")), unsafe_allow_html=True)
-        with cols[8]:
-            action_cols = st.columns(3)
-            approve_disabled = status in {"approved", "needs_data"}
-            if action_cols[0].button("确认", key=f"review-approve-{metric_id}", disabled=approve_disabled, width="stretch"):
-                store.update_review_status(metric_id, "approved")
-                st.toast("已确认使用")
-                st.rerun()
-            if action_cols[1].button("驳回", key=f"review-reject-{metric_id}", disabled=status == "rejected", width="stretch"):
-                store.update_review_status(metric_id, "rejected")
-                st.toast("已驳回")
-                st.rerun()
-            _render_correction_popover(store, row, action_cols[2])
-
-        detail_cols = st.columns([3.2, 1.2])
-        snippet = _truncate(str(row.get("extractedText") or row.get("explanation") or ""), 360)
-        detail_cols[0].markdown(
-            f"<div class='source-snippet'><b>{escape(_detail_title(row))}</b><br>{escape(snippet or '暂无说明')}</div>"
-            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(_review_display_text(row.get('updatedAt'), '未记录'))}</div>",
-            unsafe_allow_html=True,
-        )
-        url = row.get("sourceUrl")
-        if url:
-            detail_cols[1].link_button("打开来源", str(url), width="stretch")
-        else:
-            detail_cols[1].caption("暂无来源链接")
-        if ai_result:
-            st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
 
 
 def _render_correction_popover(store: ReviewQueueStore, row: dict, column) -> None:
@@ -752,72 +462,14 @@ def _badge(label: str, tone: str) -> str:
     return f'<span class="review-badge tone-{escape(tone)}">{escape(label)}</span>'
 
 
-def _ai_result_html(result: dict) -> str:
-    decision = str(result.get("aiDecision") or "")
-    tone = AI_DECISION_TONES.get(decision, "gray")
-    warnings = result.get("warnings") or []
-    warning_text = "；".join(str(item) for item in warnings if item)
-    if result.get("hallucinationRisk") and "hallucination_risk" not in warning_text:
-        warning_text = (warning_text + "；" if warning_text else "") + "hallucination_risk"
-    match_text = (
-        f"证据 {AI_MATCH_LABELS.get(str(result.get('evidenceMatch')), result.get('evidenceMatch'))}"
-        f" · 期间 {AI_MATCH_LABELS.get(str(result.get('periodMatch')), result.get('periodMatch'))}"
-        f" · 单位 {AI_MATCH_LABELS.get(str(result.get('unitMatch')), result.get('unitMatch'))}"
-    )
-    corrected = ""
-    if result.get("correctedValue") is not None:
-        corrected = f"<span>建议修正：{escape(str(result.get('correctedValue')))} {escape(str(result.get('correctedUnit') or ''))} {escape(str(result.get('correctedPeriod') or ''))}</span>"
-    return (
-        "<div class='ai-review-panel'>"
-        f"{_badge(AI_DECISION_LABELS.get(decision, decision), tone)}"
-        f"<strong>AI置信度 {float(result.get('confidenceScore') or 0):.0%}</strong>"
-        f"<span>provider=qwen · model={escape(str(result.get('model') or 'qwen'))}</span>"
-        f"<span>{escape(match_text)}</span>"
-        f"<span>{'幻觉风险：是' if result.get('hallucinationRisk') else '幻觉风险：否'}</span>"
-        f"{corrected}"
-        f"<p>{escape(str(result.get('explanationZh') or ''))}</p>"
-        f"<blockquote>{escape(str(result.get('evidenceQuote') or ''))}</blockquote>"
-        f"<em>{escape(warning_text)}</em>"
-        "</div>"
-    )
 
 
-def _is_ai_reject(result: dict | None) -> bool:
-    if not result:
-        return False
-    return result.get("aiDecision") == "recommend_reject" or result.get("evidenceMatch") == "mismatch" or result.get("appliedAction") == "suggested_reject"
 
 
-def _is_ai_correct(result: dict | None) -> bool:
-    if not result:
-        return False
-    return result.get("aiDecision") == "recommend_correct" or result.get("appliedAction") == "manually_correct_candidate"
 
 
-def _is_ai_human(result: dict | None) -> bool:
-    if not result:
-        return False
-    return str(result.get("aiDecision") or "") in {"needs_human_review", "needs_more_source", "not_enough_evidence"} or str(result.get("appliedAction") or "") in {
-        "needs_human_review",
-        "needs_more_source",
-        "not_enough_evidence",
-    }
 
 
-def _ai_sort_key(row: dict, result: dict | None) -> tuple[int, str, str]:
-    if _is_ai_reject(result):
-        rank = 0
-    elif _is_ai_correct(result):
-        rank = 1
-    elif _is_ai_human(result) and _affects_scoring(row.get("affects")):
-        rank = 2
-    elif result and result.get("aiDecision") == "not_enough_evidence":
-        rank = 3
-    elif result and result.get("aiDecision") == "recommend_approve":
-        rank = 4
-    else:
-        rank = 5
-    return (rank, str(row.get("symbol") or ""), str(row.get("metricKey") or ""))
 
 
 def _affects_scoring(value: object) -> bool:
@@ -832,62 +484,8 @@ def _truncate(value: str, limit: int) -> str:
     return value[: limit - 1] + "…"
 
 
-def _render_ai_controls(store: ReviewQueueStore, ai_store: AIReviewStore, filters: dict, rows: list[dict]) -> None:
-    assistant = QwenReviewService(queue_store=store, ai_store=ai_store)
-    candidates = qwen_review_candidates(rows)
-    with st.container(border=True):
-        cols = st.columns([1.25, 1.0, 1.0, 1.0, 1.0, 1.45], vertical_alignment="center")
-        cols[5].caption(
-            "未配置 Qwen 复核，仍可手动复核。"
-            if not assistant.configured
-            else f"本次最多预审 {min(len(candidates), assistant.max_items)} 条；跳过已确认、已驳回、FMP 和已计算项。"
-        )
-        if cols[0].button("仅运行 Qwen 证据复核", key="qwen-review-filtered-v2", width="stretch"):
-            result = assistant.review_rows(rows)
-            _show_ai_run_result(result)
-            st.rerun()
-        st.session_state["review-filter-ai-reject"] = cols[1].checkbox("只看AI建议驳回", key="review-ai-reject-v2")
-        st.session_state["review-filter-ai-correct"] = cols[2].checkbox("只看AI建议修正", key="review-ai-correct-v2")
-        st.session_state["review-filter-ai-not-enough"] = cols[3].checkbox("只看证据不足", key="review-ai-not-enough-v2")
-        st.session_state["review-filter-ai-human"] = cols[4].checkbox("只看需要人工判断", key="review-ai-human-v2")
-        batch_cols = st.columns([1.1, 1.1, 1.1, 2.2], vertical_alignment="center")
-        if batch_cols[0].button("批量接受AI自动确认项", key="review-batch-auto-approve", width="stretch"):
-            changes = store.batch_accept_ai_auto_approved([int(row["id"]) for row in rows])
-            st.toast(f"已处理 {len(changes)} 条AI自动确认项")
-            st.rerun()
-        if batch_cols[1].button("批量隐藏AI自动确认项", key="review-batch-hide-auto", width="stretch"):
-            count = store.hide_auto_approved_items([int(row["id"]) for row in rows])
-            st.toast(f"已隐藏 {count} 条AI自动确认项")
-            st.rerun()
-        if batch_cols[2].button("批量进入人工复核", key="review-batch-human", width="stretch"):
-            count = store.mark_ai_needs_human([int(row["id"]) for row in rows])
-            st.toast(f"已标记 {count} 条为人工复核")
-            st.rerun()
-        st.session_state["review-filter-hide-auto-approved"] = batch_cols[3].checkbox(
-            "隐藏AI自动确认项",
-            value=True,
-            key="review-hide-auto-approved",
-        )
 
 
-def _apply_ai_filters(rows: list[dict], ai_store: AIReviewStore) -> list[dict]:
-    latest = ai_store.latest_for_items([int(row["id"]) for row in rows])
-    filtered = []
-    for row in rows:
-        ai_result = latest.get(int(row["id"]))
-        triage_status = _ai_triage_status(row, ai_result)
-        if st.session_state.get("review-filter-hide-auto-approved") and triage_status == "auto_approved_by_ai":
-            continue
-        if st.session_state.get("review-filter-ai-reject") and triage_status != "ai_recommend_reject":
-            continue
-        if st.session_state.get("review-filter-ai-correct") and triage_status != "ai_recommend_correct":
-            continue
-        if st.session_state.get("review-filter-ai-not-enough") and triage_status != "ai_not_enough_evidence":
-            continue
-        if st.session_state.get("review-filter-ai-human") and triage_status not in {"ai_needs_human_review", "ai_not_enough_evidence", "ai_invalid_output"}:
-            continue
-        filtered.append(row)
-    return sorted(filtered, key=lambda row: _ai_sort_key(row, latest.get(int(row["id"]))))
 
 
 def _render_ai_action_controls(store: ReviewQueueStore, row: dict, ai_result: dict) -> None:
@@ -931,36 +529,6 @@ def _render_ai_action_controls(store: ReviewQueueStore, row: dict, ai_result: di
             st.rerun()
 
 
-def _ai_result_html(result: dict) -> str:
-    decision = str(result.get("aiDecision") or "")
-    triage_status = _ai_triage_status({}, result)
-    tone = AI_TRIAGE_TONES.get(triage_status, AI_DECISION_TONES.get(decision, "gray"))
-    warnings = result.get("warnings") or []
-    warning_text = "；".join(str(item) for item in warnings if item)
-    if result.get("hallucinationRisk") and "hallucination_risk" not in warning_text:
-        warning_text = (warning_text + "；" if warning_text else "") + "hallucination_risk"
-    match_text = (
-        f"证据 {AI_MATCH_LABELS.get(str(result.get('evidenceMatch')), result.get('evidenceMatch'))}"
-        f" · 期间 {AI_MATCH_LABELS.get(str(result.get('periodMatch')), result.get('periodMatch'))}"
-        f" · 单位 {AI_MATCH_LABELS.get(str(result.get('unitMatch')), result.get('unitMatch'))}"
-    )
-    corrected = ""
-    if result.get("correctedValue") is not None:
-        corrected = f"<span>建议修正：{escape(str(result.get('correctedValue')))} {escape(str(result.get('correctedUnit') or ''))} {escape(str(result.get('correctedPeriod') or ''))}</span>"
-    return (
-        "<div class='ai-review-panel'>"
-        f"{_badge(AI_TRIAGE_LABELS.get(triage_status, triage_status or 'AI预审'), tone)}"
-        f"{_badge(AI_DECISION_LABELS.get(decision, decision), tone)}"
-        f"<strong>AI置信度 {float(result.get('confidenceScore') or 0):.0%}</strong>"
-        f"<span>provider=qwen · model={escape(str(result.get('model') or 'qwen'))}</span>"
-        f"<span>{escape(match_text)}</span>"
-        f"<span>{'幻觉风险：是' if result.get('hallucinationRisk') else '幻觉风险：否'}</span>"
-        f"{corrected}"
-        f"<p>{escape(str(result.get('explanationZh') or ''))}</p>"
-        f"<blockquote>{escape(str(result.get('evidenceQuote') or ''))}</blockquote>"
-        f"<em>{escape(warning_text)}</em>"
-        "</div>"
-    )
 
 
 def _is_ai_reject(result: dict | None) -> bool:
@@ -1007,74 +575,8 @@ def _ai_triage_status(row: dict, result: dict | None) -> str:
     }.get(action, "")
 
 
-def _render_sync_controls(store: ReviewQueueStore) -> None:
-    with st.container(border=True):
-        st.markdown(
-            """
-            <div class="review-command-head">
-              <div>
-                <strong>复核工作台</strong>
-                <span>先同步观察池缺口，再用 Qwen 做证据预审；不会批量抓 SEC / IR。</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        cols = st.columns([1.35, 0.95, 0.95, 0.95, 2.0], vertical_alignment="center")
-        if cols[0].button("同步观察池复核队列", width="stretch", key="review-sync-watchlist-v2"):
-            result = ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist(load_watchlist())
-            st.session_state["review_queue_sync_result"] = result
-            st.toast(f"已同步 {len(result.symbols)} 只股票")
-            st.rerun()
-        st.session_state["review-filter-only-extracted"] = cols[1].checkbox("有值待确认", key="review-only-extracted-v2")
-        st.session_state["review-filter-only-needs-data"] = cols[2].checkbox("需要补齐", key="review-only-needs-data-v2")
-        st.session_state["review-filter-affects-scoring"] = cols[3].checkbox("影响评分", key="review-only-affects-scoring-v2")
-        result = st.session_state.get("review_queue_sync_result")
-        if result:
-            cols[4].caption(f"上次同步：{len(result.symbols)}只股票 · {result.total}项")
-        else:
-            cols[4].caption("同步只读取本地缓存和评分缺口，不会发起全市场抓取。")
 
 
-def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
-    primary_cards = [
-        ("涉及股票", summary.get("symbols", 0), "blue"),
-        ("待确认", summary.get("pending_review", 0), "yellow"),
-        ("需要补齐", summary.get("needs_data", 0), "orange"),
-        ("影响评分", summary.get("missing_kpi", 0) + summary.get("manual_override_needed", 0), "red"),
-        ("已确认", summary.get("approved", 0), "green"),
-        ("已驳回", summary.get("rejected", 0), "gray"),
-    ]
-    ai_summary = ai_summary or {}
-    triage_cards = [
-        ("AI已预审", summary.get("ai_reviewed", ai_summary.get("total", 0)), "blue"),
-        ("AI自动确认", summary.get("auto_approved_by_ai", ai_summary.get("auto_approved_by_ai", 0)), "green"),
-        ("建议修正", summary.get("ai_recommend_correct", ai_summary.get("ai_recommend_correct", 0)), "orange"),
-        ("建议驳回", summary.get("ai_recommend_reject", ai_summary.get("ai_recommend_reject", 0)), "red"),
-        ("证据不足", summary.get("ai_not_enough_evidence", ai_summary.get("ai_not_enough_evidence", 0)), "gray"),
-        ("人工判断", summary.get("ai_needs_human_review", ai_summary.get("ai_needs_human_review", 0)), "yellow"),
-    ]
-    primary_html = "".join(
-        f'<div class="review-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
-        for label, value, tone in primary_cards
-    )
-    triage_html = "".join(
-        f'<div class="review-ai-summary-card tone-{tone}"><span>{escape(label)}</span><strong>{int(value or 0)}</strong></div>'
-        for label, value, tone in triage_cards
-    )
-    st.markdown(
-        f"""
-        <section class="review-overview-panel">
-          <div class="review-overview-title">
-            <strong>复核状态总览</strong>
-            <span>优先处理 AI 建议驳回、建议修正和证据不足项</span>
-          </div>
-          <div class="review-summary-strip">{primary_html}</div>
-          <div class="review-ai-summary-strip">{triage_html}</div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def _cn_item_type(value: object) -> str:
@@ -1127,104 +629,6 @@ def _triage_tone(value: str) -> str:
     }.get(value, "gray")
 
 
-def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = None, filters: dict | None = None) -> None:
-    ai_store = AIReviewStore(store.path)
-    rows = rows if rows is not None else store.list_items()
-    qwen_assistant = QwenReviewService(queue_store=store, ai_store=ai_store)
-    autopilot = ReviewAutopilot(queue_store=store)
-    default_rows = _default_action_rows(rows, ai_store)
-    with st.container(border=True):
-        st.markdown(
-            """
-            <div class="review-command-head">
-              <div>
-                <strong>自动化处理中心</strong>
-                <span>默认自动化优先：同步队列、补齐数据、Qwen证据复核、安全确认、低优先级归档。</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption("确认 = 允许该数据进入评分。确认不等于买入建议。已确认数据可在“最近确认”中撤销。")
-        cols = st.columns([1.65, 0.9, 0.95, 2.4], vertical_alignment="center")
-        if cols[0].button("一键自动处理当前筛选结果", width="stretch", key="review-autopilot-current-filter"):
-            with st.status("正在自动处理当前筛选结果...", expanded=True) as status:
-                st.write("1. 同步复核队列")
-                st.write("2. 自动补齐缺失数据")
-                st.write("3. 重建复核队列")
-                st.write("4. Qwen复核有证据的数据")
-                st.write("5. 自动确认安全项 / 自动归档低优先级项")
-                result = autopilot.run_review_autopilot(filters or {})
-                status.update(label="自动处理完成", state="complete")
-            _show_autopilot_result(result)
-            st.rerun()
-        if cols[1].button("查看处理日志", width="stretch", key="review-show-automation-log"):
-            st.session_state["show_review_automation_logs"] = not st.session_state.get("show_review_automation_logs", False)
-        with cols[2].popover("更多 ▾", use_container_width=True):
-            if st.button("仅同步复核队列", key="review-sync-watchlist-refactor", width="stretch"):
-                result = ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist(load_watchlist())
-                st.session_state["review_queue_sync_result"] = result
-                _show_operation_result("同步复核队列", len(load_watchlist()), result.total, result.skipped, 0, [])
-                store.log_operation("sync_review_queue", filters, len(load_watchlist()), result.total, result.skipped, 0, [])
-                st.toast(f"已同步 {len(result.symbols)} 只股票，生成/更新 {result.total} 项")
-                st.rerun()
-            if st.button("仅运行数据补全", key="review-autofill-only", width="stretch"):
-                result = autopilot.run_auto_fill_only(rows)
-                _show_autopilot_result(result)
-                st.rerun()
-            if st.button("仅运行 Qwen 证据复核", key="qwen-review-filtered-refactor", width="stretch"):
-                result = qwen_assistant.review_rows(rows)
-                _show_ai_run_result(result)
-                st.rerun()
-            if st.button("仅重新计算评分", key="review-rebuild-score-only", width="stretch"):
-                result = ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist(
-                    [filters["symbol"]] if filters and filters.get("symbol") else load_watchlist()
-                )
-                _show_operation_result("重新计算评分", len(result.symbols), result.total, result.skipped, 0, [])
-                st.rerun()
-            if st.button("批量接受AI自动确认项", key="review-batch-auto-refactor", width="stretch"):
-                changes = store.batch_accept_ai_auto_approved([int(row["id"]) for row in rows])
-                _show_operation_result("批量接受AI自动确认项", len(rows), len(changes), len(rows) - len(changes), 0, [])
-                store.log_operation("batch_accept_ai_auto_approved", filters, len(rows), len(changes), len(rows) - len(changes), 0, [])
-                if not changes:
-                    st.warning("没有可处理项目：当前筛选条件下，0 条符合此操作。")
-                else:
-                    st.toast(f"已处理 {len(changes)} 条AI自动确认项")
-                st.rerun()
-            if st.button("批量隐藏AI自动确认项", key="review-hide-auto-refactor", width="stretch"):
-                count = store.hide_auto_approved_items([int(row["id"]) for row in rows])
-                _show_operation_result("批量隐藏AI自动确认项", len(rows), count, len(rows) - count, 0, [])
-                store.log_operation("batch_hide_ai_auto_approved", filters, len(rows), count, len(rows) - count, 0, [])
-                st.toast(f"已隐藏 {count} 条AI自动确认项" if count else "没有可隐藏的AI自动确认项")
-                st.rerun()
-            if st.button("批量归档低优先级项", key="review-archive-low-priority", width="stretch"):
-                count = store.batch_archive_low_priority([int(row["id"]) for row in rows])
-                _show_operation_result("批量归档低优先级项", len(rows), count, len(rows) - count, 0, [])
-                store.log_operation("batch_archive_low_priority", filters, len(rows), count, len(rows) - count, 0, [])
-                st.toast(f"已归档 {count} 条低优先级项" if count else "没有可归档的低优先级项")
-                st.rerun()
-            if st.button("清理已归档项", key="review-clean-archived", width="stretch"):
-                count = store.hide_auto_approved_items([int(row["id"]) for row in rows])
-                _show_operation_result("清理已归档项", len(rows), count, len(rows) - count, 0, [])
-                st.rerun()
-            if st.button("批量进入人工复核", key="review-human-batch-refactor", width="stretch"):
-                count = store.mark_ai_needs_human([int(row["id"]) for row in default_rows])
-                _show_operation_result("批量进入人工复核", len(default_rows), count, len(default_rows) - count, 0, [])
-                store.log_operation("batch_mark_human_review", filters, len(default_rows), count, len(default_rows) - count, 0, [])
-                st.toast(f"已标记 {count} 条为人工复核" if count else "没有可标记的项目")
-                st.rerun()
-        stats = qwen_review_efficiency_stats(rows)
-        effectiveness = automation_effectiveness(rows)
-        cols[3].caption(
-            f"当前基础筛选 {effectiveness['total']} 条（含全部复核类型）；"
-            f"Qwen证据候选 {stats['eligibleForQwenCount']} 条；"
-            f"AI已自动处理 {effectiveness['automationRate']:.0%}，待人工判断 {effectiveness['humanRemaining']} 条。"
-        )
-        _render_last_autopilot_result()
-        _render_last_qwen_result()
-        _render_last_operation_result(store)
-        if st.session_state.get("show_review_automation_logs"):
-            _render_automation_logs(store)
 
 
 def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
@@ -1698,181 +1102,6 @@ def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_r
         st.toast("已按AI建议驳回该数据")
 
 
-def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | None = None) -> None:
-    view_item = row.pop("__review_view_item", None)
-    metric_id = int(row["id"])
-    status = str(row.get("reviewStatus") or "pending_review")
-    confidence = str(row.get("confidence") or "")
-    triage = _ai_triage_status(row, ai_result)
-    eligible, reason = qwen_review_eligibility(row)
-    value_text = _format_value(row.get("value"), row.get("unit"))
-    with st.container(border=True):
-        cols = st.columns([0.58, 1.45, 0.85, 0.86, 0.82, 0.86, 1.25, 1.0], vertical_alignment="center")
-        cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
-        cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
-            f"<div class='metric-sub'>{escape(model_type_label(row.get('modelType')))}</div>",
-            unsafe_allow_html=True,
-        )
-        cols[2].markdown(f"<span class='metric-value'>{escape(value_text)}</span>", unsafe_allow_html=True)
-        cols[3].markdown(_badge(_cn_item_type(row.get("itemType")), ITEM_TYPE_TONES.get(str(row.get("itemType") or ""), "gray")), unsafe_allow_html=True)
-        cols[4].markdown(_badge(source_type_label(row.get("sourceType")), "gray"), unsafe_allow_html=True)
-        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
-        cols[6].markdown(_compact_ai_badge(ai_result, triage, eligible, reason), unsafe_allow_html=True)
-        with cols[7]:
-            action_cols = st.columns([0.62, 0.38])
-            primary_action = _review_primary_action(row)
-            primary_key = primary_action["key"]
-            if action_cols[0].button(
-                primary_action["label"],
-                key=f"review-primary-{primary_key}-{metric_id}",
-                disabled=primary_key.startswith("noop_"),
-                width="stretch",
-            ):
-                _run_review_action(store, row, primary_action["key"], ai_result)
-                st.rerun()
-            with action_cols[1].popover("操作 ▾", use_container_width=True):
-                item_type = str(row.get("itemType") or "")
-                if str(row.get("freshnessStatus") or "") == "historical_value":
-                    if st.button("设为当前值", key=f"review-set-current-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "set_current_value", ai_result)
-                        st.rerun()
-                    if st.button("归档历史值", key=f"review-archive-history-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "keep_historical", ai_result)
-                        st.rerun()
-                status_menu_handled = False
-                if status == "auto_archived" or triage == "ai_auto_archived":
-                    status_menu_handled = True
-                    if st.button("撤销归档", key=f"review-undo-archive-menu-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "undo_archive", ai_result)
-                        st.rerun()
-                if status in {"approved", "manually_corrected", "auto_approved_by_ai"} or triage == "auto_approved_by_ai":
-                    status_menu_handled = True
-                    effective_status = "auto_approved_by_ai" if triage == "auto_approved_by_ai" or status == "auto_approved_by_ai" else status
-                    undo_action = "undo_manual_correct" if status == "manually_corrected" else "undo_approval"
-                    if st.button(_undo_confirm_label(effective_status), key=f"review-direct-undo-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, undo_action, ai_result)
-                        st.rerun()
-                    if st.button("查看评分影响", key=f"review-impact-menu-{metric_id}", width="stretch"):
-                        st.session_state[IMPACT_DETAIL_KEY] = metric_id if st.session_state.get(IMPACT_DETAIL_KEY) != metric_id else None
-                    if st.session_state.get(IMPACT_DETAIL_KEY) == metric_id:
-                        score_status = store.get_score_status(str(row.get("symbol") or ""))
-                        _render_score_impact_panel(store, row, score_status, key_prefix=f"review-menu-{metric_id}")
-                    st.caption("撤销后如何处理这条数据？")
-                    if st.button("回到待复核", key=f"review-undo-pending-{metric_id}", width="stretch"):
-                        store.undo_review_status(metric_id, "pending_review", "undo_to_pending_review")
-                        st.toast("已撤销，回到待复核，需重新计算评分")
-                        st.rerun()
-                    if st.button("标记为需要补证据", key=f"review-undo-evidence-{metric_id}", width="stretch"):
-                        store.undo_review_status(metric_id, "needs_evidence", "undo_to_needs_evidence")
-                        st.toast("已撤销，并标记为需要补证据")
-                        st.rerun()
-                    if st.button("直接驳回", key=f"review-undo-reject-{metric_id}", width="stretch"):
-                        store.update_review_status(metric_id, "rejected", "undo_then_reject")
-                        st.toast("已撤销确认并驳回")
-                        st.rerun()
-                    if st.button("手动修正", key=f"review-undo-correct-{metric_id}", width="stretch"):
-                        store.undo_review_status(metric_id, "pending_review", "undo_for_manual_correction")
-                        _run_review_action(store, row, "manual_fill", ai_result)
-                        st.rerun()
-                if status_menu_handled:
-                    pass
-                elif _has_complete_extracted_value_evidence(row):
-                    if st.button("驳回", key=f"review-reject-menu-{metric_id}", disabled=status == "rejected", width="stretch"):
-                        _run_review_action(store, row, "reject", ai_result)
-                        st.rerun()
-                    if st.button("修正", key=f"review-correct-menu-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "needs_more_source", ai_result)
-                        st.rerun()
-                elif status == "needs_evidence" or item_type == "evidence_missing_extracted_value":
-                    if st.button("标记无法获取", key=f"review-unavailable-evidence-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "mark_unavailable", ai_result)
-                        st.rerun()
-                    if st.button("手动确认来源", key=f"review-manual-source-{metric_id}", width="stretch"):
-                        store.update_review_status(metric_id, "pending_review", "manual_source_confirmed")
-                        st.toast("已转入待确认，请谨慎复核")
-                        st.rerun()
-                    if st.button("归档", key=f"review-archive-needs-evidence-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                elif item_type == "missing_kpi":
-                    if st.button("手动补充", key=f"review-manual-fill-missing-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "manual_fill", ai_result)
-                        st.rerun()
-                    if st.button("归档", key=f"review-archive-missing-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                elif item_type == "derived_low_confidence":
-                    if st.button("归档", key=f"review-archive-derived-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                    if st.button("调低权重", key=f"review-lower-weight-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "lower_weight", ai_result)
-                        st.rerun()
-                elif item_type == "qualitative_risk":
-                    if st.button("归档", key=f"review-archive-risk-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                    if st.button("加入风险备注", key=f"review-risk-note-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "risk_note", ai_result)
-                        st.rerun()
-                elif item_type == "analyst_estimate_needed":
-                    if st.button("使用TTM代理", key=f"review-ttm-proxy-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "use_ttm_proxy", ai_result)
-                        st.rerun()
-                    if st.button("归档", key=f"review-archive-estimate-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                elif item_type == "manual_override_needed":
-                    if st.button("标记无法获取", key=f"review-unavailable-manual-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "mark_unavailable", ai_result)
-                        st.rerun()
-                    if st.button("归档", key=f"review-archive-manual-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                else:
-                    if st.button("归档", key=f"review-archive-other-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "archive", ai_result)
-                        st.rerun()
-                if status in {"approved", "manually_corrected", "auto_approved_by_ai"} or triage == "auto_approved_by_ai":
-                    with st.expander("查看评分影响", expanded=False):
-                        affects = _affects_label(row.get("affects") or "ConfidenceOnly")
-                        score_status = store.get_score_status(str(row.get("symbol") or ""))
-                        st.caption(
-                            f"该指标属于 {affects} 输入。撤销后将从评分输入中排除，并把 {row.get('symbol')} 标记为评分过期。"
-                        )
-                        st.caption(f"当前评分状态：{_score_status_label(score_status.get('scoreStatus'))}")
-                        if st.button("重新计算该股票", key=f"review-recompute-symbol-{metric_id}", width="stretch"):
-                            symbol = str(row.get("symbol") or "").upper()
-                            if symbol:
-                                ReviewQueueBuilder(queue_store=store).build_review_queue_for_watchlist([symbol])
-                                store.mark_score_fresh(symbol, f"manual-recompute-{metric_id}")
-                                st.toast(f"{symbol} 已重新计算并标记为最新")
-                                st.rerun()
-                if ai_result and triage == "ai_recommend_correct":
-                    if st.button("接受AI修正", key=f"review-accept-correct-menu-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "accept_ai_correct", ai_result)
-                        st.rerun()
-                if ai_result and triage == "ai_recommend_reject":
-                    if st.button("接受AI驳回", key=f"review-accept-reject-menu-{metric_id}", width="stretch"):
-                        _run_review_action(store, row, "accept_ai_reject", ai_result)
-                        st.rerun()
-                if row.get("sourceUrl"):
-                    st.link_button("打开来源", str(row.get("sourceUrl")), width="stretch")
-        st.caption(_recommended_review_action(row, eligible, reason))
-        with st.expander("展开证据与AI解释", expanded=False):
-            evidence_text = str(row.get("evidenceText") or "").strip()
-            system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
-            if row.get("aiTriageStatus") == "extraction_rejected_by_rule":
-                st.markdown(f"**规则未通过**：{escape(_review_system_reason_text(system_reason) or '该抽取候选未通过指标校验。')}")
-            elif evidence_text:
-                st.markdown(f"**原文片段**：{escape(evidence_text)}")
-            else:
-                st.markdown(f"**系统说明**：{escape(_review_system_reason_text(system_reason) or '暂无真实原文证据。')}")
-            if ai_result:
-                st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
-            else:
-                st.caption(QWEN_NOT_SUITABLE_REASON if not eligible else "尚未进行Qwen证据复核")
 
 
 def _compact_ai_badge(ai_result: dict | None, triage: str, eligible: bool, reason: str) -> str:
