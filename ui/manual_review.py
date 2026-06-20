@@ -1077,17 +1077,6 @@ def _render_summary(summary: dict, ai_summary: dict | None = None) -> None:
     )
 
 
-def _cn_status(value: object) -> str:
-    return {
-        "pending_review": "待确认",
-        "needs_data": "需要补齐",
-        "approved": "已确认",
-        "rejected": "已驳回",
-        "manually_corrected": "人工修正",
-        "stale": "已过期",
-    }.get(str(value or ""), str(value or "未归类"))
-
-
 def _cn_item_type(value: object) -> str:
     return {
         "extracted_value": "自动抽取值",
@@ -1988,27 +1977,6 @@ def _show_ai_run_result(result) -> None:
         st.toast(f"Qwen预审完成 {result.reviewed} 条；自动确认 {result.auto_approved} 条；仍需人工 {result.needs_human} 条")
 
 
-def _show_automation_result(result) -> None:
-    st.session_state["ai_automation_last_result"] = {
-        "eligible": int(getattr(result, "eligible", 0) or 0),
-        "processed": int(getattr(result, "processed", 0) or 0),
-        "skipped": int(getattr(result, "skipped", 0) or 0),
-        "failed": int(getattr(result, "failed", 0) or 0),
-        "auto_approved": int(getattr(result, "auto_approved", 0) or 0),
-        "auto_archived": int(getattr(result, "auto_archived", 0) or 0),
-        "needs_human": int(getattr(result, "needs_human", 0) or 0),
-        "qwen_reviewed": int(getattr(result, "qwen_reviewed", 0) or 0),
-        "errors": list(getattr(result, "errors", None) or []),
-        "message": str(getattr(result, "message", "") or ""),
-    }
-    if not getattr(result, "eligible", 0):
-        st.warning("当前筛选结果中没有符合条件的项目。")
-    elif getattr(result, "failed", 0):
-        st.warning(f"AI自动分流完成，但有 {result.failed} 条失败。")
-    else:
-        st.toast(f"AI自动分流完成：处理 {result.processed} 条，自动归档 {result.auto_archived} 条")
-
-
 def _show_autopilot_result(result) -> None:
     st.session_state["review_autopilot_last_result"] = {
         "runId": getattr(result, "runId", ""),
@@ -2265,26 +2233,6 @@ def _review_action_hint(row: dict, ai_result: dict | None, eligible: bool, reaso
     if triage == "ai_auto_archived":
         return "可自动归档"
     return _recommended_review_action(row, eligible, reason)
-
-
-def _render_review_evidence_panel(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> None:
-    evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
-    system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
-    title = "原文证据" if evidence_text else "系统说明"
-    body = evidence_text or _review_system_reason_text((view_item or {}).get("evidenceSummary") or system_reason)
-    st.markdown(
-        f"""
-        <div class="review-evidence-panel">
-          <strong>{escape(title)}</strong>
-          <span>{escape(body)}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if ai_result:
-        st.markdown(_ai_result_html(ai_result), unsafe_allow_html=True)
-    else:
-        st.caption(QWEN_NOT_SUITABLE_REASON if not eligible else "尚未进行 Qwen 证据复核。")
 
 
 def _render_review_evidence_drawer(source_rows: list[dict], ai_results: dict[int, dict]) -> None:

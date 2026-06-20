@@ -1147,21 +1147,6 @@ def _render_buy_classification_editor(
     )
 
 
-def _render_portfolio_ledger_preview(
-    symbol: str,
-    action_type: str,
-    quantity: object,
-    price: object,
-    *,
-    preview: dict | None = None,
-    discipline_blocked: bool = False,
-) -> None:
-    if action_type not in POSITION_AFFECTING_ACTIONS:
-        return
-    current_preview = preview or _portfolio_sync_preview(symbol, action_type, quantity, price)
-    _render_portfolio_sync_preview(current_preview, checked=True, discipline_blocked=discipline_blocked)
-
-
 def _portfolio_sync_preview(symbol: str, action_type: str, quantity: object, price: object) -> dict:
     if action_type not in POSITION_AFFECTING_ACTIONS:
         return {}
@@ -1169,24 +1154,6 @@ def _portfolio_sync_preview(symbol: str, action_type: str, quantity: object, pri
         symbol,
         {"action_type": action_type, "quantity": quantity, "price": price},
     )
-
-
-def _discipline_result_blocked(result: object) -> bool:
-    return False
-
-
-def _legacy_sell_quantity_validation_error(action_type: str, quantity: object, current_quantity: object) -> str:
-    if str(action_type or "").strip().lower() not in SELL_DISCIPLINE_ACTIONS:
-        return ""
-    sell_quantity = _number(quantity)
-    current = _number(current_quantity)
-    if sell_quantity is None or sell_quantity <= 0:
-        return "卖出/减仓数量必须大于 0。"
-    if current is None or current <= 0:
-        return "只能卖出当前组合持仓里已有的股票。"
-    if sell_quantity > current:
-        return f"卖出数量不能超过当前持仓：当前 {_quantity_text(current)}，本次 {_quantity_text(sell_quantity)}。"
-    return ""
 
 
 def _sell_edit_identity_error(editing_entry: dict | None, symbol: str, action_type: str) -> str:
@@ -2107,40 +2074,6 @@ def _buy_classification_form_values(action_type: str, key_suffix: str = "new") -
     }
 
 
-def _render_trading_discipline_result(result) -> None:
-    status = str(result.disciplineStatus or "")
-    tone = _discipline_status_tone(status)
-    metrics = [
-        ("纪律状态", DISCIPLINE_STATUS_LABELS.get(status, status or "未记录")),
-        ("卖出等级", str(result.sellLevel or "未记录")),
-        ("上限比例", format_percent(float(result.maxAllowedSellPct or 0), already_percent=False)),
-        ("核心仓卖出提示", "可作为参考" if result.canSellCore else "系统不建议动核心仓"),
-        ("需要回补计划", _yes_no(result.requiresReentryPlan)),
-    ]
-    metric_html = "".join(
-        f'<div><span>{escape(label)}</span><strong>{escape(value)}</strong></div>'
-        for label, value in metrics
-    )
-    blocker_html = _discipline_messages_html("blockers", result.blockers, is_blocker=True)
-    warning_html = _discipline_messages_html("warnings", result.warnings, is_blocker=False)
-    st.markdown(
-        f"""
-        <section class="trade-discipline-card {escape(tone)}">
-          <div class="trade-discipline-head">
-            <strong>{escape(DISCIPLINE_STATUS_LABELS.get(status, status or "未记录"))}</strong>
-            <span>{escape(str(result.reminderText or ""))}</span>
-          </div>
-          <div class="trade-discipline-grid">{metric_html}</div>
-          {blocker_html}
-          {warning_html}
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-    if result.blockers:
-        st.error("纪律不建议执行该卖出。可以保存记录，但请先复核核心仓、卖出比例和回补计划。")
-
-
 def _discipline_messages_html(title: str, items: list[object], *, is_blocker: bool) -> str:
     if not items:
         return ""
@@ -2875,18 +2808,6 @@ def _buy_avg_cost_text(row: dict) -> str:
     return _money_text(row.get("buy_avg_price"))
 
 
-def _realized_pnl_text(row: dict) -> str:
-    if row.get("cost_basis_missing"):
-        return "未计算"
-    return _money_text(row.get("realized_pnl"))
-
-
-def _realized_pct_text(row: dict) -> str:
-    if row.get("cost_basis_missing"):
-        return "未计算"
-    return _percent_or_dash(row.get("realized_pnl_pct"))
-
-
 def _holding_days_text(row: dict) -> str:
     if row.get("cost_basis_missing"):
         return "缺买入日期"
@@ -3102,16 +3023,6 @@ def _historical_non_trade_reason(entry: dict) -> str:
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
         return "历史卖出风险提醒记录"
     return "旧系统未入账记录"
-
-
-def _entry_action_plain_text(entry: dict) -> str:
-    action = str(entry.get("action_type") or "").strip().lower()
-    return {
-        "buy": "买入",
-        "add": "加仓",
-        "sell": "卖出",
-        "trim": "减仓",
-    }.get(action, action or BLANK_TEXT)
 
 
 def _render_entries(symbols: list[str], entries: list[dict]) -> None:
@@ -4293,18 +4204,6 @@ def _tag_inline_html(tags: list[dict]) -> str:
     return (
         f'<i class="trade-error-inline" title="{escape(title, quote=True)}">'
         f"{escape(labels[0])}{escape(suffix)}</i>"
-    )
-
-
-def _tag_chip_html(tags: list[dict]) -> str:
-    if not tags:
-        return '<span class="trade-error-chip empty">未标记</span>'
-    labels = [_error_tag_label(tag.get("tag")) for tag in tags]
-    title = " / ".join(labels)
-    suffix = f" +{len(labels) - 1}" if len(labels) > 1 else ""
-    return (
-        f'<span class="trade-error-chip" title="{escape(title, quote=True)}">'
-        f"{escape(labels[0])}{escape(suffix)}</span>"
     )
 
 
