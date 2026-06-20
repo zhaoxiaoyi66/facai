@@ -364,6 +364,13 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(str(ctx.exception), FMP_MISSING_KEY_MESSAGE)
         self.assertNotIn("FMP_API_KEY", str(ctx.exception))
 
+    def test_disclosure_transcript_missing_key_copy_is_readable(self) -> None:
+        source = inspect.getsource(DisclosurePipeline._load_fmp_transcript)
+
+        self.assertIn("缺少 FMP 电话会文本接口密钥", source)
+        self.assertNotIn("È±ÉÙ", source)
+        self.assertNotIn("缺少 FMP_API_KEY", source)
+
     def test_qwen_health_check_missing_key_is_safe(self) -> None:
         client = QwenClient(
             settings=QwenSettings(

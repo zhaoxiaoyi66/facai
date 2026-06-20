@@ -373,7 +373,7 @@ class DisclosurePipeline:
     def _load_fmp_transcript(self, symbol: str, definitions: list[MetricDefinition], result: dict) -> None:
         api_key = _get_secret("FMP_API_KEY")
         if not api_key:
-            self._log(result, symbol, "FMP_TRANSCRIPT", FMP_TRANSCRIPT_ENDPOINT, "skipped", "缺少 FMP_API_KEY")
+            self._log(result, symbol, "FMP_TRANSCRIPT", FMP_TRANSCRIPT_ENDPOINT, "skipped", "缺少 FMP 电话会文本接口密钥")
             return
 
         year = datetime.now(timezone.utc).year
