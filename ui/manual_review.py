@@ -235,14 +235,14 @@ def _render_recent_confirmed_row(store: ReviewQueueStore, row: dict) -> None:
 
 def _render_score_impact_panel(store: ReviewQueueStore, row: dict, score_status: dict, key_prefix: str) -> None:
     affects = _affects_label(row.get("affects") or "ConfidenceOnly")
-    run_id = score_status.get("lastScoreRunId") or "未记录"
+    score_run_text = "已计算" if score_status.get("lastScoreRunId") else "未记录"
     st.markdown(
         f"""
         <div class="review-impact-panel">
           <strong>评分影响</strong>
           <span>是否参与评分：{'是' if row.get('canEnterScoring') else '否'}</span>
           <span>影响范围：{escape(affects)}</span>
-          <span>最近评分批次：{escape(str(run_id))}</span>
+          <span>最近评分：{escape(score_run_text)}</span>
           <span>撤销后会将该股票评分标记为过期，需重新计算。</span>
         </div>
         """,

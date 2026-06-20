@@ -100,5 +100,6 @@ def test_sidebar_navigation_uses_current_user_facing_labels() -> None:
 def test_manual_review_does_not_expose_score_run_id_label() -> None:
     source = Path("ui/manual_review.py").read_text(encoding="utf-8")
 
-    assert "最近评分批次" in source
+    assert "最近评分：" in source
+    assert "最近评分批次" not in source
     assert "最近一次 scoreRunId" not in source
