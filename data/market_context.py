@@ -11,6 +11,7 @@ import pandas as pd
 from data.cache_read_model import CacheReadModel
 from data.prices import CACHE_PATH
 from data.price_history_selection import select_latest_history_key
+from data.price_freshness import classify_price_freshness, classify_quote_snapshot_freshness, get_us_market_context
 
 
 def build_market_context(
@@ -35,6 +36,21 @@ def build_market_context(
     latest_close = _number(history.get("close")) if history else None
     price_status = cache.get_price_status(normalized)
     history_status = cache.get_history_status(normalized)
+    market_day_context = get_us_market_context(now=now)
+    latest_price_date = history.get("date") if history else None
+    price_freshness = classify_price_freshness(normalized, latest_price_date, market_day_context)
+    quote_freshness = classify_quote_snapshot_freshness(
+        normalized,
+        quote,
+        latest_price_date,
+        market_day_context,
+    )
+    effective_price_status = price_status
+    if price_status == "stale_quote" and not bool(quote_freshness.get("should_prompt_refresh")):
+        effective_price_status = "quote_snapshot" if quote_price is not None else "price_history"
+    effective_history_status = history_status
+    if history_status == "stale_history" and not bool(price_freshness.get("is_stale")):
+        effective_history_status = "available"
 
     if quote_price is not None:
         current_price = quote_price
@@ -49,28 +65,46 @@ def build_market_context(
         price_source = "missing"
         fetched_at = None
 
-    is_stale = price_status == "stale_quote" or history_status == "stale_history"
+    is_stale = current_price is not None and (
+        bool(quote_freshness.get("should_prompt_refresh"))
+        or (effective_history_status == "stale_history" and bool(price_freshness.get("is_stale")))
+    )
     warning = _warning(
         price_source=price_source,
-        price_status=price_status,
-        history_status=history_status,
+        price_status=effective_price_status,
+        history_status=effective_history_status,
         quote_price=quote_price,
         latest_close=latest_close,
+        quote_freshness=quote_freshness,
+        price_freshness=price_freshness,
     )
     return {
         "symbol": normalized,
         "currentPrice": current_price,
         "priceSource": price_source,
-        "priceStatus": price_status,
+        "priceStatus": effective_price_status,
+        "rawPriceStatus": price_status,
         "quotePrice": quote_price,
         "quoteVolume": quote_volume,
         "latestClose": latest_close,
         "fetchedAt": fetched_at,
         "isStale": is_stale,
-        "historyStatus": history_status,
+        "historyStatus": effective_history_status,
+        "rawHistoryStatus": history_status,
         "historyLatestDate": history.get("date") if history else None,
         "historyTickerKey": history.get("ticker") if history else None,
         "warning": warning,
+        "quoteFreshnessStatus": quote_freshness.get("freshness_status"),
+        "quoteFreshnessLabel": quote_freshness.get("freshness_label"),
+        "quoteFreshnessReason": quote_freshness.get("reason"),
+        "quoteCanUsePrice": bool(quote_freshness.get("can_use_price")),
+        "quoteShouldPromptRefresh": bool(quote_freshness.get("should_prompt_refresh")),
+        "price_freshness_status": price_freshness.get("status"),
+        "price_freshness_detail": price_freshness.get("detail"),
+        "price_freshness_is_stale": bool(price_freshness.get("is_stale")),
+        "latest_expected_trading_day": market_day_context.get("latest_expected_trading_day"),
+        "market_status": market_day_context.get("market_status"),
+        "market_state_label": market_day_context.get("market_state_label"),
     }
 
 
@@ -195,16 +229,18 @@ def _warning(
     history_status: str,
     quote_price: float | None,
     latest_close: float | None,
+    quote_freshness: dict[str, Any],
+    price_freshness: dict[str, Any],
 ) -> str:
     warnings: list[str] = []
-    if price_status == "stale_quote":
-        warnings.append("价格数据可能过期")
+    if bool(quote_freshness.get("should_prompt_refresh")):
+        warnings.append(str(quote_freshness.get("freshness_label") or "价格快照需要刷新"))
     if price_source == "price_history":
         warnings.append("quote 缺失，使用最新收盘价替代 current price")
     if price_source == "missing":
         warnings.append("缺少 quote 和 price_history，无法生成 current price")
     if history_status == "stale_history":
-        warnings.append("price_history 可能过期")
+        warnings.append(str(price_freshness.get("status") or "price_history 可能过期"))
     elif history_status == "missing" and quote_price is not None and latest_close is None:
         warnings.append("price_history 缺失")
     return "；".join(warnings)

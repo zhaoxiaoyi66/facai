@@ -86,15 +86,35 @@ def test_quote_price_is_preferred_over_latest_close() -> None:
 def test_stale_quote_is_marked_without_silent_fallback() -> None:
     with TemporaryDirectory() as tmpdir:
         path = _db(tmpdir)
-        _insert_quote(path, "NVDA", 130, "2026-05-28T11:00:00+00:00")
-        _insert_history(path, "FMP:NVDA", [("2026-05-30", 125)], "2026-05-30T10:00:00+00:00")
+        now = datetime(2026, 6, 16, 14, 0, tzinfo=timezone.utc)
+        _insert_quote(path, "NVDA", 130, "2026-06-16T13:50:00+00:00")
+        _insert_history(path, "FMP:NVDA", [("2026-06-15", 125)], "2026-06-16T10:00:00+00:00")
 
-        context = build_market_context("NVDA", path=path, now=NOW, quote_max_age_hours=24)
+        context = build_market_context("NVDA", path=path, now=now, quote_max_age_hours=24)
 
         assert context["currentPrice"] == 130
         assert context["priceSource"] == "quote_snapshot"
         assert context["isStale"] is True
-        assert "价格数据可能过期" in context["warning"]
+        assert context["quoteFreshnessLabel"] == "盘中价格过期"
+        assert "盘中价格过期" in context["warning"]
+
+
+def test_closed_market_stale_quote_is_valid_until_next_session() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = _db(tmpdir)
+        now = datetime(2026, 6, 13, 16, 0, tzinfo=timezone.utc)
+        _insert_quote(path, "NVDA", 130, "2026-06-12T20:30:00+00:00")
+        _insert_history(path, "FMP:NVDA", [("2026-06-12", 125)], "2026-06-12T21:00:00+00:00")
+
+        context = build_market_context("NVDA", path=path, now=now, quote_max_age_hours=1)
+
+        assert context["currentPrice"] == 130
+        assert context["rawPriceStatus"] == "stale_quote"
+        assert context["priceStatus"] == "quote_snapshot"
+        assert context["quoteFreshnessLabel"] == "休市中，价格有效"
+        assert context["quoteShouldPromptRefresh"] is False
+        assert context["isStale"] is False
+        assert "过期" not in context["warning"]
 
 
 def test_missing_quote_falls_back_to_latest_close_with_warning() -> None:

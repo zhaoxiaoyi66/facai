@@ -64,10 +64,12 @@ def build_data_health_summary(
             summary["missingPriceCount"] += 1
             symbol_issues += 1
             symbol_issue_items.append(_add_issue(summary, "missing_price", symbol, "观察池缺少 current price"))
-        if market.get("priceStatus") == "stale_quote":
+        if market.get("quoteShouldPromptRefresh"):
             summary["stalePriceCount"] += 1
             symbol_issues += 1
-            symbol_issue_items.append(_add_issue(summary, "stale_quote", symbol, "quote_snapshots 已过期"))
+            symbol_issue_items.append(
+                _add_issue(summary, "stale_quote", symbol, str(market.get("quoteFreshnessLabel") or "价格快照需要刷新"))
+            )
         history_status = str(market.get("historyStatus") or "missing")
         if history_status == "missing":
             summary["missingHistoryCount"] += 1
