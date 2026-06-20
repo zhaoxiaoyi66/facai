@@ -89,3 +89,18 @@ def test_stock_detail_setup_quality_calls_rr_insufficient_only_below_45() -> Non
     display = {"setup_score": 48, "volume_acceptance_score": 48, "risk_reward_score": 42}
 
     assert stock_detail._setup_quality_decision_text(display) == "买入质量偏弱：赔率不足且承接未确认。"
+
+
+def test_stock_detail_disclosure_tables_localize_missing_placeholders() -> None:
+    source = inspect.getsource(stock_detail._render_disclosure_metrics)
+
+    assert '"数值": "N/A"' not in source
+    assert '"期间": "N/A"' not in source
+    assert '"来源链接": "N/A"' not in source
+    assert stock_detail._display_table_text("N/A") == "待补"
+    assert stock_detail._display_table_text(None, "无链接") == "无链接"
+    assert stock_detail._is_missing_table_value("N/A") is True
+    assert stock_detail._format_disclosure_value(None) == "待补"
+    assert stock_detail._metric_source_label({}, "fcf_margin") == "待补"
+    assert stock_detail._review_status_label(None) == "待补"
+    assert stock_detail._missing_row_label({}) == "待补"

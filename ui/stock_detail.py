@@ -681,7 +681,7 @@ def _render_disclosure_pipeline_controls(
                     {
                         "字段": metric_label(item.get("displayName") or item.get("metricKey")),
                         "数值": _format_disclosure_value(item.get("value"), item.get("unit")),
-                        "期间": item.get("period") or "N/A",
+                        "期间": _display_table_text(item.get("period")),
                         "来源": source_type_label(item.get("sourceType")),
                         "置信度": confidence_label(item.get("confidence")),
                     }
@@ -719,7 +719,7 @@ def _render_sec_supplement_summary(snapshot: dict) -> None:
         {"自动补充项": metric_label("RPO / cRPO growth"), "数值": format_percent(snapshot.get("rpo_growth"), already_percent=False), "来源": _metric_source_label(snapshot, "rpo_growth")},
         {"自动补充项": "递延收入增速", "数值": format_percent(snapshot.get("deferred_revenue_growth"), already_percent=False), "来源": snapshot.get("deferred_revenue_source") or "SEC companyfacts"},
     ]
-    rows = [row for row in rows if row["数值"] != "N/A"]
+    rows = [row for row in rows if not _is_missing_table_value(row["数值"])]
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     elif status:
@@ -748,13 +748,13 @@ def _render_disclosure_metrics(snapshot: dict) -> None:
                 {
                     "指标": metric_label(item.get("displayName") or item.get("metricKey")),
                     "数值": _format_disclosure_value(item.get("value"), item.get("unit")),
-                    "来源": source_type_label(item.get("sourceType") or "N/A"),
-                    "置信度": confidence_label(item.get("confidence") or "N/A"),
+                    "来源": source_type_label(item.get("sourceType")),
+                    "置信度": confidence_label(item.get("confidence")),
                     "复核状态": _review_status_label(item.get("reviewStatus") or "pending_review"),
-                    "期间": item.get("period") or "N/A",
+                    "期间": _display_table_text(item.get("period")),
                     "原文片段": _truncate(item.get("extractedText") or "", 180),
                     "动作": "已保存",
-                    "来源链接": item.get("sourceUrl") or "N/A",
+                    "来源链接": _display_table_text(item.get("sourceUrl"), "无链接"),
                 }
             )
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
@@ -762,14 +762,14 @@ def _render_disclosure_metrics(snapshot: dict) -> None:
         resolution_rows = [
             {
                 "指标": metric_label(item.get("displayName") or item.get("metricKey")),
-                "数值": "N/A",
-                "来源": source_type_label(item.get("sourceTried") or "N/A"),
-                "置信度": "N/A",
-                "期间": "N/A",
+                "数值": "待补",
+                "来源": source_type_label(item.get("sourceTried")),
+                "置信度": "待补",
+                "期间": "待补",
                 "说明": item.get("reason") or "",
                 "状态": resolution_status_label(item.get("status")),
                 "动作": action_label(item.get("recommendedAction")),
-                "来源链接": "N/A",
+                "来源链接": "无链接",
             }
             for item in resolutions
         ]
@@ -800,10 +800,10 @@ def _metric_source_label(snapshot: dict, key: str) -> str:
         if isinstance(raw, dict):
             if raw.get("sourceDocumentTitle") or raw.get("source"):
                 return str(raw.get("sourceDocumentTitle") or raw.get("source"))
-            return source_type_label(raw.get("sourceType") or "N/A")
+            return source_type_label(raw.get("sourceType"))
         if raw:
             return source_type_label(raw)
-    return "N/A"
+    return "待补"
 
 
 def _review_status_label(value: object) -> str:
@@ -813,7 +813,7 @@ def _review_status_label(value: object) -> str:
         "rejected": "已驳回",
         "manually_corrected": "手动修正",
         "stale": "已过期",
-    }.get(str(value or ""), str(value or "N/A"))
+    }.get(str(value or ""), _display_table_text(value))
 
 
 def _data_status_rows(snapshot: dict) -> list[dict]:
@@ -2427,7 +2427,7 @@ def _missing_impact_rows(impacts: list[dict]) -> list[dict]:
             continue
         rows.append(
             {
-                "指标": metric_label(item.get("metric") or "N/A"),
+                "指标": metric_label(item.get("metric")),
                 "影响等级": item.get("impactLevel") or "low",
                 "影响范围": _affects_label(item.get("affects") or "Confidence Only"),
                 "建议动作": action_label(item.get("action") or "manual_override_required"),
@@ -2914,7 +2914,7 @@ def _rows_for_routes(rows: list[dict[str, object]], routes: set[str]) -> list[st
 
 
 def _missing_row_label(row: dict[str, object]) -> str:
-    return metric_label(str(row.get("displayName") or row.get("metricKey") or "N/A"))
+    return metric_label(row.get("displayName") or row.get("metricKey"))
 
 
 def _summary_key_metrics(summary: dict[str, object]) -> list[str]:
@@ -3049,6 +3049,17 @@ def _format_disclosure_value(value: object, unit: object = None) -> str:
     if unit == "usd":
         return format_large_number(number)
     return f"{number:g}"
+
+
+def _display_table_text(value: object, fallback: str = "待补") -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"", "n/a", "na", "none", "null", "nan"}:
+        return fallback
+    return text
+
+
+def _is_missing_table_value(value: object) -> bool:
+    return _display_table_text(value, "") == ""
 
 
 def _truncate(value: str, limit: int) -> str:
