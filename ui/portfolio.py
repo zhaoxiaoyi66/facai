@@ -1839,7 +1839,7 @@ def _render_reconciliation_strip(items: list[dict]) -> None:
     summary = _reconciliation_summary(items)
     metrics = [
         ("一致", summary["ok"]),
-        ("旧未入账", summary["unsynced"]),
+        ("历史未入账", summary["unsynced"]),
         ("数量不一致", summary["quantityMismatch"]),
         ("成本不一致", summary["costMismatch"]),
         ("来源不明", summary["unknownSource"]),
@@ -1925,7 +1925,7 @@ def _reconciliation_drawer_items(item: dict | None) -> list[tuple[str, object]]:
     items = [
         ("状态", _reconciliation_status_text(current)),
         ("原因", _reconciliation_reason_text(current)),
-        ("旧未入账", int(current.get("unsyncedTradeCount") or 0)),
+        ("历史未入账", int(current.get("unsyncedTradeCount") or 0)),
         ("持仓数量 / 日志数量", _quantity_text(current.get("positionQuantity")) + " / " + _quantity_text(current.get("journalQuantity"))),
         ("数量差异", _quantity_text(current.get("quantityDiff"))),
         ("持仓成本 / 日志成本", _money_text(current.get("positionAverageCost")) + " / " + _money_text(current.get("journalAverageCost"))),
@@ -2300,7 +2300,7 @@ def _render_portfolio_alerts(summary: dict, action_groups: list[dict], reconcili
         alert_items.append(f"{int(overweight_group.get('count') or 0)} 只持仓超过计划上限：{_symbol_preview(overweight_group.get('symbols') or [])}")
     if int(reconciliation.get("problemCount") or 0) > 0:
         parts = [
-            f"旧未入账 {reconciliation['unsynced']}",
+            f"历史未入账 {reconciliation['unsynced']}",
             f"数量不一致 {reconciliation['quantityMismatch']}",
             f"成本不一致 {reconciliation['costMismatch']}",
         ]
@@ -2351,7 +2351,7 @@ def _reconciliation_expander_label(items: list[dict]) -> str:
     return (
         "账务核对"
         f"｜一致 {summary['ok']}"
-        f"｜旧未入账 {summary['unsynced']}"
+        f"｜历史未入账 {summary['unsynced']}"
         f"｜数量不一致 {summary['quantityMismatch']}"
         f"｜成本不一致 {summary['costMismatch']}"
     )
