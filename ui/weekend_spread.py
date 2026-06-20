@@ -5676,7 +5676,7 @@ def _backtest_error_message(rows: list[dict]) -> str:
         return ""
     grouped: dict[tuple[str, str], int] = {}
     for row in rows:
-        ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
+        ticker = str(row.get("ticker") or "").strip().upper() or "未知标的"
         reason = _backtest_row_failure_reason(row)
         grouped[(ticker, reason)] = grouped.get((ticker, reason), 0) + 1
     return "\uff1b".join(

@@ -1489,6 +1489,15 @@ def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:
     assert "NVDA：夜盘开盘窗口内无有效 1m K线，已排除 4 个样本" in message
 
 
+def test_backtest_error_message_does_not_show_unknown_placeholder() -> None:
+    message = weekend_spread._backtest_error_message(
+        [{"ticker": "", "data_quality": "MISSING_STOCK_FIRST_BAR", "error_message": "MISSING_STOCK_FIRST_BAR"}]
+    )
+
+    assert "UNKNOWN" not in message
+    assert "未知标的：夜盘开盘窗口内无有效 1m K线，已排除 1 个样本" in message
+
+
 def test_backtest_error_message_prefers_transmission_quality_over_observe_status() -> None:
     rows = [
         {
