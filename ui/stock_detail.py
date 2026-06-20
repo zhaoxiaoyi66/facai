@@ -232,7 +232,7 @@ def _render_record_signal_button(
             SignalPerformanceStore().save_signal(
                 symbol=ticker,
                 signal_date=datetime.now().date(),
-                signal_type="价格位置",
+                signal_type="研报中心",
                 signal_label=infer_price_position_signal_label(display),
                 signal_price=price,
                 price_source="个股研究",

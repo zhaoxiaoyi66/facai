@@ -2792,7 +2792,7 @@ def _handle_record_signal_query(table: pd.DataFrame) -> None:
             SignalPerformanceStore().save_signal(
                 symbol=symbol,
                 signal_date=datetime.now().date(),
-                signal_type="价格位置",
+                signal_type="研报中心",
                 signal_label=infer_price_position_signal_label(buy_zone_display),
                 signal_price=price,
                 price_source="决策总览",

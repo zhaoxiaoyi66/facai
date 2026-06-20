@@ -159,6 +159,16 @@ def test_signal_manual_form_uses_current_research_center_label() -> None:
     assert "持仓/价格位置" not in source
 
 
+def test_price_position_signal_writers_use_research_center_label() -> None:
+    dashboard_source = Path("ui/dashboard.py").read_text(encoding="utf-8")
+    stock_detail_source = Path("ui/stock_detail.py").read_text(encoding="utf-8")
+    source = dashboard_source + stock_detail_source
+
+    assert 'signal_type="研报中心"' in dashboard_source
+    assert 'signal_type="研报中心"' in stock_detail_source
+    assert 'signal_type="价格位置"' not in source
+
+
 def test_infer_price_position_signal_label_uses_chinese_buckets() -> None:
     assert infer_price_position_signal_label({"primary_zone_text": "左侧试仓候选区"}) == "低位试仓区"
     assert infer_price_position_signal_label({"primary_zone_text": "承接观察区内"}) == "观察承接区"
