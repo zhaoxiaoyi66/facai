@@ -2096,8 +2096,8 @@ def test_invalid_binance_symbol_is_mapping_review_not_generic_api_failure() -> N
 
     row = rows[0]
     assert row["status"] == "INVALID_SYMBOL"
-    assert row["mapping_status"] == 'symbol \u65e0\u6548 / \u6620\u5c04\u5f85\u786e\u8ba4'
-    assert row["alert_level_cn"] == 'symbol \u65e0\u6548 / \u6620\u5c04\u5f85\u786e\u8ba4'
+    assert row["mapping_status"] == "合约无效 / 映射待确认"
+    assert row["alert_level_cn"] == "合约无效 / 映射待确认"
     assert row["spread_pct"] is None
 
 
@@ -2106,7 +2106,7 @@ def test_mapping_diagnostics_marks_invalid_symbol() -> None:
 
     rows = build_mapping_diagnostics(["NVDA"], mapping=_mapping(), provider=provider, validate=True)
 
-    assert rows[0]["validation_status"] == 'symbol \u65e0\u6548'
+    assert rows[0]["validation_status"] == "合约无效"
     assert rows[0]["exists"] is False
     assert rows[0]["error_message"] == "invalid_symbol"
 
@@ -2121,7 +2121,7 @@ def test_mapping_diagnostics_marks_unverified_valid_symbol() -> None:
         validate=True,
     )
 
-    assert rows[0]["validation_status"] == 'symbol \u6709\u6548\u4f46\u6620\u5c04\u672a\u786e\u8ba4'
+    assert rows[0]["validation_status"] == "合约有效但映射未确认"
     assert rows[0]["exists"] is True
     assert rows[0]["price_available"] is True
 
@@ -8533,6 +8533,13 @@ def test_weekend_monitor_research_frames_hide_internal_fields() -> None:
     assert "数据记录健康" in sample_frame.columns
     assert "None" not in event_frame.to_string()
     assert "None" not in sample_frame.to_string()
+
+    missing_event_frame = weekend_spread._monitor_research_event_frame([{"ticker": "GLW"}])
+    missing_sample_frame = weekend_spread._monitor_research_sample_frame([{"week_id": "2026-W25", "ticker": "GLW"}])
+    assert "未记录" in missing_event_frame.to_string()
+    assert "未记录" in missing_sample_frame.to_string()
+    assert "暂缺" not in missing_event_frame.to_string()
+    assert "暂缺" not in missing_sample_frame.to_string()
 
 
 def test_weekend_monitor_safe_wrapper_does_not_crash_when_renderer_missing(monkeypatch) -> None:

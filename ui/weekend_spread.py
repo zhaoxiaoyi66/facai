@@ -3233,11 +3233,11 @@ def _monitor_research_event_frame(events: list[dict]) -> pd.DataFrame:
         records.append(
             {
                 "股票": event.get("ticker") or "",
-                "方向": event.get("direction") or "暂缺",
-                "最大价差": _percent_text(max_abs_premium),
+                "方向": event.get("direction") or "未记录",
+                "最大价差": _recorded_percent_text(max_abs_premium),
                 "日常波动参照": _daily_volatility_reference_from_ratio(event.get("max_spread_atr_ratio")),
-                "最大时间": _short_hkt_time(event.get("peak_time_et")),
-                "持续时间": _minutes_text(event.get("duration_minutes")),
+                "最大时间": _recorded_short_hkt_time(event.get("peak_time_et")),
+                "持续时间": _recorded_minutes_text(event.get("duration_minutes")),
                 "是否收敛": "是" if int(event.get("converged_before_open") or 0) else "否",
                 "休市新闻": event.get("news_label") or "待新闻确认",
                 "事件质量": event.get("event_quality") or "数据待核",
@@ -3278,22 +3278,22 @@ def _monitor_research_sample_frame(samples: list[dict]) -> pd.DataFrame:
             {
                 "周次": sample.get("week_id") or "",
                 "股票": sample.get("ticker") or "",
-                "最大溢价": _percent_text(sample.get("max_premium_pct")),
-                "最大折价": _percent_text(sample.get("max_discount_pct")),
-                "平均溢价": _percent_text(sample.get("avg_premium_pct")),
-                "价差/ATR最大值": _ratio_text(sample.get("max_spread_atr_ratio")),
-                "溢价持续时间": _minutes_text(sample.get("premium_duration_minutes")),
-                "高点时间": _short_hkt_time(sample.get("p1_max_time_et")),
+                "最大溢价": _recorded_percent_text(sample.get("max_premium_pct")),
+                "最大折价": _recorded_percent_text(sample.get("max_discount_pct")),
+                "平均溢价": _recorded_percent_text(sample.get("avg_premium_pct")),
+                "价差/ATR最大值": _recorded_ratio_text(sample.get("max_spread_atr_ratio")),
+                "溢价持续时间": _recorded_minutes_text(sample.get("premium_duration_minutes")),
+                "高点时间": _recorded_short_hkt_time(sample.get("p1_max_time_et")),
                 "高点阶段": sample.get("peak_phase") or "数据不足",
                 "距夜盘开盘": _hours_until_open_text(sample.get("hours_before_overnight_open")),
                 "高点后回落": _peak_pullback_text(sample.get("pullback_from_weekend_high_pct")),
                 "高点质量": sample.get("peak_quality") or "数据不足",
                 "休市新闻": sample.get("news_label") or "待新闻确认",
                 "新闻状态": sample.get("news_status") or "未检查",
-                "P2 时间": _short_hkt_time(sample.get("p2_time_et")),
+                "P2 时间": _recorded_short_hkt_time(sample.get("p2_time_et")),
                 "P2 状态": sample.get("p2_status") or "未验证",
                 "延迟分钟": _delay_minutes_text(sample.get("p2_delay_minutes")),
-                "兑现率": _percent_text(sample.get("capture_pct")),
+                "兑现率": _recorded_percent_text(sample.get("capture_pct")),
                 "样本质量": sample.get("sample_quality") or "数据不足",
                 "数据记录健康": sample.get("data_health_label") or "数据待核",
             }
@@ -3403,16 +3403,35 @@ def _daily_volatility_reference_from_ratio(value: object) -> str:
     return f"约 {ratio:.1f} 天波动"
 
 
+def _recorded_percent_text(value: object) -> str:
+    text = _percent_text(value)
+    return "未记录" if text == "暂缺" else text
+
+
+def _recorded_ratio_text(value: object) -> str:
+    text = _ratio_text(value)
+    return "未记录" if text == "暂缺" else text
+
+
+def _recorded_minutes_text(value: object) -> str:
+    text = _minutes_text(value)
+    return "未记录" if text == "暂缺" else text
+
+
+def _recorded_short_hkt_time(value: object) -> str:
+    text = _short_hkt_time(value)
+    return "未记录" if text == "暂缺" else text
+
+
 def _peak_time_text(row: dict) -> str:
     value = row.get("binance_weekend_high_time_et") or row.get("binance_weekend_max_time") or row.get("binance_max_time")
-    text = _short_hkt_time(value)
-    return text if text != "暂缺" else "暂缺"
+    return _recorded_short_hkt_time(value)
 
 
 def _hours_until_open_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "暂缺"
+        return "未记录"
     if number < 1:
         return f"{max(0, number * 60):.0f} 分钟"
     return f"{number:.1f} 小时"
@@ -3421,17 +3440,17 @@ def _hours_until_open_text(value: object) -> str:
 def _peak_pullback_text(value: object) -> str:
     number = _number(value)
     if number is None:
-        return "暂缺"
+        return "未记录"
     return f"{number:+.2f}%"
 
 
 def _peak_timing_explanation(row: dict) -> str:
     peak_time = _peak_time_text(row)
-    if peak_time == "暂缺":
+    if peak_time == "未记录":
         return ""
     hours = _hours_until_open_text(row.get("hours_before_overnight_open"))
     pullback = _number(row.get("pullback_from_weekend_high_pct"))
-    pullback_text = f"{abs(pullback):.1f}%" if pullback is not None else "暂缺"
+    pullback_text = f"{abs(pullback):.1f}%" if pullback is not None else "未记录"
     quality = str(row.get("peak_quality") or "数据不足")
     phase = str(row.get("peak_phase") or "数据不足")
     if quality == "插针嫌疑":
