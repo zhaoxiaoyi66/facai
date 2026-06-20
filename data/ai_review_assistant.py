@@ -448,7 +448,7 @@ class OpenAIReviewClient:
 
     def review_item(self, payload: dict) -> dict:
         if not self.configured:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+            raise RuntimeError("OpenAI 复核接口密钥未配置")
         body = self._response_payload(payload, self.model)
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -511,7 +511,7 @@ class QwenReviewClient:
 
     def review_item(self, payload: dict) -> dict:
         if not self.configured:
-            raise RuntimeError("DASHSCOPE_API_KEY is not configured")
+            raise RuntimeError("Qwen 复核接口密钥未配置")
         body = self._chat_payload(payload, self.model)
         request = Request(
             f"{self.base_url}/chat/completions",

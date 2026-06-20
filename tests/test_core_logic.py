@@ -57,6 +57,7 @@ from buy_zone_engine import (
 from data.ai_review_assistant import (
     AIReviewAssistant,
     AIReviewStore,
+    OpenAIReviewClient,
     QwenReviewClient,
     apply_ai_review_result,
     ai_review_candidates,
@@ -8050,6 +8051,20 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["role"], "system")
         self.assertEqual(body["response_format"]["type"], "json_schema")
         self.assertTrue(body["response_format"]["json_schema"]["strict"])
+
+    def test_review_clients_missing_key_copy_hides_env_key_names(self) -> None:
+        for client, expected in (
+            (OpenAIReviewClient(api_key=""), "OpenAI 复核接口密钥未配置"),
+            (QwenReviewClient(api_key=""), "Qwen 复核接口密钥未配置"),
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaises(RuntimeError) as captured:
+                    client.review_item({})
+                message = str(captured.exception)
+                self.assertIn(expected, message)
+                self.assertNotIn("OPENAI_API_KEY", message)
+                self.assertNotIn("DASHSCOPE_API_KEY", message)
+                self.assertNotIn("QWEN_API_KEY", message)
 
     def test_ai_review_provider_env_can_select_qwen(self) -> None:
         old_provider = os.environ.get("AI_REVIEW_PROVIDER")
