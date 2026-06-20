@@ -1739,7 +1739,7 @@ def _review_vm_action_label(action: str) -> str:
         "manual_confirm": "人工确认",
         "review_later": "稍后复核",
         "no_action": "无需操作",
-    }.get(action, action)
+    }.get(action, _manual_review_unknown_display_text(action, "待复核"))
 
 
 def _render_sync_controls(store: ReviewQueueStore, rows: list[dict] | None = None, filters: dict | None = None) -> None:
