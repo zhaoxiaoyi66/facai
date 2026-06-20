@@ -873,41 +873,6 @@ def _event_from_rows(week_id: str, ticker: str, rows: list[dict[str, Any]], *, c
     return event
 
 
-def _event_quality(rows: list[dict[str, Any]], *, duration: float, max_ratio: float) -> str:
-    if any("新闻" in str(row.get("news_label") or "") and "无" not in str(row.get("news_label") or "") for row in rows):
-        return "新闻驱动"
-    if any(str(row.get("spread_reasonableness") or "") == "数据不足" for row in rows):
-        return "数据待核"
-    if duration <= DEFAULT_TICK_INTERVAL_MINUTES or len(rows) <= 1:
-        return "瞬时插针"
-    if max_ratio and max_ratio < 1.0:
-        return "流动性不足"
-    return "高质量事件"
-
-
-def _sample_quality(backtest: dict[str, Any], *, max_atr: float, major_news_count: int) -> str:
-    if max_atr >= 2.0 and major_news_count <= 0:
-        return "无新闻极端价差"
-    delay = _number(backtest.get("p2_delay_minutes"))
-    p2 = _number(backtest.get("broker_open_close") or backtest.get("p2_price"))
-    if p2 is None:
-        return "仅观察样本"
-    if delay is None:
-        return "仅观察样本"
-    if delay == 0:
-        return "首分钟样本"
-    if delay > 0:
-        return "延迟成交样本"
-    return "数据不足"
-
-
-def _first_minute_liquidity(backtest: dict[str, Any]) -> str:
-    delay = _number(backtest.get("p2_delay_minutes"))
-    if delay is None:
-        return "数据不足"
-    return "首分钟" if delay == 0 else "延迟成交"
-
-
 def _event_quality(
     rows: list[dict[str, Any]],
     *,
