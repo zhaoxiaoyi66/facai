@@ -6514,6 +6514,14 @@ class ScoringTests(unittest.TestCase):
         self.assertIn("aiCloudDebtMaturity", risk_metrics)
         self.assertIn("fcfMargin", archive_metrics)
 
+    def test_review_center_missing_period_copy_is_localized(self) -> None:
+        from data.review_center_view_model import _period_key
+
+        value = _period_key({})
+
+        self.assertEqual(value, "未标记期间")
+        self.assertNotIn("unknown_period", value)
+
     def test_refresh_ai_cloud_sec_disclosures_returns_structured_counts_for_fake_sec_text(self) -> None:
         exhibit_text = (
             "CoreWeave Reports Q1 2026 Results. Contracted backlog was $4.2 billion. "

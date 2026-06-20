@@ -626,7 +626,7 @@ def _dedupe_key(row: dict) -> str:
 
 
 def _period_key(row: dict) -> str:
-    return str(row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or "unknown_period")
+    return str(row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or "未标记期间")
 
 
 def _is_historical(row: dict) -> bool:
