@@ -123,6 +123,21 @@ class PortfolioModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update_position_tier("NVDA", "UNCLASSIFIED")
 
+    def test_portfolio_position_missing_position_error_is_chinese(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")
+
+            for label, action in (
+                ("tier", lambda: store.update_position_tier("MISSING", "A")),
+                ("role", lambda: store.update_position_role("MISSING", ROLE_FIRST_CORE)),
+            ):
+                with self.subTest(label=label):
+                    with self.assertRaises(ValueError) as captured:
+                        action()
+
+                    self.assertEqual(str(captured.exception), "持仓记录不存在")
+                    self.assertNotIn("position not found", str(captured.exception))
+
     def test_portfolio_position_role_defaults_to_observation_and_can_update(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = PortfolioPositionStore(Path(tmpdir) / "portfolio.sqlite")

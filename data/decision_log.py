@@ -595,7 +595,7 @@ class TradeJournalStore:
         clean_id = _required_int(entry_id, "entry_id")
         existing = self.get_entry(clean_id)
         if not existing:
-            raise ValueError("trade entry not found")
+            raise ValueError("交易日志记录不存在")
         cleaned = _clean_trade_entry(symbol, values)
         if str(existing.get("action_type") or "") != cleaned["action_type"]:
             raise ValueError("历史交易类型不可修改")
@@ -714,7 +714,7 @@ class TradeJournalStore:
             _write_daily_trade_activity_snapshot(conn, clean_id, cleaned)
             _write_trade_role_snapshot(conn, clean_id, cleaned)
         if cursor.rowcount <= 0:
-            raise ValueError("trade entry not found")
+            raise ValueError("交易日志记录不存在")
         return self.get_entry(clean_id) or cleaned
 
     def get_entry(self, entry_id: int) -> dict | None:

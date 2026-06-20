@@ -213,7 +213,7 @@ class PortfolioPositionStore:
                 (clean_tier, now, clean_symbol),
             )
         if cursor.rowcount <= 0:
-            raise ValueError("position not found")
+            raise ValueError("持仓记录不存在")
         return self.get_position(clean_symbol) or {"symbol": clean_symbol, "position_tier": clean_tier}
 
     def update_position_role(self, symbol: str, role: str) -> dict:
@@ -232,7 +232,7 @@ class PortfolioPositionStore:
                 (clean_role, now, clean_symbol),
             )
         if cursor.rowcount <= 0:
-            raise ValueError("position not found")
+            raise ValueError("持仓记录不存在")
         return self.get_position(clean_symbol) or {"symbol": clean_symbol, "role": clean_role}
 
     def deactivate_position(self, symbol: str) -> dict | None:

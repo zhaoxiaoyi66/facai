@@ -27,6 +27,16 @@ from scoring.final_decision_adapter import build_final_decision_bundle
 
 
 class DecisionLogTests(unittest.TestCase):
+    def test_trade_journal_missing_entry_error_is_chinese(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = TradeJournalStore(Path(tmpdir) / "journal.sqlite")
+
+            with self.assertRaises(ValueError) as captured:
+                store.update_entry(999, "NVDA", {})
+
+        self.assertEqual(str(captured.exception), "交易日志记录不存在")
+        self.assertNotIn("trade entry not found", str(captured.exception))
+
     def _insert_price_history(
         self,
         db_path: Path,

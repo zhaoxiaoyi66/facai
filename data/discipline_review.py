@@ -623,7 +623,7 @@ class DisciplineReviewStore:
     def update_mistake_review(self, review_id: int, values: dict[str, Any]) -> dict[str, Any]:
         existing = self.get_mistake_review(review_id)
         if not existing:
-            raise KeyError(f"mistake review not found: {review_id}")
+            raise KeyError(f"交易复盘记录不存在：{review_id}")
         review_date = _parse_date(values.get("review_date", existing.get("review_date"))) or date.today()
         market_type = _clean_choice(
             values.get("market_type", existing.get("market_type")),

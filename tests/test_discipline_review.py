@@ -66,6 +66,19 @@ def _insert_quote(path: Path, symbol: str, price: float) -> None:
         conn.commit()
 
 
+def test_mistake_review_missing_record_error_is_chinese() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+
+        try:
+            store.update_mistake_review(999, {"symbol": "NVDA"})
+        except KeyError as exc:
+            assert exc.args[0] == "交易复盘记录不存在：999"
+            assert "mistake review not found" not in str(exc)
+        else:
+            raise AssertionError("expected missing mistake review to raise KeyError")
+
+
 def test_discipline_principles_can_be_saved_and_reset() -> None:
     with TemporaryDirectory() as tmpdir:
         store = DisciplineReviewStore(_path(tmpdir))
