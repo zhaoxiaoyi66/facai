@@ -622,17 +622,19 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     assert "门禁" not in hint
 
 
-def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_tags() -> None:
+def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade_tags() -> None:
     source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
 
-    assert "交易错题本" in source
-    assert "记录每一次犯错，把亏损变成下一次防线。" in source
-    assert "错题总数" in source
-    assert "最近 30 天错题" in source
-    assert "最近 30 天损失" in source
+    assert "交易复盘" in source
+    assert "记录交易错误、复盘交易行为，把每次失误沉淀成下一次防线。" in source
+    assert "交易错题本" not in source
+    assert "错误记录总数" in source
+    assert "最近30天错误数" in source
+    assert "最近30天损失金额" in source
     assert "未闭环防线" in source
     assert "快速记录一次错误" in source
-    assert "收进错题本" in source
+    assert "收进复盘" in source
+    assert "收进错题本" not in source
     assert "犯错行为" in source
     assert "一句话反思" in source
     assert "补充详细复盘" in source
@@ -640,7 +642,7 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "是否违反原计划" in source
     assert "是否需要交易前提醒" in source
     assert "更多错误类型" in source
-    assert "最近错题" in source
+    assert "最近复盘" in source
     assert "默认只显示最近 5 条" in source
     assert "下次防线" in source
     assert "高级统计 / 月度复盘" in source
@@ -656,10 +658,10 @@ def test_discipline_review_page_uses_mistake_notebook_instead_of_manual_trade_ta
     assert "结果 / 影响" in source
     assert "事件经过" in source
     assert "下次防线" in source
-    assert "已收进错题本。重点不是责备自己，而是下次别重复。" in source
+    assert "已收进交易复盘。重点不是责备自己，而是下次别重复。" in source
     assert "这次错误已经沉淀为下次防线。" in source
-    assert "还没有错题。不是为了证明自己没错，而是把每次失误都留成证据。" in source
-    assert "记录错题后，系统会从你的反思里沉淀下次防线。" in source
+    assert "还没有复盘记录。不是为了证明自己没错，而是把每次失误都留成证据。" in source
+    assert "记录交易复盘后，系统会从你的反思里沉淀下次防线。" in source
     assert "_render_self_check_questions" not in source
     assert "SELF_CHECK_QUESTIONS" not in source
     assert "交易前纪律提醒" not in source
