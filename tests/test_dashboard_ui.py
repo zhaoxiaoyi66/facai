@@ -376,6 +376,12 @@ def test_dashboard_price_market_cell_shows_price_source_label() -> None:
     assert "刷新时间：06/17 20:00 HKT" in html
 
 
+def test_dashboard_table_badge_hides_unknown_internal_codes() -> None:
+    assert dashboard_tables._short_badge_text("NEW_INTERNAL_BADGE_STATUS") == "待复核"
+    assert dashboard_tables._short_badge_text("") == "待复核"
+    assert dashboard_tables._short_badge_text("人工观察") == "人工观察"
+
+
 def test_dashboard_drawer_price_source_label_uses_same_snapshot_mapping() -> None:
     row = pd.Series(
         {

@@ -877,7 +877,7 @@ def _badge_html(value: object, color: str, symbol: str | None = None) -> str:
 
 
 def _short_badge_text(value: object) -> str:
-    text = str(value)
+    text = str(value or "").strip()
     replacements = {
         "可小仓观察，待关键数据复核后再加仓": "待复核",
         "可小仓分批": "小仓观察",
@@ -885,7 +885,11 @@ def _short_badge_text(value: object) -> str:
         "回撤后有吸引力": "回撤买点",
         "数据不足，需复核": "数据不足",
     }
-    return replacements.get(text, text)
+    if text in replacements:
+        return replacements[text]
+    if re.fullmatch(r"[A-Z0-9_:-]{3,}", text):
+        return "待复核"
+    return text or "待复核"
 
 
 def _dashboard_cell_link(inner_html: str, symbol: str | None) -> str:
