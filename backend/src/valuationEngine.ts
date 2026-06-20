@@ -25,10 +25,10 @@ export function entryScoreFromValuation(metrics: ValuationMetrics): { score: num
   if (metrics.evToFcf !== null) {
     if (metrics.evToFcf <= 25) {
       score += 20;
-      reasons.push("EV/FCF is reasonable.");
+      reasons.push("EV/FCF 处于相对合理区间。");
     } else if (metrics.evToFcf > 50) {
       score -= 20;
-      reasons.push("EV/FCF is above 50.");
+      reasons.push("EV/FCF 高于 50。");
     }
   }
 
@@ -39,7 +39,7 @@ export function entryScoreFromValuation(metrics: ValuationMetrics): { score: num
 
   if (metrics.psVsHistoricalMedian !== null && metrics.psVsHistoricalMedian > 1.5) {
     score -= 15;
-    reasons.push("PS is far above historical median.");
+    reasons.push("PS 明显高于历史中位数。");
   }
 
   return { score: clamp(score), reasons };

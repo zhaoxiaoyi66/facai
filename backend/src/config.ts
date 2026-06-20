@@ -48,4 +48,4 @@ export const REFRESH_STRATEGY = {
 export const FMP_BASE_URL = "https://financialmodelingprep.com/stable";
 
 export const ANTI_FOMO_WARNING =
-  "This is not a buy zone. This is a narrative heat zone. Do not chase without a defined position size and downside plan.";
+  "这不是买区，而是叙事热区。没有明确仓位大小和下行计划，不要追高。";

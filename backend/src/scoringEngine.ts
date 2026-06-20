@@ -62,23 +62,23 @@ function companyQualityScore(
 
   if ((ratios?.operatingMargin ?? 0) >= 0.2) {
     score += 15;
-    reasons.push("Strong operating margin.");
+    reasons.push("经营利润率较强。");
   }
   if ((ratios?.fcfMargin ?? 0) >= 0.15) {
     score += 15;
-    reasons.push("Strong FCF margin.");
+    reasons.push("自由现金流利润率较强。");
   }
   if ((keyMetrics?.roic ?? 0) >= 0.15) {
     score += 15;
-    reasons.push("High ROIC.");
+    reasons.push("ROIC 较高。");
   }
   if ((growth?.revenueGrowth ?? 0) >= 0.15) {
     score += 10;
-    reasons.push("Revenue growth is healthy.");
+    reasons.push("收入增长健康。");
   }
   if (ratios?.fcfMargin !== null && ratios?.fcfMargin !== undefined && ratios.fcfMargin < 0) {
     score -= 25;
-    reasons.push("FCF margin is negative.");
+    reasons.push("自由现金流利润率为负。");
   }
 
   return { score: clamp(score), reasons };
@@ -88,20 +88,20 @@ function labelScore(score: number, axis: "company" | "entry", reasons: string[])
   const label =
     axis === "company"
       ? score >= 70
-        ? "good company"
-        : "bad company"
+        ? "好公司"
+        : "公司质量待验证"
       : score >= 70
-        ? "good price"
-        : "bad price";
+        ? "价格有吸引力"
+        : "价格缺乏吸引力";
   return { score, label, reasons };
 }
 
 function ratingLabel(quality: number, entry: number, risk: number): string {
-  if (quality >= 75 && entry >= 70 && risk >= 70) return "A - high-quality buy zone";
-  if (quality >= 70 && entry >= 55 && risk >= 55) return "B - staged starter";
-  if (quality >= 60 && risk >= 45) return "C - watchlist";
-  if (risk < 40) return "D - high risk";
-  return "C - watchlist";
+  if (quality >= 75 && entry >= 70 && risk >= 70) return "A - 高质量买区";
+  if (quality >= 70 && entry >= 55 && risk >= 55) return "B - 可分批观察";
+  if (quality >= 60 && risk >= 45) return "C - 观察池";
+  if (risk < 40) return "D - 高风险";
+  return "C - 观察池";
 }
 
 function groupByCategory(rows: StockResearchRow[]): Record<string, StockResearchRow[]> {
