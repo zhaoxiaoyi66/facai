@@ -258,6 +258,11 @@ def build_weekend_spread_rows(
             expected_close_date=expected_close_date,
         )
         quote = read_model.get_quote_payload(ticker) or {}
+        if friday_close is None:
+            quote_close, quote_source = _quote_previous_regular_close(quote)
+            if quote_close is not None:
+                friday_close = quote_close
+                close_source = quote_source
         stock_name = str(quote.get("companyName") or quote.get("company_name") or quote.get("name") or ticker)
         mapping_config = effective_mapping.get(ticker)
         afterhours_fields = (
@@ -764,6 +769,43 @@ def _friday_close(
         return None, target_date.isoformat(), "stale_price_history"
     close_source = "friday_close" if latest_date.weekday() == 4 else "previous_trading_day_before_friday"
     return float(latest["close"]), latest_date.isoformat(), close_source
+
+
+def _quote_previous_regular_close(quote: dict[str, Any]) -> tuple[float | None, str]:
+    close = _first_positive_number(
+        quote.get("previousClose"),
+        quote.get("previous_close"),
+        quote.get("prevClose"),
+        quote.get("regularMarketPreviousClose"),
+        quote.get("dayPreviousClose"),
+    )
+    if close is not None:
+        return close, "quote_previous_close"
+
+    current_price = _first_positive_number(
+        quote.get("price"),
+        quote.get("current_price"),
+        quote.get("currentPrice"),
+        quote.get("regularMarketPrice"),
+    )
+    change = _number(
+        quote.get("change")
+        if quote.get("change") not in (None, "")
+        else quote.get("regularMarketChange")
+    )
+    if current_price is not None and change is not None:
+        derived = current_price - change
+        if derived > 0:
+            return derived, "quote_price_change_previous_close"
+    return None, ""
+
+
+def _first_positive_number(*values: Any) -> float | None:
+    for value in values:
+        number = _number(value)
+        if number is not None and number > 0:
+            return number
+    return None
 
 
 def _coerce_date(value: date | str | None) -> date | None:

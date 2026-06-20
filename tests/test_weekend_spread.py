@@ -118,14 +118,15 @@ from ui import weekend_spread
 
 
 class FakeCache:
-    def __init__(self, history: pd.DataFrame | None = None) -> None:
+    def __init__(self, history: pd.DataFrame | None = None, quote: dict | None = None) -> None:
         self.history = history if history is not None else _history()
+        self.quote = quote or {}
 
     def get_price_history(self, _ticker: str) -> pd.DataFrame:
         return self.history
 
     def get_quote_payload(self, ticker: str) -> dict:
-        return {"companyName": f"{ticker} Inc."}
+        return {"companyName": f"{ticker} Inc.", **self.quote}
 
 
 class FakeProvider:
@@ -764,6 +765,73 @@ def test_build_rows_uses_current_afterhours_anchor_when_regular_close_cache_is_s
     assert round(row["spread_vs_afterhours_pct"], 2) == 3.1
     assert row["primary_spread_anchor"] == "AFTERHOURS_REFERENCE"
     assert afterhours_provider.calls == [("NBIS", "2026-06-18", False)]
+
+
+def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_is_stale() -> None:
+    stale_history = pd.DataFrame([{"date": "2026-06-15", "close": 250.48}])
+    afterhours_provider = FakeAfterhoursProvider(
+        reference_price=260.0,
+        reference_time="2026-06-18T19:59:00-04:00",
+        request_start="2026-06-18T19:55:00-04:00",
+        request_end="2026-06-18T20:00:00-04:00",
+        selected_bar_time="2026-06-18T19:59:00-04:00",
+    )
+
+    rows = build_weekend_spread_rows(
+        ["NBIS"],
+        mapping={
+            "NBIS": {
+                "enabled": True,
+                "binance_symbol": "NBISUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "confirmed",
+            }
+        },
+        provider=FakeProvider(price=281.94),
+        afterhours_provider=afterhours_provider,
+        cache=FakeCache(stale_history, quote={"previousClose": 250.48}),
+        expected_close_date="2026-06-18",
+    )
+
+    row = rows[0]
+    assert row["regular_close_price"] == 250.48
+    assert row["regular_close_date"] == "2026-06-18"
+    assert row["close_source"] == "quote_previous_close"
+    assert round(row["spread_vs_regular_close_pct"], 2) == 12.56
+    assert round(row["spread_vs_afterhours_pct"], 2) == 8.44
+
+    frame = weekend_spread._live_frame(rows)
+    assert frame.loc[0, "相对收盘"] == "+12.56%"
+
+
+def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
+    rows = build_weekend_spread_rows(
+        ["BE"],
+        mapping={
+            "BE": {
+                "enabled": True,
+                "binance_symbol": "BEUSDT",
+                "market_type": "usdm_futures",
+                "quote_currency": "USDT",
+                "unit_multiplier": 1,
+                "mapping_confidence": "confirmed",
+            }
+        },
+        provider=FakeProvider(price=334.31),
+        afterhours_provider=FakeAfterhoursProvider(reference_price=329.35),
+        cache=FakeCache(
+            pd.DataFrame(columns=["date", "close"]),
+            quote={"price": 333.0, "change": 4.0},
+        ),
+        expected_close_date="2026-06-18",
+    )
+
+    row = rows[0]
+    assert row["regular_close_price"] == 329.0
+    assert row["close_source"] == "quote_price_change_previous_close"
+    assert round(row["spread_vs_regular_close_pct"], 2) == 1.61
 
 
 def test_primary_spread_falls_back_to_regular_close_when_afterhours_missing() -> None:
