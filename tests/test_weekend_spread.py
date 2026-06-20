@@ -124,6 +124,7 @@ from data.weekend_spread_monitor import (
     read_monitor_state,
     run_monitor_scan,
 )
+from data.weekend_spread_research import list_monitor_ticks, research_path_for_snapshot
 from scripts import smoke_binance_provider
 from ui import weekend_spread
 
@@ -6844,6 +6845,31 @@ def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
     assert latest_monitor_run(path)["run_id"] == run["run_id"]
 
 
+def test_weekend_monitor_scan_persists_research_ticks(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "afterhours_reference_price": 100.0,
+            "regular_close_price": 98.0,
+            "atr14_pct": 2.0,
+            "avg_range_20d_pct": 2.5,
+            "spread_atr_ratio": 1.8,
+            "spread_reasonableness": "异常价差",
+            "closed_market_news_label": "无新闻解释",
+        }
+    ]
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+    stored = list_monitor_ticks(db_path=research_path_for_snapshot(path))
+
+    assert stored[0]["run_id"] == run["run_id"]
+    assert stored[0]["ticker"] == "NVDA"
+    assert stored[0]["premium_pct"] == pytest.approx(4.0)
+    assert stored[0]["vs_regular_close_pct"] == pytest.approx(104.0 / 98.0 * 100 - 100)
+
+
 def test_weekend_monitor_normalizes_epoch_anchor_time(tmp_path) -> None:
     path = tmp_path / "weekend_spread_monitor_snapshots.json"
     rows = [
@@ -7022,6 +7048,59 @@ def test_weekend_monitor_tab_source_mentions_no_trade_system_writes() -> None:
     assert "run_monitor_scan" in source
     assert "record_trade" not in source
     assert "signal_performance" not in source
+
+
+def test_weekend_monitor_research_tab_generates_only_on_button_click() -> None:
+    source = inspect.getsource(weekend_spread._render_monitor_research_tab)
+
+    assert "生成本轮监控复盘" in source
+    assert "build_weekend_spread_research_samples" in source
+    assert "if generate_clicked" in source
+    assert "record_trade" not in source
+    assert "signal_performance" not in source
+
+
+def test_weekend_monitor_research_frames_hide_internal_fields() -> None:
+    events = [
+        {
+            "ticker": "NVDA",
+            "direction": "溢价",
+            "max_premium_pct": 4.0,
+            "min_premium_pct": 2.0,
+            "max_spread_atr_ratio": 1.8,
+            "peak_time_et": "2026-06-19T20:00:00-04:00",
+            "duration_minutes": 9.0,
+            "converged_before_open": 1,
+            "news_label": "无新闻解释",
+            "event_quality": "高质量事件",
+            "event_id": "internal",
+        }
+    ]
+    samples = [
+        {
+            "week_id": "2026-W25",
+            "ticker": "NVDA",
+            "max_premium_pct": 4.0,
+            "max_discount_pct": -1.0,
+            "avg_premium_pct": 2.0,
+            "max_spread_atr_ratio": 1.8,
+            "premium_duration_minutes": 9.0,
+            "news_label": "无新闻解释",
+            "p2_time_et": "2026-06-21T20:00:00-04:00",
+            "p2_delay_minutes": 0,
+            "capture_pct": 50.0,
+            "sample_quality": "首分钟样本",
+            "sample_id": "internal",
+        }
+    ]
+
+    event_frame = weekend_spread._monitor_research_event_frame(events)
+    sample_frame = weekend_spread._monitor_research_sample_frame(samples)
+
+    assert "event_id" not in event_frame.columns
+    assert "sample_id" not in sample_frame.columns
+    assert "None" not in event_frame.to_string()
+    assert "None" not in sample_frame.to_string()
 
 
 def test_weekend_monitor_safe_wrapper_does_not_crash_when_renderer_missing(monkeypatch) -> None:

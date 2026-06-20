@@ -93,6 +93,14 @@ from data.weekend_spread_monitor import (
     recent_monitor_runs,
     run_monitor_scan,
 )
+from data.weekend_spread_research import (
+    DEFAULT_RESEARCH_DB_PATH,
+    build_weekend_spread_research_samples,
+    cleanup_old_monitor_ticks,
+    list_premium_events,
+    list_research_samples,
+    research_summary,
+)
 from data.weekend_spread_news import (
     MISSING_URL_TEXT as WEEKEND_NEWS_MISSING_URL_TEXT,
     NEWS_MODE_CURRENT,
@@ -132,6 +140,7 @@ STRICT_P2_STRATEGY_TEXT = "该标的夜盘开盘首分钟无成交 / 无 1m bar�
 
 TAB_REALTIME = "实时观察"
 TAB_MONITOR = "周末监控"
+TAB_MONITOR_RESEARCH = "监控复盘"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
 TAB_CLOSED_MARKET_NEWS = "休市新闻"
@@ -309,14 +318,16 @@ def render() -> None:
     active_mapping = _filter_ignored_mapping(mapping, ignored)
     watchlist = load_watchlist()
 
-    realtime_tab, monitor_tab, backtest_tab, mapping_tab, closed_news_tab = st.tabs(
-        [TAB_REALTIME, TAB_MONITOR, TAB_BACKTEST, TAB_MAPPING, TAB_CLOSED_MARKET_NEWS]
+    realtime_tab, monitor_tab, monitor_research_tab, backtest_tab, mapping_tab, closed_news_tab = st.tabs(
+        [TAB_REALTIME, TAB_MONITOR, TAB_MONITOR_RESEARCH, TAB_BACKTEST, TAB_MAPPING, TAB_CLOSED_MARKET_NEWS]
     )
 
     with realtime_tab:
         rows, mapping_counts = _render_realtime_tab(watchlist, active_mapping, ignored)
     with monitor_tab:
         _render_monitor_tab_safe(rows, ignored)
+    with monitor_research_tab:
+        _render_monitor_research_tab()
     with backtest_tab:
         _render_backtest_tab(watchlist, active_mapping)
     with mapping_tab:
@@ -2039,6 +2050,191 @@ def _render_monitor_history() -> None:
         if "扫描时间" in display:
             display["扫描时间"] = display["扫描时间"].map(_short_hkt_time)
         st.dataframe(display, width="stretch", hide_index=True)
+
+
+def _render_monitor_research_tab() -> None:
+    st.subheader("监控复盘")
+    st.caption("把 3 分钟监控数据压缩成价差事件和周末样本，用于长期研究每只股票的 Binance 溢价规律。")
+
+    cols = st.columns([2, 1])
+    generate_clicked = cols[0].button("生成本轮监控复盘", key="weekend_spread_research_build", width="stretch")
+    cleanup_clicked = cols[1].button("清理 30 天前原始 tick", key="weekend_spread_research_cleanup", width="stretch")
+    if generate_clicked:
+        with st.spinner("正在压缩监控 tick，生成价差事件和周末样本..."):
+            result = build_weekend_spread_research_samples(db_path=DEFAULT_RESEARCH_DB_PATH)
+        st.success(f"已生成 {result.get('sample_count', 0)} 条周末样本，{result.get('event_count', 0)} 条价差事件。")
+    if cleanup_clicked:
+        deleted = cleanup_old_monitor_ticks(db_path=DEFAULT_RESEARCH_DB_PATH, days=30)
+        st.success(f"已清理 {deleted} 条 30 天前原始 tick；价差事件和周末样本已保留。")
+
+    summary = research_summary(db_path=DEFAULT_RESEARCH_DB_PATH)
+    _render_monitor_research_summary(summary)
+
+    events = list_premium_events(db_path=DEFAULT_RESEARCH_DB_PATH, limit=200)
+    samples = list_research_samples(db_path=DEFAULT_RESEARCH_DB_PATH, limit=300)
+    if summary.get("tick_count"):
+        st.caption(f"本轮已累计 {summary.get('tick_count', 0)} 条扫描记录，待按需生成复盘样本。")
+    else:
+        st.info("暂无监控扫描记录。先在“周末监控”里立即扫描一次，或启动 3 分钟监控。")
+
+    st.markdown("### 本轮最值得复盘的价差事件")
+    event_frame = _monitor_research_event_frame(events)
+    if event_frame.empty:
+        st.caption("暂无价差事件。点击“生成本轮监控复盘”后，如果存在异常价差，会在这里沉淀。")
+    else:
+        st.dataframe(event_frame, width="stretch", hide_index=True)
+
+    st.markdown("### 周末样本库")
+    filtered_samples = _filter_monitor_research_samples(samples)
+    sample_frame = _monitor_research_sample_frame(filtered_samples)
+    if sample_frame.empty:
+        st.caption("暂无周末样本。")
+    else:
+        st.dataframe(sample_frame, width="stretch", hide_index=True)
+
+
+def _render_monitor_research_summary(summary: dict[str, int]) -> None:
+    items = [
+        ("扫描次数", summary.get("scan_count", 0)),
+        ("有效标的", summary.get("effective_ticker_count", 0)),
+        ("异常价差事件", summary.get("event_count", 0)),
+        ("极端价差事件", summary.get("extreme_event_count", 0)),
+        ("无新闻解释的极端价差", summary.get("no_news_extreme_count", 0)),
+        ("首分钟样本", summary.get("first_minute_count", 0)),
+        ("延迟成交样本", summary.get("delayed_count", 0)),
+    ]
+    cols = st.columns(len(items))
+    for col, (label, value) in zip(cols, items):
+        col.metric(label, str(value or 0))
+
+
+def _monitor_research_event_frame(events: list[dict]) -> pd.DataFrame:
+    columns = ["股票", "方向", "最大价差", "价差/ATR", "最大时间", "持续时间", "是否收敛", "休市新闻", "样本质量"]
+    if not events:
+        return pd.DataFrame(columns=columns)
+    records = []
+    for event in _sort_monitor_research_events(events):
+        max_abs_premium = _event_max_abs_premium(event)
+        records.append(
+            {
+                "股票": event.get("ticker") or "",
+                "方向": event.get("direction") or "暂缺",
+                "最大价差": _percent_text(max_abs_premium),
+                "价差/ATR": _ratio_text(event.get("max_spread_atr_ratio")),
+                "最大时间": _short_hkt_time(event.get("peak_time_et")),
+                "持续时间": _minutes_text(event.get("duration_minutes")),
+                "是否收敛": "是" if int(event.get("converged_before_open") or 0) else "否",
+                "休市新闻": event.get("news_label") or "无新闻解释",
+                "样本质量": event.get("event_quality") or "数据待核",
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _monitor_research_sample_frame(samples: list[dict]) -> pd.DataFrame:
+    columns = [
+        "周次",
+        "股票",
+        "最大溢价",
+        "最大折价",
+        "平均溢价",
+        "价差/ATR最大值",
+        "溢价持续时间",
+        "休市新闻",
+        "P2 时间",
+        "延迟分钟",
+        "兑现率",
+        "样本质量",
+    ]
+    if not samples:
+        return pd.DataFrame(columns=columns)
+    records = []
+    for sample in samples:
+        records.append(
+            {
+                "周次": sample.get("week_id") or "",
+                "股票": sample.get("ticker") or "",
+                "最大溢价": _percent_text(sample.get("max_premium_pct")),
+                "最大折价": _percent_text(sample.get("max_discount_pct")),
+                "平均溢价": _percent_text(sample.get("avg_premium_pct")),
+                "价差/ATR最大值": _ratio_text(sample.get("max_spread_atr_ratio")),
+                "溢价持续时间": _minutes_text(sample.get("premium_duration_minutes")),
+                "休市新闻": sample.get("news_label") or "无新闻解释",
+                "P2 时间": _short_hkt_time(sample.get("p2_time_et")),
+                "延迟分钟": _delay_minutes_text(sample.get("p2_delay_minutes")),
+                "兑现率": _percent_text(sample.get("capture_pct")),
+                "样本质量": sample.get("sample_quality") or "数据不足",
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _filter_monitor_research_samples(samples: list[dict]) -> list[dict]:
+    if not samples:
+        return []
+    tickers = ["全部"] + sorted({str(sample.get("ticker") or "").strip().upper() for sample in samples if sample.get("ticker")})
+    weeks = ["全部"] + sorted({str(sample.get("week_id") or "").strip() for sample in samples if sample.get("week_id")}, key=_week_id_sort_key, reverse=True)
+    qualities = ["全部"] + sorted({str(sample.get("sample_quality") or "").strip() for sample in samples if sample.get("sample_quality")})
+    cols = st.columns(6)
+    ticker = cols[0].selectbox("股票", tickers, key="weekend_spread_research_filter_ticker")
+    week = cols[1].selectbox("周次", weeks, key="weekend_spread_research_filter_week")
+    quality = cols[2].selectbox("样本质量", qualities, key="weekend_spread_research_filter_quality")
+    no_news_extreme = cols[3].checkbox("无新闻极端价差", key="weekend_spread_research_filter_no_news_extreme")
+    first_minute = cols[4].checkbox("首分钟样本", key="weekend_spread_research_filter_first_minute")
+    delayed = cols[5].checkbox("延迟成交样本", key="weekend_spread_research_filter_delayed")
+    filtered = list(samples)
+    if ticker != "全部":
+        filtered = [sample for sample in filtered if str(sample.get("ticker") or "").strip().upper() == ticker]
+    if week != "全部":
+        filtered = [sample for sample in filtered if str(sample.get("week_id") or "").strip() == week]
+    if quality != "全部":
+        filtered = [sample for sample in filtered if str(sample.get("sample_quality") or "").strip() == quality]
+    if no_news_extreme:
+        filtered = [sample for sample in filtered if str(sample.get("sample_quality") or "") == "无新闻极端价差"]
+    if first_minute:
+        filtered = [sample for sample in filtered if str(sample.get("sample_quality") or "") == "首分钟样本"]
+    if delayed:
+        filtered = [sample for sample in filtered if str(sample.get("sample_quality") or "") == "延迟成交样本"]
+    return filtered
+
+
+def _sort_monitor_research_events(events: list[dict]) -> list[dict]:
+    return sorted(
+        events,
+        key=lambda event: (
+            -(_number(event.get("max_spread_atr_ratio")) or 0),
+            -abs(_event_max_abs_premium(event) or 0),
+            str(event.get("event_start_et") or ""),
+            str(event.get("ticker") or ""),
+        ),
+    )
+
+
+def _event_max_abs_premium(event: dict) -> float | None:
+    max_premium = _number(event.get("max_premium_pct"))
+    min_premium = _number(event.get("min_premium_pct"))
+    values = [value for value in [max_premium, min_premium] if value is not None]
+    if not values:
+        return None
+    return max(values, key=lambda value: abs(value))
+
+
+def _minutes_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    if abs(number - round(number)) < 0.01:
+        return f"{int(round(number))} 分钟"
+    return f"{number:.1f} 分钟"
+
+
+def _delay_minutes_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "无 P2"
+    if abs(number) < 0.01:
+        return "首分钟"
+    return f"+{number:.0f} 分钟"
 
 
 def _monitor_process_state() -> dict[str, object]:

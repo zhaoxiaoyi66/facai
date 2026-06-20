@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
+from data.weekend_spread_research import append_monitor_ticks, research_path_for_snapshot
 from settings import PROJECT_ROOT
 
 
@@ -38,6 +39,8 @@ def run_monitor_scan(
     price_change_alert_pct: float = 1.0,
     premium_change_alert_pct: float = 1.0,
     interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES,
+    persist_ticks: bool = True,
+    research_db_path: Path | None = None,
 ) -> dict[str, Any]:
     scan_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     selected_symbols = {str(item or "").strip().upper() for item in (symbols or []) if str(item or "").strip()}
@@ -99,6 +102,16 @@ def run_monitor_scan(
         "source": MONITOR_SOURCE,
         "created_at": scan_time.isoformat(),
     }
+    if persist_ticks:
+        try:
+            append_monitor_ticks(
+                run["rows"],
+                db_path=research_db_path or research_path_for_snapshot(snapshot_path),
+                run_id=run_id,
+                scan_time=scan_time,
+            )
+        except Exception as exc:
+            run["summary"]["tick_persist_error"] = str(exc)
     append_monitor_run(run, snapshot_path)
     return run
 
@@ -251,6 +264,8 @@ def _build_monitor_row(
     elapsed_minutes = (scan_time - previous_scan_time).total_seconds() / 60 if previous_scan_time else None
     binance_change = (binance_price / previous_price - 1) * 100 if previous_price and previous_price > 0 else None
     premium_change = premium_pct - previous_premium if previous_premium is not None else None
+    regular_close_price = _number(row.get("regular_close_price"))
+    vs_regular_close_pct = (binance_price / regular_close_price - 1) * 100 if regular_close_price and regular_close_price > 0 else None
     trend_label = classify_premium_trend(previous_premium, premium_pct, premium_change)
     premium_change_9m, trend_9m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=3)
     premium_change_15m, trend_15m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=5)
@@ -263,6 +278,13 @@ def _build_monitor_row(
         "anchor_time": row.get("anchor_time") or "",
         "binance_price": binance_price,
         "premium_pct": premium_pct,
+        "regular_close_price": regular_close_price,
+        "vs_regular_close_pct": vs_regular_close_pct,
+        "atr14_pct": _number(row.get("atr14_pct")),
+        "avg_range_20d_pct": _number(row.get("avg_range_20d_pct")),
+        "spread_atr_ratio": _number(row.get("spread_atr_ratio")),
+        "spread_reasonableness": row.get("spread_reasonableness") or "",
+        "news_label": row.get("news_label") or "",
         "previous_binance_price": previous_price,
         "binance_15m_change_pct": binance_change,
         "binance_change_since_last_pct": binance_change,
@@ -373,6 +395,12 @@ def _normalize_source_row(row: dict[str, Any]) -> dict[str, Any]:
         "binance_symbol": str(row.get("binance_symbol") or "").strip().upper(),
         "anchor_price": _number(row.get("afterhours_reference_price") or row.get("anchor_price")),
         "anchor_time": _normalize_time_text(row.get("afterhours_reference_time") or row.get("anchor_time") or ""),
+        "regular_close_price": _number(row.get("regular_close_price") or row.get("friday_close")),
+        "atr14_pct": _number(row.get("atr14_pct")),
+        "avg_range_20d_pct": _number(row.get("avg_range_20d_pct") or row.get("avg_range_20d")),
+        "spread_atr_ratio": _number(row.get("spread_atr_ratio")),
+        "spread_reasonableness": str(row.get("spread_reasonableness") or row.get("spread_reasonableness_label") or ""),
+        "news_label": str(row.get("closed_market_news_label") or row.get("news_label") or ""),
         "ignored": bool(row.get("ignored")),
         "excluded": other_tradfi and not manual_locked,
         "is_watchlist": bool(row.get("is_watchlist")),
