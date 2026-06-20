@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -43,5 +44,13 @@ def replace_display_terms(value: Any) -> str:
         return "缺少数据"
     result = text
     for raw, label in sorted(DISPLAY_LABELS.items(), key=lambda item: len(item[0]), reverse=True):
-        result = result.replace(raw, label)
+        if _is_identifier_like(raw):
+            pattern = rf"(?<![A-Za-z0-9_]){re.escape(raw)}(?![A-Za-z0-9_])"
+            result = re.sub(pattern, label, result)
+        else:
+            result = result.replace(raw, label)
     return result
+
+
+def _is_identifier_like(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+", value))
