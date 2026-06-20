@@ -1328,6 +1328,9 @@ def test_ai_radar_report_view_has_return_link_and_missing_state() -> None:
     assert "未找到 ZZZZ 的股票研报" in missing
     assert "返回研报中心" in missing
     assert "返回 Radar 列表" not in missing
+    empty_missing = radar_ui._report_not_found_html("")
+    assert "UNKNOWN" not in empty_missing
+    assert "未找到 未知股票 的股票研报" in empty_missing
 
 
 def test_ai_radar_query_params_support_deep_link_and_list_return() -> None:

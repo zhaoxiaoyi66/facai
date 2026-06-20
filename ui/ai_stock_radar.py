@@ -700,7 +700,7 @@ def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
 
 
 def _report_not_found_html(symbol: str) -> str:
-    text = symbol or "UNKNOWN"
+    text = symbol or "未知股票"
     return (
         '<section class="ai-radar-report-missing">'
         f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回研报中心</a>'
