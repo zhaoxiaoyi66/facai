@@ -7897,6 +7897,24 @@ class ScoringTests(unittest.TestCase):
             validate_ai_review_result({**valid, "extra": "not allowed"})
         self.assertIn("hallucinationRisk", validate_ai_review_result(valid))
 
+    def test_ai_review_validation_errors_hide_internal_schema_fields(self) -> None:
+        valid = _ai_review_result("recommend_approve")
+        cases = [
+            ({**valid, "extra": "not allowed"}, "AI 复核返回包含未支持字段"),
+            ({key: value for key, value in valid.items() if key != "riskLevel"}, "AI 复核返回缺少必要字段"),
+            ({**valid, "aiDecision": "bad"}, "AI 复核返回的判断类型无效"),
+            ({**valid, "confidenceScore": 2}, "AI 复核置信度必须在 0 到 1 之间"),
+        ]
+        hidden = ["unsupported fields", "missing fields", "aiDecision", "riskLevel", "confidenceScore"]
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError) as captured:
+                    validate_ai_review_result(payload)
+                message = str(captured.exception)
+                self.assertIn(expected, message)
+                for token in hidden:
+                    self.assertNotIn(token, message)
+
     def test_ai_review_prompt_forbids_world_knowledge_and_fact_retrieval(self) -> None:
         from data.ai_review_assistant import SYSTEM_PROMPT
 

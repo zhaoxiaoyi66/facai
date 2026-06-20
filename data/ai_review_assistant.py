@@ -635,29 +635,29 @@ class AIReviewAssistant:
 
 def validate_ai_review_result(result: dict) -> dict:
     if not isinstance(result, dict):
-        raise ValueError("AI review result must be a JSON object")
+        raise ValueError("AI 复核返回格式不正确：需要 JSON 对象")
     allowed = set(AI_REVIEW_JSON_SCHEMA["properties"].keys())
     extra = set(result) - allowed
     if extra:
-        raise ValueError(f"AI review result has unsupported fields: {sorted(extra)}")
+        raise ValueError("AI 复核返回包含未支持字段")
     missing = set(AI_REVIEW_JSON_SCHEMA["required"]) - set(result)
     if missing:
-        raise ValueError(f"AI review result missing fields: {sorted(missing)}")
+        raise ValueError("AI 复核返回缺少必要字段")
     normalized = dict(result)
     if normalized["aiDecision"] not in AI_DECISIONS:
-        raise ValueError("invalid aiDecision")
+        raise ValueError("AI 复核返回的判断类型无效")
     if normalized["evidenceMatch"] not in EVIDENCE_MATCHES:
-        raise ValueError("invalid evidenceMatch")
+        raise ValueError("AI 复核返回的证据匹配状态无效")
     if normalized["periodMatch"] not in PERIOD_MATCHES:
-        raise ValueError("invalid periodMatch")
+        raise ValueError("AI 复核返回的期间匹配状态无效")
     if normalized["unitMatch"] not in UNIT_MATCHES:
-        raise ValueError("invalid unitMatch")
+        raise ValueError("AI 复核返回的单位匹配状态无效")
     if normalized["riskLevel"] not in RISK_LEVELS:
-        raise ValueError("invalid riskLevel")
+        raise ValueError("AI 复核返回的风险等级无效")
     normalized["hallucinationRisk"] = bool(normalized.get("hallucinationRisk"))
     score = float(normalized["confidenceScore"])
     if score < 0 or score > 1:
-        raise ValueError("confidenceScore must be between 0 and 1")
+        raise ValueError("AI 复核置信度必须在 0 到 1 之间")
     normalized["confidenceScore"] = score
     normalized["warnings"] = [str(item) for item in normalized.get("warnings") or []]
     for nullable in ("correctedValue", "correctedUnit", "correctedPeriod"):
