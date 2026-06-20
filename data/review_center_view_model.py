@@ -440,16 +440,16 @@ def _reason_summary(row: dict, affects_scoring: bool, missing_evidence: bool, ca
         if text:
             return _truncate(text, 180)
     if risk_observation:
-        return "Qualitative risk label is tracked as observation, not a data confirmation task."
+        return "定性风险仅作为观察项记录，不作为数据确认任务。"
     if _affects(row) & {"Entry", "BuyZone", "buy_zone_context", "technicalEntry"}:
         return "影响统一买区 / 交易动作判断，需要人工复核后再用于精确买点。"
     if affects_scoring and missing_evidence:
-        return "Scoring-impact item is missing verifiable evidence."
+        return "该项会影响评分，但缺少可验证证据。"
     if affects_scoring:
-        return "Item can affect scoring and needs confirmation."
+        return "该项可能影响评分，需要人工确认。"
     if can_auto_archive:
-        return "Low-priority non-scoring gap is an archive candidate."
-    return "Review queue item needs triage."
+        return "低优先级且不参与评分，可作为归档候选。"
+    return "该复核项需要人工分流。"
 
 
 def _evidence_summary(row: dict) -> str:
@@ -461,7 +461,7 @@ def _evidence_summary(row: dict) -> str:
         _clean_text(row.get("sourceUrl")),
     ]
     summary = " | ".join(part for part in parts if part)
-    return _truncate(summary, 220) if summary else "No verifiable evidence attached."
+    return _truncate(summary, 220) if summary else "暂无可验证证据。"
 
 
 def _clean_text(value: object) -> str:
@@ -508,7 +508,7 @@ def _mark_contextual_archive_candidates(rows: list[_ReviewCenterRow]) -> None:
             continue
         for candidate in candidates:
             if _is_historical(candidate.row):
-                _mark_auto_archive_candidate(candidate, "Historical duplicate has a current-period candidate.")
+                _mark_auto_archive_candidate(candidate, "已有当前期间候选值，历史重复项可归档。")
 
 
 def _collapse_main_queue(rows: list[_ReviewCenterRow]) -> list[_ReviewCenterRow]:
@@ -523,7 +523,7 @@ def _collapse_main_queue(rows: list[_ReviewCenterRow]) -> list[_ReviewCenterRow]
         if any(_is_current_period(row) for row in ranked):
             for duplicate in duplicates:
                 if _is_historical(duplicate.row):
-                    _mark_auto_archive_candidate(duplicate, "Historical duplicate has a current-period candidate.")
+                    _mark_auto_archive_candidate(duplicate, "已有当前期间候选值，历史重复项可归档。")
         _attach_duplicate_candidates(representative, duplicates)
         representatives.append(representative)
     return sorted(representatives, key=_active_sort_key)
@@ -540,11 +540,11 @@ def _attach_duplicate_candidates(representative: _ReviewCenterRow, duplicates: l
     representative.item["duplicateCount"] = len(existing)
     historical = sum(1 for item in existing if item.get("freshnessStatus") == HISTORICAL_FRESHNESS)
     weak = sum(1 for item in existing if item.get("missingEvidence"))
-    parts = [f"{len(existing)} duplicate/historical candidates"]
+    parts = [f"{len(existing)} 个重复/历史候选"]
     if historical:
-        parts.append(f"{historical} historical")
+        parts.append(f"{historical} 个历史值")
     if weak:
-        parts.append(f"{weak} weak-evidence")
+        parts.append(f"{weak} 个弱证据")
     representative.item["duplicateSummary"] = ", ".join(parts)
 
 
