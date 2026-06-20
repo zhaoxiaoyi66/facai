@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from data.news_radar import FMPNewsClient, NewsEndpointUnavailable, normalize_news_record
+from data.providers import get_secret
 
 ET = ZoneInfo("America/New_York")
 HKT = ZoneInfo("Asia/Hong_Kong")
@@ -116,7 +117,7 @@ def refresh_weekend_spread_news(
     """Refresh only the weekend-spread news cache for one symbol/sample."""
 
     store = store or WeekendSpreadNewsStore()
-    client = client or FMPNewsClient()
+    client = client or FMPNewsClient(api_key=get_secret("FMP_API_KEY"))
     clean_symbol = _clean_symbol(symbol or sample.get("ticker"))
     if not clean_symbol:
         return {"status": "error", "count": 0, "message": "缺少股票代码"}
@@ -137,7 +138,10 @@ def refresh_weekend_spread_news(
         except NewsEndpointUnavailable:
             unavailable.append(label)
         except Exception as exc:  # pragma: no cover - defensive downgrade
-            errors.append(f"{label}: {exc}")
+            if "HTTP Error 404" in str(exc):
+                unavailable.append(label)
+            else:
+                errors.append(f"{label}: {exc}")
 
     items = [normalize_weekend_spread_news_record(clean_symbol, raw, fetched_at=fetched_at) for raw in raw_items]
     count = store.upsert_many(items)

@@ -141,7 +141,7 @@ def test_refresh_writes_weekend_spread_cache_only(tmp_path) -> None:
 
         def fetch_press_releases(self, symbol: str, limit: int = 30):
             self.calls += 1
-            return []
+            raise Exception("HTTP Error 404: Not Found")
 
     store = _store(tmp_path)
     client = FakeClient()
@@ -151,5 +151,6 @@ def test_refresh_writes_weekend_spread_cache_only(tmp_path) -> None:
 
     assert result["status"] == "ok"
     assert client.calls == 2
+    assert result["unavailable"] == ["Press Releases"]
     assert len(cached) == 1
     assert cached[0]["url"] == "https://example.com/nvda"
