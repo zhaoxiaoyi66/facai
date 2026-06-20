@@ -5187,6 +5187,8 @@ def test_tradingview_webhook_writes_price_cache(monkeypatch, tmp_path) -> None:
         path=cache_path,
     )
     assert rejected["ok"] is False
+    assert rejected["reason"] == "TradingView Webhook 密钥不匹配"
+    assert "secret" not in rejected["reason"]
     assert load_price_cache(cache_path) == []
 
     result = record_tradingview_webhook(
@@ -5206,6 +5208,34 @@ def test_tradingview_webhook_writes_price_cache(monkeypatch, tmp_path) -> None:
     assert len(records) == 1
     assert records[0]["provider"] == "TRADINGVIEW_WEBHOOK"
     assert records[0]["event_type"] == EVENT_OVERNIGHT_FIRST_1M_CLOSE
+
+
+def test_tradingview_price_cache_validation_copy_hides_internal_field_names(tmp_path) -> None:
+    from data.tradingview_price_cache import upsert_price_event
+
+    base = {
+        "symbol": "NVDA",
+        "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
+        "timestamp_et": "2026-06-14 20:01:00",
+        "close": 205.42,
+        "provider": "TRADINGVIEW_WEBHOOK",
+        "source_type": "TV_ALERT",
+        "path": tmp_path / "tv_cache.json",
+    }
+    cases = [
+        ({"event_type": "bad"}, "价格事件类型不支持", "event_type"),
+        ({"timestamp_et": "bad"}, "价格时间无法识别", "timestamp_et"),
+        ({"close": 0}, "收盘价必须大于 0", "close"),
+        ({"provider": ""}, "价格来源缺失", "provider"),
+    ]
+    for override, expected, hidden in cases:
+        payload = dict(base)
+        payload.update(override)
+        with pytest.raises(ValueError) as captured:
+            upsert_price_event(**payload)
+        message = str(captured.value)
+        assert expected in message
+        assert hidden not in message
 
 
 def test_tradingview_cache_requires_exact_overnight_20_00(tmp_path) -> None:

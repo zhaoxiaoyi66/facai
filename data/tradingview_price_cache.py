@@ -114,14 +114,14 @@ def upsert_price_event(
     if not normalized_symbol:
         raise ValueError("股票代码缺失")
     if normalized_event not in {EVENT_FRIDAY_AFTERHOURS_CLOSE, EVENT_OVERNIGHT_FIRST_1M_CLOSE, EVENT_TRADINGVIEW_1M_BAR}:
-        raise ValueError("event_type 不支持")
+        raise ValueError("价格事件类型不支持")
     if parsed_ts is None:
-        raise ValueError("timestamp_et 无法识别")
+        raise ValueError("价格时间无法识别")
     if close_value is None or close_value <= 0:
-        raise ValueError("close 必须大于 0")
+        raise ValueError("收盘价必须大于 0")
     normalized_provider = str(provider or "").strip().upper()
     if not normalized_provider:
-        raise ValueError("provider 缺失")
+        raise ValueError("价格来源缺失")
     record = {
         "symbol": normalized_symbol,
         "event_type": normalized_event,
@@ -183,9 +183,9 @@ def upsert_price_records(records_to_upsert: Iterable[dict[str, Any]], path: Path
 def record_tradingview_webhook(payload: dict[str, Any], *, path: Path = DEFAULT_TRADINGVIEW_CACHE_PATH) -> dict[str, Any]:
     expected_secret = str(get_secret("TRADINGVIEW_WEBHOOK_SECRET") or "").strip()
     if not expected_secret:
-        return {"ok": False, "reason": "webhook secret 未配置"}
+        return {"ok": False, "reason": "TradingView Webhook 密钥未配置"}
     if str(payload.get("secret") or "").strip() != expected_secret:
-        return {"ok": False, "reason": "secret 不匹配"}
+        return {"ok": False, "reason": "TradingView Webhook 密钥不匹配"}
     try:
         record = upsert_price_event(
             symbol=str(payload.get("symbol") or ""),
