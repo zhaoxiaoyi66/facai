@@ -2050,6 +2050,12 @@ def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:
     assert "价格缺口" not in html
 
 
+def test_ai_stock_radar_status_labels_do_not_show_raw_internal_codes() -> None:
+    assert radar_ui._drawdown_state_display("NEW_DRAWDOWN_STATE") == "数据不足"
+    assert radar_ui._volume_price_status_label("NEW_VOLUME_STATUS") == "数据不足"
+    assert radar_ui._drawdown_state_display("人工复核") == "人工复核"
+
+
 def test_market_closure_stale_marker_shows_price_valid() -> None:
     row = {
         "ticker": "NVDA",

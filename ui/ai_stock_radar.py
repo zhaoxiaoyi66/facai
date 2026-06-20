@@ -2767,7 +2767,16 @@ def _drawdown_state_display(value: str) -> str:
         "深度洗盘": "偏深洗盘",
         "极限洗盘": "极限洗盘观察",
     }
-    return mapping.get(value, value or "数据不足")
+    return mapping.get(value, _radar_unknown_display_text(value, "数据不足"))
+
+
+def _radar_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _drawdown_position_bar_html(profile: dict[str, Any], *, class_prefix: str) -> str:
@@ -2997,7 +3006,7 @@ def _volume_price_status_label(status: str, score: float | None = None) -> str:
         return "脱离观察区"
     if normalized == "DATA_MISSING":
         return "数据不足"
-    return normalized or "数据不足"
+    return _radar_unknown_display_text(normalized, "数据不足")
 
 
 def _volume_price_reason_text(status: str, score: float | None, reason: Any) -> str:
