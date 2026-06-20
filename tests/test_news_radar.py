@@ -19,7 +19,7 @@ from data.news_radar import (
     source_link_text,
     trade_news_check,
 )
-from ui.news_radar import _news_detail_rows, _source_line, _title_parts
+from ui.news_radar import _news_detail_rows, _price_reaction_line, _source_line, _title_parts
 
 
 class FakeNewsClient:
@@ -162,6 +162,16 @@ def test_news_detail_rows_include_original_title_and_link() -> None:
     assert details["原文标题"] == "Nvidia beats estimates"
     assert details["原文链接"] == "[查看原文](https://example.test/nvda)"
     assert details["中文摘要"]
+
+
+def test_price_reaction_missing_context_uses_specific_copy() -> None:
+    assert _price_reaction_line(None) == "价格反应数据不足"
+
+    line = _price_reaction_line({"news_price_match_label": "", "explanation": ""})
+
+    assert "价格反应数据不足" in line
+    assert "价格数据不足" in line
+    assert line != "数据不足"
 
 
 def test_news_price_context_identifies_good_news_not_confirmed_by_price(tmp_path) -> None:

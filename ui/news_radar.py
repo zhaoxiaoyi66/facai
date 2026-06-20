@@ -227,7 +227,7 @@ def _render_trade_check(symbols: list[str], *, store: NewsRadarStore) -> None:
         selected = st.selectbox("选择股票", symbols, key="news_radar_trade_check_symbol")
         check = trade_news_check(selected, store=store)
         st.write(check["summary"])
-        st.write(f"新闻-价格一致性：{check.get('news_price_match_label') or '数据不足'}")
+        st.write(f"新闻-价格一致性：{check.get('news_price_match_label') or '价格反应数据不足'}")
         if check.get("headlines"):
             st.write("关键标题：")
             for headline in check["headlines"]:
@@ -311,7 +311,7 @@ def _news_detail_rows(
         ("关键词命中", keywords or "未命中明显关键词"),
         ("中文摘要", _summary_text(item)),
         ("为什么重要", relevance or _clean(item.get("relevance_reason_zh")) or "需要人工复核影响。"),
-        ("新闻-价格一致性", price_line or "数据不足"),
+        ("新闻-价格一致性", price_line or "价格反应数据不足"),
         ("原始新闻摘要", original_summary),
     ]
 
@@ -357,11 +357,11 @@ def _source_line(item: dict[str, Any]) -> str:
 
 def _price_reaction_line(context: dict[str, Any] | None) -> str:
     if not context:
-        return "数据不足"
-    label = _clean(context.get("news_price_match_label")) or "数据不足"
+        return "价格反应数据不足"
+    label = _clean(context.get("news_price_match_label")) or "价格反应数据不足"
     p1 = _fmt_pct(context.get("price_change_1d"))
     p5 = _fmt_pct(context.get("price_change_5d"))
-    explanation = _clean(context.get("explanation")) or "数据不足"
+    explanation = _clean(context.get("explanation")) or "价格变化样本不足，暂不能判断新闻与股价方向。"
     return f"{label}；过去 1 日 {p1}，过去 5 日 {p5}。{explanation}"
 
 
@@ -421,11 +421,11 @@ def _format_time(value: Any) -> str:
 
 def _fmt_pct(value: Any) -> str:
     if value is None:
-        return "数据不足"
+        return "价格数据不足"
     try:
         return f"{float(value) * 100:+.2f}%"
     except Exception:
-        return "数据不足"
+        return "价格数据不足"
 
 
 def _clean(value: Any) -> str:
