@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -183,6 +184,39 @@ def test_refresh_uses_cache_without_calling_client(tmp_path) -> None:
 
     assert result["status"] == "cache"
     assert client.calls == []
+
+
+def test_fetch_status_schema_migrates_legacy_scope_column(tmp_path) -> None:
+    db_path = tmp_path / "news.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE news_radar_fetch_status (
+                scope TEXT PRIMARY KEY,
+                fetched_at TEXT,
+                status TEXT,
+                message TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO news_radar_fetch_status(scope, fetched_at, status, message) VALUES(?,?,?,?)",
+            ("watchlist:NVDA", "2026-06-19T00:00:00+00:00", "ok", "legacy"),
+        )
+        conn.commit()
+
+    store = NewsRadarStore(db_path)
+    migrated = store.get_fetch_status("watchlist:NVDA")
+
+    assert migrated is not None
+    assert migrated["status"] == "ok"
+    assert migrated["message"] == "legacy"
+
+    store.set_fetch_status("watchlist:NVDA", "error", "updated")
+    updated = store.get_fetch_status("watchlist:NVDA")
+    assert updated is not None
+    assert updated["status"] == "error"
+    assert updated["message"] == "updated"
 
 
 def test_refresh_endpoint_unavailable_degrades_without_raising(tmp_path) -> None:

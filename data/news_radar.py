@@ -499,9 +499,65 @@ class NewsRadarStore:
                 )
                 """
             )
+            self._ensure_fetch_status_schema(conn)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_radar_symbol ON news_radar_items(symbol)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_radar_published ON news_radar_items(published_at)")
             conn.commit()
+
+    def _ensure_fetch_status_schema(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(news_radar_fetch_status)").fetchall()
+        columns = {row["name"] for row in rows}
+        if not columns:
+            return
+        if "scope_key" not in columns:
+            key_column = next((name for name in ("scope", "cache_key", "key", "symbol") if name in columns), None)
+            key_expr = f"CAST({self._sql_identifier(key_column)} AS TEXT)" if key_column else "('legacy:' || rowid)"
+            self._rebuild_fetch_status_table(conn, key_expr=key_expr, columns=columns)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(news_radar_fetch_status)").fetchall()}
+        for name in ("fetched_at", "status", "message"):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE news_radar_fetch_status ADD COLUMN {name} TEXT")
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_radar_fetch_status_scope "
+                "ON news_radar_fetch_status(scope_key)"
+            )
+        except sqlite3.IntegrityError:
+            self._rebuild_fetch_status_table(conn, key_expr="scope_key", columns=columns)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_radar_fetch_status_scope "
+                "ON news_radar_fetch_status(scope_key)"
+            )
+
+    def _rebuild_fetch_status_table(self, conn: sqlite3.Connection, *, key_expr: str, columns: set[str]) -> None:
+        fetched_expr = self._sql_identifier("fetched_at") if "fetched_at" in columns else "''"
+        status_expr = self._sql_identifier("status") if "status" in columns else "'unknown'"
+        message_expr = self._sql_identifier("message") if "message" in columns else "''"
+        conn.execute("DROP TABLE IF EXISTS news_radar_fetch_status_migrated")
+        conn.execute(
+            """
+            CREATE TABLE news_radar_fetch_status_migrated (
+                scope_key TEXT PRIMARY KEY,
+                fetched_at TEXT,
+                status TEXT,
+                message TEXT
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO news_radar_fetch_status_migrated(scope_key, fetched_at, status, message)
+            SELECT COALESCE(NULLIF({key_expr}, ''), 'legacy:' || rowid), {fetched_expr}, {status_expr}, {message_expr}
+            FROM news_radar_fetch_status
+            ORDER BY rowid
+            """
+        )
+        conn.execute("DROP TABLE news_radar_fetch_status")
+        conn.execute("ALTER TABLE news_radar_fetch_status_migrated RENAME TO news_radar_fetch_status")
+
+    @staticmethod
+    def _sql_identifier(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
 
     def upsert_news(self, item: dict[str, Any]) -> None:
         columns = [
