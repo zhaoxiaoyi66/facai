@@ -13,8 +13,16 @@ from settings import PROJECT_ROOT
 
 
 DEFAULT_MONITOR_SNAPSHOT_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_monitor_snapshots.json"
-DEFAULT_MONITOR_INTERVAL_MINUTES = 15
+DEFAULT_MONITOR_INTERVAL_MINUTES = 3
 MONITOR_SOURCE = "BINANCE_USDT_M"
+TREND_WAITING = "等待下一轮比较"
+TREND_WAIT_MORE = "等待更多样本"
+TREND_STABLE = "价差稳定"
+TREND_PREMIUM_EXPAND = "溢价扩大"
+TREND_PREMIUM_CONVERGE = "溢价收敛"
+TREND_DISCOUNT_EXPAND = "折价扩大"
+TREND_DISCOUNT_CONVERGE = "折价收敛"
+TREND_REVERSAL = "方向反转"
 
 
 def run_monitor_scan(
@@ -39,6 +47,7 @@ def run_monitor_scan(
 
     state = read_monitor_state(snapshot_path)
     previous_by_ticker = _latest_rows_by_ticker(state)
+    history_by_ticker = _history_rows_by_ticker(state)
     prices = {str(key or "").strip().upper(): float(value) for key, value in (price_map or {}).items() if _number(value) is not None}
     if price_map is None:
         prices = fetch_bulk_usdm_prices(price_provider or CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=45))
@@ -69,6 +78,7 @@ def run_monitor_scan(
                 row,
                 binance_price=binance_price,
                 previous=previous,
+                previous_history=history_by_ticker.get(row["ticker"], []),
                 scan_time=scan_time,
                 premium_alert_pct=premium_alert_pct,
                 extreme_premium_pct=extreme_premium_pct,
@@ -164,22 +174,40 @@ def summarize_monitor_rows(rows: list[dict[str, Any]], *, skipped: dict[str, int
         "anchor_missing_count": int(skipped.get("anchor_missing") or 0),
         "ignored_count": int(skipped.get("ignored") or 0),
         "price_missing_count": int(skipped.get("price_missing") or 0),
-        "extreme_count": sum(1 for row in rows if row.get("status") == "极端偏离"),
-        "attention_count": sum(1 for row in rows if row.get("status") in {"重点关注", "极端偏离", "快速扩大", "快速收敛"}),
+        "extreme_count": sum(1 for row in rows if row.get("status") == "极端价差"),
+        "direction_reversal_count": sum(1 for row in rows if row.get("premium_trend_label") == TREND_REVERSAL),
+        "attention_count": sum(
+            1
+            for row in rows
+            if row.get("status")
+            in {
+                "重点关注",
+                "极端价差",
+                TREND_PREMIUM_EXPAND,
+                TREND_DISCOUNT_EXPAND,
+                TREND_REVERSAL,
+            }
+        ),
         "top": build_monitor_top(rows),
     }
 
 
 def build_monitor_top(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
     priced = [row for row in rows if _number(row.get("premium_pct")) is not None]
-    with_prev = [row for row in rows if _number(row.get("binance_15m_change_pct")) is not None]
-    with_delta = [row for row in rows if _number(row.get("premium_15m_change_pct")) is not None]
+    with_prev = [row for row in rows if _number(row.get("binance_change_since_last_pct")) is not None]
+    with_delta = [row for row in rows if _number(row.get("premium_change_since_last_pct_point")) is not None]
+    premium_rows = [row for row in with_delta if (_number(row.get("premium_pct")) or 0) > 0]
     return {
         "max_premium": max(priced, key=lambda row: _number(row.get("premium_pct")) or float("-inf"), default=None),
         "max_discount": min(priced, key=lambda row: _number(row.get("premium_pct")) or float("inf"), default=None),
-        "max_binance_change": max(with_prev, key=lambda row: _number(row.get("binance_15m_change_pct")) or float("-inf"), default=None),
-        "fastest_premium_expand": max(with_delta, key=lambda row: _number(row.get("premium_15m_change_pct")) or float("-inf"), default=None),
-        "fastest_premium_converge": min(with_delta, key=lambda row: _number(row.get("premium_15m_change_pct")) or float("inf"), default=None),
+        "max_binance_change": max(with_prev, key=lambda row: _number(row.get("binance_change_since_last_pct")) or float("-inf"), default=None),
+        "fastest_premium_expand": max(with_delta, key=lambda row: _number(row.get("premium_change_since_last_pct_point")) or float("-inf"), default=None),
+        "fastest_premium_converge": min(
+            premium_rows or with_delta,
+            key=lambda row: _number(row.get("premium_change_since_last_pct_point")) or float("inf"),
+            default=None,
+        ),
+        "direction_reversal_count": sum(1 for row in rows if row.get("premium_trend_label") == TREND_REVERSAL),
     }
 
 
@@ -194,8 +222,9 @@ def monitor_history_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "valid_count": summary.get("valid_count") or 0,
                 "max_premium": _top_label(top.get("max_premium"), "premium_pct"),
                 "max_discount": _top_label(top.get("max_discount"), "premium_pct"),
-                "max_15m_change": _top_label(top.get("max_binance_change"), "binance_15m_change_pct"),
-                "max_premium_expand": _top_label(top.get("fastest_premium_expand"), "premium_15m_change_pct"),
+                "max_since_last_change": _top_label(top.get("max_binance_change"), "binance_change_since_last_pct"),
+                "max_premium_expand": _top_label(top.get("fastest_premium_expand"), "premium_change_since_last_pct_point", suffix=" pct"),
+                "direction_reversal_count": top.get("direction_reversal_count") or 0,
                 "attention_count": summary.get("attention_count") or 0,
             }
         )
@@ -207,6 +236,7 @@ def _build_monitor_row(
     *,
     binance_price: float,
     previous: dict[str, Any],
+    previous_history: list[dict[str, Any]],
     scan_time: datetime,
     premium_alert_pct: float,
     extreme_premium_pct: float,
@@ -221,6 +251,9 @@ def _build_monitor_row(
     elapsed_minutes = (scan_time - previous_scan_time).total_seconds() / 60 if previous_scan_time else None
     binance_change = (binance_price / previous_price - 1) * 100 if previous_price and previous_price > 0 else None
     premium_change = premium_pct - previous_premium if previous_premium is not None else None
+    trend_label = classify_premium_trend(previous_premium, premium_pct, premium_change)
+    premium_change_9m, trend_9m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=3)
+    premium_change_15m, trend_15m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=5)
     return {
         "run_id": "",
         "scan_time": scan_time.isoformat(),
@@ -236,12 +269,21 @@ def _build_monitor_row(
         "previous_premium_pct": previous_premium,
         "premium_15m_change_pct": premium_change,
         "premium_change_since_last_pct": premium_change,
+        "premium_change_since_last_pct_point": premium_change,
+        "premium_change_3m_pct_point": premium_change,
+        "premium_change_9m_pct_point": premium_change_9m,
+        "premium_change_15m_pct_point": premium_change_15m,
+        "premium_trend_label": trend_label,
+        "trend_3m_label": trend_label,
+        "trend_9m_label": trend_9m,
+        "trend_15m_label": trend_15m,
         "previous_scan_time": previous.get("scan_time") or "",
         "elapsed_minutes": elapsed_minutes,
         "status": _monitor_status(
             premium_pct,
             binance_change,
             premium_change,
+            trend_label,
             premium_alert_pct=premium_alert_pct,
             extreme_premium_pct=extreme_premium_pct,
             price_change_alert_pct=price_change_alert_pct,
@@ -259,23 +301,68 @@ def _monitor_status(
     premium_pct: float,
     binance_change_pct: float | None,
     premium_change_pct: float | None,
+    trend_label: str,
     *,
     premium_alert_pct: float,
     extreme_premium_pct: float,
     price_change_alert_pct: float,
     premium_change_alert_pct: float,
 ) -> str:
-    if premium_change_pct is not None and premium_change_pct >= premium_change_alert_pct:
-        return "快速扩大"
-    if premium_change_pct is not None and premium_change_pct <= -premium_change_alert_pct:
-        return "快速收敛"
+    if abs(premium_pct) >= extreme_premium_pct:
+        return "极端价差"
+    if trend_label in {TREND_PREMIUM_EXPAND, TREND_PREMIUM_CONVERGE, TREND_DISCOUNT_EXPAND, TREND_DISCOUNT_CONVERGE, TREND_REVERSAL}:
+        return trend_label
+    if trend_label == TREND_WAITING:
+        return TREND_WAITING
+    if trend_label == TREND_STABLE:
+        return TREND_STABLE
+    if premium_change_pct is not None and abs(premium_change_pct) >= premium_change_alert_pct:
+        return "重点关注"
     if binance_change_pct is not None and abs(binance_change_pct) >= price_change_alert_pct:
         return "重点关注"
-    if abs(premium_pct) >= extreme_premium_pct:
-        return "极端偏离"
     if abs(premium_pct) >= premium_alert_pct:
         return "重点关注"
     return "正常"
+
+
+def classify_premium_trend(
+    previous_premium_pct: float | None,
+    current_premium_pct: float | None,
+    change_pct_point: float | None,
+    *,
+    stable_threshold_pct_point: float = 0.20,
+) -> str:
+    if previous_premium_pct is None or current_premium_pct is None or change_pct_point is None:
+        return TREND_WAITING
+    if previous_premium_pct * current_premium_pct < 0:
+        return TREND_REVERSAL
+    if abs(change_pct_point) < stable_threshold_pct_point:
+        return TREND_STABLE
+    if current_premium_pct > 0 and change_pct_point >= stable_threshold_pct_point:
+        return TREND_PREMIUM_EXPAND
+    if current_premium_pct > 0 and change_pct_point <= -stable_threshold_pct_point:
+        return TREND_PREMIUM_CONVERGE
+    if current_premium_pct < 0 and change_pct_point <= -stable_threshold_pct_point:
+        return TREND_DISCOUNT_EXPAND
+    if current_premium_pct < 0 and change_pct_point >= stable_threshold_pct_point:
+        return TREND_DISCOUNT_CONVERGE
+    return TREND_STABLE
+
+
+def _multi_round_trend(
+    previous_history: list[dict[str, Any]],
+    current_premium_pct: float,
+    *,
+    lookback_rounds: int,
+) -> tuple[float | None, str]:
+    if len(previous_history) < lookback_rounds:
+        return None, TREND_WAIT_MORE
+    baseline = previous_history[-lookback_rounds]
+    baseline_premium = _number(baseline.get("premium_pct"))
+    if baseline_premium is None:
+        return None, TREND_WAIT_MORE
+    change = current_premium_pct - baseline_premium
+    return change, classify_premium_trend(baseline_premium, current_premium_pct, change)
 
 
 def _normalize_source_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +410,20 @@ def _latest_rows_by_ticker(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(row.get("ticker") or "").strip().upper(): dict(row) for row in rows or [] if isinstance(row, dict)}
 
 
+def _history_rows_by_ticker(state: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    history: dict[str, list[dict[str, Any]]] = {}
+    for run in state.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        for row in run.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or "").strip().upper()
+            if ticker:
+                history.setdefault(ticker, []).append(dict(row))
+    return history
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     temp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
@@ -367,14 +468,14 @@ def _normalize_time_text(value: Any) -> str:
     return parsed.isoformat() if parsed is not None else str(value or "")
 
 
-def _top_label(row: Any, metric_key: str) -> str:
+def _top_label(row: Any, metric_key: str, *, suffix: str = "%") -> str:
     if not isinstance(row, dict):
         return "暂无"
     ticker = str(row.get("ticker") or "").strip().upper() or "UNKNOWN"
     value = _number(row.get(metric_key))
     if value is None:
         return ticker
-    return f"{ticker} {value:+.2f}%"
+    return f"{ticker} {value:+.2f}{suffix}"
 
 
 def _number(value: Any) -> float | None:

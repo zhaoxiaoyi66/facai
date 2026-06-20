@@ -115,8 +115,10 @@ from data.weekend_spread_log import (
     update_monday_outcome,
 )
 from data.weekend_spread_monitor import (
+    DEFAULT_MONITOR_INTERVAL_MINUTES,
     append_monitor_run,
     build_monitor_top,
+    classify_premium_trend,
     latest_monitor_run,
     monitor_history_rows,
     read_monitor_state,
@@ -6831,9 +6833,14 @@ def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
 
     row = run["rows"][0]
     assert row["premium_pct"] == pytest.approx(4.0)
+    assert DEFAULT_MONITOR_INTERVAL_MINUTES == 3
     assert row["binance_15m_change_pct"] is None
     assert row["premium_15m_change_pct"] is None
-    assert weekend_spread._monitor_frame(run["rows"]).loc[0, "较上一轮 Binance 涨跌%"] == "等待下一轮比较"
+    assert row["premium_trend_label"] == "等待下一轮比较"
+    assert row["trend_9m_label"] == "等待更多样本"
+    frame = weekend_spread._monitor_frame(run["rows"])
+    assert frame.loc[0, "Binance 较上一轮涨跌"] == "等待下一轮比较"
+    assert frame.loc[0, "价差趋势"] == "等待下一轮比较"
     assert latest_monitor_run(path)["run_id"] == run["run_id"]
 
 
@@ -6854,19 +6861,21 @@ def test_weekend_monitor_normalizes_epoch_anchor_time(tmp_path) -> None:
     assert "HKT" in weekend_spread._short_hkt_time("1781827182000")
 
 
-def test_weekend_monitor_second_scan_calculates_15m_changes(tmp_path) -> None:
+def test_weekend_monitor_second_scan_calculates_previous_round_changes(tmp_path) -> None:
     path = tmp_path / "weekend_spread_monitor_snapshots.json"
     rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
     run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
 
-    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 106.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 15, tzinfo=timezone.utc))
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 106.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 3, tzinfo=timezone.utc))
 
     row = run["rows"][0]
     assert row["binance_15m_change_pct"] == pytest.approx(106.0 / 104.0 * 100 - 100)
     assert row["premium_15m_change_pct"] == pytest.approx(2.0)
-    assert row["elapsed_minutes"] == pytest.approx(15.0)
-    assert weekend_spread._monitor_delta_label(run["rows"]) == "近15分钟"
-    assert row["status"] == "快速扩大"
+    assert row["premium_change_since_last_pct_point"] == pytest.approx(2.0)
+    assert row["elapsed_minutes"] == pytest.approx(3.0)
+    assert weekend_spread._monitor_delta_label(run["rows"]) == "近3分钟"
+    assert row["premium_trend_label"] == "溢价扩大"
+    assert row["status"] == "极端价差"
 
 
 def test_weekend_monitor_non_15m_interval_uses_previous_round_label(tmp_path) -> None:
@@ -6878,8 +6887,49 @@ def test_weekend_monitor_non_15m_interval_uses_previous_round_label(tmp_path) ->
 
     frame = weekend_spread._monitor_frame(run["rows"])
     assert weekend_spread._monitor_delta_label(run["rows"]) == "较上一轮"
-    assert "较上一轮 Binance 涨跌%" in frame.columns
+    assert "Binance 较上一轮涨跌" in frame.columns
     assert "近15分钟 Binance 涨跌%" not in frame.columns
+
+
+def test_weekend_monitor_classifies_premium_trends() -> None:
+    assert classify_premium_trend(2.0, 2.5, 0.5) == "溢价扩大"
+    assert classify_premium_trend(2.5, 2.0, -0.5) == "溢价收敛"
+    assert classify_premium_trend(-2.0, -3.0, -1.0) == "折价扩大"
+    assert classify_premium_trend(-3.0, -2.0, 1.0) == "折价收敛"
+    assert classify_premium_trend(1.0, -1.0, -2.0) == "方向反转"
+    assert classify_premium_trend(2.0, 2.1, 0.1) == "价差稳定"
+
+
+def test_weekend_monitor_multi_round_trends_wait_for_more_samples(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+    run_monitor_scan(rows, price_map={"NVDAUSDT": 104.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+
+    run = run_monitor_scan(rows, price_map={"NVDAUSDT": 105.0}, snapshot_path=path, now=datetime(2026, 6, 20, 0, 3, tzinfo=timezone.utc))
+
+    assert run["rows"][0]["trend_9m_label"] == "等待更多样本"
+    assert run["rows"][0]["trend_15m_label"] == "等待更多样本"
+
+
+def test_weekend_monitor_multi_round_trends_calculate_9m_and_15m(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+    prices = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+    run = None
+    for index, price in enumerate(prices):
+        run = run_monitor_scan(
+            rows,
+            price_map={"NVDAUSDT": price},
+            snapshot_path=path,
+            now=datetime(2026, 6, 20, 0, index * 3, tzinfo=timezone.utc),
+        )
+
+    assert run is not None
+    row = run["rows"][0]
+    assert row["premium_change_9m_pct_point"] == pytest.approx(3.0)
+    assert row["trend_9m_label"] == "溢价扩大"
+    assert row["premium_change_15m_pct_point"] == pytest.approx(5.0)
+    assert row["trend_15m_label"] == "溢价扩大"
 
 
 def test_weekend_monitor_snapshot_corruption_is_reported(tmp_path) -> None:
@@ -6951,9 +7001,10 @@ def test_weekend_monitor_top_rankings_are_correct(tmp_path) -> None:
         {"ticker": "A", "binance_symbol": "AUSDT", "afterhours_reference_price": 100.0},
         {"ticker": "B", "binance_symbol": "BUSDT", "afterhours_reference_price": 100.0},
         {"ticker": "C", "binance_symbol": "CUSDT", "afterhours_reference_price": 100.0},
+        {"ticker": "D", "binance_symbol": "DUSDT", "afterhours_reference_price": 100.0},
     ]
-    run_monitor_scan(rows, price_map={"AUSDT": 100.0, "BUSDT": 100.0, "CUSDT": 100.0}, snapshot_path=path)
-    run = run_monitor_scan(rows, price_map={"AUSDT": 110.0, "BUSDT": 95.0, "CUSDT": 103.0}, snapshot_path=path)
+    run_monitor_scan(rows, price_map={"AUSDT": 100.0, "BUSDT": 100.0, "CUSDT": 100.0, "DUSDT": 105.0}, snapshot_path=path)
+    run = run_monitor_scan(rows, price_map={"AUSDT": 110.0, "BUSDT": 95.0, "CUSDT": 103.0, "DUSDT": 102.0}, snapshot_path=path)
 
     top = build_monitor_top(run["rows"])
 
@@ -6961,7 +7012,7 @@ def test_weekend_monitor_top_rankings_are_correct(tmp_path) -> None:
     assert top["max_discount"]["ticker"] == "B"
     assert top["max_binance_change"]["ticker"] == "A"
     assert top["fastest_premium_expand"]["ticker"] == "A"
-    assert top["fastest_premium_converge"]["ticker"] == "B"
+    assert top["fastest_premium_converge"]["ticker"] == "D"
     assert monitor_history_rows([run])[0]["max_premium"].startswith("A ")
 
 
@@ -6993,8 +7044,8 @@ def test_weekend_monitor_does_not_start_duplicate_process(monkeypatch, tmp_path)
                 "pid": 12345,
                 "status": "running",
                 "started_at": "2026-06-20T00:00:00+00:00",
-                "interval_minutes": 15,
-                "command": "python tools/weekend_spread_monitor.py --interval-minutes 15 --all",
+                "interval_minutes": 3,
+                "command": "python tools/weekend_spread_monitor.py --interval-minutes 3 --all",
             }
         ),
         encoding="utf-8",
@@ -7009,6 +7060,33 @@ def test_weekend_monitor_does_not_start_duplicate_process(monkeypatch, tmp_path)
     assert result["message"] == "监控已在运行。"
 
 
+def test_weekend_monitor_start_command_uses_three_minute_default(monkeypatch, tmp_path) -> None:
+    process_path = tmp_path / "weekend_spread_monitor_process.json"
+    log_path = tmp_path / "weekend_spread_monitor.log"
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 777
+
+    def fake_popen(command, **kwargs):
+        commands.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(weekend_spread, "MONITOR_PROCESS_PATH", process_path)
+    monkeypatch.setattr(weekend_spread, "MONITOR_LOG_PATH", log_path)
+    monkeypatch.setattr(weekend_spread, "_is_process_running", lambda pid: False)
+    monkeypatch.setattr(weekend_spread.subprocess, "Popen", fake_popen)
+
+    result = weekend_spread._start_monitor_process()
+
+    assert result["ok"] is True
+    assert commands
+    assert commands[0][-3:] == ["--interval-minutes", "3", "--all"]
+    saved = json.loads(process_path.read_text(encoding="utf-8"))
+    assert saved["interval_minutes"] == 3
+    assert "--interval-minutes 3 --all" in saved["command"]
+
+
 def test_weekend_monitor_marks_stale_running_pid_as_exited(monkeypatch, tmp_path) -> None:
     process_path = tmp_path / "weekend_spread_monitor_process.json"
     process_path.write_text(
@@ -7017,8 +7095,8 @@ def test_weekend_monitor_marks_stale_running_pid_as_exited(monkeypatch, tmp_path
                 "pid": 12345,
                 "status": "running",
                 "started_at": "2026-06-20T00:00:00+00:00",
-                "interval_minutes": 15,
-                "command": "python tools/weekend_spread_monitor.py --interval-minutes 15 --all",
+                "interval_minutes": 3,
+                "command": "python tools/weekend_spread_monitor.py --interval-minutes 3 --all",
             }
         ),
         encoding="utf-8",

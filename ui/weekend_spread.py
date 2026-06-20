@@ -1708,7 +1708,7 @@ def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -
 
 def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
     st.subheader("周末价差监控")
-    st.caption("每 15 分钟扫描 Binance 美股映射价格，观察其相对美股最后交易日盘后锚点的偏离，以及近 15 分钟价差变化。本页仅用于休市期间观察，不构成交易建议。")
+    st.caption("每 3 分钟扫描 Binance 美股映射价格，观察当前价差以及价差扩大/收敛趋势。本页仅用于休市期间观察，不构成交易建议。")
     candidate_rows = _monitor_candidate_rows(rows, ignored)
     source_rows = [row for row in candidate_rows if _row_has_afterhours_anchor(row)]
     latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
@@ -1722,7 +1722,7 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
 
     cols = st.columns(3)
     scan_clicked = cols[0].button("立即扫描一次", key="weekend_spread_monitor_scan_once", width="stretch")
-    start_clicked = cols[1].button("启动 15 分钟监控", key="weekend_spread_monitor_start", width="stretch", disabled=process_state["running"])
+    start_clicked = cols[1].button("启动 3 分钟监控", key="weekend_spread_monitor_start", width="stretch", disabled=process_state["running"])
     stop_clicked = cols[2].button("停止监控", key="weekend_spread_monitor_stop", width="stretch", disabled=not process_state["running"])
 
     if scan_clicked:
@@ -1739,7 +1739,7 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
     if start_clicked:
         result = _start_monitor_process()
         if result.get("ok"):
-            st.success(str(result.get("message") or "已启动 15 分钟周末价差监控。"))
+            st.success(str(result.get("message") or "已启动 3 分钟周末价差监控。"))
             st.rerun()
         else:
             st.warning(str(result.get("message") or "监控启动失败"))
@@ -1754,7 +1754,7 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
     latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
     _render_monitor_status_strip(latest_run, candidate_rows, ignored or {}, process_state=_monitor_process_state())
     if latest_run is None:
-        st.info("尚未启动周末监控。可以点击“立即扫描一次”查看当前价差，或启动 15 分钟监控。")
+        st.info("尚未启动周末监控。可以点击“立即扫描一次”查看当前价差，或启动 3 分钟监控。")
         return
     monitor_rows = list(latest_run.get("rows") or [])
     if not monitor_rows:
@@ -1764,6 +1764,7 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
     selected_scope = _render_monitor_filters(monitor_rows)
     filtered_rows = _filter_monitor_rows(monitor_rows, selected_scope)
     st.dataframe(_monitor_frame(filtered_rows), width="stretch", hide_index=True)
+    _render_monitor_trend_detail(filtered_rows)
     _render_monitor_history()
 
 
@@ -1809,20 +1810,35 @@ def _render_monitor_status_strip(latest_run: dict | None, source_rows: list[dict
 
 def _render_monitor_top_cards(rows: list[dict]) -> None:
     top = build_monitor_top_for_ui(rows)
-    delta_label = _monitor_delta_label(rows)
     cards = [
-        ("当前最大溢价", top.get("max_premium"), "premium_pct", "相对盘后锚点"),
-        ("当前最大折价", top.get("max_discount"), "premium_pct", "相对盘后锚点"),
-        (f"{delta_label}涨幅最大", top.get("max_binance_change"), "binance_15m_change_pct", "Binance 价格变化"),
-        (f"{delta_label}价差扩大最快", top.get("fastest_premium_expand"), "premium_15m_change_pct", "溢价扩大"),
-        (f"{delta_label}价差收敛最快", top.get("fastest_premium_converge"), "premium_15m_change_pct", "溢价收敛"),
+        ("当前最大溢价", top.get("max_premium"), "premium_pct", _monitor_top_trend_caption(top.get("max_premium"))),
+        ("当前最大折价", top.get("max_discount"), "premium_pct", _monitor_top_trend_caption(top.get("max_discount"))),
+        ("近3分钟价差扩大最快", top.get("fastest_premium_expand"), "premium_change_since_last_pct_point", "价差扩大"),
+        ("近3分钟价差收敛最快", top.get("fastest_premium_converge"), "premium_change_since_last_pct_point", "价差收敛"),
+        ("近3分钟 Binance 涨幅最大", top.get("max_binance_change"), "binance_change_since_last_pct", "Binance 价格变化"),
+        ("方向反转", None, "direction_reversal_count", "价差方向从溢价/折价切换"),
     ]
     cols = st.columns(len(cards))
     for col, (title, row, metric_key, caption) in zip(cols, cards):
+        if metric_key == "direction_reversal_count":
+            count = int(top.get("direction_reversal_count") or 0)
+            col.metric(title, f"{count} 个")
+            col.caption(caption)
+            continue
         ticker = str((row or {}).get("ticker") or "暂无")
         metric = _monitor_metric_text((row or {}).get(metric_key))
         col.metric(title, f"{ticker} {metric}")
         col.caption(caption if row else "等待下一轮比较")
+
+
+def _monitor_top_trend_caption(row: dict | None) -> str:
+    if not isinstance(row, dict):
+        return "等待下一轮比较"
+    trend = str(row.get("premium_trend_label") or "等待下一轮比较")
+    delta = _number(row.get("premium_change_since_last_pct_point"))
+    if delta is None:
+        return trend
+    return f"{trend} {delta:+.2f} pct"
 
 
 def build_monitor_top_for_ui(rows: list[dict]) -> dict[str, dict | None]:
@@ -1832,11 +1848,35 @@ def build_monitor_top_for_ui(rows: list[dict]) -> dict[str, dict | None]:
 
 
 def _render_monitor_filters(rows: list[dict]) -> str:
-    delta_label = _monitor_delta_label(rows)
-    options = ["全部可监控", "我的观察池", "我的持仓", "核心仓", "溢价超过 2%", "溢价超过 5%", "折价超过 2%", f"{delta_label}变化超过 1%"]
+    options = [
+        "全部可监控",
+        "溢价扩大",
+        "溢价收敛",
+        "折价扩大",
+        "折价收敛",
+        "方向反转",
+        "极端价差",
+        "等待下一轮比较",
+        "我的观察池",
+        "我的持仓",
+        "核心仓",
+    ]
     labels = [f"{option} {_monitor_filter_count(rows, option)}" for option in options]
-    selected = st.radio("监控筛选", labels, horizontal=True, label_visibility="collapsed", key="weekend_spread_monitor_filter")
+    selected = st.radio(
+        "监控筛选",
+        labels,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="weekend_spread_monitor_filter_v2",
+        index=options.index(_default_monitor_filter(rows)),
+    )
     return options[labels.index(selected)]
+
+
+def _default_monitor_filter(rows: list[dict]) -> str:
+    if _monitor_filter_count(rows, "溢价扩大") or _monitor_filter_count(rows, "折价扩大"):
+        return "溢价扩大" if _monitor_filter_count(rows, "溢价扩大") else "折价扩大"
+    return "全部可监控"
 
 
 def _monitor_filter_count(rows: list[dict], scope: str) -> int:
@@ -1844,30 +1884,72 @@ def _monitor_filter_count(rows: list[dict], scope: str) -> int:
 
 
 def _filter_monitor_rows(rows: list[dict], scope: str) -> list[dict]:
-    if scope == "我的观察池":
+    if scope == "溢价扩大":
+        selected = [row for row in rows if row.get("premium_trend_label") == "溢价扩大"]
+    elif scope == "溢价收敛":
+        selected = [row for row in rows if row.get("premium_trend_label") == "溢价收敛"]
+    elif scope == "折价扩大":
+        selected = [row for row in rows if row.get("premium_trend_label") == "折价扩大"]
+    elif scope == "折价收敛":
+        selected = [row for row in rows if row.get("premium_trend_label") == "折价收敛"]
+    elif scope == "方向反转":
+        selected = [row for row in rows if row.get("premium_trend_label") == "方向反转"]
+    elif scope == "极端价差":
+        selected = [row for row in rows if abs(_number(row.get("premium_pct")) or 0) >= 5]
+    elif scope == "等待下一轮比较":
+        selected = [row for row in rows if row.get("premium_trend_label") == "等待下一轮比较"]
+    elif scope == "我的观察池":
         selected = [row for row in rows if row.get("is_watchlist")]
     elif scope == "我的持仓":
         selected = [row for row in rows if row.get("is_position")]
     elif scope == "核心仓":
         selected = [row for row in rows if row.get("is_core")]
-    elif scope == "溢价超过 2%":
-        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) >= 2]
-    elif scope == "溢价超过 5%":
-        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) >= 5]
-    elif scope == "折价超过 2%":
-        selected = [row for row in rows if (_number(row.get("premium_pct")) or 0) <= -2]
-    elif scope.endswith("变化超过 1%"):
-        selected = [row for row in rows if abs(_number(row.get("binance_15m_change_pct")) or 0) >= 1]
     else:
         selected = list(rows)
-    return sorted(selected, key=lambda row: (-abs(_number(row.get("premium_pct")) or 0), -abs(_number(row.get("binance_15m_change_pct")) or 0), str(row.get("ticker") or "")))
+    return sorted(
+        selected,
+        key=lambda row: (
+            _monitor_trend_rank(row),
+            -abs(_number(row.get("premium_change_since_last_pct_point")) or 0),
+            -abs(_number(row.get("premium_pct")) or 0),
+            str(row.get("ticker") or ""),
+        ),
+    )
+
+
+def _monitor_trend_rank(row: dict) -> int:
+    trend = str(row.get("premium_trend_label") or "")
+    status = str(row.get("status") or "")
+    if status == "极端价差":
+        return 0
+    if trend in {"溢价扩大", "折价扩大"}:
+        return 1
+    if trend == "方向反转":
+        return 2
+    if trend in {"溢价收敛", "折价收敛"}:
+        return 3
+    if trend == "价差稳定":
+        return 4
+    if trend == "等待下一轮比较":
+        return 5
+    return 6
 
 
 def _monitor_frame(rows: list[dict]) -> pd.DataFrame:
-    delta_label = _monitor_delta_label(rows)
-    change_col = f"{delta_label} Binance 涨跌%"
-    spread_change_col = f"{delta_label}价差变化"
-    columns = ["股票", "Binance 合约", "盘后锚点", "Binance 当前价", "当前价差%", change_col, spread_change_col, "状态", "更新时间"]
+    columns = [
+        "股票",
+        "Binance 合约",
+        "盘后锚点",
+        "Binance 当前价",
+        "当前价差%",
+        "较上一轮价差变化",
+        "价差趋势",
+        "近9分钟趋势",
+        "近15分钟趋势",
+        "Binance 较上一轮涨跌",
+        "状态",
+        "更新时间",
+    ]
     if not rows:
         return pd.DataFrame(columns=columns)
     records = []
@@ -1879,13 +1961,60 @@ def _monitor_frame(rows: list[dict]) -> pd.DataFrame:
                 "盘后锚点": _money_text(row.get("anchor_price")),
                 "Binance 当前价": _money_text(row.get("binance_price")),
                 "当前价差%": _percent_text(row.get("premium_pct")),
-                change_col: _monitor_metric_text(row.get("binance_15m_change_pct")),
-                spread_change_col: _monitor_pct_point_text(row.get("premium_15m_change_pct")),
+                "较上一轮价差变化": _monitor_pct_point_text(row.get("premium_change_since_last_pct_point")),
+                "价差趋势": row.get("premium_trend_label") or "等待下一轮比较",
+                "近9分钟趋势": _monitor_window_trend_text(row, "9m"),
+                "近15分钟趋势": _monitor_window_trend_text(row, "15m"),
+                "Binance 较上一轮涨跌": _monitor_metric_text(row.get("binance_change_since_last_pct")),
                 "状态": row.get("status") or "正常",
                 "更新时间": _short_hkt_time(row.get("scan_time")),
             }
         )
     return pd.DataFrame(records, columns=columns)
+
+
+def _monitor_window_trend_text(row: dict, window: str) -> str:
+    if window == "9m":
+        label = str(row.get("trend_9m_label") or "等待更多样本")
+        change = row.get("premium_change_9m_pct_point")
+    else:
+        label = str(row.get("trend_15m_label") or "等待更多样本")
+        change = row.get("premium_change_15m_pct_point")
+    if _number(change) is None:
+        return label
+    prefix = "约9分钟" if window == "9m" else "约15分钟"
+    return f"{prefix}：{label} {_monitor_pct_point_text(change)}"
+
+
+def _render_monitor_trend_detail(rows: list[dict]) -> None:
+    if not rows:
+        st.caption("当前筛选没有可解释的监控样本。")
+        return
+    options = [str(row.get("ticker") or "").strip().upper() for row in rows if str(row.get("ticker") or "").strip()]
+    if not options:
+        return
+    selected = st.selectbox("查看价差趋势解释", options, key="weekend_spread_monitor_detail_symbol")
+    row = next((item for item in rows if str(item.get("ticker") or "").strip().upper() == selected), None)
+    if row:
+        st.caption(_monitor_trend_explanation(row))
+
+
+def _monitor_trend_explanation(row: dict) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper() or "该标的"
+    premium = _percent_text(row.get("premium_pct"))
+    trend = str(row.get("premium_trend_label") or "等待下一轮比较")
+    delta = _monitor_pct_point_text(row.get("premium_change_since_last_pct_point"))
+    binance_change = _monitor_metric_text(row.get("binance_change_since_last_pct"))
+    trend_9m = _monitor_window_trend_text(row, "9m")
+    trend_15m = _monitor_window_trend_text(row, "15m")
+    if trend == "等待下一轮比较":
+        return f"{ticker} 当前价差为 {premium}。这是首次监控样本，下一轮扫描后会显示价差扩大或收敛。"
+    if trend == "方向反转":
+        return f"{ticker} 当前价差为 {premium}，较上一轮变化 {delta}，溢价/折价方向发生反转；请复核盘后锚点和 Binance 映射价格。"
+    return (
+        f"{ticker} 当前价差为 {premium}，较上一轮价差变化 {delta}，趋势为{trend}；"
+        f"Binance 价格较上一轮 {binance_change}。{trend_9m}；{trend_15m}。"
+    )
 
 
 def _render_monitor_history() -> None:
@@ -1901,8 +2030,9 @@ def _render_monitor_history() -> None:
                 "valid_count": "有效标的数",
                 "max_premium": "最大溢价",
                 "max_discount": "最大折价",
-                "max_15m_change": "最大较上一轮涨幅",
+                "max_since_last_change": "最大较上一轮涨幅",
                 "max_premium_expand": "最大较上一轮价差扩大",
+                "direction_reversal_count": "方向反转数",
                 "attention_count": "异常数量",
             }
         )
@@ -1975,7 +2105,7 @@ def _start_monitor_process() -> dict[str, object]:
             "log_path": str(MONITOR_LOG_PATH),
         },
     )
-    return {"ok": True, "pid": process.pid, "message": "已启动 15 分钟周末价差监控。"}
+    return {"ok": True, "pid": process.pid, "message": "已启动 3 分钟周末价差监控。"}
 
 
 def _stop_monitor_process() -> dict[str, object]:
@@ -2062,7 +2192,13 @@ def _monitor_delta_label(rows: list[dict]) -> str:
     if not elapsed_values:
         return "较上一轮"
     average_elapsed = sum(elapsed_values) / len(elapsed_values)
-    return "近15分钟" if 13 <= average_elapsed <= 17 else "较上一轮"
+    if 2 <= average_elapsed <= 4:
+        return "近3分钟"
+    if 8 <= average_elapsed <= 10:
+        return "约9分钟"
+    if 13 <= average_elapsed <= 17:
+        return "约15分钟"
+    return "较上一轮"
 
 
 def _read_json_file(path: Path) -> dict[str, object]:

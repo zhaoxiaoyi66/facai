@@ -15,7 +15,7 @@ from data.portfolio import PortfolioPositionStore
 from data.weekend_spread import is_binance_symbol_ignored, load_binance_symbol_ignore, load_binance_symbol_mapping
 from data.weekend_spread_backtest import ET, get_last_us_trading_day_of_week
 from data.weekend_spread_cache import read_weekend_spread_snapshot
-from data.weekend_spread_monitor import DEFAULT_MONITOR_SNAPSHOT_PATH, run_monitor_scan
+from data.weekend_spread_monitor import DEFAULT_MONITOR_INTERVAL_MINUTES, DEFAULT_MONITOR_SNAPSHOT_PATH, run_monitor_scan
 from settings import load_watchlist
 
 
@@ -130,7 +130,11 @@ def _print_run_summary(run: dict) -> None:
     ):
         row = top.get(key)
         if isinstance(row, dict):
-            print(f"  {label}: {row.get('ticker')} premium={_fmt(row.get('premium_pct'))} change={_fmt(row.get('binance_15m_change_pct'))}")
+            print(
+                f"  {label}: {row.get('ticker')} premium={_fmt(row.get('premium_pct'))} "
+                f"change={_fmt(row.get('binance_change_since_last_pct'))} "
+                f"trend={row.get('premium_trend_label') or '等待下一轮比较'}"
+            )
 
 
 def _fmt(value) -> str:
@@ -153,12 +157,18 @@ def _delta_label(run: dict) -> str:
     if not elapsed_values:
         return "较上一轮"
     average_elapsed = sum(elapsed_values) / len(elapsed_values)
-    return "近15分钟" if 13 <= average_elapsed <= 17 else "较上一轮"
+    if 2 <= average_elapsed <= 4:
+        return "近3分钟"
+    if 8 <= average_elapsed <= 10:
+        return "约9分钟"
+    if 13 <= average_elapsed <= 17:
+        return "约15分钟"
+    return "较上一轮"
 
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Weekend spread monitor runner")
-    parser.add_argument("--interval-minutes", type=float, default=15)
+    parser.add_argument("--interval-minutes", type=float, default=DEFAULT_MONITOR_INTERVAL_MINUTES)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--symbols", default="")
     parser.add_argument("--all", action="store_true")
