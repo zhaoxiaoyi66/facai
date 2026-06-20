@@ -174,7 +174,7 @@ LARGE_WEEKEND_PREMIUM_PCT = 1.5
 STRICT_P2_MISSING_TEXT = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
 OPENING_WINDOW_P2_MISSING_TEXT = "夜盘开盘窗口内无有效 1m K线"
 STRICT_P2_FLOW_TEXT = "无首分钟价格"
-STRICT_P2_STRATEGY_TEXT = "该标的夜盘开盘首分钟无成交 / 无 1m bar，本策略不可用。"
+STRICT_P2_STRATEGY_TEXT = "该标的夜盘开盘首分钟无成交 / 无 1m K线，本策略不可用。"
 
 TAB_REALTIME = "实时观察"
 TAB_MONITOR = "周末监控"
@@ -4130,7 +4130,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             excluded = list(preflight.get("excluded") or preliminary.get("excluded") or [])
             st.dataframe(_backtest_exclusion_frame(excluded), width="stretch", hide_index=True)
         if self_check_clicked:
-            with st.spinner(f"正在检查 {selected} 下周第一个交易日夜盘首分钟 1m bar..."):
+            with st.spinner(f"正在检查 {selected} 下周第一个交易日夜盘首分钟 1m K线..."):
                 _render_overnight_provider_self_check(build_overnight_provider_self_check(selected))
 
     if not preflight.get("can_run"):
@@ -6823,7 +6823,7 @@ def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
     if quality in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
         return "P0 使用常规收盘回退，仅观察"
     if quality == "P0_UNVERIFIED":
-        return "P0 缺少原始盘后 1m bar 验证"
+        return "P0 缺少原始盘后 1m K线验证"
     if quality == "BOATS_DELAY_PENDING":
         return "BOATS 历史数据可能延迟，请稍后重试"
     if quality == "ALPACA_BOATS_PERMISSION":
@@ -8572,8 +8572,8 @@ def _afterhours_reason_text(value: object) -> str:
         "API_KEY_MISSING": "盘后 API key 缺失",
         "NOT_FETCHED": "尚未读取盘后锚点",
         "FETCH_FAILED": "盘后锚点读取失败",
-        "NO_ALPACA_AFTERHOURS_BAR": "缺少 Alpaca 盘后 1m bar",
-        "NO_AFTERHOURS_BAR": "缺少盘后 1m bar",
+        "NO_ALPACA_AFTERHOURS_BAR": "缺少 Alpaca 盘后 1m K线",
+        "NO_AFTERHOURS_BAR": "缺少盘后 1m K线",
         "NO_AFTERHOURS_TRADE": "缺少盘后成交",
         "NO_AFTERHOURS_QUOTE": "缺少 bid/ask 报价",
         "CACHE_MISSING": "盘后缓存缺失",

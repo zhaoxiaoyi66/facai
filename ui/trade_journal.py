@@ -2374,7 +2374,7 @@ def _render_weekly_discipline_summary() -> None:
     }.get(level, "纪律正常")
     metrics = [
         ("本周交易", summary.get("totalTradesThisWeek", 0)),
-        ("sell / trim", summary.get("sellTrimCountThisWeek", 0)),
+        ("卖出 / 减仓", summary.get("sellTrimCountThisWeek", 0)),
         ("A 类卖出", summary.get("aClassSellCountThisWeek", 0)),
         ("宏观卖出", summary.get("macroSellCountThisWeek", 0)),
         ("无回补计划", summary.get("noReentryPlanSellCount", 0)),
@@ -2611,24 +2611,24 @@ def _trade_performance_filters(symbols: list[str]) -> dict:
 
 def _render_trade_performance_cards(summary: dict) -> None:
     items = [
-        ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "REALIZED"),
-        ("已实现盈亏率", _percent_or_dash(summary.get("realized_pnl_pct")), "RETURN"),
-        ("可计算卖出", str(summary.get("completed_sell_count") or 0), "SELLS"),
-        ("缺成本卖出", str(summary.get("missing_cost_count") or 0), "MISSING"),
-        ("缺成本数量", _quantity_text(summary.get("missing_cost_quantity")), "SHARES"),
-        ("缺成本金额", _money_text(summary.get("missing_cost_amount")), "VALUE"),
-        ("胜率", _percent_or_dash(summary.get("win_rate")), "WIN RATE"),
-        ("平均盈利", _money_text(summary.get("average_winner")), "AVG WIN"),
-        ("平均亏损", _money_text(summary.get("average_loser")), "AVG LOSS"),
-        ("最大盈利", _money_text(summary.get("max_winner")), "BEST"),
-        ("最大亏损", _money_text(summary.get("max_loser")), "WORST"),
-        ("平均持仓", _days_text(summary.get("average_holding_days")), "AVG DAYS"),
-        ("中位持仓", _days_text(summary.get("median_holding_days")), "MEDIAN DAYS"),
-        ("疑似卖飞", str(summary.get("suspected_sell_fly_count") or 0), "REVIEW"),
-        ("A类疑似卖飞", str(summary.get("a_class_suspected_sell_fly_count") or 0), "A REVIEW"),
-        ("情绪型卖出", str(summary.get("emotional_sell_count") or 0), "MOOD"),
-        ("买区内卖出", str(summary.get("buy_zone_sell_count") or 0), "ZONE"),
-        ("低于目标卖出", str(summary.get("below_target_sell_count") or 0), "TARGET"),
+        ("已实现盈亏", _money_text(summary.get("total_realized_pnl")), "已实现"),
+        ("已实现盈亏率", _percent_or_dash(summary.get("realized_pnl_pct")), "收益率"),
+        ("可计算卖出", str(summary.get("completed_sell_count") or 0), "卖出数"),
+        ("缺成本卖出", str(summary.get("missing_cost_count") or 0), "缺成本"),
+        ("缺成本数量", _quantity_text(summary.get("missing_cost_quantity")), "股数"),
+        ("缺成本金额", _money_text(summary.get("missing_cost_amount")), "金额"),
+        ("胜率", _percent_or_dash(summary.get("win_rate")), "胜率"),
+        ("平均盈利", _money_text(summary.get("average_winner")), "均盈"),
+        ("平均亏损", _money_text(summary.get("average_loser")), "均亏"),
+        ("最大盈利", _money_text(summary.get("max_winner")), "最大盈利"),
+        ("最大亏损", _money_text(summary.get("max_loser")), "最大亏损"),
+        ("平均持仓", _days_text(summary.get("average_holding_days")), "平均天数"),
+        ("中位持仓", _days_text(summary.get("median_holding_days")), "中位天数"),
+        ("疑似卖飞", str(summary.get("suspected_sell_fly_count") or 0), "复盘"),
+        ("A类疑似卖飞", str(summary.get("a_class_suspected_sell_fly_count") or 0), "A类复盘"),
+        ("情绪型卖出", str(summary.get("emotional_sell_count") or 0), "情绪"),
+        ("买区内卖出", str(summary.get("buy_zone_sell_count") or 0), "买区"),
+        ("低于目标卖出", str(summary.get("below_target_sell_count") or 0), "目标"),
     ]
     html = "".join(
         (
@@ -3131,14 +3131,14 @@ def _render_entry_detail(store: TradeJournalStore) -> None:
 
 def _render_sell_fly_review() -> None:
     st.markdown('<div class="trade-workbench-section replay">卖飞复盘</div>', unsafe_allow_html=True)
-    render_section_title("卖飞复盘", "只读检测 sell / trim 后 5d / 10d / 20d 的卖后涨幅，不写入数据库。")
+    render_section_title("卖飞复盘", "只读检测卖出 / 减仓后 5日 / 10日 / 20日的卖后涨幅，不写入数据库。")
     rows = _sell_fly_rows(build_sell_fly_review_results())
     if not rows:
         st.markdown(
             (
                 '<div class="trade-journal-empty signal-empty">'
                 "<strong>暂无可复盘的卖出记录或价格序列不足</strong>"
-                "<span>需要已有 sell / trim 交易记录、卖出价格，以及卖出后的本地 price_history。</span>"
+                "<span>需要已有卖出 / 减仓交易记录、卖出价格，以及卖出后的本地价格历史。</span>"
                 "</div>"
             ),
             unsafe_allow_html=True,

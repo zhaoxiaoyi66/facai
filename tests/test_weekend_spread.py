@@ -8893,7 +8893,7 @@ def test_afterhours_anchor_summary_localizes_alpaca_missing_reason() -> None:
     )
 
     assert "NO_ALPACA_AFTERHOURS_BAR" not in message
-    assert "缺少 Alpaca 盘后 1m bar" in message
+    assert "缺少 Alpaca 盘后 1m K线" in message
 
 
 def test_afterhours_result_summary_uses_actual_backtest_rows() -> None:
@@ -8912,7 +8912,7 @@ def test_afterhours_result_summary_uses_actual_backtest_rows() -> None:
 
     assert "实际用于回测 1/4" in message
     assert "缺失 3" in message
-    assert "缺少 Alpaca 盘后 1m bar" in message
+    assert "缺少 Alpaca 盘后 1m K线" in message
 
 
 def test_afterhours_result_summary_ignores_reference_price_for_missing_p0_rows() -> None:
