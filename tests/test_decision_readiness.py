@@ -109,3 +109,25 @@ def test_decision_readiness_includes_trade_sync_policy_without_recomputing_it() 
 
     assert not result["canSyncTrade"]
     assert any(item["category"] == "trade_sync_blocked" for item in result["blockingDataReasons"])
+
+
+def test_decision_readiness_hides_unknown_internal_reason_codes() -> None:
+    result = build_decision_readiness(
+        "NVDA",
+        data_health={"topIssues": []},
+        final_decision=SimpleNamespace(finalAction="observe", blockReasons=["NEW_BLOCK_REASON"], reviewReasons=[]),
+        buy_zone=SimpleNamespace(
+            currentZone="tranche_buy",
+            confidence="high",
+            validationErrors=["NEW_BUY_ZONE_VALIDATION"],
+        ),
+    )
+
+    messages = [
+        *(item["message"] for item in result["blockingDataReasons"]),
+        *(item["message"] for item in result["reviewRequiredReasons"]),
+    ]
+
+    assert "主结论风险提示：需要人工复核。" in messages
+    assert "买区校验项需要复核。" in messages
+    assert all("NEW_" not in message for message in messages)

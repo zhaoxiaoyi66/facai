@@ -169,7 +169,7 @@ def _buy_zone_validation_message(reason: str) -> str:
         "data_confidence_low": "数据置信度偏低，精确买点需要复核。",
         "buy_zone_model_not_supported": "暂无可用买区模型，不能用假精确价格替代。",
     }
-    return messages.get(reason, reason)
+    return messages.get(reason, _unknown_reason_message(reason, "买区校验项需要复核。"))
 
 
 def _final_reason_message(reason: str, *, blocking: bool) -> str:
@@ -180,7 +180,21 @@ def _final_reason_message(reason: str, *, blocking: bool) -> str:
     }
     if reason in messages:
         return messages[reason]
+    if _looks_like_internal_code(reason):
+        return f"主结论{'风险提示' if blocking else '要求复核'}：需要人工复核。"
     return f"主结论{'风险提示' if blocking else '要求复核'}：{reason}"
+
+
+def _looks_like_internal_code(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text)
+
+
+def _unknown_reason_message(reason: object, fallback: str) -> str:
+    text = str(reason or "").strip()
+    if _looks_like_internal_code(text):
+        return fallback
+    return text or fallback
 
 
 def _list_value(source: Any, *names: str) -> list[Any]:
