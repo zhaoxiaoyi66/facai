@@ -28,10 +28,16 @@ from data.discipline_review import (
 )
 from data.investment_principles import (
     DEFAULT_QUOTE_TEXT,
+    add_investment_note,
     add_principle_quote,
+    delete_investment_note,
     delete_principle_quote,
+    filter_investment_notes,
+    load_investment_notes,
     load_investment_principles,
     principle_reminder_for_mistake_tags,
+    toggle_investment_note_pin,
+    update_investment_note,
     update_principle_quote,
 )
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
@@ -133,6 +139,29 @@ def test_investment_principle_quotes_can_be_added_edited_and_deleted() -> None:
         assert updated["text"] == "只做自己能承受波动的交易。"
         assert deleted["deleted"] is True
         assert [quote["text"] for quote in payload["quotes"]] == [DEFAULT_QUOTE_TEXT]
+
+
+def test_investment_notes_can_be_added_filtered_pinned_edited_and_deleted() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "investment_principles.local.json"
+
+        first = add_investment_note("现金也是仓位。", note="不要因为手痒买入。", tags=["心态", "仓位"], source="复盘", path=path)
+        second = add_investment_note("买点看承接。", tags=["买点"], related_symbol="nvda", path=path)
+        pinned = toggle_investment_note_pin(second["id"], path=path)
+        updated = update_investment_note(first["id"], text="现金也是仓位，等待也是操作。", tags=["仓位"], source="手记", related_symbol="", path=path)
+        payload = load_investment_notes(path)
+        filtered = filter_investment_notes(payload["notes"], search="现金", tags=["仓位"])
+        pinned_only = filter_investment_notes(payload["notes"], pinned_only=True)
+
+        assert pinned["pinned"] is True
+        assert updated["text"] == "现金也是仓位，等待也是操作。"
+        assert [item["text"] for item in filtered] == ["现金也是仓位，等待也是操作。"]
+        assert [item["id"] for item in pinned_only] == [second["id"]]
+        assert payload["notes"][0]["id"] == second["id"]
+
+        assert delete_investment_note(first["id"], path=path) is True
+        reloaded = load_investment_notes(path)
+        assert all(item["id"] != first["id"] for item in reloaded["notes"])
 
 
 def test_deleting_only_default_quote_requires_confirmation() -> None:
@@ -320,6 +349,40 @@ def test_mistake_review_allows_zero_loss_and_quick_fields() -> None:
         assert saved["mistake_tags"] == ["买早", "小仓乱买"]
         assert saved["reflection"] == "没等承接确认就动手。"
         assert saved["next_defense"] == "进入候选区也要等承接信号。"
+
+
+def test_mistake_reviews_can_be_edited_archived_and_deleted() -> None:
+    with TemporaryDirectory() as tmpdir:
+        store = DisciplineReviewStore(_path(tmpdir))
+        saved = store.save_mistake_review(
+            {
+                "review_date": "2026-06-18",
+                "symbol": "NVDA",
+                "mistake_tags": ["追涨"],
+                "reflection": "追涨买入。",
+                "next_defense": "等回落确认。",
+            }
+        )
+
+        updated = store.update_mistake_review(
+            int(saved["id"]),
+            {
+                "symbol": "NOW",
+                "mistake_tags": ["FOMO"],
+                "reflection": "因为错过焦虑买入。",
+                "next_defense": "不因为焦虑下单。",
+                "loss_amount_usd": 120,
+            },
+        )
+        archived = store.archive_mistake_review(int(saved["id"]))
+
+        assert updated["symbol"] == "NOW"
+        assert updated["mistake_tags"] == ["FOMO"]
+        assert updated["loss_amount"] == 120
+        assert archived["review_status"] == "已设置防线"
+
+        store.delete_mistake_review(int(saved["id"]))
+        assert store.list_mistake_reviews() == []
 
 
 def test_recent_mistake_rows_only_returns_latest_five() -> None:
@@ -713,100 +776,44 @@ def test_dashboard_and_trade_entry_discipline_copy_are_advisory_only() -> None:
     assert "门禁" not in hint
 
 
-def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade_tags() -> None:
+def test_investment_notes_page_is_lightweight_learning_notebook() -> None:
     source = Path("ui/discipline_review.py").read_text(encoding="utf-8")
 
-    assert "交易复盘" in source
-    assert "记录交易错误、复盘交易行为，把每次失误沉淀成下一次防线。" in source
-    assert "交易错题本" not in source
-    assert "错误记录总数" in source
-    assert "最近30天错误数" in source
-    assert "最近30天损失金额" in source
-    assert "未闭环防线" in source
-    assert "快速记录一次错误" in source
-    assert "收进复盘" in source
-    assert "收进错题本" not in source
-    assert "犯错行为" in source
-    assert "一句话反思" in source
-    assert "补充详细复盘" in source
-    assert "当时情绪" in source
-    assert "是否违反原计划" in source
-    assert "是否需要交易前提醒" in source
-    assert "更多错误类型" in source
-    assert "最近复盘" in source
-    assert "默认只显示最近 5 条" in source
-    assert "下次防线" in source
-    assert "高级统计 / 月度复盘" in source
-    assert "周期与数据源" in source
-    assert "收益结算" in source
-    assert "周期收益结算" in source
-    assert "本期复盘结论" in source
-    assert "投资纪律" in source
-    assert "今日认知锚点" in source
-    assert "先读原则，再记录错误。" in source
-    assert "操作铁律" in source
-    assert "管理认知锚点" in source
-    assert "添加认知锚点" in source
-    assert "编辑当前认知锚点" in source
-    assert "原则库" in source
-    assert "金句" not in source
-    discipline_block = source[
-        source.index("def _render_investment_principles_reminder") : source.index("def _render_mistake_overview_strip")
-    ]
-    assert "<article" not in discipline_block
-    assert "</article>" not in discipline_block
-    assert "class=" not in discipline_block
-    assert "investment-core-rule-card" not in source
-    assert "investment-core-rule-grid" not in source
-    assert "保存本期复盘" in source
-    assert "标的 / 场景" in source
-    assert "损失金额" in source
-    assert "单位：USD" in source
-    assert "结果 / 影响" in source
-    assert "事件经过" in source
-    assert "下次防线" in source
-    assert "已收进交易复盘。重点不是责备自己，而是下次别重复。" in source
-    assert "这次错误已经沉淀为下次防线。" in source
-    assert "还没有复盘记录。不是为了证明自己没错，而是把每次失误都留成证据。" in source
-    assert "记录交易复盘后，系统会从你的反思里沉淀下次防线。" in source
-    assert "_render_self_check_questions" not in source
-    assert "SELF_CHECK_QUESTIONS" not in source
-    assert "交易前纪律提醒" not in source
-    assert "市场类型" not in source
-    assert "按市场类型筛选" not in source
-    assert "SPACX 示例模板" not in source
-    assert "with st.expander(\"SPACX" not in source
-    assert "基本信息" not in source
-    assert "复盘正文" not in source
-    assert "周期选择" not in source
-    assert "收益数据" not in source
-    assert "复盘内容" not in source
-    assert "保存周期复盘" not in source
-    assert "使用上一条复盘期末净资产作为期初净资产" not in source
-    assert "周期收益复盘筛选" not in source
-    assert "损失金额 / 影响" not in source
-    assert "原则文本" not in source
-    assert "例如：800U、亏损500美元、卖飞约10%" not in source
-    assert "添加错误复盘" not in source
-    assert "保存这条错题" not in source
-    assert "归档这条错误" not in source
-    assert "保存标签" not in source
-    assert "选择交易记录" not in source
-    assert "交易纪律标签" not in source
-    assert "通过 / 未通过" not in source
-    assert "门禁" not in source
+    assert "投资笔记" in source
+    assert "记录投资金句、交易错误和自己的认知变化。" in source
+    assert "今日记录" in source
+    assert "写下今天看到的一句话、一个原则、一个提醒……" in source
+    assert "保存笔记" in source
+    assert "Ctrl+Enter 保存" in source
+    assert "投资金句库" in source
+    assert "搜索正文、备注、来源或股票" in source
+    assert "只看置顶" in source
+    assert "置顶" in source
+    assert "交易错题本" in source
+    assert "记录真实犯错的交易，不做拦截，只做复盘。" in source
+    assert "记录一笔错误" in source
+    assert "错误一句话" in source
+    assert "正确做法一句话" in source
+    assert "编辑" in source
+    assert "删除" in source
+    assert "归档" in source
+    assert "简要统计 / 高级复盘" in source
 
-    render_body = source[source.index("def render(") : source.index("def _render_mistake_overview_strip")]
-    assert render_body.index("_render_investment_principles_reminder") < render_body.index("_render_mistake_overview_strip")
-    assert render_body.index("_render_mistake_overview_strip") < render_body.index("_render_quick_mistake_capture")
-    assert render_body.index("_render_quick_mistake_capture") < render_body.index("_render_recent_mistakes")
-    assert render_body.index("_render_recent_mistakes") < render_body.index("_render_next_defenses")
-    assert render_body.index("高级统计 / 月度复盘") < render_body.index("_render_periodic_return_reviews")
-    assert render_body.index("_render_periodic_return_reviews") < render_body.index("_render_periodic_review_conclusion")
-    assert render_body.index("_render_periodic_review_conclusion") < render_body.index("_render_rule_library")
-    assert render_body.index("_render_rule_library") < render_body.index("_render_portfolio_discipline")
-    assert render_body.index("_render_portfolio_discipline") < render_body.index("_render_discipline_stats")
-    assert "_render_principles_card" not in render_body
+    for old_label in [
+        "今日认知锚点",
+        "操作铁律",
+        "核心原则",
+        "换一个锚点",
+        "管理认知锚点",
+        "原则库",
+        "_render_investment_principles_reminder",
+    ]:
+        assert old_label not in source
+
+    render_body = source[source.index("def render(") : source.index("def _render_today_note_capture")]
+    assert render_body.index("_render_today_note_capture") < render_body.index("_render_investment_note_library")
+    assert render_body.index("_render_investment_note_library") < render_body.index("_render_trade_mistake_notebook")
+    assert render_body.index("_render_trade_mistake_notebook") < render_body.index("简要统计 / 高级复盘")
 
 
 def test_app_registers_discipline_review_page() -> None:

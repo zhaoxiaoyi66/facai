@@ -30,17 +30,14 @@ from data.discipline_review import (
     default_period_dates,
 )
 from data.investment_principles import (
-    DEFAULT_PRINCIPLES_PATH,
-    DEFAULT_QUOTE_ID,
-    IRON_RULE_TAGS,
-    add_principle_quote,
-    delete_principle_quote,
-    load_investment_principles,
-    next_principle_quote,
-    principle_reminder_for_mistake_tags,
-    select_principle_quote,
-    selected_principle_quote,
-    update_principle_quote,
+    DEFAULT_NOTES_PATH,
+    NOTE_TAG_OPTIONS,
+    add_investment_note,
+    delete_investment_note,
+    filter_investment_notes,
+    load_investment_notes,
+    toggle_investment_note_pin,
+    update_investment_note,
 )
 from data.portfolio import PortfolioPositionStore
 from data.news_radar import trade_news_check
@@ -80,16 +77,16 @@ QUICK_MISTAKE_TAG_OPTIONS = [
 
 def render(path: Path = CACHE_PATH) -> None:
     _render_styles()
-    render_page_header("交易复盘", "记录交易错误、复盘交易行为，把每次失误沉淀成下一次防线。")
+    render_page_header("投资笔记", "记录投资金句、交易错误和自己的认知变化。")
     discipline_store = DisciplineReviewStore(path)
-    _render_investment_principles_reminder()
+    _render_today_note_capture()
+    _render_investment_note_library()
     mistake_rows = discipline_store.list_mistake_reviews()
-    _render_mistake_overview_strip(mistake_rows)
-    _render_quick_mistake_capture(discipline_store)
-    _render_recent_mistakes(mistake_rows)
-    _render_next_defenses(mistake_rows)
+    _render_trade_mistake_notebook(discipline_store, mistake_rows)
 
-    with st.expander("高级统计 / 月度复盘", expanded=False):
+    with st.expander("简要统计 / 高级复盘", expanded=False):
+        _render_mistake_overview_strip(mistake_rows)
+        _render_next_defenses(mistake_rows)
         trade_store = TradeJournalStore(path)
         position_store = PortfolioPositionStore(path)
         entries = trade_store.list_entries()
@@ -106,112 +103,202 @@ def render(path: Path = CACHE_PATH) -> None:
         _render_discipline_stats(discipline_store, entries)
 
 
-def _render_investment_principles_reminder(path: Path = DEFAULT_PRINCIPLES_PATH) -> None:
-    payload = load_investment_principles(path)
-    quote = selected_principle_quote(payload)
-    core_rules = payload.get("core_rules") or []
-    quote_id = str((quote or {}).get("id") or "")
-    quote_text = str((quote or {}).get("text") or "暂无认知锚点").strip()
-    quote_note = str((quote or {}).get("note") or "").strip()
-    tags = [str(tag) for tag in (quote or {}).get("tags") or [] if str(tag).strip()]
-
+def _render_today_note_capture(path: Path = DEFAULT_NOTES_PATH) -> None:
+    st.markdown("### 今日记录")
     with st.container(border=True):
-        st.caption("投资纪律")
-        st.markdown("### 今日认知锚点")
-        st.markdown(f"**{quote_text}**")
-        st.caption(quote_note or "先判断真实趋势，再判断市场是否误解了这个趋势。")
+        with st.form("investment-note-capture-form", clear_on_submit=True):
+            text = st.text_area(
+                "笔记正文",
+                height=112,
+                placeholder="写下今天看到的一句话、一个原则、一个提醒……",
+                label_visibility="collapsed",
+            )
+            note = st.text_area("解释 / 备注，可选", height=68, placeholder="这句话对你的交易或研究有什么提醒？")
+            cols = st.columns([1.4, 1, 1])
+            tags = cols[0].multiselect("标签", NOTE_TAG_OPTIONS, placeholder="选择标签")
+            source = cols[1].text_input("来源，可选", placeholder="书、文章、播客、自己")
+            related_symbol = cols[2].text_input("关联股票，可选", placeholder="例如 NVDA")
+            submitted = st.form_submit_button("保存笔记", type="primary", width="stretch", help="在输入框中使用 Ctrl+Enter 也可以提交。")
+        st.caption("快捷键：Ctrl+Enter 保存。")
+    if not submitted:
+        return
+    try:
+        add_investment_note(text, note=note, tags=tags, source=source, related_symbol=related_symbol, path=path)
+        st.success("笔记已保存。")
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def _render_investment_note_library(path: Path = DEFAULT_NOTES_PATH) -> None:
+    payload = load_investment_notes(path)
+    notes = payload.get("notes") or []
+    st.markdown("### 投资金句库")
+    filter_cols = st.columns([1.7, 1.2, .8])
+    search = filter_cols[0].text_input("搜索", placeholder="搜索正文、备注、来源或股票", key="investment-note-search")
+    tags = filter_cols[1].multiselect("标签筛选", NOTE_TAG_OPTIONS, key="investment-note-tag-filter")
+    pinned_only = filter_cols[2].checkbox("只看置顶", value=False, key="investment-note-pinned-filter")
+    filtered = filter_investment_notes(notes, search=search, tags=tags, pinned_only=pinned_only)
+    if not filtered:
+        st.info("还没有符合筛选条件的笔记。可以先在上方写下今天看到的一句话。")
+        return
+    columns = st.columns(3)
+    for index, item in enumerate(filtered):
+        with columns[index % 3]:
+            _render_investment_note_card(item, path=path)
+
+
+def _render_investment_note_card(item: dict[str, Any], *, path: Path = DEFAULT_NOTES_PATH) -> None:
+    note_id = str(item.get("id") or "")
+    edit_key = f"investment-note-editing-{note_id}"
+    with st.container(border=True):
+        pin_mark = "置顶 · " if bool(item.get("pinned")) else ""
+        st.caption(f"{pin_mark}{_display_date(item.get('created_at'))}")
+        st.markdown(f"**{str(item.get('text') or '').strip()}**")
+        if str(item.get("note") or "").strip():
+            st.caption(str(item.get("note") or "").strip())
+        meta_parts = []
+        tags = [str(tag) for tag in item.get("tags") or [] if str(tag).strip()]
         if tags:
-            st.caption(" / ".join(tags))
-        st.markdown("**操作铁律**")
-        st.caption("｜".join(IRON_RULE_TAGS))
-        st.markdown("**核心原则**")
-        rule_cols = st.columns(2)
-        for index, rule in enumerate(core_rules[:2], start=1):
-            with rule_cols[index - 1].container(border=True):
-                st.caption(f"{index:02d}")
-                st.markdown(f"**{str(rule.get('title') or '未命名原则')}**")
-                st.caption(str(rule.get("body") or ""))
+            meta_parts.append(" / ".join(tags))
+        if str(item.get("source") or "").strip():
+            meta_parts.append(f"来源：{item.get('source')}")
+        if str(item.get("related_symbol") or "").strip():
+            meta_parts.append(f"股票：{item.get('related_symbol')}")
+        if meta_parts:
+            st.caption("｜".join(meta_parts))
 
-        action_cols = st.columns([1, 1, 5])
-        if action_cols[0].button("换一个锚点", key="investment-principle-next"):
-            if len(payload.get("quotes") or []) <= 1:
-                st.info("当前只有一条认知锚点，可以点击添加认知锚点。")
-            else:
-                next_principle_quote(quote_id, path=path)
-                st.rerun()
-        action_cols[1].caption("先读原则，再记录错误。")
+        action_cols = st.columns(3)
+        if action_cols[0].button("取消置顶" if bool(item.get("pinned")) else "置顶", key=f"investment-note-pin-{note_id}"):
+            toggle_investment_note_pin(note_id, path=path)
+            st.rerun()
+        if action_cols[1].button("编辑", key=f"investment-note-edit-{note_id}"):
+            st.session_state[edit_key] = not bool(st.session_state.get(edit_key))
+        if action_cols[2].button("删除", key=f"investment-note-delete-{note_id}"):
+            delete_investment_note(note_id, path=path)
+            st.success("笔记已删除。")
+            st.rerun()
 
-    with st.expander("管理认知锚点", expanded=False):
-        st.caption("管理区默认收起，只维护认知锚点和核心原则，不写入交易日志，也不拦截交易。")
-        manage_cols = st.columns(3)
-        with manage_cols[0].popover("添加认知锚点"):
-            with st.form("investment-principle-add-form", clear_on_submit=True):
-                text = st.text_area("认知锚点正文", height=88, placeholder="写下你想在复盘前先看到的一句话")
-                note = st.text_area("解释，可选", height=68, placeholder="这句话提醒自己什么？")
-                tag_text = st.text_input("标签，可选", placeholder="例如：泡沫、趋势、仓位、卖出、FOMO")
-                submitted = st.form_submit_button("保存认知锚点", type="primary")
+        if st.session_state.get(edit_key):
+            with st.form(f"investment-note-edit-form-{note_id}"):
+                text = st.text_area("正文", value=str(item.get("text") or ""), height=88)
+                note = st.text_area("解释 / 备注", value=str(item.get("note") or ""), height=68)
+                edit_cols = st.columns([1.3, 1, 1])
+                tags = edit_cols[0].multiselect("标签", NOTE_TAG_OPTIONS, default=[tag for tag in tags if tag in NOTE_TAG_OPTIONS])
+                source = edit_cols[1].text_input("来源", value=str(item.get("source") or ""))
+                related_symbol = edit_cols[2].text_input("关联股票", value=str(item.get("related_symbol") or ""))
+                submitted = st.form_submit_button("保存修改", type="primary")
             if submitted:
-                try:
-                    add_principle_quote(text, note=note, tags=tag_text, path=path)
-                    st.success("认知锚点已添加。")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-
-        with manage_cols[1].popover("编辑当前认知锚点"):
-            with st.form("investment-principle-edit-form"):
-                edit_text = st.text_area("认知锚点正文", value=quote_text, height=88)
-                edit_note = st.text_area("解释", value=quote_note, height=68)
-                edit_tags = st.text_input("标签", value="、".join(tags))
-                save_clicked = st.form_submit_button("保存修改", type="primary")
-            if save_clicked and quote_id:
-                try:
-                    update_principle_quote(quote_id, text=edit_text, note=edit_note, tags=edit_tags, path=path)
-                    st.success("认知锚点已更新。")
-                    st.rerun()
-                except (KeyError, ValueError) as exc:
-                    st.error(str(exc))
-
-        with manage_cols[2].popover("删除认知锚点"):
-            confirm = True
-            if quote_id == DEFAULT_QUOTE_ID and len(payload.get("quotes") or []) <= 1:
-                st.warning("这是当前唯一默认原则，删除后顶部将没有默认认知锚点。确认删除？")
-                confirm = st.checkbox("确认删除当前唯一默认认知锚点", key="investment-principle-confirm-delete-current")
-            if st.button("删除当前认知锚点", disabled=not confirm, key="investment-principle-delete-current"):
-                result = delete_principle_quote(quote_id, confirm_default_delete=confirm, path=path)
-                if result.get("requires_confirmation"):
-                    st.warning(str(result.get("message") or "需要确认删除。"))
-                else:
-                    st.success(str(result.get("message") or "已处理。"))
-                    st.rerun()
-        _render_all_investment_principles(payload, current_quote_id=quote_id, path=path)
+                update_investment_note(
+                    note_id,
+                    text=text,
+                    note=note,
+                    tags=tags,
+                    source=source,
+                    related_symbol=related_symbol,
+                    pinned=bool(item.get("pinned")),
+                    path=path,
+                )
+                st.session_state[edit_key] = False
+                st.success("笔记已更新。")
+                st.rerun()
 
 
-def _render_all_investment_principles(payload: dict[str, Any], *, current_quote_id: str, path: Path) -> None:
-    with st.expander("原则库", expanded=False):
-        st.markdown("**认知锚点**")
-        for quote in payload.get("quotes") or []:
-            quote_id = str(quote.get("id") or "")
-            with st.container(border=True):
-                cols = st.columns([5, 1])
-                current = " · 当前展示" if quote_id == current_quote_id else ""
-                cols[0].markdown(f"**{str(quote.get('text') or '未填写')}**{current}")
-                note = str(quote.get("note") or "").strip()
-                if note:
-                    cols[0].caption(note)
-                tags = " / ".join(str(tag) for tag in quote.get("tags") or [])
-                if tags:
-                    cols[0].caption(f"标签：{tags}")
-                if cols[1].button("设为今日", key=f"investment-principle-select-{quote_id}"):
-                    select_principle_quote(quote_id, path=path)
-                    st.rerun()
+def _render_trade_mistake_notebook(store: DisciplineReviewStore, rows: list[dict[str, Any]]) -> None:
+    st.markdown("### 交易错题本")
+    st.caption("记录真实犯错的交易，不做拦截，只做复盘。")
+    if st.button("记录一笔错误", type="primary", key="show-trade-mistake-form"):
+        st.session_state["trade_mistake_form_open"] = not bool(st.session_state.get("trade_mistake_form_open"))
+    if st.session_state.get("trade_mistake_form_open"):
+        _render_trade_mistake_form(store)
+    active_rows = [row for row in rows if str(row.get("review_status") or "") != MISTAKE_REVIEW_STATUSES[-1]]
+    archived_rows = [row for row in rows if str(row.get("review_status") or "") == MISTAKE_REVIEW_STATUSES[-1]]
+    if not active_rows:
+        st.info("还没有未归档的交易错误记录。")
+    else:
+        columns = st.columns(2)
+        for index, row in enumerate(active_rows):
+            with columns[index % 2]:
+                _render_trade_mistake_card(store, row)
+    if archived_rows:
+        with st.expander(f"已归档错误 {len(archived_rows)} 条", expanded=False):
+            columns = st.columns(2)
+            for index, row in enumerate(archived_rows):
+                with columns[index % 2]:
+                    _render_trade_mistake_card(store, row, archived=True)
 
-        st.markdown("**核心原则**")
-        for index, item in enumerate(payload.get("core_rules") or [], start=1):
-            with st.container(border=True):
-                st.caption(f"{index:02d}")
-                st.markdown(f"**{str(item.get('title') or '未命名原则')}**")
-                st.caption(str(item.get("body") or ""))
+
+TRADE_MISTAKE_TYPES = ["追涨", "杀跌", "仓位过重", "没按计划", "FOMO", "止损错误", "卖飞", "其他"]
+
+
+def _render_trade_mistake_form(store: DisciplineReviewStore, *, row: dict[str, Any] | None = None) -> None:
+    row = row or {}
+    row_id = int(row.get("id") or 0)
+    form_key = f"trade-mistake-form-{row_id or 'new'}"
+    with st.form(form_key, clear_on_submit=not row_id):
+        cols = st.columns([.9, .9, 1.1, .9])
+        review_date = cols[0].date_input("日期", value=_date_value(row.get("review_date"), date.today()))
+        symbol = cols[1].text_input("股票", value=str(row.get("symbol") or "").strip(), placeholder="例如 NVDA")
+        existing_tags = [str(tag) for tag in row.get("mistake_tags") or []]
+        default_type = existing_tags[0] if existing_tags and existing_tags[0] in TRADE_MISTAKE_TYPES else "追涨"
+        mistake_type = cols[2].selectbox("错误类型", TRADE_MISTAKE_TYPES, index=TRADE_MISTAKE_TYPES.index(default_type))
+        loss_amount = cols[3].number_input("亏损金额，可选", min_value=0.0, value=float(row.get("loss_amount") or 0), step=10.0, format="%.2f")
+        reflection = st.text_area("错误一句话", value=str(row.get("reflection") or ""), height=72, placeholder="这次真正错在哪里？")
+        next_defense = st.text_area("正确做法一句话", value=str(row.get("next_defense") or ""), height=72, placeholder="下次遇到类似情况应该怎么做？")
+        submitted = st.form_submit_button("保存错误记录", type="primary")
+    if not submitted:
+        return
+    if not str(reflection or "").strip():
+        st.error("请写下错误一句话。")
+        return
+    if not str(next_defense or "").strip():
+        st.error("请写下正确做法一句话。")
+        return
+    values = {
+        "review_date": review_date,
+        "symbol": symbol,
+        "scene_or_symbol": symbol or mistake_type,
+        "loss_amount_usd": loss_amount,
+        "mistake_tags": [mistake_type],
+        "reflection": reflection,
+        "next_defense": next_defense,
+        "review_status": row.get("review_status") or MISTAKE_REVIEW_STATUSES[0],
+    }
+    if row_id:
+        store.update_mistake_review(row_id, values)
+        st.success("错误记录已更新。")
+    else:
+        store.save_mistake_review(values)
+        st.success("错误记录已保存。")
+        st.session_state["trade_mistake_form_open"] = False
+    st.rerun()
+
+
+def _render_trade_mistake_card(store: DisciplineReviewStore, row: dict[str, Any], *, archived: bool = False) -> None:
+    row_id = int(row.get("id") or 0)
+    edit_key = f"trade-mistake-editing-{row_id}"
+    with st.container(border=True):
+        tags = " / ".join(str(tag) for tag in row.get("mistake_tags") or []) or "其他"
+        symbol = str(row.get("symbol") or row.get("scene_or_symbol") or "").strip() or "未填写股票"
+        st.caption(f"{row.get('review_date') or ''}｜{tags}{'｜已归档' if archived else ''}")
+        st.markdown(f"**{symbol}**")
+        st.markdown(f"错误：{str(row.get('reflection') or '未填写')}")
+        st.caption(f"正确做法：{str(row.get('next_defense') or '未填写')}")
+        if _loss_amount_value(row) > 0:
+            st.caption(f"亏损金额：{_loss_amount_text(row)}")
+        cols = st.columns(3)
+        if cols[0].button("编辑", key=f"trade-mistake-edit-{row_id}"):
+            st.session_state[edit_key] = not bool(st.session_state.get(edit_key))
+        if cols[1].button("删除", key=f"trade-mistake-delete-{row_id}"):
+            store.delete_mistake_review(row_id)
+            st.success("错误记录已删除。")
+            st.rerun()
+        if not archived and cols[2].button("归档", key=f"trade-mistake-archive-{row_id}"):
+            store.archive_mistake_review(row_id)
+            st.success("错误记录已归档。")
+            st.rerun()
+        if st.session_state.get(edit_key):
+            _render_trade_mistake_form(store, row=row)
 
 
 def _render_mistake_overview_strip(rows: list[dict[str, Any]]) -> None:

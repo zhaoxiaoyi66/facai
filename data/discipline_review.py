@@ -112,6 +112,10 @@ MISTAKE_TAG_OPTIONS = [
 
 MISTAKE_REVIEW_STATUSES = ["已记录", "已形成规则", "已设置防线"]
 
+for _simple_mistake_tag in ["追涨", "杀跌", "仓位过重", "没按计划", "FOMO", "止损错误", "卖飞", "其他"]:
+    if _simple_mistake_tag not in MISTAKE_TAG_OPTIONS:
+        MISTAKE_TAG_OPTIONS.append(_simple_mistake_tag)
+
 PERIODIC_RETURN_TYPES = ["周复盘", "月复盘", "自定义"]
 
 EQUITY_SOURCE_PORTFOLIO = "当前持仓汇总"
@@ -615,6 +619,94 @@ class DisciplineReviewStore:
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description] if cursor.description else []
         return [_mistake_row_to_dict(columns, row) for row in rows]
+
+    def update_mistake_review(self, review_id: int, values: dict[str, Any]) -> dict[str, Any]:
+        existing = self.get_mistake_review(review_id)
+        if not existing:
+            raise KeyError(f"mistake review not found: {review_id}")
+        review_date = _parse_date(values.get("review_date", existing.get("review_date"))) or date.today()
+        market_type = _clean_choice(
+            values.get("market_type", existing.get("market_type")),
+            MISTAKE_MARKET_TYPES,
+            str(existing.get("market_type") or "其他"),
+        )
+        review_status = _clean_choice(
+            values.get("review_status", existing.get("review_status")),
+            MISTAKE_REVIEW_STATUSES,
+            str(existing.get("review_status") or MISTAKE_REVIEW_STATUSES[0]),
+        )
+        raw_tags = values.get("mistake_tags", existing.get("mistake_tags") or [])
+        tags = _dedupe([tag for tag in raw_tags if tag in MISTAKE_TAG_OPTIONS])
+        scene_or_symbol = _clean_text(values.get("scene_or_symbol", existing.get("scene_or_symbol") or existing.get("symbol")))
+        symbol = str(values.get("symbol", existing.get("symbol") or scene_or_symbol) or "").strip().upper()
+        loss_impact_text = _clean_text(values.get("impact_summary", values.get("loss_impact_text", existing.get("loss_impact_text"))))
+        loss_amount = _optional_nonnegative_number(values.get("loss_amount_usd", values.get("loss_amount", existing.get("loss_amount"))))
+        fields = {
+            "review_date": review_date.isoformat(),
+            "market_type": market_type,
+            "symbol": symbol,
+            "scene_or_symbol": scene_or_symbol,
+            "loss_amount": loss_amount,
+            "loss_impact_text": loss_impact_text,
+            "trigger_event": _clean_text(values.get("trigger_event", existing.get("trigger_event"))),
+            "action_taken": _clean_text(values.get("action_taken", existing.get("action_taken"))),
+            "result_text": _clean_text(values.get("result_text", existing.get("result_text"))),
+            "mistake_tags_json": json.dumps(tags, ensure_ascii=False),
+            "reflection": _clean_text(values.get("reflection", existing.get("reflection"))),
+            "improvement_rule": _clean_text(values.get("improvement_rule", existing.get("improvement_rule"))),
+            "next_defense": _clean_text(values.get("next_defense", existing.get("next_defense"))),
+            "review_status": review_status,
+            "updated_at": _now(),
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE mistake_reviews
+                SET review_date = ?,
+                    market_type = ?,
+                    symbol = ?,
+                    scene_or_symbol = ?,
+                    loss_amount = ?,
+                    loss_impact_text = ?,
+                    trigger_event = ?,
+                    action_taken = ?,
+                    result_text = ?,
+                    mistake_tags_json = ?,
+                    reflection = ?,
+                    improvement_rule = ?,
+                    next_defense = ?,
+                    review_status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    fields["review_date"],
+                    fields["market_type"],
+                    fields["symbol"],
+                    fields["scene_or_symbol"],
+                    fields["loss_amount"],
+                    fields["loss_impact_text"],
+                    fields["trigger_event"],
+                    fields["action_taken"],
+                    fields["result_text"],
+                    fields["mistake_tags_json"],
+                    fields["reflection"],
+                    fields["improvement_rule"],
+                    fields["next_defense"],
+                    fields["review_status"],
+                    fields["updated_at"],
+                    int(review_id),
+                ),
+            )
+        updated = self.get_mistake_review(review_id)
+        return updated or {"id": int(review_id), **fields, "mistake_tags": tags}
+
+    def archive_mistake_review(self, review_id: int) -> dict[str, Any]:
+        return self.update_mistake_review(int(review_id), {"review_status": MISTAKE_REVIEW_STATUSES[-1]})
+
+    def delete_mistake_review(self, review_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM mistake_reviews WHERE id = ?", (int(review_id),))
 
     def save_account_equity_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
         snapshot_time = _parse_datetime(values.get("snapshot_time")) or datetime.now()

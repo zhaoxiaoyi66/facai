@@ -7,6 +7,9 @@ from typing import Any
 
 
 DEFAULT_PRINCIPLES_PATH = Path("config/investment_principles.local.json")
+DEFAULT_NOTES_PATH = DEFAULT_PRINCIPLES_PATH
+
+NOTE_TAG_OPTIONS = ["心态", "仓位", "买点", "卖点", "基本面", "AI主线", "风险", "其他"]
 
 DEFAULT_QUOTE_ID = "bubble_trend_misread"
 DEFAULT_QUOTE_TEXT = "泡沫由两部分组成：真实的趋势 + 对该趋势的误解。"
@@ -72,7 +75,7 @@ def add_principle_quote(
         }
     )
     if not quote["text"]:
-        raise ValueError("认知锚点正文不能为空")
+        raise ValueError("笔记正文不能为空")
     existing_ids = {str(item.get("id") or "") for item in payload["quotes"]}
     if quote["id"] in existing_ids:
         quote["id"] = f"{quote['id']}_{len(existing_ids) + 1}"
@@ -93,7 +96,7 @@ def update_principle_quote(
     payload = load_investment_principles(path)
     normalized_id = str(quote_id or "").strip()
     if not str(text or "").strip():
-        raise ValueError("认知锚点正文不能为空")
+        raise ValueError("笔记正文不能为空")
     for index, quote in enumerate(payload["quotes"]):
         if str(quote.get("id") or "") == normalized_id:
             updated = {
@@ -106,7 +109,7 @@ def update_principle_quote(
             payload["quotes"][index] = _normalize_quote(updated)
             _write_payload(path, payload)
             return payload["quotes"][index]
-    raise KeyError(f"未找到认知锚点：{normalized_id}")
+    raise KeyError(f"未找到投资笔记：{normalized_id}")
 
 
 def delete_principle_quote(
@@ -122,7 +125,7 @@ def delete_principle_quote(
         return {
             "deleted": False,
             "requires_confirmation": True,
-            "message": "这是当前唯一默认原则，删除后顶部将没有默认认知锚点。确认删除？",
+            "message": "这是当前唯一默认原则，删除后顶部将没有默认笔记。确认删除？",
         }
     kept = [quote for quote in quotes if str(quote.get("id") or "") != normalized_id]
     deleted = len(kept) != len(quotes)
@@ -132,7 +135,7 @@ def delete_principle_quote(
     if payload.get("selected_quote_id") == normalized_id:
         payload["selected_quote_id"] = str(kept[0].get("id") or "") if kept else ""
     _write_payload(path, payload)
-    return {"deleted": deleted, "requires_confirmation": False, "message": "已删除认知锚点。" if deleted else "未找到认知锚点。"}
+    return {"deleted": deleted, "requires_confirmation": False, "message": "已删除投资笔记。" if deleted else "未找到投资笔记。"}
 
 
 def select_principle_quote(quote_id: str, *, path: Path = DEFAULT_PRINCIPLES_PATH) -> dict[str, Any] | None:
@@ -183,6 +186,134 @@ def principle_reminder_for_mistake_tags(tags: list[str] | tuple[str, ...] | set[
     if any(token in text for token in ("忘记持仓", "没有管理", "不管理")):
         return "对应纪律：现金也是仓位，持仓也是责任。买了就要进入管理，不管理就不该买。"
     return "对应纪律：泡沫由真实趋势和对趋势的误解组成。先判断事实，再处理情绪。"
+
+
+def load_investment_notes(path: Path = DEFAULT_NOTES_PATH) -> dict[str, Any]:
+    payload = _read_payload(path)
+    normalized = _normalize_notes_payload(payload)
+    if normalized != payload:
+        _write_payload(path, normalized)
+    return normalized
+
+
+def add_investment_note(
+    text: str,
+    *,
+    note: str = "",
+    tags: list[str] | str | None = None,
+    source: str = "",
+    related_symbol: str = "",
+    path: Path = DEFAULT_NOTES_PATH,
+) -> dict[str, Any]:
+    payload = load_investment_notes(path)
+    normalized = _normalize_note(
+        {
+            "id": _quote_id(text),
+            "text": text,
+            "note": note,
+            "tags": _split_tags(tags),
+            "source": source,
+            "related_symbol": related_symbol,
+            "pinned": False,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+    )
+    if not normalized["text"]:
+        raise ValueError("笔记正文不能为空")
+    existing_ids = {str(item.get("id") or "") for item in payload["notes"]}
+    if normalized["id"] in existing_ids:
+        normalized["id"] = f"{normalized['id']}_{len(existing_ids) + 1}"
+    payload["notes"].append(normalized)
+    _write_payload(path, payload)
+    return normalized
+
+
+def update_investment_note(
+    note_id: str,
+    *,
+    text: str,
+    note: str = "",
+    tags: list[str] | str | None = None,
+    source: str = "",
+    related_symbol: str = "",
+    pinned: bool | None = None,
+    path: Path = DEFAULT_NOTES_PATH,
+) -> dict[str, Any]:
+    payload = load_investment_notes(path)
+    normalized_id = str(note_id or "").strip()
+    if not str(text or "").strip():
+        raise ValueError("笔记正文不能为空")
+    for index, item in enumerate(payload["notes"]):
+        if str(item.get("id") or "") == normalized_id:
+            updated = {
+                **item,
+                "text": str(text or "").strip(),
+                "note": str(note or "").strip(),
+                "tags": _split_tags(tags),
+                "source": str(source or "").strip(),
+                "related_symbol": str(related_symbol or "").strip().upper(),
+                "updated_at": _now_iso(),
+            }
+            if pinned is not None:
+                updated["pinned"] = bool(pinned)
+            payload["notes"][index] = _normalize_note(updated)
+            _write_payload(path, payload)
+            return payload["notes"][index]
+    raise KeyError(f"未找到投资笔记：{normalized_id}")
+
+
+def delete_investment_note(note_id: str, *, path: Path = DEFAULT_NOTES_PATH) -> bool:
+    payload = load_investment_notes(path)
+    normalized_id = str(note_id or "").strip()
+    kept = [item for item in payload["notes"] if str(item.get("id") or "") != normalized_id]
+    deleted = len(kept) != len(payload["notes"])
+    payload["notes"] = kept
+    _write_payload(path, payload)
+    return deleted
+
+
+def toggle_investment_note_pin(note_id: str, *, path: Path = DEFAULT_NOTES_PATH) -> dict[str, Any]:
+    payload = load_investment_notes(path)
+    normalized_id = str(note_id or "").strip()
+    for index, item in enumerate(payload["notes"]):
+        if str(item.get("id") or "") == normalized_id:
+            updated = {**item, "pinned": not bool(item.get("pinned")), "updated_at": _now_iso()}
+            payload["notes"][index] = _normalize_note(updated)
+            _write_payload(path, payload)
+            return payload["notes"][index]
+    raise KeyError(f"未找到投资笔记：{normalized_id}")
+
+
+def sorted_investment_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [_normalize_note(item) for item in notes if isinstance(item, dict) and str(item.get("text") or "").strip()],
+        key=lambda item: (bool(item.get("pinned")), str(item.get("created_at") or "")),
+        reverse=True,
+    )
+
+
+def filter_investment_notes(
+    notes: list[dict[str, Any]],
+    *,
+    search: str = "",
+    tags: list[str] | tuple[str, ...] | set[str] | None = None,
+    pinned_only: bool = False,
+) -> list[dict[str, Any]]:
+    query = str(search or "").strip().lower()
+    wanted_tags = {str(tag) for tag in tags or [] if str(tag).strip()}
+    result: list[dict[str, Any]] = []
+    for item in sorted_investment_notes(notes):
+        if pinned_only and not bool(item.get("pinned")):
+            continue
+        item_tags = {str(tag) for tag in item.get("tags") or []}
+        if wanted_tags and not wanted_tags.intersection(item_tags):
+            continue
+        haystack = " ".join(str(item.get(field) or "") for field in ("text", "note", "source", "related_symbol")).lower()
+        if query and query not in haystack:
+            continue
+        result.append(item)
+    return result
 
 
 def default_principles_payload() -> dict[str, Any]:
@@ -237,6 +368,49 @@ def _normalize_quote(item: dict[str, Any]) -> dict[str, Any]:
         "created_at": str(item.get("created_at") or now),
         "updated_at": str(item.get("updated_at") or item.get("created_at") or now),
     }
+
+
+def _normalize_notes_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_payload(payload)
+    raw_notes = normalized.get("notes")
+    if isinstance(raw_notes, list):
+        source_items = raw_notes
+    else:
+        source_items = normalized.get("quotes") or []
+    notes = [
+        _normalize_note(item)
+        for item in source_items
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    normalized["notes"] = sorted_investment_notes(_dedupe_notes(notes))
+    return normalized
+
+
+def _normalize_note(item: dict[str, Any]) -> dict[str, Any]:
+    text = str(item.get("text") or "").strip()
+    now = _now_iso()
+    return {
+        "id": str(item.get("id") or _quote_id(text)).strip(),
+        "text": text,
+        "note": str(item.get("note") or "").strip(),
+        "tags": _split_tags(item.get("tags")),
+        "source": str(item.get("source") or "").strip(),
+        "related_symbol": str(item.get("related_symbol") or item.get("symbol") or "").strip().upper(),
+        "pinned": bool(item.get("pinned")),
+        "created_at": str(item.get("created_at") or now),
+        "updated_at": str(item.get("updated_at") or item.get("created_at") or now),
+    }
+
+
+def _dedupe_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in notes:
+        note_id = str(item.get("id") or "").strip()
+        if note_id and note_id not in seen:
+            result.append(item)
+            seen.add(note_id)
+    return result
 
 
 def _normalize_core_rule(item: dict[str, Any]) -> dict[str, str]:
