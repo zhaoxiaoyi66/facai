@@ -5878,6 +5878,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
     assert list(frame.columns) == [
         "股票",
         "美股盘后锚点",
+        "常规收盘",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
@@ -5887,6 +5888,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "更新时间",
     ]
     assert frame.loc[0, "Binance 最新"] == "$104.58"
+    assert frame.loc[0, "常规收盘"] == "$102.15"
     assert frame.loc[0, "相对盘后"] == "+1.65%"
     assert frame.loc[0, "相对收盘"] == "+2.38%"
     assert "bid" not in frame.columns
@@ -6390,6 +6392,49 @@ def test_single_realtime_anchor_refresh_forces_only_anchor(monkeypatch) -> None:
     assert captured["afterhours_force_refresh"] is True
     assert refreshed["afterhours_reference_price"] == 274.0
     assert "盘后锚点已重抓" in message
+
+
+def test_single_realtime_close_refresh_updates_only_regular_close(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_refresh_close(tickers, **kwargs):
+        captured["close_tickers"] = list(tickers)
+        return {"attempted": 1, "updated": 1, "missing": 0, "failed": 0}
+
+    def fake_build_rows(tickers, **kwargs):
+        captured["tickers"] = list(tickers)
+        captured["force_refresh"] = kwargs.get("force_refresh")
+        captured["afterhours_force_refresh"] = kwargs.get("afterhours_force_refresh")
+        return [
+            {
+                "ticker": "NBIS",
+                "binance_symbol": "NBISUSDT",
+                "binance_last_price": 281.94,
+                "afterhours_reference_price": 260.0,
+                "regular_close_price": 274.25,
+                "regular_close_date": "2026-06-18",
+                "spread_vs_afterhours_pct": 8.44,
+                "spread_vs_regular_close_pct": 2.80,
+            }
+        ]
+
+    monkeypatch.setattr(weekend_spread, "_refresh_regular_close_history", fake_refresh_close)
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_rows", fake_build_rows)
+
+    _, refreshed, message = weekend_spread._refresh_single_realtime_row(
+        "NBIS",
+        [{"ticker": "NBIS", "binance_symbol": "NBISUSDT", "binance_last_price": 281.94}],
+        mapping={"NBIS": {"binance_symbol": "NBISUSDT", "market_type": "usdm_futures"}},
+        action="close",
+        persist=False,
+    )
+
+    assert captured["close_tickers"] == ["NBIS"]
+    assert captured["tickers"] == ["NBIS"]
+    assert captured["force_refresh"] is False
+    assert captured["afterhours_force_refresh"] is False
+    assert refreshed["regular_close_price"] == 274.25
+    assert "常规收盘价已更新" in message
 
 
 def test_row_membership_text_is_localized_for_realtime_details() -> None:

@@ -430,8 +430,9 @@ def _render_realtime_tab(
 
 
 def _render_realtime_action_bar() -> dict[str, bool]:
-    col_refresh, col_anchor = st.columns(2)
+    col_refresh, col_close, col_anchor = st.columns(3)
     refresh = col_refresh.button("刷新实时价格", width="stretch", key="weekend_spread_refresh")
+    close_refresh = col_close.button("更新收盘价", width="stretch", key="weekend_spread_close_refresh")
     anchor_refresh = col_anchor.button("更新美股盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
     use_cache = False
     force_anchor = False
@@ -457,11 +458,12 @@ def _render_realtime_action_bar() -> dict[str, bool]:
             width="stretch",
             key="weekend_spread_export_binance_equity_scan",
         )
-        st.caption("Binance 价格和最后交易日盘后锚点已解耦：刷新实时观察不会强制重建盘后锚点。")
+        st.caption("Binance 价格、常规收盘价和最后交易日盘后锚点已解耦：刷新实时观察不会强制重建其他数据。")
     return {
         "scan": False,
         "use_cache": bool(use_cache),
         "refresh": bool(refresh),
+        "close_refresh": bool(close_refresh),
         "anchor_refresh": bool(anchor_refresh),
         "force_anchor_refresh": bool(force_anchor),
         "clear_scan_cache": bool(clear_scan_cache),
@@ -890,6 +892,7 @@ def _build_weekend_spread_rows_with_feedback(
 ) -> tuple[list[dict], dict]:
     options = refresh_options or {}
     force_refresh = bool(options.get("refresh"))
+    close_refresh = bool(options.get("close_refresh"))
     anchor_refresh = bool(options.get("anchor_refresh") or options.get("force_anchor_refresh"))
     force_anchor_refresh = anchor_refresh
     skipped_ignored = int(options.get("ignored_count") or 0)
@@ -900,6 +903,43 @@ def _build_weekend_spread_rows_with_feedback(
         expected_afterhours_date=expected_anchor_date,
     )
     cached_rows = list(cached.get("rows") or [])
+    close_refresh_summary: dict[str, object] | None = None
+    if close_refresh:
+        close_total = len([ticker for ticker in watchlist if str(ticker or "").strip()])
+        close_progress = st.progress(0.0)
+        close_status_slot = st.empty()
+        close_status_slot.caption(f"正在更新最后交易日常规收盘价：{close_total} 只股票")
+
+        def update_close_progress(completed: int, total_count: int, ticker: str) -> None:
+            ratio = completed / max(total_count, 1)
+            close_progress.progress(min(max(ratio, 0.0), 1.0))
+            close_status_slot.caption(f"正在更新收盘价：{ticker}（{completed}/{total_count}）")
+
+        close_refresh_summary = _refresh_regular_close_history(watchlist, progress_callback=update_close_progress)
+        close_progress.progress(1.0)
+        close_status_slot.info(_regular_close_refresh_summary_text(close_refresh_summary))
+    if close_refresh and not force_refresh and not anchor_refresh:
+        rows = build_weekend_spread_rows(
+            watchlist,
+            mapping=mapping,
+            provider=_CachedRowBinanceProvider(cached_rows),
+            afterhours_provider=_CachedRowAfterhoursProvider(cached_rows),
+            force_refresh=False,
+            afterhours_force_refresh=False,
+            expected_close_date=expected_anchor_date,
+        )
+        generated_at = datetime.now(timezone.utc).isoformat()
+        if rows:
+            write_weekend_spread_snapshot(rows, mapping=mapping, tickers=watchlist, generated_at=datetime.now(timezone.utc))
+        live_rows = annotate_cached_rows(rows, cache_state="API_LIVE", generated_at=generated_at)
+        return live_rows, {
+            "cache_state": "API_LIVE",
+            "cache_message": "regular closes updated",
+            "rows": live_rows,
+            "generated_at": generated_at,
+            "last_failure": {},
+            "regular_close_refresh": close_refresh_summary or {},
+        }
     if not force_refresh and not anchor_refresh and cached.get("cache_state") == "ANCHOR_DATE_STALE":
         rows = build_weekend_spread_rows(
             watchlist,
@@ -1249,6 +1289,99 @@ def _fresh_afterhours_provider() -> CachedAfterhoursProvider:
 
 def _single_symbol_binance_provider() -> CachedBinancePriceProvider:
     return CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=0)
+
+
+def _refresh_regular_close_history(
+    tickers: list[str],
+    *,
+    expected_close_date: str | None = None,
+    progress_callback=None,
+) -> dict[str, object]:
+    normalized = [str(ticker or "").strip().upper() for ticker in tickers or [] if str(ticker or "").strip()]
+    target_date = (expected_close_date or _expected_realtime_anchor_date() or "").strip()[:10]
+    summary: dict[str, object] = {
+        "attempted": len(normalized),
+        "updated": 0,
+        "missing": 0,
+        "failed": 0,
+        "target_date": target_date,
+        "details": [],
+    }
+    if not normalized:
+        return summary
+    try:
+        from data.providers import get_market_data_provider
+
+        provider = get_market_data_provider()
+    except Exception as exc:
+        summary["failed"] = len(normalized)
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        return summary
+
+    for index, ticker in enumerate(normalized, start=1):
+        detail = {"ticker": ticker, "status": "", "close": None, "date": "", "reason": ""}
+        try:
+            history = provider.get_price_history(ticker, force_refresh=True)
+            close, close_date = _latest_regular_close_from_history(history, target_date)
+            if close is None:
+                # Some providers return an empty frame on API miss but may still
+                # have a stale-but-usable cache row. Re-read the local cache once
+                # so the UI can explain what remains missing.
+                close, close_date = _latest_regular_close_from_history(CacheReadModel().get_price_history(ticker), target_date)
+            if close is None:
+                detail["status"] = "missing"
+                detail["reason"] = "未读取到最后交易日收盘价"
+                summary["missing"] = int(summary["missing"]) + 1
+            else:
+                detail["status"] = "updated"
+                detail["close"] = close
+                detail["date"] = close_date
+                summary["updated"] = int(summary["updated"]) + 1
+        except Exception as exc:
+            detail["status"] = "failed"
+            detail["reason"] = f"{type(exc).__name__}: {exc}"
+            summary["failed"] = int(summary["failed"]) + 1
+        details = summary.get("details")
+        if isinstance(details, list):
+            details.append(detail)
+        if progress_callback is not None:
+            progress_callback(index, len(normalized), ticker)
+    return summary
+
+
+def _latest_regular_close_from_history(history: pd.DataFrame | None, target_date: str = "") -> tuple[float | None, str]:
+    if history is None or history.empty or "date" not in history.columns or "close" not in history.columns:
+        return None, ""
+    frame = history.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    frame = frame.dropna(subset=["date", "close"]).sort_values("date")
+    if frame.empty:
+        return None, ""
+    if target_date:
+        frame = frame[frame["date"].dt.date.astype(str) <= target_date]
+    if frame.empty:
+        return None, ""
+    row = frame.iloc[-1]
+    close = _number(row.get("close"))
+    close_date = str(row.get("date").date().isoformat() if hasattr(row.get("date"), "date") else row.get("date") or "")
+    return close, close_date[:10]
+
+
+def _regular_close_refresh_summary_text(summary: dict[str, object] | None) -> str:
+    summary = summary or {}
+    attempted = int(summary.get("attempted") or 0)
+    updated = int(summary.get("updated") or 0)
+    missing = int(summary.get("missing") or 0)
+    failed = int(summary.get("failed") or 0)
+    target = str(summary.get("target_date") or "").strip()
+    prefix = f"收盘价刷新：尝试 {attempted} 个，成功 {updated} 个，缺失 {missing} 个，失败 {failed} 个"
+    if target:
+        prefix += f"；目标交易日 {target}"
+    error = str(summary.get("error") or "").strip()
+    if error:
+        prefix += f"；{error}"
+    return prefix + "。"
 
 
 class _CachedRowAfterhoursProvider:
@@ -5182,6 +5315,7 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
         "美股盘后锚点",
+        "常规收盘",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
@@ -5196,6 +5330,7 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display = pd.DataFrame()
     display["股票"] = frame.get("ticker")
     display["美股盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
+    display["常规收盘"] = frame.apply(lambda row: _money_text(row.get("regular_close_price") or row.get("friday_close")), axis=1)
     display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
     display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
     display["相对收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
@@ -5352,11 +5487,14 @@ def _refresh_single_realtime_row(
     old_row = next((row for row in current_rows if str(row.get("ticker") or "").strip().upper() == normalized_ticker), {})
     if not normalized_ticker:
         return current_rows, {}, "缺少股票代码，无法刷新。"
-    if normalized_action not in {"price", "anchor", "both"}:
+    if normalized_action not in {"price", "close", "anchor", "both", "all"}:
         return current_rows, old_row, "未知刷新动作。"
 
-    refresh_price = normalized_action in {"price", "both"}
-    refresh_anchor = normalized_action in {"anchor", "both"}
+    refresh_price = normalized_action in {"price", "both", "all"}
+    refresh_close = normalized_action in {"close", "all"}
+    refresh_anchor = normalized_action in {"anchor", "both", "all"}
+    if refresh_close:
+        _refresh_regular_close_history([normalized_ticker], expected_close_date=_expected_realtime_anchor_date())
     provider = _single_symbol_binance_provider() if refresh_price else _CachedRowBinanceProvider(current_rows)
     afterhours_provider = _fresh_afterhours_provider() if refresh_anchor else _CachedRowAfterhoursProvider(current_rows)
     refreshed_rows = build_weekend_spread_rows(
@@ -5422,6 +5560,13 @@ def _single_refresh_message(ticker: str, row: dict, action: str) -> str:
         if price is None:
             return f"{ticker} Binance 价格刷新失败：{_localized_realtime_error(row.get('error') or 'price_not_loaded')}"
         return f"{ticker} Binance 价格已刷新：{_money_text(price)}。"
+    if action == "close":
+        regular = _number(row.get("regular_close_price") or row.get("friday_close"))
+        if regular is None:
+            return f"{ticker} 常规收盘价仍缺失。"
+        date_text = str(row.get("regular_close_date") or row.get("friday_close_date") or "").strip()[:10]
+        suffix = f"（{date_text}）" if date_text else ""
+        return f"{ticker} 常规收盘价已更新：{_money_text(regular)}{suffix}。"
     if action == "anchor":
         if anchor is None:
             reason = _afterhours_reason_text(row.get("afterhours_missing_reason")) or "未读取到盘后锚点"
@@ -5429,6 +5574,8 @@ def _single_refresh_message(ticker: str, row: dict, action: str) -> str:
         return f"{ticker} 盘后锚点已重抓：{_money_text(anchor)}。"
     parts: list[str] = []
     parts.append(f"Binance {_money_text(price)}" if price is not None else "Binance 价格缺失")
+    regular = _number(row.get("regular_close_price") or row.get("friday_close"))
+    parts.append(f"收盘价 {_money_text(regular)}" if regular is not None else "收盘价缺失")
     parts.append(f"盘后锚点 {_money_text(anchor)}" if anchor is not None else "盘后锚点缺失")
     return f"{ticker} 已完成单标的刷新：" + "，".join(parts) + "。"
 
@@ -5458,6 +5605,7 @@ def _render_row_details(
     with col_price:
         st.markdown("**价格**")
         st.caption(f"盘后锚点：{_money_text(row.get('afterhours_reference_price'))}")
+        st.caption(f"常规收盘：{_money_text(row.get('regular_close_price') or row.get('friday_close'))}")
         st.caption(f"Binance 最新：{_money_text(row.get('binance_last_price'))}")
         st.caption(f"相对盘后：{_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}")
         st.caption(f"相对收盘：{_percent_text(row.get('spread_vs_regular_close_pct'))}")
@@ -5500,11 +5648,12 @@ def _render_single_row_refresh_actions(
     if not ticker:
         return
     st.caption("单标的刷新：用于排查单个价格或锚点异常，不会刷新全市场。")
-    col_price, col_anchor, col_both = st.columns(3)
+    col_price, col_close, col_anchor, col_all = st.columns(4)
     actions = [
         (col_price, "只刷新 Binance 价格", "price"),
+        (col_close, "只更新收盘价", "close"),
         (col_anchor, "只重抓盘后锚点", "anchor"),
-        (col_both, "价格和锚点都刷新", "both"),
+        (col_all, "三项都刷新", "all"),
     ]
     for column, label, action in actions:
         if column.button(label, key=f"weekend_spread_single_{action}_{ticker}", width="stretch"):
