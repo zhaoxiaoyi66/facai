@@ -257,15 +257,11 @@ def build_overnight_provider_self_check(
         reason = "已读取夜盘开盘窗口内首个有效价，但不是 20:00 首分钟"
     elif not first_minute_hit and raw_first_bar_time:
         reason = "未命中夜盘首分钟，不可作为 P2"
-    elif not first_minute_hit and any(marker in str(reason) for marker in ("鏈", "缂", "鎶", "閰", "锛", "€")):
-        reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     elif not first_minute_hit and not reason:
         reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     if not opening_window_hit:
         if raw_first_bar_time:
             reason = "返回了后续 bar，但未命中夜盘首分钟"
-        elif any(marker in str(reason) for marker in ("閺", "缂", "閹", "闁", "閿", "鈧", "锛", "€")):
-            reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
         elif not reason:
             reason = "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
     request_meta = dict(getattr(selected_provider, "last_request_meta", {}) or {})

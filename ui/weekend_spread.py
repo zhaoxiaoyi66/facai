@@ -5355,8 +5355,6 @@ def _clean_self_check_text(value: object, fallback: str) -> str:
     text = str(value or "").strip()
     if not text or text.lower() in {"none", "anchor_source"}:
         return fallback
-    if any(marker in text for marker in ("鏈", "缂", "鎶", "閰", "锛", "€")):
-        return fallback
     return text
 
 
