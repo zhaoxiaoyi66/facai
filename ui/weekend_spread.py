@@ -87,6 +87,7 @@ from data.weekend_spread_log import (
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
     DEFAULT_MONITOR_SNAPSHOT_PATH,
+    build_monitor_priority,
     latest_monitor_run,
     monitor_history_rows,
     read_monitor_state,
@@ -1778,7 +1779,7 @@ def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -
 
 def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
     st.subheader("周末价差监控")
-    st.caption("每 3 分钟扫描 Binance 美股映射价格，观察当前价差以及价差扩大/收敛趋势。本页仅用于休市期间观察，不构成交易建议。")
+    st.caption("每 3 分钟刷新 Binance 美股映射价格，把价差大小、扩大/收敛趋势、日常波动参照和休市新闻合成观察优先级。本页仅用于休市期间观察，不构成交易建议。")
     candidate_rows = _monitor_candidate_rows(rows, ignored)
     source_rows = [row for row in candidate_rows if _row_has_afterhours_anchor(row)]
     latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
@@ -1826,13 +1827,19 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
     if latest_run is None:
         st.info("尚未启动周末监控。可以点击“立即扫描一次”查看当前价差，或启动 3 分钟监控。")
         return
-    monitor_rows = list(latest_run.get("rows") or [])
+    monitor_rows = _monitor_rows_with_priority(list(latest_run.get("rows") or []))
     if not monitor_rows:
         st.info("最近一次扫描没有有效样本。请确认映射未被忽略，并且已有盘后锚点。")
         return
+    _render_monitor_conclusion(monitor_rows)
     _render_monitor_top_cards(monitor_rows)
-    selected_scope = _render_monitor_filters(monitor_rows)
-    filtered_rows = _filter_monitor_rows(monitor_rows, selected_scope)
+    selected_range, selected_status = _render_monitor_filters(monitor_rows)
+    filtered_rows = _filter_monitor_rows(monitor_rows, selected_range, selected_status)
+    st.markdown("### 监控队列")
+    if not filtered_rows and selected_status == "值得关注":
+        st.info("当前无值得关注项，可切换到“全部”查看普通波动。")
+    elif not filtered_rows:
+        st.info("当前筛选没有结果。")
     st.dataframe(_monitor_frame(filtered_rows), width="stretch", hide_index=True)
     _render_monitor_trend_detail(filtered_rows)
     _render_monitor_history()
@@ -1880,25 +1887,25 @@ def _render_monitor_status_strip(latest_run: dict | None, source_rows: list[dict
 
 def _render_monitor_top_cards(rows: list[dict]) -> None:
     top = build_monitor_top_for_ui(rows)
+    high = int(top.get("high_priority_count") or 0)
+    medium = int(top.get("medium_priority_count") or 0)
+    focus = _top_monitor_priority_row(rows, include_medium=True)
+    expand = _fastest_monitor_trend_row(rows, expanding=True)
+    converge = _fastest_monitor_trend_row(rows, expanding=False)
+    latest_scan = _latest_monitor_scan_time(rows)
     cards = [
-        ("当前最大溢价", top.get("max_premium"), "premium_pct", _monitor_top_trend_caption(top.get("max_premium"))),
-        ("当前最大折价", top.get("max_discount"), "premium_pct", _monitor_top_trend_caption(top.get("max_discount"))),
-        ("近3分钟价差扩大最快", top.get("fastest_premium_expand"), "premium_change_since_last_pct_point", "价差扩大"),
-        ("近3分钟价差收敛最快", top.get("fastest_premium_converge"), "premium_change_since_last_pct_point", "价差收敛"),
-        ("近3分钟 Binance 涨幅最大", top.get("max_binance_change"), "binance_change_since_last_pct", "Binance 价格变化"),
-        ("方向反转", None, "direction_reversal_count", "价差方向从溢价/折价切换"),
+        ("值得关注", [f"{high + medium} 个", f"高 {high} / 中 {medium}"]),
+        ("当前最值得看", _monitor_focus_card_lines(focus)),
+        ("扩大最快", _monitor_delta_card_lines(expand)),
+        ("收敛最快", _monitor_delta_card_lines(converge)),
+        ("监控状态", [_monitor_process_state().get("status_label") or "最近一次扫描", f"最近扫描：{_hkt_clock_text(latest_scan)}", f"下一次：{_next_monitor_scan_text(latest_scan)}"]),
     ]
-    cols = st.columns(len(cards))
-    for col, (title, row, metric_key, caption) in zip(cols, cards):
-        if metric_key == "direction_reversal_count":
-            count = int(top.get("direction_reversal_count") or 0)
-            col.metric(title, f"{count} 个")
-            col.caption(caption)
-            continue
-        ticker = str((row or {}).get("ticker") or "暂无")
-        metric = _monitor_metric_text((row or {}).get(metric_key))
-        col.metric(title, f"{ticker} {metric}")
-        col.caption(caption if row else "等待下一轮比较")
+    st.markdown(
+        '<section class="weekend-realtime-summary">'
+        + "".join(_monitor_summary_card(title, lines) for title, lines in cards)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
 
 
 def _monitor_top_trend_caption(row: dict | None) -> str:
@@ -1917,74 +1924,210 @@ def build_monitor_top_for_ui(rows: list[dict]) -> dict[str, dict | None]:
     return build_monitor_top(rows)
 
 
-def _render_monitor_filters(rows: list[dict]) -> str:
-    options = [
-        "全部可监控",
-        "溢价扩大",
-        "溢价收敛",
-        "折价扩大",
-        "折价收敛",
-        "方向反转",
-        "极端价差",
-        "等待下一轮比较",
-        "我的观察池",
-        "我的持仓",
-        "核心仓",
-    ]
-    labels = [f"{option} {_monitor_filter_count(rows, option)}" for option in options]
-    selected = st.radio(
-        "监控筛选",
-        labels,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="weekend_spread_monitor_filter_v2",
-        index=options.index(_default_monitor_filter(rows)),
-    )
-    return options[labels.index(selected)]
+def _monitor_rows_with_priority(rows: list[dict]) -> list[dict]:
+    return [build_monitor_priority(dict(row or {})) for row in rows or []]
 
 
-def _default_monitor_filter(rows: list[dict]) -> str:
-    if _monitor_filter_count(rows, "溢价扩大") or _monitor_filter_count(rows, "折价扩大"):
-        return "溢价扩大" if _monitor_filter_count(rows, "溢价扩大") else "折价扩大"
-    return "全部可监控"
-
-
-def _monitor_filter_count(rows: list[dict], scope: str) -> int:
-    return len(_filter_monitor_rows(rows, scope))
-
-
-def _filter_monitor_rows(rows: list[dict], scope: str) -> list[dict]:
-    if scope == "溢价扩大":
-        selected = [row for row in rows if row.get("premium_trend_label") == "溢价扩大"]
-    elif scope == "溢价收敛":
-        selected = [row for row in rows if row.get("premium_trend_label") == "溢价收敛"]
-    elif scope == "折价扩大":
-        selected = [row for row in rows if row.get("premium_trend_label") == "折价扩大"]
-    elif scope == "折价收敛":
-        selected = [row for row in rows if row.get("premium_trend_label") == "折价收敛"]
-    elif scope == "方向反转":
-        selected = [row for row in rows if row.get("premium_trend_label") == "方向反转"]
-    elif scope == "极端价差":
-        selected = [row for row in rows if abs(_number(row.get("premium_pct")) or 0) >= 5]
-    elif scope == "等待下一轮比较":
-        selected = [row for row in rows if row.get("premium_trend_label") == "等待下一轮比较"]
-    elif scope == "我的观察池":
-        selected = [row for row in rows if row.get("is_watchlist")]
-    elif scope == "我的持仓":
-        selected = [row for row in rows if row.get("is_position")]
-    elif scope == "核心仓":
-        selected = [row for row in rows if row.get("is_core")]
+def _render_monitor_conclusion(rows: list[dict]) -> None:
+    if not rows:
+        return
+    if all(str(row.get("premium_trend_label") or "") == "等待下一轮比较" for row in rows):
+        text = "监控刚启动，趋势判断需要至少 2 轮扫描。当前只展示实时价差。"
     else:
-        selected = list(rows)
-    return sorted(
-        selected,
-        key=lambda row: (
-            _monitor_trend_rank(row),
-            -abs(_number(row.get("premium_change_since_last_pct_point")) or 0),
-            -abs(_number(row.get("premium_pct")) or 0),
-            str(row.get("ticker") or ""),
-        ),
+        top = _top_monitor_priority_row(rows, include_medium=True)
+        if top is not None and _monitor_priority_short(top) in {"高", "中"}:
+            news = _monitor_news_label(top)
+            news_tail = "且暂无重大休市新闻解释" if news in {"无新闻解释", "无重大新闻", "未检查"} else f"休市新闻为{news}"
+            text = (
+                f"当前最值得关注：{top.get('ticker')}，价差 {_percent_text(top.get('premium_pct'))}，"
+                f"{_daily_volatility_reference_text(top)}，{top.get('premium_trend_label') or '等待下一轮'}，{news_tail}。"
+            )
+        else:
+            positive_row = _max_positive_premium_row(rows)
+            focus_row = positive_row or _max_abs_monitor_row(rows)
+            if focus_row is None:
+                text = "当前没有高质量异常价差。"
+            else:
+                focus_label = "最大溢价" if positive_row is not None else "最大偏离"
+                text = (
+                    f"当前没有高质量异常价差。{focus_label}为 {focus_row.get('ticker')} "
+                    f"{_percent_text(focus_row.get('premium_pct'))}，但仅{_daily_volatility_reference_text(focus_row)}，"
+                    "暂不属于极端错价。"
+                )
+    st.markdown(
+        f"""
+        <section class="weekend-core-observation">
+          <strong>监控结论</strong><br>
+          {escape(text)}
+        </section>
+        """,
+        unsafe_allow_html=True,
     )
+
+
+def _monitor_summary_card(title: str, lines: list[object]) -> str:
+    clean_lines = [escape(str(line or "暂无")) for line in lines if str(line or "").strip()]
+    if not clean_lines:
+        clean_lines = ["暂无"]
+    main = clean_lines[0]
+    rest = "".join(f'<div class="weekend-realtime-kpi-label">{line}</div>' for line in clean_lines[1:])
+    return (
+        '<div class="weekend-realtime-kpi">'
+        f'<div class="weekend-realtime-kpi-label">{escape(title)}</div>'
+        f'<div class="weekend-realtime-kpi-value">{main}</div>'
+        f"{rest}</div>"
+    )
+
+
+def _monitor_focus_card_lines(row: dict | None) -> list[str]:
+    if not row:
+        return ["暂无"]
+    return [
+        str(row.get("ticker") or "暂无"),
+        _percent_text(row.get("premium_pct")),
+        _daily_volatility_reference_text(row),
+        str(row.get("premium_trend_label") or "等待下一轮"),
+    ]
+
+
+def _monitor_delta_card_lines(row: dict | None) -> list[str]:
+    if not row:
+        return ["暂无", "等待下一轮"]
+    return [
+        str(row.get("ticker") or "暂无"),
+        _monitor_recent_change_text(row),
+        _daily_volatility_reference_text(row),
+    ]
+
+
+def _top_monitor_priority_row(rows: list[dict], *, include_medium: bool = False) -> dict | None:
+    allowed = {"高"}
+    if include_medium:
+        allowed.add("中")
+    candidates = [row for row in rows if _monitor_priority_short(row) in allowed]
+    if not candidates:
+        return None
+    return sorted(candidates, key=_monitor_queue_sort_key)[0]
+
+
+def _max_positive_premium_row(rows: list[dict]) -> dict | None:
+    positive = [row for row in rows if (_number(row.get("premium_pct")) or 0) > 0]
+    return max(positive, key=lambda row: _number(row.get("premium_pct")) or float("-inf"), default=None)
+
+
+def _max_abs_monitor_row(rows: list[dict]) -> dict | None:
+    return max(rows, key=lambda row: abs(_number(row.get("premium_pct")) or 0), default=None)
+
+
+def _fastest_monitor_trend_row(rows: list[dict], *, expanding: bool) -> dict | None:
+    if expanding:
+        candidates = [row for row in rows if _is_monitor_expanding(row)]
+    else:
+        candidates = [row for row in rows if _is_monitor_converging(row)]
+    return max(candidates, key=lambda row: abs(_number(row.get("premium_change_since_last_pct_point")) or 0), default=None)
+
+
+def _latest_monitor_scan_time(rows: list[dict]) -> str:
+    times = [str(row.get("scan_time") or "") for row in rows if str(row.get("scan_time") or "").strip()]
+    return max(times) if times else ""
+
+
+def _monitor_priority_short(row: dict) -> str:
+    label = str(row.get("monitor_priority_label") or "").strip()
+    return {
+        "高优先级": "高",
+        "中优先级": "中",
+        "低优先级": "低",
+        "仅观察": "仅观察",
+        "数据不足": "数据不足",
+    }.get(label, label or "数据不足")
+
+
+def _monitor_news_label(row: dict) -> str:
+    text = str(row.get("news_label") or row.get("closed_market_news_label") or "").strip()
+    return text if text and text.lower() not in {"none", "nan"} else "未检查"
+
+
+def _is_monitor_expanding(row: dict) -> bool:
+    return str(row.get("premium_trend_label") or "") in {"溢价扩大", "折价扩大"}
+
+
+def _is_monitor_converging(row: dict) -> bool:
+    return str(row.get("premium_trend_label") or "") in {"溢价收敛", "折价收敛"}
+
+
+def _monitor_queue_sort_key(row: dict) -> tuple[int, float, float, int, str]:
+    rank = {"高": 0, "中": 1, "低": 2, "仅观察": 3, "数据不足": 4}
+    membership = 0 if (row.get("is_position") or row.get("is_watchlist") or row.get("is_core")) else 1
+    return (
+        rank.get(_monitor_priority_short(row), 5),
+        -float(_number(row.get("monitor_priority_score")) or 0),
+        -abs(_number(row.get("premium_pct")) or 0),
+        membership,
+        str(row.get("ticker") or ""),
+    )
+
+
+def _monitor_recent_change_text(row: dict) -> str:
+    value = _number(row.get("premium_change_since_last_pct_point"))
+    if value is None:
+        return "等待下一轮"
+    label = _monitor_delta_label([row])
+    return f"{label} {value:+.2f} pct"
+
+
+def _render_monitor_filters(rows: list[dict]) -> tuple[str, str]:
+    range_options = ["全部", "我的观察池", "我的持仓", "核心仓"]
+    status_options = ["值得关注", "正在扩大", "正在收敛", "方向反转", "数据不足", "全部"]
+    cols = st.columns([1, 1])
+    selected_range = cols[0].selectbox(
+        "范围",
+        range_options,
+        index=0,
+        key="weekend_spread_monitor_range_filter",
+    )
+    default_status = "值得关注"
+    selected_status = cols[1].selectbox(
+        "状态",
+        [f"{option} {_monitor_filter_count(rows, selected_range, option)}" for option in status_options],
+        index=status_options.index(default_status),
+        key="weekend_spread_monitor_status_filter",
+    )
+    return selected_range, status_options[[f"{option} {_monitor_filter_count(rows, selected_range, option)}" for option in status_options].index(selected_status)]
+
+
+def _monitor_filter_count(rows: list[dict], range_scope: str, status_scope: str) -> int:
+    return len(_filter_monitor_rows(rows, range_scope, status_scope))
+
+
+def _filter_monitor_rows(rows: list[dict], range_scope: str = "全部", status_scope: str = "值得关注") -> list[dict]:
+    selected = list(rows)
+    if range_scope == "我的观察池":
+        selected = [row for row in selected if row.get("is_watchlist")]
+    elif range_scope == "我的持仓":
+        selected = [row for row in selected if row.get("is_position")]
+    elif range_scope == "核心仓":
+        selected = [row for row in selected if row.get("is_core")]
+
+    if status_scope == "值得关注":
+        selected = [
+            row
+            for row in selected
+            if _monitor_priority_short(row) in {"高", "中"}
+            or _is_monitor_expanding(row)
+            or row.get("is_position")
+            or row.get("is_watchlist")
+            or row.get("is_core")
+        ]
+    elif status_scope == "正在扩大":
+        selected = [row for row in selected if _is_monitor_expanding(row)]
+    elif status_scope == "正在收敛":
+        selected = [row for row in selected if _is_monitor_converging(row)]
+    elif status_scope == "方向反转":
+        selected = [row for row in selected if row.get("premium_trend_label") == "方向反转"]
+    elif status_scope == "数据不足":
+        selected = [row for row in selected if _monitor_priority_short(row) == "数据不足"]
+    return sorted(selected, key=_monitor_queue_sort_key)
 
 
 def _monitor_trend_rank(row: dict) -> int:
@@ -2008,16 +2151,14 @@ def _monitor_trend_rank(row: dict) -> int:
 def _monitor_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
-        "Binance 合约",
-        "盘后锚点",
-        "Binance 当前价",
-        "当前价差%",
-        "较上一轮价差变化",
-        "价差趋势",
-        "近9分钟趋势",
-        "近15分钟趋势",
-        "Binance 较上一轮涨跌",
-        "状态",
+        "当前价差",
+        "日常波动参照",
+        "趋势",
+        "近 3 分钟",
+        "近 9 分钟",
+        "休市新闻",
+        "优先级",
+        "标签",
         "更新时间",
     ]
     if not rows:
@@ -2027,17 +2168,15 @@ def _monitor_frame(rows: list[dict]) -> pd.DataFrame:
         records.append(
             {
                 "股票": row.get("ticker"),
-                "Binance 合约": row.get("binance_symbol"),
-                "盘后锚点": _money_text(row.get("anchor_price")),
-                "Binance 当前价": _money_text(row.get("binance_price")),
-                "当前价差%": _percent_text(row.get("premium_pct")),
-                "较上一轮价差变化": _monitor_pct_point_text(row.get("premium_change_since_last_pct_point")),
-                "价差趋势": row.get("premium_trend_label") or "等待下一轮比较",
-                "近9分钟趋势": _monitor_window_trend_text(row, "9m"),
-                "近15分钟趋势": _monitor_window_trend_text(row, "15m"),
-                "Binance 较上一轮涨跌": _monitor_metric_text(row.get("binance_change_since_last_pct")),
-                "状态": row.get("status") or "正常",
-                "更新时间": _short_hkt_time(row.get("scan_time")),
+                "当前价差": _percent_text(row.get("premium_pct")),
+                "日常波动参照": _daily_volatility_reference_text(row),
+                "趋势": row.get("premium_trend_label") or "等待下一轮比较",
+                "近 3 分钟": _monitor_recent_change_text(row),
+                "近 9 分钟": _monitor_window_trend_text(row, "9m"),
+                "休市新闻": _monitor_news_label(row),
+                "优先级": _monitor_priority_short(row),
+                "标签": _realtime_row_tags_text(row),
+                "更新时间": _hkt_clock_text(row.get("scan_time")),
             }
         )
     return pd.DataFrame(records, columns=columns)
@@ -2063,7 +2202,7 @@ def _render_monitor_trend_detail(rows: list[dict]) -> None:
     options = [str(row.get("ticker") or "").strip().upper() for row in rows if str(row.get("ticker") or "").strip()]
     if not options:
         return
-    selected = st.selectbox("查看价差趋势解释", options, key="weekend_spread_monitor_detail_symbol")
+    selected = st.selectbox("为什么排这里", options, key="weekend_spread_monitor_detail_symbol")
     row = next((item for item in rows if str(item.get("ticker") or "").strip().upper() == selected), None)
     if row:
         st.caption(_monitor_trend_explanation(row))
@@ -2074,16 +2213,20 @@ def _monitor_trend_explanation(row: dict) -> str:
     premium = _percent_text(row.get("premium_pct"))
     trend = str(row.get("premium_trend_label") or "等待下一轮比较")
     delta = _monitor_pct_point_text(row.get("premium_change_since_last_pct_point"))
-    binance_change = _monitor_metric_text(row.get("binance_change_since_last_pct"))
+    priority = _monitor_priority_short(row)
+    daily = _daily_volatility_reference_text(row)
+    news = _monitor_news_label(row)
     trend_9m = _monitor_window_trend_text(row, "9m")
-    trend_15m = _monitor_window_trend_text(row, "15m")
     if trend == "等待下一轮比较":
-        return f"{ticker} 当前价差为 {premium}。这是首次监控样本，下一轮扫描后会显示价差扩大或收敛。"
+        return f"{ticker} 当前价差 {premium}，{daily}。首次扫描完成，趋势判断将在下一轮扫描后显示。观察优先级：{priority}。"
     if trend == "方向反转":
-        return f"{ticker} 当前价差为 {premium}，较上一轮变化 {delta}，溢价/折价方向发生反转；请复核盘后锚点和 Binance 映射价格。"
+        return f"{ticker} 当前价差 {premium}，{daily}，较上一轮变化 {delta}，溢价/折价方向发生反转。休市新闻：{news}。观察优先级：{priority}。"
+    reason = str(row.get("monitor_priority_reason") or "").strip()
+    if not reason:
+        reason = "虽然绝对价差看起来较大，但需要结合日常波动、趋势和休市新闻判断。"
     return (
-        f"{ticker} 当前价差为 {premium}，较上一轮价差变化 {delta}，趋势为{trend}；"
-        f"Binance 价格较上一轮 {binance_change}。{trend_9m}；{trend_15m}。"
+        f"{ticker} 当前价差 {premium}，{daily}。较上一轮价差变化 {delta}，趋势为{trend}；"
+        f"{trend_9m}。休市新闻：{news}。观察优先级：{priority}。{reason}"
     )
 
 

@@ -25,6 +25,12 @@ TREND_DISCOUNT_EXPAND = "折价扩大"
 TREND_DISCOUNT_CONVERGE = "折价收敛"
 TREND_REVERSAL = "方向反转"
 
+PRIORITY_HIGH = "高优先级"
+PRIORITY_MEDIUM = "中优先级"
+PRIORITY_LOW = "低优先级"
+PRIORITY_WATCH = "仅观察"
+PRIORITY_INSUFFICIENT = "数据不足"
+
 
 def run_monitor_scan(
     source_rows: Iterable[dict[str, Any]],
@@ -210,6 +216,7 @@ def build_monitor_top(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any] | 
     with_prev = [row for row in rows if _number(row.get("binance_change_since_last_pct")) is not None]
     with_delta = [row for row in rows if _number(row.get("premium_change_since_last_pct_point")) is not None]
     premium_rows = [row for row in with_delta if (_number(row.get("premium_pct")) or 0) > 0]
+    prioritized = sorted((build_monitor_priority(row) for row in rows), key=_priority_sort_key)
     return {
         "max_premium": max(priced, key=lambda row: _number(row.get("premium_pct")) or float("-inf"), default=None),
         "max_discount": min(priced, key=lambda row: _number(row.get("premium_pct")) or float("inf"), default=None),
@@ -221,6 +228,9 @@ def build_monitor_top(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any] | 
             default=None,
         ),
         "direction_reversal_count": sum(1 for row in rows if row.get("premium_trend_label") == TREND_REVERSAL),
+        "top_priority": prioritized[0] if prioritized else None,
+        "high_priority_count": sum(1 for row in prioritized if row.get("monitor_priority_label") == PRIORITY_HIGH),
+        "medium_priority_count": sum(1 for row in prioritized if row.get("monitor_priority_label") == PRIORITY_MEDIUM),
     }
 
 
@@ -269,7 +279,7 @@ def _build_monitor_row(
     trend_label = classify_premium_trend(previous_premium, premium_pct, premium_change)
     premium_change_9m, trend_9m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=3)
     premium_change_15m, trend_15m = _multi_round_trend(previous_history, premium_pct, lookback_rounds=5)
-    return {
+    result = {
         "run_id": "",
         "scan_time": scan_time.isoformat(),
         "ticker": row["ticker"],
@@ -317,6 +327,164 @@ def _build_monitor_row(
         "is_position": bool(row.get("is_position")),
         "is_core": bool(row.get("is_core") or row.get("is_core_position")),
     }
+    result.update(build_monitor_priority(result))
+    return result
+
+
+def build_monitor_priority(row: dict[str, Any]) -> dict[str, Any]:
+    """Score a monitor row for observation priority only; this is not a trade signal."""
+
+    premium = _number(row.get("premium_pct"))
+    anchor = _number(row.get("anchor_price"))
+    binance = _number(row.get("binance_price"))
+    ratio = _priority_volatility_ratio(row)
+    if premium is None or anchor is None or anchor <= 0 or binance is None or binance <= 0:
+        return {
+            **dict(row),
+            "monitor_priority_score": 0,
+            "monitor_priority_label": PRIORITY_INSUFFICIENT,
+            "monitor_priority_reason": "缺少盘后锚点或 Binance 价格，无法进入高优先级观察。",
+        }
+
+    score = 0
+    reason_parts: list[str] = []
+    if ratio is None:
+        data_score = 3
+        reason_parts.append("缺少日常波动参照")
+    else:
+        data_score = 10
+        if ratio < 0.5:
+            score += 5
+        elif ratio < 1.0:
+            score += 15
+        elif ratio < 1.5:
+            score += 25
+        elif ratio < 2.0:
+            score += 30
+        else:
+            score += 35
+        reason_parts.append(f"约 {ratio:.1f} 天日常波动")
+
+    trend_score, trend_reason = _priority_trend_score(row)
+    score += trend_score
+    if trend_reason:
+        reason_parts.append(trend_reason)
+
+    news_score, news_reason = _priority_news_score(row)
+    score += news_score
+    if news_reason:
+        reason_parts.append(news_reason)
+
+    relevance_score, relevance_reason = _priority_relevance_score(row)
+    score += relevance_score
+    if relevance_reason:
+        reason_parts.append(relevance_reason)
+
+    score += data_score
+    if data_score == 10:
+        reason_parts.append("锚点、Binance 价格和波动数据可用")
+
+    score = max(0, min(100, int(round(score))))
+    label = _priority_label(score, ratio)
+    if label == PRIORITY_HIGH:
+        summary = "价差、趋势和解释缺口共同推高观察优先级。"
+    elif label == PRIORITY_MEDIUM:
+        summary = "价差或趋势值得观察，但还不是最高优先级。"
+    elif label == PRIORITY_LOW:
+        summary = "有一定价差或趋势，但相对日常波动并不突出。"
+    elif label == PRIORITY_WATCH:
+        summary = "当前仅作普通观察。"
+    else:
+        summary = "数据不足，暂时无法判断优先级。"
+    return {
+        **dict(row),
+        "monitor_priority_score": score,
+        "monitor_priority_label": label,
+        "monitor_priority_reason": f"{summary}原因：{'；'.join(reason_parts)}。" if reason_parts else summary,
+    }
+
+
+def _priority_volatility_ratio(row: dict[str, Any]) -> float | None:
+    ratio = _number(row.get("spread_atr_ratio"))
+    if ratio is not None:
+        return abs(ratio)
+    premium = _number(row.get("premium_pct"))
+    avg_range = _number(row.get("avg_range_20d_pct"))
+    if premium is None or avg_range is None or avg_range <= 0:
+        return None
+    return abs(premium) / avg_range
+
+
+def _priority_trend_score(row: dict[str, Any]) -> tuple[int, str]:
+    trend = str(row.get("premium_trend_label") or "")
+    trend_9m = str(row.get("trend_9m_label") or "")
+    trend_15m = str(row.get("trend_15m_label") or "")
+    expanding = {TREND_PREMIUM_EXPAND, TREND_DISCOUNT_EXPAND}
+    converging = {TREND_PREMIUM_CONVERGE, TREND_DISCOUNT_CONVERGE}
+    if trend in expanding and trend_9m in expanding:
+        return 25, "近 9 分钟持续扩大"
+    if trend in expanding and trend_15m in expanding:
+        return 25, "近 15 分钟持续扩大"
+    if trend in expanding:
+        return 15, f"{trend}"
+    if trend == TREND_REVERSAL:
+        return 10, "价差方向反转"
+    if trend in converging:
+        return -10, f"{trend}"
+    if trend == TREND_STABLE:
+        return 3, "价差稳定"
+    return 0, "趋势等待下一轮" if trend == TREND_WAITING else ""
+
+
+def _priority_news_score(row: dict[str, Any]) -> tuple[int, str]:
+    label = str(row.get("news_label") or row.get("closed_market_news_label") or "").strip()
+    if not label or label == "未检查":
+        return 0, "休市新闻未检查"
+    if "观点文章" in label:
+        return 8, "主要为观点文章"
+    if "无新闻解释" in label or "无重大新闻" in label or label == "无新闻":
+        return 15, "暂无重大休市新闻解释"
+    if "新闻方向一致" in label or "重大新闻" in label or "有新闻解释" in label:
+        return 0, "存在新闻解释，错价优先级降低"
+    if "数据不足" in label:
+        return 0, "休市新闻数据不足"
+    return 5, f"休市新闻：{label}"
+
+
+def _priority_relevance_score(row: dict[str, Any]) -> tuple[int, str]:
+    if row.get("is_position") or row.get("is_core"):
+        return 15, "持仓或核心仓"
+    if row.get("is_watchlist"):
+        return 10, "观察池标的"
+    return 0, ""
+
+
+def _priority_label(score: int, ratio: float | None) -> str:
+    if ratio is None and score < 25:
+        return PRIORITY_INSUFFICIENT
+    if score >= 75:
+        return PRIORITY_HIGH
+    if score >= 50:
+        return PRIORITY_MEDIUM
+    if score >= 25:
+        return PRIORITY_LOW
+    return PRIORITY_WATCH
+
+
+def _priority_sort_key(row: dict[str, Any]) -> tuple[int, float, float, str]:
+    label_rank = {
+        PRIORITY_HIGH: 0,
+        PRIORITY_MEDIUM: 1,
+        PRIORITY_LOW: 2,
+        PRIORITY_WATCH: 3,
+        PRIORITY_INSUFFICIENT: 4,
+    }
+    return (
+        label_rank.get(str(row.get("monitor_priority_label") or ""), 5),
+        -float(_number(row.get("monitor_priority_score")) or 0),
+        -abs(_number(row.get("premium_pct")) or 0),
+        str(row.get("ticker") or ""),
+    )
 
 
 def _monitor_status(

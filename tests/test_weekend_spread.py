@@ -117,6 +117,7 @@ from data.weekend_spread_log import (
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
     append_monitor_run,
+    build_monitor_priority,
     build_monitor_top,
     classify_premium_trend,
     latest_monitor_run,
@@ -6973,8 +6974,8 @@ def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
     assert row["premium_trend_label"] == "等待下一轮比较"
     assert row["trend_9m_label"] == "等待更多样本"
     frame = weekend_spread._monitor_frame(run["rows"])
-    assert frame.loc[0, "Binance 较上一轮涨跌"] == "等待下一轮比较"
-    assert frame.loc[0, "价差趋势"] == "等待下一轮比较"
+    assert frame.loc[0, "近 3 分钟"] == "等待下一轮"
+    assert frame.loc[0, "趋势"] == "等待下一轮比较"
     assert latest_monitor_run(path)["run_id"] == run["run_id"]
 
 
@@ -7046,8 +7047,90 @@ def test_weekend_monitor_non_15m_interval_uses_previous_round_label(tmp_path) ->
 
     frame = weekend_spread._monitor_frame(run["rows"])
     assert weekend_spread._monitor_delta_label(run["rows"]) == "较上一轮"
-    assert "Binance 较上一轮涨跌" in frame.columns
+    assert "近 3 分钟" in frame.columns
+    assert frame.loc[0, "近 3 分钟"].startswith("较上一轮")
     assert "近15分钟 Binance 涨跌%" not in frame.columns
+
+
+def test_weekend_monitor_priority_low_for_small_volatility_expansion() -> None:
+    row = build_monitor_priority(
+        {
+            "ticker": "GLW",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_atr_ratio": 0.6,
+            "premium_trend_label": "溢价扩大",
+            "news_label": "未检查",
+        }
+    )
+
+    assert row["monitor_priority_label"] == "低优先级"
+    assert row["monitor_priority_score"] < 50
+
+
+def test_weekend_monitor_priority_high_for_sustained_no_news_expansion() -> None:
+    row = build_monitor_priority(
+        {
+            "ticker": "NVDA",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_atr_ratio": 1.8,
+            "premium_trend_label": "溢价扩大",
+            "trend_9m_label": "溢价扩大",
+            "news_label": "无新闻解释",
+        }
+    )
+
+    assert row["monitor_priority_label"] == "高优先级"
+    assert row["monitor_priority_score"] >= 75
+
+
+def test_weekend_monitor_priority_lowers_when_news_explains_gap() -> None:
+    no_news = build_monitor_priority(
+        {
+            "ticker": "NVDA",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_atr_ratio": 1.8,
+            "premium_trend_label": "溢价扩大",
+            "trend_9m_label": "溢价扩大",
+            "news_label": "无新闻解释",
+        }
+    )
+    explained = build_monitor_priority(
+        {
+            "ticker": "NVDA",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_atr_ratio": 1.8,
+            "premium_trend_label": "溢价扩大",
+            "trend_9m_label": "溢价扩大",
+            "news_label": "新闻方向一致",
+        }
+    )
+
+    assert explained["monitor_priority_score"] < no_news["monitor_priority_score"]
+    assert explained["monitor_priority_label"] != "高优先级"
+
+
+def test_weekend_monitor_priority_boosts_portfolio_and_watchlist() -> None:
+    plain = build_monitor_priority(
+        {
+            "ticker": "IBM",
+            "anchor_price": 100.0,
+            "binance_price": 102.0,
+            "premium_pct": 2.0,
+            "spread_atr_ratio": 1.1,
+            "premium_trend_label": "价差稳定",
+        }
+    )
+    position = build_monitor_priority({**plain, "is_position": True})
+
+    assert position["monitor_priority_score"] > plain["monitor_priority_score"]
 
 
 def test_weekend_monitor_classifies_premium_trends() -> None:
