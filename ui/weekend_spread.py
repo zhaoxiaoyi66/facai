@@ -1897,35 +1897,6 @@ class _CachedRowBinanceProvider:
         }
 
 
-def _render_primary_kpis(rows: list[dict], mapping_counts: dict[str, int]) -> None:
-    abnormal_count = sum(1 for row in rows if row.get("alert_level") == "ABNORMAL")
-    cols = st.columns(3)
-    cols[0].metric("可观察标的", mapping_counts.get("price_row_count", 0))
-    cols[1].metric("异常偏离", abnormal_count)
-    cols[2].metric("Binance 数据", _binance_status_text(rows, mapping_counts.get("universe_mapping_count", 0)))
-
-
-def _render_data_status_cards(rows: list[dict], mapping_counts: dict[str, int], local_mapping_path: Path, cache_status: dict | None = None) -> None:
-    afterhours_counts = _afterhours_counts(rows)
-    values = [
-        ("可识别映射", f"{mapping_counts.get('universe_mapping_count', 0)} / {mapping_counts.get('universe_total', 0)}"),
-        ("USDT-M 数据", _market_price_source_status(rows, "usdm_futures")),
-        ("盘后锚点", _afterhours_anchor_status_text(rows, afterhours_counts)),
-        ("最近更新", _latest_updated_at(rows) or "暂无"),
-        ("缓存时间", _cache_generated_text(cache_status)),
-        ("缓存状态", _cache_state_text(cache_status)),
-    ]
-    cols = st.columns(len(values))
-    for col, (label, value) in zip(cols, values):
-        col.caption(label)
-        col.write(value)
-    off_universe_note = _off_universe_mapping_note(mapping_counts)
-    if local_mapping_path.exists() or mapping_counts.get("local_mapping_count", 0) > 0:
-        st.caption(f"{off_universe_note}；local mapping：{local_mapping_path.as_posix()}")
-    else:
-        st.caption(f"{off_universe_note}；local mapping 尚未创建")
-
-
 def _render_realtime_status_strip(rows: list[dict], mapping_counts: dict[str, int], cache_status: dict | None = None) -> None:
     counts = _realtime_observation_counts(rows, ignored_count=int(mapping_counts.get("ignored_count") or 0))
     items = [
@@ -2014,18 +1985,6 @@ def _render_realtime_summary_cards(rows: list[dict], mapping_counts: dict[str, i
                     st.caption(line)
 
 
-def _summary_deviation_text(row: dict | None, *, include_news: bool = False) -> str:
-    if row is None:
-        return "暂无"
-    ticker = str(row.get("ticker") or "").strip().upper() or "未识别"
-    ratio = _daily_volatility_reference_text(row)
-    news = row.get("closed_market_news_label") or _realtime_closed_news_label(row)
-    suffix = f" · {ratio}" if ratio != "缺波动数据" else ""
-    if include_news and news:
-        suffix = f"{suffix} · {news}"
-    return f"{ticker} {_realtime_display_spread_text(row)}{suffix}"
-
-
 def _summary_deviation_lines(row: dict | None) -> list[str]:
     if row is None:
         return ["暂无", "等待可计算价差", ""]
@@ -2094,14 +2053,6 @@ def _realtime_most_abnormal_row(rows: list[dict]) -> dict | None:
     return sorted(candidates, key=_realtime_sort_key)[0]
 
 
-def _realtime_most_irrational_row(rows: list[dict]) -> dict | None:
-    return _realtime_most_abnormal_row(rows)
-
-
-def _unexplained_extreme_count(rows: list[dict]) -> int:
-    return sum(1 for row in rows or [] if _is_realtime_main_row(row) and _is_unexplained_anomalous_spread(row) and _spread_reason_label(row) == SPREAD_REASON_EXTREME)
-
-
 def _unexplained_anomaly_count(rows: list[dict]) -> int:
     return sum(1 for row in rows or [] if _is_realtime_main_row(row) and _is_unexplained_anomalous_spread(row))
 
@@ -2139,22 +2090,6 @@ def _realtime_core_observation_message(rows: list[dict], mapping_counts: dict[st
 def _render_realtime_observation_hint(rows: list[dict], mapping_counts: dict[str, int]) -> None:
     message = _realtime_core_observation_message(rows, mapping_counts)
     st.markdown(f'<div class="weekend-realtime-hint">{escape(message)}</div>', unsafe_allow_html=True)
-
-
-def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
-    message = _realtime_core_observation_message(rows, mapping_counts)
-    st.markdown(
-        f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_largest_deviation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
-    _render_core_observation(rows, mapping_counts)
-
-
-def _render_strongest_signal(rows: list[dict], mapping_counts: dict[str, int]) -> None:
-    _render_largest_deviation(rows, mapping_counts)
 
 
 def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
