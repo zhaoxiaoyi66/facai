@@ -461,7 +461,16 @@ def _zone_text(lower: float | None, upper: float | None) -> str:
 
 def format_zone_status(zone_status: Any) -> str:
     text = str(zone_status or "").strip()
-    return PRICE_POSITIONS.get(text, text or "N/A")
+    if text in PRICE_POSITIONS:
+        return PRICE_POSITIONS[text]
+    if _looks_like_internal_code(text):
+        return "无法判断"
+    return text or "N/A"
+
+
+def _looks_like_internal_code(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text)
 
 
 def format_entry_action_hint(

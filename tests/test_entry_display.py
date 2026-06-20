@@ -503,6 +503,8 @@ def test_zone_formatters_are_shared() -> None:
     assert format_zone_status("IN_BUY_ZONE") == "买区内"
     assert format_zone_status("BELOW_BUY_ZONE") == "低于估值参考，待复核"
     assert format_zone_status("ZONE_MISSING") == "无法判断"
+    assert format_zone_status("NEW_PRICE_POSITION") == "无法判断"
+    assert format_zone_status("人工备注") == "人工备注"
 
 
 def test_dashboard_watchlist_entry_cell_shows_price_position_without_action_text() -> None:

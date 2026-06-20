@@ -510,7 +510,11 @@ def _normalize_decline_reason(value: str) -> str:
         "fundamental": "公司基本面恶化",
         "unknown": "未知",
     }
-    return aliases.get(text.lower(), text if text else "未知")
+    if text.lower() in aliases:
+        return aliases[text.lower()]
+    if text and all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return "未知"
+    return text if text else "未知"
 
 
 def _normalize_thesis_status(value: str) -> str:

@@ -138,3 +138,16 @@ def test_clear_support_breakdown_still_marks_structure_broken() -> None:
 
     assert advisor.structure_status == STRUCTURE_BROKEN
     assert "价格跌破关键支撑" in " ".join(advisor.structure_warnings)
+
+
+def test_unknown_decline_reason_does_not_leak_internal_code() -> None:
+    advisor = evaluate_structure_entry(
+        ticker="CRM",
+        technicals=_technicals(),
+        decline_reason="NEW_DECLINE_REASON",
+        thesis_status=THESIS_INTACT,
+    )
+
+    reasons = " ".join(advisor.structure_reasons)
+    assert "下跌原因：未知。" in reasons
+    assert "NEW_DECLINE_REASON" not in reasons

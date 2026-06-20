@@ -1576,7 +1576,9 @@ def _review_system_reason_text(reason: object) -> str:
             "已从 SEC / IR / 电话会文本提取，进入评分前需人工确认。"
         ),
     }
-    return labels.get(text, text)
+    if text in labels:
+        return labels[text]
+    return _manual_review_unknown_display_text(text, "暂无系统说明。")
 
 
 def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
