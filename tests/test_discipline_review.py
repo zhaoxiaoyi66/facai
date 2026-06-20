@@ -295,12 +295,12 @@ def test_mistake_reviews_are_persisted_independently_from_trade_tags() -> None:
         assert saved["loss_impact_text"] == "800U"
         assert saved["mistake_tags"] == ["没设止损", "没设止盈", "忘记持仓"]
         assert rows[0]["reflection"] == "这是流程错误。"
-        assert "短线想做回落" in discipline_review._mistake_event_summary(rows[0])
-        assert "没有设置止盈止损" in discipline_review._mistake_event_summary(rows[0])
-        assert "800U" in discipline_review._mistake_impact_summary(rows[0])
-        assert "隔夜后亏损" in discipline_review._mistake_impact_summary(rows[0])
-        assert "睡前检查持仓" in discipline_review._mistake_next_defense(rows[0])
-        assert "合约单必须有保护单" in discipline_review._mistake_next_defense(rows[0])
+        assert rows[0]["trigger_event"] == "短线想做回落，开了一笔空单。"
+        assert rows[0]["action_taken"] == "没有设置止盈止损。"
+        assert rows[0]["loss_impact_text"] == "800U"
+        assert rows[0]["result_text"] == "隔夜后亏损。"
+        assert rows[0]["next_defense"] == "睡前检查持仓。"
+        assert rows[0]["improvement_rule"] == "合约单必须有保护单。"
 
 
 def test_mistake_reviews_store_usd_loss_and_impact_summary_separately() -> None:
@@ -326,8 +326,8 @@ def test_mistake_reviews_store_usd_loss_and_impact_summary_separately() -> None:
         assert saved["impact_summary"] == "卖飞后上涨约 10%，但金额字段只记录 USD 数字。"
 
 
-def test_quick_mistake_tags_are_supported_by_store() -> None:
-    assert set(discipline_review.QUICK_MISTAKE_TAG_OPTIONS).issubset(set(discipline_review.MISTAKE_TAG_OPTIONS))
+def test_trade_mistake_types_cover_lightweight_notebook_flow() -> None:
+    assert {"追涨", "FOMO", "卖飞", "其他"}.issubset(set(discipline_review.TRADE_MISTAKE_TYPES))
 
 
 def test_mistake_review_allows_zero_loss_and_quick_fields() -> None:
@@ -396,7 +396,7 @@ def test_recent_mistake_rows_only_returns_latest_five() -> None:
     assert [row["id"] for row in recent] == [6, 5, 4, 3, 2]
 
 
-def test_old_spacex_mistake_renders_as_card_and_next_defense() -> None:
+def test_old_spacex_mistake_still_feeds_next_defense_cards() -> None:
     row = {
         "id": 1,
         "review_date": "2026-06-16",
@@ -408,15 +408,9 @@ def test_old_spacex_mistake_renders_as_card_and_next_defense() -> None:
         "review_status": "已记录",
     }
 
-    card_html = discipline_review._mistake_card_html(row)
     rules = discipline_review._next_defense_rules([row], limit=5)
     rules_html = discipline_review._next_defense_cards_html(rules)
 
-    assert "2026-06-16 · SPACEX 空单" in card_html
-    assert "$800.00" in card_html
-    assert "没设止盈" in card_html
-    assert "空强势股票太弱智了" in card_html
-    assert "不能空强势标的" in card_html
     assert rules[0]["rule_text"] == "不能空强势标的"
     assert "来源：2026-06-16 · SPACEX 空单" in rules_html
 
