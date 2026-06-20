@@ -1498,6 +1498,9 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
         weekend_spread._market_type_text("new_market_type"),
         weekend_spread._price_source_text("NEW_PRICE_SOURCE"),
         weekend_spread._afterhours_source_text("NEW_AFTERHOURS_SOURCE"),
+        weekend_spread._monitor_log_status_text("NEW_MONITOR_STATUS"),
+        weekend_spread._monitor_priority_short({"monitor_priority_label": "NEW_PRIORITY"}),
+        weekend_spread._localized_realtime_error("NEW_REALTIME_ERROR"),
     ]
 
     assert labels == [
@@ -1509,8 +1512,12 @@ def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
         "未知市场类型",
         "未知价格来源",
         "盘后锚点来源缺失",
+        "未知",
+        "数据不足",
+        "未知错误",
     ]
     assert weekend_spread._data_quality_text("人工复核") == "人工复核"
+    assert weekend_spread._monitor_log_status_text("人工复核") == "人工复核"
     for label in labels:
         assert "NEW_" not in label
 

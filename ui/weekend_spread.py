@@ -2521,7 +2521,7 @@ def _monitor_log_status_text(value: object) -> str:
         "success": "成功",
         "failed": "失败",
         "skipped": "跳过",
-    }.get(text, text or "未知")
+    }.get(text, _unknown_display_text(text, "未知"))
 
 
 def _render_monitor_top_cards(rows: list[dict]) -> None:
@@ -2805,7 +2805,7 @@ def _monitor_priority_short(row: dict) -> str:
         "低优先级": "低",
         "仅观察": "仅观察",
         "数据不足": "数据不足",
-    }.get(label, label or "数据不足")
+    }.get(label, _unknown_display_text(label, "数据不足"))
 
 
 def _monitor_news_label(row: dict) -> str:
@@ -8660,7 +8660,7 @@ def _localized_realtime_error(value: object) -> str:
         "invalid_symbol": "Binance symbol 无效",
         "binance_price_missing": "Binance 价格缺失",
         "NO_MAPPING": "无映射",
-    }.get(text, text or "未知错误")
+    }.get(text, _unknown_display_text(text, "未知错误"))
 
 
 def _short_hkt_time(value: object) -> str:
