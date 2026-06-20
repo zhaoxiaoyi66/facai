@@ -7935,11 +7935,6 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     return display[columns]
 
 
-def _percentile_text(value: object) -> str:
-    number = _number(value)
-    return "暂缺" if number is None else f"{number:.0f}%"
-
-
 def _spread_reason_display_text(row: dict) -> str:
     label = _spread_reason_label(row)
     if label == SPREAD_REASON_INSUFFICIENT:
@@ -7951,13 +7946,6 @@ def _spread_reason_display_text(row: dict) -> str:
     if label == SPREAD_REASON_EXTREME:
         return "极端"
     return label
-
-
-def _spread_volatility_ratio_text(row: dict) -> str:
-    ratio = _number(row.get("spread_atr_ratio"))
-    if ratio is None:
-        ratio = _number(row.get("spread_range_ratio"))
-    return _ratio_text(ratio)
 
 
 def _abs_afterhours_spread_pct(row: dict) -> float:
@@ -8080,23 +8068,6 @@ def _realtime_closed_news_label(row: dict) -> str:
     except Exception:
         return "数据不足"
     return label if label else "未检查"
-
-
-def _live_type_label(row: dict) -> str:
-    if not _row_has_afterhours_anchor(row):
-        return "锚点缺失"
-    label = _mapping_display_label_for_row(row)
-    if label == MAPPING_AVAILABLE_LABEL:
-        return MAPPING_AVAILABLE_LABEL
-    if label == MAPPING_ANOMALY_LABEL:
-        return MAPPING_ANOMALY_LABEL
-    if label == MAPPING_MANUAL_LOCKED:
-        return "人工锁定"
-    return label
-
-
-def _display_frame(rows: list[dict]) -> pd.DataFrame:
-    return _live_frame(rows)
 
 
 def _no_mapping_frame(rows: list[dict]) -> pd.DataFrame:
@@ -8551,51 +8522,6 @@ def _strongest_signal_row(rows: list[dict]) -> dict | None:
     )
 
 
-def _strongest_signal_warning(row: dict) -> str:
-    if str(row.get("mapping_confidence") or "") != "confirmed":
-        return "映射未人工锁定，仅作为观察偏离。"
-    if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
-        return "盘后锚点缺失，当前使用常规收盘回退。"
-    risk = _primary_risk_text(row)
-    if risk:
-        return risk
-    return ""
-
-
-def _primary_risk_text(row: dict) -> str:
-    for key in ("mapping_risk", "liquidity_warning", "error"):
-        value = str(row.get(key) or "").strip()
-        if value:
-            return value
-    if str(row.get("mapping_confidence") or "") != "confirmed":
-        return "映射未人工锁定，需复核"
-    if str(row.get("primary_spread_anchor") or "") == "REGULAR_CLOSE_FALLBACK":
-        return "盘后锚点缺失，使用收盘回退"
-    return "仅观察"
-
-
-def _last_price_status(row: dict) -> str:
-    if not row.get("binance_symbol"):
-        return "无映射"
-    if row.get("status") == "OK" and row.get("binance_last_price") is not None:
-        return "价格可用"
-    if row.get("status") == "INVALID_SYMBOL":
-        return "symbol 无效"
-    return str(row.get("mapping_status") or row.get("status") or "数据不可用")
-
-
-def _mapping_summary(mapping: dict[str, dict]) -> str:
-    total = sum(1 for item in mapping.values() if item.get("enabled", True) and item.get("binance_symbol"))
-    confirmed = sum(
-        1
-        for item in mapping.values()
-        if item.get("enabled", True)
-        and item.get("binance_symbol")
-        and str(item.get("mapping_confidence") or "") == "confirmed"
-    )
-    return f"{total} 条本地映射，{confirmed} 条人工锁定"
-
-
 def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
     if universe_mapping_count <= 0:
         return "无可用映射"
@@ -8625,33 +8551,9 @@ def _market_price_source_status(rows: list[dict], market_type: str) -> str:
     return "待复核"
 
 
-def _market_data_status(rows: list[dict], market_type: str) -> str:
-    market_rows = [
-        row
-        for row in rows
-        if row.get("binance_symbol") and str(row.get("binance_market_type") or row.get("market_type") or "") == market_type
-    ]
-    if not market_rows:
-        return "无数据"
-    if any(row.get("status") == "OK" for row in market_rows):
-        return "可用"
-    if any(row.get("status") in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"} for row in market_rows):
-        return "不可用"
-    return "待复核"
-
-
 def _latest_updated_at(rows: list[dict]) -> str:
     values = [str(row.get("updated_at") or "") for row in rows if row.get("updated_at")]
     return values[-1] if values else ""
-
-
-def _recorded_max_abs_spread(log_snapshot: dict) -> float | None:
-    values = [log_snapshot.get("max_premium_pct"), log_snapshot.get("max_discount_pct")]
-    numeric = [_number(value) for value in values]
-    numeric = [value for value in numeric if value is not None]
-    if not numeric:
-        return None
-    return max(numeric, key=lambda value: abs(float(value)))
 
 
 def _cache_generated_text(cache_status: dict | None) -> str:
@@ -8730,31 +8632,6 @@ def _afterhours_cache_text(value: object) -> str:
     }.get(code, code or "未知")
 
 
-def _afterhours_anchor_badge(row: dict) -> str:
-    if _number(row.get("afterhours_reference_price")) is None:
-        return "锚点缺失"
-    status = str(row.get("afterhours_anchor_status") or "").strip().upper()
-    cache_status = str(row.get("afterhours_cache_status") or "").strip().upper()
-    if cache_status == "CACHE_DATE_MISMATCH":
-        return "待复核"
-    if status == "FINAL":
-        return "已固定锚点"
-    if status == "PROVISIONAL":
-        return "临时锚点"
-    return "盘后锚点"
-
-
-def _price_anchor_text(row: dict) -> str:
-    afterhours = _number(row.get("afterhours_reference_price"))
-    if afterhours is not None:
-        return f"盘后 ${afterhours:,.2f} ({_afterhours_anchor_badge(row)})"
-    regular = _number(row.get("regular_close_price") or row.get("friday_close"))
-    if regular is None:
-        return "锚点缺失"
-    reason = _afterhours_reason_text(row.get("afterhours_missing_reason"))
-    return f"收盘 ${regular:,.2f} (锚点缺失: {reason})"
-
-
 def _afterhours_spread_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -8786,33 +8663,6 @@ def _parse_utc_time(value: object) -> datetime | None:
 def _parse_et_datetime(value: object) -> datetime | None:
     parsed = _parse_utc_time(value)
     return parsed.astimezone(ET) if parsed is not None else None
-
-
-def _risk_badge_text(row: dict) -> str:
-    risks: list[str] = []
-    data_source = str(row.get("data_source_text") or "").strip()
-    if data_source:
-        risks.append(data_source)
-    status = str(row.get("status") or "")
-    confidence = str(row.get("mapping_confidence") or "")
-    if confidence and confidence != "confirmed":
-        risks.append("映射待核")
-    if status == "INVALID_SYMBOL":
-        risks.append("symbol 无效")
-    if status in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"}:
-        risks.append("Binance 不可用")
-    if _number(row.get("afterhours_reference_price")) is None and row.get("binance_symbol"):
-        risks.append(f"锚点缺失：{_afterhours_reason_text(row.get('afterhours_missing_reason'))}")
-    elif str(row.get("afterhours_cache_status") or "") in {"CACHE_HIT", "CACHE_FALLBACK"}:
-        risks.append(_afterhours_cache_text(row.get("afterhours_cache_status")))
-    liquidity = str(row.get("liquidity_warning") or "")
-    if "volume" in liquidity.lower():
-        risks.append("成交量不足")
-    if "spread" in liquidity.lower():
-        risks.append("bid-ask 偏宽")
-    if not risks:
-        risks.append("正常")
-    return " / ".join(dict.fromkeys(risks))
 
 
 def _localized_realtime_error(value: object) -> str:
@@ -8863,13 +8713,6 @@ def _percent_text(value: object) -> str:
     return f"{number:+.2f}%"
 
 
-def _bps_text(value: object) -> str:
-    number = _number(value)
-    if number is None:
-        return "暂缺"
-    return f"{number:+.1f} bps"
-
-
 def _ratio_text(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -8877,33 +8720,11 @@ def _ratio_text(value: object) -> str:
     return f"{number:.2f}x"
 
 
-def _funding_text(value: object) -> str:
-    number = _number(value)
-    if number is None:
-        return "暂缺"
-    return f"{number:.4%}"
-
-
 def _plain_number(value: object) -> str:
     number = _number(value)
     if number is None:
         return "暂缺"
     return f"{number:,.0f}"
-
-
-def _plain_decimal_text(value: object) -> str:
-    number = _number(value)
-    if number is None:
-        return "暂缺"
-    return f"{number:,.4f}"
-
-
-def _average_backtest_pullback(rows: list[dict]) -> float | None:
-    values = [_number(row.get("short_return_at_open_pct")) for row in rows]
-    values = [value for value in values if value is not None]
-    if not values:
-        return None
-    return sum(values) / len(values)
 
 
 def _number(value: object) -> float | None:
