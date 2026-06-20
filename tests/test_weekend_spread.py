@@ -7629,6 +7629,30 @@ def test_weekend_monitor_once_success_writes_status(tmp_path) -> None:
     assert status["next_expected_at"]
 
 
+def test_weekend_monitor_price_missing_is_not_counted_as_scan_error(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    status_path = tmp_path / "weekend_spread_monitor_status.json"
+    rows = [
+        {"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0},
+        {"ticker": "TSLA", "binance_symbol": "TSLAUSDT", "afterhours_reference_price": 200.0},
+    ]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0},
+        snapshot_path=path,
+        status_path=status_path,
+        now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
+        monitor_mode=MONITOR_MODE_SCHEDULER,
+        source="scheduler",
+    )
+    status = read_monitor_status(status_path)
+
+    assert run["summary"]["valid_count"] == 1
+    assert run["summary"]["price_missing_count"] == 1
+    assert status["last_scan_error_count"] == 0
+
+
 def test_weekend_monitor_manual_scan_writes_manual_status_without_next_expected(tmp_path) -> None:
     path = tmp_path / "weekend_spread_monitor_snapshots.json"
     status_path = tmp_path / "weekend_spread_monitor_status.json"

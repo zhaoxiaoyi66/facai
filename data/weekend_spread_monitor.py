@@ -185,7 +185,7 @@ def run_monitor_scan(
             f"ignored={summary.get('ignored_count', 0)} "
             f"anchor_missing={summary.get('anchor_missing_count', 0)} "
             f"price_missing={summary.get('price_missing_count', 0)} "
-            f"error_count={summary.get('price_missing_count', 0)}"
+            f"error_count={1 if summary.get('tick_persist_error') else 0}"
         ),
         path=log_path,
         at=scan_time,
@@ -463,7 +463,7 @@ def mark_monitor_scan_success(
             "last_scan_run_id": run.get("run_id") or "",
             "last_scan_valid_count": int(summary.get("valid_count") or 0),
             "last_scan_skipped_count": int(summary.get("ignored_count") or 0) + int(summary.get("anchor_missing_count") or 0),
-            "last_scan_error_count": int(summary.get("price_missing_count") or 0),
+            "last_scan_error_count": 1 if summary.get("tick_persist_error") else 0,
             "next_expected_at": "" if next_expected is None else next_expected.isoformat(),
             "consecutive_failures": 0,
             "last_error": "",
