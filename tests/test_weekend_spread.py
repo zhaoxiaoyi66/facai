@@ -1478,6 +1478,8 @@ def test_ui_maps_afterhours_source_and_quality_text() -> None:
     assert "afterHours" not in polygon_source
     assert "extended-hours" not in alpha_source
     assert "quote mid" not in quote_source
+    assert weekend_spread._afterhours_reason_text("API_KEY_MISSING") == "盘后接口密钥缺失"
+    assert weekend_spread._afterhours_reason_text("NO_AFTERHOURS_QUOTE") == "缺少盘后买卖盘报价"
     assert weekend_spread._afterhours_reason_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_cache_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_reason_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"

@@ -8569,13 +8569,13 @@ def _afterhours_reason_text(value: object) -> str:
     code = str(value or "").strip().upper()
     return {
         "PROVIDER_MISSING": "盘后数据源未配置",
-        "API_KEY_MISSING": "盘后 API key 缺失",
+        "API_KEY_MISSING": "盘后接口密钥缺失",
         "NOT_FETCHED": "尚未读取盘后锚点",
         "FETCH_FAILED": "盘后锚点读取失败",
         "NO_ALPACA_AFTERHOURS_BAR": "缺少 Alpaca 盘后 1m K线",
         "NO_AFTERHOURS_BAR": "缺少盘后 1m K线",
         "NO_AFTERHOURS_TRADE": "缺少盘后成交",
-        "NO_AFTERHOURS_QUOTE": "缺少 bid/ask 报价",
+        "NO_AFTERHOURS_QUOTE": "缺少盘后买卖盘报价",
         "CACHE_MISSING": "盘后缓存缺失",
         "CACHE_CORRUPT": "盘后缓存损坏",
         "CACHE_DATE_MISMATCH": "盘后缓存日期不匹配",
