@@ -163,6 +163,7 @@ def test_default_quote_can_be_deleted_after_confirmation() -> None:
 
 
 def test_mistake_tags_map_to_principle_reminders() -> None:
+    assert "对应纪律" in principle_reminder_for_mistake_tags(["追高", "FOMO"])
     assert "追逐对趋势的误解" in principle_reminder_for_mistake_tags(["追高", "FOMO"])
     assert "不参与感受型小仓" in principle_reminder_for_mistake_tags(["小仓乱买"])
     assert "卖出前先问逻辑是否改变" in principle_reminder_for_mistake_tags(["卖飞"])
@@ -740,13 +741,23 @@ def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade
     assert "收益结算" in source
     assert "周期收益结算" in source
     assert "本期复盘结论" in source
-    assert "投资原则提醒" in source
-    assert "今日原则" in source
+    assert "投资纪律" in source
+    assert "今日认知锚点" in source
     assert "先读原则，再记录错误。" in source
-    assert "investment-core-rule-grid" in source
-    assert "添加金句" in source
-    assert "编辑当前" in source
-    assert "查看全部投资原则" in source
+    assert "操作铁律" in source
+    assert "管理认知锚点" in source
+    assert "添加认知锚点" in source
+    assert "编辑当前认知锚点" in source
+    assert "原则库" in source
+    assert "金句" not in source
+    discipline_block = source[
+        source.index("def _render_investment_principles_reminder") : source.index("def _render_mistake_overview_strip")
+    ]
+    assert "<article" not in discipline_block
+    assert "</article>" not in discipline_block
+    assert "class=" not in discipline_block
+    assert "investment-core-rule-card" not in source
+    assert "investment-core-rule-grid" not in source
     assert "保存本期复盘" in source
     assert "标的 / 场景" in source
     assert "损失金额" in source

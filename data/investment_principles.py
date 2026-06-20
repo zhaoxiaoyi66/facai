@@ -72,7 +72,7 @@ def add_principle_quote(
         }
     )
     if not quote["text"]:
-        raise ValueError("金句正文不能为空")
+        raise ValueError("认知锚点正文不能为空")
     existing_ids = {str(item.get("id") or "") for item in payload["quotes"]}
     if quote["id"] in existing_ids:
         quote["id"] = f"{quote['id']}_{len(existing_ids) + 1}"
@@ -93,7 +93,7 @@ def update_principle_quote(
     payload = load_investment_principles(path)
     normalized_id = str(quote_id or "").strip()
     if not str(text or "").strip():
-        raise ValueError("金句正文不能为空")
+        raise ValueError("认知锚点正文不能为空")
     for index, quote in enumerate(payload["quotes"]):
         if str(quote.get("id") or "") == normalized_id:
             updated = {
@@ -106,7 +106,7 @@ def update_principle_quote(
             payload["quotes"][index] = _normalize_quote(updated)
             _write_payload(path, payload)
             return payload["quotes"][index]
-    raise KeyError(f"未找到金句：{normalized_id}")
+    raise KeyError(f"未找到认知锚点：{normalized_id}")
 
 
 def delete_principle_quote(
@@ -122,7 +122,7 @@ def delete_principle_quote(
         return {
             "deleted": False,
             "requires_confirmation": True,
-            "message": "这是当前唯一默认原则，删除后顶部将没有默认金句。确认删除？",
+            "message": "这是当前唯一默认原则，删除后顶部将没有默认认知锚点。确认删除？",
         }
     kept = [quote for quote in quotes if str(quote.get("id") or "") != normalized_id]
     deleted = len(kept) != len(quotes)
@@ -132,7 +132,7 @@ def delete_principle_quote(
     if payload.get("selected_quote_id") == normalized_id:
         payload["selected_quote_id"] = str(kept[0].get("id") or "") if kept else ""
     _write_payload(path, payload)
-    return {"deleted": deleted, "requires_confirmation": False, "message": "已删除金句。" if deleted else "未找到金句。"}
+    return {"deleted": deleted, "requires_confirmation": False, "message": "已删除认知锚点。" if deleted else "未找到认知锚点。"}
 
 
 def select_principle_quote(quote_id: str, *, path: Path = DEFAULT_PRINCIPLES_PATH) -> dict[str, Any] | None:
@@ -175,14 +175,14 @@ def selected_principle_quote(payload: dict[str, Any]) -> dict[str, Any] | None:
 def principle_reminder_for_mistake_tags(tags: list[str] | tuple[str, ...] | set[str] | None) -> str:
     text = " ".join(str(tag or "") for tag in tags or [])
     if any(token in text for token in ("追高", "FOMO", "情绪买入", "情绪交易", "怕错过", "追涨杀跌")):
-        return "对应原则：先判断真实趋势，再判断自己是不是在追逐对趋势的误解。"
+        return "对应纪律：先判断真实趋势，再判断自己是不是在追逐对趋势的误解。"
     if any(token in text for token in ("小仓乱买", "参与感买入", "感受型小仓")):
-        return "对应原则：不参与感受型小仓。买不进核心仓的票，不该用小仓安慰自己。"
+        return "对应纪律：不参与感受型小仓。买不进核心仓的票，不该用小仓安慰自己。"
     if any(token in text for token in ("卖飞", "过早卖出", "卖早")):
-        return "对应原则：卖出前先问逻辑是否改变，而不是只看短线波动。"
+        return "对应纪律：卖出前先问逻辑是否改变，而不是只看短线波动。"
     if any(token in text for token in ("忘记持仓", "没有管理", "不管理")):
-        return "对应原则：现金也是仓位，持仓也是责任。买了就要进入管理，不管理就不该买。"
-    return "对应原则：泡沫由真实趋势和对趋势的误解组成。先判断事实，再处理情绪。"
+        return "对应纪律：现金也是仓位，持仓也是责任。买了就要进入管理，不管理就不该买。"
+    return "对应纪律：泡沫由真实趋势和对趋势的误解组成。先判断事实，再处理情绪。"
 
 
 def default_principles_payload() -> dict[str, Any]:
