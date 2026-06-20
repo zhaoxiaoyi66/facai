@@ -358,6 +358,8 @@ def _quality_basis_text(result: dict[str, Any]) -> str:
 def _adjustment_check_text(result: dict[str, Any]) -> str:
     status = str(result.get("adjustment_check_status") or "").strip()
     if status:
+        if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in status):
+            return "需复核"
         return status
     if result.get("price_column_used") == "adjusted close":
         return "正常"

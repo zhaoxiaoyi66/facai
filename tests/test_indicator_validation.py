@@ -141,3 +141,17 @@ def test_indicator_display_rows_do_not_expose_none_or_internal_fields() -> None:
     assert "adjusted_close" not in text
     assert "data_quality_status" not in text
     assert "数据不足" in text
+
+
+def test_indicator_display_rows_hide_adjustment_internal_status() -> None:
+    result = validate_local_indicators("NVDA", history=_history([100 + index for index in range(130)]))
+    result["adjustment_check_status"] = "NEW_ADJUSTMENT_STATUS"
+
+    text = " ".join(
+        str(value)
+        for row in indicator_validation_display_rows(result)
+        for value in row.values()
+    )
+
+    assert "NEW_ADJUSTMENT_STATUS" not in text
+    assert "需复核" in text
