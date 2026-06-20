@@ -720,6 +720,16 @@ def _affects_label(value: object) -> str:
     return " / ".join(mapping.get(part, part) for part in parts) if parts else "解释"
 
 
+def _score_status_label(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "fresh": "最新",
+        "stale": "需重算",
+        "expired": "需重算",
+        "pending": "等待重算",
+    }.get(text, "最新" if not text else text)
+
+
 def _detail_title(row: dict) -> str:
     if row.get("reviewStatus") == "needs_data":
         return "为什么需要补齐"
@@ -1837,12 +1847,12 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
                         st.rerun()
                 if status in {"approved", "manually_corrected", "auto_approved_by_ai"} or triage == "auto_approved_by_ai":
                     with st.expander("查看评分影响", expanded=False):
-                        affects = str(row.get("affects") or "ConfidenceOnly")
+                        affects = _affects_label(row.get("affects") or "ConfidenceOnly")
                         score_status = store.get_score_status(str(row.get("symbol") or ""))
                         st.caption(
                             f"该指标属于 {affects} 输入。撤销后将从评分输入中排除，并把 {row.get('symbol')} 标记为评分过期。"
                         )
-                        st.caption(f"当前评分状态：{score_status.get('scoreStatus') or 'fresh'}")
+                        st.caption(f"当前评分状态：{_score_status_label(score_status.get('scoreStatus'))}")
                         if st.button("重新计算该股票", key=f"review-recompute-symbol-{metric_id}", width="stretch"):
                             symbol = str(row.get("symbol") or "").upper()
                             if symbol:
