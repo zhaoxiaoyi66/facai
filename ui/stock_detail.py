@@ -1339,7 +1339,16 @@ def _drawdown_state_display(value: str) -> str:
         "深度洗盘": "偏深洗盘",
         "极限洗盘": "极限洗盘观察",
     }
-    return mapping.get(value, value or "数据不足")
+    return mapping.get(value, _detail_unknown_display_text(value, "数据不足"))
+
+
+def _detail_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _drawdown_position_bar_html(profile: dict) -> str:
