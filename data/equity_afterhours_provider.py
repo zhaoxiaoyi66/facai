@@ -14,7 +14,6 @@ from data.afterhours_provider import (
     AfterhoursReference,
     CachedAfterhoursProvider,
     FMPAfterhoursProvider,
-    NullAfterhoursProvider,
 )
 from data.providers import get_secret
 

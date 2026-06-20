@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
-from data.equity_afterhours_provider import AfterhoursProvider, NullAfterhoursProvider
+from data.afterhours_provider import AfterhoursProvider, NullAfterhoursProvider
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider, normalize_market_type
 from data.cache_read_model import CacheReadModel
 from data.us_market_session import get_us_market_session_status
