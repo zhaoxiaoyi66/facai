@@ -179,7 +179,7 @@ DETAIL_GROUPS = [
     (
         "Balance Sheet",
         [
-            ("netDebtToEbitda", "鍑€鍊哄姟/EBITDA"),
+            ("netDebtToEbitda", "净债务/EBITDA"),
             ("currentRatio", "流动比率"),
         ],
     ),
