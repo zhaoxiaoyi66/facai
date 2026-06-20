@@ -40,6 +40,12 @@ def test_drawer_missing_dependencies_error_is_chinese() -> None:
         dashboard_drawer._DRAWER_DEPS = original
 
 
+def test_drawer_labels_do_not_show_raw_internal_codes() -> None:
+    assert dashboard_drawer._drawer_compact_action_text("NEW_ACTION_CODE") == "待复核"
+    assert dashboard_drawer._structure_thesis_label("NEW_THESIS_STATUS") == "主线待维护"
+    assert dashboard_drawer._drawer_compact_action_text("人工复核") == "等突破再评估"
+
+
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:
     row = pd.Series(
         {

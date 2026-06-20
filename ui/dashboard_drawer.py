@@ -1826,7 +1826,7 @@ def _structure_thesis_label(value: object) -> str:
         "WEAKENING": "主线走弱",
         "BROKEN": "主线破坏",
         "UNKNOWN": "主线待维护",
-    }.get(str(value or "").upper(), _drawer_clean_text(value) or "主线待维护")
+    }.get(str(value or "").upper(), _drawer_unknown_display_text(value, "主线待维护"))
 
 
 def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
@@ -1974,6 +1974,15 @@ def _drawer_clean_text(value: object) -> str:
     return text
 
 
+def _drawer_unknown_display_text(value: object, fallback: str) -> str:
+    text = _drawer_clean_text(value)
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
+
+
 def _drawer_display_text(value: object, fallback: str = "待补") -> str:
     text = _drawer_clean_text(value)
     if not text or text.upper() in {"N/A", "NA", "NONE", "NULL"}:
@@ -2018,7 +2027,7 @@ def _drawer_compact_action_text(value: object) -> str:
         return "等待回踩"
     if any(token in text for token in ("暂不", "不建议新增", "WAIT", "AVOID")):
         return "暂不参与"
-    return text
+    return _drawer_unknown_display_text(text, "待复核")
 
 
 def _drawer_radar_status_text(row: pd.Series) -> str:
