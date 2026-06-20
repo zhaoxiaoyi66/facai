@@ -137,6 +137,23 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert dashboard._refresh_part_status_label(None) == "待补"
 
 
+def test_dashboard_legacy_na_placeholders_are_not_rendered() -> None:
+    source = inspect.getsource(dashboard)
+
+    assert '"N/A"' not in source
+    assert "'N/A'" not in source
+    assert dashboard._dashboard_display_text("N/A") == "待补"
+    assert dashboard._dashboard_display_text(None, "未记录") == "未记录"
+    assert dashboard._dashboard_placeholder("N/A") is True
+    assert dashboard._pct_text(None) == "暂无"
+    assert dashboard._dashboard_last_updated_text("N/A") == "未记录"
+    assert dashboard._format_billions("N/A") == "暂无"
+    assert dashboard._format_plain_number("N/A") == "暂无"
+    assert dashboard._average_percent_column(pd.DataFrame({"x": ["N/A"]}), "x") == "暂无"
+    assert dashboard._action_with_position(pd.Series({})) == "待补"
+    assert "N/A" not in dashboard._detail_metric_html("估值", "N/A")
+
+
 def test_data_health_detail_groups_localize_final_decision_issue() -> None:
     html = dashboard._data_health_detail_groups_html(["NVDA finalDecision failed to build"])
 

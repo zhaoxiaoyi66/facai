@@ -1594,10 +1594,27 @@ def _format_dashboard_time(value: object) -> str:
 def _pct_text(value: object) -> str:
     try:
         if value is None:
-            return "N/A"
+            return "暂无"
         return f"{float(value):.1f}%"
     except (TypeError, ValueError):
-        return "N/A"
+        return "暂无"
+
+
+def _dashboard_display_text(value: object, fallback: str = "待补") -> str:
+    if _dashboard_placeholder(value):
+        return fallback
+    return str(value).strip()
+
+
+def _dashboard_placeholder(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    return str(value).strip().lower() in {"", "n/a", "na", "none", "null", "nan"}
 
 
 def _render_weekly_discipline_strip() -> None:
@@ -1823,8 +1840,8 @@ def _data_health_item_value(view: dict[str, object], label: str) -> object:
 
 def _dashboard_last_updated_text(value: object) -> str:
     text = str(value or "").strip()
-    if not text:
-        return "N/A"
+    if _dashboard_placeholder(value):
+        return "未记录"
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -2211,8 +2228,8 @@ def _refresh_data_health_symbol(symbol: str) -> dict[str, str]:
     return {
         "symbol": str(result.get("symbol") or normalized_symbol),
         "status": str(result.get("status") or "failed"),
-        "quoteStatus": str(result.get("quoteStatus") or "N/A"),
-        "historyStatus": str(result.get("historyStatus") or "N/A"),
+        "quoteStatus": str(result.get("quoteStatus") or "unknown"),
+        "historyStatus": str(result.get("historyStatus") or "unknown"),
         "error": str(result.get("error") or "无"),
         "company": str(after.get("company_name") or "待补"),
         "sector": str(after.get("sector") or after.get("industry") or "待补"),
@@ -2668,8 +2685,8 @@ def _render_detail_metrics(row: pd.Series) -> None:
         with column:
             st.markdown(f"**{group_name}**")
             for key, label in metrics:
-                value = row.get(key, "N/A")
-                if key == "fcfMargin" and value == "N/A":
+                value = row.get(key)
+                if key == "fcfMargin" and _dashboard_placeholder(value):
                     continue
                 st.markdown(_detail_metric_html(label, value), unsafe_allow_html=True)
                 if key == "fcfMargin" and row.get("fcfMarginNote"):
@@ -2693,7 +2710,7 @@ def _render_score_explanation(row: pd.Series) -> None:
                     "数据来源：" + _data_source_summary(row),
                     "关键缺失：" + _translated_join(row.get("missingIndustryMetrics")),
                     "人工复核：" + _manual_review_text(row),
-                    "仓位上限：" + str(row.get("maxSuggestedPosition") or "N/A"),
+                    "仓位上限：" + _dashboard_display_text(row.get("maxSuggestedPosition")),
                 ],
             ),
             unsafe_allow_html=True,
@@ -2702,7 +2719,7 @@ def _render_score_explanation(row: pd.Series) -> None:
         st.markdown(
             _score_card_html(
                 "公司质量解释",
-                str(row.get("qualityRating") or "N/A"),
+                _dashboard_display_text(row.get("qualityRating")),
                 [
                     "主要加分：" + _translated_join(row.get("keyPositiveDrivers"), limit=4),
                     "主要扣分：" + _translated_join(_quality_negative_items(row), limit=4),
@@ -2718,13 +2735,13 @@ def _render_score_explanation(row: pd.Series) -> None:
         st.markdown(
             _score_card_html(
                 "估值/计划参考解释",
-                entry_display or str(row.get("entryRating") or "N/A"),
+                entry_display or _dashboard_display_text(row.get("entryRating")),
                 [
                     "该区域来自旧估值参考，不等同于主表主击球区。",
-                    "估值状态：" + str(row.get("valuationStatus") or "N/A"),
-                    "回撤幅度：" + str(row.get("drawdownFromHigh") or "N/A"),
+                    "估值状态：" + _dashboard_display_text(row.get("valuationStatus")),
+                    "回撤幅度：" + _dashboard_display_text(row.get("drawdownFromHigh")),
                     "技术状态：" + _technical_state_text(row),
-                    "当前建议：" + str(row.get("action") or "N/A"),
+                    "当前建议：" + _dashboard_display_text(row.get("action")),
                     str(summary.get("valuation") or ""),
                     str(summary.get("technical") or ""),
                     str(summary.get("entry") or ""),
@@ -2736,7 +2753,7 @@ def _render_score_explanation(row: pd.Series) -> None:
         st.markdown(
             _score_card_html(
                 "风险解释",
-                str(row.get("riskRating") or "N/A"),
+                _dashboard_display_text(row.get("riskRating")),
                 [
                     "风险来源：" + _translated_join(_risk_items(row), limit=4),
                     "数据风险：" + _data_risk_text(row),
@@ -3093,14 +3110,18 @@ def _rating_from_score(score: float, label: str) -> str:
 
 
 def _format_billions(value: float | None) -> str:
-    if value is None or pd.isna(value):
-        return "N/A"
-    return f"{value / 1_000_000_000:,.1f}B"
+    if _is_missing(value):
+        return "暂无"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "暂无"
+    return f"{number / 1_000_000_000:,.1f}B"
 
 
 def _format_plain_number(value: float | None, digits: int = 1) -> str:
     if _is_missing(value):
-        return "N/A"
+        return "暂无"
     return f"{float(value):,.{digits}f}"
 
 
@@ -3112,12 +3133,12 @@ def _average_percent_column(table: pd.DataFrame, key: str) -> str:
         except (TypeError, ValueError):
             continue
     if not values:
-        return "N/A"
+        return "暂无"
     return f"{sum(values) / len(values):.1f}%"
 
 
 def _action_with_position(row: pd.Series) -> str:
-    action = _row_final_action(row) or "N/A"
+    action = _row_final_action(row) or "待补"
     value = _row_value(row, "currentAddLimitPercent")
     if value is None:
         value = _row_value(row, "maxSuggestedPositionPercent")
@@ -3343,7 +3364,7 @@ def _affects_decision_score(item: dict[str, object]) -> list[str]:
 
 
 def _safe_metric_label(item: dict[str, object]) -> str | None:
-    label = metric_label(item.get("displayName") or item.get("metricKey") or "N/A")
+    label = metric_label(item.get("displayName") or item.get("metricKey"))
     return None if label.startswith("未映射字段：") else label
 
 
@@ -3627,11 +3648,11 @@ def _business_risk_text(row: pd.Series) -> str:
 
 def _position_limit_text(value: float | None) -> str:
     if value is None or _is_missing(value):
-        return "N/A"
+        return "待补"
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return "N/A"
+        return "待补"
     if number <= 0:
         return "不建议新增"
     return f"≤{number:g}%"
@@ -3639,11 +3660,11 @@ def _position_limit_text(value: float | None) -> str:
 
 def _portfolio_weight_text(value: float | None) -> str:
     if value is None or _is_missing(value):
-        return "N/A"
+        return "待补"
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return "N/A"
+        return "待补"
     if number <= 0:
         return "不建议配置"
     if number >= 15:
@@ -8480,7 +8501,7 @@ def _detail_metric_html(label: object, value: object) -> str:
     return (
         '<div class="detail-metric">'
         f'<span class="detail-metric-label">{escape(str(label))}</span>'
-        f'<span class="detail-metric-value">{escape(str(value))}</span>'
+        f'<span class="detail-metric-value">{escape(_dashboard_display_text(value))}</span>'
         "</div>"
     )
 
@@ -8499,7 +8520,7 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
 
 
 def _is_missing(value: object) -> bool:
-    if value is None:
+    if _dashboard_placeholder(value):
         return True
     try:
         return bool(pd.isna(value))
