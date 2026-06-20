@@ -5121,6 +5121,7 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "最终传导",
         "高点兑现率",
         "样本质量",
+        "休市新闻",
     ]
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
@@ -5813,6 +5814,7 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "相对盘后",
         "相对收盘",
         "状态",
+        "休市新闻",
         "标签",
         "更新时间",
     ]

@@ -93,6 +93,18 @@ from data.weekend_spread_monitor import (
     recent_monitor_runs,
     run_monitor_scan,
 )
+from data.weekend_spread_news import (
+    MISSING_URL_TEXT as WEEKEND_NEWS_MISSING_URL_TEXT,
+    WINDOW_AFTER_P0,
+    WINDOW_LABELS as WEEKEND_NEWS_WINDOW_LABELS,
+    WINDOW_PRE_ANCHOR,
+    WINDOW_PRE_OVERNIGHT,
+    WeekendSpreadNewsStore,
+    build_weekend_spread_news_context,
+    refresh_weekend_spread_news,
+    source_link_text as weekend_news_source_link_text,
+    weekend_spread_news_label,
+)
 from data.overnight_price_provider import build_overnight_provider_self_check, default_overnight_price_provider
 from data.tradingview_price_cache import (
     DEFAULT_TRADINGVIEW_CSV_DIR,
@@ -117,6 +129,7 @@ TAB_REALTIME = "实时观察"
 TAB_MONITOR = "周末监控"
 TAB_BACKTEST = "历史回测"
 TAB_MAPPING = "映射管理"
+TAB_CLOSED_MARKET_NEWS = "休市新闻"
 HKT = ZoneInfo("Asia/Hong_Kong")
 ET = ZoneInfo("America/New_York")
 MONITOR_PROCESS_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "weekend_spread_monitor_process.json"
@@ -291,7 +304,9 @@ def render() -> None:
     active_mapping = _filter_ignored_mapping(mapping, ignored)
     watchlist = load_watchlist()
 
-    realtime_tab, monitor_tab, backtest_tab, mapping_tab = st.tabs([TAB_REALTIME, TAB_MONITOR, TAB_BACKTEST, TAB_MAPPING])
+    realtime_tab, monitor_tab, backtest_tab, mapping_tab, closed_news_tab = st.tabs(
+        [TAB_REALTIME, TAB_MONITOR, TAB_BACKTEST, TAB_MAPPING, TAB_CLOSED_MARKET_NEWS]
+    )
 
     with realtime_tab:
         rows, mapping_counts = _render_realtime_tab(watchlist, active_mapping, ignored)
@@ -301,6 +316,8 @@ def render() -> None:
         _render_backtest_tab(watchlist, active_mapping)
     with mapping_tab:
         _render_mapping_tab(rows, mapping, mapping_counts, ignored, watchlist=watchlist)
+    with closed_news_tab:
+        _render_closed_market_news_tab(watchlist, active_mapping)
 
 
 def _filter_ignored_mapping(mapping: dict[str, dict], ignored: dict[str, dict] | None = None) -> dict[str, dict]:
@@ -2354,6 +2371,199 @@ def _render_backtest_result_sections(
         st.dataframe(_backtest_diagnostic_frame(results), width="stretch", hide_index=True)
 
 
+def _render_closed_market_news_tab(watchlist: list[str], mapping: dict[str, dict]) -> None:
+    st.subheader("休市新闻 / 价差新闻解释")
+    st.caption("只检查最后交易日收盘后到下一次夜盘开盘前的新闻，用于判断 Binance 周末价差是否可能由休市期间的新消息驱动。")
+    st.info("新闻只能解释可能原因，不构成交易建议。观点文章不等同于公司基本面变化。")
+
+    cached_result = dict(st.session_state.get("weekend_spread_backtest_cache") or load_backtest_results())
+    source_rows = list(st.session_state.get("weekend_spread_backtest_results") or cached_result.get("rows") or [])
+    review_rows = _weekend_review_rows(source_rows)
+    if not review_rows:
+        st.info("请先在“历史回测”里运行一个样本，再查看对应周末的休市新闻时间线。")
+        return
+
+    symbol_options = sorted({str(row.get("ticker") or "").strip().upper() for row in review_rows if row.get("ticker")})
+    if not symbol_options:
+        st.info("当前回测结果里没有可识别的股票。")
+        return
+    default_symbol = str(
+        st.session_state.get("weekend_spread_news_symbol")
+        or st.session_state.get("weekend_spread_backtest_ticker")
+        or ""
+    ).strip().upper()
+    if default_symbol not in symbol_options:
+        default_symbol = symbol_options[0]
+
+    top_cols = st.columns([1, 1.4, 1, 1])
+    selected_symbol = top_cols[0].selectbox(
+        "标的",
+        symbol_options,
+        index=symbol_options.index(default_symbol),
+        key="weekend_spread_news_symbol",
+    )
+    symbol_rows = [row for row in review_rows if str(row.get("ticker") or "").strip().upper() == selected_symbol]
+    week_options = [str(row.get("week_id") or "") for row in symbol_rows if row.get("week_id")]
+    if not week_options:
+        st.info("该标的暂无可查看的周末样本。")
+        return
+    default_week = str(st.session_state.get("weekend_spread_news_week") or week_options[0])
+    if default_week not in week_options:
+        default_week = week_options[0]
+    selected_week = top_cols[1].selectbox(
+        "周次 / 样本",
+        week_options,
+        index=week_options.index(default_week),
+        key="weekend_spread_news_week",
+    )
+    sample = next(row for row in symbol_rows if str(row.get("week_id") or "") == selected_week)
+    store = WeekendSpreadNewsStore()
+
+    refresh_clicked = top_cols[2].button("刷新休市新闻", width="stretch", key="weekend_spread_refresh_closed_news")
+    translate_clicked = top_cols[3].button("补全中文摘要", width="stretch", key="weekend_spread_fill_closed_news_zh")
+    if refresh_clicked:
+        with st.spinner(f"正在刷新 {selected_symbol} {selected_week} 休市新闻..."):
+            result = refresh_weekend_spread_news(selected_symbol, sample, store=store, force=True)
+        message = str(result.get("message") or "")
+        if result.get("status") == "error":
+            st.warning(message or "休市新闻刷新失败。")
+        else:
+            st.success(message or f"已刷新 {selected_symbol} 休市新闻。")
+        st.rerun()
+
+    context = build_weekend_spread_news_context(selected_symbol, sample, store=store)
+    all_items = [
+        item
+        for bucket in (context.get("window_news") or {}).values()
+        for item in bucket
+        if isinstance(item, dict)
+    ]
+    if translate_clicked:
+        result = store.fill_missing_translations(all_items)
+        st.success(f"已补全 {result.get('title', 0)} 条中文标题，{result.get('summary', 0)} 条中文摘要，失败 {result.get('failed', 0)} 条。")
+        st.rerun()
+
+    _render_weekend_spread_news_core(selected_symbol, selected_week, sample, context)
+    _render_weekend_spread_news_timeline(context)
+
+
+def _render_weekend_spread_news_core(symbol: str, week_id: str, sample: dict, context: dict) -> None:
+    p0_text = _money_or_missing(sample.get("friday_afterhours_close"), "缺 P0")
+    p1_text = _money_or_missing(sample.get("binance_price"), "缺 P1")
+    p2_text = _money_or_missing(sample.get("broker_open_close"), "无夜盘价")
+    label = str(context.get("gap_explanation_label") or "数据不足")
+    explanation = str(context.get("explanation_zh") or "数据不足")
+    st.markdown(
+        f"""
+        <section class="weekend-core-card">
+          <div class="weekend-core-title">{escape(symbol)} · {escape(week_id)}</div>
+          <div class="weekend-core-flow-label">盘后锚点 → Binance 周末高点 → 夜盘价格</div>
+          <div class="weekend-core-flow">{escape(p0_text)} → {escape(p1_text)} → {escape(p2_text)}</div>
+          <div class="weekend-core-meta">休市新闻判断：{escape(label)}</div>
+          <div class="weekend-core-meta">{escape(explanation)}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_weekend_spread_news_timeline(context: dict) -> None:
+    windows = context.get("windows") or {}
+    if not windows.get("ok"):
+        st.warning("缺少 P0 / P1 / 夜盘窗口时间，暂时无法切分休市新闻时间线。")
+        return
+    st.markdown("#### 休市新闻时间线")
+    st.caption(_weekend_news_window_summary(windows))
+    window_news = context.get("window_news") or {}
+    order = [WINDOW_PRE_ANCHOR, WINDOW_AFTER_P0, WINDOW_PRE_OVERNIGHT]
+    for key in order:
+        label = WEEKEND_NEWS_WINDOW_LABELS.get(key, key)
+        items = list(window_news.get(key) or [])
+        expanded = key == WINDOW_AFTER_P0
+        with st.expander(f"{label}（{len(items)}）", expanded=expanded):
+            if not items:
+                st.caption("这一段暂无缓存新闻。点击“刷新休市新闻”可读取当前标的新闻。")
+                continue
+            major_items = [item for item in items if str(item.get("impact_level") or "") == "重大"]
+            regular_items = [item for item in items if item not in major_items]
+            if major_items:
+                st.caption("重大 / 待复核新闻")
+                _render_weekend_news_cards(major_items)
+            if regular_items:
+                with st.expander("普通新闻", expanded=False):
+                    _render_weekend_news_cards(regular_items)
+
+
+def _render_weekend_news_cards(items: list[dict]) -> None:
+    for item in items:
+        symbol = str(item.get("symbol") or "").strip().upper()
+        event = _display_text(item.get("event_type"), "待判断")
+        sentiment = _display_text(item.get("sentiment_label"), "待判断")
+        impact = _display_text(item.get("impact_level"), "低")
+        title_zh = _display_text(item.get("title_zh"), "")
+        original_title = _display_text(item.get("original_title") or item.get("title"), "原文标题缺失")
+        summary = _display_text(item.get("summary_zh"), "待生成摘要。")
+        relevance = _display_text(item.get("relevance_reason_zh"), "需要人工复核影响。")
+        source = _display_text(item.get("source") or item.get("site"), "未知来源")
+        published = _short_hkt_time(item.get("published_at_hkt") or item.get("published_at"))
+        link = weekend_news_source_link_text(item)
+        title_line = title_zh or original_title
+        translation_note = "" if title_zh else " · 待翻译"
+        st.markdown(f"**{symbol}｜{event}｜{sentiment}｜{impact}**")
+        st.markdown(f"**{title_line}**{translation_note}")
+        if original_title and original_title != title_line:
+            st.caption(f"原文：{original_title}")
+        st.write(f"摘要：{summary}")
+        st.write(f"为什么重要：{relevance}")
+        st.markdown(f"{source} · {published} · {link}")
+        with st.expander("展开详情", expanded=False):
+            st.write(f"原文标题：{original_title}")
+            if link == WEEKEND_NEWS_MISSING_URL_TEXT:
+                st.write(WEEKEND_NEWS_MISSING_URL_TEXT)
+            else:
+                st.markdown(f"原文链接：{link}")
+            st.write(f"原始来源：{source}")
+            st.write(f"发布时间：{published}")
+            st.write(f"事件类型：{event}")
+            st.write(f"情绪判断：{sentiment}")
+            st.write(f"影响等级：{impact}")
+            st.write(f"关键词命中：{_keywords_hit_text(item)}")
+            st.write(f"中文摘要：{summary}")
+            st.write(f"为什么重要：{relevance}")
+            st.write(f"新闻-价差解释：{_display_text(item.get('gap_explanation_label'), '待复核')}")
+            raw_summary = _display_text(item.get("summary") or item.get("original_text") or item.get("raw_text"), "暂无原始摘要")
+            st.write(f"原始新闻摘要：{raw_summary}")
+        st.divider()
+
+
+def _weekend_news_window_summary(windows: dict) -> str:
+    return (
+        f"盘后锚点前：{_short_hkt_time(windows.get('pre_anchor_start_et'))} 至 {_short_hkt_time(windows.get('p0_time_et'))}；"
+        f"锚点后重点：{_short_hkt_time(windows.get('p0_time_et'))} 至 {_short_hkt_time(windows.get('p1_time_et'))}；"
+        f"夜盘前：{_short_hkt_time(windows.get('p1_time_et'))} 至 {_short_hkt_time(windows.get('pre_overnight_end_et'))}。"
+    )
+
+
+def _display_text(value: object, fallback: str = "暂无") -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "nan", "nat"}:
+        return fallback
+    return text
+
+
+def _keywords_hit_text(item: dict) -> str:
+    raw = str(item.get("keywords_hit") or "").strip()
+    if not raw:
+        return "暂无"
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if isinstance(parsed, list):
+        return "、".join(str(part) for part in parsed if str(part).strip()) or "暂无"
+    return raw
+
+
 def _focus_weekend_review_rows(review_rows: list[dict]) -> list[dict]:
     display_rows = _display_weekend_review_rows(review_rows)
     week_options: list[str] = []
@@ -3496,6 +3706,7 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "最终传导",
         "高点兑现率",
         "样本质量",
+        "休市新闻",
     ]
     if not review_rows:
         return pd.DataFrame(columns=columns)
@@ -3513,9 +3724,17 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "最终传导": _percent_or_missing(row.get("overnight_vs_afterhours_pct"), row),
                 "高点兑现率": _percent_or_missing(row.get("capture_pct"), row),
                 "样本质量": _weekend_review_short_sample_quality(row),
+                "休市新闻": _weekend_review_news_label(row),
             }
         )
     return pd.DataFrame(records, columns=columns)
+
+
+def _weekend_review_news_label(row: dict) -> str:
+    try:
+        return weekend_spread_news_label(str(row.get("ticker") or ""), row)
+    except Exception:
+        return "数据不足"
 
 
 def _weekend_review_short_sample_quality(row: dict) -> str:
@@ -4982,6 +5201,7 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         "相对盘后",
         "相对收盘",
         "状态",
+        "休市新闻",
         "标签",
         "更新时间",
     ]
@@ -4995,6 +5215,7 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
     display["相对收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
     display["状态"] = frame.apply(lambda row: _realtime_row_status_label(row.to_dict()), axis=1)
+    display["休市新闻"] = frame.apply(lambda row: _realtime_closed_news_label(row.to_dict()), axis=1)
     display["标签"] = frame.apply(lambda row: _realtime_row_tags_text(row.to_dict()), axis=1)
     display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
     return display[columns]
@@ -5017,6 +5238,21 @@ def _realtime_row_tags_text(row: dict) -> str:
     if status == "价格异常" and status not in tags:
         tags.append(status)
     return " / ".join(dict.fromkeys([tag for tag in tags if tag])) or "映射可用"
+
+
+def _realtime_closed_news_label(row: dict) -> str:
+    if _realtime_row_status_key(row) != "review":
+        return "未检查"
+    sample = dict(row)
+    sample["p0_selected_bar_time"] = row.get("afterhours_reference_time") or row.get("friday_afterhours_reference_time")
+    sample["contract_sample_time"] = row.get("updated_at") or row.get("generated_at")
+    sample["p2_session_start_et"] = row.get("updated_at") or row.get("generated_at")
+    sample["binance_premium_pct"] = row.get("spread_vs_afterhours_pct")
+    try:
+        label = weekend_spread_news_label(str(row.get("ticker") or ""), sample)
+    except Exception:
+        return "待复核"
+    return label if label not in {"数据不足", ""} else "待复核"
 
 
 def _live_type_label(row: dict) -> str:
