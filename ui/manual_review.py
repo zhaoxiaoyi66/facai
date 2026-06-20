@@ -1169,7 +1169,7 @@ def _ai_result_html(result: dict) -> str:
         f"{corrected}"
         f"<p><strong>中文解释</strong>：{escape(str(result.get('explanationZh') or ''))}</p>"
         f"<blockquote>{escape(str(result.get('evidenceQuote') or ''))}</blockquote>"
-        f"<p><strong>模型</strong>：provider=qwen · model={escape(str(result.get('model') or 'qwen'))}</p>"
+        f"<p><strong>模型</strong>：Qwen · 版本：{escape(str(result.get('model') or 'qwen'))}</p>"
         f"<em>{escape(warnings)}</em>"
         "</div>"
     )

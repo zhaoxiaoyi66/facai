@@ -948,10 +948,12 @@ class ProviderTests(unittest.TestCase):
     def test_qwen_review_ui_uses_qwen_specific_controls(self) -> None:
         source = inspect.getsource(manual_review)
 
-        self.assertIn("仅运行 Qwen 证据复核", source)
-        self.assertIn("一键自动处理当前筛选结果", source)
+        self.assertIn("Qwen证据复核", source)
+        self.assertIn("Qwen 预审", source)
         self.assertNotIn("AI模式", source)
-        self.assertIn("provider=qwen", source)
+        self.assertIn("Qwen · 版本", source)
+        self.assertNotIn("provider=qwen", source)
+        self.assertNotIn("model=", source)
 
     def test_stock_manual_overrides_support_power_company_fields(self) -> None:
         with TemporaryDirectory() as tmpdir:
