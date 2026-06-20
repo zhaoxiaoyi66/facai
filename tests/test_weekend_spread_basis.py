@@ -273,6 +273,62 @@ def test_backfill_open_market_basis_history_falls_back_to_binance_vision_archive
     assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
 
 
+def test_backfill_open_market_basis_history_skips_completed_days_on_resume(tmp_path) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
+
+    first = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        binance_history_provider=_FakeBinanceHistoryProvider(close=101.0),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0),
+    )
+    first_count = len(basis_module.load_basis_samples("GLW", db_path=db_path))
+    second = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        binance_history_provider=_FakeBinanceHistoryProvider(close=102.0),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0),
+    )
+
+    assert first["collected_count"] == first_count
+    assert second["ok"] is True
+    assert second["collected_count"] == 0
+    assert second["skipped_existing_count"] == first_count
+    assert len(basis_module.load_basis_samples("GLW", db_path=db_path)) == first_count
+
+
+def test_backfill_open_market_basis_history_replaces_partial_day_samples(tmp_path) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
+    save_basis_samples([_sample("GLW", datetime(2026, 6, 17, 10, 0, tzinfo=US_EASTERN), 9.9)], db_path=db_path)
+
+    result = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        binance_history_provider=_FakeBinanceHistoryProvider(close=101.0),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0),
+    )
+    frame = basis_module.load_basis_samples("GLW", db_path=db_path)
+
+    assert result["ok"] is True
+    assert result["collected_count"] >= 10
+    assert len(frame) == result["collected_count"]
+    assert frame["basis_pct"].max() == pytest.approx(1.0)
+
+
 def test_backfill_open_market_basis_history_keeps_misaligned_samples_out_of_profile(tmp_path) -> None:
     db_path = tmp_path / "basis.sqlite3"
     now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
@@ -311,6 +367,8 @@ def test_basis_collector_script_supports_quiet_mode() -> None:
     assert "--backfill" in source
     assert "--lookback-days" in source
     assert "--sample-interval-minutes" in source
+    assert "--symbols" in source
+    assert "--no-resume" in source
     assert "backfill_open_market_basis_history" in source
     assert "collect_open_market_basis_once" in source
 

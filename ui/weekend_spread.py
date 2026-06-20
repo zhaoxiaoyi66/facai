@@ -521,6 +521,8 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
                 st.success(str(result.get("message") or "已回填历史开市基差样本。"))
             else:
                 st.warning(str(result.get("message") or "暂时无法回填历史开市基差。"))
+            if int(result.get("skipped_existing_count") or 0) > 0:
+                st.caption(f"断点续跑：已跳过 {int(result.get('skipped_existing_count') or 0)} 个已完成采样点。")
             profiles = load_basis_profiles(tickers)
     with col_task:
         if st.button("安装开市基差采集任务", key="weekend_spread_install_open_market_basis_task"):
@@ -542,6 +544,7 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
             "样本较少时只展示预估净价差；样本达到门槛后才正式用于判断。"
         )
         st.caption("历史回填会读取最近 5 个已完成美股交易日的 10:00-15:30 ET 分钟线，默认每 30 分钟抽样一次；两边价格时间差超过 60 秒的样本会降级为时间未对齐。")
+        st.caption("历史回填支持断点续跑：每个标的每个交易日完成后立即落库，再次运行会跳过已完成日期。")
         st.caption(f"缓存位置：{DEFAULT_BASIS_DB_PATH.as_posix()}")
 
 
@@ -550,6 +553,7 @@ def _render_realtime_basis_collection_entry(rows: list[dict], mapping: dict[str,
     needs_collection = counts.get("missing", 0) > 0 or counts.get("limited", 0) > 0
     with st.expander("开市基差采集", expanded=needs_collection):
         st.caption("平日基差要在美股正常开市时采集；未采集或样本较少时，实时表会先展示原始价差和预估净价差。")
+        st.caption("历史回填支持断点续跑；每个标的每个交易日完成后立即落库，超时后可再次点击继续。")
         is_open_window = is_open_market_basis_window()
         col_collect, col_backfill, col_task, col_status = st.columns([1, 1, 1, 2])
         with col_collect:
@@ -562,7 +566,9 @@ def _render_realtime_basis_collection_entry(rows: list[dict], mapping: dict[str,
             if st.button("回填最近 5 个交易日基差", key="weekend_spread_backfill_open_market_basis_realtime"):
                 with st.spinner("正在回填历史开市基差..."):
                     result = backfill_open_market_basis_history(mapping=mapping, ignored=ignored or {}, lookback_trading_days=5, sample_interval_minutes=30)
-                st.session_state["weekend_spread_realtime_flash"] = str(result.get("message") or "已执行历史开市基差回填。")
+                skipped_existing = int(result.get("skipped_existing_count") or 0)
+                suffix = f" 已跳过 {skipped_existing} 个已完成采样点。" if skipped_existing > 0 else ""
+                st.session_state["weekend_spread_realtime_flash"] = str(result.get("message") or "已执行历史开市基差回填。") + suffix
                 st.rerun()
         with col_task:
             if st.button("安装开市基差采集任务", key="weekend_spread_install_open_market_basis_task_realtime"):

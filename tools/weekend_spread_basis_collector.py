@@ -30,14 +30,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backfill", action="store_true", help="Backfill historical open-market basis samples.")
     parser.add_argument("--lookback-days", type=int, default=5, help="Completed US trading days to backfill.")
     parser.add_argument("--sample-interval-minutes", type=int, default=30, help="Historical sampling interval in minutes.")
+    parser.add_argument("--symbols", default="", help="Comma-separated tickers or Binance symbols to backfill.")
+    parser.add_argument("--no-resume", action="store_true", help="Rebuild selected historical basis samples instead of skipping completed days.")
     parser.add_argument("--source", choices=["manual", "scheduler"], default="manual")
     parser.add_argument("--quiet", action="store_true", help="Write output to log only.")
     args = parser.parse_args(argv)
+    symbols = [item.strip().upper() for item in str(args.symbols or "").split(",") if item.strip()]
 
     if args.backfill:
         result = backfill_open_market_basis_history(
+            symbols=symbols or None,
             lookback_trading_days=args.lookback_days,
             sample_interval_minutes=args.sample_interval_minutes,
+            resume=not args.no_resume,
         )
     else:
         result = collect_open_market_basis_once()

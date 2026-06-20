@@ -284,6 +284,7 @@ def backfill_open_market_basis_history(
     sample_interval_minutes: int = 30,
     max_alignment_seconds: int = 60,
     max_candidate_gap_seconds: int = 300,
+    resume: bool = True,
 ) -> dict[str, Any]:
     mapping = mapping if mapping is not None else load_binance_symbol_mapping()
     ignored = ignored if ignored is not None else load_binance_symbol_ignore()
@@ -317,8 +318,10 @@ def backfill_open_market_basis_history(
     sample_interval = max(1, int(sample_interval_minutes or 30))
     samples: list[dict[str, Any]] = []
     skipped = 0
+    skipped_existing = 0
     misaligned = 0
     errors: list[str] = []
+    completed_windows = 0
 
     for ticker, config in active.items():
         binance_symbol = str(config.get("binance_symbol") or "").strip().upper()
@@ -329,6 +332,10 @@ def backfill_open_market_basis_history(
             start_et = datetime.combine(day, time(10, 0), tzinfo=US_EASTERN)
             end_et = datetime.combine(day, time(15, 30), tzinfo=US_EASTERN)
             target_times = _basis_sample_times(start_et, end_et, sample_interval)
+            if resume and _basis_day_sample_count(ticker, day, db_path=db_path) >= len(target_times):
+                skipped_existing += len(target_times)
+                completed_windows += 1
+                continue
             try:
                 binance_bars = _fetch_binance_history_bars(binance_provider, binance_symbol, start_et, end_et + timedelta(minutes=1))
                 stock_bars = _fetch_stock_history_bars(stock_provider, ticker, start_et, end_et + timedelta(minutes=1))
@@ -336,6 +343,8 @@ def backfill_open_market_basis_history(
                 skipped += len(target_times)
                 errors.append(f"{ticker}:{type(exc).__name__}")
                 continue
+            day_samples: list[dict[str, Any]] = []
+            day_misaligned = 0
             for target in target_times:
                 binance_bar = _nearest_bar(binance_bars, target, max_seconds=max_candidate_gap_seconds)
                 stock_bar = _nearest_bar(stock_bars, target, max_seconds=max_candidate_gap_seconds)
@@ -345,12 +354,12 @@ def backfill_open_market_basis_history(
                 diff_seconds = abs((binance_bar.ts.astimezone(timezone.utc) - stock_bar.ts.astimezone(timezone.utc)).total_seconds())
                 quality = QUALITY_SUFFICIENT if diff_seconds <= max_alignment_seconds else QUALITY_TIME_MISALIGNED
                 if quality == QUALITY_TIME_MISALIGNED:
-                    misaligned += 1
+                    day_misaligned += 1
                 basis = calculate_basis_pct(binance_bar.close, stock_bar.close)
                 if basis is None:
                     skipped += 1
                     continue
-                samples.append(
+                day_samples.append(
                     BasisSample(
                         sample_time_et=target.isoformat(),
                         sample_time_hkt=target.astimezone(HONG_KONG).isoformat(),
@@ -367,22 +376,30 @@ def backfill_open_market_basis_history(
                         created_at=datetime.now(timezone.utc).isoformat(),
                     ).as_dict()
                 )
-
-    if samples:
-        save_basis_samples(samples, db_path=db_path)
-        for ticker in {sample["ticker"] for sample in samples}:
-            upsert_basis_profile(build_normal_basis_profile(ticker, db_path=db_path, now=current_et), db_path=db_path)
+            if day_samples:
+                _delete_basis_samples_for_ticker_day(ticker, day, db_path=db_path)
+                save_basis_samples(day_samples, db_path=db_path)
+                upsert_basis_profile(build_normal_basis_profile(ticker, db_path=db_path, now=current_et), db_path=db_path)
+                samples.extend(day_samples)
+                misaligned += day_misaligned
+                completed_windows += 1
 
     return {
-        "ok": bool(samples),
+        "ok": bool(samples) or skipped_existing > 0,
         "collected_count": len(samples),
         "skipped_count": skipped,
+        "skipped_existing_count": skipped_existing,
         "misaligned_count": misaligned,
+        "completed_windows": completed_windows,
         "trading_days": [day.isoformat() for day in trading_days],
         "message": (
-            f"已回填 {len(samples)} 条历史开市基差样本，时间未对齐 {misaligned} 条，跳过 {skipped} 条。"
+            f"已回填 {len(samples)} 条历史开市基差样本，时间未对齐 {misaligned} 条，跳过 {skipped} 条，已存在跳过 {skipped_existing} 条。"
             if samples
-            else "没有回填到可用历史开市基差样本。请检查 Binance / 美股分钟线权限。"
+            else (
+                f"历史开市基差已是最新：已存在样本 {skipped_existing} 条，无需重复回填。"
+                if skipped_existing > 0
+                else "没有回填到可用历史开市基差样本。请检查 Binance / 美股分钟线权限。"
+            )
         ),
         "errors": errors[:10],
         "samples": samples,
@@ -539,6 +556,44 @@ def load_basis_samples(ticker: str | None = None, *, db_path: Path = DEFAULT_BAS
     query += " ORDER BY sample_time_et"
     with sqlite3.connect(db_path) as conn:
         return pd.read_sql_query(query, conn, params=params)
+
+
+def _basis_day_sample_count(ticker: str, day: date, *, db_path: Path = DEFAULT_BASIS_DB_PATH) -> int:
+    if not Path(db_path).exists():
+        return 0
+    _ensure_schema(db_path)
+    normalized = str(ticker or "").strip().upper()
+    if not normalized:
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM weekend_spread_basis_samples
+                WHERE ticker = ? AND sample_time_et LIKE ?
+                """,
+                (normalized, f"{day.isoformat()}%"),
+            ).fetchone()[0]
+            or 0
+        )
+
+
+def _delete_basis_samples_for_ticker_day(ticker: str, day: date, *, db_path: Path = DEFAULT_BASIS_DB_PATH) -> None:
+    if not Path(db_path).exists():
+        return
+    _ensure_schema(db_path)
+    normalized = str(ticker or "").strip().upper()
+    if not normalized:
+        return
+    with sqlite3.connect(db_path) as conn:
+        with conn:
+            conn.execute(
+                """
+                DELETE FROM weekend_spread_basis_samples
+                WHERE ticker = ? AND sample_time_et LIKE ?
+                """,
+                (normalized, f"{day.isoformat()}%"),
+            )
 
 
 def upsert_basis_profile(profile: dict[str, Any], *, db_path: Path = DEFAULT_BASIS_DB_PATH) -> None:
