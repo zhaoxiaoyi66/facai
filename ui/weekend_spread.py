@@ -2325,6 +2325,9 @@ def _render_monitor_health_card(health: dict[str, object], latest_run: dict | No
     ]
     text = " ｜ ".join(f"{label}：{value}" for label, value in items)
     st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
+    recent_result = _latest_monitor_scan_result_from_log()
+    if recent_result:
+        st.caption(_monitor_recent_result_summary_text(recent_result))
     reason = str(health.get("health_reason") or "").strip()
     if status == "疑似失效":
         st.warning(reason or "监控可能已经停止。请点击“监控健康检查”或重新安装 3 分钟监控任务。")
@@ -2356,30 +2359,191 @@ def _render_recent_monitor_log() -> None:
             st.caption("暂无监控日志。")
             return
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             st.caption("监控日志暂时不可读取。")
             return
-        rows = [_monitor_log_summary_row(line) for line in lines]
-        rows = [row for row in rows if row]
-        if not rows:
+        results = _aggregate_monitor_log_results(lines, now=datetime.now(timezone.utc), limit=10)
+        if not results:
             st.caption("暂无监控日志。")
             return
-        st.dataframe(pd.DataFrame(rows[-10:]), width="stretch", hide_index=True)
+        failed_count = len([row for row in results if row.get("结果") in {"失败", "疑似中断"}])
+        if failed_count:
+            st.warning(f"最近监控出现 {failed_count} 次失败，展开查看原因。")
+        st.caption("最近 10 轮扫描结果")
+        st.dataframe(_monitor_log_result_frame(results), width="stretch", hide_index=True)
+        with st.expander("原始日志", expanded=False):
+            raw_rows = [_monitor_log_summary_row(line) for line in lines[-50:]]
+            raw_rows = [row for row in raw_rows if row]
+            if raw_rows:
+                st.dataframe(pd.DataFrame(raw_rows), width="stretch", hide_index=True)
+            else:
+                st.caption("暂无原始日志。")
+
+
+def _latest_monitor_scan_result_from_log(path: Path = MONITOR_LOG_PATH) -> dict[str, object]:
+    if not Path(path).exists():
+        return {}
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    results = _aggregate_monitor_log_results(lines, now=datetime.now(timezone.utc), limit=1)
+    return results[0] if results else {}
+
+
+def _monitor_recent_result_summary_text(row: dict[str, object]) -> str:
+    status = str(row.get("结果") or "").strip()
+    time_text = str(row.get("时间") or "暂无")
+    if status == "失败":
+        return f"最近扫描失败：{time_text}｜原因：{_localized_monitor_error(row.get('错误'))}"
+    if status == "疑似中断":
+        return f"最近扫描疑似中断：{time_text}｜原因：任务中断"
+    prefix = "最近手动扫描" if row.get("_source") == "manual" else "最近成功扫描"
+    parts = [f"{prefix}：{time_text}", f"有效 {row.get('有效标的') or 0}"]
+    if row.get("锚点缺失") not in {"", None}:
+        parts.append(f"锚点缺失 {row.get('锚点缺失')}")
+    if row.get("价格缺失") not in {"", None}:
+        parts.append(f"价格缺失 {row.get('价格缺失')}")
+    if row.get("耗时") not in {"", None}:
+        parts.append(f"耗时 {row.get('耗时')}")
+    return "｜".join(str(item) for item in parts)
+
+
+def _monitor_log_result_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+    base_columns = ["时间", "结果", "有效标的", "锚点缺失", "价格缺失", "耗时"]
+    include_ignored = any(str(row.get("已忽略") or "").strip() not in {"", "0"} for row in rows)
+    include_error = any(str(row.get("错误") or "").strip() for row in rows)
+    columns = base_columns.copy()
+    if include_ignored:
+        columns.insert(5, "已忽略")
+    if include_error:
+        columns.append("错误")
+    display_rows = [{column: row.get(column, "") for column in columns} for row in rows]
+    return pd.DataFrame(display_rows, columns=columns)
+
+
+def _aggregate_monitor_log_results(
+    lines: list[str],
+    *,
+    now: datetime | None = None,
+    limit: int = 10,
+) -> list[dict[str, object]]:
+    parsed = [_parse_monitor_log_line(line) for line in lines[-50:]]
+    parsed = [row for row in parsed if row]
+    if not parsed:
+        return []
+    by_run: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+    for item in parsed:
+        run_id = str(item.get("run_id") or "").strip()
+        if not run_id:
+            run_id = f"line:{len(order)}:{item.get('_timestamp') or ''}"
+        if run_id not in by_run:
+            by_run[run_id] = {"run_id": run_id, "events": []}
+            order.append(run_id)
+        by_run[run_id]["events"].append(item)
+    results = [_monitor_scan_result_from_events(by_run[run_id]["events"], now=now) for run_id in order]
+    results = [row for row in results if row]
+    results.sort(key=lambda row: str(row.get("_timestamp") or ""), reverse=True)
+    return results[:limit]
+
+
+def _monitor_scan_result_from_events(events: list[dict[str, object]], *, now: datetime | None = None) -> dict[str, object]:
+    if not events:
+        return {}
+    latest = max(events, key=lambda item: str(item.get("_timestamp") or ""))
+    statuses = {str(item.get("status") or "").strip() for item in events}
+    final = latest
+    for preferred in ("failed", "success", "skipped"):
+        matches = [item for item in events if str(item.get("status") or "").strip() == preferred]
+        if matches:
+            final = max(matches, key=lambda item: str(item.get("_timestamp") or ""))
+            break
+    result = _monitor_final_status_text(statuses, events, now=now)
+    return {
+        "_timestamp": latest.get("_timestamp") or "",
+        "_source": str(final.get("source") or latest.get("source") or "").strip(),
+        "时间": _short_hkt_time(latest.get("_timestamp")),
+        "结果": result,
+        "有效标的": _first_monitor_field(events, "valid") or "0",
+        "锚点缺失": _first_monitor_field(events, "anchor_missing") or "0",
+        "价格缺失": _first_monitor_field(events, "price_missing") or "0",
+        "已忽略": _first_monitor_field(events, "ignored") or "0",
+        "耗时": _monitor_duration_text(_first_monitor_field(events, "duration_seconds")),
+        "错误": _localized_monitor_error(_first_monitor_field(events, "error")) if result in {"失败", "疑似中断"} else "",
+    }
+
+
+def _monitor_final_status_text(statuses: set[str], events: list[dict[str, object]], *, now: datetime | None = None) -> str:
+    if "failed" in statuses:
+        return "失败"
+    if "success" in statuses:
+        return "成功"
+    if "skipped" in statuses:
+        return "跳过"
+    if "started" in statuses:
+        latest_started = max((item for item in events if item.get("status") == "started"), key=lambda item: str(item.get("_timestamp") or ""))
+        timestamp = _parse_utc_time(latest_started.get("_timestamp"))
+        current = now or datetime.now(timezone.utc)
+        if timestamp and current - timestamp > timedelta(minutes=10):
+            return "疑似中断"
+        return "运行中"
+    return "运行中"
+
+
+def _first_monitor_field(events: list[dict[str, object]], key: str) -> str:
+    for item in sorted(events, key=lambda row: str(row.get("_timestamp") or ""), reverse=True):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _monitor_duration_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    return f"{number:.2f}秒"
+
+
+def _localized_monitor_error(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "未知错误"
+    lowered = text.lower()
+    if "timeout" in lowered or "request" in lowered or "binance" in lowered or "connection" in lowered:
+        return "Binance 请求失败"
+    if "anchor" in lowered or "afterhours" in lowered:
+        return "锚点数据缺失"
+    if "snapshot" in lowered or "write" in lowered or "permission" in lowered:
+        return "快照写入失败"
+    if "lock" in lowered or "interrupted" in lowered:
+        return "任务中断"
+    return "未知错误"
+
+
+def _parse_monitor_log_line(line: str) -> dict[str, object]:
+    text = str(line or "").strip()
+    if not text:
+        return {}
+    parts = text.split()
+    timestamp = parts[0] if parts else ""
+    fields: dict[str, object] = {"_timestamp": timestamp}
+    for part in parts[1:]:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        fields[key] = value
+    return fields
 
 
 def _monitor_log_summary_row(line: str) -> dict[str, str]:
     text = str(line or "").strip()
     if not text:
         return {}
-    parts = text.split()
-    timestamp = parts[0] if parts else ""
-    fields: dict[str, str] = {}
-    for part in parts[1:]:
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        fields[key] = value
+    fields = _parse_monitor_log_line(text)
+    timestamp = str(fields.get("_timestamp") or "")
     return {
         "时间": _short_hkt_time(timestamp) if timestamp else "",
         "来源": _monitor_source_text(fields.get("source")),

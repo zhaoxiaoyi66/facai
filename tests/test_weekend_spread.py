@@ -8061,6 +8061,84 @@ def test_weekend_monitor_safe_wrapper_does_not_crash_when_renderer_missing(monke
     monkeypatch.setattr(weekend_spread, "_render_monitor_tab", renderer, raising=False)
 
 
+def test_monitor_log_aggregates_run_events_into_one_success_row() -> None:
+    lines = [
+        "2026-06-20T16:50:00+00:00 run_id=abc source=unknown status=started",
+        "2026-06-20T16:50:01+00:00 run_id=abc source=scheduler status=success duration_seconds=1.31 valid=54 ignored=44 anchor_missing=0 price_missing=0",
+        "2026-06-20T16:50:01+00:00 run_id=abc source=scheduler status=summary valid=54 ignored=44 anchor_missing=0 price_missing=0",
+    ]
+
+    rows = weekend_spread._aggregate_monitor_log_results(lines, now=datetime(2026, 6, 20, 17, 0, tzinfo=timezone.utc))
+    frame = weekend_spread._monitor_log_result_frame(rows)
+
+    assert len(rows) == 1
+    assert rows[0]["结果"] == "成功"
+    assert rows[0]["有效标的"] == "54"
+    assert rows[0]["锚点缺失"] == "0"
+    assert rows[0]["价格缺失"] == "0"
+    assert rows[0]["耗时"] == "1.31秒"
+    assert "来源" not in frame.columns
+    assert "错误" not in frame.columns
+    assert "summary" not in frame.to_string()
+    assert "started" not in frame.to_string()
+    assert "unknown" not in frame.to_string()
+    assert "run_id" not in frame.to_string()
+
+
+def test_monitor_log_failure_uses_chinese_error_reason() -> None:
+    lines = [
+        "2026-06-20T16:53:00+00:00 run_id=bad source=scheduler status=started",
+        "2026-06-20T16:53:02+00:00 run_id=bad source=scheduler status=failed duration_seconds=1.00 error=binance_timeout",
+    ]
+
+    rows = weekend_spread._aggregate_monitor_log_results(lines, now=datetime(2026, 6, 20, 17, 0, tzinfo=timezone.utc))
+    frame = weekend_spread._monitor_log_result_frame(rows)
+
+    assert rows[0]["结果"] == "失败"
+    assert rows[0]["错误"] == "Binance 请求失败"
+    assert "错误" in frame.columns
+    assert "traceback" not in frame.to_string().lower()
+    assert "failed" not in frame.to_string()
+
+
+def test_monitor_log_start_only_after_timeout_is_interrupted() -> None:
+    lines = [
+        "2026-06-20T16:40:00+00:00 run_id=hung source=scheduler status=started",
+    ]
+
+    rows = weekend_spread._aggregate_monitor_log_results(lines, now=datetime(2026, 6, 20, 16, 55, tzinfo=timezone.utc))
+
+    assert rows[0]["结果"] == "疑似中断"
+    assert rows[0]["错误"] == "未知错误"
+    assert weekend_spread._monitor_recent_result_summary_text(rows[0]) == "最近扫描疑似中断：06-21 00:40 HKT｜原因：任务中断"
+
+
+def test_recent_monitor_success_summary_is_compact() -> None:
+    row = {
+        "时间": "06-21 00:53 HKT",
+        "结果": "成功",
+        "有效标的": "54",
+        "锚点缺失": "0",
+        "价格缺失": "0",
+        "耗时": "1.31秒",
+        "_source": "manual",
+    }
+
+    text = weekend_spread._monitor_recent_result_summary_text(row)
+
+    assert text == "最近手动扫描：06-21 00:53 HKT｜有效 54｜锚点缺失 0｜价格缺失 0｜耗时 1.31秒"
+    assert "None" not in text
+    assert "unknown" not in text
+
+
+def test_recent_monitor_log_raw_section_is_collapsed() -> None:
+    source = inspect.getsource(weekend_spread._render_recent_monitor_log)
+
+    assert "最近 10 轮扫描结果" in source
+    assert 'st.expander("原始日志", expanded=False)' in source
+    assert "[-50:]" in source
+
+
 def test_weekend_monitor_does_not_start_duplicate_process(monkeypatch, tmp_path) -> None:
     process_path = tmp_path / "weekend_spread_monitor_process.json"
     process_path.write_text(
