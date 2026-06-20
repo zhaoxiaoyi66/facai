@@ -5298,7 +5298,7 @@ def _render_tradingview_backfill_tools() -> None:
         status = webhook_status_summary()
         st.caption("TradingView Webhook、CSV 和手动补数只写入周末价差缓存，不写入主交易系统。")
         cols = st.columns(4)
-        cols[0].metric("Webhook secret", "已配置" if status.get("secret_configured") else "未配置")
+        cols[0].metric("推送密钥", "已配置" if status.get("secret_configured") else "未配置")
         cols[1].metric("最近 symbol", status.get("latest_symbol") or "尚未收到")
         latest_p0 = dict(status.get("latest_p0") or {})
         latest_p2 = dict(status.get("latest_p2") or {})
@@ -5307,9 +5307,9 @@ def _render_tradingview_backfill_tools() -> None:
         if not status.get("latest_write_ok"):
             st.info("尚未收到 TradingView 推送")
 
-        st.markdown("**TradingView alert message 示例**")
+        st.markdown("**TradingView 推送消息示例**")
         example_p0 = {
-            "secret": "你的secret",
+            "secret": "你的推送密钥",
             "symbol": "{{ticker}}",
             "event_type": EVENT_FRIDAY_AFTERHOURS_CLOSE,
             "timestamp_et": "{{time}}",
@@ -5317,7 +5317,7 @@ def _render_tradingview_backfill_tools() -> None:
             "source": "TradingView",
         }
         example_p2 = {
-            "secret": "你的secret",
+            "secret": "你的推送密钥",
             "symbol": "{{ticker}}",
             "event_type": EVENT_OVERNIGHT_FIRST_1M_CLOSE,
             "timestamp_et": "{{time}}",

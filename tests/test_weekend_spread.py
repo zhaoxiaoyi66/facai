@@ -5238,6 +5238,17 @@ def test_tradingview_price_cache_validation_copy_hides_internal_field_names(tmp_
         assert hidden not in message
 
 
+def test_tradingview_backfill_tools_copy_localizes_secret_labels() -> None:
+    source = inspect.getsource(weekend_spread._render_tradingview_backfill_tools)
+
+    assert "推送密钥" in source
+    assert "TradingView 推送消息示例" in source
+    assert "你的推送密钥" in source
+    assert "Webhook secret" not in source
+    assert "alert message" not in source
+    assert "你的secret" not in source
+
+
 def test_tradingview_cache_requires_exact_overnight_20_00(tmp_path) -> None:
     from data.tradingview_price_cache import upsert_price_event
 
