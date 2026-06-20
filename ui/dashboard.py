@@ -2143,8 +2143,8 @@ def _macro_refresh_value_text(item: dict) -> str:
 
 def _render_data_health_detail_groups(issues: list[object]) -> None:
     groups = [
-        ("价格缺失 / 过期", {"missing_price", "stale_quote"}, "刷新该股票"),
-        ("历史缺失 / 过期", {"missing_history", "stale_history"}, "刷新该股票"),
+        ("价格缺失 / 需刷新", {"missing_price", "stale_quote"}, "刷新该股票"),
+        ("历史缺失 / 待更新", {"missing_history", "stale_history"}, "刷新该股票"),
         ("决策结论异常", {"final_decision_error"}, "查看评分"),
         ("持仓缺价", {"portfolio_missing_price"}, "查看持仓"),
         ("复盘结果缺失", {"outcome_missing"}, "进入交易日志"),
@@ -2397,11 +2397,11 @@ def _normalize_data_health_issue(issue: object) -> dict[str, str]:
 def _data_health_category_from_text(text: str) -> str:
     if "价格缺失" in text:
         return "missing_price"
-    if "价格过期" in text:
+    if "价格过期" in text or "价格需刷新" in text:
         return "stale_quote"
     if "历史缺失" in text:
         return "missing_history"
-    if "历史过期" in text:
+    if "历史过期" in text or "历史待更新" in text:
         return "stale_history"
     if "finalDecision" in text:
         return "final_decision_error"
@@ -2415,9 +2415,9 @@ def _data_health_category_from_text(text: str) -> str:
 def _data_health_category_label(category: str) -> str:
     return {
         "missing_price": "价格缺失",
-        "stale_quote": "价格过期",
+        "stale_quote": "价格需刷新",
         "missing_history": "历史缺失",
-        "stale_history": "历史过期",
+        "stale_history": "历史待更新",
         "final_decision_error": "决策结论异常",
         "portfolio_missing_price": "持仓缺价",
         "outcome_missing": "复盘结果缺失",
@@ -2441,7 +2441,7 @@ def _refresh_part_status_label(status: object) -> str:
         "skipped": "跳过",
         "failed": "失败",
         "missing": "缺失",
-        "stale": "过期",
+        "stale": "待更新",
         "not_run": "未执行",
         "unknown": "未知",
     }.get(text, text or "待补")
@@ -2449,8 +2449,8 @@ def _refresh_part_status_label(status: object) -> str:
 
 def _data_health_detail_groups_html(issues: list[object]) -> str:
     groups = [
-        ("价格缺失", {"missing_price", "stale_quote"}, "查看股票", "stock"),
-        ("历史缺失", {"missing_history", "stale_history"}, "查看数据状态", "stock_data"),
+        ("价格缺失 / 需刷新", {"missing_price", "stale_quote"}, "查看股票", "stock"),
+        ("历史缺失 / 待更新", {"missing_history", "stale_history"}, "查看数据状态", "stock_data"),
         ("决策结论异常", {"final_decision_error"}, "查看评分", "stock_score"),
         ("持仓缺价", {"portfolio_missing_price"}, "查看持仓", "portfolio"),
         ("复盘结果缺失", {"outcome_missing"}, "进入交易日志", "journal"),

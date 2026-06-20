@@ -133,6 +133,7 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert "historyStatus:" not in source
     assert dashboard._refresh_part_status_label("refreshed") == "已更新"
     assert dashboard._refresh_part_status_label("not_run") == "未执行"
+    assert dashboard._refresh_part_status_label("stale") == "待更新"
     assert dashboard._refresh_part_status_label(None) == "待补"
 
 
@@ -142,6 +143,19 @@ def test_data_health_detail_groups_localize_final_decision_issue() -> None:
     assert "NVDA" in html
     assert "决策结论异常" in html
     assert "finalDecision" not in html
+
+
+def test_data_health_detail_groups_use_refresh_copy_instead_of_expired_copy() -> None:
+    html = dashboard._data_health_detail_groups_html(["NVDA 价格需刷新", "CRM 历史待更新"])
+
+    assert "价格缺失 / 需刷新" in html
+    assert "历史缺失 / 待更新" in html
+    assert "价格过期" not in html
+    assert "历史过期" not in html
+    assert dashboard._data_health_category_label("stale_quote") == "价格需刷新"
+    assert dashboard._data_health_category_label("stale_history") == "历史待更新"
+    assert dashboard._data_health_category_from_text("NVDA 价格过期") == "stale_quote"
+    assert dashboard._data_health_category_from_text("CRM 历史过期") == "stale_history"
 
 
 def test_risk_summary_strip_uses_chinese_blocker_label() -> None:
