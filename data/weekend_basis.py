@@ -121,16 +121,16 @@ def evaluate_basis_lock_strategy(
 
     result = _base_result(ticker, binance_symbol, mapping_confidence)
     if anchor is None or anchor <= 0:
-        result.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price"})
+        result.update({"status": "FAILED", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少美股锚点价格"})
         return result
     result["broker_anchor_price"] = anchor
     if not quotes:
-        result.update({"status": "FAILED", "data_quality": "BINANCE_KLINE_UNAVAILABLE", "warning": "缺少 Binance bid/ask 报价"})
+        result.update({"status": "FAILED", "data_quality": "BINANCE_KLINE_UNAVAILABLE", "warning": "缺少 Binance 买卖盘报价"})
         return result
     if any(quote.estimated for quote in quotes):
         if data_quality == "OK":
             data_quality = "ESTIMATED_EXECUTION"
-        warnings.append("Binance bid/ask 来自估算，只能观察")
+        warnings.append("Binance 买卖盘报价来自估算，只能观察")
 
     oracle = _oracle_observation(quotes, anchor)
     result.update(oracle)
@@ -261,11 +261,11 @@ def build_basis_opportunity(
     result["broker_anchor_price"] = anchor
     result["min_binance_short_price"] = _min_binance_short_price(anchor, cfg)
     if anchor is None or anchor <= 0:
-        result.update({"status": "BLOCK_DATA", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少 broker anchor price"})
+        result.update({"status": "BLOCK_DATA", "data_quality": "NO_PRICE_ANCHOR", "warning": "缺少美股锚点价格"})
         return result
     quotes = normalize_basis_quotes(binance_quotes)
     if not quotes:
-        result.update({"status": "BLOCK_DATA", "data_quality": "BINANCE_QUOTE_UNAVAILABLE", "warning": "缺少 Binance bid/ask 报价"})
+        result.update({"status": "BLOCK_DATA", "data_quality": "BINANCE_QUOTE_UNAVAILABLE", "warning": "缺少 Binance 买卖盘报价"})
         return result
     current_quote = _latest_quote_at(quotes, now)
     premiums = [(quote.bid / anchor - 1.0) * 10_000.0 for quote in quotes if quote.ts <= current_quote.ts]

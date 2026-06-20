@@ -4271,6 +4271,33 @@ def test_basis_opportunity_allows_candidate_mapping_when_prices_exist() -> None:
     assert opportunity["data_quality"] == "OK"
 
 
+def test_basis_opportunity_missing_data_copy_does_not_expose_bid_ask_or_broker_anchor() -> None:
+    now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
+    mapping = _mapping()["NVDA"]
+
+    missing_anchor = build_basis_opportunity(
+        ticker="NVDA",
+        mapping=mapping,
+        broker_anchor_price=None,
+        binance_quotes=[_basis_quote(now, 102.0, 102.05)],
+        now=now,
+    )
+    missing_quote = build_basis_opportunity(
+        ticker="NVDA",
+        mapping=mapping,
+        broker_anchor_price=100,
+        binance_quotes=[],
+        now=now,
+    )
+    warnings = " | ".join(
+        str(row.get("warning") or "") for row in (missing_anchor, missing_quote)
+    )
+    assert missing_anchor["warning"] == "缺少美股锚点价格"
+    assert missing_quote["warning"] == "缺少 Binance 买卖盘报价"
+    assert "bid/ask" not in warnings
+    assert "broker anchor" not in warnings
+
+
 def test_basis_opportunity_allows_short_only_when_signal_liquidity_and_mapping_pass() -> None:
     now = datetime(2026, 7, 5, 18, tzinfo=timezone.utc)
     quotes = [
