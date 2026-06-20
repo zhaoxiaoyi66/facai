@@ -1193,7 +1193,7 @@ def _missing_official_indicator_placeholder(name: str) -> MacroIndicatorSnapshot
         indicator=name,
         value=None,
         source=sources[name],
-        error="official indicator missing",
+        error="官方指标缺失",
     )
 
 
@@ -1347,7 +1347,7 @@ def _fetch_cboe_vix_snapshot(*, now: datetime) -> MacroIndicatorSnapshot:
         raise RuntimeError("Cboe VIX CSV 没有可用观测值")
     latest_date, latest_value = rows[-1]
     if not _valid_vix_value(latest_value):
-        raise RuntimeError("Cboe VIX CSV returned invalid VIX value")
+        raise RuntimeError("Cboe VIX CSV 返回的 VIX 数值无效")
     return _series_snapshot_from_rows(
         VIX,
         rows,
@@ -1650,7 +1650,7 @@ def _fetch_fred_snapshot_with_circuit(
     provider_key = _fred_provider_key(series_id)
     open_circuit, last_error = store.is_provider_circuit_open(provider_key, now=now)
     if open_circuit:
-        raise RuntimeError(f"FRED {series_id} circuit open, using cache; last error: {last_error or 'unknown'}")
+        raise RuntimeError(f"FRED {series_id} 暂停刷新，使用缓存；最近错误：{last_error or '未知'}")
     try:
         snapshot = _fetch_fred_snapshot(indicator, series_id, fred_fetcher=fred_fetcher, now=now)
     except Exception as exc:
@@ -1705,9 +1705,9 @@ def _fetch_cached_or_fear_greed_snapshot(
             return _as_cached_fear_greed_snapshot(
                 cached,
                 now=now,
-                error=f"CNN Fear & Greed circuit open; last error: {last_error or 'unknown'}",
+                error=f"CNN Fear & Greed 暂停刷新；最近错误：{last_error or '未知'}",
             )
-        raise RuntimeError(f"CNN Fear & Greed circuit open, using proxy/cache; last error: {last_error or 'unknown'}")
+        raise RuntimeError(f"CNN Fear & Greed 暂停刷新，改用代理或缓存；最近错误：{last_error or '未知'}")
     try:
         snapshot = _fetch_fear_greed_snapshot(fear_greed_fetcher=fear_greed_fetcher, now=now)
     except Exception as exc:
@@ -1736,7 +1736,7 @@ def _fetch_fear_greed_fast_snapshot(
     if cached is not None and _refresh_snapshot_value_usable(cached):
         if _same_observation_day(cached, now):
             return _as_cached_fear_greed_snapshot(cached, now=now)
-        return _as_cached_fear_greed_snapshot(cached, now=now, error="using recent CNN cache in fast mode")
+        return _as_cached_fear_greed_snapshot(cached, now=now, error="快速模式使用最近一次 CNN 缓存")
     if fear_greed_fetcher is not None:
         return _fetch_cached_or_fear_greed_snapshot(
             store=store,
@@ -1759,7 +1759,7 @@ def _fetch_fred_snapshot(
         raise RuntimeError(f"FRED {series_id} 没有可用观测值")
     latest_date, latest_value = rows[-1]
     if indicator == VIX and not _valid_vix_value(latest_value):
-        raise RuntimeError(f"FRED {series_id} returned invalid VIX value")
+        raise RuntimeError(f"FRED {series_id} 返回的 VIX 数值无效")
     values = [value for _, value in rows]
     fetched_at = now.isoformat()
     raw_payload = _compact_raw_payload(payload)

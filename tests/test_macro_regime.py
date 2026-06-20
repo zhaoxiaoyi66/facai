@@ -200,6 +200,19 @@ def _seed_macro_market_cache(path, *, spy_below_200: bool = False, qqq_below_50:
     _seed_history(path, "UUP", [100.0] * 200 + [101.0] * 20)
 
 
+def test_macro_refresh_error_copy_is_localized() -> None:
+    source = inspect.getsource(macro_regime)
+
+    assert "Cboe VIX CSV 返回的 VIX 数值无效" in source
+    assert "暂停刷新，使用缓存" in source
+    assert "快速模式使用最近一次 CNN 缓存" in source
+    assert "官方指标缺失" in source
+    assert "returned invalid VIX value" not in source
+    assert "circuit open" not in source
+    assert "last error: unknown" not in source
+    assert "official indicator missing" not in source
+
+
 def test_high_vix_marks_risk_off() -> None:
     snapshot = evaluate_macro_regime([_indicator(VIX, 22.4)])
 
