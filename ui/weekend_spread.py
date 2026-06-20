@@ -3152,9 +3152,10 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         include_unconfirmed=include_unconfirmed,
     )
     options = [str(ticker or "").strip().upper() for ticker in preliminary.get("eligible_tickers") or []]
-    selected_default = str(st.session_state.get("weekend_spread_backtest_ticker") or (options[0] if options else "")).strip().upper()
+    selectable_options = _backtest_selectable_tickers(all_tickers, preliminary)
+    selected_default = str(st.session_state.get("weekend_spread_backtest_ticker") or (selectable_options[0] if selectable_options else "")).strip().upper()
     forced_blocked_selection = selected_default if selected_default and selected_default in all_tickers and selected_default not in options else ""
-    if not options:
+    if not selectable_options:
         st.info(f"当前无法运行回测：{_backtest_block_text(str(preliminary.get('primary_block_reason') or 'NO_MAPPING'))}")
         if forced_blocked_selection:
             forced_preflight = build_weekend_backtest_preflight(
@@ -3169,8 +3170,8 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             st.dataframe(_backtest_exclusion_frame(list(preliminary.get("excluded") or [])), width="stretch", hide_index=True)
         _render_tradingview_backfill_tools()
         return
-    selected = selected_default if selected_default in options else options[0]
-    if st.session_state.get("weekend_spread_backtest_ticker") not in options:
+    selected = selected_default if selected_default in selectable_options else selectable_options[0]
+    if st.session_state.get("weekend_spread_backtest_ticker") not in selectable_options:
         st.session_state["weekend_spread_backtest_ticker"] = selected
     anchors = _backtest_anchor_mapping([selected], weeks=weeks)
     preflight = build_weekend_backtest_preflight(
@@ -3213,7 +3214,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
             help="已忽略和不可用映射不会进入正式回测，只在排除原因中展示。",
         )
         cols = st.columns([1.2, 1, 1.35, 1, 1.4])
-        selected = cols[0].selectbox("标的", options, key="weekend_spread_backtest_ticker")
+        selected = cols[0].selectbox("标的", selectable_options, key="weekend_spread_backtest_ticker")
         weeks = int(cols[1].number_input("回测周数", min_value=1, max_value=12, value=weeks, step=1, key="weekend_spread_backtest_weeks"))
         window_label = cols[2].selectbox(
             "夜盘开盘窗口",
@@ -3942,6 +3943,24 @@ def _backtest_run_button_label(weeks: object) -> str:
 
 def _backtest_empty_prompt(weeks: object) -> str:
     return f"尚未运行历史回测。展开“回测设置”后点击“{_backtest_run_button_label(weeks)}”。"
+
+
+def _backtest_selectable_tickers(all_tickers: list[str], preflight: dict) -> list[str]:
+    eligible = {str(ticker or "").strip().upper() for ticker in preflight.get("eligible_tickers") or [] if str(ticker or "").strip()}
+    mapped_excluded = {
+        str(row.get("ticker") or "").strip().upper()
+        for row in preflight.get("excluded") or []
+        if str(row.get("ticker") or "").strip() and str(row.get("symbol") or "").strip()
+    }
+    candidates = eligible | mapped_excluded
+    ordered: list[str] = []
+    for ticker in all_tickers or []:
+        normalized = str(ticker or "").strip().upper()
+        if normalized and normalized in candidates and normalized not in ordered:
+            ordered.append(normalized)
+    for ticker in sorted(candidates - set(ordered)):
+        ordered.append(ticker)
+    return ordered
 
 
 def _weekend_review_detail_title(weeks: object) -> str:

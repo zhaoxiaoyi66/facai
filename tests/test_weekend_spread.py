@@ -6766,6 +6766,28 @@ def test_backtest_block_text_is_localized_for_preflight_errors() -> None:
     assert "不能进入正式回测" in weekend_spread._backtest_block_text("MAPPING_NOT_VERIFIED")
 
 
+def test_backtest_symbol_dropdown_keeps_mapped_but_anchor_missing_tickers() -> None:
+    preflight = {
+        "eligible_tickers": ["AAPL"],
+        "excluded": [
+            {
+                "ticker": "NOW",
+                "symbol": "NOWUSDT",
+                "exclusion_reason": "NO_AFTERHOURS_ANCHOR",
+            },
+            {
+                "ticker": "NOPE",
+                "symbol": "",
+                "exclusion_reason": "NO_MAPPING",
+            },
+        ],
+    }
+
+    options = weekend_spread._backtest_selectable_tickers(["NOW", "AAPL", "NOPE"], preflight)
+
+    assert options == ["NOW", "AAPL"]
+
+
 def test_backtest_exclusion_frame_localizes_market_type() -> None:
     frame = weekend_spread._backtest_exclusion_frame(
         [
