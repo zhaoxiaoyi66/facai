@@ -243,3 +243,19 @@ def test_refresh_writes_weekend_spread_cache_only(tmp_path) -> None:
     assert result["unavailable"] == ["Press Releases"]
     assert len(cached) == 1
     assert cached[0]["url"] == "https://example.com/nvda"
+
+
+def test_news_store_closes_sqlite_connections(tmp_path) -> None:
+    db_path = tmp_path / "weekend_spread_news.sqlite"
+    store = WeekendSpreadNewsStore(db_path)
+    sample_key = "sample"
+
+    store.upsert_news(_item("NVDA", "Nvidia raises guidance", "2026-06-13T10:00:00-04:00"))
+    assert store.list_news("NVDA")
+    store.set_fetch_status(sample_key, "ok", "done")
+    assert store.get_fetch_status(sample_key)["status"] == "ok"
+    assert store.should_refresh(sample_key, ttl_hours=6) is False
+    store.prune()
+
+    db_path.unlink()
+    assert not db_path.exists()

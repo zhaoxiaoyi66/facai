@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -497,7 +498,7 @@ class WeekendSpreadNewsStore:
         return conn
 
     def _ensure_schema(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS weekend_spread_news_items (
@@ -574,7 +575,7 @@ class WeekendSpreadNewsStore:
         values = [item.get(column, "") for column in columns]
         update = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "dedupe_key")
         placeholders = ",".join("?" for _ in columns)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 f"""
                 INSERT INTO weekend_spread_news_items ({",".join(columns)})
@@ -608,7 +609,7 @@ class WeekendSpreadNewsStore:
         if end_et is not None:
             clauses.append("published_at <= ?")
             params.append(_ensure_et(end_et).astimezone(timezone.utc).isoformat())
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM weekend_spread_news_items
@@ -621,7 +622,7 @@ class WeekendSpreadNewsStore:
         return [dict(row) for row in rows]
 
     def set_fetch_status(self, sample_key: str, status: str, message: str = "") -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 """
                 INSERT INTO weekend_spread_news_fetch_status(sample_key, fetched_at, status, message)
@@ -636,7 +637,7 @@ class WeekendSpreadNewsStore:
             conn.commit()
 
     def get_fetch_status(self, sample_key: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM weekend_spread_news_fetch_status WHERE sample_key=?",
                 (sample_key,),
@@ -671,7 +672,7 @@ class WeekendSpreadNewsStore:
             if not title_zh and not summary_zh:
                 failed += 1
                 continue
-            with self._connect() as conn:
+            with closing(self._connect()) as conn:
                 conn.execute(
                     """
                     UPDATE weekend_spread_news_items
@@ -696,7 +697,7 @@ class WeekendSpreadNewsStore:
 
     def prune(self, retention_days: int = 30) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 """
                 DELETE FROM weekend_spread_news_items
