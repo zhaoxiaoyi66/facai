@@ -34,3 +34,11 @@ def test_manual_review_score_impact_copy_localizes_internal_status() -> None:
     assert manual_review._affects_label("Quality,Entry,ConfidenceOnly") == "质量 / 买点 / 置信度"
     assert "当前评分状态：{score_status.get('scoreStatus') or 'fresh'}" not in impact_source
     assert "Quality" not in source
+
+
+def test_manual_review_qwen_not_configured_copy_hides_env_key_name() -> None:
+    source = inspect.getsource(manual_review._render_last_qwen_result)
+
+    assert "Qwen 未配置：请先在本地环境里配置 Qwen 接口密钥。" in source
+    assert "QWEN_API_KEY" not in source
+    assert ".env" not in source

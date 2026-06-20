@@ -1325,7 +1325,7 @@ def _render_last_qwen_result() -> None:
     if not isinstance(result, dict):
         return
     if result.get("not_configured"):
-        st.warning("Qwen 未配置：请检查 .env 中的 QWEN_API_KEY。")
+        st.warning("Qwen 未配置：请先在本地环境里配置 Qwen 接口密钥。")
         return
     if int(result.get("eligible_for_qwen", 0) or 0) == 0:
         st.info("当前筛选结果中没有符合 Qwen 证据复核条件的项目。缺失项、定性风险和规则推导请使用“AI自动分流当前筛选结果”。")
