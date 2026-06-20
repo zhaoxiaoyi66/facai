@@ -657,7 +657,16 @@ def _cn_label(value: object) -> str:
         "confirmation": "确认位",
         "stop_loss": "失效位",
     }
-    return labels.get(raw, raw)
+    return labels.get(raw, _portfolio_unknown_display_text(raw, "未归类"))
+
+
+def _portfolio_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _missing_fields_cn(fields: object) -> list[str]:
@@ -2840,12 +2849,12 @@ def _snapshot_action_text(value: object) -> str:
         "review": "复核",
         "blocked": "高风险",
         "unknown": "未标记",
-    }.get(text, text or BLANK_TEXT)
+    }.get(text, _portfolio_unknown_display_text(text, "未标记"))
 
 
 def _trade_action_text(value: object) -> str:
     text = str(value or "").strip()
-    return TRADE_ACTION_LABELS.get(text, text or BLANK_TEXT)
+    return TRADE_ACTION_LABELS.get(text, _portfolio_unknown_display_text(text, BLANK_TEXT))
 
 
 def _snapshot_reason_text(snapshot: dict) -> str:

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import ui.portfolio as portfolio_ui
+
 
 def test_portfolio_dashboard_prioritizes_positions_table() -> None:
     source = Path("ui/portfolio.py").read_text(encoding="utf-8")
@@ -46,3 +48,15 @@ def test_portfolio_mainline_is_compact_and_button_is_not_isolated() -> None:
     assert "st.columns([1, 0.14])" not in source
     assert "st.columns([8, 1])" in source
     assert "min-height: 86px" not in source
+
+
+def test_portfolio_labels_do_not_show_raw_internal_codes() -> None:
+    labels = [
+        portfolio_ui._cn_label("NEW_INTERNAL_FIELD"),
+        portfolio_ui._snapshot_action_text("NEW_ACTION"),
+        portfolio_ui._trade_action_text("NEW_TRADE_ACTION"),
+    ]
+
+    assert labels == ["未归类", "未标记", "—"]
+    for label in labels:
+        assert "NEW_" not in label
