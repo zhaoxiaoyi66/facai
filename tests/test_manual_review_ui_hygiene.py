@@ -32,6 +32,10 @@ def test_manual_review_score_impact_copy_localizes_internal_status() -> None:
     assert manual_review._score_status_label("fresh") == "最新"
     assert manual_review._score_status_label("stale") == "需重算"
     assert manual_review._affects_label("Quality,Entry,ConfidenceOnly") == "质量 / 买点 / 置信度"
+    assert manual_review._affects_label("Confidence Only,NEW_INTERNAL_SCOPE") == "置信度 / 解释"
+    assert manual_review._score_status_label("NEW_SCORE_STATUS") == "最新"
+    assert manual_review._confirmed_status_label("NEW_CONFIRM_STATUS") == "未归类"
+    assert manual_review._auto_archive_reason_label("NEW_ARCHIVE_REASON") == "低优先级不影响评分"
     assert "当前评分状态：{score_status.get('scoreStatus') or 'fresh'}" not in impact_source
     assert "Quality" not in source
 

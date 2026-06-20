@@ -300,7 +300,16 @@ def _confirmed_status_label(status: str) -> str:
         return "AI已确认"
     if status == "manually_corrected":
         return "已修正"
-    return STATUS_LABELS.get(status, status or "未归类")
+    return STATUS_LABELS.get(status, _manual_review_unknown_display_text(status, "未归类"))
+
+
+def _manual_review_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _confirmed_status_tone(status: str) -> str:
@@ -423,9 +432,19 @@ def _freshness_label(value: object) -> str:
 def _affects_label(value: object) -> str:
     if not value:
         return "解释"
-    mapping = {"Quality": "质量", "Entry": "买点", "Risk": "风险", "Technical": "技术", "ConfidenceOnly": "置信度", "ExplanationOnly": "解释"}
+    mapping = {
+        "Quality": "质量",
+        "Entry": "买点",
+        "Risk": "风险",
+        "Technical": "技术",
+        "ConfidenceOnly": "置信度",
+        "Confidence Only": "置信度",
+        "ExplanationOnly": "解释",
+        "Explanation Only": "解释",
+    }
     parts = [part.strip() for part in str(value).split(",") if part.strip()]
-    return " / ".join(mapping.get(part, part) for part in parts) if parts else "解释"
+    translated = [mapping.get(part, _manual_review_unknown_display_text(part, "解释")) for part in parts]
+    return " / ".join(translated) if translated else "解释"
 
 
 def _score_status_label(value: object) -> str:
@@ -435,7 +454,7 @@ def _score_status_label(value: object) -> str:
         "stale": "需重算",
         "expired": "需重算",
         "pending": "等待重算",
-    }.get(text, "最新" if not text else text)
+    }.get(text, _manual_review_unknown_display_text(text, "最新"))
 
 
 def _detail_title(row: dict) -> str:
@@ -1859,7 +1878,7 @@ def _auto_archive_reason_label(reason: object) -> str:
         return "历史值"
     if normalized in {"ai_auto_archived", "low_priority_review_noise"} or "low-priority" in lower_text or "low priority" in lower_text:
         return "低优先级不影响评分"
-    return text or "低优先级不影响评分"
+    return _manual_review_unknown_display_text(text, "低优先级不影响评分")
 
 
 def _styles() -> str:
