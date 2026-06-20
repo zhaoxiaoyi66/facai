@@ -20,7 +20,7 @@ from ui.theme import render_page_header
 
 def render() -> None:
     _render_styles()
-    render_page_header("信号表现", "追踪系统信号后的真实收益表现。")
+    render_page_header("信号表现", "追踪系统信号后的真实收益表现，用后验数据验证判断质量。")
     store = SignalPerformanceStore()
 
     _render_manual_signal_form(store)

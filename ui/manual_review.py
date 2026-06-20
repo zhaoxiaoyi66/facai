@@ -148,7 +148,7 @@ def render() -> None:
           <div>
             <div class="review-kicker">DATA REVIEW</div>
             <h1>数据复核</h1>
-            <p>验证系统信号、数据质量和历史表现。</p>
+            <p>验证系统信号、历史表现和数据质量。</p>
           </div>
         </div>
         """,

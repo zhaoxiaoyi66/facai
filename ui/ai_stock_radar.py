@@ -133,7 +133,7 @@ def render() -> None:
     perf = PerfProbe()
     stage_start = time.perf_counter()
     _render_styles()
-    render_page_header("价格位置", "只读本地缓存，生成单票价格位置判断；价格到达和评分通过都不是自动交易信号。")
+    render_page_header("研报中心", "生成单票研报、价格区间、历史回撤和技术口径判断，仅作为决策辅助，不构成自动交易信号。")
     perf.add("页面基础渲染", (time.perf_counter() - stage_start) * 1000, cache_hit=None, external_api=False)
     stage_start = time.perf_counter()
     tickers, source = select_radar_symbols(load_watchlist())
@@ -690,7 +690,7 @@ def _empty_history_frame() -> pd.DataFrame:
 def _report_view_toolbar_html(symbol: str, company: str, updated: str) -> str:
     return (
         '<section class="ai-radar-report-toolbar">'
-        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回价格位置</a>'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回研报中心</a>'
         '<div>'
         f'<strong>{escape(symbol)}</strong>'
         f'<span>{escape(company)}｜更新时间 {escape(updated)}</span>'
@@ -703,7 +703,7 @@ def _report_not_found_html(symbol: str) -> str:
     text = symbol or "UNKNOWN"
     return (
         '<section class="ai-radar-report-missing">'
-        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回价格位置</a>'
+        f'<a href="{escape(_list_view_href(), quote=True)}" target="_self">返回研报中心</a>'
         f"<strong>未找到 {escape(text)} 的股票研报</strong>"
         "<span>请返回列表选择观察池中的股票。</span>"
         "</section>"
@@ -716,7 +716,7 @@ def _report_loading_shell_html(symbol: str) -> str:
         '<article class="ai-radar-research-report loading">'
         '<header class="ai-radar-research-header skeleton">'
         '<div class="ai-radar-title-block">'
-        '<span>价格位置研究</span>'
+        '<span>研报中心</span>'
         f"<h1>{ticker}</h1>"
         "<p>正在读取本地缓存</p>"
         "<em>先展示研报框架，重数据稍后加载。</em>"
@@ -1529,7 +1529,7 @@ def _research_header_html(
     return (
         '<header class="ai-radar-research-header">'
         '<div class="ai-radar-title-block">'
-        f"<span>价格位置研究</span>"
+        f"<span>研报中心</span>"
         f"<h1>{escape(ticker)}</h1>"
         f"<p>{escape(company)}</p>"
         f"<em>{escape(meta)}</em>"
@@ -4713,7 +4713,7 @@ def _field_list_display(value: Any, row: dict[str, Any] | None = None) -> str:
 
 def _localize_report_text(text: str) -> str:
     replacements = {
-        "AI Stock Radar Research": "价格位置研究",
+        "AI Stock Radar Research": "研报中心",
         "Research notes": "研究依据",
         "wait": "等待",
         "WAIT_CONFIRMATION": "等待确认",

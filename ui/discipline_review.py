@@ -67,7 +67,7 @@ QUICK_MISTAKE_TAG_OPTIONS = [
 
 def render(path: Path = CACHE_PATH) -> None:
     _render_styles()
-    render_page_header("交易错题本", "记录每一次犯错，把亏损变成下一次防线。")
+    render_page_header("交易复盘", "记录交易错误、复盘交易行为，把每次失误沉淀成下一次防线。")
     discipline_store = DisciplineReviewStore(path)
     mistake_rows = discipline_store.list_mistake_reviews()
     _render_mistake_overview_strip(mistake_rows)
@@ -114,7 +114,7 @@ def _render_mistake_overview_strip(rows: list[dict[str, Any]]) -> None:
 
 
 def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
-    render_section_title("快速记录一次错误", "30 秒把错误收进错题本，重点是写下下一次怎么防。")
+    render_section_title("快速记录一次错误", "30 秒把错误收进复盘记录，重点是写下下一次怎么防。")
     with st.form("mistake-review-form", clear_on_submit=True):
         cols = st.columns([1, 2.4, 1.2])
         review_date = cols[0].date_input("日期", value=date.today())
@@ -152,7 +152,7 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
             detail_parts.append(f"是否需要交易前提醒：{'是' if needs_reminder else '否'}")
             result_text = "\n".join(detail_parts)
 
-        submitted = st.form_submit_button("收进错题本", type="primary", width="stretch")
+        submitted = st.form_submit_button("收进复盘", type="primary", width="stretch")
     if not submitted:
         return
     if not str(scene_or_symbol or "").strip():
@@ -182,7 +182,7 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
             "review_status": "已记录",
         }
     )
-    st.success("已收进错题本。重点不是责备自己，而是下次别重复。")
+    st.success("已收进交易复盘。重点不是责备自己，而是下次别重复。")
     st.info("这次错误已经沉淀为下次防线。")
     st.rerun()
 
@@ -236,10 +236,10 @@ def _render_quick_mistake_tag_inputs() -> list[str]:
 
 
 def _render_recent_mistakes(rows: list[dict[str, Any]]) -> None:
-    render_section_title("最近错题", "默认只显示最近 5 条，详情按需展开。")
+    render_section_title("最近复盘", "默认只显示最近 5 条，详情按需展开。")
     recent = _recent_mistake_rows(rows, limit=5)
     if not recent:
-        st.info("还没有错题。不是为了证明自己没错，而是把每次失误都留成证据。")
+        st.info("还没有复盘记录。不是为了证明自己没错，而是把每次失误都留成证据。")
         return
     for row in recent:
         st.markdown(_mistake_card_html(row), unsafe_allow_html=True)
@@ -251,7 +251,7 @@ def _render_next_defenses(rows: list[dict[str, Any]]) -> None:
     render_section_title("下次防线", "从错题里的下次防线提取，先做复盘提醒，不接入交易拦截。")
     rules = _next_defense_rules(rows, limit=5)
     if not rules:
-        st.info("记录错题后，系统会从你的反思里沉淀下次防线。")
+        st.info("记录交易复盘后，系统会从你的反思里沉淀下次防线。")
         return
     st.markdown(_next_defense_cards_html(rules), unsafe_allow_html=True)
 
@@ -513,7 +513,7 @@ def _render_portfolio_discipline(store: DisciplineReviewStore, positions: list[d
 
 def _render_mistake_reviews(store: DisciplineReviewStore, rows: list[dict[str, Any]]) -> None:
     render_section_title(
-        "本期错误归因 / 交易错题本",
+        "本期错误归因 / 交易复盘",
         "记录每一次不该发生的交易错误。重点不是责备自己，而是把错误沉淀成下一次的防线。",
     )
     summary = build_mistake_review_summary(rows)
@@ -563,11 +563,11 @@ def _render_mistake_reviews(store: DisciplineReviewStore, rows: list[dict[str, A
             st.success("错误已记录。")
             st.rerun()
 
-    st.markdown("#### 错题本列表")
+    st.markdown("#### 交易复盘列表")
     filtered = _filter_mistake_reviews(rows)
     st.markdown(_mistake_table_html(filtered), unsafe_allow_html=True)
     if filtered:
-        with st.expander("查看错题详情", expanded=False):
+        with st.expander("查看复盘详情", expanded=False):
             options = [int(row["id"]) for row in filtered]
             selected_id = st.selectbox("选择错误记录", options, format_func=lambda value: _mistake_option_label(filtered, value))
             detail = next((row for row in filtered if int(row.get("id") or 0) == int(selected_id)), None)
@@ -1002,7 +1002,7 @@ def _rule_library_html(rules: list[dict[str, Any]]) -> str:
 
 def _mistake_summary_html(summary: dict[str, Any]) -> str:
     cards = [
-        ("错误记录总数", str(summary.get("total_count") or 0), "全部错题"),
+        ("错误记录总数", str(summary.get("total_count") or 0), "全部复盘"),
         ("最近30天错误数", str(summary.get("recent_30_count") or 0), "按复盘日期"),
         ("最近30天损失金额", str(summary.get("recent_30_loss_amount_text") or "最近30天无损失金额"), "USD 统计"),
         ("最常见错误类型", str(summary.get("most_common_mistake_type") or "本期无错误记录"), f"{int(summary.get('most_common_mistake_count') or 0)} 次"),

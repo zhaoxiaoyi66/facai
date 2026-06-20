@@ -4,12 +4,12 @@ from typing import Any
 
 
 DISPLAY_LABELS: dict[str, str] = {
-    "AI Stock Radar": "价格位置",
-    "AI Stock Radar Research": "价格位置研究",
-    "Radar": "价格位置",
-    "Radar 买区": "价格位置",
+    "AI Stock Radar": "研报中心",
+    "AI Stock Radar Research": "研报中心",
+    "Radar": "研报中心",
+    "Radar 买区": "研报中心",
     "buy zone": "买区",
-    "discipline review": "交易错题本",
+    "discipline review": "交易复盘",
     "trade review": "交易复盘",
     "candidate": "自动匹配",
     "confirmed": "人工锁定",
