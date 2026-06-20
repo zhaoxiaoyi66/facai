@@ -831,8 +831,8 @@ def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_i
     assert round(row["spread_vs_afterhours_pct"], 2) == 8.44
 
     frame = weekend_spread._live_frame(rows)
-    assert frame.loc[0, "价差"] == "+$21.94"
-    assert frame.loc[0, "价差%"] == "+8.44%"
+    assert "价差" not in frame.columns
+    assert frame.loc[0, "相对盘后"] == "+8.44%"
 
 
 def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
@@ -6000,20 +6000,20 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
-        "价差",
-        "价差%",
-        "波动倍数",
-        "判断",
         "盘后锚点",
         "Binance 最新",
+        "相对盘后",
+        "日常波动参照",
+        "判断",
         "休市新闻",
         "标签",
         "更新时间",
     ]
     assert frame.loc[0, "Binance 最新"] == "$104.58"
-    assert frame.loc[0, "价差"] == "+$1.70"
-    assert frame.loc[0, "价差%"] == "+1.65%"
+    assert frame.loc[0, "相对盘后"] == "+1.65%"
     assert frame.loc[0, "判断"] == "数据不足"
+    assert "价差" not in frame.columns
+    assert "波动倍数" not in frame.columns
     assert "价差分位" not in frame.columns
     assert "ATR14" not in frame.columns
     assert "20日平均振幅" not in frame.columns
@@ -6068,11 +6068,27 @@ def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
         ]
     )
 
-    assert frame.loc[0, "价差"] == "+$7.67"
-    assert frame.loc[0, "价差%"] == "+3.92%"
-    assert frame.loc[0, "波动倍数"] == "1.80x"
+    assert frame.loc[0, "相对盘后"] == "+3.92%"
+    assert frame.loc[0, "日常波动参照"] == "约 1.8 天波动"
     assert frame.loc[0, "判断"] == "异常"
     assert frame.loc[0, "更新时间"] == "11:28 HKT"
+
+
+def test_live_frame_shows_missing_volatility_in_plain_language() -> None:
+    frame = weekend_spread._live_frame(
+        [
+            {
+                "ticker": "GLW",
+                "binance_last_price": 203.16,
+                "afterhours_reference_price": 195.49,
+                "spread_vs_afterhours_pct": 3.92,
+                "spread_reasonableness_label": SPREAD_REASON_INSUFFICIENT,
+                "mapping_quality": "映射可用",
+            }
+        ]
+    )
+
+    assert frame.loc[0, "日常波动参照"] == "缺波动数据"
 
 
 def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
@@ -6239,7 +6255,7 @@ def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current
     assert weekend_spread._realtime_row_status_label(wdc) == "锚点缺失"
 
     frame = weekend_spread._live_frame([wdc])
-    assert frame.loc[0, "价差%"] == "--"
+    assert frame.loc[0, "相对盘后"] == "--"
     assert frame.loc[0, "判断"] == "数据不足"
     assert "映射可用" in frame.loc[0, "标签"]
 
@@ -6346,6 +6362,9 @@ def test_realtime_summary_uses_abnormal_wording_without_false_alarm() -> None:
 
     assert weekend_spread._realtime_most_abnormal_row([normal_row]) is None
     assert weekend_spread._summary_abnormal_lines(None)[0] == "无明显异常"
+    assert weekend_spread._summary_deviation_lines(normal_row)[1] == "+3.92%"
+    assert weekend_spread._summary_deviation_lines(normal_row)[2] == "约 0.6 天波动"
+    assert "+$" not in " ".join(weekend_spread._summary_deviation_lines(normal_row))
 
 
 def test_realtime_filters_use_compact_selectboxes_not_horizontal_radio() -> None:
