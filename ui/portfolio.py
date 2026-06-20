@@ -3828,7 +3828,7 @@ def _render_styles() -> None:
         <style>
         .portfolio-overview {
             display: grid;
-            grid-template-columns: repeat(6, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 0.65rem;
             margin: 0.65rem 0 1.05rem;
         }
@@ -4361,7 +4361,7 @@ def _render_styles() -> None:
         }
         @media (max-width: 1100px) {
             .portfolio-overview {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             }
             .portfolio-action-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));

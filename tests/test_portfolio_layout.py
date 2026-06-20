@@ -37,6 +37,7 @@ def test_portfolio_dashboard_uses_responsive_grids() -> None:
     assert ".portfolio-table th:nth-child(6)" in source
     assert ".portfolio-table th:nth-child(7)" in source
     assert "repeat(6, minmax(0, 1fr))" not in compact_overview
+    assert "grid-template-columns: repeat(6, minmax(0, 1fr));" not in source
 
 
 def test_portfolio_overview_subtitles_are_chinese() -> None:
