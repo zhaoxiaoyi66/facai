@@ -58,9 +58,9 @@ def _render_manual_signal_form(store: SignalPerformanceStore) -> None:
         signal_price = cols[2].number_input("信号价", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="signal-manual-price")
         signal_label = cols[3].selectbox("信号类型", options=SIGNAL_TYPE_OPTIONS, key="signal-manual-label")
         cols2 = st.columns([1.2, 1.0, 2.8])
-        price_source = cols2[0].selectbox("价格来源", options=["手动", "本地日线", "价格位置", "历史回撤档案", "周末价差"], key="signal-manual-source")
+        price_source = cols2[0].selectbox("价格来源", options=["手动", "本地日线", "研报中心", "历史回撤档案", "周末价差"], key="signal-manual-source")
         confidence = cols2[1].number_input("置信度，可选", min_value=0.0, max_value=100.0, value=0.0, step=1.0, key="signal-manual-confidence")
-        position_context = cols2[2].text_input("持仓/价格位置，可选", placeholder="例如：核心仓、观察承接区、未持仓", key="signal-manual-context")
+        position_context = cols2[2].text_input("持仓/价格区间，可选", placeholder="例如：核心仓、观察承接区、未持仓", key="signal-manual-context")
         note = st.text_area("备注，可选", placeholder="记录当时为什么出现这个信号。", key="signal-manual-note")
         if st.button("保存信号", key="signal-manual-save", type="primary"):
             try:

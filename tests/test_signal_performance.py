@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
+import inspect
 from pathlib import Path
 
 from data.signal_performance import (
@@ -11,6 +12,7 @@ from data.signal_performance import (
     refresh_signal_outcomes,
     signal_performance_table_rows,
 )
+from ui import signal_performance as signal_performance_ui
 
 
 def _write_history(path: Path, symbol: str, closes: list[float], lows: list[float] | None = None) -> None:
@@ -146,6 +148,15 @@ def test_signal_table_rows_do_not_show_none_or_internal_fields(tmp_path: Path) -
 
     assert "None" not in row_text
     assert "signal_id" not in row_text
+
+
+def test_signal_manual_form_uses_current_research_center_label() -> None:
+    source = inspect.getsource(signal_performance_ui._render_manual_signal_form)
+
+    assert "研报中心" in source
+    assert "持仓/价格区间，可选" in source
+    assert '"价格位置"' not in source
+    assert "持仓/价格位置" not in source
 
 
 def test_infer_price_position_signal_label_uses_chinese_buckets() -> None:
