@@ -487,7 +487,7 @@ def _render_score_impact_panel(store: ReviewQueueStore, row: dict, score_status:
           <strong>评分影响</strong>
           <span>是否参与评分：{'是' if row.get('canEnterScoring') else '否'}</span>
           <span>影响范围：{escape(affects)}</span>
-          <span>最近一次 scoreRunId：{escape(str(run_id))}</span>
+          <span>最近评分批次：{escape(str(run_id))}</span>
           <span>撤销后会将该股票评分标记为过期，需重新计算。</span>
         </div>
         """,
