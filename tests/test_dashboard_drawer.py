@@ -394,7 +394,7 @@ def test_drawer_keeps_full_basis_out_of_main_view() -> None:
     assert "_drawer_detail_basis_html" not in drawer_source
     assert "查看完整依据" not in drawer_source
     assert "_drawer_buy_plan_alert_html" in drawer_source
-    assert "旧估值参考，仅供辅助" in detail_source
+    assert "历史估值参考，仅供辅助" in detail_source
     assert "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。" in detail_source
 
 

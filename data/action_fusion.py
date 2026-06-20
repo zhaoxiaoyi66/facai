@@ -365,7 +365,7 @@ def action_fusion_card_html(result: ActionFusionResult) -> str:
         f"{position_html}"
         f"{left_side_html}"
         "</div>"
-        "<small>旧融合提示仅作辅助依据展示，不改变买区主建议、研究状态或组合同步。</small>"
+        "<small>历史融合提示仅作辅助依据展示，不改变买区主建议、研究状态或组合同步。</small>"
         "</section>"
     )
 

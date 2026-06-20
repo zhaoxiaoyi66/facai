@@ -2728,7 +2728,7 @@ def _render_score_explanation(row: pd.Series) -> None:
                 "估值/计划参考解释",
                 entry_display or _dashboard_display_text(row.get("entryRating")),
                 [
-                    "该区域来自旧估值参考，不等同于主表主击球区。",
+                    "该区域来自历史估值参考，不等同于主表主击球区。",
                     "估值状态：" + _dashboard_display_text(row.get("valuationStatus")),
                     "回撤幅度：" + _dashboard_display_text(row.get("drawdownFromHigh")),
                     "技术状态：" + _technical_state_text(row),

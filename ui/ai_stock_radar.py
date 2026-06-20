@@ -271,7 +271,7 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     perf.add("action_fusion / trade_conclusion 生成", (time.perf_counter() - stage_start) * 1000, cache_hit=False, external_api=False)
     stage_start = time.perf_counter()
     portfolio_context = _portfolio_context(report, row or {}, action_result, buy_zone_context)
-    perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用旧融合提示快照")
+    perf.add("portfolio_context 展示组装", (time.perf_counter() - stage_start) * 1000, cache_hit=True, external_api=False, note="复用历史融合提示快照")
     buy_zone_display = build_buy_zone_display(
         buy_zone_context,
         {

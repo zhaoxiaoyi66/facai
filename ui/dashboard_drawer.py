@@ -807,7 +807,7 @@ def _drawer_conflict_notice(row: pd.Series, action_code: str) -> str:
     )
     conflict_tokens = ("可加仓", "允许买入", "允许小仓", "进入买点", "买区内", "估值买点", "价值复核", "ALLOW")
     if any(token in text for token in conflict_tokens):
-        return "结论冲突提示：技术承接数据不足，旧估值参考只作风险提示，不改变主结论。"
+        return "结论冲突提示：技术承接数据不足，历史估值参考只作风险提示，不改变主结论。"
     return ""
 
 
@@ -853,7 +853,7 @@ def _drawer_action_fusion_fallback_html() -> str:
         '<div class="action-fusion-grid">'
         '<div><b>待确认事项</b><ul><li>补齐本地买区 / 技术 / 量价缓存后再复核。</li></ul></div>'
         '</div>'
-        '<small>旧融合提示仅作辅助依据展示，不改变买区主建议、研究状态或组合同步。</small>'
+        '<small>历史融合提示仅作辅助依据展示，不改变买区主建议、研究状态或组合同步。</small>'
         '</section>'
     )
 
@@ -1872,9 +1872,9 @@ def _drawer_detail_basis_html(
             "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
             str(summary.get("quality") or ""),
         ]),
-        _drawer_card_html("旧估值参考，仅供辅助", entry_display or _drawer_display_text(row.get("entryRating"), "待补"), [
+        _drawer_card_html("历史估值参考，仅供辅助", entry_display or _drawer_display_text(row.get("entryRating"), "待补"), [
             "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。",
-            "该区域来自旧估值参考 / 历史入口字段，不等同于主表买区建议。",
+            "该区域来自历史估值参考 / 历史入口字段，不等同于主表买区建议。",
             _clean_buy_point_summary_text(summary.get("valuation"), row),
             _clean_buy_point_summary_text(summary.get("technical"), row),
             _clean_buy_point_summary_text(summary.get("entry"), row),
@@ -2173,12 +2173,12 @@ def _decision_conclusion_text(row: pd.Series, symbol: str, model: str, action: s
 def _decision_why_text(row: pd.Series, quality: str, entry: str, risk: str, summary: dict[str, str]) -> str:
     action = str(row.get("action") or "")
     if _is_high_quality_text(quality) and risk == "低" and _is_observe_or_wait_action(action, entry):
-        return f"公司风险低，但旧估值参考为 {entry}，当前新增仓位受限；这不是公司质量问题，而是估值参考还没到。"
+        return f"公司风险低，但历史估值参考为 {entry}，当前新增仓位受限；这不是公司质量问题，而是估值参考还没到。"
     parts = [_combined_entry_note(row), str(summary.get("technical") or ""), str(summary.get("valuation") or "")]
     if not parts[0]:
         parts.insert(0, str(summary.get("entry") or ""))
     text = " ".join(_clean_buy_point_summary_text(part, row) for part in parts if part).strip()
-    return text or "当前建议由质量、旧估值参考、风险、估值和数据置信度综合得出。"
+    return text or "当前建议由质量、历史估值参考、风险、估值和数据置信度综合得出。"
 
 
 def _combined_entry_note(row: pd.Series) -> str:
@@ -2186,7 +2186,7 @@ def _combined_entry_note(row: pd.Series) -> str:
     if not isinstance(combined, dict):
         return ""
     label = str(combined.get("entryLabel") or "").strip()
-    return f"旧估值参考：{label}。" if label else ""
+    return f"历史估值参考：{label}。" if label else ""
 
 
 def _clean_buy_point_summary_text(text: object, row: pd.Series) -> str:
@@ -2195,8 +2195,8 @@ def _clean_buy_point_summary_text(text: object, row: pd.Series) -> str:
     display = _entry_rating_chip_text(entry_label, entry_grade)
     raw = str(row.get("entryRating") or "").strip()
     if raw and display:
-        value = value.replace(f"买点评级为{raw}", f"旧估值参考为{display}")
-        value = value.replace(f"买点评级为 {raw}", f"旧估值参考为 {display}")
+        value = value.replace(f"买点评级为{raw}", f"历史估值参考为{display}")
+        value = value.replace(f"买点评级为 {raw}", f"历史估值参考为 {display}")
     if display:
         value = value.replace("击球区附近", display)
     return value
@@ -2220,7 +2220,7 @@ def _waiting_conditions(row: pd.Series, deps: DashboardDrawerDeps | None = None)
 def _entry_context_note(row: pd.Series) -> str:
     action = str(row.get("action") or "")
     if _is_high_quality_text(str(row.get("qualityRating") or "")) and _is_observe_or_wait_action(action, str(row.get("entryRating") or "")):
-        return "不主动新增不是因为公司质量差，而是因为当前旧估值参考不够理想；主表买区仍以纪律口径为准。"
+        return "不主动新增不是因为公司质量差，而是因为当前历史估值参考不够理想；主表买区仍以纪律口径为准。"
     return ""
 
 
