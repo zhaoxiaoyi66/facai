@@ -19,6 +19,24 @@ NEWS_TTL_HOURS = 6
 NEWS_MODE_CURRENT = "current_shutdown_window"
 NEWS_MODE_HISTORICAL = "historical_sample"
 
+NEWS_STATUS_UNCHECKED = "未检查"
+NEWS_STATUS_CHECKING = "检查中"
+NEWS_STATUS_NO_RELEVANT = "无相关新闻"
+NEWS_STATUS_NO_MAJOR = "无重大新闻"
+NEWS_STATUS_EXPLAINED = "有新闻解释"
+NEWS_STATUS_DIRECTION_MATCH = "新闻方向一致"
+NEWS_STATUS_DIRECTION_MISMATCH = "新闻方向不一致"
+NEWS_STATUS_OPINION = "观点文章"
+NEWS_STATUS_FAILED = "接口失败"
+NEWS_STATUS_INSUFFICIENT = "数据不足"
+
+GAP_EXPLANATION_NONE = "无新闻解释"
+GAP_EXPLANATION_EXPLAINED = "有新闻解释"
+GAP_EXPLANATION_MATCH = "新闻方向一致"
+GAP_EXPLANATION_MISMATCH = "新闻方向不一致"
+GAP_EXPLANATION_OPINION = "观点文章，不足以解释价差"
+GAP_EXPLANATION_INSUFFICIENT = "数据不足"
+
 WINDOW_CLOSED_MARKET = "closed_market"
 WINDOW_PRE_ANCHOR = "pre_anchor"
 WINDOW_AFTER_P0 = "after_p0"
@@ -153,12 +171,14 @@ def refresh_weekend_spread_news(
     raw_items: list[dict[str, Any]] = []
     unavailable: list[str] = []
     errors: list[str] = []
+    successful_endpoints = 0
     for label, fetcher in (
         ("Stock News", lambda: client.fetch_stock_news(clean_symbol, limit=limit)),
         ("Press Releases", lambda: client.fetch_press_releases(clean_symbol, limit=limit)),
     ):
         try:
             raw_items.extend(fetcher())
+            successful_endpoints += 1
         except NewsEndpointUnavailable:
             unavailable.append(label)
         except Exception as exc:  # pragma: no cover - defensive downgrade
@@ -169,15 +189,35 @@ def refresh_weekend_spread_news(
 
     items = [normalize_weekend_spread_news_record(clean_symbol, raw, fetched_at=fetched_at) for raw in raw_items]
     count = store.upsert_many(items)
+    status = "ok" if successful_endpoints > 0 else "error"
     message_parts = [f"写入 {count} 条休市新闻"]
     if unavailable:
         message_parts.append("套餐不可用：" + "、".join(unavailable))
     if errors:
         message_parts.append("部分失败：" + "；".join(errors[:2]))
-    status = "ok" if count or not errors else "error"
-    store.set_fetch_status(sample_key, status, "；".join(message_parts))
+    message = "；".join(str(part) for part in message_parts if str(part).strip())
+    store.set_fetch_status(sample_key, status, message)
+    if status == "error":
+        windows = weekend_spread_news_windows(sample)
+        store.set_check_status(
+            sample_key,
+            {
+                "symbol": clean_symbol,
+                "sample_key": sample_key,
+                "window_start_et": _format_time_for_cache(windows.get("window_start_et")),
+                "window_end_et": _format_time_for_cache(windows.get("window_end_et")),
+                "spread_pct_at_check": _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct")),
+                "news_status": NEWS_STATUS_FAILED,
+                "gap_news_explanation": GAP_EXPLANATION_INSUFFICIENT,
+                "fetch_status": status,
+                "fetch_error": message,
+                "source": "weekend_spread_afterhours_news",
+            },
+        )
+    else:
+        store.set_check_status(sample_key, build_weekend_spread_news_status(clean_symbol, sample, store=store))
     store.prune()
-    return {"status": status, "count": count, "message": "；".join(message_parts), "unavailable": unavailable, "errors": errors}
+    return {"status": status, "count": count, "message": message, "unavailable": unavailable, "errors": errors}
 
 
 def normalize_weekend_spread_news_record(symbol: str, raw: dict[str, Any], fetched_at: datetime | None = None) -> dict[str, Any]:
@@ -425,6 +465,159 @@ def split_news_by_weekend_windows(items: Iterable[dict[str, Any]], windows: dict
     return buckets
 
 
+def build_weekend_spread_news_status(
+    symbol: str,
+    sample: dict[str, Any],
+    *,
+    store: "WeekendSpreadNewsStore | None" = None,
+) -> dict[str, Any]:
+    store = store or WeekendSpreadNewsStore()
+    clean_symbol = _clean_symbol(symbol or sample.get("ticker"))
+    sample_key = weekend_spread_news_sample_key(clean_symbol, sample)
+    windows = weekend_spread_news_windows(sample)
+    if not clean_symbol or not windows.get("ok"):
+        return _news_status_payload(
+            clean_symbol,
+            sample_key,
+            windows,
+            sample,
+            NEWS_STATUS_INSUFFICIENT,
+            GAP_EXPLANATION_INSUFFICIENT,
+            fetch_status="insufficient",
+            fetch_error=str(windows.get("reason") or "缺少时间窗口、股票或价差数据"),
+        )
+
+    fetch = store.get_fetch_status(sample_key)
+    if not fetch:
+        cached = store.get_check_status(sample_key)
+        return cached or _news_status_payload(
+            clean_symbol,
+            sample_key,
+            windows,
+            sample,
+            NEWS_STATUS_UNCHECKED,
+            GAP_EXPLANATION_INSUFFICIENT,
+            fetch_status="unchecked",
+            fetch_error="",
+        )
+    if str(fetch.get("status") or "") == "error":
+        return _news_status_payload(
+            clean_symbol,
+            sample_key,
+            windows,
+            sample,
+            NEWS_STATUS_FAILED,
+            GAP_EXPLANATION_INSUFFICIENT,
+            fetch_status="error",
+            fetch_error=str(fetch.get("message") or "新闻接口请求失败"),
+        )
+
+    context = build_weekend_spread_news_context(clean_symbol, sample, store=store)
+    items = [item for item in context.get("news_items") or [] if isinstance(item, dict)]
+    major_items = [item for item in items if _is_major_news(item)]
+    opinion_items = [item for item in items if _is_opinion_news(item)]
+    positive_items = [item for item in major_items if _is_positive_news(item)]
+    negative_items = [item for item in major_items if _is_negative_news(item)]
+    premium = _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct"))
+    if not items:
+        news_status = NEWS_STATUS_NO_RELEVANT
+        explanation = GAP_EXPLANATION_NONE
+    elif opinion_items and not major_items:
+        news_status = NEWS_STATUS_OPINION
+        explanation = GAP_EXPLANATION_OPINION
+    elif not major_items:
+        news_status = NEWS_STATUS_NO_MAJOR
+        explanation = GAP_EXPLANATION_NONE
+    elif premium is None:
+        news_status = NEWS_STATUS_EXPLAINED
+        explanation = GAP_EXPLANATION_EXPLAINED
+    elif (premium >= 0 and positive_items) or (premium < 0 and negative_items):
+        news_status = NEWS_STATUS_DIRECTION_MATCH
+        explanation = GAP_EXPLANATION_MATCH
+    elif (premium >= 0 and negative_items) or (premium < 0 and positive_items):
+        news_status = NEWS_STATUS_DIRECTION_MISMATCH
+        explanation = GAP_EXPLANATION_MISMATCH
+    else:
+        news_status = NEWS_STATUS_EXPLAINED
+        explanation = GAP_EXPLANATION_EXPLAINED
+
+    return _news_status_payload(
+        clean_symbol,
+        sample_key,
+        windows,
+        sample,
+        news_status,
+        explanation,
+        major_news_count=len(major_items),
+        opinion_news_count=len(opinion_items),
+        latest_news_time=_latest_news_time(items),
+        fetch_status=str(fetch.get("status") or "ok"),
+        fetch_error=str(fetch.get("message") or ""),
+    )
+
+
+def _news_status_payload(
+    symbol: str,
+    sample_key: str,
+    windows: dict[str, Any],
+    sample: dict[str, Any],
+    news_status: str,
+    gap_news_explanation: str,
+    *,
+    major_news_count: int = 0,
+    opinion_news_count: int = 0,
+    latest_news_time: str = "",
+    fetch_status: str = "",
+    fetch_error: str = "",
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "sample_key": sample_key,
+        "window_start_et": _format_time_for_cache(windows.get("window_start_et")),
+        "window_end_et": _format_time_for_cache(windows.get("window_end_et")),
+        "spread_pct_at_check": _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct")),
+        "news_status": news_status,
+        "gap_news_explanation": gap_news_explanation,
+        "major_news_count": int(major_news_count or 0),
+        "opinion_news_count": int(opinion_news_count or 0),
+        "latest_news_time": latest_news_time,
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        "fetch_status": fetch_status,
+        "fetch_error": fetch_error,
+        "source": "weekend_spread_afterhours_news",
+    }
+
+
+def _is_major_news(item: dict[str, Any]) -> bool:
+    text = str(item.get("impact_level") or "")
+    return text in {"重大", "閲嶅ぇ"}
+
+
+def _is_positive_news(item: dict[str, Any]) -> bool:
+    text = str(item.get("sentiment_label") or "")
+    return text in {"正面", "姝ｉ潰"}
+
+
+def _is_negative_news(item: dict[str, Any]) -> bool:
+    text = str(item.get("sentiment_label") or "")
+    return text in {"负面", "璐熼潰"}
+
+
+def _is_opinion_news(item: dict[str, Any]) -> bool:
+    text = str(item.get("event_type") or "")
+    return text in {"观点文章", "瑙傜偣鏂囩珷"}
+
+
+def _latest_news_time(items: list[dict[str, Any]]) -> str:
+    times = [str(item.get("published_at_hkt") or item.get("published_at") or "") for item in items if str(item.get("published_at_hkt") or item.get("published_at") or "").strip()]
+    return max(times) if times else ""
+
+
+def _format_time_for_cache(value: Any) -> str:
+    parsed = _parse_datetime(value)
+    return parsed.isoformat() if parsed is not None else ""
+
+
 def _legacy_window_news(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     return {
         WINDOW_CLOSED_MARKET: list(items),
@@ -456,9 +649,9 @@ def _window_end_bucket(value: datetime) -> str:
 
 
 def weekend_spread_news_label(symbol: str, sample: dict[str, Any], *, store: "WeekendSpreadNewsStore | None" = None) -> str:
-    context = build_weekend_spread_news_context(symbol, sample, store=store)
-    label = str(context.get("gap_explanation_label") or "")
-    return label if label else "数据不足"
+    status = build_weekend_spread_news_status(symbol, sample, store=store)
+    label = str(status.get("news_status") or "")
+    return label if label else NEWS_STATUS_INSUFFICIENT
 
 
 def weekend_spread_news_sample_key(symbol: str, sample: dict[str, Any]) -> str:
@@ -537,6 +730,26 @@ class WeekendSpreadNewsStore:
                     fetched_at TEXT,
                     status TEXT,
                     message TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weekend_spread_news_checks (
+                    sample_key TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    window_start_et TEXT,
+                    window_end_et TEXT,
+                    spread_pct_at_check REAL,
+                    news_status TEXT,
+                    gap_news_explanation TEXT,
+                    major_news_count INTEGER,
+                    opinion_news_count INTEGER,
+                    latest_news_time TEXT,
+                    last_checked_at TEXT,
+                    fetch_status TEXT,
+                    fetch_error TEXT,
+                    source TEXT
                 )
                 """
             )
@@ -640,6 +853,48 @@ class WeekendSpreadNewsStore:
         with closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM weekend_spread_news_fetch_status WHERE sample_key=?",
+                (sample_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_check_status(self, sample_key: str, payload: dict[str, Any]) -> None:
+        columns = [
+            "sample_key",
+            "symbol",
+            "window_start_et",
+            "window_end_et",
+            "spread_pct_at_check",
+            "news_status",
+            "gap_news_explanation",
+            "major_news_count",
+            "opinion_news_count",
+            "latest_news_time",
+            "last_checked_at",
+            "fetch_status",
+            "fetch_error",
+            "source",
+        ]
+        row = {column: payload.get(column, "") for column in columns}
+        row["sample_key"] = sample_key
+        row["last_checked_at"] = row.get("last_checked_at") or datetime.now(timezone.utc).isoformat()
+        row["source"] = row.get("source") or "weekend_spread_afterhours_news"
+        update = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "sample_key")
+        placeholders = ",".join("?" for _ in columns)
+        with closing(self._connect()) as conn:
+            conn.execute(
+                f"""
+                INSERT INTO weekend_spread_news_checks({",".join(columns)})
+                VALUES({placeholders})
+                ON CONFLICT(sample_key) DO UPDATE SET {update}
+                """,
+                [row.get(column, "") for column in columns],
+            )
+            conn.commit()
+
+    def get_check_status(self, sample_key: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM weekend_spread_news_checks WHERE sample_key=?",
                 (sample_key,),
             ).fetchone()
         return dict(row) if row else None

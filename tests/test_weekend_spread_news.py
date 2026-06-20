@@ -7,6 +7,7 @@ from data.weekend_spread_news import (
     NEWS_MODE_CURRENT,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_context,
+    build_weekend_spread_news_status,
     current_shutdown_news_sample,
     current_shutdown_news_window,
     normalize_weekend_spread_news_record,
@@ -259,3 +260,102 @@ def test_news_store_closes_sqlite_connections(tmp_path) -> None:
 
     db_path.unlink()
     assert not db_path.exists()
+
+
+def test_weekend_news_status_is_unchecked_before_refresh(tmp_path) -> None:
+    store = _store(tmp_path)
+
+    status = build_weekend_spread_news_status("NVDA", _sample(), store=store)
+
+    assert status["news_status"] == "未检查"
+    assert status["gap_news_explanation"] == "数据不足"
+
+
+def test_refresh_success_with_no_news_is_no_relevant_news(tmp_path) -> None:
+    class EmptyClient:
+        def fetch_stock_news(self, symbol: str, limit: int = 30):
+            return []
+
+        def fetch_press_releases(self, symbol: str, limit: int = 30):
+            return []
+
+    store = _store(tmp_path)
+
+    result = refresh_weekend_spread_news("NVDA", _sample(), store=store, client=EmptyClient(), force=True)
+    status = build_weekend_spread_news_status("NVDA", _sample(), store=store)
+
+    assert result["status"] == "ok"
+    assert status["news_status"] == "无相关新闻"
+    assert status["gap_news_explanation"] == "无新闻解释"
+
+
+def test_refresh_failure_is_not_treated_as_no_news(tmp_path) -> None:
+    class FailingClient:
+        def fetch_stock_news(self, symbol: str, limit: int = 30):
+            raise RuntimeError("network timeout")
+
+        def fetch_press_releases(self, symbol: str, limit: int = 30):
+            raise RuntimeError("permission denied")
+
+    store = _store(tmp_path)
+
+    result = refresh_weekend_spread_news("NVDA", _sample(), store=store, client=FailingClient(), force=True)
+    status = build_weekend_spread_news_status("NVDA", _sample(), store=store)
+
+    assert result["status"] == "error"
+    assert status["news_status"] == "接口失败"
+    assert status["gap_news_explanation"] == "数据不足"
+    assert "network timeout" in status["fetch_error"]
+
+
+def test_weekend_news_status_positive_news_matches_premium(tmp_path) -> None:
+    class PositiveClient:
+        def fetch_stock_news(self, symbol: str, limit: int = 30):
+            return [
+                {
+                    "symbol": symbol,
+                    "title": "Nvidia raises guidance on AI demand",
+                    "publishedDate": "2026-06-13T10:00:00-04:00",
+                    "source": "FMP",
+                    "url": "https://example.com/nvda",
+                }
+            ]
+
+        def fetch_press_releases(self, symbol: str, limit: int = 30):
+            return []
+
+    store = _store(tmp_path)
+
+    refresh_weekend_spread_news("NVDA", _sample(premium=2.5), store=store, client=PositiveClient(), force=True)
+    status = build_weekend_spread_news_status("NVDA", _sample(premium=2.5), store=store)
+
+    assert status["news_status"] == "新闻方向一致"
+    assert status["gap_news_explanation"] == "新闻方向一致"
+    assert status["major_news_count"] == 1
+
+
+def test_weekend_news_status_opinion_article_keeps_separate_label(tmp_path) -> None:
+    class OpinionClient:
+        def fetch_stock_news(self, symbol: str, limit: int = 30):
+            return [
+                {
+                    "symbol": symbol,
+                    "title": "ServiceNow: The AI Threat Is Overstated",
+                    "publishedDate": "2026-06-13T10:00:00-04:00",
+                    "source": "Seeking Alpha",
+                    "url": "https://example.com/now",
+                }
+            ]
+
+        def fetch_press_releases(self, symbol: str, limit: int = 30):
+            return []
+
+    store = _store(tmp_path)
+    sample = {**_sample(premium=2.5), "ticker": "NOW"}
+
+    refresh_weekend_spread_news("NOW", sample, store=store, client=OpinionClient(), force=True)
+    status = build_weekend_spread_news_status("NOW", sample, store=store)
+
+    assert status["news_status"] == "观点文章"
+    assert status["gap_news_explanation"] == "观点文章，不足以解释价差"
+    assert status["opinion_news_count"] == 1

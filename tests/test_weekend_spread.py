@@ -5346,6 +5346,112 @@ def test_realtime_closed_news_label_uses_current_shutdown_window(monkeypatch: py
     assert "week_id" not in sample
 
 
+def test_realtime_closed_news_label_skips_small_spreads(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    def fake_label(symbol: str, sample: dict) -> str:
+        nonlocal called
+        called = True
+        return "无相关新闻"
+
+    monkeypatch.setattr(weekend_spread, "weekend_spread_news_label", fake_label)
+
+    label = weekend_spread._realtime_closed_news_label(
+        {
+            "ticker": "GLW",
+            "mapping_quality": "映射可用",
+            "binance_symbol": "GLWUSDT",
+            "binance_last_price": 181.0,
+            "afterhours_reference_price": 180.0,
+            "spread_vs_afterhours_pct": 0.56,
+        }
+    )
+
+    assert label == "未检查"
+    assert called is False
+
+
+def test_current_closed_news_targets_only_include_two_percent_spreads() -> None:
+    rows = [
+        {
+            "ticker": "GLW",
+            "mapping_quality": "映射可用",
+            "binance_symbol": "GLWUSDT",
+            "binance_last_price": 185.0,
+            "afterhours_reference_price": 180.0,
+            "spread_vs_afterhours_pct": 2.8,
+        },
+        {
+            "ticker": "NOW",
+            "mapping_quality": "映射可用",
+            "binance_symbol": "NOWUSDT",
+            "binance_last_price": 96.0,
+            "afterhours_reference_price": 95.5,
+            "spread_vs_afterhours_pct": 0.52,
+        },
+        {
+            "ticker": "AAOI",
+            "mapping_quality": "映射可用",
+            "binance_symbol": "AAOIUSDT",
+            "binance_last_price": 24.0,
+            "afterhours_reference_price": 25.0,
+            "spread_vs_afterhours_pct": -4.0,
+        },
+        {
+            "ticker": "IGN",
+            "mapping_quality": weekend_spread.MAPPING_IGNORED_LABEL,
+            "binance_symbol": "IGNUSDT",
+            "binance_last_price": 110.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 10.0,
+        },
+    ]
+
+    targets = weekend_spread._current_closed_news_target_rows(rows)
+
+    assert [row["ticker"] for row in targets] == ["AAOI", "GLW"]
+
+
+def test_refresh_current_closed_news_targets_uses_filtered_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshed: list[str] = []
+    rows = weekend_spread._current_closed_news_target_rows(
+        [
+            {
+                "ticker": "GLW",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "GLWUSDT",
+                "binance_last_price": 185.0,
+                "afterhours_reference_price": 180.0,
+                "spread_vs_afterhours_pct": 2.8,
+            },
+            {
+                "ticker": "NOW",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "NOWUSDT",
+                "binance_last_price": 96.0,
+                "afterhours_reference_price": 95.5,
+                "spread_vs_afterhours_pct": 0.52,
+            },
+        ]
+    )
+
+    def fake_refresh(symbol: str, sample: dict, **kwargs):
+        refreshed.append(symbol)
+        return {"status": "ok", "count": 0}
+
+    def fake_status(symbol: str, sample: dict, **kwargs):
+        return {"news_status": "无相关新闻"}
+
+    monkeypatch.setattr(weekend_spread, "refresh_weekend_spread_news", fake_refresh)
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_news_status", fake_status)
+
+    summary = weekend_spread._refresh_current_closed_news_targets(rows, store=object())
+
+    assert refreshed == ["GLW"]
+    assert summary["checked"] == 1
+    assert summary["no_relevant"] == 1
+
+
 def test_render_weekend_review_table_exists_and_uses_detail_frame(monkeypatch) -> None:
     calls: list[object] = []
     monkeypatch.setattr(weekend_spread.st, "dataframe", lambda frame, **kwargs: calls.append((frame, kwargs)))
