@@ -1,4 +1,4 @@
-"""Streamlit page for the News Radar module."""
+"""新闻雷达页面。"""
 
 from __future__ import annotations
 
