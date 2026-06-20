@@ -2036,7 +2036,19 @@ def _macro_indicator_label(indicator: str) -> str:
 
 
 def _macro_refresh_status_label(status: str) -> str:
-    return {"success": "成功", "partial": "部分成功", "failed": "失败"}.get(status, status)
+    return {"success": "成功", "partial": "部分成功", "failed": "失败"}.get(
+        status,
+        _dashboard_unknown_display_text(status, "未知"),
+    )
+
+
+def _dashboard_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _macro_refresh_indicator_status_label(status: str) -> str:
@@ -2046,7 +2058,7 @@ def _macro_refresh_indicator_status_label(status: str) -> str:
         "cached_fallback": "使用缓存",
         "stale": "过期",
         "skipped": "跳过",
-    }.get(status, status)
+    }.get(status, _dashboard_unknown_display_text(status, "未知"))
 
 
 def _macro_refresh_indicator_display_status(item: dict) -> str:
@@ -2452,7 +2464,7 @@ def _refresh_part_status_label(status: object) -> str:
         "stale": "待更新",
         "not_run": "未执行",
         "unknown": "未知",
-    }.get(text, text or "待补")
+    }.get(text, _dashboard_unknown_display_text(text, "待补"))
 
 
 def _data_health_detail_groups_html(issues: list[object]) -> str:

@@ -135,6 +135,13 @@ def test_data_health_refresh_feedback_localizes_backend_status_fields() -> None:
     assert dashboard._refresh_part_status_label("not_run") == "未执行"
     assert dashboard._refresh_part_status_label("stale") == "待更新"
     assert dashboard._refresh_part_status_label(None) == "待补"
+    assert dashboard._refresh_part_status_label("NEW_REFRESH_STATUS") == "待补"
+
+
+def test_dashboard_refresh_status_labels_do_not_show_raw_internal_codes() -> None:
+    assert dashboard._macro_refresh_status_label("NEW_MACRO_STATUS") == "未知"
+    assert dashboard._macro_refresh_indicator_status_label("NEW_INDICATOR_STATUS") == "未知"
+    assert dashboard._macro_refresh_status_label("人工复核") == "人工复核"
 
 
 def test_dashboard_legacy_na_placeholders_are_not_rendered() -> None:
