@@ -4351,9 +4351,9 @@ def _render_current_closed_market_news_tab(
     st.caption("只检查当前休市窗口内的新闻，用于判断 Binance 价差是否可能由新消息驱动。没有新闻不代表一定是错价，新闻也不等于公司基本面变化。")
 
     store = WeekendSpreadNewsStore()
-    target_rows = _current_closed_news_target_rows(realtime_rows)
+    refresh_rows = _current_closed_news_target_rows(realtime_rows)
     window = current_shutdown_news_sample("__WINDOW__")
-    _render_closed_news_current_summary(target_rows, store, window)
+    _render_closed_news_current_summary(refresh_rows, store, window)
 
     action_cols = st.columns([1.35, 1, 1, 1])
     refresh_clicked = action_cols[0].button("刷新当前价差 ≥ 2% 标的新闻", width="stretch", key="weekend_spread_refresh_current_closed_news_batch")
@@ -4361,39 +4361,47 @@ def _render_current_closed_market_news_tab(
     cache_clicked = action_cols[2].button("只读缓存", width="stretch", key="weekend_spread_read_current_closed_news_cache")
     translate_clicked = action_cols[3].button("补全中文摘要", width="stretch", key="weekend_spread_fill_current_closed_news_zh")
     if refresh_clicked or force_refresh_clicked:
-        if not target_rows:
+        if not refresh_rows:
             st.info("当前没有溢价/折价超过 2% 的标的。")
         elif st.session_state.get("weekend_spread_closed_news_refresh_running"):
             st.warning("已有新闻刷新任务正在进行。")
         else:
             force = bool(force_refresh_clicked)
-            result = _run_current_closed_news_refresh_with_progress(target_rows, store=store, force=force)
+            result = _run_current_closed_news_refresh_with_progress(refresh_rows, store=store, force=force)
             st.success(_closed_news_refresh_summary_text(result))
     if cache_clicked:
         st.info("当前页面只读取周末价差休市新闻缓存，不会请求 FMP。")
 
-    status_rows = _current_closed_news_status_rows(target_rows, store)
+    filter_label = st.selectbox(
+        "筛选",
+        ["价差 ≥ 2%", "价差 ≥ 1%", "全部可计算", "我的观察池", "我的持仓", "有新闻解释", "未检查", "接口失败"],
+        index=0,
+        key="weekend_spread_current_news_filter",
+    )
+    candidate_rows = _current_closed_news_filter_rows(realtime_rows, filter_label, watchlist=watchlist)
+    status_rows = _current_closed_news_status_rows(candidate_rows, store)
+    status_rows = _filter_current_closed_news_status_rows(status_rows, filter_label)
     all_items = _closed_news_items_for_status_rows(status_rows, store)
     if translate_clicked:
         result = store.fill_missing_translations(all_items)
         st.success(f"已补全 {result.get('title', 0)} 条中文标题，{result.get('summary', 0)} 条中文摘要，失败 {result.get('failed', 0)} 条。")
         st.rerun()
 
-    if not target_rows:
-        st.info("当前没有溢价/折价超过 2% 的标的。")
+    if not status_rows:
+        st.info(_current_closed_news_empty_text(filter_label))
         return
     st.markdown("### 价差新闻解释表")
-    st.dataframe(_current_closed_news_frame(status_rows), width="stretch", hide_index=True)
-    _render_closed_news_refresh_log(store)
-    selected_symbol = _select_current_closed_news_detail_symbol(status_rows)
+    selected_symbol = _render_current_closed_news_table(status_rows)
     if not selected_symbol:
+        _render_closed_news_refresh_log(store)
         return
     selected = next((row for row in status_rows if row.get("ticker") == selected_symbol), None)
     if not selected:
+        _render_closed_news_refresh_log(store)
         return
     context = build_weekend_spread_news_context(selected_symbol, selected["sample"], store=store)
-    _render_weekend_spread_news_core(selected_symbol, "当前休市窗口", selected["sample"], context)
-    _render_weekend_spread_news_timeline(context)
+    _render_current_closed_news_detail_panel(selected, context)
+    _render_closed_news_refresh_log(store)
 
 
 def _current_closed_news_target_rows(realtime_rows: list[dict], *, threshold_pct: float = 2.0) -> list[dict]:
@@ -4405,6 +4413,48 @@ def _current_closed_news_target_rows(realtime_rows: list[dict], *, threshold_pct
         and _mapping_display_label_for_row(row) != MAPPING_IGNORED_LABEL
     ]
     return sorted(targets, key=lambda row: abs(_number(row.get("spread_vs_afterhours_pct")) or 0), reverse=True)
+
+
+def _current_closed_news_filter_rows(realtime_rows: list[dict], filter_label: str, *, watchlist: list[str]) -> list[dict]:
+    if filter_label == "价差 ≥ 2%":
+        return _current_closed_news_target_rows(realtime_rows, threshold_pct=2.0)
+    if filter_label == "价差 ≥ 1%":
+        return _current_closed_news_target_rows(realtime_rows, threshold_pct=1.0)
+    rows = [
+        dict(row)
+        for row in realtime_rows or []
+        if _is_realtime_main_row(row)
+        and _mapping_display_label_for_row(row) != MAPPING_IGNORED_LABEL
+    ]
+    if filter_label == "我的观察池":
+        watch = {str(symbol or "").strip().upper() for symbol in watchlist if str(symbol or "").strip()}
+        rows = [row for row in rows if str(row.get("ticker") or "").strip().upper() in watch or row.get("is_watchlist")]
+    elif filter_label == "我的持仓":
+        positions = set(_portfolio_symbols())
+        rows = [row for row in rows if str(row.get("ticker") or "").strip().upper() in positions or row.get("is_position")]
+    return sorted(rows, key=lambda row: abs(_number(row.get("spread_vs_afterhours_pct")) or 0), reverse=True)
+
+
+def _filter_current_closed_news_status_rows(rows: list[dict], filter_label: str) -> list[dict]:
+    if filter_label == "有新闻解释":
+        return [
+            row
+            for row in rows
+            if str(row.get("news_status") or "") in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH, NEWS_STATUS_DIRECTION_MISMATCH}
+        ]
+    if filter_label == "未检查":
+        return [row for row in rows if str(row.get("news_status") or "") == NEWS_STATUS_UNCHECKED]
+    if filter_label == "接口失败":
+        return [row for row in rows if str(row.get("news_status") or "") == NEWS_STATUS_FAILED]
+    return rows
+
+
+def _current_closed_news_empty_text(filter_label: str) -> str:
+    if filter_label == "价差 ≥ 2%":
+        return "当前没有溢价/折价超过 2% 的标的。"
+    if filter_label == "价差 ≥ 1%":
+        return "当前没有溢价/折价超过 1% 的标的。"
+    return f"当前筛选“{filter_label}”没有可展示标的。"
 
 
 def _closed_news_sample_for_realtime_row(row: dict) -> dict:
@@ -4476,7 +4526,7 @@ def _current_closed_news_status_rows(rows: list[dict], store: WeekendSpreadNewsS
 
 
 def _current_closed_news_frame(rows: list[dict]) -> pd.DataFrame:
-    columns = ["股票", "当前价差%", "日常波动参照", "休市新闻状态", "新闻解释", "重大新闻数", "观点文章数", "最近新闻时间", "缓存状态", "最近检查时间", "操作"]
+    columns = ["股票", "当前价差", "日常波动参照", "新闻状态", "新闻解释", "重大新闻", "观点文章", "最近新闻", "最近检查"]
     if not rows:
         return pd.DataFrame(columns=columns)
     records = []
@@ -4484,30 +4534,240 @@ def _current_closed_news_frame(rows: list[dict]) -> pd.DataFrame:
         records.append(
             {
                 "股票": row.get("ticker"),
-                "当前价差%": _afterhours_spread_text(row.get("spread_pct")),
+                "当前价差": _afterhours_spread_text(row.get("spread_pct")),
                 "日常波动参照": row.get("daily_volatility") or "缺波动数据",
-                "休市新闻状态": row.get("news_status") or "未检查",
+                "新闻状态": _closed_news_table_status(row),
                 "新闻解释": row.get("gap_news_explanation") or "数据不足",
-                "重大新闻数": row.get("major_news_count") or 0,
-                "观点文章数": row.get("opinion_news_count") or 0,
-                "最近新闻时间": _short_hkt_time(row.get("latest_news_time")),
-                "缓存状态": row.get("cache_status") or "未检查",
-                "最近检查时间": _short_hkt_time(row.get("last_checked_at")),
-                "操作": "下方选择查看详情",
+                "重大新闻": row.get("major_news_count") or 0,
+                "观点文章": row.get("opinion_news_count") or 0,
+                "最近新闻": _short_hkt_time(row.get("latest_news_time")) if row.get("latest_news_time") else "—",
+                "最近检查": _short_hkt_time(row.get("last_checked_at")) if row.get("last_checked_at") else "未检查",
             }
         )
     return pd.DataFrame(records, columns=columns)
 
 
-def _select_current_closed_news_detail_symbol(rows: list[dict]) -> str:
-    options = [str(row.get("ticker") or "").strip().upper() for row in rows if str(row.get("ticker") or "").strip()]
-    if not options:
+def _closed_news_table_status(row: dict) -> str:
+    news_status = str(row.get("news_status") or "").strip()
+    cache_status = str(row.get("cache_status") or "").strip()
+    if cache_status == NEWS_CACHE_VALID and news_status == NEWS_STATUS_UNCHECKED:
+        return NEWS_CACHE_VALID
+    return news_status or NEWS_STATUS_UNCHECKED
+
+
+def _default_current_closed_news_detail_symbol(rows: list[dict]) -> str:
+    if not rows:
         return ""
     preferred = str(st.session_state.get("weekend_spread_news_symbol") or "").strip().upper()
-    index = options.index(preferred) if preferred in options else 0
-    selected = st.selectbox("查看单只休市新闻详情", options, index=index, key="weekend_spread_current_news_detail_symbol")
-    st.session_state["weekend_spread_news_symbol"] = selected
-    return str(selected or "").strip().upper()
+    tickers = [str(row.get("ticker") or "").strip().upper() for row in rows if str(row.get("ticker") or "").strip()]
+    if preferred in tickers:
+        return preferred
+    for row in rows:
+        if str(row.get("news_status") or "") in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH}:
+            return str(row.get("ticker") or "").strip().upper()
+    return str(max(rows, key=lambda row: abs(_number(row.get("spread_pct")) or 0)).get("ticker") or "").strip().upper()
+
+
+def _render_current_closed_news_table(rows: list[dict]) -> str:
+    frame = _current_closed_news_frame(rows)
+    default_symbol = _default_current_closed_news_detail_symbol(rows)
+    selected_symbol = default_symbol
+    try:
+        selection = st.dataframe(
+            frame,
+            width="stretch",
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="weekend_spread_current_news_table",
+        )
+        selected_rows = _selected_dataframe_rows(selection)
+        if selected_rows:
+            index = selected_rows[0]
+            if 0 <= index < len(rows):
+                selected_symbol = str(rows[index].get("ticker") or "").strip().upper()
+    except TypeError:
+        selected_symbol = _render_current_closed_news_table_fallback(frame, rows, default_symbol)
+    if selected_symbol:
+        st.session_state["weekend_spread_news_symbol"] = selected_symbol
+    return selected_symbol
+
+
+def _selected_dataframe_rows(selection: object) -> list[int]:
+    raw_selection = getattr(selection, "selection", None)
+    if isinstance(raw_selection, dict):
+        rows = raw_selection.get("rows") or []
+    elif raw_selection is not None:
+        rows = getattr(raw_selection, "rows", []) or []
+    elif isinstance(selection, dict):
+        rows = (selection.get("selection") or {}).get("rows") or []
+    else:
+        rows = []
+    return [int(row) for row in rows if str(row).strip().isdigit()]
+
+
+def _render_current_closed_news_table_fallback(frame: pd.DataFrame, rows: list[dict], default_symbol: str) -> str:
+    edit_frame = frame.copy()
+    edit_frame.insert(0, "选择", edit_frame["股票"].astype(str).str.upper() == default_symbol)
+    edited = st.data_editor(
+        edit_frame,
+        width="stretch",
+        hide_index=True,
+        disabled=[column for column in edit_frame.columns if column != "选择"],
+        column_config={"选择": st.column_config.CheckboxColumn("选择")},
+        key="weekend_spread_current_news_table_fallback",
+    )
+    selected = edited[edited["选择"] == True] if isinstance(edited, pd.DataFrame) and "选择" in edited.columns else pd.DataFrame()
+    if not selected.empty:
+        symbol = str(selected.iloc[0].get("股票") or "").strip().upper()
+        if symbol:
+            return symbol
+    return default_symbol
+
+
+def _render_current_closed_news_detail_panel(row: dict, context: dict) -> None:
+    symbol = str(row.get("ticker") or "").strip().upper()
+    sample = row.get("sample") or {}
+    st.markdown(f"### {symbol} 休市新闻解释")
+    st.markdown("#### 价差摘要")
+    _render_current_closed_news_spread_summary(row)
+    st.markdown("#### 新闻解释结论")
+    conclusion = _current_closed_news_conclusion(row, context)
+    if str(row.get("news_status") or "") == NEWS_STATUS_FAILED:
+        st.warning(conclusion)
+    elif str(row.get("news_status") or "") in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH, NEWS_STATUS_DIRECTION_MISMATCH}:
+        st.info(conclusion)
+    else:
+        st.caption(conclusion)
+    st.markdown("#### 相关新闻列表")
+    items = _sorted_current_news_items([item for item in context.get("news_items") or [] if isinstance(item, dict)])
+    if not items:
+        _render_current_closed_news_empty_detail(row)
+    else:
+        _render_current_news_compact_cards(items, row)
+    with st.expander("原始详情", expanded=False):
+        st.write(f"休市窗口：{_short_et_time(sample.get('window_start_et'))} → {_short_et_time(sample.get('window_end_et'))}")
+        st.write(f"缓存状态：{row.get('cache_status') or '未检查'}")
+        st.write(f"最近检查：{_short_hkt_time(row.get('last_checked_at')) if row.get('last_checked_at') else '未检查'}")
+        if row.get("fetch_error"):
+            st.write(f"接口错误：{row.get('fetch_error')}")
+
+
+def _render_current_closed_news_spread_summary(row: dict) -> None:
+    sample = row.get("sample") or {}
+    p0 = _money_or_missing(sample.get("friday_afterhours_close"), "缺盘后锚点")
+    p1 = _money_or_missing(sample.get("binance_price"), "缺 Binance 价格")
+    spread = _afterhours_spread_text(row.get("spread_pct"))
+    cols = st.columns([1.2, 1, 1, 1])
+    cols[0].markdown(f"**{row.get('ticker')}｜当前休市窗口**")
+    cols[0].caption(f"{p0} → {p1} → {spread}")
+    cols[1].metric("当前价差", spread)
+    cols[2].metric("日常波动参照", str(row.get("daily_volatility") or "缺波动数据"))
+    cols[3].metric("新闻状态", _closed_news_table_status(row))
+    st.caption(_current_closed_news_spread_note(row))
+
+
+def _current_closed_news_spread_note(row: dict) -> str:
+    status = str(row.get("news_status") or "")
+    daily = str(row.get("daily_volatility") or "缺波动数据")
+    spread = _afterhours_spread_text(row.get("spread_pct"))
+    if status in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH}:
+        return f"当前价差 {spread}，{daily}。存在可能解释价差的休市新闻，需要先复核新闻影响。"
+    if status == NEWS_STATUS_FAILED:
+        return f"当前价差 {spread}，{daily}。新闻接口失败，暂时不能判断是否有新闻解释。"
+    return f"当前价差 {spread}，{daily}。先看是否有明确新闻解释，再判断是否可能只是流动性或映射溢价。"
+
+
+def _current_closed_news_conclusion(row: dict, context: dict) -> str:
+    status = str(row.get("news_status") or "")
+    explanation = str(row.get("gap_news_explanation") or "")
+    if status == NEWS_STATUS_UNCHECKED:
+        return "尚未检查该股票休市新闻。点击刷新后，系统会检查当前休市窗口内是否有相关新闻。"
+    if status == NEWS_STATUS_NO_RELEVANT:
+        return "FMP 请求成功，当前休市窗口内没有相关新闻。本轮 Binance 价差缺少明确新闻解释，更可能来自流动性、映射溢价、资金行为或市场预期。"
+    if status == NEWS_STATUS_NO_MAJOR:
+        return "当前休市窗口内有新闻，但没有重大或相关基本面新闻。本轮价差暂无明确新闻解释。"
+    if status in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH}:
+        return "当前休市窗口内存在相关新闻，方向与 Binance 价差大致一致，价差可能部分受到新闻催化。"
+    if status == NEWS_STATUS_DIRECTION_MISMATCH:
+        return "当前休市窗口内有新闻，但方向与 Binance 价差不一致，暂不足以解释本轮价差。"
+    if status == NEWS_STATUS_OPINION:
+        return "当前主要为观点文章，不属于明确公司基本面事件，不能直接解释为基本面变化。"
+    if status == NEWS_STATUS_FAILED:
+        return "新闻接口请求失败，不能判断是否有新闻解释。"
+    if status == NEWS_STATUS_CACHE_EXPIRED:
+        return "当前缓存已过期，请刷新后再判断是否有新闻解释。"
+    if explanation:
+        return explanation
+    return "当前新闻解释数据不足，暂时无法判断价差是否由新闻驱动。"
+
+
+def _render_current_closed_news_empty_detail(row: dict) -> None:
+    status = str(row.get("news_status") or "")
+    if status == NEWS_STATUS_UNCHECKED:
+        st.info("尚未检查该股票休市新闻。点击刷新后，系统会检查当前休市窗口内是否有相关新闻。")
+    elif status == NEWS_STATUS_NO_RELEVANT:
+        st.info("FMP 请求成功，当前休市窗口内没有相关新闻。")
+    elif status == NEWS_STATUS_FAILED:
+        st.warning("新闻接口请求失败，不能判断是否有新闻解释。")
+    else:
+        st.caption("当前休市窗口内暂无可展示新闻。")
+
+
+def _sorted_current_news_items(items: list[dict]) -> list[dict]:
+    return sorted(items, key=_current_news_sort_key)
+
+
+def _current_news_sort_key(item: dict) -> tuple[int, float]:
+    impact = str(item.get("impact_level") or "")
+    gap = str(item.get("gap_explanation_label") or "")
+    event = str(item.get("event_type") or "")
+    priority = 4
+    if impact == "重大":
+        priority = 0
+    elif gap == "新闻方向一致":
+        priority = 1
+    elif gap == "新闻方向不一致":
+        priority = 2
+    elif event == "观点文章":
+        priority = 3
+    published = _parse_et_datetime(item.get("published_at_hkt") or item.get("published_at"))
+    timestamp = -published.timestamp() if published is not None else 0
+    return (priority, timestamp)
+
+
+def _render_current_news_compact_cards(items: list[dict], row: dict) -> None:
+    for item in items:
+        event = _display_text(item.get("event_type"), "待判断")
+        sentiment = _display_text(item.get("sentiment_label"), "待判断")
+        impact = _display_text(item.get("impact_level"), "低")
+        source = _display_text(item.get("source") or item.get("site"), "未知来源")
+        published = _short_hkt_time(item.get("published_at_hkt") or item.get("published_at"))
+        title_zh = _display_text(item.get("title_zh"), "")
+        original_title = _display_text(item.get("original_title") or item.get("title"), "原文标题缺失")
+        title_line = title_zh or f"{original_title}（待翻译）"
+        summary = _display_text(item.get("summary_zh"), "待生成摘要。")
+        relevance = _display_text(item.get("relevance_reason_zh"), "需要人工复核影响。")
+        gap_label = _display_text(item.get("gap_explanation_label") or row.get("gap_news_explanation"), "待复核")
+        link = weekend_news_source_link_text(item)
+        st.markdown(f"**{event}｜{sentiment}｜{impact}｜{source}｜{published}**")
+        st.markdown(f"**{title_line}**")
+        st.write(f"摘要：{summary}")
+        st.write(f"是否解释价差：{gap_label}。{relevance}")
+        st.markdown(link)
+        with st.expander("展开原文信息", expanded=False):
+            st.write(f"原文标题：{original_title}")
+            if link == WEEKEND_NEWS_MISSING_URL_TEXT:
+                st.write(WEEKEND_NEWS_MISSING_URL_TEXT)
+            else:
+                st.markdown(f"原文链接：{link}")
+            st.write(f"原始来源：{source}")
+            st.write(f"发布时间：{published}")
+            st.write(f"事件类型：{event}")
+            st.write(f"命中关键词：{_keywords_hit_text(item)}")
+            raw_summary = _display_text(item.get("summary") or item.get("original_text") or item.get("raw_text"), "暂无原始摘要")
+            st.write(f"原始摘要：{raw_summary}")
+        st.divider()
 
 
 def _run_current_closed_news_refresh_with_progress(

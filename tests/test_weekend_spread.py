@@ -5496,6 +5496,71 @@ def test_current_closed_news_targets_only_include_two_percent_spreads() -> None:
     assert [row["ticker"] for row in targets] == ["AAOI", "GLW"]
 
 
+def test_current_closed_news_frame_removes_operation_column() -> None:
+    frame = weekend_spread._current_closed_news_frame(
+        [
+            {
+                "ticker": "INTC",
+                "spread_pct": 2.92,
+                "daily_volatility": "约 0.4 天波动",
+                "news_status": "新闻方向一致",
+                "gap_news_explanation": "新闻方向一致",
+                "major_news_count": 1,
+                "opinion_news_count": 0,
+                "latest_news_time": "2026-06-20T17:01:00+08:00",
+                "last_checked_at": "2026-06-20T18:01:00+08:00",
+            }
+        ]
+    )
+
+    assert list(frame.columns) == ["股票", "当前价差", "日常波动参照", "新闻状态", "新闻解释", "重大新闻", "观点文章", "最近新闻", "最近检查"]
+    assert "操作" not in frame.columns
+    assert "下方选择查看详情" not in frame.to_string()
+    assert frame.loc[0, "新闻状态"] == "新闻方向一致"
+
+
+def test_current_closed_news_default_selection_prefers_explained_news() -> None:
+    rows = [
+        {"ticker": "GLW", "spread_pct": 5.1, "news_status": "无相关新闻"},
+        {"ticker": "INTC", "spread_pct": 2.9, "news_status": "有新闻解释"},
+    ]
+
+    assert weekend_spread._default_current_closed_news_detail_symbol(rows) == "INTC"
+
+
+def test_current_closed_news_default_selection_falls_back_to_largest_spread() -> None:
+    rows = [
+        {"ticker": "GLW", "spread_pct": 5.1, "news_status": "无相关新闻"},
+        {"ticker": "INTC", "spread_pct": 2.9, "news_status": "未检查"},
+    ]
+
+    assert weekend_spread._default_current_closed_news_detail_symbol(rows) == "GLW"
+
+
+def test_current_closed_news_table_uses_row_selection_without_dropdown() -> None:
+    table_source = inspect.getsource(weekend_spread._render_current_closed_news_table)
+    tab_source = inspect.getsource(weekend_spread._render_current_closed_market_news_tab)
+
+    assert 'on_select="rerun"' in table_source
+    assert 'selection_mode="single-row"' in table_source
+    assert "_render_current_closed_news_table_fallback" in table_source
+    assert "查看单只休市新闻详情" not in tab_source
+    assert "下方选择查看详情" not in tab_source
+
+
+def test_current_closed_news_detail_panel_has_clear_sections() -> None:
+    source = inspect.getsource(weekend_spread._render_current_closed_news_detail_panel)
+    cards_source = inspect.getsource(weekend_spread._render_current_news_compact_cards)
+
+    assert "价差摘要" in source
+    assert "新闻解释结论" in source
+    assert "相关新闻列表" in source
+    assert "原始详情" in source
+    assert "title_zh or" in cards_source
+    assert "展开原文信息" in cards_source
+    assert "查看原文" in cards_source or "weekend_news_source_link_text" in cards_source
+
+
 def test_refresh_current_closed_news_targets_uses_filtered_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     refreshed: list[str] = []
     recorded_batches: list[dict] = []
