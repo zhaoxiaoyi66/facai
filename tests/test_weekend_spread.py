@@ -845,9 +845,11 @@ def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_i
     frame = weekend_spread._live_frame(rows)
     assert "价差" not in frame.columns
     assert frame.loc[0, "原始价差"] == "+8.44%"
-    assert "平时偏差" not in frame.columns
-    assert "净价差" not in frame.columns
+    assert frame.loc[0, "平日基差"] == "未采集"
+    assert frame.loc[0, "净价差"] == "待采集"
+    assert frame.loc[0, "基差质量"] == "未采集"
     assert "基差不足" not in frame.to_string()
+    assert "暂缺" not in frame[["平日基差", "净价差", "基差质量"]].to_string()
 
 
 def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
@@ -6124,6 +6126,9 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "股票",
         "价格对比",
         "原始价差",
+        "平日基差",
+        "净价差",
+        "基差质量",
         "日常波动参照",
         "判断",
         "休市新闻",
@@ -6132,8 +6137,6 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
     ]
     assert frame.loc[0, "价格对比"] == "$102.88 → $104.58"
     assert frame.loc[0, "原始价差"] == "+1.65%"
-    assert "平时偏差" not in frame.columns
-    assert "净价差" not in frame.columns
     assert "基差不足" not in frame.to_string()
     assert "波动倍数" not in frame.columns
     assert "价差分位" not in frame.columns
@@ -6226,8 +6229,9 @@ def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
 
     assert frame.loc[0, "价格对比"] == "$195.49 → $203.16"
     assert frame.loc[0, "原始价差"] == "+3.92%"
-    assert frame.loc[0, "平时偏差"] == "+0.40%"
+    assert frame.loc[0, "平日基差"] == "+0.40%"
     assert frame.loc[0, "净价差"] == "+3.52%"
+    assert frame.loc[0, "基差质量"] == "可用"
     assert frame.loc[0, "日常波动参照"] == "约 1.8 天波动"
     assert frame.loc[0, "判断"] == "异常"
     assert frame.loc[0, "更新时间"] == "11:28 HKT"
@@ -6249,8 +6253,40 @@ def test_live_frame_shows_missing_volatility_in_plain_language() -> None:
     )
 
     assert frame.loc[0, "日常波动参照"] == "缺波动数据"
-    assert "平时偏差" not in frame.columns
-    assert "净价差" not in frame.columns
+    assert frame.loc[0, "平日基差"] == "未采集"
+    assert frame.loc[0, "净价差"] == "待采集"
+    assert frame.loc[0, "基差质量"] == "未采集"
+
+
+def test_live_frame_shows_limited_normal_basis_preview_without_formal_signal() -> None:
+    frame = weekend_spread._live_frame(
+        [
+            {
+                "ticker": "GLW",
+                "binance_last_price": 203.16,
+                "afterhours_reference_price": 195.49,
+                "spread_vs_afterhours_pct": 3.92,
+                "raw_spread_pct": 3.92,
+                "normal_basis_pct": 0.35,
+                "normal_basis_usable": False,
+                "normal_basis_sample_count": 5,
+                "normal_basis_trading_days_count": 1,
+                "normal_basis_quality": "样本较少",
+                "adjusted_spread_preview_pct": 3.57,
+                "spread_atr_ratio": 1.2,
+                "spread_reasonableness_label": "明显偏离",
+                "mapping_quality": "映射可用",
+                "updated_at": "2026-06-20T03:28:00+00:00",
+            }
+        ]
+    )
+
+    assert frame.loc[0, "原始价差"] == "+3.92%"
+    assert frame.loc[0, "平日基差"] == "预览 +0.35%"
+    assert frame.loc[0, "净价差"] == "预估 +3.57%"
+    assert frame.loc[0, "基差质量"] == "样本较少"
+    assert "不足" not in frame[["平日基差", "净价差", "基差质量"]].to_string()
+    assert "暂缺" not in frame[["平日基差", "净价差", "基差质量"]].to_string()
 
 
 def test_realtime_basis_status_gracefully_degrades_without_samples() -> None:
@@ -6287,8 +6323,8 @@ def test_open_market_basis_profile_frame_uses_chinese_labels() -> None:
         },
     )
 
-    assert list(frame.columns) == ["股票", "Binance 合约", "平时偏差", "5日偏差", "20日偏差", "样本数", "覆盖交易日", "最近采集", "数据质量"]
-    assert frame.loc[0, "平时偏差"] == "+0.42%"
+    assert list(frame.columns) == ["股票", "Binance 合约", "平日基差", "5日基差", "20日基差", "样本数", "覆盖交易日", "最近采集", "数据质量"]
+    assert frame.loc[0, "平日基差"] == "+0.42%"
     assert "normal_basis_median_pct" not in frame.to_string()
 
 
@@ -6570,7 +6606,7 @@ def test_realtime_summary_uses_abnormal_wording_without_false_alarm() -> None:
     assert weekend_spread._realtime_most_abnormal_row([normal_row]) is None
     assert weekend_spread._summary_abnormal_lines(None)[0] == "无明显异常"
     assert weekend_spread._summary_deviation_lines(normal_row)[1] == "净 +3.52%"
-    assert weekend_spread._summary_deviation_lines(normal_row)[2] == "原始 +3.92%，平时 +0.40%"
+    assert weekend_spread._summary_deviation_lines(normal_row)[2] == "原始 +3.92%，平日基差 +0.40%"
     assert "+$" not in " ".join(weekend_spread._summary_deviation_lines(normal_row))
 
 

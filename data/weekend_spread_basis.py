@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta, timezone
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from statistics import median
 from typing import Any, Iterable
@@ -18,9 +21,10 @@ from settings import PROJECT_ROOT
 
 
 DEFAULT_BASIS_DB_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_basis.sqlite3"
+DEFAULT_BASIS_TASK_NAME = "facai_weekend_spread_basis_collector"
 QUALITY_SUFFICIENT = "可用"
-QUALITY_LIMITED = "样本不足"
-QUALITY_INSUFFICIENT = "样本不足"
+QUALITY_LIMITED = "样本较少"
+QUALITY_INSUFFICIENT = "数据异常"
 QUALITY_TIME_MISALIGNED = "时间未对齐"
 QUALITY_UNAVAILABLE = "未采集"
 BASIS_SOURCE = "weekend_spread_open_market_basis"
@@ -167,6 +171,37 @@ def collect_open_market_basis_once(
         "sample_time_et": current_et.isoformat(),
         "samples": samples,
     }
+
+
+def install_open_market_basis_task(*, task_name: str = DEFAULT_BASIS_TASK_NAME, interval_minutes: int = 5) -> dict[str, Any]:
+    if os.name != "nt":
+        return {"ok": False, "message": "当前环境不支持 Windows 任务计划，请在美股开市时手动采集。"}
+    python_exe = _windowless_python_executable()
+    script = PROJECT_ROOT / "tools" / "weekend_spread_basis_collector.py"
+    if not python_exe.exists() or not script.exists():
+        return {"ok": False, "message": "开市基差采集任务路径不存在，无法安装。"}
+    arguments = "tools\\weekend_spread_basis_collector.py --once --source scheduler --quiet"
+    ps_script = "\n".join(
+        [
+            f"$Action = New-ScheduledTaskAction -Execute '{_ps_quote(str(python_exe))}' -Argument '{_ps_quote(arguments)}' -WorkingDirectory '{_ps_quote(str(PROJECT_ROOT))}'",
+            f"$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes {max(1, int(interval_minutes))}) -RepetitionDuration (New-TimeSpan -Days 3650)",
+            "$Settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)",
+            f"Register-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Action $Action -Trigger $Trigger -Settings $Settings -Description 'facai weekend spread open-market basis collector silent task' -Force | Out-Null",
+        ]
+    )
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        creationflags=flags,
+    )
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "").strip()
+        return {"ok": False, "message": f"开市基差采集任务安装失败：{error or '未知错误'}"}
+    mode = "静默模式" if python_exe.name.lower() == "pythonw.exe" else "隐藏窗口模式"
+    return {"ok": True, "message": f"已安装开市基差采集任务（每 5 分钟，{mode}）。"}
 
 
 def save_basis_samples(samples: Iterable[dict[str, Any]], *, db_path: Path = DEFAULT_BASIS_DB_PATH) -> int:
@@ -405,7 +440,7 @@ def _profile_quality(*, aligned_count: int, aligned_days: int, recent_count: int
         return QUALITY_TIME_MISALIGNED
     if aligned_count >= 30 and aligned_days >= 3:
         return QUALITY_SUFFICIENT
-    if aligned_count >= 10:
+    if aligned_count > 0:
         return QUALITY_LIMITED
     return QUALITY_INSUFFICIENT
 
@@ -423,7 +458,7 @@ def _empty_profile(ticker: str) -> BasisProfile:
         latest_sample_time="",
         aligned_sample_count=0,
         misaligned_sample_count=0,
-        basis_quality=QUALITY_INSUFFICIENT,
+        basis_quality=QUALITY_UNAVAILABLE,
     )
 
 
@@ -450,6 +485,22 @@ def _empty_sample_frame() -> pd.DataFrame:
 def _to_et(value: datetime) -> datetime:
     current = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     return current.astimezone(US_EASTERN)
+
+
+def _windowless_python_executable() -> Path:
+    scripts_dir = PROJECT_ROOT / ".venv" / "Scripts"
+    if os.name == "nt":
+        pythonw = scripts_dir / "pythonw.exe"
+        if pythonw.exists():
+            return pythonw
+    bundled = scripts_dir / "python.exe"
+    if bundled.exists():
+        return bundled
+    return Path(sys.executable)
+
+
+def _ps_quote(value: str) -> str:
+    return str(value).replace("'", "''")
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

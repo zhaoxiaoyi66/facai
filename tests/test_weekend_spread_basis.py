@@ -8,6 +8,7 @@ import pytest
 from data.us_market_session import US_EASTERN
 from data.weekend_spread_basis import (
     QUALITY_INSUFFICIENT,
+    QUALITY_LIMITED,
     QUALITY_SUFFICIENT,
     QUALITY_TIME_MISALIGNED,
     build_normal_basis_profile,
@@ -53,7 +54,7 @@ def test_normal_basis_profile_uses_recent_aligned_median(tmp_path) -> None:
 
     assert profile["normal_basis_median_pct"] == pytest.approx(0.35)
     assert profile["sample_count"] == 6
-    assert profile["basis_quality"] == QUALITY_INSUFFICIENT
+    assert profile["basis_quality"] == QUALITY_LIMITED
 
 
 def test_normal_basis_profile_is_usable_after_thirty_samples_and_three_days(tmp_path) -> None:
@@ -126,6 +127,14 @@ def test_collect_open_market_basis_once_writes_sample_and_profile(tmp_path) -> N
     assert result["collected_count"] == 1
     assert result["samples"][0]["basis_pct"] == pytest.approx(1.0)
     assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
+    assert profile["basis_quality"] == QUALITY_LIMITED
+
+
+def test_empty_normal_basis_profile_is_marked_uncollected(tmp_path) -> None:
+    profile = build_normal_basis_profile("GLW", db_path=tmp_path / "basis.sqlite3")
+
+    assert profile["sample_count"] == 0
+    assert profile["basis_quality"] == "未采集"
 
 
 def test_basis_collector_script_supports_quiet_mode() -> None:
@@ -133,3 +142,13 @@ def test_basis_collector_script_supports_quiet_mode() -> None:
 
     assert "--quiet" in source
     assert "collect_open_market_basis_once" in source
+
+
+def test_basis_task_installer_uses_silent_scheduler_command() -> None:
+    source = (Path(__file__).resolve().parents[1] / "data" / "weekend_spread_basis.py").read_text(encoding="utf-8")
+
+    assert "install_open_market_basis_task" in source
+    assert "pythonw.exe" in source
+    assert "--quiet" in source
+    assert "Register-ScheduledTask" in source
+    assert "-Hidden" in source
