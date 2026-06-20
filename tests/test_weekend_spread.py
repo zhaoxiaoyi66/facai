@@ -831,7 +831,8 @@ def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_i
     assert round(row["spread_vs_afterhours_pct"], 2) == 8.44
 
     frame = weekend_spread._live_frame(rows)
-    assert frame.loc[0, "相对收盘"] == "+12.56%"
+    assert frame.loc[0, "价差"] == "+$21.94"
+    assert frame.loc[0, "价差%"] == "+8.44%"
 
 
 def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
@@ -6001,22 +6002,22 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "股票",
         "盘后锚点",
         "Binance 最新",
-        "相对盘后",
-        "相对收盘",
-        "20日平均振幅",
-        "ATR14",
-        "价差/ATR",
-        "价差分位",
-        "价差理性度",
-        "状态",
+        "价差",
+        "价差%",
+        "波动倍数",
+        "判断",
         "休市新闻",
         "标签",
         "更新时间",
     ]
     assert frame.loc[0, "Binance 最新"] == "$104.58"
-    assert frame.loc[0, "相对盘后"] == "+1.65%"
-    assert frame.loc[0, "相对收盘"] == "+2.38%"
-    assert frame.loc[0, "价差理性度"] == "波动数据不足"
+    assert frame.loc[0, "价差"] == "+$1.70"
+    assert frame.loc[0, "价差%"] == "+1.65%"
+    assert frame.loc[0, "判断"] == "数据不足"
+    assert "价差分位" not in frame.columns
+    assert "ATR14" not in frame.columns
+    assert "20日平均振幅" not in frame.columns
+    assert "相对收盘" not in frame.columns
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns
@@ -6048,6 +6049,64 @@ def test_realtime_rows_are_annotated_with_cached_volatility(monkeypatch: pytest.
     assert round(annotated[0]["avg_range_20d"], 2) == 4.0
     assert annotated[0]["spread_atr_ratio"] == pytest.approx(1.0)
     assert annotated[0]["spread_reasonableness_label"] == "极端价差"
+
+
+def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
+    frame = weekend_spread._live_frame(
+        [
+            {
+                "ticker": "GLW",
+                "binance_last_price": 203.16,
+                "afterhours_reference_price": 195.49,
+                "spread_vs_afterhours_pct": 3.92,
+                "spread_atr_ratio": 1.8,
+                "spread_reasonableness_label": SPREAD_REASON_ANOMALY,
+                "closed_market_news_label": "无重大新闻",
+                "updated_at": "2026-06-20T03:28:00+00:00",
+                "mapping_quality": "映射可用",
+            }
+        ]
+    )
+
+    assert frame.loc[0, "价差"] == "+$7.67"
+    assert frame.loc[0, "价差%"] == "+3.92%"
+    assert frame.loc[0, "波动倍数"] == "1.80x"
+    assert frame.loc[0, "判断"] == "异常"
+
+
+def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
+    rows = [
+        {
+            "ticker": "HIGH_PCT",
+            "binance_last_price": 106,
+            "afterhours_reference_price": 100,
+            "spread_vs_afterhours_pct": 6.0,
+            "spread_atr_ratio": 0.8,
+            "spread_reasonableness_label": "轻微偏离",
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "HIGH_RATIO",
+            "binance_last_price": 103,
+            "afterhours_reference_price": 100,
+            "spread_vs_afterhours_pct": 3.0,
+            "spread_atr_ratio": 2.1,
+            "spread_reasonableness_label": SPREAD_REASON_EXTREME,
+            "mapping_quality": "映射可用",
+        },
+    ]
+
+    ordered = sorted(rows, key=weekend_spread._realtime_sort_key)
+
+    assert ordered[0]["ticker"] == "HIGH_RATIO"
+
+
+def test_realtime_detail_percentile_is_human_readable() -> None:
+    sentence = weekend_spread._spread_percentile_sentence({"spread_percentile": 92})
+
+    assert "过去60天" in sentence
+    assert "极端偏离" in sentence
+    assert "spread_percentile" not in sentence
 
 
 def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
@@ -6152,7 +6211,8 @@ def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current
     assert weekend_spread._realtime_row_status_label(wdc) == "锚点缺失"
 
     frame = weekend_spread._live_frame([wdc])
-    assert frame.loc[0, "状态"] == "锚点缺失"
+    assert frame.loc[0, "价差%"] == "--"
+    assert frame.loc[0, "判断"] == "数据不足"
     assert "映射可用" in frame.loc[0, "标签"]
 
 
@@ -6288,9 +6348,9 @@ def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
 def test_realtime_default_filter_prefers_non_empty_scope() -> None:
     assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 3, "价格可用但锚点缺失": 4}) == "全部可计算"
     assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 0, "锚点缺失": 4}) == "锚点缺失"
-    assert weekend_spread._default_realtime_filter_pair({"异常偏离": 2, "全部可计算": 3}) == ("全部可计算", "异常偏离")
-    assert weekend_spread._default_realtime_filter_pair({"异常偏离": 0, "全部可计算": 3}) == ("全部可计算", "全部状态")
-    assert weekend_spread._scope_from_realtime_filter_label("异常偏离 0", ["全部可计算", "异常偏离"]) == "异常偏离"
+    assert weekend_spread._default_realtime_filter_pair({"异常 / 极端": 2, "全部可计算": 3}) == ("全部可计算", "异常 / 极端")
+    assert weekend_spread._default_realtime_filter_pair({"异常 / 极端": 0, "全部可计算": 3}) == ("全部可计算", "全部状态")
+    assert weekend_spread._scope_from_realtime_filter_label("异常 / 极端 0", ["全部可计算", "异常 / 极端"]) == "异常 / 极端"
     assert weekend_spread._scope_from_realtime_filter_label("全部 Binance 美股映射 0", ["全部可计算"]) == "全部可计算"
 
 
@@ -6322,7 +6382,7 @@ def test_realtime_combined_filters_select_status_without_batch_details() -> None
     ]
 
     all_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|全部状态")
-    review_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|异常偏离")
+    review_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|异常 / 极端")
     missing_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|锚点缺失")
 
     assert [row["ticker"] for row in all_rows] == ["NBIS", "CRM"]
