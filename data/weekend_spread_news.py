@@ -9,11 +9,14 @@ from zoneinfo import ZoneInfo
 
 from data.news_radar import FMPNewsClient, NewsEndpointUnavailable, normalize_news_record
 from data.providers import get_secret
+from data.us_market_session import _is_trading_day, _previous_trading_day
 
 ET = ZoneInfo("America/New_York")
 HKT = ZoneInfo("Asia/Hong_Kong")
 NEWS_CACHE_PATH = Path("data/cache/weekend_spread_news.sqlite")
 NEWS_TTL_HOURS = 6
+NEWS_MODE_CURRENT = "current_shutdown_window"
+NEWS_MODE_HISTORICAL = "historical_sample"
 
 WINDOW_CLOSED_MARKET = "closed_market"
 WINDOW_PRE_ANCHOR = "pre_anchor"
@@ -43,12 +46,13 @@ def build_weekend_spread_news_context(
     clean_symbol = _clean_symbol(symbol or sample.get("ticker"))
     windows = weekend_spread_news_windows(sample, now=now)
     if not clean_symbol or not windows.get("ok"):
+        reason = str(windows.get("reason") or "缺少休市新闻窗口时间，暂时无法判断新闻是否解释价差。")
         return {
             "symbol": clean_symbol,
             "windows": windows,
             "window_start_et": windows.get("window_start_et"),
             "window_end_et": windows.get("window_end_et"),
-            "window_label": "休市新闻窗口",
+            "window_label": windows.get("window_label") or "休市新闻窗口",
             "news_count": 0,
             "major_news_count": 0,
             "positive_news_count": 0,
@@ -59,7 +63,7 @@ def build_weekend_spread_news_context(
             "positive_news_after_p0": 0,
             "negative_news_after_p0": 0,
             "gap_explanation_label": "数据不足",
-            "explanation_zh": "缺少休市新闻窗口时间，暂时无法判断新闻是否解释价差。",
+            "explanation_zh": reason,
             "key_news_list": [],
             "news_items": [],
             "window_news": _legacy_window_news([]),
@@ -106,7 +110,7 @@ def build_weekend_spread_news_context(
         "windows": windows,
         "window_start_et": windows.get("window_start_et"),
         "window_end_et": windows.get("window_end_et"),
-        "window_label": "休市新闻窗口",
+        "window_label": windows.get("window_label") or "休市新闻窗口",
         "news_count": len(window_items),
         "major_news_count": len(major_news),
         "positive_news_count": len(positive_news),
@@ -189,7 +193,130 @@ def normalize_weekend_spread_news_record(symbol: str, raw: dict[str, Any], fetch
     return item
 
 
+def current_shutdown_news_sample(
+    symbol: str,
+    *,
+    premium_pct: float | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a current after-hours/weekend news sample for realtime spread checks."""
+
+    windows = current_shutdown_news_window(now=now)
+    sample: dict[str, Any] = {
+        "ticker": _clean_symbol(symbol),
+        "news_mode": NEWS_MODE_CURRENT,
+        "mode": NEWS_MODE_CURRENT,
+        "binance_premium_pct": premium_pct,
+    }
+    sample.update(windows)
+    if windows.get("window_start_et"):
+        sample["window_start_et"] = windows["window_start_et"]
+    if windows.get("window_end_et"):
+        sample["window_end_et"] = windows["window_end_et"]
+        sample["window_end_bucket"] = _window_end_bucket(windows["window_end_et"])
+    return sample
+
+
+def current_shutdown_news_window(*, now: datetime | None = None) -> dict[str, Any]:
+    """Return the current completed-close-to-now window for weekend spread news."""
+
+    now_et = _ensure_et(now or datetime.now(timezone.utc))
+    today = now_et.date()
+    close_dt = datetime.combine(today, time(16, 0), tzinfo=ET)
+    regular_open_dt = datetime.combine(today, time(9, 30), tzinfo=ET)
+    if _is_trading_day(today) and regular_open_dt <= now_et < close_dt:
+        return {
+            "ok": False,
+            "mode": NEWS_MODE_CURRENT,
+            "window_label": "当前休市窗口",
+            "now_et": now_et,
+            "reason": "当前不是休市窗口。美股收盘后，本页会检查收盘后至当前时间的新闻。",
+            "is_current_shutdown_window": False,
+            "window_ended": False,
+        }
+
+    if _is_trading_day(today) and now_et >= close_dt:
+        last_trading_day = today
+    else:
+        last_trading_day = _previous_trading_day(today)
+    if last_trading_day is None:
+        return {
+            "ok": False,
+            "mode": NEWS_MODE_CURRENT,
+            "window_label": "当前休市窗口",
+            "now_et": now_et,
+            "reason": "缺少最近一个有效美股交易日，暂时无法判断休市新闻窗口。",
+            "is_current_shutdown_window": False,
+            "window_ended": False,
+        }
+
+    start = datetime.combine(last_trading_day, time(16, 0), tzinfo=ET)
+    next_session_day = _next_trading_day(last_trading_day)
+    next_overnight_open = (
+        datetime.combine(next_session_day - timedelta(days=1), time(20, 0), tzinfo=ET)
+        if next_session_day is not None
+        else None
+    )
+    window_ended = bool(next_overnight_open and now_et >= next_overnight_open)
+    end = next_overnight_open if window_ended and next_overnight_open is not None else now_et
+    if end < start:
+        return {
+            "ok": False,
+            "mode": NEWS_MODE_CURRENT,
+            "window_label": "当前休市窗口",
+            "now_et": now_et,
+            "window_start_et": start,
+            "window_end_et": end,
+            "reason": "当前不是休市窗口。美股收盘后，本页会检查收盘后至当前时间的新闻。",
+            "is_current_shutdown_window": False,
+            "window_ended": False,
+        }
+    return {
+        "ok": True,
+        "mode": NEWS_MODE_CURRENT,
+        "window_start_et": start,
+        "window_end_et": end,
+        "window_label": "当前休市窗口",
+        "now_et": now_et,
+        "last_trading_day": last_trading_day.isoformat(),
+        "next_overnight_open_et": next_overnight_open,
+        "is_current_shutdown_window": True,
+        "window_ended": window_ended,
+        "reason": "本轮休市窗口已结束。" if window_ended else "当前休市窗口进行中。",
+    }
+
+
 def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    if str(sample.get("news_mode") or sample.get("mode") or "") == NEWS_MODE_CURRENT:
+        if sample.get("window_start_et") and sample.get("window_end_et"):
+            start = _parse_datetime(sample.get("window_start_et"))
+            end = _parse_datetime(sample.get("window_end_et"))
+            if start is None or end is None:
+                return {
+                    "ok": False,
+                    "mode": NEWS_MODE_CURRENT,
+                    "window_label": "当前休市窗口",
+                    "reason": "缺少当前休市窗口时间，暂时无法判断新闻是否解释价差。",
+                    "labels": WINDOW_LABELS,
+                }
+            start = _ensure_et(start)
+            end = _ensure_et(end)
+            return {
+                "ok": bool(sample.get("ok", True)),
+                "mode": NEWS_MODE_CURRENT,
+                "window_start_et": start,
+                "window_end_et": end,
+                "window_label": "当前休市窗口",
+                "now_et": _ensure_et(now or sample.get("now_et") or datetime.now(timezone.utc)),
+                "last_trading_day": sample.get("last_trading_day"),
+                "next_overnight_open_et": sample.get("next_overnight_open_et"),
+                "is_current_shutdown_window": bool(sample.get("is_current_shutdown_window", True)),
+                "window_ended": bool(sample.get("window_ended", False)),
+                "reason": str(sample.get("reason") or ""),
+                "labels": WINDOW_LABELS,
+            }
+        return current_shutdown_news_window(now=now)
+
     raw = sample.get("raw_row") if isinstance(sample.get("raw_row"), dict) else {}
     p0 = _first_datetime(
         sample,
@@ -252,6 +379,7 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
         end = current_et if current_et >= start else start
     return {
         "ok": True,
+        "mode": NEWS_MODE_HISTORICAL,
         "window_start_et": start,
         "window_end_et": end,
         "window_label": "休市新闻窗口",
@@ -313,6 +441,19 @@ def _sort_news_desc(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _next_trading_day(start_day: date) -> date | None:
+    for offset in range(1, 12):
+        candidate = start_day + timedelta(days=offset)
+        if _is_trading_day(candidate):
+            return candidate
+    return None
+
+
+def _window_end_bucket(value: datetime) -> str:
+    end_et = _ensure_et(value)
+    return end_et.replace(minute=0, second=0, microsecond=0).isoformat()
+
+
 def weekend_spread_news_label(symbol: str, sample: dict[str, Any], *, store: "WeekendSpreadNewsStore | None" = None) -> str:
     context = build_weekend_spread_news_context(symbol, sample, store=store)
     label = str(context.get("gap_explanation_label") or "")
@@ -320,10 +461,18 @@ def weekend_spread_news_label(symbol: str, sample: dict[str, Any], *, store: "We
 
 
 def weekend_spread_news_sample_key(symbol: str, sample: dict[str, Any]) -> str:
+    mode = str(sample.get("news_mode") or sample.get("mode") or NEWS_MODE_HISTORICAL)
+    windows = weekend_spread_news_windows(sample)
+    window_end_bucket = str(sample.get("window_end_bucket") or "")
+    if not window_end_bucket and windows.get("window_end_et"):
+        window_end_bucket = _window_end_bucket(windows["window_end_et"])
     basis = "|".join(
         [
             _clean_symbol(symbol or sample.get("ticker")),
+            mode,
             str(sample.get("week_id") or ""),
+            str(windows.get("window_start_et") or sample.get("window_start_et") or ""),
+            window_end_bucket,
             str(sample.get("p0_selected_bar_time") or sample.get("friday_afterhours_time") or ""),
             str(sample.get("contract_sample_time") or sample.get("binance_max_time") or ""),
         ]

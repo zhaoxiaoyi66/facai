@@ -5213,6 +5213,7 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "样本质量",
         "休市新闻",
     ]
+
     assert len(frame) == 2
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
     assert nvda["P0 盘后锚点"] == "$100.00"
@@ -5232,6 +5233,41 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     assert diagnostic_nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
     assert "None" not in frame.to_string()
     assert "anchor_source" not in frame.to_string()
+
+
+def test_closed_market_news_tab_defaults_to_current_window_source() -> None:
+    source = inspect.getsource(weekend_spread._render_closed_market_news_tab)
+
+    assert '["当前休市窗口", "历史样本复盘"]' in source
+    assert "_render_current_closed_market_news_tab" in source
+    assert "_render_historical_closed_market_news_tab" in source
+
+
+def test_realtime_closed_news_label_uses_current_shutdown_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_label(symbol: str, sample: dict) -> str:
+        captured["symbol"] = symbol
+        captured["sample"] = dict(sample)
+        return "无新闻解释"
+
+    monkeypatch.setattr(weekend_spread, "weekend_spread_news_label", fake_label)
+    label = weekend_spread._realtime_closed_news_label(
+        {
+            "ticker": "GLW",
+            "status": "OK",
+            "binance_symbol": "GLWUSDT",
+            "binance_last_price": 185.88,
+            "afterhours_reference_price": 180.0,
+            "spread_vs_afterhours_pct": 8.27,
+        }
+    )
+
+    assert label == "无新闻解释"
+    assert captured["symbol"] == "GLW"
+    sample = captured["sample"]
+    assert sample["news_mode"] == weekend_spread.NEWS_MODE_CURRENT
+    assert "week_id" not in sample
 
 
 def test_render_weekend_review_table_exists_and_uses_detail_frame(monkeypatch) -> None:

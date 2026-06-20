@@ -4,12 +4,16 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from data.weekend_spread_news import (
+    NEWS_MODE_CURRENT,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_context,
+    current_shutdown_news_sample,
+    current_shutdown_news_window,
     normalize_weekend_spread_news_record,
     refresh_weekend_spread_news,
     source_link_text,
     split_news_by_weekend_windows,
+    weekend_spread_news_sample_key,
     weekend_spread_news_windows,
 )
 
@@ -54,6 +58,57 @@ def test_weekend_news_window_uses_last_trading_day_close_to_next_overnight() -> 
 
     assert windows["window_start_et"] == datetime(2026, 6, 12, 16, 0, tzinfo=ET)
     assert windows["window_end_et"] == datetime(2026, 6, 14, 20, 1, tzinfo=ET)
+
+
+def test_current_shutdown_window_uses_last_completed_close_to_now() -> None:
+    windows = current_shutdown_news_window(now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+
+    assert windows["ok"] is True
+    assert windows["mode"] == NEWS_MODE_CURRENT
+    assert windows["window_start_et"] == datetime(2026, 6, 12, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 6, 13, 12, 0, tzinfo=ET)
+    assert windows["is_current_shutdown_window"] is True
+
+
+def test_current_shutdown_window_uses_thursday_when_friday_is_holiday() -> None:
+    windows = current_shutdown_news_window(now=datetime(2026, 6, 20, 12, 0, tzinfo=ET))
+
+    assert windows["ok"] is True
+    assert windows["window_start_et"] == datetime(2026, 6, 18, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 6, 20, 12, 0, tzinfo=ET)
+
+
+def test_current_shutdown_window_is_inactive_during_regular_session() -> None:
+    windows = current_shutdown_news_window(now=datetime(2026, 6, 16, 10, 0, tzinfo=ET))
+
+    assert windows["ok"] is False
+    assert "当前不是休市窗口" in windows["reason"]
+
+
+def test_current_shutdown_window_ends_after_next_overnight_open() -> None:
+    windows = current_shutdown_news_window(now=datetime(2026, 6, 15, 8, 0, tzinfo=ET))
+
+    assert windows["ok"] is True
+    assert windows["window_start_et"] == datetime(2026, 6, 12, 16, 0, tzinfo=ET)
+    assert windows["window_end_et"] == datetime(2026, 6, 14, 20, 0, tzinfo=ET)
+    assert windows["window_ended"] is True
+
+
+def test_current_shutdown_sample_does_not_use_historical_week_id() -> None:
+    sample = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    windows = weekend_spread_news_windows(sample)
+
+    assert sample["news_mode"] == NEWS_MODE_CURRENT
+    assert "week_id" not in sample
+    assert windows["mode"] == NEWS_MODE_CURRENT
+    assert windows["window_start_et"] == datetime(2026, 6, 12, 16, 0, tzinfo=ET)
+
+
+def test_current_and_historical_news_cache_keys_are_isolated() -> None:
+    current = current_shutdown_news_sample("NVDA", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    historical = _sample()
+
+    assert weekend_spread_news_sample_key("NVDA", current) != weekend_spread_news_sample_key("NVDA", historical)
 
 
 def test_weekend_news_window_uses_thursday_when_friday_is_closed() -> None:
