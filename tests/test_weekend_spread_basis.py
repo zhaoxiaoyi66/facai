@@ -1,12 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from data.us_market_session import US_EASTERN
 from data.weekend_spread_basis import (
     QUALITY_INSUFFICIENT,
+    QUALITY_SUFFICIENT,
     QUALITY_TIME_MISALIGNED,
     build_normal_basis_profile,
     calculate_adjusted_spread_pct,
@@ -30,7 +32,7 @@ def _sample(ticker: str, when: datetime, basis_pct: float, *, diff_seconds: floa
         "basis_pct": basis_pct,
         "price_time_diff_seconds": diff_seconds,
         "market_session": "regular",
-        "sample_quality": "充足" if diff_seconds <= 60 else "时间未对齐",
+        "sample_quality": "可用" if diff_seconds <= 60 else "时间未对齐",
         "created_at": when.astimezone(timezone.utc).isoformat(),
     }
 
@@ -52,6 +54,23 @@ def test_normal_basis_profile_uses_recent_aligned_median(tmp_path) -> None:
     assert profile["normal_basis_median_pct"] == pytest.approx(0.35)
     assert profile["sample_count"] == 6
     assert profile["basis_quality"] == QUALITY_INSUFFICIENT
+
+
+def test_normal_basis_profile_is_usable_after_thirty_samples_and_three_days(tmp_path) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 15, 14, 0, tzinfo=US_EASTERN)
+    samples = [
+        _sample("GLW", now - timedelta(days=day, minutes=index), 0.2 + index * 0.001)
+        for day in range(3)
+        for index in range(10)
+    ]
+    save_basis_samples(samples, db_path=db_path)
+
+    profile = build_normal_basis_profile("GLW", db_path=db_path, now=now)
+
+    assert profile["sample_count"] == 30
+    assert profile["trading_days_count"] == 3
+    assert profile["basis_quality"] == QUALITY_SUFFICIENT
 
 
 def test_misaligned_basis_samples_are_not_high_quality(tmp_path) -> None:
@@ -107,3 +126,10 @@ def test_collect_open_market_basis_once_writes_sample_and_profile(tmp_path) -> N
     assert result["collected_count"] == 1
     assert result["samples"][0]["basis_pct"] == pytest.approx(1.0)
     assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
+
+
+def test_basis_collector_script_supports_quiet_mode() -> None:
+    source = (Path(__file__).resolve().parents[1] / "tools" / "weekend_spread_basis_collector.py").read_text(encoding="utf-8")
+
+    assert "--quiet" in source
+    assert "collect_open_market_basis_once" in source

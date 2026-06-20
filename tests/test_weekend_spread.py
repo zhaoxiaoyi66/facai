@@ -845,7 +845,9 @@ def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_i
     frame = weekend_spread._live_frame(rows)
     assert "价差" not in frame.columns
     assert frame.loc[0, "原始价差"] == "+8.44%"
-    assert frame.loc[0, "净价差"] == "暂缺"
+    assert "平时偏差" not in frame.columns
+    assert "净价差" not in frame.columns
+    assert "基差不足" not in frame.to_string()
 
 
 def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
@@ -6122,18 +6124,17 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "股票",
         "价格对比",
         "原始价差",
-        "平时偏差",
-        "净价差",
         "日常波动参照",
         "判断",
         "休市新闻",
+        "标签",
         "更新时间",
     ]
     assert frame.loc[0, "价格对比"] == "$102.88 → $104.58"
     assert frame.loc[0, "原始价差"] == "+1.65%"
-    assert frame.loc[0, "平时偏差"] == "不足"
-    assert frame.loc[0, "净价差"] == "暂缺"
-    assert frame.loc[0, "判断"] == "基差不足，仅看原始价差"
+    assert "平时偏差" not in frame.columns
+    assert "净价差" not in frame.columns
+    assert "基差不足" not in frame.to_string()
     assert "波动倍数" not in frame.columns
     assert "价差分位" not in frame.columns
     assert "ATR14" not in frame.columns
@@ -6203,11 +6204,16 @@ def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
         [
             {
                 "ticker": "GLW",
+                "binance_symbol": "GLWUSDT",
                 "binance_last_price": 203.16,
                 "afterhours_reference_price": 195.49,
                 "spread_vs_afterhours_pct": 3.92,
                 "raw_spread_pct": 3.92,
                 "normal_basis_pct": 0.40,
+                "normal_basis_usable": True,
+                "normal_basis_sample_count": 30,
+                "normal_basis_trading_days_count": 3,
+                "normal_basis_quality": "可用",
                 "adjusted_spread_pct": 3.52,
                 "spread_atr_ratio": 1.8,
                 "spread_reasonableness_label": SPREAD_REASON_ANOMALY,
@@ -6243,6 +6249,25 @@ def test_live_frame_shows_missing_volatility_in_plain_language() -> None:
     )
 
     assert frame.loc[0, "日常波动参照"] == "缺波动数据"
+    assert "平时偏差" not in frame.columns
+    assert "净价差" not in frame.columns
+
+
+def test_realtime_basis_status_gracefully_degrades_without_samples() -> None:
+    rows = [
+        {
+            "ticker": "GLW",
+            "binance_symbol": "GLWUSDT",
+            "binance_last_price": 203.16,
+            "afterhours_reference_price": 195.49,
+            "spread_vs_afterhours_pct": 3.92,
+            "raw_spread_pct": 3.92,
+            "mapping_quality": "映射可用",
+        }
+    ]
+
+    assert "未采集" in weekend_spread._realtime_basis_status_text(rows)
+    assert "未采集" in weekend_spread._realtime_basis_hint(rows)
 
 
 def test_open_market_basis_profile_frame_uses_chinese_labels() -> None:
@@ -6532,6 +6557,10 @@ def test_realtime_summary_uses_abnormal_wording_without_false_alarm() -> None:
         "spread_vs_afterhours_pct": 3.92,
         "raw_spread_pct": 3.92,
         "normal_basis_pct": 0.40,
+        "normal_basis_usable": True,
+        "normal_basis_sample_count": 30,
+        "normal_basis_trading_days_count": 3,
+        "normal_basis_quality": "可用",
         "adjusted_spread_pct": 3.52,
         "spread_atr_ratio": 0.59,
         "spread_reasonableness_label": "轻微偏离",

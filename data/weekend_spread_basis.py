@@ -18,11 +18,11 @@ from settings import PROJECT_ROOT
 
 
 DEFAULT_BASIS_DB_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_basis.sqlite3"
-QUALITY_SUFFICIENT = "充足"
-QUALITY_LIMITED = "较少"
-QUALITY_INSUFFICIENT = "不足"
+QUALITY_SUFFICIENT = "可用"
+QUALITY_LIMITED = "样本不足"
+QUALITY_INSUFFICIENT = "样本不足"
 QUALITY_TIME_MISALIGNED = "时间未对齐"
-QUALITY_UNAVAILABLE = "不可用"
+QUALITY_UNAVAILABLE = "未采集"
 BASIS_SOURCE = "weekend_spread_open_market_basis"
 
 
@@ -105,7 +105,7 @@ def collect_open_market_basis_once(
             "ok": False,
             "collected_count": 0,
             "skipped_count": 0,
-            "message": "当前不是美股正常交易时段，不能采集开市基差。",
+            "message": "当前不是美股正常交易时段，不能采集开市基差。请在美股 10:00-15:30 ET 期间采集。",
             "market_session": "closed",
             "sample_time_et": current_et.isoformat(),
         }
@@ -403,7 +403,7 @@ def _stock_spot_snapshot(cache: CacheReadModel, ticker: str) -> dict[str, Any]:
 def _profile_quality(*, aligned_count: int, aligned_days: int, recent_count: int, misaligned_count: int) -> str:
     if recent_count > 0 and misaligned_count > recent_count / 2:
         return QUALITY_TIME_MISALIGNED
-    if aligned_count >= 50 and aligned_days >= 5:
+    if aligned_count >= 30 and aligned_days >= 3:
         return QUALITY_SUFFICIENT
     if aligned_count >= 10:
         return QUALITY_LIMITED
