@@ -9,11 +9,9 @@ import pandas as pd
 import streamlit as st
 
 from data.news_radar import (
-    MISSING_URL_TEXT,
     NewsRadarStore,
     available_news_symbols,
     build_news_price_context,
-    news_display_rows,
     price_context_display_rows,
     refresh_general_market_news,
     refresh_symbols_news,

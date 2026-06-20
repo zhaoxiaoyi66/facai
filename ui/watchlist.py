@@ -9,7 +9,6 @@ from data.ai_stock_radar import build_ai_stock_radar_list_row
 from data.portfolio import PortfolioPositionStore
 from data.watchlist_store import DEFAULT_WATCHLIST_STATUS
 from data.watchlist_store import DEFAULT_WATCHLIST_THEME
-from data.watchlist_store import WATCHLIST_STATUS_LABELS
 from data.watchlist_store import WATCHLIST_STATUSES
 from data.watchlist_store import WATCHLIST_THEMES
 from data.watchlist_store import add_watchlist_symbol
