@@ -6328,6 +6328,18 @@ def test_open_market_basis_profile_frame_uses_chinese_labels() -> None:
     assert "normal_basis_median_pct" not in frame.to_string()
 
 
+def test_realtime_view_exposes_open_market_basis_collection_entry() -> None:
+    realtime_source = inspect.getsource(weekend_spread._render_realtime_tab)
+    entry_source = inspect.getsource(weekend_spread._render_realtime_basis_collection_entry)
+
+    assert "_render_realtime_basis_collection_entry" in realtime_source
+    assert "开市基差采集" in entry_source
+    assert "采集一次开市基差" in entry_source
+    assert "安装开市基差采集任务" in entry_source
+    assert "weekend_spread_collect_open_market_basis_realtime" in entry_source
+    assert "weekend_spread_collect_open_market_basis\"" not in entry_source
+
+
 def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
     rows = [
         {

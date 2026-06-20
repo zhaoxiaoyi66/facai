@@ -468,6 +468,7 @@ def _render_realtime_tab(
         basis_hint = _realtime_basis_hint(main_rows or rows)
         if basis_hint:
             st.caption(basis_hint)
+        _render_realtime_basis_collection_entry(main_rows or rows, scan_mapping, ignored)
         if not scan_records and _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
             _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
         elif main_rows:
@@ -531,6 +532,31 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
             "样本较少时只展示预估净价差；样本达到门槛后才正式用于判断。"
         )
         st.caption(f"缓存位置：{DEFAULT_BASIS_DB_PATH.as_posix()}")
+
+
+def _render_realtime_basis_collection_entry(rows: list[dict], mapping: dict[str, dict], ignored: dict[str, dict] | None = None) -> None:
+    counts = _realtime_basis_counts(rows)
+    needs_collection = counts.get("missing", 0) > 0 or counts.get("limited", 0) > 0
+    with st.expander("开市基差采集", expanded=needs_collection):
+        st.caption("平日基差要在美股正常开市时采集；未采集或样本较少时，实时表会先展示原始价差和预估净价差。")
+        is_open_window = is_open_market_basis_window()
+        col_collect, col_task, col_status = st.columns([1, 1, 2])
+        with col_collect:
+            if st.button("采集一次开市基差", disabled=not is_open_window, key="weekend_spread_collect_open_market_basis_realtime"):
+                with st.spinner("正在采集开市基差..."):
+                    result = collect_open_market_basis_once(mapping=mapping, ignored=ignored or {})
+                st.session_state["weekend_spread_realtime_flash"] = str(result.get("message") or "已执行开市基差采集。")
+                st.rerun()
+        with col_task:
+            if st.button("安装开市基差采集任务", key="weekend_spread_install_open_market_basis_task_realtime"):
+                result = install_open_market_basis_task()
+                st.session_state["weekend_spread_realtime_flash"] = str(result.get("message") or "已处理开市基差采集任务。")
+                st.rerun()
+        with col_status:
+            if is_open_window:
+                st.caption("当前处于可采集窗口。建议先手动采集一次，再安装静默任务持续积累样本。")
+            else:
+                st.caption("当前不是美股正常交易时段。请在美股 10:00-15:30 ET 期间采集；也可以先安装静默任务。")
 
 
 def _open_market_basis_profile_frame(
