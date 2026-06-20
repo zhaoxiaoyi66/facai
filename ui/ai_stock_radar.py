@@ -971,7 +971,7 @@ def _research_status(
             return ("near", "接近买区") if (zone_position is None or zone_position <= 0.35) else ("confirm", "等待确认")
         if price > high:
             return ("pullback", "等待回落") if (distance_pct is not None and distance_pct <= 22) else ("low", "低优先级")
-    if data_quality in {"旧格式待刷新", "行情正常 / 买区缺失"}:
+    if data_quality in {"历史格式待刷新", "行情正常 / 买区缺失"}:
         return "data", "数据不足"
     return "low", "低优先级"
 
@@ -1004,7 +1004,7 @@ def _research_data_quality_text(row: dict[str, Any], context: dict[str, Any], ac
     if price_state == "stale":
         return str(freshness.get("status") or "数据过期")
     if _legacy_buy_zone_context_missing(row):
-        return "旧格式待刷新"
+        return "历史格式待刷新"
     if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
         return "买区未生成"
     if action in {"DATA_INSUFFICIENT", "DATA_MISSING"}:
@@ -1080,8 +1080,8 @@ def _research_buy_point_summary(
     row: dict[str, Any],
 ) -> str:
     if status_key == "data":
-        if data_quality == "旧格式待刷新":
-            return "旧格式待刷新，需重建买区上下文"
+        if data_quality == "历史格式待刷新":
+            return "历史格式待刷新，需重建买区上下文"
         if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
             missing = _buy_zone_context_missing_fields(context) or ["support_zone", "resistance_zone"]
             return f"买区未生成，缺少{_field_list_display(missing)}"

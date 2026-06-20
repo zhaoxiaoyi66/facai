@@ -499,7 +499,7 @@ def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
             ),
             unsafe_allow_html=True,
         )
-        st.caption("当前未读取到 missingDataSummary，已使用旧版数据状态摘要。")
+        st.caption("当前未读取到 missingDataSummary，已使用历史数据状态摘要。")
 
     with st.expander("查看数据缺口明细", expanded=False):
         _render_missing_data_details(ticker, score, snapshot)
@@ -926,8 +926,8 @@ def _buy_zone_section_title(source: str) -> tuple[str, str]:
     if source == "manual":
         return "历史计划快照", "仅供回溯，当前建议以统一买区展示为准"
     if source == "mixed":
-        return "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
-    return "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
+        return "历史参考快照", "历史模型字段仅供回溯，当前建议以统一买区展示为准"
+    return "历史参考快照", "历史模型字段仅供回溯，当前建议以统一买区展示为准"
 
 
 def _buy_zone_next_trigger(plan: dict, active_zone: BuyZoneEstimate, source: str) -> tuple[str, float | None]:
@@ -1771,7 +1771,7 @@ def _render_buy_zone(
     source = _buy_zone_source(plan)
     manual = source == "manual"
     if source == "system":
-        title, title_suffix = "历史参考快照", "旧模型字段仅供回溯，当前建议以统一买区展示为准"
+        title, title_suffix = "历史参考快照", "历史模型字段仅供回溯，当前建议以统一买区展示为准"
     else:
         title, title_suffix = _buy_zone_section_title(source)
     render_section_title(title, title_suffix)

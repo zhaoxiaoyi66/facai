@@ -1001,7 +1001,7 @@ def _normalize_mapping_config(config: Any) -> dict[str, Any] | None:
             "quote_currency": "USDT",
             "unit_multiplier": 1,
             "mapping_confidence": "confirmed",
-            "risk_note": "旧版映射；请定期复核 symbol 与单位。",
+            "risk_note": "历史映射；请定期复核 symbol 与单位。",
         }
     if not isinstance(config, dict):
         return None

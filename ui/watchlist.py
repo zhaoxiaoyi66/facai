@@ -356,7 +356,7 @@ def _data_status_label(value: object) -> str:
 def _date_text(value: object) -> str:
     text = str(value or "").strip()
     if not text:
-        return "旧格式"
+        return "历史格式"
     return text[:10]
 
 

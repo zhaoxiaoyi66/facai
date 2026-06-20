@@ -97,7 +97,7 @@ ROLE_FRAMEWORKS = {
     ROLE_UNDEFINED: {
         "target_weight": "0%–2%",
         "split": "0% / 100%",
-        "description": "旧记录未设置角色，按观察仓处理",
+        "description": "历史记录未设置角色，按观察仓处理",
     },
 }
 

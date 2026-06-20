@@ -1003,13 +1003,13 @@ def test_research_queue_legacy_row_shows_stale_format() -> None:
         {
             "ticker": "OLD",
             "entry_display_label": "回踩观察",
-            "primary_entry_interpretation": "旧格式",
+            "primary_entry_interpretation": "历史格式",
         }
     )
 
     assert view["status_text"] == "数据不足"
-    assert view["data_quality_text"] == "旧格式待刷新"
-    assert "旧格式待刷新" in view["summary_text"]
+    assert view["data_quality_text"] == "历史格式待刷新"
+    assert "历史格式待刷新" in view["summary_text"]
 
 
 def test_research_queue_uses_buy_zone_display_as_primary_source() -> None:
