@@ -1114,11 +1114,11 @@ def _liquidity_warning(
 ) -> str:
     warnings: list[str] = []
     if bid_ask_spread_pct is None:
-        warnings.append("买卖价差暂缺")
+        warnings.append("买卖盘未采集")
     elif bid_ask_spread_pct > 0.25:
         warnings.append("流动性不足：买卖价差偏宽")
     if volume_24h is None:
-        warnings.append("24h 成交量暂缺")
+        warnings.append("24h 成交量未采集")
     elif volume_24h < 10_000:
         warnings.append("成交量不足")
     if funding_rate is not None and abs(funding_rate) >= 0.0005:

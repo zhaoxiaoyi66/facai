@@ -2215,6 +2215,17 @@ def test_bid_ask_spread_and_funding_warnings_are_exposed() -> None:
     assert '\u8d44\u91d1\u8d39\u7387\u53ef\u80fd\u541e\u566c\u4ef7\u5dee' in row["liquidity_warning"]
 
 
+def test_missing_liquidity_fields_are_labeled_as_not_collected() -> None:
+    provider = FakeProvider(price=101.5, bid=None, ask=None, volume_24h=None, funding_rate=None)
+
+    rows = build_weekend_spread_rows(["NVDA"], mapping=_mapping(), provider=provider, cache=FakeCache())
+
+    warning = rows[0]["liquidity_warning"]
+    assert "\u4e70\u5356\u76d8\u672a\u91c7\u96c6" in warning
+    assert "24h \u6210\u4ea4\u91cf\u672a\u91c7\u96c6" in warning
+    assert "\u6682\u7f3a" not in warning
+
+
 def test_manual_override_is_explicitly_marked_non_realtime() -> None:
     provider = FakeProvider(price=999)
     rows = build_weekend_spread_rows(
