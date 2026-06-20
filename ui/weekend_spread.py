@@ -5367,8 +5367,8 @@ def _render_tradingview_backfill_tools() -> None:
         cols[1].metric("最近 symbol", status.get("latest_symbol") or "尚未收到")
         latest_p0 = dict(status.get("latest_p0") or {})
         latest_p2 = dict(status.get("latest_p2") or {})
-        cols[2].metric("?? P0", _tradingview_event_metric(latest_p0))
-        cols[3].metric("?? P2", _tradingview_event_metric(latest_p2))
+        cols[2].metric("最近 P0", _tradingview_event_metric(latest_p0))
+        cols[3].metric("最近 P2", _tradingview_event_metric(latest_p2))
         if not status.get("latest_write_ok"):
             st.info("尚未收到 TradingView 推送")
 
@@ -6678,7 +6678,7 @@ def _weekend_review_row_status(data_quality: str, premium_pct: float | None, row
     base = _weekend_review_status(data_quality, premium_pct)
     if labels:
         labels.append(base)
-        return " ? ".join(labels)
+        return "｜".join(labels)
     return base
 
 

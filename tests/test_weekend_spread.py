@@ -6657,6 +6657,26 @@ def test_realtime_action_bar_keeps_low_frequency_tools_out_of_first_screen() -> 
     assert "数据源与补数工具" in tools_source
 
 
+def test_tradingview_backfill_tools_use_readable_recent_event_labels() -> None:
+    source = inspect.getsource(weekend_spread._render_tradingview_backfill_tools)
+
+    assert "最近 P0" in source
+    assert "最近 P2" in source
+    assert "?? P0" not in source
+    assert "?? P2" not in source
+
+
+def test_weekend_review_row_status_uses_cjk_separator_for_context_labels() -> None:
+    label = weekend_spread._weekend_review_row_status(
+        "OK",
+        3.0,
+        {"last_trading_day_is_friday": False, "holiday_rollover": True},
+    )
+
+    assert label == "周五休市，使用本周最后交易日｜夜盘顺延｜严格正式样本"
+    assert " ? " not in label
+
+
 def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
     rows = [
         {
