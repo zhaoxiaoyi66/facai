@@ -55,9 +55,10 @@ def test_portfolio_labels_do_not_show_raw_internal_codes() -> None:
         portfolio_ui._cn_label("NEW_INTERNAL_FIELD"),
         portfolio_ui._snapshot_action_text("NEW_ACTION"),
         portfolio_ui._trade_action_text("NEW_TRADE_ACTION"),
+        portfolio_ui._system_action_text({"systemAction": "NEW_SYSTEM_ACTION"}),
     ]
 
-    assert labels == ["未归类", "未标记", "—"]
+    assert labels == ["未归类", "未标记", "—", "未生成"]
     for label in labels:
         assert "NEW_" not in label
 

@@ -2260,7 +2260,7 @@ def _short_action_for_sentence(action: str) -> str:
         return "等突破再评估"
     if "只观察" in action or "观察" in action:
         return "等待回踩"
-    return action or "等待回踩"
+    return _drawer_unknown_display_text(action, "等待回踩")
 
 
 def _drawer_card_html(title: str, headline: str, lines: list[str]) -> str:

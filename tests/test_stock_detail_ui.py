@@ -115,4 +115,6 @@ def test_stock_detail_confidence_label_uses_empty_fallback_not_legacy_na() -> No
 
 def test_stock_detail_drawdown_status_does_not_show_raw_internal_codes() -> None:
     assert stock_detail._drawdown_state_display("NEW_DRAWDOWN_STATE") == "数据不足"
+    assert stock_detail._portfolio_system_action_text({"systemAction": "NEW_SYSTEM_ACTION"}) == "未生成"
+    assert stock_detail._portfolio_system_action_text({"systemAction": "人工复核"}) == "人工复核"
     assert stock_detail._drawdown_state_display("人工复核") == "人工复核"

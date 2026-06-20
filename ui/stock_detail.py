@@ -343,7 +343,16 @@ def _portfolio_system_action_text(row: dict) -> str:
         return "小仓观察建议"
     if lane == "wait":
         return "只观察"
-    return action or "未生成"
+    return _stock_detail_unknown_display_text(action, "未生成")
+
+
+def _stock_detail_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _portfolio_reason_text(row: dict) -> str:

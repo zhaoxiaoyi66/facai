@@ -1723,7 +1723,7 @@ def _system_action_text(row: dict) -> str:
         return "只观察"
     if "观察" in action or "只" in action:
         return "只观察"
-    return action or "未生成"
+    return _portfolio_unknown_display_text(action, "未生成")
 
 
 def _system_reason_text(row: dict) -> str:

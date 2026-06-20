@@ -44,6 +44,8 @@ def test_drawer_labels_do_not_show_raw_internal_codes() -> None:
     assert dashboard_drawer._drawer_compact_action_text("NEW_ACTION_CODE") == "待复核"
     assert dashboard_drawer._structure_thesis_label("NEW_THESIS_STATUS") == "主线待维护"
     assert dashboard_drawer._drawer_compact_action_text("人工复核") == "等突破再评估"
+    assert dashboard_drawer._short_action_for_sentence("NEW_ACTION_CODE") == "等待回踩"
+    assert dashboard_drawer._short_action_for_sentence("人工复核") == "等突破再评估"
 
 
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:
