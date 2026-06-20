@@ -7844,6 +7844,7 @@ def _mapping_editor_error_text(error_code: str) -> str:
     return {
         "ticker_required": "请填写股票代码",
         "binance_symbol_required": "请填写 Binance 合约，例如 NVDAUSDT",
+        "invalid_symbol": "Binance 合约无效",
     }.get(error_code, "映射保存失败，请检查输入")
 
 
@@ -8434,7 +8435,7 @@ def _scan_detected_by_text(value: object) -> str:
 
 def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
     with st.expander("映射诊断", expanded=False):
-        validate = st.button("校验 symbol 映射", width="stretch", key="weekend_spread_validate_mapping")
+        validate = st.button("校验 Binance 合约映射", width="stretch", key="weekend_spread_validate_mapping")
         diagnostics = build_mapping_diagnostics(
             load_watchlist(),
             mapping=mapping,
@@ -8443,13 +8444,13 @@ def _render_mapping_diagnostics(mapping: dict[str, dict]) -> None:
         )
         st.dataframe(_diagnostics_frame(diagnostics), width="stretch", hide_index=True)
         if validate:
-            st.caption("候选 symbol 只表示 Binance 上存在相似合约，不代表真实美股映射关系。")
+            st.caption("候选合约只表示 Binance 上存在相似合约，不代表真实美股映射关系。")
 
 
 def _diagnostics_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         ("ticker", "股票"),
-        ("configured_symbol", "配置 symbol"),
+        ("configured_symbol", "配置合约"),
         ("market_type", "市场类型"),
         ("mapping_confidence", "映射可信度"),
         ("validation_status", "校验状态"),
@@ -8531,7 +8532,7 @@ def _binance_status_text(rows: list[dict], universe_mapping_count: int) -> str:
     if any(row.get("status") in {"BINANCE_UNAVAILABLE", "PRICE_UNAVAILABLE"} for row in rows):
         return "部分不可用"
     if any(row.get("status") == "INVALID_SYMBOL" for row in rows):
-        return "symbol 无效"
+        return "合约无效"
     return "待刷新"
 
 
@@ -8668,7 +8669,7 @@ def _localized_realtime_error(value: object) -> str:
     text = str(value or "").strip()
     return {
         "price_not_loaded": "Binance 尚未刷新",
-        "invalid_symbol": "Binance symbol 无效",
+        "invalid_symbol": "Binance 合约无效",
         "binance_price_missing": "Binance 价格缺失",
         "NO_MAPPING": "无映射",
     }.get(text, _unknown_display_text(text, "未知错误"))

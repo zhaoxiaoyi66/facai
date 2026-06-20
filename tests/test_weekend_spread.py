@@ -6513,6 +6513,30 @@ def test_idle_provider_marks_rows_as_waiting_refresh() -> None:
     assert weekend_spread._market_price_source_status(rows, "usdm_futures") == '\u7b49\u5f85\u5237\u65b0'
 
 
+def test_mapping_diagnostics_use_contract_wording_not_symbol_label() -> None:
+    frame = weekend_spread._diagnostics_frame(
+        [
+            {
+                "ticker": "NVDA",
+                "configured_symbol": "NVDAUSDT",
+                "market_type": "USDT-M",
+                "mapping_confidence": "confirmed",
+                "validation_status": "OK",
+            }
+        ]
+    )
+    source = inspect.getsource(weekend_spread._render_mapping_diagnostics)
+
+    assert "配置合约" in frame.columns
+    assert "配置 symbol" not in frame.columns
+    assert "校验 Binance 合约映射" in source
+    assert "候选合约只表示" in source
+    assert "校验 symbol" not in source
+    assert "候选 symbol" not in source
+    assert weekend_spread._binance_status_text([{"status": "INVALID_SYMBOL", "binance_symbol": "BADUSDT"}], 1) == "合约无效"
+    assert weekend_spread._mapping_editor_error_text("invalid_symbol") == "Binance 合约无效"
+
+
 def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA", "MSFT"],
