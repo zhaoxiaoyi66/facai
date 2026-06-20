@@ -5239,28 +5239,28 @@ def _is_auto_mapping_config(config: dict | None) -> bool:
 def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
     reason = _clean_self_check_text(result.get("reason"), "未返回原因")
     if result.get("ok"):
-        st.success("夜盘数据源可用，已读取开盘窗口内首个有效 1m bar。")
+        st.success("夜盘数据源可用，已读取开盘窗口内首个有效 1m K线。")
     else:
         st.error(f"夜盘数据源自检失败：{reason}")
     rows = [
-        ("当前 provider", _clean_self_check_text(result.get("provider_display"), "未配置")),
+        ("当前数据源", _clean_self_check_text(result.get("provider_display"), "未配置")),
         ("Alpaca 配置", "已配置" if result.get("alpaca_configured") else "缺少 API key"),
-        ("Alpaca feed", _clean_self_check_text(result.get("feed"), "未配置")),
-        ("timeframe", _clean_self_check_text(result.get("timeframe"), "未配置")),
+        ("Alpaca 行情源", _clean_self_check_text(result.get("feed"), "未配置")),
+        ("时间周期", _clean_self_check_text(result.get("timeframe"), "未配置")),
         ("IBKR 配置", _ibkr_self_check_status(result)),
         ("请求开始", _weekend_review_short_time(result.get("requested_start")) or "暂无"),
         ("请求结束", _weekend_review_short_time(result.get("requested_end")) or "暂无"),
-        ("返回 bar 数量", str(int(result.get("raw_returned_bar_count") or result.get("returned_bar_count") or 0))),
-        ("第一根 raw bar 时间", _weekend_review_short_time(result.get("first_raw_bar_time_et") or result.get("first_raw_bar_time") or result.get("raw_first_bar_time")) or "暂无"),
+        ("返回K线数", str(int(result.get("raw_returned_bar_count") or result.get("returned_bar_count") or 0))),
+        ("第一根原始 1m K线时间", _weekend_review_short_time(result.get("first_raw_bar_time_et") or result.get("first_raw_bar_time") or result.get("raw_first_bar_time")) or "暂无"),
         (
-            "第一根 raw bar close",
+            "第一根原始 1m K线收盘价",
             _money_text(result.get("first_raw_bar_close") or result.get("raw_first_bar_close"))
             if _number(result.get("first_raw_bar_close") or result.get("raw_first_bar_close")) is not None
             else "暂无",
         ),
         ("选中 P2 时间", _weekend_review_short_time(result.get("selected_bar_time")) or "暂无"),
         (
-            "选中 P2 close",
+            "选中 P2 收盘价",
             _money_text(result.get("selected_bar_close"))
             if _number(result.get("selected_bar_close")) is not None
             else "暂无",
@@ -5270,7 +5270,7 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
         ("延迟分钟", "暂无" if _number(result.get("p2_delay_minutes")) is None else str(int(_number(result.get("p2_delay_minutes")) or 0))),
         ("样本质量", _p2_sample_quality_text(result.get("p2_sample_quality"))),
         ("自检结论", _clean_self_check_text(result.get("strict_p2_conclusion"), reason)),
-        ("provider 返回", _clean_self_check_text(result.get("provider"), "未配置")),
+        ("数据源返回", _clean_self_check_text(result.get("provider"), "未配置")),
         ("数据质量", _data_quality_text(result.get("quality"))),
         ("疑似 15 分钟延迟", "是" if result.get("boats_delay_suspected") else "否"),
         ("失败原因", "" if result.get("ok") else reason),
@@ -5997,7 +5997,7 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
         raw_time = str(row.get("p2_first_raw_bar_time_et") or row.get("p2_first_raw_bar_time") or "").strip()
         raw_close = _number(row.get("p2_first_raw_bar_close"))
         if raw_time and raw_close is not None:
-            st.caption(f"Provider 返回 raw bar：{raw_time}，close {_money_text(raw_close)}；未命中当前开盘窗口。")
+            st.caption(f"Provider 返回原始 1m K线：{raw_time}，close {_money_text(raw_close)}；未命中当前开盘窗口。")
     elif _number(row.get("p2_delay_minutes")) and float(_number(row.get("p2_delay_minutes")) or 0) > 0:
         st.caption(f"非首分钟样本，开盘后 +{int(float(_number(row.get('p2_delay_minutes')) or 0))} 分钟才出现有效 1m K 线。")
     elif str(row.get("data_quality") or "").strip().upper() in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
@@ -6256,10 +6256,10 @@ def _weekend_review_diagnostic_frame(review_rows: list[dict]) -> pd.DataFrame:
     display["P2 延迟分钟"] = frame.get("p2_delay_minutes")
     display["P2 样本质量"] = frame.get("sample_status")
     display["P0 请求区间"] = frame.get("p0_request_window")
-    display["P0 返回bars"] = frame.get("p0_returned_bar_count")
+    display["P0 返回K线数"] = frame.get("p0_returned_bar_count")
     display["P0 选中时间"] = frame.get("p0_selected_bar_time")
-    display["P0 选中close"] = frame.get("p0_selected_bar_close")
-    display["P0 volume"] = frame.get("p0_selected_bar_volume")
+    display["P0 选中收盘价"] = frame.get("p0_selected_bar_close")
+    display["P0 成交量"] = frame.get("p0_selected_bar_volume")
     display["Binance 合约"] = frame.get("binance_symbol")
     display["Binance 高点时间"] = frame.get("contract_sample_time")
     return display
@@ -6275,13 +6275,13 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
         "P1 周末高点",
         "P2 夜盘价格",
         "P0 请求区间",
-        "P0 返回bars",
+        "P0 返回K线数",
         "P2 请求区间",
-        "P2 返回bars",
-        "P2 第一根raw时间",
-        "P2 第一根raw close",
+        "P2 返回K线数",
+        "P2 第一根原始K线时间",
+        "P2 第一根原始K线close",
         "P2 选中时间",
-        "P2 选中close",
+        "P2 选中收盘价",
         "P2 延迟分钟",
         "P2 样本质量",
         "Binance 窗口",
@@ -6310,13 +6310,13 @@ def _backtest_diagnostic_frame(rows: list[dict]) -> pd.DataFrame:
                 "P1 周末高点": _money_or_missing(p1, "缺 P1"),
                 "P2 夜盘价格": _money_or_missing(p2, "无 P2"),
                 "P0 请求区间": _weekend_review_time_range(row.get("p0_request_start_et"), row.get("p0_request_end_et")),
-                "P0 返回bars": int(_first_number(row, ("p0_returned_bar_count",)) or 0),
+                "P0 返回K线数": int(_first_number(row, ("p0_returned_bar_count",)) or 0),
                 "P2 请求区间": p2_window,
-                "P2 返回bars": int(_first_number(row, ("stock_bar_raw_returned_count", "stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
-                "P2 第一根raw时间": _weekend_review_short_time(row.get("stock_bar_first_raw_time_et") or row.get("stock_bar_first_raw_time") or row.get("stock_bar_raw_first_time")) or "",
-                "P2 第一根raw close": _money_or_missing(_first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")), ""),
+                "P2 返回K线数": int(_first_number(row, ("stock_bar_raw_returned_count", "stock_bar_returned_count", "overnight_returned_bar_count")) or 0),
+                "P2 第一根原始K线时间": _weekend_review_short_time(row.get("stock_bar_first_raw_time_et") or row.get("stock_bar_first_raw_time") or row.get("stock_bar_raw_first_time")) or "",
+                "P2 第一根原始K线close": _money_or_missing(_first_number(row, ("stock_bar_first_raw_close", "stock_bar_raw_first_close")), ""),
                 "P2 选中时间": _weekend_review_short_time(row.get("p2_first_valid_time") or row.get("stock_bar_selected_time") or row.get("broker_first_1m_time")) or "",
-                "P2 选中close": _money_or_missing(_first_number(row, ("p2_first_valid_close", "stock_bar_selected_close", "broker_first_1m_close")), ""),
+                "P2 选中收盘价": _money_or_missing(_first_number(row, ("p2_first_valid_close", "stock_bar_selected_close", "broker_first_1m_close")), ""),
                 "P2 延迟分钟": "" if p2_delay is None else int(p2_delay),
                 "P2 样本质量": _data_quality_text(data_quality),
                 "Binance 窗口": _weekend_review_time_range(row.get("binance_window_start_et"), row.get("binance_window_end_et")),

@@ -1588,6 +1588,10 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     text = frame.to_string()
     assert "MISSING_STOCK_FIRST_BAR" not in text
     assert "None" not in text
+    assert "raw" not in text.lower()
+    assert "P2 第一根原始K线时间" in frame.columns
+    assert "P2 第一根原始K线close" in "".join(frame.columns)
+    assert "P2 选中收盘价" in frame.columns
     assert frame.iloc[0]["失败原因"] == "夜盘开盘窗口内无有效 1m K线"
     assert frame.iloc[0]["P2 夜盘价格"] == "无 P2"
 
@@ -5394,14 +5398,16 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]
     assert diagnostic_nvda["P0 请求区间"] == "2026-06-12 19:55 ET - 2026-06-12 20:00 ET"
-    assert diagnostic_nvda["P0 返回bars"] == 4
+    assert diagnostic_nvda["P0 返回K线数"] == 4
     assert diagnostic_nvda["P0 选中时间"] == "2026-06-12 19:59 ET"
-    assert diagnostic_nvda["P0 选中close"] == 100.0
-    assert diagnostic_nvda["P0 volume"] == 2500
+    assert diagnostic_nvda["P0 选中收盘价"] == 100.0
+    assert diagnostic_nvda["P0 成交量"] == 2500
     assert diagnostic_nvda["Binance 合约"] == "NVDAUSDT"
     assert diagnostic_nvda["Binance 高点时间"] == "2026-06-14 19:58 ET"
     assert "None" not in frame.to_string()
     assert "anchor_source" not in frame.to_string()
+    assert "返回bars" not in diagnostic.to_string()
+    assert "volume" not in "".join(diagnostic.columns)
 
 
 def test_closed_market_news_tab_defaults_to_current_window_source() -> None:
