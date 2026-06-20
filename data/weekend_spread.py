@@ -23,7 +23,7 @@ NO_MAPPING_TEXT = "暂无映射"
 MAPPING_REVIEW_TEXT = "需人工确认映射"
 MAPPING_CONFIRMED_TEXT = "映射已确认"
 UNIT_REVIEW_TEXT = "需确认映射单位"
-DEFAULT_USDM_MAPPING_RISK_NOTE = "候选 symbol 按 ticker+USDT 自动生成；如 Binance 未上线该合约，请单独修改或删除。"
+DEFAULT_USDM_MAPPING_RISK_NOTE = "候选合约按股票代码+USDT 自动生成；如 Binance 未上线该合约，请单独修改或删除。"
 
 
 def load_binance_symbol_mapping(
@@ -952,13 +952,13 @@ def _candidate_scan_message(scan: dict[str, Any]) -> str:
     if status == "OK":
         if scan.get("candidates"):
             return "候选待确认"
-        return "未发现候选 symbol"
+        return "未发现候选合约"
     market_results = scan.get("market_results") if isinstance(scan.get("market_results"), list) else []
     markets = {str(item.get("market_type") or "") for item in market_results if isinstance(item, dict)}
     if status == "BLOCKED":
         return "Binance API 可能被网络或地区限制拦截"
     if status == "EMPTY":
-        return "Binance exchangeInfo 返回空 symbols"
+        return "Binance exchangeInfo 返回空合约列表"
     if status == "SCHEMA_MISMATCH":
         return "Binance exchangeInfo 返回结构异常"
     if status == "PARSE_ERROR":
@@ -972,11 +972,11 @@ def _validation_status_text(validation: dict[str, Any], mapping_confidence: str)
     if not validation.get("exists"):
         status = str(validation.get("status") or "")
         if status == "invalid_symbol":
-            return "symbol 无效"
+            return "合约无效"
         return "Binance 数据不可用"
     if str(mapping_confidence or "").lower() == "confirmed":
-        return "confirmed"
-    return "symbol 有效但映射未确认"
+        return "人工锁定"
+    return "合约有效但映射未确认"
 
 
 def _normalize_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1132,7 +1132,7 @@ def _mapping_status(status: str, mapping_confidence: str) -> str:
     if status == "UNIT_UNCONFIRMED":
         return UNIT_REVIEW_TEXT
     if status == "INVALID_SYMBOL":
-        return "symbol 无效 / 映射待确认"
+        return "合约无效 / 映射待确认"
     if mapping_confidence == "confirmed":
         return MAPPING_CONFIRMED_TEXT
     return MAPPING_REVIEW_TEXT
@@ -1168,7 +1168,7 @@ def _status_label(status: str) -> str:
         "MISSING_FRIDAY_CLOSE": "缺少周五收盘价",
         "BINANCE_UNAVAILABLE": "Binance 数据不可用",
         "UNIT_UNCONFIRMED": UNIT_REVIEW_TEXT,
-        "INVALID_SYMBOL": "symbol 无效 / 映射待确认",
+        "INVALID_SYMBOL": "合约无效 / 映射待确认",
     }.get(status, "数据不足")
 
 
@@ -1180,7 +1180,7 @@ def _status_direction(status: str) -> str:
     if status == "UNIT_UNCONFIRMED":
         return "映射待确认"
     if status == "INVALID_SYMBOL":
-        return "symbol 无效"
+        return "合约无效"
     return "数据不足"
 
 

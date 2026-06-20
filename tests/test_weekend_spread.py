@@ -92,7 +92,13 @@ from data.tradingview_price_cache import (
     load_price_cache,
 )
 from data.weekend_spread import (
+    DEFAULT_USDM_MAPPING_RISK_NOTE,
+    _candidate_scan_message,
     _friday_close,
+    _mapping_status,
+    _status_direction,
+    _status_label,
+    _validation_status_text,
     build_mapping_diagnostics,
     build_weekend_spread_rows,
     classify_spread,
@@ -6537,6 +6543,28 @@ def test_mapping_diagnostics_use_contract_wording_not_symbol_label() -> None:
     assert weekend_spread._mapping_editor_error_text("invalid_symbol") == "Binance 合约无效"
 
 
+def test_weekend_spread_data_mapping_copy_uses_contract_wording() -> None:
+    texts = [
+        DEFAULT_USDM_MAPPING_RISK_NOTE,
+        _candidate_scan_message({"data_source_status": "OK", "candidates": []}),
+        _candidate_scan_message({"data_source_status": "EMPTY"}),
+        _validation_status_text({"exists": False, "status": "invalid_symbol"}, "candidate"),
+        _validation_status_text({"exists": True}, "confirmed"),
+        _validation_status_text({"exists": True}, "candidate"),
+        _mapping_status("INVALID_SYMBOL", "candidate"),
+        _status_label("INVALID_SYMBOL"),
+        _status_direction("INVALID_SYMBOL"),
+    ]
+    joined = "\n".join(texts)
+
+    assert "候选合约" in joined
+    assert "合约无效" in joined
+    assert "合约有效但映射未确认" in joined
+    assert "人工锁定" in joined
+    assert "symbol" not in joined.lower()
+    assert "confirmed" not in joined.lower()
+
+
 def test_candidate_mapping_strongest_signal_warns_unconfirmed() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA", "MSFT"],
@@ -6963,7 +6991,7 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
             "binance_last_price": 207.08,
             "spread_vs_afterhours_pct": 0.81,
             "spread_vs_regular_close_pct": 0.92,
-            "alert_level_cn": "瑙傚療",
+            "alert_level_cn": "观察",
             "mapping_confidence": "candidate",
             "updated_at": "2026-06-14T17:17:11+00:00",
         },
@@ -6977,7 +7005,7 @@ def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missin
             "binance_last_price": 104.32,
             "spread_vs_afterhours_pct": None,
             "spread_vs_regular_close_pct": 2.12,
-            "alert_level_cn": "閲嶇偣鍏虫敞",
+            "alert_level_cn": "重点关注",
             "mapping_confidence": "candidate",
             "updated_at": "2026-06-14T17:16:45+00:00",
         },
