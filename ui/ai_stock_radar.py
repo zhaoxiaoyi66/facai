@@ -13,7 +13,7 @@ from data.ai_stock_radar import RADAR_REPORT_VERSION, RadarScores, build_ai_stoc
 from data.buy_setup_quality import setup_quality_note, setup_quality_status, setup_quality_text
 from data.buy_zone_display import build_buy_zone_display
 from data.buy_zone_engine import build_buy_zone_context
-from data.drawdown_profile import build_drawdown_profile, drawdown_profile_summary_text
+from data.drawdown_profile import build_drawdown_profile
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
 from data.price_freshness import classify_price_freshness
