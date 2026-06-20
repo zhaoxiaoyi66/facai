@@ -1051,6 +1051,22 @@ def fetch_binance_weekend_max(
             "binance_weekend_max": None,
             "binance_equivalent_max": None,
             "binance_max_time": "",
+            "binance_weekend_high_price": None,
+            "binance_weekend_high_time_et": "",
+            "binance_weekend_high_time_hkt": "",
+            "binance_weekend_high_kline_open_time": "",
+            "binance_weekend_high_kline_close_time": "",
+            "binance_weekend_high_source": "BINANCE_USDT_M",
+            "binance_weekend_high_interval": "1m",
+            "high_tie_count": 0,
+            "last_high_time_et": "",
+            "last_binance_price_before_open": None,
+            "pullback_from_weekend_high_pct": None,
+            "hours_since_market_close": None,
+            "hours_since_p0": None,
+            "hours_before_overnight_open": None,
+            "peak_phase": "数据不足",
+            "peak_quality": "数据不足",
             "kline_count": 0,
             "provider": "BINANCE_USDT_M",
             "interval": "1m",
@@ -1065,6 +1081,22 @@ def fetch_binance_weekend_max(
         "binance_weekend_max": fields.get("binance_weekend_max"),
         "binance_equivalent_max": fields.get("binance_equivalent_max"),
         "binance_max_time": fields.get("binance_max_time") or "",
+        "binance_weekend_high_price": fields.get("binance_weekend_high_price"),
+        "binance_weekend_high_time_et": fields.get("binance_weekend_high_time_et") or "",
+        "binance_weekend_high_time_hkt": fields.get("binance_weekend_high_time_hkt") or "",
+        "binance_weekend_high_kline_open_time": fields.get("binance_weekend_high_kline_open_time") or "",
+        "binance_weekend_high_kline_close_time": fields.get("binance_weekend_high_kline_close_time") or "",
+        "binance_weekend_high_source": fields.get("binance_weekend_high_source") or "BINANCE_USDT_M",
+        "binance_weekend_high_interval": fields.get("binance_weekend_high_interval") or "1m",
+        "high_tie_count": fields.get("high_tie_count") or 0,
+        "last_high_time_et": fields.get("last_high_time_et") or "",
+        "last_binance_price_before_open": fields.get("last_binance_price_before_open"),
+        "pullback_from_weekend_high_pct": fields.get("pullback_from_weekend_high_pct"),
+        "hours_since_market_close": fields.get("hours_since_market_close"),
+        "hours_since_p0": fields.get("hours_since_p0"),
+        "hours_before_overnight_open": fields.get("hours_before_overnight_open"),
+        "peak_phase": fields.get("peak_phase") or "数据不足",
+        "peak_quality": fields.get("peak_quality") or "数据不足",
         "kline_count": fields.get("kline_count") or 0,
         "provider": "BINANCE_USDT_M",
         "interval": "1m",
@@ -2328,10 +2360,33 @@ def _binance_weekend_max_fields(
 ) -> dict[str, Any]:
     window_start = window.start_et.astimezone(timezone.utc)
     window_end = window.end_et.astimezone(timezone.utc)
-    weekend_bars = [bar for bar in bars if window_start <= bar.open_time < window_end]
+    weekend_bars = sorted(
+        [bar for bar in bars if window_start <= bar.open_time < window_end],
+        key=lambda bar: bar.open_time,
+    )
     if not weekend_bars:
         return _missing_binance_weekend_max_fields(symbol, window, reason="BINANCE_KLINE_UNAVAILABLE")
-    peak = max(weekend_bars, key=lambda bar: bar.high)
+    highest = max(bar.high for bar in weekend_bars)
+    high_bars = [bar for bar in weekend_bars if bar.high == highest]
+    peak = high_bars[0]
+    last_high = high_bars[-1]
+    last_before_open = weekend_bars[-1]
+    peak_time_et = peak.open_time.astimezone(ET)
+    peak_close_time_et = (peak.open_time + timedelta(minutes=1)).astimezone(ET)
+    last_high_time_et = last_high.open_time.astimezone(ET)
+    last_before_open_price = last_before_open.close
+    pullback_pct = _change_pct(last_before_open_price, peak.high)
+    market_close_et = _peak_market_close_time(window)
+    hours_since_market_close = _hours_between(market_close_et, peak_time_et)
+    hours_since_p0 = _hours_between(window.start_et, peak_time_et)
+    hours_before_open = _hours_between(peak_time_et, window.end_et)
+    peak_phase = _weekend_peak_phase(peak_time_et, window)
+    peak_quality = _weekend_peak_quality(
+        peak_phase=peak_phase,
+        hours_before_open=hours_before_open,
+        pullback_pct=pullback_pct,
+        high_tie_count=len(high_bars),
+    )
     effective_multiplier = float(multiplier or 1.0)
     equivalent = peak.high * effective_multiplier
     return {
@@ -2343,8 +2398,24 @@ def _binance_weekend_max_fields(
         "binance_weekend_max": peak.high,
         "binance_weekend_max_price": peak.high,
         "binance_equivalent_max": equivalent,
-        "binance_max_time": peak.open_time.astimezone(ET).isoformat(),
-        "binance_weekend_max_time": peak.open_time.astimezone(ET).isoformat(),
+        "binance_max_time": peak_time_et.isoformat(),
+        "binance_weekend_max_time": peak_time_et.isoformat(),
+        "binance_weekend_high_price": peak.high,
+        "binance_weekend_high_time_et": peak_time_et.isoformat(),
+        "binance_weekend_high_time_hkt": peak_time_et.astimezone(SHANGHAI).isoformat(),
+        "binance_weekend_high_kline_open_time": peak_time_et.isoformat(),
+        "binance_weekend_high_kline_close_time": peak_close_time_et.isoformat(),
+        "binance_weekend_high_source": "BINANCE_USDT_M",
+        "binance_weekend_high_interval": "1m",
+        "high_tie_count": len(high_bars),
+        "last_high_time_et": last_high_time_et.isoformat(),
+        "last_binance_price_before_open": last_before_open_price,
+        "pullback_from_weekend_high_pct": pullback_pct,
+        "hours_since_market_close": hours_since_market_close,
+        "hours_since_p0": hours_since_p0,
+        "hours_before_overnight_open": hours_before_open,
+        "peak_phase": peak_phase,
+        "peak_quality": peak_quality,
         "kline_count": len(weekend_bars),
         "binance_kline_count": len(weekend_bars),
         "binance_multiplier": effective_multiplier,
@@ -2365,12 +2436,96 @@ def _missing_binance_weekend_max_fields(symbol: str, window: WeekendWindow, *, r
         "binance_equivalent_max": None,
         "binance_max_time": "",
         "binance_weekend_max_time": "",
+        "binance_weekend_high_price": None,
+        "binance_weekend_high_time_et": "",
+        "binance_weekend_high_time_hkt": "",
+        "binance_weekend_high_kline_open_time": "",
+        "binance_weekend_high_kline_close_time": "",
+        "binance_weekend_high_source": "BINANCE_USDT_M",
+        "binance_weekend_high_interval": "1m",
+        "high_tie_count": 0,
+        "last_high_time_et": "",
+        "last_binance_price_before_open": None,
+        "pullback_from_weekend_high_pct": None,
+        "hours_since_market_close": None,
+        "hours_since_p0": None,
+        "hours_before_overnight_open": None,
+        "peak_phase": "数据不足",
+        "peak_quality": "数据不足",
         "kline_count": 0,
         "binance_kline_count": 0,
         "binance_multiplier": 1.0,
         "binance_market_type": "usdm_futures",
         "binance_weekend_max_reason": reason,
     }
+
+
+def _peak_market_close_time(window: WeekendWindow) -> datetime:
+    if window.last_trading_day_close_time_et is not None:
+        return window.last_trading_day_close_time_et.astimezone(ET)
+    day = window.last_trading_day or window.start_et.astimezone(ET).date()
+    return datetime.combine(day, time(16, 0), ET)
+
+
+def _hours_between(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None:
+        return None
+    return (end.astimezone(ET) - start.astimezone(ET)).total_seconds() / 3600.0
+
+
+def _weekend_peak_phase(high_time_et: datetime | None, window: WeekendWindow) -> str:
+    if high_time_et is None:
+        return "数据不足"
+    high_et = high_time_et.astimezone(ET)
+    end_et = window.end_et.astimezone(ET)
+    hours_before_open = _hours_between(high_et, end_et)
+    if hours_before_open is None:
+        return "数据不足"
+    if hours_before_open <= 2:
+        return "临近夜盘"
+    if hours_before_open <= 8:
+        return "夜盘前段"
+
+    market_close = _peak_market_close_time(window)
+    if market_close <= high_et < market_close + timedelta(hours=4):
+        return "刚休市后"
+
+    if window.last_trading_day_is_friday and not window.holiday_shifted_overnight_session:
+        saturday_noon = datetime.combine(market_close.date() + timedelta(days=1), time(12, 0), ET)
+        sunday_noon = datetime.combine(market_close.date() + timedelta(days=2), time(12, 0), ET)
+        sunday_18 = datetime.combine(market_close.date() + timedelta(days=2), time(18, 0), ET)
+        if high_et < saturday_noon:
+            return "周末早段"
+        if high_et < sunday_noon:
+            return "周末中段"
+        if high_et < sunday_18:
+            return "夜盘前段"
+        return "临近夜盘"
+
+    midpoint = market_close + (end_et - market_close) / 2
+    return "周末早段" if high_et < midpoint else "周末中段"
+
+
+def _weekend_peak_quality(
+    *,
+    peak_phase: str,
+    hours_before_open: float | None,
+    pullback_pct: float | None,
+    high_tie_count: int,
+) -> str:
+    if hours_before_open is None or pullback_pct is None:
+        return "数据不足"
+    if pullback_pct <= -3.0:
+        return "插针嫌疑"
+    if high_tie_count <= 1 and pullback_pct <= -2.0 and hours_before_open > 2:
+        return "插针嫌疑"
+    if hours_before_open <= 2 and pullback_pct >= -1.0:
+        return "高价值高点"
+    if (hours_before_open <= 8 or peak_phase in {"夜盘前段", "临近夜盘"}) and pullback_pct >= -2.0:
+        return "可参考高点"
+    if peak_phase in {"刚休市后", "周末早段", "周末中段"}:
+        return "早期高点"
+    return "可参考高点"
 
 
 def _broker_overnight_bars_for_window(

@@ -3045,6 +3045,8 @@ def _render_monitor_research_tab() -> None:
         st.caption("暂无周末样本。")
     else:
         st.dataframe(sample_frame, width="stretch", hide_index=True)
+        with st.expander("周末高点时间分布", expanded=False):
+            _render_weekend_peak_timing_distribution(filtered_samples)
 
 
 def _render_monitor_research_summary(summary: dict[str, int], health: dict | None = None) -> None:
@@ -3136,6 +3138,11 @@ def _monitor_research_sample_frame(samples: list[dict]) -> pd.DataFrame:
         "平均溢价",
         "价差/ATR最大值",
         "溢价持续时间",
+        "高点时间",
+        "高点阶段",
+        "距夜盘开盘",
+        "高点后回落",
+        "高点质量",
         "休市新闻",
         "新闻状态",
         "P2 时间",
@@ -3158,6 +3165,11 @@ def _monitor_research_sample_frame(samples: list[dict]) -> pd.DataFrame:
                 "平均溢价": _percent_text(sample.get("avg_premium_pct")),
                 "价差/ATR最大值": _ratio_text(sample.get("max_spread_atr_ratio")),
                 "溢价持续时间": _minutes_text(sample.get("premium_duration_minutes")),
+                "高点时间": _short_hkt_time(sample.get("p1_max_time_et")),
+                "高点阶段": sample.get("peak_phase") or "数据不足",
+                "距夜盘开盘": _hours_until_open_text(sample.get("hours_before_overnight_open")),
+                "高点后回落": _peak_pullback_text(sample.get("pullback_from_weekend_high_pct")),
+                "高点质量": sample.get("peak_quality") or "数据不足",
                 "休市新闻": sample.get("news_label") or "待新闻确认",
                 "新闻状态": sample.get("news_status") or "未检查",
                 "P2 时间": _short_hkt_time(sample.get("p2_time_et")),
@@ -3271,6 +3283,48 @@ def _daily_volatility_reference_from_ratio(value: object) -> str:
     if ratio is None:
         return "缺波动数据"
     return f"约 {ratio:.1f} 天波动"
+
+
+def _peak_time_text(row: dict) -> str:
+    value = row.get("binance_weekend_high_time_et") or row.get("binance_weekend_max_time") or row.get("binance_max_time")
+    text = _short_hkt_time(value)
+    return text if text != "暂缺" else "暂缺"
+
+
+def _hours_until_open_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    if number < 1:
+        return f"{max(0, number * 60):.0f} 分钟"
+    return f"{number:.1f} 小时"
+
+
+def _peak_pullback_text(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "暂缺"
+    return f"{number:+.2f}%"
+
+
+def _peak_timing_explanation(row: dict) -> str:
+    peak_time = _peak_time_text(row)
+    if peak_time == "暂缺":
+        return ""
+    hours = _hours_until_open_text(row.get("hours_before_overnight_open"))
+    pullback = _number(row.get("pullback_from_weekend_high_pct"))
+    pullback_text = f"{abs(pullback):.1f}%" if pullback is not None else "暂缺"
+    quality = str(row.get("peak_quality") or "数据不足")
+    phase = str(row.get("peak_phase") or "数据不足")
+    if quality == "插针嫌疑":
+        return f"本周 Binance 高点出现在 {peak_time}，属于{phase}，距夜盘约 {hours}；夜盘前已回落 {pullback_text}，更像早期插针，参考价值较低。"
+    if quality == "高价值高点":
+        return f"本周 Binance 高点出现在 {peak_time}，距夜盘约 {hours}；高点后仅回落 {pullback_text}，属于高价值高点。"
+    if quality == "可参考高点":
+        return f"本周 Binance 高点出现在 {peak_time}，属于{phase}，距夜盘约 {hours}；高点后回落 {pullback_text}，仍可作为周末高点参考。"
+    if quality == "早期高点":
+        return f"本周 Binance 高点出现在 {peak_time}，属于{phase}，距夜盘约 {hours}；距离夜盘较远，参考价值需要结合后续回落。"
+    return f"本周 Binance 高点时间为 {peak_time}，当前高点画像数据仍需复核。"
 
 
 def _event_max_abs_premium(event: dict) -> float | None:
@@ -4071,6 +4125,8 @@ def _render_backtest_result_sections(
     _render_weekend_review_kpis(review_rows)
     st.subheader(_weekend_review_detail_title(weeks))
     _render_weekend_review_table(review_rows)
+    with st.expander("周末高点时间分布", expanded=False):
+        _render_weekend_peak_timing_distribution(review_rows)
     with st.expander("数据质量 / 排除原因", expanded=False):
         ok_review_rows = _ok_weekend_review_rows(review_rows)
         if not ok_review_rows:
@@ -5362,6 +5418,12 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
             → {escape(_money_or_missing(row.get("binance_price"), "缺 P1"))}
             → {escape(_p2_flow_text(row))}
           </div>
+          <div class="weekend-core-sources">
+            Binance 周末高点：{escape(_money_or_missing(row.get("binance_price"), "缺 P1"))}｜
+            高点时间：{escape(_peak_time_text(row))}｜
+            距夜盘：{escape(_hours_until_open_text(row.get("hours_before_overnight_open")))}｜
+            高点后回落：{escape(_peak_pullback_text(row.get("pullback_from_weekend_high_pct")))}
+          </div>
           <div class="weekend-core-metrics">{metric_html}</div>
           <div class="weekend-core-sources">
             P0：{escape(_p0_source_summary(row))}｜P0 状态：{escape(_p0_status_text(row))}｜
@@ -5383,6 +5445,9 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
         st.caption(f"非首分钟样本，开盘后 +{int(float(_number(row.get('p2_delay_minutes')) or 0))} 分钟才出现有效 1m K 线。")
     elif str(row.get("data_quality") or "").strip().upper() in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
         st.caption("P0 使用常规收盘回退，仅作为观察样本。")
+    peak_explanation = _peak_timing_explanation(row)
+    if peak_explanation:
+        st.caption(peak_explanation)
 
 
 
@@ -5531,6 +5596,21 @@ def _weekend_review_rows(rows: list[dict]) -> list[dict]:
             "overnight_provider": _weekend_review_overnight_provider(row),
             "contract_sample_time": _weekend_review_contract_sample_time(row),
             "binance_price": binance_price,
+            "binance_weekend_high_time_et": str(row.get("binance_weekend_high_time_et") or row.get("binance_weekend_max_time") or row.get("binance_max_time") or ""),
+            "binance_weekend_high_time_hkt": str(row.get("binance_weekend_high_time_hkt") or ""),
+            "binance_weekend_high_kline_open_time": str(row.get("binance_weekend_high_kline_open_time") or ""),
+            "binance_weekend_high_kline_close_time": str(row.get("binance_weekend_high_kline_close_time") or ""),
+            "binance_weekend_high_source": str(row.get("binance_weekend_high_source") or "BINANCE_USDT_M"),
+            "binance_weekend_high_interval": str(row.get("binance_weekend_high_interval") or "1m"),
+            "high_tie_count": int(_first_number(row, ("high_tie_count",)) or 0),
+            "last_high_time_et": str(row.get("last_high_time_et") or ""),
+            "last_binance_price_before_open": _first_number(row, ("last_binance_price_before_open",)),
+            "pullback_from_weekend_high_pct": _first_number(row, ("pullback_from_weekend_high_pct",)),
+            "hours_since_market_close": _first_number(row, ("hours_since_market_close",)),
+            "hours_since_p0": _first_number(row, ("hours_since_p0",)),
+            "hours_before_overnight_open": _first_number(row, ("hours_before_overnight_open",)),
+            "peak_phase": str(row.get("peak_phase") or "数据不足"),
+            "peak_quality": str(row.get("peak_quality") or "数据不足"),
             "binance_window": _weekend_review_binance_window(row),
             "binance_quote_count": _first_number(row, ("binance_kline_count", "binance_quote_count", "kline_count", "returned_kline_count")),
             "binance_provider": str(row.get("binance_provider") or "BINANCE_USDT_M"),
@@ -5695,11 +5775,15 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
         "股票",
         "P0 盘后锚点",
         "P1 周末高点",
+        "P1 高点时间",
+        "高点阶段",
+        "距夜盘开盘",
+        "高点后回落",
         "P2 夜盘价格",
         "周末冲高",
-        "高点回落",
         "最终传导",
         "高点兑现率",
+        "高点质量",
         "样本质量",
         "休市新闻",
     ]
@@ -5713,16 +5797,44 @@ def _weekend_review_frame(review_rows: list[dict]) -> pd.DataFrame:
                 "股票": row.get("ticker"),
                 "P0 盘后锚点": _money_or_missing(row.get("friday_afterhours_close"), "缺 P0"),
                 "P1 周末高点": _money_or_missing(row.get("binance_price"), "缺 P1"),
+                "P1 高点时间": _peak_time_text(row),
+                "高点阶段": row.get("peak_phase") or "数据不足",
+                "距夜盘开盘": _hours_until_open_text(row.get("hours_before_overnight_open")),
+                "高点后回落": _peak_pullback_text(row.get("pullback_from_weekend_high_pct")),
                 "P2 夜盘价格": _money_or_missing(row.get("broker_open_close"), "无 P2"),
                 "周末冲高": _percent_or_missing(row.get("binance_premium_pct"), row),
-                "高点回落": _percent_or_missing(row.get("overnight_vs_binance_pct"), row),
                 "最终传导": _percent_or_missing(row.get("overnight_vs_afterhours_pct"), row),
                 "高点兑现率": _percent_or_missing(row.get("capture_pct"), row),
+                "高点质量": row.get("peak_quality") or "数据不足",
                 "样本质量": _weekend_review_short_sample_quality(row),
                 "休市新闻": _weekend_review_news_label(row),
             }
         )
     return pd.DataFrame(records, columns=columns)
+
+
+def _render_weekend_peak_timing_distribution(review_rows: list[dict]) -> None:
+    rows = [
+        row
+        for row in _display_weekend_review_rows(review_rows)
+        if str(row.get("peak_phase") or "").strip() and str(row.get("peak_phase") or "") != "数据不足"
+    ]
+    phases = ["刚休市后", "周末早段", "周末中段", "夜盘前段", "临近夜盘"]
+    records: list[dict] = []
+    for phase in phases:
+        phase_rows = [row for row in rows if str(row.get("peak_phase") or "") == phase]
+        captures = [_number(row.get("capture_pct")) for row in phase_rows]
+        captures = [float(value) for value in captures if value is not None]
+        records.append(
+            {
+                "高点阶段": phase,
+                "次数": len(phase_rows),
+                "平均兑现率": _percent_text(sum(captures) / len(captures)) if captures else "样本不足",
+            }
+        )
+    st.dataframe(pd.DataFrame(records, columns=["高点阶段", "次数", "平均兑现率"]), width="stretch", hide_index=True)
+    if sum(record["次数"] for record in records) < 3:
+        st.caption("样本不足，暂不统计阶段兑现率。")
 
 
 def _weekend_review_news_label(row: dict) -> str:
@@ -5763,7 +5875,7 @@ def _style_weekend_review_frame(frame: pd.DataFrame):
             return "color: #047857; font-weight: 800;"
         return "color: #64748b; font-weight: 700;"
 
-    percent_columns = ["周末冲高", "高点回落", "最终传导", "高点兑现率"]
+    percent_columns = ["高点后回落", "周末冲高", "最终传导", "高点兑现率"]
     color_subset = [column for column in percent_columns if column in frame.columns]
     styler = frame.style
     if not color_subset:

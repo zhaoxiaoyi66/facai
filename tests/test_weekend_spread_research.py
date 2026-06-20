@@ -83,12 +83,37 @@ def test_single_tick_spike_is_marked_as_instant_spike() -> None:
 
 def test_research_sample_calculates_weekend_metrics() -> None:
     ticks = [_tick("NVDA", 0, 2.0, ratio=1.0), _tick("NVDA", 3, 4.0, ratio=1.8), _tick("NVDA", 6, -1.0, ratio=0.5)]
-    backtest = [{"week_id": "2026-W25", "ticker": "NVDA", "broker_open_close": 103.0, "p2_delay_minutes": 0, "capture_pct": 50.0}]
+    backtest = [
+        {
+            "week_id": "2026-W25",
+            "ticker": "NVDA",
+            "broker_open_close": 103.0,
+            "p2_delay_minutes": 0,
+            "capture_pct": 50.0,
+            "binance_weekend_high_price": 104.0,
+            "binance_weekend_high_time_et": "2026-06-21T18:30:00-04:00",
+            "binance_weekend_high_time_hkt": "2026-06-22T06:30:00+08:00",
+            "last_binance_price_before_open": 103.5,
+            "peak_phase": "临近夜盘",
+            "hours_since_market_close": 50.5,
+            "hours_since_p0": 46.5,
+            "hours_before_overnight_open": 1.5,
+            "pullback_from_weekend_high_pct": -0.48,
+            "peak_quality": "高价值高点",
+        }
+    ]
 
     samples = build_research_samples(ticks, backtest_rows=backtest)
 
     assert len(samples) == 1
     sample = samples[0]
+    assert sample["p1_max_price"] == pytest.approx(104.0)
+    assert sample["p1_max_time_et"] == "2026-06-21T18:30:00-04:00"
+    assert sample["p1_max_time_hkt"] == "2026-06-22T06:30:00+08:00"
+    assert sample["peak_phase"] == "临近夜盘"
+    assert sample["hours_before_overnight_open"] == pytest.approx(1.5)
+    assert sample["pullback_from_weekend_high_pct"] == pytest.approx(-0.48)
+    assert sample["peak_quality"] == "高价值高点"
     assert sample["max_premium_pct"] == pytest.approx(4.0)
     assert sample["max_discount_pct"] == pytest.approx(-1.0)
     assert sample["avg_premium_pct"] == pytest.approx((2.0 + 4.0 - 1.0) / 3)

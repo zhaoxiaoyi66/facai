@@ -55,11 +55,14 @@ from data.weekend_basis_mapping_audit import (
     reject_weekend_basis_mapping,
 )
 from data.weekend_spread_backtest import (
+    WeekendWindow,
+    _binance_weekend_max_fields,
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
     fetch_friday_afterhours_close,
     get_first_valid_stock_bar_after_weekend,
     load_backtest_results,
+    normalize_klines,
     recent_weekend_windows,
     run_weekend_basis_backfill_audit,
     run_weekend_basis_backtest,
@@ -3301,6 +3304,68 @@ def test_weekend_basis_backtest_uses_binance_high_and_broker_first_1m_close() ->
     assert review["data_quality"] == "OK"
 
 
+def test_binance_weekend_high_records_peak_timing_profile() -> None:
+    et = ZoneInfo("America/New_York")
+    start = datetime(2026, 6, 19, 20, 0, tzinfo=et)
+    end = datetime(2026, 6, 21, 20, 0, tzinfo=et)
+    window = WeekendWindow(
+        week_id="2026-W25",
+        start_et=start,
+        end_et=end,
+        end_shanghai=end.astimezone(ZoneInfo("Asia/Shanghai")),
+        last_trading_day=date(2026, 6, 19),
+        last_trading_day_close_time_et=datetime(2026, 6, 19, 16, 0, tzinfo=et),
+        last_trading_day_is_friday=True,
+    )
+    bars = normalize_klines(
+        [
+            _kline(start + timedelta(hours=1), 103.0, 106.0, 102.0, 104.0),
+            _kline(start + timedelta(hours=2), 104.0, 106.0, 103.0, 103.0),
+            _kline(end - timedelta(minutes=1), 104.0, 104.5, 103.5, 104.0),
+        ]
+    )
+
+    fields = _binance_weekend_max_fields("NVDAUSDT", "usdm_futures", window, bars)
+
+    assert fields["binance_weekend_high_price"] == 106.0
+    assert fields["binance_weekend_high_time_et"] == (start + timedelta(hours=1)).isoformat()
+    assert fields["high_tie_count"] == 2
+    assert fields["last_high_time_et"] == (start + timedelta(hours=2)).isoformat()
+    assert fields["last_binance_price_before_open"] == 104.0
+    assert fields["hours_before_overnight_open"] == pytest.approx(47.0)
+    assert fields["pullback_from_weekend_high_pct"] == pytest.approx((104.0 / 106.0 - 1) * 100)
+    assert fields["peak_phase"] == "周末早段"
+    assert fields["peak_quality"] == "早期高点"
+
+
+def test_binance_weekend_high_near_open_with_small_pullback_is_high_value() -> None:
+    et = ZoneInfo("America/New_York")
+    start = datetime(2026, 6, 19, 20, 0, tzinfo=et)
+    end = datetime(2026, 6, 21, 20, 0, tzinfo=et)
+    window = WeekendWindow(
+        week_id="2026-W25",
+        start_et=start,
+        end_et=end,
+        end_shanghai=end.astimezone(ZoneInfo("Asia/Shanghai")),
+        last_trading_day=date(2026, 6, 19),
+        last_trading_day_close_time_et=datetime(2026, 6, 19, 16, 0, tzinfo=et),
+        last_trading_day_is_friday=True,
+    )
+    bars = normalize_klines(
+        [
+            _kline(end - timedelta(minutes=90), 105.0, 106.0, 104.8, 105.8),
+            _kline(end - timedelta(minutes=1), 105.8, 105.9, 105.2, 105.5),
+        ]
+    )
+
+    fields = _binance_weekend_max_fields("NVDAUSDT", "usdm_futures", window, bars)
+
+    assert fields["hours_before_overnight_open"] == pytest.approx(1.5)
+    assert fields["peak_phase"] == "临近夜盘"
+    assert fields["pullback_from_weekend_high_pct"] == pytest.approx((105.5 / 106.0 - 1) * 100)
+    assert fields["peak_quality"] == "高价值高点"
+
+
 def test_weekend_basis_backtest_rejects_non_exact_broker_first_minute_for_formal_sample() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]
@@ -5253,6 +5318,11 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
             "p0_quality": "ALPACA_AFTERHOURS_1M_BAR",
             "binance_weekend_max_price": 102.0,
             "binance_weekend_max_time": "2026-06-14T19:58:00-04:00",
+            "binance_weekend_high_time_et": "2026-06-14T19:58:00-04:00",
+            "hours_before_overnight_open": 0.033,
+            "pullback_from_weekend_high_pct": -0.2,
+            "peak_phase": "临近夜盘",
+            "peak_quality": "高价值高点",
             "broker_first_1m_close": 101.5,
             "broker_first_1m_time": "2026-06-14T20:00:00-04:00",
             "binance_symbol": "NVDAUSDT",
@@ -5287,11 +5357,15 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
         "股票",
         "P0 盘后锚点",
         "P1 周末高点",
+        "P1 高点时间",
+        "高点阶段",
+        "距夜盘开盘",
+        "高点后回落",
         "P2 夜盘价格",
         "周末冲高",
-        "高点回落",
         "最终传导",
         "高点兑现率",
+        "高点质量",
         "样本质量",
         "休市新闻",
     ]
@@ -5300,9 +5374,13 @@ def test_weekend_review_frame_keeps_homepage_columns_simple() -> None:
     nvda = frame[frame["股票"] == "NVDA"].iloc[0]
     assert nvda["P0 盘后锚点"] == "$100.00"
     assert nvda["P1 周末高点"] == "$102.00"
+    assert nvda["P1 高点时间"] == "06-15 07:58 HKT"
+    assert nvda["高点阶段"] == "临近夜盘"
+    assert nvda["距夜盘开盘"] == "2 分钟"
+    assert nvda["高点后回落"] == "-0.20%"
     assert nvda["P2 夜盘价格"] == "$101.50"
     assert nvda["周末冲高"] == "+2.00%"
-    assert nvda["高点回落"] == "-0.49%"
+    assert nvda["高点质量"] == "高价值高点"
 
     diagnostic = weekend_spread._weekend_review_diagnostic_frame(review_rows)
     diagnostic_nvda = diagnostic[diagnostic["股票"] == "NVDA"].iloc[0]

@@ -154,6 +154,18 @@ def build_research_samples(
             rows=rows,
         )
         sample_id = _stable_id("sample", week_id, ticker)
+        p1_max_time_et = str(
+            backtest.get("p1_max_time_et")
+            or backtest.get("binance_weekend_high_time_et")
+            or backtest.get("binance_weekend_max_time")
+            or max_row.get("scan_time_et")
+            or ""
+        )
+        p1_max_time_hkt = str(backtest.get("p1_max_time_hkt") or backtest.get("binance_weekend_high_time_hkt") or "")
+        if not p1_max_time_hkt and p1_max_time_et:
+            parsed_p1_time = _parse_optional_time(p1_max_time_et)
+            if parsed_p1_time is not None:
+                p1_max_time_hkt = parsed_p1_time.astimezone(HKT).isoformat()
         samples.append(
             {
                 "sample_id": sample_id,
@@ -162,10 +174,17 @@ def build_research_samples(
                 "binance_symbol": str(rows[-1].get("binance_symbol") or ""),
                 "p0_price": _first_number(rows, "anchor_price"),
                 "p0_time_et": str(rows[0].get("anchor_time_et") or ""),
-                "p1_max_price": _number(max_row.get("binance_price")),
-                "p1_max_time_et": str(max_row.get("scan_time_et") or ""),
+                "p1_max_price": _number(backtest.get("p1_max_price") or backtest.get("binance_weekend_high_price") or max_row.get("binance_price")),
+                "p1_max_time_et": p1_max_time_et,
+                "p1_max_time_hkt": p1_max_time_hkt,
                 "p1_min_price": _number(min_row.get("binance_price")),
-                "last_binance_price_before_open": _number(rows[-1].get("binance_price")),
+                "last_binance_price_before_open": _number(backtest.get("last_binance_price_before_open") or rows[-1].get("binance_price")),
+                "peak_phase": str(backtest.get("peak_phase") or ""),
+                "hours_since_market_close": _number(backtest.get("hours_since_market_close")),
+                "hours_since_p0": _number(backtest.get("hours_since_p0")),
+                "hours_before_overnight_open": _number(backtest.get("hours_before_overnight_open")),
+                "pullback_from_weekend_high_pct": _number(backtest.get("pullback_from_weekend_high_pct")),
+                "peak_quality": str(backtest.get("peak_quality") or ""),
                 "p2_price": _number(backtest.get("broker_open_close") or backtest.get("p2_price")),
                 "p2_time_et": str(backtest.get("p2_first_valid_time") or backtest.get("p2_time_et") or ""),
                 "p2_delay_minutes": _number(backtest.get("p2_delay_minutes")),
@@ -596,8 +615,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             p0_time_et TEXT,
             p1_max_price REAL,
             p1_max_time_et TEXT,
+            p1_max_time_hkt TEXT,
             p1_min_price REAL,
             last_binance_price_before_open REAL,
+            peak_phase TEXT,
+            hours_since_market_close REAL,
+            hours_since_p0 REAL,
+            hours_before_overnight_open REAL,
+            pullback_from_weekend_high_pct REAL,
+            peak_quality TEXT,
             p2_price REAL,
             p2_time_et TEXT,
             p2_delay_minutes REAL,
@@ -654,6 +680,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             "news_error": "TEXT",
             "p2_status": "TEXT",
             "data_health_label": "TEXT",
+            "p1_max_time_hkt": "TEXT",
+            "peak_phase": "TEXT",
+            "hours_since_market_close": "REAL",
+            "hours_since_p0": "REAL",
+            "hours_before_overnight_open": "REAL",
+            "pullback_from_weekend_high_pct": "REAL",
+            "peak_quality": "TEXT",
         },
     )
 
@@ -705,7 +738,9 @@ def _replace_samples(conn: sqlite3.Connection, samples: list[dict[str, Any]]) ->
         """
         INSERT OR REPLACE INTO weekend_spread_research_samples (
             sample_id, week_id, ticker, binance_symbol, p0_price, p0_time_et, p1_max_price,
-            p1_max_time_et, p1_min_price, last_binance_price_before_open, p2_price, p2_time_et,
+            p1_max_time_et, p1_max_time_hkt, p1_min_price, last_binance_price_before_open,
+            peak_phase, hours_since_market_close, hours_since_p0, hours_before_overnight_open,
+            pullback_from_weekend_high_pct, peak_quality, p2_price, p2_time_et,
             p2_delay_minutes, max_premium_pct, max_discount_pct, avg_premium_pct,
             max_spread_atr_ratio, premium_duration_minutes, discount_duration_minutes,
             extreme_spread_count, news_status, news_label, news_count, major_news_count,
@@ -714,7 +749,9 @@ def _replace_samples(conn: sqlite3.Connection, samples: list[dict[str, Any]]) ->
             data_health_label, created_at
         ) VALUES (
             :sample_id, :week_id, :ticker, :binance_symbol, :p0_price, :p0_time_et, :p1_max_price,
-            :p1_max_time_et, :p1_min_price, :last_binance_price_before_open, :p2_price, :p2_time_et,
+            :p1_max_time_et, :p1_max_time_hkt, :p1_min_price, :last_binance_price_before_open,
+            :peak_phase, :hours_since_market_close, :hours_since_p0, :hours_before_overnight_open,
+            :pullback_from_weekend_high_pct, :peak_quality, :p2_price, :p2_time_et,
             :p2_delay_minutes, :max_premium_pct, :max_discount_pct, :avg_premium_pct,
             :max_spread_atr_ratio, :premium_duration_minutes, :discount_duration_minutes,
             :extreme_spread_count, :news_status, :news_label, :news_count, :major_news_count,
