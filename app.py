@@ -74,7 +74,7 @@ LEGACY_PAGE_ALIASES = {
 
 st.set_page_config(
     page_title="ZHX Research",
-    page_icon=APP_ICON_PATH if APP_ICON_PATH.is_file() else (APP_ICON_FALLBACK_PATH if APP_ICON_FALLBACK_PATH.is_file() else "📈"),
+    page_icon=APP_ICON_PATH if APP_ICON_PATH.is_file() else (APP_ICON_FALLBACK_PATH if APP_ICON_FALLBACK_PATH.is_file() else "Z"),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -105,7 +105,7 @@ NAV_STRUCTURE = [
     PAGE_NEWS_RADAR,
     {
         "label": "数据复核",
-        "icon": "\u25C6",
+        "icon": "V",
         "page": PAGE_MANUAL_REVIEW,
         "children": [PAGE_SIGNAL_PERFORMANCE],
     },
@@ -217,7 +217,7 @@ def _nav_items_markup(active_page: str) -> str:
     for entry in NAV_STRUCTURE:
         if isinstance(entry, dict):
             label = str(entry.get("label") or "")
-            icon = str(entry.get("icon") or "•")
+            icon = str(entry.get("icon") or "-")
             group_page = str(entry.get("page") or "")
             children = [page for page in entry.get("children", []) if page in PAGES]
             active_pages = set(children)
@@ -283,19 +283,19 @@ def _nav_label(page_name: str) -> str:
 
 def _nav_icon(page_name: str) -> str:
     icons = {
-        PAGE_DASHBOARD: "◇",
-        PAGE_STOCK_DETAIL: "⌕",
-        PAGE_PORTFOLIO: "□",
-        PAGE_TRADE_JOURNAL: "☰",
+        PAGE_DASHBOARD: "D",
+        PAGE_STOCK_DETAIL: "S",
+        PAGE_PORTFOLIO: "P",
+        PAGE_TRADE_JOURNAL: "J",
         PAGE_DISCIPLINE_REVIEW: "!",
-        PAGE_WATCHLIST: "≡",
-        PAGE_MANUAL_REVIEW: "◆",
-        PAGE_AI_RADAR: "⌁",
-        PAGE_WEEKEND_SPREAD: "↔",
-        PAGE_NEWS_RADAR: "◈",
-        PAGE_SIGNAL_PERFORMANCE: "↗",
+        PAGE_WATCHLIST: "O",
+        PAGE_MANUAL_REVIEW: "V",
+        PAGE_AI_RADAR: "R",
+        PAGE_WEEKEND_SPREAD: "W",
+        PAGE_NEWS_RADAR: "N",
+        PAGE_SIGNAL_PERFORMANCE: "F",
     }
-    return icons.get(page_name, "•")
+    return icons.get(page_name, "-")
 
 
 if __name__ == "__main__":
