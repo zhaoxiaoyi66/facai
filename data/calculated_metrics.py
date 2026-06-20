@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
-
 import pandas as pd
 
 from indicators.technicals import add_technical_indicators, latest_technical_snapshot

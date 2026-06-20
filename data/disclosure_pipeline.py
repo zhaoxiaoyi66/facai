@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -18,7 +17,7 @@ from data.ir_kpi_scraper import kpi_mapping_for_ticker
 from data.metric_dictionary import MetricDefinition, metric_definitions_for_model
 from data.metric_source_map import metric_source_definition
 from data.metric_variants import extract_saas_metric_variants
-from data.sec_client import SECClient, SECFiling, _html_to_text, _links_from_html
+from data.sec_client import SECClient, _html_to_text, _links_from_html
 from data.sec_supplement import SEC_COMPANYFACTS_URL, extract_sec_hood_metrics, extract_sec_saas_metrics
 
 
