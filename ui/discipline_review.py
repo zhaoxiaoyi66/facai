@@ -29,6 +29,19 @@ from data.discipline_review import (
     build_trade_review_conclusion,
     default_period_dates,
 )
+from data.investment_principles import (
+    DEFAULT_PRINCIPLES_PATH,
+    DEFAULT_QUOTE_ID,
+    IRON_RULE_TAGS,
+    add_principle_quote,
+    delete_principle_quote,
+    load_investment_principles,
+    next_principle_quote,
+    principle_reminder_for_mistake_tags,
+    select_principle_quote,
+    selected_principle_quote,
+    update_principle_quote,
+)
 from data.portfolio import PortfolioPositionStore
 from data.news_radar import trade_news_check
 from data.prices import CACHE_PATH
@@ -69,6 +82,7 @@ def render(path: Path = CACHE_PATH) -> None:
     _render_styles()
     render_page_header("交易复盘", "记录交易错误、复盘交易行为，把每次失误沉淀成下一次防线。")
     discipline_store = DisciplineReviewStore(path)
+    _render_investment_principles_reminder()
     mistake_rows = discipline_store.list_mistake_reviews()
     _render_mistake_overview_strip(mistake_rows)
     _render_quick_mistake_capture(discipline_store)
@@ -90,12 +104,137 @@ def render(path: Path = CACHE_PATH) -> None:
         with st.expander("组合纪律体检", expanded=False):
             _render_portfolio_discipline(discipline_store, positions, entries)
         _render_discipline_stats(discipline_store, entries)
-        st.markdown(
-            '<div class="principle-summary-line"><strong>当前原则：</strong>不做空｜只买高信念股｜最多 6 只核心｜现金也是仓位｜不参与感受型小仓</div>',
-            unsafe_allow_html=True,
-        )
-        with st.expander("投资原则", expanded=False):
-            _render_principles_card(discipline_store)
+
+
+def _render_investment_principles_reminder(path: Path = DEFAULT_PRINCIPLES_PATH) -> None:
+    payload = load_investment_principles(path)
+    quote = selected_principle_quote(payload)
+    core_rules = payload.get("core_rules") or []
+    quote_id = str((quote or {}).get("id") or "")
+    quote_text = str((quote or {}).get("text") or "暂无今日原则").strip()
+    quote_note = str((quote or {}).get("note") or "").strip()
+    tags = [str(tag) for tag in (quote or {}).get("tags") or [] if str(tag).strip()]
+
+    st.markdown(
+        _investment_principles_hero_html(
+            quote_text=quote_text,
+            quote_note=quote_note,
+            quote_tags=tags,
+            core_rules=core_rules,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    action_cols = st.columns([1, 1, 1, 4])
+    if action_cols[0].button("换一句", key="investment-principle-next"):
+        if len(payload.get("quotes") or []) <= 1:
+            st.info("当前只有一条原则，可以点击添加金句。")
+        else:
+            next_principle_quote(quote_id, path=path)
+            st.rerun()
+
+    with action_cols[1].popover("添加金句"):
+        with st.form("investment-principle-add-form", clear_on_submit=True):
+            text = st.text_area("金句正文", height=88, placeholder="写下你想在复盘前先看到的一句话")
+            note = st.text_area("解释，可选", height=68, placeholder="这句话提醒自己什么？")
+            tag_text = st.text_input("标签，可选", placeholder="例如：泡沫、趋势、仓位、卖出、FOMO")
+            submitted = st.form_submit_button("保存金句", type="primary")
+        if submitted:
+            try:
+                add_principle_quote(text, note=note, tags=tag_text, path=path)
+                st.success("金句已添加。")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+    with action_cols[2].popover("编辑当前"):
+        with st.form("investment-principle-edit-form"):
+            edit_text = st.text_area("金句正文", value=quote_text, height=88)
+            edit_note = st.text_area("解释", value=quote_note, height=68)
+            edit_tags = st.text_input("标签", value="、".join(tags))
+            save_clicked = st.form_submit_button("保存修改", type="primary")
+        if save_clicked and quote_id:
+            try:
+                update_principle_quote(quote_id, text=edit_text, note=edit_note, tags=edit_tags, path=path)
+                st.success("金句已更新。")
+                st.rerun()
+            except (KeyError, ValueError) as exc:
+                st.error(str(exc))
+
+    with st.expander("查看全部投资原则", expanded=False):
+        _render_all_investment_principles(payload, current_quote_id=quote_id, path=path)
+
+
+def _investment_principles_hero_html(
+    *,
+    quote_text: str,
+    quote_note: str,
+    quote_tags: list[str],
+    core_rules: list[dict[str, Any]],
+) -> str:
+    tag_line = "｜".join(IRON_RULE_TAGS)
+    quote_tag_html = "".join(f"<span>{escape(tag)}</span>" for tag in quote_tags)
+    rules = core_rules[:2]
+    rule_cards = "".join(
+        f"""
+        <article class="investment-core-rule-card">
+          <span>核心原则 {index:02d}</span>
+          <strong>{escape(str(rule.get('title') or '未命名原则'))}</strong>
+          <p>{escape(str(rule.get('body') or ''))}</p>
+        </article>
+        """
+        for index, rule in enumerate(rules, start=1)
+    )
+    note = quote_note or "先读原则，再记录错误。"
+    return f"""
+    <section class="investment-principle-hero">
+      <div class="investment-principle-kicker">投资原则提醒</div>
+      <div class="investment-principle-topline">先读原则，再记录错误。</div>
+      <div class="investment-principle-main">
+        <div>
+          <span class="investment-principle-label">今日原则</span>
+          <strong>{escape(quote_text)}</strong>
+          <p>{escape(note)}</p>
+          <div class="investment-quote-tags">{quote_tag_html}</div>
+        </div>
+      </div>
+      <div class="investment-iron-tags">{escape(tag_line)}</div>
+      <div class="investment-core-rule-grid">{rule_cards}</div>
+    </section>
+    """
+
+
+def _render_all_investment_principles(payload: dict[str, Any], *, current_quote_id: str, path: Path) -> None:
+    st.caption("这里维护自己的金句和核心原则。不会写入交易日志，也不会拦截交易。")
+    for quote in payload.get("quotes") or []:
+        quote_id = str(quote.get("id") or "")
+        cols = st.columns([4, 1, 1])
+        current = " · 今日原则" if quote_id == current_quote_id else ""
+        cols[0].markdown(f"**{escape(str(quote.get('text') or '未填写'))}**{current}")
+        note = str(quote.get("note") or "").strip()
+        if note:
+            cols[0].caption(note)
+        tags = " / ".join(str(tag) for tag in quote.get("tags") or [])
+        if tags:
+            cols[0].caption(f"标签：{tags}")
+        if cols[1].button("设为今日", key=f"investment-principle-select-{quote_id}"):
+            select_principle_quote(quote_id, path=path)
+            st.rerun()
+        confirm_key = f"investment-principle-confirm-delete-{quote_id}"
+        if quote_id == DEFAULT_QUOTE_ID and len(payload.get("quotes") or []) <= 1:
+            confirm = cols[2].checkbox("确认删除", key=confirm_key)
+        else:
+            confirm = True
+        if cols[2].button("删除", key=f"investment-principle-delete-{quote_id}", disabled=not confirm):
+            result = delete_principle_quote(quote_id, confirm_default_delete=confirm, path=path)
+            if result.get("requires_confirmation"):
+                st.warning(str(result.get("message") or "需要确认删除。"))
+            else:
+                st.success(str(result.get("message") or "已处理。"))
+                st.rerun()
+
+    st.markdown("**核心原则**")
+    st.markdown(_principle_cards_html([{"title": item.get("title"), "content": item.get("body")} for item in payload.get("core_rules") or []]), unsafe_allow_html=True)
 
 
 def _render_mistake_overview_strip(rows: list[dict[str, Any]]) -> None:
@@ -125,6 +264,10 @@ def _render_quick_mistake_capture(store: DisciplineReviewStore) -> None:
         loss_amount_usd = cols[2].number_input("损失金额", min_value=0.0, value=0.0, step=10.0, format="%.2f")
         cols[2].caption("单位：USD，可填 0")
         mistake_tags = _render_quick_mistake_tag_inputs()
+        st.markdown(
+            f'<div class="mistake-principle-reminder">{escape(principle_reminder_for_mistake_tags(mistake_tags))}</div>',
+            unsafe_allow_html=True,
+        )
         reflection = st.text_area(
             "一句话反思",
             height=72,
@@ -1729,6 +1872,8 @@ def _render_styles() -> None:
         """
         <style>
         .discipline-checklist,
+        .investment-principle-hero,
+        .investment-core-rule-card,
         .discipline-card-grid,
         .principle-rule-card,
         .dashboard-discipline-card,
@@ -1739,6 +1884,42 @@ def _render_styles() -> None:
             border-radius: 8px;
             background: #fff;
             box-shadow: 0 14px 28px rgba(15,23,42,.05);
+        }
+        .investment-principle-hero {
+            padding: 1rem 1.05rem; margin: .35rem 0 1rem;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border-left: 4px solid #0f172a;
+        }
+        .investment-principle-kicker {
+            color:#2563eb; font-size:.72rem; font-weight:900; letter-spacing:.08em; text-transform:uppercase;
+        }
+        .investment-principle-topline { color:#64748b; font-size:.82rem; margin:.18rem 0 .55rem; }
+        .investment-principle-main strong {
+            display:block; color:#0f172a; font-size:1.35rem; line-height:1.36; letter-spacing:0; margin:.08rem 0 .32rem;
+        }
+        .investment-principle-main p { margin:0; color:#475569; font-size:.9rem; line-height:1.55; }
+        .investment-principle-label {
+            display:inline-flex; color:#475569; background:#f1f5f9; border:1px solid rgba(148,163,184,.22);
+            border-radius:999px; padding:.12rem .5rem; font-size:.72rem; font-weight:900;
+        }
+        .investment-quote-tags { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.55rem; }
+        .investment-quote-tags span {
+            color:#1d4ed8; background:#dbeafe; border-radius:999px; padding:.1rem .45rem; font-size:.72rem; font-weight:800;
+        }
+        .investment-iron-tags {
+            margin:.85rem 0 .65rem; padding:.45rem .6rem; border-radius:8px;
+            background:#0f172a; color:#f8fafc; font-size:.86rem; font-weight:850;
+        }
+        .investment-core-rule-grid {
+            display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:.62rem;
+        }
+        .investment-core-rule-card { padding:.72rem .82rem; background:#fff; box-shadow:none; }
+        .investment-core-rule-card span { display:block; color:#64748b; font-size:.72rem; font-weight:900; margin-bottom:.18rem; }
+        .investment-core-rule-card strong { display:block; color:#0f172a; font-size:.95rem; margin-bottom:.2rem; }
+        .investment-core-rule-card p { margin:0; color:#475569; font-size:.82rem; line-height:1.5; }
+        .mistake-principle-reminder {
+            margin:.42rem 0 .6rem; padding:.48rem .6rem; border-radius:8px;
+            background:#fff7ed; border:1px solid rgba(251,146,60,.25); color:#9a3412; font-size:.84rem; font-weight:750;
         }
         .discipline-checklist { padding: .8rem 1rem; margin-bottom: .9rem; }
         .discipline-checklist ol { margin: 0; padding: 0; list-style: none; display: grid; gap: .45rem; }
@@ -1851,6 +2032,7 @@ def _render_styles() -> None:
         .trade-entry-discipline-hint strong { display: block; color: #0f172a; }
         .trade-entry-discipline-hint span { display: block; color: #475569; font-size: .85rem; margin-top: .1rem; }
         @media (max-width: 900px) {
+            .investment-core-rule-grid,
             .principle-rule-grid { grid-template-columns: 1fr; }
             .discipline-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .review-conclusion-card > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }

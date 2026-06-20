@@ -16,6 +16,7 @@ config/trading_discipline.yaml
 config/*.local.json
 config/*.local.yaml
 config/*.local.yml
+config/investment_principles.local.json
 config/binance_symbol_mapping.local.json
 config/binance_symbol_ignore.local.json
 !config/*.example.json

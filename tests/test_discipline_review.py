@@ -26,6 +26,14 @@ from data.discipline_review import (
     default_period_dates,
     get_current_account_nav,
 )
+from data.investment_principles import (
+    DEFAULT_QUOTE_TEXT,
+    add_principle_quote,
+    delete_principle_quote,
+    load_investment_principles,
+    principle_reminder_for_mistake_tags,
+    update_principle_quote,
+)
 from data.portfolio import PortfolioPositionStore, PortfolioSettingsStore
 from ui import discipline_review
 
@@ -78,6 +86,88 @@ def test_discipline_principle_rules_can_be_saved_reordered_and_reset() -> None:
         assert store.get_principles() == "1. 左侧买入\n买点看承接、位置和风险收益。\n2. 现金也是仓位\n等待也是操作。"
         store.reset_principles()
         assert store.get_principle_rules() == DEFAULT_PRINCIPLE_RULES
+
+
+def test_investment_principles_local_store_starts_with_single_default_quote() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "investment_principles.local.json"
+
+        payload = load_investment_principles(path)
+
+        assert [quote["text"] for quote in payload["quotes"]] == [DEFAULT_QUOTE_TEXT]
+        assert "不做空，只买高信念股" in [rule["title"] for rule in payload["core_rules"]]
+        assert "持仓原则" in [rule["title"] for rule in payload["core_rules"]]
+
+
+def test_investment_principles_do_not_ship_extra_default_quotes() -> None:
+    source = Path("data/investment_principles.py").read_text(encoding="utf-8")
+    forbidden_defaults = [
+        "错过不是损失，失控才是损失",
+        "市场奖励耐心",
+        "买入前问赔率，卖出前问逻辑",
+        "股价波动不是错误，违反系统才是错误",
+    ]
+
+    assert source.count(DEFAULT_QUOTE_TEXT) == 1
+    for text in forbidden_defaults:
+        assert text not in source
+
+
+def test_investment_principles_local_file_is_ignored() -> None:
+    gitignore = Path(".gitignore").read_text(encoding="utf-8")
+
+    assert "config/*.local.json" in gitignore
+    assert "config/investment_principles.local.json" in gitignore
+    assert "config/investment_principles.local.json" not in Path("config/investment_principles.example.json").read_text(encoding="utf-8")
+
+
+def test_investment_principle_quotes_can_be_added_edited_and_deleted() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "investment_principles.local.json"
+
+        added = add_principle_quote("只做自己能解释清楚的交易。", note="说不清就不要做。", tags="纪律,FOMO", path=path)
+        updated = update_principle_quote(added["id"], text="只做自己能承受波动的交易。", note="承受不了就不是高信念。", tags=["纪律"], path=path)
+        deleted = delete_principle_quote(updated["id"], path=path)
+        payload = load_investment_principles(path)
+
+        assert updated["text"] == "只做自己能承受波动的交易。"
+        assert deleted["deleted"] is True
+        assert [quote["text"] for quote in payload["quotes"]] == [DEFAULT_QUOTE_TEXT]
+
+
+def test_deleting_only_default_quote_requires_confirmation() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "investment_principles.local.json"
+        payload = load_investment_principles(path)
+        quote_id = payload["quotes"][0]["id"]
+
+        result = delete_principle_quote(quote_id, path=path)
+
+        assert result["deleted"] is False
+        assert result["requires_confirmation"] is True
+        assert "这是当前唯一默认原则" in result["message"]
+
+
+def test_default_quote_can_be_deleted_after_confirmation() -> None:
+    with TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "investment_principles.local.json"
+        payload = load_investment_principles(path)
+        quote_id = payload["quotes"][0]["id"]
+
+        result = delete_principle_quote(quote_id, confirm_default_delete=True, path=path)
+        reloaded = load_investment_principles(path)
+
+        assert result["deleted"] is True
+        assert reloaded["quotes"] == []
+        assert reloaded["default_quote_deleted"] is True
+
+
+def test_mistake_tags_map_to_principle_reminders() -> None:
+    assert "追逐对趋势的误解" in principle_reminder_for_mistake_tags(["追高", "FOMO"])
+    assert "不参与感受型小仓" in principle_reminder_for_mistake_tags(["小仓乱买"])
+    assert "卖出前先问逻辑是否改变" in principle_reminder_for_mistake_tags(["卖飞"])
+    assert "持仓也是责任" in principle_reminder_for_mistake_tags(["忘记持仓"])
+    assert "泡沫由真实趋势" in principle_reminder_for_mistake_tags(["其他错误"])
 
 
 def test_trade_discipline_tags_are_kept_for_history_compatibility() -> None:
@@ -650,7 +740,13 @@ def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade
     assert "收益结算" in source
     assert "周期收益结算" in source
     assert "本期复盘结论" in source
-    assert "当前原则：" in source
+    assert "投资原则提醒" in source
+    assert "今日原则" in source
+    assert "先读原则，再记录错误。" in source
+    assert "investment-core-rule-grid" in source
+    assert "添加金句" in source
+    assert "编辑当前" in source
+    assert "查看全部投资原则" in source
     assert "保存本期复盘" in source
     assert "标的 / 场景" in source
     assert "损失金额" in source
@@ -690,6 +786,7 @@ def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade
     assert "门禁" not in source
 
     render_body = source[source.index("def render(") : source.index("def _render_mistake_overview_strip")]
+    assert render_body.index("_render_investment_principles_reminder") < render_body.index("_render_mistake_overview_strip")
     assert render_body.index("_render_mistake_overview_strip") < render_body.index("_render_quick_mistake_capture")
     assert render_body.index("_render_quick_mistake_capture") < render_body.index("_render_recent_mistakes")
     assert render_body.index("_render_recent_mistakes") < render_body.index("_render_next_defenses")
@@ -698,7 +795,7 @@ def test_discipline_review_page_uses_trade_review_labels_instead_of_manual_trade
     assert render_body.index("_render_periodic_review_conclusion") < render_body.index("_render_rule_library")
     assert render_body.index("_render_rule_library") < render_body.index("_render_portfolio_discipline")
     assert render_body.index("_render_portfolio_discipline") < render_body.index("_render_discipline_stats")
-    assert render_body.index("_render_discipline_stats") < render_body.index("_render_principles_card")
+    assert "_render_principles_card" not in render_body
 
 
 def test_app_registers_discipline_review_page() -> None:

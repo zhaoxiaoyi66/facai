@@ -1,0 +1,25 @@
+{
+  "quotes": [
+    {
+      "id": "bubble_trend_misread",
+      "text": "泡沫由两部分组成：真实的趋势 + 对该趋势的误解。",
+      "note": "先判断真实趋势，再判断市场是否误解了这个趋势。",
+      "tags": ["泡沫", "趋势", "认知"],
+      "created_at": "",
+      "updated_at": ""
+    }
+  ],
+  "core_rules": [
+    {
+      "id": "high_conviction_only",
+      "title": "不做空，只买高信念股",
+      "body": "不做空；只做高信念、能承受波动的股票。买点看客观承接，仓位看纪律。现金也是仓位，等待也是操作。"
+    },
+    {
+      "id": "position_limit",
+      "title": "持仓原则",
+      "body": "最多持有 6 只股票，结构为 1 只第一核心、2 只强核心、2 只卫星赔率仓、1 只战术仓；新增股票必须替换低信念持仓。"
+    }
+  ],
+  "selected_quote_id": "bubble_trend_misread"
+}
