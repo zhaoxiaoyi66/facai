@@ -780,7 +780,7 @@ class FMPNewsClient:
 
     def _get_json(self, endpoint: str, params: dict[str, Any]) -> Any:
         if not self.api_key:
-            raise RuntimeError("缺少 FMP_API_KEY")
+            raise RuntimeError("缺少 FMP 新闻接口密钥")
         params = {**params, "apikey": self.api_key}
         url = f"{self.base_url}/{endpoint.lstrip('/')}?{urllib.parse.urlencode(params)}"
         queue = get_fmp_request_queue()

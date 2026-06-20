@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from data.news_radar import (
+    FMPNewsClient,
     MISSING_URL_TEXT,
     NewsEndpointUnavailable,
     NewsRadarStore,
@@ -76,6 +77,20 @@ def test_news_card_link_falls_back_when_url_is_missing() -> None:
     assert item["url"] == ""
     assert source_link_text(item) == MISSING_URL_TEXT
     assert MISSING_URL_TEXT in _source_line(item)
+
+
+def test_fmp_news_missing_key_copy_hides_env_key_name() -> None:
+    client = FMPNewsClient(api_key="")
+
+    try:
+        client._get_json("stock-news", {"symbols": "NVDA"})
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("missing FMP key should raise")
+
+    assert message == "缺少 FMP 新闻接口密钥"
+    assert "FMP_API_KEY" not in message
 
 
 def test_title_zh_missing_shows_original_title_and_pending_translation() -> None:
