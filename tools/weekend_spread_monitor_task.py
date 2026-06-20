@@ -104,44 +104,30 @@ def _install_task(*, task_name: str, interval_minutes: float) -> dict[str, Any]:
     if not validation.get("ok"):
         return validation
     existing = _query_task(task_name=task_name)
-    if existing.get("exists"):
-        return {
-            "ok": True,
-            "already_exists": True,
-            "task_name": task_name,
-            "task_command": _scheduled_task_command(),
-            "message": "3 分钟监控任务已存在。",
-        }
-    task_command = _scheduled_task_command()
-    result = subprocess.run(
-        [
-            "schtasks",
-            "/Create",
-            "/TN",
-            task_name,
-            "/SC",
-            "MINUTE",
-            "/MO",
-            str(max(1, int(round(interval_minutes)))),
-            "/TR",
-            task_command,
-            "/F",
-        ],
+    action = _scheduled_task_action(interval_minutes=interval_minutes, source="scheduler")
+    task_command = _scheduled_task_command(interval_minutes=interval_minutes)
+    result = _run_hidden(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", _register_task_script(task_name=task_name, action=action, interval_minutes=interval_minutes)],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=30,
     )
     ok = result.returncode == 0
+    replaced = bool(existing.get("exists"))
     return {
         "ok": ok,
         "task_name": task_name,
         "task_command": task_command,
-        "message": "已安装 3 分钟监控任务。" if ok else _task_error_message(result),
+        "silent_mode": action["window_mode"] == "pythonw",
+        "hidden_window": True,
+        "replaced_existing": replaced,
+        "run_mode_label": "Windows 任务计划 · 静默模式" if action["window_mode"] == "pythonw" else "Windows 任务计划 · 隐藏窗口模式",
+        "message": ("已替换为静默后台任务。" if replaced else "已安装 3 分钟静默监控任务。") if ok else _task_error_message(result),
     }
 
 
 def _change_task(*, task_name: str, enable: bool) -> dict[str, Any]:
-    result = subprocess.run(
+    result = _run_hidden(
         ["schtasks", "/Change", "/TN", task_name, "/ENABLE" if enable else "/DISABLE"],
         capture_output=True,
         text=True,
@@ -152,13 +138,13 @@ def _change_task(*, task_name: str, enable: bool) -> dict[str, Any]:
 
 
 def _remove_task(*, task_name: str) -> dict[str, Any]:
-    result = subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True, text=True, timeout=20)
+    result = _run_hidden(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True, text=True, timeout=20)
     ok = result.returncode == 0
     return {"ok": ok, "task_name": task_name, "message": "已移除监控任务。" if ok else _task_error_message(result)}
 
 
 def _query_task(*, task_name: str) -> dict[str, Any]:
-    result = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"], capture_output=True, text=True, timeout=20)
+    result = _run_hidden(["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"], capture_output=True, text=True, timeout=20)
     ok = result.returncode == 0
     return {
         "ok": ok,
@@ -170,34 +156,92 @@ def _query_task(*, task_name: str) -> dict[str, Any]:
 
 
 def _run_once(*, interval_minutes: float) -> dict[str, Any]:
-    python_exe = _python_executable()
-    script = ROOT / "tools" / "weekend_spread_monitor.py"
-    result = subprocess.run(
-        [str(python_exe), str(script), "--once", "--all", "--source", "manual", "--interval-minutes", str(interval_minutes)],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
+    log_path = ROOT / ".cache" / "weekend_spread_monitor.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        result = _run_hidden(
+            _monitor_subprocess_command(interval_minutes=interval_minutes, source="manual"),
+            cwd=str(ROOT),
+            stdout=log_handle,
+            stderr=log_handle,
+            text=True,
+            timeout=180,
+        )
     ok = result.returncode == 0
-    return {"ok": ok, "message": "已完成一次监控扫描。" if ok else _task_error_message(result), "stdout": result.stdout, "stderr": result.stderr}
+    return {"ok": ok, "message": "已完成一次静默监控扫描。" if ok else _task_error_message(result), "stdout": "", "stderr": ""}
 
 
-def _scheduled_task_command() -> str:
-    python_exe = _python_executable()
-    script = ROOT / "tools" / "weekend_spread_monitor.py"
-    return f'cmd /c "cd /d {ROOT} && {python_exe} {script} --once --all --source scheduler"'
+def _scheduled_task_command(*, interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES) -> str:
+    action = _scheduled_task_action(interval_minutes=interval_minutes, source="scheduler")
+    return f'"{action["execute"]}" {action["arguments"]}'
 
 
-def _python_executable() -> Path:
-    bundled = ROOT / ".venv" / "Scripts" / "python.exe"
+def _scheduled_task_action(*, interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES, source: str = "scheduler") -> dict[str, str]:
+    python_exe = _python_executable(prefer_windowless=True)
+    return {
+        "execute": str(python_exe),
+        "arguments": _monitor_arguments(interval_minutes=interval_minutes, source=source, relative_script=True),
+        "working_directory": str(ROOT),
+        "window_mode": "pythonw" if python_exe.name.lower() == "pythonw.exe" else "hidden_window",
+    }
+
+
+def _monitor_subprocess_command(*, interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES, source: str = "manual") -> list[str]:
+    return [
+        str(_python_executable(prefer_windowless=True)),
+        str(ROOT / "tools" / "weekend_spread_monitor.py"),
+        "--once",
+        "--all",
+        "--source",
+        source,
+        "--quiet",
+        "--interval-minutes",
+        str(interval_minutes),
+    ]
+
+
+def _monitor_arguments(*, interval_minutes: float, source: str, relative_script: bool) -> str:
+    script = "tools\\weekend_spread_monitor.py" if relative_script else str(ROOT / "tools" / "weekend_spread_monitor.py")
+    return f"{script} --once --all --source {source} --quiet --interval-minutes {interval_minutes:g}"
+
+
+def _python_executable(*, prefer_windowless: bool = False) -> Path:
+    scripts_dir = ROOT / ".venv" / "Scripts"
+    if os.name == "nt" and prefer_windowless:
+        pythonw = scripts_dir / "pythonw.exe"
+        if pythonw.exists():
+            return pythonw
+    bundled = scripts_dir / "python.exe"
     if bundled.exists():
         return bundled
     return Path(sys.executable)
 
 
+def _register_task_script(*, task_name: str, action: dict[str, str], interval_minutes: float) -> str:
+    interval = max(1, int(round(interval_minutes)))
+    return "\n".join(
+        [
+            f"$Action = New-ScheduledTaskAction -Execute '{_ps_quote(action['execute'])}' -Argument '{_ps_quote(action['arguments'])}' -WorkingDirectory '{_ps_quote(action['working_directory'])}'",
+            f"$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes {interval}) -RepetitionDuration (New-TimeSpan -Days 3650)",
+            "$Settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)",
+            f"Register-ScheduledTask -TaskName '{_ps_quote(task_name)}' -Action $Action -Trigger $Trigger -Settings $Settings -Description 'facai weekend spread monitor silent task' -Force | Out-Null",
+        ]
+    )
+
+
+def _ps_quote(value: str) -> str:
+    return str(value).replace("'", "''")
+
+
+def _run_hidden(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    if flags:
+        kwargs.setdefault("creationflags", flags)
+    return subprocess.run(command, **kwargs)
+
+
 def _validate_task_paths() -> dict[str, Any]:
-    python_exe = _python_executable()
+    python_exe = _python_executable(prefer_windowless=True)
     script = ROOT / "tools" / "weekend_spread_monitor.py"
     missing = []
     if not ROOT.exists():
@@ -222,6 +266,9 @@ def _update_task_status(
     command: str = "",
 ) -> None:
     payload = read_monitor_status(path)
+    command_text = str(command or payload.get("command") or "")
+    silent_mode = "pythonw.exe" in command_text.lower() or "--quiet" in command_text
+    run_mode_label = "Windows 任务计划 · 静默模式" if "pythonw.exe" in command_text.lower() else "Windows 任务计划 · 隐藏窗口模式"
     payload.update(
         {
             "monitor_mode": MONITOR_MODE_SCHEDULER,
@@ -231,7 +278,10 @@ def _update_task_status(
             "task_name": task_name,
             "health_status": health_status,
             "health_reason": health_reason,
-            "command": command or payload.get("command") or "",
+            "command": command_text,
+            "silent_mode": silent_mode,
+            "hidden_window": True,
+            "run_mode_label": run_mode_label,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     )

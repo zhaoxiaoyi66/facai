@@ -136,7 +136,8 @@ from data.weekend_spread_monitor import (
 )
 from data.weekend_spread_research import list_monitor_ticks, research_path_for_snapshot
 from scripts import smoke_binance_provider
-from tools.weekend_spread_monitor_task import _scheduled_task_command
+from tools import weekend_spread_monitor_task
+from tools.weekend_spread_monitor_task import _monitor_subprocess_command, _register_task_script, _run_hidden, _scheduled_task_action, _scheduled_task_command
 from ui import weekend_spread
 
 
@@ -7229,7 +7230,89 @@ def test_weekend_monitor_scheduled_task_command_marks_scheduler_source() -> None
 
     assert "tools" in command
     assert "weekend_spread_monitor.py" in command
-    assert "--once --all --source scheduler" in command
+    assert "--once --all --source scheduler --quiet" in command
+    assert "cmd /c" not in command.lower()
+
+
+def test_weekend_monitor_task_prefers_pythonw_and_quiet(monkeypatch, tmp_path) -> None:
+    scripts = tmp_path / ".venv" / "Scripts"
+    tools_dir = tmp_path / "tools"
+    scripts.mkdir(parents=True)
+    tools_dir.mkdir()
+    (scripts / "pythonw.exe").write_text("", encoding="utf-8")
+    (scripts / "python.exe").write_text("", encoding="utf-8")
+    (tools_dir / "weekend_spread_monitor.py").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(weekend_spread_monitor_task, "ROOT", tmp_path)
+    monkeypatch.setattr(weekend_spread_monitor_task.os, "name", "nt", raising=False)
+
+    action = _scheduled_task_action(interval_minutes=3)
+
+    assert action["execute"].endswith("pythonw.exe")
+    assert "--quiet" in action["arguments"]
+    assert "--source scheduler" in action["arguments"]
+    assert "--interval-minutes 3" in action["arguments"]
+    assert action["window_mode"] == "pythonw"
+
+
+def test_weekend_monitor_task_registers_hidden_ignore_new_task() -> None:
+    script = _register_task_script(
+        task_name="facai_weekend_spread_monitor",
+        action={
+            "execute": r"C:\dev\facai\.venv\Scripts\pythonw.exe",
+            "arguments": r"tools\weekend_spread_monitor.py --once --all --source scheduler --quiet --interval-minutes 3",
+            "working_directory": r"C:\dev\facai",
+            "window_mode": "pythonw",
+        },
+        interval_minutes=3,
+    )
+
+    assert "New-ScheduledTaskAction" in script
+    assert "-Hidden" in script
+    assert "MultipleInstances IgnoreNew" in script
+    assert "ExecutionTimeLimit (New-TimeSpan -Minutes 2)" in script
+    assert "Register-ScheduledTask" in script
+
+
+def test_weekend_monitor_manual_subprocess_uses_quiet_pythonw(monkeypatch, tmp_path) -> None:
+    scripts = tmp_path / ".venv" / "Scripts"
+    tools_dir = tmp_path / "tools"
+    scripts.mkdir(parents=True)
+    tools_dir.mkdir()
+    (scripts / "pythonw.exe").write_text("", encoding="utf-8")
+    (tools_dir / "weekend_spread_monitor.py").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(weekend_spread_monitor_task, "ROOT", tmp_path)
+    monkeypatch.setattr(weekend_spread_monitor_task.os, "name", "nt", raising=False)
+
+    command = _monitor_subprocess_command(interval_minutes=3, source="manual")
+
+    assert command[0].endswith("pythonw.exe")
+    assert "--quiet" in command
+    assert command[command.index("--source") + 1] == "manual"
+
+
+def test_weekend_monitor_run_hidden_uses_create_no_window(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(weekend_spread_monitor_task.os, "name", "nt", raising=False)
+    monkeypatch.setattr(weekend_spread_monitor_task.subprocess, "CREATE_NO_WINDOW", 12345, raising=False)
+    monkeypatch.setattr(weekend_spread_monitor_task.subprocess, "run", fake_run)
+
+    _run_hidden(["python.exe", "--version"], capture_output=True, text=True)
+
+    assert captured["kwargs"]["creationflags"] == 12345
 
 
 def test_weekend_monitor_lock_prevents_duplicate_scan(tmp_path) -> None:
@@ -7726,6 +7809,8 @@ def test_weekend_monitor_does_not_start_duplicate_process(monkeypatch, tmp_path)
 def test_weekend_monitor_start_command_uses_three_minute_default(monkeypatch, tmp_path) -> None:
     process_path = tmp_path / "weekend_spread_monitor_process.json"
     log_path = tmp_path / "weekend_spread_monitor.log"
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
     commands: list[list[str]] = []
 
     class FakeProcess:
@@ -7738,16 +7823,22 @@ def test_weekend_monitor_start_command_uses_three_minute_default(monkeypatch, tm
     monkeypatch.setattr(weekend_spread, "MONITOR_PROCESS_PATH", process_path)
     monkeypatch.setattr(weekend_spread, "MONITOR_LOG_PATH", log_path)
     monkeypatch.setattr(weekend_spread, "_is_process_running", lambda pid: False)
+    monkeypatch.setattr(weekend_spread, "_monitor_python_executable", lambda: pythonw)
     monkeypatch.setattr(weekend_spread.subprocess, "Popen", fake_popen)
 
     result = weekend_spread._start_monitor_process()
 
     assert result["ok"] is True
     assert commands
-    assert commands[0][-3:] == ["--interval-minutes", "3", "--all"]
+    assert commands[0][0] == str(pythonw)
+    assert "--quiet" in commands[0]
+    assert commands[0][commands[0].index("--source") + 1] == "loop"
+    assert commands[0][commands[0].index("--interval-minutes") + 1] == "3"
+    assert "--all" in commands[0]
     saved = json.loads(process_path.read_text(encoding="utf-8"))
     assert saved["interval_minutes"] == 3
-    assert "--interval-minutes 3 --all" in saved["command"]
+    assert "--interval-minutes 3 --all --source loop --quiet" in saved["command"]
+    assert "静默模式" in result["message"]
 
 
 def test_weekend_monitor_marks_stale_running_pid_as_exited(monkeypatch, tmp_path) -> None:

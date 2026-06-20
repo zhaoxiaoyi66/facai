@@ -17,10 +17,15 @@ from data.weekend_spread_backtest import ET, get_last_us_trading_day_of_week
 from data.weekend_spread_cache import read_weekend_spread_snapshot
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
+    DEFAULT_MONITOR_LOG_PATH,
     DEFAULT_MONITOR_SNAPSHOT_PATH,
+    DEFAULT_MONITOR_STATUS_PATH,
+    DEFAULT_MONITOR_TASK_NAME,
     MONITOR_MODE_LOOP_PROCESS,
     MONITOR_MODE_MANUAL_ONCE,
     MONITOR_MODE_SCHEDULER,
+    append_monitor_log,
+    mark_monitor_scan_failure,
     run_monitor_scan,
 )
 from settings import load_watchlist
@@ -30,8 +35,17 @@ def main() -> int:
     args = _parse_args()
     interval_seconds = max(1.0, float(args.interval_minutes) * 60)
     while True:
-        run = _run_once(args)
-        _print_run_summary(run)
+        try:
+            run = _run_once(args)
+        except Exception as exc:
+            _record_cli_failure(args, exc)
+            if not args.quiet:
+                raise
+            return 1
+        if args.quiet:
+            _log_run_summary(run)
+        else:
+            _print_run_summary(run)
         if args.once:
             break
         time.sleep(interval_seconds)
@@ -146,6 +160,46 @@ def _print_run_summary(run: dict) -> None:
             )
 
 
+def _log_run_summary(run: dict) -> None:
+    summary = dict(run.get("summary") or {})
+    top = dict(summary.get("top") or {})
+    fields = [
+        f"run_id={run.get('run_id') or ''}",
+        f"source={run.get('run_source') or ''}",
+        "status=summary",
+        f"valid={summary.get('valid_count', 0)}",
+        f"ignored={summary.get('ignored_count', 0)}",
+        f"anchor_missing={summary.get('anchor_missing_count', 0)}",
+        f"price_missing={summary.get('price_missing_count', 0)}",
+    ]
+    for key, label in (
+        ("max_premium", "max_premium"),
+        ("max_discount", "max_discount"),
+        ("fastest_premium_expand", "fastest_expand"),
+        ("fastest_premium_converge", "fastest_converge"),
+    ):
+        row = top.get(key)
+        if isinstance(row, dict):
+            fields.append(f"{label}={row.get('ticker') or ''}:{_fmt(row.get('premium_pct'))}")
+    append_monitor_log(" ".join(fields), path=DEFAULT_MONITOR_LOG_PATH)
+
+
+def _record_cli_failure(args, exc: Exception) -> None:
+    append_monitor_log(f"source={args.source} status=failed error={exc}", path=DEFAULT_MONITOR_LOG_PATH)
+    try:
+        mark_monitor_scan_failure(
+            exc,
+            status_path=DEFAULT_MONITOR_STATUS_PATH,
+            interval_minutes=float(args.interval_minutes),
+            monitor_mode=_monitor_mode_for_source(args.source, once=args.once),
+            source=args.source,
+            task_name=DEFAULT_MONITOR_TASK_NAME,
+            failed_at=datetime.now(timezone.utc),
+        )
+    except Exception as status_exc:
+        append_monitor_log(f"source={args.source} status=status_write_failed error={status_exc}", path=DEFAULT_MONITOR_LOG_PATH)
+
+
 def _fmt(value) -> str:
     try:
         return f"{float(value):+.2f}%"
@@ -185,6 +239,7 @@ def _parse_args():
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--only-watchlist", action="store_true")
     parser.add_argument("--only-position", action="store_true", help="Reserved for a read-only position filter.")
+    parser.add_argument("--quiet", action="store_true", help="Write logs/status only; do not print to stdout.")
     args = parser.parse_args()
     if not args.source:
         args.source = _source_from_legacy_mode(args.monitor_mode) or "scheduler"
