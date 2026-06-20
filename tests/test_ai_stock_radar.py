@@ -143,6 +143,17 @@ def test_radar_summary_allow_buy_is_chinese() -> None:
     assert "price is inside" not in summary
 
 
+def test_radar_missing_price_reason_hides_internal_cache_fields() -> None:
+    reason = radar_data._data_block_reason("MISSING_PRICE", {})
+
+    assert "报价快照" in reason
+    assert "历史日线" in reason
+    assert "当前价" in reason
+    assert "quote" not in reason
+    assert "price_history" not in reason
+    assert "current price" not in reason
+
+
 def test_report_summary_uses_action_fusion_portfolio_context_for_holding_status() -> None:
     action_result = evaluate_action_fusion(
         ticker="NOW",

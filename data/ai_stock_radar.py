@@ -2093,7 +2093,7 @@ def _data_block_reason(data_status: str, market: dict[str, Any]) -> str:
     if data_status == "STALE":
         return "缓存过期：价格数据可能过期"
     if data_status == "MISSING_PRICE":
-        return "缺价格：本地 quote / price_history 没有可用 current price"
+        return "缺价格：本地报价快照和历史日线没有可用当前价"
     if data_status == "MISSING_VALUATION":
         return "缺少估值指标：需要 PE、Forward PE、EV/Sales、FCF yield 或 FCF margin"
     if data_status == "MISSING_SCORE":
