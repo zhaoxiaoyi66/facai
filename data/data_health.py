@@ -30,7 +30,7 @@ def build_data_health_summary(
     summary = _empty_summary()
     summary["cacheExists"] = path.exists()
     if not path.exists():
-        cache_issue = _add_issue(summary, "cache_missing", None, "cache.sqlite 不存在")
+        cache_issue = _add_issue(summary, "cache_missing", None, "本地缓存数据库不存在")
         for symbol in symbols:
             _record_decision_readiness(
                 summary,
@@ -63,7 +63,7 @@ def build_data_health_summary(
         if current_price is None:
             summary["missingPriceCount"] += 1
             symbol_issues += 1
-            symbol_issue_items.append(_add_issue(summary, "missing_price", symbol, "观察池缺少 current price"))
+            symbol_issue_items.append(_add_issue(summary, "missing_price", symbol, "观察池缺少当前价"))
         if market.get("quoteShouldPromptRefresh"):
             summary["stalePriceCount"] += 1
             symbol_issues += 1
@@ -74,11 +74,11 @@ def build_data_health_summary(
         if history_status == "missing":
             summary["missingHistoryCount"] += 1
             symbol_issues += 1
-            symbol_issue_items.append(_add_issue(summary, "missing_history", symbol, "price_history 缺失"))
+            symbol_issue_items.append(_add_issue(summary, "missing_history", symbol, "历史日线缺失"))
         elif history_status == "stale_history":
             summary["staleHistoryCount"] += 1
             symbol_issues += 1
-            symbol_issue_items.append(_add_issue(summary, "stale_history", symbol, "price_history 已过期"))
+            symbol_issue_items.append(_add_issue(summary, "stale_history", symbol, "历史日线已过期"))
         final_decision, buy_zone = _build_final_decision_inputs(path, symbol, payload, current_price)
         if not _final_decision_ready(final_decision):
             summary["finalDecisionErrorCount"] += 1
@@ -108,7 +108,7 @@ def build_data_health_summary(
         _add_issue(summary, "portfolio_missing_price", None, "组合持仓存在缺价格标的")
     summary["outcomeMissingCount"] = _outcome_missing_count(path)
     if summary["outcomeMissingCount"]:
-        _add_issue(summary, "outcome_missing", None, "decision_outcomes 存在 missing")
+        _add_issue(summary, "outcome_missing", None, "决策后验结果存在缺失记录")
     summary["topIssues"] = summary["topIssues"][:10]
     return summary
 

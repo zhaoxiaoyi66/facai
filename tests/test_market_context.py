@@ -174,7 +174,7 @@ def test_missing_quote_and_history_returns_safe_missing_context() -> None:
         assert context["historyStatus"] == "missing"
         assert context["historyLatestDate"] is None
         assert context["historyTickerKey"] is None
-        assert "缺少 quote 和 price_history" in context["warning"]
+        assert "缺少报价快照和历史日线" in context["warning"]
 
 
 def test_market_context_is_cache_only_and_does_not_force_refresh() -> None:

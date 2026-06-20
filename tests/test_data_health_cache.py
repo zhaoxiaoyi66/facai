@@ -65,6 +65,7 @@ class DataHealthCacheTests(unittest.TestCase):
             self.assertFalse(summary["cacheExists"])
             self.assertEqual(summary["healthyCount"], 0)
             self.assertEqual(summary["topIssues"][0]["category"], "cache_missing")
+            self.assertEqual(summary["topIssues"][0]["message"], "本地缓存数据库不存在")
             self.assertEqual(summary["decisionBlockedCount"], 1)
             self.assertFalse(summary["decisionReadiness"]["NOW"]["canDecide"])
 
@@ -272,6 +273,9 @@ class DataHealthCacheTests(unittest.TestCase):
 
             self.assertEqual(summary["staleHistoryCount"], 1)
             self.assertIn("stale_history", {item["category"] for item in summary["topIssues"]})
+            messages = {item["message"] for item in summary["topIssues"]}
+            self.assertIn("历史日线已过期", messages)
+            self.assertNotIn("price_history 已过期", messages)
 
     def test_data_health_final_decision_uses_quote_when_history_is_missing(self) -> None:
         with TemporaryDirectory() as tmpdir:

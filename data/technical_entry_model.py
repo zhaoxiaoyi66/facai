@@ -56,7 +56,7 @@ def build_technical_entry_model(
     if current_price is None or current_price <= 0 or history.empty or len(history) < 30:
         return _empty_result(
             UNAVAILABLE_STATE,
-            ["本地 price_history 或当前价不足，技术入场模型暂不生成触发价。"],
+            ["本地历史日线或当前价不足，技术入场模型暂不生成触发价。"],
         )
 
     close = pd.to_numeric(history["close"], errors="coerce")

@@ -236,13 +236,13 @@ def _warning(
     if bool(quote_freshness.get("should_prompt_refresh")):
         warnings.append(str(quote_freshness.get("freshness_label") or "价格快照需要刷新"))
     if price_source == "price_history":
-        warnings.append("quote 缺失，使用最新收盘价替代 current price")
+        warnings.append("报价快照缺失，使用最新收盘价替代当前价")
     if price_source == "missing":
-        warnings.append("缺少 quote 和 price_history，无法生成 current price")
+        warnings.append("缺少报价快照和历史日线，无法生成当前价")
     if history_status == "stale_history":
-        warnings.append(str(price_freshness.get("status") or "price_history 可能过期"))
+        warnings.append(str(price_freshness.get("status") or "历史日线可能过期"))
     elif history_status == "missing" and quote_price is not None and latest_close is None:
-        warnings.append("price_history 缺失")
+        warnings.append("历史日线缺失")
     return "；".join(warnings)
 
 
