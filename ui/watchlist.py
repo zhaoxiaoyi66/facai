@@ -41,7 +41,7 @@ _DATA_STATUS_LABELS = {
 
 
 def render() -> None:
-    render_page_header("观察池", "研究池 / 价格位置观察池；添加股票不会生成交易，也不会改变组合持仓。")
+    render_page_header("观察池", "研究池 / 研报观察池；添加股票不会生成交易，也不会改变组合持仓。")
     _render_styles()
 
     entries = load_watchlist_entries(WATCHLIST_PATH, default_symbols=DEFAULT_TICKERS)

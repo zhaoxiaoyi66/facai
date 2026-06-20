@@ -111,7 +111,7 @@ def _render_action_bar(
 ) -> None:
     cols = st.columns([1.2, 1.2, 1.2, 2])
     with cols[0]:
-        if st.button("刷新新闻", use_container_width=True):
+        if st.button("刷新新闻", width="stretch"):
             if not symbols:
                 st.warning("当前范围没有可刷新的股票。")
             else:
@@ -121,14 +121,14 @@ def _render_action_bar(
                 failed = sum(1 for item in results if item.get("status") == "error")
                 st.success(f"刷新完成：成功 {ok} 个，套餐不可用 {unavailable} 个，失败 {failed} 个。")
     with cols[1]:
-        if st.button("补全中文翻译", use_container_width=True):
+        if st.button("补全中文翻译", width="stretch"):
             result = store.fill_missing_translations(items)
             st.success(
                 f"已补全 {result['title']} 条中文标题，"
                 f"{result['summary']} 条中文摘要，失败 {result['failed']} 条。"
             )
     with cols[2]:
-        if st.button("刷新市场新闻", use_container_width=True):
+        if st.button("刷新市场新闻", width="stretch"):
             result = refresh_general_market_news(store=store, force=True, limit=30)
             status = result.get("message") or "已完成"
             if result.get("status") in {"ok", "cache"}:
@@ -218,7 +218,7 @@ def _render_price_context(symbols: list[str], *, store: NewsRadarStore) -> None:
         st.info("当前范围没有股票可计算新闻-价格一致性。")
         return
     contexts = [build_news_price_context(symbol, store=store) for symbol in symbols[:40]]
-    st.dataframe(pd.DataFrame(price_context_display_rows(contexts)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(price_context_display_rows(contexts)), width="stretch", hide_index=True)
 
 
 def _render_trade_check(symbols: list[str], *, store: NewsRadarStore) -> None:

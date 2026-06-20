@@ -1366,7 +1366,6 @@ def _apply_default_review_tab(tab_counts: dict[str, int]) -> None:
     for tab in ("影响评分", "证据不足", "AI 建议", "可自动处理", "已处理"):
         if tab_counts.get(tab, 0) > 0:
             st.session_state["review-active-tab"] = tab
-            st.session_state["review-active-tab-radio"] = tab
             break
     st.session_state["review-default-tab-applied"] = True
 
@@ -2059,7 +2058,7 @@ def _render_last_autopilot_result() -> None:
 
 def _render_automation_logs(store: ReviewQueueStore) -> None:
     logs = store.list_automation_logs()[:30]
-    with st.expander("处理日志", expanded=True):
+    with st.expander("处理日志", expanded=False):
         if not logs:
             st.caption("暂无自动处理日志。")
             return

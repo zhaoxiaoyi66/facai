@@ -3829,7 +3829,7 @@ def _render_backtest_tab(watchlist: list[str], mapping: dict[str, dict]) -> None
         st.rerun()
 
     _render_tradingview_backfill_tools()
-    _render_backfill_audit_area_v2(watchlist, mapping, anchors)
+    _render_backfill_audit_area(watchlist, mapping, anchors)
     _render_backtest_advanced_records()
 
 
@@ -4613,14 +4613,9 @@ def _render_backtest_preflight(preflight: dict[str, object]) -> None:
     cols[3].metric("数据源状态", "USDT-M 合约")
 
 
-def _render_backfill_audit_area_v2(watchlist: list[str], mapping: dict[str, dict], anchors: dict[str, dict]) -> None:
-    with st.expander("高级 / 前瞻记录", expanded=False):
-        st.caption("前瞻记录只写入周末价差缓存，不会生成交易信号或修改主系统。")
-
-
 def _render_backfill_audit_area(watchlist: list[str], mapping: dict[str, dict], anchors: dict[str, dict]) -> None:
     with st.expander("高级 / 前瞻记录", expanded=False):
-        st.caption("前瞻记录仅用于周末价差观察，不构成交易建议。")
+        st.caption("前瞻记录只写入周末价差缓存，不会生成交易信号或修改主系统。")
 
 
 def _mapping_status_text(value: object) -> str:
