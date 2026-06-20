@@ -236,10 +236,10 @@ def build_stock_report_context(symbol: str, *, perf: PerfProbe | None = None, lo
     row = _cached_report_row(symbol, perf)
     snapshot = _dict_value(row, "rawSnapshot") or {}
     technicals = _dict_value(row, "rawTechnicals") or {}
-    perf.add("financials / fundamentals 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存")
+    perf.add("财务 / 基本面读取", 0.0, cache_hit=True, external_api=False, note="来自研报列表缓存")
     market = _cached_market_context(symbol, perf)
     technicals = _enrich_technical_context(symbol, row or {}, snapshot, technicals, market)
-    perf.add("technical_data 读取", 0.0, cache_hit=True, external_api=False, note="来自 Radar 行缓存 / 轻量派生")
+    perf.add("技术数据读取", 0.0, cache_hit=True, external_api=False, note="来自研报列表缓存 / 轻量派生")
     stage_start = time.perf_counter()
     report_obj = build_ai_stock_radar_report(
         symbol,
@@ -756,7 +756,7 @@ def _performance_diagnostics_html(perf: PerfProbe) -> str:
         )
     return (
         '<section class="ai-radar-debug ai-radar-perf-debug">'
-        f'<div class="ai-radar-debug-note">总耗时：{perf.total_ms:.2f} ms｜外部 API 请求：否（本页优先读取本地 cache.sqlite）</div>'
+        f'<div class="ai-radar-debug-note">总耗时：{perf.total_ms:.2f} ms｜外部 API 请求：否（本页优先读取本地缓存）</div>'
         '<table class="ai-radar-debug-table">'
         "<thead><tr><th>阶段</th><th>耗时</th><th>缓存</th><th>外部 API</th><th>说明</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"

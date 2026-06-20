@@ -1942,6 +1942,19 @@ def test_ai_radar_debug_html_localizes_fields_without_name_error() -> None:
     assert "sector / industry" not in html
 
 
+def test_ai_radar_performance_diagnostics_hide_internal_cache_filename() -> None:
+    perf = radar_ui.PerfProbe()
+    perf.add("财务 / 基本面读取", 0.0, cache_hit=True, external_api=False, note="来自研报列表缓存")
+
+    html = radar_ui._performance_diagnostics_html(perf)
+
+    assert "本地缓存" in html
+    assert "研报列表缓存" in html
+    assert "cache.sqlite" not in html
+    assert "financials / fundamentals" not in html
+    assert "technical_data" not in html
+
+
 def test_ai_radar_report_daily_volume_prevents_volume_gap() -> None:
     report = {
         "ticker": "MSFT",
