@@ -2991,7 +2991,7 @@ def _monitor_insufficient_frame(rows: list[dict]) -> pd.DataFrame:
         records.append(
             {
                 "股票": str(row.get("ticker") or "").strip().upper() or "未知",
-                "当前价差%": _percent_text(_monitor_premium_pct(row)) if _monitor_premium_pct(row) is not None else "暂缺",
+                "当前价差%": _percent_text(_monitor_premium_pct(row)) if _monitor_premium_pct(row) is not None else "不可计算",
                 "缺失字段": "、".join(_monitor_missing_fields(row)) or "关键字段不足",
                 "缺失原因": _monitor_missing_reason(row),
                 "下一步操作": _monitor_next_fill_action(row),

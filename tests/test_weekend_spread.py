@@ -8264,6 +8264,18 @@ def test_weekend_monitor_splits_insufficient_rows_from_default_queue() -> None:
     assert "ATR14 / 20 日平均振幅" in frame.loc[0, "缺失字段"]
     assert frame.loc[0, "下一步操作"] == "刷新历史价格后重算波动数据"
 
+    missing_spread = weekend_spread._monitor_insufficient_frame(
+        [
+            {
+                "ticker": "MISSING",
+                "anchor_price": None,
+                "binance_price": 104.0,
+            }
+        ]
+    )
+    assert missing_spread.loc[0, "当前价差%"] == "不可计算"
+    assert "暂缺" not in missing_spread.to_string()
+
 
 def test_weekend_monitor_classifies_premium_trends() -> None:
     assert classify_premium_trend(2.0, 2.5, 0.5) == "溢价扩大"
