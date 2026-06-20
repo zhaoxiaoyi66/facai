@@ -62,3 +62,21 @@ def test_global_theme_uses_cjk_safe_font_fallbacks() -> None:
     assert '"Microsoft YaHei"' in source
     assert '"Noto Sans CJK SC"' in source
     assert "font-family: var(--zhx-font-sans)" in source
+
+
+def test_sidebar_navigation_uses_current_user_facing_labels() -> None:
+    source = Path("app.py").read_text(encoding="utf-8")
+
+    assert 'PAGE_DISCIPLINE_REVIEW = "交易复盘"' in source
+    assert 'PAGE_AI_RADAR = "研报中心"' in source
+    assert '"交易错题本": PAGE_DISCIPLINE_REVIEW' in source
+    assert '"价格位置": PAGE_AI_RADAR' in source
+    assert 'PAGE_DISCIPLINE_REVIEW: "交易复盘"' in source
+    assert 'PAGE_AI_RADAR: "研报中心"' in source
+
+    nav_block = source[source.index("NAV_STRUCTURE = [") : source.index("]\n\n\ndef main")]
+    assert "PAGE_WEEKEND_SPREAD" in nav_block
+    assert "PAGE_NEWS_RADAR" in nav_block
+    assert "PAGE_WATCHLIST" in nav_block
+    assert nav_block.rfind("PAGE_WATCHLIST") > nav_block.rfind("PAGE_SIGNAL_PERFORMANCE")
+    assert '"children": [PAGE_SIGNAL_PERFORMANCE]' in nav_block

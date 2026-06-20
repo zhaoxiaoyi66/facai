@@ -705,6 +705,7 @@ def test_app_registers_discipline_review_page() -> None:
     source = Path("app.py").read_text(encoding="utf-8")
 
     assert "PAGE_DISCIPLINE_REVIEW" in source
-    assert 'PAGE_DISCIPLINE_REVIEW = "交易错题本"' in source
+    assert 'PAGE_DISCIPLINE_REVIEW = "交易复盘"' in source
+    assert '"交易错题本": PAGE_DISCIPLINE_REVIEW' in source
     assert '"discipline-review"' in source
     assert "discipline_review.render" in source

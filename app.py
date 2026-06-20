@@ -29,10 +29,10 @@ APP_ICON_FALLBACK_PATH = Path(__file__).with_name("nunu_old_champion_icon_120.pn
 
 PAGE_DASHBOARD = "决策总览"
 PAGE_PORTFOLIO = "组合持仓"
-PAGE_DISCIPLINE_REVIEW = "交易错题本"
+PAGE_DISCIPLINE_REVIEW = "交易复盘"
 PAGE_TRADE_JOURNAL = "交易日志"
 PAGE_STOCK_DETAIL = "个股研究"
-PAGE_AI_RADAR = "价格位置"
+PAGE_AI_RADAR = "研报中心"
 PAGE_MANUAL_REVIEW = "数据复核"
 PAGE_WEEKEND_SPREAD = "周末价差"
 PAGE_NEWS_RADAR = "新闻雷达"
@@ -62,6 +62,7 @@ LEGACY_PAGE_ALIASES = {
     "组合持仓": PAGE_PORTFOLIO,
     "交易日志": PAGE_TRADE_JOURNAL,
     "纪律复盘": PAGE_DISCIPLINE_REVIEW,
+    "交易错题本": PAGE_DISCIPLINE_REVIEW,
     "交易复盘": PAGE_DISCIPLINE_REVIEW,
     "观察名单": PAGE_WATCHLIST,
     "数据复核中心": PAGE_MANUAL_REVIEW,
