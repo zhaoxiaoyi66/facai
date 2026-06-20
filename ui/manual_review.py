@@ -8,11 +8,9 @@ import streamlit as st
 from ai.qwen_review_service import (
     QWEN_NOT_SUITABLE_REASON,
     QwenReviewService,
-    qwen_review_candidates,
     qwen_review_efficiency_stats,
     qwen_review_eligibility,
 )
-from ai.review_automation import ReviewAutomationService, automation_effectiveness
 from data.ai_review_assistant import AIReviewStore
 from data.evidence_backfill import backfill_evidence_for_review_item
 from data.review_center_auto_archive import auto_archive_low_priority_review_items
@@ -22,7 +20,7 @@ from formatting import format_compact_number, format_large_number
 from review_autopilot import ReviewAutopilot, auto_fill_capability
 from scoring.sector_models import classifyStockModel
 from settings import load_watchlist
-from ui.metric_labels import action_label, confidence_label, metric_label, model_type_label, source_type_label
+from ui.metric_labels import confidence_label, metric_label, model_type_label, source_type_label
 
 
 STATUS_LABELS = {

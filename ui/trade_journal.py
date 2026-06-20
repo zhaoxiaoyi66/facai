@@ -41,7 +41,6 @@ from data.sell_review import evaluate_sell_review_flags, format_sell_review_labe
 from data.stock_plan import StockPlanStore
 from data.trade_performance import EVENT_EXIT_REASONS, EVENT_PLAN_KEYWORDS, summarize_trade_performance
 from data.trade_activity import (
-    activity_level_label,
     build_daily_trade_activity,
     build_monthly_trade_calendar,
 )
