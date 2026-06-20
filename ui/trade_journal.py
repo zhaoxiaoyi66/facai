@@ -4157,7 +4157,16 @@ def _signal_reason_label(value: object) -> str:
         "entry_rating": "入场评级",
         "risk_rating": "风险评级",
     }
-    return labels.get(text, text)
+    return labels.get(text, _trade_unknown_display_text(text, "其他原因"))
+
+
+def _trade_unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _signal_snapshot_outcomes_html(
@@ -4212,12 +4221,12 @@ def _error_tag_label(value: object) -> str:
 
 def _final_action_label(value: object) -> str:
     text = str(value or "").strip()
-    return FINAL_ACTION_LABELS.get(text, text or BLANK_TEXT)
+    return FINAL_ACTION_LABELS.get(text, _trade_unknown_display_text(text, "未记录"))
 
 
 def _lane_label(value: object) -> str:
     text = str(value or "").strip()
-    return LANE_LABELS.get(text, text or BLANK_TEXT)
+    return LANE_LABELS.get(text, _trade_unknown_display_text(text, "未记录"))
 
 
 def _outcome_status_text(outcome: dict | None, horizon: str, snapshot: dict) -> str:
