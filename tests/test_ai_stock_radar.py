@@ -2019,8 +2019,38 @@ def test_list_data_confidence_shows_stale_price_not_price_gap() -> None:
 
     html = radar_ui._list_row_html(row, "")
 
-    assert "价格过期" in html
+    assert "数据不足" in html
     assert "价格缺口" not in html
+
+
+def test_market_closure_stale_marker_shows_price_valid() -> None:
+    row = {
+        "ticker": "NVDA",
+        "company_name": "NVIDIA",
+        "current_price": 210.69,
+        "data_status": "STALE",
+        "is_stale": True,
+        "price_freshness_status": "休市中，价格有效",
+        "price_freshness_is_stale": False,
+        "history_latest_date": "2026-06-18",
+        "debug": {"data_missing_fields": ["current_price_stale"]},
+    }
+
+    data_quality = radar_ui._research_data_quality_text(row, {"current_action": "WAIT_PULLBACK"}, "WAIT_PULLBACK")
+    status_class, status_text = radar_ui._research_status(
+        "WAIT_PULLBACK",
+        row["current_price"],
+        180,
+        220,
+        None,
+        None,
+        data_quality,
+    )
+
+    assert data_quality == "休市中，价格有效"
+    assert radar_ui._price_data_state(row) == "ok"
+    assert status_class != "data"
+    assert status_text
 
 
 def test_list_company_aliases_render_company_name() -> None:

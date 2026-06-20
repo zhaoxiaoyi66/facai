@@ -16,6 +16,9 @@ from data.buy_zone_engine import build_buy_zone_context
 from data.drawdown_profile import build_drawdown_profile, drawdown_profile_summary_text
 from data.entry_display import format_buy_zone, format_zone_status
 from data.market_context import build_market_context, build_market_history
+from data.price_freshness import classify_price_freshness
+from data.price_freshness import get_us_market_context
+from data.price_freshness import infer_latest_price_date
 from data.portfolio_targets import build_action_fusion_portfolio_context
 from data.sector_localization import format_company_track, get_ticker_research_track
 from data.stock_plan import StockPlanStore
@@ -992,11 +995,14 @@ def _research_confidence_text(row: dict[str, Any], context: dict[str, Any], acti
 
 
 def _research_data_quality_text(row: dict[str, Any], context: dict[str, Any], action: str) -> str:
+    freshness = _row_price_freshness(row)
+    if _row_has_stale_price_marker(row) and freshness and not freshness.get("is_stale"):
+        return str(freshness.get("status") or "价格有效")
     price_state = _price_data_state(row)
     if price_state == "missing":
         return "价格缺失"
     if price_state == "stale":
-        return "价格过期"
+        return str(freshness.get("status") or "数据过期")
     if _legacy_buy_zone_context_missing(row):
         return "旧格式待刷新"
     if action in {"NO_BUY_ZONE", "ZONE_MISSING"}:
@@ -3874,7 +3880,7 @@ def _report_status_text(row: dict[str, Any]) -> str:
     price_state = _price_data_state(row)
     if price_state == "missing":
         return "需补数据"
-    if price_state == "stale" or bool(row.get("is_stale")):
+    if price_state == "stale":
         return "研报过期"
     if _data_confidence(row) in {"高", "中"}:
         return "已生成"
@@ -3911,7 +3917,7 @@ def _data_confidence(row: dict[str, Any]) -> str:
         return "不足"
     if data_status == "OK" and not bool(row.get("is_stale")) and not missing:
         return "高"
-    if price_state == "stale" or data_status == "STALE":
+    if price_state == "stale" or (data_status == "STALE" and price_state == "stale"):
         return "低"
     if data_status == "MISSING_SCORE" or len(missing) >= 3:
         return "低"
@@ -3921,7 +3927,7 @@ def _data_confidence(row: dict[str, Any]) -> str:
 def _missing_groups(row: dict[str, Any]) -> list[str]:
     fields = _actionable_missing_fields(row)
     status = str(row.get("data_status") or "")
-    if status and status != "OK":
+    if status and status != "OK" and not (status.upper() == "STALE" and _price_data_state(row) != "stale"):
         fields.append(status)
     text = " ".join(str(item).lower() for item in fields)
     price_state = _price_data_state(row, text)
@@ -4094,10 +4100,42 @@ def _price_data_state(row: dict[str, Any], field_text: str | None = None) -> str
         text = " ".join(str(item).lower() for item in fields)
     price = _number(row.get("current_price"))
     if bool(row.get("is_stale")) or status == "STALE" or "current_price_stale" in text or "price_stale" in text:
+        freshness = _row_price_freshness(row)
+        if freshness and not freshness.get("is_stale"):
+            return "ok"
         return "stale"
     if price is None and (status == "MISSING_PRICE" or "current_price" in text or "price" in text or "quote" in text):
         return "missing"
     return "ok"
+
+
+def _row_price_freshness(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row.get("price_freshness_status") or "").strip()
+    if status:
+        explicit_is_stale = row.get("price_freshness_is_stale")
+        is_stale = bool(explicit_is_stale) if explicit_is_stale is not None else status in {"数据过期", "数据不足"}
+        return {
+            "status": status,
+            "detail": str(row.get("price_freshness_detail") or ""),
+            "is_stale": is_stale,
+            "price_date": row.get("price_latest_date"),
+            "latest_expected_trading_day": row.get("latest_expected_trading_day"),
+            "market_status": row.get("market_status"),
+        }
+    latest_price_date = infer_latest_price_date(row)
+    return classify_price_freshness(str(row.get("ticker") or ""), latest_price_date, get_us_market_context())
+
+
+def _row_has_stale_price_marker(row: dict[str, Any]) -> bool:
+    status = str(row.get("data_status") or "").upper()
+    if bool(row.get("is_stale")) or status == "STALE":
+        return True
+    debug = row.get("debug") if isinstance(row.get("debug"), dict) else {}
+    fields: list[Any] = []
+    fields.extend(debug.get("data_missing_fields") or [])
+    fields.extend(row.get("data_missing_fields") or [])
+    text = " ".join(str(item).lower() for item in fields)
+    return "current_price_stale" in text or "price_stale" in text
 
 
 def _missing_group_text(row: dict[str, Any]) -> str:
@@ -4136,9 +4174,10 @@ def _data_health_context(
     critical_missing_fields = _dedupe_text([field for field in missing_fields if _is_critical_health_field(field)])
     optional_missing_fields = _dedupe_text([field for field in missing_fields if field not in critical_missing_fields])
     stale_fields: list[str] = []
-    if _price_data_state(report) == "stale" or bool(report.get("is_stale")):
+    report_price_state = _price_data_state(report)
+    if report_price_state == "stale":
         stale_fields.append("当前价格")
-    if str(report.get("data_status") or "").upper() == "STALE":
+    if str(report.get("data_status") or "").upper() == "STALE" and report_price_state == "stale":
         stale_fields.append("评分 / 区间")
     health_level = "高"
     if critical_missing_fields:

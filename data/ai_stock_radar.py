@@ -12,6 +12,9 @@ from typing import Any
 from data.market_context import build_market_context
 from data.market_context import build_market_history
 from data.buy_zone_engine import build_buy_zone_context
+from data.price_freshness import classify_price_freshness
+from data.price_freshness import get_us_market_context
+from data.price_freshness import infer_latest_price_date
 from data.prices import CACHE_PATH
 from data.entry_display import build_entry_display as calculate_entry_display
 from data.trade_gate import BuyGateResult as RadarBuyGateResult
@@ -193,7 +196,8 @@ def build_ai_stock_radar_report(
         chase_zone=chase_zone,
         metrics=metrics,
     )
-    data_status = _data_status(market, score_input, zones["buy_zone"])
+    price_freshness = _market_price_freshness(symbol, market, now=now)
+    data_status = _data_status(market, score_input, zones["buy_zone"], price_freshness=price_freshness)
     price_position = calculate_price_position(current_price, zones["buy_zone"], zones["chase_zone"], data_status)
     block_reasons = _block_reasons(
         current_price,
@@ -283,7 +287,7 @@ def build_ai_stock_radar_report(
         current_price=current_price,
         price_source=str(market.get("priceSource") or "missing"),
         data_updated_at=market.get("fetchedAt"),
-        is_stale=bool(market.get("isStale")),
+        is_stale=bool(market.get("isStale")) and bool(price_freshness.get("is_stale")),
         history_status=str(market.get("historyStatus") or "missing"),
         history_latest_date=market.get("historyLatestDate"),
         history_ticker_key=market.get("historyTickerKey"),
@@ -447,7 +451,8 @@ def build_ai_stock_radar_list_row(
         chase_zone=chase_zone,
         metrics=metrics,
     )
-    data_status = _data_status(market, score_input, zones["buy_zone"])
+    price_freshness = _market_price_freshness(symbol, market, now=now)
+    data_status = _data_status(market, score_input, zones["buy_zone"], price_freshness=price_freshness)
     price_position = calculate_price_position(current_price, zones["buy_zone"], zones["chase_zone"], data_status)
     block_reasons = _block_reasons(
         current_price,
@@ -520,8 +525,17 @@ def build_ai_stock_radar_list_row(
         "current_price": current_price,
         "price_source": market.get("priceSource") or "missing",
         "data_updated_at": market.get("fetchedAt"),
-        "is_stale": bool(market.get("isStale")),
+        "is_stale": bool(market.get("isStale")) and bool(price_freshness.get("is_stale")),
         "history_status": market.get("historyStatus") or "missing",
+        "history_latest_date": market.get("historyLatestDate"),
+        "history_ticker_key": market.get("historyTickerKey"),
+        "price_status": market.get("priceStatus"),
+        "price_latest_date": price_freshness.get("price_date"),
+        "price_freshness_status": price_freshness.get("status"),
+        "price_freshness_detail": price_freshness.get("detail"),
+        "price_freshness_is_stale": bool(price_freshness.get("is_stale")),
+        "latest_expected_trading_day": price_freshness.get("latest_expected_trading_day"),
+        "market_status": price_freshness.get("market_status"),
         "decision": decision,
         "final_score": score_input.final_score,
         "buy_zone_context": buy_zone_context,
@@ -1988,8 +2002,20 @@ def _normalized_input_value(canonical: str, value: Any) -> Any:
     return _number(value)
 
 
-def _data_status(market: dict[str, Any], scores: RadarScores, buy_zone: RadarZone) -> str:
-    if market.get("isStale"):
+def _market_price_freshness(symbol: str, market: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    market_context = get_us_market_context(now=now)
+    latest_price_date = infer_latest_price_date(market)
+    return classify_price_freshness(symbol, latest_price_date, market_context)
+
+
+def _data_status(
+    market: dict[str, Any],
+    scores: RadarScores,
+    buy_zone: RadarZone,
+    *,
+    price_freshness: dict[str, Any] | None = None,
+) -> str:
+    if market.get("isStale") and not (price_freshness and not price_freshness.get("is_stale")):
         return "STALE"
     if _number(market.get("currentPrice")) is None:
         return "MISSING_PRICE"
