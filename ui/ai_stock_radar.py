@@ -4990,20 +4990,6 @@ def _entry_display_html(row: dict[str, Any]) -> str:
     )
 
 
-def _decision_label(value: str) -> str:
-    return value if value else "UNKNOWN"
-
-
-def _data_status_label(value: str) -> str:
-    return {
-        "OK": "正常",
-        "STALE": "价格可能过期",
-        "MISSING_PRICE": "缺价格",
-        "MISSING_SCORE": "缺评分",
-        "MISSING_BUY_ZONE": "缺买区上下文",
-    }.get(value, value or "未知")
-
-
 def _price_position_label(value: Any) -> str:
     return format_zone_status(value)
 
