@@ -8472,7 +8472,7 @@ def _diagnostics_frame(rows: list[dict]) -> pd.DataFrame:
         display[label] = frame.get(key)
     for col in ("价格", "买卖盘", "成交量", "资金费率"):
         if col in display:
-            display[col] = display[col].map(lambda value: "可用" if bool(value) else "暂缺")
+            display[col] = display[col].map(lambda value: "可用" if bool(value) else "不可用")
     if "映射可信度" in display:
         display["映射可信度"] = display["映射可信度"].map(_mapping_confidence_label)
     return display

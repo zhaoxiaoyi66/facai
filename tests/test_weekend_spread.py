@@ -6528,6 +6528,10 @@ def test_mapping_diagnostics_use_contract_wording_not_symbol_label() -> None:
                 "market_type": "USDT-M",
                 "mapping_confidence": "confirmed",
                 "validation_status": "OK",
+                "price_available": True,
+                "book_available": False,
+                "volume_available": False,
+                "funding_available": False,
             }
         ]
     )
@@ -6539,6 +6543,9 @@ def test_mapping_diagnostics_use_contract_wording_not_symbol_label() -> None:
     assert "候选合约只表示" in source
     assert "校验 symbol" not in source
     assert "候选 symbol" not in source
+    assert frame.loc[0, "价格"] == "可用"
+    assert frame.loc[0, "买卖盘"] == "不可用"
+    assert "暂缺" not in frame[["价格", "买卖盘", "成交量", "资金费率"]].to_string()
     assert weekend_spread._binance_status_text([{"status": "INVALID_SYMBOL", "binance_symbol": "BADUSDT"}], 1) == "合约无效"
     assert weekend_spread._mapping_editor_error_text("invalid_symbol") == "Binance 合约无效"
 
