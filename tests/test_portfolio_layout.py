@@ -39,6 +39,20 @@ def test_portfolio_dashboard_uses_responsive_grids() -> None:
     assert "repeat(6, minmax(0, 1fr))" not in compact_overview
 
 
+def test_portfolio_overview_subtitles_are_chinese() -> None:
+    source = Path("ui/portfolio.py").read_text(encoding="utf-8")
+    overview_source = source[
+        source.index("def _render_overview_strip") : source.index("def _cash_source_text")
+    ]
+
+    assert "持仓市值" in overview_source
+    assert "持仓成本" in overview_source
+    assert "手动基准" in overview_source
+    assert "启用持仓" in overview_source
+    for old_label in ("market value", "cost basis", "manual total", '"active"'):
+        assert old_label not in overview_source
+
+
 def test_portfolio_mainline_is_compact_and_button_is_not_isolated() -> None:
     source = Path("ui/portfolio_mainline.py").read_text(encoding="utf-8")
 

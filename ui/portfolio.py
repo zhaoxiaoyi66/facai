@@ -2270,12 +2270,12 @@ def _dedupe_text(items: list[str]) -> list[str]:
 def _render_overview_strip(summary: dict) -> None:
     items = [
         ("账户净值", _money_or_dash(summary.get("accountNav")), "市值 + 现金"),
-        ("总市值", _money_or_dash(summary.get("marketValue"), zero_dash=True), "market value"),
+        ("总市值", _money_or_dash(summary.get("marketValue"), zero_dash=True), "持仓市值"),
         ("浮动盈亏", _money_or_dash(summary.get("unrealizedPnl")), _percent_or_dash(summary.get("unrealizedPnlPct"))),
         ("现金", _money_or_dash(summary.get("cashBalance")), _cash_source_text(summary.get("cashBalanceSource"))),
-        ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "cost basis"),
-        ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "manual total"),
-        ("持仓数", str(summary.get("positionCount", 0)), "active"),
+        ("总成本", _money_or_dash(summary.get("costBasis"), zero_dash=True), "持仓成本"),
+        ("组合基准", _money_or_dash(summary.get("totalPortfolioValue"), zero_dash=True), "手动基准"),
+        ("持仓数", str(summary.get("positionCount", 0)), "启用持仓"),
     ]
     html = "".join(
         '<div class="portfolio-stat compact">'
