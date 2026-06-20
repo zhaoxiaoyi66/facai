@@ -749,9 +749,9 @@ def test_trade_journal_separates_executed_ledger_from_historical_non_trades(monk
 
     assert [entry["id"] for entry in executed] == [1]
     assert [entry["id"] for entry in historical] == [2, 3, 4]
-    assert trade_journal._historical_non_trade_reason(entries[2]) == "旧系统仅观察记录"
+    assert trade_journal._historical_non_trade_reason(entries[2]) == "历史仅观察记录"
     assert trade_journal._historical_non_trade_reason(entries[3]) == "历史卖出风险提醒记录"
-    assert trade_journal._historical_non_trade_reason(entries[4]) == "旧系统未入账记录"
+    assert trade_journal._historical_non_trade_reason(entries[4]) == "历史未入账记录"
 
 
 def test_trade_entry_detail_shows_sell_review_snapshot() -> None:

@@ -1758,7 +1758,7 @@ def _row_status_text(row: dict) -> str:
     if str(reconciliation.get("status") or "") in {"warning", "mismatch"}:
         return _reconciliation_reason_text(reconciliation)
     if int(row.get("unsyncedTradeCount") or 0) > 0:
-        return "有旧系统未入账记录"
+        return "有历史未入账记录"
     deviation = _deviation_text(row)
     return deviation if deviation != "暂无偏离提示" else _price_status_text(row.get("priceStatus"))
 
@@ -1767,7 +1767,7 @@ def _trade_sync_text(row: dict) -> str:
     count = int(row.get("unsyncedTradeCount") or 0)
     if count <= 0:
         return "已入账"
-    return f"有 {count} 条旧系统未入账记录"
+    return f"有 {count} 条历史未入账记录"
 
 
 def _safe_portfolio_reconciliation() -> list[dict]:
@@ -1910,7 +1910,7 @@ def _reconciliation_status_text(item: dict | None) -> str:
 def _reconciliation_reason_text(item: dict | None) -> str:
     reasons = [str(reason) for reason in (item or {}).get("reasons") or []]
     labels = {
-        "unsynced_trades_exist": "有旧系统未入账记录",
+        "unsynced_trades_exist": "有历史未入账记录",
         "quantity_mismatch": "当前持仓数量和交易流水不一致",
         "average_cost_mismatch": "当前持仓成本和交易流水不一致",
         "position_without_synced_journal": "有持仓但找不到入账交易来源",

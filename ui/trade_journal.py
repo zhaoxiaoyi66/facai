@@ -2547,7 +2547,7 @@ def _render_summary(entries: list[dict], performance_summary: dict | None = None
         ("胜率", _percent_or_dash(summary.get("win_rate")), "已完成卖出"),
         ("平均持仓天数", _days_text(summary.get("average_holding_days")), "FIFO 统计"),
         ("疑似卖飞次数", str(summary.get("suspected_sell_fly_count") or 0), "复盘提示"),
-        ("历史非成交", str(legacy_count), "旧系统记录"),
+        ("历史非成交", str(legacy_count), "历史记录"),
     ]
     html = "".join(
         (
@@ -2981,7 +2981,7 @@ def _render_historical_non_trade_records(entries: list[dict]) -> None:
     if not entries:
         st.info("暂无历史非成交记录。")
         return
-    st.caption("这里仅兼容旧系统留下的非成交记录；默认交易流水和战绩统计不会读取这些记录。")
+    st.caption("这里仅兼容历史入口留下的非成交记录；默认交易流水和战绩统计不会读取这些记录。")
     headers = ["日期", "股票", "类型", "数量 / 价格", "原因", "操作"]
     header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body = "".join(_historical_non_trade_row_html(entry) for entry in entries[:80])
@@ -3016,12 +3016,12 @@ def _historical_non_trade_row_html(entry: dict) -> str:
 def _historical_non_trade_reason(entry: dict) -> str:
     action = str(entry.get("action_type") or "").strip().lower()
     if action not in {"buy", "add", "sell", "trim"}:
-        return "旧系统非成交动作"
+        return "历史非成交动作"
     if bool(entry.get("radar_observation_only")):
-        return "旧系统仅观察记录"
+        return "历史仅观察记录"
     if str(entry.get("discipline_status") or "").strip().lower() == "blocked":
         return "历史卖出风险提醒记录"
-    return "旧系统未入账记录"
+    return "历史未入账记录"
 
 
 def _render_entries(symbols: list[str], entries: list[dict]) -> None:
