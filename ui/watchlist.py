@@ -36,6 +36,7 @@ _DATA_STATUS_LABELS = {
     "stale": "缓存过期",
     "missing": "缺数据",
     "data_missing": "缺数据",
+    "data_insufficient": "数据不足",
 }
 
 
@@ -349,8 +350,13 @@ def _canonical_buy_zone_action(row: dict) -> str:
 
 
 def _data_status_label(value: object) -> str:
-    key = str(value or "missing")
-    return _DATA_STATUS_LABELS.get(key, key or "缺数据")
+    key = str(value or "missing").strip()
+    normalized = key.lower()
+    if normalized in _DATA_STATUS_LABELS:
+        return _DATA_STATUS_LABELS[normalized]
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in key):
+        return "数据状态未知"
+    return key or "缺数据"
 
 
 def _date_text(value: object) -> str:

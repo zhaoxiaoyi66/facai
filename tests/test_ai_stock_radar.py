@@ -830,6 +830,12 @@ def test_watchlist_held_missing_data_shows_pause_add_instead_of_avoid() -> None:
     assert "回避" not in html
 
 
+def test_watchlist_data_status_label_hides_internal_codes() -> None:
+    assert watchlist_ui._data_status_label("DATA_MISSING") == "缺数据"
+    assert watchlist_ui._data_status_label("DATA_INSUFFICIENT") == "数据不足"
+    assert watchlist_ui._data_status_label("NEW_DATA_STATUS") == "数据状态未知"
+
+
 def test_watchlist_star_sort_keeps_original_order_within_groups() -> None:
     entries = [{"ticker": "NOW"}, {"ticker": "NVDA"}, {"ticker": "ADBE"}, {"ticker": "CRM"}]
     marks = {
