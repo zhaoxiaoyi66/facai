@@ -3402,6 +3402,28 @@ def test_default_p2_uses_first_valid_20_01_bar_as_delayed_sample() -> None:
     assert frame.iloc[0]["样本质量"] == "延迟成交"
 
 
+def test_weekend_review_frame_does_not_label_delayed_p2_as_first_minute() -> None:
+    frame = weekend_spread._weekend_review_frame(
+        [
+            {
+                "week_id": "2026-W24",
+                "ticker": "GLW",
+                "friday_afterhours_close": 180.0,
+                "binance_price": 185.88,
+                "broker_open_close": 184.01,
+                "binance_premium_pct": 3.2666,
+                "overnight_vs_binance_pct": -1.006,
+                "overnight_vs_afterhours_pct": 2.2277,
+                "capture_pct": 68.2,
+                "data_quality": "OK",
+                "p2_delay_minutes": 1,
+            }
+        ]
+    )
+
+    assert frame.iloc[0]["样本质量"] == "延迟成交"
+
+
 def test_backtest_marks_binance_contract_not_listed_yet_before_onboard() -> None:
     now = datetime(2026, 7, 6, 1, tzinfo=timezone.utc)
     window = recent_weekend_windows(weeks=1, now=now)[0]

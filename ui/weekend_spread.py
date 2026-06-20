@@ -3858,7 +3858,8 @@ def _weekend_review_news_label(row: dict) -> str:
 def _weekend_review_short_sample_quality(row: dict) -> str:
     quality = str(row.get("data_quality") or "").strip().upper()
     if quality == "OK":
-        return "严格样本" if _number(row.get("p2_delay_minutes")) in {None, 0} else "首分钟样本"
+        delay = _number(row.get("p2_delay_minutes"))
+        return "严格样本" if delay in {None, 0} else "延迟成交"
     if quality == "DELAYED_OVERNIGHT_FIRST_VALID":
         return "延迟成交"
     if quality == "P0_UNVERIFIED":
