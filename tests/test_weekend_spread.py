@@ -5927,6 +5927,14 @@ def test_weekend_review_price_source_text_localizes_afterhours_providers() -> No
     assert weekend_spread._price_source_text("FMP_AFTERHOURS_TRADE") == "FMP 盘后成交"
 
 
+def test_weekend_review_core_card_raw_bar_copy_is_localized() -> None:
+    source = inspect.getsource(weekend_spread._render_weekend_review_core_card)
+
+    assert "数据源返回原始 1m K线" in source
+    assert "Provider 返回" not in source
+    assert "，close " not in source
+
+
 def test_weekend_review_summary_uses_latest_four_weeks() -> None:
     rows = [
         {

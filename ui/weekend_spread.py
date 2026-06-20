@@ -5997,7 +5997,7 @@ def _render_weekend_review_core_card(review_rows: list[dict], *, weeks: int = 4)
         raw_time = str(row.get("p2_first_raw_bar_time_et") or row.get("p2_first_raw_bar_time") or "").strip()
         raw_close = _number(row.get("p2_first_raw_bar_close"))
         if raw_time and raw_close is not None:
-            st.caption(f"Provider 返回原始 1m K线：{raw_time}，close {_money_text(raw_close)}；未命中当前开盘窗口。")
+            st.caption(f"数据源返回原始 1m K线：{raw_time}，收盘价 {_money_text(raw_close)}；未命中当前开盘窗口。")
     elif _number(row.get("p2_delay_minutes")) and float(_number(row.get("p2_delay_minutes")) or 0) > 0:
         st.caption(f"非首分钟样本，开盘后 +{int(float(_number(row.get('p2_delay_minutes')) or 0))} 分钟才出现有效 1m K 线。")
     elif str(row.get("data_quality") or "").strip().upper() in {"REGULAR_CLOSE_FALLBACK", "FALLBACK_REGULAR_CLOSE"}:
