@@ -61,6 +61,7 @@ def _run_once(args) -> dict:
         snapshot_path=DEFAULT_MONITOR_SNAPSHOT_PATH,
         now=datetime.now(timezone.utc),
         interval_minutes=float(args.interval_minutes),
+        monitor_mode=args.monitor_mode if args.once else "loop",
     )
 
 
@@ -170,6 +171,7 @@ def _parse_args():
     parser = argparse.ArgumentParser(description="Weekend spread monitor runner")
     parser.add_argument("--interval-minutes", type=float, default=DEFAULT_MONITOR_INTERVAL_MINUTES)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--monitor-mode", default="scheduler")
     parser.add_argument("--symbols", default="")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--only-watchlist", action="store_true")

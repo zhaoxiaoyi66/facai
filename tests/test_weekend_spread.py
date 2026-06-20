@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
+import data.weekend_spread_monitor as monitor_data
 from data.afterhours_provider import AfterhoursReference, CachedAfterhoursProvider, NullAfterhoursProvider, resolve_afterhours_reference
 from data.binance_provider import BinanceHTTPPriceProvider
 from data.binance_equity_scan import (
@@ -117,12 +118,16 @@ from data.weekend_spread_log import (
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
     append_monitor_run,
+    acquire_monitor_lock,
     build_monitor_priority,
     build_monitor_top,
     classify_premium_trend,
+    evaluate_monitor_health,
     latest_monitor_run,
     monitor_history_rows,
     read_monitor_state,
+    read_monitor_status,
+    release_monitor_lock,
     run_monitor_scan,
 )
 from data.weekend_spread_research import list_monitor_ticks, research_path_for_snapshot
@@ -6977,6 +6982,107 @@ def test_weekend_monitor_first_scan_waits_for_next_comparison(tmp_path) -> None:
     assert frame.loc[0, "近 3 分钟"] == "等待下一轮"
     assert frame.loc[0, "趋势"] == "等待下一轮比较"
     assert latest_monitor_run(path)["run_id"] == run["run_id"]
+
+
+def test_weekend_monitor_once_success_writes_status(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    status_path = tmp_path / "weekend_spread_monitor_status.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0},
+        snapshot_path=path,
+        status_path=status_path,
+        now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
+        monitor_mode="scheduler",
+    )
+    status = read_monitor_status(status_path)
+
+    assert status["monitor_mode"] == "scheduler"
+    assert status["health_status"] == "正常"
+    assert status["last_scan_run_id"] == run["run_id"]
+    assert status["last_scan_valid_count"] == 1
+    assert status["consecutive_failures"] == 0
+
+
+def test_weekend_monitor_once_failure_writes_error_status(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    status_path = tmp_path / "weekend_spread_monitor_status.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+
+    def fail_fetch(_provider):
+        raise RuntimeError("binance down")
+
+    monkeypatch.setattr(monitor_data, "fetch_bulk_usdm_prices", fail_fetch)
+
+    with pytest.raises(RuntimeError):
+        run_monitor_scan(
+            rows,
+            snapshot_path=path,
+            status_path=status_path,
+            now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
+            monitor_mode="scheduler",
+        )
+
+    status = read_monitor_status(status_path)
+    assert status["health_status"] == "最近失败"
+    assert status["consecutive_failures"] == 1
+    assert "binance down" in status["last_error"]
+
+
+def test_weekend_monitor_health_evaluation_statuses() -> None:
+    base = {
+        "enabled": True,
+        "monitor_mode": "scheduler",
+        "interval_minutes": 3,
+        "last_success_at": "2026-06-20T00:00:00+00:00",
+        "consecutive_failures": 0,
+    }
+
+    assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 7, tzinfo=timezone.utc))["health_status"] == "正常"
+    assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 8, tzinfo=timezone.utc))["health_status"] == "疑似失效"
+    assert evaluate_monitor_health({**base, "enabled": False}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "已暂停"
+    assert evaluate_monitor_health({}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "未启动"
+    assert evaluate_monitor_health({**base, "consecutive_failures": 3}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "最近失败"
+    assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc), scheduler_exists=False)["health_status"] == "未启动"
+
+
+def test_weekend_monitor_lock_prevents_duplicate_scan(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    lock_path = tmp_path / "weekend_spread_monitor.lock"
+    acquire_monitor_lock(lock_path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0},
+        snapshot_path=path,
+        lock_path=lock_path,
+        now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert run["skipped_due_to_lock"] is True
+    assert latest_monitor_run(path) is None
+    release_monitor_lock(lock_path)
+
+
+def test_weekend_monitor_stale_lock_is_cleared(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    lock_path = tmp_path / "weekend_spread_monitor.lock"
+    acquire_monitor_lock(lock_path, now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc))
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0},
+        snapshot_path=path,
+        lock_path=lock_path,
+        now=datetime(2026, 6, 20, 0, 11, tzinfo=timezone.utc),
+    )
+
+    assert run["summary"]["valid_count"] == 1
+    assert not lock_path.exists()
 
 
 def test_weekend_monitor_scan_persists_research_ticks(tmp_path) -> None:

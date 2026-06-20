@@ -86,11 +86,15 @@ from data.weekend_spread_log import (
 )
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
+    DEFAULT_MONITOR_LOG_PATH,
     DEFAULT_MONITOR_SNAPSHOT_PATH,
+    DEFAULT_MONITOR_STATUS_PATH,
     build_monitor_priority,
+    evaluate_monitor_health,
     latest_monitor_run,
     monitor_history_rows,
     read_monitor_state,
+    read_monitor_status,
     recent_monitor_runs,
     run_monitor_scan,
 )
@@ -119,6 +123,7 @@ from data.weekend_spread_volatility import (
     SPREAD_REASON_INSUFFICIENT,
     build_spread_volatility_profile,
 )
+from tools.weekend_spread_monitor_task import run_task_command
 from data.overnight_price_provider import build_overnight_provider_self_check, default_overnight_price_provider
 from data.tradingview_price_cache import (
     DEFAULT_TRADINGVIEW_CSV_DIR,
@@ -1786,15 +1791,17 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
     snapshot_state = read_monitor_state(DEFAULT_MONITOR_SNAPSHOT_PATH)
     if snapshot_state.get("corrupted"):
         st.warning(str(snapshot_state.get("message") or "监控快照损坏，请重新扫描。"))
-    process_state = _monitor_process_state()
-    scan_clicked = False
-    start_clicked = False
-    stop_clicked = False
+    status_payload = read_monitor_status(DEFAULT_MONITOR_STATUS_PATH)
+    health = evaluate_monitor_health(status_payload)
 
     cols = st.columns(3)
     scan_clicked = cols[0].button("立即扫描一次", key="weekend_spread_monitor_scan_once", width="stretch")
-    start_clicked = cols[1].button("启动 3 分钟监控", key="weekend_spread_monitor_start", width="stretch", disabled=process_state["running"])
-    stop_clicked = cols[2].button("停止监控", key="weekend_spread_monitor_stop", width="stretch", disabled=not process_state["running"])
+    install_clicked = cols[1].button("安装 3 分钟监控任务", key="weekend_spread_monitor_install_task", width="stretch")
+    health_clicked = cols[2].button("监控健康检查", key="weekend_spread_monitor_health_check", width="stretch")
+    task_cols = st.columns(3)
+    pause_clicked = task_cols[0].button("暂停监控", key="weekend_spread_monitor_pause_task", width="stretch")
+    resume_clicked = task_cols[1].button("恢复监控", key="weekend_spread_monitor_resume_task", width="stretch")
+    remove_clicked = task_cols[2].button("移除监控任务", key="weekend_spread_monitor_remove_task", width="stretch")
 
     if scan_clicked:
         if not candidate_rows:
@@ -1805,27 +1812,32 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
                     candidate_rows,
                     price_provider=CachedBinancePriceProvider(BinanceHTTPPriceProvider(), ttl_seconds=45),
                     snapshot_path=DEFAULT_MONITOR_SNAPSHOT_PATH,
+                    monitor_mode="manual",
                 )
             st.success(f"已完成本轮扫描：有效标的 {latest_run.get('summary', {}).get('valid_count', 0)} 个。")
-    if start_clicked:
-        result = _start_monitor_process()
-        if result.get("ok"):
-            st.success(str(result.get("message") or "已启动 3 分钟周末价差监控。"))
-            st.rerun()
-        else:
-            st.warning(str(result.get("message") or "监控启动失败"))
-    if stop_clicked:
-        result = _stop_monitor_process()
-        if result.get("ok"):
-            st.success("已停止周末价差监控。")
-            st.rerun()
-        else:
-            st.warning(str(result.get("message") or "未发现运行中的监控服务"))
+    for clicked, command in (
+        (install_clicked, "install"),
+        (pause_clicked, "pause"),
+        (resume_clicked, "resume"),
+        (remove_clicked, "remove"),
+        (health_clicked, "status"),
+    ):
+        if clicked:
+            result = run_task_command(command)
+            if result.get("ok"):
+                st.success(str(result.get("message") or "任务计划操作完成。"))
+                if command != "status":
+                    st.rerun()
+            else:
+                st.warning(str(result.get("message") or "当前环境不支持任务计划，请使用手动扫描或命令行启动。"))
 
     latest_run = latest_monitor_run(DEFAULT_MONITOR_SNAPSHOT_PATH)
-    _render_monitor_status_strip(latest_run, candidate_rows, ignored or {}, process_state=_monitor_process_state())
+    status_payload = read_monitor_status(DEFAULT_MONITOR_STATUS_PATH)
+    health = evaluate_monitor_health(status_payload)
+    _render_monitor_health_card(health, latest_run, candidate_rows, ignored or {})
+    _render_recent_monitor_log()
     if latest_run is None:
-        st.info("尚未启动周末监控。可以点击“立即扫描一次”查看当前价差，或启动 3 分钟监控。")
+        st.info("尚未安装 3 分钟监控任务。可以先点击“立即扫描一次”验证数据，再安装任务。")
         return
     monitor_rows = _monitor_rows_with_priority(list(latest_run.get("rows") or []))
     if not monitor_rows:
@@ -1885,6 +1897,60 @@ def _render_monitor_status_strip(latest_run: dict | None, source_rows: list[dict
     st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
 
 
+def _render_monitor_health_card(health: dict[str, object], latest_run: dict | None, source_rows: list[dict], ignored: dict[str, dict]) -> None:
+    summary = dict((latest_run or {}).get("summary") or {})
+    status = str(health.get("health_status") or "状态未知")
+    mode = {
+        "scheduler": "任务计划",
+        "loop": "后台循环",
+        "manual": "手动扫描",
+    }.get(str(health.get("monitor_mode") or ""), str(health.get("monitor_mode") or "未启动"))
+    interval = _number(health.get("interval_minutes")) or DEFAULT_MONITOR_INTERVAL_MINUTES
+    last_success = _short_hkt_time(health.get("last_success_at")) if health.get("last_success_at") else "暂无"
+    minutes_since = _number(health.get("minutes_since_success"))
+    minutes_text = "暂无" if minutes_since is None else f"{minutes_since:.1f} 分钟"
+    next_expected = _short_hkt_time(health.get("next_expected_at")) if health.get("next_expected_at") else "暂无"
+    failures = int(_number(health.get("consecutive_failures")) or 0)
+    valid_count = int(_number(health.get("last_scan_valid_count")) or _number(summary.get("valid_count")) or 0)
+    error = str(health.get("last_error") or "").strip() or "无"
+    items = [
+        ("状态", status),
+        ("运行方式", mode),
+        ("监控间隔", f"{interval:g} 分钟"),
+        ("最近成功", last_success),
+        ("距上次成功", minutes_text),
+        ("下次预计", next_expected),
+        ("连续失败", str(failures)),
+        ("本轮有效标的", str(valid_count)),
+        ("已忽略", str(len(ignored))),
+    ]
+    text = " ｜ ".join(f"{label}：{value}" for label, value in items)
+    st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
+    reason = str(health.get("health_reason") or "").strip()
+    if status == "疑似失效":
+        st.warning(reason or "监控可能已经停止。请点击“监控健康检查”或重新安装 3 分钟监控任务。")
+    elif status == "最近失败":
+        st.warning(f"{reason or '最近扫描失败。'} 最近错误：{error}")
+    elif status == "未启动":
+        st.info(reason or "尚未安装 3 分钟监控任务。可以先点击“立即扫描一次”验证数据，再安装任务。")
+    elif status == "已暂停":
+        st.info(reason or "监控任务已暂停。")
+
+
+def _render_recent_monitor_log() -> None:
+    with st.expander("查看最近监控日志", expanded=False):
+        path = DEFAULT_MONITOR_LOG_PATH
+        if not path.exists():
+            st.caption("暂无监控日志。")
+            return
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:]
+        except OSError:
+            st.caption("监控日志暂时不可读取。")
+            return
+        st.code("\n".join(lines) if lines else "暂无监控日志。")
+
+
 def _render_monitor_top_cards(rows: list[dict]) -> None:
     top = build_monitor_top_for_ui(rows)
     high = int(top.get("high_priority_count") or 0)
@@ -1893,12 +1959,13 @@ def _render_monitor_top_cards(rows: list[dict]) -> None:
     expand = _fastest_monitor_trend_row(rows, expanding=True)
     converge = _fastest_monitor_trend_row(rows, expanding=False)
     latest_scan = _latest_monitor_scan_time(rows)
+    health = evaluate_monitor_health(read_monitor_status(DEFAULT_MONITOR_STATUS_PATH))
     cards = [
         ("值得关注", [f"{high + medium} 个", f"高 {high} / 中 {medium}"]),
         ("当前最值得看", _monitor_focus_card_lines(focus)),
         ("扩大最快", _monitor_delta_card_lines(expand)),
         ("收敛最快", _monitor_delta_card_lines(converge)),
-        ("监控状态", [_monitor_process_state().get("status_label") or "最近一次扫描", f"最近扫描：{_hkt_clock_text(latest_scan)}", f"下一次：{_next_monitor_scan_text(latest_scan)}"]),
+        ("监控状态", [health.get("health_status") or "最近一次扫描", f"最近扫描：{_hkt_clock_text(latest_scan)}", f"下一次：{_next_monitor_scan_text(latest_scan)}"]),
     ]
     st.markdown(
         '<section class="weekend-realtime-summary">'

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -14,7 +14,19 @@ from settings import PROJECT_ROOT
 
 
 DEFAULT_MONITOR_SNAPSHOT_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_monitor_snapshots.json"
+DEFAULT_MONITOR_STATUS_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_monitor_status.json"
+DEFAULT_MONITOR_LOCK_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_monitor.lock"
+DEFAULT_MONITOR_LOG_PATH = PROJECT_ROOT / ".cache" / "weekend_spread_monitor.log"
 DEFAULT_MONITOR_INTERVAL_MINUTES = 3
+DEFAULT_MONITOR_TASK_NAME = "facai_weekend_spread_monitor"
+MONITOR_LOCK_STALE_MINUTES = 10
+HEALTH_OK = "正常"
+HEALTH_NOT_STARTED = "未启动"
+HEALTH_PAUSED = "已暂停"
+HEALTH_STALE = "疑似失效"
+HEALTH_FAILED = "最近失败"
+HEALTH_UNKNOWN = "状态未知"
+HEALTH_SCANNING = "扫描中"
 MONITOR_SOURCE = "BINANCE_USDT_M"
 TREND_WAITING = "等待下一轮比较"
 TREND_WAIT_MORE = "等待更多样本"
@@ -33,6 +45,125 @@ PRIORITY_INSUFFICIENT = "数据不足"
 
 
 def run_monitor_scan(
+    source_rows: Iterable[dict[str, Any]],
+    *,
+    price_provider: BinancePriceProvider | None = None,
+    price_map: dict[str, float] | None = None,
+    snapshot_path: Path = DEFAULT_MONITOR_SNAPSHOT_PATH,
+    status_path: Path | None = None,
+    lock_path: Path | None = None,
+    log_path: Path | None = None,
+    now: datetime | None = None,
+    symbols: Iterable[str] | None = None,
+    premium_alert_pct: float = 2.0,
+    extreme_premium_pct: float = 5.0,
+    price_change_alert_pct: float = 1.0,
+    premium_change_alert_pct: float = 1.0,
+    interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES,
+    monitor_mode: str = "manual",
+    task_name: str = DEFAULT_MONITOR_TASK_NAME,
+    persist_ticks: bool = True,
+    research_db_path: Path | None = None,
+    use_lock: bool = True,
+    update_status: bool = True,
+) -> dict[str, Any]:
+    snapshot_path = Path(snapshot_path)
+    status_path = Path(status_path) if status_path is not None else _status_path_for_snapshot(snapshot_path)
+    lock_path = Path(lock_path) if lock_path is not None else _lock_path_for_snapshot(snapshot_path)
+    log_path = Path(log_path) if log_path is not None else _log_path_for_snapshot(snapshot_path)
+    scan_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    lock_acquired = False
+    if use_lock:
+        lock_result = acquire_monitor_lock(lock_path, now=scan_time)
+        if not lock_result.get("acquired"):
+            run = {
+                "run_id": uuid4().hex,
+                "scan_time": scan_time.isoformat(),
+                "interval_minutes": interval_minutes,
+                "rows": [],
+                "summary": {
+                    "scan_time": scan_time.isoformat(),
+                    "valid_count": 0,
+                    "anchor_missing_count": 0,
+                    "ignored_count": 0,
+                    "price_missing_count": 0,
+                    "skipped_due_to_lock": True,
+                    "reason": lock_result.get("reason") or "已有扫描正在进行，本轮跳过。",
+                },
+                "source": MONITOR_SOURCE,
+                "created_at": scan_time.isoformat(),
+                "skipped_due_to_lock": True,
+            }
+            append_monitor_log(
+                f"run_id={run['run_id']} skipped duplicate scan reason={run['summary']['reason']}",
+                path=log_path,
+                at=scan_time,
+            )
+            return run
+        lock_acquired = True
+    if update_status:
+        mark_monitor_scan_started(
+            status_path=status_path,
+            interval_minutes=interval_minutes,
+            monitor_mode=monitor_mode,
+            task_name=task_name,
+            started_at=scan_time,
+        )
+    try:
+        run = _run_monitor_scan_unlocked(
+            source_rows,
+            price_provider=price_provider,
+            price_map=price_map,
+            snapshot_path=snapshot_path,
+            now=scan_time,
+            symbols=symbols,
+            premium_alert_pct=premium_alert_pct,
+            extreme_premium_pct=extreme_premium_pct,
+            price_change_alert_pct=price_change_alert_pct,
+            premium_change_alert_pct=premium_change_alert_pct,
+            interval_minutes=interval_minutes,
+            persist_ticks=persist_ticks,
+            research_db_path=research_db_path,
+        )
+    except Exception as exc:
+        if update_status:
+            mark_monitor_scan_failure(
+                exc,
+                status_path=status_path,
+                interval_minutes=interval_minutes,
+                monitor_mode=monitor_mode,
+                task_name=task_name,
+                failed_at=scan_time,
+            )
+        append_monitor_log(f"run failed error={exc}", path=log_path, at=scan_time)
+        raise
+    finally:
+        if lock_acquired:
+            release_monitor_lock(lock_path)
+    if update_status:
+        mark_monitor_scan_success(
+            run,
+            status_path=status_path,
+            interval_minutes=interval_minutes,
+            monitor_mode=monitor_mode,
+            task_name=task_name,
+            finished_at=scan_time,
+        )
+    summary = dict(run.get("summary") or {})
+    append_monitor_log(
+        (
+            f"run_id={run.get('run_id')} finished "
+            f"valid={summary.get('valid_count', 0)} ignored={summary.get('ignored_count', 0)} "
+            f"anchor_missing={summary.get('anchor_missing_count', 0)} "
+            f"price_missing={summary.get('price_missing_count', 0)}"
+        ),
+        path=log_path,
+        at=scan_time,
+    )
+    return run
+
+
+def _run_monitor_scan_unlocked(
     source_rows: Iterable[dict[str, Any]],
     *,
     price_provider: BinancePriceProvider | None = None,
@@ -183,6 +314,208 @@ def latest_monitor_run(path: Path = DEFAULT_MONITOR_SNAPSHOT_PATH) -> dict[str, 
 def recent_monitor_runs(path: Path = DEFAULT_MONITOR_SNAPSHOT_PATH, *, limit: int = 10) -> list[dict[str, Any]]:
     runs = list(read_monitor_state(path).get("runs") or [])
     return list(reversed(runs[-limit:]))
+
+
+def read_monitor_status(path: Path = DEFAULT_MONITOR_STATUS_PATH) -> dict[str, Any]:
+    if not Path(path).exists():
+        return {}
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {"health_status": HEALTH_UNKNOWN, "health_reason": "监控状态文件损坏。"}
+    return payload if isinstance(payload, dict) else {"health_status": HEALTH_UNKNOWN, "health_reason": "监控状态文件格式异常。"}
+
+
+def write_monitor_status(payload: dict[str, Any], path: Path = DEFAULT_MONITOR_STATUS_PATH) -> dict[str, Any]:
+    data = dict(payload or {})
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, data)
+    return data
+
+
+def mark_monitor_scan_started(
+    *,
+    status_path: Path,
+    interval_minutes: float,
+    monitor_mode: str,
+    task_name: str,
+    started_at: datetime,
+) -> dict[str, Any]:
+    payload = read_monitor_status(status_path)
+    payload.update(
+        {
+            "monitor_mode": monitor_mode,
+            "enabled": True,
+            "interval_minutes": interval_minutes,
+            "task_name": task_name,
+            "last_started_at": started_at.isoformat(),
+            "health_status": HEALTH_SCANNING,
+            "health_reason": "正在执行本轮扫描。",
+        }
+    )
+    return write_monitor_status(payload, status_path)
+
+
+def mark_monitor_scan_success(
+    run: dict[str, Any],
+    *,
+    status_path: Path,
+    interval_minutes: float,
+    monitor_mode: str,
+    task_name: str,
+    finished_at: datetime,
+) -> dict[str, Any]:
+    summary = dict(run.get("summary") or {})
+    next_expected = finished_at + timedelta(minutes=float(interval_minutes or DEFAULT_MONITOR_INTERVAL_MINUTES))
+    payload = read_monitor_status(status_path)
+    payload.update(
+        {
+            "monitor_mode": monitor_mode,
+            "enabled": True,
+            "interval_minutes": interval_minutes,
+            "task_name": task_name,
+            "last_finished_at": finished_at.isoformat(),
+            "last_success_at": finished_at.isoformat(),
+            "last_scan_run_id": run.get("run_id") or "",
+            "last_scan_valid_count": int(summary.get("valid_count") or 0),
+            "last_scan_skipped_count": int(summary.get("ignored_count") or 0) + int(summary.get("anchor_missing_count") or 0),
+            "last_scan_error_count": int(summary.get("price_missing_count") or 0),
+            "next_expected_at": next_expected.isoformat(),
+            "consecutive_failures": 0,
+            "last_error": "",
+            "health_status": HEALTH_OK,
+            "health_reason": "最近一轮扫描成功。",
+        }
+    )
+    return write_monitor_status(payload, status_path)
+
+
+def mark_monitor_scan_failure(
+    exc: Exception | str,
+    *,
+    status_path: Path,
+    interval_minutes: float,
+    monitor_mode: str,
+    task_name: str,
+    failed_at: datetime,
+) -> dict[str, Any]:
+    payload = read_monitor_status(status_path)
+    failures = int(payload.get("consecutive_failures") or 0) + 1
+    payload.update(
+        {
+            "monitor_mode": monitor_mode,
+            "enabled": True,
+            "interval_minutes": interval_minutes,
+            "task_name": task_name,
+            "last_failure_at": failed_at.isoformat(),
+            "last_finished_at": failed_at.isoformat(),
+            "last_error": str(exc),
+            "consecutive_failures": failures,
+            "health_status": HEALTH_FAILED,
+            "health_reason": f"最近扫描失败，连续失败 {failures} 次。",
+        }
+    )
+    return write_monitor_status(payload, status_path)
+
+
+def evaluate_monitor_health(
+    status: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+    scheduler_exists: bool | None = None,
+) -> dict[str, Any]:
+    payload = dict(status or {})
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if not payload:
+        return {
+            "health_status": HEALTH_NOT_STARTED,
+            "health_reason": "尚未安装或运行周末价差监控。",
+            "minutes_since_success": None,
+            "next_expected_at": "",
+        }
+    if scheduler_exists is False and payload.get("monitor_mode") == "scheduler":
+        return {**payload, "health_status": HEALTH_NOT_STARTED, "health_reason": "任务计划不存在，请重新安装 3 分钟监控任务。"}
+    if payload.get("enabled") is False:
+        return {**payload, "health_status": HEALTH_PAUSED, "health_reason": "监控任务已暂停。"}
+    failures = int(payload.get("consecutive_failures") or 0)
+    if failures >= 3:
+        return {**payload, "health_status": HEALTH_FAILED, "health_reason": f"连续失败 {failures} 次，请查看最近错误。"}
+    interval = float(payload.get("interval_minutes") or DEFAULT_MONITOR_INTERVAL_MINUTES)
+    last_success = _parse_utc_time(payload.get("last_success_at"))
+    if last_success is None:
+        if payload.get("last_failure_at") or failures:
+            return {**payload, "health_status": HEALTH_FAILED, "health_reason": "尚无成功扫描，最近一次运行失败。"}
+        return {**payload, "health_status": HEALTH_NOT_STARTED, "health_reason": "尚未产生成功扫描。"}
+    elapsed = (current - last_success).total_seconds() / 60
+    next_expected = last_success + timedelta(minutes=interval)
+    enriched = {
+        **payload,
+        "minutes_since_success": elapsed,
+        "next_expected_at": payload.get("next_expected_at") or next_expected.isoformat(),
+    }
+    if elapsed <= interval * 2.5:
+        return {**enriched, "health_status": HEALTH_OK, "health_reason": "最近成功扫描仍在预期间隔内。"}
+    return {
+        **enriched,
+        "health_status": HEALTH_STALE,
+        "health_reason": f"最近成功扫描已超过 {interval * 2.5:.1f} 分钟预期间隔，监控可能已经停止。",
+    }
+
+
+def acquire_monitor_lock(path: Path = DEFAULT_MONITOR_LOCK_PATH, *, now: datetime | None = None, stale_minutes: float = MONITOR_LOCK_STALE_MINUTES) -> dict[str, Any]:
+    path = Path(path)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if path.exists():
+        payload = read_monitor_status(path)
+        started = _parse_utc_time(payload.get("started_at"))
+        if started is not None and (current - started).total_seconds() / 60 <= stale_minutes:
+            return {"acquired": False, "reason": "已有扫描正在进行，本轮跳过。", "pid": payload.get("pid")}
+        try:
+            path.unlink()
+        except OSError:
+            return {"acquired": False, "reason": "扫描锁仍被占用，本轮跳过。"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, {"pid": os.getpid(), "started_at": current.isoformat()})
+    return {"acquired": True, "pid": os.getpid(), "started_at": current.isoformat()}
+
+
+def release_monitor_lock(path: Path = DEFAULT_MONITOR_LOCK_PATH) -> None:
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def append_monitor_log(message: str, *, path: Path = DEFAULT_MONITOR_LOG_PATH, at: datetime | None = None) -> None:
+    timestamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {message}\n")
+    except OSError:
+        return
+
+
+def _status_path_for_snapshot(snapshot_path: Path) -> Path:
+    if Path(snapshot_path) == DEFAULT_MONITOR_SNAPSHOT_PATH:
+        return DEFAULT_MONITOR_STATUS_PATH
+    return Path(snapshot_path).with_name("weekend_spread_monitor_status.json")
+
+
+def _lock_path_for_snapshot(snapshot_path: Path) -> Path:
+    if Path(snapshot_path) == DEFAULT_MONITOR_SNAPSHOT_PATH:
+        return DEFAULT_MONITOR_LOCK_PATH
+    return Path(snapshot_path).with_name("weekend_spread_monitor.lock")
+
+
+def _log_path_for_snapshot(snapshot_path: Path) -> Path:
+    if Path(snapshot_path) == DEFAULT_MONITOR_SNAPSHOT_PATH:
+        return DEFAULT_MONITOR_LOG_PATH
+    return Path(snapshot_path).with_name("weekend_spread_monitor.log")
 
 
 def summarize_monitor_rows(rows: list[dict[str, Any]], *, skipped: dict[str, int] | None = None, scan_time: datetime | None = None) -> dict[str, Any]:
