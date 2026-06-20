@@ -6748,6 +6748,15 @@ def test_realtime_detail_percentile_is_human_readable() -> None:
     assert "spread_percentile" not in sentence
 
 
+def test_realtime_detail_missing_percentile_is_not_debug_copy() -> None:
+    sentence = weekend_spread._spread_percentile_sentence({"spread_percentile": None})
+
+    assert "历史波动分布样本不足" in sentence
+    assert "价差分位" not in sentence
+    assert "暂缺" not in sentence
+    assert "spread_percentile" not in sentence
+
+
 def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
     rows = build_weekend_spread_rows(
         ["NVDA"],

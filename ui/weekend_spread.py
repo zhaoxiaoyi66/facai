@@ -8348,7 +8348,7 @@ def _volatility_detail_sentence(row: dict) -> str:
 def _spread_percentile_sentence(row: dict) -> str:
     percentile = _number(row.get("spread_percentile"))
     if percentile is None:
-        return "价差分位：暂缺"
+        return "历史波动分布样本不足，先参考日常波动参照。"
     if percentile >= 90:
         return f"当前价差超过过去60天 {percentile:.0f}% 以上的日常波动，属于极端偏离。"
     if percentile >= 70:
