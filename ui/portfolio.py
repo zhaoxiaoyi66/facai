@@ -278,17 +278,6 @@ def _render_macro_regime_buy_hint() -> None:
     st.caption(macro_regime_trade_hint_text(snapshot, context="buy"))
 
 
-def _render_structure_entry_buy_hint(ticker: str) -> None:
-    symbol = str(ticker or "").strip().upper()
-    if not symbol:
-        return
-    try:
-        context = build_buy_execution_advisory_context(symbol)
-    except Exception:
-        return
-    st.markdown(_portfolio_buy_evidence_panel_html(context), unsafe_allow_html=True)
-
-
 def _portfolio_buy_basic_info_html(ticker: str, current: dict, tier: str) -> str:
     symbol = str(ticker or "").strip().upper() or "未选择"
     shares = _number(current.get("quantity"))
@@ -468,11 +457,6 @@ def _portfolio_buy_evidence_block_html(title: str, status: str, score: object, s
         f"<ul>{detail_items}</ul>"
         "</details>"
     )
-
-
-def _portfolio_buy_conclusion(context, current: dict | None = None) -> tuple[str, str]:
-    summary = _portfolio_buy_page_summary(context, current)
-    return summary["conclusion"], summary["tone"]
 
 
 def _portfolio_buy_page_summary(context, current: dict | None = None) -> dict[str, object]:
@@ -704,40 +688,6 @@ def _localized_text(value: object) -> str:
         return _cn_label(token) if _cn_label(token) != token else "未归类"
 
     return re.sub(r"\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b", replace_snake, text)
-
-
-def _render_starter_check_card(form_key: str, current: dict) -> None:
-    mode = ENTRY_MODE_OPTIONS.get(str(st.session_state.get(f"{form_key}:entry_mode") or ""), "normal_buy")
-    tier = POSITION_TIER_FORM_OPTIONS.get(str(st.session_state.get(f"{form_key}:position_tier") or ""), "")
-    if mode != "starter_position":
-        return
-    thesis_text = str(st.session_state.get(f"{form_key}:starter_thesis") or "").strip()
-    add_plan_text = str(st.session_state.get(f"{form_key}:starter_add_plan") or "").strip()
-    invalidation_text = str(st.session_state.get(f"{form_key}:starter_invalidation") or "").strip()
-    target = _number(st.session_state.get(f"{form_key}:target_sell_price"))
-    items = [
-        ("持仓等级", "A类" if tier == "A" else "仅 A 类可用"),
-        ("底仓上限", "7%"),
-        ("建仓 thesis", "已随计划带入" if thesis_text else "计划未提供"),
-        ("后续加仓计划", "已填写" if add_plan_text else "请填写后续加仓计划"),
-        ("失效条件", "已填写" if invalidation_text else "请填写失效条件"),
-        ("目标卖出价", "已填写" if target is not None else "请填写目标卖出价"),
-    ]
-    html = "".join(
-        '<div class="starter-check-item">'
-        f"<span>{escape(label)}</span>"
-        f"<b>{escape(value)}</b>"
-        "</div>"
-        for label, value in items
-    )
-    st.markdown(
-        '<div class="starter-check-card">'
-        "<strong>A类底仓检查</strong>"
-        f"{html}"
-        "<small>底仓建仓不要求已有分批买入计划；交易意图由买入前记录弹窗保存。</small>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
 
 
 def _render_buy_execution_plan_summary(symbol: str, current: dict, tier: str = "") -> None:
@@ -1038,46 +988,6 @@ def _submit_portfolio_buy_add(
         st.session_state["portfolio_save_notice"] = ("error", message)
     st.rerun()
     return
-
-
-def _render_ladder_buy_plan_reference(symbol: str) -> None:
-    ticker = str(symbol or "").strip().upper()
-    if not ticker:
-        return
-    plan = StockPlanStore().get_plan(ticker)
-    levels = plan.get("buy_plan_tranches") or []
-    if not levels:
-        st.markdown(
-            '<div class="ladder-buy-reference is-empty">'
-            "<strong>分批买入计划</strong>"
-            "<span>未找到计划；本次买入仍可确认入账，计划缺口会记录为提示。</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-    max_pct = _percent_text(plan.get("target_position_pct") or plan.get("planned_position_pct"))
-    invalidation = str(plan.get("invalidation_condition") or plan.get("stop_adding_condition") or "").strip()
-    level_items = []
-    for item in levels[:3]:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label") or "计划档位").strip()
-        price = _money_text(item.get("price"))
-        shares = _number(item.get("shares"))
-        shares_text = f"{shares:g} 股" if shares is not None else "数量未设"
-        level_items.append(f"<li><b>{escape(label)}</b><span>{escape(price)} / {escape(shares_text)}</span></li>")
-    level_html = "".join(level_items) or "<li><span>计划档位未完整设置</span></li>"
-    st.markdown(
-        '<div class="ladder-buy-reference">'
-        "<strong>分批买入计划</strong>"
-        f"<ul>{level_html}</ul>"
-        '<div class="ladder-buy-reference-meta">'
-        f"<span>买后上限 {escape(max_pct)}</span>"
-        f"<span>失效条件：{escape(invalidation or '未设置')}</span>"
-        "</div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
 
 
 def _render_buy_plan_manager(rows: list[dict]) -> None:
@@ -1627,14 +1537,6 @@ def _buy_plan_cooldown_status(plan: dict, *, now: datetime | None = None) -> dic
         "plan_age_minutes": round(age_minutes, 2),
         "label": "计划时间已记录",
     }
-
-
-def _buy_plan_can_be_gate_evidence(plan: dict, status: dict) -> bool:
-    return bool(
-        status.get("status") in {"triggered", "near_trigger"}
-        and str(plan.get("thesis") or "").strip()
-        and str(plan.get("invalidation_condition") or "").strip()
-    )
 
 
 def _parse_plan_datetime(value: object) -> datetime | None:
@@ -2669,13 +2571,6 @@ def _position_tier_badge_html(tier: object) -> str:
         f"{escape(format_position_tier_label(tier))}"
         "</em>"
     )
-
-
-def _current_detail_symbol(symbols: list[str]) -> str:
-    selected = str(st.session_state.get("portfolio-drawer-action-symbol") or "").strip().upper()
-    if selected in symbols:
-        return selected
-    return symbols[0]
 
 
 def _system_cell_html(row: dict) -> str:
