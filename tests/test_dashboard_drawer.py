@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 
 import pandas as pd
 
@@ -284,6 +285,28 @@ def test_drawer_header_localizes_missing_market_cap() -> None:
 
     assert "市值：待补" in html
     assert "市值：N/A" not in html
+
+
+def test_drawer_helpers_use_chinese_missing_text_instead_of_na() -> None:
+    assert dashboard_drawer._drawer_money_text(None) == "暂缺"
+    assert dashboard_drawer._drawer_pct_text(None) == "暂缺"
+    assert dashboard_drawer._drawer_zone_range_text(None, None) == "暂缺"
+    assert dashboard_drawer._drawer_entry_zone_row_has_value(("追高风险区", "暂缺", "", "")) is False
+
+
+def test_drawer_basis_panels_do_not_expose_na_placeholders() -> None:
+    deps = replace(
+        _fake_drawer_deps(),
+        detail_groups=(("基础指标", (("marketCap", "市值"), ("fcfMargin", "FCF Margin"))),),
+    )
+    row = pd.Series({"symbol": "NOW", "marketCap": "N/A", "fcfMargin": "N/A"})
+
+    summary_html = dashboard_drawer._drawer_decision_summary_html(row, deps)
+    raw_html = dashboard_drawer._drawer_raw_metrics_html(row, deps)
+
+    assert "待补" in raw_html
+    assert "N/A" not in summary_html
+    assert "N/A" not in raw_html
 
 
 def test_drawer_shows_acceptance_state_from_canonical_display() -> None:

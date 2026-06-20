@@ -863,10 +863,10 @@ def _drawer_decision_summary_html(row: pd.Series, deps: DashboardDrawerDeps | No
     symbol = str(row.get("symbol") or "该股票")
     model = model_type_label(row.get("modelType"))
     action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "等待回踩")
-    quality = str(row.get("qualityRating") or "N/A")
+    quality = _drawer_display_text(row.get("qualityRating"), "待补")
     entry_label, entry_grade, _entry_raw = _entry_rating_display_parts(row)
-    entry = _entry_rating_chip_text(entry_label, entry_grade) or str(row.get("entryRating") or "N/A")
-    risk = str(row.get("riskRating") or "N/A")
+    entry = _entry_rating_chip_text(entry_label, entry_grade) or _drawer_display_text(row.get("entryRating"), "待补")
+    risk = _drawer_display_text(row.get("riskRating"), "待补")
     summary = row.get("humanReadableSummary")
     if not isinstance(summary, dict):
         summary = {}
@@ -1197,7 +1197,7 @@ def _drawer_entry_zone_structure_html(
         ),
         (
             "追高风险区",
-            "> " + _drawer_money_text(chase_above) if _drawer_number(chase_above) is not None else "N/A",
+            "> " + _drawer_money_text(chase_above) if _drawer_number(chase_above) is not None else "暂缺",
             _drawer_chase_relationship(current_price, chase_above, overlap),
             "超过后系统不建议新增",
         ),
@@ -1304,8 +1304,7 @@ def _drawer_find_entry_zone_row(
 
 
 def _drawer_entry_zone_row_has_value(row: tuple[str, str, str, str]) -> bool:
-    value = str(row[1] or "").strip()
-    return value not in {"", "N/A", "暂缺", "> N/A", "<= N/A", ">= N/A"}
+    return _drawer_has_display_value(row[1])
 
 
 def _drawer_primary_entry_focus_text(
@@ -1335,24 +1334,24 @@ def _drawer_primary_entry_focus_text(
         parts = []
         near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
         trend = _drawer_zone_range_text(trend_reclaim_low, trend_reclaim_high)
-        if near != "N/A":
+        if _drawer_has_display_value(near):
             parts.append("近端观察 " + near)
-        if confirmation != "N/A":
+        if _drawer_has_display_value(confirmation):
             parts.append("确认线 " + confirmation)
-        elif trend != "N/A":
+        elif _drawer_has_display_value(trend):
             parts.append("趋势确认 " + trend)
         return "；".join(parts)
 
     if status == "IN_TECHNICAL_PULLBACK_ZONE" and technical_available:
         parts = ["有效技术复核区 " + _drawer_zone_range_text(technical_low, effective_high)]
         chase = _drawer_money_text(chase_above)
-        if chase != "N/A":
+        if _drawer_has_display_value(chase):
             parts.append("追高线 " + chase)
         return "；".join(parts)
 
     if status == "IN_CHASE_ZONE" or price_status == "IN_CHASE_ZONE":
         chase = _drawer_money_text(chase_above)
-        if chase != "N/A":
+        if _drawer_has_display_value(chase):
             return "追高线 " + chase + "；等回踩"
         if technical_available:
             return "回踩等待区 " + _drawer_zone_range_text(technical_low, technical_high)
@@ -1362,11 +1361,11 @@ def _drawer_primary_entry_focus_text(
     ):
         parts = []
         near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
-        if near != "N/A":
+        if _drawer_has_display_value(near):
             parts.append("近端观察 " + near)
-        if invalidation != "N/A":
+        if _drawer_has_display_value(invalidation):
             parts.append("失效线 " + invalidation)
-        if confirmation != "N/A":
+        if _drawer_has_display_value(confirmation):
             parts.append("确认线 " + confirmation)
         return "；".join(parts)
 
@@ -1376,7 +1375,7 @@ def _drawer_primary_entry_focus_text(
     if technical_available:
         return "技术回踩区 " + _drawer_zone_range_text(technical_low, effective_high)
     near = _drawer_zone_range_text(near_term_repair_low, near_term_repair_high)
-    if near != "N/A":
+    if _drawer_has_display_value(near):
         return "近端观察 " + near
     return ""
 
@@ -1582,13 +1581,13 @@ def _drawer_entry_context_status_text(entry_context_status: str, price_position:
 def _drawer_zone_range_text(low: object, high: object) -> str:
     low_text = _drawer_money_text(low)
     high_text = _drawer_money_text(high)
-    if low_text != "N/A" and high_text != "N/A":
+    if _drawer_has_display_value(low_text) and _drawer_has_display_value(high_text):
         return f"{low_text} - {high_text}"
-    if high_text != "N/A":
+    if _drawer_has_display_value(high_text):
         return "<= " + high_text
-    if low_text != "N/A":
+    if _drawer_has_display_value(low_text):
         return ">= " + low_text
-    return "N/A"
+    return "暂缺"
 
 
 def _drawer_structure_entry_card_html(row: pd.Series) -> str:
@@ -1833,8 +1832,8 @@ def _structure_thesis_label(value: object) -> str:
 def _drawer_next_action_html(row: pd.Series, deps: DashboardDrawerDeps | None = None) -> str:
     drawer_deps = _drawer_deps(deps)
     action = _drawer_compact_action_text(row.get("finalAction") or row.get("action") or "")
-    current_add = str(row.get("currentAddLimit") or row.get("maxSuggestedPosition") or "N/A")
-    max_weight = str(row.get("maxPortfolioWeight") or "N/A")
+    current_add = _drawer_display_text(row.get("currentAddLimit") or row.get("maxSuggestedPosition"), "待补")
+    max_weight = _drawer_display_text(row.get("maxPortfolioWeight"), "待补")
     waiting = _waiting_conditions(row, drawer_deps)
     if not waiting:
         waiting = ["等待估值、趋势或关键经营数据进一步确认。"]
@@ -1868,12 +1867,12 @@ def _drawer_detail_basis_html(
 ) -> str:
     drawer_deps = _drawer_deps(deps)
     explanation_cards = [
-        _drawer_card_html("公司质量解释", str(row.get("qualityRating") or "N/A"), [
+        _drawer_card_html("公司质量解释", _drawer_display_text(row.get("qualityRating"), "待补"), [
             "主要加分：" + drawer_deps.translated_join(row.get("keyPositiveDrivers"), limit=4),
             "主要扣分：" + drawer_deps.translated_join(drawer_deps.quality_negative_items(row), limit=4),
             str(summary.get("quality") or ""),
         ]),
-        _drawer_card_html("旧估值参考，仅供辅助", entry_display or str(row.get("entryRating") or "N/A"), [
+        _drawer_card_html("旧估值参考，仅供辅助", entry_display or _drawer_display_text(row.get("entryRating"), "待补"), [
             "该参考不改变买入权限，买区建议以技术承接 buy_zone_context 为准。",
             "该区域来自旧估值参考 / 历史入口字段，不等同于主表买区建议。",
             _clean_buy_point_summary_text(summary.get("valuation"), row),
@@ -1881,7 +1880,7 @@ def _drawer_detail_basis_html(
             _clean_buy_point_summary_text(summary.get("entry"), row),
             _entry_context_note(row),
         ]),
-        _drawer_card_html("风险解释", str(row.get("riskRating") or "N/A"), [
+        _drawer_card_html("风险解释", _drawer_display_text(row.get("riskRating"), "待补"), [
             "风险来源：" + drawer_deps.translated_join(drawer_deps.risk_items(row), limit=4),
             str(summary.get("risk") or ""),
             _risk_context_note(row),
@@ -1907,7 +1906,7 @@ def _drawer_detail_basis_html(
 
 def _drawer_money_text(value: object) -> str:
     number = _drawer_number(value)
-    return "N/A" if number is None else f"${number:,.2f}"
+    return "暂缺" if number is None else f"${number:,.2f}"
 
 
 def _drawer_volume_text(value: object) -> str:
@@ -1943,7 +1942,12 @@ def _drawer_bool(value: object) -> bool:
 
 def _drawer_pct_text(value: object) -> str:
     number = _drawer_number(value)
-    return "N/A" if number is None else f"{number:+.1f}%"
+    return "暂缺" if number is None else f"{number:+.1f}%"
+
+
+def _drawer_has_display_value(value: object) -> bool:
+    text = str(value or "").strip()
+    return text not in {"", "N/A", "NA", "暂缺", "待补", "> N/A", "<= N/A", ">= N/A", "> 暂缺", "<= 暂缺", ">= 暂缺"}
 
 
 def _drawer_text_list(value: object) -> list[str]:
@@ -2366,7 +2370,7 @@ def _drawer_raw_metrics_html(row: pd.Series, deps: DashboardDrawerDeps | None = 
     blocks = []
     for group_name, metrics in drawer_deps.detail_groups:
         items = "".join(
-            f'<li><span>{escape(label)}</span><strong>{escape(str(row.get(key, "N/A")))}</strong></li>'
+            f'<li><span>{escape(label)}</span><strong>{escape(_drawer_display_text(row.get(key), "待补"))}</strong></li>'
             for key, label in metrics
             if not (key == "fcfMargin" and row.get(key) == "N/A")
         )
