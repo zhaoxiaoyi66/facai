@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from data.weekend_spread_news import (
+    NEWS_CACHE_EXPIRED,
+    NEWS_CACHE_VALID,
     NEWS_MODE_CURRENT,
+    NEWS_STATUS_CACHE_EXPIRED,
+    NEWS_STATUS_NO_RELEVANT,
+    NEWS_TTL_HOURS,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_context,
     build_weekend_spread_news_status,
@@ -14,6 +19,7 @@ from data.weekend_spread_news import (
     refresh_weekend_spread_news,
     source_link_text,
     split_news_by_weekend_windows,
+    weekend_spread_news_label,
     weekend_spread_news_sample_key,
     weekend_spread_news_windows,
 )
@@ -110,6 +116,79 @@ def test_current_and_historical_news_cache_keys_are_isolated() -> None:
     historical = _sample()
 
     assert weekend_spread_news_sample_key("NVDA", current) != weekend_spread_news_sample_key("NVDA", historical)
+
+
+def test_current_shutdown_cache_key_does_not_change_every_minute() -> None:
+    earlier = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    later = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 5, tzinfo=ET))
+
+    assert earlier["window_end_et"] != later["window_end_et"]
+    assert earlier["window_id"] == later["window_id"]
+    assert weekend_spread_news_sample_key("GLW", earlier) == weekend_spread_news_sample_key("GLW", later)
+
+
+def test_new_shutdown_window_uses_new_cache_key() -> None:
+    first = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    next_week = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 20, 12, 0, tzinfo=ET))
+
+    assert first["window_id"] != next_week["window_id"]
+    assert weekend_spread_news_sample_key("GLW", first) != weekend_spread_news_sample_key("GLW", next_week)
+
+
+def test_weekend_news_cache_is_valid_for_48_hours(tmp_path) -> None:
+    assert NEWS_TTL_HOURS == 48
+    store = _store(tmp_path)
+    sample = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    sample_key = weekend_spread_news_sample_key("GLW", sample)
+    checked_at = datetime.now(timezone.utc)
+    store.set_check_status(
+        sample_key,
+        {
+            "symbol": "GLW",
+            "window_id": sample["window_id"],
+            "window_start_et": sample["window_start_et"].isoformat(),
+            "window_end_et": sample["window_end_et"].isoformat(),
+            "news_status": NEWS_STATUS_NO_RELEVANT,
+            "gap_news_explanation": "无新闻解释",
+            "last_checked_at": checked_at.isoformat(),
+            "cache_expires_at": (checked_at + timedelta(hours=47)).isoformat(),
+            "fetch_status": "ok",
+        },
+    )
+
+    status = build_weekend_spread_news_status("GLW", sample, store=store)
+
+    assert status["news_status"] == NEWS_STATUS_NO_RELEVANT
+    assert status["cache_status"] == NEWS_CACHE_VALID
+    assert status["last_checked_at"] == checked_at.isoformat()
+    assert store.should_refresh(sample_key) is False
+
+
+def test_expired_weekend_news_cache_is_reported_without_deleting_result(tmp_path) -> None:
+    store = _store(tmp_path)
+    sample = current_shutdown_news_sample("GLW", premium_pct=3.2, now=datetime(2026, 6, 13, 12, 0, tzinfo=ET))
+    sample_key = weekend_spread_news_sample_key("GLW", sample)
+    store.set_check_status(
+        sample_key,
+        {
+            "symbol": "GLW",
+            "window_id": sample["window_id"],
+            "window_start_et": sample["window_start_et"].isoformat(),
+            "window_end_et": sample["window_end_et"].isoformat(),
+            "news_status": NEWS_STATUS_NO_RELEVANT,
+            "gap_news_explanation": "无新闻解释",
+            "last_checked_at": "2026-06-10T12:00:00-04:00",
+            "cache_expires_at": "2026-06-11T12:00:00-04:00",
+            "fetch_status": "ok",
+        },
+    )
+
+    status = build_weekend_spread_news_status("GLW", sample, store=store)
+
+    assert status["news_status"] == NEWS_STATUS_NO_RELEVANT
+    assert status["cache_status"] == NEWS_CACHE_EXPIRED
+    assert weekend_spread_news_label("GLW", sample, store=store) == NEWS_STATUS_CACHE_EXPIRED
+    assert store.should_refresh(sample_key) is True
 
 
 def test_weekend_news_window_uses_thursday_when_friday_is_closed() -> None:

@@ -128,8 +128,19 @@ from data.weekend_spread_research import (
 )
 from data.weekend_spread_news import (
     MISSING_URL_TEXT as WEEKEND_NEWS_MISSING_URL_TEXT,
+    NEWS_CACHE_EXPIRED,
+    NEWS_CACHE_VALID,
     NEWS_MODE_CURRENT,
     NEWS_MODE_HISTORICAL,
+    NEWS_STATUS_CACHE_EXPIRED,
+    NEWS_STATUS_DIRECTION_MATCH,
+    NEWS_STATUS_DIRECTION_MISMATCH,
+    NEWS_STATUS_EXPLAINED,
+    NEWS_STATUS_FAILED,
+    NEWS_STATUS_NO_MAJOR,
+    NEWS_STATUS_NO_RELEVANT,
+    NEWS_STATUS_OPINION,
+    NEWS_STATUS_UNCHECKED,
     WeekendSpreadNewsStore,
     build_weekend_spread_news_status,
     build_weekend_spread_news_context,
@@ -4344,22 +4355,20 @@ def _render_current_closed_market_news_tab(
     window = current_shutdown_news_sample("__WINDOW__")
     _render_closed_news_current_summary(target_rows, store, window)
 
-    action_cols = st.columns([1.4, 1, 1])
+    action_cols = st.columns([1.35, 1, 1, 1])
     refresh_clicked = action_cols[0].button("刷新当前价差 ≥ 2% 标的新闻", width="stretch", key="weekend_spread_refresh_current_closed_news_batch")
-    cache_clicked = action_cols[1].button("只读缓存", width="stretch", key="weekend_spread_read_current_closed_news_cache")
-    translate_clicked = action_cols[2].button("补全中文摘要", width="stretch", key="weekend_spread_fill_current_closed_news_zh")
-    if refresh_clicked:
+    force_refresh_clicked = action_cols[1].button("强制重新刷新", width="stretch", key="weekend_spread_force_current_closed_news_batch")
+    cache_clicked = action_cols[2].button("只读缓存", width="stretch", key="weekend_spread_read_current_closed_news_cache")
+    translate_clicked = action_cols[3].button("补全中文摘要", width="stretch", key="weekend_spread_fill_current_closed_news_zh")
+    if refresh_clicked or force_refresh_clicked:
         if not target_rows:
             st.info("当前没有溢价/折价超过 2% 的标的。")
+        elif st.session_state.get("weekend_spread_closed_news_refresh_running"):
+            st.warning("已有新闻刷新任务正在进行。")
         else:
-            with st.spinner("正在刷新当前价差 ≥ 2% 标的休市新闻..."):
-                result = _refresh_current_closed_news_targets(target_rows, store=store)
-            st.success(
-                "已检查 {checked} 只；有新闻解释 {explained}；无重大新闻 {no_major}；无相关新闻 {no_relevant}；接口失败 {failed}。".format(
-                    **result
-                )
-            )
-            st.rerun()
+            force = bool(force_refresh_clicked)
+            result = _run_current_closed_news_refresh_with_progress(target_rows, store=store, force=force)
+            st.success(_closed_news_refresh_summary_text(result))
     if cache_clicked:
         st.info("当前页面只读取周末价差休市新闻缓存，不会请求 FMP。")
 
@@ -4375,6 +4384,7 @@ def _render_current_closed_market_news_tab(
         return
     st.markdown("### 价差新闻解释表")
     st.dataframe(_current_closed_news_frame(status_rows), width="stretch", hide_index=True)
+    _render_closed_news_refresh_log(store)
     selected_symbol = _select_current_closed_news_detail_symbol(status_rows)
     if not selected_symbol:
         return
@@ -4414,21 +4424,28 @@ def _render_closed_news_current_summary(target_rows: list[dict], store: WeekendS
     start = _short_et_time(windows.get("window_start_et"))
     end = _short_et_time(windows.get("window_end_et"))
     status_rows = _current_closed_news_status_rows(target_rows, store)
-    checked = len([row for row in status_rows if row.get("news_status") != "未检查"])
-    failed = len([row for row in status_rows if row.get("news_status") == "接口失败"])
-    explained = len([row for row in status_rows if row.get("news_status") in {"有新闻解释", "新闻方向一致", "新闻方向不一致"}])
-    no_news = len([row for row in status_rows if row.get("news_status") in {"无相关新闻", "无重大新闻"}])
+    cached = len([row for row in status_rows if row.get("cache_status") == NEWS_CACHE_VALID])
+    expired = len([row for row in status_rows if row.get("cache_status") == NEWS_CACHE_EXPIRED])
+    checked = len([row for row in status_rows if row.get("news_status") != NEWS_STATUS_UNCHECKED])
+    failed = len([row for row in status_rows if row.get("news_status") == NEWS_STATUS_FAILED])
+    explained = len([row for row in status_rows if row.get("news_status") in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH, NEWS_STATUS_DIRECTION_MISMATCH}])
+    no_news = len([row for row in status_rows if row.get("news_status") in {NEWS_STATUS_NO_RELEVANT, NEWS_STATUS_NO_MAJOR}])
+    latest_checked = max([str(row.get("last_checked_at") or "") for row in status_rows if str(row.get("last_checked_at") or "").strip()] or [""])
     cols = st.columns(6)
     values = [
         ("当前休市窗口", f"{start} → {end}"),
         ("价差 ≥ 2% 标的", str(len(target_rows))),
-        ("已检查", str(checked)),
+        ("已缓存", str(cached)),
         ("未检查", str(max(0, len(target_rows) - checked))),
-        ("有新闻解释", str(explained)),
+        ("缓存过期", str(expired)),
         ("接口失败", str(failed)),
     ]
     for col, (label, value) in zip(cols, values):
         col.metric(label, value)
+    st.caption(
+        f"新闻缓存 48 小时有效。已检查 {checked} 只｜有新闻解释 {explained} 只｜无新闻/无重大新闻 {no_news} 只"
+        + (f"｜最近检查 {_short_hkt_time(latest_checked)}" if latest_checked else "")
+    )
     if no_news:
         st.caption(f"无新闻解释 / 无重大新闻：{no_news} 只")
 
@@ -4449,6 +4466,8 @@ def _current_closed_news_status_rows(rows: list[dict], store: WeekendSpreadNewsS
                 "major_news_count": int(_number(status.get("major_news_count")) or 0),
                 "opinion_news_count": int(_number(status.get("opinion_news_count")) or 0),
                 "latest_news_time": status.get("latest_news_time") or "",
+                "cache_status": status.get("cache_status") or NEWS_STATUS_UNCHECKED,
+                "last_checked_at": status.get("last_checked_at") or "",
                 "fetch_error": status.get("fetch_error") or "",
                 "sample": sample,
             }
@@ -4457,7 +4476,7 @@ def _current_closed_news_status_rows(rows: list[dict], store: WeekendSpreadNewsS
 
 
 def _current_closed_news_frame(rows: list[dict]) -> pd.DataFrame:
-    columns = ["股票", "当前价差%", "日常波动参照", "休市新闻状态", "新闻解释", "重大新闻数", "观点文章数", "最近新闻时间", "操作"]
+    columns = ["股票", "当前价差%", "日常波动参照", "休市新闻状态", "新闻解释", "重大新闻数", "观点文章数", "最近新闻时间", "缓存状态", "最近检查时间", "操作"]
     if not rows:
         return pd.DataFrame(columns=columns)
     records = []
@@ -4472,6 +4491,8 @@ def _current_closed_news_frame(rows: list[dict]) -> pd.DataFrame:
                 "重大新闻数": row.get("major_news_count") or 0,
                 "观点文章数": row.get("opinion_news_count") or 0,
                 "最近新闻时间": _short_hkt_time(row.get("latest_news_time")),
+                "缓存状态": row.get("cache_status") or "未检查",
+                "最近检查时间": _short_hkt_time(row.get("last_checked_at")),
                 "操作": "下方选择查看详情",
             }
         )
@@ -4489,24 +4510,167 @@ def _select_current_closed_news_detail_symbol(rows: list[dict]) -> str:
     return str(selected or "").strip().upper()
 
 
-def _refresh_current_closed_news_targets(rows: list[dict], *, store: WeekendSpreadNewsStore) -> dict[str, int]:
-    summary = {"checked": 0, "explained": 0, "no_major": 0, "no_relevant": 0, "failed": 0}
+def _run_current_closed_news_refresh_with_progress(
+    rows: list[dict],
+    *,
+    store: WeekendSpreadNewsStore,
+    force: bool,
+) -> dict[str, int | float | str]:
+    st.session_state["weekend_spread_closed_news_refresh_running"] = True
+    total = len(rows)
+    st.info(f"开始检查当前价差 ≥2% 的 {total} 只股票休市新闻。")
+    progress_bar = st.progress(0.0)
+    current_box = st.empty()
+    summary_box = st.empty()
+    lines_box = st.empty()
+    lines: list[str] = []
+
+    def on_progress(event: dict) -> None:
+        completed = int(event.get("completed") or 0)
+        symbol = str(event.get("symbol") or "").strip().upper()
+        stage = str(event.get("stage") or "")
+        if stage == "checking":
+            current_box.info(f"正在检查 {symbol} 的休市新闻……")
+        elif stage == "cached":
+            lines.append(f"- {symbol}：缓存有效，本次不重新请求")
+        elif stage == "done":
+            lines.append(f"- {symbol}：{event.get('news_status') or '数据不足'}")
+        elif stage == "failed":
+            lines.append(f"- {symbol}：接口失败，{event.get('error') or '未知错误'}")
+        progress_bar.progress(min(1.0, completed / total if total else 1.0))
+        summary = event.get("summary") or {}
+        summary_box.caption(
+            "当前进度 {completed} / {total}｜已完成 {done}｜无相关新闻 {no_relevant}｜无重大新闻 {no_major}｜"
+            "有新闻解释 {explained}｜观点文章 {opinion}｜接口失败 {failed}".format(
+                completed=completed,
+                total=total,
+                done=summary.get("completed", completed),
+                no_relevant=summary.get("no_relevant", 0),
+                no_major=summary.get("no_major", 0),
+                explained=summary.get("explained", 0),
+                opinion=summary.get("opinion", 0),
+                failed=summary.get("failed", 0),
+            )
+        )
+        if lines:
+            lines_box.markdown("\n".join(lines[-8:]))
+
+    try:
+        result = _refresh_current_closed_news_targets(rows, store=store, force=force, progress_callback=on_progress)
+        progress_bar.progress(1.0)
+        current_box.success(_closed_news_refresh_summary_text(result))
+        return result
+    finally:
+        st.session_state["weekend_spread_closed_news_refresh_running"] = False
+
+
+def _closed_news_refresh_summary_text(result: dict[str, object]) -> str:
+    return (
+        "已完成 {completed} / {total} 只：无相关新闻 {no_relevant}，无重大新闻 {no_major}，"
+        "观点文章 {opinion}，有新闻解释 {explained}，接口失败 {failed}。"
+    ).format(
+        completed=result.get("completed", result.get("checked", 0)),
+        total=result.get("total", 0),
+        no_relevant=result.get("no_relevant", 0),
+        no_major=result.get("no_major", 0),
+        opinion=result.get("opinion", 0),
+        explained=result.get("explained", 0),
+        failed=result.get("failed", 0),
+    )
+
+
+def _refresh_current_closed_news_targets(
+    rows: list[dict],
+    *,
+    store: WeekendSpreadNewsStore,
+    force: bool = False,
+    progress_callback=None,
+) -> dict[str, int | float | str]:
+    started = datetime.now(timezone.utc)
+    summary: dict[str, int | float | str] = {
+        "total": len(rows),
+        "completed": 0,
+        "checked": 0,
+        "cached": 0,
+        "explained": 0,
+        "no_major": 0,
+        "no_relevant": 0,
+        "opinion": 0,
+        "failed": 0,
+        "error_summary": "",
+    }
+    errors: list[str] = []
     for row in rows:
         symbol = str(row.get("ticker") or "").strip().upper()
         sample = _closed_news_sample_for_realtime_row(row)
-        refresh_weekend_spread_news(symbol, sample, store=store, force=True)
-        status = build_weekend_spread_news_status(symbol, sample, store=store)
-        summary["checked"] += 1
+        if progress_callback:
+            progress_callback({"stage": "checking", "symbol": symbol, "completed": summary["completed"], "summary": dict(summary)})
+        try:
+            before_status = build_weekend_spread_news_status(symbol, sample, store=store)
+            if not force and not _should_refresh_closed_news_status(before_status):
+                summary["cached"] = int(summary["cached"]) + 1
+                status = before_status
+                if progress_callback:
+                    progress_callback({"stage": "cached", "symbol": symbol, "completed": int(summary["completed"]) + 1, "summary": dict(summary)})
+            else:
+                refresh_weekend_spread_news(symbol, sample, store=store, force=True)
+                status = build_weekend_spread_news_status(symbol, sample, store=store)
+                summary["checked"] = int(summary["checked"]) + 1
+        except Exception as exc:  # pragma: no cover - defensive UI isolation
+            status = {"news_status": NEWS_STATUS_FAILED, "fetch_error": str(exc)}
+            errors.append(f"{symbol}: {exc}")
+        summary["completed"] = int(summary["completed"]) + 1
         news_status = str(status.get("news_status") or "")
-        if news_status in {"有新闻解释", "新闻方向一致", "新闻方向不一致"}:
-            summary["explained"] += 1
-        elif news_status == "无重大新闻":
-            summary["no_major"] += 1
-        elif news_status == "无相关新闻":
-            summary["no_relevant"] += 1
-        elif news_status == "接口失败":
-            summary["failed"] += 1
+        if news_status in {NEWS_STATUS_EXPLAINED, NEWS_STATUS_DIRECTION_MATCH, NEWS_STATUS_DIRECTION_MISMATCH}:
+            summary["explained"] = int(summary["explained"]) + 1
+        elif news_status == NEWS_STATUS_OPINION:
+            summary["opinion"] = int(summary["opinion"]) + 1
+        elif news_status == NEWS_STATUS_NO_MAJOR:
+            summary["no_major"] = int(summary["no_major"]) + 1
+        elif news_status == NEWS_STATUS_NO_RELEVANT:
+            summary["no_relevant"] = int(summary["no_relevant"]) + 1
+        elif news_status == NEWS_STATUS_FAILED:
+            summary["failed"] = int(summary["failed"]) + 1
+            error = str(status.get("fetch_error") or "").strip()
+            if error:
+                errors.append(f"{symbol}: {error}")
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "failed" if news_status == NEWS_STATUS_FAILED else "done",
+                    "symbol": symbol,
+                    "news_status": news_status,
+                    "error": status.get("fetch_error") or "",
+                    "completed": int(summary["completed"]),
+                    "summary": dict(summary),
+                }
+            )
+    finished = datetime.now(timezone.utc)
+    summary["duration_seconds"] = round((finished - started).total_seconds(), 2)
+    summary["error_summary"] = "；".join(errors[:5])
+    store.record_refresh_batch(
+        {
+            "started_at": started.isoformat(),
+            "finished_at": finished.isoformat(),
+            "total_symbols": summary["total"],
+            "checked_count": summary["checked"],
+            "cached_count": summary["cached"],
+            "no_news_count": summary["no_relevant"],
+            "no_major_news_count": summary["no_major"],
+            "explained_count": summary["explained"],
+            "opinion_count": summary["opinion"],
+            "failed_count": summary["failed"],
+            "duration_seconds": summary["duration_seconds"],
+            "error_summary": summary["error_summary"],
+        }
+    )
     return summary
+
+
+def _should_refresh_closed_news_status(status: dict[str, object]) -> bool:
+    news_status = str(status.get("news_status") or "")
+    cache_status = str(status.get("cache_status") or "")
+    return news_status in {NEWS_STATUS_UNCHECKED, NEWS_STATUS_FAILED, NEWS_STATUS_CACHE_EXPIRED} or cache_status == NEWS_CACHE_EXPIRED
 
 
 def _closed_news_items_for_status_rows(rows: list[dict], store: WeekendSpreadNewsStore) -> list[dict]:
@@ -4515,6 +4679,34 @@ def _closed_news_items_for_status_rows(rows: list[dict], store: WeekendSpreadNew
         context = build_weekend_spread_news_context(str(row.get("ticker") or ""), row.get("sample") or {}, store=store)
         items.extend([item for item in context.get("news_items") or [] if isinstance(item, dict)])
     return items
+
+
+def _render_closed_news_refresh_log(store: WeekendSpreadNewsStore) -> None:
+    batches = store.list_refresh_batches(limit=20)
+    with st.expander("最近新闻刷新记录", expanded=False):
+        if not batches:
+            st.caption("暂无刷新记录。")
+            return
+        rows = []
+        for row in batches:
+            total = int(_number(row.get("total_symbols")) or 0)
+            failed = int(_number(row.get("failed_count")) or 0)
+            rows.append(
+                {
+                    "时间": _short_hkt_time(row.get("finished_at") or row.get("started_at")),
+                    "范围": "当前价差 ≥2%",
+                    "总数": total,
+                    "成功数": max(0, total - failed),
+                    "缓存命中": int(_number(row.get("cached_count")) or 0),
+                    "无新闻": int(_number(row.get("no_news_count")) or 0),
+                    "有新闻解释": int(_number(row.get("explained_count")) or 0),
+                    "观点文章": int(_number(row.get("opinion_count")) or 0),
+                    "接口失败": failed,
+                    "耗时": f"{_number(row.get('duration_seconds')) or 0:.1f} 秒",
+                    "错误摘要": _display_text(row.get("error_summary"), ""),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_historical_closed_market_news_tab() -> None:

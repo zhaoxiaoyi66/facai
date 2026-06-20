@@ -15,7 +15,7 @@ from data.us_market_session import _is_trading_day, _previous_trading_day
 ET = ZoneInfo("America/New_York")
 HKT = ZoneInfo("Asia/Hong_Kong")
 NEWS_CACHE_PATH = Path("data/cache/weekend_spread_news.sqlite")
-NEWS_TTL_HOURS = 6
+NEWS_TTL_HOURS = 48
 NEWS_MODE_CURRENT = "current_shutdown_window"
 NEWS_MODE_HISTORICAL = "historical_sample"
 
@@ -29,6 +29,11 @@ NEWS_STATUS_DIRECTION_MISMATCH = "新闻方向不一致"
 NEWS_STATUS_OPINION = "观点文章"
 NEWS_STATUS_FAILED = "接口失败"
 NEWS_STATUS_INSUFFICIENT = "数据不足"
+NEWS_STATUS_CACHE_EXPIRED = "缓存过期"
+
+NEWS_CACHE_VALID = "缓存有效"
+NEWS_CACHE_EXPIRED = "缓存过期"
+NEWS_CACHE_MISSING = "未检查"
 
 GAP_EXPLANATION_NONE = "无新闻解释"
 GAP_EXPLANATION_EXPLAINED = "有新闻解释"
@@ -166,6 +171,7 @@ def refresh_weekend_spread_news(
     sample_key = weekend_spread_news_sample_key(clean_symbol, sample)
     if not force and not store.should_refresh(sample_key, NEWS_TTL_HOURS):
         return {"status": "cache", "count": 0, "message": "使用缓存"}
+    windows = weekend_spread_news_windows(sample)
 
     fetched_at = datetime.now(timezone.utc)
     raw_items: list[dict[str, Any]] = []
@@ -198,12 +204,12 @@ def refresh_weekend_spread_news(
     message = "；".join(str(part) for part in message_parts if str(part).strip())
     store.set_fetch_status(sample_key, status, message)
     if status == "error":
-        windows = weekend_spread_news_windows(sample)
         store.set_check_status(
             sample_key,
             {
                 "symbol": clean_symbol,
                 "sample_key": sample_key,
+                "window_id": weekend_spread_news_window_id(sample),
                 "window_start_et": _format_time_for_cache(windows.get("window_start_et")),
                 "window_end_et": _format_time_for_cache(windows.get("window_end_et")),
                 "spread_pct_at_check": _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct")),
@@ -215,7 +221,15 @@ def refresh_weekend_spread_news(
             },
         )
     else:
-        store.set_check_status(sample_key, build_weekend_spread_news_status(clean_symbol, sample, store=store))
+        status_payload = _compute_weekend_spread_news_status(
+            clean_symbol,
+            sample,
+            store,
+            sample_key,
+            windows,
+            store.get_fetch_status(sample_key),
+        )
+        store.set_check_status(sample_key, status_payload)
     store.prune()
     return {"status": status, "count": count, "message": message, "unavailable": unavailable, "errors": errors}
 
@@ -254,7 +268,10 @@ def current_shutdown_news_sample(
         sample["window_start_et"] = windows["window_start_et"]
     if windows.get("window_end_et"):
         sample["window_end_et"] = windows["window_end_et"]
-        sample["window_end_bucket"] = _window_end_bucket(windows["window_end_et"])
+    if windows.get("window_cache_end_et"):
+        sample["window_cache_end_et"] = windows["window_cache_end_et"]
+        sample["window_end_bucket"] = _window_end_bucket(windows["window_cache_end_et"])
+    sample["window_id"] = weekend_spread_news_window_id(sample)
     return sample
 
 
@@ -312,11 +329,13 @@ def current_shutdown_news_window(*, now: datetime | None = None) -> dict[str, An
             "is_current_shutdown_window": False,
             "window_ended": False,
         }
-    return {
+    window_cache_end = next_overnight_open or end
+    result = {
         "ok": True,
         "mode": NEWS_MODE_CURRENT,
         "window_start_et": start,
         "window_end_et": end,
+        "window_cache_end_et": window_cache_end,
         "window_label": "当前休市窗口",
         "now_et": now_et,
         "last_trading_day": last_trading_day.isoformat(),
@@ -325,6 +344,8 @@ def current_shutdown_news_window(*, now: datetime | None = None) -> dict[str, An
         "window_ended": window_ended,
         "reason": "本轮休市窗口已结束。" if window_ended else "当前休市窗口进行中。",
     }
+    result["window_id"] = _build_window_id(NEWS_MODE_CURRENT, start, window_cache_end)
+    return result
 
 
 def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
@@ -347,6 +368,9 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
                 "mode": NEWS_MODE_CURRENT,
                 "window_start_et": start,
                 "window_end_et": end,
+                "window_cache_end_et": _parse_datetime(sample.get("window_cache_end_et"))
+                or _parse_datetime(sample.get("next_overnight_open_et"))
+                or end,
                 "window_label": "当前休市窗口",
                 "now_et": _ensure_et(now or sample.get("now_et") or datetime.now(timezone.utc)),
                 "last_trading_day": sample.get("last_trading_day"),
@@ -354,6 +378,14 @@ def weekend_spread_news_windows(sample: dict[str, Any], *, now: datetime | None 
                 "is_current_shutdown_window": bool(sample.get("is_current_shutdown_window", True)),
                 "window_ended": bool(sample.get("window_ended", False)),
                 "reason": str(sample.get("reason") or ""),
+                "window_id": str(sample.get("window_id") or "")
+                or _build_window_id(
+                    NEWS_MODE_CURRENT,
+                    start,
+                    _parse_datetime(sample.get("window_cache_end_et"))
+                    or _parse_datetime(sample.get("next_overnight_open_et"))
+                    or end,
+                ),
                 "labels": WINDOW_LABELS,
             }
         return current_shutdown_news_window(now=now)
@@ -487,10 +519,13 @@ def build_weekend_spread_news_status(
             fetch_error=str(windows.get("reason") or "缺少时间窗口、股票或价差数据"),
         )
 
+    cached = store.get_check_status(sample_key)
+    if cached:
+        return _decorate_cached_status(cached)
+
     fetch = store.get_fetch_status(sample_key)
     if not fetch:
-        cached = store.get_check_status(sample_key)
-        return cached or _news_status_payload(
+        return _news_status_payload(
             clean_symbol,
             sample_key,
             windows,
@@ -500,7 +535,19 @@ def build_weekend_spread_news_status(
             fetch_status="unchecked",
             fetch_error="",
         )
-    if str(fetch.get("status") or "") == "error":
+
+    return _compute_weekend_spread_news_status(clean_symbol, sample, store, sample_key, windows, fetch)
+
+
+def _compute_weekend_spread_news_status(
+    clean_symbol: str,
+    sample: dict[str, Any],
+    store: "WeekendSpreadNewsStore",
+    sample_key: str,
+    windows: dict[str, Any],
+    fetch: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if str((fetch or {}).get("status") or "") == "error":
         return _news_status_payload(
             clean_symbol,
             sample_key,
@@ -509,7 +556,7 @@ def build_weekend_spread_news_status(
             NEWS_STATUS_FAILED,
             GAP_EXPLANATION_INSUFFICIENT,
             fetch_status="error",
-            fetch_error=str(fetch.get("message") or "新闻接口请求失败"),
+            fetch_error=str((fetch or {}).get("message") or "新闻接口请求失败"),
         )
 
     context = build_weekend_spread_news_context(clean_symbol, sample, store=store)
@@ -556,6 +603,22 @@ def build_weekend_spread_news_status(
     )
 
 
+def _decorate_cached_status(payload: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    row = dict(payload)
+    checked = _parse_datetime(row.get("last_checked_at"))
+    expires = _parse_datetime(row.get("cache_expires_at"))
+    if expires is None and checked is not None:
+        expires = checked.astimezone(timezone.utc) + timedelta(hours=NEWS_TTL_HOURS)
+        row["cache_expires_at"] = expires.isoformat()
+    if str(row.get("fetch_status") or "") == "error" or str(row.get("news_status") or "") == NEWS_STATUS_FAILED:
+        row["cache_status"] = NEWS_STATUS_FAILED
+    elif expires is not None and _ensure_utc(now or datetime.now(timezone.utc)) > expires.astimezone(timezone.utc):
+        row["cache_status"] = NEWS_CACHE_EXPIRED
+    else:
+        row["cache_status"] = NEWS_CACHE_VALID
+    return row
+
+
 def _news_status_payload(
     symbol: str,
     sample_key: str,
@@ -573,6 +636,7 @@ def _news_status_payload(
     return {
         "symbol": symbol,
         "sample_key": sample_key,
+        "window_id": weekend_spread_news_window_id(sample),
         "window_start_et": _format_time_for_cache(windows.get("window_start_et")),
         "window_end_et": _format_time_for_cache(windows.get("window_end_et")),
         "spread_pct_at_check": _number(sample.get("binance_premium_pct") or sample.get("weekend_premium_pct")),
@@ -582,6 +646,8 @@ def _news_status_payload(
         "opinion_news_count": int(opinion_news_count or 0),
         "latest_news_time": latest_news_time,
         "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        "cache_expires_at": (datetime.now(timezone.utc) + timedelta(hours=NEWS_TTL_HOURS)).isoformat(),
+        "cache_status": NEWS_CACHE_VALID if fetch_status not in {"", "unchecked", "insufficient", "error"} else NEWS_CACHE_MISSING,
         "fetch_status": fetch_status,
         "fetch_error": fetch_error,
         "source": "weekend_spread_afterhours_news",
@@ -648,29 +714,51 @@ def _window_end_bucket(value: datetime) -> str:
     return end_et.replace(minute=0, second=0, microsecond=0).isoformat()
 
 
+def _window_id_time(value: Any) -> str:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return ""
+    return _ensure_et(parsed).strftime("%Y-%m-%d_%H%MET")
+
+
+def _build_window_id(mode: str, start: Any, end: Any, *, week_id: str = "") -> str:
+    start_text = _window_id_time(start)
+    end_text = _window_id_time(end)
+    prefix = mode or NEWS_MODE_HISTORICAL
+    suffix = f"{start_text}_to_{end_text}" if start_text or end_text else "unknown_window"
+    if week_id:
+        return f"{prefix}|{week_id}|{suffix}"
+    return f"{prefix}|{suffix}"
+
+
+def weekend_spread_news_window_id(sample: dict[str, Any], *, now: datetime | None = None) -> str:
+    mode = str(sample.get("news_mode") or sample.get("mode") or NEWS_MODE_HISTORICAL)
+    explicit = str(sample.get("window_id") or "").strip()
+    if explicit:
+        return explicit
+    windows = weekend_spread_news_windows(sample, now=now)
+    start = windows.get("window_start_et") or sample.get("window_start_et")
+    stable_end = (
+        windows.get("window_cache_end_et")
+        or sample.get("window_cache_end_et")
+        or windows.get("next_overnight_open_et")
+        or sample.get("next_overnight_open_et")
+        or windows.get("window_end_et")
+        or sample.get("window_end_et")
+    )
+    return _build_window_id(mode, start, stable_end, week_id=str(sample.get("week_id") or ""))
+
+
 def weekend_spread_news_label(symbol: str, sample: dict[str, Any], *, store: "WeekendSpreadNewsStore | None" = None) -> str:
     status = build_weekend_spread_news_status(symbol, sample, store=store)
+    if str(status.get("cache_status") or "") == NEWS_CACHE_EXPIRED:
+        return NEWS_STATUS_CACHE_EXPIRED
     label = str(status.get("news_status") or "")
     return label if label else NEWS_STATUS_INSUFFICIENT
 
 
 def weekend_spread_news_sample_key(symbol: str, sample: dict[str, Any]) -> str:
-    mode = str(sample.get("news_mode") or sample.get("mode") or NEWS_MODE_HISTORICAL)
-    windows = weekend_spread_news_windows(sample)
-    window_end_bucket = str(sample.get("window_end_bucket") or "")
-    if not window_end_bucket and windows.get("window_end_et"):
-        window_end_bucket = _window_end_bucket(windows["window_end_et"])
-    basis = "|".join(
-        [
-            _clean_symbol(symbol or sample.get("ticker")),
-            mode,
-            str(sample.get("week_id") or ""),
-            str(windows.get("window_start_et") or sample.get("window_start_et") or ""),
-            window_end_bucket,
-            str(sample.get("p0_selected_bar_time") or sample.get("friday_afterhours_time") or ""),
-            str(sample.get("contract_sample_time") or sample.get("binance_max_time") or ""),
-        ]
-    )
+    basis = "|".join([_clean_symbol(symbol or sample.get("ticker")), weekend_spread_news_window_id(sample)])
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()
 
 
@@ -738,6 +826,7 @@ class WeekendSpreadNewsStore:
                 CREATE TABLE IF NOT EXISTS weekend_spread_news_checks (
                     sample_key TEXT PRIMARY KEY,
                     symbol TEXT,
+                    window_id TEXT,
                     window_start_et TEXT,
                     window_end_et TEXT,
                     spread_pct_at_check REAL,
@@ -747,15 +836,45 @@ class WeekendSpreadNewsStore:
                     opinion_news_count INTEGER,
                     latest_news_time TEXT,
                     last_checked_at TEXT,
+                    cache_expires_at TEXT,
+                    cache_status TEXT,
                     fetch_status TEXT,
                     fetch_error TEXT,
                     source TEXT
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weekend_spread_news_refresh_batches (
+                    batch_id TEXT PRIMARY KEY,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    total_symbols INTEGER,
+                    checked_count INTEGER,
+                    cached_count INTEGER,
+                    no_news_count INTEGER,
+                    no_major_news_count INTEGER,
+                    explained_count INTEGER,
+                    opinion_count INTEGER,
+                    failed_count INTEGER,
+                    duration_seconds REAL,
+                    error_summary TEXT
+                )
+                """
+            )
+            self._ensure_column(conn, "weekend_spread_news_checks", "window_id", "TEXT")
+            self._ensure_column(conn, "weekend_spread_news_checks", "cache_expires_at", "TEXT")
+            self._ensure_column(conn, "weekend_spread_news_checks", "cache_status", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_weekend_spread_news_symbol ON weekend_spread_news_items(symbol)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_weekend_spread_news_published ON weekend_spread_news_items(published_at)")
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def upsert_news(self, item: dict[str, Any]) -> None:
         columns = [
@@ -861,6 +980,7 @@ class WeekendSpreadNewsStore:
         columns = [
             "sample_key",
             "symbol",
+            "window_id",
             "window_start_et",
             "window_end_et",
             "spread_pct_at_check",
@@ -870,6 +990,8 @@ class WeekendSpreadNewsStore:
             "opinion_news_count",
             "latest_news_time",
             "last_checked_at",
+            "cache_expires_at",
+            "cache_status",
             "fetch_status",
             "fetch_error",
             "source",
@@ -877,6 +999,10 @@ class WeekendSpreadNewsStore:
         row = {column: payload.get(column, "") for column in columns}
         row["sample_key"] = sample_key
         row["last_checked_at"] = row.get("last_checked_at") or datetime.now(timezone.utc).isoformat()
+        if not row.get("cache_expires_at"):
+            checked = _parse_datetime(row["last_checked_at"]) or datetime.now(timezone.utc)
+            row["cache_expires_at"] = (checked.astimezone(timezone.utc) + timedelta(hours=NEWS_TTL_HOURS)).isoformat()
+        row["cache_status"] = row.get("cache_status") or NEWS_CACHE_VALID
         row["source"] = row.get("source") or "weekend_spread_afterhours_news"
         update = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "sample_key")
         placeholders = ",".join("?" for _ in columns)
@@ -900,6 +1026,16 @@ class WeekendSpreadNewsStore:
         return dict(row) if row else None
 
     def should_refresh(self, sample_key: str, ttl_hours: int = NEWS_TTL_HOURS) -> bool:
+        check = self.get_check_status(sample_key)
+        if check:
+            if str(check.get("fetch_status") or "") == "error" or str(check.get("news_status") or "") == NEWS_STATUS_FAILED:
+                return True
+            expires = _parse_datetime(check.get("cache_expires_at"))
+            if expires is not None:
+                return datetime.now(timezone.utc) > expires.astimezone(timezone.utc)
+            checked = _parse_datetime(check.get("last_checked_at"))
+            if checked is not None:
+                return datetime.now(timezone.utc) - checked.astimezone(timezone.utc) > timedelta(hours=ttl_hours)
         row = self.get_fetch_status(sample_key)
         if not row or row.get("status") != "ok":
             return True
@@ -907,6 +1043,49 @@ class WeekendSpreadNewsStore:
         if fetched is None:
             return True
         return datetime.now(timezone.utc) - fetched.astimezone(timezone.utc) > timedelta(hours=ttl_hours)
+
+    def record_refresh_batch(self, payload: dict[str, Any]) -> None:
+        columns = [
+            "batch_id",
+            "started_at",
+            "finished_at",
+            "total_symbols",
+            "checked_count",
+            "cached_count",
+            "no_news_count",
+            "no_major_news_count",
+            "explained_count",
+            "opinion_count",
+            "failed_count",
+            "duration_seconds",
+            "error_summary",
+        ]
+        row = {column: payload.get(column, "") for column in columns}
+        row["batch_id"] = row.get("batch_id") or hashlib.sha1(str(datetime.now(timezone.utc).timestamp()).encode()).hexdigest()
+        placeholders = ",".join("?" for _ in columns)
+        update = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "batch_id")
+        with closing(self._connect()) as conn:
+            conn.execute(
+                f"""
+                INSERT INTO weekend_spread_news_refresh_batches({",".join(columns)})
+                VALUES({placeholders})
+                ON CONFLICT(batch_id) DO UPDATE SET {update}
+                """,
+                [row.get(column, "") for column in columns],
+            )
+            conn.commit()
+
+    def list_refresh_batches(self, limit: int = 20) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM weekend_spread_news_refresh_batches
+                ORDER BY COALESCE(finished_at, started_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def fill_missing_translations(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
         title_count = 0
@@ -986,6 +1165,10 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 def _ensure_et(value: datetime) -> datetime:
     return value.replace(tzinfo=ET) if value.tzinfo is None else value.astimezone(ET)
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def _first_datetime(primary: dict[str, Any], secondary: dict[str, Any], keys: tuple[str, ...]) -> datetime | None:

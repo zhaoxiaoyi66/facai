@@ -5498,6 +5498,7 @@ def test_current_closed_news_targets_only_include_two_percent_spreads() -> None:
 
 def test_refresh_current_closed_news_targets_uses_filtered_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     refreshed: list[str] = []
+    recorded_batches: list[dict] = []
     rows = weekend_spread._current_closed_news_target_rows(
         [
             {
@@ -5524,16 +5525,147 @@ def test_refresh_current_closed_news_targets_uses_filtered_targets(monkeypatch: 
         return {"status": "ok", "count": 0}
 
     def fake_status(symbol: str, sample: dict, **kwargs):
-        return {"news_status": "无相关新闻"}
+        return {"news_status": "无相关新闻"} if symbol in refreshed else {"news_status": "未检查"}
+
+    class DummyStore:
+        def record_refresh_batch(self, payload: dict) -> None:
+            recorded_batches.append(payload)
 
     monkeypatch.setattr(weekend_spread, "refresh_weekend_spread_news", fake_refresh)
     monkeypatch.setattr(weekend_spread, "build_weekend_spread_news_status", fake_status)
 
-    summary = weekend_spread._refresh_current_closed_news_targets(rows, store=object())
+    summary = weekend_spread._refresh_current_closed_news_targets(rows, store=DummyStore())
 
     assert refreshed == ["GLW"]
     assert summary["checked"] == 1
     assert summary["no_relevant"] == 1
+    assert recorded_batches[0]["total_symbols"] == 1
+
+
+def test_refresh_current_closed_news_targets_skips_valid_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshed: list[str] = []
+    rows = weekend_spread._current_closed_news_target_rows(
+        [
+            {
+                "ticker": "GLW",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "GLWUSDT",
+                "binance_last_price": 185.0,
+                "afterhours_reference_price": 180.0,
+                "spread_vs_afterhours_pct": 2.8,
+            }
+        ]
+    )
+
+    class DummyStore:
+        def record_refresh_batch(self, payload: dict) -> None:
+            self.payload = payload
+
+    monkeypatch.setattr(weekend_spread, "refresh_weekend_spread_news", lambda symbol, sample, **kwargs: refreshed.append(symbol))
+    monkeypatch.setattr(
+        weekend_spread,
+        "build_weekend_spread_news_status",
+        lambda symbol, sample, **kwargs: {"news_status": "无相关新闻", "cache_status": "缓存有效"},
+    )
+
+    summary = weekend_spread._refresh_current_closed_news_targets(rows, store=DummyStore())
+
+    assert refreshed == []
+    assert summary["cached"] == 1
+    assert summary["checked"] == 0
+    assert summary["no_relevant"] == 1
+
+
+def test_force_refresh_current_closed_news_targets_refreshes_valid_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshed: list[str] = []
+    rows = weekend_spread._current_closed_news_target_rows(
+        [
+            {
+                "ticker": "GLW",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "GLWUSDT",
+                "binance_last_price": 185.0,
+                "afterhours_reference_price": 180.0,
+                "spread_vs_afterhours_pct": 2.8,
+            }
+        ]
+    )
+
+    class DummyStore:
+        def record_refresh_batch(self, payload: dict) -> None:
+            self.payload = payload
+
+    def fake_refresh(symbol: str, sample: dict, **kwargs):
+        refreshed.append(symbol)
+        return {"status": "ok", "count": 0}
+
+    monkeypatch.setattr(weekend_spread, "refresh_weekend_spread_news", fake_refresh)
+    monkeypatch.setattr(
+        weekend_spread,
+        "build_weekend_spread_news_status",
+        lambda symbol, sample, **kwargs: {"news_status": "无相关新闻", "cache_status": "缓存有效"},
+    )
+
+    summary = weekend_spread._refresh_current_closed_news_targets(rows, store=DummyStore(), force=True)
+
+    assert refreshed == ["GLW"]
+    assert summary["checked"] == 1
+    assert summary["cached"] == 0
+
+
+def test_refresh_current_closed_news_targets_continues_after_single_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshed: list[str] = []
+    events: list[dict] = []
+    rows = weekend_spread._current_closed_news_target_rows(
+        [
+            {
+                "ticker": "GLW",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "GLWUSDT",
+                "binance_last_price": 185.0,
+                "afterhours_reference_price": 180.0,
+                "spread_vs_afterhours_pct": 2.8,
+            },
+            {
+                "ticker": "AAOI",
+                "mapping_quality": "映射可用",
+                "binance_symbol": "AAOIUSDT",
+                "binance_last_price": 24.0,
+                "afterhours_reference_price": 25.0,
+                "spread_vs_afterhours_pct": -4.0,
+            },
+        ]
+    )
+
+    class DummyStore:
+        def record_refresh_batch(self, payload: dict) -> None:
+            self.payload = payload
+
+    def fake_refresh(symbol: str, sample: dict, **kwargs):
+        refreshed.append(symbol)
+        if symbol == "AAOI":
+            raise RuntimeError("FMP 请求超时")
+        return {"status": "ok", "count": 0}
+
+    def fake_status(symbol: str, sample: dict, **kwargs):
+        if symbol in refreshed and symbol != "AAOI":
+            return {"news_status": "无相关新闻"}
+        return {"news_status": "未检查"}
+
+    monkeypatch.setattr(weekend_spread, "refresh_weekend_spread_news", fake_refresh)
+    monkeypatch.setattr(weekend_spread, "build_weekend_spread_news_status", fake_status)
+
+    summary = weekend_spread._refresh_current_closed_news_targets(
+        rows,
+        store=DummyStore(),
+        progress_callback=events.append,
+    )
+
+    assert refreshed == ["AAOI", "GLW"]
+    assert summary["completed"] == 2
+    assert summary["failed"] == 1
+    assert summary["no_relevant"] == 1
+    assert any(event.get("stage") == "checking" and event.get("symbol") == "AAOI" for event in events)
 
 
 def test_render_weekend_review_table_exists_and_uses_detail_frame(monkeypatch) -> None:
