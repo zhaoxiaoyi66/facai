@@ -439,6 +439,7 @@ def _render_realtime_tab(
     main_rows = _filter_live_rows_by_scope(rows, visible_scope)
     with table_slot.container():
         st.markdown("#### 实时价差表")
+        st.caption("默认筛选：溢价/折价 ≥ 1%。小于 1% 的普通波动默认隐藏，可切换到“全部可计算”查看。")
         st.caption("日常波动参照：1.0 天表示当前 Binance 价差约等于该股票平时一天的正常波动；超过 1.5 天通常需要复核，超过 2.0 天视为极端。")
         if not scan_records and _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
             _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
@@ -767,13 +768,16 @@ def _empty_volatility_fields() -> dict:
 
 def _render_realtime_filters(rows: list[dict]) -> str:
     range_options = ["全部可计算", "我的观察池", "我的持仓", "核心仓"]
-    status_options = ["全部状态", "明显偏离以上", "异常 / 极端", "无新闻解释的异常", "数据不足", "锚点缺失", "已忽略"]
+    status_options = ["溢价/折价 ≥ 1%", "溢价/折价 ≥ 2%", "溢价/折价 ≥ 5%", "全部可计算", "数据不足", "锚点缺失", "已忽略"]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
         "全部可计算": len(main_rows),
         "我的观察池": len([row for row in main_rows if row.get("is_watchlist")]),
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
+        "溢价/折价 ≥ 1%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 1.0]),
+        "溢价/折价 ≥ 2%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 2.0]),
+        "溢价/折价 ≥ 5%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 5.0]),
         "异常 / 极端": len([row for row in main_rows if _is_realtime_anomaly_or_extreme(row)]),
         "明显偏离以上": len([row for row in main_rows if _spread_reason_label(row) in {"明显偏离", SPREAD_REASON_ANOMALY, SPREAD_REASON_EXTREME}]),
         "无新闻解释的异常": len([row for row in main_rows if _is_unexplained_anomalous_spread(row)]),
@@ -856,8 +860,14 @@ def _row_matches_realtime_range(row: dict, scope: str) -> bool:
 
 
 def _row_matches_realtime_status(row: dict, scope: str) -> bool:
-    if scope in {"", "全部状态"}:
+    if scope in {"", "全部可计算", "全部状态"}:
         return _is_realtime_main_row(row)
+    if scope == "溢价/折价 ≥ 1%":
+        return _is_realtime_main_row(row) and _abs_afterhours_spread_pct(row) >= 1.0
+    if scope == "溢价/折价 ≥ 2%":
+        return _is_realtime_main_row(row) and _abs_afterhours_spread_pct(row) >= 2.0
+    if scope == "溢价/折价 ≥ 5%":
+        return _is_realtime_main_row(row) and _abs_afterhours_spread_pct(row) >= 5.0
     if scope == "极端价差":
         return _is_realtime_main_row(row) and _spread_reason_label(row) == SPREAD_REASON_EXTREME
     if scope in {"异常价差", "异常 / 极端"}:
@@ -882,6 +892,10 @@ def _row_matches_realtime_status(row: dict, scope: str) -> bool:
 def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
     counts = _realtime_observation_counts(rows)
     status_scope = str(scope or "").split("|", 1)[1] if "|" in str(scope or "") else str(scope or "")
+    if status_scope == "溢价/折价 ≥ 1%" and counts.get("computable", 0) > 0:
+        return "当前没有溢价/折价超过 1% 的标的。可切换到“全部可计算”查看普通波动。"
+    if status_scope in {"溢价/折价 ≥ 2%", "溢价/折价 ≥ 5%"} and counts.get("computable", 0) > 0:
+        return "当前筛选下没有达到该价差阈值的标的。可切换到“全部可计算”查看普通波动。"
     if status_scope in {"异常 / 极端", "极端价差", "异常价差", "无新闻解释的异常价差", "有新闻解释的异常价差", "无新闻解释的异常", "有新闻解释的异常", "明显偏离以上"}:
         return "当前没有异常或极端价差，可切换到“全部可计算”查看普通波动。"
     if status_scope in {"波动数据不足", "数据不足"}:
@@ -914,9 +928,7 @@ def _default_realtime_filter_scope(counts: dict[str, int]) -> str:
 
 
 def _default_realtime_filter_pair(counts: dict[str, int]) -> tuple[str, str]:
-    if counts.get("异常 / 极端", 0) > 0:
-        return "全部可计算", "异常 / 极端"
-    return "全部可计算", "全部状态"
+    return "全部可计算", "溢价/折价 ≥ 1%"
 
 
 def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
@@ -931,6 +943,10 @@ def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
         return "锚点缺失"
     if text.startswith("锚点缺失"):
         return "锚点缺失"
+    if text.startswith("异常 / 极端"):
+        return "溢价/折价 ≥ 1%"
+    if text.startswith("全部状态"):
+        return "溢价/折价 ≥ 1%"
     return ""
 
 
@@ -1749,7 +1765,7 @@ def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -
             if max_premium is not None:
                 ticker = str(max_premium.get("ticker") or "").strip().upper() or "该标的"
                 spread = _afterhours_spread_text(max_premium.get("spread_vs_afterhours_pct"))
-                ratio = _spread_volatility_ratio_text(max_premium)
+                ratio = _daily_volatility_reference_text(max_premium)
                 ratio_text = f"仅{ratio}" if ratio != "缺波动数据" else "波动数据不足"
                 message = f"当前没有明显异常价差。最大溢价为 {ticker} {spread}，但{ratio_text}，暂不属于极端错价。"
             else:
@@ -6240,9 +6256,8 @@ def _refresh_diagnostic_reason(row: dict, *, ignored: dict[str, dict] | None = N
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
-        "盘后锚点",
-        "Binance 最新",
-        "相对盘后",
+        "价格对比",
+        "溢价/折价",
         "日常波动参照",
         "判断",
         "休市新闻",
@@ -6254,9 +6269,8 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
     display["股票"] = frame.get("ticker")
-    display["盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
-    display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
-    display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
+    display["价格对比"] = frame.apply(lambda row: _price_comparison_text(row.to_dict()), axis=1)
+    display["溢价/折价"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
     display["日常波动参照"] = frame.apply(lambda row: _daily_volatility_reference_text(row.to_dict()), axis=1)
     display["判断"] = frame.apply(lambda row: _spread_reason_display_text(row.to_dict()), axis=1)
     display["休市新闻"] = frame.apply(lambda row: row.get("closed_market_news_label") or _realtime_closed_news_label(row.to_dict()), axis=1)
@@ -6290,6 +6304,11 @@ def _spread_volatility_ratio_text(row: dict) -> str:
     return _ratio_text(ratio)
 
 
+def _abs_afterhours_spread_pct(row: dict) -> float:
+    spread = _number(row.get("spread_vs_afterhours_pct"))
+    return abs(spread) if spread is not None else 0.0
+
+
 def _daily_volatility_reference_text(row: dict) -> str:
     ratio = _number(row.get("spread_atr_ratio"))
     if ratio is None:
@@ -6297,6 +6316,19 @@ def _daily_volatility_reference_text(row: dict) -> str:
     if ratio is None:
         return "缺波动数据"
     return f"约 {ratio:.1f} 天波动"
+
+
+def _price_comparison_text(row: dict) -> str:
+    anchor = _number(row.get("afterhours_reference_price"))
+    binance_price = _number(row.get("adjusted_binance_price") or row.get("binance_last_price"))
+    if anchor is None and binance_price is None:
+        return "价格暂缺"
+    if anchor is None:
+        return f"盘后缺失 → Binance {_money_text(binance_price)}"
+    if binance_price is None:
+        return f"{_money_text(anchor)} → Binance 缺失"
+    return f"{_money_text(anchor)} → {_money_text(binance_price)}"
+
 
 
 def _frame_series(frame: pd.DataFrame, column: str) -> pd.Series:

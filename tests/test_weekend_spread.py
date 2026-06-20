@@ -838,7 +838,7 @@ def test_build_rows_fills_regular_close_from_quote_previous_close_when_history_i
 
     frame = weekend_spread._live_frame(rows)
     assert "价差" not in frame.columns
-    assert frame.loc[0, "相对盘后"] == "+8.44%"
+    assert frame.loc[0, "溢价/折价"] == "+8.44%"
 
 
 def test_build_rows_derives_regular_close_from_quote_price_change_when_previous_close_missing() -> None:
@@ -6006,17 +6006,16 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
-        "盘后锚点",
-        "Binance 最新",
-        "相对盘后",
+        "价格对比",
+        "溢价/折价",
         "日常波动参照",
         "判断",
         "休市新闻",
         "标签",
         "更新时间",
     ]
-    assert frame.loc[0, "Binance 最新"] == "$104.58"
-    assert frame.loc[0, "相对盘后"] == "+1.65%"
+    assert frame.loc[0, "价格对比"] == "$102.88 → $104.58"
+    assert frame.loc[0, "溢价/折价"] == "+1.65%"
     assert frame.loc[0, "判断"] == "数据不足"
     assert "价差" not in frame.columns
     assert "波动倍数" not in frame.columns
@@ -6074,7 +6073,8 @@ def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
         ]
     )
 
-    assert frame.loc[0, "相对盘后"] == "+3.92%"
+    assert frame.loc[0, "价格对比"] == "$195.49 → $203.16"
+    assert frame.loc[0, "溢价/折价"] == "+3.92%"
     assert frame.loc[0, "日常波动参照"] == "约 1.8 天波动"
     assert frame.loc[0, "判断"] == "异常"
     assert frame.loc[0, "更新时间"] == "11:28 HKT"
@@ -6170,7 +6170,7 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert "$102.15" in frame.loc[0, "盘后锚点"]
+    assert frame.loc[0, "价格对比"] == "盘后缺失 → Binance $104.58"
 
 
 def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:
@@ -6261,7 +6261,7 @@ def test_cached_realtime_rows_mask_stale_anchor_even_when_other_rows_are_current
     assert weekend_spread._realtime_row_status_label(wdc) == "锚点缺失"
 
     frame = weekend_spread._live_frame([wdc])
-    assert frame.loc[0, "相对盘后"] == "--"
+    assert frame.loc[0, "溢价/折价"] == "--"
     assert frame.loc[0, "判断"] == "数据不足"
     assert "映射可用" in frame.loc[0, "标签"]
 
@@ -6427,9 +6427,9 @@ def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
 def test_realtime_default_filter_prefers_non_empty_scope() -> None:
     assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 3, "价格可用但锚点缺失": 4}) == "全部可计算"
     assert weekend_spread._default_realtime_filter_scope({"异常偏离": 0, "全部可计算": 0, "锚点缺失": 4}) == "锚点缺失"
-    assert weekend_spread._default_realtime_filter_pair({"异常 / 极端": 2, "全部可计算": 3}) == ("全部可计算", "异常 / 极端")
-    assert weekend_spread._default_realtime_filter_pair({"异常 / 极端": 0, "全部可计算": 3}) == ("全部可计算", "全部状态")
-    assert weekend_spread._scope_from_realtime_filter_label("异常 / 极端 0", ["全部可计算", "异常 / 极端"]) == "异常 / 极端"
+    assert weekend_spread._default_realtime_filter_pair({"溢价/折价 ≥ 1%": 2, "全部可计算": 3}) == ("全部可计算", "溢价/折价 ≥ 1%")
+    assert weekend_spread._default_realtime_filter_pair({"溢价/折价 ≥ 1%": 0, "全部可计算": 3}) == ("全部可计算", "溢价/折价 ≥ 1%")
+    assert weekend_spread._scope_from_realtime_filter_label("异常 / 极端 0", ["溢价/折价 ≥ 1%"]) == "溢价/折价 ≥ 1%"
     assert weekend_spread._scope_from_realtime_filter_label("全部 Binance 美股映射 0", ["全部可计算"]) == "全部可计算"
 
 
@@ -6458,14 +6458,24 @@ def test_realtime_combined_filters_select_status_without_batch_details() -> None
             "afterhours_reference_price": None,
             "mapping_quality": "映射可用",
         },
+        {
+            "ticker": "IBM",
+            "binance_symbol": "IBMUSDT",
+            "binance_last_price": 100.5,
+            "afterhours_reference_price": 100,
+            "spread_vs_afterhours_pct": 0.5,
+            "mapping_quality": "映射可用",
+        },
     ]
 
-    all_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|全部状态")
-    review_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|异常 / 极端")
+    all_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|全部可计算")
+    default_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|溢价/折价 ≥ 1%")
+    two_pct_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|溢价/折价 ≥ 2%")
     missing_rows = weekend_spread._filter_live_rows_by_scope(rows, "全部可计算|锚点缺失")
 
-    assert [row["ticker"] for row in all_rows] == ["NBIS", "CRM"]
-    assert [row["ticker"] for row in review_rows] == ["NBIS"]
+    assert [row["ticker"] for row in all_rows] == ["NBIS", "CRM", "IBM"]
+    assert [row["ticker"] for row in default_rows] == ["NBIS", "CRM"]
+    assert [row["ticker"] for row in two_pct_rows] == ["NBIS", "CRM"]
     assert [row["ticker"] for row in missing_rows] == ["NOW"]
 
 
