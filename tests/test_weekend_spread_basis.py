@@ -1,10 +1,14 @@
 ﻿from __future__ import annotations
 
+import io
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import URLError
+import zipfile
 
 import pytest
 
+import data.weekend_spread_basis as basis_module
 from data.us_market_session import US_EASTERN
 from data.weekend_spread_basis import (
     QUALITY_INSUFFICIENT,
@@ -155,6 +159,20 @@ class _FakeBinanceHistoryProvider:
         return rows
 
 
+class _BrokenBinanceHistoryProvider:
+    def get_klines(
+        self,
+        _symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[list[object]]:
+        raise URLError("forced disconnect")
+
+
 class _FakeStockHistoryProvider:
     is_configured = True
     provider_name = "FAKE_STOCK_HISTORY"
@@ -201,6 +219,58 @@ def test_backfill_open_market_basis_history_writes_aligned_samples_and_profile(t
     assert result["misaligned_count"] == 0
     assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
     assert profile["basis_quality"] == QUALITY_LIMITED
+
+
+def test_backfill_open_market_basis_history_falls_back_to_binance_vision_archive(tmp_path, monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.payload
+
+    def archive_payload() -> bytes:
+        rows = ["open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore"]
+        current = datetime(2026, 6, 17, 14, 0, tzinfo=timezone.utc)
+        for _index in range(12):
+            open_ms = int(current.timestamp() * 1000)
+            rows.append(f"{open_ms},101,101,101,101,1,{open_ms + 59999},101,1,1,101,0")
+            current += timedelta(minutes=30)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("GLWUSDT-1m-2026-06-17.csv", "\n".join(rows).encode("utf-8"))
+        return buffer.getvalue()
+
+    def fake_urlopen(request: object, timeout: float = 20) -> FakeResponse:
+        assert "data/futures/um/daily/klines/GLWUSDT/1m/GLWUSDT-1m-2026-06-17.zip" in request.full_url
+        return FakeResponse(archive_payload())
+
+    monkeypatch.setattr(basis_module, "urlopen", fake_urlopen)
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
+
+    result = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        binance_history_provider=_BrokenBinanceHistoryProvider(),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0),
+    )
+    profile = build_normal_basis_profile("GLW", db_path=db_path, now=now)
+
+    assert result["ok"] is True
+    assert result["collected_count"] >= 10
+    assert result["samples"][0]["binance_source"] == "binance_vision_usdm_futures_1m"
+    assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
 
 
 def test_backfill_open_market_basis_history_keeps_misaligned_samples_out_of_profile(tmp_path) -> None:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import io
 import json
 import os
 import sqlite3
@@ -13,6 +15,7 @@ from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+import zipfile
 
 import pandas as pd
 
@@ -28,6 +31,7 @@ from settings import PROJECT_ROOT
 
 DEFAULT_BASIS_DB_PATH = PROJECT_ROOT / "data" / "cache" / "weekend_spread_basis.sqlite3"
 DEFAULT_BASIS_TASK_NAME = "facai_weekend_spread_basis_collector"
+BINANCE_VISION_FUTURES_DAILY_KLINE_URL = "https://data.binance.vision/data/futures/um/daily/klines"
 QUALITY_SUFFICIENT = "可用"
 QUALITY_LIMITED = "样本较少"
 QUALITY_INSUFFICIENT = "数据异常"
@@ -730,35 +734,106 @@ def _fetch_binance_history_bars(
     start_et: datetime,
     end_et: datetime,
 ) -> list[HistoricalBasisBar]:
-    if provider is None or not hasattr(provider, "get_klines"):
-        return []
     start_ms = _to_ms(start_et)
     end_ms = _to_ms(end_et)
     cursor = start_ms
     payload: list[Any] = []
-    for _ in range(10):
-        batch = provider.get_klines(
-            symbol,
-            market_type="usdm_futures",
-            interval="1m",
-            start_time_ms=cursor,
-            end_time_ms=end_ms,
-            limit=1000,
-        )
-        if not batch:
-            break
-        payload.extend(batch)
-        bars = normalize_klines(batch)
-        if not bars:
-            break
-        next_cursor = _to_ms(bars[-1].open_time + timedelta(minutes=1))
-        if next_cursor <= cursor or next_cursor >= end_ms:
-            break
-        cursor = next_cursor
-    return [
+    if provider is not None and hasattr(provider, "get_klines"):
+        try:
+            for _ in range(10):
+                batch = provider.get_klines(
+                    symbol,
+                    market_type="usdm_futures",
+                    interval="1m",
+                    start_time_ms=cursor,
+                    end_time_ms=end_ms,
+                    limit=1000,
+                )
+                if not batch:
+                    break
+                payload.extend(batch)
+                bars = normalize_klines(batch)
+                if not bars:
+                    break
+                next_cursor = _to_ms(bars[-1].open_time + timedelta(minutes=1))
+                if next_cursor <= cursor or next_cursor >= end_ms:
+                    break
+                cursor = next_cursor
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            payload = []
+    bars = [
         HistoricalBasisBar(ts=bar.open_time.astimezone(timezone.utc), close=float(bar.close), source="binance_usdm_futures_1m")
         for bar in normalize_klines(payload)
     ]
+    if bars:
+        return bars
+    return _fetch_binance_vision_daily_klines(symbol, start_et, end_et)
+
+
+def _fetch_binance_vision_daily_klines(symbol: str, start_et: datetime, end_et: datetime) -> list[HistoricalBasisBar]:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return []
+    start_utc = start_et.astimezone(timezone.utc)
+    end_utc = end_et.astimezone(timezone.utc)
+    bars_by_time: dict[datetime, HistoricalBasisBar] = {}
+    for day in _utc_dates_between(start_utc, end_utc):
+        for bar in _download_binance_vision_daily_klines(normalized, day):
+            ts = bar.ts.astimezone(timezone.utc)
+            if start_utc <= ts < end_utc:
+                bars_by_time[ts] = bar
+    return [bars_by_time[key] for key in sorted(bars_by_time)]
+
+
+def _download_binance_vision_daily_klines(symbol: str, day: date) -> list[HistoricalBasisBar]:
+    url = f"{BINANCE_VISION_FUTURES_DAILY_KLINE_URL}/{symbol}/1m/{symbol}-1m-{day.isoformat()}.zip"
+    request = Request(url, headers={"User-Agent": "facai-weekend-spread/1.2"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+        if not csv_names:
+            return []
+        text = archive.read(csv_names[0]).decode("utf-8")
+    rows = csv.reader(io.StringIO(text))
+    bars: list[HistoricalBasisBar] = []
+    for row in rows:
+        bar = _binance_vision_row_to_bar(row)
+        if bar is not None:
+            bars.append(bar)
+    return bars
+
+
+def _binance_vision_row_to_bar(row: list[str]) -> HistoricalBasisBar | None:
+    if len(row) < 5:
+        return None
+    open_time = _number(row[0])
+    close = _number(row[4])
+    if open_time is None or close is None or close <= 0:
+        return None
+    # Binance Vision has used millisecond timestamps historically; keep this
+    # tolerant in case a file is emitted with microsecond precision.
+    timestamp = open_time / 1_000_000 if open_time > 10_000_000_000_000 else open_time / 1000
+    try:
+        ts = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return HistoricalBasisBar(ts=ts, close=float(close), source="binance_vision_usdm_futures_1m")
+
+
+def _utc_dates_between(start_utc: datetime, end_utc: datetime) -> list[date]:
+    current = start_utc.date()
+    last = (end_utc - timedelta(microseconds=1)).date()
+    result: list[date] = []
+    while current <= last:
+        result.append(current)
+        current += timedelta(days=1)
+    return result
 
 
 def _fetch_stock_history_bars(
