@@ -1468,8 +1468,16 @@ def test_all_afterhours_providers_missing_keeps_regular_close_fallback() -> None
 
 
 def test_ui_maps_afterhours_source_and_quality_text() -> None:
-    assert weekend_spread._afterhours_source_text("POLYGON_OPEN_CLOSE_AFTERHOURS").startswith("Polygon/Massive")
-    assert weekend_spread._afterhours_source_text("ALPHAVANTAGE_INTRADAY_EXTENDED").startswith("Alpha Vantage")
+    polygon_source = weekend_spread._afterhours_source_text("POLYGON_OPEN_CLOSE_AFTERHOURS")
+    alpha_source = weekend_spread._afterhours_source_text("ALPHAVANTAGE_INTRADAY_EXTENDED")
+    quote_source = weekend_spread._afterhours_source_text("POLYGON_QUOTE_MID")
+
+    assert polygon_source == "Polygon/Massive 盘后开收盘"
+    assert alpha_source == "Alpha Vantage 盘前盘后分钟线"
+    assert quote_source == "Polygon/Massive 报价中间价"
+    assert "afterHours" not in polygon_source
+    assert "extended-hours" not in alpha_source
+    assert "quote mid" not in quote_source
     assert weekend_spread._afterhours_reason_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_cache_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_reason_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"

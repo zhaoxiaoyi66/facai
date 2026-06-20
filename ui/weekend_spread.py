@@ -6793,7 +6793,7 @@ def _price_source_text(value: object) -> str:
         "REGULAR_CLOSE_FALLBACK": "常规收盘回退",
         "P0_UNVERIFIED": "P0 待验证",
         "FMP_AFTERHOURS_1M_BAR": "FMP 盘后 1m",
-        "FMP_AFTERHOURS_QUOTE_ANCHOR": "FMP quote 盘后锚点",
+        "FMP_AFTERHOURS_QUOTE_ANCHOR": "FMP 报价盘后锚点",
         "FMP_AFTERHOURS_TRADE": "FMP 盘后成交",
         "FMP_AFTERHOURS_QUOTE_MID": "FMP 盘后中间价",
         "FMP": "FMP 盘后",
@@ -8588,13 +8588,13 @@ def _afterhours_reason_text(value: object) -> str:
 def _afterhours_source_text(value: object) -> str:
     code = str(value or "").strip()
     return {
-        "POLYGON_OPEN_CLOSE_AFTERHOURS": "Polygon/Massive open-close afterHours",
-        "POLYGON_TRADES_1955_2000": "Polygon/Massive 19:55-20:00 trade",
-        "POLYGON_AFTERHOURS_LAST_TRADE": "Polygon/Massive afterhours last trade",
-        "POLYGON_QUOTE_MID": "Polygon/Massive quote mid",
+        "POLYGON_OPEN_CLOSE_AFTERHOURS": "Polygon/Massive 盘后开收盘",
+        "POLYGON_TRADES_1955_2000": "Polygon/Massive 19:55-20:00 成交",
+        "POLYGON_AFTERHOURS_LAST_TRADE": "Polygon/Massive 盘后最后成交",
+        "POLYGON_QUOTE_MID": "Polygon/Massive 报价中间价",
         "FMP_AFTERHOURS_TRADE": "FMP 盘后成交",
         "FMP_AFTERHOURS_QUOTE_MID": "FMP 盘后报价中间价",
-        "ALPHAVANTAGE_INTRADAY_EXTENDED": "Alpha Vantage extended-hours intraday",
+        "ALPHAVANTAGE_INTRADAY_EXTENDED": "Alpha Vantage 盘前盘后分钟线",
     }.get(code, code or "盘后锚点来源缺失")
 
 
