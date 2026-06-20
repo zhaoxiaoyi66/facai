@@ -4008,9 +4008,10 @@ def _stats_table_html(rows: list[dict], labels: dict[str, str]) -> str:
 
 def _stats_row_html(row: dict, labels: dict[str, str]) -> str:
     group = str(row.get("group") or "unknown")
+    display_group = labels.get(group) or _trade_unknown_display_text(group, "未标记")
     return (
         "<tr>"
-        f'<td class="symbol">{escape(labels.get(group, group))}</td>'
+        f'<td class="symbol">{escape(display_group)}</td>'
         f"<td>{escape(_int_text(row.get('sampleCount')))}</td>"
         f"<td>{escape(_percent_or_dash(row.get('winRate')))}</td>"
         f"<td>{escape(_percent_or_dash(row.get('averageReturnPct')))}</td>"

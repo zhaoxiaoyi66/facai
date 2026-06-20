@@ -24,6 +24,13 @@ def _trade(symbol: str, action: str, at: str, *, quantity: float = 1, price: flo
     }
 
 
+def test_signal_stats_row_hides_unknown_group_key() -> None:
+    html = trade_journal._stats_row_html({"group": "unknown", "sampleCount": 1}, {})
+
+    assert "未标记" in html
+    assert ">unknown<" not in html
+
+
 def test_trade_activity_frequency_levels_by_decision_count() -> None:
     base = "2026-06-15"
 
