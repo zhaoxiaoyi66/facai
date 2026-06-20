@@ -67,6 +67,15 @@ from data.weekend_spread_backtest import (
     summarize_backfill_audit_results,
     summarize_backtest_results,
 )
+from data.weekend_spread_volatility import (
+    SPREAD_REASON_ANOMALY,
+    SPREAD_REASON_EXTREME,
+    SPREAD_REASON_INSUFFICIENT,
+    SPREAD_REASON_MILD,
+    SPREAD_REASON_NORMAL,
+    build_spread_volatility_profile,
+    classify_spread_reasonableness,
+)
 from data.tradingview_price_cache import (
     EVENT_FRIDAY_AFTERHOURS_CLOSE,
     EVENT_OVERNIGHT_FIRST_1M_CLOSE,
@@ -591,6 +600,22 @@ def _history(close: float = 100.0) -> pd.DataFrame:
             {"date": "2026-06-13", "close": close + 0.8},
         ]
     )
+
+
+def _volatility_history(rows: int = 70, *, close: float = 100.0, daily_range: float = 4.0) -> pd.DataFrame:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    data = []
+    half = daily_range / 2.0
+    for index in range(rows):
+        data.append(
+            {
+                "date": (start + timedelta(days=index)).date().isoformat(),
+                "high": close + half,
+                "low": close - half,
+                "close": close,
+            }
+        )
+    return pd.DataFrame(data)
 
 
 def _kline(moment: datetime, open_: float, high: float, low: float, close: float, volume: float = 1_000) -> list:
@@ -1835,6 +1860,42 @@ def test_alert_level_thresholds() -> None:
     assert classify_spread(1.5)["level"] == "FOCUS"
     assert classify_spread(2.1)["level"] == "ABNORMAL"
     assert classify_spread(None)["level"] == "DATA_INSUFFICIENT"
+
+
+def test_weekend_spread_volatility_metrics_are_calculated_from_daily_history() -> None:
+    profile = build_spread_volatility_profile(_volatility_history(), 4.0)
+
+    assert round(profile.avg_range_20d or 0, 2) == 4.0
+    assert round(profile.atr14_pct or 0, 2) == 4.0
+    assert round(profile.spread_atr_ratio or 0, 2) == 1.0
+    assert round(profile.spread_range_ratio or 0, 2) == 1.0
+    assert profile.spread_percentile == 100.0
+
+
+def test_weekend_spread_volatility_reasonableness_thresholds() -> None:
+    assert classify_spread_reasonableness(spread_atr_ratio=0.4) == SPREAD_REASON_NORMAL
+    assert classify_spread_reasonableness(spread_atr_ratio=0.75) == SPREAD_REASON_MILD
+    assert classify_spread_reasonableness(spread_atr_ratio=1.2) == "明显偏离"
+    assert classify_spread_reasonableness(spread_atr_ratio=1.7) == SPREAD_REASON_ANOMALY
+    assert classify_spread_reasonableness(spread_atr_ratio=2.1) == SPREAD_REASON_EXTREME
+    assert classify_spread_reasonableness(spread_atr_ratio=None, spread_range_ratio=None) == SPREAD_REASON_INSUFFICIENT
+
+
+def test_weekend_spread_volatility_explanation_uses_news_context() -> None:
+    explained = build_spread_volatility_profile(_volatility_history(daily_range=2.0), 3.2, news_label="新闻方向一致")
+    unexplained = build_spread_volatility_profile(_volatility_history(daily_range=2.0), 3.2, news_label="无新闻解释")
+    opinion = build_spread_volatility_profile(_volatility_history(daily_range=2.0), 3.2, news_label="观点文章，不足以解释价差")
+
+    assert explained.spread_reasonableness_explanation == "价差偏大，但存在新闻解释。"
+    assert unexplained.spread_reasonableness_explanation == "价差显著超过日常波动，且缺少明确新闻解释。"
+    assert opinion.spread_reasonableness_explanation == "有观点文章，但不足以完全解释价差。"
+
+
+def test_weekend_spread_volatility_reports_insufficient_daily_history() -> None:
+    profile = build_spread_volatility_profile(_volatility_history(rows=5), 2.0)
+
+    assert profile.spread_reasonableness_label == SPREAD_REASON_INSUFFICIENT
+    assert profile.volatility_status == "波动数据不足"
 
 
 def test_missing_symbol_mapping_does_not_call_provider() -> None:
@@ -5935,25 +5996,55 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
-        "美股盘后锚点",
-        "常规收盘",
+        "盘后锚点",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
+        "20日平均振幅",
+        "ATR14",
+        "价差/ATR",
+        "价差分位",
+        "价差理性度",
         "状态",
         "休市新闻",
         "标签",
         "更新时间",
     ]
     assert frame.loc[0, "Binance 最新"] == "$104.58"
-    assert frame.loc[0, "常规收盘"] == "$102.15"
     assert frame.loc[0, "相对盘后"] == "+1.65%"
     assert frame.loc[0, "相对收盘"] == "+2.38%"
+    assert frame.loc[0, "价差理性度"] == "波动数据不足"
     assert "bid" not in frame.columns
     assert "ask" not in frame.columns
     assert "funding_rate" not in frame.columns
     assert "risk_note" not in frame.columns
     assert "风险" not in frame.columns
+
+
+def test_realtime_rows_are_annotated_with_cached_volatility(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Reader:
+        def get_price_history(self, _ticker: str) -> pd.DataFrame:
+            return _volatility_history()
+
+    monkeypatch.setattr(weekend_spread, "CacheReadModel", lambda: Reader())
+    monkeypatch.setattr(weekend_spread, "_realtime_closed_news_label", lambda _row: "无新闻解释")
+    rows = [
+        {
+            "ticker": "NVDA",
+            "binance_symbol": "NVDAUSDT",
+            "binance_last_price": 104.0,
+            "afterhours_reference_price": 100.0,
+            "spread_vs_afterhours_pct": 4.0,
+            "mapping_quality": "映射可用",
+        }
+    ]
+
+    annotated = weekend_spread._annotate_realtime_volatility(rows)
+
+    assert round(annotated[0]["atr14_pct"], 2) == 4.0
+    assert round(annotated[0]["avg_range_20d"], 2) == 4.0
+    assert annotated[0]["spread_atr_ratio"] == pytest.approx(1.0)
+    assert annotated[0]["spread_reasonableness_label"] == "极端价差"
 
 
 def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
@@ -5967,7 +6058,7 @@ def test_live_frame_marks_afterhours_missing_and_fallback() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert "$102.15" in frame.loc[0, "美股盘后锚点"]
+    assert "$102.15" in frame.loc[0, "盘后锚点"]
 
 
 def test_live_frame_does_not_render_nan_afterhours_anchor_when_one_row_is_missing() -> None:

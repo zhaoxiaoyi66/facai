@@ -104,6 +104,12 @@ from data.weekend_spread_news import (
     source_link_text as weekend_news_source_link_text,
     weekend_spread_news_label,
 )
+from data.weekend_spread_volatility import (
+    SPREAD_REASON_ANOMALY,
+    SPREAD_REASON_EXTREME,
+    SPREAD_REASON_INSUFFICIENT,
+    build_spread_volatility_profile,
+)
 from data.overnight_price_provider import build_overnight_provider_self_check, default_overnight_price_provider
 from data.tradingview_price_cache import (
     DEFAULT_TRADINGVIEW_CSV_DIR,
@@ -385,6 +391,7 @@ def _render_realtime_tab(
     scan_tickers = [str(record.get("ticker") or "").strip().upper() for record in scan_records if record.get("ticker")]
     rows, cache_status = _build_weekend_spread_rows_with_feedback(scan_tickers, mapping=scan_mapping, refresh_options=refresh_options)
     rows = _merge_scan_metadata(rows, scan_records, watchlist)
+    rows = _annotate_realtime_volatility(rows)
     st.session_state["weekend_spread_realtime_rows"] = rows
     st.session_state["weekend_spread_realtime_cache_status"] = cache_status
     st.session_state["weekend_spread_realtime_scan_status"] = scan_status
@@ -662,9 +669,87 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
     return merged
 
 
+def _annotate_realtime_volatility(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+    reader = CacheReadModel()
+    cache = _realtime_volatility_cache()
+    annotated: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        ticker = str(item.get("ticker") or "").strip().upper()
+        spread = _number(item.get("spread_vs_afterhours_pct"))
+        if not ticker or spread is None:
+            item.update(_empty_volatility_fields())
+            annotated.append(item)
+            continue
+        try:
+            history = reader.get_price_history(ticker)
+        except Exception:
+            history = pd.DataFrame()
+        latest_date = _history_latest_date(history)
+        news_label = _realtime_closed_news_label(item)
+        item["closed_market_news_label"] = news_label
+        cache_key = f"{ticker}|{latest_date}|20|14|60|{round(float(spread), 4)}|{news_label}"
+        profile = cache.get(cache_key)
+        if not isinstance(profile, dict):
+            profile = build_spread_volatility_profile(history, spread, news_label=news_label).as_dict()
+            cache[cache_key] = profile
+            _trim_realtime_volatility_cache(cache)
+        item.update(_volatility_fields_from_profile(profile))
+        annotated.append(item)
+    return annotated
+
+
+def _realtime_volatility_cache() -> dict:
+    try:
+        cache = st.session_state.setdefault("weekend_spread_volatility_cache", {})
+    except Exception:
+        return {}
+    if not isinstance(cache, dict):
+        st.session_state["weekend_spread_volatility_cache"] = {}
+        return st.session_state["weekend_spread_volatility_cache"]
+    return cache
+
+
+def _trim_realtime_volatility_cache(cache: dict, limit: int = 300) -> None:
+    while len(cache) > limit:
+        first_key = next(iter(cache))
+        cache.pop(first_key, None)
+
+
+def _history_latest_date(history: pd.DataFrame) -> str:
+    if not isinstance(history, pd.DataFrame) or history.empty or "date" not in history.columns:
+        return "missing"
+    dates = pd.to_datetime(history["date"], errors="coerce")
+    latest = dates.dropna().max()
+    if pd.isna(latest):
+        return "missing"
+    return pd.Timestamp(latest).date().isoformat()
+
+
+def _volatility_fields_from_profile(profile: dict) -> dict:
+    return {
+        "avg_range_20d": profile.get("avg_range_20d"),
+        "atr14_pct": profile.get("atr14_pct"),
+        "spread_atr_ratio": profile.get("spread_atr_ratio"),
+        "spread_range_ratio": profile.get("spread_range_ratio"),
+        "spread_percentile": profile.get("spread_percentile"),
+        "spread_reasonableness_label": profile.get("spread_reasonableness_label") or SPREAD_REASON_INSUFFICIENT,
+        "spread_reasonableness_explanation": profile.get("spread_reasonableness_explanation") or "缺少足够日线数据，无法判断当前价差是否超出正常波动。",
+        "volatility_status": profile.get("volatility_status") or "波动数据不足",
+        "volatility_latest_data_date": profile.get("latest_data_date") or "",
+        "volatility_history_count": profile.get("history_count") or 0,
+    }
+
+
+def _empty_volatility_fields() -> dict:
+    return _volatility_fields_from_profile({})
+
+
 def _render_realtime_filters(rows: list[dict]) -> str:
     range_options = ["全部可计算", "我的观察池", "我的持仓", "核心仓"]
-    status_options = ["全部状态", "异常偏离", "锚点缺失", "Binance 价格失败", "已忽略"]
+    status_options = ["全部状态", "异常偏离", "极端价差", "异常价差", "无新闻解释的异常价差", "有新闻解释的异常价差", "波动数据不足", "锚点缺失", "Binance 价格失败", "已忽略"]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
     counts = {
         "全部可计算": len(main_rows),
@@ -672,6 +757,11 @@ def _render_realtime_filters(rows: list[dict]) -> str:
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
         "异常偏离": len([row for row in main_rows if _realtime_row_status_key(row) == "review"]),
+        "极端价差": len([row for row in main_rows if _spread_reason_label(row) == SPREAD_REASON_EXTREME]),
+        "异常价差": len([row for row in main_rows if _spread_reason_label(row) in {SPREAD_REASON_ANOMALY, SPREAD_REASON_EXTREME}]),
+        "无新闻解释的异常价差": len([row for row in main_rows if _is_unexplained_anomalous_spread(row)]),
+        "有新闻解释的异常价差": len([row for row in main_rows if _is_news_explained_anomalous_spread(row)]),
+        "波动数据不足": len([row for row in main_rows if _spread_reason_label(row) == SPREAD_REASON_INSUFFICIENT]),
         "锚点缺失": len([row for row in rows if _realtime_row_status_key(row) == "anchor_missing"]),
         "Binance 价格失败": len([row for row in rows if _realtime_row_status_key(row) == "binance_failed"]),
         "已忽略": len([row for row in rows if _mapping_display_label_for_row(row) == MAPPING_IGNORED_LABEL]),
@@ -758,6 +848,16 @@ def _row_matches_realtime_status(row: dict, scope: str) -> bool:
         return _is_realtime_main_row(row)
     if scope == "异常偏离":
         return _is_realtime_main_row(row) and _realtime_row_status_key(row) == "review"
+    if scope == "极端价差":
+        return _is_realtime_main_row(row) and _spread_reason_label(row) == SPREAD_REASON_EXTREME
+    if scope == "异常价差":
+        return _is_realtime_main_row(row) and _spread_reason_label(row) in {SPREAD_REASON_ANOMALY, SPREAD_REASON_EXTREME}
+    if scope == "无新闻解释的异常价差":
+        return _is_realtime_main_row(row) and _is_unexplained_anomalous_spread(row)
+    if scope == "有新闻解释的异常价差":
+        return _is_realtime_main_row(row) and _is_news_explained_anomalous_spread(row)
+    if scope == "波动数据不足":
+        return _is_realtime_main_row(row) and _spread_reason_label(row) == SPREAD_REASON_INSUFFICIENT
     if scope in {"锚点缺失", "价格可用但锚点缺失"}:
         return _realtime_row_status_key(row) == "anchor_missing"
     if scope == "Binance 价格失败":
@@ -772,6 +872,10 @@ def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
     status_scope = str(scope or "").split("|", 1)[1] if "|" in str(scope or "") else str(scope or "")
     if status_scope == "异常偏离" and counts.get("review", 0) <= 0:
         return "当前没有异常偏离，可切换到“全部状态”查看全部可计算价差。"
+    if status_scope in {"极端价差", "异常价差", "无新闻解释的异常价差", "有新闻解释的异常价差"}:
+        return "当前没有符合该波动率筛选的价差。可以切换到“全部状态”查看全部可计算价差。"
+    if status_scope == "波动数据不足":
+        return "当前筛选下没有波动数据不足标的。"
     if status_scope in {"锚点缺失", "价格可用但锚点缺失"} and counts.get("anchor_missing", 0) <= 0:
         return "当前没有锚点缺失标的。"
     if status_scope == "Binance 价格失败" and counts.get("unavailable", 0) <= 0:
@@ -1515,8 +1619,9 @@ def _render_realtime_summary_cards(rows: list[dict], mapping_counts: dict[str, i
     max_premium = _realtime_extreme_row(rows, direction="premium")
     max_discount = _realtime_extreme_row(rows, direction="discount")
     values = [
-        ("当前最大溢价", _summary_deviation_text(max_premium)),
-        ("当前最大折价", _summary_deviation_text(max_discount)),
+        ("最异常溢价", _summary_deviation_text(max_premium)),
+        ("最异常折价", _summary_deviation_text(max_discount)),
+        ("无新闻解释的极端价差", str(_unexplained_extreme_count(rows))),
         ("可计算价差", str(counts.get("computable", 0))),
         ("异常偏离", str(counts.get("review", 0))),
         ("最近更新", _latest_updated_at(rows) or _cache_generated_text(cache_status) or "暂无"),
@@ -1530,7 +1635,9 @@ def _summary_deviation_text(row: dict | None) -> str:
     if row is None:
         return "暂无"
     ticker = str(row.get("ticker") or "").strip().upper() or "未识别"
-    return f"{ticker} {_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}"
+    ratio = _ratio_text(row.get("spread_atr_ratio"))
+    suffix = f" · {ratio} ATR" if ratio != "暂缺" else ""
+    return f"{ticker} {_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}{suffix}"
 
 
 def _realtime_extreme_row(rows: list[dict], *, direction: str) -> dict | None:
@@ -1543,9 +1650,15 @@ def _realtime_extreme_row(rows: list[dict], *, direction: str) -> dict | None:
         return None
     if direction == "discount":
         negatives = [row for row in candidates if float(_number(row.get("spread_vs_afterhours_pct")) or 0) < 0]
-        return min(negatives or candidates, key=lambda row: float(_number(row.get("spread_vs_afterhours_pct")) or 0))
+        pool = negatives or candidates
+        return max(pool, key=lambda row: (_volatility_rank_value(row), abs(float(_number(row.get("spread_vs_afterhours_pct")) or 0))))
     positives = [row for row in candidates if float(_number(row.get("spread_vs_afterhours_pct")) or 0) > 0]
-    return max(positives or candidates, key=lambda row: float(_number(row.get("spread_vs_afterhours_pct")) or 0))
+    pool = positives or candidates
+    return max(pool, key=lambda row: (_volatility_rank_value(row), abs(float(_number(row.get("spread_vs_afterhours_pct")) or 0))))
+
+
+def _unexplained_extreme_count(rows: list[dict]) -> int:
+    return sum(1 for row in rows or [] if _is_realtime_main_row(row) and _is_unexplained_anomalous_spread(row) and _spread_reason_label(row) == SPREAD_REASON_EXTREME)
 
 
 def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
@@ -1568,13 +1681,17 @@ def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -
     ticker = str(row.get("ticker") or "").strip().upper()
     spread_text = _afterhours_spread_text(row.get("spread_vs_afterhours_pct"))
     status_label = _realtime_row_status_label(row)
+    volatility_label = _spread_reason_display_text(row)
+    volatility_explanation = str(row.get("spread_reasonableness_explanation") or "").strip()
     if _realtime_row_status_key(row) == "review":
         message = (
-            f"{ticker} 当前相对盘后锚点 {spread_text}，属于{status_label}。"
+            f"{ticker} 当前相对盘后锚点 {spread_text}，属于{status_label}；波动参照为{volatility_label}。"
             "优先复核：Binance 映射、盘后锚点、是否为真实可参考价差。"
         )
     else:
-        message = f"{ticker} 当前相对盘后锚点 {spread_text}，是当前最大偏离。继续观察价差是否扩大或收敛。"
+        message = f"{ticker} 当前相对盘后锚点 {spread_text}，波动参照为{volatility_label}。继续观察价差是否扩大或收敛。"
+    if volatility_explanation and volatility_label != "正常波动":
+        message = f"{message}{volatility_explanation}"
     st.markdown(
         f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
         unsafe_allow_html=True,
@@ -2103,13 +2220,52 @@ def _realtime_status_counts(rows: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _realtime_sort_key(row: dict) -> tuple[int, float, int, str]:
+def _realtime_sort_key(row: dict) -> tuple[int, int, float, float, int, str]:
     priority = {"review": 0, "normal": 1, "unavailable": 2}
     key = _realtime_row_status_key(row)
     spread = _number(row.get("spread_vs_afterhours_pct"))
     spread_abs = abs(spread) if spread is not None else -1.0
     relation_rank = 0 if row.get("is_position") else 1 if row.get("is_watchlist") else 2
-    return (priority.get(key, 9), -spread_abs, relation_rank, str(row.get("ticker") or ""))
+    volatility_rank = _spread_reason_rank(row)
+    atr_ratio = _number(row.get("spread_atr_ratio")) or _number(row.get("spread_range_ratio")) or -1.0
+    return (priority.get(key, 9), volatility_rank, -atr_ratio, -spread_abs, relation_rank, str(row.get("ticker") or ""))
+
+
+def _spread_reason_label(row: dict) -> str:
+    return str(row.get("spread_reasonableness_label") or SPREAD_REASON_INSUFFICIENT).strip() or SPREAD_REASON_INSUFFICIENT
+
+
+def _spread_reason_rank(row: dict) -> int:
+    return {
+        SPREAD_REASON_EXTREME: 0,
+        SPREAD_REASON_ANOMALY: 1,
+        "明显偏离": 2,
+        "轻微偏离": 3,
+        "正常波动": 4,
+        SPREAD_REASON_INSUFFICIENT: 5,
+    }.get(_spread_reason_label(row), 6)
+
+
+def _volatility_rank_value(row: dict) -> float:
+    ratio = _number(row.get("spread_atr_ratio"))
+    if ratio is None:
+        ratio = _number(row.get("spread_range_ratio"))
+    percentile = _number(row.get("spread_percentile")) or 0.0
+    return max(float(ratio or 0.0), percentile / 100.0)
+
+
+def _is_unexplained_anomalous_spread(row: dict) -> bool:
+    if _spread_reason_label(row) not in {SPREAD_REASON_ANOMALY, SPREAD_REASON_EXTREME}:
+        return False
+    news = str(row.get("closed_market_news_label") or _realtime_closed_news_label(row) or "").strip()
+    return news in {"无新闻解释", "无重大新闻", "无新闻", "待复核", "未检查"}
+
+
+def _is_news_explained_anomalous_spread(row: dict) -> bool:
+    if _spread_reason_label(row) not in {SPREAD_REASON_ANOMALY, SPREAD_REASON_EXTREME}:
+        return False
+    news = str(row.get("closed_market_news_label") or _realtime_closed_news_label(row) or "").strip()
+    return any(token in news for token in ("有新闻解释", "新闻方向一致", "重大新闻"))
 
 
 def _realtime_row_status_key(row: dict) -> str:
@@ -5461,11 +5617,15 @@ def _refresh_diagnostic_reason(row: dict, *, ignored: dict[str, dict] | None = N
 def _live_frame(rows: list[dict]) -> pd.DataFrame:
     columns = [
         "股票",
-        "美股盘后锚点",
-        "常规收盘",
+        "盘后锚点",
         "Binance 最新",
         "相对盘后",
         "相对收盘",
+        "20日平均振幅",
+        "ATR14",
+        "价差/ATR",
+        "价差分位",
+        "价差理性度",
         "状态",
         "休市新闻",
         "标签",
@@ -5476,16 +5636,38 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     display = pd.DataFrame()
     display["股票"] = frame.get("ticker")
-    display["美股盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
-    display["常规收盘"] = frame.apply(lambda row: _money_text(row.get("regular_close_price") or row.get("friday_close")), axis=1)
+    display["盘后锚点"] = frame.apply(lambda row: _price_anchor_text(row.to_dict()), axis=1)
     display["Binance 最新"] = frame.get("binance_last_price").map(_money_text)
     display["相对盘后"] = frame.get("spread_vs_afterhours_pct").map(_afterhours_spread_text)
     display["相对收盘"] = frame.get("spread_vs_regular_close_pct").map(_percent_text)
+    display["20日平均振幅"] = _frame_series(frame, "avg_range_20d").map(_percent_text)
+    display["ATR14"] = _frame_series(frame, "atr14_pct").map(_percent_text)
+    display["价差/ATR"] = _frame_series(frame, "spread_atr_ratio").map(_ratio_text)
+    display["价差分位"] = _frame_series(frame, "spread_percentile").map(_percentile_text)
+    display["价差理性度"] = frame.apply(lambda row: _spread_reason_display_text(row.to_dict()), axis=1)
     display["状态"] = frame.apply(lambda row: _realtime_row_status_label(row.to_dict()), axis=1)
-    display["休市新闻"] = frame.apply(lambda row: _realtime_closed_news_label(row.to_dict()), axis=1)
+    display["休市新闻"] = frame.apply(lambda row: row.get("closed_market_news_label") or _realtime_closed_news_label(row.to_dict()), axis=1)
     display["标签"] = frame.apply(lambda row: _realtime_row_tags_text(row.to_dict()), axis=1)
     display["更新时间"] = frame.get("updated_at").map(_short_hkt_time)
     return display[columns]
+
+
+def _percentile_text(value: object) -> str:
+    number = _number(value)
+    return "暂缺" if number is None else f"{number:.0f}%"
+
+
+def _spread_reason_display_text(row: dict) -> str:
+    label = _spread_reason_label(row)
+    if label == SPREAD_REASON_INSUFFICIENT:
+        return "波动数据不足"
+    return label
+
+
+def _frame_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column in frame.columns:
+        return frame[column]
+    return pd.Series([None] * len(frame), index=frame.index)
 
 
 def _realtime_row_tags_text(row: dict) -> str:
@@ -5746,7 +5928,7 @@ def _render_row_details(
     st.markdown(f'<section class="weekend-detail-card"><strong>{escape(ticker)} 价差详情</strong></section>', unsafe_allow_html=True)
     if mapping is not None:
         _render_single_row_refresh_actions(row, all_rows=all_rows or rows, mapping=mapping, tickers=tickers)
-    col_price, col_quality, col_tags = st.columns(3)
+    col_price, col_volatility, col_quality, col_tags = st.columns(4)
     with col_price:
         st.markdown("**价格**")
         st.caption(f"盘后锚点：{_money_text(row.get('afterhours_reference_price'))}")
@@ -5754,6 +5936,13 @@ def _render_row_details(
         st.caption(f"Binance 最新：{_money_text(row.get('binance_last_price'))}")
         st.caption(f"相对盘后：{_afterhours_spread_text(row.get('spread_vs_afterhours_pct'))}")
         st.caption(f"相对收盘：{_percent_text(row.get('spread_vs_regular_close_pct'))}")
+    with col_volatility:
+        st.markdown("**波动参照**")
+        st.caption(f"20日平均振幅：{_percent_text(row.get('avg_range_20d'))}")
+        st.caption(f"ATR14：{_percent_text(row.get('atr14_pct'))}")
+        st.caption(f"价差/ATR：{_ratio_text(row.get('spread_atr_ratio'))}")
+        st.caption(f"价差分位：{_percentile_text(row.get('spread_percentile'))}")
+        st.caption(f"价差理性度：{_spread_reason_display_text(row)}")
     with col_quality:
         st.markdown("**数据质量**")
         st.caption(f"映射状态：{_mapping_display_label_for_row(row)}")
@@ -5773,6 +5962,7 @@ def _render_row_details(
         quality_reason = str(row.get("mapping_quality_reason") or "").strip()
         if quality_reason:
             st.caption(f"备注：{quality_reason}")
+    st.caption(_volatility_detail_sentence(row))
 
 
 def _detail_select_label(row: dict) -> str:
@@ -5780,6 +5970,25 @@ def _detail_select_label(row: dict) -> str:
     spread = _afterhours_spread_text(row.get("spread_vs_afterhours_pct"))
     status = _realtime_row_status_label(row)
     return f"{ticker} ｜ {spread} ｜ {status}"
+
+
+def _volatility_detail_sentence(row: dict) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper() or "该标的"
+    label = _spread_reason_display_text(row)
+    explanation = str(row.get("spread_reasonableness_explanation") or "").strip()
+    spread = _afterhours_spread_text(row.get("spread_vs_afterhours_pct"))
+    avg_range = _percent_text(row.get("avg_range_20d"))
+    atr = _percent_text(row.get("atr14_pct"))
+    ratio = _ratio_text(row.get("spread_atr_ratio"))
+    percentile = _percentile_text(row.get("spread_percentile"))
+    if label == "波动数据不足":
+        return f"{ticker} 缺少足够日线数据，无法判断当前价差是否超出正常波动。"
+    return (
+        f"{ticker} 当前 Binance 相对盘后锚点 {spread}。"
+        f"过去20个交易日平均单日振幅为 {avg_range}，ATR14 为 {atr}。"
+        f"当前价差约等于 {ratio} ATR，处于过去60日波动的 {percentile} 分位。"
+        f"{explanation or f'价差理性度：{label}。'}"
+    )
 
 
 def _render_single_row_refresh_actions(
@@ -5920,7 +6129,10 @@ def _strongest_signal_row(rows: list[dict]) -> dict | None:
         return None
     return max(
         priced,
-        key=lambda row: abs(float(_number(row.get("spread_vs_afterhours_pct")) or _number(row.get("spread_pct")) or 0)),
+        key=lambda row: (
+            _volatility_rank_value(row),
+            abs(float(_number(row.get("spread_vs_afterhours_pct")) or _number(row.get("spread_pct")) or 0)),
+        ),
     )
 
 
@@ -6233,7 +6445,7 @@ def _ratio_text(value: object) -> str:
     number = _number(value)
     if number is None:
         return "暂缺"
-    return f"{number:.2f}"
+    return f"{number:.2f}x"
 
 
 def _funding_text(value: object) -> str:
