@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import sqlite3
 from pathlib import Path
