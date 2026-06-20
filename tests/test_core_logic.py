@@ -1819,6 +1819,9 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("min-height:40px", styles_source)
         self.assertIn("var(--dash-success-bg)", table_source)
         self.assertIn("width: 224px", theme_source)
+        self.assertIn("--zhx-font-sans", theme_source)
+        self.assertIn('"PingFang SC"', theme_source)
+        self.assertIn('"Microsoft YaHei"', theme_source)
 
     def test_dashboard_filter_chip_links_drive_table_filters(self) -> None:
         dashboard_module = __import__("ui.dashboard", fromlist=[""])

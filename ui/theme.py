@@ -11,6 +11,8 @@ def render_global_styles() -> None:
         """
         <style>
         :root {
+            --zhx-font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+            --zhx-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
             --zhx-bg: #F7F8FA;
             --zhx-surface: #ffffff;
             --zhx-surface-soft: #F3F4F6;
@@ -39,7 +41,7 @@ def render_global_styles() -> None:
         .stApp {
             background: var(--zhx-bg);
             color: var(--zhx-text);
-            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-family: var(--zhx-font-sans);
         }
 
         [data-testid="stMainBlockContainer"] {
@@ -810,7 +812,7 @@ def render_sidebar_restore_button() -> None:
             "border:1px solid rgba(148,163,184,.28)",
             "background:#0B1220",
             "color:#F8FAFC",
-            "font:700 13px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+            "font:700 13px Inter,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif",
             "box-shadow:0 14px 30px rgba(15,23,42,.18)",
             "cursor:pointer",
             "display:none",
