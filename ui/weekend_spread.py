@@ -5244,7 +5244,7 @@ def _render_overnight_provider_self_check(result: dict[str, object]) -> None:
         st.error(f"夜盘数据源自检失败：{reason}")
     rows = [
         ("当前数据源", _clean_self_check_text(result.get("provider_display"), "未配置")),
-        ("Alpaca 配置", "已配置" if result.get("alpaca_configured") else "缺少 API key"),
+        ("Alpaca 配置", "已配置" if result.get("alpaca_configured") else "缺少接口密钥"),
         ("Alpaca 行情源", _clean_self_check_text(result.get("feed"), "未配置")),
         ("时间周期", _clean_self_check_text(result.get("timeframe"), "未配置")),
         ("IBKR 配置", _ibkr_self_check_status(result)),

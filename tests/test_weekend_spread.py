@@ -57,6 +57,8 @@ from data.weekend_basis_mapping_audit import (
 from data.weekend_spread_backtest import (
     WeekendWindow,
     _binance_weekend_max_fields,
+    _overnight_missing_display_reason,
+    _strict_overnight_missing_display_reason,
     build_weekend_backtest_preflight,
     clear_backtest_view_state,
     fetch_friday_afterhours_close,
@@ -1484,6 +1486,16 @@ def test_ui_maps_afterhours_source_and_quality_text() -> None:
     assert weekend_spread._afterhours_cache_text("CACHE_CORRUPT") == "盘后缓存损坏"
     assert weekend_spread._afterhours_reason_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
     assert weekend_spread._afterhours_cache_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
+
+
+def test_overnight_provider_error_copy_does_not_expose_provider_word() -> None:
+    loose = _overnight_missing_display_reason("PROVIDER_ERROR")
+    strict = _strict_overnight_missing_display_reason("PROVIDER_ERROR")
+
+    assert loose == "夜盘数据源报错。"
+    assert strict == "夜盘数据源报错"
+    assert "provider" not in loose.lower()
+    assert "provider" not in strict.lower()
 
 
 def test_backtest_error_message_aggregates_missing_stock_first_bar() -> None:

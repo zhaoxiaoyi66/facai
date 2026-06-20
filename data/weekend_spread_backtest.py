@@ -1377,7 +1377,7 @@ def _overnight_missing_display_reason(quality: str) -> str:
     if normalized == "MISSING_BOATS_FIRST_1M":
         return "缺少下周第一个交易日 BOATS 夜盘首分钟 1m K线。"
     if normalized == "PROVIDER_ERROR":
-        return "夜盘 provider 报错。"
+        return "夜盘数据源报错。"
     return "缺少下周第一个交易日美股夜盘首分钟 1m K线"
 
 
@@ -1388,7 +1388,7 @@ def _strict_overnight_missing_display_reason(quality: str) -> str:
     if normalized == "ALPACA_BOATS_PERMISSION":
         return "Alpaca BOATS 权限不足，可能需要 Algo Trader Plus"
     if normalized == "PROVIDER_ERROR":
-        return "夜盘 provider 报错"
+        return "夜盘数据源报错"
     return "夜盘首分钟无有效 1m K线，不适合开盘第一时间平单"
 
 

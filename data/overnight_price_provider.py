@@ -180,20 +180,20 @@ def build_overnight_provider_self_check(
         reason = "美股夜盘数据源未配置"
     elif selected == "ALPACA_BOATS" and not config.get("alpaca_configured"):
         selected_provider = None
-        reason = "API key 缺失"
+        reason = "接口密钥缺失"
     elif selected == "IBKR_OVERNIGHT" and not config.get("ibkr_configured"):
         selected_provider = None
         reason = "美股夜盘数据源未配置"
     elif selected not in {"ALPACA_BOATS", "IBKR_OVERNIGHT"}:
         selected_provider = None
-        reason = "provider 报错：不支持的夜盘数据源"
+        reason = "数据源报错：不支持的夜盘数据源"
     if selected_provider is None:
         if not selected or selected == "IBKR_OVERNIGHT":
             reason = "美股夜盘数据源未配置"
         elif selected == "ALPACA_BOATS":
-            reason = "API key 缺失"
+            reason = "接口密钥缺失"
         else:
-            reason = "provider 报错：不支持的夜盘数据源"
+            reason = "数据源报错：不支持的夜盘数据源"
         result = {
             "ok": False,
             "requested_start": session_start_et.isoformat(),
@@ -227,7 +227,7 @@ def build_overnight_provider_self_check(
                 "provider": selected,
                 "quality": "PROVIDER_ERROR",
             }
-            reason = f"provider 报错：{type(exc).__name__}"
+            reason = f"数据源报错：{type(exc).__name__}"
     if not reason:
         provider_error = str(getattr(selected_provider, "last_error_reason", "") or "")
         quality = str(result.get("quality") or "").strip().upper()
@@ -238,7 +238,7 @@ def build_overnight_provider_self_check(
         elif provider_error == "MISSING_BOATS_FIRST_1M" or quality == "MISSING_BOATS_FIRST_1M":
             reason = "缺少 BOATS 夜盘首分钟 1m K线。"
         elif provider_error.startswith("PROVIDER_ERROR"):
-            reason = "provider 报错"
+            reason = "数据源报错"
         elif quality == "OVERNIGHT_PROVIDER_MISSING":
             reason = "美股夜盘数据源未配置"
         elif not result.get("ok"):
