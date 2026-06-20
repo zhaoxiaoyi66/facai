@@ -106,6 +106,13 @@ def test_new_trade_entry_actions_are_sell_trim_only() -> None:
     assert "add" not in trade_journal.SELL_ENTRY_ACTION_OPTIONS.values()
 
 
+def test_trade_journal_sell_editor_empty_position_copy_is_chinese() -> None:
+    source = inspect.getsource(trade_journal._render_editor)
+
+    assert "当前没有可卖出的启用持仓。" in source
+    assert "active 持仓" not in source
+
+
 def test_trade_journal_signal_labels_do_not_show_raw_internal_codes() -> None:
     labels = [
         trade_journal._signal_reason_label("NEW_BLOCK_REASON"),

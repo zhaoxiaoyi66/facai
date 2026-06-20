@@ -486,7 +486,7 @@ def _render_editor(store: TradeJournalStore) -> None:
             st.caption("买入/加仓请前往组合持仓页操作；这里只记录减仓、清仓，并显示卖出风险提示。")
             _render_macro_regime_sell_hint()
             if not active_positions:
-                st.info("当前没有可卖出的 active 持仓。")
+                st.info("当前没有可卖出的启用持仓。")
                 return
         st.markdown("### 成交信息")
         top_cols = st.columns([1.1, 1.2, 1])
