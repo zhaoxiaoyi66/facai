@@ -336,7 +336,7 @@ def _quick_target_level(plan: dict) -> dict | None:
 def _plan_status(status: str, level: dict | None, distance_pct: float | None, message: str) -> dict:
     return {
         "status": status,
-        "label": BUY_PLAN_STATUS_LABELS.get(status, status),
+        "label": BUY_PLAN_STATUS_LABELS.get(status, "需复核"),
         "level": level,
         "distance_pct": distance_pct,
         "message": message,

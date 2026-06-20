@@ -18,7 +18,7 @@ from data.decision_log import TradeJournalStore
 from data.price_alerts import PriceAlertStore, sync_buy_plan_price_alert
 from data.portfolio import PortfolioPositionStore
 from data.portfolio_trade_entry import submit_portfolio_buy_add
-from data.stock_plan import StockPlanStore, get_buy_plan_status, is_active_buy_plan
+from data.stock_plan import StockPlanStore, _plan_status, get_buy_plan_status, is_active_buy_plan
 from data.structure_entry import STRUCTURE_BROKEN, StructureEntryAdvisor
 from data.trade_gate import buy_gate_entry_fields, evaluate_buy_gate
 from data.trade_intent import TradeIntentStore
@@ -357,6 +357,13 @@ def test_stock_plan_quick_target_status_without_ladder_levels() -> None:
         assert near["status"] == "near_trigger"
         assert near["level"]["label"] == "目标提醒价"
         assert triggered["status"] == "triggered"
+
+
+def test_stock_plan_unknown_status_label_does_not_leak_internal_code() -> None:
+    status = _plan_status("NEW_PLAN_STATUS", None, None, "需要复核")
+
+    assert status["label"] == "需复核"
+    assert "NEW_PLAN_STATUS" not in status["label"]
 
 
 def test_closing_buy_plan_marks_it_inactive_for_current_plan_ui() -> None:
