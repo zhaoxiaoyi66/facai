@@ -5460,7 +5460,16 @@ def _mapping_status_text(value: object) -> str:
         "etf_verified": "映射可用",
         "pending_verification": "映射可用",
         "other_tradfi": "其他 TradFi",
-    }.get(text, str(value or "未知"))
+    }.get(text, _unknown_display_text(value, "未知映射状态"))
+
+
+def _unknown_display_text(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return fallback
+    return text
 
 
 def _data_quality_text(value: object) -> str:
@@ -5508,7 +5517,7 @@ def _data_quality_text(value: object) -> str:
         "MISSING_P0": "缺少 P0",
         "MISSING_P1": "缺少 P1",
         "MISSING_P2": "缺少 P2",
-    }.get(text, text or "未知")
+    }.get(text, _unknown_display_text(value, "未知数据状态"))
 
 
 def _backfill_mapping_status_text(value: object) -> str:
@@ -5516,7 +5525,7 @@ def _backfill_mapping_status_text(value: object) -> str:
     return {
         "CONFIRMED_TRADE_GRADE": "人工锁定 / 可回测",
         "CANDIDATE_OBSERVATION": "映射可用 / 观察",
-    }.get(text, str(value or "未知"))
+    }.get(text, _unknown_display_text(value, "未知映射状态"))
 
 
 def _basis_status_text(value: object) -> str:
@@ -5539,7 +5548,7 @@ def _basis_status_text(value: object) -> str:
         "EXIT_READY": "待结束",
         "CLOSED": "已关闭",
         "FAILED": "失败",
-    }.get(text, str(value or "未知"))
+    }.get(text, _unknown_display_text(value, "未知基差状态"))
 
 
 def _exclusion_reason_text(value: object) -> str:
@@ -5556,7 +5565,7 @@ def _exclusion_reason_text(value: object) -> str:
         "FUTURES_UNAVAILABLE": "USDT-M 合约不可用",
         "NO_PRICE_ANCHOR": "缺少价格锚点",
         "PROVIDER_ERROR": "数据源错误",
-    }.get(text, str(value or "未知"))
+    }.get(text, _unknown_display_text(value, "未知排除原因"))
 
 
 def _backtest_block_text(value: object) -> str:
@@ -5583,7 +5592,7 @@ def _market_type_text(value: object) -> str:
         "um_futures": "USDT-M 合约",
         "futures": "USDT-M 合约",
         "spot": "现货",
-    }.get(text, str(value or "未知"))
+    }.get(text, _unknown_display_text(value, "未知市场类型"))
 
 
 def _backtest_exclusion_frame(rows: list[dict]) -> pd.DataFrame:
@@ -6807,7 +6816,7 @@ def _price_source_text(value: object) -> str:
         "MANUAL_OVERNIGHT_1M": "手动夜盘",
         "MANUAL_AFTERHOURS_1M": "手动盘后",
         "BINANCE_USDT_M": "Binance USDT-M",
-    }.get(upper, text)
+    }.get(upper, _unknown_display_text(value, "未知价格来源"))
 
 
 def _weekend_review_failure_reason(row: dict, data_quality: str) -> str:
@@ -8595,7 +8604,7 @@ def _afterhours_source_text(value: object) -> str:
         "FMP_AFTERHOURS_TRADE": "FMP 盘后成交",
         "FMP_AFTERHOURS_QUOTE_MID": "FMP 盘后报价中间价",
         "ALPHAVANTAGE_INTRADAY_EXTENDED": "Alpha Vantage 盘前盘后分钟线",
-    }.get(code, code or "盘后锚点来源缺失")
+    }.get(code, _unknown_display_text(value, "盘后锚点来源缺失"))
 
 
 def _afterhours_cache_text(value: object) -> str:

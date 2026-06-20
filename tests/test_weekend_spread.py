@@ -1488,6 +1488,33 @@ def test_ui_maps_afterhours_source_and_quality_text() -> None:
     assert weekend_spread._afterhours_cache_text("CACHE_DATE_MISMATCH") == "盘后缓存日期不匹配"
 
 
+def test_weekend_spread_unknown_internal_codes_do_not_leak_to_ui() -> None:
+    labels = [
+        weekend_spread._mapping_status_text("NEW_MAPPING_STATUS"),
+        weekend_spread._data_quality_text("NEW_INTERNAL_STATUS"),
+        weekend_spread._backfill_mapping_status_text("NEW_BACKFILL_STATUS"),
+        weekend_spread._basis_status_text("NEW_BASIS_STATUS"),
+        weekend_spread._exclusion_reason_text("NEW_EXCLUSION_REASON"),
+        weekend_spread._market_type_text("new_market_type"),
+        weekend_spread._price_source_text("NEW_PRICE_SOURCE"),
+        weekend_spread._afterhours_source_text("NEW_AFTERHOURS_SOURCE"),
+    ]
+
+    assert labels == [
+        "未知映射状态",
+        "未知数据状态",
+        "未知映射状态",
+        "未知基差状态",
+        "未知排除原因",
+        "未知市场类型",
+        "未知价格来源",
+        "盘后锚点来源缺失",
+    ]
+    assert weekend_spread._data_quality_text("人工复核") == "人工复核"
+    for label in labels:
+        assert "NEW_" not in label
+
+
 def test_overnight_provider_error_copy_does_not_expose_provider_word() -> None:
     loose = _overnight_missing_display_reason("PROVIDER_ERROR")
     strict = _strict_overnight_missing_display_reason("PROVIDER_ERROR")
