@@ -1160,7 +1160,7 @@ def _text_list(value: Any) -> list[str]:
 
 def _missing_label(value: str) -> str:
     text = str(value or "").strip()
-    return {
+    labels = {
         "daily_ohlcv": "历史K线",
         "daily_ohlcv_window": "历史K线窗口不足",
         "volume_ratio": "成交量/量比",
@@ -1177,7 +1177,12 @@ def _missing_label(value: str) -> str:
         "resistance_zone": "阻力区",
         "price": "当前价格",
         "buy_zone_context": "统一买区上下文",
-    }.get(text, text)
+    }
+    if text in labels:
+        return labels[text]
+    if text and all(ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) for ch in text):
+        return "数据字段"
+    return text or "数据字段"
 
 
 def _display_advisory_level(action: str) -> str:

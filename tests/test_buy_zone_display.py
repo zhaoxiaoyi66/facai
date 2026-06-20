@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from data.buy_zone_display import build_buy_zone_display
+from data.buy_zone_display import _missing_label, build_buy_zone_display
 
 
 def test_now_position_sizing_zero_converges_to_single_main_action() -> None:
@@ -278,3 +278,9 @@ def test_data_insufficient_position_pauses_add_without_legacy_buy_copy() -> None
     assert display["account_action_text"] == "已有 100 股，持有观察，不建议加仓"
     assert display["zone_text"] == "暂不生成"
     assert display["badge_label"] == "数据不足"
+
+
+def test_missing_field_label_hides_unknown_internal_codes() -> None:
+    assert _missing_label("NEW_MISSING_FIELD") == "数据字段"
+    assert _missing_label("") == "数据字段"
+    assert _missing_label("人工补充字段") == "人工补充字段"
