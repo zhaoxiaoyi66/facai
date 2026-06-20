@@ -1464,7 +1464,7 @@ def _buy_plan_alert_status_text(alert: dict) -> str:
         "deleted": "已删除",
     }
     trigger = _money_text(alert.get("triggerPrice"))
-    return f"{labels.get(status, status or '未知')}｜{trigger}"
+    return f"{labels.get(status, _portfolio_unknown_display_text(status, '未知'))}｜{trigger}"
 
 
 def _buy_plan_plan_status_text(plan: dict) -> str:
@@ -1925,7 +1925,7 @@ def _reconciliation_reason_text(item: dict | None) -> str:
         "position_without_synced_journal": "有持仓但找不到入账交易来源",
         "synced_journal_without_active_position": "交易流水有持仓但当前持仓未启用",
     }
-    translated = [labels.get(reason, reason) for reason in reasons]
+    translated = [labels.get(reason, _portfolio_unknown_display_text(reason, "其他原因")) for reason in reasons]
     return "；".join(translated) if translated else "交易日志和当前持仓一致"
 
 
@@ -2237,8 +2237,8 @@ def _portfolio_buy_plan_reasons(plan_gate: dict) -> list[str]:
         "valuation_review_required": "估值评分低于 40，计划缺少复核说明。",
         "allow_planned_add": "已匹配计划内分批买入档位。",
     }
-    reasons = [labels.get(status, status)] if status else []
-    reasons.extend(str(item) for item in (plan_gate.get("plan_block_reasons") or []) if str(item).strip())
+    reasons = [labels.get(status, _portfolio_unknown_display_text(status, "其他原因"))] if status else []
+    reasons.extend(_portfolio_unknown_display_text(item, "其他原因") for item in (plan_gate.get("plan_block_reasons") or []) if str(item).strip())
     return _dedupe_text(reasons)
 
 
@@ -2250,8 +2250,9 @@ def _portfolio_starter_reasons(starter_gate: dict) -> list[str]:
         "starter_review_required": "估值评分过低，底仓建仓需要复核。",
         "allow_starter_position": "已匹配 A 类底仓建仓条件。",
     }
-    reasons = [labels.get(status, status)] if labels.get(status, status) else []
-    reasons.extend(str(item) for item in (starter_gate.get("starter_block_reasons") or []) if str(item).strip())
+    status_text = labels.get(status, _portfolio_unknown_display_text(status, ""))
+    reasons = [status_text] if status_text else []
+    reasons.extend(_portfolio_unknown_display_text(item, "其他原因") for item in (starter_gate.get("starter_block_reasons") or []) if str(item).strip())
     return _dedupe_text(reasons)
 
 
