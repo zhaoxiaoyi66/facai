@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+import json
 import os
 import sqlite3
 import subprocess
@@ -9,13 +10,18 @@ import sys
 from pathlib import Path
 from statistics import median
 from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
 from data.binance_provider import BinanceHTTPPriceProvider, BinancePriceProvider, CachedBinancePriceProvider
 from data.cache_read_model import CacheReadModel
+from data.providers import get_secret
 from data.us_market_session import US_EASTERN, HONG_KONG, _is_trading_day
 from data.weekend_spread import is_binance_symbol_ignored, load_binance_symbol_ignore, load_binance_symbol_mapping
+from data.weekend_spread_backtest import normalize_klines
 from data.weekend_spread_monitor import fetch_bulk_usdm_prices
 from settings import PROJECT_ROOT
 
@@ -67,6 +73,94 @@ class BasisProfile:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class HistoricalBasisBar:
+    ts: datetime
+    close: float
+    source: str = ""
+
+
+class AlpacaRegularHoursBarProvider:
+    provider_name = "ALPACA_REGULAR"
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        base_url: str = "https://data.alpaca.markets",
+        feed: str | None = None,
+        timeout_seconds: float = 12.0,
+    ) -> None:
+        self.api_key = api_key or get_secret("ALPACA_API_KEY_ID") or get_secret("ALPACA_API_KEY")
+        self.api_secret = api_secret or get_secret("ALPACA_API_SECRET_KEY") or get_secret("ALPACA_SECRET_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.feeds = _normalize_alpaca_feeds(feed or get_secret("ALPACA_BASIS_FEED") or get_secret("ALPACA_AFTERHOURS_FEED"))
+        self.timeout_seconds = timeout_seconds
+        self.last_error_reason = ""
+        self.last_feed = ""
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key and self.api_secret)
+
+    def get_stock_bars(
+        self,
+        symbol: str,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        interval: str = "1m",
+    ) -> list[dict[str, Any]]:
+        if not self.is_configured:
+            self.last_error_reason = "API_KEY_MISSING"
+            return []
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            self.last_error_reason = "MISSING_SYMBOL"
+            return []
+        timeframe = "1Min" if str(interval or "").lower() in {"1m", "1min", "1 min"} else str(interval)
+        fetch_errors: list[str] = []
+        for feed in self.feeds:
+            params = {
+                "timeframe": timeframe,
+                "start": start_time.astimezone(timezone.utc).isoformat(),
+                "end": end_time.astimezone(timezone.utc).isoformat(),
+                "adjustment": "raw",
+                "feed": feed,
+                "sort": "asc",
+                "limit": "10000",
+            }
+            try:
+                payload = self._get_json(f"v2/stocks/{normalized}/bars", params)
+            except HTTPError as exc:
+                fetch_errors.append(f"{feed}:HTTPError:{exc.code}")
+                continue
+            except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                fetch_errors.append(f"{feed}:{type(exc).__name__}")
+                continue
+            rows = payload.get("bars") if isinstance(payload, dict) else []
+            if isinstance(rows, list) and rows:
+                self.last_feed = feed
+                self.last_error_reason = ""
+                return [dict(row) for row in rows if isinstance(row, dict)]
+        self.last_error_reason = ";".join(fetch_errors) if fetch_errors else "NO_REGULAR_BARS"
+        return []
+
+    def _get_json(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        request = Request(
+            f"{self.base_url}/{endpoint.lstrip('/')}?{urlencode(params)}",
+            headers={
+                "APCA-API-KEY-ID": self.api_key or "",
+                "APCA-API-SECRET-KEY": self.api_secret or "",
+                "User-Agent": "facai-weekend-spread-basis/1.0",
+            },
+        )
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+        return payload if isinstance(payload, dict) else {}
 
 
 def calculate_basis_pct(binance_price: Any, stock_spot_price: Any) -> float | None:
@@ -169,6 +263,124 @@ def collect_open_market_basis_once(
         "message": f"已采集 {len(samples)} 条开市基差样本，跳过 {skipped} 条。",
         "market_session": "regular",
         "sample_time_et": current_et.isoformat(),
+        "samples": samples,
+    }
+
+
+def backfill_open_market_basis_history(
+    symbols: Iterable[str] | None = None,
+    *,
+    mapping: dict[str, dict[str, Any]] | None = None,
+    ignored: dict[str, dict[str, Any]] | None = None,
+    binance_history_provider: Any | None = None,
+    stock_history_provider: Any | None = None,
+    db_path: Path = DEFAULT_BASIS_DB_PATH,
+    now: datetime | None = None,
+    lookback_trading_days: int = 5,
+    sample_interval_minutes: int = 30,
+    max_alignment_seconds: int = 60,
+    max_candidate_gap_seconds: int = 300,
+) -> dict[str, Any]:
+    mapping = mapping if mapping is not None else load_binance_symbol_mapping()
+    ignored = ignored if ignored is not None else load_binance_symbol_ignore()
+    selected = {str(item or "").strip().upper() for item in symbols or [] if str(item or "").strip()}
+    active = _active_mapping_rows(mapping, ignored, selected)
+    if not active:
+        return {
+            "ok": False,
+            "collected_count": 0,
+            "skipped_count": 0,
+            "misaligned_count": 0,
+            "message": "没有可回填的开市基差标的。",
+            "samples": [],
+        }
+
+    stock_provider = stock_history_provider or AlpacaRegularHoursBarProvider()
+    if not _stock_history_provider_ready(stock_provider):
+        return {
+            "ok": False,
+            "collected_count": 0,
+            "skipped_count": len(active),
+            "misaligned_count": 0,
+            "message": "缺少可用的美股历史分钟线数据源，无法回填开市基差。请配置 Alpaca 常规盘分钟线权限，或在开市时实时采集。",
+            "provider_status": str(getattr(stock_provider, "last_error_reason", "") or "API_KEY_MISSING"),
+            "samples": [],
+        }
+
+    binance_provider = binance_history_provider or BinanceHTTPPriceProvider()
+    current_et = _to_et(now or datetime.now(timezone.utc))
+    trading_days = _recent_completed_trading_days(current_et, max(1, int(lookback_trading_days or 5)))
+    sample_interval = max(1, int(sample_interval_minutes or 30))
+    samples: list[dict[str, Any]] = []
+    skipped = 0
+    misaligned = 0
+    errors: list[str] = []
+
+    for ticker, config in active.items():
+        binance_symbol = str(config.get("binance_symbol") or "").strip().upper()
+        if not binance_symbol:
+            skipped += 1
+            continue
+        for day in trading_days:
+            start_et = datetime.combine(day, time(10, 0), tzinfo=US_EASTERN)
+            end_et = datetime.combine(day, time(15, 30), tzinfo=US_EASTERN)
+            target_times = _basis_sample_times(start_et, end_et, sample_interval)
+            try:
+                binance_bars = _fetch_binance_history_bars(binance_provider, binance_symbol, start_et, end_et + timedelta(minutes=1))
+                stock_bars = _fetch_stock_history_bars(stock_provider, ticker, start_et, end_et + timedelta(minutes=1))
+            except Exception as exc:
+                skipped += len(target_times)
+                errors.append(f"{ticker}:{type(exc).__name__}")
+                continue
+            for target in target_times:
+                binance_bar = _nearest_bar(binance_bars, target, max_seconds=max_candidate_gap_seconds)
+                stock_bar = _nearest_bar(stock_bars, target, max_seconds=max_candidate_gap_seconds)
+                if binance_bar is None or stock_bar is None:
+                    skipped += 1
+                    continue
+                diff_seconds = abs((binance_bar.ts.astimezone(timezone.utc) - stock_bar.ts.astimezone(timezone.utc)).total_seconds())
+                quality = QUALITY_SUFFICIENT if diff_seconds <= max_alignment_seconds else QUALITY_TIME_MISALIGNED
+                if quality == QUALITY_TIME_MISALIGNED:
+                    misaligned += 1
+                basis = calculate_basis_pct(binance_bar.close, stock_bar.close)
+                if basis is None:
+                    skipped += 1
+                    continue
+                samples.append(
+                    BasisSample(
+                        sample_time_et=target.isoformat(),
+                        sample_time_hkt=target.astimezone(HONG_KONG).isoformat(),
+                        ticker=ticker,
+                        binance_symbol=binance_symbol,
+                        binance_price=float(binance_bar.close),
+                        stock_spot_price=float(stock_bar.close),
+                        stock_spot_source=stock_bar.source or "historical_stock_1m",
+                        binance_source=binance_bar.source or "binance_usdm_futures_1m",
+                        basis_pct=float(basis),
+                        price_time_diff_seconds=diff_seconds,
+                        market_session="regular",
+                        sample_quality=quality,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                    ).as_dict()
+                )
+
+    if samples:
+        save_basis_samples(samples, db_path=db_path)
+        for ticker in {sample["ticker"] for sample in samples}:
+            upsert_basis_profile(build_normal_basis_profile(ticker, db_path=db_path, now=current_et), db_path=db_path)
+
+    return {
+        "ok": bool(samples),
+        "collected_count": len(samples),
+        "skipped_count": skipped,
+        "misaligned_count": misaligned,
+        "trading_days": [day.isoformat() for day in trading_days],
+        "message": (
+            f"已回填 {len(samples)} 条历史开市基差样本，时间未对齐 {misaligned} 条，跳过 {skipped} 条。"
+            if samples
+            else "没有回填到可用历史开市基差样本。请检查 Binance / 美股分钟线权限。"
+        ),
+        "errors": errors[:10],
         "samples": samples,
     }
 
@@ -480,6 +692,141 @@ def _empty_sample_frame() -> pd.DataFrame:
             "created_at",
         ]
     )
+
+
+def _recent_completed_trading_days(now_et: datetime, count: int) -> list[date]:
+    current = _to_et(now_et)
+    candidate = current.date()
+    if not (_is_trading_day(candidate) and current.time() >= time(15, 31)):
+        candidate = candidate - timedelta(days=1)
+    result: list[date] = []
+    while len(result) < count:
+        if _is_trading_day(candidate):
+            result.append(candidate)
+        candidate = candidate - timedelta(days=1)
+    return sorted(result)
+
+
+def _basis_sample_times(start_et: datetime, end_et: datetime, interval_minutes: int) -> list[datetime]:
+    current = start_et
+    result: list[datetime] = []
+    step = timedelta(minutes=max(1, int(interval_minutes or 30)))
+    while current <= end_et:
+        result.append(current)
+        current += step
+    return result
+
+
+def _stock_history_provider_ready(provider: Any) -> bool:
+    if provider is None or not hasattr(provider, "get_stock_bars"):
+        return False
+    configured = getattr(provider, "is_configured", True)
+    return bool(configured)
+
+
+def _fetch_binance_history_bars(
+    provider: Any,
+    symbol: str,
+    start_et: datetime,
+    end_et: datetime,
+) -> list[HistoricalBasisBar]:
+    if provider is None or not hasattr(provider, "get_klines"):
+        return []
+    start_ms = _to_ms(start_et)
+    end_ms = _to_ms(end_et)
+    cursor = start_ms
+    payload: list[Any] = []
+    for _ in range(10):
+        batch = provider.get_klines(
+            symbol,
+            market_type="usdm_futures",
+            interval="1m",
+            start_time_ms=cursor,
+            end_time_ms=end_ms,
+            limit=1000,
+        )
+        if not batch:
+            break
+        payload.extend(batch)
+        bars = normalize_klines(batch)
+        if not bars:
+            break
+        next_cursor = _to_ms(bars[-1].open_time + timedelta(minutes=1))
+        if next_cursor <= cursor or next_cursor >= end_ms:
+            break
+        cursor = next_cursor
+    return [
+        HistoricalBasisBar(ts=bar.open_time.astimezone(timezone.utc), close=float(bar.close), source="binance_usdm_futures_1m")
+        for bar in normalize_klines(payload)
+    ]
+
+
+def _fetch_stock_history_bars(
+    provider: Any,
+    ticker: str,
+    start_et: datetime,
+    end_et: datetime,
+) -> list[HistoricalBasisBar]:
+    rows = provider.get_stock_bars(
+        ticker,
+        start_time=start_et,
+        end_time=end_et,
+        interval="1m",
+    )
+    source = str(getattr(provider, "provider_name", "") or "historical_stock_1m")
+    feed = str(getattr(provider, "last_feed", "") or "").strip()
+    if feed:
+        source = f"{source}_{feed}"
+    bars: list[HistoricalBasisBar] = []
+    for row in rows or []:
+        bar = _normalize_historical_stock_bar(row, source=source)
+        if bar is not None:
+            bars.append(bar)
+    deduped: dict[datetime, HistoricalBasisBar] = {bar.ts: bar for bar in bars}
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def _normalize_historical_stock_bar(row: Any, *, source: str) -> HistoricalBasisBar | None:
+    if isinstance(row, HistoricalBasisBar):
+        return row
+    if not isinstance(row, dict):
+        return None
+    ts = _first_time(
+        row.get("t"),
+        row.get("timestamp"),
+        row.get("time"),
+        row.get("bar_time"),
+        row.get("start"),
+    )
+    close = _first_number(row.get("c"), row.get("close"), row.get("price"), row.get("lastPrice"))
+    if ts is None or close is None or close <= 0:
+        return None
+    return HistoricalBasisBar(ts=ts.astimezone(timezone.utc), close=float(close), source=source)
+
+
+def _nearest_bar(bars: list[HistoricalBasisBar], target_et: datetime, *, max_seconds: int) -> HistoricalBasisBar | None:
+    if not bars:
+        return None
+    target_utc = target_et.astimezone(timezone.utc)
+    closest = min(bars, key=lambda bar: abs((bar.ts.astimezone(timezone.utc) - target_utc).total_seconds()))
+    diff = abs((closest.ts.astimezone(timezone.utc) - target_utc).total_seconds())
+    return closest if diff <= max_seconds else None
+
+
+def _to_ms(value: datetime) -> int:
+    return int(value.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def _normalize_alpaca_feeds(value: Any) -> list[str]:
+    raw = str(value or "").strip()
+    candidates = [item.strip().lower() for item in raw.split(",") if item.strip()] if raw else []
+    candidates.extend(["sip", "iex"])
+    result: list[str] = []
+    for item in candidates:
+        if item not in {"sip", "iex"} or item in result:
+            continue
+        result.append(item)
+    return result or ["sip", "iex"]
 
 
 def _to_et(value: datetime) -> datetime:

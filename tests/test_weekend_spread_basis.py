@@ -11,6 +11,7 @@ from data.weekend_spread_basis import (
     QUALITY_LIMITED,
     QUALITY_SUFFICIENT,
     QUALITY_TIME_MISALIGNED,
+    backfill_open_market_basis_history,
     build_normal_basis_profile,
     calculate_adjusted_spread_pct,
     calculate_basis_pct,
@@ -130,6 +131,102 @@ def test_collect_open_market_basis_once_writes_sample_and_profile(tmp_path) -> N
     assert profile["basis_quality"] == QUALITY_LIMITED
 
 
+class _FakeBinanceHistoryProvider:
+    def __init__(self, *, close: float = 101.0) -> None:
+        self.close = close
+
+    def get_klines(
+        self,
+        _symbol: str,
+        *,
+        market_type: str = "usdm_futures",
+        interval: str = "1m",
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[list[object]]:
+        start = datetime.fromtimestamp(int(start_time_ms or 0) / 1000, tz=timezone.utc)
+        end = datetime.fromtimestamp(int(end_time_ms or 0) / 1000, tz=timezone.utc)
+        current = start
+        rows: list[list[object]] = []
+        while current < end:
+            rows.append([int(current.timestamp() * 1000), self.close, self.close, self.close, self.close, 1])
+            current += timedelta(minutes=30)
+        return rows
+
+
+class _FakeStockHistoryProvider:
+    is_configured = True
+    provider_name = "FAKE_STOCK_HISTORY"
+
+    def __init__(self, *, close: float = 100.0, offset_seconds: int = 0) -> None:
+        self.close = close
+        self.offset_seconds = offset_seconds
+
+    def get_stock_bars(
+        self,
+        _symbol: str,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        interval: str = "1m",
+    ) -> list[dict[str, object]]:
+        current = start_time.astimezone(timezone.utc) + timedelta(seconds=self.offset_seconds)
+        end = end_time.astimezone(timezone.utc)
+        rows: list[dict[str, object]] = []
+        while current < end:
+            rows.append({"t": current.isoformat(), "c": self.close})
+            current += timedelta(minutes=30)
+        return rows
+
+
+def test_backfill_open_market_basis_history_writes_aligned_samples_and_profile(tmp_path) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
+
+    result = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        binance_history_provider=_FakeBinanceHistoryProvider(close=101.0),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0),
+    )
+    profile = build_normal_basis_profile("GLW", db_path=db_path, now=now)
+
+    assert result["ok"] is True
+    assert result["collected_count"] >= 10
+    assert result["misaligned_count"] == 0
+    assert profile["normal_basis_median_pct"] == pytest.approx(1.0)
+    assert profile["basis_quality"] == QUALITY_LIMITED
+
+
+def test_backfill_open_market_basis_history_keeps_misaligned_samples_out_of_profile(tmp_path) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 17, 17, 0, tzinfo=US_EASTERN)
+
+    result = backfill_open_market_basis_history(
+        mapping={"GLW": {"binance_symbol": "GLWUSDT"}},
+        ignored={},
+        db_path=db_path,
+        now=now,
+        lookback_trading_days=1,
+        sample_interval_minutes=30,
+        max_alignment_seconds=60,
+        max_candidate_gap_seconds=300,
+        binance_history_provider=_FakeBinanceHistoryProvider(close=101.0),
+        stock_history_provider=_FakeStockHistoryProvider(close=100.0, offset_seconds=120),
+    )
+    profile = build_normal_basis_profile("GLW", db_path=db_path, now=now)
+
+    assert result["ok"] is True
+    assert result["misaligned_count"] >= 10
+    assert profile["normal_basis_median_pct"] is None
+    assert profile["basis_quality"] == QUALITY_TIME_MISALIGNED
+
+
 def test_empty_normal_basis_profile_is_marked_uncollected(tmp_path) -> None:
     profile = build_normal_basis_profile("GLW", db_path=tmp_path / "basis.sqlite3")
 
@@ -141,6 +238,10 @@ def test_basis_collector_script_supports_quiet_mode() -> None:
     source = (Path(__file__).resolve().parents[1] / "tools" / "weekend_spread_basis_collector.py").read_text(encoding="utf-8")
 
     assert "--quiet" in source
+    assert "--backfill" in source
+    assert "--lookback-days" in source
+    assert "--sample-interval-minutes" in source
+    assert "backfill_open_market_basis_history" in source
     assert "collect_open_market_basis_once" in source
 
 

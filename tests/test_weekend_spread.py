@@ -6335,6 +6335,8 @@ def test_realtime_view_exposes_open_market_basis_collection_entry() -> None:
     assert "_render_realtime_basis_collection_entry" in realtime_source
     assert "开市基差采集" in entry_source
     assert "采集一次开市基差" in entry_source
+    assert "回填最近 5 个交易日基差" in entry_source
+    assert "weekend_spread_backfill_open_market_basis_realtime" in entry_source
     assert "安装开市基差采集任务" in entry_source
     assert "weekend_spread_collect_open_market_basis_realtime" in entry_source
     assert "weekend_spread_collect_open_market_basis\"" not in entry_source
