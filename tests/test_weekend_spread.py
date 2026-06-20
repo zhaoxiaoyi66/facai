@@ -7317,6 +7317,72 @@ def test_weekend_monitor_priority_boosts_portfolio_and_watchlist() -> None:
     assert position["monitor_priority_score"] > plain["monitor_priority_score"]
 
 
+def test_weekend_monitor_priority_uses_range_ratio_fallback() -> None:
+    row = build_monitor_priority(
+        {
+            "ticker": "GLW",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_range_ratio": 1.2,
+            "premium_trend_label": "价差稳定",
+        }
+    )
+
+    assert row["monitor_priority_label"] != "数据不足"
+
+
+def test_weekend_monitor_rows_fill_volatility_from_local_cache(monkeypatch) -> None:
+    class Reader:
+        def get_price_history(self, _ticker: str) -> pd.DataFrame:
+            return _volatility_history(rows=70, close=100.0, daily_range=4.0)
+
+    monkeypatch.setattr(weekend_spread, "CacheReadModel", lambda: Reader())
+    rows = [
+        {
+            "ticker": "GLW",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "premium_trend_label": "价差稳定",
+        }
+    ]
+
+    prioritized = weekend_spread._monitor_rows_with_priority(rows)
+
+    assert prioritized[0]["spread_atr_ratio"] == pytest.approx(1.0)
+    assert weekend_spread._daily_volatility_reference_text(prioritized[0]) == "约 1.0 天波动"
+    assert prioritized[0]["monitor_priority_label"] != "数据不足"
+
+
+def test_weekend_monitor_splits_insufficient_rows_from_default_queue() -> None:
+    valid = build_monitor_priority(
+        {
+            "ticker": "NVDA",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+            "spread_atr_ratio": 1.5,
+        }
+    )
+    insufficient = build_monitor_priority(
+        {
+            "ticker": "AAOI",
+            "anchor_price": 100.0,
+            "binance_price": 104.0,
+            "premium_pct": 4.0,
+        }
+    )
+
+    valid_rows, insufficient_rows = weekend_spread._split_monitor_rows_by_quality([valid, insufficient])
+
+    assert [row["ticker"] for row in valid_rows] == ["NVDA"]
+    assert [row["ticker"] for row in insufficient_rows] == ["AAOI"]
+    frame = weekend_spread._monitor_insufficient_frame(insufficient_rows)
+    assert "ATR14 / 20 日平均振幅" in frame.loc[0, "缺失字段"]
+    assert frame.loc[0, "下一步操作"] == "刷新历史价格后重算波动数据"
+
+
 def test_weekend_monitor_classifies_premium_trends() -> None:
     assert classify_premium_trend(2.0, 2.5, 0.5) == "溢价扩大"
     assert classify_premium_trend(2.5, 2.0, -0.5) == "溢价收敛"

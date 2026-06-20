@@ -730,9 +730,13 @@ def _build_monitor_row(
         "regular_close_price": regular_close_price,
         "vs_regular_close_pct": vs_regular_close_pct,
         "atr14_pct": _number(row.get("atr14_pct")),
-        "avg_range_20d_pct": _number(row.get("avg_range_20d_pct")),
+        "avg_range_20d_pct": _number(row.get("avg_range_20d_pct") or row.get("avg_range_20d")),
+        "avg_range_20d": _number(row.get("avg_range_20d") or row.get("avg_range_20d_pct")),
         "spread_atr_ratio": _number(row.get("spread_atr_ratio")),
-        "spread_reasonableness": row.get("spread_reasonableness") or "",
+        "spread_range_ratio": _number(row.get("spread_range_ratio")),
+        "spread_reasonableness": row.get("spread_reasonableness") or row.get("spread_reasonableness_label") or "",
+        "spread_reasonableness_label": row.get("spread_reasonableness_label") or row.get("spread_reasonableness") or "",
+        "volatility_status": row.get("volatility_status") or "",
         "news_label": row.get("news_label") or "",
         "previous_binance_price": previous_price,
         "binance_15m_change_pct": binance_change,
@@ -847,8 +851,11 @@ def _priority_volatility_ratio(row: dict[str, Any]) -> float | None:
     ratio = _number(row.get("spread_atr_ratio"))
     if ratio is not None:
         return abs(ratio)
+    range_ratio = _number(row.get("spread_range_ratio"))
+    if range_ratio is not None:
+        return abs(range_ratio)
     premium = _number(row.get("premium_pct"))
-    avg_range = _number(row.get("avg_range_20d_pct"))
+    avg_range = _number(row.get("avg_range_20d_pct") or row.get("avg_range_20d"))
     if premium is None or avg_range is None or avg_range <= 0:
         return None
     return abs(premium) / avg_range
@@ -1005,8 +1012,12 @@ def _normalize_source_row(row: dict[str, Any]) -> dict[str, Any]:
         "regular_close_price": _number(row.get("regular_close_price") or row.get("friday_close")),
         "atr14_pct": _number(row.get("atr14_pct")),
         "avg_range_20d_pct": _number(row.get("avg_range_20d_pct") or row.get("avg_range_20d")),
+        "avg_range_20d": _number(row.get("avg_range_20d") or row.get("avg_range_20d_pct")),
         "spread_atr_ratio": _number(row.get("spread_atr_ratio")),
+        "spread_range_ratio": _number(row.get("spread_range_ratio")),
         "spread_reasonableness": str(row.get("spread_reasonableness") or row.get("spread_reasonableness_label") or ""),
+        "spread_reasonableness_label": str(row.get("spread_reasonableness_label") or row.get("spread_reasonableness") or ""),
+        "volatility_status": str(row.get("volatility_status") or ""),
         "news_label": str(row.get("closed_market_news_label") or row.get("news_label") or ""),
         "ignored": bool(row.get("ignored")),
         "excluded": other_tradfi and not manual_locked,

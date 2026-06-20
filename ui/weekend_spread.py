@@ -1864,6 +1864,7 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
         st.info("尚未安装 3 分钟监控任务。可以先点击“立即扫描一次”验证数据，再安装任务。")
         return
     monitor_rows = _monitor_rows_with_priority(list(latest_run.get("rows") or []))
+    valid_monitor_rows, insufficient_monitor_rows = _split_monitor_rows_by_quality(monitor_rows)
     if not monitor_rows:
         valid_count = int(_number((latest_run.get("summary") or {}).get("valid_count")) or 0)
         if valid_count > 0:
@@ -1871,17 +1872,19 @@ def _render_monitor_tab(rows: list[dict], ignored: dict[str, dict] | None = None
         else:
             st.info("最近一次扫描没有有效样本，请检查映射、忽略清单和盘后锚点。")
         return
-    _render_monitor_conclusion(monitor_rows)
-    _render_monitor_top_cards(monitor_rows)
-    selected_range, selected_status = _render_monitor_filters(monitor_rows)
-    filtered_rows = _filter_monitor_rows(monitor_rows, selected_range, selected_status)
+    _render_monitor_sample_stats(valid_monitor_rows, insufficient_monitor_rows, latest_run, ignored or {})
+    _render_monitor_conclusion(valid_monitor_rows, insufficient_monitor_rows)
+    _render_monitor_top_cards(valid_monitor_rows)
+    selected_range, selected_status = _render_monitor_filters(valid_monitor_rows)
+    filtered_rows = _filter_monitor_rows(valid_monitor_rows, selected_range, selected_status)
     st.markdown("### 监控队列")
     if not filtered_rows and selected_status == "值得关注":
-        st.info("当前无值得关注项，可切换到“全部”查看普通波动。")
+        st.info("当前无值得关注项，可切换到“全部有效样本”查看普通波动。")
     elif not filtered_rows:
         st.info("当前筛选没有结果。")
     st.dataframe(_monitor_frame(filtered_rows), width="stretch", hide_index=True)
     _render_monitor_trend_detail(filtered_rows)
+    _render_monitor_insufficient_rows(insufficient_monitor_rows)
     _render_monitor_history()
 
 
@@ -2100,11 +2103,136 @@ def build_monitor_top_for_ui(rows: list[dict]) -> dict[str, dict | None]:
 
 
 def _monitor_rows_with_priority(rows: list[dict]) -> list[dict]:
-    return [build_monitor_priority(dict(row or {})) for row in rows or []]
+    return [build_monitor_priority(dict(row or {})) for row in _annotate_monitor_volatility(rows)]
 
 
-def _render_monitor_conclusion(rows: list[dict]) -> None:
+def _annotate_monitor_volatility(rows: list[dict]) -> list[dict]:
     if not rows:
+        return []
+    reader = CacheReadModel()
+    cache = _realtime_volatility_cache()
+    annotated: list[dict] = []
+    for row in rows:
+        item = _normalize_monitor_volatility_row(dict(row or {}))
+        ticker = str(item.get("ticker") or "").strip().upper()
+        spread = _monitor_premium_pct(item)
+        if _monitor_volatility_ratio(item) is not None or not ticker or spread is None:
+            annotated.append(item)
+            continue
+        try:
+            history = reader.get_price_history(ticker)
+        except Exception:
+            history = pd.DataFrame()
+        latest_date = _history_latest_date(history)
+        news_label = _monitor_news_label(item)
+        cache_key = f"monitor|{ticker}|{latest_date}|20|14|60|{round(float(spread), 4)}|{news_label}"
+        profile = cache.get(cache_key)
+        if not isinstance(profile, dict):
+            profile = build_spread_volatility_profile(history, spread, news_label=news_label).as_dict()
+            cache[cache_key] = profile
+            _trim_realtime_volatility_cache(cache)
+        item.update(_volatility_fields_from_profile(profile))
+        item = _normalize_monitor_volatility_row(item)
+        annotated.append(item)
+    return annotated
+
+
+def _normalize_monitor_volatility_row(row: dict) -> dict:
+    item = dict(row or {})
+    premium = _monitor_premium_pct(item)
+    atr = _number(item.get("atr14_pct"))
+    avg_range = _number(item.get("avg_range_20d") or item.get("avg_range_20d_pct"))
+    if avg_range is not None:
+        item["avg_range_20d"] = avg_range
+        item["avg_range_20d_pct"] = avg_range
+    if _number(item.get("spread_atr_ratio")) is None and premium is not None and atr and atr > 0:
+        item["spread_atr_ratio"] = abs(premium) / atr
+    if _number(item.get("spread_range_ratio")) is None and premium is not None and avg_range and avg_range > 0:
+        item["spread_range_ratio"] = abs(premium) / avg_range
+    return item
+
+
+def _monitor_premium_pct(row: dict) -> float | None:
+    premium = _number(row.get("premium_pct"))
+    if premium is not None:
+        return premium
+    return _number(row.get("spread_vs_afterhours_pct"))
+
+
+def _monitor_volatility_ratio(row: dict) -> float | None:
+    ratio = _number(row.get("spread_atr_ratio"))
+    if ratio is not None:
+        return abs(ratio)
+    range_ratio = _number(row.get("spread_range_ratio"))
+    if range_ratio is not None:
+        return abs(range_ratio)
+    premium = _monitor_premium_pct(row)
+    avg_range = _number(row.get("avg_range_20d_pct") or row.get("avg_range_20d"))
+    if premium is None or avg_range is None or avg_range <= 0:
+        return None
+    return abs(premium) / avg_range
+
+
+def _split_monitor_rows_by_quality(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    valid: list[dict] = []
+    insufficient: list[dict] = []
+    for row in rows or []:
+        if _is_effective_monitor_row(row):
+            valid.append(row)
+        else:
+            insufficient.append(row)
+    return valid, insufficient
+
+
+def _is_effective_monitor_row(row: dict) -> bool:
+    if _number(row.get("binance_price")) is None:
+        return False
+    if _number(row.get("anchor_price")) is None:
+        return False
+    if _monitor_premium_pct(row) is None:
+        return False
+    if _monitor_volatility_ratio(row) is None:
+        return False
+    return _monitor_priority_short(row) != "数据不足"
+
+
+def _render_monitor_sample_stats(valid_rows: list[dict], insufficient_rows: list[dict], latest_run: dict | None, ignored: dict[str, dict]) -> None:
+    summary = dict((latest_run or {}).get("summary") or {})
+    worth_count = len([row for row in valid_rows if _monitor_priority_short(row) in {"高", "中"}])
+    ordinary_count = max(0, len(valid_rows) - worth_count)
+    anchor_missing = int(_number(summary.get("anchor_missing_count")) or len([row for row in insufficient_rows if _number(row.get("anchor_price")) is None]))
+    items = [
+        ("可监控有效样本", len(valid_rows)),
+        ("值得关注", worth_count),
+        ("普通波动", ordinary_count),
+        ("数据不足", len(insufficient_rows)),
+        ("锚点缺失", anchor_missing),
+        ("已忽略", len(ignored)),
+    ]
+    text = " ｜ ".join(f"{label}：{value}" for label, value in items)
+    st.markdown(f'<div class="weekend-status-strip">{escape(text)}</div>', unsafe_allow_html=True)
+    volatility_missing = len([row for row in insufficient_rows if _monitor_volatility_ratio(row) is None])
+    if volatility_missing:
+        st.info(f"有 {volatility_missing} 个标的缺少波动数据，已移入“数据不足 / 待补齐”列表。")
+
+
+def _render_monitor_conclusion(rows: list[dict], insufficient_rows: list[dict] | None = None) -> None:
+    insufficient_rows = insufficient_rows or []
+    if not rows:
+        if insufficient_rows:
+            text = (
+                f"当前有效监控样本不足。{len(insufficient_rows)} 个标的缺少波动参照或关键字段，"
+                "需先补齐日线/ATR 数据后再判断价差是否异常。"
+            )
+            st.markdown(
+                f"""
+                <section class="weekend-core-observation">
+                  <strong>监控结论</strong><br>
+                  {escape(text)}
+                </section>
+                """,
+                unsafe_allow_html=True,
+            )
         return
     if all(str(row.get("premium_trend_label") or "") == "等待下一轮比较" for row in rows):
         text = "监控刚启动，趋势判断需要至少 2 轮扫描。当前只展示实时价差。"
@@ -2253,7 +2381,7 @@ def _monitor_recent_change_text(row: dict) -> str:
 
 def _render_monitor_filters(rows: list[dict]) -> tuple[str, str]:
     range_options = ["全部", "我的观察池", "我的持仓", "核心仓"]
-    status_options = ["值得关注", "正在扩大", "正在收敛", "方向反转", "数据不足", "全部"]
+    status_options = ["值得关注", "正在扩大", "正在收敛", "方向反转", "全部有效样本"]
     cols = st.columns([1, 1])
     selected_range = cols[0].selectbox(
         "范围",
@@ -2300,8 +2428,6 @@ def _filter_monitor_rows(rows: list[dict], range_scope: str = "全部", status_s
         selected = [row for row in selected if _is_monitor_converging(row)]
     elif status_scope == "方向反转":
         selected = [row for row in selected if row.get("premium_trend_label") == "方向反转"]
-    elif status_scope == "数据不足":
-        selected = [row for row in selected if _monitor_priority_short(row) == "数据不足"]
     return sorted(selected, key=_monitor_queue_sort_key)
 
 
@@ -2383,6 +2509,83 @@ def _render_monitor_trend_detail(rows: list[dict]) -> None:
         st.caption(_monitor_trend_explanation(row))
 
 
+def _render_monitor_insufficient_rows(rows: list[dict]) -> None:
+    with st.expander(f"数据不足 / 待补齐（{len(rows)}）", expanded=False):
+        st.caption("这些标的不会进入默认监控队列；补齐锚点、Binance 价格或日线波动数据后再参与优先级判断。")
+        if not rows:
+            st.caption("暂无待补齐样本。")
+            return
+        if st.button("尝试补齐波动数据", key="weekend_spread_monitor_fill_volatility", width="stretch"):
+            st.info("已重新读取本地日线缓存。若仍缺波动数据，请先刷新该股票的历史价格。")
+        st.dataframe(_monitor_insufficient_frame(rows), width="stretch", hide_index=True)
+
+
+def _monitor_insufficient_frame(rows: list[dict]) -> pd.DataFrame:
+    columns = ["股票", "当前价差%", "缺失字段", "缺失原因", "下一步操作"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    records = []
+    for row in rows:
+        records.append(
+            {
+                "股票": str(row.get("ticker") or "").strip().upper() or "未知",
+                "当前价差%": _percent_text(_monitor_premium_pct(row)) if _monitor_premium_pct(row) is not None else "暂缺",
+                "缺失字段": "、".join(_monitor_missing_fields(row)) or "关键字段不足",
+                "缺失原因": _monitor_missing_reason(row),
+                "下一步操作": _monitor_next_fill_action(row),
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _monitor_missing_fields(row: dict) -> list[str]:
+    fields: list[str] = []
+    if _number(row.get("binance_price")) is None:
+        fields.append("Binance 价格")
+    if _number(row.get("anchor_price")) is None:
+        fields.append("盘后锚点")
+    if _monitor_premium_pct(row) is None:
+        fields.append("当前价差")
+    if _monitor_volatility_ratio(row) is None:
+        atr = _number(row.get("atr14_pct"))
+        avg_range = _number(row.get("avg_range_20d") or row.get("avg_range_20d_pct"))
+        if atr is None and avg_range is None:
+            fields.append("ATR14 / 20 日平均振幅")
+        elif atr is None:
+            fields.append("ATR14")
+        elif avg_range is None:
+            fields.append("20 日平均振幅")
+        else:
+            fields.append("波动参照")
+    return fields
+
+
+def _monitor_missing_reason(row: dict) -> str:
+    if _number(row.get("anchor_price")) is None:
+        return "盘后锚点缺失"
+    if _number(row.get("binance_price")) is None:
+        return "Binance 价格缺失"
+    if _monitor_premium_pct(row) is None:
+        return "当前价差无法计算"
+    if _monitor_volatility_ratio(row) is None:
+        atr = _number(row.get("atr14_pct"))
+        avg_range = _number(row.get("avg_range_20d") or row.get("avg_range_20d_pct"))
+        if atr is None and avg_range is None:
+            return "缺少日线历史、ATR14 或 20 日振幅"
+        return "波动参照未能计算"
+    return "关键数据不足"
+
+
+def _monitor_next_fill_action(row: dict) -> str:
+    if _number(row.get("anchor_price")) is None:
+        return "更新盘后锚点"
+    if _number(row.get("binance_price")) is None:
+        return "刷新 Binance 价格"
+    if _monitor_volatility_ratio(row) is None:
+        return "刷新历史价格后重算波动数据"
+    return "复核数据质量"
+
+
 def _monitor_trend_explanation(row: dict) -> str:
     ticker = str(row.get("ticker") or "").strip().upper() or "该标的"
     premium = _percent_text(row.get("premium_pct"))
@@ -2396,13 +2599,28 @@ def _monitor_trend_explanation(row: dict) -> str:
         return f"{ticker} 当前价差 {premium}，{daily}。首次扫描完成，趋势判断将在下一轮扫描后显示。观察优先级：{priority}。"
     if trend == "方向反转":
         return f"{ticker} 当前价差 {premium}，{daily}，较上一轮变化 {delta}，溢价/折价方向发生反转。休市新闻：{news}。观察优先级：{priority}。"
-    reason = str(row.get("monitor_priority_reason") or "").strip()
-    if not reason:
-        reason = "虽然绝对价差看起来较大，但需要结合日常波动、趋势和休市新闻判断。"
+    reason = _monitor_priority_detail_reason(row)
     return (
         f"{ticker} 当前价差 {premium}，{daily}。较上一轮价差变化 {delta}，趋势为{trend}；"
         f"{trend_9m}。休市新闻：{news}。观察优先级：{priority}。{reason}"
     )
+
+
+def _monitor_priority_detail_reason(row: dict) -> str:
+    priority = _monitor_priority_short(row)
+    ratio = _monitor_volatility_ratio(row)
+    news = _monitor_news_label(row)
+    if priority == "数据不足" or ratio is None:
+        return "该标的当前缺少波动参照，无法判断价差是否异常。"
+    if priority == "高":
+        if news in {"无新闻解释", "无重大新闻", "未检查"}:
+            return "价差强度、趋势和新闻解释缺口共同推高观察优先级。"
+        return "价差和趋势较突出，但需要先复核休市新闻影响。"
+    if priority == "中":
+        return "价差或趋势值得观察，但还不是最高优先级。"
+    if priority == "低":
+        return "虽然存在一定价差或变化，但相对日常波动并不突出。"
+    return "当前仅作普通观察，需继续等待更多扫描样本。"
 
 
 def _render_monitor_history() -> None:
@@ -6421,9 +6639,7 @@ def _abs_afterhours_spread_pct(row: dict) -> float:
 
 
 def _daily_volatility_reference_text(row: dict) -> str:
-    ratio = _number(row.get("spread_atr_ratio"))
-    if ratio is None:
-        ratio = _number(row.get("spread_range_ratio"))
+    ratio = _monitor_volatility_ratio(row)
     if ratio is None:
         return "缺波动数据"
     return f"约 {ratio:.1f} 天波动"
