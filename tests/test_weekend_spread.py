@@ -8344,7 +8344,8 @@ def test_weekend_monitor_splits_insufficient_rows_from_default_queue() -> None:
             }
         ]
     )
-    assert missing_spread.loc[0, "当前价差%"] == "不可计算"
+    assert missing_spread.loc[0, "当前价差"] == "不可计算"
+    assert "当前价差%" not in missing_spread.columns
     assert "暂缺" not in missing_spread.to_string()
 
 
