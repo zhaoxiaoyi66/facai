@@ -21,7 +21,9 @@ from data.weekend_spread_basis import (
     calculate_basis_pct,
     collect_open_market_basis_once,
     is_open_market_basis_window,
+    load_cached_basis_profiles,
     save_basis_samples,
+    upsert_basis_profile,
 )
 
 
@@ -358,6 +360,26 @@ def test_empty_normal_basis_profile_is_marked_uncollected(tmp_path) -> None:
 
     assert profile["sample_count"] == 0
     assert profile["basis_quality"] == "未采集"
+
+
+def test_cached_basis_profiles_reuse_persisted_profile_without_rebuilding_samples(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "basis.sqlite3"
+    now = datetime(2026, 6, 20, 12, tzinfo=US_EASTERN)
+    save_basis_samples([_sample("GLW", now - timedelta(days=index), 0.35) for index in range(3)], db_path=db_path)
+    profile = build_normal_basis_profile("GLW", db_path=db_path, now=now)
+    upsert_basis_profile(profile, db_path=db_path)
+
+    def fail_rebuild(*args, **kwargs):
+        raise AssertionError("cached profile loader must not rebuild from samples")
+
+    monkeypatch.setattr(basis_module, "build_normal_basis_profile", fail_rebuild)
+
+    profiles = load_cached_basis_profiles(["GLW", "NOW"], db_path=db_path)
+
+    assert profiles["GLW"]["normal_basis_median_pct"] == pytest.approx(0.35)
+    assert profiles["GLW"]["profile_cache_source"] == "weekend_spread_basis_profiles"
+    assert profiles["NOW"]["basis_quality"] == "未采集"
+    assert profiles["NOW"]["sample_count"] == 0
 
 
 def test_basis_collector_script_supports_quiet_mode() -> None:

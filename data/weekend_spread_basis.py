@@ -543,6 +543,49 @@ def load_basis_profiles(
     return profiles
 
 
+def load_cached_basis_profiles(
+    tickers: Iterable[str],
+    *,
+    db_path: Path = DEFAULT_BASIS_DB_PATH,
+) -> dict[str, dict[str, Any]]:
+    normalized_tickers = [str(ticker or "").strip().upper() for ticker in tickers or [] if str(ticker or "").strip()]
+    if not normalized_tickers:
+        return {}
+    if not Path(db_path).exists():
+        return {ticker: _empty_profile(ticker).as_dict() for ticker in normalized_tickers}
+    _ensure_schema(db_path)
+    placeholders = ",".join("?" for _ in normalized_tickers)
+    query = f"""
+        SELECT ticker, normal_basis_5d_pct, normal_basis_20d_pct, normal_basis_median_pct,
+               normal_basis_iqr_pct, normal_basis_mad_pct, sample_count, trading_days_count,
+               latest_sample_time, basis_quality, updated_at
+        FROM weekend_spread_basis_profiles
+        WHERE ticker IN ({placeholders})
+    """
+    profiles = {ticker: _empty_profile(ticker).as_dict() for ticker in normalized_tickers}
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(query, normalized_tickers).fetchall():
+            ticker = str(row["ticker"] or "").strip().upper()
+            profiles[ticker] = {
+                "ticker": ticker,
+                "normal_basis_5d_pct": _number(row["normal_basis_5d_pct"]),
+                "normal_basis_20d_pct": _number(row["normal_basis_20d_pct"]),
+                "normal_basis_median_pct": _number(row["normal_basis_median_pct"]),
+                "normal_basis_iqr_pct": _number(row["normal_basis_iqr_pct"]),
+                "normal_basis_mad_pct": _number(row["normal_basis_mad_pct"]),
+                "sample_count": int(row["sample_count"] or 0),
+                "trading_days_count": int(row["trading_days_count"] or 0),
+                "latest_sample_time": str(row["latest_sample_time"] or ""),
+                "aligned_sample_count": int(row["sample_count"] or 0),
+                "misaligned_sample_count": 0,
+                "basis_quality": str(row["basis_quality"] or QUALITY_UNAVAILABLE),
+                "updated_at": str(row["updated_at"] or ""),
+                "profile_cache_source": "weekend_spread_basis_profiles",
+            }
+    return profiles
+
+
 def load_basis_samples(ticker: str | None = None, *, db_path: Path = DEFAULT_BASIS_DB_PATH) -> pd.DataFrame:
     if not Path(db_path).exists():
         return _empty_sample_frame()

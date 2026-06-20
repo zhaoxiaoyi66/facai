@@ -81,7 +81,7 @@ from data.weekend_spread_basis import (
     collect_open_market_basis_once,
     install_open_market_basis_task,
     is_open_market_basis_window,
-    load_basis_profiles,
+    load_cached_basis_profiles,
 )
 from data.weekend_spread_cache import (
     annotate_cached_rows,
@@ -293,6 +293,17 @@ def _apply_weekend_spread_layout_css() -> None:
         .weekend-core-observation strong {
           color: #0f172a;
         }
+        .weekend-realtime-hint {
+          border: 1px solid #e2e8f0;
+          border-left: 3px solid #2563eb;
+          border-radius: 10px;
+          padding: 8px 11px;
+          margin: 6px 0 8px;
+          color: #334155;
+          background: #f8fafc;
+          font-size: 13px;
+          line-height: 1.45;
+        }
         .weekend-detail-card {
           border: 1px solid #e2e8f0;
           border-radius: 12px;
@@ -416,16 +427,7 @@ def _render_realtime_tab(
     st.subheader("Binance 美股映射全市场扫描")
     st.caption("观察 Binance 美股映射价格相对最近美股盘后锚点的偏离。")
     ignored = ignored or {}
-    action_slot = st.empty()
-    summary_slot = st.empty()
-    observation_slot = st.empty()
-    status_slot = st.empty()
-    filter_slot = st.empty()
-    table_slot = st.empty()
-    detail_slot = st.empty()
-    advanced_slot = st.empty()
-    with action_slot.container():
-        refresh_options = _render_realtime_action_bar()
+    refresh_options = _render_realtime_action_bar()
     refresh_options["ignored_count"] = len(ignored)
     scan_records, scan_status = _load_realtime_scan_records(watchlist, mapping, ignored, refresh_options=refresh_options)
     scan_mapping = scan_records_to_mapping(scan_records, mapping)
@@ -452,38 +454,32 @@ def _render_realtime_tab(
         }
     )
 
-    with summary_slot.container():
-        _render_realtime_summary_cards(rows, mapping_counts, cache_status)
-    with observation_slot.container():
-        _render_core_observation(rows, mapping_counts)
-    with status_slot.container():
-        _render_realtime_status_strip(rows, mapping_counts, cache_status)
-    with filter_slot.container():
-        visible_scope = _render_realtime_filters(rows)
+    _render_realtime_status_strip(rows, mapping_counts, cache_status)
+    visible_scope = _render_realtime_filters(rows)
 
     main_rows = _filter_live_rows_by_scope(rows, visible_scope)
-    with table_slot.container():
-        st.markdown("#### 实时价差表")
-        st.caption("默认筛选：溢价/折价 ≥ 1%。小于 1% 的普通波动默认隐藏，可切换到“全部可计算”查看。")
-        st.caption("日常波动参照：1.0 天表示当前 Binance 价差约等于该股票平时一天的正常波动；超过 1.5 天通常需要复核，超过 2.0 天视为极端。")
-        basis_hint = _realtime_basis_hint(main_rows or rows)
+    _render_realtime_observation_hint(rows, mapping_counts)
+    st.markdown("#### 实时价差表")
+    st.caption("默认显示溢价/折价 ≥ 1% 的标的；小于 1% 的普通波动可切换到“全部”查看。")
+    if not scan_records and _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
+        _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
+    elif main_rows:
+        st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
+    else:
+        st.info(_realtime_empty_state_text(rows, visible_scope))
+    if main_rows:
+        _render_row_details(main_rows, all_rows=rows, mapping=scan_mapping, tickers=scan_tickers)
+
+    with st.expander("摘要统计", expanded=False):
+        _render_realtime_summary_cards(rows, mapping_counts, cache_status)
+        basis_hint = _realtime_basis_hint(rows)
         if basis_hint:
             st.caption(basis_hint)
-        _render_realtime_basis_collection_entry(main_rows or rows, scan_mapping, ignored)
-        if not scan_records and _should_show_empty_mapping_state(mapping_counts, "重点/有数据"):
-            _render_empty_mapping_state(mapping_counts, DEFAULT_LOCAL_MAPPING_PATH)
-        elif main_rows:
-            st.dataframe(_live_frame(main_rows), width="stretch", hide_index=True)
-        else:
-            st.info(_realtime_empty_state_text(rows, visible_scope))
-    with detail_slot.container():
-        if main_rows:
-            _render_row_details(main_rows, all_rows=rows, mapping=scan_mapping, tickers=scan_tickers)
-
-    with advanced_slot.container():
-        with st.expander("高级设置 / 缓存管理", expanded=False):
-            _render_no_mapping_expander(rows)
-            _render_refresh_diagnostics(rows, ignored)
+        st.caption("日常波动参照：1.0 天表示当前 Binance 价差约等于该股票平时一天的正常波动；超过 1.5 天通常需要复核，超过 2.0 天视为极端。")
+    _render_realtime_basis_collection_entry(main_rows or rows, scan_mapping, ignored)
+    _render_realtime_data_source_tools(rows, ignored)
+    with st.expander("高级设置 / 缓存管理", expanded=False):
+        _render_no_mapping_expander(rows)
     return rows, mapping_counts
 
 
@@ -501,7 +497,7 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
             if str(ticker or "").strip()
         }
     )
-    profiles = load_basis_profiles(tickers)
+    profiles = load_cached_basis_profiles(tickers)
     is_open_window = is_open_market_basis_window()
     col_collect, col_backfill, col_task, col_status = st.columns([1, 1, 1, 2])
     with col_collect:
@@ -512,7 +508,7 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
                 st.success(str(result.get("message") or "已采集开市基差样本。"))
             else:
                 st.warning(str(result.get("message") or "当前不能采集开市基差。"))
-            profiles = load_basis_profiles(tickers)
+            profiles = load_cached_basis_profiles(tickers)
     with col_backfill:
         if st.button("回填最近 5 个交易日基差", key="weekend_spread_backfill_open_market_basis"):
             with st.spinner("正在回填历史开市基差..."):
@@ -523,7 +519,7 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
                 st.warning(str(result.get("message") or "暂时无法回填历史开市基差。"))
             if int(result.get("skipped_existing_count") or 0) > 0:
                 st.caption(f"断点续跑：已跳过 {int(result.get('skipped_existing_count') or 0)} 个已完成采样点。")
-            profiles = load_basis_profiles(tickers)
+            profiles = load_cached_basis_profiles(tickers)
     with col_task:
         if st.button("安装开市基差采集任务", key="weekend_spread_install_open_market_basis_task"):
             result = install_open_market_basis_task()
@@ -549,9 +545,7 @@ def _render_open_market_basis_tab(rows: list[dict], mapping: dict[str, dict], ig
 
 
 def _render_realtime_basis_collection_entry(rows: list[dict], mapping: dict[str, dict], ignored: dict[str, dict] | None = None) -> None:
-    counts = _realtime_basis_counts(rows)
-    needs_collection = counts.get("missing", 0) > 0 or counts.get("limited", 0) > 0
-    with st.expander("开市基差采集", expanded=needs_collection):
+    with st.expander("开市基差采集", expanded=False):
         st.caption("平日基差要在美股正常开市时采集；未采集或样本较少时，实时表会先展示原始价差和预估净价差。")
         st.caption("历史回填支持断点续跑；每个标的每个交易日完成后立即落库，超时后可再次点击继续。")
         is_open_window = is_open_market_basis_window()
@@ -613,21 +607,40 @@ def _render_realtime_action_bar() -> dict[str, bool]:
     refresh = col_refresh.button("刷新实时价格", width="stretch", key="weekend_spread_refresh")
     close_refresh = col_close.button("更新收盘价", width="stretch", key="weekend_spread_close_refresh")
     anchor_refresh = col_anchor.button("更新美股盘后锚点", width="stretch", key="weekend_spread_anchor_refresh")
-    use_cache = False
-    force_anchor = False
-    clear_scan_cache = False
+    tool_action = str(st.session_state.pop("weekend_spread_realtime_tool_action", "") or "").strip()
+    use_cache = tool_action == "use_cache"
+    force_anchor = tool_action == "force_anchor"
+    clear_scan_cache = tool_action == "clear_scan_cache"
+    if clear_scan_cache:
+        try:
+            DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH.unlink(missing_ok=True)
+        except OSError as exc:
+            st.warning(f"清空扫描缓存失败：{exc}")
+        else:
+            st.success("已清空 Binance 美股映射扫描缓存。")
+    return {
+        "scan": False,
+        "use_cache": bool(use_cache),
+        "refresh": bool(refresh),
+        "close_refresh": bool(close_refresh),
+        "anchor_refresh": bool(anchor_refresh),
+        "force_anchor_refresh": bool(force_anchor),
+        "clear_scan_cache": bool(clear_scan_cache),
+    }
+
+
+def _render_realtime_data_source_tools(rows: list[dict], ignored: dict[str, dict] | None = None) -> None:
     with st.expander("数据源与补数工具", expanded=False):
         col_cache, col_force_anchor, col_clear = st.columns([1, 1, 1])
-        use_cache = col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache")
-        force_anchor = col_force_anchor.button("重新抓取锚点", width="stretch", key="weekend_spread_force_anchor_refresh")
-        clear_scan_cache = col_clear.button("清空扫描缓存", width="stretch", key="weekend_spread_clear_binance_equity_scan_cache")
-        if clear_scan_cache:
-            try:
-                DEFAULT_BINANCE_EQUITY_SCAN_CACHE_PATH.unlink(missing_ok=True)
-            except OSError as exc:
-                st.warning(f"清空扫描缓存失败：{exc}")
-            else:
-                st.success("已清空 Binance 美股映射扫描缓存。")
+        if col_cache.button("使用缓存", width="stretch", key="weekend_spread_use_cache"):
+            st.session_state["weekend_spread_realtime_tool_action"] = "use_cache"
+            st.rerun()
+        if col_force_anchor.button("重新抓取锚点", width="stretch", key="weekend_spread_force_anchor_refresh"):
+            st.session_state["weekend_spread_realtime_tool_action"] = "force_anchor"
+            st.rerun()
+        if col_clear.button("清空扫描缓存", width="stretch", key="weekend_spread_clear_binance_equity_scan_cache"):
+            st.session_state["weekend_spread_realtime_tool_action"] = "clear_scan_cache"
+            st.rerun()
         scan_cache = read_binance_equity_scan_cache()
         st.download_button(
             "导出扫描结果",
@@ -638,15 +651,7 @@ def _render_realtime_action_bar() -> dict[str, bool]:
             key="weekend_spread_export_binance_equity_scan",
         )
         st.caption("Binance 价格、常规收盘价和最后交易日盘后锚点已解耦：刷新实时观察不会强制重建其他数据。")
-    return {
-        "scan": False,
-        "use_cache": bool(use_cache),
-        "refresh": bool(refresh),
-        "close_refresh": bool(close_refresh),
-        "anchor_refresh": bool(anchor_refresh),
-        "force_anchor_refresh": bool(force_anchor),
-        "clear_scan_cache": bool(clear_scan_cache),
-    }
+        _render_refresh_diagnostics(rows, ignored or {})
 
 
 def _load_realtime_scan_records(
@@ -841,7 +846,7 @@ def _merge_scan_metadata(rows: list[dict], scan_records: list[dict], watchlist: 
 def _annotate_realtime_basis(rows: list[dict]) -> list[dict]:
     tickers = [str(row.get("ticker") or "").strip().upper() for row in rows or [] if str(row.get("ticker") or "").strip()]
     try:
-        profiles = load_basis_profiles(tickers)
+        profiles = load_cached_basis_profiles(tickers)
     except Exception:
         profiles = {}
     annotated: list[dict] = []
@@ -853,7 +858,7 @@ def _annotate_realtime_basis(rows: list[dict]) -> list[dict]:
         profile = profiles.get(ticker) if ticker else None
         basis = _number((profile or {}).get("normal_basis_median_pct"))
         item["normal_basis_pct"] = basis
-        item["normal_basis_quality"] = str((profile or {}).get("basis_quality") or QUALITY_INSUFFICIENT)
+        item["normal_basis_quality"] = str((profile or {}).get("basis_quality") or QUALITY_UNAVAILABLE)
         item["normal_basis_sample_count"] = int(_number((profile or {}).get("sample_count")) or 0)
         item["normal_basis_trading_days_count"] = int(_number((profile or {}).get("trading_days_count")) or 0)
         item["normal_basis_latest_sample_time"] = str((profile or {}).get("latest_sample_time") or "")
@@ -1024,16 +1029,8 @@ def _render_realtime_filters(rows: list[dict]) -> str:
         "溢价/折价 ≥ 1%",
         "溢价/折价 ≥ 2%",
         "溢价/折价 ≥ 5%",
-        "无新闻解释的异常",
-        "有新闻解释的异常",
-        "基差可用",
-        "样本较少",
-        "未采集",
-        "净价差异常",
-        "原始价差异常",
-        "全部可计算",
+        "全部",
         "数据不足",
-        "锚点缺失",
         "已忽略",
     ]
     main_rows = [row for row in rows if _is_realtime_main_row(row)]
@@ -1042,6 +1039,7 @@ def _render_realtime_filters(rows: list[dict]) -> str:
         "我的观察池": len([row for row in main_rows if row.get("is_watchlist")]),
         "我的持仓": len([row for row in main_rows if row.get("is_position")]),
         "核心仓": len([row for row in main_rows if row.get("is_core") or row.get("is_core_position")]),
+        "全部": len(main_rows),
         "溢价/折价 ≥ 1%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 1.0]),
         "溢价/折价 ≥ 2%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 2.0]),
         "溢价/折价 ≥ 5%": len([row for row in main_rows if _abs_afterhours_spread_pct(row) >= 5.0]),
@@ -1133,7 +1131,7 @@ def _row_matches_realtime_range(row: dict, scope: str) -> bool:
 
 
 def _row_matches_realtime_status(row: dict, scope: str) -> bool:
-    if scope in {"", "全部可计算", "全部状态"}:
+    if scope in {"", "全部", "全部可计算", "全部状态"}:
         return _is_realtime_main_row(row)
     if scope == "溢价/折价 ≥ 1%":
         return _is_realtime_main_row(row) and _abs_afterhours_spread_pct(row) >= 1.0
@@ -1176,11 +1174,11 @@ def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
     counts = _realtime_observation_counts(rows)
     status_scope = str(scope or "").split("|", 1)[1] if "|" in str(scope or "") else str(scope or "")
     if status_scope == "溢价/折价 ≥ 1%" and counts.get("computable", 0) > 0:
-        return "当前没有溢价/折价超过 1% 的标的。可切换到“全部可计算”查看普通波动。"
+        return "当前没有溢价/折价超过 1% 的标的。可切换到“全部”查看普通波动。"
     if status_scope in {"溢价/折价 ≥ 2%", "溢价/折价 ≥ 5%"} and counts.get("computable", 0) > 0:
-        return "当前筛选下没有达到该价差阈值的标的。可切换到“全部可计算”查看普通波动。"
+        return "当前筛选下没有达到该价差阈值的标的。可切换到“全部”查看普通波动。"
     if status_scope in {"异常 / 极端", "极端价差", "异常价差", "无新闻解释的异常价差", "有新闻解释的异常价差", "无新闻解释的异常", "有新闻解释的异常", "明显偏离以上"}:
-        return "当前没有异常或极端价差，可切换到“全部可计算”查看普通波动。"
+        return "当前没有异常或极端价差，可切换到“全部”查看普通波动。"
     if status_scope == "净价差异常":
         return "当前没有足够开市基差样本，无法筛选净价差异常。"
     if status_scope in {"已有开市基差", "基差可用"}:
@@ -1200,7 +1198,7 @@ def _realtime_empty_state_text(rows: list[dict], scope: str) -> str:
     if counts.get("binance_price_available", 0) <= 0 and counts.get("binance_total", 0) > 0:
         return "Binance 价格读取失败，请查看刷新诊断。"
     if counts.get("computable", 0) > 0 and scope != "全部可计算":
-        return "当前筛选没有结果。可以切换到“全部可计算”。"
+        return "当前筛选没有结果。可以切换到“全部”。"
     if counts.get("anchor_missing", 0) > 0 and scope != "价格可用但锚点缺失":
         return "当前筛选没有结果。可以切换到“价格可用但锚点缺失”。"
     return "当前筛选下没有可展示的实时价差。可以切换筛选，或到“映射管理”里点击“一键同步 Binance 美股映射”。"
@@ -1230,6 +1228,8 @@ def _scope_from_realtime_filter_label(label: object, options: list[str]) -> str:
     # Compatibility for old persisted radio labels.
     if text.startswith("全部 Binance 美股映射"):
         return "全部可计算"
+    if text.startswith("全部可计算"):
+        return "全部"
     if text.startswith("价格可用但锚点缺失"):
         return "锚点缺失"
     if text.startswith("锚点缺失"):
@@ -2095,15 +2095,15 @@ def _unexplained_anomaly_count(rows: list[dict]) -> int:
     return sum(1 for row in rows or [] if _is_realtime_main_row(row) and _is_unexplained_anomalous_spread(row))
 
 
-def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+def _realtime_core_observation_message(rows: list[dict], mapping_counts: dict[str, int]) -> str:
     row = _realtime_most_abnormal_row(rows)
     if row is None:
         if mapping_counts.get("universe_mapping_count", 0) <= 0:
-            message = "尚未同步 Binance 美股映射。请到“映射管理”里点击“一键同步 Binance 美股映射”后再观察。"
+            return "尚未同步 Binance 美股映射。请到“映射管理”里点击“一键同步 Binance 美股映射”后再观察。"
         elif _realtime_observation_counts(rows).get("anchor_missing", 0) > 0:
-            message = "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新盘后锚点”。"
+            return "Binance 价格已读取，但盘后锚点缺失，暂时无法计算价差。请点击“更新盘后锚点”。"
         elif _realtime_observation_counts(rows).get("binance_price_available", 0) <= 0:
-            message = "Binance 价格读取失败，请查看刷新诊断。"
+            return "Binance 价格读取失败，请查看刷新诊断。"
         else:
             max_premium = _realtime_extreme_row(rows, direction="premium")
             if max_premium is not None:
@@ -2112,14 +2112,8 @@ def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -
                 spread_name = _realtime_display_spread_name(max_premium)
                 ratio = _daily_volatility_reference_text(max_premium)
                 ratio_text = f"仅{ratio}" if ratio != "缺波动数据" else "波动数据不足"
-                message = f"当前没有明显异常价差。最大{spread_name}为 {ticker} {spread}，但{ratio_text}，暂不属于极端错价。"
-            else:
-                message = "当前没有可计算价差。请先刷新 Binance 价格或更新盘后锚点。"
-        st.markdown(
-            f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
-            unsafe_allow_html=True,
-        )
-        return
+                return f"当前没有明显异常价差。最大{spread_name}为 {ticker} {spread}，但{ratio_text}，暂不属于极端错价。"
+            return "当前没有可计算价差。请先刷新 Binance 价格或更新盘后锚点。"
 
     ticker = str(row.get("ticker") or "").strip().upper()
     spread_text = _realtime_display_spread_text(row)
@@ -2127,9 +2121,17 @@ def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -
     ratio = _daily_volatility_reference_text(row)
     news = str(row.get("closed_market_news_label") or _realtime_closed_news_label(row) or "").strip()
     if any(token in news for token in ("有新闻", "重大新闻", "新闻方向一致")):
-        message = f"当前{spread_name}偏大，但存在休市新闻解释：{ticker} {spread_text}，{ratio}。需要先复核新闻影响，不能简单视为错价。"
-    else:
-        message = f"当前最值得关注的是 {ticker}，{spread_name}为 {spread_text}，{ratio}，且暂无重大休市新闻解释。"
+        return f"当前{spread_name}偏大，但存在休市新闻解释：{ticker} {spread_text}，{ratio}。需要先复核新闻影响，不能简单视为错价。"
+    return f"当前最值得关注的是 {ticker}，{spread_name}为 {spread_text}，{ratio}，且暂无重大休市新闻解释。"
+
+
+def _render_realtime_observation_hint(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+    message = _realtime_core_observation_message(rows, mapping_counts)
+    st.markdown(f'<div class="weekend-realtime-hint">{escape(message)}</div>', unsafe_allow_html=True)
+
+
+def _render_core_observation(rows: list[dict], mapping_counts: dict[str, int]) -> None:
+    message = _realtime_core_observation_message(rows, mapping_counts)
     st.markdown(
         f'<section class="weekend-core-observation"><strong>核心观察</strong><br>{escape(message)}</section>',
         unsafe_allow_html=True,
@@ -6737,8 +6739,13 @@ def _render_mapping_tab(
         key="weekend_spread_scan_binance_equities",
         help="低频操作：从 Binance exchangeInfo 重新同步美股 / TradFi 映射。",
     ):
-        _load_realtime_scan_records(watchlist or [], mapping, ignored, refresh_options={"scan": True})
+        with st.spinner("正在同步 Binance 美股映射，请稍候。完成前不会修改观察池、持仓或交易记录。"):
+            _load_realtime_scan_records(watchlist or [], mapping, ignored, refresh_options={"scan": True})
+        st.session_state["weekend_spread_mapping_flash"] = "Binance 美股映射同步完成。"
         st.rerun()
+    flash = str(st.session_state.pop("weekend_spread_mapping_flash", "") or "").strip()
+    if flash:
+        st.success(flash)
     action_cols[1].caption("同步会更新本模块 mapping 缓存，不影响主系统观察池或持仓。")
     action_cols[2].caption("实时页只保留高频刷新价格和更新锚点。")
     records = _mapping_management_records(rows, mapping) + _ignored_mapping_records(ignored)
@@ -6755,8 +6762,17 @@ def _render_mapping_tab(
     show_all = st.toggle("显示全部映射", value=False, key="weekend_spread_mapping_show_all")
     display_records = records if show_all else _filter_mapping_records(records, selected_filter)
     if display_records:
-        edited_frame = _render_mapping_operation_table(display_records, selected_filter)
-        _render_mapping_batch_actions(edited_frame, display_records, selected_filter, DEFAULT_LOCAL_MAPPING_PATH)
+        st.caption("表格勾选和合约修改会先暂存，只有点击下方提交按钮才会执行，避免普通点选触发整页刷新。")
+        with st.form("weekend_spread_mapping_operation_form", clear_on_submit=False):
+            edited_frame = _render_mapping_operation_table(display_records, selected_filter)
+            _render_mapping_batch_actions(
+                edited_frame,
+                display_records,
+                selected_filter,
+                DEFAULT_LOCAL_MAPPING_PATH,
+                use_form_submit=True,
+            )
+        _render_mapping_filter_ignore_action(display_records, selected_filter)
     elif records:
         st.success("当前筛选下没有需要处理的映射。打开“显示全部映射”可以查看全量扫描结果。")
     else:
@@ -6994,6 +7010,8 @@ def _render_mapping_batch_actions(
     records: list[dict],
     selected_filter: str,
     local_mapping_path: Path,
+    *,
+    use_form_submit: bool = False,
 ) -> None:
     operations = _mapping_operation_rows(edited_frame, records)
     selected_count = len([row for row in operations if row.get("selected")])
@@ -7005,30 +7023,44 @@ def _render_mapping_batch_actions(
             f"已选 {selected_count} 个；待忽略 {ignore_count} 个；待恢复 {restore_count} 个；合约修改 {change_count} 个。"
         )
 
+    def action_button(container, label: str, *, key: str, **kwargs) -> bool:
+        if use_form_submit:
+            return container.form_submit_button(label, key=key, **kwargs)
+        return container.button(label, key=key, **kwargs)
+
     col_ignore, col_restore, col_save, col_clear = st.columns(4)
-    if col_ignore.button("忽略选中", key="weekend_spread_batch_ignore", width="stretch"):
+    if action_button(col_ignore, "忽略选中", key="weekend_spread_batch_ignore", width="stretch"):
         summary = _apply_ignore_operations(_pending_ignore_operations(operations), path=DEFAULT_IGNORE_PATH)
         _show_batch_operation_summary(summary, success_text="已忽略 {count} 个映射。")
-    if col_restore.button("恢复选中", key="weekend_spread_batch_restore", width="stretch"):
+    if action_button(col_restore, "恢复选中", key="weekend_spread_batch_restore", width="stretch"):
         summary = _apply_restore_operations(_pending_restore_operations(operations), path=DEFAULT_IGNORE_PATH)
         _show_batch_operation_summary(summary, success_text="已恢复 {count} 个映射。")
-    if col_save.button("保存合约修改", key="weekend_spread_batch_save_mapping", width="stretch"):
+    if action_button(col_save, "保存合约修改", key="weekend_spread_batch_save_mapping", width="stretch"):
         summary = _apply_contract_changes(_pending_contract_changes(operations), path=local_mapping_path)
         _show_batch_operation_summary(summary, success_text="已保存 {count} 个合约修改，并标记为人工锁定。")
-    if col_clear.button("清空选择", key="weekend_spread_batch_clear_selection", width="stretch"):
+    if action_button(col_clear, "清空选择", key="weekend_spread_batch_clear_selection", width="stretch"):
         st.session_state["weekend_spread_mapping_editor_nonce"] = int(st.session_state.get("weekend_spread_mapping_editor_nonce", 0)) + 1
         st.rerun()
 
-    if selected_filter not in {"全部", "已忽略"} and records:
-        candidates = [record for record in records if str(record.get("state_group") or "") != "ignored"]
-        with st.expander("批量忽略当前筛选结果", expanded=False):
-            st.caption(
-                f"将忽略当前筛选下的 {len(candidates)} 个映射。它们不会再出现在实时观察和回测候选中，但可以在忽略清单中恢复。"
-            )
-            confirmed = st.checkbox("确认忽略当前筛选结果", key=f"weekend_spread_confirm_ignore_filter_{_state_key_text(selected_filter)}")
-            if st.button("忽略当前筛选结果", key=f"weekend_spread_ignore_filter_{_state_key_text(selected_filter)}", disabled=not confirmed, width="stretch"):
-                summary = _apply_ignore_operations(_records_to_operations(candidates), path=DEFAULT_IGNORE_PATH)
-                _show_batch_operation_summary(summary, success_text="已忽略当前筛选下的 {count} 个映射。")
+
+
+def _render_mapping_filter_ignore_action(records: list[dict], selected_filter: str) -> None:
+    if selected_filter in {"全部", "已忽略"} or not records:
+        return
+    candidates = [record for record in records if str(record.get("state_group") or "") != "ignored"]
+    with st.expander("批量忽略当前筛选结果", expanded=False):
+        st.caption(
+            f"将忽略当前筛选下的 {len(candidates)} 个映射。它们不会再出现在实时观察和回测候选中，但可以在忽略清单中恢复。"
+        )
+        confirmed = st.checkbox("确认忽略当前筛选结果", key=f"weekend_spread_confirm_ignore_filter_{_state_key_text(selected_filter)}")
+        if st.button(
+            "忽略当前筛选结果",
+            key=f"weekend_spread_ignore_filter_{_state_key_text(selected_filter)}",
+            disabled=not confirmed,
+            width="stretch",
+        ):
+            summary = _apply_ignore_operations(_records_to_operations(candidates), path=DEFAULT_IGNORE_PATH)
+            _show_batch_operation_summary(summary, success_text="已忽略当前筛选下的 {count} 个映射。")
 
 
 def _mapping_operation_rows(edited_frame: pd.DataFrame, records: list[dict]) -> list[dict]:
@@ -7335,7 +7367,6 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
         "日常波动参照",
         "判断",
         "休市新闻",
-        "标签",
         "更新时间",
     ]
     frame = pd.DataFrame(rows)
@@ -7351,7 +7382,6 @@ def _live_frame(rows: list[dict]) -> pd.DataFrame:
     display["日常波动参照"] = frame.apply(lambda row: _daily_volatility_reference_text(row.to_dict()), axis=1)
     display["判断"] = frame.apply(lambda row: _spread_reason_display_text(row.to_dict()), axis=1)
     display["休市新闻"] = frame.apply(lambda row: row.get("closed_market_news_label") or _realtime_closed_news_label(row.to_dict()), axis=1)
-    display["标签"] = frame.apply(lambda row: _realtime_row_tags_text(row.to_dict()), axis=1)
     display["更新时间"] = _frame_series(frame, "updated_at").map(_hkt_clock_text)
     return display[columns]
 

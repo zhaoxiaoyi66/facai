@@ -6172,6 +6172,13 @@ def test_realtime_ui_uses_row_details_not_standalone_detail_block() -> None:
     assert "for row in rows:" not in source
 
 
+def test_realtime_basis_annotation_reads_cached_profiles_without_rebuilding() -> None:
+    source = inspect.getsource(weekend_spread._annotate_realtime_basis)
+
+    assert "load_cached_basis_profiles" in source
+    assert "load_basis_profiles" not in source
+
+
 def test_candidate_mapping_is_excluded_from_backtest_by_default() -> None:
     source = inspect.getsource(weekend_spread._render_backtest_tab)
 
@@ -6210,7 +6217,6 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
         "日常波动参照",
         "判断",
         "休市新闻",
-        "标签",
         "更新时间",
     ]
     assert frame.loc[0, "价格对比"] == "$102.88 → $104.58"
@@ -6419,6 +6425,39 @@ def test_realtime_view_exposes_open_market_basis_collection_entry() -> None:
     assert "安装开市基差采集任务" in entry_source
     assert "weekend_spread_collect_open_market_basis_realtime" in entry_source
     assert "weekend_spread_collect_open_market_basis\"" not in entry_source
+
+
+def test_realtime_layout_prioritizes_table_before_summary_and_tools() -> None:
+    source = inspect.getsource(weekend_spread._render_realtime_tab)
+
+    assert source.index("_render_realtime_status_strip") < source.index("_render_realtime_filters")
+    assert source.index("_render_realtime_filters") < source.index("#### 实时价差表")
+    assert source.index("#### 实时价差表") < source.index("摘要统计")
+    assert source.index("摘要统计") < source.index("_render_realtime_basis_collection_entry")
+    assert source.index("_render_realtime_basis_collection_entry") < source.index("_render_realtime_data_source_tools")
+    assert source.index("_render_realtime_data_source_tools") < source.index("高级设置 / 缓存管理")
+
+
+def test_realtime_low_frequency_sections_are_collapsed_by_default() -> None:
+    realtime_source = inspect.getsource(weekend_spread._render_realtime_tab)
+    basis_source = inspect.getsource(weekend_spread._render_realtime_basis_collection_entry)
+    tools_source = inspect.getsource(weekend_spread._render_realtime_data_source_tools)
+
+    assert 'st.expander("摘要统计", expanded=False)' in realtime_source
+    assert 'st.expander("开市基差采集", expanded=False)' in basis_source
+    assert 'st.expander("数据源与补数工具", expanded=False)' in tools_source
+    assert 'st.expander("高级设置 / 缓存管理", expanded=False)' in realtime_source
+
+
+def test_realtime_action_bar_keeps_low_frequency_tools_out_of_first_screen() -> None:
+    action_source = inspect.getsource(weekend_spread._render_realtime_action_bar)
+    tools_source = inspect.getsource(weekend_spread._render_realtime_data_source_tools)
+
+    assert "刷新实时价格" in action_source
+    assert "更新收盘价" in action_source
+    assert "更新美股盘后锚点" in action_source
+    assert "数据源与补数工具" not in action_source
+    assert "数据源与补数工具" in tools_source
 
 
 def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
@@ -7250,6 +7289,28 @@ def test_mapping_management_frame_is_editable_batch_table() -> None:
     assert frame.loc[0, "选择"] == False
     assert frame.loc[0, "是否忽略"] == False
     assert frame.loc[0, "操作状态"] == "未修改"
+
+
+def test_mapping_management_batches_table_edits_in_form() -> None:
+    source = inspect.getsource(weekend_spread._render_mapping_tab)
+
+    assert 'st.form("weekend_spread_mapping_operation_form"' in source
+    assert "只有点击下方提交按钮才会执行" in source
+    assert "use_form_submit=True" in source
+
+
+def test_mapping_batch_actions_use_form_submit_buttons() -> None:
+    source = inspect.getsource(weekend_spread._render_mapping_batch_actions)
+
+    assert "form_submit_button" in source
+    assert "action_button" in source
+
+
+def test_mapping_sync_shows_explicit_busy_feedback() -> None:
+    source = inspect.getsource(weekend_spread._render_mapping_tab)
+
+    assert "正在同步 Binance 美股映射" in source
+    assert "weekend_spread_mapping_flash" in source
 
 
 def test_mapping_batch_ignore_restore_and_contract_save(tmp_path) -> None:
