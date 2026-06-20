@@ -1617,6 +1617,20 @@ def test_p2_source_summary_marks_missing_p2_instead_of_provider_name() -> None:
     assert weekend_spread._p2_source_summary(row) == "夜盘开盘窗口内无有效 1m K线"
 
 
+def test_p2_source_summary_hides_internal_failure_reason_code() -> None:
+    row = {
+        "broker_open_close": None,
+        "overnight_provider": "ALPACA_BOATS",
+        "data_quality": "OBSERVE_ANCHOR_ONLY",
+        "failure_reason": "MISSING_STOCK_FIRST_BAR",
+    }
+
+    label = weekend_spread._p2_source_summary(row)
+
+    assert label == "夜盘开盘窗口内无有效 1m K线"
+    assert "MISSING_STOCK_FIRST_BAR" not in label
+
+
 def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     frame = weekend_spread._backtest_diagnostic_frame(
         [

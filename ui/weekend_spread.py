@@ -5881,9 +5881,20 @@ def _p2_source_summary(row: dict) -> str:
     if _number(row.get("broker_open_close")) is None:
         reason = str(row.get("failure_reason") or "").strip()
         if reason and reason.upper() not in {"NONE", "ANCHOR_SOURCE"}:
-            if "首分钟" in reason:
+            reason_code = reason.upper()
+            if "首分钟" in reason or reason_code in {
+                "MISSING_STOCK_FIRST_BAR",
+                "MISSING_OVERNIGHT_FIRST_1M",
+                "MISSING_BOATS_FIRST_1M",
+                "NO_BROKER_OVERNIGHT_BAR",
+                "NO_OPENING_WINDOW_BAR",
+                "NO_FIRST_MINUTE_BAR",
+            }:
                 return OPENING_WINDOW_P2_MISSING_TEXT
-            return reason
+            localized = _data_quality_text(reason_code)
+            if localized != "未知数据状态":
+                return localized
+            return _unknown_display_text(reason, "未知失败原因")
         quality = str(row.get("data_quality") or (row.get("raw_row") or {}).get("transmission_data_quality") or "").strip().upper()
         if quality == "OVERNIGHT_PROVIDER_MISSING":
             return "美股夜盘数据源未配置"
