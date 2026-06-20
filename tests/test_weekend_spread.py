@@ -1660,7 +1660,8 @@ def test_backtest_diagnostic_frame_localizes_raw_backtest_rows() -> None:
     assert "None" not in text
     assert "raw" not in text.lower()
     assert "P2 第一根原始K线时间" in frame.columns
-    assert "P2 第一根原始K线close" in "".join(frame.columns)
+    assert "P2 第一根原始K线收盘价" in frame.columns
+    assert "P2 第一根原始K线close" not in "".join(frame.columns)
     assert "P2 选中收盘价" in frame.columns
     assert frame.iloc[0]["失败原因"] == "夜盘开盘窗口内无有效 1m K线"
     assert frame.iloc[0]["P2 夜盘价格"] == "无 P2"
