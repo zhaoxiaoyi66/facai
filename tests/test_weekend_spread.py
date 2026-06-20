@@ -6000,12 +6000,12 @@ def test_live_frame_keeps_only_core_realtime_columns_and_shows_anchor() -> None:
 
     assert list(frame.columns) == [
         "股票",
-        "盘后锚点",
-        "Binance 最新",
         "价差",
         "价差%",
         "波动倍数",
         "判断",
+        "盘后锚点",
+        "Binance 最新",
         "休市新闻",
         "标签",
         "更新时间",
@@ -6072,6 +6072,7 @@ def test_live_frame_shows_short_reason_labels_and_volatility_ratio() -> None:
     assert frame.loc[0, "价差%"] == "+3.92%"
     assert frame.loc[0, "波动倍数"] == "1.80x"
     assert frame.loc[0, "判断"] == "异常"
+    assert frame.loc[0, "更新时间"] == "11:28 HKT"
 
 
 def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
@@ -6099,6 +6100,33 @@ def test_realtime_sort_prioritizes_volatility_ratio_before_percent() -> None:
     ordered = sorted(rows, key=weekend_spread._realtime_sort_key)
 
     assert ordered[0]["ticker"] == "HIGH_RATIO"
+
+
+def test_realtime_most_abnormal_uses_reason_rank_before_percent() -> None:
+    rows = [
+        {
+            "ticker": "LARGE_NORMAL",
+            "binance_symbol": "LARGEUSDT",
+            "binance_last_price": 110,
+            "afterhours_reference_price": 100,
+            "spread_vs_afterhours_pct": 10.0,
+            "spread_atr_ratio": 0.7,
+            "spread_reasonableness_label": "轻微偏离",
+            "mapping_quality": "映射可用",
+        },
+        {
+            "ticker": "SMALL_ABNORMAL",
+            "binance_symbol": "SMALLUSDT",
+            "binance_last_price": 103,
+            "afterhours_reference_price": 100,
+            "spread_vs_afterhours_pct": 3.0,
+            "spread_atr_ratio": 1.6,
+            "spread_reasonableness_label": SPREAD_REASON_ANOMALY,
+            "mapping_quality": "映射可用",
+        },
+    ]
+
+    assert weekend_spread._realtime_most_abnormal_row(rows)["ticker"] == "SMALL_ABNORMAL"
 
 
 def test_realtime_detail_percentile_is_human_readable() -> None:
@@ -6297,9 +6325,35 @@ def test_realtime_summary_cards_do_not_render_raw_html_blocks() -> None:
     source = inspect.getsource(weekend_spread._render_realtime_summary_cards)
 
     assert "st.columns" in source
-    assert ".metric(" in source
+    assert "container(border=True)" in source
+    assert ".metric(" not in source
     assert "unsafe_allow_html" not in source
     assert "weekend-realtime-summary" not in source
+    assert "..." not in source
+
+
+def test_realtime_summary_uses_abnormal_wording_without_false_alarm() -> None:
+    normal_row = {
+        "ticker": "GLW",
+        "binance_symbol": "GLWUSDT",
+        "binance_last_price": 203.16,
+        "afterhours_reference_price": 195.49,
+        "spread_vs_afterhours_pct": 3.92,
+        "spread_atr_ratio": 0.59,
+        "spread_reasonableness_label": "轻微偏离",
+        "mapping_quality": "映射可用",
+    }
+
+    assert weekend_spread._realtime_most_abnormal_row([normal_row]) is None
+    assert weekend_spread._summary_abnormal_lines(None)[0] == "无明显异常"
+
+
+def test_realtime_filters_use_compact_selectboxes_not_horizontal_radio() -> None:
+    source = inspect.getsource(weekend_spread._render_realtime_filters)
+
+    assert ".selectbox(" in source
+    assert "st.radio" not in source
+    assert "horizontal=True" not in source
 
 
 def test_realtime_counts_split_binance_price_and_anchor_availability() -> None:
@@ -6475,7 +6529,7 @@ def test_live_frame_formats_updated_at_as_short_hkt() -> None:
 
     frame = weekend_spread._live_frame(rows)
 
-    assert frame.loc[0, "更新时间"] == "06-14 20:00 HKT"
+    assert frame.loc[0, "更新时间"] == "20:00 HKT"
     assert "T12:" not in frame.loc[0, "更新时间"]
 
 
