@@ -477,7 +477,7 @@ def _missing_summary_text(missing: list[str]) -> str:
 def _render_missing_data_notice(ticker: str, score, snapshot: dict) -> None:
     render_section_title("数据可信度与缺口", "按影响程度汇总，细节默认折叠")
     missing_summary = _missing_data_summary(score, snapshot)
-    confidence = confidence_label(score.data_confidence or snapshot.get("dataConfidence") or "N/A")
+    confidence = confidence_label(score.data_confidence or snapshot.get("dataConfidence"))
     if missing_summary:
         st.markdown(_missing_data_summary_html(confidence, missing_summary), unsafe_allow_html=True)
         groups = _missing_gap_groups(score, missing_summary)

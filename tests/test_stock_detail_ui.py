@@ -104,3 +104,10 @@ def test_stock_detail_disclosure_tables_localize_missing_placeholders() -> None:
     assert stock_detail._metric_source_label({}, "fcf_margin") == "待补"
     assert stock_detail._review_status_label(None) == "待补"
     assert stock_detail._missing_row_label({}) == "待补"
+
+
+def test_stock_detail_confidence_label_uses_empty_fallback_not_legacy_na() -> None:
+    source = inspect.getsource(stock_detail._render_missing_data_notice)
+
+    assert 'or "N/A"' not in source
+    assert "confidence_label(score.data_confidence or snapshot.get(\"dataConfidence\"))" in source
