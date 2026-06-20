@@ -14,6 +14,7 @@ from data.news_radar import (
     classify_news_item,
     news_display_rows,
     normalize_news_record,
+    price_context_display_rows,
     refresh_general_market_news,
     refresh_symbol_news,
     source_link_text,
@@ -172,6 +173,26 @@ def test_price_reaction_missing_context_uses_specific_copy() -> None:
     assert "价格反应数据不足" in line
     assert "价格数据不足" in line
     assert line != "数据不足"
+
+
+def test_price_context_rows_use_specific_missing_price_copy() -> None:
+    rows = price_context_display_rows(
+        [
+            {
+                "symbol": "NVDA",
+                "price_change_1d": None,
+                "price_change_5d": None,
+                "news_price_match_label": "",
+                "explanation": "",
+            }
+        ]
+    )
+
+    assert rows[0]["过去 1 日"] == "价格数据不足"
+    assert rows[0]["过去 5 日"] == "价格数据不足"
+    assert rows[0]["一致性判断"] == "价格反应数据不足"
+    assert rows[0]["解释"] == "价格变化样本不足，暂不能判断新闻与股价方向。"
+    assert all(str(value) != "数据不足" for value in rows[0].values())
 
 
 def test_news_price_context_identifies_good_news_not_confirmed_by_price(tmp_path) -> None:

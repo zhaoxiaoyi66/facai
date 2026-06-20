@@ -1072,11 +1072,11 @@ def available_news_symbols() -> dict[str, set[str]]:
 
 def _fmt_pct(value: Any) -> str:
     if value is None:
-        return "数据不足"
+        return "价格数据不足"
     try:
         return f"{float(value) * 100:+.2f}%"
     except Exception:
-        return "数据不足"
+        return "价格数据不足"
 
 
 def source_link_text(item: dict[str, Any]) -> str:
@@ -1116,8 +1116,8 @@ def price_context_display_rows(contexts: Iterable[dict[str, Any]]) -> list[dict[
                 "重大新闻": int(context.get("major_news_count") or 0),
                 "正面新闻": int(context.get("positive_news_count") or 0),
                 "负面新闻": int(context.get("negative_news_count") or 0),
-                "一致性判断": _clean_text(context.get("news_price_match_label")) or "数据不足",
-                "解释": _clean_text(context.get("explanation")) or "数据不足",
+                "一致性判断": _clean_text(context.get("news_price_match_label")) or "价格反应数据不足",
+                "解释": _clean_text(context.get("explanation")) or "价格变化样本不足，暂不能判断新闻与股价方向。",
             }
         )
     return rows
