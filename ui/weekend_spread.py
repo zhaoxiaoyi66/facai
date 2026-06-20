@@ -6752,27 +6752,6 @@ def _weekend_review_broker_first_time(row: dict) -> str:
     return ""
 
 
-def _parse_et_datetime(value: object) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.isdigit():
-        try:
-            timestamp = int(text)
-            if timestamp > 10_000_000_000:
-                timestamp = timestamp / 1000
-            return datetime.fromtimestamp(timestamp, timezone.utc).astimezone(ET)
-        except (OverflowError, OSError, ValueError):
-            return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=ET)
-    return parsed.astimezone(ET)
-
-
 def _p2_delay_minutes_from_row(row: dict, broker_open_close: float | None) -> float | None:
     explicit = _first_number(row, ("p2_delay_minutes",))
     if explicit is not None:

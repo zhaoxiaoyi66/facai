@@ -1241,15 +1241,6 @@ def _macro_indicator(macro_regime, indicator: str):
         return None
 
 
-def _dashboard_number(value: object) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _dashboard_indicator_uses_cache(snapshot) -> bool:
     source = str(getattr(snapshot, "source", "") or "").lower()
     return bool(getattr(snapshot, "error", None)) or "cache" in source or "cached" in source or "缓存" in source
