@@ -205,7 +205,7 @@ def _entry_rating_cell_html(row: pd.Series) -> str:
     position_label, position_range = _dashboard_price_position_text(display, row)
     tone = _price_position_tone(position_label)
     background, foreground, border = BADGE_STYLES.get(tone, BADGE_STYLES["gray"])
-    title = f"价格位置：{position_label}；区间：{position_range}"
+    title = f"价格区间：{position_label}；区间：{position_range}"
     return (
         '<div class="decision-cell entry-rating-cell">'
         f'<span class="entry-rating-token" title="{escape(title)}" '

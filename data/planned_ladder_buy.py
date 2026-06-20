@@ -68,7 +68,7 @@ def evaluate_planned_ladder_buy(
     if current_price is None:
         return _blocked(symbol, "price_missing", ["缺少当前价格，不能匹配分批买入计划。"], max_position_pct=max_position_pct, timing=timing)
     if data_status in {"DATA_MISSING", "MISSING"} or decision == "DATA_MISSING" or is_stale:
-        notes.append("价格位置和买区提示数据缺失或过期；这是提示，不会阻止已匹配的计划买入。")
+        notes.append("价格区间和买区提示数据缺失或过期；这是提示，不会阻止已匹配的计划买入。")
     if qty is None or qty <= 0:
         return _blocked(symbol, "quantity_missing", ["买入数量无效，不能匹配计划档位。"], max_position_pct=max_position_pct, timing=timing)
     if mood in BLOCKED_BUY_MOODS:

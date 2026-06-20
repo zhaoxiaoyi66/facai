@@ -2240,7 +2240,7 @@ def _zone_selection(report: dict[str, Any], buy_zone_context: dict[str, Any] | N
     elif references:
         reason = f"当前价落入【{references[0]}】，系统选择【{primary}】作为主区间。"
     else:
-        reason = str(buy_zone_context.get("zone_selection_reason") or f"当前价未落入完整参考区间，系统按价格位置选择【{primary}】作为主区间。")
+        reason = str(buy_zone_context.get("zone_selection_reason") or f"当前价未落入完整参考区间，系统按价格区间选择【{primary}】作为主区间。")
     if buy_zone_context.get("zone_selection_reason"):
         reason = str(buy_zone_context.get("zone_selection_reason"))
     return {

@@ -1063,7 +1063,7 @@ class DashboardLayoutTests(unittest.TestCase):
                 "现价",
                 "市值",
                 "质量",
-                "价格位置",
+                "价格区间",
                 "风险",
                 "估值状态",
                 "操作建议",
@@ -1098,7 +1098,7 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertTrue(hidden_default_columns.isdisjoint(labels))
         self.assertEqual(
             [column["label"] for column in WATCHLIST_COLUMNS],
-            ["代码", "价格 / 市值", "质量", "价格位置", "风险", "动作", "数据", "操作"],
+            ["代码", "价格 / 市值", "质量", "价格区间", "风险", "动作", "数据", "操作"],
         )
 
     def test_dashboard_loading_uses_productized_shell_not_streamlit_spinner(self) -> None:

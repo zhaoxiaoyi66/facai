@@ -1474,7 +1474,7 @@ def test_planned_ladder_buy_treats_radar_data_missing_or_stale_as_advisory() -> 
         warnings = json.loads(entry["radar_advisory_warnings_json"])
         assert warnings
         warning_text = " ".join(warnings)
-        assert "价格位置和买区提示数据缺失或过期" in warning_text
+        assert "价格区间和买区提示数据缺失或过期" in warning_text
         assert "Radar 买区" not in warning_text
         assert "advisory warning" not in warning_text
         assert not any(token in warning_text for token in ("鍏", "鎶", "涓", "瓒", "绛"))
@@ -1706,7 +1706,7 @@ def test_starter_position_treats_radar_data_missing_or_stale_as_advisory(monkeyp
         warnings = json.loads(entry["radar_advisory_warnings_json"])
         assert warnings
         warning_text = " ".join(warnings)
-        assert "价格位置和买区提示数据缺失" in warning_text
+        assert "价格区间和买区提示数据缺失" in warning_text
         assert "Radar 买区" not in warning_text
         assert "价格数据过期" in warning_text
         assert "符合计划约束" in warning_text

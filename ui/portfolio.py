@@ -2177,7 +2177,7 @@ def _portfolio_buy_market_status_items(market_status: dict, gate: dict) -> list[
         allowed_add_pct = _number(gate.get("allowed_add_pct"))
         if allowed_add_pct is not None and allowed_add_pct <= 0:
             items.append("系统参考新增仓位为 0%，仅作风险提示。")
-        items.append("价格位置和买区提示是判断辅助；可手动继续，偏离建议会记录为人工复核记录。")
+        items.append("价格区间和买区提示是判断辅助；可手动继续，偏离建议会记录为人工复核记录。")
     return _dedupe_text(items)
 
 
@@ -2188,7 +2188,7 @@ def _portfolio_buy_gate_actions(
     tier: object = "",
 ) -> list[str]:
     clean_tier = str(tier or "").strip().upper()
-    actions = ["复核价格位置和买区提示；最终买入由你决定，偏离建议会记录为人工复核记录。"]
+    actions = ["复核价格区间和买区提示；最终买入由你决定，偏离建议会记录为人工复核记录。"]
     if clean_tier == "A":
         actions.extend(["建立 A 类底仓计划。", "建立分批买入计划。"])
     elif clean_tier == "B":
@@ -2206,7 +2206,7 @@ def _portfolio_buy_gate_actions(
         [
             "可降低买入数量，让仓位更接近参考上限。",
             "也可改为计划买入或价格提醒，先观察再执行。",
-            "重新复核该股票的价格位置、技术回踩区和买入计划。",
+            "重新复核该股票的价格区间、技术回踩区和买入计划。",
         ]
     )
     context_items = [*(plan_reasons or []), *(starter_reasons or [])]
