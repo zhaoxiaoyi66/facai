@@ -1942,7 +1942,7 @@ def _basis_backfill_one_window(
                 "status": "FAILED",
                 "data_mode": "ESTIMATED",
                 "data_quality": "ESTIMATED_EXECUTION",
-                "warning": "Binance 历史没有 bid/ask，估算执行不进入 strict statistics",
+                "warning": "Binance 历史缺少买卖盘报价，估算执行不计入严格统计",
                 "kline_cache_status": kline_cache_status,
             }
         )

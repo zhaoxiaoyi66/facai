@@ -4166,6 +4166,9 @@ def test_weekend_basis_backfill_marks_kline_execution_estimated_and_excludes_str
 
     assert rows[0]["data_mode"] == "ESTIMATED"
     assert rows[0]["data_quality"] == "ESTIMATED_EXECUTION"
+    assert rows[0]["warning"] == "Binance 历史缺少买卖盘报价，估算执行不计入严格统计"
+    assert "bid/ask" not in rows[0]["warning"]
+    assert "strict statistics" not in rows[0]["warning"]
     assert summarize_backfill_audit_results(rows)["strict_sample_count"] == 0
 
 
