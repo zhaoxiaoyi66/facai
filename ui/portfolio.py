@@ -2736,8 +2736,8 @@ def _trading_discipline_items(row: dict) -> list[tuple[str, object]]:
     position_class = _position_class_for_row(row)
     if position_class not in {"A", "B", "C"}:
         return [
-            ("鑲＄エ鍒嗙被", format_position_tier_label(row.get("positionTier"))),
-            ("绾緥鎻愰啋", "请先编辑持仓等级；A/B/C 是手动持仓属性，不按股票或仓位自动猜测。"),
+            ("持仓分层", format_position_tier_label(row.get("positionTier"))),
+            ("纪律提醒", "请先编辑持仓等级；A/B/C 是手动持仓属性，不按股票或仓位自动猜测。"),
         ]
     config = load_trading_discipline_config()
     class_rules = dict(config.get("position_classes", {}).get(position_class, {}))
@@ -2955,7 +2955,7 @@ def _lane_label(key: str) -> str:
         "nearTrim": "接近减仓价",
         "overweight": "超仓位",
         "review": "需复核",
-    }.get(key, key)
+    }.get(key, "未归类")
 
 
 def _render_final_portfolio_styles() -> None:

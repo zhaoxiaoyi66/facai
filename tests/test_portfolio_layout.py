@@ -68,3 +68,18 @@ def test_portfolio_reason_labels_do_not_show_raw_internal_codes() -> None:
     assert portfolio_ui._reconciliation_reason_text({"reasons": ["NEW_RECON_REASON"]}) == "其他原因"
     assert portfolio_ui._portfolio_buy_plan_reasons({"plan_match_status": "NEW_PLAN_STATUS"}) == ["其他原因"]
     assert portfolio_ui._portfolio_starter_reasons({"starter_match_status": "NEW_STARTER_STATUS"}) == []
+
+
+def test_portfolio_drawer_discipline_labels_do_not_show_mojibake() -> None:
+    items = portfolio_ui._trading_discipline_items({"symbol": "NVDA", "positionTier": "core"})
+    text = " ".join(f"{label} {value}" for label, value in items)
+
+    assert "持仓分层" in text
+    assert "纪律提醒" in text
+    assert "鑲" not in text
+    assert "绾" not in text
+    assert "\ue044" not in text
+
+
+def test_portfolio_unknown_lane_label_does_not_show_raw_key() -> None:
+    assert portfolio_ui._lane_label("NEW_LANE") == "未归类"
