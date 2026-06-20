@@ -4,6 +4,7 @@ import inspect
 from dataclasses import replace
 
 import pandas as pd
+import pytest
 
 from ui import dashboard_drawer
 
@@ -24,6 +25,19 @@ def _fake_drawer_deps() -> dashboard_drawer.DashboardDrawerDeps:
         drawer_low_priority_resolution_row=lambda _item: "",
         detail_groups=(),
     )
+
+
+def test_drawer_missing_dependencies_error_is_chinese() -> None:
+    original = dashboard_drawer._DRAWER_DEPS
+    try:
+        dashboard_drawer._DRAWER_DEPS = None
+        with pytest.raises(RuntimeError) as captured:
+            dashboard_drawer._drawer_deps()
+        message = str(captured.value)
+        assert "个股详情抽屉依赖尚未配置。" in message
+        assert "not configured" not in message
+    finally:
+        dashboard_drawer._DRAWER_DEPS = original
 
 
 def test_quick_decision_blocks_legacy_add_when_buy_zone_context_is_data_insufficient() -> None:

@@ -67,7 +67,7 @@ def _drawer_deps(deps: DashboardDrawerDeps | None = None) -> DashboardDrawerDeps
     if deps is not None:
         return deps
     if _DRAWER_DEPS is None:
-        raise RuntimeError("Dashboard drawer dependencies are not configured.")
+        raise RuntimeError("个股详情抽屉依赖尚未配置。")
     return _DRAWER_DEPS
 
 
