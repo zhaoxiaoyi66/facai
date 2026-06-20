@@ -19,6 +19,8 @@ from data.weekend_spread_monitor import (
     HEALTH_NOT_STARTED,
     HEALTH_OK,
     HEALTH_PAUSED,
+    MONITOR_MODE_SCHEDULER,
+    MONITOR_RUN_SOURCE_SCHEDULER,
     read_monitor_status,
     write_monitor_status,
 )
@@ -98,6 +100,18 @@ def run_task_command(
 
 
 def _install_task(*, task_name: str, interval_minutes: float) -> dict[str, Any]:
+    validation = _validate_task_paths()
+    if not validation.get("ok"):
+        return validation
+    existing = _query_task(task_name=task_name)
+    if existing.get("exists"):
+        return {
+            "ok": True,
+            "already_exists": True,
+            "task_name": task_name,
+            "task_command": _scheduled_task_command(),
+            "message": "3 分钟监控任务已存在。",
+        }
     task_command = _scheduled_task_command()
     result = subprocess.run(
         [
@@ -159,7 +173,7 @@ def _run_once(*, interval_minutes: float) -> dict[str, Any]:
     python_exe = _python_executable()
     script = ROOT / "tools" / "weekend_spread_monitor.py"
     result = subprocess.run(
-        [str(python_exe), str(script), "--once", "--all", "--interval-minutes", str(interval_minutes)],
+        [str(python_exe), str(script), "--once", "--all", "--source", "manual", "--interval-minutes", str(interval_minutes)],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -172,7 +186,7 @@ def _run_once(*, interval_minutes: float) -> dict[str, Any]:
 def _scheduled_task_command() -> str:
     python_exe = _python_executable()
     script = ROOT / "tools" / "weekend_spread_monitor.py"
-    return f'cmd /c "cd /d {ROOT} && {python_exe} {script} --once --all"'
+    return f'cmd /c "cd /d {ROOT} && {python_exe} {script} --once --all --source scheduler"'
 
 
 def _python_executable() -> Path:
@@ -180,6 +194,21 @@ def _python_executable() -> Path:
     if bundled.exists():
         return bundled
     return Path(sys.executable)
+
+
+def _validate_task_paths() -> dict[str, Any]:
+    python_exe = _python_executable()
+    script = ROOT / "tools" / "weekend_spread_monitor.py"
+    missing = []
+    if not ROOT.exists():
+        missing.append(str(ROOT))
+    if not python_exe.exists():
+        missing.append(str(python_exe))
+    if not script.exists():
+        missing.append(str(script))
+    if missing:
+        return {"ok": False, "message": "监控任务路径不存在：" + "；".join(missing), "missing_paths": missing}
+    return {"ok": True}
 
 
 def _update_task_status(
@@ -195,7 +224,8 @@ def _update_task_status(
     payload = read_monitor_status(path)
     payload.update(
         {
-            "monitor_mode": "scheduler",
+            "monitor_mode": MONITOR_MODE_SCHEDULER,
+            "source": MONITOR_RUN_SOURCE_SCHEDULER,
             "enabled": enabled,
             "interval_minutes": interval_minutes,
             "task_name": task_name,

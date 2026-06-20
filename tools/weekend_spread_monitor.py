@@ -15,7 +15,14 @@ from data.portfolio import PortfolioPositionStore
 from data.weekend_spread import is_binance_symbol_ignored, load_binance_symbol_ignore, load_binance_symbol_mapping
 from data.weekend_spread_backtest import ET, get_last_us_trading_day_of_week
 from data.weekend_spread_cache import read_weekend_spread_snapshot
-from data.weekend_spread_monitor import DEFAULT_MONITOR_INTERVAL_MINUTES, DEFAULT_MONITOR_SNAPSHOT_PATH, run_monitor_scan
+from data.weekend_spread_monitor import (
+    DEFAULT_MONITOR_INTERVAL_MINUTES,
+    DEFAULT_MONITOR_SNAPSHOT_PATH,
+    MONITOR_MODE_LOOP_PROCESS,
+    MONITOR_MODE_MANUAL_ONCE,
+    MONITOR_MODE_SCHEDULER,
+    run_monitor_scan,
+)
 from settings import load_watchlist
 
 
@@ -61,7 +68,8 @@ def _run_once(args) -> dict:
         snapshot_path=DEFAULT_MONITOR_SNAPSHOT_PATH,
         now=datetime.now(timezone.utc),
         interval_minutes=float(args.interval_minutes),
-        monitor_mode=args.monitor_mode if args.once else "loop",
+        monitor_mode=_monitor_mode_for_source(args.source, once=args.once),
+        source=args.source,
     )
 
 
@@ -171,12 +179,37 @@ def _parse_args():
     parser = argparse.ArgumentParser(description="Weekend spread monitor runner")
     parser.add_argument("--interval-minutes", type=float, default=DEFAULT_MONITOR_INTERVAL_MINUTES)
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--monitor-mode", default="scheduler")
+    parser.add_argument("--source", choices=["manual", "scheduler", "loop"], default="")
+    parser.add_argument("--monitor-mode", default="", help=argparse.SUPPRESS)
     parser.add_argument("--symbols", default="")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--only-watchlist", action="store_true")
     parser.add_argument("--only-position", action="store_true", help="Reserved for a read-only position filter.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.source:
+        args.source = _source_from_legacy_mode(args.monitor_mode) or "scheduler"
+    return args
+
+
+def _monitor_mode_for_source(source: str, *, once: bool) -> str:
+    if not once:
+        return MONITOR_MODE_LOOP_PROCESS
+    if source == "manual":
+        return MONITOR_MODE_MANUAL_ONCE
+    if source == "loop":
+        return MONITOR_MODE_LOOP_PROCESS
+    return MONITOR_MODE_SCHEDULER
+
+
+def _source_from_legacy_mode(monitor_mode: str) -> str:
+    text = str(monitor_mode or "").strip().lower()
+    if text in {"manual", "manual_once"}:
+        return "manual"
+    if text in {"loop", "loop_process"}:
+        return "loop"
+    if text == "scheduler":
+        return "scheduler"
+    return ""
 
 
 if __name__ == "__main__":

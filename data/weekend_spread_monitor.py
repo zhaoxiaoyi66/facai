@@ -20,7 +20,18 @@ DEFAULT_MONITOR_LOG_PATH = PROJECT_ROOT / ".cache" / "weekend_spread_monitor.log
 DEFAULT_MONITOR_INTERVAL_MINUTES = 3
 DEFAULT_MONITOR_TASK_NAME = "facai_weekend_spread_monitor"
 MONITOR_LOCK_STALE_MINUTES = 10
+MONITOR_MODE_MANUAL_ONCE = "manual_once"
+MONITOR_MODE_SCHEDULER = "scheduler"
+MONITOR_MODE_LOOP_PROCESS = "loop_process"
+MONITOR_MODE_STOPPED = "stopped"
+MONITOR_MODE_UNKNOWN = "unknown"
+MONITOR_RUN_SOURCE_MANUAL = "manual"
+MONITOR_RUN_SOURCE_SCHEDULER = "scheduler"
+MONITOR_RUN_SOURCE_LOOP = "loop"
 HEALTH_OK = "正常"
+HEALTH_MANUAL_COMPLETE = "手动扫描完成"
+HEALTH_TASK_RUNNING = "任务监控运行中"
+HEALTH_LOOP_RUNNING = "后台进程运行中"
 HEALTH_NOT_STARTED = "未启动"
 HEALTH_PAUSED = "已暂停"
 HEALTH_STALE = "疑似失效"
@@ -66,18 +77,23 @@ def run_monitor_scan(
     research_db_path: Path | None = None,
     use_lock: bool = True,
     update_status: bool = True,
+    source: str | None = None,
 ) -> dict[str, Any]:
     snapshot_path = Path(snapshot_path)
     status_path = Path(status_path) if status_path is not None else _status_path_for_snapshot(snapshot_path)
     lock_path = Path(lock_path) if lock_path is not None else _lock_path_for_snapshot(snapshot_path)
     log_path = Path(log_path) if log_path is not None else _log_path_for_snapshot(snapshot_path)
     scan_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    monitor_mode = normalize_monitor_mode(monitor_mode, source=source)
+    run_source = monitor_source_for_mode(monitor_mode, source=source)
+    run_id = uuid4().hex
+    started_at_monotonic = time.monotonic()
     lock_acquired = False
     if use_lock:
         lock_result = acquire_monitor_lock(lock_path, now=scan_time)
         if not lock_result.get("acquired"):
             run = {
-                "run_id": uuid4().hex,
+                "run_id": run_id,
                 "scan_time": scan_time.isoformat(),
                 "interval_minutes": interval_minutes,
                 "rows": [],
@@ -91,11 +107,12 @@ def run_monitor_scan(
                     "reason": lock_result.get("reason") or "已有扫描正在进行，本轮跳过。",
                 },
                 "source": MONITOR_SOURCE,
+                "run_source": run_source,
                 "created_at": scan_time.isoformat(),
                 "skipped_due_to_lock": True,
             }
             append_monitor_log(
-                f"run_id={run['run_id']} skipped duplicate scan reason={run['summary']['reason']}",
+                f"run_id={run['run_id']} source={run_source} status=skipped reason={run['summary']['reason']}",
                 path=log_path,
                 at=scan_time,
             )
@@ -106,9 +123,15 @@ def run_monitor_scan(
             status_path=status_path,
             interval_minutes=interval_minutes,
             monitor_mode=monitor_mode,
+            source=run_source,
             task_name=task_name,
             started_at=scan_time,
         )
+    append_monitor_log(
+        f"run_id={run_id} source={run_source} mode={monitor_mode} status=started",
+        path=log_path,
+        at=scan_time,
+    )
     try:
         run = _run_monitor_scan_unlocked(
             source_rows,
@@ -124,38 +147,45 @@ def run_monitor_scan(
             interval_minutes=interval_minutes,
             persist_ticks=persist_ticks,
             research_db_path=research_db_path,
+            run_id=run_id,
         )
     except Exception as exc:
+        duration_seconds = time.monotonic() - started_at_monotonic
         if update_status:
             mark_monitor_scan_failure(
                 exc,
                 status_path=status_path,
                 interval_minutes=interval_minutes,
                 monitor_mode=monitor_mode,
+                source=run_source,
                 task_name=task_name,
                 failed_at=scan_time,
             )
-        append_monitor_log(f"run failed error={exc}", path=log_path, at=scan_time)
+        append_monitor_log(f"run_id={run_id} source={run_source} status=failed duration_seconds={duration_seconds:.2f} error={exc}", path=log_path, at=scan_time)
         raise
     finally:
         if lock_acquired:
             release_monitor_lock(lock_path)
+    duration_seconds = time.monotonic() - started_at_monotonic
     if update_status:
         mark_monitor_scan_success(
             run,
             status_path=status_path,
             interval_minutes=interval_minutes,
             monitor_mode=monitor_mode,
+            source=run_source,
             task_name=task_name,
             finished_at=scan_time,
         )
     summary = dict(run.get("summary") or {})
     append_monitor_log(
         (
-            f"run_id={run.get('run_id')} finished "
-            f"valid={summary.get('valid_count', 0)} ignored={summary.get('ignored_count', 0)} "
+            f"run_id={run.get('run_id')} source={run_source} status=success "
+            f"duration_seconds={duration_seconds:.2f} valid={summary.get('valid_count', 0)} "
+            f"ignored={summary.get('ignored_count', 0)} "
             f"anchor_missing={summary.get('anchor_missing_count', 0)} "
-            f"price_missing={summary.get('price_missing_count', 0)}"
+            f"price_missing={summary.get('price_missing_count', 0)} "
+            f"error_count={summary.get('price_missing_count', 0)}"
         ),
         path=log_path,
         at=scan_time,
@@ -178,6 +208,7 @@ def _run_monitor_scan_unlocked(
     interval_minutes: float = DEFAULT_MONITOR_INTERVAL_MINUTES,
     persist_ticks: bool = True,
     research_db_path: Path | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     scan_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     selected_symbols = {str(item or "").strip().upper() for item in (symbols or []) if str(item or "").strip()}
@@ -227,7 +258,7 @@ def _run_monitor_scan_unlocked(
             )
         )
 
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     for item in monitor_rows:
         item["run_id"] = run_id
     run = {
@@ -334,19 +365,66 @@ def write_monitor_status(payload: dict[str, Any], path: Path = DEFAULT_MONITOR_S
     return data
 
 
+def normalize_monitor_mode(monitor_mode: str | None = None, *, source: str | None = None) -> str:
+    source_text = str(source or "").strip().lower()
+    mode_text = str(monitor_mode or "").strip().lower()
+    if source_text == MONITOR_RUN_SOURCE_MANUAL:
+        return MONITOR_MODE_MANUAL_ONCE
+    if source_text == MONITOR_RUN_SOURCE_SCHEDULER:
+        return MONITOR_MODE_SCHEDULER
+    if source_text == MONITOR_RUN_SOURCE_LOOP:
+        return MONITOR_MODE_LOOP_PROCESS
+    if mode_text in {"manual", MONITOR_MODE_MANUAL_ONCE}:
+        return MONITOR_MODE_MANUAL_ONCE
+    if mode_text == MONITOR_MODE_SCHEDULER:
+        return MONITOR_MODE_SCHEDULER
+    if mode_text in {"loop", MONITOR_MODE_LOOP_PROCESS}:
+        return MONITOR_MODE_LOOP_PROCESS
+    if mode_text == MONITOR_MODE_STOPPED:
+        return MONITOR_MODE_STOPPED
+    if mode_text:
+        return mode_text
+    return MONITOR_MODE_UNKNOWN
+
+
+def monitor_source_for_mode(monitor_mode: str | None = None, *, source: str | None = None) -> str:
+    source_text = str(source or "").strip().lower()
+    if source_text in {MONITOR_RUN_SOURCE_MANUAL, MONITOR_RUN_SOURCE_SCHEDULER, MONITOR_RUN_SOURCE_LOOP}:
+        return source_text
+    mode = normalize_monitor_mode(monitor_mode)
+    if mode == MONITOR_MODE_SCHEDULER:
+        return MONITOR_RUN_SOURCE_SCHEDULER
+    if mode == MONITOR_MODE_LOOP_PROCESS:
+        return MONITOR_RUN_SOURCE_LOOP
+    return MONITOR_RUN_SOURCE_MANUAL
+
+
+def is_monitor_snapshot_fresh(last_success_at: object, interval_minutes: float, now: datetime | None = None) -> bool | None:
+    last_success = _parse_utc_time(last_success_at)
+    if last_success is None:
+        return None
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    elapsed = (current - last_success).total_seconds() / 60
+    return elapsed <= float(interval_minutes or DEFAULT_MONITOR_INTERVAL_MINUTES) * 2.5
+
+
 def mark_monitor_scan_started(
     *,
     status_path: Path,
     interval_minutes: float,
     monitor_mode: str,
+    source: str | None = None,
     task_name: str,
     started_at: datetime,
 ) -> dict[str, Any]:
+    monitor_mode = normalize_monitor_mode(monitor_mode, source=source)
+    run_source = monitor_source_for_mode(monitor_mode, source=source)
     payload = read_monitor_status(status_path)
     payload.update(
         {
             "monitor_mode": monitor_mode,
-            "enabled": True,
+            "source": run_source,
+            "enabled": monitor_mode != MONITOR_MODE_MANUAL_ONCE,
             "interval_minutes": interval_minutes,
             "task_name": task_name,
             "last_started_at": started_at.isoformat(),
@@ -363,16 +441,21 @@ def mark_monitor_scan_success(
     status_path: Path,
     interval_minutes: float,
     monitor_mode: str,
+    source: str | None = None,
     task_name: str,
     finished_at: datetime,
 ) -> dict[str, Any]:
     summary = dict(run.get("summary") or {})
-    next_expected = finished_at + timedelta(minutes=float(interval_minutes or DEFAULT_MONITOR_INTERVAL_MINUTES))
+    monitor_mode = normalize_monitor_mode(monitor_mode, source=source)
+    run_source = monitor_source_for_mode(monitor_mode, source=source)
+    is_manual = monitor_mode == MONITOR_MODE_MANUAL_ONCE
+    next_expected = None if is_manual else finished_at + timedelta(minutes=float(interval_minutes or DEFAULT_MONITOR_INTERVAL_MINUTES))
     payload = read_monitor_status(status_path)
     payload.update(
         {
             "monitor_mode": monitor_mode,
-            "enabled": True,
+            "source": run_source,
+            "enabled": not is_manual,
             "interval_minutes": interval_minutes,
             "task_name": task_name,
             "last_finished_at": finished_at.isoformat(),
@@ -381,11 +464,11 @@ def mark_monitor_scan_success(
             "last_scan_valid_count": int(summary.get("valid_count") or 0),
             "last_scan_skipped_count": int(summary.get("ignored_count") or 0) + int(summary.get("anchor_missing_count") or 0),
             "last_scan_error_count": int(summary.get("price_missing_count") or 0),
-            "next_expected_at": next_expected.isoformat(),
+            "next_expected_at": "" if next_expected is None else next_expected.isoformat(),
             "consecutive_failures": 0,
             "last_error": "",
-            "health_status": HEALTH_OK,
-            "health_reason": "最近一轮扫描成功。",
+            "health_status": HEALTH_MANUAL_COMPLETE if is_manual else HEALTH_OK,
+            "health_reason": "这是一次手动扫描，不会自动继续。" if is_manual else "最近一轮扫描成功。",
         }
     )
     return write_monitor_status(payload, status_path)
@@ -397,15 +480,19 @@ def mark_monitor_scan_failure(
     status_path: Path,
     interval_minutes: float,
     monitor_mode: str,
+    source: str | None = None,
     task_name: str,
     failed_at: datetime,
 ) -> dict[str, Any]:
+    monitor_mode = normalize_monitor_mode(monitor_mode, source=source)
+    run_source = monitor_source_for_mode(monitor_mode, source=source)
     payload = read_monitor_status(status_path)
     failures = int(payload.get("consecutive_failures") or 0) + 1
     payload.update(
         {
             "monitor_mode": monitor_mode,
-            "enabled": True,
+            "source": run_source,
+            "enabled": monitor_mode != MONITOR_MODE_MANUAL_ONCE,
             "interval_minutes": interval_minutes,
             "task_name": task_name,
             "last_failure_at": failed_at.isoformat(),
@@ -427,6 +514,7 @@ def evaluate_monitor_health(
 ) -> dict[str, Any]:
     payload = dict(status or {})
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    monitor_mode = normalize_monitor_mode(payload.get("monitor_mode"), source=payload.get("source"))
     if not payload:
         return {
             "health_status": HEALTH_NOT_STARTED,
@@ -434,10 +522,8 @@ def evaluate_monitor_health(
             "minutes_since_success": None,
             "next_expected_at": "",
         }
-    if scheduler_exists is False and payload.get("monitor_mode") == "scheduler":
+    if scheduler_exists is False and monitor_mode == MONITOR_MODE_SCHEDULER:
         return {**payload, "health_status": HEALTH_NOT_STARTED, "health_reason": "任务计划不存在，请重新安装 3 分钟监控任务。"}
-    if payload.get("enabled") is False:
-        return {**payload, "health_status": HEALTH_PAUSED, "health_reason": "监控任务已暂停。"}
     failures = int(payload.get("consecutive_failures") or 0)
     if failures >= 3:
         return {**payload, "health_status": HEALTH_FAILED, "health_reason": f"连续失败 {failures} 次，请查看最近错误。"}
@@ -446,15 +532,35 @@ def evaluate_monitor_health(
     if last_success is None:
         if payload.get("last_failure_at") or failures:
             return {**payload, "health_status": HEALTH_FAILED, "health_reason": "尚无成功扫描，最近一次运行失败。"}
+        if payload.get("enabled") is False and monitor_mode != MONITOR_MODE_MANUAL_ONCE:
+            return {**payload, "health_status": HEALTH_PAUSED, "health_reason": "监控任务已暂停。"}
         return {**payload, "health_status": HEALTH_NOT_STARTED, "health_reason": "尚未产生成功扫描。"}
     elapsed = (current - last_success).total_seconds() / 60
+    if monitor_mode == MONITOR_MODE_MANUAL_ONCE:
+        return {
+            **payload,
+            "monitor_mode": monitor_mode,
+            "source": MONITOR_RUN_SOURCE_MANUAL,
+            "minutes_since_success": elapsed,
+            "next_expected_at": "",
+            "health_status": HEALTH_MANUAL_COMPLETE,
+            "health_reason": "当前展示的是手动扫描结果。系统不会自动更新，除非安装 3 分钟监控任务。",
+        }
+    if payload.get("enabled") is False:
+        return {**payload, "health_status": HEALTH_PAUSED, "health_reason": "监控任务已暂停。"}
     next_expected = last_success + timedelta(minutes=interval)
     enriched = {
         **payload,
+        "monitor_mode": monitor_mode,
+        "source": monitor_source_for_mode(monitor_mode, source=payload.get("source")),
         "minutes_since_success": elapsed,
         "next_expected_at": payload.get("next_expected_at") or next_expected.isoformat(),
     }
-    if elapsed <= interval * 2.5:
+    if is_monitor_snapshot_fresh(last_success, interval, now=current):
+        if monitor_mode == MONITOR_MODE_SCHEDULER:
+            return {**enriched, "health_status": HEALTH_TASK_RUNNING, "health_reason": "3 分钟监控任务运行中，页面正在读取最近快照。"}
+        if monitor_mode == MONITOR_MODE_LOOP_PROCESS:
+            return {**enriched, "health_status": HEALTH_LOOP_RUNNING, "health_reason": "后台监控进程运行中，页面正在读取最近快照。"}
         return {**enriched, "health_status": HEALTH_OK, "health_reason": "最近成功扫描仍在预期间隔内。"}
     return {
         **enriched,

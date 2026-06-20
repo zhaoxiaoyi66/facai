@@ -117,6 +117,10 @@ from data.weekend_spread_log import (
 )
 from data.weekend_spread_monitor import (
     DEFAULT_MONITOR_INTERVAL_MINUTES,
+    HEALTH_MANUAL_COMPLETE,
+    HEALTH_TASK_RUNNING,
+    MONITOR_MODE_MANUAL_ONCE,
+    MONITOR_MODE_SCHEDULER,
     append_monitor_run,
     acquire_monitor_lock,
     build_monitor_priority,
@@ -132,6 +136,7 @@ from data.weekend_spread_monitor import (
 )
 from data.weekend_spread_research import list_monitor_ticks, research_path_for_snapshot
 from scripts import smoke_binance_provider
+from tools.weekend_spread_monitor_task import _scheduled_task_command
 from ui import weekend_spread
 
 
@@ -7005,15 +7010,46 @@ def test_weekend_monitor_once_success_writes_status(tmp_path) -> None:
         snapshot_path=path,
         status_path=status_path,
         now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
-        monitor_mode="scheduler",
+        monitor_mode=MONITOR_MODE_SCHEDULER,
+        source="scheduler",
     )
     status = read_monitor_status(status_path)
 
-    assert status["monitor_mode"] == "scheduler"
+    assert status["monitor_mode"] == MONITOR_MODE_SCHEDULER
+    assert status["source"] == "scheduler"
     assert status["health_status"] == "正常"
     assert status["last_scan_run_id"] == run["run_id"]
     assert status["last_scan_valid_count"] == 1
     assert status["consecutive_failures"] == 0
+    assert status["next_expected_at"]
+
+
+def test_weekend_monitor_manual_scan_writes_manual_status_without_next_expected(tmp_path) -> None:
+    path = tmp_path / "weekend_spread_monitor_snapshots.json"
+    status_path = tmp_path / "weekend_spread_monitor_status.json"
+    rows = [{"ticker": "NVDA", "binance_symbol": "NVDAUSDT", "afterhours_reference_price": 100.0}]
+
+    run = run_monitor_scan(
+        rows,
+        price_map={"NVDAUSDT": 104.0},
+        snapshot_path=path,
+        status_path=status_path,
+        now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
+        monitor_mode=MONITOR_MODE_MANUAL_ONCE,
+        source="manual",
+    )
+    status = read_monitor_status(status_path)
+    health = evaluate_monitor_health(status, now=datetime(2026, 6, 20, 0, 3, tzinfo=timezone.utc))
+
+    assert status["monitor_mode"] == MONITOR_MODE_MANUAL_ONCE
+    assert status["source"] == "manual"
+    assert status["health_status"] == HEALTH_MANUAL_COMPLETE
+    assert status["last_scan_run_id"] == run["run_id"]
+    assert status["last_scan_valid_count"] == 1
+    assert status["next_expected_at"] == ""
+    assert health["health_status"] == HEALTH_MANUAL_COMPLETE
+    assert health["next_expected_at"] == ""
+    assert weekend_spread._monitor_next_expected_text(health) == "无，未启动自动监控"
 
 
 def test_weekend_monitor_once_failure_writes_error_status(monkeypatch, tmp_path) -> None:
@@ -7032,7 +7068,8 @@ def test_weekend_monitor_once_failure_writes_error_status(monkeypatch, tmp_path)
             snapshot_path=path,
             status_path=status_path,
             now=datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc),
-            monitor_mode="scheduler",
+            monitor_mode=MONITOR_MODE_SCHEDULER,
+            source="scheduler",
         )
 
     status = read_monitor_status(status_path)
@@ -7044,18 +7081,27 @@ def test_weekend_monitor_once_failure_writes_error_status(monkeypatch, tmp_path)
 def test_weekend_monitor_health_evaluation_statuses() -> None:
     base = {
         "enabled": True,
-        "monitor_mode": "scheduler",
+        "monitor_mode": MONITOR_MODE_SCHEDULER,
+        "source": "scheduler",
         "interval_minutes": 3,
         "last_success_at": "2026-06-20T00:00:00+00:00",
         "consecutive_failures": 0,
     }
 
-    assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 7, tzinfo=timezone.utc))["health_status"] == "正常"
+    assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 7, tzinfo=timezone.utc))["health_status"] == HEALTH_TASK_RUNNING
     assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 8, tzinfo=timezone.utc))["health_status"] == "疑似失效"
     assert evaluate_monitor_health({**base, "enabled": False}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "已暂停"
     assert evaluate_monitor_health({}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "未启动"
     assert evaluate_monitor_health({**base, "consecutive_failures": 3}, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc))["health_status"] == "最近失败"
     assert evaluate_monitor_health(base, now=datetime(2026, 6, 20, 0, 1, tzinfo=timezone.utc), scheduler_exists=False)["health_status"] == "未启动"
+
+
+def test_weekend_monitor_scheduled_task_command_marks_scheduler_source() -> None:
+    command = _scheduled_task_command()
+
+    assert "tools" in command
+    assert "weekend_spread_monitor.py" in command
+    assert "--once --all --source scheduler" in command
 
 
 def test_weekend_monitor_lock_prevents_duplicate_scan(tmp_path) -> None:
