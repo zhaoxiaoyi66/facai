@@ -295,15 +295,15 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         cols = st.columns([0.6, 1.35, 1.05, 0.9, 0.9, 0.95, 1.0, 1.0, 1.7])
         cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
         cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey') or 'N/A'))}</div>"
+            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
             f"<div class='metric-sub'>{escape(_metric_row_subtitle(row))}</div>",
             unsafe_allow_html=True,
         )
         item_type = str(row.get("itemType") or "")
         cols[2].markdown(_badge(ITEM_TYPE_LABELS.get(item_type, item_type), ITEM_TYPE_TONES.get(item_type, "gray")), unsafe_allow_html=True)
         cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
-        cols[4].markdown(escape(source_type_label(row.get("sourceType") or "N/A")))
-        cols[5].markdown(_badge(confidence_label(confidence or "N/A"), _confidence_tone(confidence)), unsafe_allow_html=True)
+        cols[4].markdown(escape(source_type_label(row.get("sourceType"))))
+        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
         cols[6].markdown(escape(_affects_label(row.get("affects"))))
         cols[7].markdown(_badge(STATUS_LABELS.get(status, status), STATUS_TONES.get(status, "gray")), unsafe_allow_html=True)
         with cols[8]:
@@ -323,7 +323,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         snippet = _truncate(str(row.get("extractedText") or row.get("explanation") or ""), 360)
         detail_cols[0].markdown(
             f"<div class='source-snippet'><b>{escape(_detail_title(row))}</b><br>{escape(snippet or '暂无说明')}</div>"
-            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(str(row.get('updatedAt') or 'N/A'))}</div>",
+            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(_review_display_text(row.get('updatedAt'), '未记录'))}</div>",
             unsafe_allow_html=True,
         )
         url = row.get("sourceUrl")
@@ -451,15 +451,15 @@ def _render_recent_confirmed_row(store: ReviewQueueStore, row: dict) -> None:
     with st.container(border=True):
         cols = st.columns([0.95, 0.55, 1.35, 0.72, 0.44, 0.75, 0.82, 0.78, 0.82, 1.45], vertical_alignment="center")
         cols[0].caption(_short_time(row.get("confirmedAt") or row.get("approvedAt") or row.get("reviewedAt") or row.get("updatedAt")))
-        cols[1].markdown(f"**{escape(symbol or 'N/A')}**")
+        cols[1].markdown(f"**{escape(symbol or '待补')}**")
         cols[2].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey') or 'N/A'))}</div>"
+            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
             f"<div class='metric-sub'>{escape(str(row.get('metricKey') or ''))}</div>",
             unsafe_allow_html=True,
         )
         cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
-        cols[4].caption(str(row.get("unit") or "N/A"))
-        cols[5].markdown(_badge(source_type_label(row.get("sourceType") or "N/A"), "gray"), unsafe_allow_html=True)
+        cols[4].caption(_review_display_text(row.get("unit")))
+        cols[5].markdown(_badge(source_type_label(row.get("sourceType")), "gray"), unsafe_allow_html=True)
         cols[6].markdown(_badge(_confirmed_status_label(effective_status), _confirmed_status_tone(effective_status)), unsafe_allow_html=True)
         cols[7].markdown(_badge("参与评分" if row.get("canEnterScoring") else "不进评分", "green" if row.get("canEnterScoring") else "gray"), unsafe_allow_html=True)
         cols[8].caption(_confirmed_actor_label(row))
@@ -480,7 +480,7 @@ def _render_recent_confirmed_row(store: ReviewQueueStore, row: dict) -> None:
 
 def _render_score_impact_panel(store: ReviewQueueStore, row: dict, score_status: dict, key_prefix: str) -> None:
     affects = _affects_label(row.get("affects") or "ConfidenceOnly")
-    run_id = score_status.get("lastScoreRunId") or "N/A"
+    run_id = score_status.get("lastScoreRunId") or "未记录"
     st.markdown(
         f"""
         <div class="review-impact-panel">
@@ -512,11 +512,11 @@ def _render_last_confirm_notice(store: ReviewQueueStore) -> None:
     if not metric_id:
         return
     symbol = str(row.get("symbol") or notice.get("symbol") or "").upper()
-    metric_name = metric_label(row.get("displayName") or row.get("metricKey") or notice.get("metricName") or "N/A")
+    metric_name = metric_label(row.get("displayName") or row.get("metricKey") or notice.get("metricName"))
     st.markdown(
         f"""
         <div class="review-confirm-notice">
-          <strong>刚刚确认：{escape(symbol or 'N/A')} {escape(metric_name)}</strong>
+          <strong>刚刚确认：{escape(symbol or '待补')} {escape(metric_name)}</strong>
           <span>该数据将参与评分，可在“最近确认”中撤销。</span>
         </div>
         """,
@@ -579,15 +579,15 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         cols = st.columns([0.6, 1.35, 1.05, 0.9, 0.9, 0.95, 1.0, 1.0, 1.7])
         cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
         cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey') or 'N/A'))}</div>"
+            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
             f"<div class='metric-sub'>{escape(model_type_label(row.get('modelType')))}</div>",
             unsafe_allow_html=True,
         )
         item_type = str(row.get("itemType") or "")
         cols[2].markdown(_badge(ITEM_TYPE_LABELS.get(item_type, item_type), ITEM_TYPE_TONES.get(item_type, "gray")), unsafe_allow_html=True)
         cols[3].markdown(f"<span class='metric-value'>{escape(_format_value(row.get('value'), row.get('unit')))}</span>", unsafe_allow_html=True)
-        cols[4].markdown(escape(source_type_label(row.get("sourceType") or "N/A")))
-        cols[5].markdown(_badge(confidence_label(confidence or "N/A"), _confidence_tone(confidence)), unsafe_allow_html=True)
+        cols[4].markdown(escape(source_type_label(row.get("sourceType"))))
+        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
         cols[6].markdown(escape(_affects_label(row.get("affects"))))
         cols[7].markdown(_badge(STATUS_LABELS.get(status, status), STATUS_TONES.get(status, "gray")), unsafe_allow_html=True)
         with cols[8]:
@@ -607,7 +607,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         snippet = _truncate(str(row.get("extractedText") or row.get("explanation") or ""), 360)
         detail_cols[0].markdown(
             f"<div class='source-snippet'><b>{escape(_detail_title(row))}</b><br>{escape(snippet or '暂无说明')}</div>"
-            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(str(row.get('updatedAt') or 'N/A'))}</div>",
+            f"<div class='source-meta'>{escape(action_label(row.get('recommendedAction') or '复核'))} · 更新 {escape(_review_display_text(row.get('updatedAt'), '未记录'))}</div>",
             unsafe_allow_html=True,
         )
         url = row.get("sourceUrl")
@@ -662,6 +662,17 @@ def _format_value(value: object, unit: object) -> str:
     if number.is_integer():
         return f"{number:,.0f}"
     return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+
+def _review_display_text(value: object, fallback: str = "待补") -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"", "n/a", "na", "none", "null", "nan"}:
+        return fallback
+    return text
+
+
+def _review_has_display_text(value: object) -> bool:
+    return _review_display_text(value, "") != ""
 
 
 def _metric_row_subtitle(row: dict) -> str:
@@ -1587,14 +1598,14 @@ def _run_review_action(store: ReviewQueueStore, row: dict, action_key: str, ai_r
         confirmed_row = dict(row)
         confirmed_row["reviewStatus"] = "approved"
         confirmed_row["canEnterScoring"] = True
-        metric_name = metric_label(row.get("displayName") or row.get("metricKey") or "N/A")
+        metric_name = metric_label(row.get("displayName") or row.get("metricKey"))
         st.session_state[CONFIRM_NOTICE_KEY] = {
             "id": metric_id,
             "symbol": str(row.get("symbol") or "").upper(),
             "metricName": metric_name,
             "row": confirmed_row,
         }
-        st.toast(f"已确认 {confirmed_row.get('symbol') or 'N/A'} {metric_name}，该数据将参与评分。")
+        st.toast(f"已确认 {confirmed_row.get('symbol') or '待补'} {metric_name}，该数据将参与评分。")
     elif action_key == "keep_historical":
         store.auto_archive_item(metric_id, "keep_historical_value")
         st.toast("已保留为历史值")
@@ -1700,14 +1711,14 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         cols = st.columns([0.58, 1.45, 0.85, 0.86, 0.82, 0.86, 1.25, 1.0], vertical_alignment="center")
         cols[0].markdown(f"**{escape(str(row.get('symbol') or ''))}**")
         cols[1].markdown(
-            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey') or 'N/A'))}</div>"
+            f"<div class='metric-title'>{escape(metric_label(row.get('displayName') or row.get('metricKey')))}</div>"
             f"<div class='metric-sub'>{escape(model_type_label(row.get('modelType')))}</div>",
             unsafe_allow_html=True,
         )
         cols[2].markdown(f"<span class='metric-value'>{escape(value_text)}</span>", unsafe_allow_html=True)
         cols[3].markdown(_badge(_cn_item_type(row.get("itemType")), ITEM_TYPE_TONES.get(str(row.get("itemType") or ""), "gray")), unsafe_allow_html=True)
-        cols[4].markdown(_badge(source_type_label(row.get("sourceType") or "N/A"), "gray"), unsafe_allow_html=True)
-        cols[5].markdown(_badge(confidence_label(confidence or "N/A"), _confidence_tone(confidence)), unsafe_allow_html=True)
+        cols[4].markdown(_badge(source_type_label(row.get("sourceType")), "gray"), unsafe_allow_html=True)
+        cols[5].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
         cols[6].markdown(_compact_ai_badge(ai_result, triage, eligible, reason), unsafe_allow_html=True)
         with cols[7]:
             action_cols = st.columns([0.62, 0.38])
@@ -2164,7 +2175,7 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
         st.markdown('<div class="review-row-marker"></div>', unsafe_allow_html=True)
         cols = st.columns([0.44, 1.5, 1.08, 0.64, 0.7, 0.68, 1.1, 1.68], gap="small", vertical_alignment="center")
         cols[0].markdown(f"<div class='review-symbol'>{escape(str(row.get('symbol') or ''))}</div>", unsafe_allow_html=True)
-        metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey") or "N/A"
+        metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey")
         cols[1].markdown(
             f"<div class='metric-title'>{escape(metric_label(metric_name))}</div>"
             f"<div class='metric-sub'>{escape(_metric_row_subtitle(row))}</div>",
@@ -2174,8 +2185,8 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
             f"<div class='review-value-stack'><strong>{escape(value_text)}</strong><span>{escape(suggested_text)}</span></div>",
             unsafe_allow_html=True,
         )
-        cols[3].markdown(_badge(source_type_label(row.get("sourceType") or "N/A"), "gray"), unsafe_allow_html=True)
-        cols[4].markdown(_badge(confidence_label(confidence or "N/A"), _confidence_tone(confidence)), unsafe_allow_html=True)
+        cols[3].markdown(_badge(source_type_label(row.get("sourceType")), "gray"), unsafe_allow_html=True)
+        cols[4].markdown(_badge(confidence_label(confidence), _confidence_tone(confidence)), unsafe_allow_html=True)
         cols[5].markdown(_badge(affects_text, _affects_tone(row.get("affects"))), unsafe_allow_html=True)
         action_hint = _review_action_hint(row, ai_result, eligible, reason, view_item)
         cols[6].markdown(
@@ -2198,10 +2209,10 @@ def _render_metric_row(store: ReviewQueueStore, row: dict, ai_result: dict | Non
 
 
 def _review_row_source_meta(row: dict) -> str:
-    source = source_type_label(row.get("sourceType") or "N/A")
+    source = source_type_label(row.get("sourceType"))
     if str(row.get("sourceType") or "").strip().lower() == "missing":
         return f"{source} · 待补证据"
-    period = row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or row.get("sourceDate") or row.get("updatedAt") or "N/A"
+    period = _review_display_text(row.get("metricPeriod") or row.get("fiscalPeriod") or row.get("period") or row.get("sourceDate") or row.get("updatedAt"))
     return f"{source} · {period}"
 
 
@@ -2366,7 +2377,7 @@ def _review_system_reason_text(reason: object) -> str:
 
 def _review_evidence_drawer_html(row: dict, ai_result: dict | None, eligible: bool, reason: str, view_item: dict | None = None) -> str:
     symbol = str(row.get("symbol") or "")
-    metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey") or "N/A"
+    metric_name = view_item.get("metric") if isinstance(view_item, dict) else row.get("displayName") or row.get("metricKey")
     evidence_text = str(row.get("evidenceText") or row.get("extractedText") or "").strip()
     system_reason = str(row.get("systemReason") or row.get("explanation") or "").strip()
     evidence_summary = str((view_item or {}).get("evidenceSummary") or "").strip()
@@ -2405,7 +2416,7 @@ def _review_drawer_section(title: str, body: object, clipped: bool = False) -> s
 
 
 def _review_source_display(row: dict) -> str:
-    source = source_type_label(row.get("sourceType") or "N/A")
+    source = source_type_label(row.get("sourceType"))
     title = str(row.get("sourceDocumentTitle") or row.get("sourceTitle") or "").strip()
     url = str(row.get("sourceUrl") or "").strip()
     source_type = str(row.get("sourceType") or "").strip().upper()
@@ -2414,7 +2425,7 @@ def _review_source_display(row: dict) -> str:
         title = _earnings_release_label(url) or "earnings release"
     elif title:
         title = title.replace("8-K Exhibit 99.1", "Exhibit 99.1")
-    parts = [part for part in (source, title) if part and part not in {"N/A", "待补"}]
+    parts = [part for part in (source, title) if _review_has_display_text(part) and part != "待补"]
     text = " / ".join(parts) if parts else "待补"
     return text if not url else f"{text} · {url}"
 
