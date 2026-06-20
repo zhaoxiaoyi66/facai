@@ -464,9 +464,9 @@ class OpenAIReviewClient:
                 raw = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI review request failed: {exc.code} {detail}") from exc
+            raise RuntimeError(f"OpenAI 复核请求失败：{exc.code} {detail}") from exc
         except URLError as exc:
-            raise RuntimeError(f"OpenAI review request failed: {exc.reason}") from exc
+            raise RuntimeError(f"OpenAI 复核请求失败：{exc.reason}") from exc
         return validate_ai_review_result(json.loads(_extract_response_text(raw)))
 
     def response_body_for_batch(self, payload: dict) -> dict:
@@ -527,9 +527,9 @@ class QwenReviewClient:
                 raw = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Qwen review request failed: {exc.code} {detail}") from exc
+            raise RuntimeError(f"Qwen 复核请求失败：{exc.code} {detail}") from exc
         except URLError as exc:
-            raise RuntimeError(f"Qwen review request failed: {exc.reason}") from exc
+            raise RuntimeError(f"Qwen 复核请求失败：{exc.reason}") from exc
         return validate_ai_review_result(json.loads(_extract_chat_completion_text(raw)))
 
     def response_body_for_batch(self, payload: dict) -> dict:
@@ -627,7 +627,7 @@ class AIReviewAssistant:
     def apply_ai_review_batch_results(self, batch_id: int) -> AIReviewRunResult:
         record = self.ai_store.get_batch_record(batch_id)
         if not record:
-            return AIReviewRunResult(0, 0, 0, 0, errors=[f"batch {batch_id} not found"])
+            return AIReviewRunResult(0, 0, 0, 0, errors=[f"AI 复核批次 {batch_id} 不存在"])
         result = self.review_item_ids(record.get("reviewItemIds") or [])
         self.ai_store.update_batch_record(batch_id, "completed" if not result.errors else "completed_with_errors")
         return result

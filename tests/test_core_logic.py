@@ -8067,6 +8067,22 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(batch["status"], "queued")
             self.assertEqual(status["reviewItemIds"], [int(item["id"])])
 
+    def test_ai_review_request_and_batch_error_copy_is_localized(self) -> None:
+        source = inspect.getsource(__import__("data.ai_review_assistant", fromlist=[""]))
+
+        self.assertIn("OpenAI 复核请求失败", source)
+        self.assertIn("Qwen 复核请求失败", source)
+        self.assertNotIn("review request failed", source)
+        self.assertNotIn("batch {batch_id} not found", source)
+
+        with TemporaryDirectory() as tmpdir:
+            store = ReviewQueueStore(Path(tmpdir) / "ai.sqlite")
+            assistant = AIReviewAssistant(queue_store=store, ai_store=AIReviewStore(store.path), client=_UnconfiguredAIClient())
+
+            result = assistant.apply_ai_review_batch_results(999)
+
+        self.assertEqual(result.errors, ["AI 复核批次 999 不存在"])
+
     def test_qwen_review_client_uses_dashscope_json_schema_payload(self) -> None:
         client = QwenReviewClient(api_key="test-key", model="qwen-plus", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
         body = client.response_body_for_batch({"symbol": "NOW", "metricKey": "subscriptionRevenueGrowth"})
